@@ -173,6 +173,19 @@ export function BacktestDebugPage() {
     }
   }
 
+  async function resumeRun() {
+    if (!run) return;
+    setControlBusy("resume");
+    setError("");
+    try {
+      setRun(await api<DebugRun>(`/api/trading/backtest_debug/runs/${encodeURIComponent(run.run_id)}/resume`, { method: "POST" }));
+    } catch (reason) {
+      setError(message(reason));
+    } finally {
+      setControlBusy("");
+    }
+  }
+
   return <div className="historical-home backtest-debug-page">
     <header className="historical-goal-hero">
       <div className="historical-goal-copy"><h1>Backtest Debug</h1><p>Run a small, exact event sequence through the production historical runtime contracts.</p></div>
@@ -201,9 +214,9 @@ export function BacktestDebugPage() {
       <aside className="historical-action-column"><section className={`historical-primary-action ${preflight?.ready && parsed.ok ? "" : "blocked"}`}>
         {preflight?.ready && parsed.ok ? <Play size={24} /> : <CircleStop size={24} />}
         <div><strong>{run ? `Debug run ${run.status.replaceAll("_", " ")}` : "Exact-input execution"}</strong><p>{run ? `${Math.round(run.progress * 100)}% · ${run.processed_events || 0} events · ${run.current_time}` : parsed.ok ? `${parsed.marketEvents.length} market events and ${parsed.derivedFrames.length} derived frames will be content hashed.` : parsed.error}</p></div>
-        {run && !terminal(run.status) ? <div className="historical-command-buttons"><button className="button secondary" disabled={Boolean(controlBusy)} onClick={() => commandRun(run.status === "paused" ? "play" : "pause")} type="button">{run.status === "paused" ? <Play size={15} /> : <Pause size={15} />} {run.status === "paused" ? "Resume" : "Pause"}</button><button className="button secondary" disabled={Boolean(controlBusy)} onClick={stopRun} type="button"><Square size={15} /> Stop</button></div> : <button className="button primary" disabled={checking || creating || !preflight?.ready || !parsed.ok} onClick={createRun} type="button"><Play size={16} /> {creating ? "Creating…" : "Run fixture"}</button>}
+        {run && !terminal(run.status) ? <div className="historical-command-buttons"><button className="button secondary" disabled={Boolean(controlBusy)} onClick={() => commandRun(run.status === "paused" ? "play" : "pause")} type="button">{run.status === "paused" ? <Play size={15} /> : <Pause size={15} />} {run.status === "paused" ? "Resume" : "Pause"}</button><button className="button secondary" disabled={Boolean(controlBusy)} onClick={stopRun} type="button"><Square size={15} /> Stop</button></div> : run?.checkpoint?.resume_supported && run.status !== "completed" ? <button className="button primary" disabled={Boolean(controlBusy)} onClick={resumeRun} type="button"><Play size={16} /> {controlBusy === "resume" ? "Restoring…" : "Resume checkpoint"}</button> : <button className="button primary" disabled={checking || creating || !preflight?.ready || !parsed.ok} onClick={createRun} type="button"><Play size={16} /> {creating ? "Creating…" : "Run fixture"}</button>}
         {run?.debug_fixture ? <small>{run.debug_fixture.fixture_id} · {run.debug_fixture.content_hash.slice(0, 12)}</small> : null}
-        {run ? <small>{run.checkpoint?.status === "available" ? `Checkpoint ${run.checkpoint.processed_events.toLocaleString()} events · ${run.checkpoint.event_time}` : `Checkpoint pending · every ${run.checkpoint?.interval_events ?? 1_000} events`} · restart resume not yet enabled</small> : null}
+        {run ? <small>{run.checkpoint?.status === "available" ? `Checkpoint ${run.checkpoint.processed_events.toLocaleString()} events · ${run.checkpoint.event_time}` : `Checkpoint pending · every ${run.checkpoint?.interval_events ?? 1_000} events`} · {run.checkpoint?.resume_supported ? "restart-safe" : "resume unavailable"}</small> : null}
       </section></aside>
     </div>
     {run ? <section className="historical-runtime-canvas" aria-label="Backtest Debug Canvas workspace"><CanvasWorkspaceSurface canvasId="main" manager={false} modeControls={<div className="historical-canvas-run-state"><strong>Backtest Debug · {run.status.replaceAll("_", " ")}</strong><span>{run.processed_events || 0} exact events</span></div>} replayRun={run} runtimeWorkspaceId="main" /></section> : null}

@@ -5356,6 +5356,18 @@ async def trading_backtest_debug_run_stop(run_id: str) -> dict[str, Any]:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
+@app.post("/api/trading/backtest_debug/runs/{run_id}/resume")
+async def trading_backtest_debug_run_resume(run_id: str) -> dict[str, Any]:
+    try:
+        return (await backtest_debug_run_service.resume(run_id)).snapshot()
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Backtest Debug run not found") from exc
+    except ReplayRunCapacityError as exc:
+        raise HTTPException(status_code=429, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
 @app.post("/api/trading/backtest_debug/runs/{run_id}/commands")
 async def trading_backtest_debug_run_command(
     run_id: str,
@@ -5478,6 +5490,18 @@ async def trading_backtest_run_stop(run_id: str) -> dict[str, Any]:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
+@app.post("/api/trading/backtest/runs/{run_id}/resume")
+async def trading_backtest_run_resume(run_id: str) -> dict[str, Any]:
+    try:
+        return (await backtest_run_service.resume(run_id)).snapshot()
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Backtest run not found") from exc
+    except ReplayRunCapacityError as exc:
+        raise HTTPException(status_code=429, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
 @app.post("/api/trading/backtest/runs/{run_id}/commands")
 async def trading_backtest_run_command(
     run_id: str,
@@ -5527,6 +5551,18 @@ async def trading_replay_run_command(
         raise HTTPException(status_code=404, detail="Replay run not found") from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/trading/replay/runs/{run_id}/resume")
+async def trading_replay_run_resume(run_id: str) -> dict[str, Any]:
+    try:
+        return (await replay_run_service.resume(run_id)).snapshot()
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Replay run not found") from exc
+    except ReplayRunCapacityError as exc:
+        raise HTTPException(status_code=429, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 @app.get("/api/trading/replay/runs/{run_id}/canvas")

@@ -272,12 +272,24 @@ function ReplayControls({ onExit, onRunChange, run }: { onExit: () => void; onRu
     }
   }
 
+  async function resumeCheckpoint() {
+    setBusy("resume");
+    setControlError("");
+    try {
+      onRunChange(await api<CanvasReplayRun>(`/api/trading/replay/runs/${encodeURIComponent(run.run_id)}/resume`, { method: "POST" }));
+    } catch (reason) {
+      setControlError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setBusy("");
+    }
+  }
+
   return <div className="replay-canvas-controls" aria-label="Replay controls">
     <button aria-label="Return to Replay setup" className="replay-control-back" onClick={async () => {
       if (!terminal && active) await command("pause");
       onExit();
     }} title="Replay setup" type="button"><ArrowLeft size={14} /></button>
-    <button aria-label={active ? "Pause Replay" : "Play Replay"} className="replay-control-primary" disabled={terminal || Boolean(busy)} onClick={() => command(active ? "pause" : "play")} type="button">{active ? <Pause size={14} /> : <Play size={14} />}</button>
+    <button aria-label={terminal ? "Resume Replay checkpoint" : active ? "Pause Replay" : "Play Replay"} className="replay-control-primary" disabled={(terminal && !run.checkpoint?.resume_supported) || Boolean(busy)} onClick={() => terminal ? resumeCheckpoint() : command(active ? "pause" : "play")} type="button">{active ? <Pause size={14} /> : <Play size={14} />}</button>
     <button aria-label="Advance one event-time second" className="replay-control-button" disabled={terminal || Boolean(busy)} onClick={() => command("step", { step_seconds: 1 })} title="Step one second" type="button"><SkipForward size={13} /></button>
     <button aria-label="Fast-forward five event-time minutes" className="replay-control-button" disabled={terminal || Boolean(busy)} onClick={() => {
       const current = new Date(run.current_time);

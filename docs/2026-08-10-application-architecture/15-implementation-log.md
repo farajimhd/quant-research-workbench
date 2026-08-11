@@ -784,6 +784,18 @@ bounded direct ClickHouse paths remain documented in
      entries. Chart provenance exposes both revisions and Canvas presents them
      to manual and semi-automatic users. All 12 focused Rust cache tests and the
      managed TypeScript/Vite production build passed.
+102. Enabled fail-closed restart recovery for Replay, Backtest, and Backtest
+     Debug. Checkpoint schema v2 atomically captures raw-event and derived-frame
+     cursors, event and calculation clocks, controller/Strategy caches,
+     assignment state, the complete deterministic simulator ledger and order
+     state, Watchlist membership, runtime counters, and pinned data authority.
+     Portfolio and OMS recover from the same durable SQLite-WAL journal before
+     source continuation. Services discover persisted manifests after backend
+     restart; mode-specific resume APIs and UI controls reject completed,
+     incomplete, identity-drifted, and legacy cursor-only runs. Validation
+     included a real stop-after-first-event/new-service/continue-to-completion
+     cycle, derived-only cursor coverage, exact simulator order-state round trip,
+     98 focused runtime/OMS tests, and the managed frontend production build.
 
 The authoritative remaining work and acceptance gates are maintained in the
 [complete implementation backlog](14-implementation-backlog.md). A checked

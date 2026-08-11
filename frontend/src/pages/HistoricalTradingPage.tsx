@@ -184,6 +184,19 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
     }
   }
 
+  async function resumeRun() {
+    if (!run) return;
+    setControlBusy("resume");
+    setError("");
+    try {
+      setRun(await api<BacktestRun>(`/api/trading/backtest/runs/${encodeURIComponent(run.run_id)}/resume`, { method: "POST" }));
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setControlBusy("");
+    }
+  }
+
   return (
     <div className="historical-home">
       <header className="historical-goal-hero">
@@ -238,9 +251,11 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
                 : "Resolve every required preflight item before starting."}</p></div>
             {run && !["completed", "stopped", "failed"].includes(run.status)
               ? <div className="historical-command-buttons"><button className="button secondary" disabled={Boolean(controlBusy)} onClick={() => commandRun(run.status === "paused" ? "play" : "pause")} type="button">{run.status === "paused" ? <Play size={15} /> : <Pause size={15} />} {run.status === "paused" ? "Resume" : "Pause"}</button><button className="button secondary" disabled={Boolean(controlBusy)} onClick={stopRun} type="button"><Square size={15} /> Stop</button></div>
-              : <button className="button primary" disabled={checking || creating || !preflight?.strategy_run_ready} onClick={createRun} type="button"><Play size={16} /> {creating ? "Creating run…" : "Run backtest"}</button>}
+              : run?.checkpoint?.resume_supported && run.status !== "completed"
+                ? <button className="button primary" disabled={Boolean(controlBusy)} onClick={resumeRun} type="button"><Play size={16} /> {controlBusy === "resume" ? "Restoring…" : "Resume checkpoint"}</button>
+                : <button className="button primary" disabled={checking || creating || !preflight?.strategy_run_ready} onClick={createRun} type="button"><Play size={16} /> {creating ? "Creating run…" : "Run backtest"}</button>}
             {run?.error ? <small>{run.error}</small> : null}
-            {run ? <small>{run.checkpoint?.status === "available" ? `Checkpoint ${run.checkpoint.processed_events.toLocaleString()} events · ${run.checkpoint.event_time}` : `Checkpoint pending · every ${run.checkpoint?.interval_events ?? 1_000} events`} · restart resume not yet enabled</small> : null}
+            {run ? <small>{run.checkpoint?.status === "available" ? `Checkpoint ${run.checkpoint.processed_events.toLocaleString()} events · ${run.checkpoint.event_time}` : `Checkpoint pending · every ${run.checkpoint?.interval_events ?? 1_000} events`} · {run.checkpoint?.resume_supported ? "restart-safe" : "resume unavailable"}</small> : null}
           </section>
         </aside>
       </div>

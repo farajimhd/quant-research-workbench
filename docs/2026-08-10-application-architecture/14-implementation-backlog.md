@@ -499,7 +499,14 @@ load progressively without false continuity.
   - [x] Project the pinned Backtest run through the shared Canvas resolver and
         canonical Strategy/Portfolio/OMS state while keeping all interactive
         assignment/proposal commands read-only.
-- [ ] Add durable resume/restart from checkpoints.
+- [x] Add durable resume/restart from checkpoints. Replay, Backtest, and
+      Backtest Debug persist an atomic versioned checkpoint spanning exact raw
+      and derived cursors, controller clocks/caches, Strategy assignment state,
+      simulator cash/positions/orders/executions/market state, runtime counters,
+      Watchlist state, and pinned data authority. Portfolio and OMS restore from
+      their durable journal before continuation. Resume fails closed for older
+      cursor-only checkpoints, changed account/configuration/fixture identity,
+      incomplete state, or completed runs.
 - [x] Add deterministic Debug fixtures.
   - [x] Inject bounded, causally ordered, content-hashed market-event and
         derived-frame fixtures through the shared historical controller,
@@ -518,12 +525,15 @@ load progressively without false continuity.
         command contract and user controls while rejecting Replay-only commands.
   - [ ] Unify lifecycle command/status envelopes across Live/Paper controllers
         and background research jobs.
-- [ ] Add restart-safe checkpoints.
+- [x] Add restart-safe checkpoints.
   - [x] Expose durable historical-run checkpoint cursor, event/write clocks,
         processed count, interval, and honest resume-support status in backend
         and UI snapshots.
-  - [ ] Restore clock, source cursor, Strategy, simulator, Portfolio, OMS, and
-        journal state before enabling restart resume.
+  - [x] Restore clock, raw and derived source cursors, Strategy, simulator,
+        Portfolio, OMS, Watchlist membership, pinned authority, and journal
+        state before enabling historical restart resume. Persisted candidates
+        remain discoverable after backend restart and mode-specific resume
+        endpoints/UI controls never advertise legacy cursor-only checkpoints.
 - [ ] Route manual, semi-automatic, and automatic proposals through one control plane.
 
 Acceptance gate: identical Run Plan and recorded inputs produce deterministic

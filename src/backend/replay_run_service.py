@@ -8,7 +8,7 @@ import re
 import time
 import urllib.parse
 from copy import deepcopy
-from dataclasses import dataclass, field, replace
+from dataclasses import asdict, dataclass, field, replace
 from datetime import UTC, date, datetime, time as clock_time, timedelta
 from pathlib import Path
 from typing import Any, Callable
@@ -80,6 +80,7 @@ PLAYBACK_SPEEDS = (1.0, 5.0, 30.0, 120.0, 0.0)
 DEFAULT_MAX_RESIDENT_RUNS = 32
 DEFAULT_HISTORY_FETCH_CONCURRENCY = 8
 MAX_DEBUG_FIXTURE_EVENTS = 20_000
+RESTART_CHECKPOINT_SCHEMA_VERSION = 2
 
 
 class ReplayRunCapacityError(RuntimeError):
@@ -237,6 +238,7 @@ class ReplayRunController:
         *,
         run_id: str | None = None,
         runtime_root: Path | None = None,
+        resume_state: dict[str, Any] | None = None,
     ) -> None:
         self.definition = definition
         self.run_id = run_id or str(uuid4())
@@ -280,6 +282,10 @@ class ReplayRunController:
         self._historical_watchlist_timeline_index = 0
         self._active_historical_watchlist_tickers: set[str] = set()
         self._data_authority: dict[str, dict[str, Any]] = {}
+        self._resume_state = deepcopy(resume_state) if resume_state is not None else None
+        self._source_cursor: dict[str, Any] = {}
+        self._frame_cursor: dict[str, Any] = {}
+        self._processed_frames = 0
         if self.definition.debug_fixture is not None:
             self._data_authority["market_events"] = {
                 "authority": "backtest_debug_fixture",
@@ -602,19 +608,115 @@ class ReplayRunController:
                 "resume_supported": False,
             }
         state = dict(persisted.get("state") or {})
+        restart_ready = (
+            int(state.get("schema_version") or 0) == RESTART_CHECKPOINT_SCHEMA_VERSION
+            and bool(state.get("complete"))
+            and isinstance(state.get("broker"), dict)
+            and isinstance(state.get("controller"), dict)
+            and isinstance(state.get("identity"), dict)
+            and isinstance(state.get("runtime"), dict)
+        )
         return {
             "status": "available",
             "cursor": str(persisted.get("cursor") or ""),
             "event_time": persisted.get("event_time"),
             "updated_at": persisted.get("updated_at"),
-            "processed_events": int(state.get("processed_events") or 0),
+            "processed_events": int(
+                dict(state.get("controller") or {}).get("processed_events")
+                or state.get("processed_events")
+                or 0
+            ),
             "interval_events": (
                 self._runtime.config.checkpoint_interval_events
                 if self._runtime is not None
                 else 1_000
             ),
-            "resume_supported": False,
+            "resume_supported": restart_ready,
+            "schema_version": int(state.get("schema_version") or 1),
         }
+
+    def _restart_checkpoint_state(self) -> dict[str, Any]:
+        if self._runtime is None or self._strategy is None:
+            raise RuntimeError("Historical runtime is not ready for checkpointing")
+        broker_checkpoint = getattr(self._runtime.broker, "checkpoint_state", None)
+        if broker_checkpoint is None:
+            raise RuntimeError("Historical broker does not support restart checkpoints")
+        return {
+            "schema_version": RESTART_CHECKPOINT_SCHEMA_VERSION,
+            "complete": True,
+            "identity": {
+                "run_id": self.run_id,
+                "mode": self.definition.mode.value,
+                "configuration_revision_id": self.definition.configuration_revision.get(
+                    "revision_id", ""
+                ),
+                "configuration_content_hash": self.definition.configuration_revision.get(
+                    "content_hash", ""
+                ),
+                "debug_fixture_content_hash": (
+                    self.definition.debug_fixture.content_hash
+                    if self.definition.debug_fixture is not None
+                    else ""
+                ),
+                "account_ids": list(self.account_ids),
+            },
+            "controller": {
+                "current_time": self.current_time.isoformat() if self.current_time else None,
+                "processed_events": self.processed_events,
+                "warmup_events": self.warmup_events,
+                "source_cursor": deepcopy(self._source_cursor),
+                "frame_cursor": deepcopy(self._frame_cursor),
+                "processed_frames": self._processed_frames,
+                "previous_vwap": [
+                    {
+                        "ticker": ticker,
+                        "timeframe": timeframe,
+                        "observed_at": observed_at.isoformat(),
+                        "value": value,
+                    }
+                    for (ticker, timeframe), (observed_at, value) in sorted(
+                        self._previous_vwap.items()
+                    )
+                ],
+                "strategy_source_values": deepcopy(self._strategy_source_values),
+                "quotes": {
+                    ticker: _market_event_checkpoint(event)
+                    for ticker, event in self._quotes.items()
+                },
+                "watchlist_timeline_index": self._historical_watchlist_timeline_index,
+                "active_watchlist_tickers": sorted(
+                    self._active_historical_watchlist_tickers
+                ),
+                "data_authority": deepcopy(self._data_authority),
+            },
+            "runtime": {
+                "processed_events": self._runtime.processed_events,
+                "last_event_time": (
+                    self._runtime.last_event_time.isoformat()
+                    if self._runtime.last_event_time
+                    else None
+                ),
+                "latest_checkpoint_cursor": self._runtime._latest_checkpoint_cursor,
+            },
+            "assignments": [
+                assignment.payload() for assignment in self._strategy.assignments()
+            ],
+            "broker": broker_checkpoint(),
+        }
+
+    def _save_restart_checkpoint(self, event_time: datetime) -> None:
+        if self._journal is None or self._runtime is None:
+            return
+        state = self._restart_checkpoint_state()
+        cursor = json.dumps(
+            {
+                "market": state["controller"]["source_cursor"],
+                "frame": state["controller"]["frame_cursor"],
+            },
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+        self._journal.save_checkpoint(self.run_id, cursor, state, event_time)
 
     async def canvas_payload(self, symbol: str = "AAPL") -> dict[str, Any]:
         if self._runtime is None or self._journal is None:
@@ -726,9 +828,19 @@ class ReplayRunController:
             self._record_historical_watchlist_authority()
             frames = await self._load_strategy_frames()
             frame_index = 0
+            if self._resume_state is not None and self._frame_cursor:
+                while (
+                    frame_index < len(frames)
+                    and not _frame_after_cursor(frames[frame_index], self._frame_cursor)
+                ):
+                    frame_index += 1
             self._stream_tickers = self._resolved_tickers()
             async for events in self._market_event_batches():
                 for event_index, event in enumerate(events, start=1):
+                    if self._resume_state is not None and self._source_cursor and not _event_after_cursor(
+                        event, self._source_cursor
+                    ):
+                        continue
                     if self._stop_requested:
                         await self._finish("stopped")
                         return
@@ -861,6 +973,14 @@ class ReplayRunController:
             )
             for row in source_assignments
         ]
+        if self._resume_state is not None:
+            checkpoint_assignments = self._resume_state.get("assignments")
+            if not isinstance(checkpoint_assignments, list):
+                raise ValueError("Restart checkpoint omitted Strategy assignment state")
+            assignments = [
+                _strategy_assignment_from_checkpoint(dict(row))
+                for row in checkpoint_assignments
+            ]
         self._strategy = AssignedLongMomentumStrategy(assignments)
         instruments = {
             assignment.ticker: InstrumentContract(
@@ -942,6 +1062,11 @@ class ReplayRunController:
             SimulationConfig(initial_cash=self.definition.initial_cash),
             mode=TradingMode(self.definition.mode.value),
         )
+        if self._resume_state is not None:
+            broker_state = self._resume_state.get("broker")
+            if not isinstance(broker_state, dict):
+                raise ValueError("Restart checkpoint omitted simulated broker state")
+            broker.restore_checkpoint_state(broker_state)
         self._runtime = TradingRuntime(
             RunConfig(
                 mode=self.definition.mode,
@@ -975,6 +1100,86 @@ class ReplayRunController:
             portfolio=portfolio,
         )
         await self._runtime.initialize()
+        if self._resume_state is not None:
+            self._restore_restart_checkpoint()
+
+    def _restore_restart_checkpoint(self) -> None:
+        if self._runtime is None or self._strategy is None or self._resume_state is None:
+            raise RuntimeError("Restart runtime is not initialized")
+        state = self._resume_state
+        if (
+            int(state.get("schema_version") or 0) != RESTART_CHECKPOINT_SCHEMA_VERSION
+            or not bool(state.get("complete"))
+        ):
+            raise ValueError("Historical restart checkpoint is incomplete or unsupported")
+        identity = state.get("identity")
+        if not isinstance(identity, dict):
+            raise ValueError("Historical restart checkpoint omitted run identity")
+        expected_identity = {
+            "run_id": self.run_id,
+            "mode": self.definition.mode.value,
+            "configuration_revision_id": self.definition.configuration_revision.get(
+                "revision_id", ""
+            ),
+            "configuration_content_hash": self.definition.configuration_revision.get(
+                "content_hash", ""
+            ),
+            "debug_fixture_content_hash": (
+                self.definition.debug_fixture.content_hash
+                if self.definition.debug_fixture is not None
+                else ""
+            ),
+            "account_ids": list(self.account_ids),
+        }
+        if identity != expected_identity:
+            raise ValueError("Historical restart checkpoint identity changed")
+        controller = state.get("controller")
+        runtime = state.get("runtime")
+        if not isinstance(controller, dict) or not isinstance(runtime, dict):
+            raise ValueError("Historical restart checkpoint omitted runtime state")
+        current_time = _optional_checkpoint_time(controller.get("current_time"))
+        last_event_time = _optional_checkpoint_time(runtime.get("last_event_time"))
+        self.current_time = current_time
+        self.processed_events = int(controller.get("processed_events") or 0)
+        self.warmup_events = int(controller.get("warmup_events") or 0)
+        self._source_cursor = dict(controller.get("source_cursor") or {})
+        self._frame_cursor = dict(controller.get("frame_cursor") or {})
+        self._processed_frames = int(controller.get("processed_frames") or 0)
+        if not self._source_cursor and not self._frame_cursor:
+            raise ValueError("Historical restart checkpoint omitted all source cursors")
+        self._previous_vwap = {
+            (str(row["ticker"]), str(row["timeframe"])): (
+                _checkpoint_time(row["observed_at"]),
+                float(row["value"]),
+            )
+            for row in controller.get("previous_vwap") or ()
+        }
+        self._strategy_source_values = deepcopy(
+            dict(controller.get("strategy_source_values") or {})
+        )
+        self._quotes = {
+            str(ticker): _quote_from_checkpoint(dict(row))
+            for ticker, row in dict(controller.get("quotes") or {}).items()
+        }
+        self._historical_watchlist_timeline_index = int(
+            controller.get("watchlist_timeline_index") or 0
+        )
+        self._active_historical_watchlist_tickers = {
+            str(value).upper()
+            for value in controller.get("active_watchlist_tickers") or ()
+        }
+        self._data_authority = deepcopy(dict(controller.get("data_authority") or {}))
+        self._runtime.processed_events = int(runtime.get("processed_events") or 0)
+        self._runtime.last_event_time = last_event_time
+        self._runtime._latest_checkpoint_cursor = str(
+            runtime.get("latest_checkpoint_cursor") or ""
+        )
+        self.status = (
+            "running"
+            if self.definition.mode in {RunMode.BACKTEST, RunMode.BACKTEST_DEBUG}
+            else "paused"
+        )
+        self.updated_at = datetime.now(UTC)
 
     async def _process_market_event(self, event: MarketEvent) -> None:
         if self._runtime is None:
@@ -982,6 +1187,11 @@ class ReplayRunController:
         if isinstance(event, QuoteEvent):
             self._quotes[event.ticker] = event
         await self._runtime.process_event(event)
+        self._source_cursor = {
+            "ts": event.ts.astimezone(UTC).isoformat(),
+            "sequence": int(event.sequence),
+            "kind": event.kind,
+        }
 
     async def _process_strategy_frame(self, frame: ReplayDerivedFrame) -> None:
         if self._runtime is None or self._strategy is None:
@@ -1110,6 +1320,13 @@ class ReplayRunController:
                 observation,
                 assignment.account_id,
             )
+        self._frame_cursor = {
+            "as_of": frame.as_of.astimezone(UTC).isoformat(),
+            "ticker": frame.ticker,
+            "timeframe": frame.timeframe,
+            "sequence": frame.sequence,
+        }
+        self._processed_frames += 1
 
     def _remember_strategy_frame(self, frame: ReplayDerivedFrame) -> None:
         current_vwap = _positive(frame.indicator.get("vwap"))
@@ -1162,6 +1379,19 @@ class ReplayRunController:
             self.status = "paused"
             transport_boundary = True
         await self._publish(force=transport_boundary)
+        if (
+            (
+                self.processed_events > 0
+                and self.processed_events % 1_000 == 0
+                and self._source_cursor
+            )
+            or (
+                self._processed_frames > 0
+                and self._processed_frames % 1_000 == 0
+                and self._frame_cursor
+            )
+        ):
+            self._save_restart_checkpoint(event_time)
         if transport_boundary:
             self._write_manifest()
 
@@ -1169,6 +1399,8 @@ class ReplayRunController:
         if self._runtime is not None and not self._runtime_finished:
             await self._runtime.finish(status=status)
             self._runtime_finished = True
+        if self.current_time is not None and (self._source_cursor or self._frame_cursor):
+            self._save_restart_checkpoint(self.current_time)
         self.status = status
         self.updated_at = datetime.now(UTC)
         await self._publish(force=True)
@@ -1509,6 +1741,73 @@ class ReplayRunService:
 
     async def create(self, definition: ReplayRunDefinition) -> ReplayRunController:
         controller = ReplayRunController(definition, runtime_root=self.runtime_root)
+        await self._admit(controller)
+        await controller.start()
+        return controller
+
+    async def resume(self, run_id: str) -> ReplayRunController:
+        normalized = str(run_id or "").strip()
+        if not re.fullmatch(r"[0-9a-fA-F-]{36}", normalized):
+            raise KeyError(run_id)
+        resident = self._runs.get(normalized)
+        if resident is not None and resident.status not in TERMINAL_REPLAY_STATUSES:
+            raise ValueError("Historical run is already resident and active")
+        run_dir = (self.runtime_root / normalized).resolve()
+        if self.runtime_root != run_dir and self.runtime_root not in run_dir.parents:
+            raise ValueError("Historical run directory escaped the runtime root")
+        manifest_path = run_dir / "manifest.json"
+        journal_path = run_dir / "journal.sqlite3"
+        if not manifest_path.is_file() or not journal_path.is_file():
+            raise KeyError(run_id)
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        prior_status = str(dict(manifest.get("run") or {}).get("status") or "")
+        if prior_status == "completed":
+            raise ValueError("Completed historical runs cannot be resumed")
+        journal = TradingJournal(journal_path)
+        try:
+            persisted = journal.load_checkpoint(normalized)
+        finally:
+            journal.close()
+        state = dict((persisted or {}).get("state") or {})
+        if (
+            int(state.get("schema_version") or 0) != RESTART_CHECKPOINT_SCHEMA_VERSION
+            or not bool(state.get("complete"))
+        ):
+            raise ValueError("Historical run has no complete restart-safe checkpoint")
+        definition = _definition_from_manifest(manifest, run_dir=run_dir)
+        identity = dict(state.get("identity") or {})
+        expected_fixture_hash = (
+            definition.debug_fixture.content_hash
+            if definition.debug_fixture is not None
+            else ""
+        )
+        if (
+            str(identity.get("run_id") or "") != normalized
+            or str(identity.get("mode") or "") != definition.mode.value
+            or str(identity.get("configuration_revision_id") or "")
+            != str(definition.configuration_revision.get("revision_id") or "")
+            or str(identity.get("configuration_content_hash") or "")
+            != str(definition.configuration_revision.get("content_hash") or "")
+            or str(identity.get("debug_fixture_content_hash") or "")
+            != expected_fixture_hash
+            or list(identity.get("account_ids") or ())
+            != list(_simulated_account_ids(definition))
+        ):
+            raise ValueError("Historical restart checkpoint identity changed")
+        if resident is not None and resident._journal is not None:
+            resident._journal.close()
+            resident._journal = None
+        controller = ReplayRunController(
+            definition,
+            run_id=normalized,
+            runtime_root=self.runtime_root,
+            resume_state=state,
+        )
+        await self._admit(controller)
+        await controller.start()
+        return controller
+
+    async def _admit(self, controller: ReplayRunController) -> None:
         async with self._lock:
             terminal = sorted(
                 (
@@ -1527,8 +1826,6 @@ class ReplayRunService:
                     "before creating another"
                 )
             self._runs[controller.run_id] = controller
-        await controller.start()
-        return controller
 
     def get(self, run_id: str) -> ReplayRunController:
         normalized = str(run_id or "").strip()
@@ -1540,7 +1837,7 @@ class ReplayRunService:
         return controller
 
     def list(self) -> list[dict[str, Any]]:
-        return [
+        resident = [
             controller.snapshot()
             for controller in sorted(
                 self._runs.values(),
@@ -1548,6 +1845,25 @@ class ReplayRunService:
                 reverse=True,
             )
         ]
+        known = {str(row.get("run_id") or "") for row in resident}
+        persisted: list[dict[str, Any]] = []
+        if self.runtime_root.is_dir():
+            for manifest_path in self.runtime_root.glob("*/manifest.json"):
+                if manifest_path.parent.name in known:
+                    continue
+                try:
+                    payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+                    row = dict(payload.get("run") or {})
+                    if str(row.get("run_id") or "") != manifest_path.parent.name:
+                        continue
+                    persisted.append(row)
+                except (OSError, ValueError, TypeError, json.JSONDecodeError):
+                    continue
+        return sorted(
+            [*resident, *persisted],
+            key=lambda row: str(row.get("created_at") or ""),
+            reverse=True,
+        )[: self.max_resident_runs * 4]
 
 
 def replay_runtime_root() -> Path:
@@ -1578,6 +1894,135 @@ def backtest_debug_runtime_root() -> Path:
         os.environ.get("TRADING_RUNTIME_ROOT", str(DEFAULT_BACKTEST_DEBUG_ROOT.parent))
     )
     return trading_root / "backtest_debug"
+
+
+def _definition_from_manifest(
+    manifest: dict[str, Any], *, run_dir: Path
+) -> ReplayRunDefinition:
+    definition = dict(manifest.get("definition") or {})
+    approved = manifest.get("approved_configuration")
+    if not isinstance(approved, dict) or not approved.get("revision_id"):
+        raise ValueError("Historical manifest omitted its approved configuration")
+    mode = RunMode(str(definition.get("mode") or ""))
+    fixture = None
+    if mode == RunMode.BACKTEST_DEBUG:
+        fixture_path = run_dir / "debug-fixture.json"
+        if not fixture_path.is_file():
+            raise ValueError("Backtest Debug restart omitted its fixture")
+        fixture_payload = json.loads(fixture_path.read_text(encoding="utf-8"))
+        fixture = HistoricalDebugFixture(
+            fixture_id=str(fixture_payload.get("fixture_id") or ""),
+            market_events=tuple(
+                dict(row) for row in fixture_payload.get("market_events") or ()
+            ),
+            derived_frames=tuple(
+                dict(row) for row in fixture_payload.get("derived_frames") or ()
+            ),
+        )
+        if fixture.content_hash != str(fixture_payload.get("content_hash") or ""):
+            raise ValueError("Backtest Debug fixture content hash changed")
+    session_date = date.fromisoformat(str(definition.get("session_date") or ""))
+    session_end = _checkpoint_time(definition.get("session_end"))
+    return ReplayRunDefinition(
+        session_date=session_date,
+        final_session_date=session_end.astimezone(NEW_YORK).date(),
+        start_time=clock_time.fromisoformat(str(definition.get("start_time") or "")),
+        initial_cash=float(definition.get("initial_cash") or 0),
+        assignment_ids=tuple(str(value) for value in definition.get("assignment_ids") or ()),
+        tickers=tuple(str(value) for value in definition.get("tickers") or ()),
+        configuration_revision=deepcopy(approved),
+        mode=mode,
+        debug_fixture=fixture,
+    )
+
+
+def _simulated_account_ids(definition: ReplayRunDefinition) -> tuple[str, ...]:
+    configuration = definition.configuration_revision["payload"]
+    bindings = [
+        dict(row)
+        for row in configuration["accounts"]["bindings"]
+        if bool(row.get("enabled", True))
+        and definition.mode.value in list(row.get("modes") or [])
+    ]
+    return tuple(
+        f"SIM-{index + 1:02d}-{_slug(str(binding['account_key']))}"
+        for index, binding in enumerate(bindings)
+    ) or ("SIM-REPLAY",)
+
+
+def _checkpoint_time(value: Any) -> datetime:
+    parsed = value if isinstance(value, datetime) else datetime.fromisoformat(str(value))
+    if parsed.tzinfo is None:
+        raise ValueError("Restart checkpoint timestamps must be timezone-aware")
+    return parsed
+
+
+def _optional_checkpoint_time(value: Any) -> datetime | None:
+    return _checkpoint_time(value) if value else None
+
+
+def _market_event_checkpoint(event: MarketEvent) -> dict[str, Any]:
+    payload = asdict(event)
+    payload["kind"] = event.kind
+    for key in ("ingest_ts", "participant_ts", "trf_ts", "ts"):
+        if isinstance(payload.get(key), datetime):
+            payload[key] = payload[key].isoformat()
+    return payload
+
+
+def _event_after_cursor(event: MarketEvent, cursor: dict[str, Any]) -> bool:
+    cursor_time = _checkpoint_time(cursor.get("ts"))
+    cursor_key = (
+        cursor_time.astimezone(UTC),
+        int(cursor.get("sequence") or 0),
+        str(cursor.get("kind") or ""),
+    )
+    event_key = (event.ts.astimezone(UTC), int(event.sequence), event.kind)
+    return event_key > cursor_key
+
+
+def _frame_after_cursor(frame: ReplayDerivedFrame, cursor: dict[str, Any]) -> bool:
+    cursor_key = (
+        _checkpoint_time(cursor.get("as_of")).astimezone(UTC),
+        str(cursor.get("ticker") or ""),
+        str(cursor.get("timeframe") or ""),
+        int(cursor.get("sequence") or 0),
+    )
+    frame_key = (
+        frame.as_of.astimezone(UTC),
+        frame.ticker,
+        frame.timeframe,
+        int(frame.sequence),
+    )
+    return frame_key > cursor_key
+
+
+def _quote_from_checkpoint(payload: dict[str, Any]) -> QuoteEvent:
+    if payload.pop("kind", "quote") != "quote":
+        raise ValueError("Restart checkpoint quote cache contains a non-quote event")
+    payload["conditions"] = tuple(int(value) for value in payload.get("conditions") or ())
+    payload["indicators"] = tuple(int(value) for value in payload.get("indicators") or ())
+    payload["ingest_ts"] = _checkpoint_time(payload["ingest_ts"])
+    payload["ts"] = _checkpoint_time(payload["ts"])
+    return QuoteEvent(**payload)
+
+
+def _strategy_assignment_from_checkpoint(payload: dict[str, Any]) -> StrategyAssignment:
+    return StrategyAssignment(
+        assignment_id=str(payload.get("assignment_id") or ""),
+        strategy_id=str(payload.get("strategy_id") or ""),
+        strategy_revision=int(payload.get("strategy_revision") or 0),
+        account_id=str(payload.get("account_id") or ""),
+        ticker=str(payload.get("ticker") or "").upper(),
+        conid=int(payload.get("conid") or 0),
+        status=AssignmentStatus(str(payload.get("status") or "")),
+        permissions=StrategyPermissions(**dict(payload.get("permissions") or {})),
+        parameters=deepcopy(dict(payload.get("parameters") or {})),
+        state=deepcopy(dict(payload.get("state") or {})),
+        source=str(payload.get("source") or "checkpoint"),
+        created_at=_checkpoint_time(payload.get("created_at")),
+        updated_at=_checkpoint_time(payload.get("updated_at")),
+    )
 
 
 def _debug_market_events(rows: tuple[dict[str, Any], ...]) -> list[MarketEvent]:

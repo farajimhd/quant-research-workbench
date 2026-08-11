@@ -304,8 +304,104 @@ class HistoricalDebugFixtureTests(unittest.IsolatedAsyncioTestCase):
                 checkpoint = controller.snapshot()["checkpoint"]
                 self.assertEqual(checkpoint["status"], "available")
                 self.assertEqual(checkpoint["processed_events"], 2)
-                self.assertFalse(checkpoint["resume_supported"])
+                self.assertTrue(checkpoint["resume_supported"])
                 qmd_source.assert_not_called()
+            finally:
+                if controller._journal is not None:
+                    controller._journal.close()
+
+    async def test_service_restores_complete_debug_checkpoint(self) -> None:
+        class StopAfterFirstEvent(ReplayRunController):
+            async def _after_event(self, event_time: datetime) -> None:
+                await super()._after_event(event_time)
+                if self.processed_events == 1:
+                    self._stop_requested = True
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            definition = ReplayRunDefinition(
+                session_date=date(2026, 7, 28),
+                start_time=time(9, 45),
+                mode=RunMode.BACKTEST_DEBUG,
+                tickers=("AAPL",),
+                debug_fixture=self.fixture(),
+                configuration_revision=approved_configuration(),
+            )
+            controller = StopAfterFirstEvent(definition, runtime_root=root)
+            await controller.start()
+            assert controller._task is not None
+            await controller._task
+            if controller._journal is not None:
+                controller._journal.close()
+            self.assertEqual(controller.status, "stopped")
+            self.assertEqual(controller.processed_events, 1)
+
+            service = ReplayRunService(runtime_root=root)
+            self.assertEqual(service.list()[0]["run_id"], controller.run_id)
+            self.assertTrue(service.list()[0]["checkpoint"]["resume_supported"])
+            manifest_path = controller.run_dir / "manifest.json"
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            manifest["approved_configuration"]["content_hash"] = "changed"
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "identity changed"):
+                await service.resume(controller.run_id)
+            manifest["approved_configuration"]["content_hash"] = "test-hash"
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+            resumed = await service.resume(controller.run_id)
+            assert resumed._task is not None
+            await resumed._task
+            try:
+                self.assertEqual(resumed.status, "completed", resumed.error)
+                self.assertEqual(resumed.processed_events, 2)
+                self.assertEqual(
+                    resumed.current_time.isoformat(),
+                    "2026-07-28T09:45:01-04:00",
+                )
+                self.assertTrue(resumed.snapshot()["checkpoint"]["resume_supported"])
+            finally:
+                if resumed._journal is not None:
+                    resumed._journal.close()
+
+    async def test_derived_only_debug_run_writes_restart_safe_cursor(self) -> None:
+        fixture = HistoricalDebugFixture(
+            fixture_id="derived-only",
+            derived_frames=(
+                {
+                    "ticker": "AAPL",
+                    "timeframe": "1m",
+                    "as_of": "2026-07-28T09:45:01-04:00",
+                    "sequence": 1,
+                    "bar": {"close": 101.25},
+                    "indicator": {"vwap": 101.1},
+                },
+            ),
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            controller = ReplayRunController(
+                ReplayRunDefinition(
+                    session_date=date(2026, 7, 28),
+                    start_time=time(9, 45),
+                    mode=RunMode.BACKTEST_DEBUG,
+                    tickers=("AAPL",),
+                    debug_fixture=fixture,
+                    configuration_revision=approved_configuration(),
+                ),
+                runtime_root=Path(directory),
+            )
+            await controller.start()
+            assert controller._task is not None
+            await controller._task
+            try:
+                checkpoint = controller.snapshot()["checkpoint"]
+                self.assertTrue(checkpoint["resume_supported"])
+                persisted = controller._journal.load_checkpoint(controller.run_id)
+                self.assertEqual(
+                    persisted["state"]["controller"]["frame_cursor"]["sequence"],
+                    1,
+                )
+                self.assertEqual(
+                    persisted["state"]["controller"]["source_cursor"], {}
+                )
             finally:
                 if controller._journal is not None:
                     controller._journal.close()

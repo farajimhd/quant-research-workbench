@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass, replace
+from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timedelta, timezone
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -36,6 +36,43 @@ from src.trading_runtime.order_management import ShortabilitySnapshot
 
 
 NEW_YORK = ZoneInfo("America/New_York")
+
+
+def _checkpoint_time(value: Any) -> datetime:
+    parsed = value if isinstance(value, datetime) else datetime.fromisoformat(str(value))
+    if parsed.tzinfo is None:
+        raise ValueError("Simulator checkpoint timestamps must be timezone-aware")
+    return parsed
+
+
+def _market_event_checkpoint(event: MarketEvent) -> dict[str, Any]:
+    payload = asdict(event)
+    payload["kind"] = event.kind
+    for key in ("ingest_ts", "participant_ts", "trf_ts", "ts"):
+        value = payload.get(key)
+        if isinstance(value, datetime):
+            payload[key] = value.isoformat()
+    return payload
+
+
+def _quote_from_checkpoint(payload: dict[str, Any]) -> QuoteEvent:
+    payload.pop("kind", None)
+    payload["conditions"] = tuple(int(value) for value in payload.get("conditions") or ())
+    payload["indicators"] = tuple(int(value) for value in payload.get("indicators") or ())
+    payload["ingest_ts"] = _checkpoint_time(payload["ingest_ts"])
+    payload["ts"] = _checkpoint_time(payload["ts"])
+    return QuoteEvent(**payload)
+
+
+def _trade_from_checkpoint(payload: dict[str, Any]) -> TradeEvent:
+    payload.pop("kind", None)
+    payload["conditions"] = tuple(int(value) for value in payload.get("conditions") or ())
+    for key in ("ingest_ts", "ts"):
+        payload[key] = _checkpoint_time(payload[key])
+    for key in ("participant_ts", "trf_ts"):
+        if payload.get(key) is not None:
+            payload[key] = _checkpoint_time(payload[key])
+    return TradeEvent(**payload)
 
 
 @dataclass(frozen=True, slots=True)
@@ -145,6 +182,119 @@ class SimulatedBrokerAdapter:
 
     async def initialize(self) -> None:
         self._initialized = True
+
+    def checkpoint_state(self) -> dict[str, Any]:
+        """Return the complete deterministic broker state required for restart."""
+        return {
+            "schema_version": 1,
+            "account_ids": list(self._account_ids),
+            "cash": dict(self._cash),
+            "realized_pnl": dict(self._realized_pnl),
+            "positions": {
+                account_id: [asdict(position) for position in positions.values()]
+                for account_id, positions in self._positions.items()
+            },
+            "orders": [
+                {
+                    "request": state.request.to_cpapi(),
+                    "order_id": state.order_id,
+                    "status": state.status.value,
+                    "submitted_at": state.submitted_at.isoformat(),
+                    "oca_group": state.oca_group,
+                    "filled": state.filled,
+                    "avg_price": state.avg_price,
+                    "stop_triggered": state.stop_triggered,
+                    "status_description": state.status_description,
+                }
+                for state in self._orders.values()
+            ],
+            "executions": [
+                {**asdict(execution), "trade_time": execution.trade_time.isoformat()}
+                for execution in self._executions
+            ],
+            "quotes": {
+                str(conid): _market_event_checkpoint(event)
+                for conid, event in self._quotes.items()
+            },
+            "trades": {
+                str(conid): _market_event_checkpoint(event)
+                for conid, event in self._trades.items()
+            },
+            "marks": {str(conid): value for conid, value in self._marks.items()},
+            "next_order_id": self._next_order_id,
+            "next_execution_id": self._next_execution_id,
+        }
+
+    def restore_checkpoint_state(self, payload: dict[str, Any]) -> None:
+        """Restore only an exact, complete simulator checkpoint."""
+        if int(payload.get("schema_version") or 0) != 1:
+            raise ValueError("Unsupported simulated broker checkpoint schema")
+        account_ids = [str(value) for value in payload.get("account_ids") or ()]
+        if account_ids != self._account_ids:
+            raise ValueError("Simulated broker checkpoint account identity changed")
+        cash = {str(key): float(value) for key, value in dict(payload.get("cash") or {}).items()}
+        realized = {
+            str(key): float(value)
+            for key, value in dict(payload.get("realized_pnl") or {}).items()
+        }
+        if set(cash) != set(self._account_ids) or set(realized) != set(self._account_ids):
+            raise ValueError("Simulated broker checkpoint omitted account balances")
+        positions: dict[str, dict[int, _Position]] = {account_id: {} for account_id in self._account_ids}
+        source_positions = dict(payload.get("positions") or {})
+        if set(source_positions) != set(self._account_ids):
+            raise ValueError("Simulated broker checkpoint omitted account positions")
+        for account_id, rows in source_positions.items():
+            for row in rows or ():
+                position = _Position(**dict(row))
+                positions[str(account_id)][position.conid] = position
+        orders: dict[str, _OrderState] = {}
+        order_ids_by_coid: dict[str, str] = {}
+        for row in payload.get("orders") or ():
+            values = dict(row)
+            request = OrderRequest.from_cpapi(dict(values.pop("request")))
+            state = _OrderState(
+                request=request,
+                order_id=str(values["order_id"]),
+                status=OrderStatus(str(values["status"])),
+                submitted_at=_checkpoint_time(values["submitted_at"]),
+                oca_group=str(values.get("oca_group") or ""),
+                filled=float(values.get("filled") or 0),
+                avg_price=float(values.get("avg_price") or 0),
+                stop_triggered=bool(values.get("stop_triggered")),
+                status_description=str(values.get("status_description") or ""),
+            )
+            orders[state.order_id] = state
+            if request.cOID:
+                if request.cOID in order_ids_by_coid:
+                    raise ValueError("Simulated broker checkpoint contains duplicate cOID")
+                order_ids_by_coid[request.cOID] = state.order_id
+        executions = []
+        for row in payload.get("executions") or ():
+            values = dict(row)
+            values["trade_time"] = _checkpoint_time(values["trade_time"])
+            executions.append(Execution(**values))
+        self._cash = cash
+        self._realized_pnl = realized
+        self._positions = positions
+        self._orders = orders
+        self._order_ids_by_coid = order_ids_by_coid
+        self._executions = executions
+        self._quotes = {
+            int(conid): _quote_from_checkpoint(dict(row))
+            for conid, row in dict(payload.get("quotes") or {}).items()
+        }
+        self._trades = {
+            int(conid): _trade_from_checkpoint(dict(row))
+            for conid, row in dict(payload.get("trades") or {}).items()
+        }
+        self._marks = {
+            int(conid): float(value)
+            for conid, value in dict(payload.get("marks") or {}).items()
+        }
+        self._next_order_id = int(payload.get("next_order_id") or 0)
+        self._next_execution_id = int(payload.get("next_execution_id") or 0)
+        if self._next_order_id < 1 or self._next_execution_id < 1:
+            raise ValueError("Simulated broker checkpoint contains invalid counters")
 
     async def accounts(self) -> list[str]:
         self._require_initialized()

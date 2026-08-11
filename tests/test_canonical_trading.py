@@ -300,6 +300,34 @@ class CanonicalAdapterTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([row.event_type for row in events], [BrokerEventType.ORDER_COMMAND, BrokerEventType.ORDER_ACKNOWLEDGED])
         self.assertEqual(events[-1].mode, TradingMode.BACKTEST)
 
+    async def test_simulated_adapter_restores_exact_order_checkpoint(self) -> None:
+        broker = SimulatedBrokerAdapter(["SIM"], mode=TradingMode.BACKTEST)
+        await broker.initialize()
+        intent = OrderIntent(
+            command_id="checkpoint-command",
+            account_id="SIM",
+            instrument=instrument(),
+            client_order_id="checkpoint-client",
+            side="BUY",
+            order_type="LMT",
+            time_in_force="DAY",
+            quantity=Decimal("5"),
+            limit_price=Decimal("100"),
+            created_at=NOW,
+        )
+        await broker.submit_intents("SIM", [intent])
+        state = broker.checkpoint_state()
+
+        restored = SimulatedBrokerAdapter(["SIM"], mode=TradingMode.BACKTEST)
+        restored.restore_checkpoint_state(state)
+        await restored.initialize()
+
+        self.assertEqual(
+            [row.to_cpapi() for row in await restored.live_orders()],
+            [row.to_cpapi() for row in await broker.live_orders()],
+        )
+        self.assertEqual(restored.checkpoint_state(), state)
+
     async def test_stream_topic_preserves_case_sensitive_account_id(self) -> None:
         broker = SimulatedBrokerAdapter(["DUAbC"])
         session = CanonicalBrokerSession(broker, mode=TradingMode.REPLAY, provider=BrokerProvider.SIMULATED)
