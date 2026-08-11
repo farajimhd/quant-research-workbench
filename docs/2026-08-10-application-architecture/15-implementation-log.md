@@ -1130,6 +1130,23 @@ bounded direct ClickHouse paths remain documented in
      shared multi-plan QMD event pass, not repeated full-market replays. All 48
      focused backend tests and all 36 QMD History Rust tests passed; the changed
      Python modules compiled.
+130. Replaced the remaining one-Watchlist admission limit with a bounded shared
+     batch product. QMD History now accepts one to 64 unique plans sharing exact
+     replay bounds, pins and reads the market stream once, advances one shared
+     computation engine at the union of their evaluation clocks, and preserves
+     independent dirty sets, external boundaries, requested QMD sources,
+     cadence cursors, rank indexes, chunk state, and revision evidence for each
+     Watchlist. Aggregate evaluation and membership-slot ceilings prevent a
+     valid collection of individually bounded plans from broadening service
+     work without limit.
+
+     The backend submits one typed batch, binds QMD and identity revisions into
+     application materialization identities, and unions membership causally.
+     A ticker removed from one Watchlist remains active while another owns it;
+     conflicting conids fail closed. Eighty-two focused backend tests and all
+     36 QMD History Rust tests passed. Durable revision-keyed persistence,
+     aligned 20-session relative volume, ticker-sharded load acceptance, and
+     real service/database acceptance remain separate open gates.
 
 The authoritative remaining work and acceptance gates are maintained in the
 [complete implementation backlog](14-implementation-backlog.md). A checked

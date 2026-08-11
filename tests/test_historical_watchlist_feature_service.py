@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import unittest
 from datetime import UTC, datetime
+from unittest.mock import patch
 
 from src.backend.historical_watchlist_feature_service import (
     historical_watchlist_external_feature_bundle,
     historical_watchlist_external_feature_intervals,
+    materialize_historical_watchlist_plans,
 )
 from src.backend.query_plans.historical_watchlist_feature_intervals_v1 import (
     MAX_CHANGE_CLOCKS,
@@ -19,6 +21,55 @@ class _Client:
 
 
 class HistoricalWatchlistFeatureServiceTests(unittest.TestCase):
+    @patch("src.backend.qmd_gateway_client.qmd_materialize_historical_watchlist_timelines")
+    @patch("src.backend.historical_watchlist_feature_service.historical_watchlist_external_feature_bundle")
+    def test_batch_enriches_each_timeline_without_replaying_per_plan(
+        self, bundle, materialize
+    ) -> None:
+        bundle.side_effect = [
+            {
+                "external_feature_intervals": [],
+                "external_feature_revisions": [],
+                "identity_intervals": [{
+                    "ticker": ticker,
+                    "start": "2026-08-07T13:30:00+00:00",
+                    "end": "2026-08-07T13:32:00+00:00",
+                    "identity": {"ibkr_conid": conid},
+                }],
+                "identity_revision": {"complete": True, "source_revision": f"sha256:{ticker}"},
+            }
+            for ticker, conid in (("AAPL", 1), ("MSFT", 2))
+        ]
+        materialize.return_value = {
+            "batch_materialization_id": "sha256:qmd-batch",
+            "materializations": [
+                {
+                    "watchlist_id": watchlist_id,
+                    "plan_hash": f"sha256:{watchlist_id}",
+                    "materialization_id": f"sha256:m-{watchlist_id}",
+                    "chunks": [{"transitions": [{
+                        "effective_at": "2026-08-07T13:31:00+00:00",
+                        "event": "added",
+                        "ticker": ticker,
+                    }]}],
+                }
+                for watchlist_id, ticker in (("one", "AAPL"), ("two", "MSFT"))
+            ],
+        }
+        plans = [
+            {"watchlist_id": value, "plan_hash": f"sha256:{value}-unique"}
+            for value in ("one", "two")
+        ]
+
+        result = materialize_historical_watchlist_plans(plans)
+
+        self.assertEqual(materialize.call_count, 1)
+        self.assertEqual(
+            result["materializations"][1]["chunks"][0]["transitions"][0]["identity"]["ibkr_conid"],
+            2,
+        )
+        self.assertTrue(result["application_batch_materialization_id"].startswith("sha256:"))
+
     def setUp(self) -> None:
         self.plan = {
             "start": "2026-08-07T13:30:00+00:00",

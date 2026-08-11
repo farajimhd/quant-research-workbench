@@ -602,6 +602,42 @@ def qmd_materialize_historical_watchlist_timeline(
     return payload
 
 
+def qmd_materialize_historical_watchlist_timelines(
+    requests: list[dict[str, Any]],
+) -> dict[str, Any]:
+    payload = qmd_history_post_json(
+        "/materialize/watchlist-timelines",
+        {"requests": requests},
+        timeout=300,
+    )
+    if not isinstance(payload, dict):
+        raise RuntimeError("QMD History returned an invalid Watchlist timeline batch")
+    if not str(payload.get("batch_materialization_id") or "").startswith("sha256:"):
+        raise RuntimeError("QMD History Watchlist batch has no materialization identity")
+    materializations = payload.get("materializations")
+    if not isinstance(materializations, list) or len(materializations) != len(requests):
+        raise RuntimeError("QMD History Watchlist batch returned the wrong plan count")
+    expected = {
+        str(dict(request.get("plan") or {}).get("watchlist_id") or ""):
+        str(dict(request.get("plan") or {}).get("plan_hash") or "")
+        for request in requests
+    }
+    actual = {
+        str(dict(row).get("watchlist_id") or ""):
+        str(dict(row).get("plan_hash") or "")
+        for row in materializations
+    }
+    if actual != expected:
+        raise RuntimeError("QMD History Watchlist batch changed plan identity")
+    if any(
+        not str(dict(row).get("materialization_id") or "").startswith("sha256:")
+        or not isinstance(dict(row).get("chunks"), list)
+        for row in materializations
+    ):
+        raise RuntimeError("QMD History Watchlist batch contains an invalid timeline")
+    return payload
+
+
 def _qmd_service_get_json(
     base_url: str,
     path: str,

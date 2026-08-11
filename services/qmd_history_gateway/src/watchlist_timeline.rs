@@ -165,6 +165,11 @@ pub struct HistoricalWatchlistTimelineRequest {
     pub plan: HistoricalWatchlistPlan,
 }
 
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct HistoricalWatchlistTimelineBatchRequest {
+    pub requests: Vec<HistoricalWatchlistTimelineRequest>,
+}
+
 pub struct WatchlistTimelineReducer<'a> {
     allowed_sources: BTreeSet<String>,
     candidates: BTreeMap<String, WatchlistCandidate>,

@@ -5,8 +5,9 @@ use crate::cache::{
 };
 use crate::config::HistoricalGatewayConfig;
 use crate::scanner::{
-    materialize_watchlist_timeline, HistoricalScannerDerivedCache,
-    HistoricalScannerDerivedSnapshot, HistoricalWatchlistTimelineMaterialization,
+    materialize_watchlist_timeline, materialize_watchlist_timelines, HistoricalScannerDerivedCache,
+    HistoricalScannerDerivedSnapshot, HistoricalWatchlistTimelineBatchMaterialization,
+    HistoricalWatchlistTimelineMaterialization,
 };
 use crate::source::{
     EventCoverage, EventWindow, HistoricalCursor, HistoricalEventSource, LatestEventCoverage,
@@ -14,7 +15,7 @@ use crate::source::{
 };
 use crate::watchlist_timeline::{
     validate_plan, HistoricalWatchlistPlan, HistoricalWatchlistPlanValidation,
-    HistoricalWatchlistTimelineRequest,
+    HistoricalWatchlistTimelineBatchRequest, HistoricalWatchlistTimelineRequest,
 };
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{DefaultBodyLimit, Path, Query, State};
@@ -213,6 +214,11 @@ pub fn app(state: AppState) -> Router {
                 .layer(DefaultBodyLimit::max(watchlist_request_max_bytes)),
         )
         .route(
+            "/materialize/watchlist-timelines",
+            post(materialize_watchlist_timeline_batch)
+                .layer(DefaultBodyLimit::max(watchlist_request_max_bytes)),
+        )
+        .route(
             "/snapshot/chart-macro-bars/{ticker}",
             get(chart_macro_bar_snapshot),
         )
@@ -285,6 +291,29 @@ async fn materialize_watchlist_timeline_plan(
             )
         })?;
     materialize_watchlist_timeline(state.config.clone(), state.source.clone(), request)
+        .await
+        .map(Json)
+        .map_err(bad_request)
+}
+
+async fn materialize_watchlist_timeline_batch(
+    State(state): State<Arc<AppState>>,
+    Json(request): Json<HistoricalWatchlistTimelineBatchRequest>,
+) -> Result<Json<HistoricalWatchlistTimelineBatchMaterialization>, ApiError> {
+    let _permit = state
+        .watchlist_materialization_permits
+        .clone()
+        .try_acquire_owned()
+        .map_err(|_| {
+            (
+                StatusCode::TOO_MANY_REQUESTS,
+                Json(json!({
+                    "error": "historical Watchlist materialization capacity is busy",
+                    "retryable": true,
+                })),
+            )
+        })?;
+    materialize_watchlist_timelines(state.config.clone(), state.source.clone(), request)
         .await
         .map(Json)
         .map_err(bad_request)

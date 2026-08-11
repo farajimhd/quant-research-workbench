@@ -2272,30 +2272,72 @@ def _historical_watchlist_membership_timeline_from_plans(
 ) -> list[dict[str, Any]]:
     if not plans:
         return []
-    if len(plans) != 1:
-        raise ValueError(
-            "Historical Watchlist timeline currently requires one Watchlist-backed universe; "
-            "multiple Watchlists must share one QMD event replay."
-        )
     from src.backend.historical_watchlist_feature_service import (
-        materialize_historical_watchlist_plan,
+        materialize_historical_watchlist_plans,
     )
 
-    plan = plans[0]
-    materialized = materialize_historical_watchlist_plan(plan)
+    batch = materialize_historical_watchlist_plans(plans)
+    materialized_by_watchlist = {
+        str(row.get("watchlist_id") or ""): dict(row)
+        for row in batch.get("materializations") or []
+    }
     transitions = sorted(
         (
-            dict(event)
-            for chunk in materialized.get("chunks") or []
+            {**dict(event), "_watchlist_id": str(plan.get("watchlist_id") or "")}
+            for plan in plans
+            for chunk in materialized_by_watchlist.get(
+                str(plan.get("watchlist_id") or ""), {}
+            ).get("chunks") or []
             for event in dict(chunk).get("transitions") or []
         ),
         key=lambda event: (
             str(event.get("effective_at") or ""),
+            str(event.get("_watchlist_id") or ""),
             str(event.get("ticker") or ""),
             str(event.get("event") or ""),
         ),
     )
-    members: dict[str, dict[str, Any]] = {}
+    members_by_watchlist: dict[str, dict[str, dict[str, Any]]] = {
+        str(plan.get("watchlist_id") or ""): {} for plan in plans
+    }
+    authority = []
+    for plan in plans:
+        watchlist_id = str(plan.get("watchlist_id") or "")
+        materialized = materialized_by_watchlist.get(watchlist_id)
+        if materialized is None:
+            raise ValueError(f"Historical Watchlist materialization is missing: {watchlist_id}")
+        authority.append(
+            {
+                "watchlist_id": watchlist_id,
+                "plan_hash": str(materialized.get("plan_hash") or ""),
+                "materialization_id": str(
+                    materialized.get("application_materialization_id")
+                    or materialized.get("materialization_id")
+                    or ""
+                ),
+                "qmd_materialization_id": str(
+                    materialized.get("materialization_id") or ""
+                ),
+                "batch_materialization_id": str(
+                    batch.get("application_batch_materialization_id")
+                    or batch.get("batch_materialization_id")
+                    or ""
+                ),
+                "qmd_batch_materialization_id": str(
+                    batch.get("batch_materialization_id") or ""
+                ),
+                "source_revision": dict(materialized.get("source_revision") or {}),
+                "external_feature_revisions": list(
+                    materialized.get("external_feature_revisions") or []
+                ),
+                "identity_revision": dict(
+                    materialized.get("identity_revision") or {}
+                ),
+                "calculation_revision": str(
+                    materialized.get("calculation_revision") or ""
+                ),
+            }
+        )
     timeline: list[dict[str, Any]] = []
     index = 0
     while index < len(transitions):
@@ -2305,6 +2347,8 @@ def _historical_watchlist_membership_timeline_from_plans(
             if _historical_watchlist_clock(event.get("effective_at")) != effective_at:
                 break
             ticker = str(event.get("ticker") or "").strip().upper()
+            watchlist_id = str(event.get("_watchlist_id") or "")
+            members = members_by_watchlist[watchlist_id]
             event_kind = str(event.get("event") or "")
             if ticker and event_kind == "removed":
                 members.pop(ticker, None)
@@ -2316,44 +2360,38 @@ def _historical_watchlist_membership_timeline_from_plans(
                     "membership_reason": event.get("reason"),
                     **dict(event.get("evidence") or {}),
                     **dict(event.get("identity") or {}),
+                    "watchlist_ids": [watchlist_id],
                 }
             index += 1
+        union_members: dict[str, dict[str, Any]] = {}
+        for plan in plans:
+            watchlist_id = str(plan.get("watchlist_id") or "")
+            for ticker, row in members_by_watchlist[watchlist_id].items():
+                existing = union_members.get(ticker)
+                if existing is not None:
+                    if int(existing.get("ibkr_conid") or 0) != int(
+                        row.get("ibkr_conid") or 0
+                    ):
+                        raise ValueError(
+                            f"Historical Watchlists disagree on point-in-time identity for {ticker}"
+                        )
+                    existing["watchlist_ids"] = [
+                        *list(existing.get("watchlist_ids") or []),
+                        watchlist_id,
+                    ]
+                else:
+                    union_members[ticker] = dict(row)
         timeline.append(
             {
                 "effective_at": effective_at,
                 "members": sorted(
-                    (dict(row) for row in members.values()),
+                    (dict(row) for row in union_members.values()),
                     key=lambda row: (
                         int(row.get("rank") or 10**9),
                         str(row.get("ticker") or ""),
                     ),
                 ),
-                "authority": [
-                    {
-                        "watchlist_id": str(plan.get("watchlist_id") or ""),
-                        "plan_hash": str(materialized.get("plan_hash") or ""),
-                        "materialization_id": str(
-                            materialized.get("application_materialization_id")
-                            or materialized.get("materialization_id")
-                            or ""
-                        ),
-                        "qmd_materialization_id": str(
-                            materialized.get("materialization_id") or ""
-                        ),
-                        "source_revision": dict(
-                            materialized.get("source_revision") or {}
-                        ),
-                        "external_feature_revisions": list(
-                            materialized.get("external_feature_revisions") or []
-                        ),
-                        "identity_revision": dict(
-                            materialized.get("identity_revision") or {}
-                        ),
-                        "calculation_revision": str(
-                            materialized.get("calculation_revision") or ""
-                        ),
-                    }
-                ],
+                "authority": [dict(row) for row in authority],
             }
         )
     return timeline

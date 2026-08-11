@@ -436,20 +436,22 @@ class HistoricalDebugFixtureTests(unittest.IsolatedAsyncioTestCase):
 
 class HistoricalWatchlistTimelineTests(unittest.TestCase):
     @patch(
-        "src.backend.historical_watchlist_feature_service.materialize_historical_watchlist_plan"
+        "src.backend.historical_watchlist_feature_service.materialize_historical_watchlist_plans"
     )
     def test_projects_qmd_transition_chunks_into_causal_membership_snapshots(
         self, materialize
     ) -> None:
         materialize.return_value = {
-            "plan_hash": "sha256:plan",
-            "materialization_id": "sha256:materialized",
-            "calculation_revision": "qmd-v3",
-            "source_revision": {"token": "events-v1"},
-            "external_feature_revisions": [],
-            "chunks": [
+            "batch_materialization_id": "sha256:batch",
+            "materializations": [
                 {
-                    "transitions": [
+                    "watchlist_id": "core-candidates",
+                    "plan_hash": "sha256:plan",
+                    "materialization_id": "sha256:materialized",
+                    "calculation_revision": "qmd-v3",
+                    "source_revision": {"token": "events-v1"},
+                    "external_feature_revisions": [],
+                    "chunks": [{"transitions": [
                         {
                             "effective_at": "2026-08-10T13:30:00+00:00",
                             "event": "added",
@@ -475,7 +477,7 @@ class HistoricalWatchlistTimelineTests(unittest.TestCase):
                             "evidence": {},
                             "identity": {"ibkr_conid": 272093},
                         },
-                    ]
+                    ]}]
                 }
             ],
         }
@@ -494,6 +496,46 @@ class HistoricalWatchlistTimelineTests(unittest.TestCase):
             timeline[0]["authority"][0]["materialization_id"],
             "sha256:materialized",
         )
+
+    @patch(
+        "src.backend.historical_watchlist_feature_service.materialize_historical_watchlist_plans"
+    )
+    def test_unions_multiple_watchlists_without_removing_shared_members(
+        self, materialize
+    ) -> None:
+        def row(watchlist_id, transitions):
+            return {
+                "watchlist_id": watchlist_id,
+                "plan_hash": f"sha256:{watchlist_id}",
+                "materialization_id": f"sha256:m-{watchlist_id}",
+                "chunks": [{"transitions": transitions}],
+            }
+
+        identity = {"ibkr_conid": 265598}
+        materialize.return_value = {
+            "batch_materialization_id": "sha256:batch",
+            "materializations": [
+                row("one", [
+                    {"effective_at": "2026-08-10T13:30:00+00:00", "event": "added",
+                     "ticker": "AAPL", "rank": 1, "identity": identity},
+                    {"effective_at": "2026-08-10T13:32:00+00:00", "event": "removed",
+                     "ticker": "AAPL"},
+                ]),
+                row("two", [
+                    {"effective_at": "2026-08-10T13:31:00+00:00", "event": "added",
+                     "ticker": "AAPL", "rank": 1, "identity": identity},
+                ]),
+            ],
+        }
+
+        timeline = _historical_watchlist_membership_timeline_from_plans([
+            {"watchlist_id": "one", "plan_hash": "sha256:one"},
+            {"watchlist_id": "two", "plan_hash": "sha256:two"},
+        ])
+
+        self.assertEqual([len(item["members"]) for item in timeline], [1, 1, 1])
+        self.assertEqual(timeline[-1]["members"][0]["watchlist_ids"], ["two"])
+        self.assertEqual(len(timeline[-1]["authority"]), 2)
 
     def test_resolves_first_clock_and_each_later_weekday_session_boundary(self) -> None:
         approved = approved_configuration()

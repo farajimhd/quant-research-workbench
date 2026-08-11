@@ -288,6 +288,81 @@ def materialize_historical_watchlist_plan(plan: dict[str, Any]) -> dict[str, Any
     return materialized
 
 
+def materialize_historical_watchlist_plans(
+    plans: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Materialize several Watchlists through one shared QMD market replay."""
+    if not plans:
+        return {
+            "application_batch_materialization_id": _content_hash([]),
+            "materializations": [],
+        }
+    from src.backend.qmd_gateway_client import (
+        qmd_materialize_historical_watchlist_timelines,
+    )
+
+    bundles = [historical_watchlist_external_feature_bundle(plan) for plan in plans]
+    requests = [
+        {
+            "external_feature_intervals": bundle["external_feature_intervals"],
+            "external_feature_revisions": bundle["external_feature_revisions"],
+            "plan": plan,
+        }
+        for plan, bundle in zip(plans, bundles, strict=True)
+    ]
+    cache_key = _content_hash(
+        {
+            "batch": [
+                {
+                    "external_feature_revisions": bundle["external_feature_revisions"],
+                    "identity_revision": bundle["identity_revision"],
+                    "plan_hash": plan.get("plan_hash"),
+                }
+                for plan, bundle in zip(plans, bundles, strict=True)
+            ]
+        }
+    )
+    with _MATERIALIZATION_CACHE_LOCK:
+        cached = _MATERIALIZATION_CACHE.get(cache_key)
+        if cached is not None:
+            _MATERIALIZATION_CACHE.move_to_end(cache_key)
+            return json.loads(json.dumps(cached))
+    batch = qmd_materialize_historical_watchlist_timelines(requests)
+    by_watchlist = {
+        str(row.get("watchlist_id") or ""): row
+        for row in batch.get("materializations") or []
+    }
+    ordered = []
+    for plan, bundle in zip(plans, bundles, strict=True):
+        watchlist_id = str(plan.get("watchlist_id") or "")
+        materialized = by_watchlist.get(watchlist_id)
+        if materialized is None:
+            raise RuntimeError(
+                f"QMD History batch omitted historical Watchlist {watchlist_id}"
+            )
+        _enrich_materialized_identity(
+            materialized,
+            identity_intervals=bundle["identity_intervals"],
+            identity_revision=bundle["identity_revision"],
+        )
+        ordered.append(materialized)
+    batch["materializations"] = ordered
+    batch["application_batch_materialization_id"] = _content_hash(
+        {
+            "qmd_batch_materialization_id": batch.get("batch_materialization_id"),
+            "materializations": [
+                row.get("application_materialization_id") for row in ordered
+            ],
+        }
+    )
+    with _MATERIALIZATION_CACHE_LOCK:
+        _MATERIALIZATION_CACHE[cache_key] = json.loads(json.dumps(batch))
+        _MATERIALIZATION_CACHE.move_to_end(cache_key)
+        while len(_MATERIALIZATION_CACHE) > _MATERIALIZATION_CACHE_LIMIT:
+            _MATERIALIZATION_CACHE.popitem(last=False)
+    return batch
+
+
 def _clock(value: Any, label: str) -> datetime:
     try:
         parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))

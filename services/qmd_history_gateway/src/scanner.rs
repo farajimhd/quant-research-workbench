@@ -2,6 +2,7 @@ use crate::config::HistoricalGatewayConfig;
 use crate::source::{EventWindow, HistoricalEventSource, SourceRevision};
 use crate::watchlist_timeline::{
     plan_evaluation_clock, validate_plan, ExternalFeatureRevisionEvidence,
+    HistoricalWatchlistPlanValidation, HistoricalWatchlistTimelineBatchRequest,
     HistoricalWatchlistTimelineRequest, WatchlistCandidate, WatchlistCandidateDeltaFrame,
     WatchlistTimelineChunk, WatchlistTimelineReducer,
 };
@@ -27,6 +28,8 @@ pub const HISTORICAL_SCANNER_DERIVED_SCHEMA_VERSION: &str = "canvas_historical_q
 const SIGNAL_EVENT_LIMIT: usize = 20_000;
 const SCANNER_TIMEFRAMES: [&str; 5] = ["100ms", "1s", "10s", "30s", "1m"];
 const SCANNER_INDICATOR_TIMEFRAME: &str = "100ms";
+const WATCHLIST_BATCH_MAX_EVALUATIONS: u64 = 5_000_000;
+const WATCHLIST_BATCH_MAX_MEMBERSHIP_SLOTS: u64 = 10_000_000;
 
 #[derive(Clone, Debug, Serialize)]
 pub struct HistoricalScannerDerivedSnapshot {
@@ -57,6 +60,15 @@ pub struct HistoricalWatchlistTimelineMaterialization {
     pub source_revision: SourceRevision,
     pub transition_count: usize,
     pub watchlist_id: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct HistoricalWatchlistTimelineBatchMaterialization {
+    pub batch_materialization_id: String,
+    pub event_count: u64,
+    pub materializations: Vec<HistoricalWatchlistTimelineMaterialization>,
+    pub schema_version: u16,
+    pub source_revision: SourceRevision,
 }
 
 type SnapshotResult = Result<Arc<HistoricalScannerDerivedSnapshot>, String>;
@@ -691,6 +703,292 @@ pub async fn materialize_watchlist_timeline(
     })
 }
 
+struct BatchPlanRuntime<'a> {
+    boundaries: Vec<(DateTime<Utc>, String)>,
+    boundary_index: usize,
+    chunks: Vec<WatchlistTimelineChunk>,
+    dirty: BTreeSet<String>,
+    evaluation_index: u64,
+    external: ExternalIntervalIndex,
+    qmd_sources: BTreeSet<String>,
+    reducer: Option<WatchlistTimelineReducer<'a>>,
+    request: &'a HistoricalWatchlistTimelineRequest,
+    validation: HistoricalWatchlistPlanValidation,
+}
+
+pub async fn materialize_watchlist_timelines(
+    config: HistoricalGatewayConfig,
+    source: HistoricalEventSource,
+    batch: HistoricalWatchlistTimelineBatchRequest,
+) -> Result<HistoricalWatchlistTimelineBatchMaterialization, String> {
+    if batch.requests.is_empty() || batch.requests.len() > 64 {
+        return Err("historical Watchlist batch requires between one and 64 plans".to_string());
+    }
+    let first = &batch.requests[0].plan;
+    let start = first
+        .start
+        .parse::<DateTime<Utc>>()
+        .map_err(|error| format!("invalid historical Watchlist start: {error}"))?;
+    let end = first
+        .end
+        .parse::<DateTime<Utc>>()
+        .map_err(|error| format!("invalid historical Watchlist end: {error}"))?;
+    let mut watchlist_ids = BTreeSet::new();
+    let mut runtimes = Vec::with_capacity(batch.requests.len());
+    let mut batch_evaluations = 0_u64;
+    let mut batch_membership_slots = 0_u64;
+    for request in &batch.requests {
+        if request.plan.start != first.start || request.plan.end != first.end {
+            return Err(
+                "historical Watchlist batch plans must share exact replay bounds".to_string(),
+            );
+        }
+        if !watchlist_ids.insert(request.plan.watchlist_id.as_str()) {
+            return Err(
+                "historical Watchlist batch watchlist_id values must be unique".to_string(),
+            );
+        }
+        let validation = validate_plan(&request.plan)?;
+        batch_evaluations = batch_evaluations.saturating_add(validation.evaluation_count);
+        batch_membership_slots = batch_membership_slots.saturating_add(
+            validation
+                .evaluation_count
+                .saturating_mul(request.plan.maximum_size as u64),
+        );
+        if batch_evaluations > WATCHLIST_BATCH_MAX_EVALUATIONS
+            || batch_membership_slots > WATCHLIST_BATCH_MAX_MEMBERSHIP_SLOTS
+        {
+            return Err(format!(
+                "historical Watchlist batch exceeds evaluation_limit={} or membership_slot_limit={}",
+                WATCHLIST_BATCH_MAX_EVALUATIONS, WATCHLIST_BATCH_MAX_MEMBERSHIP_SLOTS
+            ));
+        }
+        let (external, boundaries) = prepare_external_features(request, start, end)?;
+        let dirty = external.keys().cloned().collect();
+        runtimes.push(BatchPlanRuntime {
+            boundaries,
+            boundary_index: 0,
+            chunks: Vec::new(),
+            dirty,
+            evaluation_index: 0,
+            external,
+            qmd_sources: request.plan.qmd_sources.iter().cloned().collect(),
+            reducer: Some(WatchlistTimelineReducer::new(&request.plan, None)?),
+            request,
+            validation,
+        });
+    }
+
+    let window = EventWindow {
+        start,
+        end,
+        tickers: Vec::new(),
+    };
+    let source_revision = source.source_revision(&window).await?;
+    if !source_revision.complete_for_history || !source_revision.request_complete {
+        return Err(
+            "historical Watchlist batch requires a complete pinned market-event window".to_string(),
+        );
+    }
+    let references = source
+        .market_structure_reference_levels_all(start)
+        .await
+        .map_err(|error| format!("historical Watchlist daily references unavailable: {error}"))?;
+    let mut engine = CrossSectionEngine::new(&source, references);
+    let mut known_tickers = BTreeSet::new();
+    let mut recent_until = HashMap::<String, DateTime<Utc>>::new();
+    let mut event_count = 0_u64;
+    let mut reference_session = session_date(start);
+    let mut batches = source.stream_ordered(
+        window,
+        config.batch_size.max(100_000),
+        source_revision.live_continuation_sequence,
+    )?;
+    while let Some(events) = batches.recv().await {
+        for compact in events? {
+            let event = source.market_event(&compact);
+            while let Some(clock) = next_batch_clock(&runtimes)? {
+                if clock > event.ts() {
+                    break;
+                }
+                advance_batch_clock(
+                    &source,
+                    &mut engine,
+                    &mut runtimes,
+                    clock,
+                    &known_tickers,
+                    &mut recent_until,
+                    &mut reference_session,
+                )
+                .await?;
+            }
+            let ticker = event.ticker().to_ascii_uppercase();
+            known_tickers.insert(ticker.clone());
+            recent_until.insert(ticker.clone(), event.ts() + chrono::Duration::seconds(61));
+            for runtime in &mut runtimes {
+                runtime.dirty.insert(ticker.clone());
+            }
+            engine.apply_event(event).await?;
+            event_count = event_count.saturating_add(1);
+            if event_count > config.scanner_max_events_per_snapshot as u64 {
+                return Err(format!(
+                    "historical Watchlist batch replay exceeded event_limit={}",
+                    config.scanner_max_events_per_snapshot
+                ));
+            }
+        }
+    }
+    while let Some(clock) = next_batch_clock(&runtimes)? {
+        advance_batch_clock(
+            &source,
+            &mut engine,
+            &mut runtimes,
+            clock,
+            &known_tickers,
+            &mut recent_until,
+            &mut reference_session,
+        )
+        .await?;
+    }
+
+    let mut materializations = Vec::with_capacity(runtimes.len());
+    for runtime in runtimes {
+        let transition_count = runtime
+            .chunks
+            .iter()
+            .map(|chunk| chunk.transitions.len())
+            .sum::<usize>();
+        let mut external_revisions = runtime.request.external_feature_revisions.clone();
+        external_revisions.sort_by(|left, right| left.field_id.cmp(&right.field_id));
+        let materialization_id = materialization_id(
+            &runtime.request.plan.plan_hash,
+            &source_revision,
+            &external_revisions,
+        )?;
+        materializations.push(HistoricalWatchlistTimelineMaterialization {
+            calculation_revision: HISTORICAL_SCANNER_DERIVED_SCHEMA_VERSION,
+            cadence_ms: runtime.request.plan.cadence_ms,
+            chunks: runtime.chunks,
+            engine_version: qmd_core::market_signal::MARKET_SIGNAL_ENGINE_VERSION,
+            evaluation_count: runtime.validation.evaluation_count,
+            event_count,
+            external_feature_revisions: external_revisions,
+            materialization_id,
+            plan_hash: runtime.request.plan.plan_hash.clone(),
+            schema_version: 1,
+            source_revision: source_revision.clone(),
+            transition_count,
+            watchlist_id: runtime.request.plan.watchlist_id.clone(),
+        });
+    }
+    let batch_materialization_id = batch_materialization_id(&materializations, &source_revision)?;
+    Ok(HistoricalWatchlistTimelineBatchMaterialization {
+        batch_materialization_id,
+        event_count,
+        materializations,
+        schema_version: 1,
+        source_revision,
+    })
+}
+
+fn next_batch_clock(runtimes: &[BatchPlanRuntime<'_>]) -> Result<Option<DateTime<Utc>>, String> {
+    let mut next = None;
+    for runtime in runtimes {
+        if runtime.evaluation_index >= runtime.validation.evaluation_count {
+            continue;
+        }
+        let clock = plan_evaluation_clock(&runtime.request.plan, runtime.evaluation_index)?;
+        next = Some(next.map_or(clock, |prior: DateTime<Utc>| prior.min(clock)));
+    }
+    Ok(next)
+}
+
+async fn advance_batch_clock(
+    source: &HistoricalEventSource,
+    engine: &mut CrossSectionEngine,
+    runtimes: &mut [BatchPlanRuntime<'_>],
+    clock: DateTime<Utc>,
+    known_tickers: &BTreeSet<String>,
+    recent_until: &mut HashMap<String, DateTime<Utc>>,
+    reference_session: &mut NaiveDate,
+) -> Result<(), String> {
+    let mut rate_dirty = recent_until.keys().cloned().collect::<BTreeSet<_>>();
+    let expired = recent_until
+        .iter()
+        .filter(|(_, until)| **until < clock)
+        .map(|(ticker, _)| ticker.clone())
+        .collect::<Vec<_>>();
+    for ticker in expired {
+        rate_dirty.insert(ticker.clone());
+        recent_until.remove(&ticker);
+    }
+    let session = session_date(clock);
+    if session != *reference_session {
+        let references = source
+            .market_structure_reference_levels_all(clock)
+            .await
+            .map_err(|error| {
+                format!("historical Watchlist daily references unavailable: {error}")
+            })?;
+        engine.replace_indicator_references(references);
+        *reference_session = session;
+        rate_dirty.extend(known_tickers.iter().cloned());
+    }
+    engine.finalize(clock).await?;
+    rate_dirty.extend(engine.take_changed_indicator_tickers());
+    for runtime in runtimes {
+        runtime.dirty.extend(rate_dirty.iter().cloned());
+        if runtime.evaluation_index >= runtime.validation.evaluation_count
+            || plan_evaluation_clock(&runtime.request.plan, runtime.evaluation_index)? != clock
+        {
+            continue;
+        }
+        advance_external_boundaries(
+            &runtime.boundaries,
+            &mut runtime.boundary_index,
+            clock,
+            &mut runtime.dirty,
+        );
+        apply_timeline_candidates(
+            engine,
+            runtime
+                .reducer
+                .as_mut()
+                .ok_or_else(|| "historical Watchlist batch reducer is unavailable".to_string())?,
+            &runtime.external,
+            &runtime.qmd_sources,
+            clock,
+            &mut runtime.dirty,
+        )
+        .await?;
+        runtime.evaluation_index += 1;
+        finish_reducer_chunk_if_due(
+            &runtime.request.plan,
+            runtime.validation.evaluation_count,
+            runtime.evaluation_index,
+            &mut runtime.reducer,
+            &mut runtime.chunks,
+        )?;
+    }
+    Ok(())
+}
+
+fn batch_materialization_id(
+    materializations: &[HistoricalWatchlistTimelineMaterialization],
+    source_revision: &SourceRevision,
+) -> Result<String, String> {
+    let payload = serde_json::json!({
+        "materializations": materializations
+            .iter()
+            .map(|row| (&row.watchlist_id, &row.materialization_id))
+            .collect::<Vec<_>>(),
+        "source_revision": source_revision,
+    });
+    let encoded = serde_json::to_vec(&payload)
+        .map_err(|error| format!("historical Watchlist batch identity encoding failed: {error}"))?;
+    Ok(format!("sha256:{:x}", Sha256::digest(encoded)))
+}
+
 fn prepare_external_features(
     request: &HistoricalWatchlistTimelineRequest,
     plan_start: DateTime<Utc>,
@@ -807,6 +1105,17 @@ async fn apply_timeline_clock(
 ) -> Result<(), String> {
     engine.finalize(clock).await?;
     dirty.extend(engine.take_changed_indicator_tickers());
+    apply_timeline_candidates(engine, reducer, external, qmd_sources, clock, dirty).await
+}
+
+async fn apply_timeline_candidates(
+    engine: &mut CrossSectionEngine,
+    reducer: &mut WatchlistTimelineReducer<'_>,
+    external: &ExternalIntervalIndex,
+    qmd_sources: &BTreeSet<String>,
+    clock: DateTime<Utc>,
+    dirty: &mut BTreeSet<String>,
+) -> Result<(), String> {
     let tickers = std::mem::take(dirty);
     let mut upserts = Vec::new();
     let mut removals = Vec::new();

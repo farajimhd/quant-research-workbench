@@ -578,10 +578,16 @@ load progressively without false continuity.
         - [x] Replace the active single-Watchlist Backtest path with QMD History
               transition chunks, causal conid enrichment, application-level
               materialization identity, and revision evidence.
-        - [ ] Replay all configured Watchlists through one shared QMD event
-              pass, union their causal membership timelines, and add durable
-              revision-keyed storage/reuse. The active path remains fail closed
-              for more than one Watchlist until this shared batch exists.
+        - [x] Replay all configured Watchlists through one shared QMD event
+              pass and union their causal membership timelines.
+          - [x] QMD History admits up to 64 unique plans with identical replay
+                bounds, enforces aggregate evaluation/membership budgets, and
+                advances independent cadence/reducer/external-feature state
+                over one pinned event stream and shared computation engine.
+                Backend union semantics retain a ticker while any configured
+                Watchlist owns it and reject cross-Watchlist identity conflict.
+          - [ ] Persist the revision-keyed batch product durably; the current
+                bounded backend cache is process-local only.
   - [x] Build canonical Backtest performance, Portfolio, position, order,
         execution, and closed-trade result projections.
   - [x] Add strategy/run attribution and comparative analysis projections.
