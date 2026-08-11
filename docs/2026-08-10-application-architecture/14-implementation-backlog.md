@@ -696,6 +696,10 @@ broker command outside OMS.
 - [x] Add discovery computation-cost metrics.
 - [x] Add Portfolio disposition/reservation and OMS reconciliation metrics.
 - [ ] Bound queues, caches, subscriptions, retries, concurrency, and result sets.
+  - [x] Expose the enforced backend command, discovery, chart, simulation,
+        offline, and general admission lanes on the Services dashboard with
+        active/limit, availability, completion, rejection, and wait evidence;
+        keep the system-owned limits noneditable.
   - [x] Bound Replay/Backtest subscriber queues and resident controllers;
         coalesce replaceable snapshots, evict only terminal controllers, and
         return HTTP 429 when all configured resident slots are active.

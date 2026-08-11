@@ -1015,6 +1015,14 @@ bounded direct ClickHouse paths remain documented in
      Three focused plan/gateway tests, five bounded-cache/Services tests, and
      all nine application-registry tests passed; the changed Python modules
      compiled.
+121. Added backend admission-budget evidence to the Services dashboard. The UI
+     polls the existing system-owned workload contract independently of fleet
+     health and shows active/limit usage, remaining capacity, completed work,
+     rejected admissions, cumulative wait, and the configured admission wait
+     for command, discovery, chart, simulation, offline, and general lanes.
+     Unavailable evidence is explicit and limits are review-only. The managed
+     TypeScript/Vite production build passed in the external frontend runtime;
+     real-browser inspection remains under the existing localhost policy gate.
 
 The authoritative remaining work and acceptance gates are maintained in the
 [complete implementation backlog](14-implementation-backlog.md). A checked

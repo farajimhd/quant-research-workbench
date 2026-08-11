@@ -53,6 +53,19 @@ type ServicesStatusPayload = {
   services: ServiceStatusPayload[];
 };
 
+type WorkloadBudgetPayload = {
+  lanes: Record<string, {
+    active: number;
+    available: number;
+    completed: number;
+    limit: number;
+    rejected: number;
+    total_wait_seconds: number;
+  }>;
+  schema_version: number;
+  wait_timeout_seconds: number;
+};
+
 type ServiceDatabaseTablePayload = {
   error?: string;
   rows?: ServiceDatabaseTableRow[];
@@ -110,6 +123,8 @@ export function ServicesPage({ mode, onNavigate }: { mode: ServicePageMode; onNa
   const [detailLoading, setDetailLoading] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [workloadBudgets, setWorkloadBudgets] = useState<WorkloadBudgetPayload | null>(null);
+  const [workloadBudgetError, setWorkloadBudgetError] = useState("");
   const [now, setNow] = useState(() => new Date());
   const payloadRef = useRef<ServicesStatusPayload | null>(null);
   const serviceId = mode === "dashboard" ? null : mode;
@@ -121,6 +136,27 @@ export function ServicesPage({ mode, onNavigate }: { mode: ServicePageMode; onNa
   useEffect(() => {
     const timer = window.setInterval(() => setNow(new Date()), 1000);
     return () => window.clearInterval(timer);
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function loadBudgets() {
+      try {
+        const next = await api<WorkloadBudgetPayload>("/api/system/workload-budgets", { timeoutMs: 5000 });
+        if (!cancelled) {
+          setWorkloadBudgets(next);
+          setWorkloadBudgetError("");
+        }
+      } catch (exc) {
+        if (!cancelled) setWorkloadBudgetError(exc instanceof Error ? exc.message : String(exc));
+      }
+    }
+    void loadBudgets();
+    const timer = window.setInterval(() => void loadBudgets(), 5000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
   }, []);
 
   useEffect(() => {
@@ -226,7 +262,7 @@ export function ServicesPage({ mode, onNavigate }: { mode: ServicePageMode; onNa
       ) : error && !services.length ? (
         <ServicePageApiFailure message={error} />
       ) : (
-        <ServicesDashboard now={now} services={services} onNavigate={onNavigate} />
+        <ServicesDashboard budgets={workloadBudgets} budgetError={workloadBudgetError} now={now} services={services} onNavigate={onNavigate} />
       )}
       {showBlockingLoader ? (
         <div className="services-page-loading-overlay" aria-label="Loading service data">
@@ -314,12 +350,38 @@ function ServicesTopSummary({ checkedAt, now, services }: { checkedAt: string; n
   );
 }
 
-function ServicesDashboard({ now, onNavigate, services }: { now: Date; onNavigate: (mode: ServicePageMode) => void; services: ServiceStatusPayload[] }) {
+function ServicesDashboard({ budgets, budgetError, now, onNavigate, services }: { budgets: WorkloadBudgetPayload | null; budgetError: string; now: Date; onNavigate: (mode: ServicePageMode) => void; services: ServiceStatusPayload[] }) {
   return (
-    <section className="service-fleet-grid" aria-label="Gateway live responsibility status">
-      {services.map((service) => (
-        <ServiceFleetCard key={service.registry.id} now={now} onOpen={() => onNavigate(service.registry.id)} service={service} />
-      ))}
+    <div className="services-dashboard-stack">
+      <WorkloadBudgetPanel error={budgetError} payload={budgets} />
+      <section className="service-fleet-grid" aria-label="Gateway live responsibility status">
+        {services.map((service) => (
+          <ServiceFleetCard key={service.registry.id} now={now} onOpen={() => onNavigate(service.registry.id)} service={service} />
+        ))}
+      </section>
+    </div>
+  );
+}
+
+function WorkloadBudgetPanel({ error, payload }: { error: string; payload: WorkloadBudgetPayload | null }) {
+  const lanes = Object.entries(payload?.lanes ?? {});
+  const rejected = lanes.reduce((total, [, lane]) => total + lane.rejected, 0);
+  return (
+    <section className={`service-workload-budget-panel${error ? " is-unavailable" : rejected ? " has-rejections" : ""}`} aria-label="Backend workload admission budgets">
+      <header>
+        <div><span className="page-kicker">Application backend</span><h2>Workload admission</h2></div>
+        <span>{payload ? `${payload.wait_timeout_seconds}s admission wait` : error ? "Evidence unavailable" : "Loading limits…"}</span>
+      </header>
+      {lanes.length ? <div className="service-workload-budget-grid">
+        {lanes.map(([name, lane]) => {
+          const pressure = lane.limit ? lane.active / lane.limit : 0;
+          return <article className={lane.rejected ? "has-rejections" : pressure >= 0.8 ? "is-pressured" : ""} key={name}>
+            <div><strong>{displayName(name)}</strong><span>{lane.active} / {lane.limit} active</span></div>
+            <progress aria-label={`${displayName(name)} workload usage`} max={lane.limit} value={lane.active} />
+            <small>{lane.available} available · {lane.completed} completed · {lane.rejected} rejected · {formatDuration(lane.total_wait_seconds * 1000)} waiting</small>
+          </article>;
+        })}
+      </div> : <p>{error || "Waiting for backend admission evidence."}</p>}
     </section>
   );
 }
