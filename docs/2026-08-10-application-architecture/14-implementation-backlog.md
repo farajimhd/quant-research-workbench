@@ -270,7 +270,8 @@ one fenced decision.
 
 - [x] Accept only an execution intent whose durable Portfolio decision and
       reservation match its account, intent, ticker, quantity, and active state.
-- [ ] Version the execution-intent schema.
+- [x] Version the execution-intent schema and fail closed on unsupported
+      versions while retaining explicit version-1 recovery for legacy journals.
 - [x] Generate stable client/order identifiers and reject persisted duplicate intent IDs.
 - [x] Implement submit, acknowledge, replace, cancel, reject, and fill transitions.
 - [x] Handle partial fills and remaining quantity.

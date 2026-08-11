@@ -2351,6 +2351,7 @@ def _intent_from_payload(payload: dict[str, Any]) -> StrategyIntent:
         action=str(payload["action"]),  # type: ignore[arg-type]
         quantity=float(payload["quantity"]),
         reference_price=float(payload["reference_price"]),
+        schema_version=int(payload.get("schema_version") or 1),
         capital_request=(CapitalRequest(**dict(capital_raw)) if capital_raw else None),
         invalidation_price=(
             float(payload["invalidation_price"])

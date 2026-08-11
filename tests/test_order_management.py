@@ -16,10 +16,16 @@ from src.trading_runtime.order_management import (
     OrderManagementEngine,
     OrderManagementState,
     ShortabilitySnapshot,
+    _intent_from_payload,
     execution_tactic,
 )
 from src.trading_runtime.risk import RiskAuthority
-from src.trading_runtime.signals import StrategyEvaluation, StrategyIntent, normalize_strategy_evaluation
+from src.trading_runtime.signals import (
+    STRATEGY_INTENT_SCHEMA_VERSION,
+    StrategyEvaluation,
+    StrategyIntent,
+    normalize_strategy_evaluation,
+)
 from src.trading_runtime.simulated_broker import SimulatedBrokerAdapter
 from src.trading_runtime.strategy_orders import IbkrStrategyOrderPlanner, StrategyOrderPlan
 
@@ -177,6 +183,27 @@ class BlockedShortability:
 
 
 class ExecutionTacticTests(unittest.TestCase):
+    def test_execution_intent_contract_is_versioned_and_legacy_payloads_migrate(self) -> None:
+        current = intent()
+        self.assertEqual(
+            current.payload()["schema_version"], STRATEGY_INTENT_SCHEMA_VERSION
+        )
+        legacy_payload = current.payload()
+        legacy_payload.pop("schema_version")
+        recovered = _intent_from_payload(legacy_payload)
+        self.assertEqual(recovered.schema_version, STRATEGY_INTENT_SCHEMA_VERSION)
+
+        with self.assertRaisesRegex(ValueError, "Unsupported Strategy intent schema"):
+            StrategyIntent(
+                intent_id="future-intent",
+                ticker="TEST",
+                event_time=NOW,
+                action="enter_long",
+                quantity=1,
+                reference_price=10,
+                schema_version=999,
+            )
+
     def test_suppression_does_not_implicitly_authorize_warning_confirmation(self) -> None:
         with patch.dict(
             "os.environ",

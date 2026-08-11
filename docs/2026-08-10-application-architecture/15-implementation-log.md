@@ -60,6 +60,9 @@ bounded direct ClickHouse paths remain documented in
     keeps liveness, dependency, data and execution readiness separate. Missing
     producer evidence remains unknown, and non-broker services report execution
     as not applicable.
+12. Versioned the broker-neutral Strategy execution-intent contract, included
+    the version in durable payloads, rejected unsupported future versions, and
+    retained explicit version-1 recovery for pre-versioned OMS journal rows.
 
 The authoritative remaining work and acceptance gates are maintained in the
 [complete implementation backlog](14-implementation-backlog.md). A checked

@@ -14,6 +14,10 @@ from src.trading_runtime.execution_policies import (
     TrailingRuleType,
     legacy_execution_policy,
 )
+
+
+STRATEGY_INTENT_SCHEMA_VERSION = 1
+SUPPORTED_STRATEGY_INTENT_SCHEMA_VERSIONS = {STRATEGY_INTENT_SCHEMA_VERSION}
 from src.trading_runtime.taxonomy import (
     ClockContract,
     EvaluationMode,
@@ -241,6 +245,7 @@ class StrategyIntent:
     action: StrategyAction
     quantity: float
     reference_price: float
+    schema_version: int = STRATEGY_INTENT_SCHEMA_VERSION
     capital_request: CapitalRequest | None = None
     invalidation_price: float | None = None
     profit_target_price: float | None = None
@@ -291,6 +296,10 @@ class StrategyIntent:
         )
 
     def __post_init__(self) -> None:
+        if self.schema_version not in SUPPORTED_STRATEGY_INTENT_SCHEMA_VERSIONS:
+            raise ValueError(
+                f"Unsupported Strategy intent schema version: {self.schema_version}"
+            )
         if not self.intent_id or not self.ticker:
             raise ValueError("Strategy intent identity and ticker are required")
         if self.quantity < 0:
