@@ -234,6 +234,8 @@ budgets and invalid scope broadening fails configuration validation.
         service import as a compatibility re-export.
   - [x] Move the Live market-data universe and bounded Live/Paper tradability
         lookup into the shared registered `market.tradable_universe.v1` plan.
+  - [x] Make `reference.identity_for_symbol.v1` resolve to a versioned causal
+        identity-anchor builder instead of the ticker-facts composition service.
   - [ ] Move remaining approved backend SQL domains without modifying deferred
         producer services.
 - [ ] Remove duplicated route-level SQL as callers migrate.
@@ -244,6 +246,8 @@ budgets and invalid scope broadening fails configuration validation.
         only request normalization, optional-data degradation, and projection.
   - [x] Remove duplicate Live universe SQL from the market-data loader and
         trading command preflight while preserving their distinct consumers.
+  - [x] Remove point-in-time identity-anchor SQL from ticker-facts composition;
+        retain its existing function name as a compatibility re-export.
   - [ ] Remove remaining route/service-local SQL only after its registered plan
         and focused parity tests exist.
 - [ ] Consume deferred producer services through unchanged bounded contracts.

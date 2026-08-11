@@ -468,7 +468,7 @@ def _query_plans() -> tuple[QueryPlanDefinition, ...]:
         QueryPlanDefinition(
             "reference.identity_for_symbol.v1",
             "reference_gateway",
-            "src.backend.ticker_facts_service:ticker_facts",
+            "src.backend.query_plans.reference_ticker_facts_v1:identity_anchor",
             (
                 "q_live.id_symbol_interval_v1",
                 "q_live.id_symbol_v1",

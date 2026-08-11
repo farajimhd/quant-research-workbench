@@ -53,6 +53,13 @@ class ApplicationRegistryTests(unittest.TestCase):
             universe_plan.implementation,
             "src.backend.query_plans.market_tradable_universe_v1:full_tradable_universe",
         )
+        identity_plan = {
+            plan.plan_id: plan for plan in QUERY_PLANS
+        }["reference.identity_for_symbol.v1"]
+        self.assertEqual(
+            identity_plan.implementation,
+            "src.backend.query_plans.reference_ticker_facts_v1:identity_anchor",
+        )
         self.assertTrue(
             {
                 "news.company_asof.v1",

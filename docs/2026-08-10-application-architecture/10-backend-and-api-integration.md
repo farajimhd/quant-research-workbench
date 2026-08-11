@@ -151,6 +151,13 @@ bounded symbol lookup returns the same universe date, tradability decision,
 exclusion reason, and broker conid used by command preflight. Database selection
 remains server-side and neither caller carries route-local SQL.
 
+`reference.identity_for_symbol.v1` now points to an actual versioned query
+builder rather than the ticker-facts composition service. The identity anchor
+selects the newest universe publication no later than the requested day and
+recording clock, applies the same clock to symbol/listing/security/issuer joins,
+and deterministically prefers tradable USD stock listings. The service retains
+the public builder name as a compatibility import.
+
 ## 6. Configuration registry and compiler
 
 The catalog contains capability, field, container, strategy, policy, mode and service descriptors. Configuration records reference stable IDs and versions. The compiler:

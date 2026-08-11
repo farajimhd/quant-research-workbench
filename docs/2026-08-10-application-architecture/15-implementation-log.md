@@ -676,6 +676,14 @@ bounded direct ClickHouse paths remain documented in
     while repeated refreshes avoid copying the same 500-bar window. DELETE
     responses expose exact reclaimed counts. Cargo formatting passed and all 96
     QMD Gateway library tests passed using the external runtime target.
+90. Replaced the application registry's composition-service pointer for
+    `reference.identity_for_symbol.v1` with a real versioned query builder. The
+    extracted anchor preserves the causal universe-day and recording-time
+    cutoffs, point-in-time symbol/listing/security/issuer joins, and deterministic
+    tradable USD stock preference. Ticker Facts keeps the former
+    `identity_anchor_sql` name as a compatibility import, so route behavior did
+    not change. Python compile and all 27 focused query-plan, registry, and
+    ticker-facts service tests passed.
 
 The authoritative remaining work and acceptance gates are maintained in the
 [complete implementation backlog](14-implementation-backlog.md). A checked
