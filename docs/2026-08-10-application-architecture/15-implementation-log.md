@@ -1326,6 +1326,23 @@ bounded direct ClickHouse paths remain documented in
      covers invalid request, resource-limit, source-conflict, and upstream
      classifications so callers can distinguish request correction from retry
      and full materialization restart.
+140. Registered the backend's bounded reads of already-published intelligence
+     outputs without changing any deferred producer. The new
+     `intelligence.published_consumer.v1` plan owns query construction for
+     current-version News Synthesis documents and document-scoped SEC labels.
+     Both reads require an explicit bounded source-ID set, preserve the
+     producer-issued document identity and source clock, and retain the exact
+     latest-version selection and presentation payload behavior. Dynamic table
+     identifiers fail closed before query construction.
+
+     The backend News and scoped-label loaders now contain only request
+     normalization, result grouping, and presentation mapping. Text
+     Intelligence engines, schemas, and publication code were not changed.
+     `news_prior_context` was deliberately not migrated in this phase because
+     research labeling imports that shared utility directly; moving it would
+     cross the deferred producer/research boundary. Nineteen focused registry,
+     query-plan, News presentation, scoped-label, and SEC Canvas tests passed,
+     and every changed Python module compiled with bytecode writes disabled.
 
 The authoritative remaining work and acceptance gates are maintained in the
 [complete implementation backlog](14-implementation-backlog.md). A checked

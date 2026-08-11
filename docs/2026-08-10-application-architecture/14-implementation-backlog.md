@@ -275,6 +275,9 @@ budgets and invalid scope broadening fails configuration validation.
   - [x] Move Historical Scanner's set-based identity, market, supply, short,
         corporate-event, and presentation enrichment read into the registered
         `reference.scanner_asof.v1` plan.
+  - [x] Move bounded backend reads of published News Synthesis and scoped SEC
+        labels into `intelligence.published_consumer.v1` without changing the
+        deferred Text Intelligence engines, schemas, or publication behavior.
   - [ ] Move remaining approved backend SQL domains without modifying deferred
         producer services.
 - [ ] Remove duplicated route-level SQL as callers migrate.
@@ -297,9 +300,17 @@ budgets and invalid scope broadening fails configuration validation.
         consumes the registered fundamentals builder before deriving cards.
   - [x] Remove point-in-time reference SQL from Historical Scanner composition;
         keep only optional logo URL and row projection behavior in the service.
+  - [x] Remove published News Synthesis and scoped-label SQL from their backend
+        presentation loaders; keep payload mapping and optional degradation in
+        the consumers.
   - [ ] Remove remaining route/service-local SQL only after its registered plan
         and focused parity tests exist.
-- [ ] Consume deferred producer services through unchanged bounded contracts.
+- [x] Consume deferred producer services through unchanged bounded contracts.
+      Backend News/SEC presentation reads are bounded by source identity and
+      current producer version, registered as consumer-owned query plans, and
+      do not modify or invoke producer publication behavior. Shared
+      `news_prior_context` remains outside this migration because research
+      labeling code imports it directly.
 - [x] Bulk-load point-in-time enrichment and avoid per-row remote queries.
       Scanner reference, corporate-event, float, short-interest, fundamental,
       previous-close, and daily-volume inputs are resolved through causal

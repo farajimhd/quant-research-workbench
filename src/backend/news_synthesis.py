@@ -5,9 +5,12 @@ from typing import Any, Callable
 
 from research.text_intelligence.news_synthesis_v1.engine import ENGINE_VERSION
 from research.text_intelligence.news_synthesis_v1.storage import (
-    LIVE_SEMANTIC_TABLE,
     SYNTHESIS_TABLE,
 )
+from src.backend.query_plans.text_intelligence_consumer_v1 import (
+    news_synthesis_by_id,
+)
+
 
 def load_news_synthesis(
     source_ids: list[str], *, query_rows: Callable[[str], list[dict[str, Any]]], quote: Callable[[str], str]
@@ -15,14 +18,14 @@ def load_news_synthesis(
     ids = sorted({value.strip() for value in source_ids if value.strip()})
     if not ids:
         return {}
-    rows = query_rows(f"""
-SELECT canonical_news_id,synthesis_json
-FROM q_live.{SYNTHESIS_TABLE} FINAL
-WHERE engine_version={quote(ENGINE_VERSION)}
-  AND canonical_news_id IN ({','.join(quote(value) for value in ids)})
-ORDER BY updated_at_utc DESC
-LIMIT 1 BY canonical_news_id,engine_version
-FORMAT JSONEachRow""")
+    rows = query_rows(
+        news_synthesis_by_id(
+            ids,
+            engine_version=ENGINE_VERSION,
+            synthesis_table=SYNTHESIS_TABLE,
+            quote=quote,
+        )
+    )
     output: dict[str, dict[str, Any]] = {}
     for row in rows:
         try: document = json.loads(str(row.get("synthesis_json") or "{}"))

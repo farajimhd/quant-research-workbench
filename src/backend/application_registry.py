@@ -625,6 +625,19 @@ def _query_plans() -> tuple[QueryPlanDefinition, ...]:
             "q_live.market_reference_publication_coverage_v1",
         ),
         QueryPlanDefinition(
+            "intelligence.published_consumer.v1",
+            "backend",
+            "src.backend.query_plans.text_intelligence_consumer_v1:scoped_labels,news_synthesis_by_id",
+            (
+                "q_live.scoped_text_labels_v5",
+                "q_live.news_synthesis_v1",
+            ),
+            "bounded producer-issued source/document identity",
+            "source_timestamp or source published_at_utc",
+            "producer updated_at_utc",
+            "service://text-intelligence/news-coverage",
+        ),
+        QueryPlanDefinition(
             "intelligence.news_asof.v1",
             "text_intelligence",
             "service://text-intelligence/news-synthesis-v1",

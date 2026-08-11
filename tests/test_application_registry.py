@@ -100,6 +100,7 @@ class ApplicationRegistryTests(unittest.TestCase):
                 "sec.filing_asof.v1",
                 "sec.scanner_filing_asof.v1",
                 "sec.ticker_identity_batch.v1",
+                "intelligence.published_consumer.v1",
             }.issubset({plan.plan_id for plan in QUERY_PLANS})
         )
 
