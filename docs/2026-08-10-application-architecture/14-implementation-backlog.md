@@ -573,7 +573,7 @@ load progressively without false continuity.
             a daily-volume approximation.
       - [ ] Partition materialization computation across bounded ticker shards
             and complete representative active-session load acceptance.
-      - [ ] Persist/reuse the revisioned timeline product and replace Backtest's
+      - [x] Persist/reuse the revisioned timeline product and replace Backtest's
             session-boundary membership fallback with its transition stream.
         - [x] Replace the active single-Watchlist Backtest path with QMD History
               transition chunks, causal conid enrichment, application-level
@@ -586,8 +586,12 @@ load progressively without false continuity.
                 over one pinned event stream and shared computation engine.
                 Backend union semantics retain a ticker while any configured
                 Watchlist owns it and reject cross-Watchlist identity conflict.
-          - [ ] Persist the revision-keyed batch product durably; the current
-                bounded backend cache is process-local only.
+          - [x] Persist the revision-keyed batch product durably. QMD History
+                exposes the exact complete source revision before lookup; both
+                memory and atomic external-runtime files bind plan, external
+                features, point-in-time identity, source-plan hash, and revision
+                token. Files are content-verified, size/count bounded, and
+                revision drift during materialization requires a retry.
   - [x] Build canonical Backtest performance, Portfolio, position, order,
         execution, and closed-trade result projections.
   - [x] Add strategy/run attribution and comparative analysis projections.

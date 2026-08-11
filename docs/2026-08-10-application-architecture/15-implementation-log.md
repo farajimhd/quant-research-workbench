@@ -1147,6 +1147,22 @@ bounded direct ClickHouse paths remain documented in
      36 QMD History Rust tests passed. Durable revision-keyed persistence,
      aligned 20-session relative volume, ticker-sharded load acceptance, and
      real service/database acceptance remain separate open gates.
+131. Made historical Watchlist reuse durable and correction-safe. The prior
+     process-local cache identity included plans and external-feature revisions
+     but omitted the QMD market-source revision, so a corrected source could
+     incorrectly reuse an old timeline. QMD History now exposes the exact
+     complete source-plan hash and revision token for a bounded window. Backend
+     memory and durable cache keys bind that evidence with every plan,
+     external-feature revision, and point-in-time identity revision; the
+     materializer rejects a source revision that changes between lookup and
+     replay rather than caching mixed authority.
+
+     Durable envelopes are written atomically under
+     `D:\TradingML\runtimes\qmd_history\watchlist_timelines`, verify their own
+     content hash before reuse, reject mismatched revisions, cap each file at
+     256 MiB, and retain at most 64 exact materializations. Eighty-four focused
+     backend tests and all 36 QMD History Rust tests passed; the changed Python
+     modules compiled.
 
 The authoritative remaining work and acceptance gates are maintained in the
 [complete implementation backlog](14-implementation-backlog.md). A checked

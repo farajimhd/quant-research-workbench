@@ -18,6 +18,7 @@ from src.backend.qmd_gateway_client import (
     qmd_computation_demand,
     qmd_computation_requirements,
     qmd_history_base_url,
+    qmd_historical_source_revision,
     qmd_materialize_historical_watchlist_timeline,
     qmd_materialize_historical_watchlist_timelines,
     qmd_validate_historical_watchlist_plan,
@@ -38,6 +39,26 @@ from src.request_context import begin_request_context, current_request_identity,
 
 
 class QmdGatewayClientTests(unittest.TestCase):
+    @patch("src.backend.qmd_gateway_client.urllib.request.urlopen")
+    @patch("src.backend.qmd_gateway_client.qmd_history_base_url", return_value="http://127.0.0.1:8801")
+    def test_historical_source_revision_requires_complete_stable_identity(
+        self, _base_url, urlopen
+    ) -> None:
+        response = MagicMock()
+        response.read.return_value = (
+            b'{"token":"revision-1","source_plan_hash":"plan-1",'
+            b'"complete_for_history":true,"request_complete":true}'
+        )
+        urlopen.return_value.__enter__.return_value = response
+
+        payload = qmd_historical_source_revision(
+            start="2026-08-07T13:30:00+00:00",
+            end="2026-08-07T20:00:00+00:00",
+        )
+
+        self.assertEqual(payload["token"], "revision-1")
+        self.assertIn("start=2026-08-07T13%3A30%3A00%2B00%3A00", urlopen.call_args.args[0].full_url)
+
     @patch("src.backend.qmd_gateway_client.urllib.request.urlopen")
     @patch("src.backend.qmd_gateway_client.qmd_history_base_url", return_value="http://127.0.0.1:8801")
     def test_historical_watchlist_batch_is_typed_and_content_bound(

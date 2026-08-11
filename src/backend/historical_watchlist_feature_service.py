@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from collections import OrderedDict
 from datetime import UTC, datetime
 from math import isfinite
+from pathlib import Path
 from typing import Any, Callable
 from threading import Lock
 
@@ -47,6 +49,9 @@ IDENTITY_FIELDS = (
 _MATERIALIZATION_CACHE: OrderedDict[str, dict[str, Any]] = OrderedDict()
 _MATERIALIZATION_CACHE_LOCK = Lock()
 _MATERIALIZATION_CACHE_LIMIT = 8
+_DURABLE_CACHE_SCHEMA_VERSION = 1
+_DURABLE_CACHE_MAX_ENTRIES = 64
+_DURABLE_CACHE_MAX_FILE_BYTES = 256 * 1024 * 1024
 
 
 def historical_watchlist_external_feature_intervals(
@@ -252,17 +257,22 @@ def historical_watchlist_external_feature_bundle(
 
 def materialize_historical_watchlist_plan(plan: dict[str, Any]) -> dict[str, Any]:
     from src.backend.qmd_gateway_client import (
+        qmd_historical_source_revision,
         qmd_materialize_historical_watchlist_timeline,
     )
 
     bundle = historical_watchlist_external_feature_bundle(plan)
     revisions = bundle["external_feature_revisions"]
     intervals = bundle["external_feature_intervals"]
+    source_revision = qmd_historical_source_revision(
+        start=str(plan.get("start") or ""), end=str(plan.get("end") or "")
+    )
     cache_key = _content_hash(
         {
             "external_feature_revisions": revisions,
             "identity_revision": bundle["identity_revision"],
             "plan_hash": plan.get("plan_hash"),
+            "source_revision": source_revision,
         }
     )
     with _MATERIALIZATION_CACHE_LOCK:
@@ -270,6 +280,10 @@ def materialize_historical_watchlist_plan(plan: dict[str, Any]) -> dict[str, Any
         if cached is not None:
             _MATERIALIZATION_CACHE.move_to_end(cache_key)
             return json.loads(json.dumps(cached))
+    durable = _durable_cache_read(cache_key, source_revision=source_revision)
+    if durable is not None:
+        _remember_materialization(cache_key, durable)
+        return durable
     materialized = qmd_materialize_historical_watchlist_timeline(
         plan,
         external_feature_revisions=revisions,
@@ -280,11 +294,9 @@ def materialize_historical_watchlist_plan(plan: dict[str, Any]) -> dict[str, Any
         identity_intervals=bundle["identity_intervals"],
         identity_revision=bundle["identity_revision"],
     )
-    with _MATERIALIZATION_CACHE_LOCK:
-        _MATERIALIZATION_CACHE[cache_key] = json.loads(json.dumps(materialized))
-        _MATERIALIZATION_CACHE.move_to_end(cache_key)
-        while len(_MATERIALIZATION_CACHE) > _MATERIALIZATION_CACHE_LIMIT:
-            _MATERIALIZATION_CACHE.popitem(last=False)
+    _assert_source_revision(materialized.get("source_revision"), source_revision)
+    _durable_cache_write(cache_key, materialized, source_revision=source_revision)
+    _remember_materialization(cache_key, materialized)
     return materialized
 
 
@@ -298,6 +310,7 @@ def materialize_historical_watchlist_plans(
             "materializations": [],
         }
     from src.backend.qmd_gateway_client import (
+        qmd_historical_source_revision,
         qmd_materialize_historical_watchlist_timelines,
     )
 
@@ -310,6 +323,13 @@ def materialize_historical_watchlist_plans(
         }
         for plan, bundle in zip(plans, bundles, strict=True)
     ]
+    bounds = {
+        (str(plan.get("start") or ""), str(plan.get("end") or "")) for plan in plans
+    }
+    if len(bounds) != 1:
+        raise ValueError("historical Watchlist batch plans must share exact bounds")
+    start, end = next(iter(bounds))
+    source_revision = qmd_historical_source_revision(start=start, end=end)
     cache_key = _content_hash(
         {
             "batch": [
@@ -319,7 +339,8 @@ def materialize_historical_watchlist_plans(
                     "plan_hash": plan.get("plan_hash"),
                 }
                 for plan, bundle in zip(plans, bundles, strict=True)
-            ]
+            ],
+            "source_revision": source_revision,
         }
     )
     with _MATERIALIZATION_CACHE_LOCK:
@@ -327,7 +348,12 @@ def materialize_historical_watchlist_plans(
         if cached is not None:
             _MATERIALIZATION_CACHE.move_to_end(cache_key)
             return json.loads(json.dumps(cached))
+    durable = _durable_cache_read(cache_key, source_revision=source_revision)
+    if durable is not None:
+        _remember_materialization(cache_key, durable)
+        return durable
     batch = qmd_materialize_historical_watchlist_timelines(requests)
+    _assert_source_revision(batch.get("source_revision"), source_revision)
     by_watchlist = {
         str(row.get("watchlist_id") or ""): row
         for row in batch.get("materializations") or []
@@ -355,12 +381,102 @@ def materialize_historical_watchlist_plans(
             ],
         }
     )
+    _durable_cache_write(cache_key, batch, source_revision=source_revision)
+    _remember_materialization(cache_key, batch)
+    return batch
+
+
+def _remember_materialization(cache_key: str, payload: dict[str, Any]) -> None:
     with _MATERIALIZATION_CACHE_LOCK:
-        _MATERIALIZATION_CACHE[cache_key] = json.loads(json.dumps(batch))
+        _MATERIALIZATION_CACHE[cache_key] = json.loads(json.dumps(payload))
         _MATERIALIZATION_CACHE.move_to_end(cache_key)
         while len(_MATERIALIZATION_CACHE) > _MATERIALIZATION_CACHE_LIMIT:
             _MATERIALIZATION_CACHE.popitem(last=False)
-    return batch
+
+
+def _durable_cache_root() -> Path:
+    configured = os.environ.get("QMD_WATCHLIST_TIMELINE_CACHE_DIR", "").strip()
+    return Path(
+        configured
+        or r"D:\TradingML\runtimes\qmd_history\watchlist_timelines"
+    )
+
+
+def _durable_cache_path(cache_key: str) -> Path:
+    digest = cache_key.removeprefix("sha256:")
+    if len(digest) != 64 or any(character not in "0123456789abcdef" for character in digest):
+        raise ValueError("historical Watchlist cache key is invalid")
+    return _durable_cache_root() / f"watchlist-{digest}.json"
+
+
+def _durable_cache_read(
+    cache_key: str, *, source_revision: dict[str, Any]
+) -> dict[str, Any] | None:
+    path = _durable_cache_path(cache_key)
+    try:
+        if not path.is_file() or path.stat().st_size > _DURABLE_CACHE_MAX_FILE_BYTES:
+            return None
+        envelope = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, json.JSONDecodeError):
+        return None
+    if (
+        int(envelope.get("schema_version") or 0) != _DURABLE_CACHE_SCHEMA_VERSION
+        or str(envelope.get("cache_key") or "") != cache_key
+        or dict(envelope.get("source_revision") or {}) != source_revision
+    ):
+        return None
+    payload = envelope.get("payload")
+    if not isinstance(payload, dict) or str(envelope.get("payload_hash") or "") != _content_hash(payload):
+        return None
+    return json.loads(json.dumps(payload))
+
+
+def _durable_cache_write(
+    cache_key: str,
+    payload: dict[str, Any],
+    *,
+    source_revision: dict[str, Any],
+) -> None:
+    path = _durable_cache_path(cache_key)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    envelope = {
+        "cache_key": cache_key,
+        "payload": payload,
+        "payload_hash": _content_hash(payload),
+        "schema_version": _DURABLE_CACHE_SCHEMA_VERSION,
+        "source_revision": source_revision,
+    }
+    encoded = json.dumps(envelope, sort_keys=True, separators=(",", ":"))
+    if len(encoded.encode("utf-8")) > _DURABLE_CACHE_MAX_FILE_BYTES:
+        raise RuntimeError("historical Watchlist durable materialization exceeds cache file limit")
+    temporary = path.with_suffix(f".{os.getpid()}.{id(payload)}.tmp")
+    try:
+        temporary.write_text(encoded, encoding="utf-8")
+        os.replace(temporary, path)
+    finally:
+        try:
+            temporary.unlink(missing_ok=True)
+        except OSError:
+            pass
+    candidates = sorted(
+        path.parent.glob("watchlist-*.json"),
+        key=lambda candidate: candidate.stat().st_mtime,
+        reverse=True,
+    )
+    for expired in candidates[_DURABLE_CACHE_MAX_ENTRIES:]:
+        try:
+            expired.unlink()
+        except OSError:
+            pass
+
+
+def _assert_source_revision(actual: Any, expected: dict[str, Any]) -> None:
+    actual_revision = dict(actual or {})
+    for field in ("source_plan_hash", "token"):
+        if str(actual_revision.get(field) or "") != str(expected.get(field) or ""):
+            raise RuntimeError(
+                "QMD History source revision changed during Watchlist materialization; retry"
+            )
 
 
 def _clock(value: Any, label: str) -> datetime:

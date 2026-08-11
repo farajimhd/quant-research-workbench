@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 import unittest
+import os
+import tempfile
 from datetime import UTC, datetime
 from unittest.mock import patch
 
 from src.backend.historical_watchlist_feature_service import (
+    _durable_cache_read,
+    _durable_cache_write,
     historical_watchlist_external_feature_bundle,
     historical_watchlist_external_feature_intervals,
     materialize_historical_watchlist_plans,
@@ -21,11 +25,36 @@ class _Client:
 
 
 class HistoricalWatchlistFeatureServiceTests(unittest.TestCase):
+    def test_durable_cache_is_bound_to_exact_source_revision(self) -> None:
+        key = "sha256:" + "a" * 64
+        revision = {"source_plan_hash": "plan-1", "token": "revision-1"}
+        with tempfile.TemporaryDirectory() as directory, patch.dict(
+            os.environ, {"QMD_WATCHLIST_TIMELINE_CACHE_DIR": directory}
+        ):
+            _durable_cache_write(key, {"value": 7}, source_revision=revision)
+            self.assertEqual(
+                _durable_cache_read(key, source_revision=revision), {"value": 7}
+            )
+            self.assertIsNone(
+                _durable_cache_read(
+                    key,
+                    source_revision={"source_plan_hash": "plan-1", "token": "revision-2"},
+                )
+            )
+
+    @patch("src.backend.qmd_gateway_client.qmd_historical_source_revision")
     @patch("src.backend.qmd_gateway_client.qmd_materialize_historical_watchlist_timelines")
     @patch("src.backend.historical_watchlist_feature_service.historical_watchlist_external_feature_bundle")
     def test_batch_enriches_each_timeline_without_replaying_per_plan(
-        self, bundle, materialize
+        self, bundle, materialize, source_revision
     ) -> None:
+        revision = {
+            "complete_for_history": True,
+            "request_complete": True,
+            "source_plan_hash": "source-plan-1",
+            "token": "source-revision-1",
+        }
+        source_revision.return_value = revision
         bundle.side_effect = [
             {
                 "external_feature_intervals": [],
@@ -42,6 +71,7 @@ class HistoricalWatchlistFeatureServiceTests(unittest.TestCase):
         ]
         materialize.return_value = {
             "batch_materialization_id": "sha256:qmd-batch",
+            "source_revision": revision,
             "materializations": [
                 {
                     "watchlist_id": watchlist_id,
@@ -61,7 +91,10 @@ class HistoricalWatchlistFeatureServiceTests(unittest.TestCase):
             for value in ("one", "two")
         ]
 
-        result = materialize_historical_watchlist_plans(plans)
+        with tempfile.TemporaryDirectory() as directory, patch.dict(
+            os.environ, {"QMD_WATCHLIST_TIMELINE_CACHE_DIR": directory}
+        ):
+            result = materialize_historical_watchlist_plans(plans)
 
         self.assertEqual(materialize.call_count, 1)
         self.assertEqual(

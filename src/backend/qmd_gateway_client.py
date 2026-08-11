@@ -576,6 +576,27 @@ def qmd_validate_historical_watchlist_plan(plan: dict[str, Any]) -> dict[str, An
     return payload
 
 
+def qmd_historical_source_revision(
+    *, start: str, end: str
+) -> dict[str, Any]:
+    payload = qmd_history_get_json(
+        "/source-revision",
+        {"start": start, "end": end},
+        timeout=30,
+    )
+    if not isinstance(payload, dict):
+        raise RuntimeError("QMD History returned an invalid source revision")
+    if not str(payload.get("token") or "") or not str(
+        payload.get("source_plan_hash") or ""
+    ):
+        raise RuntimeError("QMD History source revision has no stable identity")
+    if not bool(payload.get("complete_for_history")) or not bool(
+        payload.get("request_complete")
+    ):
+        raise RuntimeError("QMD History source revision is incomplete")
+    return payload
+
+
 def qmd_materialize_historical_watchlist_timeline(
     plan: dict[str, Any],
     *,

@@ -194,6 +194,7 @@ pub fn app(state: AppState) -> Router {
         .route("/coverage", get(coverage))
         .route("/coverage/latest", get(latest_coverage))
         .route("/source-plan", get(source_plan))
+        .route("/source-revision", get(source_revision_snapshot))
         .route("/capability-catalog", get(capability_catalog_snapshot))
         .route("/snapshot/cache", get(cache_snapshot))
         .route("/snapshot/events", get(event_page_snapshot))
@@ -512,6 +513,27 @@ async fn source_plan(
     state
         .source
         .source_plan(&window)
+        .await
+        .map(Json)
+        .map_err(service_error)
+}
+
+async fn source_revision_snapshot(
+    Query(query): Query<SourcePlanQuery>,
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<SourceRevision>, ApiError> {
+    let tickers = query
+        .tickers
+        .as_deref()
+        .unwrap_or_default()
+        .split(',')
+        .filter(|value| !value.trim().is_empty())
+        .map(str::to_string)
+        .collect();
+    let window = window(&query.start, &query.end, tickers)?;
+    state
+        .source
+        .source_revision(&window)
         .await
         .map(Json)
         .map_err(service_error)
