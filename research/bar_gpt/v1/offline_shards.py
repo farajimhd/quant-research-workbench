@@ -1425,8 +1425,8 @@ def _ticker_worker_main(
             dataset_class = DirectEventShardDataset
         dataset_kwargs: dict[str, Any] = {}
         if config.source_mode == "direct_events":
-            dataset_kwargs["progress_callback"] = lambda message: events.put(
-                ("unit", worker_id, str(message), ticker)
+            dataset_kwargs["progress_callback"] = lambda progress: events.put(
+                ("source_page", worker_id, ticker, dict(progress))
             )
         dataset = dataset_class(
             data_config=config,
@@ -1576,6 +1576,8 @@ class ShardBuildReporter:
         self.failed_workers: set[int] = set()
         self.worker_memory: dict[int, dict[str, int]] = {}
         self.worker_state: dict[int, tuple[str, str]] = {}
+        self.worker_source_progress: dict[int, dict[str, Any]] = {}
+        self.source_pages_completed = 0
         self.worker_progress: dict[int, list[int]] = {
             worker: [0, int(total), 0, int(worker_block_totals[worker]), 0, 0]
             for worker, total in enumerate(worker_totals)
@@ -1590,7 +1592,7 @@ class ShardBuildReporter:
         if use_rich:
             from rich.console import Console
             from rich.live import Live
-            self._console = Console()
+            self._console = Console(force_terminal=True if self.layout == "rich" else None)
             self._live = Live(self._render(), console=self._console, screen=True, transient=False, auto_refresh=False)
             self._live.start()
         self.state = "running"
@@ -1648,7 +1650,39 @@ class ShardBuildReporter:
                         )
         elif kind == "unit":
             self.worker_state[worker] = (str(value[2]), str(value[3]))
+        elif kind == "source_page":
+            ticker = str(value[2])
+            payload = dict(value[3])
+            phase = str(payload.get("phase", "source"))
+            progress_kind = str(payload.get("kind", "page"))
+            completed = int(payload.get("completed", 0))
+            total = max(0, int(payload.get("total", 0)))
+            previous = self.worker_source_progress.get(worker)
+            reported_elapsed = max(0.0, float(payload.get("elapsed_seconds", 0.0)))
+            if previous is None or str(previous.get("phase")) != phase:
+                phase_started = time.perf_counter() - reported_elapsed
+                prior_completed = 0
+            else:
+                phase_started = min(
+                    float(previous.get("phase_started", time.perf_counter())),
+                    time.perf_counter() - reported_elapsed,
+                )
+                prior_completed = int(previous.get("completed", 0))
+            if progress_kind == "page":
+                self.source_pages_completed += max(0, completed - prior_completed)
+            payload["phase_started"] = phase_started
+            payload["completed"] = completed
+            payload["total"] = total
+            payload["phase"] = phase
+            payload["kind"] = progress_kind
+            self.worker_source_progress[worker] = payload
+            page_range = ""
+            if payload.get("left") and payload.get("right"):
+                page_range = f" {payload['left']}..{payload['right']}"
+            detail = str(payload.get("detail", "")).strip()
+            self.worker_state[worker] = (phase, detail or f"{ticker}{page_range}")
         elif kind == "block":
+            self.worker_source_progress.pop(worker, None)
             progress = self.worker_progress.setdefault(worker, [0, 0, 0, 0, 0, 0])
             progress[5] = int(value[5])
             if len(value) > 6:
@@ -1718,6 +1752,7 @@ class ShardBuildReporter:
             )
             print(
                 f"state={self.state} compiled_blocks={self.compiled_work_blocks}/{self.total_work_blocks} "
+                f"source_pages={self.source_pages_completed} "
                 f"certified_shards={self.completed}/{self.total} rate={rate:.1f}_blocks/s "
                 f"eta={_duration(eta) if eta else '-'} written={self.bytes / 2**30:.2f}GiB "
                 f"certified_blocks={self.blocks:,} origins={self.origins:,} failures={self.failures} active=[{active}]",
@@ -1735,23 +1770,33 @@ class ShardBuildReporter:
         rate = max(0.0, self.compiled_work_blocks / elapsed)
         remaining = max(0, self.total_work_blocks - self.compiled_work_blocks)
         eta = remaining / rate if rate else 0
-        progress = Progress(
-            TextColumn("[bold cyan]Compiled training blocks[/]"),
-            BarColumn(complete_style="cyan", finished_style="green"),
-            TextColumn("{task.completed:,.0f}/{task.total:,.0f}"),
-            TextColumn("[bold]{task.percentage:>5.1f}%[/]"),
-            expand=True,
-        )
-        progress.add_task(
-            "compiled", total=max(1, self.total_work_blocks),
-            completed=min(self.compiled_work_blocks, max(1, self.total_work_blocks)),
-        )
+        if self.total_work_blocks > 0:
+            progress: Any = Progress(
+                TextColumn("[bold cyan]Compiled training blocks[/]"),
+                BarColumn(complete_style="cyan", finished_style="green"),
+                TextColumn("{task.completed:,.0f}/{task.total:,.0f}"),
+                TextColumn("[bold]{task.percentage:>5.1f}%[/]"),
+                expand=True,
+            )
+            progress.add_task(
+                "compiled", total=self.total_work_blocks,
+                completed=min(self.compiled_work_blocks, self.total_work_blocks),
+            )
+        else:
+            progress = Table.grid(expand=True)
+            progress.add_column(ratio=1)
+            progress.add_column(justify="right")
+            progress.add_row(
+                "[bold cyan]Compiled training blocks[/] [dim](total available after source aggregation)[/]",
+                f"{self.compiled_work_blocks:,}/?",
+            )
         summary = Table.grid(expand=True, padding=(0, 2))
         if width >= 90:
             summary.add_column(); summary.add_column(); summary.add_column()
             summary.add_row(f"[bold]state[/] {self.state}", f"[bold]rate[/] {rate:.1f} blocks/s", f"[bold]ETA[/] {_duration(eta) if eta else '-'}")
-            summary.add_row(f"[bold]certified[/] {self.completed:,}/{self.total:,} shards", f"[bold]written[/] {self.bytes / 2**30:.2f} GiB", f"[bold]origins[/] {self.origins:,}")
-            summary.add_row(f"[bold]workers[/] {self.workers}", f"[bold]failures[/] {self.failures}", f"[bold]elapsed[/] {_duration(elapsed)}")
+            summary.add_row(f"[bold]certified[/] {self.completed:,}/{self.total:,} shards", f"[bold]source[/] {self.source_pages_completed:,} pages", f"[bold]origins[/] {self.origins:,}")
+            summary.add_row(f"[bold]written[/] {self.bytes / 2**30:.2f} GiB", f"[bold]workers[/] {self.workers}", f"[bold]elapsed[/] {_duration(elapsed)}")
+            summary.add_row(f"[bold]failures[/] {self.failures}", "", "")
         else:
             summary.add_column(); summary.add_column()
             summary.add_row(f"[bold]state[/] {self.state}", f"[bold]ETA[/] {_duration(eta) if eta else '-'}")
@@ -1776,6 +1821,28 @@ class ShardBuildReporter:
             total_label = f"{blocks_total:,}" if blocks_total else "?"
             bar = f"[green]{'=' * filled}[/][dim]{'-' * (cells - filled)}[/] {blocks_done:,}/{total_label} blocks"
             detail = f"{focus or '-'} | shards {shards_done}/{shards_total}"
+            source = self.worker_source_progress.get(worker)
+            if source is not None:
+                source_kind = str(source.get("kind", "page"))
+                source_done = int(source.get("completed", 0))
+                source_total = int(source.get("total", 0))
+                source_fraction = source_done / source_total if source_total else 0.0
+                source_filled = min(cells, int(source_fraction * cells))
+                phase_elapsed = max(0.0, time.perf_counter() - float(source.get("phase_started", time.perf_counter())))
+                source_rate = source_done / phase_elapsed if source_done and phase_elapsed > 0 else 0.0
+                source_eta = (source_total - source_done) / source_rate if source_rate else 0.0
+                if source_kind == "stage":
+                    bar = f"[yellow]active[/] {_duration(phase_elapsed)}"
+                    detail = focus or "-"
+                else:
+                    bar = (
+                        f"[cyan]{'=' * source_filled}[/][dim]{'-' * (cells - source_filled)}[/] "
+                        f"{source_done:,}/{source_total:,} pages"
+                    )
+                    detail = (
+                        f"{focus or '-'} | {source_rate:.2f} pages/s | "
+                        f"ETA {_duration(source_eta) if source_eta else '-'}"
+                    )
             blocks = fetched
             if sessions or blocks:
                 detail = f"{detail} · sessions {sessions} · blocks {blocks}"
@@ -1891,7 +1958,18 @@ def _run_main(args: argparse.Namespace, run_log: BuildRunLog | None) -> int:
     )
     if config.source_mode == "direct_events":
         from research.bar_gpt.v1.direct_event_shards import direct_event_preflight
+        preflight_started = time.perf_counter()
+        print("Preflight: validating direct-event authority and scheduling weights...", flush=True)
+        if run_log is not None:
+            run_log.record("direct_event_preflight_started")
         evidence, ticker_weights = direct_event_preflight(client, config, selected_tickers)
+        preflight_seconds = time.perf_counter() - preflight_started
+        print(f"Preflight complete in {preflight_seconds:.1f}s", flush=True)
+        if run_log is not None:
+            run_log.record(
+                "direct_event_preflight_completed", seconds=preflight_seconds,
+                tickers=len(selected_tickers),
+            )
         unit_block_plan: dict[str, tuple[int, int]] = {}
     else:
         evidence = preflight(client, config)

@@ -26,6 +26,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--clickhouse-prefetch-pages", type=int, default=16)
     parser.add_argument("--clickhouse-max-concurrent-pages", type=int, default=32)
     parser.add_argument("--max-shards", type=int, default=2)
+    parser.add_argument("--progress-layout", choices=("rich", "text"), default="rich")
     args = parser.parse_args(list(argv) if argv is not None else None)
     tickers = tuple(dict.fromkeys(item.strip().upper() for item in str(args.tickers).split(",") if item.strip()))
     if not tickers:
@@ -53,6 +54,7 @@ def commands(args: argparse.Namespace) -> tuple[tuple[str, list[str]], ...]:
         "--clickhouse-max-threads-per-worker", str(args.clickhouse_max_threads_per_query),
         "--clickhouse-prefetch-pages", str(args.clickhouse_prefetch_pages),
         "--clickhouse-max-concurrent-pages", str(args.clickhouse_max_concurrent_pages),
+        "--progress-layout", str(args.progress_layout),
         "--max-shards", str(args.max_shards),
     ]
     if args.execute:

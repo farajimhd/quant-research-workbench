@@ -56,7 +56,7 @@ def _iter_prefetched_pages_in_order(
     *,
     depth: int,
     read_page: Callable[[dt.date, dt.date], list[PageValue]],
-    page_callback: Callable[[str, str, int, float], None] | None,
+    page_callback: Callable[[str, str, int, float, int, int, float], None] | None,
     thread_name_prefix: str,
 ) -> Iterator[list[PageValue]]:
     """Keep query slots full and report completions without reordering data.
@@ -71,6 +71,12 @@ def _iter_prefetched_pages_in_order(
     pending: dict[Future[list[PageValue]], tuple[int, dt.date, dt.date, float]] = {}
     ready: dict[int, list[PageValue]] = {}
     next_ordinal = 0
+    completed_pages = 0
+    total_pages = len(pending_pages)
+    phase_started = time.perf_counter()
+
+    if page_callback is not None:
+        page_callback("", "", 0, 0.0, 0, total_pages, 0.0)
 
     with ThreadPoolExecutor(
         max_workers=max(1, int(depth)), thread_name_prefix=thread_name_prefix
@@ -88,10 +94,12 @@ def _iter_prefetched_pages_in_order(
                 ordinal, left, right, started = pending.pop(future)
                 page = future.result()
                 ready[ordinal] = page
+                completed_pages += 1
                 if page_callback is not None:
                     page_callback(
                         left.isoformat(), right.isoformat(), len(page),
-                        time.perf_counter() - started,
+                        time.perf_counter() - started, completed_pages, total_pages,
+                        time.perf_counter() - phase_started,
                     )
             submit_available()
             while next_ordinal in ready:
@@ -450,7 +458,7 @@ class DirectEventArrowStreamClient(ArrowStreamClient):
     def iter_session_views(self, *, ticker: str, start_date: str, end_date: str,
                            source_intervals: tuple[TickerInterval, ...] = (), device: torch.device | str = "cpu",
                            prefetch_pages: int = 1,
-                           page_callback: Callable[[str, str, int, float], None] | None = None,
+                           page_callback: Callable[[str, str, int, float, int, int, float], None] | None = None,
                            ) -> Iterator[tuple[str, BarView]]:
         def read_page(left: dt.date, right: dt.date) -> list[tuple[str, BarView]]:
             started = time.perf_counter()
@@ -501,7 +509,7 @@ class DirectEventArrowStreamClient(ArrowStreamClient):
         source_intervals: tuple[TickerInterval, ...] = (),
         device: torch.device | str = "cpu",
         prefetch_pages: int = 1,
-        page_callback: Callable[[str, str, int, float], None] | None = None,
+        page_callback: Callable[[str, str, int, float, int, int, float], None] | None = None,
     ) -> Iterator[tuple[str, BarView, int]]:
         """Aggregate calendar warm-up directly to daily rows inside ClickHouse."""
         def read_page(left: dt.date, right: dt.date) -> list[tuple[str, BarView, int]]:
@@ -562,15 +570,45 @@ class DirectEventArrowStreamClient(ArrowStreamClient):
 class DirectEventShardDataset(BarGPTIterableDataset):
     """Single-pass event-to-shard dataset with ticker-owned rolling state."""
 
-    def __init__(self, *, progress_callback: Callable[[str], None] | None = None, **kwargs: object) -> None:
+    def __init__(
+        self, *, progress_callback: Callable[[dict[str, object]], None] | None = None, **kwargs: object
+    ) -> None:
         super().__init__(**kwargs)
         self.progress_callback = progress_callback
 
-    def _page_progress(self, phase: str, left: str, right: str, sessions: int, seconds: float) -> None:
+    def _page_progress(
+        self,
+        phase: str,
+        left: str,
+        right: str,
+        sessions: int,
+        seconds: float,
+        completed: int,
+        total: int,
+        elapsed: float,
+    ) -> None:
         if self.progress_callback is not None:
-            self.progress_callback(
-                f"{phase} page {left}..{right}: {sessions} sessions in {seconds:.1f}s"
-            )
+            self.progress_callback({
+                "kind": "page",
+                "phase": phase,
+                "left": left,
+                "right": right,
+                "sessions": int(sessions),
+                "query_seconds": float(seconds),
+                "completed": int(completed),
+                "total": int(total),
+                "elapsed_seconds": float(elapsed),
+            })
+
+    def _stage_progress(self, phase: str, detail: str = "") -> None:
+        if self.progress_callback is not None:
+            self.progress_callback({
+                "kind": "stage",
+                "phase": phase,
+                "detail": detail,
+                "completed": 0,
+                "total": 0,
+            })
 
     def __iter__(self) -> Iterator[BarGPTExample]:
         if self.split != "cache" or self.data_config.coverage_mode != "sequential":
@@ -587,6 +625,7 @@ class DirectEventShardDataset(BarGPTIterableDataset):
             self.data_config.daily_history_start_date,
             (dt.date.fromisoformat(first_start) - dt.timedelta(days=lookback_days)).isoformat(),
         )
+        self._stage_progress("identity metadata", f"{len(tickers)} ticker(s)")
         intervals = client.read_identity_intervals(
             tickers,
             identity_database=self.data_config.identity_database,
@@ -595,6 +634,7 @@ class DirectEventShardDataset(BarGPTIterableDataset):
             event_table=self.data_config.identity_event_table,
             coverage_start=metadata_start,
         )
+        self._stage_progress("split metadata", f"{len(tickers)} ticker(s)")
         actions = client.read_split_actions(
             intervals,
             start_date=metadata_start,
@@ -627,14 +667,15 @@ class DirectEventShardDataset(BarGPTIterableDataset):
                     (dt.date.fromisoformat(unit.start_date) - dt.timedelta(days=lookback_days)).isoformat(),
                 )
                 eligible_seconds_by_day: list[tuple[str, int]] = []
+                self._stage_progress("calendar warmup", f"{unit.ticker} planning source partitions")
                 for day, daily_view, eligible_seconds in client.iter_daily_views(
                     ticker=unit.ticker,
                     start_date=warmup_start,
                     end_date=unit.start_date,
                     source_intervals=intervals[unit.ticker],
                     prefetch_pages=self.data_config.clickhouse_prefetch_pages,
-                    page_callback=lambda left, right, sessions, seconds: self._page_progress(
-                        "calendar warmup", left, right, sessions, seconds
+                    page_callback=lambda left, right, sessions, seconds, completed, total, elapsed: self._page_progress(
+                        "calendar warmup", left, right, sessions, seconds, completed, total, elapsed
                     ),
                 ):
                     eligible_seconds_by_day.append((day, eligible_seconds))
@@ -650,6 +691,7 @@ class DirectEventShardDataset(BarGPTIterableDataset):
                 )
                 accumulated = 0
                 intraday_warmup_start = warmup_start
+                self._stage_progress("intraday warmup planning", unit.ticker)
                 for day, eligible_seconds in reversed(eligible_seconds_by_day):
                     accumulated += int(eligible_seconds)
                     intraday_warmup_start = day
@@ -660,22 +702,24 @@ class DirectEventShardDataset(BarGPTIterableDataset):
                         f"{unit.ticker}: only {accumulated:,} eligible trade seconds are available before "
                         f"{unit.start_date}; {required_intraday:,} are required for intraday warm-up"
                     )
+                self._stage_progress("intraday warmup", f"{unit.ticker} planning source partitions")
                 for day, session in client.iter_session_views(
                     ticker=unit.ticker, start_date=intraday_warmup_start, end_date=unit.start_date,
                     source_intervals=intervals[unit.ticker], prefetch_pages=self.data_config.clickhouse_prefetch_pages,
-                    page_callback=lambda left, right, sessions, seconds: self._page_progress(
-                        "intraday warmup", left, right, sessions, seconds
+                    page_callback=lambda left, right, sessions, seconds, completed, total, elapsed: self._page_progress(
+                        "intraday warmup", left, right, sessions, seconds, completed, total, elapsed
                     ),
                 ):
                     history.append(session, materialize=False)
                 loaded_through = unit.start_date
             fetch_start = loaded_through
             emitted = emitted_by_unit.get(f"{unit.ticker}:{unit.start_date[:7]}", 0)
+            self._stage_progress("build source", f"{unit.ticker}:{unit.start_date[:7]}")
             for day, session in client.iter_session_views(
                 ticker=unit.ticker, start_date=fetch_start, end_date=unit.end_date,
                 source_intervals=intervals[unit.ticker], prefetch_pages=self.data_config.clickhouse_prefetch_pages,
-                page_callback=lambda left, right, sessions, seconds: self._page_progress(
-                    "build", left, right, sessions, seconds
+                page_callback=lambda left, right, sessions, seconds, completed, total, elapsed: self._page_progress(
+                    "build", left, right, sessions, seconds, completed, total, elapsed
                 ),
             ):
                 if day < unit.start_date:
