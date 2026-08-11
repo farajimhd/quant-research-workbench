@@ -11,7 +11,7 @@ from copy import deepcopy
 from dataclasses import dataclass, field, replace
 from datetime import UTC, date, datetime, time as clock_time, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from uuid import uuid4
 from zoneinfo import ZoneInfo
 
@@ -279,6 +279,14 @@ class ReplayRunController:
         self._historical_watchlist_timeline_cache: list[dict[str, Any]] | None = None
         self._historical_watchlist_timeline_index = 0
         self._active_historical_watchlist_tickers: set[str] = set()
+        self._data_authority: dict[str, dict[str, Any]] = {}
+        if self.definition.debug_fixture is not None:
+            self._data_authority["market_events"] = {
+                "authority": "backtest_debug_fixture",
+                "fixture_id": self.definition.debug_fixture.fixture_id,
+                "revision_token": self.definition.debug_fixture.content_hash,
+                "source_plan_hash": self.definition.debug_fixture.content_hash,
+            }
 
     async def start(self) -> None:
         if self._task is not None:
@@ -556,6 +564,14 @@ class ReplayRunController:
                 "timeline_index": self._historical_watchlist_timeline_index,
                 "timeline_count": len(self._historical_watchlist_timeline_cache or ()),
             },
+            "data_authority": {
+                "configuration": {
+                    "revision_id": self.definition.configuration_revision.get("revision_id", ""),
+                    "revision": self.definition.configuration_revision.get("revision", 0),
+                    "content_hash": self.definition.configuration_revision.get("content_hash", ""),
+                },
+                "sources": deepcopy(self._data_authority),
+            },
             **{
                 key: value
                 for key, value in self.definition.payload().items()
@@ -803,6 +819,15 @@ class ReplayRunController:
         )
         await source.health()
         async for batch in source.stream():
+            if source.source_revision is None:
+                raise RuntimeError("QMD historical event source omitted pinned authority")
+            self._record_data_authority(
+                "market_events",
+                {
+                    "authority": "qmd_history_events",
+                    **source.source_revision,
+                },
+            )
             yield batch.events
 
     async def _initialize_runtime(self) -> None:
@@ -1364,6 +1389,7 @@ class ReplayRunController:
                     timeframe=timeframe,
                     start=self.definition.session_start,
                     end=self.definition.session_end,
+                    authority_sink=self._record_data_authority,
                 )
 
         groups = await asyncio.gather(
@@ -1374,6 +1400,7 @@ class ReplayRunController:
             tickers=tickers,
             start=self.definition.session_start,
             end=self.definition.session_end,
+            authority_sink=self._record_data_authority,
         )
         frames = [frame for group in groups for frame in group]
         for ticker in events_by_ticker:
@@ -1385,6 +1412,27 @@ class ReplayRunController:
             frames,
             key=lambda frame: (frame.as_of, frame.ticker, frame.timeframe, frame.sequence),
         )
+
+    def _record_data_authority(self, key: str, evidence: dict[str, Any]) -> None:
+        normalized = deepcopy(evidence)
+        previous = self._data_authority.get(key)
+        if previous is not None and previous != normalized:
+            raise RuntimeError(
+                f"Historical data authority changed for {key}; restart from a new run"
+            )
+        if previous is not None:
+            return
+        self._data_authority[key] = normalized
+        if self._journal is not None:
+            self._journal.append(
+                run_id=self.run_id,
+                category="data_authority",
+                entity_type="source_revision",
+                entity_id=key,
+                event_time=self.current_time or self.definition.session_start,
+                payload={"source_key": key, **normalized},
+            )
+        self._write_manifest()
 
     def _write_manifest(self) -> None:
         if not self.run_dir.exists():
@@ -2132,6 +2180,7 @@ async def _historical_derived_frames(
     timeframe: str,
     start: datetime,
     end: datetime,
+    authority_sink: Callable[[str, dict[str, Any]], None] | None = None,
 ) -> list[ReplayDerivedFrame]:
     url = qmd_history_websocket_url(
         f"/stream/derived/{urllib.parse.quote(ticker)}",
@@ -2154,6 +2203,11 @@ async def _historical_derived_frames(
     payload = json.loads(message.decode("utf-8") if isinstance(message, bytes) else message)
     if payload.get("error"):
         raise RuntimeError(f"QMD derived stream failed for {ticker}: {payload['error']}")
+    if authority_sink is not None:
+        authority_sink(
+            f"derived:{_ticker(ticker)}:{timeframe}",
+            _qmd_payload_authority(payload, authority="qmd_history_derived"),
+        )
     bars = list(payload.get("bars") or [])
     indicators = list(payload.get("indicators") or [])
     if len(bars) != len(indicators):
@@ -2180,6 +2234,7 @@ async def _historical_signal_events(
     tickers: tuple[str, ...],
     start: datetime,
     end: datetime,
+    authority_sink: Callable[[str, dict[str, Any]], None] | None = None,
 ) -> dict[str, list[dict[str, Any]]]:
     request = QmdProductRequest(
         "scanner",
@@ -2199,6 +2254,11 @@ async def _historical_signal_events(
     payload = await asyncio.to_thread(fetch)
     if payload.get("error"):
         raise RuntimeError(f"QMD historical signal stream failed: {payload['error']}")
+    if authority_sink is not None:
+        authority_sink(
+            "scanner_signals",
+            _qmd_payload_authority(payload, authority="qmd_history_scanner"),
+        )
     requested = set(tickers)
     grouped = {ticker: [] for ticker in tickers}
     for raw in payload.get("recent_signal_events") or []:
@@ -2213,6 +2273,32 @@ async def _historical_signal_events(
             )
         )
     return grouped
+
+
+def _qmd_payload_authority(
+    payload: dict[str, Any],
+    *,
+    authority: str,
+) -> dict[str, Any]:
+    cache = payload.get("cache") if isinstance(payload.get("cache"), dict) else {}
+    revision = payload.get("source_revision")
+    if not isinstance(revision, dict):
+        revision = cache.get("source_revision")
+    if not isinstance(revision, dict):
+        raise RuntimeError(f"{authority} response omitted source revision evidence")
+    token = str(revision.get("token") or revision.get("revision_token") or "").strip()
+    plan_hash = str(revision.get("source_plan_hash") or "").strip()
+    if not token or not plan_hash:
+        raise RuntimeError(f"{authority} response returned incomplete source revision evidence")
+    return {
+        "authority": authority,
+        "revision_token": token,
+        "source_plan_hash": plan_hash,
+        "complete_for_history": bool(revision.get("complete_for_history", False)),
+        "source_tiers": list(revision.get("source_tiers") or ()),
+        "engine_version": str(cache.get("engine_version") or payload.get("engine_version") or ""),
+        "event_count": int(cache.get("event_count") or payload.get("event_count") or 0),
+    }
 
 
 def replay_history_fetch_concurrency() -> int:

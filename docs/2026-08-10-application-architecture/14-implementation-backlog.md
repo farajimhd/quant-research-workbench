@@ -81,6 +81,9 @@ one backend registry record and one executable implementation status.
 - [ ] Pin source plans/revisions for Replay and Backtest.
   - [x] Pin the first event page's source-plan hash and revision token across
         every continuation; reject drift with a typed restart conflict.
+  - [x] Persist approved-configuration, event, derived-frame, and Scanner-signal
+        source-plan/revision evidence in each run manifest and durable journal;
+        reject same-product drift during the active run.
   - [ ] Add storage-level immutable revision reads so a changed source can
         continue from the pinned old revision instead of restarting.
 - [x] Permit advancing tail watermarks for Live consumers. QMD History event
@@ -500,6 +503,11 @@ load progressively without false continuity.
         and Canvas APIs without calling QMD History.
   - [x] Add the end-user fixture library/editor and Backtest Debug run page.
 - [ ] Pin causal market/enrichment versions for historical decisions.
+  - [x] Pin QMD event, per-ticker/timeframe derived, and Scanner-signal revisions
+        that feed historical Strategy decisions; use the fixture content hash
+        as Backtest Debug authority.
+  - [ ] Persist equivalent revision evidence for every historical Watchlist
+        reference/technical/fundamental membership input.
 - [ ] Standardize progress, pause, resume, cancel, failure, and completion.
   - [x] Give Backtest and Backtest Debug a shared typed `pause`/`play`/`stop`
         command contract and user controls while rejecting Replay-only commands.

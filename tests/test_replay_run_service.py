@@ -21,6 +21,7 @@ from src.backend.replay_run_service import (
     _canvas_profile_tickers,
     _historical_watchlist_membership_timeline_for_configuration,
     _historical_signal_events,
+    _qmd_payload_authority,
     _debug_derived_frames,
     _debug_market_events,
     backtest_debug_preflight,
@@ -268,10 +269,16 @@ class HistoricalDebugFixtureTests(unittest.IsolatedAsyncioTestCase):
             fixture_payload = json.loads(
                 (controller.run_dir / "debug-fixture.json").read_text(encoding="utf-8")
             )
+            manifest = json.loads(
+                (controller.run_dir / "manifest.json").read_text(encoding="utf-8")
+            )
 
         self.assertEqual(fixture_payload["fixture_id"], "deterministic-aapl")
         self.assertEqual(fixture_payload["market_event_count"], 2)
         self.assertEqual(fixture_payload["content_hash"], self.fixture().content_hash)
+        authority = manifest["run"]["data_authority"]["sources"]["market_events"]
+        self.assertEqual(authority["authority"], "backtest_debug_fixture")
+        self.assertEqual(authority["revision_token"], self.fixture().content_hash)
 
     async def test_debug_fixture_completes_through_shared_runtime_without_qmd(self) -> None:
         with tempfile.TemporaryDirectory() as directory, patch(
@@ -534,6 +541,7 @@ class ReplayHistoricalFetchBudgetTests(unittest.IsolatedAsyncioTestCase):
             tickers=tuple(sorted(f"T{index}" for index in range(12))),
             start=definition.session_start,
             end=definition.session_end,
+            authority_sink=controller._record_data_authority,
         )
 
     async def test_groups_one_cross_sectional_signal_response_by_ticker(self) -> None:
@@ -764,6 +772,49 @@ class ReplayControllerTests(unittest.IsolatedAsyncioTestCase):
 
 
 class ReplayHistoricalSourceTests(unittest.IsolatedAsyncioTestCase):
+    def test_qmd_payload_authority_normalizes_derived_and_scanner_evidence(self) -> None:
+        payload = {
+            "cache": {
+                "engine_version": "qmd-derived-v28",
+                "event_count": 42,
+                "source_revision": {
+                    "token": "revision-7",
+                    "source_plan_hash": "plan-7",
+                    "complete_for_history": True,
+                    "source_tiers": ["archive"],
+                },
+            }
+        }
+        authority = _qmd_payload_authority(payload, authority="qmd_history_derived")
+        self.assertEqual(authority["revision_token"], "revision-7")
+        self.assertEqual(authority["source_plan_hash"], "plan-7")
+        self.assertEqual(authority["engine_version"], "qmd-derived-v28")
+        self.assertEqual(authority["event_count"], 42)
+        self.assertTrue(authority["complete_for_history"])
+
+    def test_controller_rejects_same_source_key_revision_drift(self) -> None:
+        definition = ReplayRunDefinition(
+            session_date=date(2026, 7, 28),
+            start_time=time(9, 45),
+            configuration_revision=approved_configuration(),
+        )
+        controller = ReplayRunController(
+            definition,
+            runtime_root=Path(tempfile.gettempdir()),
+        )
+        first = {"revision_token": "revision-1", "source_plan_hash": "plan-1"}
+        controller._record_data_authority("market_events", first)
+        controller._record_data_authority("market_events", first)
+        with self.assertRaisesRegex(RuntimeError, "data authority changed"):
+            controller._record_data_authority(
+                "market_events",
+                {"revision_token": "revision-2", "source_plan_hash": "plan-1"},
+            )
+
+    def test_qmd_payload_authority_fails_closed_without_revision(self) -> None:
+        with self.assertRaisesRegex(RuntimeError, "omitted source revision"):
+            _qmd_payload_authority({}, authority="qmd_history_scanner")
+
     def test_signal_lifecycles_are_attached_point_in_time(self) -> None:
         start = datetime(2026, 7, 28, 13, 45, tzinfo=ZoneInfo("UTC"))
         frames = [

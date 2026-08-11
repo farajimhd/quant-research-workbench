@@ -168,6 +168,14 @@ implemented, but restart reconstruction is not yet authorized as safe resume.
   once per run window and groups it by assigned ticker. Ticker/timeframe derived
   streams use a bounded semaphore (default eight, maximum 32) rather than opening
   every QMD History request concurrently.
+- Replay and Backtest persist a `data_authority` manifest beside the journal.
+  It pins the approved configuration hash plus QMD event, per-ticker/timeframe
+  derived, and cross-sectional Scanner-signal source-plan hashes and revision
+  tokens before those products can drive decisions. The same evidence is
+  journaled once per source key, and a changed revision for an existing key
+  fails the run. Backtest Debug uses the exact fixture content hash as both its
+  plan and revision authority. This proves what an active run consumed; it does
+  not yet make superseded ClickHouse revisions rereadable after restart.
 - Backtest Watchlist membership is pinned at the requested first event clock
   and re-resolved causally at every later 04:00 New York weekday-session
   boundary. The shared controller journals additions/removals, prevents new

@@ -746,6 +746,16 @@ bounded direct ClickHouse paths remain documented in
     partial-coverage warnings are promoted to the outer contract. Python
     compile, all 45 focused response/request/QMD/workload tests, negotiated and
     legacy ASGI checks, and the managed TypeScript/Vite build passed.
+98. Made historical decision-source authority durable. Replay and Backtest now
+    persist the approved configuration identity plus QMD event,
+    per-ticker/timeframe derived, and Scanner-signal plan hashes and revision
+    tokens in the run snapshot/manifest and journal. A second observation of
+    the same source key must match exactly or the run fails and requires a new
+    run. Backtest Debug records its fixture content hash as both source plan and
+    revision. Missing QMD revision evidence fails closed. Storage-level reads
+    of superseded revisions and complete Watchlist-enrichment revision evidence
+    remain explicit open work. Python compile and all 44 focused Replay,
+    Backtest, Debug, source-continuation, and Canvas-contract tests passed.
 
 The authoritative remaining work and acceptance gates are maintained in the
 [complete implementation backlog](14-implementation-backlog.md). A checked
