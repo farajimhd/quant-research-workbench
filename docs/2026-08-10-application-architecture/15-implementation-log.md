@@ -443,6 +443,15 @@ bounded direct ClickHouse paths remain documented in
     last, mean, and maximum microseconds. Two focused metric tests passed. This
     instruments the real runnable path but does not claim the profiling gate is
     complete until an active-session run is captured against explicit budgets.
+67. Removed an avoidable chart-loading barrier from the legacy Paper and Live
+    manual-trading workspaces. The primary chart now loads and renders
+    independently; daily and five-minute secondary charts request data only
+    while visible and expose separate loading and error state. The managed
+    external-runtime frontend production build passed. The managed UI review
+    passed all 12 Real Live route scenarios with no objective shell issues, but
+    the environment remained at the broker/market Session Gate, so this phase
+    does not claim browser exercise of the chart panels or completion of their
+    migration to the shared Canvas/QMD resolver.
 
 The authoritative remaining work and acceptance gates are maintained in the
 [complete implementation backlog](14-implementation-backlog.md). A checked

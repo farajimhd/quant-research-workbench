@@ -318,6 +318,10 @@ Acceptance gate: UI availability equals backend registry and runnable truth.
       its shared derived cache.
 - [x] Return base bars first and progressively add requested indicators,
       signals, and structure from the same cache entry.
+- [x] Let legacy Paper/Live primary charts render independently and fetch the
+      visible daily and five-minute secondary charts on demand, with isolated
+      loading and failure state. This is an interim smooth-loading correction,
+      not completion of the shared Canvas/QMD resolver migration.
 - [ ] Merge archive, recent, and live tail by watermark.
 - [x] Deduplicate identical historical derived requests with QMD History
       single-flight execution.

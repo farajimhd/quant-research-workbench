@@ -153,9 +153,17 @@ Live, Paper, Replay, and Backtest workspaces must be visually explicit and canno
   by QMD History. Indicator responses now carry engine/schema versions,
   effective parameters, response warm-up state, source-plan hash and tiers,
   source revision, completeness and stale reason through the backend to a
-  compact Canvas notice. The remaining chart drift is the explicit watermark merge with
-  the live tail, adjacent-window prefetch, richer correction presentation,
-  and published Canvas defaults in the remaining mode workspaces.
+  compact Canvas notice. Canvas also keeps one bounded exact-cursor prefetch for
+  the next earlier page and discards it when navigation changes the request.
+  The remaining chart drift is the explicit watermark merge with the live tail,
+  richer correction presentation, and published Canvas defaults in the
+  remaining mode workspaces.
+- The legacy Paper and Live processed-artifact chart workspaces now request the
+  primary chart independently so it can render without waiting for secondary
+  views. Daily and five-minute charts are fetched independently only while
+  visible, with per-chart loading and error state. This improves the current
+  manual-trading path without representing it as the target QMD/Canvas resolver;
+  that migration and live-tail continuity remain open.
 - Replay Canvas now creates manual or semi-automatic semantic proposals from
   the visible closed-bar snapshot, point-in-time conid, price/source sequence,
   freshness, quantity, and optional stop/target. The Replay controller rejects

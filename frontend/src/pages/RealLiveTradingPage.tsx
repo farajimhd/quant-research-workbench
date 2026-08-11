@@ -2211,7 +2211,10 @@ function LiveChartWindow({
   const [dayPayload, setDayPayload] = useState<ChartPayload | null>(null);
   const [fiveMinutePayload, setFiveMinutePayload] = useState<ChartPayload | null>(null);
   const [chartLoading, setChartLoading] = useState(false);
-  const [chartError, setChartError] = useState("");
+  const [dayChartLoading, setDayChartLoading] = useState(false);
+  const [fiveMinuteChartLoading, setFiveMinuteChartLoading] = useState(false);
+  const [chartErrors, setChartErrors] = useState({ day: "", fiveMinute: "", main: "" });
+  const chartError = [chartErrors.main, showDayChart ? chartErrors.day : "", showFiveMinuteChart ? chartErrors.fiveMinute : ""].filter(Boolean).join(" ");
   const liveRow = latestLiveChartRow(chart, marketRows, scannerRows);
   const selectedTime = clockTimestampSeconds(session.sessionDate, session.barTime) ?? rowTimestampSeconds(chart.row, session.sessionDate, session.barTime);
   const selectedOpen =
@@ -2252,38 +2255,56 @@ function LiveChartWindow({
   useEffect(() => {
     let active = true;
     setChartLoading(true);
-    setChartError("");
-    const dayStart = dateOffset(session.sessionDate, -60);
-    const fiveMinuteStart = previousSessionDate(sessions, session.sessionDate, 2);
-    Promise.allSettled([
-      loadChart(scope.processed_root, session.sessionDate, session.sessionDate, mainTimeframe, chart.ticker, mainVisibleColumns),
-      loadChart(scope.processed_root, dayStart, session.sessionDate, "1d", chart.ticker, []),
-      loadChart(scope.processed_root, fiveMinuteStart, session.sessionDate, "5m", chart.ticker, compactVisibleColumns),
-    ])
-      .then(([mainResult, dayResult, fiveResult]) => {
-        if (!active) return;
-        setMainPayload(mainResult.status === "fulfilled" ? mainResult.value : null);
-        setDayPayload(dayResult.status === "fulfilled" ? dayResult.value : null);
-        setFiveMinutePayload(fiveResult.status === "fulfilled" ? fiveResult.value : null);
-        const firstError = [mainResult, dayResult, fiveResult].find((result) => result.status === "rejected");
-        setChartError(firstError && firstError.status === "rejected" ? firstError.reason?.message ?? "One chart failed to load." : "");
-      })
+    setMainPayload(null);
+    setChartErrors((current) => ({ ...current, main: "" }));
+    loadChart(scope.processed_root, session.sessionDate, session.sessionDate, mainTimeframe, chart.ticker, mainVisibleColumns)
+      .then((payload) => { if (active) setMainPayload(payload); })
+      .catch((reason) => { if (active) setChartErrors((current) => ({ ...current, main: reason instanceof Error ? reason.message : "Main chart failed to load." })); })
       .finally(() => {
         if (active) setChartLoading(false);
       });
     return () => {
       active = false;
     };
-  }, [chart.ticker, compactVisibleColumns, mainTimeframe, mainVisibleColumns, scope.processed_root, session.sessionDate, sessions]);
+  }, [chart.ticker, mainTimeframe, mainVisibleColumns, scope.processed_root, session.sessionDate]);
+
+  useEffect(() => {
+    if (!showDayChart) return;
+    let active = true;
+    setDayChartLoading(true);
+    setDayPayload(null);
+    setChartErrors((current) => ({ ...current, day: "" }));
+    loadChart(scope.processed_root, dateOffset(session.sessionDate, -60), session.sessionDate, "1d", chart.ticker, [])
+      .then((payload) => { if (active) setDayPayload(payload); })
+      .catch((reason) => { if (active) setChartErrors((current) => ({ ...current, day: reason instanceof Error ? reason.message : "Daily chart failed to load." })); })
+      .finally(() => { if (active) setDayChartLoading(false); });
+    return () => { active = false; };
+  }, [chart.ticker, scope.processed_root, session.sessionDate, showDayChart]);
+
+  useEffect(() => {
+    if (!showFiveMinuteChart) return;
+    let active = true;
+    setFiveMinuteChartLoading(true);
+    setFiveMinutePayload(null);
+    setChartErrors((current) => ({ ...current, fiveMinute: "" }));
+    const start = previousSessionDate(sessions, session.sessionDate, 2);
+    loadChart(scope.processed_root, start, session.sessionDate, "5m", chart.ticker, compactVisibleColumns)
+      .then((payload) => { if (active) setFiveMinutePayload(payload); })
+      .catch((reason) => { if (active) setChartErrors((current) => ({ ...current, fiveMinute: reason instanceof Error ? reason.message : "Five-minute chart failed to load." })); })
+      .finally(() => { if (active) setFiveMinuteChartLoading(false); });
+    return () => { active = false; };
+  }, [chart.ticker, compactVisibleColumns, scope.processed_root, session.sessionDate, sessions, showFiveMinuteChart]);
 
   return (
     <ChartsContainer
       catalog={catalog}
       chartError={chartError}
       chartLoading={chartLoading}
+      dayChartLoading={dayChartLoading}
       compactVisibleColumns={compactVisibleColumns}
       dayPayload={dayOpenOnlyPayload}
       fiveMinutePayload={fiveMinuteOpenOnlyPayload}
+      fiveMinuteChartLoading={fiveMinuteChartLoading}
       mainPayload={mainOpenOnlyPayload}
       mainTimeframe={mainTimeframe}
       mainVisibleColumns={mainVisibleColumns}
@@ -2316,9 +2337,11 @@ function ChartsContainer({
   chartError,
   chartLoading,
   compactVisibleColumns,
+  dayChartLoading,
   dayPayload,
   draft,
   fiveMinutePayload,
+  fiveMinuteChartLoading,
   liveEntryLine,
   mainPayload,
   mainTimeframe,
@@ -2345,9 +2368,11 @@ function ChartsContainer({
   chartError: string;
   chartLoading: boolean;
   compactVisibleColumns: string[];
+  dayChartLoading: boolean;
   dayPayload: ChartPayload | null;
   draft: { limit: string; quantity: string; side: "BUY" | "SELL"; stop: string; type: string };
   fiveMinutePayload: ChartPayload | null;
+  fiveMinuteChartLoading: boolean;
   liveEntryLine: LiveEntryLine | null;
   mainPayload: ChartPayload | null;
   mainTimeframe: string;
@@ -2428,7 +2453,7 @@ function ChartsContainer({
                   enableFullscreen={false}
                   featureOptions={[]}
                   indicatorOptions={[]}
-                  loading={chartLoading}
+                  loading={dayChartLoading}
                   daySeparatorsVisible={false}
                   onTickerChange={() => undefined}
                   onTimeframeChange={() => undefined}
@@ -2458,7 +2483,7 @@ function ChartsContainer({
                   enableFullscreen={false}
                   featureOptions={compactOptions?.feature_columns ?? []}
                   indicatorOptions={LOWER_DISPLAY_ITEMS}
-                  loading={chartLoading}
+                  loading={fiveMinuteChartLoading}
                   initialFitMode="last_market_day"
                   onTickerChange={() => undefined}
                   onTimeframeChange={() => undefined}
