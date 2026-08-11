@@ -993,11 +993,13 @@ bounded direct ClickHouse paths remain documented in
 119. Added snapshot-before-delta semantics to the Canvas market-signal stream.
      The backend establishes the QMD subscription first, captures one bounded
      ticker signal snapshot with a versioned snapshot identity, then forwards
-     ticker-scoped events and terminal resnapshot controls. The existing compact
-     event stream retains its monotonic arrival sequence; signal deltas retain
-     their stable event IDs, so the broader monotonic signal-sequence gate stays
-     open. Focused route validation proved subscription ordering, initial
-     snapshot delivery, and lag-control forwarding.
+     ticker-scoped events and terminal resnapshot controls. QMD's signal store
+     now assigns one monotonic publication sequence shared by its snapshots and
+     flattened delta envelopes without changing the event field shape; lag
+     controls expose the last delivered continuation sequence. All 99 QMD
+     library tests and five backend route tests passed, proving sequence
+     agreement, subscription ordering, initial snapshot delivery, and
+     lag-control forwarding; the changed Python modules also compiled.
 
 The authoritative remaining work and acceptance gates are maintained in the
 [complete implementation backlog](14-implementation-backlog.md). A checked

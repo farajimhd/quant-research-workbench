@@ -13,8 +13,16 @@ pub const SCANNER_PRIMITIVE_SCHEMA_VERSION: u16 = 2;
 #[derive(Clone, Debug, Serialize)]
 pub struct MarketSignalSnapshot {
     pub as_of: DateTime<Utc>,
+    pub last_sequence: u64,
     pub row_count: usize,
     pub rows: Vec<MarketSignalEvent>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct MarketSignalDelta {
+    pub sequence: u64,
+    #[serde(flatten)]
+    pub event: MarketSignalEvent,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -61,6 +69,7 @@ struct ScannerStore {
     latest_by_key: HashMap<String, MarketSignalEvent>,
     history: VecDeque<MarketSignalEvent>,
     history_limit: usize,
+    publication_sequence: u64,
 }
 
 #[derive(Clone)]
@@ -93,12 +102,15 @@ impl SharedScannerStore {
                 latest_by_key: HashMap::new(),
                 history: VecDeque::with_capacity(history_limit.min(10_000)),
                 history_limit,
+                publication_sequence: 0,
             })),
         }
     }
 
-    pub async fn apply(&self, signal: MarketSignalEvent) {
+    pub async fn apply(&self, signal: MarketSignalEvent) -> MarketSignalDelta {
         let mut store = self.inner.write().await;
+        store.publication_sequence = store.publication_sequence.saturating_add(1);
+        let sequence = store.publication_sequence;
         let key = format!(
             "{}:{}:{}",
             signal.ticker, signal.working_timeframe, signal.signal_key
@@ -108,9 +120,13 @@ impl SharedScannerStore {
         } else {
             store.latest_by_key.insert(key, signal.clone());
         }
-        store.history.push_back(signal);
+        store.history.push_back(signal.clone());
         while store.history.len() > store.history_limit {
             store.history.pop_front();
+        }
+        MarketSignalDelta {
+            sequence,
+            event: signal,
         }
     }
 
@@ -139,6 +155,7 @@ impl SharedScannerStore {
             .unwrap_or_else(Utc::now);
         MarketSignalSnapshot {
             as_of,
+            last_sequence: store.publication_sequence,
             row_count: rows.len(),
             rows,
         }
@@ -160,6 +177,7 @@ impl SharedScannerStore {
             .unwrap_or_else(Utc::now);
         MarketSignalSnapshot {
             as_of,
+            last_sequence: store.publication_sequence,
             row_count: rows.len(),
             rows,
         }
@@ -183,7 +201,7 @@ pub fn spawn_scanner_primitive_engine(
     store: SharedScannerStore,
     channel_capacity: usize,
     metrics: SharedMetrics,
-    signal_sender: broadcast::Sender<MarketSignalEvent>,
+    signal_sender: broadcast::Sender<MarketSignalDelta>,
 ) -> ScannerPrimitiveRouter {
     let (sender, receiver) = mpsc::channel::<ScannerObservation>(channel_capacity.max(1));
     tokio::spawn(run_scanner_primitive_engine(
@@ -199,7 +217,7 @@ async fn run_scanner_primitive_engine(
     store: SharedScannerStore,
     mut receiver: mpsc::Receiver<ScannerObservation>,
     metrics: SharedMetrics,
-    signal_sender: broadcast::Sender<MarketSignalEvent>,
+    signal_sender: broadcast::Sender<MarketSignalDelta>,
 ) {
     let mut engine = MarketSignalEngine::default();
     while let Some(observation) = receiver.recv().await {
@@ -209,8 +227,8 @@ async fn run_scanner_primitive_engine(
         }
         metrics.inc_scanner_candidates(signals.len() as u64);
         for signal in signals {
-            store.apply(signal.clone()).await;
-            let _ = signal_sender.send(signal);
+            let delta = store.apply(signal).await;
+            let _ = signal_sender.send(delta);
         }
     }
 }
@@ -416,5 +434,17 @@ pub(crate) mod tests {
 
         assert_eq!(snapshot.rows[0].ticker, "HIGH");
         assert_eq!(snapshot.rows[0].rank_score, 0.80);
+    }
+
+    #[tokio::test]
+    async fn signal_snapshot_and_deltas_share_one_sequence() {
+        let store = SharedScannerStore::new(10);
+        let first = store.apply(signal_template()).await;
+        let second = store.apply(signal_template()).await;
+        let snapshot = store.signal_snapshot(10).await;
+
+        assert_eq!(first.sequence, 1);
+        assert_eq!(second.sequence, 2);
+        assert_eq!(snapshot.last_sequence, 2);
     }
 }

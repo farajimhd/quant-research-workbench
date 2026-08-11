@@ -6197,6 +6197,7 @@ async def trading_canvas_market_signals_stream(websocket: WebSocket, symbol: str
             await websocket.send_json(
                 {
                     **snapshot,
+                    "last_sequence": int(snapshot.get("last_sequence") or 0),
                     "schema_version": 1,
                     "snapshot_id": f"qmd-signals:{ticker}:{snapshot.get('as_of') or 'empty'}",
                     "type": "snapshot",

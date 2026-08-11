@@ -126,6 +126,7 @@ class QmdCanvasStreamContractTests(unittest.TestCase):
             self.assertTrue(entered, "upstream subscription must precede snapshot capture")
             return {
                 "as_of": "2026-08-11T15:00:00+00:00",
+                "last_sequence": 41,
                 "row_count": 1,
                 "rows": [{"event_id": "signal-1", "ticker": "AAPL"}],
                 "source": "qmd-gateway",
@@ -150,6 +151,7 @@ class QmdCanvasStreamContractTests(unittest.TestCase):
                 second = websocket.receive_json()
 
         self.assertEqual(first["type"], "snapshot")
+        self.assertEqual(first["last_sequence"], 41)
         self.assertEqual(first["row_count"], 1)
         self.assertEqual(
             first["snapshot_id"], "qmd-signals:AAPL:2026-08-11T15:00:00+00:00"

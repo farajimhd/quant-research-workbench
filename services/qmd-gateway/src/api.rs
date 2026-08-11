@@ -24,9 +24,10 @@ use crate::market_products::{
     parse_resolution_us, ConditionBarSnapshot, FamilyBarSnapshot, MacroBarSnapshot,
     ProductCacheMetrics, SharedMarketProductStore,
 };
-use crate::market_signal::MarketSignalEvent;
 use crate::metrics::{MetricsSnapshot, OperationalSnapshot, SharedMetrics};
-use crate::scanner::{MarketSignalSnapshot, ScannerPrimitiveSnapshot, SharedScannerStore};
+use crate::scanner::{
+    MarketSignalDelta, MarketSignalSnapshot, ScannerPrimitiveSnapshot, SharedScannerStore,
+};
 use crate::session::session_phase;
 use crate::signal_catalog::{signal_taxonomy_catalog, SignalTaxonomyEntry};
 use crate::state::{
@@ -69,7 +70,7 @@ pub struct AppState {
     pub intraday_bars: broadcast::Sender<IntradayBarRow>,
     pub scanner: SharedScannerStore,
     pub scanner_deltas: broadcast::Sender<ScannerRowDelta>,
-    pub scanner_events: broadcast::Sender<MarketSignalEvent>,
+    pub scanner_events: broadcast::Sender<MarketSignalDelta>,
     pub shutdown: watch::Sender<bool>,
     pub trade_aggregation_rules: TradeAggregationRules,
 }
@@ -1653,13 +1654,15 @@ async fn stream_scanner(mut socket: WebSocket, state: Arc<AppState>, limit: usiz
 
 async fn stream_market_signals(mut socket: WebSocket, state: Arc<AppState>) {
     let mut receiver = state.scanner_events.subscribe();
+    let mut delivered_sequence = state.scanner.signal_snapshot(0).await.last_sequence;
     loop {
         match receiver.recv().await {
-            Ok(event) => match serde_json::to_string(&event) {
+            Ok(delta) => match serde_json::to_string(&delta) {
                 Ok(text) => {
                     if socket.send(Message::Text(text.into())).await.is_err() {
                         break;
                     }
+                    delivered_sequence = delta.sequence;
                 }
                 Err(error) => {
                     if socket
@@ -1677,7 +1680,7 @@ async fn stream_market_signals(mut socket: WebSocket, state: Arc<AppState>) {
                     "market_signal_stream_lagged",
                     count,
                     "/snapshot/signal-events",
-                    None,
+                    Some(delivered_sequence),
                 )
                 .await;
                 break;

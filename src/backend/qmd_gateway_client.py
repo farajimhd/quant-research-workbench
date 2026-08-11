@@ -986,6 +986,7 @@ def qmd_market_signals(
     ]
     return {
         "as_of": payload.get("as_of") if isinstance(payload, dict) else None,
+        "last_sequence": int(payload.get("last_sequence") or 0) if isinstance(payload, dict) else 0,
         "mode": "lifecycle_history" if include_history else "active",
         "row_count": len(rows),
         "rows": rows,

@@ -326,9 +326,9 @@ budgets and invalid scope broadening fails configuration validation.
         with snapshot ID/last sequence and establish its QMD delta subscription
         before the snapshot is captured.
   - [x] Give the Canvas market-signal path a versioned ticker snapshot after
-        its upstream subscription is established; retain event identity on
-        deltas and require resnapshot on lag. A monotonic signal sequence
-        remains part of the unchecked parent contract.
+        its upstream subscription is established; QMD snapshots and flattened
+        deltas now share one monotonic publication sequence, retain event
+        identity, and require resnapshot on lag.
 - [ ] Fill reconnect gaps or require resnapshot.
   - [x] Forward tickerless QMD terminal gap frames through the backend and make
         the live tape/quote Canvas replace state from a new snapshot on reconnect.
