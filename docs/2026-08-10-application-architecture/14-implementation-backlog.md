@@ -600,11 +600,15 @@ load progressively without false continuity.
               Real archive acceptance on 2026-08-11 returned HTTP 200 and the
               correct bounded product, but a two-second 2026-08-07 market
               window (683,497 events, two evaluation clocks, 25 transitions)
-              required 25.779 seconds and left 1.268 GB resident. The preceding
-              one-minute run completed after roughly 212 seconds and reached
-              an 8.084 GB process peak. Stable ownership is implemented, but
-              shard finalization is still sequential and the full event stream
-              remains memory-expensive; therefore the parent gate stays open.
+              originally required 25.779 seconds and left 1.268 GB resident.
+              After removing Generic Structure from this plan schema's
+              incapable all-market engine, the exact request completed in
+              21.197 seconds with identical output and released to about 22 MB;
+              the fresh process peaked at 1.743 GB. The earlier 8.084 GB peak
+              followed a one-minute run and is not a clean direct comparison.
+              Stable ownership is implemented, but shard finalization remains
+              sequential and 21 seconds for two market seconds still fails the
+              throughput budget; therefore the parent gate stays open.
       - [x] Persist/reuse the revisioned timeline product and replace Backtest's
             session-boundary membership fallback with its transition stream.
         - [x] Replace the active single-Watchlist Backtest path with QMD History

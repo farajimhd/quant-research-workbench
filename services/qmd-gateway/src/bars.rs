@@ -387,6 +387,7 @@ pub struct BarShardStore {
 
 struct BarStore {
     frames: Vec<BarFrame>,
+    structure_enabled: bool,
     structure_event_frame_label: String,
     history_limit: usize,
     trade_rules: TradeAggregationRules,
@@ -493,8 +494,51 @@ impl SharedBarStore {
             .filter_map(|label| parse_timeframe(&label))
             .collect::<Vec<_>>();
         let shard_count = shard_count.max(1);
+        Self::new_with_structure_policy(
+            frames,
+            history_limit,
+            shard_count,
+            trade_rules,
+            true,
+        )
+    }
+
+    pub fn new_without_structure(
+        timeframes: Vec<String>,
+        history_limit: usize,
+        shard_count: usize,
+        trade_rules: TradeAggregationRules,
+    ) -> Self {
+        let frames = timeframes
+            .into_iter()
+            .filter_map(|label| parse_timeframe(&label))
+            .collect::<Vec<_>>();
+        Self::new_with_structure_policy(
+            frames,
+            history_limit,
+            shard_count,
+            trade_rules,
+            false,
+        )
+    }
+
+    fn new_with_structure_policy(
+        frames: Vec<BarFrame>,
+        history_limit: usize,
+        shard_count: usize,
+        trade_rules: TradeAggregationRules,
+        structure_enabled: bool,
+    ) -> Self {
+        let shard_count = shard_count.max(1);
         let shards = (0..shard_count)
-            .map(|_| BarShardStore::new(frames.clone(), history_limit, trade_rules.clone()))
+            .map(|_| {
+                BarShardStore::new(
+                    frames.clone(),
+                    history_limit,
+                    trade_rules.clone(),
+                    structure_enabled,
+                )
+            })
             .collect::<Vec<_>>();
         Self {
             shards: Arc::new(shards),
@@ -615,6 +659,15 @@ impl SharedBarStore {
         checkpoints
     }
 
+    #[cfg(test)]
+    async fn structure_engine_count(&self) -> usize {
+        let mut count = 0usize;
+        for shard in self.shards.iter() {
+            count = count.saturating_add(shard.inner.lock().await.structure.len());
+        }
+        count
+    }
+
     fn shard_for_ticker(&self, ticker: &str) -> BarShardStore {
         self.shard(shard_index(ticker, self.shards.len()))
     }
@@ -635,6 +688,7 @@ impl BarShardStore {
         frames: Vec<BarFrame>,
         history_limit: usize,
         trade_rules: TradeAggregationRules,
+        structure_enabled: bool,
     ) -> Self {
         let structure_event_frame_label = frames
             .iter()
@@ -644,6 +698,7 @@ impl BarShardStore {
         Self {
             inner: Arc::new(Mutex::new(BarStore {
                 frames,
+                structure_enabled,
                 structure_event_frame_label,
                 history_limit,
                 trade_rules,
@@ -747,11 +802,14 @@ impl BarStore {
                     .observe_trade(trade.ts, trade.price);
             }
         }
-        let (structure_snapshot, structure_events) = self
-            .structure
-            .entry(sym.clone())
-            .or_insert_with(|| GenericStructureEngine::new(&sym))
-            .apply_event(event, trade_rule);
+        let (structure_snapshot, structure_events) = if self.structure_enabled {
+            self.structure
+                .entry(sym.clone())
+                .or_insert_with(|| GenericStructureEngine::new(&sym))
+                .apply_event(event, trade_rule)
+        } else {
+            (GenericStructureSnapshot::default(), Vec::new())
+        };
         for frame in self.frames.clone() {
             let start = aligned_start(event.ts(), frame.duration_millis);
             let end = start + chrono::Duration::milliseconds(frame.duration_millis);
@@ -1633,6 +1691,31 @@ mod tests {
             ticker: "AAPL".into(),
             ts,
         }
+    }
+
+    #[tokio::test]
+    async fn structure_disabled_store_keeps_bar_state_without_allocating_engines() {
+        let rules = TradeAggregationRules::new([(0, TradeUpdateRule::regular())]).unwrap();
+        let bars = SharedBarStore::new_without_structure(
+            vec!["1s".into()],
+            2,
+            1,
+            rules,
+        );
+        let start = Utc.with_ymd_and_hms(2026, 8, 7, 13, 30, 0).unwrap();
+
+        bars.apply_event(&MarketEvent::Quote(quote(start, 99.0, 101.0, 1)))
+            .await;
+        bars.finalize_due(start + chrono::Duration::seconds(2))
+            .await;
+
+        let snapshot = bars.snapshot("AAPL", "1s", 2).await;
+        assert_eq!(snapshot.history.len(), 1);
+        assert_eq!(snapshot.history[0].quote_count, 1);
+        assert_eq!(snapshot.history[0].qmd_structure.reference_price, 0.0);
+        assert!(snapshot.history[0].qmd_structure.timeframe_states.is_empty());
+        assert!(snapshot.history[0].qmd_structure.active_levels.is_empty());
+        assert_eq!(bars.structure_engine_count().await, 0);
     }
 
     #[tokio::test]

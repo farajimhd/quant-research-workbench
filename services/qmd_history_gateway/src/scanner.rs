@@ -207,7 +207,7 @@ impl CrossSectionEngine {
         Self {
             active_signals: HashMap::new(),
             aggregates: HashMap::new(),
-            bars: SharedBarStore::new(
+            bars: SharedBarStore::new_without_structure(
                 SCANNER_TIMEFRAMES
                     .iter()
                     .map(|value| (*value).to_string())

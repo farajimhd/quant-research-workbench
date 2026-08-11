@@ -1252,6 +1252,27 @@ bounded direct ClickHouse paths remain documented in
      symbols and one changed rule input recomputes exactly one. The attempted
      wider command named a nonexistent test module after those twenty tests
      passed; no result is claimed for that nonexistent module.
+136. Removed an unintended expensive computation from QMD History's
+     all-market Watchlist materializer. `CrossSectionEngine` previously used
+     the normal live bar-store constructor, which allocated and updated a
+     `GenericStructureEngine` for every ticker even though historical
+     Watchlist schema v3 does not admit Generic Structure as a rule source.
+     The shared bar authority now has an explicit structure-disabled
+     constructor. It preserves the same bars and indicators with default-empty
+     structure payloads and allocates no structure engines; normal QMD Live and
+     chart/history structure paths retain the existing structure-enabled
+     constructor.
+
+     All 38 QMD History tests and all 100 shared QMD tests passed. The exact
+     isolated release acceptance request used for entry 133 returned the same
+     683,497 events, two evaluation clocks, and 25 transitions in 21.197
+     seconds versus 25.779 seconds, a 17.8 percent reduction. The fresh process
+     peaked at 1.743 GB and released to about 22 MB after the response. This
+     does not close the performance gate: two market seconds still require
+     about 21 seconds, and live Generic Structure still needs its separate
+     sequence-safe focused-activation design. Evidence is outside the
+     repository under `D:\TradingML\runtimes\qmd_goal_load` and the isolated
+     PID 40184 was stopped with port 18801 verified free.
 
 The authoritative remaining work and acceptance gates are maintained in the
 [complete implementation backlog](14-implementation-backlog.md). A checked
