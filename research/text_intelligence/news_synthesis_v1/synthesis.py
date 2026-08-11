@@ -738,12 +738,27 @@ def derive_eligibility(
     participations: Iterable[Mapping[str, Any]],
     envelope: Mapping[str, Any],
     quality_flags: Iterable[str],
+    document_quality_flags: Iterable[str] | None = None,
 ) -> list[dict[str, Any]]:
     statement_by_id = {str(row["statement_id"]): row for row in statements}
     parts_by_entity: dict[str, list[Mapping[str, Any]]] = defaultdict(list)
     for row in participations:
         parts_by_entity[str(row["entity_id"])].append(row)
     flags = set(quality_flags)
+    entities = list(entities)
+    blocking_flag_names = {
+        "invalid_text",
+        "unrendered_text",
+        "ambiguous_identity",
+        "unresolved_identity",
+    }
+    # Flattened legacy flags do not retain provenance, so omitted document
+    # flags preserve the historical fail-closed behavior.  Live synthesis
+    # passes explicit source/document flags and derives entity blockers only
+    # from that entity's identity status.
+    document_blocking_flags = (
+        flags if document_quality_flags is None else set(document_quality_flags)
+    ) & blocking_flag_names
     purpose = envelope["communication_purpose"]["value"]
     origin = envelope["information_origin"]["value"]
     results: list[dict[str, Any]] = []
@@ -769,13 +784,22 @@ def derive_eligibility(
             for row in substantive
         )
         has_semantic_implication = any(row.get("semantic_sentiment") in {"positive", "negative"} for row in rows)
-        identity_ok = entity.get("identity_status") == "resolved"
+        identity_status = str(entity.get("identity_status") or "")
+        identity_ok = identity_status == "resolved"
+        entity_identity_flags = {
+            flag
+            for flag, status in (
+                ("ambiguous_identity", "ambiguous"),
+                ("unresolved_identity", "unresolved"),
+            )
+            if identity_status == status
+        }
         tradable_security = entity.get("entity_kind") == "security" and bool(str(entity.get("ticker", "")).strip())
-        evidence_ok = bool(substantive) and not ({"invalid_text", "unrendered_text", "ambiguous_identity", "unresolved_identity"} & flags)
+        evidence_ok = bool(substantive) and not document_blocking_flags
         trigger = tradable_security and identity_ok and evidence_ok and current_event and has_semantic_implication and purpose == "report" and origin != "analyst"
         reaction = trigger and purpose not in {"recap", "explain_move"}
-        history = identity_ok and bool(substantive)
-        analyst = tradable_security and identity_ok and origin == "analyst" and any(row["statement_kind"] in {"assessment", "forecast"} for row in substantive)
+        history = identity_ok and evidence_ok
+        analyst = tradable_security and identity_ok and evidence_ok and origin == "analyst" and any(row["statement_kind"] in {"assessment", "forecast"} for row in substantive)
         for product, eligible in (
             ("forecast_trigger", trigger),
             ("reaction_study", reaction),
@@ -790,7 +814,7 @@ def derive_eligibility(
                     "eligible": eligible,
                     "policy_id": f"{POLICY_VERSION}:{product}",
                     "reasons": reasons,
-                    "blocking_flags": sorted(flag for flag in flags if flag in {"invalid_text", "unrendered_text", "ambiguous_identity", "unresolved_identity"}),
+                    "blocking_flags": sorted(document_blocking_flags | entity_identity_flags),
                 }
             )
     return results

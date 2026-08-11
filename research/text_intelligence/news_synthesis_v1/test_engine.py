@@ -10,10 +10,12 @@ from .engine import (
     IssuerIdentity,
     IssuerIdentityIndex,
     NewsSynthesisEngine,
+    RULES,
+    _sentiment,
     _sentiment_term_present,
 )
 from .facts import extract_typed_facts
-from .synthesis import _is_active_regulatory_blocker, derive_issuer_views
+from .synthesis import _is_active_regulatory_blocker, derive_eligibility, derive_issuer_views
 from .storage import persistence_row
 
 
@@ -179,6 +181,269 @@ class NewsSynthesisEngineTests(unittest.TestCase):
             "text": "The total cost declined during the quarter.",
         })
         self.assertEqual(document["entities"], [])
+
+    def test_identity_quality_blocking_is_entity_scoped(self) -> None:
+        statements = [{
+            "statement_id": "s1",
+            "statement_kind": "event",
+            "concept_leaf": "commercial.contract",
+            "time_relation": "current",
+        }]
+        envelope = {
+            "communication_purpose": {"value": "report"},
+            "information_origin": {"value": "issuer"},
+        }
+        for identity_status, quality_flag in (
+            ("unresolved", "unresolved_identity"),
+            ("ambiguous", "ambiguous_identity"),
+        ):
+            with self.subTest(identity_status=identity_status):
+                entities = [
+                    {
+                        "entity_id": "resolved",
+                        "entity_kind": "security",
+                        "ticker": "AAA",
+                        "identity_status": "resolved",
+                    },
+                    {
+                        "entity_id": "uncertain",
+                        "entity_kind": "security",
+                        "ticker": "BBB",
+                        "identity_status": identity_status,
+                    },
+                ]
+                participations = [
+                    {
+                        "entity_id": entity["entity_id"],
+                        "statement_id": "s1",
+                        "semantic_role": "affected_subject",
+                        "semantic_sentiment": "positive",
+                    }
+                    for entity in entities
+                ]
+                results = derive_eligibility(
+                    entities=entities,
+                    statements=statements,
+                    participations=participations,
+                    envelope=envelope,
+                    quality_flags=[quality_flag],
+                    document_quality_flags=(),
+                )
+                forecast = {
+                    row["entity_id"]: row
+                    for row in results
+                    if row["product"] == "forecast_trigger"
+                }
+                history = {
+                    row["entity_id"]: row
+                    for row in results
+                    if row["product"] == "issuer_history"
+                }
+                self.assertTrue(forecast["resolved"]["eligible"])
+                self.assertEqual(forecast["resolved"]["blocking_flags"], [])
+                self.assertTrue(history["resolved"]["eligible"])
+                self.assertFalse(forecast["uncertain"]["eligible"])
+                self.assertFalse(history["uncertain"]["eligible"])
+                self.assertEqual(
+                    forecast["uncertain"]["blocking_flags"],
+                    [quality_flag],
+                )
+                self.assertTrue(all(
+                    not row["eligible"] or not row["blocking_flags"]
+                    for row in results
+                ))
+
+    def test_document_quality_blocking_remains_global(self) -> None:
+        results = derive_eligibility(
+            entities=[{
+                "entity_id": "resolved",
+                "entity_kind": "security",
+                "ticker": "AAA",
+                "identity_status": "resolved",
+            }],
+            statements=[{
+                "statement_id": "s1",
+                "statement_kind": "event",
+                "concept_leaf": "commercial.contract",
+                "time_relation": "current",
+            }],
+            participations=[{
+                "entity_id": "resolved",
+                "statement_id": "s1",
+                "semantic_role": "affected_subject",
+                "semantic_sentiment": "positive",
+            }],
+            envelope={
+                "communication_purpose": {"value": "report"},
+                "information_origin": {"value": "issuer"},
+            },
+            quality_flags=["invalid_text", "unrendered_text"],
+            document_quality_flags=["invalid_text", "unrendered_text"],
+        )
+        self.assertTrue(all(not row["eligible"] for row in results))
+        self.assertTrue(all(
+            row["blocking_flags"] == ["invalid_text", "unrendered_text"]
+            for row in results
+        ))
+
+    def test_unrepresented_identity_quality_flag_remains_fail_closed(self) -> None:
+        results = derive_eligibility(
+            entities=[{
+                "entity_id": "resolved",
+                "entity_kind": "security",
+                "ticker": "AAA",
+                "identity_status": "resolved",
+            }],
+            statements=[{
+                "statement_id": "s1",
+                "statement_kind": "event",
+                "concept_leaf": "commercial.contract",
+                "time_relation": "current",
+            }],
+            participations=[{
+                "entity_id": "resolved",
+                "statement_id": "s1",
+                "semantic_role": "affected_subject",
+                "semantic_sentiment": "positive",
+            }],
+            envelope={
+                "communication_purpose": {"value": "report"},
+                "information_origin": {"value": "issuer"},
+            },
+            quality_flags=["unresolved_identity"],
+            document_quality_flags=["unresolved_identity"],
+        )
+        self.assertTrue(all(not row["eligible"] for row in results))
+        self.assertTrue(all(
+            row["blocking_flags"] == ["unresolved_identity"]
+            for row in results
+        ))
+
+    def test_source_identity_quality_flag_remains_global_when_status_overlaps(self) -> None:
+        entities = [
+            {
+                "entity_id": "resolved",
+                "entity_kind": "security",
+                "ticker": "AAA",
+                "identity_status": "resolved",
+            },
+            {
+                "entity_id": "uncertain",
+                "entity_kind": "security",
+                "ticker": "BBB",
+                "identity_status": "unresolved",
+            },
+        ]
+        results = derive_eligibility(
+            entities=entities,
+            statements=[{
+                "statement_id": "s1",
+                "statement_kind": "event",
+                "concept_leaf": "commercial.contract",
+                "time_relation": "current",
+            }],
+            participations=[{
+                "entity_id": entity["entity_id"],
+                "statement_id": "s1",
+                "semantic_role": "affected_subject",
+                "semantic_sentiment": "positive",
+            } for entity in entities],
+            envelope={
+                "communication_purpose": {"value": "report"},
+                "information_origin": {"value": "issuer"},
+            },
+            quality_flags=["unresolved_identity"],
+            document_quality_flags=["unresolved_identity"],
+        )
+        self.assertTrue(all(not row["eligible"] for row in results))
+        self.assertTrue(all(
+            row["blocking_flags"] == ["unresolved_identity"]
+            for row in results
+        ))
+
+    def test_legacy_flat_identity_quality_flag_remains_globally_fail_closed(self) -> None:
+        results = derive_eligibility(
+            entities=[{
+                "entity_id": "resolved",
+                "entity_kind": "security",
+                "ticker": "AAA",
+                "identity_status": "resolved",
+            }],
+            statements=[{
+                "statement_id": "s1",
+                "statement_kind": "event",
+                "concept_leaf": "commercial.contract",
+                "time_relation": "current",
+            }],
+            participations=[{
+                "entity_id": "resolved",
+                "statement_id": "s1",
+                "semantic_role": "affected_subject",
+                "semantic_sentiment": "positive",
+            }],
+            envelope={
+                "communication_purpose": {"value": "report"},
+                "information_origin": {"value": "issuer"},
+            },
+            quality_flags=["unresolved_identity"],
+        )
+        self.assertTrue(all(not row["eligible"] for row in results))
+        self.assertTrue(all(
+            row["blocking_flags"] == ["unresolved_identity"]
+            for row in results
+        ))
+
+    def test_engine_scopes_derived_unresolved_identity_to_that_entity(self) -> None:
+        document = self.engine.synthesize({
+            "source_id": "news-derived-unresolved-overlap",
+            "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": "Alpha wins contract while Zeta updates",
+            "text": (
+                "Alpha Therapeutics Inc (NASDAQ:AAA) won a contract. "
+                "Zeta Corp (NASDAQ:ZZZ) announced an update."
+            ),
+            "tickers": ["AAA", "ZZZ"],
+        })
+        self.assertEqual(document["quality_flags"], ["unresolved_identity"])
+        forecast = {
+            row["entity_id"]: row
+            for row in document["eligibility"]
+            if row["product"] == "forecast_trigger"
+        }
+        resolved_id = next(
+            row["entity_id"] for row in document["entities"]
+            if row["identity_status"] == "resolved"
+        )
+        unresolved_id = next(
+            row["entity_id"] for row in document["entities"]
+            if row["identity_status"] == "unresolved"
+        )
+        self.assertTrue(forecast[resolved_id]["eligible"])
+        self.assertEqual(forecast[resolved_id]["blocking_flags"], [])
+        self.assertFalse(forecast[unresolved_id]["eligible"])
+        self.assertEqual(
+            forecast[unresolved_id]["blocking_flags"],
+            ["unresolved_identity"],
+        )
+
+    def test_engine_source_unresolved_flag_remains_global_with_unresolved_entity(self) -> None:
+        document = self.engine.synthesize({
+            "source_id": "news-source-unresolved-overlap",
+            "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": "Alpha wins contract while Zeta updates",
+            "text": (
+                "Alpha Therapeutics Inc (NASDAQ:AAA) won a contract. "
+                "Zeta Corp (NASDAQ:ZZZ) announced an update."
+            ),
+            "tickers": ["AAA", "ZZZ"],
+            "quality_flags": ["unresolved_identity"],
+        })
+        self.assertEqual(document["quality_flags"], ["unresolved_identity"])
+        self.assertTrue(all(
+            not row["eligible"]
+            and row["blocking_flags"] == ["unresolved_identity"]
+            for row in document["eligibility"]
+        ))
 
     def test_provider_scope_preserves_distinctive_one_word_brand_resolution(self) -> None:
         engine = NewsSynthesisEngine(IssuerIdentityIndex((
@@ -585,6 +850,126 @@ class NewsSynthesisEngineTests(unittest.TestCase):
 
         self.assertEqual(entities, [])
 
+    def test_grammatical_legal_role_aliases_never_create_security_identity(self) -> None:
+        index = IssuerIdentityIndex((
+            IssuerIdentity(
+                "AAA",
+                "issuer:aaa",
+                "Alpha Therapeutics",
+                ("Company's", "Corporation's"),
+                "NASDAQ",
+            ),
+        ))
+
+        for text, candidates in (
+            ("The company's revenue increased.", ()),
+            ("The corporation's revenue increased.", ("AAA",)),
+        ):
+            with self.subTest(text=text, candidates=candidates):
+                self.assertEqual(
+                    index.resolve(
+                        text=text,
+                        candidates=candidates,
+                        timestamp="2026-08-03T12:00:00Z",
+                    ),
+                    [],
+                )
+
+    def test_plural_legal_role_aliases_never_create_security_identity(self) -> None:
+        index = IssuerIdentityIndex((
+            IssuerIdentity(
+                "AAA",
+                "issuer:aaa",
+                "Alpha Therapeutics",
+                ("Companies'", "Corporations'", "The Companies"),
+                "NASDAQ",
+            ),
+        ))
+
+        for text in (
+            "The companies' revenue increased.",
+            "The corporations' revenue increased.",
+            "The companies announced an update.",
+        ):
+            with self.subTest(text=text):
+                self.assertEqual(
+                    index.resolve(
+                        text=text,
+                        candidates=("AAA",),
+                        timestamp="2026-08-03T12:00:00Z",
+                    ),
+                    [],
+                )
+
+    def test_grammatical_alias_filter_preserves_distinctive_possessive_name(self) -> None:
+        index = IssuerIdentityIndex((
+            IssuerIdentity(
+                "MCD",
+                "issuer:mcd",
+                "McDonald's",
+                ("McDonald's",),
+                "NYSE",
+            ),
+        ))
+
+        entities = index.resolve(
+            text="McDonald's launches a new service.",
+            candidates=("MCD",),
+            timestamp="2026-08-03T12:00:00Z",
+        )
+
+        self.assertEqual([row["ticker"] for row in entities], ["MCD"])
+
+    def test_grammatical_alias_filter_preserves_full_name_and_explicit_ticker(self) -> None:
+        index = IssuerIdentityIndex((
+            IssuerIdentity(
+                "NEW",
+                "issuer:new",
+                "New Company",
+                ("New Company", "Company's"),
+                "NYSE",
+            ),
+        ))
+
+        full_name = index.resolve(
+            text="New Company announced an update.",
+            candidates=("NEW",),
+            timestamp="2026-08-03T12:00:00Z",
+        )
+        explicit = index.resolve(
+            text="The company (NYSE:NEW) announced an update.",
+            candidates=("NEW",),
+            timestamp="2026-08-03T12:00:00Z",
+        )
+
+        self.assertEqual([row["ticker"] for row in full_name], ["NEW"])
+        self.assertEqual([row["ticker"] for row in explicit], ["NEW"])
+
+    def test_grammatical_alias_filter_preserves_provider_scoped_common_word_brand(self) -> None:
+        index = IssuerIdentityIndex((
+            IssuerIdentity(
+                "TGT",
+                "issuer:target",
+                "Target Corporation",
+                ("Target",),
+                "NYSE",
+            ),
+        ))
+
+        scoped = index.resolve(
+            text="Target announced an update.",
+            candidates=("TGT",),
+            timestamp="2026-08-03T12:00:00Z",
+        )
+        unscoped = index.resolve(
+            text="Target performance improved.",
+            candidates=(),
+            timestamp="2026-08-03T12:00:00Z",
+        )
+
+        self.assertEqual([row["ticker"] for row in scoped], ["TGT"])
+        self.assertEqual(unscoped, [])
+
     def test_title_only_attributed_assessment_language_is_directional(self) -> None:
         cases = (
             ("Hearing Northstar Securities out in defense of Alpha Therapeutics", "positive"),
@@ -784,20 +1169,197 @@ class NewsSynthesisEngineTests(unittest.TestCase):
         self.assertNotIn("commercial.demand_condition", concepts)
         self.assertNotIn("capital.financing", concepts)
 
-    def test_achieved_listing_compliance_recovery_remains_positive(self) -> None:
+    def test_pure_reverse_stock_split_is_mechanically_neutral(self) -> None:
         document = self.engine.synthesize({
-            "source_id": "news-regained-listing-compliance",
+            "source_id": "news-pure-reverse-stock-split",
             "source_timestamp": "2026-08-03T12:00:00Z",
-            "title": "Alpha regains Nasdaq compliance",
+            "title": "Alpha approves 1-for-20 reverse stock split",
             "text": (
-                "Alpha Therapeutics Inc (NASDAQ:AAA) has regained compliance with Nasdaq listing "
-                "requirements following a previously completed reverse stock split."
+                "Alpha Therapeutics Inc (NASDAQ:AAA) approved a 1-for-20 "
+                "reverse stock split effective next week."
             ),
             "tickers": ["AAA"],
         })
-        self.assertEqual(document["issuer_views"][0]["composite_sentiment"], "positive")
+        view = document["issuer_views"][0]
+        self.assertEqual(view["composite_sentiment"], "neutral")
+        listing_statement_ids = {
+            row["statement_id"]
+            for row in document["statements"]
+            if row["concept_leaf"] == "listing.market_structure"
+        }
+        listing_participations = [
+            row for row in document["participations"]
+            if row["statement_id"] in listing_statement_ids
+        ]
+        self.assertTrue(listing_participations)
+        self.assertTrue(all(
+            row["semantic_sentiment"] == "neutral"
+            and row["sentiment_strength"] == 0
+            for row in listing_participations
+        ))
+        eligibility = {
+            row["product"]: row["eligible"]
+            for row in document["eligibility"]
+        }
+        self.assertFalse(eligibility["forecast_trigger"])
+        self.assertTrue(eligibility["issuer_history"])
 
-    def test_granted_listing_extension_to_regain_compliance_is_positive(self) -> None:
+    def test_achieved_listing_compliance_recovery_remains_positive(self) -> None:
+        achieved_variants = (
+            "Alpha Therapeutics Inc (NASDAQ:AAA) has regained compliance with Nasdaq listing requirements.",
+            "Alpha Therapeutics Inc (NASDAQ:AAA) regains Nasdaq listing compliance.",
+            "Alpha Therapeutics Inc (NASDAQ:AAA) has regained full compliance.",
+            "Alpha Therapeutics Inc (NASDAQ:AAA) regained minimum-bid compliance.",
+        )
+        for index, text in enumerate(achieved_variants):
+            with self.subTest(text=text):
+                document = self.engine.synthesize({
+                    "source_id": f"news-regained-listing-compliance-{index}",
+                    "source_timestamp": "2026-08-03T12:00:00Z",
+                    "title": text,
+                    "text": text,
+                    "tickers": ["AAA"],
+                })
+                self.assertEqual(document["issuer_views"][0]["composite_sentiment"], "positive")
+
+    def test_unachieved_listing_compliance_with_intervening_words_remains_negative(self) -> None:
+        unachieved_variants = (
+            "Alpha Therapeutics Inc (NASDAQ:AAA) has not yet regained Nasdaq listing compliance.",
+            "Alpha Therapeutics Inc (NASDAQ:AAA) has never regained Nasdaq listing compliance.",
+            "Alpha Therapeutics Inc (NASDAQ:AAA) has not fully regained Nasdaq listing compliance.",
+            "Alpha Therapeutics Inc (NASDAQ:AAA) has yet to regain Nasdaq listing compliance.",
+            "Alpha Therapeutics Inc (NASDAQ:AAA) did not regain Nasdaq listing compliance.",
+            "Alpha Therapeutics Inc (NASDAQ:AAA) hasn't regained Nasdaq listing compliance.",
+            "Alpha Therapeutics Inc (NASDAQ:AAA) was unable to regain Nasdaq listing compliance.",
+            "Alpha Therapeutics Inc (NASDAQ:AAA) cannot regain Nasdaq listing compliance.",
+            "Alpha Therapeutics Inc (NASDAQ:AAA) failed to regain Nasdaq listing compliance.",
+            "Alpha Therapeutics Inc (NASDAQ:AAA) remains out of Nasdaq listing compliance.",
+            (
+                "Alpha Therapeutics Inc (NASDAQ:AAA) regained Nasdaq listing compliance "
+                "but later received a noncompliance notice."
+            ),
+            (
+                "Alpha Therapeutics Inc (NASDAQ:AAA) regained Nasdaq listing compliance "
+                "but later lost compliance."
+            ),
+            (
+                "Alpha Therapeutics Inc (NASDAQ:AAA) regained Nasdaq listing compliance "
+                "but later lost its compliance."
+            ),
+            (
+                "Alpha Therapeutics Inc (NASDAQ:AAA) regained Nasdaq listing compliance "
+                "before falling out of compliance again."
+            ),
+            (
+                "Alpha Therapeutics Inc (NASDAQ:AAA) regained Nasdaq listing compliance "
+                "but subsequently fell below the minimum bid requirement."
+            ),
+        )
+        for index, text in enumerate(unachieved_variants):
+            with self.subTest(text=text):
+                document = self.engine.synthesize({
+                    "source_id": f"news-listing-compliance-not-achieved-{index}",
+                    "source_timestamp": "2026-08-03T12:00:00Z",
+                    "title": text,
+                    "text": text,
+                    "tickers": ["AAA"],
+                })
+                self.assertEqual(document["issuer_views"][0]["composite_sentiment"], "negative")
+
+    def test_later_achieved_compliance_supersedes_earlier_failed_attempt(self) -> None:
+        achieved_variants = (
+            (
+                "Alpha Therapeutics Inc (NASDAQ:AAA) failed to regain compliance last quarter "
+                "but has now regained Nasdaq listing compliance."
+            ),
+            (
+                "Alpha Therapeutics Inc (NASDAQ:AAA) could not regain compliance during the "
+                "initial period but has now regained Nasdaq listing compliance."
+            ),
+            (
+                "After a prior minimum bid deficiency, Alpha Therapeutics Inc (NASDAQ:AAA) "
+                "has regained Nasdaq listing compliance."
+            ),
+        )
+        for index, text in enumerate(achieved_variants):
+            with self.subTest(text=text):
+                document = self.engine.synthesize({
+                    "source_id": f"news-listing-compliance-later-achieved-{index}",
+                    "source_timestamp": "2026-08-03T12:00:00Z",
+                    "title": text,
+                    "text": text,
+                    "tickers": ["AAA"],
+                })
+                self.assertIn(
+                    "positive",
+                    {
+                        row["semantic_sentiment"]
+                        for row in document["participations"]
+                        if row["semantic_role"] != "none"
+                    },
+                )
+
+    def test_procedural_cure_language_is_never_achieved_positive(self) -> None:
+        procedural_variants = (
+            "Alpha was granted an additional 180 days to regain minimum bid compliance.",
+            "Alpha must submit a plan to regain listing compliance.",
+            "Alpha will take measures to regain Nasdaq listing compliance.",
+            "Alpha has until June 30 to regain minimum bid compliance.",
+        )
+        for text in procedural_variants:
+            with self.subTest(text=text):
+                sentiment, strength = _sentiment(
+                    text,
+                    next(rule for rule in RULES if rule.concept == "listing.market_structure"),
+                    "affected_subject",
+                )
+                self.assertNotEqual(sentiment, "positive")
+
+    def test_explicit_unresolved_listing_cure_state_is_negative(self) -> None:
+        adverse_variants = (
+            "Alpha has til June 30 to regain minimum bid compliance.",
+            "Alpha plans to file its delinquent report promptly to regain listing compliance.",
+            "Alpha expects that the share split will allow it to regain minimum bid compliance.",
+            "Alpha aims to comply with Nasdaq's minimum bid price requirement.",
+        )
+        for text in adverse_variants:
+            with self.subTest(text=text):
+                self.assertEqual(
+                    _sentiment(
+                        text,
+                        next(rule for rule in RULES if rule.concept == "listing.market_structure"),
+                        "affected_subject",
+                    ),
+                    ("negative", 3),
+                )
+
+    def test_cure_motivated_share_actions_are_negative(self) -> None:
+        cure_variants = (
+            "The reverse split is expected to allow Alpha to regain minimum bid compliance.",
+            "The reverse split is part of Alpha's plan to regain the $1 minimum bid requirement.",
+            "The share combination is intended to satisfy the minimum bid continued listing requirement.",
+            "The reverse split aims to comply with Nasdaq's minimum bid price requirement.",
+        )
+        for text in cure_variants:
+            with self.subTest(text=text):
+                self.assertEqual(
+                    _sentiment(
+                        text,
+                        next(rule for rule in RULES if rule.concept == "listing.market_structure"),
+                        "affected_subject",
+                    ),
+                    ("negative", 3),
+                )
+
+    def test_title_nominal_completed_compliance_recovery_is_positive(self) -> None:
+        sentiment, strength = _sentiment(
+            "Title: Regaining of Nasdaq Listing Compliance",
+            next(rule for rule in RULES if rule.concept == "listing.market_structure"),
+            "affected_subject",
+        )
+        self.assertEqual((sentiment, strength), ("positive", 2))
+
+    def test_granted_listing_extension_to_regain_compliance_is_neutral(self) -> None:
         document = self.engine.synthesize({
             "source_id": "news-listing-extension",
             "source_timestamp": "2026-08-03T12:00:00Z",
@@ -808,7 +1370,7 @@ class NewsSynthesisEngineTests(unittest.TestCase):
             ),
             "tickers": ["AAA"],
         })
-        self.assertEqual(document["issuer_views"][0]["composite_sentiment"], "positive")
+        self.assertEqual(document["issuer_views"][0]["composite_sentiment"], "neutral")
 
     def test_rating_endpoint_is_not_double_counted_as_issuer_assessment(self) -> None:
         document = self.engine.synthesize({
@@ -821,6 +1383,125 @@ class NewsSynthesisEngineTests(unittest.TestCase):
         concepts = [row["concept_leaf"] for row in document["statements"]]
         self.assertIn("analyst.rating_action", concepts)
         self.assertNotIn("analyst.issuer_assessment", concepts)
+        self.assertEqual(document["issuer_views"][0]["composite_sentiment"], "negative")
+
+    def test_reverse_split_listing_cure_intent_variants_remain_negative(self) -> None:
+        cases = (
+            "The reverse split is expected to allow it to regain Nasdaq minimum bid compliance.",
+            "The reverse split is primarily intended to bring the company into listing compliance.",
+            "The reverse split aims to comply with Nasdaq's minimum bid requirement.",
+            "The reverse split is designed to restore listing compliance.",
+        )
+        for text in cases:
+            with self.subTest(text=text):
+                document = self.engine.synthesize({
+                    "source_id": "news-reverse-split-listing-cure",
+                    "source_timestamp": "2026-08-03T12:00:00Z",
+                    "title": "Alpha announces reverse stock split",
+                    "text": f"Alpha Therapeutics Inc (NASDAQ:AAA) announced a reverse stock split. {text}",
+                    "tickers": ["AAA"],
+                })
+                self.assertEqual(
+                    document["issuer_views"][0]["composite_sentiment"],
+                    "negative",
+                )
+
+    def test_reverse_split_conditioned_only_on_approval_remains_neutral(self) -> None:
+        document = self.engine.synthesize({
+            "source_id": "news-reverse-split-shareholder-approval",
+            "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": "Alpha proposes reverse stock split",
+            "text": (
+                "Alpha Therapeutics Inc (NASDAQ:AAA) proposed a reverse stock split "
+                "subject to shareholder approval."
+            ),
+            "tickers": ["AAA"],
+        })
+        self.assertEqual(document["issuer_views"][0]["composite_sentiment"], "neutral")
+
+    def test_reverse_split_unrelated_to_compliance_remains_neutral(self) -> None:
+        document = self.engine.synthesize({
+            "source_id": "news-reverse-split-not-compliance-cure",
+            "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": "Alpha approves reverse stock split",
+            "text": (
+                "Alpha Therapeutics Inc (NASDAQ:AAA) approved a reverse stock split. "
+                "The action was not intended to regain listing compliance."
+            ),
+            "tickers": ["AAA"],
+        })
+        self.assertEqual(document["issuer_views"][0]["composite_sentiment"], "neutral")
+
+    def test_prospective_listing_compliance_without_deficiency_is_neutral(self) -> None:
+        document = self.engine.synthesize({
+            "source_id": "news-prospective-listing-compliance",
+            "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": "Alpha provides listing update",
+            "text": (
+                "Alpha Therapeutics Inc (NASDAQ:AAA) expects to comply with the "
+                "continued listing requirement."
+            ),
+            "tickers": ["AAA"],
+        })
+        self.assertEqual(document["issuer_views"][0]["composite_sentiment"], "neutral")
+
+    def test_listing_cure_process_is_not_positive(self) -> None:
+        cases = (
+            (
+                "Alpha is working to regain compliance with Nasdaq listing requirements.",
+                "negative",
+            ),
+            (
+                "Alpha has a 180-day grace period to regain minimum bid compliance.",
+                "neutral",
+            ),
+            (
+                "To regain compliance, Alpha shares must close above $1 for ten days.",
+                "negative",
+            ),
+            (
+                "Alpha received a noncompliance notice and has 180 days to regain compliance.",
+                "negative",
+            ),
+        )
+        for text, expected in cases:
+            with self.subTest(text=text):
+                document = self.engine.synthesize({
+                    "source_id": "news-listing-cure-process",
+                    "source_timestamp": "2026-08-03T12:00:00Z",
+                    "title": text,
+                    "text": f"Alpha Therapeutics Inc (NASDAQ:AAA) {text}",
+                    "tickers": ["AAA"],
+                })
+                self.assertEqual(
+                    document["issuer_views"][0]["composite_sentiment"],
+                    expected,
+                )
+
+    def test_denied_listing_extension_is_negative(self) -> None:
+        document = self.engine.synthesize({
+            "source_id": "news-listing-extension-denied",
+            "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": "Alpha listing extension denied",
+            "text": (
+                "Alpha Therapeutics Inc (NASDAQ:AAA) failed to obtain a listing extension."
+            ),
+            "tickers": ["AAA"],
+        })
+        self.assertEqual(document["issuer_views"][0]["composite_sentiment"], "negative")
+
+    def test_conditional_listing_extension_preserves_active_adverse_condition(self) -> None:
+        document = self.engine.synthesize({
+            "source_id": "news-conditional-listing-extension",
+            "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": "Alpha receives Nasdaq extension",
+            "text": (
+                "Alpha Therapeutics Inc (NASDAQ:AAA) received a Nasdaq listing extension. "
+                "Continued listing remains conditioned on a reverse stock split to restore "
+                "minimum bid compliance."
+            ),
+            "tickers": ["AAA"],
+        })
         self.assertEqual(document["issuer_views"][0]["composite_sentiment"], "negative")
 
     def test_production_package_has_no_prior_labeler_dependency(self) -> None:
@@ -3739,7 +4420,7 @@ class NewsSynthesisEngineTests(unittest.TestCase):
         self.assertIn("listing.market_structure", concepts)
         self.assertIn("capital.return", concepts)
         self.assertIn("corporate_transaction.acquisition", concepts)
-        self.assertEqual(document["issuer_views"][0]["composite_sentiment"], "mixed")
+        self.assertEqual(document["issuer_views"][0]["composite_sentiment"], "positive")
 
     def test_transaction_mechanical_reverse_split_is_neutral(self) -> None:
         document = self.engine.synthesize({

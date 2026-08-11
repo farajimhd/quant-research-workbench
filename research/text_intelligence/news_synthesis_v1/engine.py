@@ -283,7 +283,7 @@ RULES = (
     _rule("clinical.trial_result", r"\bdata\b.{0,120}\bshows?\b.{0,100}\bbiosimilar\b.{0,80}\bhighly similar\b.{0,40}\bto\b.{0,100}", positive=("highly similar",)),
     _rule("clinical.trial_result", r"\b(?:clinical trial|study|Phase\s*[123][a-z]?(?:/[123][a-z]?)?)\b.*\b(?:endpoint|results?|data|efficacy|safety|survival|viral suppression|site)\b|\b(?:results?|data)\b.{0,120}\b(?:clinical trial|study|Phase\s*[123][a-z]?(?:/[123][a-z]?)?)\b|\b(?:initiat(?:e[sd]?|ion)|commenc(?:e[sd]?|ement)|begin(?:s|ning)?)\b.{0,100}\b(?:Phase\s*[123][a-z]?\s+)?(?:clinical\s+)?(?:study|trial)\b|\bexpansion of\b.{0,100}\bclinical development program\b.{0,120}\bnew trial\b|\bpresent(?:s|ed|ing)?\b.{0,100}\bpositive\b.{0,100}\bdata\b.{0,100}\bclinical program\b|\bpositive clinical (?:data|results?)\b|\bpublication of data\b.{0,120}\bshows?\b.{0,120}\b(?:induces?|activates?|improves?)\b.{0,140}\blinked to\b.{0,80}\b(?:prevention|treatment)\b|\b(?:met|achieved|did not meet|failed to meet|did not demonstrate)\b.{0,120}\b(?:primary\b.{0,60})?(?:endpoint|goal|dose[- ]response|statistical significance)\b|\b(?:primary|co-primary|secondary) endpoint\b.{0,100}\b(?:did not meet|failed to meet|missed)\b.{0,80}\b(?:statistical significance|endpoint)?\b|\b(?:shut(?:s|ting)? down|discontinues?|terminates?)\b.{0,100}\b(?:clinical trial|study|Phase\s*[123])\b|\b(?:investigator|physician|assessment|review)\b.{0,160}\bconclud(?:e[sd]?|ing)\b.{0,100}\bnot (?:a )?case of\b.{0,120}\brevis(?:e[sd]?|ing) (?:the )?diagnosis\b|\b(?:statistically significant(?: and clinically meaningful)? improvement|statistically significant (?:adverse |unwanted |harmful )?(?:immune|immunologic|immunological) response (?:data|results?)|significantly reduces?|prevent(?:s|ed|ing)?\s+\d+(?:\.\d+)?%\s+of|\d+(?:\.\d+)?%\s+(?:vaccine )?efficacy|\d+(?:\.\d+)?%\s+reduction in (?:the )?risk|\d+(?:\.\d+)?%\s+of patients?.{0,80}\bachieved\b|first (?:patient|subject) (?:enrolled|dosed|screened)|(?:enrolls?|doses?|screens?) (?:the )?first (?:patient|subject)|(?:opens?|initiates?|announces?)\b.{0,80}\b(?:Phase\s*[123]\s+)?trial site|high efficacy|durable viral suppression|overall survival|sustained virologic response)\b", positive=("met", "positive", "improved", "prevented", "efficacy", "trial site", "initiation", "new trial", "first patient screened"), negative=("failed", "missed", "did not meet", "shut down", "discontinue", "terminate", "adverse")),
     _rule("legal.proceeding", r"\b(?:lawsuit|litigation|investigation|subpoena|probe|targeted by (?:the )?probe|under investigation|settlement|arbitration|legal claim|security vulnerability|actively exploited vulnerability|data breach|claim for .{0,60}damages|seeking .{0,40}damages|patent peace|patent (?:is )?issued|issues? .{0,40}patent|(?:grant(?:s|ed)?|receiv(?:e|es|ed))\b.{0,80}\bpatent)\b|\bfil(?:e[sd]?|ing)\b.{0,80}\bcomplaint\b.{0,100}\bagainst\b|\b(?:sues?|sued|investigates?|investigated|charges?|charged)\b.{0,140}\b(?:discrimination|fraud|corruption|claims?|company|providers?)\b|\b(?:won|wins?)\b.{0,100}\b(?:IP rights|patent|legal)\b.{0,80}\bcase\b|\b(?:case|action|judgment)\b.{0,120}\b(?:reversed?|remanded|dismissed as moot)\b|\b(?:reverses?|remands?|dismiss(?:es|ed) as moot)\b.{0,120}\b(?:case|action|judgment)\b|\b(?:judge|court)\b.{0,140}\b(?:rules?|ruled|finds?|found|calls?|called|strikes? down|invalidates?)\b.{0,100}\b(?:restriction|limitation|ban|rule|regulation)s?\b|\b(?:judge|court)\b.{0,140}\b(?:restriction|limitation|ban|rule|regulation)s?\b.{0,100}\b(?:arbitrary|unlawful|invalid|struck down)\b", positive=("seeking damages", "served a request", "files arbitration", "patent peace", "patent issued", "issues patent"), negative=("lawsuit", "investigation", "probe", "subpoena", "breach", "vulnerability", "discriminatory", "adverse treatment")),
-    _rule("listing.market_structure", r"\b(?:reverse (?:stock|share) split|reverse split|stock split|share consolidation|share combination|delist(?:s|ed|ing)?|deslit|delisting|listing compliance|regains? compliance|regained compliance|continued listing|non[- ]compliance|minimum bid|late filing|failure to timely file|included in .{0,60}(?:Russell|S&P|Nasdaq).{0,20}index|IPO)\b", positive=("regain", "regained compliance", "approved listing", "included"), negative=("delist", "deslit", "noncompliance", "non-compliance", "late", "failure", "reverse split", "reverse share split", "reverse stock split")),
+    _rule("listing.market_structure", r"\b(?:reverse (?:stock|share) split|reverse split|stock split|share consolidation|share combination|delist(?:s|ed|ing)?|deslit|delisting|listing compliance|listing extension|regains?\b.{0,60}\bcompliance|regained\b.{0,60}\bcompliance|regaining of\b.{0,60}\bcompliance|continued listing|non[- ]?compliance|minimum bid|late filing|failure to timely file|included in .{0,60}(?:Russell|S&P|Nasdaq).{0,20}index|IPO)\b", positive=("regained compliance", "approved listing", "included"), negative=("delist", "deslit", "noncompliance", "non-compliance", "late", "failure")),
     _rule("commercial.contract", r"\b(?:awarded|wins?|receives?|secures?|sign(?:s|ed|ing)?|enters?|affirms?)\b.{0,120}\b(?:contract|order|award|agreements?|program|initiative)\b|\bselected\b.{0,120}\bto (?:provide|deliver|supply)\b.{0,120}\b(?:services?|consultancy|supervision|supply|systems?|stations?|equipment|products?|components?)\b|\b(?:expand(?:s|ed|ing)?|extend(?:s|ed|ing)?|renew(?:s|ed|ing)?)\b.{0,100}\b(?:sales |supply |service )?agreements?\b|\b(?:deal with\b.{0,100}\b(?:provid|supply)\w*|named\b.{0,100}\bofficial\b.{0,60}\b(?:broker|provider|supplier|partner))\b|\bcontract award\b|\b(?:waiver and amendment|amendment) agreement\b|\bwaiv(?:e|es|ed|ing)\b.{0,120}\bright to terminate\b.{0,120}\b(?:fund|financ|tranche|obligation)\w*\b|\b(?:contract|agreement)\s+(?:termination|cancellation|non[- ]renewal)\b|\b(?:termination|cancellation|non[- ]renewal)\b.{0,80}\b(?:contract|agreement)\b|\b(?:follow[- ]on )?(?:contract|order|agreement|program|initiative)\b.{0,120}\b(?:awarded|affirmed|won|win|received|secured|signed|terminated|cancelled|canceled|not renewed)\b", positive=("awarded", "affirmed", "wins", "win", "received", "secured", "signed", "selected", "expand", "extend", "renew", "contract award"), negative=("cancel", "terminate", "non-renewal", "not renewed")),
     _rule("product.milestone", r"\b(?:launch|unveil|reveal|debut)\w*\b.{0,80}\bsolutions?\b|\b(?:launch|unveil|reveal|debut|showcas|commercializ|introduc|roll(?:s|ed|ing)? out|recall|discontinue|authoriz(?:e|es|ed|ing)|ships? (?:the )?first|first shipment|deliver(?:s|ed)? (?:the |its )?\d+(?:st|nd|rd|th)|release(?:s|d)? (?:the )?(?:final )?pricing|production milestone|assembly line|built? \d+)\w*\b.{0,120}\b(?:product|platform|service|(?:pilot|production|commercial) units?|feature|functionality|uploader|device|drug|treatment|vaccine|vehicle|system|game|headset|candidate|model|factory|use|panel|test|camera|dressing)\b|\bdeliver(?:s|ed)? (?:the |its )?\d+(?:st|nd|rd|th)\b|\b(?:product|feature|functionality|uploader|device|drug|treatment|vaccine|service|game|headset|vehicle|model|panel|test|camera|dressing)\b.{0,120}\b(?:launch|unveil|reveal|debut|showcas|commercializ|introduc|release|recall|discontinue|delay|authoriz|available|roll(?:s|ed|ing)? out|assembly line|first shipment)\w*\b|\b(?:products?|goods?|inventory)\b.{0,120}\breturned\b.{0,100}\b(?:company|supplier|customer|distributor|retailer|regulator)\b|\b(?:new products?|product delay|(?:lead|investigational) (?:product candidate|drug|treatment|therapy|antibody)|delivery system|bodies coming down the assembly line)\b", positive=("launch", "unveil", "reveal", "debut", "commercializ", "introduc", "release", "approval", "authorize", "available", "roll out", "rolling out", "new", "assembly", "built", "affordable", "ships the first", "first shipment", "deliver"), negative=("recall", "returned", "delay", "discontinue")),
     _rule("governance.management_change", r"\b(?:appoint(?:s|ed|ing)?|nam(?:e|es|ed|ing)|elect(?:s|ed|ing)?|resigns?|retires?|steps down|terminates?|replaces?|death|dies|died|passing)\b.{0,100}\b(?:chief executive|chief financial|CEO|CFO|president|founder|director|board)\b|\b(?:chief executive|chief financial|CEO|CFO|president|founder|director)\b.{0,80}\b(?:resigns?|retires?|steps down|appointed|named|elected|terminated|replaced|dies|died|death|passing)\b", negative=("resign", "terminated", "steps down", "death", "dies", "died", "passing")),
@@ -425,10 +425,18 @@ class NewsSynthesisEngine:
             entities,
             mention_terms,
         )
-        flags = _quality_flags(source, entities, text)
+        document_flags = _document_quality_flags(source, text)
+        flags = _quality_flags(source, entities, text, document_flags=document_flags)
         views = derive_issuer_views(entities, participations, statements=statements)
         synthesis = derive_synthesis(entities=entities, statements=statements, participations=participations, issuer_views=views)
-        eligibility = derive_eligibility(entities=entities, statements=statements, participations=participations, envelope=envelope, quality_flags=flags)
+        eligibility = derive_eligibility(
+            entities=entities,
+            statements=statements,
+            participations=participations,
+            envelope=envelope,
+            quality_flags=flags,
+            document_quality_flags=document_flags,
+        )
         document = {
             "contract_version": CONTRACT_VERSION, "concept_registry_version": self.registry_version,
             "sample_id": source_id, "source_id": source_id, "source_timestamp": timestamp,
@@ -1096,10 +1104,25 @@ def _evidence(text: str) -> list[dict[str, Any]]:
     return [{"source_field": "title", "start": 0, "end": len(quote), "quote": quote}] if quote else []
 
 
-def _quality_flags(source: Mapping[str, Any], entities: Sequence[Mapping[str, Any]], text: str) -> list[str]:
+def _document_quality_flags(source: Mapping[str, Any], text: str) -> list[str]:
     flags = {str(value) for name in ("quality_flags", "content_quality_flags") for value in source.get(name) or () if value}
     if not text.strip(): flags.add("invalid_text")
     if str(source.get("render_status") or "").strip().lower() == "unrendered": flags.add("unrendered_text")
+    return sorted(flags)
+
+
+def _quality_flags(
+    source: Mapping[str, Any],
+    entities: Sequence[Mapping[str, Any]],
+    text: str,
+    *,
+    document_flags: Iterable[str] | None = None,
+) -> list[str]:
+    flags = set(
+        _document_quality_flags(source, text)
+        if document_flags is None
+        else document_flags
+    )
     if not entities: flags.add("unresolved_identity")
     for row in entities:
         if row["identity_status"] in {"ambiguous", "unresolved"}: flags.add(f"{row['identity_status']}_identity")
@@ -2585,53 +2608,163 @@ def _sentiment(
         if re.search(r"\b(?:widened|increased)\b.{0,40}\b(?:net )?loss\b|\b(?:net )?loss\b.{0,40}\bwidened\b", normalized):
             return "negative", 2
     if rule.concept == "listing.market_structure":
-        if re.search(r"\bnot (?:yet )?regain(?:ed)? compliance\b", normalized):
-            return "negative", 3
-        if re.search(r"\b(?:has |have |had )?regained compliance\b|\bregains compliance\b", normalized):
-            return "positive", 2
-        reverse_split = r"(?:reverse(?:\s+(?:stock|share))?\s+split|share consolidation|share combination)"
-        reverse_split_action = (
-            r"(?:announc\w*|approv\w*|authoriz\w*|implement\w*|complet\w*|effectuat\w*|"
-            r"takes? effect|will become effective|will reduce)"
+        unachieved_compliance = re.search(
+            r"\b(?:never\s+regained|not(?:\s+(?:yet|fully|successfully)){0,2}\s+regained|"
+            r"(?:has|have|had)\s+yet\s+to\s+regain|"
+            r"(?:did|does|has|have|had|could|can|was|were)\s+(?:not|n t)"
+            r"(?:\s+(?:yet|fully|successfully)){0,2}\s+regain(?:ed)?|"
+            r"(?:hasn|haven|hadn|didn|doesn|couldn|wasn|weren)['’]t"
+            r"(?:\s+(?:yet|fully|successfully)){0,2}\s+regain(?:ed)?|"
+            r"(?:cannot|can't|could not|failed to|fails to)\s+regain|"
+            r"(?:is|are|was|were|has been|have been)\s+unable\s+to\s+regain)"
+            r"(?:\s+[a-z0-9-]+){0,5}\s+compliance\b",
+            normalized,
         )
-        if re.search(
-            rf"\b{reverse_split}\b.{{0,180}}\b(?:synthetic share repurchase|"
-            rf"in connection with (?:the )?(?:closing|combination|spin[- ]?off)|"
-            rf"share distribution)\b|"
-            rf"\b(?:synthetic share repurchase|spin[- ]?off|share distribution)\b"
-            rf".{{0,180}}\b{reverse_split}\b",
+        later_adverse_state = re.search(
+            r"\b(?:regained|regains)\b.{0,80}\bcompliance\b.{0,180}"
+            r"\b(?:but|however|before|later|subsequently|then)\b.{0,100}"
+            r"\b(?:non[- ]?compliance|deficien(?:cy|t)|delisting|minimum bid notice|"
+            r"los(?:t|es)\s+(?:its\s+)?compliance|"
+            r"(?:fell|falls|falling)\s+out of compliance|"
+            r"(?:fell|falls|falling)\s+below\b.{0,40}\bminimum bid)\b",
             normalized,
-        ):
-            return "neutral", 0
-        if re.search(
-            rf"\btitle:\s*[^\n]*\b{reverse_split}\b|"
-            rf"\b{reverse_split_action}\b.{{0,140}}\b{reverse_split}\b|"
-            rf"\b{reverse_split}\b.{{0,140}}\b{reverse_split_action}\b",
+        )
+        unresolved_terminal_state = re.search(
+            r"\bremains?\s+(?:out of|below)\b.{0,50}"
+            r"\b(?:compliance|minimum bid|listing requirement)\b",
             normalized,
-        ):
+        )
+        achieved_compliance_matches = tuple(re.finditer(
+            r"\b(?:(?:has|have|had)\s+(?:(?:now|since|successfully)\s+)?)?regained"
+            r"(?:\s+(?:full|continued|exchange|listing|market|minimum|bid|minimum-bid|nasdaq|nyse)){0,5}"
+            r"\s+compliance\b|"
+            r"\bregains"
+            r"(?:\s+(?:full|continued|exchange|listing|market|minimum|bid|minimum-bid|nasdaq|nyse)){0,5}"
+            r"\s+compliance\b|"
+            r"\btitle:\s*[^\n]{0,120}\bregaining of"
+            r"(?:\s+(?:full|continued|exchange|listing|market|minimum|bid|minimum-bid|nasdaq|nyse)){0,5}"
+            r"\s+compliance\b",
+            normalized,
+        ))
+        achieved_compliance = (
+            achieved_compliance_matches[-1]
+            if achieved_compliance_matches
+            else None
+        )
+        if later_adverse_state or unresolved_terminal_state:
             return "negative", 3
-        if re.search(
-            r"\b(?:gets?|got|receiv(?:e[sd]?|ing)|receipt|grant(?:s|ed|ing)|extension)\b"
-            r".{0,140}\b(?:extension|additional \d+ (?:calendar )?day period)\b"
-            r".{0,140}\b(?:regain compliance|minimum bid)",
-            normalized,
+        if achieved_compliance and (
+            unachieved_compliance is None
+            or achieved_compliance.start() >= unachieved_compliance.end()
         ):
             return "positive", 2
-        if re.search(
-            r"\b(?:to|will|seeks? to|aims? to|expects? to|in order to)\s+regain compliance\b",
-            normalized,
-        ):
+        if unachieved_compliance:
             return "negative", 3
         if re.search(
-            r"\bnot (?:yet )?regain(?:ed)? compliance\b|\b(?:delisting|non[- ]compliance)\b|"
+            r"\b(?:delisting|non[- ]?compliance)\b|"
             r"\b(?:no longer|fail(?:s|ed)? to) meet(?:s)?\b.{0,50}\b(?:minimum bid|listing requirement)\b|"
             r"\bminimum bid\b.{0,80}\b(?:deficien(?:cy|t)|below|notice)\b|"
             r"\b(?:deficien(?:cy|t)|below)\b.{0,80}\bminimum bid\b",
             normalized,
         ):
             return "negative", 3
-        if re.search(r"\b(?:has |have |had )?regained compliance\b|\bregains compliance\b", normalized):
-            return "positive", 2
+        if re.search(
+            r"\b(?:continued listing|listing extension|listing status)\b.{0,100}"
+            r"\b(?:condition(?:ed|al)|subject to|requires?|must)\b.{0,180}"
+            r"\b(?:reverse (?:stock |share )?split|share consolidation|share combination|"
+            r"regain|restore|cure|remedy|minimum bid|listing compliance)\b|"
+            r"\b(?:condition(?:ed|al)|subject to|requires?|must)\b.{0,180}"
+            r"\b(?:regain|restore|cure|remedy|bring\b.{0,50}\binto)\b"
+            r".{0,100}\b(?:compliance|minimum bid|listing requirement)\b",
+            normalized,
+        ):
+            return "negative", 2
+        if re.search(
+            r"\b(?:did not|failed to)\b.{0,40}\b(?:receive|obtain)\b"
+            r".{0,80}\blisting extension\b",
+            normalized,
+        ):
+            return "negative", 3
+        if re.search(
+            r"\b(?:reverse (?:stock |share )?split|share consolidation|share combination)\b"
+            r".{0,220}\b(?:expect(?:s|ed)?|intend(?:s|ed)?|plans?|aims?|seeks?|designed|purpose|allow)\b"
+            r".{0,180}\b(?:regain|comply|satisfy|meet)\b.{0,100}"
+            r"\b(?:compliance|minimum bid|listing requirement|continued listing)\b",
+            normalized,
+        ):
+            return "negative", 3
+        if re.search(
+            r"\b(?:gets?|got|receiv(?:e[sd]?|ing)|grant(?:s|ed|ing))\b"
+            r".{0,100}\blisting extension\b",
+            normalized,
+        ):
+            return "neutral", 0
+        if re.search(
+            r"\b(?:grace|compliance|cure) period\b.{0,120}"
+            r"\b(?:regain|minimum bid|listing compliance)\b|"
+            r"\b\d+[- ]day period\b.{0,120}\b(?:regain|minimum bid)\b",
+            normalized,
+        ):
+            return "neutral", 0
+        if re.search(
+            r"\b(?:gets?|got|receiv(?:e[sd]?|ing)|receipt|grant(?:s|ed|ing)|extension)\b"
+            r".{0,140}\b(?:extension|additional \d+ (?:calendar )?days?|"
+            r"additional \d+ (?:calendar )?day period)\b"
+            r".{0,140}\b(?:regain compliance|minimum bid)",
+            normalized,
+        ):
+            return "neutral", 0
+        if re.search(
+            r"\bhas\s+(?:until|til|till)\b.{0,120}\bto\s+regain\b.{0,80}"
+            r"\b(?:compliance|minimum bid|listing requirement)\b|"
+            r"\bplans?\s+to\s+file\b.{0,160}\bto\s+regain\b.{0,80}"
+            r"\b(?:compliance|listing requirement)\b",
+            normalized,
+        ):
+            return "negative", 3
+        if re.search(
+            r"\b(?:period|deadline|extension|plans?|measures|opportunity|time|until)\b"
+            r".{0,160}\b(?:to\s+)?regain\b.{0,80}"
+            r"\b(?:compliance|minimum bid|listing requirement)\b",
+            normalized,
+        ):
+            return "neutral", 0
+        if re.search(
+            r"\bnot\b.{0,30}\b(?:intended|designed|expected)\b.{0,120}"
+            r"\b(?:regain|restore|comply|cure|remedy|bring\b.{0,50}\binto)\b"
+            r".{0,100}\b(?:compliance|minimum bid|listing requirement)\b",
+            normalized,
+        ):
+            return "neutral", 0
+        if re.search(
+            r"\b(?:work(?:s|ed|ing)? to|seeks? to|aims? to|expect(?:s|ed)? to|intend(?:s|ed)? to|"
+            r"designed to|in order to)\b.{0,100}"
+            r"\b(?:regain|restore|cure|remedy|bring\b.{0,50}\binto)\b"
+            r".{0,100}\b(?:compliance|minimum bid|listing requirement)\b|"
+            r"\b(?:reverse (?:stock |share )?split|share consolidation|share combination)\b"
+            r".{0,140}\b(?:to|in order to)\s+"
+            r"(?:regain|restore|cure|remedy)\b.{0,100}"
+            r"\b(?:compliance|minimum bid|listing requirement)\b|"
+            r"\b(?:reverse (?:stock |share )?split|share consolidation|share combination)\b"
+            r".{0,180}\b(?:seeks? to|aims? to|expect(?:s|ed)? to|intend(?:s|ed)? to|"
+            r"designed to|in order to)\b.{0,100}\bcomply\b.{0,100}\bminimum bid\b",
+            normalized,
+        ):
+            return "negative", 3
+        if re.search(
+            r"\b(?:expect(?:s|ed)?|intend(?:s|ed)?|plans?|aims?|seeks?)\b"
+            r".{0,220}(?:"
+            r"\b(?:allow\b.{0,100})?regain\b.{0,100}\b(?:compliance|listing requirement)\b|"
+            r"\b(?:comply|satisfy|meet)\b.{0,100}\bminimum bid\b)",
+            normalized,
+        ):
+            return "negative", 3
+        if re.search(
+            r"\bto regain\b.{0,50}\bcompliance\b.{0,160}"
+            r"\b(?:must|required|needs? to)\b",
+            normalized,
+        ):
+            return "negative", 3
     if rule.concept == "commercial.contract":
         if re.search(
             r"\b(?:waiting|review|statutory|regulatory) period\b.{0,100}"
@@ -4572,16 +4705,55 @@ def _alias_variants(value: str) -> tuple[str, ...]:
             pending.append(variant)
     return tuple(sorted(variants))
 def _safe_alias(value: str) -> bool:
-    return len(value) >= 5 and value not in {
-        "america", "american", "block", "capital", "company", "credit",
-        "discover", "early", "element", "energy", "equity", "financial",
-        "global", "group", "guidance", "holdings", "international",
-        "complete response letter",
-        "investors", "mining", "national", "ordinary shares", "performance",
-        "pharmaceuticals", "public", "securities", "solutions", "standard",
-        "strategy", "target", "technology", "the company", "trading", "united",
-        "western",
-    }
+    return len(value) >= 5 and not _blocked_alias_content(value)
+
+
+_BLOCKED_ALIAS_VALUES = frozenset({
+    "america", "american", "block", "capital", "company", "credit",
+    "discover", "early", "element", "energy", "equity", "financial",
+    "global", "group", "guidance", "holdings", "international",
+    "complete response letter",
+    "investors", "mining", "national", "ordinary shares", "performance",
+    "pharmaceuticals", "public", "securities", "solutions", "standard",
+    "strategy", "target", "technology", "the company", "trading", "united",
+    "western",
+})
+
+
+_CANDIDATE_BLOCKED_ALIAS_VALUES = frozenset({
+    "capital", "company", "global", "group", "holdings", "international",
+    "pharmaceutical", "pharmaceuticals", "solutions", "technology",
+    "therapeutics",
+})
+
+
+_LEGAL_ROLE_ALIAS_TOKENS = frozenset({
+    "business", "businesses", "co", "companies", "company", "corp",
+    "corporation", "corporations", "enterprise", "enterprises", "firm",
+    "firms", "group", "groups", "holding", "holdings", "inc",
+    "incorporated", "issuer", "issuers", "limited", "ltd", "plc",
+})
+
+
+def _grammatical_legal_role_alias(value: str) -> bool:
+    """Reject legal-role phrases that normalization made look like names.
+
+    Apostrophe removal turns generic possessives such as ``the company's``
+    into ``the company s``.  Those spans describe an already established
+    issuer; they must never create a security identity.  The check is
+    intentionally limited to legal-role vocabulary so distinctive possessive
+    brands and full names such as ``New Company`` remain admissible.
+    """
+    tokens = value.split()
+    if tokens[:1] == ["the"]:
+        tokens = tokens[1:]
+    if len(tokens) >= 2 and tokens[-1] == "s":
+        tokens = tokens[:-1]
+    return bool(tokens) and all(token in _LEGAL_ROLE_ALIAS_TOKENS for token in tokens)
+
+
+def _blocked_alias_content(value: str) -> bool:
+    return value in _BLOCKED_ALIAS_VALUES or _grammatical_legal_role_alias(value)
 
 
 def _candidate_scoped_alias_variants(values: Iterable[str]) -> tuple[str, ...]:
@@ -4629,11 +4801,8 @@ def _candidate_scoped_alias_variants(values: Iterable[str]) -> tuple[str, ...]:
         variant
         for variant in variants
         if len(variant) >= 4
-        and variant not in {
-            "capital", "company", "global", "group", "holdings",
-            "international", "pharmaceutical", "pharmaceuticals",
-            "solutions", "technology", "therapeutics",
-        }
+        and not _grammatical_legal_role_alias(variant)
+        and variant not in _CANDIDATE_BLOCKED_ALIAS_VALUES
     ))
 def _normalize_ticker_identifier(value: Any) -> str:
     raw = str(value or "").upper().strip()
