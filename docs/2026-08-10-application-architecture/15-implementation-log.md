@@ -901,6 +901,16 @@ bounded direct ClickHouse paths remain documented in
      QMD client, stream, and application-authority tests passed. Real-browser
      visual acceptance remains separately open because localhost navigation is
      policy-blocked.
+114. Extended the QMD authority runner with approved direct-ClickHouse Scanner
+     primitive parity. For a complete durable plan, the probe expands only
+     QMD-declared archive years and the registered recent event table, performs
+     bounded explicit-ticker reads, and compares first/last/five-minute price,
+     volume, trade count, quote count, and population with QMD History's decoded
+     ordered stream. It refuses gaps, current-live continuations, unapproved
+     sources, and truncated QMD reads. Six focused tests and Python compilation
+     passed. Runtime parity evidence remains open because port 8800 currently
+     identifies the separately authorized IBKR Gateway Supervisor and QMD
+     History is unavailable on 8801.
 
 The authoritative remaining work and acceptance gates are maintained in the
 [complete implementation backlog](14-implementation-backlog.md). A checked

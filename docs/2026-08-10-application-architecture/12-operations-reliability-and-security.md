@@ -175,13 +175,20 @@ $env:PYTHONDONTWRITEBYTECODE='1'
 python scripts\validate_qmd_authority.py `
   --start 2026-08-07T08:00:00-04:00 `
   --end 2026-08-11T16:00:00-04:00 `
-  --tickers AAPL,MSFT
+  --tickers AAPL,MSFT `
+  --direct-clickhouse-parity
 ```
 
 The report is written atomically under
 `D:\TradingML\runtimes\qmd_validation`. A passing unit test or compiled binary
 does not replace a passing report across representative archive, recent, and
 current-live segments.
+
+Direct parity is permitted only for a fully durable source plan. The validator
+expands QMD's archive `events_YYYY` declaration by the requested years and
+accepts only the registered archive and `q_live.events` authorities; a gap,
+live continuation, unapproved table, incomplete page read, or Scanner primitive
+difference fails the report.
 
 ## 10. Current implementation and remaining drift
 

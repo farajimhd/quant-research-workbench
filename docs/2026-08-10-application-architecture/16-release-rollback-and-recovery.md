@@ -64,8 +64,8 @@ forward and rollback operations.
    recent/current-live boundaries, plus a known gap or eviction case.
 3. Run `scripts\validate_qmd_authority.py` for multiple tickers and retain its
    runtime report.
-4. Compare direct approved ClickHouse query-plan output with QMD History for a
-   fixed pinned revision once that parity probe is implemented.
+4. Add `--direct-clickhouse-parity` and compare the approved plan-declared
+   ClickHouse Scanner primitives with QMD History for the fixed pinned revision.
 5. Capture active-session Core Scan throughput, stage latency, queue depth,
    CPU, memory, and drop/lag evidence.
 6. Exercise stream lag/reconnect and prove resnapshot or exact gap fill.

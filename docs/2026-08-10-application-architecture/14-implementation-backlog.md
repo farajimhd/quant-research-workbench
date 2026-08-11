@@ -113,6 +113,13 @@ one backend registry record and one executable implementation status.
 - [x] Return source-plan hash, event schema, coverage, `as_of`, and continuation cursor.
 - [x] Provide a consumer-neutral historical contract suitable for future Market AI use.
 - [ ] Prove approved direct ClickHouse reads match QMD History decoding/results.
+  - [x] Implement an opt-in, read-only parity probe in the QMD authority runner.
+        It accepts only QMD-plan-declared archive/recent event tables, requires
+        a complete durable window and exact ticker population, and compares
+        first/last/five-minute price, volume, trade count, and quote count with
+        QMD History's decoded ordered events.
+  - [ ] Capture a passing parity report from ready QMD services and ClickHouse;
+        the current laptop port conflict prevents production evidence.
 - [x] Prevent clients from choosing physical QMD databases/tables.
 
 Acceptance gate: a boundary-spanning request returns one ordered,
