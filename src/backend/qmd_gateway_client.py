@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import math
 import os
 import urllib.error
@@ -456,12 +457,29 @@ def qmd_indicators(symbol: str, *, timeframe: str = "1m", row_limit: int = 500) 
 
 
 def qmd_catalogs() -> dict[str, Any]:
-    indicators = qmd_get_json("/indicator-catalog", timeout=3)
-    signals = qmd_get_json("/signal-catalog", timeout=3)
-    return {
-        "indicator_catalog": indicators if isinstance(indicators, list) else [],
-        "signal_catalog": signals if isinstance(signals, list) else [],
+    paths = {
+        "capability_catalog": "/capability-catalog",
+        "indicator_catalog": "/indicator-catalog",
+        "signal_catalog": "/signal-catalog",
+    }
+    with ThreadPoolExecutor(max_workers=len(paths)) as executor:
+        futures = {
+            key: executor.submit(qmd_get_json, path, timeout=3)
+            for key, path in paths.items()
+        }
+        catalogs = {key: future.result() for key, future in futures.items()}
+    normalized = {
+        key: value if isinstance(value, list) else []
+        for key, value in catalogs.items()
+    }
+    content_hash = hashlib.sha256(
+        json.dumps(normalized, separators=(",", ":"), sort_keys=True).encode("utf-8")
+    ).hexdigest()
+    return normalized | {
         "provider": "qmd-gateway",
+        "authority": "qmd_runtime_catalog",
+        "schema_version": 1,
+        "content_hash": content_hash,
     }
 
 

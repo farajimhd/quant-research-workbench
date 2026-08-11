@@ -10,6 +10,7 @@ from unittest.mock import patch
 from src.backend.trading_configuration_service import (
     _default_draft,
     _migrate_draft,
+    _qmd_runtime_capabilities,
     _resolved_source_account_id,
     _validate_draft,
     _validate_market_discovery,
@@ -26,6 +27,46 @@ from src.trading_runtime.strategy_engine import long_momentum_strategy_definitio
 
 
 class TradingConfigurationServiceTests(unittest.TestCase):
+    @patch("src.backend.trading_configuration_service.qmd_catalogs")
+    def test_market_discovery_projects_qmd_runtime_catalog_authority(self, catalogs) -> None:
+        catalogs.return_value = {
+            "capability_catalog": [{
+                "key": "momentum_core",
+                "label": "Core Momentum Oscillators",
+                "producer": "qmd",
+                "kind": "indicator_family",
+                "execution_scope": "watchlist",
+                "allowed_scopes": ["watchlist", "strategy_run", "request", "offline"],
+                "configuration_policy": "configurable",
+                "implementation_status": "implemented",
+                "operational_status": "ready",
+                "cost_class": "medium",
+                "stateful": True,
+                "inputs": ["bars"],
+                "outputs": ["rsi_14"],
+            }],
+            "indicator_catalog": [{
+                "key": "momentum_core",
+                "category": "momentum",
+                "priority": "p1",
+                "typical_timeframes": ["1m", "5m"],
+                "rationale": "Closed-bar momentum calculations.",
+            }],
+            "signal_catalog": [],
+        }
+        with patch(
+            "src.backend.trading_configuration_service._QMD_RUNTIME_CATALOG_CACHE",
+            (0.0, []),
+        ):
+            rows = _qmd_runtime_capabilities()
+
+        self.assertEqual(len(rows), 1)
+        row = rows[0]
+        self.assertEqual(row["capability_id"], "qmd.family.momentum_core")
+        self.assertEqual(row["execution_scope"], "watchlist")
+        self.assertEqual(row["timeframes"], ["1m", "5m"])
+        self.assertEqual(row["catalog_authority"], "qmd_runtime_catalog")
+
     def test_legacy_server_draft_table_is_removed(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             journal = TradingJournal(Path(directory) / "journal.sqlite3")

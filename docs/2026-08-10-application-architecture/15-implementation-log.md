@@ -47,6 +47,9 @@ bounded direct ClickHouse paths remain documented in
    hydrated Canvas charts.
 7. Added Backtest creation, monitoring, and stop controls over one continuous
    shared historical Strategy/Portfolio/OMS runtime.
+8. Made the QMD Gateway runtime catalog authoritative for backend Market
+   Discovery projection, with a short-lived and explicitly unavailable legacy
+   review fallback when QMD cannot be reached.
 
 The authoritative remaining work and acceptance gates are maintained in the
 [complete implementation backlog](14-implementation-backlog.md). A checked

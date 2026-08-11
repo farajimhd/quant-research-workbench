@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import time
 from copy import deepcopy
 from dataclasses import asdict
 from pathlib import Path
@@ -11,6 +12,7 @@ from uuid import uuid4
 
 from dotenv import load_dotenv
 
+from src.backend.qmd_gateway_client import qmd_catalogs
 from src.backend.trading_runtime_service import (
     get_strategy_definition,
     list_strategy_assignments,
@@ -65,6 +67,7 @@ DISCOVERY_EXECUTION_SCOPES = {
     "offline",
 }
 DISCOVERY_CONFIGURATION_POLICIES = {"locked", "configurable", "generated", "retired"}
+_QMD_RUNTIME_CATALOG_CACHE: tuple[float, list[dict[str, Any]]] = (0.0, [])
 
 
 def _load_configuration_env() -> None:
@@ -1330,6 +1333,10 @@ def _qmd_family_capabilities() -> list[dict[str, Any]]:
     without presenting planned calculations as active runtime behavior.
     """
 
+    runtime_rows = _qmd_runtime_capabilities()
+    if runtime_rows:
+        return runtime_rows
+
     rows = [
         ("core_bars", "Core OHLCV Bars", "market_data", "p0", "implemented", "trades, quotes", "open, high, low, close, volume, dollar volume, trade count, VWAP, return, range", "Aggregates causally available trades and NBBO quotes into non-overlapping OHLCV bars; VWAP is trade-price times size divided by accumulated size."),
         ("quote_mid_spread_bars", "Quote Midpoint and Spread Bars", "market_data", "p0", "implemented", "quotes", "bid, ask and midpoint OHLC; mean and closing spread", "Samples NBBO bid and ask updates, calculates midpoint as (bid + ask) / 2 and spread as ask - bid, then aggregates each value over the bar."),
@@ -1406,7 +1413,132 @@ def _qmd_family_capabilities() -> list[dict[str, Any]]:
             "configurable": runnable and not required and tier not in {"offline"},
             "system_required": required,
             "tier": tier,
+            "operational_status": "catalog_source_unavailable",
+            "coverage_status": "fallback_snapshot",
+            "catalog_authority": "backend_fallback_snapshot",
         })
+    return result
+
+
+def _qmd_runtime_capabilities() -> list[dict[str, Any]]:
+    """Project the QMD-owned runtime catalog into configuration UI records.
+
+    QMD Gateway is the authority. The older Python family table is used only
+    when that service is unavailable so an existing approved configuration can
+    still be reviewed; those rows are explicitly marked unavailable below.
+    """
+
+    global _QMD_RUNTIME_CATALOG_CACHE
+    now = time.monotonic()
+    expires_at, cached = _QMD_RUNTIME_CATALOG_CACHE
+    if now < expires_at:
+        return deepcopy(cached)
+    try:
+        catalogs = qmd_catalogs()
+    except Exception:
+        _QMD_RUNTIME_CATALOG_CACHE = (now + 5.0, [])
+        return []
+    capability_rows = [
+        dict(row)
+        for row in catalogs.get("capability_catalog") or []
+        if isinstance(row, dict) and str(row.get("key") or "").strip()
+    ]
+    if not capability_rows:
+        _QMD_RUNTIME_CATALOG_CACHE = (now + 5.0, [])
+        return []
+    indicators = {
+        str(row.get("key") or ""): dict(row)
+        for row in catalogs.get("indicator_catalog") or []
+        if isinstance(row, dict)
+    }
+    signals = {
+        str(row.get("key") or ""): dict(row)
+        for row in catalogs.get("signal_catalog") or []
+        if isinstance(row, dict)
+    }
+    tier_by_scope = {
+        "universal_ingest": "universal",
+        "core_scan": "core",
+        "watchlist": "watchlist",
+        "strategy_run": "strategy",
+        "request": "request",
+        "offline": "offline",
+    }
+    result: list[dict[str, Any]] = []
+    for row in capability_rows:
+        key = str(row["key"])
+        kind = str(row.get("kind") or "")
+        indicator = indicators.get(key, {})
+        signal = signals.get(key, {})
+        detail = indicator or signal
+        scope = str(row.get("execution_scope") or "watchlist")
+        policy = str(row.get("configuration_policy") or "generated")
+        status = str(row.get("implementation_status") or "unknown")
+        priority = str(
+            detail.get("priority")
+            or ("p0" if scope in {"universal_ingest", "core_scan"} else "p2")
+        )
+        timeframes = list(
+            detail.get("typical_timeframes")
+            or detail.get("working_timeframes")
+            or []
+        )
+        capability_id = (
+            f"qmd.primitive.{key.replace('_', '-')}"
+            if kind == "primitive"
+            else f"qmd.signal.{key}"
+            if kind == "market_observation"
+            else f"qmd.family.{key}"
+        )
+        category = str(detail.get("category") or "QMD runtime")
+        capability_type = (
+            "system"
+            if kind == "primitive"
+            else "signal"
+            if kind == "market_observation"
+            else "market_data"
+            if category in {"candles", "core"} and key in {"core_bars", "quote_mid_spread_bars"}
+            else "reference"
+            if category in {"reference_context", "session"}
+            else "indicator"
+        )
+        description = str(
+            detail.get("rationale")
+            or detail.get("input_basis")
+            or f"QMD runtime capability {row.get('label') or key}."
+        )
+        system_required = policy == "locked"
+        enabled = status in {"implemented", "reference_only"} and scope not in {"offline"}
+        result.append({
+            "capability_id": capability_id,
+            "name": str(row.get("label") or key),
+            "description": description,
+            "calculation": description,
+            "category": category.replace("_", " ").title(),
+            "provider": "QMD",
+            "output_type": "family",
+            "capability_type": capability_type,
+            "priority": priority,
+            "availability": status,
+            "inputs": list(row.get("inputs") or []),
+            "fields": list(row.get("outputs") or []),
+            "timeframes": timeframes,
+            "selected_timeframes": timeframes,
+            "enabled": enabled,
+            "configurable": policy == "configurable" and status in {"implemented", "reference_only", "strategy_specific"},
+            "system_required": system_required,
+            "tier": tier_by_scope.get(scope, "watchlist"),
+            "execution_scope": scope,
+            "allowed_scopes": list(row.get("allowed_scopes") or []),
+            "configuration_policy": policy,
+            "implementation_status": status,
+            "operational_status": str(row.get("operational_status") or "unknown"),
+            "coverage_status": "runtime_catalog",
+            "cost_class": str(row.get("cost_class") or "unknown"),
+            "stateful": bool(row.get("stateful")),
+            "catalog_authority": "qmd_runtime_catalog",
+        })
+    _QMD_RUNTIME_CATALOG_CACHE = (now + 60.0, deepcopy(result))
     return result
 
 
@@ -1528,12 +1660,15 @@ def _normalize_discovery_capability_contract(row: dict[str, Any]) -> dict[str, A
             )
         ),
         "implementation_status": availability,
-        "operational_status": (
-            "integration_pending"
-            if availability == "integration_pending"
-            else "planned"
-            if availability == "planned_realtime"
-            else "ready"
+        "operational_status": str(
+            normalized.get("operational_status")
+            or (
+                "integration_pending"
+                if availability == "integration_pending"
+                else "planned"
+                if availability == "planned_realtime"
+                else "ready"
+            )
         ),
         "coverage_status": str(normalized.get("coverage_status") or "unknown"),
         "cost_class": str(
@@ -1786,9 +1921,11 @@ def _default_market_discovery(
 ) -> dict[str, Any]:
     """QMD-owned discovery configuration exposed without moving calculations into Strategy."""
 
+    qmd_rows = _qmd_family_capabilities()
+    if not any(row.get("catalog_authority") == "qmd_runtime_catalog" for row in qmd_rows):
+        qmd_rows = [*_universal_ingest_capabilities(), *qmd_rows]
     calculation_rows: list[dict[str, Any]] = [
-        *_universal_ingest_capabilities(),
-        *_qmd_family_capabilities(),
+        *qmd_rows,
         *_pending_text_intelligence_label_capabilities(),
         *_discovery_reference_capabilities(),
     ]

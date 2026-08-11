@@ -169,8 +169,15 @@ offline calculation is available in its proper scope.
 - Published Run Plans may select a Watchlist source. Live/Paper wait fail closed
   for its current runtime projection, while Replay/Backtest require historical
   membership resolution.
-- The Python configuration service duplicates and already disagrees with the
-  Rust QMD catalog.
+- The configuration service now requests QMD Gateway's capability, indicator,
+  and signal catalogs together and projects the Rust-owned execution scope,
+  policy, status, cost, state, inputs, outputs, and cadence into Market
+  Discovery. If QMD is unavailable it uses the existing Python family snapshot
+  only for review, labels it `backend_fallback_snapshot`, and reports
+  `catalog_source_unavailable`; it is not treated as current runtime authority.
+- The fallback snapshot remains duplicate code and should be replaced by a
+  durable last-known QMD catalog artifact before the competing-catalog backlog
+  item can be closed.
 - Strategy-run and offline computation consumers do not yet publish their full
   target union into QMD's computation planner.
 - The UI now separates implementation, execution scope, configuration policy,

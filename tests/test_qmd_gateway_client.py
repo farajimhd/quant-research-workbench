@@ -7,6 +7,7 @@ from src.backend.qmd_gateway_client import (
     normalize_qmd_macro_bar_snapshot,
     normalize_qmd_market_signal,
     qmd_compact_events,
+    qmd_catalogs,
     qmd_live_market_state,
     qmd_indicators,
     qmd_market_signals,
@@ -17,6 +18,22 @@ from src.backend.qmd_gateway_client import (
 
 
 class QmdGatewayClientTests(unittest.TestCase):
+    @patch("src.backend.qmd_gateway_client.qmd_get_json")
+    def test_catalog_bundle_includes_canonical_computation_scope(self, get_json) -> None:
+        get_json.side_effect = lambda path, *, timeout: [{"key": path.strip("/")}]
+
+        payload = qmd_catalogs()
+
+        self.assertEqual(payload["authority"], "qmd_runtime_catalog")
+        self.assertEqual(payload["schema_version"], 1)
+        self.assertEqual(len(payload["content_hash"]), 64)
+        self.assertEqual(payload["capability_catalog"], [{"key": "capability-catalog"}])
+        self.assertEqual(
+            {call.args[0] for call in get_json.call_args_list},
+            {"/capability-catalog", "/indicator-catalog", "/signal-catalog"},
+        )
+        self.assertTrue(all(call.kwargs["timeout"] == 3 for call in get_json.call_args_list))
+
     @patch("src.backend.qmd_gateway_client.qmd_get_json")
     def test_market_signal_snapshot_filters_symbol_without_recomputing_signals(
         self, get_json
