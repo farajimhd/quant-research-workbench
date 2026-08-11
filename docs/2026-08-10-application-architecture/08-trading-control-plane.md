@@ -146,6 +146,11 @@ Stale market data, QMD loss, intelligence loss, broker disconnect, reconciliatio
   positions, orders, executions, and closed trades from the same run journal.
 - Live still contains legacy paths and has not reached controller parity.
 - Portfolio admission is fenced across backend/run processes sharing the same authoritative trading journal. A multi-host deployment would still need to move the same lease/reservation contract to a networked transactional authority.
+- The canonical Portfolio projection now exposes a bounded operational metrics
+  envelope derived from the durable journal and current state: disposition and
+  reservation-transition counts, active reserved notional/risk, reconciliation
+  issues, OMS state counts, unknown outcomes, protection deficits, and
+  reconciliation failures. Canvas renders the safety-critical subset.
 - Configuration publishing emits immutable compiled Run Plans, but Live still
   has legacy paths that do not all execute through the shared mode controller.
 - Account bindings are partly environment-backed as desired, but broker/account readiness and generated deployment review are not yet one complete flow.

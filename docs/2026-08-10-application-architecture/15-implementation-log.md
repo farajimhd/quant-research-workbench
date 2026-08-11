@@ -183,6 +183,11 @@ bounded direct ClickHouse paths remain documented in
     event-distance joins from the existing Reference Gateway tables, so the IPO
     template is no longer falsely integration-pending. Saved system templates
     migrate that status without overwriting ordinary user enablement choices.
+36. Added bounded Portfolio and OMS operational metrics to the canonical
+    Portfolio projection and Canvas. The envelope counts disposition and
+    reservation transitions from the newest 5,000 journal records, reports
+    truncation, and combines them with current active reservations, managed OMS
+    states, unknown outcomes, reconciliation failures, and protection deficits.
 
 The authoritative remaining work and acceptance gates are maintained in the
 [complete implementation backlog](14-implementation-backlog.md). A checked

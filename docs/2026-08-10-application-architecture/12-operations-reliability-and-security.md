@@ -78,6 +78,12 @@ Load shedding is semantic:
 
 Use correlation IDs from UI request or source event through backend, service, computation, proposal, Portfolio and OMS. Metrics include throughput, event/available/processing lag, coverage, source transitions, gaps, cache hit rate, queue age, rejected/deferred work, strategy latency, risk dispositions, order reconciliation and error budgets.
 
+Portfolio/OMS operational counts are explicitly bounded to the newest 5,000
+journal records per authority and carry a truncation flag. Current managed-group
+state and active reservation totals are computed from durable state rather than
+treated as lifetime counters. The UI highlights rejection, unknown outcome,
+reconciliation failure, and unprotected-quantity evidence.
+
 Logs are structured, bounded and redact credentials, account identifiers where required, licensed payloads and sensitive model prompts. Audit records are append-only and include actor, action, target, before/after version references and result.
 
 ## 7. Security and storage topology

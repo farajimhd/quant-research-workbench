@@ -29,11 +29,14 @@ def portfolio_management_snapshot(canonical_state: dict[str, Any]) -> dict[str, 
     policy_catalog = configured_portfolio_policy_catalog(configuration=configuration)
     selected_ids = {str(row.get("account_id") or "") for row in canonical_state.get("accounts") or []}
     profiles = tuple(profile for profile in profiles if profile.account_id in selected_ids)
-    persisted = trading_journal().portfolio_states()
-    managed_states = trading_journal().order_management_states()
+    journal = trading_journal()
+    persisted = journal.portfolio_states()
+    managed_states = journal.order_management_states()
+    portfolio_records = journal.portfolio_management_records(limit=5_000)
+    order_records = journal.order_management_records(limit=5_000)
     risk_records = [
         row
-        for row in trading_journal().order_management_records(limit=1_000)
+        for row in order_records
         if row.entity_type == "continuous_risk_state"
     ]
     account_rows: list[dict[str, Any]] = []
@@ -161,7 +164,7 @@ def portfolio_management_snapshot(canonical_state: dict[str, Any]) -> dict[str, 
             "entity_type": row.entity_type,
             **row.payload,
         }
-        for row in trading_journal().portfolio_management_records(limit=250)
+        for row in portfolio_records[-250:]
     ]
     return {
         "schema_version": 1,
@@ -172,11 +175,104 @@ def portfolio_management_snapshot(canonical_state: dict[str, Any]) -> dict[str, 
         "accounts": account_rows,
         "groups": _group_rows(groups, account_rows),
         "recent_decisions": decisions,
+        "operational_metrics": _operational_metrics(
+            account_rows,
+            managed_states,
+            portfolio_records,
+            order_records,
+        ),
         "configuration": portfolio_configuration_payload(profiles, groups),
         "configuration_authority": {
             "source": "approved_release" if approved else "legacy_environment",
             "revision_id": str(approved.get("revision_id") or "") if approved else "",
             "revision": int(approved.get("revision") or 0) if approved else 0,
+        },
+    }
+
+
+def _operational_metrics(
+    account_rows: list[dict[str, Any]],
+    managed_states: list[dict[str, Any]],
+    portfolio_records: list[Any],
+    order_records: list[Any],
+) -> dict[str, Any]:
+    disposition_counts: dict[str, int] = {}
+    reservation_event_counts: dict[str, int] = {}
+    for record in portfolio_records:
+        if record.entity_type == "portfolio_decision":
+            status = str(record.payload.get("status") or "unknown")
+            disposition_counts[status] = disposition_counts.get(status, 0) + 1
+        if record.entity_type == "portfolio_reservation":
+            event = str(record.payload.get("event") or "unknown")
+            reservation_event_counts[event] = reservation_event_counts.get(event, 0) + 1
+
+    state_counts: dict[str, int] = {}
+    unprotected_quantity = 0.0
+    for row in managed_states:
+        state = dict(row.get("state") or {})
+        status = str(state.get("state") or "unknown")
+        state_counts[status] = state_counts.get(status, 0) + 1
+        unprotected_quantity += max(
+            0.0,
+            float(state.get("protection_required_quantity") or 0)
+            - float(state.get("protection_coverage_quantity") or 0),
+        )
+    reconciliation_records = [
+        record
+        for record in order_records
+        if "reconciliation" in str(record.payload.get("event") or record.entity_type).lower()
+    ]
+    reconciliation_failures = [
+        record
+        for record in reconciliation_records
+        if any(
+            token in str(record.payload.get("event") or "").lower()
+            for token in ("missing", "failed", "unknown", "mismatch")
+        )
+    ]
+    active_reservations = [
+        reservation
+        for account in account_rows
+        for reservation in account.get("reservations") or []
+    ]
+    reconciliation_issues = [
+        issue
+        for account in account_rows
+        for issue in account.get("reconciliation") or []
+    ]
+    return {
+        "schema_version": 1,
+        "journal_window_limit": 5_000,
+        "portfolio": {
+            "decision_count": sum(disposition_counts.values()),
+            "disposition_counts": disposition_counts,
+            "reservation_event_counts": reservation_event_counts,
+            "active_reservation_count": len(active_reservations),
+            "active_reserved_notional": sum(
+                float(row.get("reserved_notional") or 0) for row in active_reservations
+            ),
+            "active_reserved_planned_risk": sum(
+                float(row.get("reserved_planned_risk") or 0) for row in active_reservations
+            ),
+            "reconciliation_issue_count": len(reconciliation_issues),
+            "pending_command_count": sum(
+                len(account.get("pending_operational_commands") or []) for account in account_rows
+            ),
+            "journal_window_truncated": len(portfolio_records) >= 5_000,
+        },
+        "oms": {
+            "managed_group_count": len(managed_states),
+            "state_counts": state_counts,
+            "outcome_unknown_count": state_counts.get("outcome_unknown", 0),
+            "unprotected_quantity": unprotected_quantity,
+            "reconciliation_event_count": len(reconciliation_records),
+            "reconciliation_failure_count": len(reconciliation_failures),
+            "last_reconciliation_at": (
+                reconciliation_records[-1].event_time.isoformat()
+                if reconciliation_records
+                else None
+            ),
+            "journal_window_truncated": len(order_records) >= 5_000,
         },
     }
 

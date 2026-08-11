@@ -4,6 +4,7 @@ import json
 import os
 import tempfile
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
 
@@ -174,6 +175,57 @@ class PortfolioManagementServiceTests(unittest.TestCase):
         self.assertEqual(result["control_mode"], "reduce_only")
         self.assertEqual(margin["control_mode"], "reduce_only")
         self.assertTrue(any(row["entity_type"] == "portfolio_control" for row in payload["recent_decisions"]))
+
+    def test_snapshot_exposes_bounded_portfolio_and_oms_operational_metrics(self) -> None:
+        journal = trading_journal()
+        journal.append(
+            run_id="run-a",
+            category="portfolio_management",
+            entity_type="portfolio_decision",
+            entity_id="decision-a",
+            account_id="CASH1",
+            payload={"event": "portfolio_decision", "status": "approved"},
+        )
+        journal.append(
+            run_id="run-a",
+            category="portfolio_management",
+            entity_type="portfolio_reservation",
+            entity_id="reservation-a",
+            account_id="CASH1",
+            payload={"event": "reservation_created"},
+        )
+        journal.save_order_management_state(
+            "group-a",
+            run_id="run-a",
+            account_id="CASH1",
+            state={
+                "state": "outcome_unknown",
+                "protection_required_quantity": 100,
+                "protection_coverage_quantity": 75,
+            },
+        )
+        journal.append(
+            run_id="run-a",
+            category="order_management",
+            entity_type="order_group_state",
+            entity_id="group-a",
+            account_id="CASH1",
+            event_time=datetime.now(timezone.utc),
+            payload={"event": "reconciliation_missing", "state": "rejected"},
+        )
+
+        metrics = portfolio_management_snapshot(canonical_state())["operational_metrics"]
+
+        self.assertEqual(metrics["portfolio"]["disposition_counts"], {"approved": 1})
+        self.assertEqual(
+            metrics["portfolio"]["reservation_event_counts"],
+            {"reservation_created": 1},
+        )
+        self.assertEqual(metrics["oms"]["state_counts"], {"outcome_unknown": 1})
+        self.assertEqual(metrics["oms"]["unprotected_quantity"], 25)
+        self.assertEqual(metrics["oms"]["reconciliation_event_count"], 1)
+        self.assertEqual(metrics["oms"]["reconciliation_failure_count"], 1)
+        self.assertIsNotNone(metrics["oms"]["last_reconciliation_at"])
 
     def test_resume_and_emergency_commands_are_runtime_queued_and_fail_closed(self) -> None:
         portfolio_management_command("margin", "pause_entries", reason="risk review")

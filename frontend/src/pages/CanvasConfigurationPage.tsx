@@ -186,6 +186,24 @@ type CanonicalTradingPreview = {
       }>;
       groups: PreviewRow[];
       recent_decisions: PreviewRow[];
+      operational_metrics?: {
+        portfolio: {
+          decision_count: number;
+          disposition_counts: Record<string, number>;
+          active_reservation_count: number;
+          active_reserved_notional: number;
+          reconciliation_issue_count: number;
+          pending_command_count: number;
+        };
+        oms: {
+          managed_group_count: number;
+          outcome_unknown_count: number;
+          unprotected_quantity: number;
+          reconciliation_event_count: number;
+          reconciliation_failure_count: number;
+          last_reconciliation_at?: string | null;
+        };
+      };
     };
   };
 };
@@ -3488,9 +3506,13 @@ function PortfolioPreview({ data, settings }: { data: CanonicalTradingPreview; s
 
 function PortfolioManagementPreview({ data, management }: { data: CanonicalTradingPreview; management: NonNullable<CanonicalTradingPreview["portfolio"]["management"]> }) {
   const [accounts, setAccounts] = useState(management.accounts);
+  const [operationalMetrics, setOperationalMetrics] = useState(management.operational_metrics);
   const [pending, setPending] = useState("");
   const [message, setMessage] = useState("");
-  useEffect(() => setAccounts(management.accounts), [management]);
+  useEffect(() => {
+    setAccounts(management.accounts);
+    setOperationalMetrics(management.operational_metrics);
+  }, [management]);
   const operational = data.mode === "live" || data.mode === "paper";
   const command = async (
     accountKey: string,
@@ -3515,7 +3537,10 @@ function PortfolioManagementPreview({ data, management }: { data: CanonicalTradi
           method: "POST",
         },
       );
-      if (result.portfolio_management) setAccounts(result.portfolio_management.accounts);
+      if (result.portfolio_management) {
+        setAccounts(result.portfolio_management.accounts);
+        setOperationalMetrics(result.portfolio_management.operational_metrics);
+      }
       else setAccounts((current) => current.map((row) => row.account_key === accountKey ? {
         ...row,
         ...(result.control_mode ? { control_mode: result.control_mode } : {}),
@@ -3539,6 +3564,16 @@ function PortfolioManagementPreview({ data, management }: { data: CanonicalTradi
     <div className="trading-secondary-heading"><strong>Portfolio management</strong><span>IBKR-authoritative state · account-specific policy · portfolio approval before OMS</span></div>
     {management.stale ? <div className="trading-disclosure" data-tone="negative">Entries blocked: {management.stale_reason || "broker state is stale"}</div> : null}
     {message ? <div className="trading-disclosure" role="status">{message}</div> : null}
+    {operationalMetrics ? <div className="portfolio-management-metrics" aria-label="Portfolio and OMS operational metrics">
+      <TradingMetric label="Decisions" value={String(operationalMetrics.portfolio.decision_count)} />
+      <TradingMetric label="Rejected" value={String(operationalMetrics.portfolio.disposition_counts.rejected || 0)} tone={operationalMetrics.portfolio.disposition_counts.rejected ? "negative" : "positive"} />
+      <TradingMetric label="Active reservations" value={String(operationalMetrics.portfolio.active_reservation_count)} />
+      <TradingMetric label="Reserved notional" value={money(operationalMetrics.portfolio.active_reserved_notional)} />
+      <TradingMetric label="OMS groups" value={String(operationalMetrics.oms.managed_group_count)} />
+      <TradingMetric label="Unknown outcome" value={String(operationalMetrics.oms.outcome_unknown_count)} tone={operationalMetrics.oms.outcome_unknown_count ? "negative" : "positive"} />
+      <TradingMetric label="Reconcile failures" value={String(operationalMetrics.oms.reconciliation_failure_count)} tone={operationalMetrics.oms.reconciliation_failure_count ? "negative" : "positive"} />
+      <TradingMetric label="Unprotected quantity" value={formatQuantity(operationalMetrics.oms.unprotected_quantity)} tone={operationalMetrics.oms.unprotected_quantity ? "negative" : "positive"} />
+    </div> : null}
     <div className="portfolio-management-account-list">
       {accounts.map((account) => {
         const metrics = account.metrics;
