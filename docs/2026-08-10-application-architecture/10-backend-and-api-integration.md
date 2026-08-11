@@ -158,6 +158,15 @@ recording clock, applies the same clock to symbol/listing/security/issuer joins,
 and deterministically prefers tradable USD stock listings. The service retains
 the public builder name as a compatibility import.
 
+The remaining non-fundamental Ticker Facts fanout is registered as
+`reference.ticker_facts.v1` and built as one bounded query bundle after identity
+resolution. It covers market snapshot, float, borrow, short interest/volume,
+FTD, Reg SHO, identifiers, classifications, splits/dividends, and causal daily
+volume. Each independent source remains separately degradable in composition.
+IPO fields resolve through `reference.scanner_asof.v1`, the implementation that
+actually loads point-in-time IPO data, rather than claiming Ticker Facts as a
+source it does not query. SEC/XBRL facts remain in `sec.fundamentals_asof.v1`.
+
 ## 6. Configuration registry and compiler
 
 The catalog contains capability, field, container, strategy, policy, mode and service descriptors. Configuration records reference stable IDs and versions. The compiler:

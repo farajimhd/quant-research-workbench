@@ -684,6 +684,15 @@ bounded direct ClickHouse paths remain documented in
     `identity_anchor_sql` name as a compatibility import, so route behavior did
     not change. Python compile and all 27 focused query-plan, registry, and
     ticker-facts service tests passed.
+91. Completed the non-fundamental Ticker Facts query-plan split. The registered
+    `reference.ticker_facts.v1` bundle now owns causal market snapshot, float,
+    borrow, short-interest/volume, FTD, Reg SHO, identifier, classification,
+    split/dividend, and daily-volume builders. Ticker Facts retains independent
+    source degradation and compatibility imports but no longer owns that SQL.
+    The registry now routes IPO fields to `reference.scanner_asof.v1`, which is
+    the path that actually loads IPO data, and keeps SEC/XBRL fundamentals in
+    their distinct plan. Python compile and all 28 focused query-plan, registry,
+    and Ticker Facts tests passed.
 
 The authoritative remaining work and acceptance gates are maintained in the
 [complete implementation backlog](14-implementation-backlog.md). A checked

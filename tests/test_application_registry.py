@@ -60,6 +60,17 @@ class ApplicationRegistryTests(unittest.TestCase):
             identity_plan.implementation,
             "src.backend.query_plans.reference_ticker_facts_v1:identity_anchor",
         )
+        facts_plan = {
+            plan.plan_id: plan for plan in QUERY_PLANS
+        }["reference.ticker_facts.v1"]
+        self.assertEqual(
+            facts_plan.implementation,
+            "src.backend.query_plans.reference_ticker_facts_v1:reference_fact_queries",
+        )
+        self.assertIn(
+            "market_sip_compact.daily_session_bars_by_symbol_time_v1",
+            facts_plan.source_paths,
+        )
         self.assertTrue(
             {
                 "news.company_asof.v1",
@@ -106,6 +117,7 @@ class ApplicationRegistryTests(unittest.TestCase):
         self.assertEqual(fields["signal.news_labeled"].status, "integration_pending")
         self.assertEqual(fields["event.ipo.days_to_event"].status, "implemented")
         self.assertEqual(fields["event.split.days_to_event"].status, "implemented")
+        self.assertEqual(fields["event.ipo.date"].query_plan_id, "reference.scanner_asof.v1")
         self.assertEqual(fields["model.market_hypothesis.payload"].status, "integration_pending")
         self.assertEqual(fields["reference.borrow_fee"].historical_support, "live_observation_only")
 

@@ -502,15 +502,21 @@ def _query_plans() -> tuple[QueryPlanDefinition, ...]:
         QueryPlanDefinition(
             "reference.ticker_facts.v1",
             "reference_gateway",
-            "src.backend.ticker_facts_service:ticker_facts",
+            "src.backend.query_plans.reference_ticker_facts_v1:reference_fact_queries",
             (
-                "q_live.market_short_volume_v1",
+                "q_live.id_issuer_identifier_v1",
+                "q_live.id_security_identifier_v1",
+                "q_live.market_cash_dividend_v1",
                 "q_live.market_fails_to_deliver_v1",
                 "q_live.market_reg_sho_threshold_v1",
                 "q_live.market_security_borrow_v1",
+                "q_live.market_security_classification_v1",
+                "q_live.market_security_float_v1",
+                "q_live.market_security_market_snapshot_v1",
+                "q_live.market_short_interest_v1",
+                "q_live.market_short_volume_v1",
                 "q_live.market_stock_split_v1",
-                "q_live.market_cash_dividend_v1",
-                "q_live.market_ipo_v1",
+                "market_sip_compact.daily_session_bars_by_symbol_time_v1",
             ),
             "point-in-time symbol_id/security_id",
             "source effective/trade/settlement date",
@@ -741,17 +747,18 @@ def _fields() -> tuple[FieldDefinition, ...]:
     for family, (source, names) in corporate_events.items():
         for name in names:
             scanner_distance = name == "days_to_event" and family in {"ipo", "split"}
+            scanner_projection = scanner_distance or family == "ipo"
             rows.append(_field(
                 f"event.{family}.{name}",
                 "corporate_event",
-                "backend" if scanner_distance else "reference_gateway",
+                "backend" if scanner_projection else "reference_gateway",
                 "derived://reference-scanner-event-distance" if scanner_distance else source,
-                "reference.scanner_asof.v1" if scanner_distance else "reference.ticker_facts.v1",
+                "reference.scanner_asof.v1" if scanner_projection else "reference.ticker_facts.v1",
                 value_type="string" if name in {"execution_date", "ex_date", "currency", "date", "status", "event_type", "effective_date", "old_symbol", "new_symbol"} else "number",
                 entity_grain="security_event",
                 ttl_seconds=None,
                 provenance="derived" if scanner_distance else "reported",
-                coverage_query_plan="reference.scanner_asof.v1" if scanner_distance else "reference.ticker_facts.v1",
+                coverage_query_plan="reference.scanner_asof.v1" if scanner_projection else "reference.ticker_facts.v1",
             ))
 
     diagnostic_specs = {

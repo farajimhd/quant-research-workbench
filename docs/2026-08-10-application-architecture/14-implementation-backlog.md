@@ -236,6 +236,9 @@ budgets and invalid scope broadening fails configuration validation.
         lookup into the shared registered `market.tradable_universe.v1` plan.
   - [x] Make `reference.identity_for_symbol.v1` resolve to a versioned causal
         identity-anchor builder instead of the ticker-facts composition service.
+  - [x] Move the non-fundamental Ticker Facts fanout into the registered
+        `reference.ticker_facts.v1` query bundle; keep SEC/XBRL facts under their
+        distinct fundamentals plan.
   - [ ] Move remaining approved backend SQL domains without modifying deferred
         producer services.
 - [ ] Remove duplicated route-level SQL as callers migrate.
@@ -248,6 +251,9 @@ budgets and invalid scope broadening fails configuration validation.
         trading command preflight while preserving their distinct consumers.
   - [x] Remove point-in-time identity-anchor SQL from ticker-facts composition;
         retain its existing function name as a compatibility re-export.
+  - [x] Remove market, float, borrow, short, identifier, classification,
+        corporate-action, and daily-volume SQL from Ticker Facts composition;
+        retain builder names as compatibility imports.
   - [ ] Remove remaining route/service-local SQL only after its registered plan
         and focused parity tests exist.
 - [ ] Consume deferred producer services through unchanged bounded contracts.

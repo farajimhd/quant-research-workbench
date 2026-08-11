@@ -1,8 +1,14 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime, timedelta
+from typing import Any
 
 from research.mlops.clickhouse import quote_ident, sql_string
+from src.backend.query_plans.market_daily_bars_v1 import daily_session_trade_bars_relation_sql
+
+
+HISTORY_LIMIT = 10_000
+MAIN_HISTORY_DAYS = 520
 
 
 def identity_anchor(ticker: str, cutoff: datetime, database: str) -> str:
@@ -50,3 +56,324 @@ def identity_anchor(ticker: str, cutoff: datetime, database: str) -> str:
 
 def clickhouse_timestamp(value: datetime) -> str:
     return value.astimezone(UTC).isoformat(timespec="milliseconds")
+
+
+def reference_fact_queries(
+    *,
+    ticker: str,
+    context: dict[str, Any],
+    cutoff: datetime,
+    database: str,
+    historical_database: str,
+) -> dict[str, str]:
+    """Build the independent reference queries for one resolved identity."""
+    return {
+        "borrow": borrow(ticker, cutoff, database),
+        "classifications": classifications(context["security_id"], cutoff, database),
+        "corporate": corporate_events(context["symbol_id"], cutoff, database),
+        "fails_to_deliver": fails_to_deliver(ticker, cutoff, database),
+        "float": float_history(context["symbol_id"], cutoff, database),
+        "identifiers": identifiers(
+            context["issuer_id"], context["security_id"], cutoff, database
+        ),
+        "market": market_snapshot(context["symbol_id"], cutoff, database),
+        "reg_sho": reg_sho(ticker, cutoff, database),
+        "short_interest": short_interest(context["symbol_id"], cutoff, database),
+        "short_volume": short_volume(context["symbol_id"], cutoff, database),
+        "splits": splits(context["symbol_id"], cutoff, database),
+        "volume": daily_volume(ticker, cutoff, historical_database),
+    }
+
+
+def market_snapshot(symbol_id: str, cutoff: datetime, database: str) -> str:
+    return latest_rows(
+        database,
+        "market_security_market_snapshot_v1",
+        "symbol_id",
+        symbol_id,
+        "observed_at_utc",
+        cutoff,
+        limit=20,
+    )
+
+
+def float_history(symbol_id: str, cutoff: datetime, database: str) -> str:
+    # New provider rows can contain shares outstanding while omitting float.
+    return latest_rows(
+        database,
+        "market_security_float_v1",
+        "symbol_id",
+        symbol_id,
+        "effective_date",
+        cutoff,
+        date_column=True,
+        limit=40,
+    )
+
+
+def borrow(ticker: str, cutoff: datetime, database: str) -> str:
+    return latest_rows(
+        database,
+        "market_security_borrow_v1",
+        "provider_ticker",
+        ticker,
+        "observed_at_utc",
+        cutoff,
+        limit=20,
+    )
+
+
+def short_interest(
+    symbol_id: str,
+    cutoff: datetime,
+    database: str,
+    *,
+    limit: int = 30,
+) -> str:
+    db = quote_ident(database)
+    return f"""
+        SELECT settlement_date, publication_date, published_at_utc, short_interest, avg_daily_volume,
+               days_to_cover, source_system, source_venue, inserted_at
+        FROM
+        (
+            SELECT settlement_date, publication_date, published_at_utc, short_interest, avg_daily_volume,
+                   days_to_cover, source_system, source_venue, inserted_at
+            FROM {db}.market_short_interest_v1 FINAL
+            WHERE symbol_id = {sql_string(symbol_id)}
+              AND settlement_date <= toDate({sql_string(cutoff.date().isoformat())})
+              AND inserted_at <= parseDateTime64BestEffort({sql_string(clickhouse_timestamp(cutoff))})
+            ORDER BY settlement_date DESC, inserted_at DESC
+            LIMIT 1 BY settlement_date
+        )
+        ORDER BY settlement_date DESC
+        LIMIT {max(1, min(HISTORY_LIMIT, limit))}
+        FORMAT JSONEachRow
+    """
+
+
+def short_volume(symbol_id: str, cutoff: datetime, database: str) -> str:
+    return short_volume_history(symbol_id, cutoff, database, limit=21)
+
+
+def short_volume_history(
+    symbol_id: str,
+    cutoff: datetime,
+    database: str,
+    *,
+    limit: int = HISTORY_LIMIT,
+) -> str:
+    db = quote_ident(database)
+    return f"""
+        SELECT trade_date, short_volume, total_volume, exempt_volume, short_volume_ratio,
+               source_system, source_venue, inserted_at
+        FROM
+        (
+            SELECT * FROM {db}.market_short_volume_v1 FINAL
+            WHERE symbol_id = {sql_string(symbol_id)}
+              AND trade_date <= toDate({sql_string(cutoff.date().isoformat())})
+              AND inserted_at <= parseDateTime64BestEffort({sql_string(clickhouse_timestamp(cutoff))})
+            ORDER BY trade_date DESC, inserted_at DESC
+            LIMIT 1 BY trade_date
+        )
+        ORDER BY trade_date DESC, inserted_at DESC
+        LIMIT {max(1, min(HISTORY_LIMIT, limit))}
+        FORMAT JSONEachRow
+    """
+
+
+def daily_volume(ticker: str, cutoff: datetime, database: str) -> str:
+    return daily_volume_history(ticker, cutoff, database, limit=MAIN_HISTORY_DAYS)
+
+
+def daily_volume_history(
+    ticker: str,
+    cutoff: datetime,
+    database: str,
+    *,
+    limit: int = HISTORY_LIMIT,
+) -> str:
+    daily_bars = daily_session_trade_bars_relation_sql(
+        database=database,
+        start_date=date(1970, 1, 1),
+        end_date=cutoff.date() + timedelta(days=1),
+        as_of=cutoff,
+        ticker=ticker,
+    )
+    return f"""
+        SELECT session_date, bar_end, close, size_sum
+        FROM ({daily_bars})
+        ORDER BY bar_end DESC
+        LIMIT {max(1, min(HISTORY_LIMIT, limit))}
+        FORMAT JSONEachRow
+    """
+
+
+def identifiers(
+    issuer_id: str,
+    security_id: str,
+    cutoff: datetime,
+    database: str,
+) -> str:
+    db = quote_ident(database)
+    instant = sql_string(clickhouse_timestamp(cutoff))
+    return f"""
+        SELECT entity, identifier_kind, identifier_value, source_system, is_primary, last_seen_at_utc
+        FROM
+        (
+            SELECT 'issuer' AS entity, identifier_kind, identifier_value, source_system, is_primary, last_seen_at_utc
+            FROM {db}.id_issuer_identifier_v1 FINAL WHERE issuer_id = {sql_string(issuer_id)}
+            UNION ALL
+            SELECT 'security' AS entity, identifier_kind, identifier_value, source_system, is_primary, last_seen_at_utc
+            FROM {db}.id_security_identifier_v1 FINAL WHERE security_id = {sql_string(security_id)}
+        )
+        WHERE last_seen_at_utc <= parseDateTime64BestEffort({instant})
+        ORDER BY is_primary DESC, entity ASC, identifier_kind ASC
+        FORMAT JSONEachRow
+    """
+
+
+def classifications(security_id: str, cutoff: datetime, database: str) -> str:
+    db = quote_ident(database)
+    return f"""
+        SELECT classification_source, classification_scheme, classification_level, classification_value, last_seen_at_utc
+        FROM {db}.market_security_classification_v1 FINAL
+        WHERE security_id = {sql_string(security_id)}
+          AND last_seen_at_utc <= parseDateTime64BestEffort({sql_string(clickhouse_timestamp(cutoff))})
+        ORDER BY classification_source ASC, classification_scheme ASC, classification_level ASC
+        LIMIT 30
+        FORMAT JSONEachRow
+    """
+
+
+def corporate_events(symbol_id: str, cutoff: datetime, database: str) -> str:
+    db = quote_ident(database)
+    instant = sql_string(clickhouse_timestamp(cutoff))
+    day = sql_string(cutoff.date().isoformat())
+    return f"""
+        SELECT
+            (SELECT max(execution_date) FROM {db}.market_stock_split_v1 FINAL
+             WHERE symbol_id = {sql_string(symbol_id)} AND execution_date <= toDate({day}) AND inserted_at <= parseDateTime64BestEffort({instant})) AS last_split_date,
+            (SELECT argMax(split_from, tuple(execution_date, inserted_at)) FROM {db}.market_stock_split_v1 FINAL
+             WHERE symbol_id = {sql_string(symbol_id)} AND execution_date <= toDate({day}) AND inserted_at <= parseDateTime64BestEffort({instant})) AS last_split_from,
+            (SELECT argMax(split_to, tuple(execution_date, inserted_at)) FROM {db}.market_stock_split_v1 FINAL
+             WHERE symbol_id = {sql_string(symbol_id)} AND execution_date <= toDate({day}) AND inserted_at <= parseDateTime64BestEffort({instant})) AS last_split_to,
+            (SELECT max(ex_dividend_date) FROM {db}.market_cash_dividend_v1 FINAL
+             WHERE symbol_id = {sql_string(symbol_id)} AND ex_dividend_date <= toDate({day}) AND inserted_at <= parseDateTime64BestEffort({instant})) AS last_ex_dividend_date,
+            (SELECT argMax(cash_amount, tuple(ex_dividend_date, inserted_at)) FROM {db}.market_cash_dividend_v1 FINAL
+             WHERE symbol_id = {sql_string(symbol_id)} AND ex_dividend_date <= toDate({day}) AND inserted_at <= parseDateTime64BestEffort({instant})) AS last_dividend_amount,
+            (SELECT argMax(currency_code, tuple(ex_dividend_date, inserted_at)) FROM {db}.market_cash_dividend_v1 FINAL
+             WHERE symbol_id = {sql_string(symbol_id)} AND ex_dividend_date <= toDate({day}) AND inserted_at <= parseDateTime64BestEffort({instant})) AS dividend_currency
+        FORMAT JSONEachRow
+    """
+
+
+def fails_to_deliver(
+    ticker: str,
+    cutoff: datetime,
+    database: str,
+    *,
+    limit: int = 30,
+) -> str:
+    return latest_rows(
+        database,
+        "market_fails_to_deliver_v1",
+        "provider_ticker",
+        ticker,
+        "settlement_date",
+        cutoff,
+        date_column=True,
+        limit=limit,
+    )
+
+
+def reg_sho(
+    ticker: str,
+    cutoff: datetime,
+    database: str,
+    *,
+    limit: int = 30,
+) -> str:
+    return latest_rows(
+        database,
+        "market_reg_sho_threshold_v1",
+        "provider_ticker",
+        ticker,
+        "threshold_date",
+        cutoff,
+        date_column=True,
+        limit=limit,
+    )
+
+
+def splits(
+    symbol_id: str,
+    cutoff: datetime,
+    database: str,
+    *,
+    limit: int = 100,
+) -> str:
+    return latest_rows(
+        database,
+        "market_stock_split_v1",
+        "symbol_id",
+        symbol_id,
+        "execution_date",
+        cutoff,
+        date_column=True,
+        limit=limit,
+    )
+
+
+def latest(
+    database: str,
+    table: str,
+    key: str,
+    value: str,
+    order: str,
+    cutoff: datetime,
+    *,
+    date_column: bool = False,
+) -> str:
+    return latest_rows(
+        database,
+        table,
+        key,
+        value,
+        order,
+        cutoff,
+        date_column=date_column,
+        limit=1,
+    )
+
+
+def latest_rows(
+    database: str,
+    table: str,
+    key: str,
+    value: str,
+    order: str,
+    cutoff: datetime,
+    *,
+    date_column: bool = False,
+    limit: int = 2,
+) -> str:
+    db = quote_ident(database)
+    relation = f"{db}.{quote_ident(table)}"
+    cutoff_clause = (
+        f"toDate({sql_string(cutoff.date().isoformat())})"
+        if date_column
+        else f"parseDateTime64BestEffort({sql_string(clickhouse_timestamp(cutoff))})"
+    )
+    return f"""
+        SELECT * FROM
+        (
+            SELECT * FROM {relation} FINAL
+            WHERE {quote_ident(key)} = {sql_string(value)} AND {quote_ident(order)} <= {cutoff_clause}
+              AND inserted_at <= parseDateTime64BestEffort({sql_string(clickhouse_timestamp(cutoff))})
+            ORDER BY {quote_ident(order)} DESC, inserted_at DESC
+            LIMIT 1 BY {quote_ident(order)}
+        )
+        ORDER BY {quote_ident(order)} DESC, inserted_at DESC
+        LIMIT {max(1, min(HISTORY_LIMIT, limit))}
+        FORMAT JSONEachRow
+    """
