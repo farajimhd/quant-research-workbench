@@ -225,8 +225,11 @@ budgets and invalid scope broadening fails configuration validation.
       previous-close, and daily-volume inputs are resolved through causal
       full-universe queries and joined in memory; no per-ticker remote query is
       present on the interactive Scanner/Watchlist path.
-- [ ] Maintain a compact feature projection with source, version,
-      `available_at`, freshness, and null reasons.
+- [x] Maintain a compact feature projection with source, version,
+      `available_at`, freshness, and null reasons. Historical Canvas and
+      Live/Paper Scanner responses attach one registry-derived column envelope
+      with coverage and aggregated null evidence instead of repeating metadata
+      on every ticker row.
 - [x] Compile configuration dependencies, warm-up, modes, permissions, and
       accounts. Configuration schema v19 carries QMD catalog capability keys,
       warm-up bars, and implementation revisions into compiled observation

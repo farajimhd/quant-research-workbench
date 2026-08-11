@@ -396,6 +396,16 @@ def _query_plans() -> tuple[QueryPlanDefinition, ...]:
     )
     return (
         QueryPlanDefinition(
+            "qmd.scanner.snapshot.v1",
+            "qmd_gateway",
+            "src.backend.qmd_gateway_client:qmd_scanner_snapshot",
+            ("service://qmd-gateway/scanner",),
+            "canonical ticker identity",
+            "QMD event time and scanner sequence",
+            "QMD processing time",
+            "service://qmd-gateway/coverage",
+        ),
+        QueryPlanDefinition(
             "reference.schema_inventory.v1",
             "reference_gateway",
             "services.reference_gateway.table_groups:REFERENCE_TABLE_GROUPS",

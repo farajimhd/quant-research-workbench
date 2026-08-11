@@ -31,6 +31,7 @@ from src.backend.historical_scanner_service import (
     historical_scanner_technical_projection,
     historical_scanner_qmd_projection_or_schedule,
 )
+from src.backend.feature_projection import compact_feature_projection
 from src.trading_runtime.domain import BrokerAccount, BrokerEventEnvelope, BrokerEventType, BrokerProvider, TradingMode
 from src.trading_runtime.ibkr_normalizer import normalize_account_values, normalize_execution, normalize_ledger, normalize_order, normalize_position_snapshot
 from src.trading_runtime.projector import TradingStateProjector
@@ -231,6 +232,12 @@ def scanner_snapshot_payload(
     return {
         "as_of": effective_as_of.isoformat(),
         "errors": errors,
+        "feature_projection": compact_feature_projection(
+            rows,
+            as_of=effective_as_of,
+            source_revision=str(meta.get("source_revision") or ""),
+            source_schema_version=str(meta.get("schema_version") or "1"),
+        ),
         "meta": meta,
         "rows": rows,
         "signal_rows": signal_rows,

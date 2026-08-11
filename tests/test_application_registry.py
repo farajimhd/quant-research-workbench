@@ -26,6 +26,7 @@ class ApplicationRegistryTests(unittest.TestCase):
         self.assertEqual(len(field_ids), len(set(field_ids)))
         sources = {source for plan in QUERY_PLANS for source in plan.source_paths}
         self.assertTrue({f"q_live.{table}" for table in OWNED_REFERENCE_TABLES}.issubset(sources))
+        self.assertIn("qmd.scanner.snapshot.v1", {plan.plan_id for plan in QUERY_PLANS})
 
     def test_baseline_covers_scanner_chart_strategy_and_diagnostic_enrichments(self) -> None:
         fields = {field.field_id: field for field in FIELD_DEFINITIONS}

@@ -31,6 +31,14 @@ by the catalog and rejects a column that is not the projection of its registered
 field. `/api/registries/market-discovery-fields` exposes the static presentation
 contract; the versioned configuration embeds the runtime-resolved catalog.
 
+Historical Canvas scanner and Live/Paper scanner responses also carry a compact
+`feature_projection` envelope derived from this registry. It records each
+exposed column onceâ€”not once per tickerâ€”with field/source/query-plan identity,
+schema and source revision, event and availability clocks, latest observed
+availability, freshness policy, implementation status, coverage counts, and
+aggregated explicit null reasons. Flat row values remain efficient for sorting
+and rendering; the projection is their causal/provenance companion.
+
 ## Registry model
 
 Each `FieldDefinition` contains:
@@ -75,6 +83,10 @@ The live application bulk-loads the eligible universe and incrementally applies
 source changes. It never queries ClickHouse or another service once per scanner
 row. Historical requests use set-based point-in-time queries bounded by the
 Canvas/run clock.
+
+The QMD Scanner itself is registered as `qmd.scanner.snapshot.v1`, so native
+market columns and enrichment columns use the same projection contract even
+though their physical authorities remain different.
 
 ## Baseline registered field namespace
 

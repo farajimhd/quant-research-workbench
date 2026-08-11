@@ -97,6 +97,11 @@ float, short interest, country, presentation assets, IPOs and splits; one
 causal fundamentals query resolves SEC facts for the same population; and one
 daily-bar query supplies previous close and volume baselines. The backend joins
 those projections in memory and does not issue a remote request per ticker.
+Both the historical and Live/Paper scanner compositions now attach a compact
+registry-derived feature projection with source/query-plan ID, schema/source
+revision, causal availability and freshness policy, coverage, and null reasons.
+The projection avoids repeating provenance on every market row while keeping a
+flat browser-friendly scanner payload.
 
 The typed QMD client response schema v2 preserves product, authority, endpoint,
 payload, completeness, warnings, coverage status and source revision. QMD Live
@@ -193,8 +198,12 @@ Service-to-service calls use scoped identities and explicit allowlists. Read acc
   fallback has been removed; saved releases retain embedded review evidence,
   while current choices require QMD authority. Remaining handwritten reference
   and deferred-intelligence projections still require registry generation.
-- Snapshot/delta recovery, completeness and standard error semantics vary by endpoint.
-- Replay, Live and draft Backtest surfaces do not yet all use one compiler and controller API.
+- Non-QMD endpoint envelopes and application-wide command authorization still
+  need standardization; QMD and scanner feature projections now preserve typed
+  completeness/provenance at their composition boundaries.
+- Replay, Live/Paper, and Backtest resolve the same published Canvas and
+  canonical trading projections. A future research workspace and the remaining
+  legacy rollback code still require migration evidence before removal.
 
 ---
 

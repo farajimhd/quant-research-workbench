@@ -562,6 +562,16 @@ bounded direct ClickHouse paths remain documented in
     All 30 focused historical-runtime/Canvas tests, Python compile, diff
     validation, and the managed external-runtime frontend production build
     passed. Real-browser validation remains in the broader UI acceptance gate.
+79. Added the compact application feature projection to historical Canvas and
+    Live/Paper Scanner responses. Each browser-friendly flat column now has one
+    registry-derived companion record carrying field/source/query-plan identity,
+    schema and source revision, event/availability clocks, latest observed
+    availability, freshness policy, implementation status, coverage, and
+    aggregated explicit null reasons. QMD native Scanner columns use the newly
+    registered `qmd.scanner.snapshot.v1` plan; enrichment fields retain their
+    existing Reference/SEC query-plan authority. No producer service changed.
+    All 16 focused projection, application-registry, Canvas, and preflight tests
+    plus Python compile and diff validation passed.
 
 The authoritative remaining work and acceptance gates are maintained in the
 [complete implementation backlog](14-implementation-backlog.md). A checked

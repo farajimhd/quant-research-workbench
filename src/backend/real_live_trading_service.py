@@ -11,7 +11,7 @@ import urllib.request
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -19,6 +19,7 @@ from zoneinfo import ZoneInfo
 from dotenv import load_dotenv
 
 from src.backend.qmd_gateway_client import qmd_scanner_snapshot
+from src.backend.feature_projection import compact_feature_projection
 from src.backend.real_live_market_data.clickhouse import ClickHouseHttpClient, quote_identifier
 from src.backend.real_live_market_data.config import market_gateway_config
 from src.market_engine.broker import AccountSnapshot, ExecutionFill, OrderSnapshot, PortfolioPosition
@@ -296,6 +297,12 @@ def real_live_scanner_snapshot(row_limit: int = 250) -> dict[str, Any]:
             )
             if reference_error:
                 filtered["reference_enrichment_error"] = reference_error
+            filtered["feature_projection"] = compact_feature_projection(
+                limited_rows,
+                as_of=datetime.now(UTC),
+                source_revision=str(filtered.get("source_revision") or ""),
+                source_schema_version=str(filtered.get("schema_version") or "1"),
+            )
             return filtered
     except Exception as exc:
         qmd_error = str(exc)
@@ -309,7 +316,7 @@ def real_live_scanner_snapshot(row_limit: int = 250) -> dict[str, Any]:
     rows = rows[: max(1, min(int(row_limit or 250), 1000))]
     rows, tradable_filter = filter_tradable_rows(rows)
     now = datetime.now(NEW_YORK)
-    return {
+    result = {
         "provider": "massive",
         "session_date": now.date().isoformat(),
         "market_time": now.strftime("%H:%M"),
@@ -318,6 +325,13 @@ def real_live_scanner_snapshot(row_limit: int = 250) -> dict[str, Any]:
         "qmd_gateway_error": qmd_error,
         "tradable_filter": tradable_filter,
     }
+    result["feature_projection"] = compact_feature_projection(
+        rows,
+        as_of=datetime.now(UTC),
+        source_revision="massive-rest-fallback",
+        source_schema_version=1,
+    )
+    return result
 
 
 def real_live_portfolio(account_type: str, account_keys: str | list[str] | None = None) -> dict[str, Any]:
