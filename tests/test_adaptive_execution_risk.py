@@ -86,6 +86,41 @@ def adaptive_intent(*, quantity: float = 100) -> StrategyIntent:
     )
 
 
+def portfolio_approved(
+    journal: TradingJournal,
+    request: StrategyIntent,
+    account_id: str = "DU1",
+) -> StrategyIntent:
+    decision_id = f"decision:{request.intent_id}"
+    reservation_id = f"reservation:{request.intent_id}"
+    state = journal.portfolio_states().get(account_id) or {}
+    reservations = [
+        row
+        for row in state.get("reservations") or []
+        if str(row.get("reservation_id") or "") != reservation_id
+    ]
+    reservations.append(
+        {
+            "reservation_id": reservation_id,
+            "decision_id": decision_id,
+            "intent_id": request.intent_id,
+            "account_id": account_id,
+            "ticker": request.ticker,
+            "quantity": request.quantity,
+            "status": "reserved",
+        }
+    )
+    journal.save_portfolio_state(account_id, {**state, "reservations": reservations})
+    return replace(
+        request,
+        metadata={
+            **request.metadata,
+            "portfolio_decision_id": decision_id,
+            "portfolio_reservation_id": reservation_id,
+        },
+    )
+
+
 class ContractAndPlanningTests(unittest.TestCase):
     def test_multi_swing_profile_creates_independent_protected_batches(self) -> None:
         plan = IbkrStrategyOrderPlanner().plan(
@@ -262,7 +297,11 @@ class AdaptiveOmsTests(unittest.IsolatedAsyncioTestCase):
                 policy=BrokerCommunicationPolicy(),
                 execution_market_data=market_data,
             )
-            submitted = await manager.submit_intent(adaptive_intent(), account_id="DU1", event=None)
+            submitted = await manager.submit_intent(
+                portfolio_approved(journal, adaptive_intent()),
+                account_id="DU1",
+                event=None,
+            )
             broker_id = submitted.broker_order_ids[0]
             await manager.on_order_update(
                 LiveOrder(
@@ -336,7 +375,7 @@ class AdaptiveOmsTests(unittest.IsolatedAsyncioTestCase):
                 strategy_revision=7,
             )
             original = await first.submit_intent(
-                adaptive_intent(quantity=10),
+                portfolio_approved(journal, adaptive_intent(quantity=10)),
                 account_id="DU1",
                 event=None,
             )
@@ -359,7 +398,7 @@ class AdaptiveOmsTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(recovered[0].broker_order_ids, original.broker_order_ids)
             with self.assertRaisesRegex(ValueError, "already been submitted"):
                 await second.submit_intent(
-                    adaptive_intent(quantity=10),
+                    portfolio_approved(journal, adaptive_intent(quantity=10)),
                     account_id="DU1",
                     event=None,
                 )

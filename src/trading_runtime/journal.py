@@ -132,6 +132,28 @@ class TradingJournal:
         ).fetchall()
         return {str(row["account_id"]): json.loads(row["state_json"]) for row in rows}
 
+    def portfolio_reservation(
+        self, account_id: str, reservation_id: str
+    ) -> dict[str, Any] | None:
+        if not account_id or not reservation_id:
+            return None
+        with self._lock:
+            row = self._connection.execute(
+                "SELECT state_json FROM portfolio_states WHERE account_id = ?",
+                (account_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        state = json.loads(str(row["state_json"]))
+        return next(
+            (
+                dict(reservation)
+                for reservation in state.get("reservations") or []
+                if str(reservation.get("reservation_id") or "") == reservation_id
+            ),
+            None,
+        )
+
     def acquire_portfolio_admission_lease(
         self,
         resource_id: str,

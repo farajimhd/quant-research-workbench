@@ -247,20 +247,21 @@ one fenced decision.
 
 ## 9. OMS authority
 
-- [ ] Accept only Portfolio-approved execution intent.
+- [x] Accept only an execution intent whose durable Portfolio decision and
+      reservation match its account, intent, ticker, quantity, and active state.
 - [ ] Version the execution-intent schema.
-- [ ] Generate idempotent client/order identifiers.
-- [ ] Implement submit, acknowledge, replace, cancel, reject, and fill transitions.
-- [ ] Handle partial fills and remaining quantity.
-- [ ] Implement parent/child, bracket, stop, target, trailing, flatten, and disconnect protection.
-- [ ] Separate execution and protection policies.
-- [ ] Preserve existing IBKR Supervisor/broker boundaries.
-- [ ] Normalize broker and deterministic simulator events to one schema.
-- [ ] Recover and reconcile uncertain orders after reconnect.
-- [ ] Fail closed when broker or journal truth is uncertain.
-- [ ] Journal commands and every lifecycle/reconciliation result.
+- [x] Generate stable client/order identifiers and reject persisted duplicate intent IDs.
+- [x] Implement submit, acknowledge, replace, cancel, reject, and fill transitions.
+- [x] Handle partial fills and remaining quantity.
+- [x] Implement parent/child, bracket, stop, target, trailing, flatten, and disconnect protection.
+- [x] Separate execution and protection policies.
+- [x] Preserve existing IBKR Supervisor/broker boundaries.
+- [x] Normalize broker and deterministic simulator events to one schema.
+- [x] Recover and reconcile uncertain orders after reconnect.
+- [x] Fail closed when broker, Portfolio reservation, or journal truth is uncertain.
+- [x] Journal commands and every lifecycle/reconciliation result.
 - [ ] Build order, execution, protection, and reconciliation UI projections.
-- [ ] Test idempotency, restart, disconnect, partial fills, and protections.
+- [x] Test Portfolio authority, idempotency, restart, disconnect, partial fills, and protections.
 
 Acceptance gate: no chart, strategy, model output, or backend route can issue a
 broker command outside OMS.

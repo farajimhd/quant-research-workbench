@@ -94,6 +94,13 @@ OMS exclusively owns executable order lifecycle after Portfolio approval:
 
 The broker adapter executes OMS commands. Strategies, charts, AI services, and scanners never call the broker directly.
 
+`submit_intent` now verifies the exact durable Portfolio decision and
+reservation against account, intent, ticker, approved quantity, and active
+status before planning any broker order. It also rejects an intent ID already
+present in durable OMS state even when recovery has not yet populated the
+in-memory projection. This makes the journal boundary authoritative for both
+Portfolio admission and OMS idempotency; metadata alone is not approval.
+
 ## 6. IBKR and account bindings
 
 IBKR Gateway/Supervisor owns connectivity, session health, market/trading permissions and broker account discovery. Secrets and actual account IDs remain environment-backed. Configuration stores stable binding keys and permitted modes, not credentials.

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
@@ -66,6 +67,41 @@ def planner(strategy_intent: StrategyIntent, account_id: str, _event) -> Strateg
                 price=strategy_intent.reference_price,
             ),
         )
+    )
+
+
+def portfolio_approved(
+    journal: TradingJournal,
+    request: StrategyIntent,
+    account_id: str = "DU1",
+) -> StrategyIntent:
+    decision_id = f"decision:{request.intent_id}"
+    reservation_id = f"reservation:{request.intent_id}"
+    state = journal.portfolio_states().get(account_id) or {}
+    reservations = [
+        row
+        for row in state.get("reservations") or []
+        if str(row.get("reservation_id") or "") != reservation_id
+    ]
+    reservations.append(
+        {
+            "reservation_id": reservation_id,
+            "decision_id": decision_id,
+            "intent_id": request.intent_id,
+            "account_id": account_id,
+            "ticker": request.ticker,
+            "quantity": request.quantity,
+            "status": "reserved",
+        }
+    )
+    journal.save_portfolio_state(account_id, {**state, "reservations": reservations})
+    return replace(
+        request,
+        metadata={
+            **request.metadata,
+            "portfolio_decision_id": decision_id,
+            "portfolio_reservation_id": reservation_id,
+        },
     )
 
 
@@ -225,6 +261,26 @@ class OrderManagementPolicyTests(unittest.IsolatedAsyncioTestCase):
         )
         return manager, journal
 
+    async def test_oms_rejects_missing_or_mismatched_portfolio_authority(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            broker = SimulatedBrokerAdapter(["DU1"], mode=TradingMode.PAPER)
+            manager, journal = await self._manager(
+                directory,
+                broker,
+                policy=BrokerCommunicationPolicy(),
+            )
+            with self.assertRaisesRegex(ValueError, "durable Portfolio"):
+                await manager.submit_intent(intent(), account_id="DU1", event=None)
+            approved = portfolio_approved(journal, intent())
+            mismatched = replace(approved, quantity=approved.quantity + 1)
+            with self.assertRaisesRegex(ValueError, "mismatched Portfolio reservation"):
+                await manager.submit_intent(
+                    mismatched, account_id="DU1", event=None
+                )
+            self.assertEqual(await broker.live_orders(), [])
+            await manager.close()
+            journal.close()
+
     async def test_allowlisted_warning_is_confirmed_and_complete_transcript_is_saved(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             broker = WarningBroker(["o163"])
@@ -233,7 +289,9 @@ class OrderManagementPolicyTests(unittest.IsolatedAsyncioTestCase):
                 broker,
                 policy=BrokerCommunicationPolicy(auto_confirm_message_ids=("o163",)),
             )
-            snapshot = await manager.submit_intent(intent(), account_id="DU1", event=None)
+            snapshot = await manager.submit_intent(
+                portfolio_approved(journal, intent()), account_id="DU1", event=None
+            )
             self.assertEqual(snapshot.state, OrderManagementState.ACKNOWLEDGED)
             self.assertEqual(broker.replies, [True])
             decisions = [
@@ -254,7 +312,9 @@ class OrderManagementPolicyTests(unittest.IsolatedAsyncioTestCase):
                 broker,
                 policy=BrokerCommunicationPolicy(auto_confirm_message_ids=("o163",)),
             )
-            snapshot = await manager.submit_intent(intent(), account_id="DU1", event=None)
+            snapshot = await manager.submit_intent(
+                portfolio_approved(journal, intent()), account_id="DU1", event=None
+            )
             self.assertEqual(snapshot.state, OrderManagementState.POLICY_BLOCKED)
             self.assertEqual(broker.replies, [False])
             await manager.close()
@@ -268,7 +328,9 @@ class OrderManagementPolicyTests(unittest.IsolatedAsyncioTestCase):
                 broker,
                 policy=BrokerCommunicationPolicy(auto_confirm_message_ids=("o163", "o164")),
             )
-            snapshot = await manager.submit_intent(intent(), account_id="DU1", event=None)
+            snapshot = await manager.submit_intent(
+                portfolio_approved(journal, intent()), account_id="DU1", event=None
+            )
             self.assertEqual(snapshot.state, OrderManagementState.ACKNOWLEDGED)
             self.assertEqual(broker.replies, [True, True])
             decisions = [
@@ -291,7 +353,9 @@ class OrderManagementPolicyTests(unittest.IsolatedAsyncioTestCase):
             )
             with self.assertRaisesRegex(ValueError, "does not report sufficient shortable"):
                 await manager.submit_intent(
-                    intent(action="enter_short", urgency="urgent"),
+                    portfolio_approved(
+                        journal, intent(action="enter_short", urgency="urgent")
+                    ),
                     account_id="DU1",
                     event=None,
                 )
@@ -308,7 +372,7 @@ class OrderManagementPolicyTests(unittest.IsolatedAsyncioTestCase):
                 broker,
                 policy=BrokerCommunicationPolicy(),
             )
-            requested = intent()
+            requested = portfolio_approved(journal, intent())
             with self.assertRaisesRegex(TimeoutError, "timed out"):
                 await manager.submit_intent(requested, account_id="DU1", event=None)
             self.assertEqual(manager.snapshots()[0].state, OrderManagementState.OUTCOME_UNKNOWN)
@@ -357,7 +421,9 @@ class OrderManagementPolicyTests(unittest.IsolatedAsyncioTestCase):
                     "trailing_amount": 0.10,
                 }
             )
-            entry_snapshot = await manager.submit_intent(entry, account_id="DU1", event=None)
+            entry_snapshot = await manager.submit_intent(
+                portfolio_approved(journal, entry), account_id="DU1", event=None
+            )
             self.assertEqual(len(entry_snapshot.broker_order_ids), 4)
             pocket = StrategyIntent(
                 **{
@@ -370,7 +436,9 @@ class OrderManagementPolicyTests(unittest.IsolatedAsyncioTestCase):
                     },
                 }
             )
-            pocket_snapshot = await manager.submit_intent(pocket, account_id="DU1", event=None)
+            pocket_snapshot = await manager.submit_intent(
+                portfolio_approved(journal, pocket), account_id="DU1", event=None
+            )
             self.assertEqual(pocket_snapshot.state, OrderManagementState.ACKNOWLEDGED)
             self.assertTrue(pocket_snapshot.reentry_after_fill)
             self.assertEqual(len(broker.modifications), 1)
@@ -423,7 +491,9 @@ class OrderManagementPolicyTests(unittest.IsolatedAsyncioTestCase):
                     "profit_target_price": 10.50,
                 }
             )
-            snapshot = await manager.submit_intent(entry, account_id="DU1", event=None)
+            snapshot = await manager.submit_intent(
+                portfolio_approved(journal, entry), account_id="DU1", event=None
+            )
             child = LiveOrder(
                 account="DU1",
                 orderId=snapshot.broker_order_ids[1],

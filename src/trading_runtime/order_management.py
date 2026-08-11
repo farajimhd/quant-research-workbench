@@ -477,6 +477,44 @@ class OrderManagementEngine:
                 self._group_by_broker_id[broker_order_id] = group_id
         return await self.reconcile()
 
+    def _require_portfolio_approval(
+        self, intent: StrategyIntent, account_id: str
+    ) -> None:
+        decision_id = str(intent.metadata.get("portfolio_decision_id") or "")
+        reservation_id = str(intent.metadata.get("portfolio_reservation_id") or "")
+        if not decision_id or not reservation_id:
+            raise ValueError(
+                "OMS requires a durable Portfolio decision and reservation"
+            )
+        reservation = self.journal.portfolio_reservation(account_id, reservation_id)
+        if reservation is None:
+            raise ValueError(
+                "OMS cannot verify the Portfolio reservation for this account"
+            )
+        mismatches = []
+        if str(reservation.get("decision_id") or "") != decision_id:
+            mismatches.append("decision_id")
+        if str(reservation.get("intent_id") or "") != intent.intent_id:
+            mismatches.append("intent_id")
+        if str(reservation.get("account_id") or "") != account_id:
+            mismatches.append("account_id")
+        if str(reservation.get("ticker") or "").upper() != intent.ticker.upper():
+            mismatches.append("ticker")
+        if not math.isclose(
+            float(reservation.get("quantity") or 0),
+            float(intent.quantity),
+            rel_tol=0.0,
+            abs_tol=1e-9,
+        ):
+            mismatches.append("quantity")
+        if str(reservation.get("status") or "") != "reserved":
+            mismatches.append("status")
+        if mismatches:
+            raise ValueError(
+                "OMS rejected a stale or mismatched Portfolio reservation: "
+                + ", ".join(mismatches)
+            )
+
     async def submit_intent(
         self,
         intent: StrategyIntent,
@@ -488,7 +526,14 @@ class OrderManagementEngine:
             raise RuntimeError("Order management engine is closed")
         if not self._broker_connected:
             raise RuntimeError("Broker stream is disconnected; new order intents are frozen")
-        if intent.intent_id in (group.intent.intent_id for group in self._groups.values()):
+        self._require_portfolio_approval(intent, account_id)
+        persisted_intent_ids = {
+            str(dict(row.get("state") or {}).get("intent", {}).get("intent_id") or "")
+            for row in self.journal.order_management_states()
+        }
+        if intent.intent_id in persisted_intent_ids or intent.intent_id in (
+            group.intent.intent_id for group in self._groups.values()
+        ):
             raise ValueError(f"Strategy intent has already been submitted: {intent.intent_id}")
         plan = self.planner(intent, account_id, event)
         if not plan.orders:
