@@ -6188,7 +6188,20 @@ async def trading_canvas_market_signals_stream(websocket: WebSocket, symbol: str
             ping_timeout=20,
             max_size=2 * 1024 * 1024,
         ) as upstream:
-            await websocket.send_json({"status": "connected", "ticker": ticker})
+            snapshot = await asyncio.to_thread(
+                qmd_market_signals,
+                ticker,
+                include_history=False,
+                row_limit=5_000,
+            )
+            await websocket.send_json(
+                {
+                    **snapshot,
+                    "schema_version": 1,
+                    "snapshot_id": f"qmd-signals:{ticker}:{snapshot.get('as_of') or 'empty'}",
+                    "type": "snapshot",
+                }
+            )
             async for message in upstream:
                 payload = json.loads(message.decode("utf-8") if isinstance(message, bytes) else message)
                 if _qmd_stream_payload_matches_ticker(payload, ticker):

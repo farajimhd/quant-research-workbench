@@ -325,9 +325,14 @@ budgets and invalid scope broadening fails configuration validation.
   - [x] Give the live Canvas compact-event path a versioned ticker snapshot
         with snapshot ID/last sequence and establish its QMD delta subscription
         before the snapshot is captured.
+  - [x] Give the Canvas market-signal path a versioned ticker snapshot after
+        its upstream subscription is established; retain event identity on
+        deltas and require resnapshot on lag. A monotonic signal sequence
+        remains part of the unchecked parent contract.
 - [ ] Fill reconnect gaps or require resnapshot.
   - [x] Forward tickerless QMD terminal gap frames through the backend and make
         the live tape/quote Canvas replace state from a new snapshot on reconnect.
+  - [x] Forward the same terminal gap contract after the market-signal snapshot.
 - [x] Isolate budgets for commands, discovery, charts, simulation, and offline work.
   - [x] Enforce independent HTTP admission limits with typed retryable 429
         rejection and expose per-lane active/completed/rejected/wait evidence.

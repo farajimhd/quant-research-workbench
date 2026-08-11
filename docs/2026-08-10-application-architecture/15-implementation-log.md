@@ -990,6 +990,14 @@ bounded direct ClickHouse paths remain documented in
      focused causal-plan assertions, and Python compilation passed. The
      Miniconda runtime does not provide pytest, so the existing pytest wrapper
      file was not claimed as executed.
+119. Added snapshot-before-delta semantics to the Canvas market-signal stream.
+     The backend establishes the QMD subscription first, captures one bounded
+     ticker signal snapshot with a versioned snapshot identity, then forwards
+     ticker-scoped events and terminal resnapshot controls. The existing compact
+     event stream retains its monotonic arrival sequence; signal deltas retain
+     their stable event IDs, so the broader monotonic signal-sequence gate stays
+     open. Focused route validation proved subscription ordering, initial
+     snapshot delivery, and lag-control forwarding.
 
 The authoritative remaining work and acceptance gates are maintained in the
 [complete implementation backlog](14-implementation-backlog.md). A checked

@@ -119,6 +119,44 @@ class QmdCanvasStreamContractTests(unittest.TestCase):
         self.assertIs(payload["complete"], True)
         self.assertIs(payload["truncated_before"], True)
 
+    def test_signal_route_subscribes_before_snapshot_and_forwards_gap(self) -> None:
+        entered: list[bool] = []
+
+        def snapshot(*_args, **_kwargs):
+            self.assertTrue(entered, "upstream subscription must precede snapshot capture")
+            return {
+                "as_of": "2026-08-11T15:00:00+00:00",
+                "row_count": 1,
+                "rows": [{"event_id": "signal-1", "ticker": "AAPL"}],
+                "source": "qmd-gateway",
+                "ticker": "AAPL",
+            }
+
+        upstream = FakeUpstream(
+            [{"type": "stream_gap", "action": "resnapshot_required", "skipped": 2}]
+        )
+        with (
+            patch(
+                "src.backend.app.websockets.connect",
+                return_value=FakeConnect(upstream, entered),
+            ),
+            patch("src.backend.app.qmd_market_signals", side_effect=snapshot),
+            TestClient(app) as client,
+        ):
+            with client.websocket_connect(
+                "/api/trading/canvas-market-signals/stream/AAPL"
+            ) as websocket:
+                first = websocket.receive_json()
+                second = websocket.receive_json()
+
+        self.assertEqual(first["type"], "snapshot")
+        self.assertEqual(first["row_count"], 1)
+        self.assertEqual(
+            first["snapshot_id"], "qmd-signals:AAPL:2026-08-11T15:00:00+00:00"
+        )
+        self.assertEqual(second["action"], "resnapshot_required")
+        self.assertEqual(second["skipped"], 2)
+
 
 if __name__ == "__main__":
     unittest.main()
