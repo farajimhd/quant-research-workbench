@@ -320,6 +320,85 @@ class ReplayPreflightTests(unittest.TestCase):
         self.assertEqual(result["account_mapping"], {"DU123456": "SIM-01-PRIMARY"})
         self.assertTrue(all(check["status"] == "ready" for check in result["checks"]))
 
+    def test_preflight_resolves_watchlist_at_replay_clock(self) -> None:
+        approved = approved_configuration()
+        approved["payload"]["universes"] = [{
+            "enabled": True,
+            "name": "VWAP breakout",
+            "scanner_view_id": "vwap-breakout",
+            "source": "watchlist",
+        }]
+        approved["configuration_model"] = {"market_discovery": {}}
+        resolved = {
+            "members": [{"ticker": "MSFT", "ibkr_conid": 272093}],
+            "scanner": {"complete_universe": True},
+            "status": "ready",
+        }
+        with tempfile.TemporaryDirectory() as directory, patch(
+            "src.backend.replay_run_service.historical_gateway_snapshot",
+            return_value={"base_url": "http://127.0.0.1:8801", "ready": True},
+        ), patch(
+            "src.backend.replay_run_service.historical_day_coverage",
+            return_value={"coverage_table": "qmd.coverage", "event_count": 10, "ticker_count": 1},
+        ), patch(
+            "src.backend.replay_run_service.replay_runtime_root",
+            return_value=Path(directory),
+        ), patch(
+            "src.backend.watchlist_runtime_service.resolve_historical_watchlist",
+            return_value=resolved,
+        ) as resolver:
+            result = replay_preflight(
+                session_date=date(2026, 7, 28),
+                start_time=time(9, 45),
+                initial_cash=100_000,
+                configuration_revision=approved,
+            )
+
+        self.assertTrue(result["ready"])
+        self.assertIn("MSFT", result["tickers"])
+        self.assertEqual(
+            resolver.call_args.kwargs["as_of"].isoformat(),
+            "2026-07-28T09:45:00-04:00",
+        )
+
+    def test_preflight_fails_closed_for_partial_historical_watchlist(self) -> None:
+        approved = approved_configuration()
+        approved["payload"]["universes"] = [{
+            "enabled": True,
+            "name": "Core candidates",
+            "scanner_view_id": "core-candidates",
+            "source": "watchlist",
+        }]
+        approved["configuration_model"] = {"market_discovery": {}}
+        with tempfile.TemporaryDirectory() as directory, patch(
+            "src.backend.replay_run_service.historical_gateway_snapshot",
+            return_value={"base_url": "http://127.0.0.1:8801", "ready": True},
+        ), patch(
+            "src.backend.replay_run_service.historical_day_coverage",
+            return_value={"coverage_table": "qmd.coverage", "event_count": 10, "ticker_count": 1},
+        ), patch(
+            "src.backend.replay_run_service.replay_runtime_root",
+            return_value=Path(directory),
+        ), patch(
+            "src.backend.watchlist_runtime_service.resolve_historical_watchlist",
+            return_value={
+                "members": [{"ticker": "AAPL"}],
+                "scanner": {"complete_universe": False},
+                "status": "refreshing",
+            },
+        ):
+            result = replay_preflight(
+                session_date=date(2026, 7, 28),
+                start_time=time(9, 45),
+                initial_cash=100_000,
+                configuration_revision=approved,
+            )
+
+        self.assertFalse(result["ready"])
+        check = next(row for row in result["checks"] if row["id"] == "historical_watchlists")
+        self.assertEqual(check["status"], "blocked")
+        self.assertIn("complete full-universe snapshot", check["evidence"])
+
 
 class ReplaySharedAbstractionTests(unittest.TestCase):
     def test_canvas_journal_projection_is_category_filtered_and_bounded(self) -> None:

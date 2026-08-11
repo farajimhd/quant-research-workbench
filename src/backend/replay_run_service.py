@@ -184,6 +184,7 @@ class ReplayRunController:
         self._pace_event_anchor: datetime | None = None
         self._pace_wall_anchor = 0.0
         self._pace_reset = True
+        self._historical_watchlist_cache: list[dict[str, Any]] | None = None
 
     async def start(self) -> None:
         if self._task is not None:
@@ -898,6 +899,51 @@ class ReplayRunController:
             for row in self.definition.configuration_revision["payload"]["assignments"]
             if str(row.get("status") or "") not in {"disabled", "completed", "error"}
         ]
+        configuration = self.definition.configuration_revision["payload"]
+        historical_members = self._historical_watchlist_members()
+        existing = {
+            (str(row.get("account_key") or ""), str(row.get("ticker") or "").upper())
+            for row in rows
+        }
+        account_keys = [
+            str(row.get("account_key") or "")
+            for row in dict(configuration.get("accounts") or {}).get("bindings") or []
+            if bool(row.get("enabled", True)) and "replay" in set(row.get("modes") or [])
+        ]
+        missing_identity = sorted(
+            str(row.get("ticker") or "").upper()
+            for row in historical_members
+            if int(row.get("ibkr_conid") or 0) <= 0
+        )
+        if missing_identity:
+            raise ValueError(
+                "Historical Watchlist members require point-in-time conids: "
+                + ", ".join(missing_identity)
+            )
+        for account_key in account_keys:
+            for member in historical_members:
+                ticker = str(member.get("ticker") or "").upper()
+                if not ticker or (account_key, ticker) in existing:
+                    continue
+                rows.append(
+                    {
+                        "assignment_id": f"historical-watchlist:{account_key}:{ticker}",
+                        "account_key": account_key,
+                        "ticker": ticker,
+                        "conid": int(member["ibkr_conid"]),
+                        "status": "watching",
+                        "permissions": {
+                            "observe": True,
+                            "enter": True,
+                            "add": True,
+                            "reduce": True,
+                            "exit": True,
+                            "reenter": True,
+                        },
+                        "parameters": {},
+                        "source": "historical_watchlist",
+                    }
+                )
         if self.definition.assignment_ids:
             selected = set(self.definition.assignment_ids)
             rows = [row for row in rows if str(row.get("assignment_id")) in selected]
@@ -907,6 +953,15 @@ class ReplayRunController:
                     f"Replay assignments are unavailable or inactive: {', '.join(sorted(missing))}"
                 )
         return rows
+
+    def _historical_watchlist_members(self) -> list[dict[str, Any]]:
+        if self._historical_watchlist_cache is not None:
+            return self._historical_watchlist_cache
+        self._historical_watchlist_cache = _historical_watchlist_members_for_configuration(
+            self.definition.configuration_revision,
+            as_of=self.definition.requested_start,
+        )
+        return self._historical_watchlist_cache
 
     def _resolved_tickers(self) -> tuple[str, ...]:
         assignment_tickers = (
@@ -923,6 +978,10 @@ class ReplayRunController:
             for symbol in universe.get("symbols") or []
             if str(symbol or "").strip()
         ]
+        universe_tickers.extend(
+            str(row.get("ticker") or "").upper()
+            for row in self._historical_watchlist_members()
+        )
         canvas_tickers = _canvas_profile_tickers(
             dict(dict(configuration.get("canvas") or {}).get("profile") or {})
         )
@@ -1052,6 +1111,54 @@ def replay_runtime_root() -> Path:
     return trading_root / "replay"
 
 
+def _historical_watchlist_members_for_configuration(
+    approved: dict[str, Any],
+    *,
+    as_of: datetime,
+) -> list[dict[str, Any]]:
+    """Resolve every enabled Watchlist universe at one causal event clock.
+
+    Replay and Backtest must never interpret a partial scanner materialization as
+    the full eligible market because absent rows would become false exclusions.
+    """
+    configuration = dict(approved.get("payload") or {})
+    universes = [
+        dict(universe)
+        for universe in configuration.get("universes") or []
+        if bool(universe.get("enabled", True))
+        and str(universe.get("source") or "") == "watchlist"
+    ]
+    if not universes:
+        return []
+    model = dict(approved.get("configuration_model") or {})
+    if not model:
+        raise ValueError(
+            "Historical Watchlist resolution requires the approved configuration model"
+        )
+    from src.backend.watchlist_runtime_service import resolve_historical_watchlist
+
+    members: dict[str, dict[str, Any]] = {}
+    for universe in universes:
+        resolved = resolve_historical_watchlist(
+            model,
+            str(universe.get("scanner_view_id") or ""),
+            as_of=as_of,
+        )
+        if str(resolved.get("status") or "") != "ready" or not bool(
+            dict(resolved.get("scanner") or {}).get("complete_universe")
+        ):
+            detail = str(resolved.get("status") or "unavailable")
+            raise ValueError(
+                f"Historical Watchlist {universe.get('name')} requires a complete "
+                f"full-universe snapshot; current status is {detail}"
+            )
+        for row in resolved.get("members") or []:
+            ticker = str(row.get("ticker") or "").strip().upper()
+            if ticker:
+                members[ticker] = dict(row)
+    return [members[ticker] for ticker in sorted(members)]
+
+
 def replay_preflight(
     *,
     session_date: date,
@@ -1094,6 +1201,15 @@ def replay_preflight(
     assignment_tickers = {
         str(row.get("ticker") or "").strip().upper() for row in assignments
     }
+    historical_watchlist_members: list[dict[str, Any]] = []
+    historical_watchlist_error = ""
+    try:
+        historical_watchlist_members = _historical_watchlist_members_for_configuration(
+            approved,
+            as_of=definition.requested_start,
+        )
+    except Exception as exc:
+        historical_watchlist_error = str(exc)
     universe_tickers = {
         _ticker(symbol)
         for universe in configuration.get("universes") or []
@@ -1106,6 +1222,10 @@ def replay_preflight(
         {
             *assignment_tickers,
             *universe_tickers,
+            *(
+                str(row.get("ticker") or "").strip().upper()
+                for row in historical_watchlist_members
+            ),
             *configured_canvas_tickers,
             *(_ticker(value) for value in tickers),
         }
@@ -1150,6 +1270,20 @@ def replay_preflight(
             if event_count > 0 and ticker_count > 0 and not coverage_error
             else coverage_error or "No canonical events cover the selected session.",
             str(coverage.get("coverage_table") or "QMD History coverage"),
+        ),
+        _check(
+            "historical_watchlists",
+            "Historical Watchlists",
+            not historical_watchlist_error,
+            f"{len(historical_watchlist_members)} point-in-time Watchlist member(s) were resolved from a complete market snapshot."
+            if historical_watchlist_members
+            else "No enabled Watchlist-backed universe is configured for this run.",
+            historical_watchlist_error or "Approved configuration at the Replay event clock",
+            required=any(
+                bool(universe.get("enabled", True))
+                and str(universe.get("source") or "") == "watchlist"
+                for universe in configuration.get("universes") or []
+            ),
         ),
         _check(
             "runtime_storage",

@@ -87,6 +87,16 @@ before its indicator snapshot is returned.
 The Canvas Scanner can join the strongest active focused QMD lifecycle and sort
 its Signals preset by `rank_score`; Signal Stream shows lifecycle events and the
 live method catalog.
+
+The application backend resolves configured Watchlists from the complete
+compact Core Scanner population. Reference facts and the previous completed
+daily close are loaded in bounded set-based ClickHouse queries and cached;
+there is no per-row database lookup. Rules fail closed on missing evidence,
+then apply explicit inclusions/exclusions, ranking, and maximum size. For a
+focused rule such as VWAP breakout, the backend first leases a bounded
+liquidity-ranked candidate set, then replaces it with exact membership after
+the focused evidence is available. Membership changes are append-only events
+in the trading journal and are rehydrated after restart.
 The rank score is produced by QMD from causal, per-symbol/timeframe normalized
 surprises rather than recomputed in the UI.
 

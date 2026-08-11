@@ -463,6 +463,38 @@ def resolve_runtime_configuration(model: dict[str, Any], *, mode: str, run_plan_
         raise ValueError(
             f"Run Plan {run_plan.get('run_plan_id')} references an unknown Watch Universe"
         )
+    universe = deepcopy(universe)
+    if str(universe.get("source") or "") == "watchlist":
+        universe = _resolve_watchlist_universe(universe, mode=mode)
+        if mode in {"live", "paper"}:
+            from src.backend.real_live_trading_service import tradable_symbol_map
+
+            identities = tradable_symbol_map(list(universe.get("symbols") or []))
+            existing_pairs = {
+                (
+                    str(row.get("account_key") or ""),
+                    str(row.get("ticker") or "").upper(),
+                )
+                for row in runtime_assignments
+            }
+            for account_key in sorted(account_keys):
+                for ticker in universe.get("symbols") or []:
+                    identity = identities.get(str(ticker).upper(), {})
+                    conid = int(identity.get("ibkr_conid") or 0)
+                    if not conid or (account_key, str(ticker).upper()) in existing_pairs:
+                        continue
+                    runtime_assignments.append(
+                        {
+                            "assignment_id": f"{run_plan['run_plan_id']}:{account_key}:{str(ticker).upper()}",
+                            "account_key": account_key,
+                            "ticker": str(ticker).upper(),
+                            "conid": conid,
+                            "status": "watching",
+                            "permissions": {},
+                            "parameters": {},
+                            "source": "watchlist_runtime",
+                        }
+                    )
     for assignment in runtime_assignments:
         ticker = str(assignment.get("ticker") or "").upper()
         side = str(
@@ -511,7 +543,7 @@ def resolve_runtime_configuration(model: dict[str, Any], *, mode: str, run_plan_
         "schema_version": CONFIGURATION_SCHEMA_VERSION,
         "run_plan": deepcopy(run_plan),
         "deployment": {**deepcopy(run_plan), "deployment_id": str(run_plan["run_plan_id"])},
-        "universe": deepcopy(universe),
+        "universe": universe,
         "campaign_policy": deepcopy(
             _effective_campaign_policy(run_plan)
         ),
@@ -556,6 +588,40 @@ def resolve_runtime_configuration(model: dict[str, Any], *, mode: str, run_plan_
         },
         "accounts": {"bindings": bindings},
     }
+
+
+def _resolve_watchlist_universe(
+    universe: dict[str, Any], *, mode: str
+) -> dict[str, Any]:
+    result = deepcopy(universe)
+    if mode not in {"live", "paper"}:
+        result["symbols"] = []
+        result["resolved"] = False
+        result["resolution_status"] = "historical_membership_required"
+        return result
+    from src.backend.watchlist_runtime_service import WATCHLIST_RUNTIME
+
+    runtime = WATCHLIST_RUNTIME.snapshot()
+    watchlist_id = str(result.get("scanner_view_id") or "")
+    snapshot = next(
+        (
+            row
+            for row in runtime.get("watchlists") or []
+            if str(row.get("watchlist_id") or "") == watchlist_id
+        ),
+        None,
+    )
+    result["symbols"] = sorted(
+        {
+            str(row.get("ticker") or "").upper()
+            for row in dict(snapshot or {}).get("members") or []
+            if str(row.get("ticker") or "").strip()
+        }
+    )
+    result["resolved"] = snapshot is not None
+    result["resolved_at"] = runtime.get("as_of")
+    result["resolution_status"] = "ready" if snapshot is not None else "awaiting_watchlist_snapshot"
+    return result
 
 
 def _default_strategy_lifecycle(parameters: dict[str, Any]) -> dict[str, Any]:
@@ -2175,7 +2241,7 @@ def _compile_profile_run_plan(candidate: dict[str, Any], profile: dict[str, Any]
         "universe_id": universe_id,
         "name": str(watchlist.get("name") or "Strategy watchlist"),
         "description": str(watchlist.get("description") or "QMD-resolved Watchlist snapshot."),
-        "source": "configured_symbols",
+        "source": "watchlist",
         "symbols": symbols,
         "scanner_view_id": str(watchlist.get("watchlist_id") or ""),
         "watchlist_snapshot": deepcopy(watchlist),
@@ -2352,7 +2418,7 @@ def _validate_draft(draft: dict[str, Any], *, require_runtime_ready: bool = True
             raise ValueError(
                 f"Watch Universe {universe.get('name')} has an unsupported source"
             )
-        if require_runtime_ready and source != "configured_symbols":
+        if require_runtime_ready and source == "scanner_view":
             raise ValueError(
                 f"Watch Universe {universe.get('name')} cannot be published until its {source} runtime resolver is available"
             )
@@ -2419,6 +2485,8 @@ def _validate_draft(draft: dict[str, Any], *, require_runtime_ready: bool = True
                 if str(row.get("ticker") or "").strip() and int(row.get("conid") or 0) > 0
             }
             missing_identity = sorted(universe_symbols - identity_bound_symbols)
+            if str(universe.get("source") or "") == "watchlist":
+                missing_identity = []
             if missing_identity:
                 raise ValueError(
                     f"Automatic Run Plan {run_plan.get('name')} requires identity-bound assignments for: {', '.join(missing_identity)}"

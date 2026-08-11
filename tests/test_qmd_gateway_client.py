@@ -11,6 +11,7 @@ from src.backend.qmd_gateway_client import (
     qmd_indicators,
     qmd_market_signals,
     qmd_scanner_snapshot,
+    qmd_scanner_indicators,
     qmd_websocket_url,
 )
 
@@ -209,6 +210,22 @@ class QmdGatewayClientTests(unittest.TestCase):
     def test_scanner_rejects_unknown_enrichment_scope(self) -> None:
         with self.assertRaisesRegex(ValueError, "Unsupported QMD scanner enrichment"):
             qmd_scanner_snapshot(enrichments={"everything"})
+
+    @patch("src.backend.qmd_gateway_client.qmd_get_json")
+    def test_scanner_indicator_projection_is_explicit_and_focused(self, get_json) -> None:
+        get_json.return_value = {
+            "rows": [{"sym": "AAPL", "timeframe": "1s", "vwap": 101.5}]
+        }
+
+        rows = qmd_scanner_indicators(timeframe="1s", row_limit=99_999)
+
+        self.assertEqual(rows[0]["ticker"], "AAPL")
+        self.assertEqual(rows[0]["vwap"], 101.5)
+        get_json.assert_called_once_with(
+            "/snapshot/scanner-indicators",
+            {"limit": 5_000, "timeframe": "1s"},
+            timeout=3,
+        )
 
     @patch("src.backend.qmd_gateway_client.qmd_get_json")
     def test_live_market_state_uses_symbol_snapshot(self, get_json) -> None:

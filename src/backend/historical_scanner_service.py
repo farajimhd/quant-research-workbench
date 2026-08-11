@@ -90,6 +90,7 @@ SCANNER_REFERENCE_FIELDS = (
     "short_interest",
     "short_crowding_pct",
     "days_to_cover",
+    "ibkr_conid",
 )
 SCANNER_FUNDAMENTAL_FIELDS = (
     "xbrl_quality_score", "xbrl_quality_label", "xbrl_quality_coverage_pct",
@@ -367,6 +368,7 @@ def historical_scanner_reference_projection(as_of: datetime) -> dict[str, dict[s
                 if(f.free_float > 0 AND si.short_interest IS NOT NULL,
                    toFloat64(si.short_interest) / toFloat64(f.free_float) * 100, NULL) AS short_crowding_pct,
                 si.days_to_cover AS days_to_cover,
+                u.ibkr_conid AS ibkr_conid,
                 ifNull(a.relative_path, '') AS logo_relative_path
             FROM
             (
@@ -376,7 +378,8 @@ def historical_scanner_reference_projection(as_of: datetime) -> dict[str, dict[s
                     argMax(security_id, inserted_at) AS security_id,
                     argMax(issuer_id, inserted_at) AS issuer_id,
                     argMax(listing_id, inserted_at) AS listing_id,
-                    argMax(exchange_code, inserted_at) AS exchange_code
+                    argMax(exchange_code, inserted_at) AS exchange_code,
+                    argMax(ibkr_conid, inserted_at) AS ibkr_conid
                 FROM q_live.feature_tradable_universe_v1 FINAL
                 WHERE universe_date = latest_universe_date AND inserted_at <= cutoff AND is_tradable = 1
                 GROUP BY ticker

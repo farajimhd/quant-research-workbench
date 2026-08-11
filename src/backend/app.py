@@ -4118,6 +4118,13 @@ def real_live_trading_scanner(row_limit: int = Query(default=250, ge=1, le=1000)
         raise HTTPException(status_code=502, detail=f"Filtered live scanner failed: {scanner_error}; Python gateway failed: {exc}") from exc
 
 
+@app.get("/api/market-discovery/watchlists/runtime")
+def market_discovery_watchlist_runtime() -> dict[str, Any]:
+    from src.backend.watchlist_runtime_service import WATCHLIST_RUNTIME
+
+    return WATCHLIST_RUNTIME.snapshot()
+
+
 @app.get("/api/real-live-trading/market-gateway/status")
 def real_live_market_gateway_status() -> dict[str, Any]:
     payload = market_gateway_status()

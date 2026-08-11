@@ -121,15 +121,11 @@ impl SharedComputationTargets {
     pub fn requires_focused_computation(&self, ticker: &str) -> bool {
         let now = Utc::now();
         let normalized = ticker.trim().to_ascii_uppercase();
-        let mut state = self
-            .inner
-            .write()
-            .expect("computation target lock poisoned");
-        prune_expired(&mut state.targets, now);
-        state
-            .targets
-            .values()
-            .any(|target| target.tickers.binary_search(&normalized).is_ok())
+        let state = self.inner.read().expect("computation target lock poisoned");
+        state.targets.values().any(|target| {
+            target.expires_at.map(|expiry| expiry > now).unwrap_or(true)
+                && target.tickers.binary_search(&normalized).is_ok()
+        })
     }
 
     pub fn snapshot(&self) -> ComputationTargetSnapshot {

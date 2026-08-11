@@ -507,6 +507,25 @@ class TradingJournal:
         ).fetchall()
         return [_record(row) for row in rows]
 
+    def watchlist_membership_records(
+        self,
+        *,
+        watchlist_id: str = "",
+        limit: int = 10_000,
+    ) -> list[JournalRecord]:
+        clauses = ["category = 'watchlist_membership'"]
+        values: list[Any] = []
+        if watchlist_id:
+            clauses.append("json_extract(payload_json, '$.watchlist_id') = ?")
+            values.append(watchlist_id)
+        values.append(max(1, min(int(limit), 50_000)))
+        rows = self._connection.execute(
+            f"SELECT * FROM journal WHERE {' AND '.join(clauses)} "
+            "ORDER BY event_time ASC, recorded_at ASC, sequence ASC LIMIT ?",
+            values,
+        ).fetchall()
+        return [_record(row) for row in rows]
+
     def recent_records(
         self,
         run_id: str,

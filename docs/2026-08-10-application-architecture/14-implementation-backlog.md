@@ -112,10 +112,10 @@ macro bars agree across Live, History, Replay, Backtest, and charts.
 - [ ] Maintain one compact row per eligible security.
 - [ ] Publish scanner snapshots plus row deltas.
 - [x] Remove broad expensive indicators from the default all-market path.
-- [ ] Implement dynamic Watchlist inclusion, exclusion, ranking, maximum size,
+- [x] Implement dynamic Watchlist inclusion, exclusion, ranking, maximum size,
       TTL, manual override, and promotion/demotion reasons.
-- [ ] Persist membership add/remove/expire events.
-- [ ] Subscribe focused calculations only for current members.
+- [x] Persist membership add/remove/expire events.
+- [x] Subscribe focused calculations only for current members.
 - [ ] Union Watchlist, Strategy, chart, and offline computation requests.
       QMD now owns the validated leased union and chart requests are wired;
       Watchlist, Strategy, and offline producers still need to publish targets.

@@ -79,6 +79,28 @@ def qmd_put_json(path: str, payload: dict[str, Any], *, timeout: int = 3) -> Any
     return json.loads(text) if text.strip() else {}
 
 
+def qmd_delete_json(path: str, *, timeout: int = 3) -> Any:
+    if not qmd_enabled():
+        raise RuntimeError("QMD gateway is disabled by REAL_LIVE_QMD_GATEWAY_ENABLED.")
+    url = f"{qmd_base_url().rstrip('/')}{path}"
+    request = urllib.request.Request(
+        url,
+        method="DELETE",
+        headers={"Accept": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            text = response.read().decode("utf-8")
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode("utf-8", errors="replace")
+        raise RuntimeError(
+            f"QMD DELETE {safe_qmd_url(url)} failed with HTTP {exc.code}: {body[:500]}"
+        ) from exc
+    except urllib.error.URLError as exc:
+        raise RuntimeError(f"QMD DELETE {safe_qmd_url(url)} failed: {exc.reason}") from exc
+    return json.loads(text) if text.strip() else {}
+
+
 def qmd_websocket_url(path: str, params: dict[str, Any] | None = None) -> str:
     if not qmd_enabled():
         raise RuntimeError("QMD gateway is disabled by REAL_LIVE_QMD_GATEWAY_ENABLED.")
@@ -255,6 +277,22 @@ def qmd_market_signals(
         "source": "qmd-gateway",
         "ticker": ticker,
     }
+
+
+def qmd_scanner_indicators(
+    *, timeframe: str = "1s", row_limit: int = 5_000
+) -> list[dict[str, Any]]:
+    payload = qmd_get_json(
+        "/snapshot/scanner-indicators",
+        {"limit": max(1, min(int(row_limit), 5_000)), "timeframe": timeframe},
+        timeout=3,
+    )
+    source_rows = payload.get("rows") or [] if isinstance(payload, dict) else []
+    return [
+        normalize_qmd_indicator_scanner_row(row)
+        for row in source_rows
+        if isinstance(row, dict)
+    ]
 
 
 def qmd_bars(symbol: str, *, timeframe: str = "1m", row_limit: int = 500) -> dict[str, Any]:
@@ -473,6 +511,9 @@ def normalize_qmd_symbol_snapshot(row: dict[str, Any]) -> dict[str, Any]:
         "trade_accel_10s_60s": trade_rate_10s - trade_rate_60s,
         "provider": "qmd-gateway",
         "live_priority": day_dollar_volume / 1_000_000 + trade_rate_10s * 100,
+        "last_price": last_price,
+        "volume": float_value(row.get("day_volume")),
+        "liquidity_rank": day_dollar_volume / 1_000_000 + trade_rate_10s * 100,
     }
 
 

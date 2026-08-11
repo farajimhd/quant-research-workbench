@@ -240,9 +240,63 @@ def _approved_configuration_checks(
 
 def real_live_scanner_snapshot(row_limit: int = 250) -> dict[str, Any]:
     try:
-        payload = qmd_scanner_snapshot(row_limit=row_limit)
+        # Resolve Watchlists from the complete compact Core Scanner population;
+        # the caller's row limit applies only to the returned UI projection.
+        payload = qmd_scanner_snapshot(row_limit=5_000)
         if payload.get("row_count", 0) > 0:
-            return apply_tradable_filter_to_scanner_payload(payload)
+            filtered = apply_tradable_filter_to_scanner_payload(payload)
+            rows = list(filtered.get("rows") or [])
+            reference_error = ""
+            try:
+                from src.backend.watchlist_runtime_service import (
+                    WATCHLIST_RUNTIME,
+                    enrich_core_scanner_rows,
+                    live_market_reference_projection,
+                )
+                from src.backend.qmd_gateway_client import qmd_scanner_indicators
+                from src.backend.trading_configuration_service import configuration_base
+                from src.backend.trading_runtime_service import trading_journal
+
+                rows = enrich_core_scanner_rows(rows, live_market_reference_projection())
+                configuration = configuration_base()
+                focused_seeds = WATCHLIST_RUNTIME.seed_focused_targets(
+                    configuration, rows
+                )
+                indicator_rows = {
+                    str(row.get("ticker") or "").upper(): row
+                    for row in qmd_scanner_indicators(timeframe="1s", row_limit=5_000)
+                }
+                rows = [
+                    {**row, **indicator_rows.get(str(row.get("ticker") or "").upper(), {})}
+                    for row in rows
+                ]
+                watchlist_runtime = WATCHLIST_RUNTIME.resolve(
+                    configuration,
+                    rows,
+                    journal=trading_journal(),
+                )
+                watchlist_runtime["focused_seeds"] = focused_seeds
+            except Exception as exc:
+                reference_error = str(exc)
+                watchlist_runtime = {
+                    "status": "degraded",
+                    "watchlists": [],
+                    "target_errors": [{"watchlist_id": "*", "error": reference_error}],
+                }
+            limited_rows = rows[: max(1, min(int(row_limit or 250), 1_000))]
+            filtered.update(
+                {
+                    "rows": limited_rows,
+                    "row_count": len(limited_rows),
+                    "market_rows": limited_rows,
+                    "market_row_count": len(limited_rows),
+                    "core_population_count": len(rows),
+                    "watchlist_runtime": watchlist_runtime,
+                }
+            )
+            if reference_error:
+                filtered["reference_enrichment_error"] = reference_error
+            return filtered
     except Exception as exc:
         qmd_error = str(exc)
     else:
