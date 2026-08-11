@@ -155,6 +155,10 @@ Stale market data, QMD loss, intelligence loss, broker disconnect, reconciliatio
   than an opaque test mock. The Backtest Debug workspace provides a bounded
   JSON fixture editor, browser-local reusable case library, preflight, run
   controls, hash evidence, and the shared read-only Canvas projection.
+- Automatic historical modes expose one bounded lifecycle-command shape:
+  `pause`, `play` (resume), and `stop`. Backtest and Backtest Debug pages use
+  that command endpoint and show the resulting controller status; Replay-only
+  step, speed, and fast-forward commands are rejected for automatic modes.
 - Historical Strategy warm-up fetches the cross-sectional Scanner signal product
   once per run window and groups it by assigned ticker. Ticker/timeframe derived
   streams use a bounded semaphore (default eight, maximum 32) rather than opening

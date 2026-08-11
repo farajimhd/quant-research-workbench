@@ -8,9 +8,12 @@ from fastapi import HTTPException
 
 from src.backend.app import (
     BacktestDebugRunCreateRequest,
+    ReplayRunCommandRequest,
+    trading_backtest_debug_run_command,
     trading_backtest_debug_run_canvas,
     trading_backtest_debug_run_create,
     trading_backtest_run_canvas,
+    trading_backtest_run_command,
 )
 from src.trading_runtime.runtime import RunMode
 
@@ -90,6 +93,36 @@ class BacktestCanvasContractTests(unittest.IsolatedAsyncioTestCase):
         get.assert_called_once_with("run-1")
         controller.canvas_payload.assert_awaited_once_with("MSFT")
         self.assertEqual(payload["strategy"]["runtime_mode"], "backtest_debug")
+
+    async def test_backtest_and_debug_share_bounded_lifecycle_commands(self) -> None:
+        backtest = MagicMock()
+        backtest.command = AsyncMock(return_value={"mode": "backtest", "status": "paused"})
+        debug = MagicMock()
+        debug.command = AsyncMock(return_value={"mode": "backtest_debug", "status": "running"})
+        with (
+            patch("src.backend.app.backtest_run_service.get", return_value=backtest),
+            patch("src.backend.app.backtest_debug_run_service.get", return_value=debug),
+        ):
+            paused = await trading_backtest_run_command(
+                "run-1", ReplayRunCommandRequest(command="pause")
+            )
+            resumed = await trading_backtest_debug_run_command(
+                "run-2", ReplayRunCommandRequest(command="play")
+            )
+
+        backtest.command.assert_awaited_once_with("pause")
+        debug.command.assert_awaited_once_with("play")
+        self.assertEqual(paused["status"], "paused")
+        self.assertEqual(resumed["status"], "running")
+
+    async def test_automatic_historical_modes_reject_replay_only_commands(self) -> None:
+        with self.assertRaises(HTTPException) as raised:
+            await trading_backtest_run_command(
+                "run-1", ReplayRunCommandRequest(command="step", step_seconds=1)
+            )
+
+        self.assertEqual(raised.exception.status_code, 400)
+        self.assertIn("pause, play, or stop", raised.exception.detail)
 
 
 if __name__ == "__main__":

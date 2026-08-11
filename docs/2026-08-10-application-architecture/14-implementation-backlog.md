@@ -450,6 +450,10 @@ load progressively without false continuity.
   - [x] Add the end-user fixture library/editor and Backtest Debug run page.
 - [ ] Pin causal market/enrichment versions for historical decisions.
 - [ ] Standardize progress, pause, resume, cancel, failure, and completion.
+  - [x] Give Backtest and Backtest Debug a shared typed `pause`/`play`/`stop`
+        command contract and user controls while rejecting Replay-only commands.
+  - [ ] Unify lifecycle command/status envelopes across Live/Paper controllers
+        and background research jobs.
 - [ ] Add restart-safe checkpoints.
 - [ ] Route manual, semi-automatic, and automatic proposals through one control plane.
 

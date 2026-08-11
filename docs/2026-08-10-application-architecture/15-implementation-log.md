@@ -607,6 +607,15 @@ bounded direct ClickHouse paths remain documented in
     Python compile and 33 focused plan, registry, Watchlist, and historical
     Scanner tests passed (pytest ran in the existing `ml4t` environment because
     the default repository Python does not contain pytest).
+83. Standardized the exposed automatic-historical lifecycle boundary. Backtest
+    and Backtest Debug now accept only typed `pause`, `play` (resume), and
+    `stop` commands through matching run endpoints, and both pages expose pause,
+    resume, and stop controls against the authoritative controller status.
+    Replay-only stepping, speed, and fast-forward operations fail closed on
+    these automatic modes. The older stop endpoints remain compatibility aliases
+    while the UI uses the shared command contract. Python compile, 41 focused
+    historical runtime/API tests, and the managed frontend production build
+    passed.
 
 The authoritative remaining work and acceptance gates are maintained in the
 [complete implementation backlog](14-implementation-backlog.md). A checked

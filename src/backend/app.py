@@ -5271,6 +5271,21 @@ async def trading_backtest_debug_run_stop(run_id: str) -> dict[str, Any]:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
+@app.post("/api/trading/backtest_debug/runs/{run_id}/commands")
+async def trading_backtest_debug_run_command(
+    run_id: str,
+    payload: ReplayRunCommandRequest,
+) -> dict[str, Any]:
+    try:
+        if payload.command not in {"pause", "play", "stop"}:
+            raise ValueError("Backtest Debug supports pause, play, or stop")
+        return await backtest_debug_run_service.get(run_id).command(payload.command)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Backtest Debug run not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @app.get("/api/trading/backtest/runs")
 def trading_backtest_runs() -> dict[str, Any]:
     rows = backtest_run_service.list()
@@ -5372,6 +5387,21 @@ async def trading_backtest_run_canvas(
 async def trading_backtest_run_stop(run_id: str) -> dict[str, Any]:
     try:
         return await backtest_run_service.get(run_id).command("stop")
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Backtest run not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/trading/backtest/runs/{run_id}/commands")
+async def trading_backtest_run_command(
+    run_id: str,
+    payload: ReplayRunCommandRequest,
+) -> dict[str, Any]:
+    try:
+        if payload.command not in {"pause", "play", "stop"}:
+            raise ValueError("Backtest supports pause, play, or stop")
+        return await backtest_run_service.get(run_id).command(payload.command)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Backtest run not found") from exc
     except ValueError as exc:

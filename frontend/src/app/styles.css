@@ -20691,6 +20691,12 @@ button {
   width: 100%;
 }
 
+.historical-primary-action .historical-command-buttons {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
 .historical-primary-action > small {
   color: var(--muted-foreground);
   font-size: 11px;

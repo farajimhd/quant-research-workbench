@@ -1,4 +1,4 @@
-import { CheckCircle2, CircleStop, Gauge, Play, RefreshCcw, Square, TriangleAlert } from "lucide-react";
+import { CheckCircle2, CircleStop, Gauge, Pause, Play, RefreshCcw, Square, TriangleAlert } from "lucide-react";
 import { useEffect, useState } from "react";
 
 import { api } from "../api/client";
@@ -71,6 +71,7 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
   const [results, setResults] = useState<BacktestResults | null>(null);
   const [comparison, setComparison] = useState<BacktestComparison | null>(null);
   const [comparisonError, setComparisonError] = useState("");
+  const [controlBusy, setControlBusy] = useState("");
 
   useEffect(() => {
     let cancelled = false;
@@ -158,9 +159,28 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
   async function stopRun() {
     if (!run) return;
     try {
-      setRun(await api<BacktestRun>(`/api/trading/backtest/runs/${encodeURIComponent(run.run_id)}/stop`, { method: "POST" }));
+      setRun(await api<BacktestRun>(`/api/trading/backtest/runs/${encodeURIComponent(run.run_id)}/commands`, {
+        body: JSON.stringify({ command: "stop" }),
+        method: "POST",
+      }));
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
+    }
+  }
+
+  async function commandRun(command: "pause" | "play") {
+    if (!run) return;
+    setControlBusy(command);
+    setError("");
+    try {
+      setRun(await api<BacktestRun>(`/api/trading/backtest/runs/${encodeURIComponent(run.run_id)}/commands`, {
+        body: JSON.stringify({ command }),
+        method: "POST",
+      }));
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setControlBusy("");
     }
   }
 
@@ -217,7 +237,7 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
                 ? `Revision ${preflight.configuration_revision} will run through ${preflight.window.session_count} sessions using one simulated Portfolio/OMS state.`
                 : "Resolve every required preflight item before starting."}</p></div>
             {run && !["completed", "stopped", "failed"].includes(run.status)
-              ? <button className="button secondary" onClick={stopRun} type="button"><Square size={15} /> Stop</button>
+              ? <div className="historical-command-buttons"><button className="button secondary" disabled={Boolean(controlBusy)} onClick={() => commandRun(run.status === "paused" ? "play" : "pause")} type="button">{run.status === "paused" ? <Play size={15} /> : <Pause size={15} />} {run.status === "paused" ? "Resume" : "Pause"}</button><button className="button secondary" disabled={Boolean(controlBusy)} onClick={stopRun} type="button"><Square size={15} /> Stop</button></div>
               : <button className="button primary" disabled={checking || creating || !preflight?.strategy_run_ready} onClick={createRun} type="button"><Play size={16} /> {creating ? "Creating run…" : "Run backtest"}</button>}
             {run?.error ? <small>{run.error}</small> : null}
           </section>

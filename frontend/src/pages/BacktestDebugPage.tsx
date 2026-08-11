@@ -1,4 +1,4 @@
-import { Bug, CheckCircle2, CircleStop, Play, Save, Square, Trash2, TriangleAlert } from "lucide-react";
+import { Bug, CheckCircle2, CircleStop, Pause, Play, Save, Square, Trash2, TriangleAlert } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 
 import { api } from "../api/client";
@@ -50,6 +50,7 @@ export function BacktestDebugPage() {
   const [preflight, setPreflight] = useState<DebugPreflight | null>(null);
   const [checking, setChecking] = useState(true);
   const [creating, setCreating] = useState(false);
+  const [controlBusy, setControlBusy] = useState("");
   const [error, setError] = useState("");
   const [run, setRun] = useState<DebugRun | null>(null);
   const parsed = useMemo(() => parseFixture(marketEvents, derivedFrames), [derivedFrames, marketEvents]);
@@ -147,9 +148,28 @@ export function BacktestDebugPage() {
   async function stopRun() {
     if (!run) return;
     try {
-      setRun(await api<DebugRun>(`/api/trading/backtest_debug/runs/${encodeURIComponent(run.run_id)}/stop`, { method: "POST" }));
+      setRun(await api<DebugRun>(`/api/trading/backtest_debug/runs/${encodeURIComponent(run.run_id)}/commands`, {
+        body: JSON.stringify({ command: "stop" }),
+        method: "POST",
+      }));
     } catch (reason) {
       setError(message(reason));
+    }
+  }
+
+  async function commandRun(command: "pause" | "play") {
+    if (!run) return;
+    setControlBusy(command);
+    setError("");
+    try {
+      setRun(await api<DebugRun>(`/api/trading/backtest_debug/runs/${encodeURIComponent(run.run_id)}/commands`, {
+        body: JSON.stringify({ command }),
+        method: "POST",
+      }));
+    } catch (reason) {
+      setError(message(reason));
+    } finally {
+      setControlBusy("");
     }
   }
 
@@ -181,7 +201,7 @@ export function BacktestDebugPage() {
       <aside className="historical-action-column"><section className={`historical-primary-action ${preflight?.ready && parsed.ok ? "" : "blocked"}`}>
         {preflight?.ready && parsed.ok ? <Play size={24} /> : <CircleStop size={24} />}
         <div><strong>{run ? `Debug run ${run.status.replaceAll("_", " ")}` : "Exact-input execution"}</strong><p>{run ? `${Math.round(run.progress * 100)}% · ${run.processed_events || 0} events · ${run.current_time}` : parsed.ok ? `${parsed.marketEvents.length} market events and ${parsed.derivedFrames.length} derived frames will be content hashed.` : parsed.error}</p></div>
-        {run && !terminal(run.status) ? <button className="button secondary" onClick={stopRun} type="button"><Square size={15} /> Stop</button> : <button className="button primary" disabled={checking || creating || !preflight?.ready || !parsed.ok} onClick={createRun} type="button"><Play size={16} /> {creating ? "Creating…" : "Run fixture"}</button>}
+        {run && !terminal(run.status) ? <div className="historical-command-buttons"><button className="button secondary" disabled={Boolean(controlBusy)} onClick={() => commandRun(run.status === "paused" ? "play" : "pause")} type="button">{run.status === "paused" ? <Play size={15} /> : <Pause size={15} />} {run.status === "paused" ? "Resume" : "Pause"}</button><button className="button secondary" disabled={Boolean(controlBusy)} onClick={stopRun} type="button"><Square size={15} /> Stop</button></div> : <button className="button primary" disabled={checking || creating || !preflight?.ready || !parsed.ok} onClick={createRun} type="button"><Play size={16} /> {creating ? "Creating…" : "Run fixture"}</button>}
         {run?.debug_fixture ? <small>{run.debug_fixture.fixture_id} · {run.debug_fixture.content_hash.slice(0, 12)}</small> : null}
       </section></aside>
     </div>
