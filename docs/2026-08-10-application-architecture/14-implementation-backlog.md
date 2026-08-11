@@ -523,6 +523,10 @@ load progressively without false continuity.
 - [ ] Standardize progress, pause, resume, cancel, failure, and completion.
   - [x] Give Backtest and Backtest Debug a shared typed `pause`/`play`/`stop`
         command contract and user controls while rejecting Replay-only commands.
+  - [x] Publish one versioned lifecycle projection for Replay/Backtest and
+        background market-data builds, including canonical state, progress,
+        terminal state, timestamps, failure retryability, checkpoint evidence,
+        enabled commands, resource identity, and controlling authority.
   - [ ] Unify lifecycle command/status envelopes across Live/Paper controllers
         and background research jobs.
 - [x] Add restart-safe checkpoints.

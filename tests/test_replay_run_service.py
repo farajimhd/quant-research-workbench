@@ -141,6 +141,14 @@ class ReplayRunDefinitionTests(unittest.TestCase):
         self.assertEqual(snapshot["canvas_profile"]["defaultState"]["openIds"], ["chart"])
         self.assertEqual(snapshot["checkpoint"]["status"], "pending")
         self.assertFalse(snapshot["checkpoint"]["resume_supported"])
+        self.assertEqual(snapshot["lifecycle"]["state"], "created")
+        self.assertFalse(
+            next(
+                row
+                for row in snapshot["lifecycle"]["commands"]
+                if row["command"] == "resume"
+            )["enabled"]
+        )
 
     def test_debug_definition_requires_a_bounded_deterministic_fixture(self) -> None:
         with self.assertRaisesRegex(ValueError, "requires a deterministic fixture"):

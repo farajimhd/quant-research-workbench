@@ -796,6 +796,16 @@ bounded direct ClickHouse paths remain documented in
      included a real stop-after-first-event/new-service/continue-to-completion
      cycle, derived-only cursor coverage, exact simulator order-state round trip,
      98 focused runtime/OMS tests, and the managed frontend production build.
+103. Added a shared lifecycle status contract for historical trading runs and
+     market-data background builds. Both now expose canonical state, bounded
+     progress, terminal state, timestamps, failure/retry semantics, checkpoint
+     capability, command availability, resource identity, and explicit control
+     authority without removing their existing compatibility fields. Paused
+     jobs advertise in-place resume, failed/cancelled jobs advertise stateful
+     retry, and historical resume remains gated by checkpoint schema v2. All 42
+     focused lifecycle and Replay controller tests passed. Live/Paper execution
+     lifecycle and intelligence research-job adoption remain open because their
+     controllers are outside this approved service-change phase.
 
 The authoritative remaining work and acceptance gates are maintained in the
 [complete implementation backlog](14-implementation-backlog.md). A checked

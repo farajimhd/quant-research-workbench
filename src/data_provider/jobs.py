@@ -13,6 +13,7 @@ from typing import Any
 
 from src.data_provider.config import BuildRequest
 from src.data_provider.file_lock import file_lock
+from src.backend.lifecycle_contract import lifecycle_projection
 
 
 JOB_DIR = "jobs"
@@ -269,6 +270,40 @@ def attach_job_summary(payload: dict[str, Any], events: list[dict[str, Any]] | N
     request = payload.get("request") or {}
     payload.setdefault("build_name", request.get("build_name") or f"market_data_{payload.get('created_at', '')}")
     payload["summary"] = summary
+    raw_progress = payload.get("progress")
+    fraction = (
+        float(raw_progress.get("fraction"))
+        if isinstance(raw_progress, dict) and raw_progress.get("fraction") is not None
+        else (
+            min(1.0, summary["artifact_count"] / summary["output_sessions"])
+            if summary["output_sessions"]
+            else None
+        )
+    )
+    status = str(payload.get("status") or "unknown").lower()
+    checkpoint = {
+        "status": "available" if status in {"paused", *TERMINAL_STATUSES} else "pending",
+        "resume_supported": status == "paused",
+        "retry_stateful_supported": status in TERMINAL_STATUSES,
+        "resume_stage": request.get("resume_stage"),
+    }
+    payload["lifecycle"] = lifecycle_projection(
+        resource_type="market_data_build",
+        resource_id=str(payload.get("job_id") or ""),
+        status=status,
+        progress=fraction,
+        completed_units=int(summary["artifact_count"]),
+        total_units=int(summary["output_sessions"]),
+        unit="sessions",
+        checkpoint=checkpoint,
+        error=str(payload.get("error") or ""),
+        created_at=payload.get("created_at"),
+        started_at=payload.get("started_at"),
+        updated_at=payload.get("updated_at"),
+        finished_at=payload.get("finished_at"),
+        supported_commands=("pause", "resume", "cancel", "retry_stateful"),
+        authority="market_data_job_file",
+    )
     return payload
 
 
@@ -319,7 +354,7 @@ def start_build_worker(path: Path, payload: dict[str, Any], *, polars_threads: i
     payload["traceback"] = None
     payload["paused_at"] = None
     write_job(path, payload)
-    return payload
+    return attach_job_summary(payload)
 
 
 def resume_build_job(processed_root: Path, job_id: str, *, session_workers: int | None = None, polars_threads: int | None = None) -> dict[str, Any]:

@@ -18,6 +18,7 @@ from zoneinfo import ZoneInfo
 import websockets
 
 from src.backend.canonical_trading_service import trading_state_payload
+from src.backend.lifecycle_contract import lifecycle_projection
 from src.backend.qmd_gateway_client import (
     QmdProductRequest,
     qmd_history_websocket_url,
@@ -196,7 +197,7 @@ class ReplayRunDefinition:
         approved = self.configuration_revision
         configuration = dict(approved.get("payload") or {})
         canvas = dict(configuration.get("canvas") or {})
-        return {
+        payload = {
             "mode": self.mode.value,
             "session_date": self.session_date.isoformat(),
             "start_time": self.start_time.isoformat(timespec="seconds"),
@@ -216,6 +217,7 @@ class ReplayRunDefinition:
                 self.debug_fixture.payload() if self.debug_fixture is not None else None
             ),
         }
+        return payload
 
 
 @dataclass(slots=True)
@@ -540,7 +542,7 @@ class ReplayRunController:
             (self.definition.session_end - self.definition.requested_start).total_seconds(),
         )
         elapsed = max(0.0, (current - self.definition.requested_start).total_seconds())
-        return {
+        payload = {
             "schema_version": 1,
             "mode": self.definition.mode.value,
             "run_id": self.run_id,
@@ -590,6 +592,27 @@ class ReplayRunController:
                 else None
             ),
         }
+        payload["lifecycle"] = lifecycle_projection(
+            resource_type="historical_trading_run",
+            resource_id=self.run_id,
+            status=self.status,
+            progress=float(payload["progress"]),
+            completed_units=self.processed_events,
+            total_units=None,
+            unit="market_events",
+            checkpoint=checkpoint,
+            error=self.error,
+            created_at=payload["created_at"],
+            updated_at=payload["updated_at"],
+            finished_at=(
+                payload["updated_at"]
+                if self.status in TERMINAL_REPLAY_STATUSES
+                else None
+            ),
+            supported_commands=("pause", "play", "stop", "resume"),
+            authority="historical_run_controller",
+        )
+        return payload
 
     def _checkpoint_projection(self) -> dict[str, Any]:
         persisted = (
