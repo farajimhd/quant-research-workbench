@@ -1384,6 +1384,16 @@ bounded direct ClickHouse paths remain documented in
      Fourteen focused SEC operations, SEC Canvas, and application-registry
      tests passed. All changed Python modules compiled with bytecode writes
      disabled.
+146. Completed the Services SEC operational query bundle by moving exact
+     filing-detail SQL into `sec.operations_intraday.v1`. One validated
+     CIK/accession identity now produces the parent, documents, rendered text,
+     company facts, and frame queries. The parent stays mandatory and bounded
+     to one latest row; company facts and frames retain their 300-row ceilings;
+     child reads remain independently degradable in the service composition.
+     SEC and Reference producers were not changed.
+
+     Sixteen focused SEC operations, SEC Canvas, and application-registry tests
+     passed. All changed Python modules compiled with bytecode writes disabled.
 145. Moved the Services SEC operational identity join into
      `sec.operations_intraday.v1`. The builder accepts a nonempty, normalized,
      deduplicated CIK set and joins the published SEC bridge to issuer,

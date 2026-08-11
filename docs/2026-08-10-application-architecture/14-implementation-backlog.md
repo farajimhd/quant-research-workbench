@@ -289,6 +289,8 @@ budgets and invalid scope broadening fails configuration validation.
         exact returned-key document/text/XBRL aggregates into the same plan.
   - [x] Move the bounded CIK-to-SEC-bridge/issuer/security/listing/symbol
         operational identity join into `sec.operations_intraday.v1`.
+  - [x] Move the exact CIK/accession SEC detail bundle for parent, documents,
+        rendered text, company facts, and frames into the same plan.
   - [ ] Move remaining approved backend SQL domains without modifying deferred
         producer services.
 - [ ] Remove duplicated route-level SQL as callers migrate.
@@ -324,6 +326,8 @@ budgets and invalid scope broadening fails configuration validation.
         `app.py`; retain set-based execution and response composition there.
   - [x] Remove the Services SEC operational identity SQL from `app.py`; retain
         deterministic primary-identity selection and presentation there.
+  - [x] Remove the Services SEC detail SQL from `app.py`; retain parent error
+        semantics, independently degradable children, and presentation there.
   - [ ] Remove remaining route/service-local SQL only after its registered plan
         and focused parity tests exist.
 - [x] Consume deferred producer services through unchanged bounded contracts.

@@ -155,6 +155,7 @@ from src.backend.query_plans.news_operations_v1 import (
     today_summary as news_today_summary_query,
 )
 from src.backend.query_plans.sec_operations_v1 import (
+    filing_detail_queries as sec_filing_detail_queries,
     identity_rows_by_cik as sec_identity_rows_by_cik_query,
     intraday_histogram as sec_intraday_histogram_query,
     related_filing_counts as sec_related_filing_count_queries,
@@ -2506,20 +2507,9 @@ def service_sec_detail(cik: str, accession_number: str) -> dict[str, Any]:
     text_table = "sec_filing_text_rendered_v3"
     company_fact_table = "sec_xbrl_company_fact_v3"
     frame_table = "sec_xbrl_frame_observation_v3"
-    cik_sql = sql_string(normalized_cik)
-    accession_sql = sql_string(accession)
-    where_key = f"cik = {cik_sql} AND accession_number = {accession_sql}"
+    queries = sec_filing_detail_queries(normalized_cik, accession)
     try:
-        filing_rows = clickhouse_json_each_row(
-            f"""
-            SELECT *
-            FROM {quote_ident(database)}.{quote_ident(filing_table)}
-            WHERE {where_key}
-            ORDER BY inserted_at DESC
-            LIMIT 1
-            FORMAT JSONEachRow
-            """
-        )
+        filing_rows = clickhouse_json_each_row(queries["filing"])
     except TimeoutError as exc:
         raise HTTPException(status_code=504, detail="SEC filing parent lookup timed out") from exc
     except Exception as exc:
@@ -2538,64 +2528,19 @@ def service_sec_detail(cik: str, accession_number: str) -> dict[str, Any]:
 
     document_rows = optional_detail_rows(
         "document_rows",
-        f"""
-        SELECT *
-        FROM {quote_ident(database)}.{quote_ident(document_table)} FINAL
-        WHERE {where_key}
-        ORDER BY sequence_number ASC, inserted_at DESC, document_name ASC
-        FORMAT JSONEachRow
-        """,
+        queries["documents"],
     )
     text_rows = optional_detail_rows(
         "text_rows",
-        f"""
-        SELECT
-            document_id,
-            filing_id,
-            accession_number,
-            accession_number_compact,
-            toString(cik) AS cik,
-            text_kind,
-            text,
-            text_char_count,
-            text_byte_count,
-            text_sha256,
-            extraction_method,
-            normalizer_version,
-            quality_flags,
-            source_archive_date,
-            source_archive_member,
-            formatDateTime(extracted_at_utc, '%Y-%m-%dT%H:%i:%S.%fZ', 'UTC') AS extracted_at_utc,
-            source_run_id,
-            inserted_at,
-            false AS text_truncated
-        FROM {quote_ident(database)}.{quote_ident(text_table)} FINAL
-        WHERE {where_key}
-        ORDER BY text_kind ASC, document_id ASC, inserted_at DESC
-        FORMAT JSONEachRow
-        """,
+        queries["texts"],
     )
     company_fact_rows = optional_detail_rows(
         "company_fact_rows",
-        f"""
-        SELECT *
-        FROM {quote_ident(database)}.{quote_ident(company_fact_table)}
-        WHERE {where_key}
-        ORDER BY taxonomy ASC, tag ASC, period_end_date DESC, unit_code ASC
-        LIMIT 300
-        FORMAT JSONEachRow
-        """,
+        queries["company_facts"],
     )
     frame_rows = optional_detail_rows(
         "frame_rows",
-        f"""
-        SELECT *
-        FROM {quote_ident(database)}.{quote_ident(frame_table)}
-        WHERE {where_key}
-        ORDER BY taxonomy ASC, tag ASC, period_end_date DESC, unit_code ASC
-        LIMIT 300
-        FORMAT JSONEachRow
-        """,
+        queries["frames"],
     )
     try:
         identity_rows = service_sec_identity_rows_by_cik(database, [normalized_cik]).get(normalized_cik, [])

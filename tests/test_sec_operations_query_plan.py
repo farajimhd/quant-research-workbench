@@ -4,6 +4,7 @@ import unittest
 from datetime import UTC, datetime
 
 from src.backend.query_plans.sec_operations_v1 import (
+    filing_detail_queries,
     intraday_histogram,
     identity_rows_by_cik,
     related_filing_counts,
@@ -61,6 +62,20 @@ class SecOperationsQueryPlanTests(unittest.TestCase):
         self.assertIn("b.confidence_score DESC", sql)
         with self.assertRaises(ValueError):
             identity_rows_by_cik([])
+
+    def test_filing_detail_bundle_uses_one_exact_identity_and_bounded_xbrl(self) -> None:
+        queries = filing_detail_queries("123", "0001")
+
+        self.assertEqual(
+            set(queries), {"filing", "documents", "texts", "company_facts", "frames"}
+        )
+        for sql in queries.values():
+            self.assertIn("cik = '123' AND accession_number = '0001'", sql)
+        self.assertIn("LIMIT 1", queries["filing"])
+        self.assertIn("LIMIT 300", queries["company_facts"])
+        self.assertIn("LIMIT 300", queries["frames"])
+        with self.assertRaises(ValueError):
+            filing_detail_queries("", "0001")
 
 
 if __name__ == "__main__":

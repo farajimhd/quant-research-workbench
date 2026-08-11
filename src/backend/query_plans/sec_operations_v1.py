@@ -343,6 +343,76 @@ def identity_rows_by_cik(ciks: Iterable[str]) -> str:
     """
 
 
+def filing_detail_queries(cik: str, accession_number: str) -> dict[str, str]:
+    normalized_cik = str(cik).strip()
+    accession = str(accession_number).strip()
+    if not normalized_cik or not accession:
+        raise ValueError("CIK and accession number are required")
+    where_key = (
+        f"cik = {sql_string(normalized_cik)} "
+        f"AND accession_number = {sql_string(accession)}"
+    )
+    return {
+        "filing": f"""
+            SELECT *
+            FROM `q_live`.`sec_filing_v3`
+            WHERE {where_key}
+            ORDER BY inserted_at DESC
+            LIMIT 1
+            FORMAT JSONEachRow
+        """,
+        "documents": f"""
+            SELECT *
+            FROM `q_live`.`sec_filing_document_v3` FINAL
+            WHERE {where_key}
+            ORDER BY sequence_number ASC, inserted_at DESC, document_name ASC
+            FORMAT JSONEachRow
+        """,
+        "texts": f"""
+            SELECT
+                document_id,
+                filing_id,
+                accession_number,
+                accession_number_compact,
+                toString(cik) AS cik,
+                text_kind,
+                text,
+                text_char_count,
+                text_byte_count,
+                text_sha256,
+                extraction_method,
+                normalizer_version,
+                quality_flags,
+                source_archive_date,
+                source_archive_member,
+                formatDateTime(extracted_at_utc, '%Y-%m-%dT%H:%i:%S.%fZ', 'UTC') AS extracted_at_utc,
+                source_run_id,
+                inserted_at,
+                false AS text_truncated
+            FROM `q_live`.`sec_filing_text_rendered_v3` FINAL
+            WHERE {where_key}
+            ORDER BY text_kind ASC, document_id ASC, inserted_at DESC
+            FORMAT JSONEachRow
+        """,
+        "company_facts": f"""
+            SELECT *
+            FROM `q_live`.`sec_xbrl_company_fact_v3`
+            WHERE {where_key}
+            ORDER BY taxonomy ASC, tag ASC, period_end_date DESC, unit_code ASC
+            LIMIT 300
+            FORMAT JSONEachRow
+        """,
+        "frames": f"""
+            SELECT *
+            FROM `q_live`.`sec_xbrl_frame_observation_v3`
+            WHERE {where_key}
+            ORDER BY taxonomy ASC, tag ASC, period_end_date DESC, unit_code ASC
+            LIMIT 300
+            FORMAT JSONEachRow
+        """,
+    }
+
+
 def _datetime64(value: datetime) -> str:
     aware = value if value.tzinfo is not None else value.replace(tzinfo=UTC)
     formatted = aware.astimezone(UTC).strftime("%Y-%m-%d %H:%M:%S.%f")

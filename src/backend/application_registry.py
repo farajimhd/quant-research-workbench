@@ -634,7 +634,7 @@ def _query_plans() -> tuple[QueryPlanDefinition, ...]:
         QueryPlanDefinition(
             "sec.operations_intraday.v1",
             "backend",
-            "src.backend.query_plans.sec_operations_v1:intraday_histogram,today_summary,today_filings,related_filing_counts,identity_rows_by_cik",
+            "src.backend.query_plans.sec_operations_v1:intraday_histogram,today_summary,today_filings,related_filing_counts,identity_rows_by_cik,filing_detail_queries",
             (
                 "q_live.sec_filing_v3",
                 "q_live.sec_filing_document_v3",
