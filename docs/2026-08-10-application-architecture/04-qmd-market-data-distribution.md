@@ -227,6 +227,9 @@ returns a typed 409/restart instruction if either changed. This prevents a
 Replay or Backtest from silently blending pages across revisions. It detects
 revision drift but does not yet provide an old-revision physical snapshot, so a
 conflict restarts instead of continuing against historical table state.
+The event-page read itself also passes the revision's live continuation
+sequence into QMD's source merge, so the response cannot admit arrivals newer
+than the revision it reports.
 
 ## Market AI delivery contract
 

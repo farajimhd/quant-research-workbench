@@ -421,6 +421,13 @@ bounded direct ClickHouse paths remain documented in
     ticker-only assignment authority would be ambiguous. All 26 Replay/Backtest
     service tests and Python compile passed. Intraday Watchlist-event replay is
     still explicitly open and this phase does not claim full mode parity.
+64. Closed a server-side QMD History event-page watermark seam discovered
+    during the revision audit. The endpoint already computed and returned a
+    pinned source revision, but its actual source fetch used the unpinned helper;
+    it now passes the revision's live continuation sequence into the merge, so
+    newer live arrivals cannot enter a page labeled with the older revision.
+    Rust formatting and all 26 QMD History tests passed using the external Cargo
+    runtime.
 
 The authoritative remaining work and acceptance gates are maintained in the
 [complete implementation backlog](14-implementation-backlog.md). A checked

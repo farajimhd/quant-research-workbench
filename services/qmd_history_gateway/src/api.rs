@@ -503,7 +503,12 @@ async fn event_page_snapshot(
     };
     let (events, next_cursor) = state
         .source
-        .fetch_batch(&window, cursor.as_ref(), limit)
+        .fetch_batch_at_revision(
+            &window,
+            cursor.as_ref(),
+            limit,
+            source_revision.live_continuation_sequence,
+        )
         .await
         .map_err(service_error)?;
     let complete = events.len() < limit || next_cursor.is_none();
