@@ -43,13 +43,311 @@ class FieldDefinition:
     modes: tuple[str, ...]
     provenance: str
     coverage_query_plan: str
+    freshness_policy: str
+    null_reasons: tuple[str, ...]
     security_classification: str = "internal_market_data"
     schema_version: int = 1
     status: str = "implemented"
 
 
+@dataclass(frozen=True, slots=True)
+class MarketSourceDefinition:
+    source_id: str
+    label: str
+    owner: str
+    source_path: str
+    transport: str
+    event_clock: str
+    availability_clock: str
+    coverage_path: str
+    watermark_path: str
+    retention_policy: str
+    modes: tuple[str, ...]
+    authoritative_for: tuple[str, ...]
+    status: str = "implemented"
+    schema_version: int = 1
+
+
+@dataclass(frozen=True, slots=True)
+class ProductDefinition:
+    product_id: str
+    label: str
+    owner: str
+    kind: str
+    implementation: str
+    source_ids: tuple[str, ...]
+    dependency_products: tuple[str, ...]
+    outputs: tuple[str, ...]
+    delivery: tuple[str, ...]
+    execution_scopes: tuple[str, ...]
+    modes: tuple[str, ...]
+    persistence_policy: str
+    schema_version: int
+    status: str = "implemented"
+
+
+@dataclass(frozen=True, slots=True)
+class LinkContractDefinition:
+    link_id: str
+    value_type: str
+    producers: tuple[str, ...]
+    consumers: tuple[str, ...]
+    clock_policy: str
+    identity_policy: str
+    modes: tuple[str, ...]
+    schema_version: int = 1
+
+
+@dataclass(frozen=True, slots=True)
+class ContainerDefinition:
+    container_id: str
+    label: str
+    implementation: str
+    input_links: tuple[str, ...]
+    output_links: tuple[str, ...]
+    product_ids: tuple[str, ...]
+    modes: tuple[str, ...]
+    state_schema_version: int
+    status: str = "implemented"
+
+
+@dataclass(frozen=True, slots=True)
+class ConfigurationSchemaDefinition:
+    schema_id: str
+    owner: str
+    implementation: str
+    version: int
+    modes: tuple[str, ...]
+    immutable_when_published: bool
+    status: str = "implemented"
+
+
 ALL_MODES = ("live", "paper", "replay", "backtest", "backtest_debug")
 HISTORICAL_MODES = ("replay", "backtest", "backtest_debug")
+
+
+MARKET_SOURCES = (
+    MarketSourceDefinition(
+        "qmd.massive_live",
+        "Massive live WebSocket",
+        "qmd_gateway",
+        "websocket://massive/quotes+trades",
+        "websocket",
+        "SIP timestamp + source sequence",
+        "QMD receive timestamp",
+        "service://qmd/operational/massive_feed",
+        "service://qmd/continuation/sequence",
+        "ephemeral vendor stream",
+        ("live", "paper"),
+        ("current live quote/trade events",),
+    ),
+    MarketSourceDefinition(
+        "qmd.live_memory",
+        "QMD current live memory",
+        "qmd_gateway",
+        "service://qmd/stream/compact-events",
+        "snapshot_and_delta",
+        "canonical event clock",
+        "QMD normalized_at",
+        "service://qmd/metrics",
+        "canonical event continuation cursor",
+        "bounded current-session state",
+        ("live", "paper"),
+        ("current live continuation", "live scanner state"),
+    ),
+    MarketSourceDefinition(
+        "qmd.recent_events",
+        "QMD recent retained events",
+        "qmd_gateway",
+        "q_live.events",
+        "clickhouse",
+        "canonical SIP timestamp",
+        "persisted_at",
+        "q_live.qmd_live_event_coverage_v1",
+        "latest verified recent interval",
+        "three prior market sessions plus current session",
+        ALL_MODES,
+        ("recent historical events", "recent event-derived bars"),
+    ),
+    MarketSourceDefinition(
+        "qmd.archive_events",
+        "Market SIP compact archive",
+        "market_sip_compact",
+        "market_sip_compact.events_YYYY",
+        "clickhouse",
+        "canonical SIP timestamp",
+        "archive build completion timestamp",
+        "market_sip_compact.events_ordinal_continuity",
+        "latest completed archive session",
+        "durable",
+        HISTORICAL_MODES,
+        ("older historical events",),
+    ),
+    MarketSourceDefinition(
+        "qmd.daily_bars",
+        "Canonical daily session bars",
+        "market_sip_compact",
+        "market_sip_compact.daily_session_bars_by_symbol_time_v1",
+        "clickhouse",
+        "New York session date",
+        "build completed_at",
+        "market_sip_compact.daily_session_bars_by_symbol_time_v1",
+        "latest completed session/build step",
+        "durable",
+        ALL_MODES,
+        ("daily bars", "weekly/monthly/yearly derivation input"),
+    ),
+    MarketSourceDefinition(
+        "reference.point_in_time",
+        "Canonical point-in-time reference publications",
+        "reference_gateway",
+        "q_live.feature_tradable_universe_v1",
+        "clickhouse",
+        "source effective timestamp",
+        "published_at_utc",
+        "q_live.market_reference_publication_coverage_v1",
+        "latest completed source publication",
+        "source-specific",
+        ALL_MODES,
+        ("identity", "tradability", "scanner enrichment"),
+    ),
+)
+
+
+PRODUCT_DEFINITIONS = (
+    ProductDefinition("qmd.compact_events", "Canonical compact events", "qmd_core", "event", "qmd_core::compact_event", ("qmd.live_memory", "qmd.recent_events", "qmd.archive_events"), (), ("compact_event", "continuation_cursor", "coverage"), ("snapshot", "delta_stream", "historical_page"), ("universal_ingest", "request", "offline"), ALL_MODES, "recent_then_archive", 1),
+    ProductDefinition("qmd.intraday_bars", "Canonical intraday bars", "qmd_core", "bar", "qmd_core::bars", ("qmd.live_memory", "qmd.recent_events", "qmd.archive_events"), ("qmd.compact_events",), ("ohlcv", "vwap", "closed_state"), ("snapshot", "delta_stream"), ("core_scan", "watchlist", "strategy_run", "request", "offline"), ALL_MODES, "selected_q_live_plus_rebuildable_cache", 1),
+    ProductDefinition("qmd.macro_bars", "Daily and macro bars", "qmd_core", "bar", "qmd_core::market_products", ("qmd.daily_bars",), (), ("daily", "weekly", "monthly", "yearly", "partial_state"), ("snapshot",), ("request", "offline"), ALL_MODES, "daily_authority_derived_macro", 1),
+    ProductDefinition("qmd.indicators", "Reusable QMD indicators", "qmd_core", "indicator", "qmd_core::indicators", ("qmd.live_memory", "qmd.recent_events", "qmd.archive_events", "reference.point_in_time"), ("qmd.intraday_bars",), ("indicator_rows", "warmup", "provenance"), ("snapshot", "progressive_delta"), ("core_scan", "watchlist", "strategy_run", "request", "offline"), ALL_MODES, "catalog_policy", 1),
+    ProductDefinition("qmd.market_signals", "Reusable market observations", "qmd_core", "signal", "qmd_core::market_signal", ("qmd.live_memory", "qmd.recent_events", "qmd.archive_events"), ("qmd.indicators",), ("market_signal_event", "evidence"), ("snapshot", "delta_stream"), ("watchlist", "strategy_run", "request", "offline"), ALL_MODES, "decision_snapshot_only", 1),
+    ProductDefinition("qmd.scanner", "Market scanner projection", "qmd_gateway", "scanner", "services/qmd-gateway/src/scanner.rs", ("qmd.live_memory", "qmd.recent_events", "qmd.archive_events", "reference.point_in_time"), ("qmd.intraday_bars", "qmd.indicators", "qmd.market_signals"), ("candidate_rows", "membership", "as_of", "coverage"), ("snapshot", "delta_stream", "historical_snapshot"), ("core_scan", "watchlist", "strategy_run"), ALL_MODES, "current_projection_plus_journal_evidence", 1),
+    ProductDefinition("qmd.chart", "Progressive chart payload", "qmd_history_gateway", "chart", "services/qmd_history_gateway/src/api.rs", ("qmd.live_memory", "qmd.recent_events", "qmd.archive_events", "qmd.daily_bars"), ("qmd.intraday_bars", "qmd.macro_bars", "qmd.indicators", "qmd.market_signals"), ("bars", "indicators", "signals", "structure", "provenance"), ("base_snapshot", "progressive_delta"), ("request",), ALL_MODES, "bounded_revisioned_cache", 1),
+    ProductDefinition("qmd.computation_targets", "Scoped computation leases", "qmd_gateway", "control", "services/qmd-gateway/src/computation_targets.rs", ("qmd.live_memory",), ("qmd.indicators", "qmd.market_signals"), ("target_lease", "effective_scope", "expiry"), ("snapshot", "command"), ("watchlist", "strategy_run", "request"), ("live", "paper"), "ephemeral_lease", 1),
+)
+
+
+SYMBOL_LINK_CONSUMERS = (
+    "chart",
+    "charts_quotes",
+    "facts",
+    "microstructure",
+    "ticker_news",
+    "ticker_sec",
+    "xbrl",
+)
+
+LINK_CONTRACTS = (
+    LinkContractDefinition(
+        "workspace.symbol_context",
+        "point_in_time_symbol_identity",
+        ("scanner", "signal_stream", "watchlist", "strategy_activity", "positions", "orders", "closed_trades"),
+        SYMBOL_LINK_CONSUMERS,
+        "preserve workspace clock",
+        "resolve symbol through event-valid identity",
+        ALL_MODES,
+    ),
+    LinkContractDefinition(
+        "workspace.clock_context",
+        "as_of_clock",
+        ("workspace_controller",),
+        ("all_containers",),
+        "mode clock is authoritative",
+        "not_applicable",
+        ALL_MODES,
+    ),
+    LinkContractDefinition(
+        "workspace.news_selection",
+        "canonical_news_document_id",
+        ("news", "ticker_news"),
+        ("news_detail",),
+        "selected record must be available by workspace clock",
+        "canonical document ID plus event-valid ticker link",
+        ALL_MODES,
+    ),
+    LinkContractDefinition(
+        "workspace.sec_selection",
+        "sec_accession",
+        ("sec", "ticker_sec"),
+        ("sec_detail",),
+        "accepted_at must not exceed workspace clock",
+        "accession plus event-valid CIK/security bridge",
+        ALL_MODES,
+    ),
+    LinkContractDefinition(
+        "workspace.order_selection",
+        "canonical_order_identity",
+        ("orders", "positions"),
+        ("fills", "activity"),
+        "run clock",
+        "run ID plus canonical order ID",
+        ALL_MODES,
+    ),
+)
+
+
+def _container(
+    container_id: str,
+    label: str,
+    implementation: str,
+    *,
+    products: tuple[str, ...] = (),
+    inputs: tuple[str, ...] = ("workspace.clock_context",),
+    outputs: tuple[str, ...] = (),
+    modes: tuple[str, ...] = ALL_MODES,
+) -> ContainerDefinition:
+    return ContainerDefinition(
+        container_id,
+        label,
+        implementation,
+        inputs,
+        outputs,
+        products,
+        modes,
+        8,
+    )
+
+
+CONTAINER_DEFINITIONS = (
+    _container("chart", "Chart", "frontend/src/app/components/ChartPanel.tsx", products=("qmd.chart",), inputs=("workspace.clock_context", "workspace.symbol_context")),
+    _container("charts_quotes", "Charts & Quotes", "frontend/src/app/components/MarketMicrostructureContainers.tsx", products=("qmd.chart", "qmd.intraday_bars"), inputs=("workspace.clock_context", "workspace.symbol_context")),
+    _container("facts", "Stock Facts", "frontend/src/app/components/StockFactsContainer.tsx", inputs=("workspace.clock_context", "workspace.symbol_context")),
+    _container("microstructure", "Quotes & Tape", "frontend/src/app/components/MarketMicrostructureContainers.tsx", products=("qmd.intraday_bars", "qmd.indicators"), inputs=("workspace.clock_context", "workspace.symbol_context")),
+    _container("scanner", "Scanner", "frontend/src/app/components/MarketScreenerContainers.tsx", products=("qmd.scanner",), outputs=("workspace.symbol_context",)),
+    _container("signal_stream", "Signal Stream", "frontend/src/app/components/MarketScreenerContainers.tsx", products=("qmd.market_signals",), outputs=("workspace.symbol_context",)),
+    _container("watchlist", "Watch Universe", "frontend/src/app/components/MarketScreenerContainers.tsx", products=("qmd.scanner", "qmd.computation_targets"), outputs=("workspace.symbol_context",)),
+    _container("strategy_activity", "Strategy Activity", "frontend/src/app/components/MarketScreenerContainers.tsx", outputs=("workspace.symbol_context",)),
+    _container("strategy", "Strategy", "frontend/src/pages/CanvasConfigurationPage.tsx"),
+    _container("portfolio", "Portfolio", "frontend/src/pages/CanvasConfigurationPage.tsx"),
+    _container("positions", "Position Manager", "frontend/src/pages/CanvasConfigurationPage.tsx", outputs=("workspace.symbol_context", "workspace.order_selection")),
+    _container("orders", "Orders & Fills", "frontend/src/pages/CanvasConfigurationPage.tsx", outputs=("workspace.symbol_context", "workspace.order_selection")),
+    _container("fills", "Execution Audit", "frontend/src/pages/CanvasConfigurationPage.tsx", inputs=("workspace.clock_context", "workspace.order_selection")),
+    _container("closed_trades", "Round-trip Audit", "frontend/src/pages/CanvasConfigurationPage.tsx", outputs=("workspace.symbol_context",)),
+    _container("activity", "Trading Activity", "frontend/src/pages/CanvasConfigurationPage.tsx", inputs=("workspace.clock_context", "workspace.order_selection")),
+    _container("performance_journal", "Trading Journal", "frontend/src/pages/CanvasConfigurationPage.tsx"),
+    _container("news", "All News", "frontend/src/app/components/NewsContainers.tsx", outputs=("workspace.news_selection",)),
+    _container("ticker_news", "Ticker News", "frontend/src/app/components/NewsContainers.tsx", inputs=("workspace.clock_context", "workspace.symbol_context"), outputs=("workspace.news_selection",)),
+    _container("news_detail", "News Detail", "frontend/src/app/components/NewsContainers.tsx", inputs=("workspace.clock_context", "workspace.news_selection")),
+    _container("sec", "All SEC", "frontend/src/app/components/SecContainers.tsx", outputs=("workspace.sec_selection",)),
+    _container("ticker_sec", "Ticker SEC", "frontend/src/app/components/SecContainers.tsx", inputs=("workspace.clock_context", "workspace.symbol_context"), outputs=("workspace.sec_selection",)),
+    _container("sec_detail", "SEC Detail", "frontend/src/app/components/SecContainers.tsx", inputs=("workspace.clock_context", "workspace.sec_selection")),
+    _container("xbrl", "XBRL Financial Evidence", "frontend/src/app/components/XbrlAnalysisContainer.tsx", inputs=("workspace.clock_context", "workspace.symbol_context")),
+)
+
+
+CONFIGURATION_SCHEMAS = (
+    ConfigurationSchemaDefinition("trading_configuration", "backend", "src/backend/trading_configuration_service.py", 16, ALL_MODES, True),
+    ConfigurationSchemaDefinition("strategy_profile", "strategy_runtime", "src/trading_runtime/strategy_engine.py", 3, ALL_MODES, True),
+    ConfigurationSchemaDefinition("watchlist", "backend", "src/backend/watchlist_runtime_service.py", 1, ALL_MODES, True),
+    ConfigurationSchemaDefinition("run_plan", "backend", "src/backend/trading_configuration_service.py", 1, ALL_MODES, True),
+    ConfigurationSchemaDefinition("canvas_profile", "backend", "src/backend/trading_configuration_service.py", 1, ALL_MODES, True),
+    ConfigurationSchemaDefinition("canvas_layout", "frontend", "frontend/src/app/components/TradingWorkspace.tsx", 8, ALL_MODES, False),
+    ConfigurationSchemaDefinition("portfolio_policy", "portfolio", "src/trading_runtime/portfolio.py", 1, ALL_MODES, True),
+    ConfigurationSchemaDefinition("oms_policy", "oms", "src/trading_runtime/order_management.py", 1, ALL_MODES, True),
+    ConfigurationSchemaDefinition("strategy_intent", "strategy_runtime", "src/trading_runtime/signals.py", 1, ALL_MODES, True),
+    ConfigurationSchemaDefinition("execution_policy", "oms", "src/trading_runtime/execution_policies.py", 1, ALL_MODES, True),
+    ConfigurationSchemaDefinition("protection_profile", "oms", "src/trading_runtime/execution_policies.py", 1, ALL_MODES, True),
+    ConfigurationSchemaDefinition("account_binding", "portfolio", "src/backend/trading_configuration_service.py", 1, ALL_MODES, True),
+)
 
 
 def _query_plans() -> tuple[QueryPlanDefinition, ...]:
@@ -214,6 +512,13 @@ def _field(
     modes: tuple[str, ...] = ALL_MODES,
     provenance: str = "raw",
     coverage_query_plan: str = "reference.schema_inventory.v1",
+    null_reasons: tuple[str, ...] = (
+        "not_published",
+        "outside_coverage",
+        "identity_unresolved",
+        "stale",
+        "not_applicable",
+    ),
     status: str = "implemented",
 ) -> FieldDefinition:
     label = field_id.split(".")[-1].replace("_", " ").title()
@@ -237,6 +542,8 @@ def _field(
         modes=modes,
         provenance=provenance,
         coverage_query_plan=coverage_query_plan,
+        freshness_policy="ttl" if ttl_seconds is not None else "source_revision",
+        null_reasons=null_reasons,
         status=status,
     )
 
@@ -365,6 +672,70 @@ FIELD_DEFINITIONS = _fields()
 
 
 def validate_application_registry() -> None:
+    source_ids = [source.source_id for source in MARKET_SOURCES]
+    product_ids = [product.product_id for product in PRODUCT_DEFINITIONS]
+    link_ids = [link.link_id for link in LINK_CONTRACTS]
+    container_ids = [container.container_id for container in CONTAINER_DEFINITIONS]
+    schema_ids = [schema.schema_id for schema in CONFIGURATION_SCHEMAS]
+    for label, values in (
+        ("market source", source_ids),
+        ("product", product_ids),
+        ("link", link_ids),
+        ("container", container_ids),
+        ("configuration schema", schema_ids),
+    ):
+        if len(values) != len(set(values)):
+            raise ValueError(f"{label} IDs must be unique")
+
+    known_sources = set(source_ids)
+    known_products = set(product_ids)
+    known_links = set(link_ids)
+    supported_modes = set(ALL_MODES)
+    for source in MARKET_SOURCES:
+        if not set(source.modes).issubset(supported_modes):
+            raise ValueError(f"{source.source_id} has an unsupported mode")
+        if not source.coverage_path or not source.watermark_path:
+            raise ValueError(f"{source.source_id} must declare coverage and watermark authority")
+    product_graph: dict[str, tuple[str, ...]] = {}
+    for product in PRODUCT_DEFINITIONS:
+        missing_sources = set(product.source_ids) - known_sources
+        missing_products = set(product.dependency_products) - known_products
+        if missing_sources or missing_products:
+            raise ValueError(
+                f"{product.product_id} has unknown sources/products: "
+                f"{sorted(missing_sources | missing_products)}"
+            )
+        if not set(product.modes).issubset(supported_modes):
+            raise ValueError(f"{product.product_id} has an unsupported mode")
+        product_graph[product.product_id] = product.dependency_products
+    _validate_acyclic_dependencies(product_graph)
+
+    containers = set(container_ids)
+    special_link_participants = {"all_containers", "workspace_controller"}
+    for link in LINK_CONTRACTS:
+        unknown = (set(link.producers) | set(link.consumers)) - containers - special_link_participants
+        if unknown:
+            raise ValueError(f"{link.link_id} references unknown containers: {sorted(unknown)}")
+    for container in CONTAINER_DEFINITIONS:
+        missing_links = (set(container.input_links) | set(container.output_links)) - known_links
+        missing_products = set(container.product_ids) - known_products
+        if missing_links or missing_products:
+            raise ValueError(
+                f"{container.container_id} has unknown links/products: "
+                f"{sorted(missing_links | missing_products)}"
+            )
+        for link_id in container.input_links:
+            contract = next(link for link in LINK_CONTRACTS if link.link_id == link_id)
+            if container.container_id not in contract.consumers and "all_containers" not in contract.consumers:
+                raise ValueError(f"{container.container_id} is not a consumer of {link_id}")
+        for link_id in container.output_links:
+            contract = next(link for link in LINK_CONTRACTS if link.link_id == link_id)
+            if container.container_id not in contract.producers:
+                raise ValueError(f"{container.container_id} is not a producer of {link_id}")
+    for schema in CONFIGURATION_SCHEMAS:
+        if schema.version < 1 or not set(schema.modes).issubset(supported_modes):
+            raise ValueError(f"{schema.schema_id} has an invalid version or mode")
+
     plan_ids = [plan.plan_id for plan in QUERY_PLANS]
     if len(plan_ids) != len(set(plan_ids)):
         raise ValueError("query plan IDs must be unique")
@@ -394,14 +765,43 @@ def validate_application_registry() -> None:
         raise ValueError(f"Reference table inventory is incomplete: {missing_reference_tables}")
 
 
+def _validate_acyclic_dependencies(graph: dict[str, tuple[str, ...]]) -> None:
+    visiting: set[str] = set()
+    visited: set[str] = set()
+
+    def visit(node: str) -> None:
+        if node in visiting:
+            raise ValueError(f"product dependency cycle includes {node}")
+        if node in visited:
+            return
+        visiting.add(node)
+        for dependency in graph.get(node, ()):
+            visit(dependency)
+        visiting.remove(node)
+        visited.add(node)
+
+    for node in graph:
+        visit(node)
+
+
 @lru_cache(maxsize=1)
 def application_registry_payload() -> dict[str, object]:
     validate_application_registry()
     return {
-        "schema_version": 1,
+        "schema_version": 2,
+        "market_sources": [asdict(source) for source in MARKET_SOURCES],
+        "products": [asdict(product) for product in PRODUCT_DEFINITIONS],
+        "link_contracts": [asdict(link) for link in LINK_CONTRACTS],
+        "containers": [asdict(container) for container in CONTAINER_DEFINITIONS],
+        "configuration_schemas": [asdict(schema) for schema in CONFIGURATION_SCHEMAS],
         "fields": [asdict(field) for field in FIELD_DEFINITIONS],
         "query_plans": [asdict(plan) for plan in QUERY_PLANS],
         "counts": {
+            "market_sources": len(MARKET_SOURCES),
+            "products": len(PRODUCT_DEFINITIONS),
+            "link_contracts": len(LINK_CONTRACTS),
+            "containers": len(CONTAINER_DEFINITIONS),
+            "configuration_schemas": len(CONFIGURATION_SCHEMAS),
             "fields": len(FIELD_DEFINITIONS),
             "query_plans": len(QUERY_PLANS),
             "reference_tables": sum(len(group.tables) for group in REFERENCE_TABLE_GROUPS),

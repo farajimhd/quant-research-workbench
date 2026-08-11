@@ -75,6 +75,13 @@ bounded direct ClickHouse paths remain documented in
     watermark, live lag, writer/drop state, cache efficiency/footprint, and
     active historical build capacity without converting missing evidence into
     healthy zeroes.
+16. Extended the existing application registry with market-source
+    coverage/watermark contracts, QMD product dependencies, all runnable Canvas
+    containers and typed links, and versioned trading configuration schemas.
+    The shared QMD live/history capability catalog now also declares version,
+    cadence, timeframe, warm-up, state/persistence class and mode support. The
+    backend exposes each registry family; frontend catalog generation remains
+    open.
 
 The authoritative remaining work and acceptance gates are maintained in the
 [complete implementation backlog](14-implementation-backlog.md). A checked

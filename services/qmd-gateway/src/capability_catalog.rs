@@ -1,4 +1,6 @@
-use crate::indicator_catalog::{indicator_catalog, ImplementationStatus, IndicatorPriority};
+use crate::indicator_catalog::{
+    indicator_catalog, ComputeMode, ImplementationStatus, IndicatorPriority, PersistPolicy,
+};
 use crate::signal_catalog::signal_catalog;
 use serde::{Deserialize, Serialize};
 
@@ -44,6 +46,13 @@ pub struct ComputationCapability<'a> {
     pub operational_status: &'static str,
     pub cost_class: CostClass,
     pub stateful: bool,
+    pub implementation_version: u16,
+    pub cadence: &'static str,
+    pub timeframes: &'a [&'a str],
+    pub warm_up_bars: Option<u16>,
+    pub state_class: &'static str,
+    pub persistence_policy: &'static str,
+    pub modes: &'static [&'static str],
     pub inputs: &'a [&'a str],
     pub outputs: &'a [&'a str],
 }
@@ -105,6 +114,36 @@ const CORE_FAMILIES: &[&str] = &[
     "nbbo_liquidity",
     "reference_context",
 ];
+const ALL_MODES: &[&str] = &["live", "paper", "replay", "backtest", "backtest_debug"];
+const NO_TIMEFRAMES: &[&str] = &[];
+
+fn indicator_cadence(mode: ComputeMode) -> &'static str {
+    match mode {
+        ComputeMode::RealtimeTick | ComputeMode::RealtimeInMemory => "on_event_or_state_change",
+        ComputeMode::RealtimeBarClose => "bar_close",
+        ComputeMode::PolarsOnDemand => "on_demand",
+        ComputeMode::ReferenceLoad => "publication_or_schedule",
+    }
+}
+
+fn persistence_policy(policy: PersistPolicy) -> &'static str {
+    match policy {
+        PersistPolicy::Always => "always",
+        PersistPolicy::IfSignalUses => "if_signal_uses",
+        PersistPolicy::SignalSnapshotOnly => "signal_snapshot_only",
+        PersistPolicy::ReferenceSnapshot => "reference_snapshot",
+        PersistPolicy::NoDefault => "no_default",
+    }
+}
+
+fn recommended_warm_up_bars(mode: ComputeMode) -> Option<u16> {
+    match mode {
+        ComputeMode::RealtimeBarClose | ComputeMode::PolarsOnDemand => Some(50),
+        ComputeMode::RealtimeTick | ComputeMode::RealtimeInMemory | ComputeMode::ReferenceLoad => {
+            None
+        }
+    }
+}
 
 fn indicator_scope(key: &str, status: ImplementationStatus) -> ExecutionScope {
     if CORE_FAMILIES.contains(&key) {
@@ -186,6 +225,17 @@ pub fn computation_capability_catalog() -> Vec<ComputationCapability<'static>> {
             operational_status: "ready",
             cost_class: CostClass::Minimal,
             stateful: true,
+            implementation_version: 1,
+            cadence: "every_accepted_event",
+            timeframes: NO_TIMEFRAMES,
+            warm_up_bars: None,
+            state_class: "per_symbol_stream_state",
+            persistence_policy: if *key == "compact_persistence_fanout" {
+                "always"
+            } else {
+                "state_or_downstream_evidence"
+            },
+            modes: ALL_MODES,
             inputs,
             outputs,
         });
@@ -214,6 +264,13 @@ pub fn computation_capability_catalog() -> Vec<ComputationCapability<'static>> {
             operational_status: "ready",
             cost_class: cost_class(scope, definition.priority),
             stateful: true,
+            implementation_version: 1,
+            cadence: indicator_cadence(definition.compute_mode),
+            timeframes: definition.typical_timeframes,
+            warm_up_bars: recommended_warm_up_bars(definition.compute_mode),
+            state_class: "per_symbol_timeframe_state",
+            persistence_policy: persistence_policy(definition.persist_policy),
+            modes: ALL_MODES,
             inputs: definition.inputs,
             outputs: definition.fields,
         }
@@ -234,6 +291,13 @@ pub fn computation_capability_catalog() -> Vec<ComputationCapability<'static>> {
                 operational_status: "ready",
                 cost_class: CostClass::Medium,
                 stateful: true,
+                implementation_version: definition.signal_version,
+                cadence: definition.publication_cadence,
+                timeframes: definition.working_timeframes,
+                warm_up_bars: None,
+                state_class: "per_symbol_signal_lifecycle",
+                persistence_policy: "decision_snapshot_only",
+                modes: ALL_MODES,
                 inputs: definition.required_indicator_fields,
                 outputs: definition.emits,
             }),
@@ -263,6 +327,10 @@ mod tests {
                     ExecutionScope::UniversalIngest
                 ));
             }
+            assert!(row.implementation_version > 0);
+            assert!(!row.cadence.is_empty());
+            assert!(!row.persistence_policy.is_empty());
+            assert!(!row.modes.is_empty());
         }
         assert_eq!(
             catalog

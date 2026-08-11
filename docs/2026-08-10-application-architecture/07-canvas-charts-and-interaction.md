@@ -133,7 +133,11 @@ Live, Paper, Replay, and Backtest workspaces must be visually explicit and canno
 
 ## 7. Current drift
 
-- The configuration surfaces already draft many containers, but they are not yet backed by one complete, versioned container registry.
+- The backend application registry now records every currently runnable Canvas
+  container, its implementation, state-schema version, compatible modes, QMD
+  products, and typed input/output links. The frontend's container definitions
+  are still handwritten and must be generated or checked against this authority
+  before the catalog is truly single-source.
 - The backend now exposes a Canvas-only projection of the approved release.
   Standalone Canvas and Replay instantiate that published/pinned profile, while
   revision-scoped browser overlays persist layout, links, symbols and container

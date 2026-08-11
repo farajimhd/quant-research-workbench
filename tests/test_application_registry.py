@@ -4,7 +4,12 @@ import unittest
 
 from services.reference_gateway.table_groups import OWNED_REFERENCE_TABLES
 from src.backend.application_registry import (
+    CONFIGURATION_SCHEMAS,
+    CONTAINER_DEFINITIONS,
     FIELD_DEFINITIONS,
+    LINK_CONTRACTS,
+    MARKET_SOURCES,
+    PRODUCT_DEFINITIONS,
     QUERY_PLANS,
     application_registry_payload,
     validate_application_registry,
@@ -40,6 +45,8 @@ class ApplicationRegistryTests(unittest.TestCase):
             self.assertTrue(fields[field_id].query_plan_id)
             self.assertTrue(fields[field_id].available_at)
             self.assertTrue(fields[field_id].source_path)
+            self.assertTrue(fields[field_id].freshness_policy)
+            self.assertTrue(fields[field_id].null_reasons)
         self.assertGreaterEqual(len(fields), 180)
 
     def test_deferred_producer_fields_are_registered_without_claiming_readiness(self) -> None:
@@ -50,9 +57,32 @@ class ApplicationRegistryTests(unittest.TestCase):
 
     def test_payload_includes_versions_and_counts(self) -> None:
         payload = application_registry_payload()
-        self.assertEqual(payload["schema_version"], 1)
+        self.assertEqual(payload["schema_version"], 2)
         self.assertEqual(payload["counts"]["fields"], len(FIELD_DEFINITIONS))
         self.assertEqual(payload["counts"]["query_plans"], len(QUERY_PLANS))
+        self.assertEqual(payload["counts"]["market_sources"], len(MARKET_SOURCES))
+        self.assertEqual(payload["counts"]["products"], len(PRODUCT_DEFINITIONS))
+        self.assertEqual(payload["counts"]["containers"], len(CONTAINER_DEFINITIONS))
+        self.assertEqual(payload["counts"]["link_contracts"], len(LINK_CONTRACTS))
+        self.assertEqual(payload["counts"]["configuration_schemas"], len(CONFIGURATION_SCHEMAS))
+
+    def test_market_sources_declare_coverage_and_watermarks(self) -> None:
+        sources = {source.source_id: source for source in MARKET_SOURCES}
+        for source_id in ("qmd.live_memory", "qmd.recent_events", "qmd.archive_events", "qmd.daily_bars"):
+            self.assertIn(source_id, sources)
+            self.assertTrue(sources[source_id].coverage_path)
+            self.assertTrue(sources[source_id].watermark_path)
+
+    def test_products_containers_links_and_schemas_are_cross_referenced(self) -> None:
+        validate_application_registry()
+        products = {product.product_id for product in PRODUCT_DEFINITIONS}
+        links = {link.link_id for link in LINK_CONTRACTS}
+        self.assertIn("qmd.chart", products)
+        self.assertIn("qmd.scanner", products)
+        self.assertIn("workspace.symbol_context", links)
+        self.assertTrue(all(set(container.product_ids).issubset(products) for container in CONTAINER_DEFINITIONS))
+        self.assertTrue(all((set(container.input_links) | set(container.output_links)).issubset(links) for container in CONTAINER_DEFINITIONS))
+        self.assertIn("strategy_intent", {schema.schema_id for schema in CONFIGURATION_SCHEMAS})
 
 
 if __name__ == "__main__":

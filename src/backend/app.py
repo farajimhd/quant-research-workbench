@@ -4751,6 +4751,37 @@ def application_query_plan_registry() -> dict[str, object]:
     return {"schema_version": payload["schema_version"], "count": len(rows), "rows": rows}
 
 
+@app.get("/api/registries/market-sources")
+def application_market_source_registry() -> dict[str, object]:
+    return application_registry_family("market_sources")
+
+
+@app.get("/api/registries/products")
+def application_product_registry() -> dict[str, object]:
+    return application_registry_family("products")
+
+
+@app.get("/api/registries/containers")
+def application_container_registry() -> dict[str, object]:
+    return application_registry_family("containers")
+
+
+@app.get("/api/registries/link-contracts")
+def application_link_contract_registry() -> dict[str, object]:
+    return application_registry_family("link_contracts")
+
+
+@app.get("/api/registries/configuration-schemas")
+def application_configuration_schema_registry() -> dict[str, object]:
+    return application_registry_family("configuration_schemas")
+
+
+def application_registry_family(key: str) -> dict[str, object]:
+    payload = application_registry_payload()
+    rows = list(payload[key])
+    return {"schema_version": payload["schema_version"], "count": len(rows), "rows": rows}
+
+
 @app.get("/api/trading/configuration/base")
 def trading_configuration_base() -> dict[str, Any]:
     return configuration_base()

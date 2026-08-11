@@ -96,6 +96,15 @@ The catalog contains capability, field, container, strategy, policy, mode and se
 6. estimates resource class and applies limits;
 7. emits a deterministic release/Run Plan hash.
 
+The backend application registry now exposes versioned family endpoints for
+market sources, QMD products, enrichment fields/query plans, Canvas containers,
+typed link contracts, and configuration schemas. Its validator checks unique
+IDs, cross-family references, product dependency cycles,
+coverage/watermark authority, and supported modes. QMD's shared live/history
+capability catalog remains the formula-level authority and additionally
+declares implementation version, cadence, timeframe, warm-up, state class,
+persistence, cost/scope, mode support, and implementation status.
+
 The UI derives choices and statuses from this catalog. It must not maintain a competing handwritten list of “available” features.
 
 ## 7. Caching and workload isolation

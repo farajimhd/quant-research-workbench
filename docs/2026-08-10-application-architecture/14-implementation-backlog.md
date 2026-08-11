@@ -27,20 +27,20 @@ separate explicit authorization.
 
 ## 0. Registries and compiled contracts
 
-- [ ] Register market sources and their coverage/watermark contracts.
-- [ ] Register QMD events, bars, indicators, signals, scanner, and chart products.
-- [ ] Register every capability with inputs, outputs, implementation version,
+- [x] Register market sources and their coverage/watermark contracts.
+- [x] Register QMD events, bars, indicators, signals, scanner, and chart products.
+- [x] Register every capability with inputs, outputs, implementation version,
       allowed/default scope, cadence, timeframe, warm-up, state/cost class,
       persistence policy, mode support, and implementation status.
-- [ ] Register enrichment fields with semantic grain, owner, physical source,
+- [x] Register enrichment fields with semantic grain, owner, physical source,
       query-plan ID, point-in-time join, availability clock, freshness, null
       reasons, coverage, security class, and historical support.
-- [ ] Register Canvas container schemas and typed link contracts.
-- [ ] Register Strategy, Watchlist, Canvas, Portfolio, OMS, execution,
+- [x] Register Canvas container schemas and typed link contracts.
+- [x] Register Strategy, Watchlist, Canvas, Portfolio, OMS, execution,
       protection, account-binding, and mode schemas.
 - [ ] Validate unique IDs, references, dependency cycles, clocks, scopes, modes,
       source paths, and retired compatibility aliases.
-- [ ] Expose the registries through backend catalog APIs.
+- [x] Expose the registries through backend catalog APIs.
 - [ ] Generate frontend choices and statuses from the backend catalogs.
 - [ ] Remove competing handwritten frontend/backend/QMD availability catalogs.
 - [x] Version approved configuration releases and compute deterministic hashes.
