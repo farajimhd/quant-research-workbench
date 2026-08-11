@@ -48,7 +48,7 @@ from src.backend.application_registry import (
     runtime_capability_registry_payload,
 )
 from src.backend.application_authority import AuthorityDenied, AuthorityPolicy
-from src.backend.bounded_cache import BoundedTtlCache
+from src.backend.bounded_cache import BoundedSingleFlightTtlCache, BoundedTtlCache
 from src.backend.workload_budget import (
     WorkloadBudgetRejected,
     classify_workload,
@@ -305,6 +305,14 @@ _SERVICE_SEC_HISTOGRAM_CACHE = BoundedTtlCache[str, dict[str, Any]](
     max_entries=SERVICE_HISTOGRAM_CACHE_MAX_ENTRIES,
     ttl_seconds=SERVICE_SEC_HISTOGRAM_CACHE_SECONDS,
     contract_revision="service-sec-histogram.v1",
+)
+_COMPUTATION_REQUIREMENT_SUMMARY_CACHE = BoundedSingleFlightTtlCache[
+    str, dict[str, Any]
+](
+    max_entries=1,
+    ttl_seconds=1.0,
+    contract_revision="computation-requirement-summary.v1",
+    wait_timeout_seconds=10.0,
 )
 
 SERVICE_DATABASE_TABLES: dict[str, list[dict[str, str]]] = {
@@ -3946,7 +3954,7 @@ def market_discovery_watchlist_runtime() -> dict[str, Any]:
     from src.backend.watchlist_runtime_service import WATCHLIST_RUNTIME
 
     payload = WATCHLIST_RUNTIME.snapshot()
-    planner = qmd_computation_requirements()
+    planner = computation_requirement_summary()
     requirement_summary, demand_summary = bounded_computation_planner_summary(planner)
     payload["computation_requirements"] = requirement_summary
     if isinstance(planner.get("live_demand"), dict):
@@ -3995,8 +4003,19 @@ def bounded_computation_planner_summary(
 
 
 @app.get("/api/system/computation-requirements")
-def system_computation_requirements() -> dict[str, Any]:
-    return qmd_computation_requirements()
+def system_computation_requirements(
+    include_details: bool = Query(default=False),
+) -> dict[str, Any]:
+    if include_details:
+        return qmd_computation_requirements(include_live_details=True)
+    return computation_requirement_summary()
+
+
+def computation_requirement_summary() -> dict[str, Any]:
+    return _COMPUTATION_REQUIREMENT_SUMMARY_CACHE.get_or_load(
+        "current",
+        lambda: qmd_computation_requirements(include_live_details=False),
+    )
 
 
 @app.get("/api/market-discovery/scanner/history")

@@ -20,6 +20,7 @@ from src.request_context import ContextThreadPoolExecutor as ThreadPoolExecutor
 from dotenv import load_dotenv
 
 from src.backend.qmd_gateway_client import qmd_scanner_snapshot
+from src.backend.bounded_cache import BoundedSingleFlightTtlCache
 from src.backend.feature_projection import compact_feature_projection
 from src.backend.query_plans.market_tradable_universe_v1 import tradable_symbol_lookup
 from src.backend.real_live_market_data.clickhouse import ClickHouseHttpClient
@@ -33,6 +34,12 @@ NEW_YORK = ZoneInfo("America/New_York")
 DEFAULT_IBKR_BASE_URL = "https://localhost:5000/v1/api"
 DEFAULT_MASSIVE_BASE_URL = "https://api.massive.com"
 IBKR_ORDER_LANE = threading.RLock()
+SCANNER_COMPOSITION_CACHE = BoundedSingleFlightTtlCache[str, dict[str, Any]](
+    max_entries=1,
+    ttl_seconds=5.0,
+    contract_revision="real-live-scanner-composition.v1",
+    wait_timeout_seconds=30.0,
+)
 
 
 @dataclass(frozen=True)
@@ -242,6 +249,27 @@ def _approved_configuration_checks(
 
 
 def real_live_scanner_snapshot(row_limit: int = 250) -> dict[str, Any]:
+    complete = SCANNER_COMPOSITION_CACHE.get_or_load(
+        "complete-population",
+        _compose_real_live_scanner_snapshot,
+    )
+    limit = max(1, min(int(row_limit or 250), 1_000))
+    limited_rows = list(complete.get("rows") or [])[:limit]
+    result = {
+        **complete,
+        "rows": limited_rows,
+        "row_count": len(limited_rows),
+    }
+    result["feature_projection"] = compact_feature_projection(
+        limited_rows,
+        as_of=datetime.now(UTC),
+        source_revision=str(result.get("source_revision") or ""),
+        source_schema_version=str(result.get("schema_version") or "1"),
+    )
+    return result
+
+
+def _compose_real_live_scanner_snapshot() -> dict[str, Any]:
     try:
         # Resolve Watchlists from the complete compact Core Scanner population;
         # the caller's row limit applies only to the returned UI projection.
@@ -286,11 +314,10 @@ def real_live_scanner_snapshot(row_limit: int = 250) -> dict[str, Any]:
                     "watchlists": [],
                     "target_errors": [{"watchlist_id": "*", "error": reference_error}],
                 }
-            limited_rows = rows[: max(1, min(int(row_limit or 250), 1_000))]
             filtered.update(
                 {
-                    "rows": limited_rows,
-                    "row_count": len(limited_rows),
+                    "rows": rows,
+                    "row_count": len(rows),
                     "core_population_count": len(rows),
                     "watchlist_runtime": watchlist_runtime,
                 }
@@ -301,12 +328,6 @@ def real_live_scanner_snapshot(row_limit: int = 250) -> dict[str, Any]:
             filtered.pop("market_row_count", None)
             if reference_error:
                 filtered["reference_enrichment_error"] = reference_error
-            filtered["feature_projection"] = compact_feature_projection(
-                limited_rows,
-                as_of=datetime.now(UTC),
-                source_revision=str(filtered.get("source_revision") or ""),
-                source_schema_version=str(filtered.get("schema_version") or "1"),
-            )
             return filtered
     except Exception as exc:
         qmd_error = str(exc)
@@ -317,7 +338,7 @@ def real_live_scanner_snapshot(row_limit: int = 250) -> dict[str, Any]:
     rows = [normalize_massive_ticker_snapshot(item) for item in tickers]
     rows = [row for row in rows if row["symbol"] and row["last_price"] > 0]
     rows.sort(key=lambda row: (row["live_priority"], row["day_volume"]), reverse=True)
-    rows = rows[: max(1, min(int(row_limit or 250), 1000))]
+    rows = rows[:1_000]
     rows, tradable_filter = filter_tradable_rows(rows)
     now = datetime.now(NEW_YORK)
     result = {
@@ -329,12 +350,6 @@ def real_live_scanner_snapshot(row_limit: int = 250) -> dict[str, Any]:
         "qmd_gateway_error": qmd_error,
         "tradable_filter": tradable_filter,
     }
-    result["feature_projection"] = compact_feature_projection(
-        rows,
-        as_of=datetime.now(UTC),
-        source_revision="massive-rest-fallback",
-        source_schema_version=1,
-    )
     return result
 
 

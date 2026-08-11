@@ -817,6 +817,24 @@ class QmdGatewayClientTests(unittest.TestCase):
         self.assertEqual(payload["authorities"]["qmd_history"], "unavailable")
         self.assertIn("history offline", payload["errors"]["qmd_history"])
 
+    def test_computation_requirements_can_request_bounded_live_summary(self) -> None:
+        live_get = MagicMock(
+            return_value={
+                "active_requirement_count": 58_752,
+                "active_symbol_count": 2_448,
+                "active_target_count": 2,
+            }
+        )
+        payload = qmd_computation_requirements(
+            include_live_details=False,
+            live_get=live_get,
+            history_get=lambda *_args, **_kwargs: {"requirements": []},
+        )
+
+        self.assertEqual(payload["live_requirement_count"], 58_752)
+        self.assertEqual(payload["requirements"], [])
+        live_get.assert_called_once_with("/computation-targets/summary", timeout=3)
+
     @patch("src.backend.qmd_gateway_client.qmd_put_json")
     @patch("src.backend.qmd_gateway_client.qmd_get_json")
     def test_indicator_request_leases_focused_chart_computation(

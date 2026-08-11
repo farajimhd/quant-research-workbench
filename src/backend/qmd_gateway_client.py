@@ -889,6 +889,7 @@ def qmd_computation_demand() -> dict[str, Any]:
 
 def qmd_computation_requirements(
     *,
+    include_live_details: bool = True,
     live_get: Callable[..., Any] = qmd_get_json,
     history_get: Callable[..., Any] = qmd_history_get_json,
 ) -> dict[str, Any]:
@@ -897,7 +898,11 @@ def qmd_computation_requirements(
     payloads: dict[str, dict[str, Any]] = {}
     with ThreadPoolExecutor(max_workers=2) as executor:
         futures = {
-            "qmd_gateway": executor.submit(live_get, "/computation-targets", timeout=3),
+            "qmd_gateway": executor.submit(
+                live_get,
+                "/computation-targets" if include_live_details else "/computation-targets/summary",
+                timeout=3,
+            ),
             "qmd_history": executor.submit(history_get, "/snapshot/cache", timeout=3),
         }
         for authority, future in futures.items():
@@ -935,6 +940,14 @@ def qmd_computation_requirements(
             str(row.get("requirement_id") or ""),
         )
     )
+    live_requirement_count = (
+        int(live_payload.get("active_requirement_count") or 0)
+        if "active_requirement_count" in live_payload
+        else sum(1 for row in requirements if row.get("authority") == "qmd_gateway")
+    )
+    offline_requirement_count = sum(
+        1 for row in requirements if row.get("authority") == "qmd_history"
+    )
     return {
         "schema_version": 1,
         "as_of": datetime.now(timezone.utc).isoformat(),
@@ -943,13 +956,9 @@ def qmd_computation_requirements(
             "qmd_gateway": "available" if "qmd_gateway" in payloads else "unavailable",
             "qmd_history": "available" if "qmd_history" in payloads else "unavailable",
         },
-        "active_requirement_count": len(requirements),
-        "live_requirement_count": sum(
-            1 for row in requirements if row.get("authority") == "qmd_gateway"
-        ),
-        "offline_requirement_count": sum(
-            1 for row in requirements if row.get("authority") == "qmd_history"
-        ),
+        "active_requirement_count": live_requirement_count + offline_requirement_count,
+        "live_requirement_count": live_requirement_count,
+        "offline_requirement_count": offline_requirement_count,
         "live_demand": payloads.get("qmd_gateway"),
         "requirements": requirements,
         "errors": errors,

@@ -1031,6 +1031,13 @@ broker command outside OMS.
         refresh. Real validation measured 8.31 seconds cold, 1.66 seconds at
         expiry using honest stale evidence, and 1.33 seconds after the new
         projection became current.
+  - [x] Coalesce complete-population Scanner composition and ordinary
+        computation-management reads. A five-second bounded single-flight
+        projection retains QMD/reference source evidence while per-request row
+        limits are applied after composition. The QMD computation summary no
+        longer transports the full per-symbol requirement graph: the backend
+        response fell from about 62-78 MB during diagnosis to 1.3 KB while
+        still reporting 74,096 active requirements.
   - [ ] Repeat the active-session soak with the live-reserved repair fan-in and
         record websocket freshness, repair progress, compact queue depth/waits,
         Scanner latency, CPU, and memory through catch-up and steady state.
@@ -1059,6 +1066,14 @@ broker command outside OMS.
       Replay/Backtest clocks and state, configuration authority, and rejection
       of direct order paths.
 - [ ] Run representative end-to-end load tests.
+  - [x] Pass the bounded post-close application read profile across Scanner,
+        Watchlist, Canvas chart, and computation management. Eight concurrent
+        clients completed 1,808 validated requests in 30 seconds with zero
+        errors. Route p95 latency was 255 ms, 507 ms, 756 ms, and 282 ms,
+        respectively. Evidence is
+        `D:\TradingML\runtimes\qmd_validation\application_read_load_20260811T212024Z.json`.
+  - [ ] Repeat the same whole-path profile during a representative active
+        session together with the longer QMD CPU/memory/freshness soak.
 - [ ] Migrate one authority domain at a time with compatibility measurement.
 - [ ] Remove duplicate paths only after zero production callers are proven.
 - [x] Document release, rollback, and recovery for every active migration

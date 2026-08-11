@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import unittest
+from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
+from src.backend import app as backend_app
 from src.backend.app import app, bounded_computation_planner_summary
+from src.backend.bounded_cache import BoundedSingleFlightTtlCache
 from src.backend.application_authority import (
     AuthorityDenied,
     AuthorityPolicy,
@@ -15,6 +18,28 @@ from src.backend.application_authority import (
 
 
 class ApplicationAuthorityTests(unittest.TestCase):
+    def test_computation_summary_is_shared_across_management_consumers(self) -> None:
+        cache = BoundedSingleFlightTtlCache[str, dict](
+            max_entries=1,
+            ttl_seconds=60,
+            contract_revision="planner-summary.test",
+        )
+        payload = {"schema_version": 1, "active_requirement_count": 7}
+        with (
+            patch.object(backend_app, "_COMPUTATION_REQUIREMENT_SUMMARY_CACHE", cache),
+            patch.object(
+                backend_app,
+                "qmd_computation_requirements",
+                return_value=payload,
+            ) as planner,
+        ):
+            first = backend_app.computation_requirement_summary()
+            second = backend_app.computation_requirement_summary()
+
+        self.assertEqual(first, payload)
+        self.assertEqual(second, payload)
+        planner.assert_called_once_with(include_live_details=False)
+
     def test_watchlist_planner_summary_omits_wide_requirement_and_target_rows(self) -> None:
         requirements, demand = bounded_computation_planner_summary({
             "schema_version": 1,

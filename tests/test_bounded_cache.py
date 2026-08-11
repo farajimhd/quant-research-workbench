@@ -1,12 +1,44 @@
 from __future__ import annotations
 
 import unittest
+from concurrent.futures import ThreadPoolExecutor
+from threading import Event, Lock
 from unittest.mock import patch
 
-from src.backend.bounded_cache import BoundedTtlCache
+from src.backend.bounded_cache import BoundedSingleFlightTtlCache, BoundedTtlCache
 
 
 class BoundedTtlCacheTests(unittest.TestCase):
+    def test_single_flight_coalesces_concurrent_misses(self) -> None:
+        cache = BoundedSingleFlightTtlCache[str, dict](
+            max_entries=1,
+            ttl_seconds=60,
+            contract_revision="single-flight.test",
+        )
+        entered = Event()
+        release = Event()
+        calls = 0
+        calls_lock = Lock()
+
+        def loader() -> dict:
+            nonlocal calls
+            with calls_lock:
+                calls += 1
+            entered.set()
+            release.wait(timeout=5)
+            return {"revision": "qmd-42"}
+
+        with ThreadPoolExecutor(max_workers=8) as executor:
+            futures = [executor.submit(cache.get_or_load, "scanner", loader) for _ in range(8)]
+            self.assertTrue(entered.wait(timeout=2))
+            release.set()
+            results = [future.result(timeout=2) for future in futures]
+
+        self.assertEqual(calls, 1)
+        self.assertEqual(results, [{"revision": "qmd-42"}] * 8)
+        self.assertEqual(cache.metrics()["loads"], 1)
+        self.assertGreaterEqual(cache.metrics()["coalesced"], 1)
+
     def test_expires_and_rejects_a_changed_source_revision(self) -> None:
         now = [10.0]
         cache = BoundedTtlCache[str, str](

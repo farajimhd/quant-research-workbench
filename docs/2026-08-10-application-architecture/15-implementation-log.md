@@ -1799,6 +1799,38 @@ it does not imply all application work is complete.
      Python compilation, help rendering, and the real acceptance passed. The
      deferred News Synthesis assertion remains unchanged.
 
+168. Recorded and implemented the final scope clarification: QMD Live, QMD
+     History, backend, frontend, Portfolio, and OMS are in scope; intelligence
+     producer changes remain deferred, and broker/deployment execution remains
+     separately authorized. The whole-path read review found that the system
+     computation endpoint duplicated QMD's full per-symbol requirement graph,
+     producing a roughly 62-78 MB ordinary management response. QMD now exposes
+     a bounded summary contract, the backend shares that summary for Watchlist
+     and management consumers, and explicit `include_details=true` preserves
+     intentional diagnostic access to the full graph.
+
+     Scanner composition now uses a bounded five-second single-flight cache:
+     one caller composes the complete QMD, Reference, indicator, and Watchlist
+     population, while each request independently applies its UI row limit and
+     feature projection. Concurrent misses are coalesced without fabricating a
+     newer source revision. The reusable cache records loads/coalescing and has
+     bounded entries, TTL, and wait time. A new acceptance command enforces
+     response contracts and hard wall-clock reads for Scanner, Watchlist,
+     Canvas chart, and computation planning, with compact terminal output and
+     atomic external evidence.
+
+     The first real profile failed honestly: Scanner p95 was 8.75 seconds. A
+     later diagnostic run exposed the wide planner payload and showed Scanner
+     and Watchlist p95 at 14.94 and 12.24 seconds. After loading the tested QMD
+     and backend processes, the identical 30-second/eight-client profile passed
+     1,808 requests with zero errors: Scanner p95 254.806 ms, Watchlist p95
+     506.596 ms, Canvas p95 756.429 ms, and planner p95 281.524 ms. Evidence is
+     `D:\TradingML\runtimes\qmd_validation\application_read_load_20260811T212024Z.json`.
+     All 108 QMD tests and 62 focused backend/cache/client/acceptance tests
+     passed. This closes post-close whole-path read acceptance only; the
+     representative active-session soak and every deferred producer/broker
+     item remain open.
+
 ---
 
 [Top](README.md) · [Previous](14-implementation-backlog.md) · [First](01-product-and-principles.md)

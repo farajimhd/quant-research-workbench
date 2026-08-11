@@ -7,7 +7,7 @@ use crate::compact_event::{
 };
 use crate::computation_targets::{
     ComputationTargetLease, ComputationTargetRequest, ComputationTargetSnapshot,
-    SharedComputationTargets,
+    ComputationTargetSummary, SharedComputationTargets,
 };
 use crate::config::GatewayConfig;
 use crate::event::MarketEvent;
@@ -156,6 +156,10 @@ pub fn app(state: AppState) -> Router {
             get(computation_target_snapshot).put(replace_computation_target),
         )
         .route(
+            "/computation-targets/summary",
+            get(computation_target_summary),
+        )
+        .route(
             "/computation-targets/{target_id}",
             delete(remove_computation_target),
         )
@@ -232,6 +236,12 @@ async fn computation_target_snapshot(
     State(state): State<Arc<AppState>>,
 ) -> Json<ComputationTargetSnapshot> {
     Json(state.computation_targets.snapshot())
+}
+
+async fn computation_target_summary(
+    State(state): State<Arc<AppState>>,
+) -> Json<ComputationTargetSummary> {
+    Json(state.computation_targets.summary())
 }
 
 async fn replace_computation_target(

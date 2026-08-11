@@ -67,6 +67,24 @@ pub struct ComputationTargetSnapshot {
 }
 
 #[derive(Clone, Debug, Serialize)]
+pub struct ComputationTargetSummary {
+    pub schema_version: u16,
+    pub as_of: DateTime<Utc>,
+    pub active_target_count: usize,
+    pub active_symbol_count: usize,
+    pub active_requirement_count: usize,
+    pub capability_ref_counts: BTreeMap<String, usize>,
+    pub estimated_demand_units: u64,
+    pub requested_demand_units: u64,
+    pub deduplicated_demand_units_saved: u64,
+    pub scope_capability_counts: BTreeMap<String, usize>,
+    pub scope_estimated_demand_units: BTreeMap<String, u64>,
+    pub scope_symbol_counts: BTreeMap<String, usize>,
+    pub scope_target_counts: BTreeMap<String, usize>,
+    pub target_estimated_demand_units: BTreeMap<String, u64>,
+}
+
+#[derive(Clone, Debug, Serialize)]
 pub struct EffectiveComputationRequirement {
     pub requirement_id: String,
     pub ticker: String,
@@ -365,6 +383,26 @@ impl SharedComputationTargets {
             scope_symbol_counts,
             scope_target_counts,
             target_estimated_demand_units,
+        }
+    }
+
+    pub fn summary(&self) -> ComputationTargetSummary {
+        let snapshot = self.snapshot();
+        ComputationTargetSummary {
+            schema_version: snapshot.schema_version,
+            as_of: snapshot.as_of,
+            active_target_count: snapshot.active_target_count,
+            active_symbol_count: snapshot.active_symbol_count,
+            active_requirement_count: snapshot.active_requirement_count,
+            capability_ref_counts: snapshot.capability_ref_counts,
+            estimated_demand_units: snapshot.estimated_demand_units,
+            requested_demand_units: snapshot.requested_demand_units,
+            deduplicated_demand_units_saved: snapshot.deduplicated_demand_units_saved,
+            scope_capability_counts: snapshot.scope_capability_counts,
+            scope_estimated_demand_units: snapshot.scope_estimated_demand_units,
+            scope_symbol_counts: snapshot.scope_symbol_counts,
+            scope_target_counts: snapshot.scope_target_counts,
+            target_estimated_demand_units: snapshot.target_estimated_demand_units,
         }
     }
 }

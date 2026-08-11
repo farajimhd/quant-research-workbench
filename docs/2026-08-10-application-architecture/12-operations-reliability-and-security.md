@@ -208,6 +208,25 @@ Its atomic JSON report is also stored under
 change path, an inexact response clock, a non-ready snapshot, or future evidence
 returns a nonzero exit.
 
+The application read path has a separate bounded concurrent acceptance. It
+exercises the Core Scanner, Watchlist runtime, single-ticker Canvas chart, and
+computation-management summary through the real backend while recording QMD
+health before and after:
+
+```powershell
+$env:PYTHONDONTWRITEBYTECODE='1'
+python scripts\validate_application_read_load.py `
+  --duration-seconds 30 `
+  --concurrency 8
+```
+
+The command enforces a wall-clock timeout per response, validates every
+response contract, fails on any error or route p95 above the configured budget,
+and writes its atomic report under `D:\TradingML\runtimes\qmd_validation`.
+Ordinary management reads use the bounded computation summary; the explicit
+`include_details=true` endpoint remains available for deliberate inspection of
+the full per-symbol requirement graph.
+
 Direct parity is permitted only for a fully durable source plan. The validator
 expands QMD's archive `events_YYYY` declaration by the requested years and
 accepts only the registered archive and `q_live.events` authorities; a gap,
