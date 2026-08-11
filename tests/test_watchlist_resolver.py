@@ -58,6 +58,15 @@ class WatchlistResolverTest(unittest.TestCase):
                 "split_event",
             }.issubset(column_ids)
         )
+        field_sources = {
+            row["source_id"] for row in self.discovery["field_catalog"]
+        }
+        self.assertTrue(
+            all(
+                row["source_id"] in field_sources
+                for row in self.discovery["column_catalog"]
+            )
+        )
 
     def test_cap_and_float_classifications_use_exact_boundaries(self) -> None:
         self.assertEqual(

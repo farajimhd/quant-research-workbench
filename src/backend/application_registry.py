@@ -52,6 +52,21 @@ class FieldDefinition:
 
 
 @dataclass(frozen=True, slots=True)
+class DiscoveryFieldPresentation:
+    source_id: str
+    field_id: str
+    column_id: str
+    label: str
+    description: str
+    semantic_type: str
+    default_visible: bool
+    filterable: bool
+    sortable: bool
+    filter_operators: tuple[str, ...]
+    timeframes: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class MarketSourceDefinition:
     source_id: str
     label: str
@@ -346,7 +361,7 @@ CONTAINER_DEFINITIONS = (
 
 
 CONFIGURATION_SCHEMAS = (
-    ConfigurationSchemaDefinition("trading_configuration", "backend", "src/backend/trading_configuration_service.py", 16, ALL_MODES, True),
+    ConfigurationSchemaDefinition("trading_configuration", "backend", "src/backend/trading_configuration_service.py", 17, ALL_MODES, True),
     ConfigurationSchemaDefinition("strategy_profile", "strategy_runtime", "src/trading_runtime/strategy_engine.py", 3, ALL_MODES, True),
     ConfigurationSchemaDefinition("watchlist", "backend", "src/backend/watchlist_runtime_service.py", 1, ALL_MODES, True),
     ConfigurationSchemaDefinition("run_plan", "backend", "src/backend/trading_configuration_service.py", 1, ALL_MODES, True),
@@ -715,6 +730,34 @@ def _fields() -> tuple[FieldDefinition, ...]:
 FIELD_DEFINITIONS = _fields()
 
 
+DISCOVERY_FIELD_PRESENTATIONS = (
+    DiscoveryFieldPresentation("identity.symbol", "identity.symbol", "symbol", "Symbol", "Point-in-time ticker identity for the eligible listing.", "reference", True, False, True, (), ("event",)),
+    DiscoveryFieldPresentation("identity.company_name", "identity.company_name", "company_name", "Company", "Issuer or security name available for the listing at evaluation time.", "reference", True, False, True, (), ("event",)),
+    DiscoveryFieldPresentation("market.last_price", "", "last_price", "Last price", "Most recent causally available eligible trade price.", "market_data", True, True, True, ("greater_or_equal", "greater_than", "less_or_equal", "less_than", "equals", "above_by_bps"), ("1s", "10s", "30s", "1m")),
+    DiscoveryFieldPresentation("market.change_pct", "", "change_pct", "Change %", "Percentage change from the completed previous-session close.", "market_data", True, True, True, ("greater_or_equal", "greater_than", "less_or_equal", "less_than", "equals"), ("1s", "10s", "30s", "1m")),
+    DiscoveryFieldPresentation("market.volume", "", "volume", "Volume", "Cumulative eligible share volume for the current session.", "market_data", True, True, True, ("greater_or_equal", "greater_than", "less_or_equal", "less_than", "equals"), ("1s", "10s", "30s", "1m")),
+    DiscoveryFieldPresentation("market.relative_volume", "", "relative_volume", "Relative volume", "Cumulative volume versus the aligned 20-session baseline.", "indicator", True, True, True, ("greater_or_equal", "greater_than", "less_or_equal", "less_than", "equals"), ("10s", "30s", "1m")),
+    DiscoveryFieldPresentation("indicator.vwap.value", "", "vwap", "VWAP", "Causal session volume-weighted average eligible trade price.", "indicator", True, True, True, ("greater_or_equal", "greater_than", "less_or_equal", "less_than", "equals", "above_by_bps"), ("1s", "10s", "30s", "1m")),
+    DiscoveryFieldPresentation("reference.market_cap", "reference.market_cap", "market_cap", "Market cap", "Latest point-in-time market capitalization.", "reference", True, True, True, ("greater_or_equal", "greater_than", "less_or_equal", "less_than", "equals"), ("1d",)),
+    DiscoveryFieldPresentation("classification.market_cap", "classification.market_cap", "market_cap_category", "Cap category", "Small, Mid, or Large classification from the published configuration.", "reference", True, False, True, (), ("1d",)),
+    DiscoveryFieldPresentation("reference.float_shares", "reference.float_shares", "float_shares", "Public float", "Tradable share supply with SEC-derived fallback provenance.", "reference", True, True, True, ("greater_or_equal", "greater_than", "less_or_equal", "less_than", "equals"), ("1d",)),
+    DiscoveryFieldPresentation("classification.float", "classification.float", "float_category", "Float category", "Tiny through Broad Float classification from the published configuration.", "reference", True, False, True, (), ("1d",)),
+    DiscoveryFieldPresentation("reference.short_interest", "reference.short_interest", "short_interest", "Short interest", "Latest reported short shares available before evaluation.", "reference", False, True, True, ("greater_or_equal", "greater_than", "less_or_equal", "less_than", "equals"), ("settlement",)),
+    DiscoveryFieldPresentation("reference.short_interest_pct", "reference.short_interest_pct", "short_interest_pct", "Short % float", "Short interest divided by point-in-time public float.", "reference", True, True, True, ("greater_or_equal", "greater_than", "less_or_equal", "less_than", "equals"), ("settlement",)),
+    DiscoveryFieldPresentation("reference.days_to_cover", "reference.days_to_cover", "days_to_cover", "Days to cover", "Reported short interest divided by average daily volume.", "reference", False, True, True, ("greater_or_equal", "greater_than", "less_or_equal", "less_than", "equals"), ("settlement",)),
+    DiscoveryFieldPresentation("fundamental.trajectory_score", "fundamental.trajectory_score", "fundamental_trajectory", "Fundamental trajectory", "SEC-derived 0-100 financial trajectory score.", "reference", False, True, True, ("greater_or_equal", "greater_than", "less_or_equal", "less_than", "equals"), ("filing",)),
+    DiscoveryFieldPresentation("fundamental.quality_score", "fundamental.quality_score", "fundamental_quality", "Fundamental quality", "Coverage and comparability of the supporting SEC facts.", "reference", False, True, True, ("greater_or_equal", "greater_than", "less_or_equal", "less_than", "equals"), ("filing",)),
+    DiscoveryFieldPresentation("signal.news_labeled", "signal.news_labeled", "", "News labeled", "Validated point-in-time Text Intelligence news-label availability.", "signal", False, True, False, ("is_true",), ("event",)),
+    DiscoveryFieldPresentation("signal.company_news.score", "news.score", "news_sentiment", "News sentiment", "Latest validated point-in-time company-news score and label.", "signal", False, True, True, ("greater_or_equal", "greater_than", "less_or_equal", "less_than", "equals"), ("event",)),
+    DiscoveryFieldPresentation("signal.sec_labeled", "signal.sec_labeled", "", "SEC labeled", "Validated point-in-time Text Intelligence SEC-label availability.", "signal", False, True, False, ("is_true",), ("event",)),
+    DiscoveryFieldPresentation("signal.sec_filing.score", "sec.score", "sec_sentiment", "SEC sentiment", "Latest validated point-in-time filing score and label.", "signal", False, True, True, ("greater_or_equal", "greater_than", "less_or_equal", "less_than", "equals"), ("event",)),
+    DiscoveryFieldPresentation("event.ipo.date", "event.ipo.date", "ipo_event", "IPO date", "Point-in-time past or upcoming IPO event date.", "event", False, False, True, (), ("event",)),
+    DiscoveryFieldPresentation("event.ipo.days_to_event", "event.ipo.days_to_event", "ipo_days_to_event", "IPO event distance", "Signed calendar days from evaluation to the point-in-time IPO event.", "event", False, True, True, ("greater_or_equal", "greater_than", "less_or_equal", "less_than", "equals"), ("event",)),
+    DiscoveryFieldPresentation("event.split.execution_date", "event.split.execution_date", "split_event", "Split date", "Latest published stock-split execution date and ratio.", "event", False, False, True, (), ("event",)),
+    DiscoveryFieldPresentation("event.split.days_to_event", "event.split.days_to_event", "split_days_to_event", "Split event distance", "Signed calendar days from evaluation to the latest published split execution date.", "event", False, True, True, ("greater_or_equal", "greater_than", "less_or_equal", "less_than", "equals"), ("event",)),
+)
+
+
 def validate_application_registry() -> None:
     source_ids = [source.source_id for source in MARKET_SOURCES]
     product_ids = [product.product_id for product in PRODUCT_DEFINITIONS]
@@ -722,6 +765,7 @@ def validate_application_registry() -> None:
     container_ids = [container.container_id for container in CONTAINER_DEFINITIONS]
     schema_ids = [schema.schema_id for schema in CONFIGURATION_SCHEMAS]
     alias_ids = [alias.alias_id for alias in COMPATIBILITY_ALIASES]
+    discovery_source_ids = [field.source_id for field in DISCOVERY_FIELD_PRESENTATIONS]
     for label, values in (
         ("market source", source_ids),
         ("product", product_ids),
@@ -729,9 +773,26 @@ def validate_application_registry() -> None:
         ("container", container_ids),
         ("configuration schema", schema_ids),
         ("compatibility alias", alias_ids),
+        ("Market Discovery field", discovery_source_ids),
     ):
         if len(values) != len(set(values)):
             raise ValueError(f"{label} IDs must be unique")
+
+    registered_field_ids = {field.field_id for field in FIELD_DEFINITIONS}
+    for presentation in DISCOVERY_FIELD_PRESENTATIONS:
+        if presentation.field_id and presentation.field_id not in registered_field_ids:
+            raise ValueError(
+                f"{presentation.source_id} references unknown application field "
+                f"{presentation.field_id}"
+            )
+        if presentation.column_id and not presentation.sortable:
+            raise ValueError(
+                f"{presentation.source_id} display column must declare sort behavior"
+            )
+        if presentation.filterable and not presentation.filter_operators:
+            raise ValueError(
+                f"{presentation.source_id} is filterable without registered operators"
+            )
 
     known_sources = set(source_ids)
     known_products = set(product_ids)
@@ -928,7 +989,7 @@ def _validate_acyclic_dependencies(graph: dict[str, tuple[str, ...]]) -> None:
 def application_registry_payload() -> dict[str, object]:
     validate_application_registry()
     return {
-        "schema_version": 3,
+        "schema_version": 4,
         "market_sources": [asdict(source) for source in MARKET_SOURCES],
         "products": [asdict(product) for product in PRODUCT_DEFINITIONS],
         "link_contracts": [asdict(link) for link in LINK_CONTRACTS],
@@ -936,6 +997,9 @@ def application_registry_payload() -> dict[str, object]:
         "configuration_schemas": [asdict(schema) for schema in CONFIGURATION_SCHEMAS],
         "compatibility_aliases": [asdict(alias) for alias in COMPATIBILITY_ALIASES],
         "fields": [asdict(field) for field in FIELD_DEFINITIONS],
+        "market_discovery_fields": [
+            asdict(field) for field in DISCOVERY_FIELD_PRESENTATIONS
+        ],
         "query_plans": [asdict(plan) for plan in QUERY_PLANS],
         "counts": {
             "market_sources": len(MARKET_SOURCES),
@@ -945,6 +1009,7 @@ def application_registry_payload() -> dict[str, object]:
             "configuration_schemas": len(CONFIGURATION_SCHEMAS),
             "compatibility_aliases": len(COMPATIBILITY_ALIASES),
             "fields": len(FIELD_DEFINITIONS),
+            "market_discovery_fields": len(DISCOVERY_FIELD_PRESENTATIONS),
             "query_plans": len(QUERY_PLANS),
             "reference_tables": sum(len(group.tables) for group in REFERENCE_TABLE_GROUPS),
         },

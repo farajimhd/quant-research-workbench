@@ -4814,6 +4814,11 @@ def application_field_registry(
     return {"schema_version": payload["schema_version"], "count": len(rows), "rows": rows}
 
 
+@app.get("/api/registries/market-discovery-fields")
+def application_market_discovery_field_registry() -> dict[str, object]:
+    return application_registry_family("market_discovery_fields")
+
+
 @app.get("/api/registries/query-plans")
 def application_query_plan_registry() -> dict[str, object]:
     payload = application_registry_payload()

@@ -12,6 +12,25 @@ is safe for each mode.
 The registry replaces duplicated backend constants, UI catalogs, service table
 lists, and ad hoc SQL knowledge.
 
+## Current implementation
+
+The backend application registry is the current catalog authority. Schema v4
+adds a `market_discovery_fields` presentation contract that points to an
+existing application `field_id` or QMD `capability_id`; it does not redefine
+the underlying value. The configuration service resolves those references into
+one `field_catalog`, then derives Watchlist columns and allowed filter operators
+from that catalog. Every other registered application field and QMD capability
+is also retained in the resolved catalog as non-selectable metadata, so it is
+visible to validation and cannot acquire a handwritten UI path.
+
+The resolved record includes stable source and display IDs, semantic type,
+source/query-plan provenance, causal availability, implementation status,
+timeframes, and explicit `filterable`, `sortable`, and operator policies. The
+backend rejects a Watchlist rule whose source or comparator is not authorized
+by the catalog and rejects a column that is not the projection of its registered
+field. `/api/registries/market-discovery-fields` exposes the static presentation
+contract; the versioned configuration embeds the runtime-resolved catalog.
+
 ## Registry model
 
 Each `FieldDefinition` contains:
@@ -289,7 +308,8 @@ a cross-sectional ranking baseline.
 1. Owners register fields alongside schemas and query templates.
 2. CI validates unique IDs, dependencies, clocks, tables/endpoints, types, and
    mode support.
-3. Backend and frontend catalogs are generated from the same registry.
+3. Backend and frontend fields, Watchlist columns, and Watchlist filter choices
+   are generated from the same registry.
 4. Approved Releases pin field and query-template versions.
 5. Removed fields remain readable for old runs but cannot be selected in new
    drafts.

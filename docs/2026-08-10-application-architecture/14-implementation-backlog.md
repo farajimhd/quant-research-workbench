@@ -215,7 +215,12 @@ internal topology, or producer formula.
 - [x] Add scanner and membership history views. Market Discovery rebuilds a
       bounded full-market historical Scanner snapshot through QMD History for
       a chosen New York clock and shows the append-only Watchlist event journal.
-- [ ] Generate fields, columns, and filters from registry metadata.
+- [x] Generate fields, columns, and filters from registry metadata. Application
+      registry schema v4 supplies Market Discovery presentation policy;
+      configuration schema v17 resolves the complete application/QMD field
+      catalog, projects Watchlist columns, and validates filter sources and
+      operators. The Watchlist editor creates filters only from eligible
+      registry rows and supported comparators.
 - [ ] Preserve theme, global scale, responsive, and accessibility authorities.
 - [ ] Validate all affected states in real browsers.
 

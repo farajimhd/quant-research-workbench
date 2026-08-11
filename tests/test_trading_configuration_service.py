@@ -178,7 +178,7 @@ class TradingConfigurationServiceTests(unittest.TestCase):
             self.assertEqual(_resolved_source_account_id(accounts["paper"]), "DU-PAPER-TEST")
             self.assertEqual(_resolved_source_account_id(accounts["cash"]), "U-CASH-TEST")
 
-    def test_schema_v16_migration_adds_phase_modes_and_market_discovery(self) -> None:
+    def test_schema_v17_migration_adds_phase_modes_and_market_discovery(self) -> None:
         with patch(
             "src.backend.trading_configuration_service.get_strategy_definition",
             return_value=long_momentum_strategy_definition(),
@@ -206,7 +206,7 @@ class TradingConfigurationServiceTests(unittest.TestCase):
 
         migrated = _migrate_draft(legacy)
 
-        self.assertEqual(migrated["schema_version"], 16)
+        self.assertEqual(migrated["schema_version"], 17)
         self.assertTrue(migrated["market_discovery"]["core_scan"]["calculations"])
         self.assertTrue(migrated["market_discovery"]["watchlists"])
         capabilities = {
@@ -313,6 +313,46 @@ class TradingConfigurationServiceTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "membership TTL must be positive"):
             _validate_market_discovery(discovery)
 
+    def test_market_discovery_fields_columns_and_filters_share_registry_authority(self) -> None:
+        with patch(
+            "src.backend.trading_configuration_service.get_strategy_definition",
+            return_value=long_momentum_strategy_definition(),
+        ), patch(
+            "src.backend.trading_configuration_service.list_strategy_assignments",
+            return_value=[],
+        ):
+            discovery = deepcopy(_default_draft()["market_discovery"])
+
+        fields = {row["source_id"]: row for row in discovery["field_catalog"]}
+        self.assertGreaterEqual(len(fields), 180)
+        self.assertEqual(fields["market.last_price"]["column_id"], "last_price")
+        self.assertTrue(fields["market.last_price"]["filterable"])
+        self.assertIn(
+            "greater_or_equal", fields["market.last_price"]["filter_operators"]
+        )
+        self.assertEqual(
+            fields["signal.company_news.score"]["implementation_status"],
+            "integration_pending",
+        )
+        self.assertTrue(
+            all(
+                row["source_id"] in fields
+                and row["registry_authority"] in {
+                    "application_registry",
+                    "qmd_runtime_catalog",
+                }
+                for row in discovery["column_catalog"]
+            )
+        )
+
+        custom = deepcopy(discovery["rule_sets"][0])
+        custom["rule_set_id"] = "invalid-unregistered-field"
+        custom["scope"] = "watchlist"
+        custom["conditions"][0]["left_source_id"] = "unknown.field"
+        discovery["rule_sets"].append(custom)
+        with self.assertRaisesRegex(ValueError, "references unknown field"):
+            _validate_market_discovery(discovery)
+
     def test_market_discovery_validates_selected_calculation_cadences(self) -> None:
         with patch(
             "src.backend.trading_configuration_service.get_strategy_definition",
@@ -368,7 +408,7 @@ class TradingConfigurationServiceTests(unittest.TestCase):
         ):
             draft = _default_draft()
 
-        self.assertEqual(draft["schema_version"], 16)
+        self.assertEqual(draft["schema_version"], 17)
         self.assertEqual(len(draft["strategy"]["profiles"]), 1)
         self.assertEqual(len(draft["strategy"]["profile_templates"]), 1)
         self.assertEqual(

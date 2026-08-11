@@ -234,6 +234,17 @@ bounded direct ClickHouse paths remain documented in
     already compiles and content-hashes immutable Run Plans that mode-specific
     runtime resolvers consume. Autonomous market-source, computation-lease, and
     generic continuation lineage remains open.
+44. Removed the remaining handwritten Market Discovery field/column/filter
+    authority. Application registry schema v4 declares presentation metadata
+    against existing app fields or QMD capabilities; configuration schema v17
+    resolves the full catalog and generates Watchlist columns from it. Backend
+    validation rejects unknown Watchlist sources, unsupported comparators, and
+    non-registry columns. The frontend custom-filter dialog consumes only
+    eligible registry rows and their operator policies. Forty-seven focused
+    backend/configuration tests, the managed frontend build, and the focused
+    1600x1000 Market Discovery browser interaction passed with zero objective
+    UI issues. The application-wide theme, scale, responsive, and accessibility
+    matrix remains open.
 
 The authoritative remaining work and acceptance gates are maintained in the
 [complete implementation backlog](14-implementation-backlog.md). A checked

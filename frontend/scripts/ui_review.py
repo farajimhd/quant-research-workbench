@@ -29,6 +29,7 @@ PAGES = (
     "replay-trading",
     "backtest-trading",
     "canvas-configuration",
+    "market-discovery-configuration",
     "strategy-configuration",
     "assignment-configuration",
     "portfolio-configuration",
@@ -49,7 +50,7 @@ VIEWPORTS = {
     "normal": {"width": 1600, "height": 1000},
     "compact": {"width": 1280, "height": 720},
 }
-REPRESENTATIVE_PAGES = ("real-live-trading", "replay-trading", "backtest-trading", "canvas-configuration", "portfolio-configuration", "oms-configuration", "account-configuration", "revision-configuration", "canvas-focus", "services-dashboard")
+REPRESENTATIVE_PAGES = ("real-live-trading", "replay-trading", "backtest-trading", "canvas-configuration", "market-discovery-configuration", "portfolio-configuration", "oms-configuration", "account-configuration", "revision-configuration", "canvas-focus", "services-dashboard")
 REPRESENTATIVE_THEMES = ("light", "dark")
 TARGETED_SCALES = (0.8, 1.0, 1.25)
 
@@ -495,6 +496,40 @@ def validate_canvas_interactions(
                         page.screenshot(path=str(interaction_screenshot.with_name(interaction_screenshot.stem + "__stress-final.png")), full_page=True)
             except Exception as exc:
                 issues.append(f"Focus chart interaction check failed: {exc}")
+        return issues
+
+    if scenario["page"] == "market-discovery-configuration":
+        if not (
+            scenario["theme"] == "light"
+            and scenario["scale"] == 1.0
+            and scenario["viewport_name"] == "normal"
+        ):
+            return issues
+        try:
+            page.get_by_role("tab", name="Guided Configuration", exact=True).click()
+            page.get_by_role("button", name=re.compile(r"^3\s+Watchlists$")).click()
+            available = page.get_by_label("Available Watchlists")
+            available.get_by_role("button", name="Configure").first.click()
+            page.get_by_label("Watchlist configuration steps").get_by_role(
+                "button", name=re.compile(r"^2\s+Rules$")
+            ).click()
+            create_filter = page.get_by_role(
+                "button", name="New registry filter", exact=True
+            )
+            if create_filter.count() != 1 or create_filter.is_disabled():
+                issues.append("Watchlist rules do not expose an enabled registry-backed filter action")
+            else:
+                create_filter.click()
+                dialog = page.get_by_role("dialog")
+                if dialog.count() != 1 or "Define a registry-backed membership rule" not in dialog.inner_text():
+                    issues.append("registry-backed Watchlist filter dialog did not open")
+                elif "Data source" not in dialog.inner_text() or "Comparison" not in dialog.inner_text():
+                    issues.append("Watchlist filter dialog does not expose registered field and comparator controls")
+                dialog.get_by_role("button", name="Cancel", exact=True).click()
+            if page.evaluate("document.documentElement.scrollWidth > document.documentElement.clientWidth"):
+                issues.append("Market Discovery page leaks horizontal scrolling to the document")
+        except Exception as exc:
+            issues.append(f"Market Discovery registry interaction check failed: {exc}")
         return issues
 
     if not (

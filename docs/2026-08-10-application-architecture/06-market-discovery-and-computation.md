@@ -200,6 +200,14 @@ offline calculation is available in its proper scope.
   query plan, availability clock, and implementation status from the
   application field registry. Display guidance remains product copy, not an
   independent availability authority.
+- Market Discovery configuration schema v17 resolves every registered
+  application field and QMD capability into one backend-owned field catalog.
+  Its visible Watchlist columns are projections of registered presentation
+  metadata, and the custom Watchlist filter editor offers only fields and
+  comparators authorized by that same metadata. Publication fails closed for
+  unknown filter sources, unsupported operators, or non-registry columns.
+  Frontend code supplies interaction and explanatory copy but no independent
+  field, column, comparator, source-path, or availability authority.
 - Published Run Plans now carry typed observation dependencies compiled from
   Strategy taxonomy. Paper/Live plans bound to a resolved Watchlist publish a
   separate `strategy_run` lease for the exact current membership; overlapping
@@ -217,6 +225,9 @@ offline calculation is available in its proper scope.
 - The UI now separates implementation, execution scope, configuration policy,
   operation, and coverage, and reads Watchlist membership/history from the
   runtime projection. Scanner history and enrichment null-reason views remain.
+  The managed browser review now exercises the registry-backed Watchlist filter
+  creation path on the Market Discovery page; the broader theme/scale/browser
+  matrix remains an application-wide acceptance item.
 
 ## Navigation
 

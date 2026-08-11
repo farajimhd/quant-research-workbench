@@ -12,7 +12,10 @@ from uuid import uuid4
 
 from dotenv import load_dotenv
 
-from src.backend.application_registry import FIELD_DEFINITIONS
+from src.backend.application_registry import (
+    DISCOVERY_FIELD_PRESENTATIONS,
+    FIELD_DEFINITIONS,
+)
 from src.backend.qmd_gateway_client import qmd_catalogs
 from src.backend.trading_runtime_service import (
     get_strategy_definition,
@@ -40,7 +43,7 @@ from src.trading_runtime.strategy_campaign import validate_campaign_policy
 from src.trading_runtime.taxonomy import StrategyTaxonomy
 
 
-CONFIGURATION_SCHEMA_VERSION = 16
+CONFIGURATION_SCHEMA_VERSION = 17
 CONFIGURATION_SECTIONS = {
     "strategy",
     "market_discovery",
@@ -1834,32 +1837,143 @@ def _default_watchlist_rule_sets() -> list[dict[str, Any]]:
     ]
 
 
-def _watchlist_column_catalog() -> list[dict[str, Any]]:
-    return [
-        {"column_id": column_id, "name": name, "description": description, "source": source, "value_type": value_type, "default_visible": default_visible}
-        for column_id, name, description, source, value_type, default_visible in [
-            ("symbol", "Symbol", "Point-in-time ticker identity for the eligible listing.", "Reference DB", "text", True),
-            ("company_name", "Company", "Issuer or security name available for the listing at evaluation time.", "Reference DB", "text", True),
-            ("last_price", "Last price", "Most recent causally available eligible trade price.", "QMD", "price", True),
-            ("change_pct", "Change %", "Percentage change from the completed previous-session close.", "QMD + reference", "percent", True),
-            ("volume", "Volume", "Cumulative eligible share volume for the current session.", "QMD", "shares", True),
-            ("relative_volume", "Relative volume", "Cumulative volume versus the aligned 20-session baseline.", "QMD", "multiple", True),
-            ("vwap", "VWAP", "Causal session volume-weighted average trade price.", "QMD", "price", True),
-            ("market_cap", "Market cap", "Latest point-in-time market capitalization.", "Reference DB", "currency", True),
-            ("market_cap_category", "Cap category", "Small, Mid, or Large classification from this configuration.", "Derived classification", "text", True),
-            ("float_shares", "Public float", "Tradable share supply with SEC-derived fallback provenance.", "Reference DB + SEC", "shares", True),
-            ("float_category", "Float category", "Tiny through Broad Float classification from this configuration.", "Derived classification", "text", True),
-            ("short_interest", "Short interest", "Latest reported short shares available before evaluation.", "Reference DB", "shares", False),
-            ("short_interest_pct", "Short % float", "Short interest divided by point-in-time public float.", "Derived reference", "percent", True),
-            ("days_to_cover", "Days to cover", "Reported short interest divided by average daily volume.", "Reference DB", "days", False),
-            ("fundamental_trajectory", "Fundamental trajectory", "SEC-derived 0-100 financial trajectory score.", "SEC facts", "score", False),
-            ("fundamental_quality", "Fundamental quality", "Coverage and comparability of the supporting SEC facts.", "SEC facts", "score", False),
-            ("news_sentiment", "News sentiment", "Latest validated point-in-time company-news score and label.", "Text Intelligence", "score", False),
-            ("sec_sentiment", "SEC sentiment", "Latest validated point-in-time filing score and label.", "Text Intelligence", "score", False),
-            ("ipo_event", "IPO date", "Point-in-time past or upcoming IPO event date.", "Corporate-event DB", "date", False),
-            ("split_event", "Split date", "Latest published stock-split execution date and ratio.", "Corporate-event DB", "date", False),
-        ]
-    ]
+def _market_discovery_field_catalog(
+    calculation_rows: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Resolve one registry-owned field catalog for columns and filters."""
+
+    registered = {field.field_id: field for field in FIELD_DEFINITIONS}
+    capabilities = {
+        str(row.get("capability_id") or ""): row for row in calculation_rows
+    }
+    presented_field_ids = {
+        row.field_id for row in DISCOVERY_FIELD_PRESENTATIONS if row.field_id
+    }
+    rows: list[dict[str, Any]] = []
+    for presentation in DISCOVERY_FIELD_PRESENTATIONS:
+        field = registered.get(presentation.field_id)
+        capability = capabilities.get(presentation.source_id, {})
+        implementation_status = str(
+            field.status
+            if field is not None
+            else capability.get("implementation_status")
+            or capability.get("availability")
+            or "integration_pending"
+        )
+        rows.append({
+            "source_id": presentation.source_id,
+            "field_id": presentation.field_id,
+            "column_id": presentation.column_id,
+            "name": presentation.label,
+            "description": presentation.description,
+            "semantic_type": presentation.semantic_type,
+            "source": str(
+                field.owner
+                if field is not None
+                else capability.get("owner") or capability.get("provider") or "QMD"
+            ),
+            "source_path": str(
+                field.source_path
+                if field is not None
+                else capability.get("source_path") or "qmd://runtime-capability"
+            ),
+            "query_plan_id": str(
+                field.query_plan_id
+                if field is not None
+                else capability.get("query_plan_id") or "qmd.runtime-capability-catalog"
+            ),
+            "available_at": str(
+                field.available_at
+                if field is not None
+                else capability.get("available_at") or "QMD publication clock"
+            ),
+            "provenance": str(field.provenance if field is not None else "qmd"),
+            "value_type": str(
+                field.value_type
+                if field is not None
+                else capability.get("output_type") or "number"
+            ),
+            "unit": str(field.unit if field is not None else capability.get("output_type") or "scalar"),
+            "default_visible": presentation.default_visible,
+            "filterable": presentation.filterable,
+            "sortable": presentation.sortable,
+            "filter_operators": list(presentation.filter_operators),
+            "timeframes": list(presentation.timeframes),
+            "implementation_status": implementation_status,
+            "registry_authority": "application_registry",
+        })
+    for field in sorted(FIELD_DEFINITIONS, key=lambda row: row.field_id):
+        if field.field_id in presented_field_ids:
+            continue
+        rows.append({
+            "source_id": field.field_id,
+            "field_id": field.field_id,
+            "column_id": "",
+            "name": field.label,
+            "description": f"Registered {field.group} field from {field.owner}.",
+            "semantic_type": "reference",
+            "source": field.owner,
+            "source_path": field.source_path,
+            "query_plan_id": field.query_plan_id,
+            "available_at": field.available_at,
+            "provenance": field.provenance,
+            "value_type": field.value_type,
+            "unit": field.unit,
+            "default_visible": False,
+            "filterable": False,
+            "sortable": False,
+            "filter_operators": [],
+            "timeframes": [],
+            "implementation_status": field.status,
+            "registry_authority": "application_registry",
+        })
+    known_source_ids = {str(row["source_id"]) for row in rows}
+    for capability_id, capability in sorted(capabilities.items()):
+        if not capability_id or capability_id in known_source_ids:
+            continue
+        rows.append({
+            "source_id": capability_id,
+            "field_id": "",
+            "column_id": "",
+            "name": str(capability.get("name") or capability_id),
+            "description": str(
+                capability.get("calculation")
+                or capability.get("description")
+                or "Registered runtime capability."
+            ),
+            "semantic_type": str(capability.get("capability_type") or "system"),
+            "source": str(capability.get("owner") or capability.get("provider") or "QMD"),
+            "source_path": str(capability.get("source_path") or "qmd://runtime-capability"),
+            "query_plan_id": str(
+                capability.get("query_plan_id") or "qmd.runtime-capability-catalog"
+            ),
+            "available_at": str(
+                capability.get("available_at") or "QMD publication clock"
+            ),
+            "provenance": "qmd",
+            "value_type": str(capability.get("output_type") or "number"),
+            "unit": str(capability.get("output_type") or "scalar"),
+            "default_visible": False,
+            "filterable": False,
+            "sortable": False,
+            "filter_operators": [],
+            "timeframes": list(capability.get("timeframes") or []),
+            "implementation_status": str(
+                capability.get("implementation_status")
+                or capability.get("availability")
+                or "unknown"
+            ),
+            "registry_authority": str(
+                capability.get("catalog_authority") or "application_registry"
+            ),
+        })
+    return rows
+
+
+def _watchlist_column_catalog(
+    field_catalog: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    return [deepcopy(row) for row in field_catalog if str(row.get("column_id") or "")]
 
 
 def _default_watchlist_templates(symbols: list[str], calculation_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -1988,6 +2102,7 @@ def _default_market_discovery(
             continue
         rule_set_ids.add(rule_set_id)
         merged_rule_sets.append(deepcopy(rule_set))
+    field_catalog = _market_discovery_field_catalog(calculation_rows)
     return {
         "security_universe": {
             "universe_id": "qmd-security-universe",
@@ -2005,7 +2120,8 @@ def _default_market_discovery(
             "calculations": calculation_rows,
         },
         "classifications": _market_discovery_classifications(),
-        "column_catalog": _watchlist_column_catalog(),
+        "field_catalog": field_catalog,
+        "column_catalog": _watchlist_column_catalog(field_catalog),
         "rule_sets": merged_rule_sets,
         "watchlists": _default_watchlist_templates(symbols, calculation_rows),
     }
@@ -2211,6 +2327,39 @@ def _validate_market_discovery(section: dict[str, Any]) -> None:
     )
     for rule_set in rule_sets:
         _validate_rule_set_definition(rule_set, f"Watchlist rule set {rule_set.get('name')}")
+    field_catalog = list(section.get("field_catalog") or [])
+    field_source_ids = _unique_ids(
+        field_catalog,
+        "source_id",
+        "Market Discovery field",
+    )
+    if not field_source_ids:
+        raise ValueError("Market Discovery requires a registered field catalog")
+    field_by_source = {
+        str(row.get("source_id") or ""): row for row in field_catalog
+    }
+    for rule_set in rule_sets:
+        if str(rule_set.get("scope") or "strategy") != "watchlist":
+            continue
+        for condition in rule_set.get("conditions") or []:
+            source_id = str(condition.get("left_source_id") or "")
+            field = field_by_source.get(source_id)
+            if field is None:
+                raise ValueError(
+                    f"Watchlist rule set {rule_set.get('name')} references unknown field {source_id}"
+                )
+            comparator = str(condition.get("comparator") or "")
+            if not bool(field.get("filterable")) or comparator not in set(
+                field.get("filter_operators") or []
+            ):
+                raise ValueError(
+                    f"Watchlist rule set {rule_set.get('name')} cannot use {comparator} on {source_id}"
+                )
+            right_source_id = str(condition.get("right_source_id") or "")
+            if right_source_id and right_source_id not in field_by_source:
+                raise ValueError(
+                    f"Watchlist rule set {rule_set.get('name')} references unknown comparison field {right_source_id}"
+                )
     for calculation in calculations:
         execution_scope = str(calculation.get("execution_scope") or "")
         if execution_scope not in DISCOVERY_EXECUTION_SCOPES:
@@ -2271,6 +2420,15 @@ def _validate_market_discovery(section: dict[str, Any]) -> None:
     column_ids = _unique_ids(column_catalog, "column_id", "Watchlist column")
     if not column_ids:
         raise ValueError("Market Discovery requires a Watchlist column catalog")
+    for column in column_catalog:
+        source_id = str(column.get("source_id") or "")
+        field = field_by_source.get(source_id)
+        if field is None or str(field.get("column_id") or "") != str(
+            column.get("column_id") or ""
+        ):
+            raise ValueError(
+                f"Watchlist column {column.get('column_id')} is not generated from the field registry"
+            )
     _unique_ids(list(section.get("classifications") or []), "classification_id", "Market classification")
     for watchlist in watchlists:
         availability = str(watchlist.get("availability") or "available")
@@ -2775,6 +2933,9 @@ def _migrate_draft(raw: dict[str, Any]) -> dict[str, Any]:
         )
         result["market_discovery"]["classifications"] = deepcopy(
             defaults["market_discovery"].get("classifications") or []
+        )
+        result["market_discovery"]["field_catalog"] = deepcopy(
+            defaults["market_discovery"].get("field_catalog") or []
         )
         result["market_discovery"]["column_catalog"] = deepcopy(
             defaults["market_discovery"].get("column_catalog") or []

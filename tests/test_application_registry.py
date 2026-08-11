@@ -7,6 +7,7 @@ from src.backend.application_registry import (
     COMPATIBILITY_ALIASES,
     CONFIGURATION_SCHEMAS,
     CONTAINER_DEFINITIONS,
+    DISCOVERY_FIELD_PRESENTATIONS,
     FIELD_DEFINITIONS,
     LINK_CONTRACTS,
     MARKET_SOURCES,
@@ -67,7 +68,7 @@ class ApplicationRegistryTests(unittest.TestCase):
 
     def test_payload_includes_versions_and_counts(self) -> None:
         payload = application_registry_payload()
-        self.assertEqual(payload["schema_version"], 3)
+        self.assertEqual(payload["schema_version"], 4)
         self.assertEqual(payload["counts"]["fields"], len(FIELD_DEFINITIONS))
         self.assertEqual(payload["counts"]["query_plans"], len(QUERY_PLANS))
         self.assertEqual(payload["counts"]["market_sources"], len(MARKET_SOURCES))
@@ -76,6 +77,21 @@ class ApplicationRegistryTests(unittest.TestCase):
         self.assertEqual(payload["counts"]["link_contracts"], len(LINK_CONTRACTS))
         self.assertEqual(payload["counts"]["configuration_schemas"], len(CONFIGURATION_SCHEMAS))
         self.assertEqual(payload["counts"]["compatibility_aliases"], len(COMPATIBILITY_ALIASES))
+        self.assertEqual(
+            payload["counts"]["market_discovery_fields"],
+            len(DISCOVERY_FIELD_PRESENTATIONS),
+        )
+
+    def test_market_discovery_presentations_register_columns_and_filter_operators(self) -> None:
+        rows = {row.source_id: row for row in DISCOVERY_FIELD_PRESENTATIONS}
+        self.assertEqual(rows["market.last_price"].column_id, "last_price")
+        self.assertIn("greater_or_equal", rows["market.last_price"].filter_operators)
+        self.assertEqual(
+            rows["signal.company_news.score"].field_id,
+            "news.score",
+        )
+        self.assertFalse(rows["event.ipo.date"].filterable)
+        self.assertTrue(rows["event.ipo.days_to_event"].filterable)
 
     def test_market_sources_declare_coverage_and_watermarks(self) -> None:
         sources = {source.source_id: source for source in MARKET_SOURCES}
