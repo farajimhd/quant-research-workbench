@@ -176,6 +176,13 @@ bounded direct ClickHouse paths remain documented in
     and preserves head/tail limits. An evicted forward cursor fails closed.
     Equivalent live continuation for current-window charts and historical
     Scanner products remains open.
+35. Removed the remaining Market Discovery availability authority drift.
+    Reference and deferred-intelligence capability rows now inherit owner,
+    source, query plan, availability clock, and status from registered fields.
+    The backend Scanner reference query also implements causal IPO and split
+    event-distance joins from the existing Reference Gateway tables, so the IPO
+    template is no longer falsely integration-pending. Saved system templates
+    migrate that status without overwriting ordinary user enablement choices.
 
 The authoritative remaining work and acceptance gates are maintained in the
 [complete implementation backlog](14-implementation-backlog.md). A checked

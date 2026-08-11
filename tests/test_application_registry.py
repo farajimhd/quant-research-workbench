@@ -35,12 +35,17 @@ class ApplicationRegistryTests(unittest.TestCase):
             "reference.float_shares",
             "reference.short_interest",
             "event.split.factor",
+            "event.split.days_to_event",
+            "event.ipo.days_to_event",
             "coverage.state",
             "news.score",
             "sec.accession",
             "fundamental.revenue",
             "fundamental.free_cash_flow",
             "xbrl.quality_score",
+            "fundamental.quality_score",
+            "signal.news_labeled",
+            "signal.sec_labeled",
             "embedding.news.vector",
         ):
             self.assertIn(field_id, fields)
@@ -54,6 +59,9 @@ class ApplicationRegistryTests(unittest.TestCase):
     def test_deferred_producer_fields_are_registered_without_claiming_readiness(self) -> None:
         fields = {field.field_id: field for field in FIELD_DEFINITIONS}
         self.assertEqual(fields["news.score"].status, "integration_pending")
+        self.assertEqual(fields["signal.news_labeled"].status, "integration_pending")
+        self.assertEqual(fields["event.ipo.days_to_event"].status, "implemented")
+        self.assertEqual(fields["event.split.days_to_event"].status, "implemented")
         self.assertEqual(fields["model.market_hypothesis.payload"].status, "integration_pending")
         self.assertEqual(fields["reference.borrow_fee"].historical_support, "live_observation_only")
 

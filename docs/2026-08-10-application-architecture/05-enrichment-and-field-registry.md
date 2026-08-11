@@ -93,7 +93,7 @@ registered semantic field.
 
 | Field IDs | Primary authority | Query path |
 | --- | --- | --- |
-| `event.split.execution_date`, `event.split.from`, `event.split.to`, `event.split.factor` | `market_stock_split_v1` | publication-aware event window |
+| `event.split.execution_date`, `event.split.from`, `event.split.to`, `event.split.factor`, `event.split.days_to_event` | `market_stock_split_v1` | publication-aware event window and causal Scanner distance |
 | `event.dividend.ex_date`, `event.dividend.amount`, `event.dividend.currency` | `market_cash_dividend_v1` | publication-aware event window |
 | `event.ipo.date`, `event.ipo.status`, `event.ipo.days_to_event` | `market_ipo_v1` | point-in-time event window |
 | `event.ticker_change.*` | ticker-event and symbol-interval tables | Composite-FIGI-bound history |
@@ -114,6 +114,12 @@ registered semantic field.
 Coverage, scheduling, and issue fields are primarily diagnostic and eligibility
 inputs. They are registered so configuration and UI can explain why a business
 field is absent; they are not ordinary user-facing Scanner columns by default.
+
+The backend Scanner reference projection now joins the nearest IPO listing and
+stock-split execution date published by its causal cutoff in the same bounded,
+set-based query as market cap, float, and short interest. Missing event joins
+remain null; they are never converted to the ClickHouse default date. The
+signed distance is positive before the event and negative after it.
 
 ### News fields
 

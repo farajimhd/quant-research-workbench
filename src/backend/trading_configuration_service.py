@@ -12,6 +12,7 @@ from uuid import uuid4
 
 from dotenv import load_dotenv
 
+from src.backend.application_registry import FIELD_DEFINITIONS
 from src.backend.qmd_gateway_client import qmd_catalogs
 from src.backend.trading_runtime_service import (
     get_strategy_definition,
@@ -1662,17 +1663,39 @@ def _pending_text_intelligence_label_capabilities() -> list[dict[str, Any]]:
     either flag from process health or from the mere arrival of source text.
     """
 
-    return [
-        {
+    rows = []
+    fields = {field.field_id: field for field in FIELD_DEFINITIONS}
+    for source_id, name, runtime_field, inputs, description in [
+        (
+            "signal.news_labeled",
+            "News labeled",
+            "news_labeled",
+            ["causally available company-news event", "validated Text Intelligence news label"],
+            "Turns true only on a news event for which Text Intelligence publishes a valid point-in-time label. Missing, failed, stale, or unavailable labeling remains false.",
+        ),
+        (
+            "signal.sec_labeled",
+            "SEC labeled",
+            "sec_labeled",
+            ["causally available SEC filing event", "validated Text Intelligence SEC label"],
+            "Turns true only on an SEC event for which Text Intelligence publishes a valid point-in-time label. Missing, failed, stale, or unavailable labeling remains false.",
+        ),
+    ]:
+        field = fields[source_id]
+        rows.append({
             "capability_id": source_id,
             "name": name,
             "description": description,
             "category": "Text Intelligence labels",
-            "provider": "Text Intelligence",
+            "provider": field.owner,
+            "owner": field.owner,
+            "source_path": field.source_path,
+            "query_plan_id": field.query_plan_id,
+            "available_at": field.available_at,
             "output_type": "boolean",
             "capability_type": "signal",
             "priority": "p1",
-            "availability": "integration_pending",
+            "availability": field.status,
             "inputs": inputs,
             "fields": [runtime_field],
             "calculation": description,
@@ -1682,24 +1705,8 @@ def _pending_text_intelligence_label_capabilities() -> list[dict[str, Any]]:
             "configurable": False,
             "system_required": False,
             "tier": "watchlist",
-        }
-        for source_id, name, runtime_field, inputs, description in [
-            (
-                "signal.news_labeled",
-                "News labeled",
-                "news_labeled",
-                ["causally available company-news event", "validated Text Intelligence news label"],
-                "Turns true only on a news event for which Text Intelligence publishes a valid point-in-time label. Missing, failed, stale, or unavailable labeling remains false.",
-            ),
-            (
-                "signal.sec_labeled",
-                "SEC labeled",
-                "sec_labeled",
-                ["causally available SEC filing event", "validated Text Intelligence SEC label"],
-                "Turns true only on an SEC event for which Text Intelligence publishes a valid point-in-time label. Missing, failed, stale, or unavailable labeling remains false.",
-            ),
-        ]
-    ]
+        })
+    return rows
 
 
 def _discovery_reference_capabilities() -> list[dict[str, Any]]:
@@ -1726,26 +1733,37 @@ def _discovery_reference_capabilities() -> list[dict[str, Any]]:
         "reference.float_shares",
     }
     required_ids = {"market.change_pct", "market.volume"}
-    return [{
-        "capability_id": capability_id,
-        "name": name,
-        "description": calculation,
-        "category": "Scanner enrichment" if capability_id in core_ids else "Watchlist fields",
-        "provider": provider,
-        "output_type": output_type,
-        "capability_type": capability_type,
-        "priority": "p0" if capability_id in required_ids else "p1",
-        "availability": "implemented" if capability_id != "event.ipo.days_to_event" else "integration_pending",
-        "inputs": [provider],
-        "fields": [field],
-        "calculation": calculation,
-        "timeframes": timeframes,
-        "selected_timeframes": timeframes,
-        "enabled": capability_id != "event.ipo.days_to_event",
-        "configurable": capability_id not in required_ids and capability_id != "event.ipo.days_to_event",
-        "system_required": capability_id in required_ids,
-        "tier": "core" if capability_id in core_ids else "watchlist",
-    } for capability_id, name, capability_type, output_type, field, calculation, provider, timeframes in rows]
+    registered = {field.field_id: field for field in FIELD_DEFINITIONS}
+    capabilities = []
+    for capability_id, name, capability_type, output_type, field_id, calculation, provider, timeframes in rows:
+        field = registered.get(field_id)
+        availability = field.status if field is not None else "implemented"
+        runnable = availability == "implemented"
+        capabilities.append({
+            "capability_id": capability_id,
+            "name": name,
+            "description": calculation,
+            "category": "Scanner enrichment" if capability_id in core_ids else "Watchlist fields",
+            "provider": field.owner if field is not None else provider,
+            "owner": field.owner if field is not None else provider,
+            "source_path": field.source_path if field is not None else "qmd://core-scanner",
+            "query_plan_id": field.query_plan_id if field is not None else "qmd.runtime-capability-catalog",
+            "available_at": field.available_at if field is not None else "qmd event/bar clock",
+            "output_type": output_type,
+            "capability_type": capability_type,
+            "priority": "p0" if capability_id in required_ids else "p1",
+            "availability": availability,
+            "inputs": [field.source_path if field is not None else provider],
+            "fields": [field_id],
+            "calculation": calculation,
+            "timeframes": timeframes,
+            "selected_timeframes": timeframes,
+            "enabled": runnable,
+            "configurable": runnable and capability_id not in required_ids,
+            "system_required": capability_id in required_ids,
+            "tier": "core" if capability_id in core_ids else "watchlist",
+        })
+    return capabilities
 
 
 def _market_discovery_classifications() -> list[dict[str, Any]]:
@@ -1864,7 +1882,7 @@ def _default_watchlist_templates(symbols: list[str], calculation_rows: list[dict
         template("sec-bearish-sentiment", "SEC Bearish Sentiment", "New SEC filing events with a validated negative Text Intelligence label.", ["watchlist-sec-bearish"], "signal.sec_filing.score", direction="ascending", refresh=5000, enabled=False, columns=[*common_columns, "sec_sentiment"], availability="integration_pending", availability_detail="Requires validated Text Intelligence SEC-label events."),
         template("fundamental-bullish", "Fundamental Bullish", "Issuers with reliable SEC evidence and a financial trajectory score of at least 65.", ["watchlist-fundamental-bullish"], "fundamental.trajectory_score", refresh=60_000, columns=[*common_columns, "fundamental_trajectory", "fundamental_quality"]),
         template("fundamental-bearish", "Fundamental Bearish", "Issuers with reliable SEC evidence and a financial trajectory score of 35 or lower.", ["watchlist-fundamental-bearish"], "fundamental.trajectory_score", direction="ascending", refresh=60_000, columns=[*common_columns, "fundamental_trajectory", "fundamental_quality"]),
-        template("past-upcoming-ipos", "Past and Upcoming IPOs", "IPOs from 30 days before through 90 days after the event date.", ["watchlist-ipo-window"], "event.ipo.days_to_event", refresh=60_000, enabled=False, columns=[*common_columns, "ipo_event"], availability="integration_pending", availability_detail="Requires a point-in-time IPO corporate-event feed."),
+        template("past-upcoming-ipos", "Past and Upcoming IPOs", "IPOs from 30 days before through 90 days after the event date.", ["watchlist-ipo-window"], "event.ipo.days_to_event", refresh=60_000, columns=[*common_columns, "ipo_event"]),
         template("stock-splits", "Stock Splits", "Published stock splits from 10 days before through 5 days after execution.", ["watchlist-split-window"], "event.split.days_to_event", refresh=60_000, columns=[*common_columns, "split_event"]),
     ]
 
@@ -2837,7 +2855,15 @@ def _migrate_draft(raw: dict[str, Any]) -> dict[str, Any]:
         merged_watchlists: list[dict[str, Any]] = []
         for default_watchlist in default_watchlists:
             watchlist_id = str(default_watchlist.get("watchlist_id") or "")
-            merged_watchlists.append({**default_watchlist, **current_watchlists.pop(watchlist_id, {})})
+            current_watchlist = current_watchlists.pop(watchlist_id, {})
+            merged = {**default_watchlist, **current_watchlist}
+            if bool(default_watchlist.get("template")) and str(default_watchlist.get("origin")) == "system":
+                previous_availability = str(current_watchlist.get("availability") or "")
+                merged["availability"] = default_watchlist.get("availability", "available")
+                merged["availability_detail"] = default_watchlist.get("availability_detail", "")
+                if previous_availability == "integration_pending" and merged["availability"] == "available":
+                    merged["enabled"] = bool(default_watchlist.get("enabled", True))
+            merged_watchlists.append(merged)
         merged_watchlists.extend(current_watchlists.values())
         result["market_discovery"]["watchlists"] = merged_watchlists
         column_ids = {

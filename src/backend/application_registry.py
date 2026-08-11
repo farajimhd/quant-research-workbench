@@ -426,6 +426,8 @@ def _query_plans() -> tuple[QueryPlanDefinition, ...]:
                 "q_live.market_short_interest_v1",
                 "q_live.market_security_country_v1",
                 "q_live.market_presentation_asset_v1",
+                "q_live.market_ipo_v1",
+                "q_live.market_stock_split_v1",
             ),
             "point-in-time symbol_id from tradable universe",
             "source observation/effective/publication date",
@@ -636,14 +638,26 @@ def _fields() -> tuple[FieldDefinition, ...]:
         rows.append(_field(f"classification.{name}", "classification", "backend", "derived://reference-classification", "reference.scanner_asof.v1", value_type="string", provenance="derived"))
 
     corporate_events = {
-        "split": ("q_live.market_stock_split_v1", ("execution_date", "from", "to", "factor")),
+        "split": ("q_live.market_stock_split_v1", ("execution_date", "from", "to", "factor", "days_to_event")),
         "dividend": ("q_live.market_cash_dividend_v1", ("ex_date", "amount", "currency")),
         "ipo": ("q_live.market_ipo_v1", ("date", "status", "days_to_event")),
         "ticker_change": ("q_live.market_ticker_event_v1", ("event_type", "effective_date", "old_symbol", "new_symbol")),
     }
     for family, (source, names) in corporate_events.items():
         for name in names:
-            rows.append(_field(f"event.{family}.{name}", "corporate_event", "reference_gateway", source, "reference.ticker_facts.v1", value_type="string" if name in {"execution_date", "ex_date", "currency", "date", "status", "event_type", "effective_date", "old_symbol", "new_symbol"} else "number", entity_grain="security_event", ttl_seconds=None))
+            scanner_distance = name == "days_to_event" and family in {"ipo", "split"}
+            rows.append(_field(
+                f"event.{family}.{name}",
+                "corporate_event",
+                "backend" if scanner_distance else "reference_gateway",
+                "derived://reference-scanner-event-distance" if scanner_distance else source,
+                "reference.scanner_asof.v1" if scanner_distance else "reference.ticker_facts.v1",
+                value_type="string" if name in {"execution_date", "ex_date", "currency", "date", "status", "event_type", "effective_date", "old_symbol", "new_symbol"} else "number",
+                entity_grain="security_event",
+                ttl_seconds=None,
+                provenance="derived" if scanner_distance else "reported",
+                coverage_query_plan="reference.scanner_asof.v1" if scanner_distance else "reference.ticker_facts.v1",
+            ))
 
     diagnostic_specs = {
         "quality": ("q_live.id_mapping_issue_v1", ("mapping_issue_count", "mapping_issue_types", "mapping_blocked", "source_mapping_state", "source_mapping_evidence")),
@@ -679,6 +693,13 @@ def _fields() -> tuple[FieldDefinition, ...]:
         rows.append(_field(f"fundamental.{name}", "fundamental", "backend", "derived://sec-xbrl-company-facts", "sec.fundamentals_asof.v1", value_type="string" if name.endswith("_label") or name.endswith("_at") else "number", unit="percent" if name.endswith("_pct") else "scalar", entity_grain="issuer_fiscal_period", ttl_seconds=None, publication_cadence="filing_driven", provenance="derived", coverage_query_plan="sec.fundamentals_asof.v1"))
     for name in xbrl_fields:
         rows.append(_field(f"xbrl.{name}", "xbrl_quality", "backend", "derived://sec-xbrl-company-facts", "sec.fundamentals_asof.v1", value_type="string" if name.endswith("_label") else "number", unit="percent" if name.endswith("_pct") else "score", entity_grain="issuer_filing", ttl_seconds=None, publication_cadence="filing_driven", provenance="derived", coverage_query_plan="sec.fundamentals_asof.v1"))
+    rows.append(_field("fundamental.quality_score", "fundamental", "backend", "derived://sec-xbrl-company-facts/xbrl-quality", "sec.fundamentals_asof.v1", unit="score", entity_grain="issuer_filing", ttl_seconds=None, publication_cadence="filing_driven", provenance="derived", coverage_query_plan="sec.fundamentals_asof.v1"))
+
+    for field_id, source in (
+        ("signal.news_labeled", "service://text-intelligence/news-synthesis-v1"),
+        ("signal.sec_labeled", "service://text-intelligence/sec-synthesis-v1"),
+    ):
+        rows.append(_field(field_id, "intelligence_signal", "text_intelligence", source, "intelligence.news_asof.v1" if "news" in field_id else "intelligence.sec_asof.v1", value_type="boolean", entity_grain="company_event", ttl_seconds=900, publication_cadence="event_driven", provenance="derived", status="integration_pending"))
 
     for field_id, owner, source in (
         ("embedding.news.vector", "text_embed_gateway", "service://text-embed/news"),

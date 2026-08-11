@@ -195,10 +195,11 @@ offline calculation is available in its proper scope.
   never substitutes backend assertions for current runtime authority. An
   already-saved configuration retains its immutable embedded rows for review,
   but those rows do not become a live availability catalog.
-- The duplicate Python QMD family snapshot has been removed. Remaining
-  handwritten reference and deferred-intelligence projections still need to be
-  generated from the application field registry before the broader
-  competing-catalog backlog item can close.
+- The duplicate Python QMD family snapshot has been removed. Reference and
+  deferred-intelligence Market Discovery rows now take owner, source path,
+  query plan, availability clock, and implementation status from the
+  application field registry. Display guidance remains product copy, not an
+  independent availability authority.
 - Published Run Plans now carry typed observation dependencies compiled from
   Strategy taxonomy. Paper/Live plans bound to a resolved Watchlist publish a
   separate `strategy_run` lease for the exact current membership; overlapping

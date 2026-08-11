@@ -118,6 +118,31 @@ class TradingConfigurationServiceTests(unittest.TestCase):
         self.assertIn("qmd.family.saved_only", rows)
         self.assertTrue(rows["qmd.family.saved_only"]["enabled"])
 
+    def test_system_ipo_template_migrates_from_pending_to_registered_path(self) -> None:
+        draft = self._draft()
+        ipo = next(
+            row
+            for row in draft["market_discovery"]["watchlists"]
+            if row["watchlist_id"] == "past-upcoming-ipos"
+        )
+        ipo.update({"availability": "integration_pending", "enabled": False})
+        with patch(
+            "src.backend.trading_configuration_service.get_strategy_definition",
+            return_value=long_momentum_strategy_definition(),
+        ), patch(
+            "src.backend.trading_configuration_service.list_strategy_assignments",
+            return_value=[],
+        ):
+            migrated = _migrate_draft(draft)
+
+        migrated_ipo = next(
+            row
+            for row in migrated["market_discovery"]["watchlists"]
+            if row["watchlist_id"] == "past-upcoming-ipos"
+        )
+        self.assertEqual(migrated_ipo["availability"], "available")
+        self.assertTrue(migrated_ipo["enabled"])
+
     def test_legacy_server_draft_table_is_removed(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             journal = TradingJournal(Path(directory) / "journal.sqlite3")
@@ -209,6 +234,10 @@ class TradingConfigurationServiceTests(unittest.TestCase):
         self.assertEqual(capabilities["SEC labeled"]["tier"], "watchlist")
         self.assertEqual(capabilities["SEC labeled"]["availability"], "integration_pending")
         self.assertFalse(capabilities["SEC labeled"]["enabled"])
+        self.assertEqual(capabilities["News labeled"]["source_path"], "service://text-intelligence/news-synthesis-v1")
+        self.assertEqual(capabilities["IPO event distance"]["query_plan_id"], "reference.scanner_asof.v1")
+        self.assertEqual(capabilities["Split event distance"]["query_plan_id"], "reference.scanner_asof.v1")
+        self.assertEqual(capabilities["IPO event distance"]["availability"], "implemented")
         universal = [
             row
             for row in migrated["market_discovery"]["core_scan"]["calculations"]

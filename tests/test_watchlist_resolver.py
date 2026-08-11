@@ -111,7 +111,6 @@ class WatchlistResolverTest(unittest.TestCase):
             "news-bearish-sentiment",
             "sec-bullish-sentiment",
             "sec-bearish-sentiment",
-            "past-upcoming-ipos",
         }:
             watchlist = self.watchlists[watchlist_id]
             self.assertEqual(watchlist["availability"], "integration_pending")
@@ -124,6 +123,8 @@ class WatchlistResolverTest(unittest.TestCase):
                 ),
                 [],
             )
+        self.assertEqual(self.watchlists["past-upcoming-ipos"]["availability"], "available")
+        self.assertTrue(self.watchlists["past-upcoming-ipos"]["enabled"])
 
     def test_missing_evidence_fails_closed_and_manual_inclusion_is_explicit(self) -> None:
         watchlist = {

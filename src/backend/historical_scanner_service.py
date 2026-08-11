@@ -90,6 +90,8 @@ SCANNER_REFERENCE_FIELDS = (
     "short_interest",
     "short_crowding_pct",
     "days_to_cover",
+    "ipo_days_to_event",
+    "split_days_to_event",
     "ibkr_conid",
 )
 SCANNER_FUNDAMENTAL_FIELDS = (
@@ -368,6 +370,8 @@ def historical_scanner_reference_projection(as_of: datetime) -> dict[str, dict[s
                 if(f.free_float > 0 AND si.short_interest IS NOT NULL,
                    toFloat64(si.short_interest) / toFloat64(f.free_float) * 100, NULL) AS short_crowding_pct,
                 si.days_to_cover AS days_to_cover,
+                if(empty(ipo.symbol_id), NULL, dateDiff('day', cutoff_date, ipo.listing_date)) AS ipo_days_to_event,
+                if(empty(split.symbol_id), NULL, dateDiff('day', cutoff_date, split.execution_date)) AS split_days_to_event,
                 u.ibkr_conid AS ibkr_conid,
                 ifNull(a.relative_path, '') AS logo_relative_path
             FROM
@@ -462,6 +466,30 @@ def historical_scanner_reference_projection(as_of: datetime) -> dict[str, dict[s
                   AND coalesce(published_at_utc, toDateTime64(publication_date, 3, 'UTC'), toDateTime64(settlement_date, 3, 'UTC')) <= cutoff
                 GROUP BY symbol_id
             ) AS si ON si.symbol_id = u.symbol_id
+            LEFT JOIN
+            (
+                SELECT
+                    symbol_id,
+                    argMin(
+                        listing_date,
+                        tuple(abs(dateDiff('day', cutoff_date, listing_date)), listing_date, inserted_at)
+                    ) AS listing_date
+                FROM q_live.market_ipo_v1 FINAL
+                WHERE inserted_at <= cutoff
+                GROUP BY symbol_id
+            ) AS ipo ON ipo.symbol_id = u.symbol_id
+            LEFT JOIN
+            (
+                SELECT
+                    symbol_id,
+                    argMin(
+                        execution_date,
+                        tuple(abs(dateDiff('day', cutoff_date, execution_date)), execution_date, inserted_at)
+                    ) AS execution_date
+                FROM q_live.market_stock_split_v1 FINAL
+                WHERE inserted_at <= cutoff
+                GROUP BY symbol_id
+            ) AS split ON split.symbol_id = u.symbol_id
             FORMAT JSONEachRow
             """
         )
