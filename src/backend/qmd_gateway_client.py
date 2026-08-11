@@ -350,6 +350,20 @@ def qmd_live_market_state(ticker: str) -> dict[str, Any]:
     return payload
 
 
+def qmd_ticker_state(ticker: str) -> dict[str, Any]:
+    """Return the versioned live-memory state for one ticker."""
+    symbol = ticker.strip().upper()
+    if not symbol:
+        raise ValueError("ticker is required for QMD ticker state")
+    payload = qmd_get_json(
+        f"/snapshot/ticker-state/{urllib.parse.quote(symbol)}",
+        timeout=3,
+    )
+    if not isinstance(payload, dict):
+        raise RuntimeError("QMD ticker state returned an invalid envelope")
+    return payload
+
+
 def qmd_scanner_snapshot(
     row_limit: int = 250,
     *,

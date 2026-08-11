@@ -88,6 +88,14 @@ keeps a short per-ticker reorder buffer and inserts `q_live.events` without a
 durable ordinal. Cross-store consumers sort each segment under its own contract,
 concatenate a non-overlapping boundary, and may assign a query-local ordinal.
 
+`GET /snapshot/ticker-state/{ticker}` is the versioned latest-state contract.
+Its envelope declares `schema_version`, the `qmd_gateway_live_memory`
+authority, normalized ticker, Scanner sequence, snapshot `as_of`, optional
+event `age_ms`, explicit `ready` or `missing` state, and a nullable row. The
+sequence and row are captured under the same market-state read lock. The older
+`/snapshot/ticker/{ticker}` nullable-row response remains a compatibility
+surface until production callers are proven absent.
+
 ## Canonical Intraday Bars
 
 `/stream/intraday-bars` and required table `intraday_family_bars_v2` expose the

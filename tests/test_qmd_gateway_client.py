@@ -14,6 +14,7 @@ from src.backend.qmd_gateway_client import (
     qmd_historical_scanner_snapshot,
     qmd_catalogs,
     qmd_live_market_state,
+    qmd_ticker_state,
     qmd_indicators,
     qmd_market_signals,
     qmd_product_request,
@@ -332,6 +333,20 @@ class QmdGatewayClientTests(unittest.TestCase):
 
         self.assertEqual(qmd_live_market_state("aapl"), get_json.return_value)
         get_json.assert_called_once_with("/snapshot/live-market-state/AAPL", timeout=3)
+
+    @patch("src.backend.qmd_gateway_client.qmd_get_json")
+    def test_ticker_state_uses_versioned_live_memory_envelope(self, get_json) -> None:
+        get_json.return_value = {
+            "schema_version": 1,
+            "authority": "qmd_gateway_live_memory",
+            "ticker": "AAPL",
+            "found": True,
+            "sequence": 14,
+            "row": {"last_price": 101.5},
+        }
+
+        self.assertEqual(qmd_ticker_state("aapl"), get_json.return_value)
+        get_json.assert_called_once_with("/snapshot/ticker-state/AAPL", timeout=3)
 
     @patch("src.backend.qmd_gateway_client.qmd_put_json")
     @patch("src.backend.qmd_gateway_client.qmd_get_json")

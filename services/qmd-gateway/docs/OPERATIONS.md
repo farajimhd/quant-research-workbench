@@ -114,6 +114,7 @@ screen.
 | `GET /snapshot/scanner?limit=250` | Simple latest market-state scanner snapshot. |
 | `GET /snapshot/scanner-primitives?limit=250` | Massive-only primitive candidates. |
 | `GET /snapshot/ticker/AAPL` | Latest quote/trade state for one ticker. |
+| `GET /snapshot/ticker-state/AAPL` | Versioned latest-state envelope with Scanner sequence, authority, freshness, and explicit missing state. |
 | `GET /snapshot/bars/AAPL?timeframe=1m&limit=500` | Recent in-memory closed bars for one ticker/timeframe. |
 | `GET /snapshot/indicators/AAPL?timeframe=1m&limit=500` | Recent indicator state for one ticker/timeframe. |
 | `GET /snapshot/live-market-state?limit=250` | Active and recent abnormal market-state transitions. |

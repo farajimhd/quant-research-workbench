@@ -31,6 +31,7 @@ use crate::session::session_phase;
 use crate::signal_catalog::{signal_taxonomy_catalog, SignalTaxonomyEntry};
 use crate::state::{
     ScannerRowDelta, ScannerSnapshot, SharedMarketState, StatusMetrics, SymbolSnapshot,
+    TickerStateSnapshot,
 };
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path, Query, State};
@@ -159,6 +160,10 @@ pub fn app(state: AppState) -> Router {
             get(scanner_primitive_snapshot),
         )
         .route("/snapshot/ticker/{ticker}", get(ticker_snapshot))
+        .route(
+            "/snapshot/ticker-state/{ticker}",
+            get(ticker_state_snapshot),
+        )
         .route("/snapshot/bars/{ticker}", get(bar_snapshot))
         .route("/snapshot/product-cache", get(product_cache_snapshot))
         .route("/snapshot/family-bars/{ticker}", get(family_bar_snapshot))
@@ -797,6 +802,13 @@ async fn ticker_snapshot(
     Path(ticker): Path<String>,
 ) -> Json<Option<SymbolSnapshot>> {
     Json(state.market.ticker_snapshot(&ticker).await)
+}
+
+async fn ticker_state_snapshot(
+    State(state): State<Arc<AppState>>,
+    Path(ticker): Path<String>,
+) -> Json<TickerStateSnapshot> {
+    Json(state.market.ticker_state_snapshot(&ticker).await)
 }
 
 async fn bar_snapshot(

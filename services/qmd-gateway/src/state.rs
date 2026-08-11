@@ -60,6 +60,19 @@ pub struct SymbolSnapshot {
 }
 
 #[derive(Clone, Debug, Serialize)]
+pub struct TickerStateSnapshot {
+    pub age_ms: Option<u64>,
+    pub as_of: DateTime<Utc>,
+    pub authority: &'static str,
+    pub found: bool,
+    pub row: Option<SymbolSnapshot>,
+    pub schema_version: u16,
+    pub sequence: u64,
+    pub state: &'static str,
+    pub ticker: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
 pub struct ScannerSnapshot {
     pub as_of: DateTime<Utc>,
     pub row_count: usize,
@@ -165,6 +178,35 @@ impl SharedMarketState {
             .symbols
             .get(&normalized)
             .map(|symbol| symbol.snapshot(&normalized, Utc::now()))
+    }
+
+    pub async fn ticker_state_snapshot(&self, ticker: &str) -> TickerStateSnapshot {
+        let state = self.inner.read().await;
+        let normalized = ticker.trim().to_ascii_uppercase();
+        let as_of = Utc::now();
+        let row = state
+            .symbols
+            .get(&normalized)
+            .map(|symbol| symbol.snapshot(&normalized, as_of));
+        let age_ms = row.as_ref().and_then(|snapshot| {
+            snapshot.last_event_ts.map(|last_event| {
+                as_of
+                    .signed_duration_since(last_event)
+                    .num_milliseconds()
+                    .max(0) as u64
+            })
+        });
+        TickerStateSnapshot {
+            age_ms,
+            as_of,
+            authority: "qmd_gateway_live_memory",
+            found: row.is_some(),
+            state: if row.is_some() { "ready" } else { "missing" },
+            row,
+            schema_version: 1,
+            sequence: state.scanner_sequence,
+            ticker: normalized,
+        }
     }
 }
 
@@ -368,5 +410,30 @@ mod tests {
         assert_eq!(second.sequence, 2);
         assert_eq!(snapshot.sequence, 2);
         assert_eq!(snapshot.rows[0].last_price, 11.0);
+    }
+
+    #[tokio::test]
+    async fn ticker_state_snapshot_is_versioned_and_sequence_aligned() {
+        let state = SharedMarketState::new();
+        let missing = state.ticker_state_snapshot("missing").await;
+        assert!(!missing.found);
+        assert_eq!(missing.state, "missing");
+        assert_eq!(missing.schema_version, 1);
+        assert_eq!(missing.sequence, 0);
+
+        let delta = state
+            .apply_event(&MarketEvent::Trade(trade(
+                "2026-07-14T14:00:00Z",
+                10.0,
+                5.0,
+            )))
+            .await;
+        let snapshot = state.ticker_state_snapshot("test").await;
+
+        assert!(snapshot.found);
+        assert_eq!(snapshot.authority, "qmd_gateway_live_memory");
+        assert_eq!(snapshot.sequence, delta.sequence);
+        assert_eq!(snapshot.row.unwrap().last_price, 10.0);
+        assert!(snapshot.age_ms.is_some());
     }
 }

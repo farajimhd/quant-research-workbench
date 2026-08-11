@@ -81,8 +81,10 @@ one backend registry record and one executable implementation status.
 - [ ] Stabilize live compact-event and bounded ticker-snapshot contracts.
   - [x] Publish and consume a versioned per-ticker compact-event page with an
         arrival cursor, exact eviction evidence, bounds, and forward pagination.
-  - [ ] Version the latest ticker-state snapshot and retire the compact-event
-        raw-array compatibility endpoint after zero callers are proven.
+  - [x] Publish and consume a versioned latest ticker-state envelope with
+        authority, Scanner sequence, freshness, and explicit missing state.
+  - [ ] Retire the nullable ticker-row and compact-event raw-array compatibility
+        endpoints after zero production callers are proven.
 - [ ] Add reconnect continuation and sequence-gap repair.
 - [x] Expose bounded historical events, bars, indicators, signals, and scanner products.
 - [x] Return source-plan hash, event schema, coverage, `as_of`, and continuation cursor.

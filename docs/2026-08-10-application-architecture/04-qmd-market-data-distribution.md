@@ -168,8 +168,10 @@ Live compact-event consumers now use a versioned, bounded per-ticker page. Its
 arrival cursor, exact per-ticker eviction watermark, buffer bounds, `has_more`,
 and delivery-order declaration make truncation explicit. The backend typed QMD
 client uses this contract; the old raw-array endpoint remains only as a measured
-compatibility surface. The latest ticker-state snapshot still needs the same
-versioned envelope before the whole live snapshot item is complete.
+compatibility surface. QMD Gateway also publishes a versioned latest
+ticker-state envelope with authority, Scanner sequence, `as_of`, age, and
+explicit ready/missing state. Its older nullable-row endpoint remains only as a
+measured compatibility surface.
 
 The same source plan supports:
 
@@ -206,8 +208,8 @@ flowchart TD
     F --> G
 ```
 
-QMD now provides the stable live compact-event page; the broader live ticker
-snapshot and reconnect contract remains open. The historical request contract
+QMD now provides stable live compact-event and ticker-state snapshots; stream
+reconnect and sequence-gap repair remain open. The historical request contract
 uses the same `qmd_core` encoding and source plan. Market AI chooses the
 requested product and causal cutoff; it does not choose `q_live` versus
 `market_sip_compact` or reproduce boundary logic.

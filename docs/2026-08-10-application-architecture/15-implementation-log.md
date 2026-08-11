@@ -157,6 +157,11 @@ bounded direct ClickHouse paths remain documented in
     `has_more`, and a next cursor. The legacy raw-array endpoint remains for
     compatibility; latest ticker-state versioning and stream gap repair remain
     open and are not implied by this snapshot contract.
+32. Added and adopted a versioned QMD Live latest ticker-state envelope. It
+    captures the row and global Scanner sequence under one read lock, declares
+    authority and schema version, reports `as_of` and event age, and represents
+    a missing symbol explicitly. The older nullable-row endpoint remains only
+    for measured compatibility; reconnect sequence-gap repair remains open.
 
 The authoritative remaining work and acceptance gates are maintained in the
 [complete implementation backlog](14-implementation-backlog.md). A checked
