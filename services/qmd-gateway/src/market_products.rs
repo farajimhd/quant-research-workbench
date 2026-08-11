@@ -1,4 +1,5 @@
 use crate::bars::{TradeAggregationRules, TradeUpdateRule};
+use crate::computation_targets::SharedComputationTargets;
 use crate::event::{MarketEvent, QuoteEvent};
 use chrono::{DateTime, Datelike, Duration, NaiveDate, TimeZone, Timelike, Utc, Weekday};
 use chrono_tz::America::New_York;
@@ -243,11 +244,13 @@ pub struct SharedMarketProductStore {
 
 #[derive(Clone)]
 pub struct MarketProductEventRouter {
+    computation_targets: SharedComputationTargets,
     senders: Arc<Vec<mpsc::Sender<MarketEvent>>>,
 }
 
 pub fn spawn_market_product_engines(
     store: SharedMarketProductStore,
+    computation_targets: SharedComputationTargets,
     channel_capacity: usize,
     shard_count: usize,
 ) -> MarketProductEventRouter {
@@ -266,6 +269,7 @@ pub fn spawn_market_product_engines(
         senders.push(sender);
     }
     MarketProductEventRouter {
+        computation_targets,
         senders: Arc::new(senders),
     }
 }
@@ -275,6 +279,12 @@ impl MarketProductEventRouter {
         &self,
         event: MarketEvent,
     ) -> Result<(), mpsc::error::SendError<MarketEvent>> {
+        if !self
+            .computation_targets
+            .requires_focused_computation(event.ticker())
+        {
+            return Ok(());
+        }
         let index = stable_hash(event.ticker()) as usize % self.senders.len();
         self.senders[index].send(event).await
     }
@@ -1199,12 +1209,59 @@ fn stable_hash(value: &str) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::capability_catalog::ExecutionScope;
+    use crate::computation_targets::ComputationTargetRequest;
     use crate::event::{QuoteEvent, TradeEvent};
     use chrono::TimeZone;
     use serde_json::json;
 
     fn rules() -> TradeAggregationRules {
         TradeAggregationRules::new([(0, TradeUpdateRule::regular())]).unwrap()
+    }
+
+    #[tokio::test]
+    async fn product_router_admits_only_focused_tickers() {
+        let store = SharedMarketProductStore::new(
+            vec![1_000_000],
+            ProductCacheLimits {
+                max_bytes: 1_000_000,
+                max_partitions: 16,
+                max_rows: 1_000,
+            },
+            1,
+            rules(),
+            ConditionClassifier::training_aligned(),
+        );
+        let targets = SharedComputationTargets::default();
+        let router = spawn_market_product_engines(store.clone(), targets.clone(), 8, 1);
+        let start = Utc.with_ymd_and_hms(2026, 8, 11, 14, 0, 0).unwrap();
+
+        router.send(trade(start, 1, 10.0, 5.0)).await.unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        assert_eq!(store.metrics().await.family_rows, 0);
+
+        targets
+            .replace(ComputationTargetRequest {
+                target_id: "chart:aapl".to_string(),
+                owner: "test".to_string(),
+                scope: ExecutionScope::Request,
+                tickers: vec!["AAPL".to_string()],
+                capabilities: vec!["opening_range".to_string()],
+                timeframes: vec!["1m".to_string()],
+                parameter_hash: "test".to_string(),
+                anchor: "live".to_string(),
+                source_revision: "advancing".to_string(),
+                ttl_seconds: None,
+                correlation_id: String::new(),
+                causation_id: String::new(),
+            })
+            .unwrap();
+        router
+            .send(trade(start + Duration::seconds(1), 2, 11.0, 7.0))
+            .await
+            .unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        assert!(store.metrics().await.family_rows > 0);
     }
 
     fn trade(ts: DateTime<Utc>, sequence: u64, price: f64, size: f64) -> MarketEvent {

@@ -1680,6 +1680,63 @@ it does not imply all application work is complete.
      legacy ticker endpoint; therefore endpoint retirement remains correctly
      open until those deferred migrations resume.
 
+159. Removed chart-scale bar retention from QMD's all-market memory path. A
+     longer release run invalidated the short throughput acceptance when its
+     resident set reached 16.1 GB and event freshness later regressed. The
+     bounded market-product cache reported only 335.6 MB estimated over 1.34
+     million rows; the larger drift was the bar store retaining up to 1,000
+     rows per ticker and timeframe, with each row cloning full Generic
+     Structure vectors. The system-owned default is now four current-tail rows
+     for replacement and downstream close processing. Full chart windows stay
+     on QMD History/ClickHouse and do not expand universal memory. Generic
+     Structure activation itself remains a separate open barrier/replay task;
+     this change does not claim that broader migration is complete.
+
+160. Moved QMD's live chart-product cache behind the existing focused
+     computation lease union. The four-row bar-tail run remained fresh but
+     still grew from 1.5 GB to 6.3 GB while the product engine allocated more
+     than 1.3 million family/condition rows over the complete market. The
+     product router now checks the same reference-counted Watchlist, Strategy,
+     chart-request, and offline leases as focused indicators before admitting
+     a ticker. Full chart windows remain QMD History authority; QMD Live owns
+     only the demanded incremental tail. This removes chart presentation state
+     from universal ingest without weakening chart continuity or silently
+     dropping an authoritative source event.
+
+161. Corrected the remaining QMD all-market memory and scheduling boundaries.
+     Unfocused symbols now retain only the one-second safety bar used for LULD
+     and locked/crossed market-state evaluation; active computation leases
+     receive the complete enriched timeframe set. Retained bars share one
+     reference-counted Structure snapshot instead of cloning its vectors into
+     every timeframe. This reduced the final post-close soak from the earlier
+     multi-gigabyte trajectory to 543 MB resident memory at 235 seconds.
+
+162. Removed three independent freshness stalls found by progressively longer
+     release runs. Intraday ready-bar selection now uses ticker/session-scoped
+     ordered ranges rather than scanning every active series for every event.
+     Structure persistence takes at most 256 dirty checkpoints per flush and
+     requeues a failed batch without losing a newer dirty update. Canonical bar
+     inserts use four bounded writers with aggregate pending metrics. Compact
+     events and their warning audit use two bounded persistence workers, a
+     separate 50,000-row batch, and a five-second maximum batch age; a closed
+     worker falls back to inline lossless retry. Late intraday repairs are
+     keyed by ticker/session/bucket and limited to one per writer tick so
+     current bar inserts cannot be starved by redundant historical rebuilds.
+
+163. Validated the combined QMD build with 108 passing Rust tests and an
+     optimized managed release soak against the real post-close feed plus
+     recent repair. At 235 seconds it reported 1,116 ms event lag, 543 MB
+     resident memory, 254,127 ingested and 252,967 persisted compact events,
+     303,096 persisted canonical bar rows, zero live/repair input backlog,
+     zero source/bar drops, zero repair failures, an empty unfocused product
+     cache, 15/107 microseconds average/maximum all-market bar time, and 5/17
+     microseconds Core Scan time. The evidence report is
+     `D:\TradingML\runtimes\qmd_validation\qmd_funnel_postclose_acceptance_20260811T202225Z.json`.
+     Because the final build completed after 16:00 ET, representative
+     active-session budget approval remains explicitly open. Generic Structure
+     also remains exact but all-market until its atomic activation barrier and
+     checkpoint-to-barrier replay are implemented.
+
 ---
 
 [Top](README.md) · [Previous](14-implementation-backlog.md) · [First](01-product-and-principles.md)

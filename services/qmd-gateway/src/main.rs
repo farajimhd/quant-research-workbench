@@ -113,12 +113,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .trade_aggregation_rules()
         .map_err(startup_error)?;
     let compact_event_decoder = compact_references.decoder();
+    let computation_targets = SharedComputationTargets::default();
     let market = SharedMarketState::new();
-    let bars = SharedBarStore::new(
+    let bars = SharedBarStore::new_for_computational_funnel(
         config.bar_timeframes.clone(),
         config.bar_history_limit,
         config.bar_shard_count,
         trade_aggregation_rules.clone(),
+        computation_targets.clone(),
     );
     let product_resolutions = config
         .intraday_bar_timeframes
@@ -138,6 +140,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     );
     let product_router = spawn_market_product_engines(
         products.clone(),
+        computation_targets.clone(),
         config.compact_event_channel_capacity,
         config.intraday_bar_shard_count,
     );
@@ -155,7 +158,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         trade_aggregation_rules.clone(),
         market_structure_references,
     );
-    let computation_targets = SharedComputationTargets::default();
     let reference_refresh_indicators = indicators.clone();
     let scanner = SharedScannerStore::new(config.scanner_primitive_history_limit);
     let live_market_state = SharedLiveMarketStateStore::new(config.live_market_state_history_limit);
@@ -325,6 +327,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     );
     let bar_router = spawn_bar_engines(
         bars.clone(),
+        computation_targets.clone(),
         config.bar_channel_capacity,
         Some(indicator_router.bar_sender()),
         Some(live_market_state_router.clone()),

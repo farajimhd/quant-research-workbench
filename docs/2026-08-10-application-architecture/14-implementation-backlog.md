@@ -186,6 +186,37 @@ macro bars agree across Live, History, Replay, Backtest, and charts.
         at 40/47 microseconds average and 312/363 microseconds maximum, but the
         service was still catching up with a large compact-writer backlog, so
         this is evidence rather than budget approval.
+    - [x] Remove chart-scale bar retention from the all-market store. QMD keeps
+          four current-tail rows per ticker/timeframe for live replacement and
+          downstream close processing; full chart history remains a QMD
+          History/ClickHouse request concern. The previous default retained
+          1,000 rows including cloned Structure vectors and reached 16.1 GB
+          resident memory during catch-up.
+    - [x] Put live chart-product caches behind the shared focused-computation
+          lease union. Full chart windows come from QMD History; QMD Live now
+          updates family/condition/macro cache state only for active Watchlist,
+          Strategy, chart, or offline ticker demand rather than allocating
+          8,192 all-market ticker-day partitions by default.
+    - [x] Keep only the one-second all-market safety bar required by abnormal
+          market-state evaluation; build the complete enriched timeframe set
+          only for the shared focused-computation lease union. Structure
+          snapshots are reference-counted in retained bars rather than
+          deep-cloned into every ticker/timeframe tail.
+    - [x] Remove periodic and derived-writer stalls from the universal event
+          path: Structure checkpoints use 256-symbol dirty batches with
+          retry-safe requeueing; intraday ready-bar lookup is ticker/session
+          scoped; current bar writes are four-way sharded; compact/audit
+          persistence uses two bounded workers and a five-second maximum batch
+          age; late bar repair is bucket-deduplicated and limited to one repair
+          per writer tick so current rows retain priority.
+    - [ ] Repeat the final combined build during a representative active
+          session. The 235-second post-close/recent-repair soak stayed at
+          1.12 seconds event lag, 543 MB resident memory, zero source/bar drops,
+          zero repair failures, 15/107 microseconds average/maximum all-market
+          bar time, and 5/17 microseconds Core Scan time. This validates the
+          corrected bounded runtime but does not retroactively approve an
+          active-session budget; evidence is external under
+          `D:\TradingML\runtimes\qmd_validation\qmd_funnel_postclose_acceptance_20260811T202225Z.json`.
 - [x] Limit default Core Scan to last/change, volume/dollar volume, activity,
       spread, halt/stale, basic liquidity, reference context, and rank inputs.
       Its exact five low-cost runtime families are catalog-tested; optional

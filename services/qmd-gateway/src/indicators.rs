@@ -22,6 +22,8 @@ use std::sync::{Arc, RwLock as StdRwLock};
 use tokio::sync::{mpsc, Mutex};
 use tokio::time::{interval, sleep, Duration, MissedTickBehavior};
 
+const STRUCTURE_CHECKPOINT_BATCH_LIMIT: usize = 256;
+
 pub const INDICATOR_SCHEMA_VERSION: u16 = 18;
 const MICROSTRUCTURE_AGGREGATE_TIMEFRAMES: [&str; 7] = ["1s", "5s", "10s", "30s", "1m", "5m", "1h"];
 const INDICATOR_STATE_RECLAIM_INTERVAL_SECONDS: u64 = 30;
@@ -1825,7 +1827,7 @@ impl BarIndicatorState {
             qmd_structure_prior_month_high: references.prior_month_high,
             qmd_structure_prior_month_low: references.prior_month_low,
             qmd_structure_prior_month_close: references.prior_month_close,
-            qmd_structure_snapshot: structure.clone(),
+            qmd_structure_snapshot: structure.as_ref().clone(),
             qmd_structure_events: bar.qmd_structure_events.clone(),
             microstructure_interval: MicrostructureIntervalFeatures::default(),
         }
@@ -2569,11 +2571,6 @@ impl IndicatorClickHouseWriter {
             .into_values()
             .collect::<Vec<_>>();
         structure_events.sort_by_key(|event| (event.confirmed_at, event.event_id));
-        let structure_states = if self.config.persist_structure_events {
-            bars.structure_checkpoints_since(structure_watermarks).await
-        } else {
-            Vec::new()
-        };
         if self.config.persist_indicators && !batch.is_empty() {
             self.metrics
                 .set_lane_pending("indicators", batch.len() as u64);
@@ -2604,8 +2601,21 @@ impl IndicatorClickHouseWriter {
             );
             self.metrics.set_lane_pending("structure_events", 0);
         }
-        if self.config.persist_structure_events && !structure_states.is_empty() {
+        let structure_states = if self.config.persist_structure_events {
+            bars.take_structure_checkpoints_since(
+                structure_watermarks,
+                STRUCTURE_CHECKPOINT_BATCH_LIMIT,
+            )
+            .await
+        } else {
+            Vec::new()
+        };
+        if !structure_states.is_empty() {
             if let Err(error) = self.insert_structure_states(&structure_states).await {
+                bars.requeue_structure_checkpoints(
+                    structure_states.iter().map(|(sym, _)| sym.clone()),
+                )
+                .await;
                 self.metrics.record_lane_failure("structure_events", &error);
                 eprintln!("ClickHouse QMD structure-state insert failed: {error}");
                 return false;

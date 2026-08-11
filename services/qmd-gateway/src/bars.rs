@@ -1,3 +1,4 @@
+use crate::computation_targets::SharedComputationTargets;
 use crate::event::{MarketEvent, QuoteEvent, TradeEvent};
 use crate::generic_structure::{
     GenericStructureCheckpoint, GenericStructureEngine, GenericStructureEvent,
@@ -9,7 +10,7 @@ use crate::metrics::{SharedMetrics, TimingTarget};
 use chrono::{DateTime, TimeZone, Timelike, Utc};
 use chrono_tz::America::New_York;
 use serde::Serialize;
-use std::collections::{HashMap, VecDeque};
+use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::sync::Arc;
 use tokio::sync::{mpsc, Mutex};
 use tokio::time::{interval, Duration};
@@ -352,7 +353,7 @@ pub struct BarRow {
     /// Compact state for scanner/UI: `inactive`, `unknown`, `inside`, `near_upper`, `near_lower`, `above_upper`, or `below_lower`.
     pub estimated_luld_state: String,
     /// Canonical event-native, multi-scale QMD structure sampled causally at this bar's last event.
-    pub qmd_structure: GenericStructureSnapshot,
+    pub qmd_structure: Arc<GenericStructureSnapshot>,
     /// Exact structural changes confirmed inside this bar. Persisted by the canonical 100 ms indicator lane.
     #[serde(skip_serializing)]
     pub qmd_structure_events: Vec<GenericStructureEvent>,
@@ -387,12 +388,14 @@ pub struct BarShardStore {
 
 struct BarStore {
     frames: Vec<BarFrame>,
+    computation_targets: Option<SharedComputationTargets>,
     structure_enabled: bool,
     structure_event_frame_label: String,
     history_limit: usize,
     trade_rules: TradeAggregationRules,
     luld: HashMap<String, EstimatedLuldState>,
     structure: HashMap<String, GenericStructureEngine>,
+    structure_dirty: BTreeSet<String>,
     open: HashMap<BarKey, MutableBar>,
     closed: HashMap<BarKey, VecDeque<BarRow>>,
 }
@@ -478,7 +481,7 @@ struct MutableBar {
     sell_dollar_volume: f64,
     effective_spread_sum: f64,
     estimated_luld: EstimatedLuldSnapshot,
-    qmd_structure: GenericStructureSnapshot,
+    qmd_structure: Arc<GenericStructureSnapshot>,
     qmd_structure_events: Vec<GenericStructureEvent>,
 }
 
@@ -494,12 +497,27 @@ impl SharedBarStore {
             .filter_map(|label| parse_timeframe(&label))
             .collect::<Vec<_>>();
         let shard_count = shard_count.max(1);
+        Self::new_with_structure_policy(frames, history_limit, shard_count, trade_rules, true, None)
+    }
+
+    pub fn new_for_computational_funnel(
+        timeframes: Vec<String>,
+        history_limit: usize,
+        shard_count: usize,
+        trade_rules: TradeAggregationRules,
+        computation_targets: SharedComputationTargets,
+    ) -> Self {
+        let frames = timeframes
+            .into_iter()
+            .filter_map(|label| parse_timeframe(&label))
+            .collect::<Vec<_>>();
         Self::new_with_structure_policy(
             frames,
             history_limit,
-            shard_count,
+            shard_count.max(1),
             trade_rules,
             true,
+            Some(computation_targets),
         )
     }
 
@@ -519,6 +537,7 @@ impl SharedBarStore {
             shard_count,
             trade_rules,
             false,
+            None,
         )
     }
 
@@ -528,6 +547,7 @@ impl SharedBarStore {
         shard_count: usize,
         trade_rules: TradeAggregationRules,
         structure_enabled: bool,
+        computation_targets: Option<SharedComputationTargets>,
     ) -> Self {
         let shard_count = shard_count.max(1);
         let shards = (0..shard_count)
@@ -537,6 +557,7 @@ impl SharedBarStore {
                     history_limit,
                     trade_rules.clone(),
                     structure_enabled,
+                    computation_targets.clone(),
                 )
             })
             .collect::<Vec<_>>();
@@ -640,23 +661,56 @@ impl SharedBarStore {
         }
     }
 
-    pub async fn structure_checkpoints_since(
+    pub async fn take_structure_checkpoints_since(
         &self,
         watermarks: &HashMap<String, i64>,
+        limit: usize,
     ) -> Vec<(String, GenericStructureCheckpoint)> {
         let mut checkpoints = Vec::new();
         for shard in self.shards.iter() {
-            let store = shard.inner.lock().await;
-            checkpoints.extend(store.structure.iter().filter_map(|(sym, engine)| {
+            if checkpoints.len() >= limit {
+                break;
+            }
+            let mut store = shard.inner.lock().await;
+            let symbols = store
+                .structure_dirty
+                .iter()
+                .take(limit.saturating_sub(checkpoints.len()))
+                .cloned()
+                .collect::<Vec<_>>();
+            for sym in symbols {
+                store.structure_dirty.remove(&sym);
+                let Some(engine) = store.structure.get(&sym) else {
+                    continue;
+                };
                 let updated_at_ms = engine.updated_at_ms();
-                if updated_at_ms <= watermarks.get(sym).copied().unwrap_or_default() {
-                    return None;
+                if updated_at_ms <= watermarks.get(&sym).copied().unwrap_or_default() {
+                    continue;
                 }
-                Some((sym.clone(), engine.checkpoint()))
-            }));
+                checkpoints.push((sym, engine.checkpoint()));
+            }
         }
         checkpoints.sort_by(|left, right| left.0.cmp(&right.0));
         checkpoints
+    }
+
+    pub async fn requeue_structure_checkpoints(&self, symbols: impl IntoIterator<Item = String>) {
+        let mut by_shard = vec![Vec::new(); self.shards.len()];
+        for sym in symbols {
+            let index = shard_index(&sym, self.shards.len());
+            by_shard[index].push(sym);
+        }
+        for (index, symbols) in by_shard.into_iter().enumerate() {
+            if symbols.is_empty() {
+                continue;
+            }
+            self.shards[index]
+                .inner
+                .lock()
+                .await
+                .structure_dirty
+                .extend(symbols);
+        }
     }
 
     #[cfg(test)]
@@ -695,6 +749,7 @@ impl BarShardStore {
         history_limit: usize,
         trade_rules: TradeAggregationRules,
         structure_enabled: bool,
+        computation_targets: Option<SharedComputationTargets>,
     ) -> Self {
         let structure_event_frame_label = frames
             .iter()
@@ -704,12 +759,14 @@ impl BarShardStore {
         Self {
             inner: Arc::new(Mutex::new(BarStore {
                 frames,
+                computation_targets,
                 structure_enabled,
                 structure_event_frame_label,
                 history_limit,
                 trade_rules,
                 luld: HashMap::new(),
                 structure: HashMap::new(),
+                structure_dirty: BTreeSet::new(),
                 open: HashMap::new(),
                 closed: HashMap::new(),
             })),
@@ -809,14 +866,28 @@ impl BarStore {
             }
         }
         let (structure_snapshot, structure_events) = if self.structure_enabled {
-            self.structure
+            let result = self
+                .structure
                 .entry(sym.clone())
                 .or_insert_with(|| GenericStructureEngine::new(&sym))
-                .apply_event(event, trade_rule)
+                .apply_event(event, trade_rule);
+            self.structure_dirty.insert(sym.clone());
+            result
         } else {
             (GenericStructureSnapshot::default(), Vec::new())
         };
-        for frame in self.frames.clone() {
+        let structure_snapshot = Arc::new(structure_snapshot);
+        let focused = self
+            .computation_targets
+            .as_ref()
+            .map(|targets| targets.requires_focused_computation(&sym))
+            .unwrap_or(true);
+        for frame in self
+            .frames
+            .clone()
+            .into_iter()
+            .filter(|frame| focused || frame.label == "1s")
+        {
             let start = aligned_start(event.ts(), frame.duration_millis);
             let end = start + chrono::Duration::milliseconds(frame.duration_millis);
             let key = BarKey {
@@ -1249,7 +1320,7 @@ impl MutableBar {
             sell_dollar_volume: 0.0,
             effective_spread_sum: 0.0,
             estimated_luld: EstimatedLuldSnapshot::unknown(),
-            qmd_structure: GenericStructureSnapshot::default(),
+            qmd_structure: Arc::new(GenericStructureSnapshot::default()),
             qmd_structure_events: Vec::new(),
         }
     }
@@ -1441,6 +1512,7 @@ impl MutableBar {
 
 pub fn spawn_bar_engines(
     bars: SharedBarStore,
+    computation_targets: SharedComputationTargets,
     channel_capacity: usize,
     indicator_sender: Option<mpsc::Sender<BarRow>>,
     live_market_state_sender: Option<LiveMarketStateRouter>,
@@ -1455,6 +1527,7 @@ pub fn spawn_bar_engines(
         tokio::spawn(run_bar_engine(
             shard_id,
             bars.shard(shard_id),
+            computation_targets.clone(),
             receiver,
             indicator_sender.clone(),
             live_market_state_sender.clone(),
@@ -1469,6 +1542,7 @@ pub fn spawn_bar_engines(
 async fn run_bar_engine(
     shard_id: usize,
     shard: BarShardStore,
+    computation_targets: SharedComputationTargets,
     mut receiver: mpsc::Receiver<MarketEvent>,
     indicator_sender: Option<mpsc::Sender<BarRow>>,
     live_market_state_sender: Option<LiveMarketStateRouter>,
@@ -1487,18 +1561,18 @@ async fn run_bar_engine(
                             );
                             shard.apply_event(&event).await
                         };
-                        send_finalized_bars(shard_id, indicator_sender.as_ref(), live_market_state_sender.as_ref(), &metrics, finalized).await;
+                        send_finalized_bars(shard_id, &computation_targets, indicator_sender.as_ref(), live_market_state_sender.as_ref(), &metrics, finalized).await;
                     }
                     None => {
                         let finalized = shard.finalize_due(Utc::now()).await;
-                        send_finalized_bars(shard_id, indicator_sender.as_ref(), live_market_state_sender.as_ref(), &metrics, finalized).await;
+                        send_finalized_bars(shard_id, &computation_targets, indicator_sender.as_ref(), live_market_state_sender.as_ref(), &metrics, finalized).await;
                         return;
                     }
                 }
             }
             _ = heartbeat.tick() => {
                 let finalized = shard.finalize_due(Utc::now()).await;
-                send_finalized_bars(shard_id, indicator_sender.as_ref(), live_market_state_sender.as_ref(), &metrics, finalized).await;
+                send_finalized_bars(shard_id, &computation_targets, indicator_sender.as_ref(), live_market_state_sender.as_ref(), &metrics, finalized).await;
             }
         }
     }
@@ -1506,6 +1580,7 @@ async fn run_bar_engine(
 
 async fn send_finalized_bars(
     shard_id: usize,
+    computation_targets: &SharedComputationTargets,
     indicator_sender: Option<&mpsc::Sender<BarRow>>,
     live_market_state_sender: Option<&LiveMarketStateRouter>,
     metrics: &SharedMetrics,
@@ -1513,15 +1588,19 @@ async fn send_finalized_bars(
 ) {
     metrics.inc_bar_emitted(rows.len() as u64);
     for row in rows {
-        if let Some(sender) = indicator_sender {
-            if sender.send(row.clone()).await.is_err() {
-                metrics.inc_bar_indicator_dropped();
-                eprintln!("Indicator bar receiver closed; shard {shard_id} could not route one finalized bar.");
+        if computation_targets.requires_bar_computation(&row.sym, &row.timeframe) {
+            if let Some(sender) = indicator_sender {
+                if sender.send(row.clone()).await.is_err() {
+                    metrics.inc_bar_indicator_dropped();
+                    eprintln!("Indicator bar receiver closed; shard {shard_id} could not route one finalized bar.");
+                }
             }
         }
-        if let Some(sender) = live_market_state_sender {
-            if sender.send_bar(row.clone()).await.is_err() {
-                eprintln!("Live market state receiver closed; shard {shard_id} could not route one finalized bar.");
+        if row.timeframe == "1s" {
+            if let Some(sender) = live_market_state_sender {
+                if sender.send_bar(row.clone()).await.is_err() {
+                    eprintln!("Live market state receiver closed; shard {shard_id} could not route one finalized bar.");
+                }
             }
         }
     }
@@ -1702,12 +1781,7 @@ mod tests {
     #[tokio::test]
     async fn structure_disabled_store_keeps_bar_state_without_allocating_engines() {
         let rules = TradeAggregationRules::new([(0, TradeUpdateRule::regular())]).unwrap();
-        let bars = SharedBarStore::new_without_structure(
-            vec!["1s".into()],
-            2,
-            1,
-            rules,
-        );
+        let bars = SharedBarStore::new_without_structure(vec!["1s".into()], 2, 1, rules);
         let start = Utc.with_ymd_and_hms(2026, 8, 7, 13, 30, 0).unwrap();
 
         bars.apply_event(&MarketEvent::Quote(quote(start, 99.0, 101.0, 1)))
@@ -1719,9 +1793,70 @@ mod tests {
         assert_eq!(snapshot.history.len(), 1);
         assert_eq!(snapshot.history[0].quote_count, 1);
         assert_eq!(snapshot.history[0].qmd_structure.reference_price, 0.0);
-        assert!(snapshot.history[0].qmd_structure.timeframe_states.is_empty());
+        assert!(snapshot.history[0]
+            .qmd_structure
+            .timeframe_states
+            .is_empty());
         assert!(snapshot.history[0].qmd_structure.active_levels.is_empty());
         assert_eq!(bars.structure_engine_count().await, 0);
+    }
+
+    #[tokio::test]
+    async fn computational_funnel_keeps_only_safety_bars_until_focus() {
+        let rules = TradeAggregationRules::new([(0, TradeUpdateRule::regular())]).unwrap();
+        let targets = SharedComputationTargets::default();
+        let bars = SharedBarStore::new_for_computational_funnel(
+            vec!["1s".into(), "5s".into()],
+            4,
+            1,
+            rules,
+            targets.clone(),
+        );
+        let start = Utc.with_ymd_and_hms(2026, 8, 11, 14, 0, 0).unwrap();
+
+        bars.apply_event(&MarketEvent::Trade(trade(start, 100.0, 10.0, vec![])))
+            .await;
+        bars.apply_event(&MarketEvent::Trade(trade(
+            start + chrono::Duration::seconds(2),
+            101.0,
+            10.0,
+            vec![],
+        )))
+        .await;
+        assert_eq!(bars.snapshot("AAPL", "1s", 4).await.history.len(), 1);
+        assert!(bars.snapshot("AAPL", "5s", 4).await.history.is_empty());
+
+        targets
+            .replace(crate::computation_targets::ComputationTargetRequest {
+                target_id: "chart:test".into(),
+                owner: "test".into(),
+                scope: crate::capability_catalog::ExecutionScope::Request,
+                tickers: vec!["AAPL".into()],
+                capabilities: vec!["opening_range".into()],
+                timeframes: vec!["5s".into()],
+                parameter_hash: "test".into(),
+                anchor: "live".into(),
+                source_revision: "advancing".into(),
+                ttl_seconds: None,
+                correlation_id: String::new(),
+                causation_id: String::new(),
+            })
+            .unwrap();
+        bars.apply_event(&MarketEvent::Trade(trade(
+            start + chrono::Duration::seconds(3),
+            102.0,
+            10.0,
+            vec![],
+        )))
+        .await;
+        bars.apply_event(&MarketEvent::Trade(trade(
+            start + chrono::Duration::seconds(6),
+            103.0,
+            10.0,
+            vec![],
+        )))
+        .await;
+        assert_eq!(bars.snapshot("AAPL", "5s", 4).await.history.len(), 1);
     }
 
     #[tokio::test]
@@ -1785,15 +1920,19 @@ mod tests {
                 .collect::<Vec<_>>()
         );
         assert_eq!(fine_state.last_event_id, five_state.last_event_id);
-        let checkpoints = bars.structure_checkpoints_since(&HashMap::new()).await;
+        let checkpoints = bars
+            .take_structure_checkpoints_since(&HashMap::new(), 1)
+            .await;
         assert_eq!(checkpoints.len(), 1);
         let mut watermarks = HashMap::new();
         watermarks.insert(
             "AAPL".to_string(),
             checkpoints[0].1.updated_at.unwrap().timestamp_millis(),
         );
+        bars.requeue_structure_checkpoints(["AAPL".to_string()])
+            .await;
         assert!(bars
-            .structure_checkpoints_since(&watermarks)
+            .take_structure_checkpoints_since(&watermarks, 1)
             .await
             .is_empty());
     }

@@ -11,6 +11,7 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::sync::{broadcast, mpsc, Mutex, RwLock};
 use tokio::time::{interval, sleep, Duration, Instant};
@@ -830,6 +831,65 @@ pub struct CompactEventClickHouseWriter {
     coverage_windows: Arc<Mutex<HashMap<(String, String), CoverageWindow>>>,
 }
 
+struct CompactPersistWork {
+    events: Vec<LiveCompactEvent>,
+    issues: Vec<(LiveCompactEvent, CompactEventIssue)>,
+}
+
+#[derive(Clone)]
+struct CompactPersistPending {
+    main_events: Arc<AtomicU64>,
+    main_issues: Arc<AtomicU64>,
+    worker_events: Arc<Vec<AtomicU64>>,
+    worker_issues: Arc<Vec<AtomicU64>>,
+    metrics: SharedMetrics,
+}
+
+impl CompactPersistPending {
+    fn new(worker_count: usize, metrics: SharedMetrics) -> Self {
+        Self {
+            main_events: Arc::new(AtomicU64::new(0)),
+            main_issues: Arc::new(AtomicU64::new(0)),
+            worker_events: Arc::new((0..worker_count).map(|_| AtomicU64::new(0)).collect()),
+            worker_issues: Arc::new((0..worker_count).map(|_| AtomicU64::new(0)).collect()),
+            metrics,
+        }
+    }
+
+    fn set_main(&self, events: u64, issues: u64) {
+        self.main_events.store(events, Ordering::Relaxed);
+        self.main_issues.store(issues, Ordering::Relaxed);
+        self.publish();
+    }
+
+    fn set_worker(&self, worker_id: usize, events: u64, issues: u64) {
+        self.worker_events[worker_id].store(events, Ordering::Relaxed);
+        self.worker_issues[worker_id].store(issues, Ordering::Relaxed);
+        self.publish();
+    }
+
+    fn publish(&self) {
+        let events = self
+            .worker_events
+            .iter()
+            .map(|value| value.load(Ordering::Relaxed))
+            .fold(
+                self.main_events.load(Ordering::Relaxed),
+                u64::saturating_add,
+            );
+        let issues = self
+            .worker_issues
+            .iter()
+            .map(|value| value.load(Ordering::Relaxed))
+            .fold(
+                self.main_issues.load(Ordering::Relaxed),
+                u64::saturating_add,
+            );
+        self.metrics.set_lane_pending("compact_events", events);
+        self.metrics.set_lane_pending("compact_audit", issues);
+    }
+}
+
 impl CompactEventClickHouseWriter {
     pub fn new(
         config: GatewayConfig,
@@ -894,7 +954,20 @@ impl CompactEventClickHouseWriter {
     }
 
     async fn run_merged(self, mut receiver: mpsc::Receiver<MarketEvent>) {
-        let mut batch = Vec::with_capacity(self.config.max_clickhouse_batch);
+        const PERSIST_WORKER_COUNT: usize = 2;
+        let (persist_sender, persist_receiver) = mpsc::channel::<CompactPersistWork>(4);
+        let persist_receiver = Arc::new(Mutex::new(persist_receiver));
+        let persist_pending =
+            CompactPersistPending::new(PERSIST_WORKER_COUNT, self.metrics.clone());
+        let mut persist_handles = Vec::with_capacity(PERSIST_WORKER_COUNT);
+        for worker_id in 0..PERSIST_WORKER_COUNT {
+            persist_handles.push(tokio::spawn(self.clone().run_persist_worker(
+                worker_id,
+                persist_receiver.clone(),
+                persist_pending.clone(),
+            )));
+        }
+        let mut batch = Vec::with_capacity(self.config.compact_event_max_clickhouse_batch);
         let mut issue_batch = Vec::new();
         let mut issues_seen = 0u64;
         let mut arrival_sequence = self
@@ -966,9 +1039,8 @@ impl CompactEventClickHouseWriter {
                                         reorder_lag_us,
                                         false,
                                     );
-                                    if batch.len() >= self.config.max_clickhouse_batch {
-                                        self.flush_persisted(&mut batch).await;
-                                        self.flush_issues(&mut issue_batch).await;
+                                    if batch.len() >= self.config.compact_event_max_clickhouse_batch {
+                                        self.submit_persist_work(&persist_sender, &mut batch, &mut issue_batch).await;
                                     }
                                 }
                             }
@@ -982,12 +1054,10 @@ impl CompactEventClickHouseWriter {
                                 reorder_lag_us,
                                 true,
                             );
-                            while !batch.is_empty() || !issue_batch.is_empty() {
-                                self.flush_persisted(&mut batch).await;
-                                self.flush_issues(&mut issue_batch).await;
-                                if !batch.is_empty() || !issue_batch.is_empty() {
-                                    sleep(Duration::from_millis(250)).await;
-                                }
+                            self.submit_persist_work(&persist_sender, &mut batch, &mut issue_batch).await;
+                            drop(persist_sender);
+                            for handle in persist_handles {
+                                let _ = handle.await;
                             }
                             return;
                         }
@@ -1005,20 +1075,73 @@ impl CompactEventClickHouseWriter {
                         reorder_lag_us,
                         force,
                     );
-                    if receiver.is_empty() && self.metrics.compact_input_events_pending() == 0 {
-                        self.flush_persisted(&mut batch).await;
-                        self.flush_issues(&mut issue_batch).await;
-                    }
+                    self.submit_persist_work(&persist_sender, &mut batch, &mut issue_batch).await;
                 }
             }
-            self.metrics.set_lane_pending(
-                "compact_events",
+            persist_pending.set_main(
                 reorder_pending_count
                     .saturating_add(batch.len() as u64)
                     .saturating_add(receiver.len() as u64),
+                issue_batch.len() as u64,
             );
-            self.metrics
-                .set_lane_pending("compact_audit", issue_batch.len() as u64);
+        }
+    }
+
+    async fn submit_persist_work(
+        &self,
+        sender: &mpsc::Sender<CompactPersistWork>,
+        batch: &mut Vec<LiveCompactEvent>,
+        issue_batch: &mut Vec<(LiveCompactEvent, CompactEventIssue)>,
+    ) {
+        if batch.is_empty() && issue_batch.is_empty() {
+            return;
+        }
+        let work = CompactPersistWork {
+            events: std::mem::replace(
+                batch,
+                Vec::with_capacity(self.config.compact_event_max_clickhouse_batch),
+            ),
+            issues: std::mem::take(issue_batch),
+        };
+        if let Err(error) = sender.send(work).await {
+            eprintln!(
+                "Compact persistence workers closed; persisting the rejected durable batch inline."
+            );
+            let mut work = error.0;
+            while !work.events.is_empty() || !work.issues.is_empty() {
+                self.flush_persisted(&mut work.events).await;
+                self.flush_issues(&mut work.issues).await;
+                if !work.events.is_empty() || !work.issues.is_empty() {
+                    sleep(Duration::from_millis(250)).await;
+                }
+            }
+        }
+    }
+
+    async fn run_persist_worker(
+        self,
+        worker_id: usize,
+        receiver: Arc<Mutex<mpsc::Receiver<CompactPersistWork>>>,
+        pending: CompactPersistPending,
+    ) {
+        loop {
+            let Some(mut work) = receiver.lock().await.recv().await else {
+                pending.set_worker(worker_id, 0, 0);
+                return;
+            };
+            pending.set_worker(
+                worker_id,
+                work.events.len() as u64,
+                work.issues.len() as u64,
+            );
+            while !work.events.is_empty() || !work.issues.is_empty() {
+                self.flush_persisted(&mut work.events).await;
+                self.flush_issues(&mut work.issues).await;
+                if !work.events.is_empty() || !work.issues.is_empty() {
+                    sleep(Duration::from_millis(250)).await;
+                }
+            }
+            pending.set_worker(worker_id, 0, 0);
         }
     }
 
@@ -1086,8 +1209,6 @@ impl CompactEventClickHouseWriter {
         if batch.is_empty() || !self.config.persist_compact_events {
             return;
         }
-        self.metrics
-            .set_lane_pending("compact_events", batch.len() as u64);
         batch.sort_by(|left, right| {
             left.ticker
                 .cmp(&right.ticker)
@@ -1106,7 +1227,6 @@ impl CompactEventClickHouseWriter {
                     count,
                     "Committed normalized compact events to q_live.events.",
                 );
-                self.metrics.set_lane_pending("compact_events", 0);
                 match coverage_result {
                     Ok(()) => self.metrics.record_lane_success(
                         "coverage_ledger",
@@ -1328,8 +1448,6 @@ impl CompactEventClickHouseWriter {
             rows.clear();
             return;
         }
-        self.metrics
-            .set_lane_pending("compact_audit", rows.len() as u64);
         let observed_at = clickhouse_datetime64(&Utc::now());
         let body = rows
             .iter()
@@ -1374,7 +1492,6 @@ impl CompactEventClickHouseWriter {
             count,
             "Committed compact-event warning audit rows.",
         );
-        self.metrics.set_lane_pending("compact_audit", 0);
     }
 
     fn create_live_coverage_table_sql(&self) -> String {

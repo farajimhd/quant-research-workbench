@@ -77,6 +77,7 @@ pub struct GatewayConfig {
     pub clickhouse_url: String,
     pub clickhouse_user: String,
     pub compact_event_channel_capacity: usize,
+    pub compact_event_max_clickhouse_batch: usize,
     pub compact_event_live_buffer_events_per_ticker: usize,
     pub compact_event_reorder_force_flush_ms: u64,
     pub compact_event_reorder_lag_ms: u64,
@@ -185,7 +186,7 @@ impl GatewayConfig {
         Self {
             api_key_present: !massive_api_key.is_empty(),
             bar_channel_capacity: env_usize("QMD_BAR_CHANNEL_CAPACITY", 250_000),
-            bar_history_limit: env_usize("QMD_BAR_HISTORY_LIMIT", 1_000),
+            bar_history_limit: env_usize("QMD_BAR_HISTORY_LIMIT", 4),
             product_cache_max_bytes: env_usize("QMD_PRODUCT_CACHE_MAX_BYTES", 512 * 1024 * 1024)
                 .clamp(16 * 1024 * 1024, 16 * 1024 * 1024 * 1024),
             product_cache_max_partitions: env_usize("QMD_PRODUCT_CACHE_MAX_PARTITIONS", 8_192)
@@ -234,6 +235,11 @@ impl GatewayConfig {
                 "QMD_COMPACT_EVENT_CHANNEL_CAPACITY",
                 250_000,
             ),
+            compact_event_max_clickhouse_batch: env_usize(
+                "QMD_COMPACT_EVENT_MAX_CLICKHOUSE_BATCH",
+                50_000,
+            )
+            .clamp(1_000, 250_000),
             compact_event_live_buffer_events_per_ticker: env_usize(
                 "QMD_COMPACT_EVENT_LIVE_BUFFER_EVENTS_PER_TICKER",
                 512,

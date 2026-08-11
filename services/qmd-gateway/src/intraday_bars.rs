@@ -8,6 +8,8 @@ use reqwest::Client;
 use serde::Serialize;
 use serde_json::json;
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::hash::{Hash, Hasher};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::sync::{broadcast, mpsc, Mutex};
 use tokio::task::JoinHandle;
@@ -27,7 +29,7 @@ const OBSOLETE_BAR_TABLES: &[&str] = &[
 type BarKey = (String, String, i64, i64, &'static str);
 type FinalizedSeries = (String, String, &'static str);
 
-#[derive(Clone, Eq, Hash, PartialEq)]
+#[derive(Clone)]
 struct RepairRequest {
     ticker: String,
     local_date: String,
@@ -36,6 +38,24 @@ struct RepairRequest {
     source_sequence: u64,
     event_type: u8,
     arrival_sequence: u64,
+}
+
+impl PartialEq for RepairRequest {
+    fn eq(&self, other: &Self) -> bool {
+        self.ticker == other.ticker
+            && self.local_date == other.local_date
+            && self.bucket_index == other.bucket_index
+    }
+}
+
+impl Eq for RepairRequest {}
+
+impl Hash for RepairRequest {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.ticker.hash(state);
+        self.local_date.hash(state);
+        self.bucket_index.hash(state);
+    }
 }
 
 enum WriterMessage {
@@ -91,6 +111,31 @@ pub struct IntradayBarService {
     pub router: IntradayBarRouter,
     pub rows: broadcast::Sender<IntradayBarRow>,
     tasks: Vec<JoinHandle<()>>,
+}
+
+#[derive(Clone)]
+struct IntradayWriterPending {
+    counts: Arc<Vec<AtomicU64>>,
+    metrics: SharedMetrics,
+}
+
+impl IntradayWriterPending {
+    fn new(writer_count: usize, metrics: SharedMetrics) -> Self {
+        Self {
+            counts: Arc::new((0..writer_count).map(|_| AtomicU64::new(0)).collect()),
+            metrics,
+        }
+    }
+
+    fn set(&self, writer_id: usize, count: u64) {
+        self.counts[writer_id].store(count, Ordering::Relaxed);
+        let total = self
+            .counts
+            .iter()
+            .map(|value| value.load(Ordering::Relaxed))
+            .fold(0_u64, u64::saturating_add);
+        self.metrics.set_lane_pending("intraday_bars", total);
+    }
 }
 
 impl IntradayBarService {
@@ -261,7 +306,6 @@ pub async fn spawn_intraday_bar_service(
     validate_identifier(&config.intraday_bar_table, "QMD_INTRADAY_BAR_TABLE")?;
     validate_identifier(&config.compact_event_table, "QMD_COMPACT_EVENT_TABLE")?;
 
-    let (row_sender, row_receiver) = mpsc::channel(config.intraday_bar_channel_capacity);
     let (broadcast_sender, _) = broadcast::channel(10_000);
     let writer = IntradayBarWriter::new(config.clone(), metrics.clone(), resolutions.clone());
     writer.initialize().await?;
@@ -270,20 +314,34 @@ pub async fn spawn_intraday_bar_service(
         "healthy",
         "Canonical intraday bar table initialized; awaiting closed 100ms bars.",
     );
-    let mut tasks = vec![tokio::spawn(writer.run(row_receiver))];
+    let shard_count = config.intraday_bar_shard_count.max(1);
+    let writer_count = shard_count.min(4);
+    let per_writer_capacity = (config.intraday_bar_channel_capacity / writer_count).max(1);
+    let mut tasks = Vec::new();
+    let mut writer_senders = Vec::with_capacity(writer_count);
+    let writer_pending = IntradayWriterPending::new(writer_count, metrics.clone());
+    for writer_id in 0..writer_count {
+        let (sender, receiver) = mpsc::channel(per_writer_capacity);
+        writer_senders.push(sender);
+        tasks.push(tokio::spawn(writer.clone().run(
+            writer_id,
+            writer_pending.clone(),
+            receiver,
+        )));
+    }
     let mut senders = Vec::new();
     let lateness_us = config.compact_event_reorder_lag_ms.saturating_mul(1_000) as i64;
-    for _ in 0..config.intraday_bar_shard_count.max(1) {
+    for shard_id in 0..shard_count {
         let (sender, mut receiver) =
             mpsc::channel::<LiveCompactEvent>(config.intraday_bar_channel_capacity);
-        let output = row_sender.clone();
+        let output = writer_senders[shard_id % writer_count].clone();
         let live_rows = broadcast_sender.clone();
         let shard_resolutions = resolutions.clone();
         let shard_metrics = metrics.clone();
         tasks.push(tokio::spawn(async move {
-            let mut base_bars: HashMap<BarKey, IntradayBarRow> = HashMap::new();
+            let mut base_bars: BTreeMap<BarKey, IntradayBarRow> = BTreeMap::new();
             let mut base_seen: HashMap<BarKey, HashSet<EventIdentity>> = HashMap::new();
-            let mut rollups: HashMap<BarKey, IntradayBarRow> = HashMap::new();
+            let mut rollups: BTreeMap<BarKey, IntradayBarRow> = BTreeMap::new();
             let mut max_seen: HashMap<(String, String), i64> = HashMap::new();
             let mut finalized_through: HashMap<FinalizedSeries, i64> = HashMap::new();
             loop {
@@ -403,7 +461,7 @@ pub async fn spawn_intraday_bar_service(
         }));
         senders.push(sender);
     }
-    drop(row_sender);
+    drop(writer_senders);
     Ok(IntradayBarService {
         router: IntradayBarRouter { senders },
         rows: broadcast_sender,
@@ -413,9 +471,9 @@ pub async fn spawn_intraday_bar_service(
 
 #[allow(clippy::too_many_arguments)]
 async fn flush_ready(
-    base_bars: &mut HashMap<BarKey, IntradayBarRow>,
+    base_bars: &mut BTreeMap<BarKey, IntradayBarRow>,
     base_seen: &mut HashMap<BarKey, HashSet<EventIdentity>>,
-    rollups: &mut HashMap<BarKey, IntradayBarRow>,
+    rollups: &mut BTreeMap<BarKey, IntradayBarRow>,
     finalized_through: &mut HashMap<FinalizedSeries, i64>,
     resolutions: &[i64],
     series: Option<&(String, String)>,
@@ -424,13 +482,9 @@ async fn flush_ready(
     output: &mpsc::Sender<WriterMessage>,
     metrics: &SharedMetrics,
 ) -> bool {
-    let mut ready = base_bars
-        .keys()
-        .filter(|key| {
-            series.map_or(true, |series| key.0 == series.0 && key.1 == series.1)
-                && (key.3 + 1) * BASE_RESOLUTION_US <= watermark
-        })
-        .cloned()
+    let mut ready = series_bar_keys(base_bars, series)
+        .into_iter()
+        .filter(|key| (key.3 + 1) * BASE_RESOLUTION_US <= watermark)
         .collect::<Vec<_>>();
     ready.sort();
     for key in ready {
@@ -468,13 +522,9 @@ async fn flush_ready(
                 .or_insert(row);
         }
     }
-    let mut ready_rollups = rollups
-        .keys()
-        .filter(|key| {
-            series.map_or(true, |series| key.0 == series.0 && key.1 == series.1)
-                && (key.3 + 1) * key.2 <= watermark
-        })
-        .cloned()
+    let mut ready_rollups = series_bar_keys(rollups, series)
+        .into_iter()
+        .filter(|key| (key.3 + 1) * key.2 <= watermark)
         .collect::<Vec<_>>();
     ready_rollups.sort();
     for key in ready_rollups {
@@ -487,10 +537,30 @@ async fn flush_ready(
     true
 }
 
+fn series_bar_keys(
+    rows: &BTreeMap<BarKey, IntradayBarRow>,
+    series: Option<&(String, String)>,
+) -> Vec<BarKey> {
+    let Some((ticker, local_date)) = series else {
+        return rows.keys().cloned().collect();
+    };
+    let lower = (ticker.clone(), local_date.clone(), i64::MIN, i64::MIN, "");
+    let upper = (
+        ticker.clone(),
+        local_date.clone(),
+        i64::MAX,
+        i64::MAX,
+        "\u{10ffff}",
+    );
+    rows.range(lower..=upper)
+        .map(|(key, _)| key.clone())
+        .collect()
+}
+
 async fn flush_wall_ready(
-    base_bars: &mut HashMap<BarKey, IntradayBarRow>,
+    base_bars: &mut BTreeMap<BarKey, IntradayBarRow>,
     base_seen: &mut HashMap<BarKey, HashSet<EventIdentity>>,
-    rollups: &mut HashMap<BarKey, IntradayBarRow>,
+    rollups: &mut BTreeMap<BarKey, IntradayBarRow>,
     finalized_through: &mut HashMap<FinalizedSeries, i64>,
     resolutions: &[i64],
     live_rows: &broadcast::Sender<IntradayBarRow>,
@@ -551,6 +621,7 @@ async fn emit_row(
     true
 }
 
+#[derive(Clone)]
 struct IntradayBarWriter {
     client: Client,
     config: GatewayConfig,
@@ -868,7 +939,12 @@ impl IntradayBarWriter {
         Ok(())
     }
 
-    async fn run(self, mut receiver: mpsc::Receiver<WriterMessage>) {
+    async fn run(
+        self,
+        writer_id: usize,
+        pending: IntradayWriterPending,
+        mut receiver: mpsc::Receiver<WriterMessage>,
+    ) {
         let mut batch = Vec::with_capacity(self.config.max_clickhouse_batch);
         let mut repairs = HashMap::<RepairRequest, Instant>::new();
         let mut tick = interval(Duration::from_millis(self.config.flush_interval_ms));
@@ -877,9 +953,14 @@ impl IntradayBarWriter {
                 message = receiver.recv() => match message {
                     Some(WriterMessage::Row(row)) => batch.push(row),
                     Some(WriterMessage::Repair(request)) => {
-                        repairs.entry(request).or_insert_with(|| {
-                            Instant::now() + Duration::from_millis(self.config.flush_interval_ms.saturating_mul(2))
-                        });
+                        repairs.remove(&request);
+                        repairs.insert(
+                            request,
+                            Instant::now()
+                                + Duration::from_millis(
+                                    self.config.flush_interval_ms.saturating_mul(2),
+                                ),
+                        );
                     }
                     None => {
                         while !batch.is_empty() {
@@ -903,8 +984,8 @@ impl IntradayBarWriter {
             if batch.len() >= self.config.max_clickhouse_batch {
                 self.flush(&mut batch).await;
             }
-            self.metrics.set_lane_pending(
-                "intraday_bars",
+            pending.set(
+                writer_id,
                 (batch.len() + repairs.len() + receiver.len()) as u64,
             );
         }
@@ -912,10 +993,12 @@ impl IntradayBarWriter {
 
     async fn flush_repairs(&self, repairs: &mut HashMap<RepairRequest, Instant>, force: bool) {
         let now = Instant::now();
+        let limit = if force { usize::MAX } else { 1 };
         let ready = repairs
             .iter()
             .filter(|(_, due)| force || **due <= now)
             .map(|(request, _)| request.clone())
+            .take(limit)
             .collect::<HashSet<_>>();
         for request in ready {
             if let Err(error) = self.repair_bucket(&request).await {
@@ -981,8 +1064,6 @@ impl IntradayBarWriter {
         if rows.is_empty() {
             return;
         }
-        self.metrics
-            .set_lane_pending("intraday_bars", rows.len() as u64);
         let body = rows
             .iter()
             .map(|row| {
@@ -1032,7 +1113,6 @@ impl IntradayBarWriter {
             count,
             "Committed canonical intraday bars derived from closed 100ms bars.",
         );
-        self.metrics.set_lane_pending("intraday_bars", 0);
         match coverage_result {
             Ok(()) => self.metrics.record_lane_success(
                 "coverage_ledger",
@@ -1390,9 +1470,9 @@ mod tests {
             base.bucket_index,
             base.bar_family,
         );
-        let mut base_bars = HashMap::from([(key.clone(), base)]);
+        let mut base_bars = BTreeMap::from([(key.clone(), base)]);
         let mut base_seen = HashMap::from([(key, HashSet::from([event_identity(&event)]))]);
-        let mut rollups = HashMap::new();
+        let mut rollups = BTreeMap::new();
         let mut finalized = HashMap::new();
         let (output, mut receiver) = mpsc::channel(8);
         let (broadcast, _) = broadcast::channel(8);
@@ -1447,5 +1527,25 @@ mod tests {
             .collect::<Vec<_>>();
         validate_resolutions(&values).unwrap();
         assert_eq!(values.last().copied(), Some(3_600_000_000));
+    }
+
+    #[test]
+    fn late_repair_identity_collapses_events_for_the_same_bucket() {
+        let first = RepairRequest {
+            ticker: "AAPL".into(),
+            local_date: "2026-08-11".into(),
+            bucket_index: 42,
+            sip_timestamp_us: 100,
+            source_sequence: 1,
+            event_type: 0,
+            arrival_sequence: 10,
+        };
+        let mut later = first.clone();
+        later.sip_timestamp_us = 199;
+        later.source_sequence = 9;
+        later.event_type = 1;
+        later.arrival_sequence = 20;
+        let requests = HashSet::from([first, later]);
+        assert_eq!(requests.len(), 1);
     }
 }
