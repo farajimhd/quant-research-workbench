@@ -25,7 +25,7 @@ use qmd_core::market_products::{
     parse_resolution_us, spawn_market_product_engines, ConditionClassifier, ProductCacheLimits,
     SharedMarketProductStore,
 };
-use qmd_core::massive::{run_massive_ingest, MarketEventFanout};
+use qmd_core::massive::{run_canonical_event_fanout, run_massive_ingest, MarketEventFanout};
 use qmd_core::metrics::SharedMetrics;
 use qmd_core::scanner::{spawn_scanner_primitive_engine, MarketSignalDelta, SharedScannerStore};
 use qmd_core::state::{ScannerRowDelta, SharedMarketState};
@@ -59,6 +59,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         "writer",
         config.compact_events_enabled && config.persist_compact_events,
         config.compact_events_enabled && config.persist_compact_events,
+    );
+    metrics.register_lane(
+        "canonical_events",
+        "Normalized event computation fanout",
+        "computation",
+        config.compact_events_enabled,
+        config.compact_events_enabled,
     );
     metrics.register_lane(
         "intraday_bars",
@@ -182,6 +189,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let (event_sender, _event_receiver) = broadcast::channel::<MarketEvent>(10_000);
     let (compact_event_sender, _compact_event_receiver) =
         broadcast::channel::<LiveCompactEvent>(10_000);
+    let (canonical_event_sender, canonical_event_receiver) =
+        mpsc::channel::<MarketEvent>(config.event_channel_capacity);
     let (scanner_sender, _scanner_receiver) = broadcast::channel::<MarketSignalDelta>(10_000);
     let (scanner_delta_sender, _scanner_delta_receiver) =
         broadcast::channel::<ScannerRowDelta>(10_000);
@@ -224,6 +233,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             metrics.clone(),
             intraday_bar_service.router.clone(),
             product_router,
+            canonical_event_sender.clone(),
         );
         compact_writer.initialize().await.map_err(|error| {
             startup_error(format!(
@@ -351,6 +361,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         } else {
             None
         },
+        canonical_event_capacity: if config.compact_events_enabled {
+            Some(canonical_event_sender.clone())
+        } else {
+            None
+        },
         bar_router: bar_router.clone(),
         indicator_router: indicator_router.clone(),
         live_market_state_router: live_market_state_router.clone(),
@@ -358,6 +373,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         scanner_delta_sender: scanner_delta_sender.clone(),
         metrics: metrics.clone(),
     };
+    drop(canonical_event_sender);
+    let mut canonical_fanout = event_fanout.clone();
+    canonical_fanout.canonical_event_capacity = None;
+    writer_handles.push(tokio::spawn(run_canonical_event_fanout(
+        canonical_event_receiver,
+        canonical_fanout,
+    )));
 
     let (shutdown_sender, mut shutdown_receiver) = watch::channel(false);
     let app = app(AppState {

@@ -177,6 +177,11 @@ macro bars agree across Live, History, Replay, Backtest, and charts.
 - [x] Limit Universal Ingest to normalization/encoding, point-in-time identity,
       sequencing, NBBO/trade state, freshness/quality, and compact persistence
       fanout. The exact six-family set is catalog-tested.
+  - [x] Route live Scanner, market-state, bar, indicator, and event-stream
+        computation from the decoded canonical compact event, not the parallel
+        raw vendor object. The bounded canonical lane is operationally visible
+        and participates in live-capacity reservation before repair admission;
+        compact-disabled diagnostics retain an explicit raw fallback.
 - [ ] Profile all-market computations before Core Scan approval.
   - [x] Instrument sampled Core Scan and all-market bar/structure stage latency
         in the QMD operational snapshot without adding per-event histogram cost.

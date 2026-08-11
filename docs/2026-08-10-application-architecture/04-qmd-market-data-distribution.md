@@ -17,6 +17,28 @@ library:
 Clients ask QMD for a time range and product. They do not select a database or
 decide which process/table contains a date.
 
+## Canonical live computation path
+
+```mermaid
+flowchart TD
+    A["Massive websocket or bounded recent repair"] --> B["Admit raw and compact persistence inputs"]
+    B --> C["Compact normalization, condition encoding, canonical arrival identity"]
+    C --> D["Decode the canonical compact event"]
+    D --> E["Core Scanner and live market state"]
+    D --> F["All-market safety bars"]
+    D --> G["Focused bars, indicators, structure, and signals"]
+    D --> H["Canonical event and product streams"]
+```
+
+Live derived computation consumes the same decoded compact representation used
+by QMD History. Raw vendor events are admitted to authoritative persistence
+before downstream backpressure, but they do not independently update Scanner,
+bar, indicator, or live-state engines when compact normalization is enabled.
+The canonical handoff is a bounded, observable lane with reserved live capacity;
+repair admission waits rather than occupying that reserve. Compact-disabled
+diagnostic operation retains an explicit raw fallback and does not pretend to
+provide live/history compact parity.
+
 ## Three-source event distribution
 
 ```mermaid
@@ -108,7 +130,7 @@ restart conflict under both policies.
 
 ```mermaid
 flowchart TD
-    A["Live event accepted and encoded"] --> B["Persist q_live.events and recent family bars"]
+    A["Live event admitted and canonically encoded"] --> B["Persist q_live.events and recent family bars"]
     B --> C["Record recent coverage"]
     C --> D["Historical flatfile pipeline publishes archive coverage"]
     D --> E["Compare counts, bounds, event identities, ordering, and schemas"]

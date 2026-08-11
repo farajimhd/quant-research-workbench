@@ -819,6 +819,7 @@ fn compact_coverage_groups(
 
 #[derive(Clone)]
 pub struct CompactEventClickHouseWriter {
+    canonical_event_sender: mpsc::Sender<MarketEvent>,
     client: Client,
     config: GatewayConfig,
     event_sender: broadcast::Sender<LiveCompactEvent>,
@@ -899,9 +900,11 @@ impl CompactEventClickHouseWriter {
         metrics: SharedMetrics,
         intraday_bar_router: IntradayBarRouter,
         product_router: MarketProductEventRouter,
+        canonical_event_sender: mpsc::Sender<MarketEvent>,
     ) -> Self {
         let decoder = references.decoder();
         Self {
+            canonical_event_sender,
             client: Client::new(),
             config,
             event_sender,
@@ -1014,6 +1017,16 @@ impl CompactEventClickHouseWriter {
                                 }
                                 self.live_store.push(conversion.event.clone()).await;
                                 let canonical_event = self.decoder.decode(&conversion.event);
+                                if self.canonical_event_sender.send(canonical_event.clone()).await.is_err() {
+                                    self.metrics.inc_event_broadcast_dropped();
+                                    self.metrics.record_lane_failure("canonical_events", "Canonical event fanout receiver closed.");
+                                    eprintln!("Canonical event fanout receiver closed; could not route one normalized event.");
+                                } else {
+                                    self.metrics.set_lane_pending(
+                                        "canonical_events",
+                                        self.canonical_event_sender.max_capacity().saturating_sub(self.canonical_event_sender.capacity()) as u64,
+                                    );
+                                }
                                 if self.product_router.send(canonical_event).await.is_err() {
                                     eprintln!("Market-product receiver closed; could not route one compact event.");
                                 }

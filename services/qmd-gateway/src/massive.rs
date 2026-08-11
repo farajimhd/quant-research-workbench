@@ -17,6 +17,7 @@ pub struct MarketEventFanout {
     pub writer_sender: Option<mpsc::Sender<MarketEvent>>,
     pub compact_writer_sender: Option<mpsc::Sender<MarketEvent>>,
     pub compact_repair_writer_sender: Option<mpsc::Sender<MarketEvent>>,
+    pub canonical_event_capacity: Option<mpsc::Sender<MarketEvent>>,
     pub bar_router: BarEventRouter,
     pub indicator_router: IndicatorEventRouter,
     pub live_market_state_router: LiveMarketStateRouter,
@@ -139,12 +140,6 @@ async fn fanout_event(event: MarketEvent, fanout: &MarketEventFanout, repair: bo
         MarketEvent::Quote(_) => "quote",
     };
     fanout.metrics.observe_event(kind, event.ts());
-    let scanner_delta = {
-        let _core_scan_profile = fanout
-            .metrics
-            .sampled_timing(TimingTarget::CoreScanEvent, 1_024);
-        fanout.state.apply_event(&event).await
-    };
     // Admit the authoritative compact/raw records before any derived consumer
     // can apply backpressure. These bounded sends intentionally slow ingest
     // rather than dropping source events; replaceable broadcasts below remain
@@ -160,6 +155,44 @@ async fn fanout_event(event: MarketEvent, fanout: &MarketEventFanout, repair: bo
         &fanout.metrics,
     )
     .await;
+    if fanout.compact_writer_sender.is_some() {
+        return;
+    }
+    // Explicit fallback for deployments that disable compact normalization.
+    // The normal QMD contract routes derived computation only after the
+    // compact writer has assigned canonical identity and decoded the event.
+    fanout_canonical_event(event, fanout).await;
+}
+
+pub async fn run_canonical_event_fanout(
+    mut receiver: mpsc::Receiver<MarketEvent>,
+    fanout: MarketEventFanout,
+) {
+    while let Some(event) = receiver.recv().await {
+        fanout.metrics.set_lane_pending(
+            "canonical_events",
+            receiver.max_capacity().saturating_sub(receiver.capacity()) as u64,
+        );
+        fanout_canonical_event(event, &fanout).await;
+        fanout.metrics.record_lane_success(
+            "canonical_events",
+            1,
+            "Applied one normalized event to the shared live computation fanout.",
+        );
+        fanout.metrics.set_lane_pending(
+            "canonical_events",
+            receiver.max_capacity().saturating_sub(receiver.capacity()) as u64,
+        );
+    }
+}
+
+async fn fanout_canonical_event(event: MarketEvent, fanout: &MarketEventFanout) {
+    let scanner_delta = {
+        let _core_scan_profile = fanout
+            .metrics
+            .sampled_timing(TimingTarget::CoreScanEvent, 1_024);
+        fanout.state.apply_event(&event).await
+    };
     if fanout.scanner_delta_sender.send(scanner_delta).is_err() {
         fanout.metrics.inc_event_broadcast_dropped();
     }
@@ -233,6 +266,11 @@ fn repair_fanout_has_capacity(event: &MarketEvent, fanout: &MarketEventFanout) -
                     .unwrap_or(true)
         })
         .unwrap_or(true);
+    let canonical_ready = fanout
+        .canonical_event_capacity
+        .as_ref()
+        .map(queue_has_repair_capacity)
+        .unwrap_or(true);
     let (bar_capacity, bar_maximum) = fanout.bar_router.queue_capacity(event);
     let (state_capacity, state_maximum) = fanout.live_market_state_router.event_queue_capacity();
     let indicator_ready = fanout
@@ -242,6 +280,7 @@ fn repair_fanout_has_capacity(event: &MarketEvent, fanout: &MarketEventFanout) -
         .unwrap_or(true);
 
     compact_ready
+        && canonical_ready
         && queue_values_have_repair_capacity(bar_capacity, bar_maximum)
         && queue_values_have_repair_capacity(state_capacity, state_maximum)
         && indicator_ready

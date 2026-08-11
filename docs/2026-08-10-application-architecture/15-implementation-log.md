@@ -1869,6 +1869,32 @@ it does not imply all application work is complete.
      second archive copy, neither mutation was made. The performance gate stays
      open with the precise authority decision now recorded.
 
+171. Aligned live QMD computation with the shared compact event authority.
+     Previously the raw Massive/repair `MarketEvent` updated Scanner, live
+     market state, bars, indicators, and event streams in parallel with compact
+     conversion, while QMD History replayed the decoded compact representation.
+     Live and historical calculations could therefore observe different size
+     precision, condition encoding, raw metadata, and event identity.
+
+     Raw events now enter the authoritative persistence queues first. The
+     compact writer assigns canonical arrival identity, applies the registered
+     condition/tape encoding, decodes one canonical `MarketEvent`, and sends it
+     through a new bounded computation handoff. Only that event updates the
+     Core Scanner, market-state, bar, indicator, and public event paths.
+     Market-product and canonical intraday-bar consumers retain the same compact
+     authority. The handoff is registered as a required operational lane,
+     reports pending/success/failure state, and is included in repair admission
+     so repair cannot consume its reserved live capacity. Compact-disabled
+     diagnostics keep an explicit raw fallback.
+
+     All 109 QMD tests passed on the optimized release. Real startup-repair
+     validation then processed 4,660 received events through 4,660 successful
+     canonical fanouts with zero failures and zero pending rows while Scanner
+     sequence advanced. An AAPL authority check matched Scanner last trade
+     `304.94` to compact arrival `28228314` price integer `30494`. This removes
+     the representation drift required before an exact Generic Structure
+     checkpoint cursor and activation barrier can be implemented.
+
 ---
 
 [Top](README.md) · [Previous](14-implementation-backlog.md) · [First](01-product-and-principles.md)
