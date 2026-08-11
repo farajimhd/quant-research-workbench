@@ -95,11 +95,14 @@ one backend registry record and one executable implementation status.
         authority, Scanner sequence, freshness, and explicit missing state.
   - [ ] Retire the nullable ticker-row and compact-event raw-array compatibility
         endpoints after zero production callers are proven.
-- [ ] Add reconnect continuation and sequence-gap repair.
+- [x] Add reconnect continuation and sequence-gap repair.
   - [x] Make Scanner reconnect start from an authoritative snapshot and
         automatically replace client state after lag or a sequence gap.
-  - [ ] Add equivalent bounded continuation or resnapshot contracts to the
-        remaining raw event and product streams.
+  - [x] Add equivalent bounded continuation or resnapshot contracts to the
+        remaining raw event and product streams. Lagged raw/compact event,
+        intraday-bar, live-state, signal, and historical derived streams emit a
+        typed terminal resnapshot frame; periodic product streams are complete
+        current snapshots.
 - [x] Expose bounded historical events, bars, indicators, signals, and scanner products.
 - [x] Return source-plan hash, event schema, coverage, `as_of`, and continuation cursor.
 - [x] Provide a consumer-neutral historical contract suitable for future Market AI use.

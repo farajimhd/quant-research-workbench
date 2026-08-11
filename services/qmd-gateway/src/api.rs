@@ -41,6 +41,7 @@ use axum::middleware;
 use axum::response::IntoResponse;
 use axum::routing::{delete, get, post};
 use axum::{Json, Router};
+use futures_util::SinkExt;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -314,9 +315,43 @@ fn scanner_sequence_gap(delivered_sequence: u64, received_sequence: u64) -> Opti
     }
 }
 
+fn resnapshot_required_frame(
+    warning: &str,
+    skipped: u64,
+    snapshot_endpoint: &str,
+    continuation_after_arrival_sequence: Option<u64>,
+) -> Value {
+    json!({
+        "schema_version": 1,
+        "type": "stream_gap",
+        "warning": warning,
+        "skipped": skipped,
+        "action": "resnapshot_required",
+        "snapshot_endpoint": snapshot_endpoint,
+        "continuation_after_arrival_sequence": continuation_after_arrival_sequence,
+    })
+}
+
+async fn send_resnapshot_required(
+    socket: &mut WebSocket,
+    warning: &str,
+    skipped: u64,
+    snapshot_endpoint: &str,
+    continuation_after_arrival_sequence: Option<u64>,
+) {
+    let frame = resnapshot_required_frame(
+        warning,
+        skipped,
+        snapshot_endpoint,
+        continuation_after_arrival_sequence,
+    );
+    let _ = socket.send(Message::Text(frame.to_string().into())).await;
+    let _ = socket.close().await;
+}
+
 #[cfg(test)]
 mod shutdown_tests {
-    use super::{scanner_sequence_gap, valid_shutdown_token};
+    use super::{resnapshot_required_frame, scanner_sequence_gap, valid_shutdown_token};
 
     #[test]
     fn shutdown_requires_the_configured_non_empty_token() {
@@ -331,6 +366,20 @@ mod shutdown_tests {
         assert_eq!(scanner_sequence_gap(10, 10), None);
         assert_eq!(scanner_sequence_gap(10, 13), Some(2));
         assert_eq!(scanner_sequence_gap(u64::MAX, u64::MAX), None);
+    }
+
+    #[test]
+    fn lag_frame_requires_resnapshot_and_preserves_compact_cursor() {
+        let frame = resnapshot_required_frame(
+            "compact_event_stream_lagged",
+            7,
+            "/snapshot/compact-event-market-page",
+            Some(42),
+        );
+        assert_eq!(frame["type"], "stream_gap");
+        assert_eq!(frame["action"], "resnapshot_required");
+        assert_eq!(frame["skipped"], 7);
+        assert_eq!(frame["continuation_after_arrival_sequence"], 42);
     }
 }
 
@@ -1353,11 +1402,15 @@ async fn stream_intraday_bars(mut socket: WebSocket, state: Arc<AppState>) {
                 }
             }
             Err(broadcast::error::RecvError::Lagged(count)) => {
-                let warning =
-                    format!(r#"{{"warning":"intraday_bar_stream_lagged","skipped":{count}}}"#);
-                if socket.send(Message::Text(warning.into())).await.is_err() {
-                    break;
-                }
+                send_resnapshot_required(
+                    &mut socket,
+                    "intraday_bar_stream_lagged",
+                    count,
+                    "/snapshot/family-bars/{ticker}",
+                    None,
+                )
+                .await;
+                break;
             }
             Err(broadcast::error::RecvError::Closed) => break,
         }
@@ -1391,11 +1444,15 @@ async fn stream_live_market_state(mut socket: WebSocket, state: Arc<AppState>) {
                 }
             }
             Err(broadcast::error::RecvError::Lagged(count)) => {
-                let warning =
-                    format!(r#"{{"warning":"live_market_state_stream_lagged","skipped":{count}}}"#);
-                if socket.send(Message::Text(warning.into())).await.is_err() {
-                    break;
-                }
+                send_resnapshot_required(
+                    &mut socket,
+                    "live_market_state_stream_lagged",
+                    count,
+                    "/snapshot/live-market-state",
+                    None,
+                )
+                .await;
+                break;
             }
             Err(broadcast::error::RecvError::Closed) => break,
         }
@@ -1404,6 +1461,7 @@ async fn stream_live_market_state(mut socket: WebSocket, state: Arc<AppState>) {
 
 async fn stream_compact_events(mut socket: WebSocket, state: Arc<AppState>) {
     let mut receiver = state.compact_events.subscribe();
+    let mut delivered_arrival_sequence = 0_u64;
     loop {
         match receiver.recv().await {
             Ok(event) => match serde_json::to_string(&event) {
@@ -1411,6 +1469,7 @@ async fn stream_compact_events(mut socket: WebSocket, state: Arc<AppState>) {
                     if socket.send(Message::Text(text.into())).await.is_err() {
                         break;
                     }
+                    delivered_arrival_sequence = event.arrival_sequence;
                 }
                 Err(error) => {
                     if socket
@@ -1423,11 +1482,15 @@ async fn stream_compact_events(mut socket: WebSocket, state: Arc<AppState>) {
                 }
             },
             Err(broadcast::error::RecvError::Lagged(count)) => {
-                let warning =
-                    format!(r#"{{"warning":"compact_event_stream_lagged","skipped":{count}}}"#);
-                if socket.send(Message::Text(warning.into())).await.is_err() {
-                    break;
-                }
+                send_resnapshot_required(
+                    &mut socket,
+                    "compact_event_stream_lagged",
+                    count,
+                    "/snapshot/compact-event-market-page",
+                    Some(delivered_arrival_sequence),
+                )
+                .await;
+                break;
             }
             Err(broadcast::error::RecvError::Closed) => break,
         }
@@ -1455,10 +1518,15 @@ async fn stream_events(mut socket: WebSocket, state: Arc<AppState>) {
                 }
             },
             Err(broadcast::error::RecvError::Lagged(count)) => {
-                let warning = format!(r#"{{"warning":"event_stream_lagged","skipped":{count}}}"#);
-                if socket.send(Message::Text(warning.into())).await.is_err() {
-                    break;
-                }
+                send_resnapshot_required(
+                    &mut socket,
+                    "event_stream_lagged",
+                    count,
+                    "/snapshot/compact-event-market-page",
+                    None,
+                )
+                .await;
+                break;
             }
             Err(broadcast::error::RecvError::Closed) => break,
         }
@@ -1592,11 +1660,15 @@ async fn stream_market_signals(mut socket: WebSocket, state: Arc<AppState>) {
                 }
             },
             Err(broadcast::error::RecvError::Lagged(count)) => {
-                let warning =
-                    format!(r#"{{"warning":"market_signal_stream_lagged","skipped":{count}}}"#);
-                if socket.send(Message::Text(warning.into())).await.is_err() {
-                    break;
-                }
+                send_resnapshot_required(
+                    &mut socket,
+                    "market_signal_stream_lagged",
+                    count,
+                    "/snapshot/signal-events",
+                    None,
+                )
+                .await;
+                break;
             }
             Err(broadcast::error::RecvError::Closed) => break,
         }

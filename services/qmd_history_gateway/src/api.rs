@@ -1070,7 +1070,11 @@ async fn stream_cached_bars(
                 }
                 last_sequence = frame.sequence;
             }
-            Ok(_) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+            Ok(_) => {}
+            Err(tokio::sync::broadcast::error::RecvError::Lagged(count)) => {
+                send_stream_gap(&mut socket, "historical_bar_stream_lagged", count).await;
+                return;
+            }
             Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
         }
     }
@@ -1125,7 +1129,11 @@ async fn stream_cached_indicators(
                 }
                 last_sequence = frame.sequence;
             }
-            Ok(_) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+            Ok(_) => {}
+            Err(tokio::sync::broadcast::error::RecvError::Lagged(count)) => {
+                send_stream_gap(&mut socket, "historical_indicator_stream_lagged", count).await;
+                return;
+            }
             Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
         }
     }
@@ -1257,7 +1265,11 @@ async fn stream_derived(
                 }
                 throttle(updates_per_second).await;
             }
-            Ok(_) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+            Ok(_) => {}
+            Err(tokio::sync::broadcast::error::RecvError::Lagged(count)) => {
+                send_stream_gap(&mut socket, "historical_derived_stream_lagged", count).await;
+                return;
+            }
             Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
         }
     }
@@ -1354,6 +1366,23 @@ async fn send_stream_error(socket: &mut WebSocket, message: String) {
     let _ = socket.close().await;
 }
 
+fn stream_gap_frame(warning: &str, skipped: u64) -> Value {
+    json!({
+        "schema_version": 1,
+        "type": "stream_gap",
+        "warning": warning,
+        "skipped": skipped,
+        "action": "resnapshot_required",
+        "retry_action": "reconnect_with_original_window",
+        "terminal": true,
+    })
+}
+
+async fn send_stream_gap(socket: &mut WebSocket, warning: &str, skipped: u64) {
+    let _ = send_json(socket, &stream_gap_frame(warning, skipped)).await;
+    let _ = socket.close().await;
+}
+
 fn bad_request(message: impl Into<String>) -> ApiError {
     (
         StatusCode::BAD_REQUEST,
@@ -1395,7 +1424,7 @@ fn source_revision_conflict(
 mod tests {
     use super::{
         causal_product_window, parse_chart_stage, parse_indicator_projection, parse_timestamp,
-        product_resolution, validate_timeframe, ProductQuery,
+        product_resolution, stream_gap_frame, validate_timeframe, ProductQuery,
     };
 
     #[test]
@@ -1410,6 +1439,16 @@ mod tests {
         assert!(validate_timeframe("5s").is_ok());
         assert!(validate_timeframe("1m").is_ok());
         assert!(validate_timeframe("2m").is_err());
+    }
+
+    #[test]
+    fn historical_lag_is_terminal_and_requires_original_window_resnapshot() {
+        let frame = stream_gap_frame("historical_derived_stream_lagged", 9);
+        assert_eq!(frame["type"], "stream_gap");
+        assert_eq!(frame["action"], "resnapshot_required");
+        assert_eq!(frame["retry_action"], "reconnect_with_original_window");
+        assert_eq!(frame["terminal"], true);
+        assert_eq!(frame["skipped"], 9);
     }
 
     #[test]

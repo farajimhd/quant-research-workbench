@@ -245,9 +245,16 @@ flowchart TD
 
 QMD now provides stable live compact-event and ticker-state snapshots. The
 Scanner stream reconnects through an authoritative snapshot and replaces client
-state immediately after receiver lag or a non-contiguous sequence. Equivalent
-repair contracts for the remaining raw event/product streams remain open. The historical request contract
-uses the same `qmd_core` encoding and source plan. Market AI chooses the
+state immediately after receiver lag or a non-contiguous sequence. Compact
+events, decoded events, intraday bars, live market state, and signal streams now
+emit a typed terminal `stream_gap` frame with `resnapshot_required` and the
+authoritative recovery endpoint whenever a broadcast receiver lags. The compact
+stream also returns its last delivered arrival sequence for exact page recovery;
+periodically sampled ticker/bar/indicator/product streams are already complete
+snapshots rather than lossy deltas. QMD History bar, indicator, and derived
+streams likewise require reconnect with the original causal window after lag
+instead of silently continuing. The historical request contract uses the same
+`qmd_core` encoding and source plan. Market AI chooses the
 requested product and causal cutoff; it does not choose `q_live` versus
 `market_sip_compact` or reproduce boundary logic.
 

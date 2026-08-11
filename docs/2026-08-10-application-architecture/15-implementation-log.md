@@ -484,6 +484,16 @@ bounded direct ClickHouse paths remain documented in
     passed. The strict Market Discovery browser matrix captured all 12
     light/dark, scale, and viewport scenarios with zero objective issues; a
     focused loaded-state capture verified the partial-authority planner text.
+71. Closed QMD stream lag ambiguity. Scanner already repaired gaps in-band; all
+    remaining broadcast-delta streams now emit a schema-v1 terminal
+    `stream_gap` frame with `resnapshot_required`, skipped count, and the
+    authoritative recovery endpoint. Compact events also carry the last
+    delivered arrival sequence for exact bounded page continuation. QMD History
+    bar, indicator, and derived streams now require reconnect with the original
+    causal window after lag instead of silently rescanning and continuing.
+    Periodically sampled ticker/bar/indicator/product endpoints remain complete
+    current snapshots. All 93 QMD Gateway tests, all 28 QMD History tests, Rust
+    formatting, and diff validation passed.
 
 The authoritative remaining work and acceptance gates are maintained in the
 [complete implementation backlog](14-implementation-backlog.md). A checked

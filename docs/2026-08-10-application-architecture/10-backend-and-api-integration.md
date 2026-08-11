@@ -72,6 +72,13 @@ WebSocket/SSE streams begin from an HTTP snapshot identified by `snapshot_id` an
 
 Subscriptions are reference-counted and bounded. Slow clients receive coalesced projections where valid, or a resnapshot instruction; authoritative events are not silently dropped. Heartbeats distinguish idle markets from dead connections.
 
+QMD stream lag is now terminal and machine-readable. Scanner replaces its state
+in-band; raw/compact event, intraday-bar, live-state, signal, and historical
+derived streams emit `type=stream_gap`, `action=resnapshot_required`, a recovery
+endpoint or original-window retry contract, and then close. Periodic product
+streams send current snapshots and therefore do not accumulate an undisclosed
+delta gap.
+
 ## 5. Shared clients and query planners
 
 Backend route handlers call shared typed clients:
