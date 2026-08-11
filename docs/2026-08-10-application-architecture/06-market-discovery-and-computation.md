@@ -162,14 +162,20 @@ offline calculation is available in its proper scope.
 
 ## Current gaps
 
-- Live and historical scanner paths calculate a broad QMD indicator row across
-  the scanned universe.
-- The current Watchlist resolver is not wired into production scheduling.
-- Published Run Plans currently reduce Watchlists to configured symbols.
+- Core Scan now uses the compact QMD Scanner row; broad indicators are opt-in.
+- Live/Paper scheduling resolves configured Watchlists, journals membership,
+  and publishes bounded focused QMD leases. Replay resolves the same rules
+  against its point-in-time Scanner and enrichment clock.
+- Published Run Plans may select a Watchlist source. Live/Paper wait fail closed
+  for its current runtime projection, while Replay/Backtest require historical
+  membership resolution.
 - The Python configuration service duplicates and already disagrees with the
   Rust QMD catalog.
-- UI status collapses partial, planned, strategy-specific, and offline families
-  into “Unavailable.”
+- Strategy-run and offline computation consumers do not yet publish their full
+  target union into QMD's computation planner.
+- The UI now separates implementation, execution scope, configuration policy,
+  operation, and coverage, and reads Watchlist membership/history from the
+  runtime projection. Scanner history and enrichment null-reason views remain.
 
 ## Navigation
 

@@ -266,6 +266,8 @@ class WatchlistRuntime:
                 "member_count": sum(row["member_count"] for row in watchlists),
                 "watchlists": watchlists,
                 "history": list(self._history),
+                "history_count": len(self._history),
+                "status": "ready" if self._hydrated else "awaiting_first_resolution",
             }
 
 

@@ -162,16 +162,17 @@ internal topology, or producer formula.
 
 ## 5. Market Discovery frontend
 
-- [ ] Make Universal Ingest the first, normally locked configuration page.
+- [x] Make Universal Ingest the first, normally locked configuration page.
 - [ ] Show primitive reason, owner, version, cost, coverage, and consumers.
 - [ ] Generate Core Scan choices from eligible registry capabilities.
 - [ ] Show cost and broadening approval for all-market changes.
-- [ ] Configure Watchlist rules, rank, size, TTL, overrides, and focused calculations.
-- [ ] Expose Strategy/request/offline availability without calling it unavailable.
-- [ ] Separate implementation, execution scope, configuration authority,
+- [x] Configure Watchlist rules, rank, size, TTL, overrides, and focused calculations.
+- [x] Expose Strategy/request/offline availability without calling it unavailable.
+- [x] Separate implementation, execution scope, configuration authority,
       operational readiness, and coverage status.
 - [ ] Show enrichment provenance, freshness, gaps, and null reasons.
-- [ ] Add scanner and membership history views.
+- [ ] Add scanner and membership history views. Runtime membership history is
+      connected; compact Scanner history remains.
 - [ ] Generate fields, columns, and filters from registry metadata.
 - [ ] Preserve theme, global scale, responsive, and accessibility authorities.
 - [ ] Validate all affected states in real browsers.

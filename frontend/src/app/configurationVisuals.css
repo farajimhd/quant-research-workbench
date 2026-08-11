@@ -247,6 +247,8 @@
   width: 100%;
 }
 .discovery-guided-stage > .discovery-runtime-notice > svg { color: var(--warning); flex: 0 0 auto; }
+.discovery-guided-stage > .discovery-runtime-notice[data-ready="true"] { border-left-color: var(--success); }
+.discovery-guided-stage > .discovery-runtime-notice[data-ready="true"] > svg { color: var(--success); }
 .discovery-guided-stage .strategy-identity-fields { display: grid; gap: 28px; width: 100%; }
 .discovery-guided-stage .strategy-identity-field { display: grid; gap: 9px; }
 .discovery-guided-stage .strategy-identity-field > span {

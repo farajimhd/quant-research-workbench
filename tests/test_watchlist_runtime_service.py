@@ -189,6 +189,8 @@ class WatchlistRuntimeServiceTests(unittest.TestCase):
             )
 
             restored = runtime.snapshot()
+            self.assertEqual(restored["status"], "ready")
+            self.assertEqual(restored["history_count"], 1)
             self.assertEqual(restored["watchlists"][0]["members"][0]["ticker"], "AAPL")
             self.assertEqual(restored["history"][0]["event"], "added")
             journal.close()
