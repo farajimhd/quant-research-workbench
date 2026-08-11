@@ -20,6 +20,7 @@ from src.backend.replay_run_service import (
     _attach_historical_signals,
     _canvas_profile_tickers,
     _historical_watchlist_membership_timeline_for_configuration,
+    _historical_watchlist_membership_timeline_from_plans,
     _historical_signal_events,
     _qmd_payload_authority,
     _debug_derived_frames,
@@ -434,6 +435,66 @@ class HistoricalDebugFixtureTests(unittest.IsolatedAsyncioTestCase):
 
 
 class HistoricalWatchlistTimelineTests(unittest.TestCase):
+    @patch(
+        "src.backend.historical_watchlist_feature_service.materialize_historical_watchlist_plan"
+    )
+    def test_projects_qmd_transition_chunks_into_causal_membership_snapshots(
+        self, materialize
+    ) -> None:
+        materialize.return_value = {
+            "plan_hash": "sha256:plan",
+            "materialization_id": "sha256:materialized",
+            "calculation_revision": "qmd-v3",
+            "source_revision": {"token": "events-v1"},
+            "external_feature_revisions": [],
+            "chunks": [
+                {
+                    "transitions": [
+                        {
+                            "effective_at": "2026-08-10T13:30:00+00:00",
+                            "event": "added",
+                            "ticker": "AAPL",
+                            "rank": 1,
+                            "score": 20.0,
+                            "reason": "rules passed",
+                            "evidence": {"market.volume": 1000},
+                            "identity": {"ibkr_conid": 265598},
+                        },
+                        {
+                            "effective_at": "2026-08-10T13:31:00+00:00",
+                            "event": "removed",
+                            "ticker": "AAPL",
+                        },
+                        {
+                            "effective_at": "2026-08-10T13:31:00+00:00",
+                            "event": "added",
+                            "ticker": "MSFT",
+                            "rank": 1,
+                            "score": 30.0,
+                            "reason": "rules passed",
+                            "evidence": {},
+                            "identity": {"ibkr_conid": 272093},
+                        },
+                    ]
+                }
+            ],
+        }
+
+        timeline = _historical_watchlist_membership_timeline_from_plans(
+            [{"watchlist_id": "core-candidates", "plan_hash": "sha256:plan"}]
+        )
+
+        self.assertEqual([[row["ticker"] for row in item["members"]] for item in timeline], [
+            ["AAPL"],
+            ["MSFT"],
+        ])
+        self.assertEqual(timeline[0]["members"][0]["market.volume"], 1000)
+        self.assertEqual(timeline[0]["members"][0]["ibkr_conid"], 265598)
+        self.assertEqual(
+            timeline[0]["authority"][0]["materialization_id"],
+            "sha256:materialized",
+        )
+
     def test_resolves_first_clock_and_each_later_weekday_session_boundary(self) -> None:
         approved = approved_configuration()
         with patch(

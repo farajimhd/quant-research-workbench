@@ -1534,10 +1534,8 @@ class ReplayRunController:
     def _historical_watchlist_timeline(self) -> list[dict[str, Any]]:
         if self._historical_watchlist_timeline_cache is None:
             self._historical_watchlist_timeline_cache = (
-                _historical_watchlist_membership_timeline_for_configuration(
-                    self.definition.configuration_revision,
-                    start=self.definition.requested_start,
-                    end=self.definition.session_end,
+                _historical_watchlist_membership_timeline_from_plans(
+                    self._historical_watchlist_plans
                 )
             )
         return self._historical_watchlist_timeline_cache
@@ -2269,6 +2267,105 @@ def _historical_watchlist_membership_timeline_for_configuration(
     return timeline
 
 
+def _historical_watchlist_membership_timeline_from_plans(
+    plans: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    if not plans:
+        return []
+    if len(plans) != 1:
+        raise ValueError(
+            "Historical Watchlist timeline currently requires one Watchlist-backed universe; "
+            "multiple Watchlists must share one QMD event replay."
+        )
+    from src.backend.historical_watchlist_feature_service import (
+        materialize_historical_watchlist_plan,
+    )
+
+    plan = plans[0]
+    materialized = materialize_historical_watchlist_plan(plan)
+    transitions = sorted(
+        (
+            dict(event)
+            for chunk in materialized.get("chunks") or []
+            for event in dict(chunk).get("transitions") or []
+        ),
+        key=lambda event: (
+            str(event.get("effective_at") or ""),
+            str(event.get("ticker") or ""),
+            str(event.get("event") or ""),
+        ),
+    )
+    members: dict[str, dict[str, Any]] = {}
+    timeline: list[dict[str, Any]] = []
+    index = 0
+    while index < len(transitions):
+        effective_at = _historical_watchlist_clock(transitions[index].get("effective_at"))
+        while index < len(transitions):
+            event = transitions[index]
+            if _historical_watchlist_clock(event.get("effective_at")) != effective_at:
+                break
+            ticker = str(event.get("ticker") or "").strip().upper()
+            event_kind = str(event.get("event") or "")
+            if ticker and event_kind == "removed":
+                members.pop(ticker, None)
+            elif ticker and event_kind in {"added", "rank_changed"}:
+                members[ticker] = {
+                    "ticker": ticker,
+                    "rank": event.get("rank"),
+                    "score": event.get("score"),
+                    "membership_reason": event.get("reason"),
+                    **dict(event.get("evidence") or {}),
+                    **dict(event.get("identity") or {}),
+                }
+            index += 1
+        timeline.append(
+            {
+                "effective_at": effective_at,
+                "members": sorted(
+                    (dict(row) for row in members.values()),
+                    key=lambda row: (
+                        int(row.get("rank") or 10**9),
+                        str(row.get("ticker") or ""),
+                    ),
+                ),
+                "authority": [
+                    {
+                        "watchlist_id": str(plan.get("watchlist_id") or ""),
+                        "plan_hash": str(materialized.get("plan_hash") or ""),
+                        "materialization_id": str(
+                            materialized.get("application_materialization_id")
+                            or materialized.get("materialization_id")
+                            or ""
+                        ),
+                        "qmd_materialization_id": str(
+                            materialized.get("materialization_id") or ""
+                        ),
+                        "source_revision": dict(
+                            materialized.get("source_revision") or {}
+                        ),
+                        "external_feature_revisions": list(
+                            materialized.get("external_feature_revisions") or []
+                        ),
+                        "identity_revision": dict(
+                            materialized.get("identity_revision") or {}
+                        ),
+                        "calculation_revision": str(
+                            materialized.get("calculation_revision") or ""
+                        ),
+                    }
+                ],
+            }
+        )
+    return timeline
+
+
+def _historical_watchlist_clock(value: Any) -> datetime:
+    parsed = datetime.fromisoformat(str(value or "").replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        raise ValueError("Historical Watchlist transition clock must be timezone-aware")
+    return parsed.astimezone(UTC)
+
+
 def _historical_watchlist_plans_for_configuration(
     approved: dict[str, Any],
     *,
@@ -2530,10 +2627,8 @@ def backtest_preflight(
                 start=datetime.combine(sessions[0], clock_time(4, 0), tzinfo=NEW_YORK),
                 end=datetime.combine(sessions[-1], clock_time(20, 0), tzinfo=NEW_YORK),
             )
-            timeline = _historical_watchlist_membership_timeline_for_configuration(
-                approved,
-                start=datetime.combine(sessions[0], clock_time(4, 0), tzinfo=NEW_YORK),
-                end=datetime.combine(sessions[-1], clock_time(20, 0), tzinfo=NEW_YORK),
+            timeline = _historical_watchlist_membership_timeline_from_plans(
+                watchlist_plans
             )
             watchlist_snapshot_count = len(timeline)
             watchlist_members = list(

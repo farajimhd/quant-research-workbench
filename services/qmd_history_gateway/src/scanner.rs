@@ -721,6 +721,7 @@ fn prepare_external_features(
         })?;
         if !revision.complete
             || revision.query_plan_id != contract.query_plan_id
+            || revision.query_plan_version != contract.query_plan_version
             || revision.schema_version != contract.schema_version
             || revision.source_revision.trim().is_empty()
         {

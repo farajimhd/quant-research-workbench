@@ -85,6 +85,10 @@ SCANNER_TECHNICAL_METRICS = (
     "range_pct",
 )
 SCANNER_REFERENCE_FIELDS = (
+    "symbol_id",
+    "security_id",
+    "issuer_id",
+    "listing_id",
     "company_name",
     "exchange",
     "country",
@@ -372,14 +376,20 @@ def scanner_technical_window(as_of: datetime, calculation_window: str) -> tuple[
     return local_start.astimezone(UTC), local_end.astimezone(UTC)
 
 
-def historical_scanner_reference_projection(as_of: datetime) -> dict[str, dict[str, Any]]:
+def historical_scanner_reference_projection(
+    as_of: datetime,
+    *,
+    client: ClickHouseHttpClient | None = None,
+) -> dict[str, dict[str, Any]]:
     """Batch-project point-in-time identity, supply, market, and short facts for the scanner universe."""
     if as_of.tzinfo is None:
         raise ValueError("Historical scanner clock must be timezone-aware.")
     cutoff = as_of.astimezone(UTC)
-    client = ClickHouseHttpClient(default_clickhouse_url(), default_clickhouse_user(), default_clickhouse_password())
+    active_client = client or ClickHouseHttpClient(
+        default_clickhouse_url(), default_clickhouse_user(), default_clickhouse_password()
+    )
     rows = _json_rows(
-        client.execute(scanner_reference_projection(cutoff, "q_live"))
+        active_client.execute(scanner_reference_projection(cutoff, "q_live"))
     )
     projection: dict[str, dict[str, Any]] = {}
     for row in rows:
@@ -401,6 +411,7 @@ def historical_scanner_reference_projection(as_of: datetime) -> dict[str, dict[s
 def historical_scanner_fundamental_projection(
     as_of: datetime,
     *,
+    client: ClickHouseHttpClient | None = None,
     prices_by_ticker: dict[str, float] | None = None,
 ) -> dict[str, dict[str, Any]]:
     """Calculate the Stock Facts and XBRL financial fields in one causal, set-based read."""
@@ -408,9 +419,11 @@ def historical_scanner_fundamental_projection(
         raise ValueError("Historical scanner clock must be timezone-aware.")
     cutoff = as_of.astimezone(UTC)
     tags = sorted({tag for _, alternatives in FUNDAMENTAL_TAGS for tag in alternatives})
-    client = ClickHouseHttpClient(default_clickhouse_url(), default_clickhouse_user(), default_clickhouse_password())
+    active_client = client or ClickHouseHttpClient(
+        default_clickhouse_url(), default_clickhouse_user(), default_clickhouse_password()
+    )
     rows = _json_rows(
-        client.execute(scanner_fundamentals(tags, cutoff, "q_live"))
+        active_client.execute(scanner_fundamentals(tags, cutoff, "q_live"))
     )
     grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for row in rows:

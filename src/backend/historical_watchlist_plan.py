@@ -7,7 +7,7 @@ from datetime import datetime, time, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from src.backend.application_registry import FIELD_DEFINITIONS
+from src.backend.application_registry import FIELD_DEFINITIONS, QUERY_PLANS
 from src.trading_runtime.watchlist_resolver import SOURCE_FIELDS
 
 
@@ -72,6 +72,7 @@ def compile_historical_watchlist_plan(
     selected_rules = [rule_by_id[rule_id] for rule_id in dict.fromkeys(selected_rule_ids)]
     sources = _validated_sources(watchlist, selected_rules)
     field_by_id = {field.field_id: field for field in FIELD_DEFINITIONS}
+    query_plan_by_id = {plan.plan_id: plan for plan in QUERY_PLANS}
     external_features: list[dict[str, Any]] = []
     for source_id in sorted(sources - QMD_SOURCE_IDS):
         field = field_by_id.get(source_id)
@@ -82,6 +83,11 @@ def compile_historical_watchlist_plan(
                 f"historical Watchlist source is not causally available: {source_id} "
                 f"(status={field.status}, historical_support={field.historical_support})"
             )
+        query_plan = query_plan_by_id.get(field.query_plan_id)
+        if query_plan is None:
+            raise ValueError(
+                f"historical Watchlist query plan is not registered: {field.query_plan_id}"
+            )
         external_features.append(
             {
                 "available_at": field.available_at,
@@ -90,6 +96,7 @@ def compile_historical_watchlist_plan(
                 "identity_join": field.identity_join,
                 "owner": field.owner,
                 "query_plan_id": field.query_plan_id,
+                "query_plan_version": query_plan.version,
                 "schema_version": field.schema_version,
                 "source_path": field.source_path,
             }

@@ -560,9 +560,14 @@ load progressively without false continuity.
             references by New York session, merges certified external value
             intervals, and returns revision/content-bound chunks. Request bytes,
             event count, output slots, and concurrent materializations are gated.
-      - [ ] Build the backend external-feature interval provider for every
+      - [x] Build the backend external-feature interval provider for every
             registered Watchlist dependency and pass exact complete revision
             evidence into QMD History.
+            The provider evaluates registered Reference and SEC query plans
+            only at bounded causal source-change/session clocks, emits
+            nonoverlapping value intervals, and content-hashes per-field
+            revisions. Point-in-time stable identity is carried separately as
+            control metadata and cannot be used as undeclared rule evidence.
       - [ ] Implement the causal elapsed-session 20-session relative-volume
             baseline; QMD History currently rejects this field rather than use
             a daily-volume approximation.
@@ -570,6 +575,13 @@ load progressively without false continuity.
             and complete representative active-session load acceptance.
       - [ ] Persist/reuse the revisioned timeline product and replace Backtest's
             session-boundary membership fallback with its transition stream.
+        - [x] Replace the active single-Watchlist Backtest path with QMD History
+              transition chunks, causal conid enrichment, application-level
+              materialization identity, and revision evidence.
+        - [ ] Replay all configured Watchlists through one shared QMD event
+              pass, union their causal membership timelines, and add durable
+              revision-keyed storage/reuse. The active path remains fail closed
+              for more than one Watchlist until this shared batch exists.
   - [x] Build canonical Backtest performance, Portfolio, position, order,
         execution, and closed-trade result projections.
   - [x] Add strategy/run attribution and comparative analysis projections.

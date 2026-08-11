@@ -24,6 +24,7 @@ pub struct ExternalFeatureContract {
     pub identity_join: String,
     pub owner: String,
     pub query_plan_id: String,
+    pub query_plan_version: u16,
     pub schema_version: u16,
     pub source_path: String,
 }
@@ -143,6 +144,7 @@ pub struct ExternalFeatureRevisionEvidence {
     pub complete: bool,
     pub field_id: String,
     pub query_plan_id: String,
+    pub query_plan_version: u16,
     pub schema_version: u16,
     pub source_revision: String,
 }
@@ -316,6 +318,7 @@ pub fn validate_plan(
         if !feature_ids.insert(feature.field_id.as_str())
             || feature.owner.trim().is_empty()
             || feature.query_plan_id.trim().is_empty()
+            || feature.query_plan_version == 0
             || feature.available_at.trim().is_empty()
             || feature.event_at.trim().is_empty()
             || feature.identity_join.trim().is_empty()
@@ -1114,6 +1117,7 @@ mod tests {
                 identity_join: "point-in-time symbol/security/issuer identity".to_string(),
                 owner: "reference_gateway".to_string(),
                 query_plan_id: "reference.scanner_asof.v1".to_string(),
+                query_plan_version: 2,
                 schema_version: 1,
                 source_path: "q_live.market_security_float_v1".to_string(),
             }],
@@ -1124,7 +1128,7 @@ mod tests {
         rehash(&mut plan);
         assert_eq!(
             plan.plan_hash,
-            "sha256:34c4a658a1002098ad5c09dfe71bbb6d5bd7daabb4a134361068c7c49efe16a8"
+            "sha256:b67fc34277bb71eaa45101875ab0b4b96167872ae26f80d28867e511e2b578bf"
         );
         plan
     }

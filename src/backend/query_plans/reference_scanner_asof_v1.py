@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from zoneinfo import ZoneInfo
 
 from research.mlops.clickhouse import quote_ident, sql_string
 
 
 QUERY_PLAN_ID = "reference.scanner_asof.v1"
-QUERY_PLAN_VERSION = 1
+QUERY_PLAN_VERSION = 2
+NEW_YORK = ZoneInfo("America/New_York")
 
 
 def scanner_reference_projection(cutoff: datetime, database: str = "q_live") -> str:
@@ -17,7 +19,7 @@ def scanner_reference_projection(cutoff: datetime, database: str = "q_live") -> 
     instant = sql_string(
         cutoff.astimezone(UTC).isoformat(timespec="milliseconds")
     )
-    cutoff_date = sql_string(cutoff.astimezone(UTC).date().isoformat())
+    cutoff_date = sql_string(cutoff.astimezone(NEW_YORK).date().isoformat())
     return f"""
         WITH
             parseDateTime64BestEffort({instant}) AS cutoff,
@@ -34,6 +36,10 @@ def scanner_reference_projection(cutoff: datetime, database: str = "q_live") -> 
             ) AS latest_scanner_date
         SELECT
             u.ticker AS ticker,
+            u.symbol_id AS symbol_id,
+            u.security_id AS security_id,
+            u.issuer_id AS issuer_id,
+            u.listing_id AS listing_id,
             u.exchange_code AS exchange,
             coalesce(nullIf(s.security_name, ''), nullIf(i.legal_name, ''), nullIf(i.issuer_name, '')) AS company_name,
             coalesce(nullIf(c.effective_country_code, ''), nullIf(i.domicile_country_code, '')) AS country,

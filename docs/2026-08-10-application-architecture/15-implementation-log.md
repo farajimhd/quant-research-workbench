@@ -1110,6 +1110,26 @@ bounded direct ClickHouse paths remain documented in
      Python and Rust share the new fixed plan hash. Five Rust plan/reducer tests
      and 14 backend compiler/registry tests passed; the changed Python modules
      compiled.
+129. Implemented the registered external-feature interval provider and the
+     identity-safe first Backtest cutover. The backend now queries registered
+     Reference and SEC projections only at bounded source-change and session
+     clocks, including effective/observed/publication availability rather than
+     insertion time alone; diffs those projections into nonoverlapping causal
+     intervals; and supplies complete content-hashed, query-plan-versioned
+     evidence to QMD History. Point-in-time symbol/security/issuer/listing IDs
+     and positive IBKR conids are materialized separately as control metadata,
+     so they cannot broaden the compiled rule graph. QMD transitions are
+     enriched from those intervals, fail closed on missing identity, and the
+     application materialization identity binds the QMD replay to its identity
+     revision.
+
+     Backtest and preflight now consume the transition product for one
+     Watchlist rather than the session-boundary snapshot fallback, preserving
+     identity and complete authority in each causal membership snapshot. The
+     active path still rejects multiple configured Watchlists: they require a
+     shared multi-plan QMD event pass, not repeated full-market replays. All 48
+     focused backend tests and all 36 QMD History Rust tests passed; the changed
+     Python modules compiled.
 
 The authoritative remaining work and acceptance gates are maintained in the
 [complete implementation backlog](14-implementation-backlog.md). A checked
