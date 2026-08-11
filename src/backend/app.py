@@ -27,6 +27,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from src.backend.json_utils import json_safe, parse_csv_list
+from src.backend.application_registry import application_registry_payload
 from src.backend.canvas_preview_service import canvas_preview_payload, scanner_snapshot_payload
 from src.backend.canonical_trading_service import canonical_trading_state
 from src.backend.portfolio_management_service import (
@@ -4468,6 +4469,32 @@ def trading_strategy_activity(
         )
     except (TypeError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/api/registries/application")
+def application_registry() -> dict[str, object]:
+    return application_registry_payload()
+
+
+@app.get("/api/registries/fields")
+def application_field_registry(
+    group: str | None = None,
+    status: str | None = None,
+) -> dict[str, object]:
+    payload = application_registry_payload()
+    rows = list(payload["fields"])
+    if group:
+        rows = [row for row in rows if row.get("group") == group]
+    if status:
+        rows = [row for row in rows if row.get("status") == status]
+    return {"schema_version": payload["schema_version"], "count": len(rows), "rows": rows}
+
+
+@app.get("/api/registries/query-plans")
+def application_query_plan_registry() -> dict[str, object]:
+    payload = application_registry_payload()
+    rows = list(payload["query_plans"])
+    return {"schema_version": payload["schema_version"], "count": len(rows), "rows": rows}
 
 
 @app.get("/api/trading/configuration/base")
