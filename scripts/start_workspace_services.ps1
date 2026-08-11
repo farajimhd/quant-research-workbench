@@ -219,7 +219,8 @@ $qmdCommand = $pathAssignment +
 $backendCommand = $pathAssignment +
     "& " + (ConvertTo-PowerShellLiteral -Value $backendLauncher) +
     " -HostName " + (ConvertTo-PowerShellLiteral -Value $HostName) +
-    " -Port $BackendPort"
+    " -Port $BackendPort" +
+    " -PythonExe " + (ConvertTo-PowerShellLiteral -Value $resolvedPython)
 if ($NoBackendReload) {
     $backendCommand += " -NoReload"
 }

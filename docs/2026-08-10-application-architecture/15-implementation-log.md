@@ -1425,6 +1425,26 @@ The authoritative remaining work and acceptance gates are maintained in the
 item means its real runnable path was implemented and focused validation passed;
 it does not imply all application work is complete.
 
+147. Closed the real-browser frontend acceptance gate and repaired the
+     standalone backend launcher discovered by that gate. `run_backend.ps1`
+     no longer assumes a bare `python` command exists: it accepts an explicit
+     interpreter, then resolves the active Conda interpreter, PATH, or the
+     standard per-user Miniconda/Anaconda locations and fails before startup
+     with an actionable message if none exists. The workspace starter passes
+     its already-resolved interpreter into the backend launcher, keeping all
+     three managed processes on one explicit Python authority.
+
+     The repository-managed frontend and backend were then exercised together
+     in the in-app browser. Market Discovery rendered Universal Ingest first,
+     locked it as system authority, and showed all six registered primitives.
+     Canvas, Portfolio, OMS, Live, Replay, Backtest, and Service Health reached
+     their configured or truthful dependency/approval gate states. The Market
+     Discovery viewport was visually inspected, all route DOM contracts were
+     inspected, and browser warning/error logs were empty. A first failed
+     configuration load was traced to an older backend process and was not
+     accepted as a UI pass; the current backend returned the complete base
+     configuration successfully before the repeated browser checks.
+
 ---
 
 [Top](README.md) · [Previous](14-implementation-backlog.md) · [First](01-product-and-principles.md)

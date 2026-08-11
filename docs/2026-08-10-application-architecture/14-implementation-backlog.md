@@ -462,11 +462,13 @@ internal topology, or producer formula.
       honors reduced-motion preference, and publishes selected/expanded state
       for the appearance controls. Page-specific presentation remains layered
       on these shared authorities.
-- [ ] Validate all affected states in real browsers.
-  - [ ] The managed frontend was HTTP-ready on `127.0.0.1:5173`, but the
-        in-app browser security policy blocked the localhost reload after its
-        prior connection-error page. The validation process was stopped and no
-        alternate browser surface was used; visual acceptance remains open.
+- [x] Validate all affected states in real browsers. The managed frontend and
+      backend were exercised together in the in-app browser across Market
+      Discovery, Canvas, Portfolio, OMS, Live, Replay, Backtest, and Service
+      Health. Market Discovery rendered the locked Universal Ingest authority
+      and its six registered primitives; the remaining pages reached their
+      truthful configured, dependency-waiting, or approval-blocked states with
+      no browser console warning or error.
 
 Acceptance gate: UI availability equals backend registry and runnable truth.
 
@@ -892,7 +894,11 @@ broker command outside OMS.
       gap control frame. The Canvas consumer closes on that frame, reconnects
       with bounded backoff, and replaces state from the next snapshot. Real
       browser validation remains the separate open visual gate below.
-- [ ] Run real browser/visual validation for frontend changes.
+- [x] Run real browser/visual validation for frontend changes. The managed
+      frontend and repository backend were validated together across all
+      affected configuration, trading-mode, and service-health routes; the
+      Market Discovery viewport was visually inspected and browser logs were
+      empty.
 - [x] Test trading races, restart, protection, and deterministic mode parity.
       Two hundred one focused tests passed in the required external runtime,
       covering Portfolio fencing/lease expiry/reservations, OMS idempotency,
