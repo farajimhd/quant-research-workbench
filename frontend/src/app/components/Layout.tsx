@@ -99,11 +99,17 @@ export function Layout({
   }
 
   if (chromeless) {
-    return <div className="app-shell focus-app-shell"><main className="focus-app-main">{children}</main></div>;
+    return (
+      <div className="app-shell focus-app-shell">
+        <a className="skip-link" href="#main-content">Skip to main content</a>
+        <main className="focus-app-main" id="main-content" tabIndex={-1}>{children}</main>
+      </div>
+    );
   }
 
   return (
     <div className={collapsed ? "app-shell sidebar-collapsed" : "app-shell"}>
+      <a className="skip-link" href="#main-content">Skip to main content</a>
       <header className="topbar">
         <div className="topbar-brand">
           <Activity size={24} />
@@ -113,11 +119,19 @@ export function Layout({
         <div className="topbar-actions">
           {topbarStatus}
           <div className="theme-picker">
-            <button className="icon-button" type="button" aria-label="Change theme" onClick={() => setThemeMenuOpen((value) => !value)}>
+            <button
+              aria-controls="appearance-dialog"
+              aria-expanded={themeMenuOpen}
+              aria-haspopup="dialog"
+              className="icon-button"
+              type="button"
+              aria-label="Change appearance"
+              onClick={() => setThemeMenuOpen((value) => !value)}
+            >
               <Palette size={18} />
             </button>
             {themeMenuOpen ? (
-              <div className="theme-menu" role="menu">
+              <div aria-label="Appearance" className="theme-menu" id="appearance-dialog" role="dialog">
                 <div className="theme-menu-title">Appearance</div>
                 <div className="theme-scale-group" aria-label="Interface scale">
                   <div className="theme-menu-group-label">UI Scale</div>
@@ -125,6 +139,7 @@ export function Layout({
                     {UI_SCALE_OPTIONS.map((scale) => (
                       <button
                         className={scale === uiScale ? "theme-scale-button active" : "theme-scale-button"}
+                        aria-pressed={scale === uiScale}
                         key={scale}
                         onClick={() => setUiScale(scale)}
                         type="button"
@@ -179,7 +194,7 @@ export function Layout({
             ))}
           </nav>
         </aside>
-        <main className={compactContent ? "main compact-main" : "main"}>
+        <main className={compactContent ? "main compact-main" : "main"} id="main-content" tabIndex={-1}>
           <div className={compactContent ? "shell-content-inner compact-content" : "shell-content-inner"}>{children}</div>
         </main>
       </div>
@@ -222,6 +237,7 @@ function ThemeMenuGroup({
       <div className="theme-menu-items">
         {themes.map((theme) => (
           <button
+            aria-pressed={activeThemeId === theme.themeId}
             className={buildThemeMenuItemButtonClassName(activeThemeId === theme.themeId)}
             key={theme.themeId}
             onClick={() => onSelect(theme.themeId)}

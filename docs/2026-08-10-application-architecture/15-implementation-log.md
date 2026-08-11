@@ -814,6 +814,15 @@ bounded direct ClickHouse paths remain documented in
      reached HTTP 200 for visual validation, but the in-app browser policy
      blocked localhost reload; the exact processes were stopped and browser
      acceptance remains open rather than being inferred from the build.
+105. Completed the shared frontend accessibility and appearance foundation.
+     The existing persisted theme catalog, five-level global UI scale,
+     zoom-aware viewport sizing, and responsive page rules remain authoritative.
+     The application shell now adds a keyboard skip link and unique main
+     landmark in both standard and chromeless layouts, a consistent visible
+     focus fallback, reduced-motion behavior, and explicit expanded/selected
+     semantics for appearance controls. The production build passed; the
+     separate real-browser acceptance gate remains open because localhost
+     navigation is policy-blocked in the available in-app browser.
 
 The authoritative remaining work and acceptance gates are maintained in the
 [complete implementation backlog](14-implementation-backlog.md). A checked

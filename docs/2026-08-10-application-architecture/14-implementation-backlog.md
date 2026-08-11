@@ -373,7 +373,13 @@ internal topology, or producer formula.
       catalog, projects Watchlist columns, and validates filter sources and
       operators. The Watchlist editor creates filters only from eligible
       registry rows and supported comparators.
-- [ ] Preserve theme, global scale, responsive, and accessibility authorities.
+- [x] Preserve theme, global scale, responsive, and accessibility authorities.
+      The shared shell persists the selected theme and five-level UI scale,
+      keeps zoom-aware viewport sizing, exposes a keyboard skip path and one
+      main landmark, supplies a cross-application `:focus-visible` fallback,
+      honors reduced-motion preference, and publishes selected/expanded state
+      for the appearance controls. Page-specific presentation remains layered
+      on these shared authorities.
 - [ ] Validate all affected states in real browsers.
   - [ ] The managed frontend was HTTP-ready on `127.0.0.1:5173`, but the
         in-app browser security policy blocked the localhost reload after its

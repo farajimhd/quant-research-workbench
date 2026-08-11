@@ -143,9 +143,46 @@ button {
   cursor: pointer;
 }
 
+:where(a, button, input, select, textarea, summary, [tabindex]):focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
+.skip-link {
+  background: var(--foreground);
+  border-radius: 0 0 8px 8px;
+  color: var(--background);
+  font-size: 14px;
+  font-weight: 700;
+  left: 16px;
+  padding: 10px 14px;
+  position: fixed;
+  top: 0;
+  transform: translateY(-120%);
+  transition: transform 120ms ease;
+  z-index: 20000;
+}
+
+.skip-link:focus {
+  outline-color: currentColor;
+  transform: translateY(0);
+}
+
 ::selection {
   background: color-mix(in oklab, var(--info) 24%, var(--surface));
   color: var(--foreground);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-delay: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+  }
 }
 
 .app-shell {
