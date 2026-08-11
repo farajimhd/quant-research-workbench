@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import dataclasses
 import json
 import os
 import time
@@ -12,6 +13,7 @@ import torch
 
 from research.bar_gpt.v1.config import DataConfig
 from research.bar_gpt.v1.data import TIMEFRAME_US_BY_NAME
+from research.bar_gpt.v1.direct_event_shards import DirectEventArrowStreamClient
 from research.bar_gpt.v1.features import MODEL_FEATURE_NAMES
 from research.bar_gpt.v1.offline_shards import (
     OFFLINE_SHARD_CONTRACT_VERSION,
@@ -21,6 +23,8 @@ from research.bar_gpt.v1.offline_shards import (
     load_shard,
 )
 from research.bar_gpt.v1.schema import FEATURE_VERSION
+from research.mlops.clickhouse import discover_clickhouse_env_files
+from research.mlops.env import load_env_files
 from research.bar_gpt.v1.targets import (
     AUTOREGRESSIVE_TARGET_NAMES,
     OHLC_FIELDS,
@@ -29,7 +33,7 @@ from research.bar_gpt.v1.targets import (
 )
 
 
-DEFAULT_PILOT_ROOT = Path(r"D:\TradingML\runtimes\bar_gpt\v1\offline_shards_v7_pilot")
+DEFAULT_PILOT_ROOT = Path(r"D:\TradingML\runtimes\bar_gpt\v1\offline_shards_v9_pilot")
 DEFAULT_MAX_ABSOLUTE_RETURN_BPS = 2_000.0
 
 
@@ -94,6 +98,11 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         help="Require every audited origin to have complete 1D, 1W, and 1MO context.",
     )
     parser.add_argument("--max-absolute-return-bps", type=float, default=DEFAULT_MAX_ABSOLUTE_RETURN_BPS)
+    parser.add_argument(
+        "--verify-direct-source",
+        action="store_true",
+        help="Rebuild eligible trade timestamps from compact events and match every audited origin.",
+    )
     parser.add_argument("--output", type=Path, default=None)
     args = parser.parse_args(list(argv) if argv is not None else None)
     if args.max_shards <= 0:
@@ -186,7 +195,8 @@ def audit_shard(
     source_authority = context_contract.get("source_authority")
     _require(isinstance(source_authority, dict), f"{unit_key}: source authority is absent")
     _require(
-        all(str(source_authority.get(name, "")).strip() for name in ("database", "one_second_table", "daily_table"))
+        bool(str(source_authority.get("database", "")).strip())
+        and source_authority.get("mode") in {"direct_events", "materialized_bars"}
         and source_authority.get("condition_authority") == "embedded_1s"
         and source_authority.get("one_second_feature_version") == FEATURE_VERSION,
         f"{unit_key}: source authority is incomplete",
@@ -286,9 +296,14 @@ def audit_shard(
                 expected_duration = int(TIMEFRAME_US_BY_NAME[name])
                 _require(bool(torch.all(ends - starts == expected_duration)), f"{label}/{name}: bar duration mismatch")
                 source_index = MODEL_FEATURE_NAMES.index("log_source_event_count")
+                trade_present_index = MODEL_FEATURE_NAMES.index("trade_present")
                 _require(
                     bool(torch.all(features[:, source_index] > 0)),
                     f"{label}/{name}: empty-event bar was stored as intraday context",
+                )
+                _require(
+                    bool(torch.all(features[:, trade_present_index] > 0)),
+                    f"{label}/{name}: context bar without an eligible trade",
                 )
                 for condition_name in ("halt_pause", "resume", "news_risk", "luld_limit_state"):
                     present = features[:, MODEL_FEATURE_NAMES.index(f"{condition_name}_present")] > 0
@@ -359,10 +374,15 @@ def audit_shard(
                     )
                     _require(int(origin_indices.max()) < length, f"{block_label}/1s: origin outside slice")
                     source_index = MODEL_FEATURE_NAMES.index("log_source_event_count")
+                    trade_present_index = MODEL_FEATURE_NAMES.index("trade_present")
                     local_features = views[name]["features"][start : start + length]
                     _require(
                         bool(torch.all(local_features[origin_indices.long(), source_index] > 0)),
                         f"{block_label}/1s: zero-event origin detected",
+                    )
+                    _require(
+                        bool(torch.all(local_features[origin_indices.long(), trade_present_index] > 0)),
+                        f"{block_label}/1s: origin without an eligible trade",
                     )
                     local_available = available[start : start + length]
                     session_origin_positions.append(origin_indices.long() + start)
@@ -501,6 +521,70 @@ def audit_shard(
     }
 
 
+def verify_direct_source(sidecar_path: Path) -> dict[str, Any]:
+    """Match every audited origin to a reconstructed eligible trade second."""
+    from research.bar_gpt.v1.train import _stream_config
+
+    sidecar = json.loads(sidecar_path.read_text(encoding="utf-8"))
+    _require(
+        sidecar.get("context_contract", {}).get("source_authority", {}).get("mode") == "direct_events",
+        f"{sidecar_path}: direct-source audit requires a direct_events shard",
+    )
+    shard = load_shard(sidecar_path.with_suffix(".pt"))
+    ticker = str(shard["unit_key"]).split(":", 1)[0]
+    sessions = list(shard.get("sessions", ()))
+    _require(bool(sessions), f"{ticker}: direct-source verification requires nonempty sessions")
+    dates = sorted(str(session["local_date"]) for session in sessions)
+    start = dt.date.fromisoformat(dates[0])
+    end = dt.date.fromisoformat(dates[-1]) + dt.timedelta(days=1)
+    base_config = DataConfig()
+    config = dataclasses.replace(
+        base_config,
+        tickers=(ticker,),
+        start_date=start.isoformat(),
+        end_date=end.isoformat(),
+        validation_start_date=start.isoformat(),
+        validation_slices=((ticker, start.isoformat(), end.isoformat()),),
+    )
+    config.validate()
+    client = DirectEventArrowStreamClient(_stream_config(config), config)
+    intervals = client.read_identity_intervals(
+        (ticker,),
+        identity_database=config.identity_database,
+        interval_table=config.identity_interval_table,
+        entity_table=config.identity_entity_table,
+        event_table=config.identity_event_table,
+        coverage_start=config.daily_history_start_date,
+    )[ticker]
+    reconstructed = {
+        day: set(int(value) for value in view.available_at_us.tolist())
+        for day, view in client.iter_session_views(
+            ticker=ticker,
+            start_date=start.isoformat(),
+            end_date=end.isoformat(),
+            source_intervals=intervals,
+            prefetch_pages=1,
+        )
+    }
+    checked = 0
+    for session in sessions:
+        day = str(session["local_date"])
+        available = reconstructed.get(day, set())
+        _require(bool(available), f"{ticker} {day}: no direct eligible-trade bars were reconstructed")
+        for block in session["blocks"]:
+            origins = [int(value) for value in block["origin_timestamps_us"].tolist()]
+            missing = [value for value in origins if value not in available]
+            _require(not missing, f"{ticker} {day}: {len(missing)} origins lack a direct eligible trade")
+            checked += len(origins)
+    return {
+        "ticker": ticker,
+        "sessions": len(sessions),
+        "origins_checked": checked,
+        "source": "compact events reconstructed with direct trade eligibility",
+        "status": "passed",
+    }
+
+
 def run_audit(
     root: Path,
     *,
@@ -512,6 +596,7 @@ def run_audit(
     require_calendar_context: bool = False,
     max_absolute_return_bps: float = DEFAULT_MAX_ABSOLUTE_RETURN_BPS,
     output: Path | None = None,
+    verify_direct_events: bool = False,
 ) -> dict[str, Any]:
     started = time.perf_counter()
     sidecars = discover_sidecars(
@@ -530,6 +615,7 @@ def run_audit(
         )
         for path in sidecars
     ]
+    direct_source = [verify_direct_source(path) for path in sidecars] if verify_direct_events else []
     payload = {
         "created_at": dt.datetime.now().astimezone().isoformat(timespec="seconds"),
         "root": str(root),
@@ -539,6 +625,7 @@ def run_audit(
         "audited_shards": len(audited),
         "status": "passed",
         "shards": audited,
+        "direct_source_verification": direct_source,
     }
     destination = output or (
         root / "manifest" / "audits" / f"audit-{dt.datetime.now():%Y%m%d-%H%M%S}-p{os.getpid()}.json"
@@ -550,6 +637,8 @@ def run_audit(
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv)
+    if args.verify_direct_source:
+        load_env_files(discover_clickhouse_env_files())
     report = run_audit(
         args.root.resolve(),
         tickers=_csv(str(args.tickers)),
@@ -560,6 +649,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         require_calendar_context=bool(args.require_calendar_context),
         max_absolute_return_bps=float(args.max_absolute_return_bps),
         output=args.output.resolve() if args.output is not None else None,
+        verify_direct_events=bool(args.verify_direct_source),
     )
     for shard in report["shards"]:
         print(

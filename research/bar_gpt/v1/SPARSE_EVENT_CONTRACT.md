@@ -1,4 +1,4 @@
-# BarGPT embedded-condition sparse event and OHLC target contract (v7)
+# BarGPT direct-event trade-sparse and OHLC target contract (v9)
 
 ## Defects this contract replaces
 
@@ -24,43 +24,50 @@ The v5 pilot exposed a further semantic defect: every structurally positive
 trade and paired quote was accepted without applying the database condition
 category's field-update permissions. AAPL's 2019-01-03 average-price/Form-T
 trade (177.89 versus a market near 142.60) contaminated context and targets,
-and an implausibly wide quote contaminated quote extrema. Historical trade
-correction code 12 (the original incorrect data) was also retained upstream.
+and an implausibly wide quote contaminated quote extrema. The compact event
+authority's historical correction-pair limitation is accepted: its five
+condition-token slots do not preserve the separate NYSE correction field or
+pairing identity. The direct builder does not claim to reconstruct it.
 
-The old shard roots are immutable. Contract-v7 shards are rebuilt under
-`offline_shards_v7`; old shards, checkpoints, cursors, discovery panels, and
+The old shard roots are immutable. Contract-v9 shards are rebuilt under
+`offline_shards_v9`; old shards, checkpoints, cursors, discovery panels, and
 validation manifests are not compatible or repairable in place.
 
 ## Bar, context, and condition authority
 
-* A one-second model bar exists only when `origin_event_count > 0`.
+* A one-second model bar exists only when `eligible_trade_event_count > 0`.
   `origin_eligible=1` and `context_eligible=1` are stored explicitly and are
   required by the loader. `source_event_count` counts retained eligible events,
-  including volume-only contributions in a second that already has an origin.
+  including volume-only and quote contributions in a second that already has
+  an eligible trade. Quote-only and condition-only seconds are never origins or
+  context tokens.
 * Trade conditions are combined fail-closed. An event may update each stored
   sufficient statistic only when every condition token authorizes that field.
   `update_high_low`, `update_last`, and `update_volume` therefore produce
   independent high/low, close, and volume/count masks. A trade can create an
   origin only when it may update high/low or last; a volume-only trade can add
   volume to an already-active second but cannot create a bar or origin.
-* Correction 00 and corrected-data 01 remain eligible upstream. Correction
-  codes 07, 08, 10, 11, and 12 are excluded before compact event encoding;
-  unknown condition/correction metadata fails closed. Because the compact
-  event schema does not retain the original correction field, the 1s preflight
-  also requires database source-day provenance containing the complete
-  `07,08,10,11,12` exclusion policy and refuses an older event authority.
-* A quote is eligible only as a complete positive bid/ask pair with bid <= ask,
-  no Invalid/Closed/MarketMakerQuotesClosed/NonFirm/Cancel/Unknown/Crossed
+* The direct builder reads immutable compact `events_YYYY` partitions whose
+  provenance excludes corrections 07, 08, 10, and 11. Historical 01/12 pairing
+  is not reconstructed. This accepted source limitation is recorded in the
+  shard contract; the runnable build has no raw-flatfile or correction-overlay
+  dependency.
+* Trade condition 12 (Form T) is wholly model-ineligible: it cannot contribute
+  price, volume, count, context, origin, or target support. Quote condition 12
+  (Manual Bid/Ask) is likewise wholly model-ineligible. A quote is otherwise
+  eligible only as a complete positive bid/ask pair with bid <= ask, no
+  Invalid/Closed/MarketMakerQuotesClosed/NonFirm/Cancel/Unknown/Crossed
   modifier, and midpoint-relative spread no wider than 1,000 bps. The bound is
   configurable and applied once in vectorized ClickHouse SQL.
-* A coarser fixed bucket exists only when its aggregated source-event count is
-  positive. Empty buckets are absent rather than zero-valued tokens.
+* A coarser fixed bucket exists only when it contains at least one trade-bearing
+  1s input row. Empty and quote-only buckets are absent rather than zero-valued
+  tokens.
 * Every stored bar has explicit `bar_start_us`, `bar_end_us`, and
   `available_at_us`, satisfying
   `bar_start_us < bar_end_us <= available_at_us`.
 * Each origin is an active one-second bar. Context is the latest configured
   fixed number of nonempty, completed bars: 720/360/360/240/240/96/16/8 for
-  1s through 1h and 90/52/24 for 1D/1W/1MO.
+  1s through 1h and 90/52/12 for 1D/1W/1MO.
 * Timestamp gaps remain explicit. Fixed token counts therefore span variable
   physical time for less-active instruments.
 * The builder derives its warm-up requirement from the configured timeframe
@@ -82,15 +89,17 @@ The authoritative trade-condition categories observed in
 | high/low + last + volume (origin eligible) | 00, 01, 03, 04, 06, 08, 09, 11, 14, 17, 18, 19, 23, 24, 25, 27, 28, 30, 34, 35, 36, 41, 55 |
 | high/low + volume, no last (origin eligible) | 05, 10, 22, 32, 33 |
 | high/low + last, no volume (origin eligible) | 38 |
-| volume only (never creates an origin) | 02, 07, 12, 13, 20, 21, 26, 29, 37, 39-54 |
+| volume only (never creates an origin) | 02, 07, 13, 20, 21, 26, 29, 37, 39-54 |
 | no price/volume contribution | 15, 16, 56, 59 |
+| BarGPT model-ineligible in every field | 12 (Form T) |
 
 These lists are not duplicated as a Python hot-path lookup. The builders load
 the database flags into constant ClickHouse arrays once per query and use
 `arrayAll`, preserving fail-closed multi-condition semantics without row loops.
-Trade condition 12 in this table is a different source field and namespace
-from historical trade correction 12; the former is volume-only, while the
-latter is excluded upstream as original incorrect data.
+Trade condition 12 and NYSE trade correction 12 are different source fields
+and namespaces. Form T is rejected entirely. The separate historical
+correction namespace cannot be reconstructed from compact events and is an
+explicitly accepted source limitation.
 
 ## Model input tensor contract
 
@@ -304,7 +313,7 @@ to at most 16 metrics.
 
 ## Builder, shard, and certification contract
 
-Contract-v7 uses shard contract 7 and loader stream contract 9. Shards persist
+Contract-v9 uses shard contract 9 and loader stream contract 11. Shards persist
 view interval metadata, nonempty context, active origins, per-origin causal
 as-of indices, 18-channel autoregressive tensors, 23-channel physical tensors,
 condition provenance, and SHA-256-certified sidecars. Discovery fails closed
@@ -314,11 +323,10 @@ The pilot and full builders invoke the same builder implementation; the pilot
 only bounds ticker/month scope. Automated audit must verify:
 
 * no zero-event origin or intraday context token;
-* no correction-12 or condition-ineligible field contribution in reconstructed
-  ClickHouse samples;
+* direct reconstruction of every audited origin from an eligible trade second,
+  and no Form-T/Manual-Bid-Ask contribution in reconstructed ClickHouse samples;
 * no implausible quote/condition/split return outlier above the configured
   fail-closed audit threshold;
-* a dedicated AAPL 2020-08-31 split-boundary pilot proving causal adjustment;
 * interval ordering, availability, exact configured context, block continuity,
   split basis, and causal as-of relationships;
 * signed input high/low geometry and physical/AR OHLC ordering;
@@ -327,7 +335,7 @@ only bounds ticker/month scope. Automated audit must verify:
   ClickHouse reconstruction;
 * target and direction support by family, OHLC field, horizon, and AR view.
 
-Before the full cohort build, the v7 overfit runner must pass the total-loss
+Before the full cohort build, the v9 overfit runner must pass the total-loss
 improvement gate and direction gates for every physical task with sufficient
 two-class support, and demonstrate each of the 12 autoregressive direction
 tasks on the configured minimum number of eligible views. It reports direct

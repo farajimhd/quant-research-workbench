@@ -22,7 +22,7 @@ from research.bar_gpt.v1.model_discovery import (
 )
 
 
-FINAL_VALIDATION_CONTRACT_VERSION = 5
+FINAL_VALIDATION_CONTRACT_VERSION = 6
 FINAL_VALIDATION_WANDB_PROJECT = "bar gpt model discovery final validation"
 
 

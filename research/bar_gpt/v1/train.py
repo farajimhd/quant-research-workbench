@@ -228,7 +228,7 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--resume-checkpoint", default="")
     parser.add_argument("--seed", type=int, default=train.seed)
     parser.add_argument("--data-source", choices=("offline", "clickhouse"), default="clickhouse")
-    parser.add_argument("--offline-shard-root", default=r"D:\TradingML\runtimes\bar_gpt\v1\offline_shards_v7")
+    parser.add_argument("--offline-shard-root", default=r"D:\TradingML\runtimes\bar_gpt\v1\offline_shards_v9")
     parser.add_argument("--offline-train-start-date", default="2019-01-01")
     parser.add_argument("--offline-train-end-date", default="2021-01-01")
     parser.add_argument("--offline-validation-start-date", default="2026-01-01")
@@ -250,7 +250,7 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
 def build_config(args: argparse.Namespace) -> ExperimentConfig:
     horizons = _int_csv(args.horizons_us)
     data = DataConfig(
-        loader_stream_contract_version=8,
+        loader_stream_contract_version=11,
         database=str(args.database),
         one_second_table=str(args.one_second_table),
         manifest_table=str(args.manifest_table),
@@ -1486,7 +1486,7 @@ def main(argv: Iterable[str] | None = None) -> int:
             for index in range(4)
         )
         evidence = {
-            "mode": "offline_shards_v7",
+            "mode": "offline_shards_v9",
             "offline_shard_root": str(root),
             "offline_training_units": str(len(offline_train_units)),
             "offline_training_blocks": str(sum(unit.blocks for unit in offline_train_units)),

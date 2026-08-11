@@ -44,11 +44,11 @@ from research.mlops.clickhouse import (
 from research.mlops.env import load_env_files
 
 
-OFFLINE_SHARD_CONTRACT_VERSION = 7
-# Stream contract 9 consumes only origin/context-eligible 1s rows and embeds
-# condition state in that certified one-second authority.
-OFFLINE_SHARD_BUILD_STREAM_CONTRACT_VERSION = 9
-DEFAULT_OUTPUT_ROOT = Path(r"D:\TradingML\runtimes\bar_gpt\v1\offline_shards_v7")
+OFFLINE_SHARD_CONTRACT_VERSION = 9
+# Stream contract 11 derives trade-bearing sparse tokens and calendar context
+# directly from compact events and persists only certified tensor shards.
+OFFLINE_SHARD_BUILD_STREAM_CONTRACT_VERSION = 11
+DEFAULT_OUTPUT_ROOT = Path(r"D:\TradingML\runtimes\bar_gpt\v1\offline_shards_v9")
 SHARD_CATALOG_LOCK_FILENAME = "SHARD_CATALOG_IMMUTABLE.json"
 
 
@@ -338,6 +338,10 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--skip-hash", action="store_true", help="Diagnostic only; leaves shards uncertified.")
     parser.add_argument("--max-shards", type=int, default=0, help="Bounded smoke limit; zero builds the full plan.")
     parser.add_argument("--database", default=defaults.database)
+    parser.add_argument("--source-mode", choices=("direct_events", "materialized_bars"), default=defaults.source_mode)
+    parser.add_argument("--events-table-base", default=defaults.events_table_base)
+    parser.add_argument("--condition-reference-table", default=defaults.condition_reference_table)
+    parser.add_argument("--max-quote-spread-bps", type=float, default=defaults.max_quote_spread_bps)
     parser.add_argument("--one-second-table", default=defaults.one_second_table)
     parser.add_argument("--daily-table", default=defaults.daily_table)
     parser.add_argument("--condition-table", default=defaults.condition_table)
@@ -368,6 +372,10 @@ def build_data_config(args: argparse.Namespace) -> DataConfig:
     config = dataclasses.replace(
         base,
         database=str(args.database),
+        source_mode=str(args.source_mode),
+        events_table_base=str(args.events_table_base),
+        condition_reference_table=str(args.condition_reference_table),
+        max_quote_spread_bps=float(args.max_quote_spread_bps),
         one_second_table=str(args.one_second_table),
         daily_table=str(args.daily_table),
         condition_table=str(args.condition_table),
@@ -796,6 +804,8 @@ def compile_prepared_unit(sessions: Sequence[dict[str, Any]], config: DataConfig
             "intraday_warmup_bars_1s": int(config.intraday_warmup_bars_1s),
             "source_authority": {
                 "database": config.database,
+                "mode": config.source_mode,
+                "events_table_base": config.events_table_base,
                 "one_second_table": config.one_second_table,
                 "daily_table": config.daily_table,
                 "condition_authority": "embedded_1s",
@@ -1400,7 +1410,11 @@ def _ticker_worker_main(
             if unit_key(unit.ticker, unit.start_date) not in skipped
         }
         events.put(("unit", worker_id, "starting ticker", ticker))
-        dataset = BarGPTIterableDataset(
+        dataset_class = BarGPTIterableDataset
+        if config.source_mode == "direct_events":
+            from research.bar_gpt.v1.direct_event_shards import DirectEventShardDataset
+            dataset_class = DirectEventShardDataset
+        dataset = dataset_class(
             data_config=config,
             stream_config=_stream_config(config),
             split="cache",
@@ -1860,23 +1874,28 @@ def _run_main(args: argparse.Namespace, run_log: BuildRunLog | None) -> int:
     client = ClickHouseHttpClient(
         default_clickhouse_url(), default_clickhouse_user(), default_clickhouse_password()
     )
-    evidence = preflight(client, config)
-    coverage_config = dataclasses.replace(
-        config,
-        tickers=selected_tickers,
-        validation_slices=(),
-        validation_start_date=config.end_date,
-    )
-    _sessions, _exact_blocks, _exact_origins, unit_block_plan, _block_plan = sequential_coverage_counts(
-        client, coverage_config, seed=17, tickers=selected_tickers,
-    )
-    ticker_weights = {
-        ticker: sum(
-            int(unit_block_plan.get(key, (0, 0))[0])
-            for key in allowed if key.partition(":")[0] == ticker
+    if config.source_mode == "direct_events":
+        from research.bar_gpt.v1.direct_event_shards import direct_event_preflight
+        evidence, ticker_weights = direct_event_preflight(client, config, selected_tickers)
+        unit_block_plan: dict[str, tuple[int, int]] = {}
+    else:
+        evidence = preflight(client, config)
+        coverage_config = dataclasses.replace(
+            config,
+            tickers=selected_tickers,
+            validation_slices=(),
+            validation_start_date=config.end_date,
         )
-        for ticker in selected_tickers
-    }
+        _sessions, _exact_blocks, _exact_origins, unit_block_plan, _block_plan = sequential_coverage_counts(
+            client, coverage_config, seed=17, tickers=selected_tickers,
+        )
+        ticker_weights = {
+            ticker: sum(
+                int(unit_block_plan.get(key, (0, 0))[0])
+                for key in allowed if key.partition(":")[0] == ticker
+            )
+            for ticker in selected_tickers
+        }
     partitions = (
         _partition_tickers(selected_tickers, int(args.workers), ticker_weights)
         if selected_tickers else []

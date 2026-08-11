@@ -40,9 +40,10 @@ For interactive review, open `inspect_model.ipynb`; it renders the same
 torchinfo/torchview artifacts, prints real batch and target shapes, and runs a
 bounded checkpoint evaluation when `CHECKPOINT` is set.
 
-Training and production consume raw point-in-time SIP prices. The intraday
-authority is one rich row per completed active one-second bucket in
-`market_sip_compact.bar_gpt_1s_bars_v2_cohort_2tb`. It preserves:
+Training consumes certified tensor shards compiled directly from immutable
+point-in-time SIP events. The builder creates one rich row only for a second
+containing an eligible trade; quote-only, condition-only, empty, and
+condition-ineligible seconds cannot become origins or context. It preserves:
 
 - independent trade, quote-bid, and quote-ask price and size geometry;
 - paired-quote spread, midpoint, microprice, and queue-imbalance moments;
@@ -50,23 +51,21 @@ authority is one rich row per completed active one-second bucket in
 - source ordinal/timestamp bounds and causal `available_at_us`;
 - composable sufficient statistics for exact loader-side rollups.
 
-The table does not store redundant 5-second through 1-hour rows or forecast
-targets. Empty and condition-ineligible seconds are absent. The loader keeps
-the sparse event timeline and builds larger completed intraday bars online.
+No intermediate 1s or daily table is persisted. The worker streams bounded
+Arrow pages over localhost, retains one ticker's rolling state across months,
+builds all intraday/calendar views and targets, then atomically writes the
+final mmap-ready shard.
 
 Exact halt/pause, resume, news-risk, and LULD-state counts are classified from
 retained events and embedded during the same one-pass certified one-second
 build. Neither the 1s builder nor offline shard loader queries a separate
 condition sidecar. These states cannot manufacture a 1s row: a row is stored
-only when at least one condition-eligible trade or paired quote can be an
-origin.
+only when at least one condition-eligible trade can be an origin.
 
-The daily authority is
-`market_sip_compact.daily_session_bars_by_symbol_time_v1`. It is built directly
-from ordered SIP events and maintained by `download_update_events`. Each
-ticker/date has explicit premarket, regular, and after-hours rows, including
-zero-activity sessions. The loader collapses only completed session rows into
-1D and derives completed ISO-week and calendar-month views online.
+Daily, weekly, and monthly context is derived inside the same ticker worker
+from completed trade-bearing sessions. A daily bar becomes available only at
+20:00 New York; empty days are absent. Completed daily bars roll into ISO-week
+and calendar-month context without another ClickHouse scan.
 
 Massive aggregate bars are excluded because they do not retain the event,
 quote, and size geometry of the SIP contract. Training begins in 2019. At that
@@ -79,25 +78,23 @@ complete configured history: 90 completed daily bars, 52 completed weekly bars
 two trading years). Weekly and monthly views are aggregated from a rolling
 500-daily-bar warm-up. Dates on or after the current session remain excluded.
 
-Build and certify the missing 2019 one-second authority before requesting 2019
-training or offline shards. The end date is exclusive:
+Build and audit the direct-event pilot before the full shard campaign:
 
 ```powershell
-python -B -m research.bar_gpt.v1.run_build_1s --start-date 2019-01-01 --end-date 2020-01-01
-python -B -m research.bar_gpt.v1.run_build_1s --start-date 2019-01-01 --end-date 2020-01-01 --execute
+python -B -m research.bar_gpt.v1.run_pilot_offline_shards
+python -B -m research.bar_gpt.v1.run_pilot_offline_shards --execute
 ```
 
-The first command is a safe plan. The one-second builder is manifest-resumable.
-On the first canonical execute it drops only the exact canonical v1 cohort
-table and manifests after verifying the replacement storage policy; use
-`--keep-v1` to suppress that retirement. The identity-alias builder already begins in 2019, and the
-daily-session authority must also remain continuously certified from
-`2019-01-01`.
+The first command is a safe plan. Execute compiles two bounded 2026 shards and
+then automatically verifies hashes, every tensor field, context geometry,
+targets, masks, and every origin against a fresh direct reconstruction from
+compact events.
 
-The preflight fails before any drop or write unless database-resident event
-provenance certifies trade-correction exclusions `07,08,10,11,12`. The compact
-event schema has no correction-code column, so an older event authority cannot
-be repaired safely by the downstream 1s query.
+The preflight fails before shard writes unless database event provenance
+certifies correction exclusions `07,08,10,11` and the condition-token authority
+is present. Historical 01/12 pairing is not reconstructed from compact events;
+that accepted limitation is recorded in the contract and future ingestion
+guidance rather than hidden behind a raw-flatfile dependency.
 
 ## Causal split and identity contract
 
@@ -477,9 +474,9 @@ prepared host batches, then training restarts from consumed durable cursors.
 Unconsumed training blocks replay safely rather than being marked complete.
 
 Training refuses to start unless every requested ticker-month has a compatible
-contract-v7 complete or explicitly covered-empty sidecar and every complete
+contract-v9 complete or explicitly covered-empty sidecar and every complete
 sidecar has its tensor file. ClickHouse is not contacted by the offline training
-path. The v7 shard payload is pinned to embedded-condition sparse OHLC loader-stream contract 9,
+path. The v9 shard payload is pinned to direct-event trade-sparse loader-stream contract 11,
 including nonempty origins/context, timestamped intervals, exact per-origin
 context geometry, signed family OHLC returns, and 12 direction tasks. Defaults are a
 384-wide eight-layer decoder, BF16,
@@ -595,10 +592,9 @@ python -B -m research.bar_gpt.v1.run_build_offline_shards --execute
 The first command is a read-only plan. The execute form balances whole tickers
 by their planned block counts across bounded logical worker slots and writes
 immutable ticker-month shards beneath
-`D:\TradingML\runtimes\bar_gpt\v1\offline_shards_v7`. Both the requested
-one-second authority and daily-session authority now begin in 2019. The
-compiler fails preflight until those sources are continuously certified and
-never fabricates unavailable intraday sessions or calendar history.
+`D:\TradingML\runtimes\bar_gpt\v1\offline_shards_v9`. The compiler reads
+monthly compact-event partitions directly and never fabricates unavailable
+intraday sessions or calendar history.
 
 Each ticker runs in a fresh spawned process, so completing a ticker releases
 PyTorch, Arrow, Polars, and Windows allocator arenas before that logical worker
@@ -634,7 +630,7 @@ This prevents every worker from independently creating a workstation-sized CPU
 thread pool while leaving capacity for ClickHouse and the operating system.
 
 Every executing compiler invocation creates a unique diagnostic directory at
-`offline_shards_v7\manifest\build_runs\<run-id>`. Its parent-owned
+`offline_shards_v9\manifest\build_runs\<run-id>`. Its parent-owned
 `events.jsonl` records the resolved plan, worker PID/ticker launches, stages,
 bounded progress, certifications, complete caught tracebacks, process exit
 codes, last known work, and final catalog. `summary.json` records the final
@@ -643,7 +639,7 @@ to Python `faulthandler` inside that spawned process. An abrupt native exit may
 not produce a Python traceback, but the parent still records its nonzero exit
 code, PID, ticker, last stage and fatal-log path immediately and counts it as a
 failure in both Rich and text output. These operational files do not enter the
-v7 storage hash and do not change shard payloads or ticker/year/month layout.
+v9 storage hash and do not change shard payloads or ticker/year/month layout.
 
 Each month stores every session-level 1s, intraday-rollup, and calendar tensor
 once. Block records retain only slices, exact causal prefix corrections,
@@ -653,14 +649,14 @@ for every origin. Shards use uncompressed PyTorch tensor containers so `torch.lo
 memory-map their storage. The runtime reader performs only mmap slicing,
 padding into reusable pinned batches, and asynchronous CUDA handoff.
 
-The v7 storage identity contains only settings that can alter one ticker-month
+The v9 storage identity contains only settings that can alter one ticker-month
 tensor payload. GPU batch size, loader workers, pinning, prefetch depth,
 requested tickers, requested date range, validation ownership, query tuning,
 and progress/concurrency controls are excluded. A stable ticker-month hash
 replaces range-dependent unit numbering inside each shard. Consequently the
 same certified shard can be collated into any loader-time batch size and two
 disjoint build commands can safely accumulate compatible months in one root.
-Embedded-condition sparse OHLC loader-stream contract 9 is part of the v7 identity, so older shards fail
+The direct-event trade-sparse loader-stream contract 11 is part of the v9 identity, so older shards fail
 discovery instead of being silently interpreted under the corrected context
 contract.
 `origin_bars_1s` remains storage geometry—the number of sequential origins in
@@ -678,11 +674,9 @@ python -B -m research.bar_gpt.v1.run_build_offline_dataset
 python -B -m research.bar_gpt.v1.run_build_offline_dataset --execute
 ```
 
-The first command prints all five exact commands without writing. The execute
-form reads the database yearly event authority directly, builds a continuous
-2019-2026 embedded-condition one-second context authority, point-in-time source
-aliases and daily/calendar authority, then emits only the requested 2019-2021
-training and 2026 validation shards. Every tensor file is
+The first command prints two exact commands without writing. The execute form
+reads compact events directly and emits only the requested 2019-2021 training
+and 2026 validation shards. Every tensor file is
 SHA-256 certified during its normal atomic write, so this launcher does not add
 a second full-catalog validation pass. Use `--force-rebuild` only to replace
 existing compatible production shards deliberately; normal execution skips
@@ -698,28 +692,27 @@ python -B -m research.bar_gpt.v1.run_pilot_offline_shards --execute --force-rebu
 ```
 
 The first command prints the exact build and audit plan. The execute form builds
-`AAPL:2019-01` and `GOOGL:2019-01`, a bounded one-session
-`AAPL:2026-01` context-check shard, and an AAPL 2020-08-31 split-boundary
-shard beneath `offline_shards_v7_pilot`. It
+at most two 2026 ticker-month shards for `AAPL` and `GOOGL` beneath
+`offline_shards_v9_pilot`, then automatically
 verifies all complete-file SHA-256 digests and fails unless shard/sidecar identities,
-counts, configured context, causal as-of indices, horizon tensors, and condition
-positive-count metadata agree. The audit also scans every stored value in all
-46 feature columns of every view for finiteness and records per-feature
+counts, configured context, causal as-of indices, horizon tensors, condition
+positive-count metadata, and direct eligible-trade origin reconstruction agree.
+The audit also scans every stored value in all model feature columns of every
+view for finiteness and records per-feature
 nonzero fractions, standard deviations, minima, and maxima. It also validates
 signed input high/low geometry and every physical/autoregressive OHLC ordering.
 Its JSON report is
 written beneath the pilot root's `manifest/audits` directory. The pilot root is
 never used by the default training or production-build launchers.
-Use `--force-rebuild` only when replacing pilot shards after a contract change,
-such as the 24-month calendar-context correction.
-The 2026 audit additionally requires every origin to expose complete 90/52/24
-calendar context; an `asof=-1` that is correct at the 2019 boundary fails the
-2026 context check.
+Use `--force-rebuild` only when replacing pilot shards after a contract change.
+The 2026 audit requires every origin to expose complete 90/52/12
+daily/weekly/monthly calendar context; an incomplete calendar prefix fails the
+pilot.
 
 The offline compiler fails closed before writing a shard when any origin lacks
 the configured 720/360/360/240/240/96/16/8 intraday histories. Calendar rows
 are stored from the history actually available at the 2019 authority boundary,
-but the model-facing as-of index remains `-1` until the complete 90/52/24
+but the model-facing as-of index remains `-1` until the complete 90/52/12
 daily/weekly/monthly context exists. The audit rejects any partially populated
 calendar view that is accidentally exposed as available.
 
@@ -792,7 +785,7 @@ sidecars are skipped. `--max-shards N` provides a bounded smoke. The optional
 substantial I/O to the 2.3 TB catalog; without it, the original certified digest
 is preserved while tensor structure and metadata are still checked.
 
-The completed `offline_shards_v7` authority can be permanently sealed after its
+The completed `offline_shards_v9` authority can be permanently sealed after its
 catalog has been certified:
 
 ```powershell

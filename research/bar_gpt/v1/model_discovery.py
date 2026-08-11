@@ -23,12 +23,12 @@ from research.bar_gpt.v1.offline_shards import (
 )
 
 
-DISCOVERY_CONTRACT_VERSION = 5
+DISCOVERY_CONTRACT_VERSION = 6
 DISCOVERY_WANDB_PROJECT = "bar gpt model discovery"
 DISCOVERY_ORIGIN_BARS_1S = 4_096
 DISCOVERY_TRAIN_ORIGINS_PER_EPOCH = 100_000_000
 DISCOVERY_EPOCHS = 2
-DEFAULT_SHARD_ROOT = Path(r"D:\TradingML\runtimes\bar_gpt\v1\offline_shards_v7")
+DEFAULT_SHARD_ROOT = Path(r"D:\TradingML\runtimes\bar_gpt\v1\offline_shards_v9")
 DEFAULT_OUTPUT_ROOT = Path(r"D:\TradingML\runtimes\bar_gpt\v1\model_discovery")
 
 

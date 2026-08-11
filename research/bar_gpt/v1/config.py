@@ -81,9 +81,14 @@ class BarGPTConfig:
 
 @dataclass(slots=True)
 class DataConfig:
-    # V8 makes trade OHLC/volume masks condition-category aware and restricts
-    # both origins and all context views to eligible sparse market events.
-    loader_stream_contract_version: int = 9
+    # Stream v11 compiles directly from compact events.  An eligible trade is
+    # mandatory for every stored 1s token, origin, and intraday context row;
+    # quotes may enrich a trade-bearing second but cannot create one.
+    loader_stream_contract_version: int = 11
+    source_mode: str = "direct_events"
+    events_table_base: str = "events"
+    condition_reference_table: str = "event_condition_token_reference"
+    max_quote_spread_bps: float = 1_000.0
     database: str = "market_sip_compact"
     one_second_table: str = BAR_GPT_COHORT_2TB_TABLE
     manifest_table: str = BAR_GPT_COHORT_2TB_MANIFEST_TABLE
@@ -185,8 +190,14 @@ class DataConfig:
         return tuple(ticker for ticker in self.tickers if ticker not in holdout)
 
     def validate(self) -> None:
-        if self.loader_stream_contract_version != 9:
-            raise ValueError("this BarGPT version requires loader_stream_contract_version 9")
+        if self.loader_stream_contract_version != 11:
+            raise ValueError("this BarGPT version requires loader_stream_contract_version 11")
+        if self.source_mode not in {"direct_events", "materialized_bars"}:
+            raise ValueError("source_mode must be direct_events or materialized_bars")
+        if not self.events_table_base or not self.condition_reference_table:
+            raise ValueError("direct event source names cannot be empty")
+        if self.max_quote_spread_bps <= 0:
+            raise ValueError("max_quote_spread_bps must be positive")
         if "split_adjusted" in self.one_second_table or self.daily_table.endswith("_adjusted"):
             raise ValueError("globally adjusted bar authorities are retired; use raw bars with causal split metadata")
         if not self.tickers:
