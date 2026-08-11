@@ -71,6 +71,17 @@ class ApplicationRegistryTests(unittest.TestCase):
             "market_sip_compact.daily_session_bars_by_symbol_time_v1",
             facts_plan.source_paths,
         )
+        scanner_reference_plan = {
+            plan.plan_id: plan for plan in QUERY_PLANS
+        }["reference.scanner_asof.v1"]
+        self.assertEqual(
+            scanner_reference_plan.implementation,
+            "src.backend.query_plans.reference_scanner_asof_v1:scanner_reference_projection",
+        )
+        self.assertIn(
+            "q_live.feature_tradable_universe_v1",
+            scanner_reference_plan.source_paths,
+        )
         fundamentals_plan = {
             plan.plan_id: plan for plan in QUERY_PLANS
         }["sec.fundamentals_asof.v1"]

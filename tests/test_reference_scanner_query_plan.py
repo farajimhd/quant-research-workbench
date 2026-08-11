@@ -1,0 +1,32 @@
+from __future__ import annotations
+
+import unittest
+from datetime import UTC, datetime
+
+from src.backend.query_plans.reference_scanner_asof_v1 import (
+    scanner_reference_projection,
+)
+
+
+class ReferenceScannerQueryPlanTests(unittest.TestCase):
+    def test_plan_is_set_based_and_applies_all_availability_cutoffs(self) -> None:
+        sql = scanner_reference_projection(
+            datetime(2026, 8, 11, 15, 45, 12, 123456, tzinfo=UTC),
+            "q_live",
+        )
+        self.assertIn("is_tradable = 1", sql)
+        self.assertNotIn("ticker IN", sql)
+        self.assertIn("feature_date <= cutoff_date AND inserted_at <= cutoff", sql)
+        self.assertIn("asset_kind = 'logo' AND status = 'active' AND inserted_at <= cutoff", sql)
+        self.assertIn("published_at_utc", sql)
+        self.assertIn("FROM `q_live`.market_ipo_v1 FINAL", sql)
+        self.assertIn("FROM `q_live`.market_stock_split_v1 FINAL", sql)
+        self.assertIn("2026-08-11T15:45:12.123+00:00", sql)
+
+    def test_plan_rejects_naive_cutoff(self) -> None:
+        with self.assertRaisesRegex(ValueError, "timezone"):
+            scanner_reference_projection(datetime(2026, 8, 11))
+
+
+if __name__ == "__main__":
+    unittest.main()

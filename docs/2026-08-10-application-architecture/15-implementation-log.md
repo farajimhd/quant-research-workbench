@@ -718,6 +718,16 @@ bounded direct ClickHouse paths remain documented in
     covers background Replay, Backtest, Strategy, Portfolio, and OMS journal
     continuations; autonomous QMD source-event lineage remains a separate open
     item. Python compile and the focused journal/runtime tests passed.
+95. Made `reference.scanner_asof.v1` a real versioned query plan and removed the
+    SQL from Historical Scanner composition. The single set-based query covers
+    tradable identity, issuer/security labels, country, market cap, shares,
+    float, short interest, IPO/split proximity, and presentation assets. During
+    extraction, three point-in-time leaks were corrected: Scanner-static,
+    current issuer branding, and active logo assets now all require publication
+    no later than the workspace clock. The registry now lists the plan's actual
+    universe, identity, presentation, and reference sources. Python compile and
+    all 31 focused plan, registry, Historical Scanner, and Watchlist tests
+    passed.
 
 The authoritative remaining work and acceptance gates are maintained in the
 [complete implementation backlog](14-implementation-backlog.md). A checked

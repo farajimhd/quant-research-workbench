@@ -173,6 +173,14 @@ including the causal universe publication and filing/recording cutoffs.
 This extraction does not change SEC Gateway schemas, publication, or service
 behavior.
 
+`reference.scanner_asof.v1` is likewise an executable versioned plan rather
+than a pointer to the Scanner composition service. It performs one set-based
+read over the causal tradable universe and reference publications. Universe,
+Scanner-static, security, issuer/branding, presentation assets, country, market
+snapshot, float, short interest, IPO, and split inputs all apply the workspace
+availability cutoff before projection. Historical Scanner retains row shaping
+and logo-URL presentation only.
+
 ## 6. Configuration registry and compiler
 
 The catalog contains capability, field, container, strategy, policy, mode and service descriptors. Configuration records reference stable IDs and versions. The compiler:

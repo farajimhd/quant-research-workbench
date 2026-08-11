@@ -484,8 +484,12 @@ def _query_plans() -> tuple[QueryPlanDefinition, ...]:
         QueryPlanDefinition(
             "reference.scanner_asof.v1",
             "reference_gateway",
-            "src.backend.historical_scanner_service:historical_scanner_reference_projection",
+            "src.backend.query_plans.reference_scanner_asof_v1:scanner_reference_projection",
             (
+                "q_live.feature_tradable_universe_v1",
+                "q_live.feature_scanner_static_v1",
+                "q_live.id_security_v1",
+                "q_live.id_issuer_v1",
                 "q_live.market_security_market_snapshot_v1",
                 "q_live.market_security_float_v1",
                 "q_live.market_short_interest_v1",

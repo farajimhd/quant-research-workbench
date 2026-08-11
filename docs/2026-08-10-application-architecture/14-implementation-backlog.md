@@ -245,6 +245,9 @@ budgets and invalid scope broadening fails configuration validation.
   - [x] Move Historical Scanner's set-based, all-universe XBRL query into the
         same fundamentals plan with causal universe, filing, and recording
         clocks.
+  - [x] Move Historical Scanner's set-based identity, market, supply, short,
+        corporate-event, and presentation enrichment read into the registered
+        `reference.scanner_asof.v1` plan.
   - [ ] Move remaining approved backend SQL domains without modifying deferred
         producer services.
 - [ ] Remove duplicated route-level SQL as callers migrate.
@@ -265,6 +268,8 @@ budgets and invalid scope broadening fails configuration validation.
         fundamentals plan.
   - [x] Remove all-universe XBRL SQL from Historical Scanner composition; it now
         consumes the registered fundamentals builder before deriving cards.
+  - [x] Remove point-in-time reference SQL from Historical Scanner composition;
+        keep only optional logo URL and row projection behavior in the service.
   - [ ] Remove remaining route/service-local SQL only after its registered plan
         and focused parity tests exist.
 - [ ] Consume deferred producer services through unchanged bounded contracts.
