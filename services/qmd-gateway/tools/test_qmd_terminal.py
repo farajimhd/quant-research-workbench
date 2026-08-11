@@ -71,6 +71,10 @@ def representative_state() -> qmd.PollState:
         "compact_events_emitted": 99_995,
         "compact_events_persisted": 99_990,
         "compact_events_reorder_pending": 5,
+        "compact_live_events_pending": 0,
+        "compact_repair_events_pending": 12,
+        "gap_fill_queue_waits": 3,
+        "gap_fill_queue_wait_ms": 25,
         "compact_event_rejected": 0,
         "intraday_bar_rows_emitted": 520,
         "intraday_bar_rows_persisted": 500,
@@ -201,6 +205,13 @@ class QmdTerminalTests(unittest.TestCase):
         self.assertIn("status=running", line)
         self.assertIn("q_live=healthy", line)
         self.assertNotIn("{", line)
+
+    def test_versioned_compact_page_populates_samples(self) -> None:
+        state = representative_state()
+        now = datetime.now(UTC)
+        event = {"ticker": "AAPL", "arrival_sequence": 42}
+        state.record_success("sample:AAPL", {"schema_version": 1, "events": [event]}, now)
+        self.assertEqual(state.samples["AAPL"], [event])
 
     def test_degraded_and_active_maintenance_renders_fit(self) -> None:
         if qmd.Group is None:

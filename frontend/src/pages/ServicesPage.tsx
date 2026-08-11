@@ -5222,11 +5222,14 @@ function serviceFleetMetrics(service: ServiceStatusPayload): ServiceFleetMetric[
   const queueDropParts = queueKeys.map((key) => number([key])).filter((value): value is number => value !== null);
   const queueDrops = number(["queue_drop_total"]) ?? (queueDropParts.length ? queueDropParts.reduce((sum, value) => sum + value, 0) : null);
   const eventLagMs = number(["last_event_lag_ms"]);
+  const liveInputPending = number(["compact_live_events_pending"]);
+  const repairInputPending = number(["compact_repair_events_pending"]);
+  const repairWaits = number(["gap_fill_queue_waits"]);
   return [
     { label: "Events Ingested", value: compact(number(["ingest_events"])), detail: `${compact(number(["ingest_quotes"]))} quotes · ${compact(number(["ingest_trades"]))} trades · ${eventLagMs === null ? "unknown" : formatDuration(eventLagMs / 1000)} lag` },
     { label: "Events Persisted", value: compact(number(["compact_events_persisted"])), detail: `${compact(number(["compact_events_reorder_pending"]))} reorder pending` },
     { label: "Bars Persisted", value: compact(number(["intraday_bar_rows_persisted"])), detail: `${compact(number(["intraday_bar_repairs_completed"]))} late repairs` },
-    { label: "Repair / Queue", ...ratio(optionalNumberOrNull(coverage.completed_jobs), optionalNumberOrNull(coverage.total_jobs)), detail: `${compact(queueDrops)} queue drops`, tone: (queueDrops ?? 0) > 0 ? "warn" : "neutral" },
+    { label: "Repair / Queue", ...ratio(optionalNumberOrNull(coverage.completed_jobs), optionalNumberOrNull(coverage.total_jobs)), detail: `${compact(liveInputPending)} live Â· ${compact(repairInputPending)} repair pending Â· ${compact(repairWaits)} waits Â· ${compact(queueDrops)} drops`, tone: (queueDrops ?? 0) > 0 ? "warn" : "neutral" },
   ];
 }
 

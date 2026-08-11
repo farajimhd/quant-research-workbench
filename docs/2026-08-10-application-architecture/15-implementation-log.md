@@ -1669,6 +1669,17 @@ it does not imply all application work is complete.
      All 105 QMD tests passed. The longer CPU/memory/Scanner steady-state soak
      remains open and is not implied by this active catch-up acceptance.
 
+158. Updated the two operational consumers of QMD's split live/repair lanes.
+     The Rich terminal now reads the versioned compact-event page envelope
+     instead of the legacy raw-array endpoint and shows live pending, repair
+     pending, repair wait count/duration, persistence failures, and throughput
+     on the q_live stage. The Services dashboard exposes the same live/repair
+     pending and wait evidence beside authoritative queue-drop totals, so a
+     healthy aggregate lane cannot hide repair throttling or live backlog.
+     Deferred Market AI and Text Intelligence callers still use the nullable
+     legacy ticker endpoint; therefore endpoint retirement remains correctly
+     open until those deferred migrations resume.
+
 ---
 
 [Top](README.md) · [Previous](14-implementation-backlog.md) · [First](01-product-and-principles.md)

@@ -103,7 +103,8 @@ class PollState:
         self.source_updated_at[source] = now
         if source.startswith("sample:"):
             ticker = source.split(":", 1)[1]
-            self.samples[ticker] = payload if isinstance(payload, list) else []
+            events = payload.get("events") if isinstance(payload, dict) else None
+            self.samples[ticker] = events if isinstance(events, list) else []
         elif source in {"health", "status", "metrics", "maintenance", "coverage"}:
             if isinstance(payload, dict):
                 setattr(self, source, payload)
@@ -215,7 +216,7 @@ def poll_once(
     if details:
         for ticker in watch:
             requests[f"sample:{ticker}"] = (
-                f"/snapshot/compact-events/{ticker}?limit={max(1, event_limit)}"
+                f"/snapshot/compact-event-page/{ticker}?limit={max(1, event_limit)}"
             )
 
     results: dict[str, Any] = {}
@@ -533,8 +534,8 @@ def pipeline_rows(state: PollState) -> list[dict[str, str]]:
             "state": str(compact.get("state") or "disabled"),
             "rate": format_rate(state.rates.get("compact_events_persisted_per_sec")),
             "freshness": lane_freshness(compact),
-            "pending": format_int(compact.get("pending_rows")),
-            "detail": f"persisted {format_int(metrics.get('compact_events_persisted'))}; failures {format_int(compact.get('failures'))}",
+            "pending": f"L {format_int(metrics.get('compact_live_events_pending'))} / R {format_int(metrics.get('compact_repair_events_pending'))}",
+            "detail": f"persisted {format_int(metrics.get('compact_events_persisted'))}; repair waits {format_int(metrics.get('gap_fill_queue_waits'))} ({format_age(as_float(metrics.get('gap_fill_queue_wait_ms')) / 1000)}); failures {format_int(compact.get('failures'))}",
         },
         {
             "stage": "Intraday bars",
