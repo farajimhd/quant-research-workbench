@@ -4,6 +4,7 @@ import unittest
 from unittest.mock import patch
 
 from src.backend.ticker_presentation_service import normalize_tickers, ticker_presentation_payload, ticker_presentation_sql
+from src.backend.query_plans.market_ticker_presentation_v1 import ticker_presentation
 
 
 class TickerPresentationServiceTests(unittest.TestCase):
@@ -12,6 +13,7 @@ class TickerPresentationServiceTests(unittest.TestCase):
 
     def test_query_uses_presentation_asset_authority(self) -> None:
         sql = ticker_presentation_sql(["AAPL", "MSFT"])
+        self.assertEqual(sql, ticker_presentation(["AAPL", "MSFT"]))
         self.assertIn("market_presentation_asset_v1 FINAL", sql)
         self.assertIn("feature_tradable_universe_v1 AS u FINAL", sql)
         self.assertIn("u.ticker IN ('AAPL', 'MSFT')", sql)

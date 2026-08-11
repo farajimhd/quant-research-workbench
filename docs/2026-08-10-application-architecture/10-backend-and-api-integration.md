@@ -137,6 +137,13 @@ extended-session partitions, rejects ambiguous source identity, applies the
 coverage for the requested ticker is absent. `daily_session_bars.py` remains a
 compatibility import, not a second SQL authority.
 
+Bounded ticker branding and issuer-name lookup is registered separately as
+`market.ticker_presentation.v1`. The plan owns latest reference-snapshot
+selection, linked-logo precedence, deterministic legacy-asset fallback, and
+one-row-per-ticker reduction. `ticker_presentation_service.py` retains only the
+request bound, optional-data degradation policy, row projection, and a
+compatibility re-export of the registered builder.
+
 ## 6. Configuration registry and compiler
 
 The catalog contains capability, field, container, strategy, policy, mode and service descriptors. Configuration records reference stable IDs and versions. The compiler:

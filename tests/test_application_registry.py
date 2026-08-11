@@ -35,6 +35,17 @@ class ApplicationRegistryTests(unittest.TestCase):
             "src.backend.query_plans.market_daily_bars_v1:daily_session_trade_bars",
         )
         self.assertEqual(daily_plan.availability_clock, "available_at_us")
+        presentation_plan = {
+            plan.plan_id: plan for plan in QUERY_PLANS
+        }["market.ticker_presentation.v1"]
+        self.assertEqual(
+            presentation_plan.implementation,
+            "src.backend.query_plans.market_ticker_presentation_v1:ticker_presentation",
+        )
+        self.assertIn(
+            "q_live.market_presentation_asset_v1",
+            presentation_plan.source_paths,
+        )
         self.assertTrue(
             {
                 "news.company_asof.v1",

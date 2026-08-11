@@ -223,12 +223,17 @@ budgets and invalid scope broadening fails configuration validation.
   - [x] Move the causal daily-session-bar aggregation used by historical
         Scanner, ticker facts, and Watchlists into the registered
         `market.daily_session_bars.v1` plan.
+  - [x] Move bounded ticker branding and issuer-name lookup into the registered
+        `market.ticker_presentation.v1` plan while retaining the existing
+        service import as a compatibility re-export.
   - [ ] Move remaining approved backend SQL domains without modifying deferred
         producer services.
 - [ ] Remove duplicated route-level SQL as callers migrate.
   - [x] Remove the migrated Canvas context SQL from its composition service.
   - [x] Replace daily-session-bar service imports with the registered plan;
         retain only a compatibility re-export for external callers.
+  - [x] Remove ticker-presentation SQL from its service; the service now owns
+        only request normalization, optional-data degradation, and projection.
   - [ ] Remove remaining route/service-local SQL only after its registered plan
         and focused parity tests exist.
 - [ ] Consume deferred producer services through unchanged bounded contracts.

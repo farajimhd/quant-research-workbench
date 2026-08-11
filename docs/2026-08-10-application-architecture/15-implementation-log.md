@@ -647,6 +647,14 @@ bounded direct ClickHouse paths remain documented in
     reported zero objective issues; with the backend intentionally absent they
     also verified the explicit `Research unavailable` fail-closed state. The
     shared successful Canvas surface had already been validated separately.
+87. Moved the bounded ticker-presentation ClickHouse query into the registered
+    `market.ticker_presentation.v1` plan. The plan is now the single SQL
+    authority for latest reference snapshots, issuer naming, linked-logo
+    precedence, deterministic legacy-asset fallback, and one-row-per-ticker
+    reduction. The service keeps its 200-symbol syntax bound, graceful optional
+    branding degradation, response projection, and a compatibility re-export
+    for existing callers. Python compile and all 15 focused application-registry
+    and ticker-presentation tests passed.
 
 The authoritative remaining work and acceptance gates are maintained in the
 [complete implementation backlog](14-implementation-backlog.md). A checked

@@ -416,6 +416,21 @@ def _query_plans() -> tuple[QueryPlanDefinition, ...]:
             "market_sip_compact.daily_session_bars_by_symbol_time_v1",
         ),
         QueryPlanDefinition(
+            "market.ticker_presentation.v1",
+            "backend",
+            "src.backend.query_plans.market_ticker_presentation_v1:ticker_presentation",
+            (
+                "q_live.feature_tradable_universe_v1",
+                "q_live.feature_scanner_static_v1",
+                "q_live.id_issuer_v1",
+                "q_live.market_presentation_asset_v1",
+            ),
+            "bounded uppercase ticker set to latest symbol and issuer identity",
+            "latest universe_date and feature_date",
+            "reference inserted_at and last_seen_at_utc",
+            "q_live.market_reference_publication_coverage_v1",
+        ),
+        QueryPlanDefinition(
             "reference.schema_inventory.v1",
             "reference_gateway",
             "services.reference_gateway.table_groups:REFERENCE_TABLE_GROUPS",
