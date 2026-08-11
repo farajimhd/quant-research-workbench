@@ -339,6 +339,11 @@ bounded direct ClickHouse paths remain documented in
     and presentation override revision. Updated artifacts therefore miss the
     old entry without a backend restart. Four focused revision/cache tests,
     Python compile, and diff validation passed.
+54. Replaced the process-wide canonical live account-state dictionary with the
+    shared bounded TTL/LRU cache. Account selectors remain part of the key, the
+    projection contract is explicitly versioned, refresh still bypasses reads,
+    and at most 32 account-selector projections are retained. Five focused
+    cache tests, Python compile, and diff validation passed.
 
 The authoritative remaining work and acceptance gates are maintained in the
 [complete implementation backlog](14-implementation-backlog.md). A checked

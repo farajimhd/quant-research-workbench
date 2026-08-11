@@ -70,6 +70,35 @@ class BoundedTtlCacheTests(unittest.TestCase):
         self.assertEqual(first, second)
         table_stats.assert_called_once_with(targets)
 
+    def test_canonical_live_state_uses_a_bounded_projection_cache(self) -> None:
+        from src.backend import canonical_trading_service
+
+        cache = BoundedTtlCache[tuple[str, str], dict](
+            max_entries=2,
+            ttl_seconds=60,
+            contract_revision="canonical-live-state.test",
+        )
+        broker_payload = {
+            "portfolios": [],
+            "orders": [],
+            "executions": [],
+            "errors": [],
+        }
+        with (
+            patch.object(canonical_trading_service, "_CACHE", cache),
+            patch.object(
+                canonical_trading_service,
+                "real_live_portfolio",
+                return_value=broker_payload,
+            ) as portfolio,
+        ):
+            first = canonical_trading_service.canonical_live_state("paper", "account-a")
+            second = canonical_trading_service.canonical_live_state("paper", "account-a")
+
+        self.assertEqual(first, second)
+        portfolio.assert_called_once_with("paper", account_keys="account-a")
+        self.assertEqual(cache.metrics()["max_entries"], 2)
+
 
 if __name__ == "__main__":
     unittest.main()

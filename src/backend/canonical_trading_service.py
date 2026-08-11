@@ -1,11 +1,10 @@
 from __future__ import annotations
 
-import threading
-import time
 from decimal import Decimal
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from src.backend.bounded_cache import BoundedTtlCache
 from src.backend.real_live_trading_service import real_live_portfolio
 from src.trading_runtime.domain import (
     BrokerEventEnvelope,
@@ -28,9 +27,12 @@ from src.trading_runtime.round_trips import derive_round_trip_trades
 from src.trading_runtime.performance import build_performance_report, derive_trade_episodes, episodes_from_round_trips
 
 
-_CACHE_LOCK = threading.Lock()
-_CACHE: dict[tuple[str, str], tuple[float, dict[str, Any]]] = {}
 _CACHE_SECONDS = 2.0
+_CACHE = BoundedTtlCache[tuple[str, str], dict[str, Any]](
+    max_entries=32,
+    ttl_seconds=_CACHE_SECONDS,
+    contract_revision="canonical-live-state.v1",
+)
 _NEW_YORK = ZoneInfo("America/New_York")
 
 
@@ -57,11 +59,9 @@ def canonical_trading_state(
 
 def canonical_live_state(account_type: str = "paper", account_keys: str = "", *, refresh: bool = False) -> dict[str, Any]:
     cache_key = (account_type, account_keys)
-    now = time.monotonic()
-    with _CACHE_LOCK:
-        cached = _CACHE.get(cache_key)
-        if cached and not refresh and now - cached[0] <= _CACHE_SECONDS:
-            return cached[1]
+    cached = None if refresh else _CACHE.get(cache_key)
+    if cached is not None:
+        return cached
     raw = real_live_portfolio(account_type, account_keys=account_keys)
     mode = TradingMode.PAPER if all(str(row.get("trading_mode") or "").lower() == "paper" for row in raw.get("portfolios", [])) else TradingMode.LIVE
     projector = TradingStateProjector(mode, BrokerProvider.IBKR_CPAPI)
@@ -127,8 +127,7 @@ def canonical_live_state(account_type: str = "paper", account_keys: str = "", *,
     projector.stale = bool(errors)
     projector.stale_reason = "; ".join(str(item.get("message") or item) for item in errors) if errors else ""
     payload = trading_state_payload(projector.snapshot())
-    with _CACHE_LOCK:
-        _CACHE[cache_key] = (now, payload)
+    _CACHE.set(cache_key, payload)
     return payload
 
 

@@ -221,8 +221,10 @@ budgets and invalid scope broadening fails configuration validation.
         bounded thread-safe TTL/LRU caches carrying explicit contract revisions.
   - [x] Key the bounded processed-artifact chart LRU by the relevant artifact
         build identities, schema/calculation versions, and presentation revision.
-  - [ ] Add source/calculation revision invalidation to remaining mode-specific
-        caches before closing the application-wide item.
+  - [x] Bound the canonical live account-state projection cache by account
+        selector and an explicit projection contract revision.
+  - [ ] Audit remaining run-local caches and add source/calculation revision
+        invalidation where their immutable Run Plan does not already provide it.
 - [ ] Enforce user, workspace, environment, mode, account, and command authority.
 - [ ] Resolve secrets and broker identifiers server-side.
 - [x] Aggregate service readiness separately from data readiness.
