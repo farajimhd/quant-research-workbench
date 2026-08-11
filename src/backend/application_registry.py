@@ -632,6 +632,22 @@ def _query_plans() -> tuple[QueryPlanDefinition, ...]:
             "q_live.sec_coverage_manifest_v3",
         ),
         QueryPlanDefinition(
+            "sec.operations_intraday.v1",
+            "backend",
+            "src.backend.query_plans.sec_operations_v1:intraday_histogram",
+            (
+                "q_live.sec_filing_v3",
+                "q_live.sec_filing_document_v3",
+                "q_live.sec_filing_text_rendered_v3",
+                "q_live.sec_xbrl_company_fact_v3",
+                "q_live.sec_xbrl_frame_observation_v3",
+            ),
+            "CIK plus accession number",
+            "bounded New York market-day accepted_at_utc window",
+            "SEC Gateway recorded_at_utc",
+            "q_live.sec_coverage_manifest_v3",
+        ),
+        QueryPlanDefinition(
             "sec.scanner_filing_asof.v1",
             "backend",
             "src.backend.query_plans.canvas_context_v1:scanner_sec_filings",

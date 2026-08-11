@@ -154,6 +154,9 @@ from src.backend.query_plans.news_operations_v1 import (
     today_rows as news_today_rows_query,
     today_summary as news_today_summary_query,
 )
+from src.backend.query_plans.sec_operations_v1 import (
+    intraday_histogram as sec_intraday_histogram_query,
+)
 from src.backend.real_live_trading_service import (
     apply_tradable_filter_to_scanner_payload,
     configured_real_live_accounts,
@@ -2237,121 +2240,11 @@ def service_sec_histogram(
     if cached_payload:
         return cached_payload
 
-    bin_count = int(((window_end_utc - window_start_utc).total_seconds() + safe_bin_seconds - 1) // safe_bin_seconds)
-    window_start_sql = service_datetime64_sql(window_start_utc)
-    window_end_sql = service_datetime64_sql(window_end_utc)
-    query = f"""
-        WITH
-            {window_start_sql} AS window_start,
-            {window_end_sql} AS window_end,
-            filing_buckets AS
-            (
-                SELECT
-                    toString(cik) AS cik,
-                    accession_number,
-                    toUInt64(intDiv(dateDiff('second', window_start, accepted_at_utc) + {safe_bin_seconds // 2}, {safe_bin_seconds})) AS bucket_index
-                FROM {quote_ident(database)}.{quote_ident(filing_table)}
-                WHERE accepted_at_utc >= window_start
-                  AND accepted_at_utc < window_end
-            ),
-            document_counts AS
-            (
-                SELECT
-                    toString(cik) AS cik,
-                    accession_number,
-                    toUInt64(count()) AS document_rows
-                FROM {quote_ident(database)}.{quote_ident(document_table)} FINAL
-                WHERE (toString(cik), accession_number) IN (SELECT cik, accession_number FROM filing_buckets)
-                GROUP BY
-                    cik,
-                    accession_number
-            ),
-            text_counts AS
-            (
-                SELECT
-                    toString(cik) AS cik,
-                    accession_number,
-                    toUInt64(count()) AS text_rows
-                FROM {quote_ident(database)}.{quote_ident(text_table)} FINAL
-                WHERE (toString(cik), accession_number) IN (SELECT cik, accession_number FROM filing_buckets)
-                GROUP BY
-                    cik,
-                    accession_number
-            ),
-            fact_counts AS
-            (
-                SELECT
-                    toString(cik) AS cik,
-                    accession_number,
-                    toUInt64(count()) AS xbrl_fact_rows
-                FROM {quote_ident(database)}.{quote_ident(company_fact_table)}
-                WHERE (toString(cik), accession_number) IN (SELECT cik, accession_number FROM filing_buckets)
-                GROUP BY
-                    cik,
-                    accession_number
-            ),
-            frame_counts AS
-            (
-                SELECT
-                    toString(cik) AS cik,
-                    accession_number,
-                    toUInt64(count()) AS xbrl_frame_rows
-                FROM {quote_ident(database)}.{quote_ident(frame_table)}
-                WHERE (toString(cik), accession_number) IN (SELECT cik, accession_number FROM filing_buckets)
-                GROUP BY
-                    cik,
-                    accession_number
-            ),
-            classified_filings AS
-            (
-                SELECT
-                    f.bucket_index AS bucket_index,
-                    toUInt64(ifNull(d.document_rows, 0)) AS related_document_rows,
-                    toUInt64(ifNull(t.text_rows, 0)) AS related_text_rows,
-                    toUInt64(ifNull(cf.xbrl_fact_rows, 0) + ifNull(fr.xbrl_frame_rows, 0)) AS related_xbrl_rows
-                FROM filing_buckets AS f
-                LEFT JOIN document_counts AS d
-                    ON d.cik = f.cik AND d.accession_number = f.accession_number
-                LEFT JOIN text_counts AS t
-                    ON t.cik = f.cik AND t.accession_number = f.accession_number
-                LEFT JOIN fact_counts AS cf
-                    ON cf.cik = f.cik AND cf.accession_number = f.accession_number
-                LEFT JOIN frame_counts AS fr
-                    ON fr.cik = f.cik AND fr.accession_number = f.accession_number
-            ),
-            bucket_counts AS
-            (
-                SELECT
-                    bucket_index,
-                    toUInt64(count()) AS total_rows,
-                    toUInt64(countIf(related_xbrl_rows > 0)) AS xbrl_rows,
-                    toUInt64(countIf(related_xbrl_rows = 0 AND related_text_rows > 0)) AS text_rows,
-                    toUInt64(countIf(related_xbrl_rows = 0 AND related_text_rows = 0 AND related_document_rows > 0)) AS document_rows,
-                    toUInt64(countIf(related_xbrl_rows = 0 AND related_text_rows = 0 AND related_document_rows = 0)) AS filing_only_rows
-                FROM classified_filings
-                GROUP BY bucket_index
-            )
-        SELECT
-            formatDateTime(
-                window_start + toIntervalSecond(toInt64(b.bucket_index) * {safe_bin_seconds}),
-                '%Y-%m-%dT%H:%i:%S.000Z',
-                'UTC'
-            ) AS bucket_utc,
-            toUInt64(ifNull(c.filing_only_rows, 0)) AS filing_only_rows,
-            toUInt64(ifNull(c.document_rows, 0)) AS document_rows,
-            toUInt64(ifNull(c.text_rows, 0)) AS text_rows,
-            toUInt64(ifNull(c.xbrl_rows, 0)) AS xbrl_rows,
-            toUInt64(ifNull(c.total_rows, 0)) AS total_rows
-        FROM
-        (
-            SELECT toUInt64(number) AS bucket_index
-            FROM numbers({bin_count + 1})
-        ) AS b
-        LEFT JOIN bucket_counts AS c
-            ON c.bucket_index = b.bucket_index
-        ORDER BY b.bucket_index
-        FORMAT JSONEachRow
-    """
+    query = sec_intraday_histogram_query(
+        window_start_utc,
+        window_end_utc,
+        bin_seconds=safe_bin_seconds,
+    )
     rows: list[dict[str, Any]] = []
     for line in clickhouse_status_query(query).splitlines():
         if not line.strip():

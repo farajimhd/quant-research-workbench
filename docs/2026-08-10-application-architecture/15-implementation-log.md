@@ -1372,6 +1372,18 @@ bounded direct ClickHouse paths remain documented in
      Twenty-nine focused operational-plan, News detail, trading-News route,
      and application-registry tests passed. All changed Python modules compiled
      with bytecode writes disabled.
+143. Moved the Services SEC market-day classification histogram into the
+     registered `sec.operations_intraday.v1` plan. The query uses the bounded
+     half-open `accepted_at_utc` window and the canonical CIK/accession identity
+     to classify each filing by the strongest published downstream state:
+     XBRL, rendered text, document only, or filing only. It reads only existing
+     SEC Gateway publications and does not change their schemas or production.
+     The backend route retains caching, optional degradation, JSON decoding,
+     and operational presentation.
+
+     Fifteen focused SEC operational-plan, SEC Canvas, News operational-plan,
+     and application-registry tests passed. All changed Python modules compiled
+     with bytecode writes disabled.
 
 The authoritative remaining work and acceptance gates are maintained in the
 [complete implementation backlog](14-implementation-backlog.md). A checked

@@ -283,6 +283,8 @@ budgets and invalid scope broadening fails configuration validation.
         the route without changing News Gateway tables or publication.
   - [x] Move Services News market-day summary, row, and histogram SQL into the
         bounded `news.operations_intraday.v1` plan.
+  - [x] Move the Services SEC market-day filing/text/XBRL histogram SQL into
+        the bounded `sec.operations_intraday.v1` plan.
   - [ ] Move remaining approved backend SQL domains without modifying deferred
         producer services.
 - [ ] Remove duplicated route-level SQL as callers migrate.
@@ -312,6 +314,8 @@ budgets and invalid scope broadening fails configuration validation.
         route now composes registered builders and user-facing fields only.
   - [x] Remove Services News market-day operational SQL from `app.py`; retain
         caching, row decoding, and operational presentation in the backend.
+  - [x] Remove the Services SEC histogram SQL from `app.py`; retain caching,
+        degradation, row decoding, and operational presentation there.
   - [ ] Remove remaining route/service-local SQL only after its registered plan
         and focused parity tests exist.
 - [x] Consume deferred producer services through unchanged bounded contracts.
