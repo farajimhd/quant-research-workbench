@@ -674,6 +674,12 @@ impl SharedBarStore {
 }
 
 impl BarEventRouter {
+    pub fn queue_capacity(&self, event: &MarketEvent) -> (usize, usize) {
+        let index = shard_index(event.ticker(), self.senders.len());
+        let sender = &self.senders[index];
+        (sender.capacity(), sender.max_capacity())
+    }
+
     pub async fn send(
         &self,
         event: MarketEvent,

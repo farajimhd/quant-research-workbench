@@ -8,7 +8,7 @@ use crate::state::{ScannerRowDelta, SharedMarketState};
 use futures_util::{SinkExt, StreamExt};
 use serde_json::json;
 use tokio::sync::{broadcast, mpsc};
-use tokio::time::{sleep, Duration};
+use tokio::time::{sleep, Duration, Instant};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 
 #[derive(Clone)]
@@ -16,6 +16,7 @@ pub struct MarketEventFanout {
     pub state: SharedMarketState,
     pub writer_sender: Option<mpsc::Sender<MarketEvent>>,
     pub compact_writer_sender: Option<mpsc::Sender<MarketEvent>>,
+    pub compact_repair_writer_sender: Option<mpsc::Sender<MarketEvent>>,
     pub bar_router: BarEventRouter,
     pub indicator_router: IndicatorEventRouter,
     pub live_market_state_router: LiveMarketStateRouter,
@@ -78,8 +79,10 @@ pub async fn run_massive_ingest(config: GatewayConfig, fanout: MarketEventFanout
                             }
                             match parse_massive_payload(&text) {
                                 Ok(events) => {
+                                    fanout.metrics.add_live_events_waiting(events.len() as u64);
                                     for event in events {
                                         fanout_market_event(event, &fanout).await;
+                                        fanout.metrics.complete_live_event();
                                     }
                                 }
                                 Err(error) => {
@@ -127,6 +130,10 @@ pub async fn run_massive_ingest(config: GatewayConfig, fanout: MarketEventFanout
 }
 
 pub async fn fanout_market_event(event: MarketEvent, fanout: &MarketEventFanout) {
+    fanout_event(event, fanout, false).await;
+}
+
+async fn fanout_event(event: MarketEvent, fanout: &MarketEventFanout, repair: bool) {
     let kind = match &event {
         MarketEvent::Trade(_) => "trade",
         MarketEvent::Quote(_) => "quote",
@@ -144,7 +151,11 @@ pub async fn fanout_market_event(event: MarketEvent, fanout: &MarketEventFanout)
     // non-blocking and require lagging clients to resnapshot.
     enqueue_authoritative_event(
         event.clone(),
-        fanout.compact_writer_sender.as_ref(),
+        if repair {
+            fanout.compact_repair_writer_sender.as_ref()
+        } else {
+            fanout.compact_writer_sender.as_ref()
+        },
         fanout.writer_sender.as_ref(),
         &fanout.metrics,
     )
@@ -176,6 +187,80 @@ pub async fn fanout_market_event(event: MarketEvent, fanout: &MarketEventFanout)
         fanout.metrics.inc_indicator_event_dropped();
         eprintln!("Indicator shard receiver closed; could not route one indicator event.");
     }
+}
+
+/// Route a REST-repair event without allowing repair concurrency to consume
+/// the persistence and computation queue slots reserved for the websocket.
+/// The repair remains lossless: it waits and resumes when capacity is safe.
+pub async fn fanout_repair_market_event(event: MarketEvent, fanout: &MarketEventFanout) {
+    wait_for_repair_fanout_capacity(&event, fanout).await;
+    fanout_event(event, fanout, true).await;
+}
+
+async fn wait_for_repair_fanout_capacity(event: &MarketEvent, fanout: &MarketEventFanout) {
+    if repair_fanout_has_capacity(event, fanout) {
+        return;
+    }
+
+    let started_at = Instant::now();
+    while !repair_fanout_has_capacity(event, fanout) {
+        sleep(Duration::from_millis(5)).await;
+    }
+    fanout
+        .metrics
+        .record_gap_fill_queue_wait(started_at.elapsed().as_millis() as u64);
+}
+
+fn repair_fanout_has_capacity(event: &MarketEvent, fanout: &MarketEventFanout) -> bool {
+    if fanout.metrics.live_events_waiting() > 0 {
+        return false;
+    }
+    let compact_ready = fanout
+        .compact_repair_writer_sender
+        .as_ref()
+        .map(|sender| {
+            queue_has_repair_capacity(sender)
+                && fanout
+                    .metrics
+                    .lane_pending_rows("compact_events")
+                    .map(|pending| {
+                        pending
+                            < sender
+                                .max_capacity()
+                                .saturating_sub(repair_queue_reserve(sender.max_capacity()))
+                                as u64
+                    })
+                    .unwrap_or(true)
+        })
+        .unwrap_or(true);
+    let (bar_capacity, bar_maximum) = fanout.bar_router.queue_capacity(event);
+    let (state_capacity, state_maximum) = fanout.live_market_state_router.event_queue_capacity();
+    let indicator_ready = fanout
+        .indicator_router
+        .event_queue_capacity(event)
+        .map(|(capacity, maximum)| queue_values_have_repair_capacity(capacity, maximum))
+        .unwrap_or(true);
+
+    compact_ready
+        && queue_values_have_repair_capacity(bar_capacity, bar_maximum)
+        && queue_values_have_repair_capacity(state_capacity, state_maximum)
+        && indicator_ready
+}
+
+fn queue_has_repair_capacity<T>(sender: &mpsc::Sender<T>) -> bool {
+    sender.is_closed()
+        || queue_values_have_repair_capacity(sender.capacity(), sender.max_capacity())
+}
+
+fn queue_values_have_repair_capacity(capacity: usize, maximum: usize) -> bool {
+    capacity > repair_queue_reserve(maximum)
+}
+
+fn repair_queue_reserve(maximum: usize) -> usize {
+    if maximum <= 1 {
+        return 0;
+    }
+    (maximum / 10).max(1).min(25_000).min(maximum - 1)
 }
 
 async fn enqueue_authoritative_event(
@@ -250,6 +335,29 @@ mod tests {
             "raw backpressure should remain lossless"
         );
         raw_receiver.recv().await.unwrap();
+        task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn repair_waits_without_consuming_the_live_queue_reserve() {
+        let (sender, mut receiver) = mpsc::channel(10);
+        for sequence in 1..=9 {
+            sender.send(trade(sequence)).await.unwrap();
+        }
+        let repair_sender = sender.clone();
+        let task = tokio::spawn(async move {
+            while !queue_has_repair_capacity(&repair_sender) {
+                sleep(Duration::from_millis(5)).await;
+            }
+            repair_sender.send(trade(10)).await.unwrap();
+        });
+
+        sleep(Duration::from_millis(20)).await;
+        assert!(
+            !task.is_finished(),
+            "repair consumed the reserved live slot"
+        );
+        receiver.recv().await.unwrap();
         task.await.unwrap();
     }
 }

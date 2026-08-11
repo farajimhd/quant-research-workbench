@@ -84,6 +84,10 @@ pub enum LiveMarketStateInput {
 }
 
 impl LiveMarketStateRouter {
+    pub fn event_queue_capacity(&self) -> (usize, usize) {
+        (self.sender.capacity(), self.sender.max_capacity())
+    }
+
     pub async fn send_event(
         &self,
         event: MarketEvent,

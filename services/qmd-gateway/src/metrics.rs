@@ -29,9 +29,13 @@ struct MetricsInner {
     compact_events_reorder_buffered: AtomicU64,
     compact_events_reorder_flushed: AtomicU64,
     compact_events_reorder_pending: AtomicU64,
+    compact_live_events_pending: AtomicU64,
+    compact_repair_events_pending: AtomicU64,
     events_broadcast_dropped: AtomicU64,
     gap_fill_failures: AtomicU64,
     gap_fill_last_duration_ms: AtomicU64,
+    gap_fill_queue_wait_ms: AtomicU64,
+    gap_fill_queue_waits: AtomicU64,
     gap_fill_rows_written: AtomicU64,
     gap_fill_runs: AtomicU64,
     gap_fill_total_duration_ms: AtomicU64,
@@ -49,6 +53,7 @@ struct MetricsInner {
     live_market_state_events_emitted: AtomicU64,
     live_market_state_events_persisted: AtomicU64,
     live_market_state_persist_failures: AtomicU64,
+    live_events_waiting: AtomicU64,
     massive_connect_failures: AtomicU64,
     massive_disconnects: AtomicU64,
     parse_failures: AtomicU64,
@@ -117,9 +122,13 @@ pub struct MetricsSnapshot {
     pub compact_events_reorder_buffered: u64,
     pub compact_events_reorder_flushed: u64,
     pub compact_events_reorder_pending: u64,
+    pub compact_live_events_pending: u64,
+    pub compact_repair_events_pending: u64,
     pub events_broadcast_dropped: u64,
     pub gap_fill_failures: u64,
     pub gap_fill_last_duration_ms: u64,
+    pub gap_fill_queue_wait_ms: u64,
+    pub gap_fill_queue_waits: u64,
     pub gap_fill_rows_written: u64,
     pub gap_fill_runs: u64,
     pub gap_fill_total_duration_ms: u64,
@@ -138,6 +147,7 @@ pub struct MetricsSnapshot {
     pub live_market_state_events_emitted: u64,
     pub live_market_state_events_persisted: u64,
     pub live_market_state_persist_failures: u64,
+    pub live_events_waiting: u64,
     pub massive_connect_failures: u64,
     pub massive_disconnects: u64,
     pub parse_failures: u64,
@@ -201,9 +211,13 @@ impl SharedMetrics {
                 compact_events_reorder_buffered: AtomicU64::new(0),
                 compact_events_reorder_flushed: AtomicU64::new(0),
                 compact_events_reorder_pending: AtomicU64::new(0),
+                compact_live_events_pending: AtomicU64::new(0),
+                compact_repair_events_pending: AtomicU64::new(0),
                 events_broadcast_dropped: AtomicU64::new(0),
                 gap_fill_failures: AtomicU64::new(0),
                 gap_fill_last_duration_ms: AtomicU64::new(0),
+                gap_fill_queue_wait_ms: AtomicU64::new(0),
+                gap_fill_queue_waits: AtomicU64::new(0),
                 gap_fill_rows_written: AtomicU64::new(0),
                 gap_fill_runs: AtomicU64::new(0),
                 gap_fill_total_duration_ms: AtomicU64::new(0),
@@ -221,6 +235,7 @@ impl SharedMetrics {
                 live_market_state_events_emitted: AtomicU64::new(0),
                 live_market_state_events_persisted: AtomicU64::new(0),
                 live_market_state_persist_failures: AtomicU64::new(0),
+                live_events_waiting: AtomicU64::new(0),
                 massive_connect_failures: AtomicU64::new(0),
                 massive_disconnects: AtomicU64::new(0),
                 parse_failures: AtomicU64::new(0),
@@ -396,9 +411,13 @@ impl SharedMetrics {
             compact_events_reorder_buffered: self.get(&self.inner.compact_events_reorder_buffered),
             compact_events_reorder_flushed: self.get(&self.inner.compact_events_reorder_flushed),
             compact_events_reorder_pending: self.get(&self.inner.compact_events_reorder_pending),
+            compact_live_events_pending: self.get(&self.inner.compact_live_events_pending),
+            compact_repair_events_pending: self.get(&self.inner.compact_repair_events_pending),
             events_broadcast_dropped: self.get(&self.inner.events_broadcast_dropped),
             gap_fill_failures: self.get(&self.inner.gap_fill_failures),
             gap_fill_last_duration_ms: self.get(&self.inner.gap_fill_last_duration_ms),
+            gap_fill_queue_wait_ms: self.get(&self.inner.gap_fill_queue_wait_ms),
+            gap_fill_queue_waits: self.get(&self.inner.gap_fill_queue_waits),
             gap_fill_rows_written: self.get(&self.inner.gap_fill_rows_written),
             gap_fill_runs: self.get(&self.inner.gap_fill_runs),
             gap_fill_total_duration_ms: self.get(&self.inner.gap_fill_total_duration_ms),
@@ -429,6 +448,7 @@ impl SharedMetrics {
                 .get(&self.inner.live_market_state_events_persisted),
             live_market_state_persist_failures: self
                 .get(&self.inner.live_market_state_persist_failures),
+            live_events_waiting: self.get(&self.inner.live_events_waiting),
             massive_connect_failures: self.get(&self.inner.massive_connect_failures),
             massive_disconnects: self.get(&self.inner.massive_disconnects),
             parse_failures: self.get(&self.inner.parse_failures),
@@ -442,12 +462,37 @@ impl SharedMetrics {
         self.inc(&self.inner.ingest_events, 1);
         self.inner
             .last_event_unix_ms
-            .store(ts.timestamp_millis(), Ordering::Relaxed);
+            .fetch_max(ts.timestamp_millis(), Ordering::Relaxed);
         match kind {
             "trade" => self.inc(&self.inner.ingest_trades, 1),
             "quote" => self.inc(&self.inner.ingest_quotes, 1),
             _ => {}
         }
+    }
+
+    pub fn add_live_events_waiting(&self, count: u64) {
+        self.inc(&self.inner.live_events_waiting, count);
+    }
+
+    pub fn complete_live_event(&self) {
+        let _ = self.inner.live_events_waiting.fetch_update(
+            Ordering::Relaxed,
+            Ordering::Relaxed,
+            |current| Some(current.saturating_sub(1)),
+        );
+    }
+
+    pub fn live_events_waiting(&self) -> u64 {
+        self.get(&self.inner.live_events_waiting)
+    }
+
+    pub fn lane_pending_rows(&self, key: &str) -> Option<u64> {
+        let state = self
+            .inner
+            .operational
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        state.lanes.get(key).map(|lane| lane.pending_rows)
     }
 
     pub fn inc_bar_emitted(&self, count: u64) {
@@ -525,6 +570,19 @@ impl SharedMetrics {
         self.set(&self.inner.compact_events_reorder_pending, count);
     }
 
+    pub fn set_compact_live_events_pending(&self, count: u64) {
+        self.set(&self.inner.compact_live_events_pending, count);
+    }
+
+    pub fn set_compact_repair_events_pending(&self, count: u64) {
+        self.set(&self.inner.compact_repair_events_pending, count);
+    }
+
+    pub fn compact_input_events_pending(&self) -> u64 {
+        self.get(&self.inner.compact_live_events_pending)
+            .saturating_add(self.get(&self.inner.compact_repair_events_pending))
+    }
+
     pub fn inc_event_broadcast_dropped(&self) {
         self.inc(&self.inner.events_broadcast_dropped, 1);
     }
@@ -535,6 +593,11 @@ impl SharedMetrics {
 
     pub fn inc_gap_fill_rows(&self, rows: u64) {
         self.inc(&self.inner.gap_fill_rows_written, rows);
+    }
+
+    pub fn record_gap_fill_queue_wait(&self, elapsed_ms: u64) {
+        self.inc(&self.inner.gap_fill_queue_waits, 1);
+        self.inc(&self.inner.gap_fill_queue_wait_ms, elapsed_ms);
     }
 
     pub fn inc_gap_fill_run(&self) {
@@ -671,6 +734,7 @@ fn truncate_error(value: &str) -> String {
 #[cfg(test)]
 mod operational_tests {
     use super::{SharedMetrics, TimingTarget};
+    use chrono::{TimeZone, Utc};
 
     #[test]
     fn operational_lane_records_failure_and_recovery() {
@@ -702,6 +766,29 @@ mod operational_tests {
         assert_eq!(profile.samples, 1);
         assert_eq!(profile.sample_every, 1);
         assert!(profile.max_us >= profile.last_us);
+    }
+
+    #[test]
+    fn historical_repair_cannot_regress_live_freshness() {
+        let metrics = SharedMetrics::new();
+        let current = Utc.with_ymd_and_hms(2026, 8, 11, 18, 0, 0).unwrap();
+        let repair = Utc.with_ymd_and_hms(2026, 8, 11, 17, 0, 0).unwrap();
+
+        metrics.observe_event("trade", current);
+        metrics.observe_event("quote", repair);
+
+        assert_eq!(metrics.snapshot().last_event_ts, Some(current));
+    }
+
+    #[test]
+    fn live_batch_demand_is_bounded_at_zero() {
+        let metrics = SharedMetrics::new();
+        metrics.add_live_events_waiting(2);
+        metrics.complete_live_event();
+        metrics.complete_live_event();
+        metrics.complete_live_event();
+        assert_eq!(metrics.live_events_waiting(), 0);
+        assert_eq!(metrics.snapshot().live_events_waiting, 0);
     }
 }
 

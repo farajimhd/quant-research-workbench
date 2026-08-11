@@ -238,8 +238,20 @@ impl SymbolState {
         if !self.accept_session(trade.ts) {
             return;
         }
-        self.last_event_ts = Some(trade.ts);
-        self.last_price = trade.price;
+        let advances_current_trade = self
+            .last_trade
+            .as_ref()
+            .map(|last_trade| trade.ts >= last_trade.ts)
+            .unwrap_or(true);
+        if advances_current_trade {
+            self.last_price = trade.price;
+            self.last_trade = Some(trade.clone());
+        }
+        self.last_event_ts = Some(
+            self.last_event_ts
+                .map(|last_event_ts| last_event_ts.max(trade.ts))
+                .unwrap_or(trade.ts),
+        );
         self.day_volume += trade.size.max(0.0);
         self.day_dollar_volume += trade.size.max(0.0) * trade.price.max(0.0);
         self.day_trade_count += 1;
@@ -255,15 +267,25 @@ impl SymbolState {
         }
         self.recent_trade_counts
             .retain(|timestamp, _| *timestamp >= cutoff);
-        self.last_trade = Some(trade);
     }
 
     fn apply_quote(&mut self, quote: QuoteEvent) {
         if !self.accept_session(quote.ts) {
             return;
         }
-        self.last_event_ts = Some(quote.ts);
-        self.last_quote = Some(quote);
+        if self
+            .last_quote
+            .as_ref()
+            .map(|last_quote| quote.ts >= last_quote.ts)
+            .unwrap_or(true)
+        {
+            self.last_quote = Some(quote.clone());
+        }
+        self.last_event_ts = Some(
+            self.last_event_ts
+                .map(|last_event_ts| last_event_ts.max(quote.ts))
+                .unwrap_or(quote.ts),
+        );
     }
 
     fn accept_session(&mut self, ts: DateTime<Utc>) -> bool {
@@ -393,6 +415,21 @@ mod tests {
         assert!(state.trade_rate(60, active) > 0.0);
         let stale = "2026-07-14T14:03:00Z".parse::<DateTime<Utc>>().unwrap();
         assert_eq!(state.trade_rate(60, stale), 0.0);
+    }
+
+    #[test]
+    fn late_same_session_repairs_do_not_regress_current_trade_state() {
+        let mut state = SymbolState::new();
+        state.apply_trade(trade("2026-07-14T14:00:10Z", 11.0, 7.0));
+        state.apply_trade(trade("2026-07-14T14:00:00Z", 9.0, 5.0));
+
+        assert_eq!(state.last_price, 11.0);
+        assert_eq!(
+            state.last_event_ts.unwrap().to_rfc3339(),
+            "2026-07-14T14:00:10+00:00"
+        );
+        assert_eq!(state.day_trade_count, 2);
+        assert_eq!(state.day_volume, 12.0);
     }
 
     #[tokio::test]

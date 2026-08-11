@@ -5,7 +5,9 @@ param(
     [string]$TerminalWatch = "AAPL,NVDA,TSLA",
     [double]$TerminalRefreshSeconds = 1.0,
     [int]$TerminalEventLimit = 6,
+    [string]$CargoTargetDir = "",
     [switch]$CheckOnly,
+    [switch]$DebugBuild,
     [switch]$NoTerminal,
     [switch]$TerminalNoScreen
 )
@@ -15,7 +17,24 @@ $env:PYTHONDONTWRITEBYTECODE = "1"
 $repoRoot = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
 $manifest = Join-Path $repoRoot "services\qmd-gateway\Cargo.toml"
 $serviceDir = Split-Path -Parent $manifest
-$gatewayExe = Join-Path $serviceDir "target\debug\qmd-gateway.exe"
+$targetRoot = if ($CargoTargetDir.Trim()) {
+    $CargoTargetDir.Trim()
+} elseif ($env:QMD_CARGO_TARGET_DIR) {
+    $env:QMD_CARGO_TARGET_DIR.Trim()
+} elseif ($env:CARGO_TARGET_DIR) {
+    $env:CARGO_TARGET_DIR.Trim()
+} else {
+    "D:\TradingML\runtimes\qmd_gateway\cargo-target"
+}
+$targetRoot = [IO.Path]::GetFullPath($targetRoot).TrimEnd('\')
+$resolvedRepo = [IO.Path]::GetFullPath($repoRoot).TrimEnd('\')
+if ($targetRoot.Equals($resolvedRepo, [StringComparison]::OrdinalIgnoreCase) -or
+    $targetRoot.StartsWith($resolvedRepo + '\', [StringComparison]::OrdinalIgnoreCase)) {
+    throw "QMD Cargo output must be outside the repository: $targetRoot"
+}
+$env:CARGO_TARGET_DIR = $targetRoot
+$targetProfile = if ($DebugBuild) { "debug" } else { "release" }
+$gatewayExe = Join-Path $targetRoot "$targetProfile\qmd-gateway.exe"
 $terminalScript = Join-Path $serviceDir "tools\qmd_terminal.py"
 
 function Import-DotEnvFile {
@@ -58,12 +77,20 @@ if ($Bind.Trim()) {
 }
 
 if ($CheckOnly) {
-    cargo check --manifest-path $manifest
+    if ($DebugBuild) {
+        cargo check --manifest-path $manifest
+    } else {
+        cargo check --release --manifest-path $manifest
+    }
     exit $LASTEXITCODE
 }
 
 if ($NoTerminal) {
-    cargo run --manifest-path $manifest
+    if ($DebugBuild) {
+        cargo run --manifest-path $manifest
+    } else {
+        cargo run --release --manifest-path $manifest
+    }
     exit $LASTEXITCODE
 }
 
@@ -158,8 +185,12 @@ $stderrLog = Join-Path $logRoot "qmd_gateway_$runStamp.err.log"
 $shutdownToken = [Guid]::NewGuid().ToString("N")
 $env:QMD_SHUTDOWN_TOKEN = $shutdownToken
 
-Write-Host "Building qmd-gateway..."
-cargo build --manifest-path $manifest
+Write-Host "Building qmd-gateway ($targetProfile)..."
+if ($DebugBuild) {
+    cargo build --manifest-path $manifest
+} else {
+    cargo build --release --manifest-path $manifest
+}
 if ($LASTEXITCODE -ne 0) {
     exit $LASTEXITCODE
 }

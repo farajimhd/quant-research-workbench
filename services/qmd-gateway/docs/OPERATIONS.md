@@ -41,6 +41,13 @@ Run the gateway:
 .\scripts\run_qmd_gateway.ps1
 ```
 
+The managed launcher builds and runs the optimized release profile by default
+and keeps Cargo output outside the repository under
+`D:\TradingML\runtimes\qmd_gateway\cargo-target`. Use `-DebugBuild` only for
+local debugging; it is not suitable for the all-market SIP workload. Override
+the external target with `-CargoTargetDir` or `QMD_CARGO_TARGET_DIR` when the
+runtime authority is on another host.
+
 By default this builds the Rust service, starts it in the background, waits for
 `/health`, then opens the Rich terminal monitor in the same terminal. Gateway
 stdout/stderr are written under `.tmp/qmd-gateway/` so service logs do not

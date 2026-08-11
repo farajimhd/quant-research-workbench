@@ -22,7 +22,8 @@ use qmd_core::live_market_state::{
 use qmd_core::maintenance::SharedMaintenanceState;
 use qmd_core::market_calendar::{run_market_calendar_refresh, MarketCalendarClient};
 use qmd_core::market_products::{
-    parse_resolution_us, ConditionClassifier, ProductCacheLimits, SharedMarketProductStore,
+    parse_resolution_us, spawn_market_product_engines, ConditionClassifier, ProductCacheLimits,
+    SharedMarketProductStore,
 };
 use qmd_core::massive::{run_massive_ingest, MarketEventFanout};
 use qmd_core::metrics::SharedMetrics;
@@ -135,6 +136,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         trade_aggregation_rules.clone(),
         ConditionClassifier::training_aligned(),
     );
+    let product_router = spawn_market_product_engines(
+        products.clone(),
+        config.compact_event_channel_capacity,
+        config.intraday_bar_shard_count,
+    );
     let market_structure_references = load_live_market_structure_references(&config, Utc::now())
         .await
         .unwrap_or_else(|error| {
@@ -163,6 +169,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         mpsc::channel::<MarketEvent>(config.event_channel_capacity);
     let (compact_writer_sender, compact_writer_receiver) =
         mpsc::channel::<MarketEvent>(config.compact_event_channel_capacity);
+    let compact_repair_capacity = (config.compact_event_channel_capacity / 10)
+        .max(1_024)
+        .min(25_000)
+        .min(config.compact_event_channel_capacity);
+    let (compact_repair_writer_sender, compact_repair_writer_receiver) =
+        mpsc::channel::<MarketEvent>(compact_repair_capacity);
     let (indicator_writer_sender, indicator_writer_receiver) =
         mpsc::channel::<IndicatorRow>(config.indicator_channel_capacity);
     let (event_sender, _event_receiver) = broadcast::channel::<MarketEvent>(10_000);
@@ -209,7 +221,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             compact_event_store.clone(),
             metrics.clone(),
             intraday_bar_service.router.clone(),
-            products.clone(),
+            product_router,
         );
         compact_writer.initialize().await.map_err(|error| {
             startup_error(format!(
@@ -228,9 +240,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 "Compact-event warning audit initialized; normal state is sparse.",
             );
         }
-        writer_handles.push(tokio::spawn(compact_writer.run(compact_writer_receiver)));
+        writer_handles.push(tokio::spawn(
+            compact_writer.run(compact_writer_receiver, compact_repair_writer_receiver),
+        ));
     } else {
         drop(compact_writer_receiver);
+        drop(compact_repair_writer_receiver);
         eprintln!(
             "Compact event stream is disabled. Set QMD_COMPACT_EVENTS_ENABLED=true to enable it."
         );
@@ -325,6 +340,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         },
         compact_writer_sender: if config.compact_events_enabled {
             Some(compact_writer_sender)
+        } else {
+            None
+        },
+        compact_repair_writer_sender: if config.compact_events_enabled {
+            Some(compact_repair_writer_sender)
         } else {
             None
         },

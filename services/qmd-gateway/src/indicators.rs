@@ -1059,6 +1059,18 @@ impl IndicatorEventRouter {
         self.bar_sender.clone()
     }
 
+    pub fn event_queue_capacity(&self, event: &MarketEvent) -> Option<(usize, usize)> {
+        if !self
+            .computation_targets
+            .requires_event_computation(event.ticker())
+        {
+            return None;
+        }
+        let index = shard_index(event.ticker(), self.event_senders.len());
+        let sender = &self.event_senders[index];
+        Some((sender.capacity(), sender.max_capacity()))
+    }
+
     pub async fn send_event(
         &self,
         event: MarketEvent,

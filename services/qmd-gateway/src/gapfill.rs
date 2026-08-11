@@ -4,7 +4,7 @@ use crate::event::{MarketEvent, QuoteEvent, TradeEvent};
 use crate::flatfile::FlatfileDiscovery;
 use crate::maintenance::SharedMaintenanceState;
 use crate::market_calendar::MarketCalendarClient;
-use crate::massive::{fanout_market_event, MarketEventFanout};
+use crate::massive::{fanout_repair_market_event, MarketEventFanout};
 use crate::metrics::TimingTarget;
 use crate::session::{is_streaming_phase, session_phase};
 use crate::timefmt::clickhouse_datetime64;
@@ -463,7 +463,7 @@ impl GapFillService {
 
         let mut count = 0u64;
         for event in events {
-            fanout_market_event(event, &self.fanout).await;
+            fanout_repair_market_event(event, &self.fanout).await;
             count += 1;
         }
         Ok(IntervalFillOutcome {

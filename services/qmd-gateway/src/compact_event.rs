@@ -2,7 +2,7 @@ use crate::bars::{TradeAggregationRules, TradeUpdateRule};
 use crate::config::GatewayConfig;
 use crate::event::{MarketEvent, QuoteEvent, TradeEvent};
 use crate::intraday_bars::IntradayBarRouter;
-use crate::market_products::SharedMarketProductStore;
+use crate::market_products::MarketProductEventRouter;
 use crate::metrics::SharedMetrics;
 use crate::timefmt::clickhouse_datetime64;
 use chrono::{DateTime, TimeZone, Utc};
@@ -823,7 +823,7 @@ pub struct CompactEventClickHouseWriter {
     event_sender: broadcast::Sender<LiveCompactEvent>,
     live_store: SharedCompactEventStore,
     metrics: SharedMetrics,
-    products: SharedMarketProductStore,
+    product_router: MarketProductEventRouter,
     references: CompactEventReferences,
     decoder: CompactEventDecoder,
     intraday_bar_router: IntradayBarRouter,
@@ -838,7 +838,7 @@ impl CompactEventClickHouseWriter {
         live_store: SharedCompactEventStore,
         metrics: SharedMetrics,
         intraday_bar_router: IntradayBarRouter,
-        products: SharedMarketProductStore,
+        product_router: MarketProductEventRouter,
     ) -> Self {
         let decoder = references.decoder();
         Self {
@@ -847,7 +847,7 @@ impl CompactEventClickHouseWriter {
             event_sender,
             live_store,
             metrics,
-            products,
+            product_router,
             references,
             decoder,
             intraday_bar_router,
@@ -876,9 +876,27 @@ impl CompactEventClickHouseWriter {
             .await
     }
 
-    pub async fn run(self, mut receiver: mpsc::Receiver<MarketEvent>) {
+    pub async fn run(
+        self,
+        live_receiver: mpsc::Receiver<MarketEvent>,
+        repair_receiver: mpsc::Receiver<MarketEvent>,
+    ) {
+        let (priority_sender, priority_receiver) = mpsc::channel(1);
+        let priority_metrics = self.metrics.clone();
+        let priority_task = tokio::spawn(merge_compact_inputs_live_first(
+            live_receiver,
+            repair_receiver,
+            priority_sender,
+            priority_metrics,
+        ));
+        self.run_merged(priority_receiver).await;
+        priority_task.abort();
+    }
+
+    async fn run_merged(self, mut receiver: mpsc::Receiver<MarketEvent>) {
         let mut batch = Vec::with_capacity(self.config.max_clickhouse_batch);
         let mut issue_batch = Vec::new();
+        let mut issues_seen = 0u64;
         let mut arrival_sequence = self
             .latest_arrival_sequence()
             .await
@@ -905,15 +923,17 @@ impl CompactEventClickHouseWriter {
                                 arrival_sequence = arrival_sequence.saturating_add(1);
                                 conversion.event.arrival_sequence = arrival_sequence;
                                 if let Some(issue) = conversion.issue.take() {
-                                    eprintln!(
-                                        "Compact event warning: kind={} ticker={} sip_timestamp_us={} source_sequence={} conditions={} indicators={}",
-                                        issue.issue_kind,
-                                        conversion.event.ticker,
-                                        conversion.event.sip_timestamp_us,
-                                        conversion.event.source_sequence,
-                                        issue.condition_codes.len(),
-                                        issue.indicator_codes.len(),
-                                    );
+                                    issues_seen = issues_seen.saturating_add(1);
+                                    if issues_seen == 1 || issues_seen % 10_000 == 0 {
+                                        eprintln!(
+                                            "Compact event warning summary: seen={} latest_kind={} latest_ticker={} latest_sip_timestamp_us={} latest_source_sequence={}",
+                                            issues_seen,
+                                            issue.issue_kind,
+                                            conversion.event.ticker,
+                                            conversion.event.sip_timestamp_us,
+                                            conversion.event.source_sequence,
+                                        );
+                                    }
                                     issue_batch.push((conversion.event.clone(), issue));
                                 }
                                 if self.event_sender.send(conversion.event.clone()).is_err() {
@@ -921,24 +941,26 @@ impl CompactEventClickHouseWriter {
                                 }
                                 self.live_store.push(conversion.event.clone()).await;
                                 let canonical_event = self.decoder.decode(&conversion.event);
-                                self.products
-                                    .apply_event(&canonical_event, canonical_event.ts())
-                                    .await;
+                                if self.product_router.send(canonical_event).await.is_err() {
+                                    eprintln!("Market-product receiver closed; could not route one compact event.");
+                                }
                                 if self.intraday_bar_router.send(conversion.event.clone()).await.is_err() {
                                     self.metrics.inc_intraday_bar_event_dropped();
                                     eprintln!("Canonical intraday bar receiver closed; could not route one compact event.");
                                 }
                                 self.metrics.inc_compact_events_emitted(1);
                                 if self.config.persist_compact_events {
-                                    let buffer = reorder_buffers.entry(conversion.event.ticker.clone()).or_default();
+                                    let ticker = conversion.event.ticker.clone();
+                                    let buffer = reorder_buffers.entry(ticker.clone()).or_default();
                                     if buffer.insert(conversion.event) {
                                         self.metrics.inc_compact_event_reorder_late_arrival();
                                     }
                                     reorder_pending_count = reorder_pending_count.saturating_add(1);
                                     self.metrics.inc_compact_events_reorder_buffered(1);
                                     self.metrics.set_compact_events_reorder_pending(reorder_pending_count);
-                                    self.drain_reorder_buffers(
+                                    self.drain_reorder_buffer(
                                         &mut reorder_buffers,
+                                        &ticker,
                                         &mut batch,
                                         &mut reorder_pending_count,
                                         reorder_lag_us,
@@ -983,8 +1005,10 @@ impl CompactEventClickHouseWriter {
                         reorder_lag_us,
                         force,
                     );
-                    self.flush_persisted(&mut batch).await;
-                    self.flush_issues(&mut issue_batch).await;
+                    if receiver.is_empty() && self.metrics.compact_input_events_pending() == 0 {
+                        self.flush_persisted(&mut batch).await;
+                        self.flush_issues(&mut issue_batch).await;
+                    }
                 }
             }
             self.metrics.set_lane_pending(
@@ -1023,6 +1047,37 @@ impl CompactEventClickHouseWriter {
                 .inc_compact_events_reorder_flushed(ready.len() as u64);
             batch.extend(ready);
         }
+        self.metrics
+            .set_compact_events_reorder_pending(*reorder_pending_count);
+    }
+
+    fn drain_reorder_buffer(
+        &self,
+        reorder_buffers: &mut HashMap<String, TickerReorderBuffer>,
+        ticker: &str,
+        batch: &mut Vec<LiveCompactEvent>,
+        reorder_pending_count: &mut u64,
+        reorder_lag_us: u64,
+        force: bool,
+    ) {
+        let Some(buffer) = reorder_buffers.get_mut(ticker) else {
+            return;
+        };
+        let (ready, forced) = if force {
+            (buffer.drain_all(), false)
+        } else {
+            buffer.drain_ready(
+                reorder_lag_us,
+                self.config.compact_event_reorder_max_events_per_ticker,
+            )
+        };
+        if forced {
+            self.metrics.inc_compact_event_reorder_forced_flush();
+        }
+        *reorder_pending_count = reorder_pending_count.saturating_sub(ready.len() as u64);
+        self.metrics
+            .inc_compact_events_reorder_flushed(ready.len() as u64);
+        batch.extend(ready);
         self.metrics
             .set_compact_events_reorder_pending(*reorder_pending_count);
     }
@@ -1441,6 +1496,46 @@ impl CompactEventClickHouseWriter {
     }
 }
 
+async fn merge_compact_inputs_live_first(
+    mut live_receiver: mpsc::Receiver<MarketEvent>,
+    mut repair_receiver: mpsc::Receiver<MarketEvent>,
+    priority_sender: mpsc::Sender<MarketEvent>,
+    metrics: SharedMetrics,
+) {
+    let mut live_closed = false;
+    let mut repair_closed = false;
+    while !live_closed || !repair_closed {
+        let event = tokio::select! {
+            biased;
+            event = live_receiver.recv(), if !live_closed => {
+                match event {
+                    Some(event) => Some(event),
+                    None => {
+                        live_closed = true;
+                        None
+                    }
+                }
+            }
+            event = repair_receiver.recv(), if !repair_closed => {
+                match event {
+                    Some(event) => Some(event),
+                    None => {
+                        repair_closed = true;
+                        None
+                    }
+                }
+            }
+        };
+        metrics.set_compact_live_events_pending(live_receiver.len() as u64);
+        metrics.set_compact_repair_events_pending(repair_receiver.len() as u64);
+        if let Some(event) = event {
+            if priority_sender.send(event).await.is_err() {
+                return;
+            }
+        }
+    }
+}
+
 fn compact_event_from_market_event(
     event: &MarketEvent,
     references: &CompactEventReferences,
@@ -1820,6 +1915,61 @@ mod tests {
         )
         .unwrap()
         .event
+    }
+
+    fn market_quote(sequence: u64) -> MarketEvent {
+        let timestamp = Utc.with_ymd_and_hms(2026, 8, 11, 18, 0, 0).unwrap();
+        MarketEvent::Quote(QuoteEvent {
+            ask_exchange: 11,
+            ask_price: 10.1,
+            ask_size: 10,
+            bid_exchange: 12,
+            bid_price: 10.0,
+            bid_size: 20,
+            conditions: vec![],
+            indicators: vec![],
+            ingest_ts: timestamp,
+            raw: serde_json::Value::Null,
+            sequence,
+            tape: 1,
+            ticker: "TEST".to_string(),
+            ts: timestamp,
+        })
+    }
+
+    #[tokio::test]
+    async fn compact_input_merger_drains_live_before_ready_repair() {
+        let (live_sender, live_receiver) = mpsc::channel(2);
+        let (repair_sender, repair_receiver) = mpsc::channel(2);
+        let (priority_sender, mut priority_receiver) = mpsc::channel(1);
+        repair_sender.send(market_quote(1)).await.unwrap();
+        live_sender.send(market_quote(2)).await.unwrap();
+        drop(live_sender);
+        drop(repair_sender);
+
+        let task = tokio::spawn(merge_compact_inputs_live_first(
+            live_receiver,
+            repair_receiver,
+            priority_sender,
+            SharedMetrics::new(),
+        ));
+        let first = priority_receiver.recv().await.unwrap();
+        let second = priority_receiver.recv().await.unwrap();
+        assert_eq!(
+            match first {
+                MarketEvent::Quote(row) => row.sequence,
+                MarketEvent::Trade(row) => row.sequence,
+            },
+            2
+        );
+        assert_eq!(
+            match second {
+                MarketEvent::Quote(row) => row.sequence,
+                MarketEvent::Trade(row) => row.sequence,
+            },
+            1
+        );
+        task.await.unwrap();
     }
 
     #[test]

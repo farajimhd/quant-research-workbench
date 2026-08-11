@@ -5,7 +5,7 @@ use chrono_tz::America::New_York;
 use serde::Serialize;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
-use tokio::sync::Mutex;
+use tokio::sync::{mpsc, Mutex};
 
 pub const MARKET_PRODUCT_SCHEMA_VERSION: u16 = 1;
 pub const SESSION_START_US: u64 = 4 * 60 * 60 * 1_000_000;
@@ -239,6 +239,45 @@ impl ConditionClassifier {
 #[derive(Clone)]
 pub struct SharedMarketProductStore {
     shards: Arc<Vec<Arc<Mutex<MarketProductEngine>>>>,
+}
+
+#[derive(Clone)]
+pub struct MarketProductEventRouter {
+    senders: Arc<Vec<mpsc::Sender<MarketEvent>>>,
+}
+
+pub fn spawn_market_product_engines(
+    store: SharedMarketProductStore,
+    channel_capacity: usize,
+    shard_count: usize,
+) -> MarketProductEventRouter {
+    let count = shard_count.max(1);
+    let per_shard_capacity = channel_capacity.div_ceil(count).max(1);
+    let mut senders = Vec::with_capacity(count);
+    for _ in 0..count {
+        let (sender, mut receiver) = mpsc::channel::<MarketEvent>(per_shard_capacity);
+        let worker_store = store.clone();
+        tokio::spawn(async move {
+            while let Some(event) = receiver.recv().await {
+                let as_of = event.ts();
+                worker_store.apply_event(&event, as_of).await;
+            }
+        });
+        senders.push(sender);
+    }
+    MarketProductEventRouter {
+        senders: Arc::new(senders),
+    }
+}
+
+impl MarketProductEventRouter {
+    pub async fn send(
+        &self,
+        event: MarketEvent,
+    ) -> Result<(), mpsc::error::SendError<MarketEvent>> {
+        let index = stable_hash(event.ticker()) as usize % self.senders.len();
+        self.senders[index].send(event).await
+    }
 }
 
 pub struct MarketProductEngine {

@@ -906,6 +906,19 @@ broker command outside OMS.
         Live Scanner no longer serializes an identical `market_rows` copy, and
         the Watchlist endpoint returns computation counts/maps while the full
         per-symbol requirement graph remains on the dedicated system endpoint.
+  - [x] Reserve persistence and computation admission for the current websocket
+        while concurrent REST repair is active. Repair remains lossless and
+        waits at a 10% reserve (capped at 25,000 slots) on compact persistence,
+        bar, indicator, and live-market-state queues; cumulative wait count and
+        duration are exposed in QMD metrics. The gate includes the compact
+        writer's internal pending batch, not only sender capacity, and yields
+        before shared computation whenever a decoded websocket batch is
+        waiting. Live and repair compact events use separate bounded inputs;
+        the writer drains live first and permits at most two already-admitted
+        repair events ahead of newly ready live input. Older same-session
+        repair events
+        can add missing session totals but cannot regress the latest trade,
+        quote, Scanner timestamp, or service freshness watermark.
 - [x] Shed replaceable projections before authoritative events or journal
       writes. QMD now admits compact and optional raw persistence queues before
       any derived router can apply backpressure; broadcast projections remain
@@ -955,6 +968,16 @@ broker command outside OMS.
         refresh. Real validation measured 8.31 seconds cold, 1.66 seconds at
         expiry using honest stale evidence, and 1.33 seconds after the new
         projection became current.
+  - [ ] Repeat the active-session soak with the live-reserved repair fan-in and
+        record websocket freshness, repair progress, compact queue depth/waits,
+        Scanner latency, CPU, and memory through catch-up and steady state.
+    - [x] Capture the active catch-up portion in
+          `qmd_live_priority_acceptance_20260811T191900Z.json`. The release
+          process held event lag at 1.071-1.083 seconds, returned live and
+          repair compact queues to zero, persisted 264,389 events in 15
+          seconds, advanced repair by 38,677 rows, and recorded no repair
+          failure. The longer CPU/memory/Scanner steady-state portion remains
+          open.
 - [x] Test streaming reconnect and resnapshot. QMD unit coverage proves typed
       terminal lag/sequence-gap frames; an actual backend WebSocket route test
       proves upstream subscription precedes snapshot capture and forwards the

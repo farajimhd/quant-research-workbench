@@ -1611,6 +1611,64 @@ it does not imply all application work is complete.
      Watchlist, QMD-client, application-authority, and cache tests passed, and
      the changed Python modules compiled with bytecode writes disabled.
 
+157. Separated live admission priority from lossless QMD REST repair at their
+     shared persistence and computation fan-in. Startup repair previously used
+     the exact websocket fanout and eight repair workers could fill its bounded
+     compact, bar, indicator, or live-market-state queues. Current events were
+     not dropped, but they could wait behind historical catch-up. Repair now
+     pauses when free capacity in any applicable queue reaches a 10% reserve,
+     capped at 25,000 slots, while the websocket continues to use the reserved
+     capacity. Repair resumes automatically as consumers drain; cumulative wait
+     count and wait milliseconds are visible in QMD metrics.
+
+     The review also found that repair events could overwrite freshness and
+     same-session current state with an older timestamp. The service freshness
+     watermark is now monotonic. Symbol state still applies missing historical
+     trades to session totals, but only the newest trade or quote may replace
+     current price/quote state and `last_event_ts`. This preserves the existing
+     shared live/recent computation path without allowing concurrent repair to
+     make the Scanner appear older than an already-seen websocket event.
+     All 103 QMD tests passed using the required external Cargo target,
+     including explicit live-reserve, monotonic-freshness, and late-repair
+     state regression coverage. The production catch-up soak remains a
+     separate open acceptance gate until the rebuilt service has progressed
+     through representative active traffic. An initial compact-only runtime
+     sample correctly fixed freshness reporting but proved that a later router
+     could still stall live intake; that partial result was rejected and the
+     reserve was extended to the complete lossless fanout before this entry was
+     accepted. A second sample showed that channel capacity alone did not see
+     the compact writer's internal pending batch or contention before queue
+     admission. The final gate therefore uses total compact lane backlog and
+     explicit decoded-websocket demand as well as all sender capacities. The
+     mixed compact FIFO was the final source of head-of-line blocking: live and
+     repair now have separate bounded inputs, a one-row merge handoff, and a
+     live-first writer selection. Per-lane pending counts are exposed so this
+     priority can be verified without inferring it from the combined backlog.
+
+     The universal compact hot path was also corrected in four places. Normal
+     event admission drains only that event's ticker reorder buffer instead of
+     scanning every active ticker; timed/forced flush still drains the complete
+     map. Market-product cache updates now use the existing ticker shards
+     through bounded per-shard workers instead of serializing them inside the
+     persistence writer. During upstream backlog, persistence accumulates the
+     configured full ClickHouse batch instead of issuing a small partial insert
+     every five seconds; low-traffic flush latency remains five seconds. Every
+     condition-overflow audit row remains durable, while stderr reports only
+     the first and each 10,000th summary rather than synchronously printing one
+     line per event.
+
+     The managed QMD launcher now uses an optimized release binary by default,
+     stores Cargo output under the external runtime authority, and retains an
+     explicit `-DebugBuild` diagnostic switch. A first launch test found and
+     rejected a PowerShell string-splat bug that passed `--release` as program
+     characters; the final process path proved the actual release binary.
+     In `qmd_live_priority_acceptance_20260811T191900Z.json`, four active
+     catch-up samples held event lag at 1.071-1.083 seconds, the live queue
+     returned to zero, persistence advanced from 1,234,339 to 1,498,728 rows,
+     repair advanced from 164,874 to 203,551 rows, and failures remained zero.
+     All 105 QMD tests passed. The longer CPU/memory/Scanner steady-state soak
+     remains open and is not implied by this active catch-up acceptance.
+
 ---
 
 [Top](README.md) · [Previous](14-implementation-backlog.md) · [First](01-product-and-principles.md)
