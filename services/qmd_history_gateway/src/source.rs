@@ -26,12 +26,14 @@ pub struct EventWindow {
 
 #[derive(Clone, Debug, Serialize)]
 pub struct EventCoverage {
+    pub complete: bool,
     pub coverage_table: String,
     pub end: DateTime<Utc>,
     pub event_count: u64,
     pub first_sip_timestamp_us: u64,
     pub last_sip_timestamp_us: u64,
     pub source_tables: Vec<String>,
+    pub source_plan_hash: String,
     pub start: DateTime<Utc>,
     pub ticker_count: u64,
 }
@@ -258,13 +260,9 @@ impl HistoricalEventSource {
             .session_date
             .as_deref()
             .map(|value| {
-                NaiveDate::parse_from_str(value, "%Y-%m-%d")
-                    .map_err(|error| format!("invalid archive coverage date {value:?}: {error}"))?
-                    .succ_opt()
-                    .ok_or_else(|| "archive coverage date overflow".to_string())?
-                    .and_hms_opt(0, 0, 0)
-                    .map(|value| value.and_utc())
-                    .ok_or_else(|| "invalid archive coverage boundary".to_string())
+                let date = NaiveDate::parse_from_str(value, "%Y-%m-%d")
+                    .map_err(|error| format!("invalid archive coverage date {value:?}: {error}"))?;
+                archive_session_end_utc(date)
             })
             .transpose()?;
         let recent = if archive_end.is_some_and(|end| end >= window.end) {
@@ -532,7 +530,7 @@ impl HistoricalEventSource {
             return Ok(());
         }
         let sql = format!(
-            "SELECT * FROM ({}) ORDER BY ticker, sip_timestamp_us, ordinal FORMAT JSONEachRow",
+            "SELECT * FROM ({}) ORDER BY sip_timestamp_us, ticker, ordinal FORMAT JSONEachRow",
             selects.join(" UNION ALL ")
         );
         self.stream_query_rows(sql, batch_size, sender).await
@@ -693,51 +691,103 @@ impl HistoricalEventSource {
 
     pub async fn coverage(&self, window: &EventWindow) -> Result<EventCoverage, String> {
         validate_window(window)?;
-        let last_inclusive = window.end - chrono::Duration::microseconds(1);
-        let years = (window.start.year()..=last_inclusive.year()).collect::<Vec<_>>();
-        let coverage_table = format!(
-            "{}.events_ordinal_continuity",
-            self.config.clickhouse_database
-        );
-        let sql = format!(
-            r#"SELECT
-                sum(event_count) AS event_count,
-                uniqExact(ticker) AS ticker_count,
-                if(event_count = 0, 0, min(first_sip_timestamp_us)) AS first_sip_timestamp_us,
-                if(event_count = 0, 0, max(last_sip_timestamp_us)) AS last_sip_timestamp_us
-            FROM (
-                SELECT
-                    ticker,
-                    source_date,
-                    argMax(event_count, tuple(build_step, updated_at)) AS event_count,
-                    argMax(first_sip_timestamp_us, tuple(build_step, updated_at)) AS first_sip_timestamp_us,
-                    argMax(last_sip_timestamp_us, tuple(build_step, updated_at)) AS last_sip_timestamp_us
-                FROM {coverage_table}
-                WHERE source_date >= toDate('{}') AND source_date <= toDate('{}')
-                GROUP BY ticker, source_date
-            )
-            FORMAT JSONEachRow"#,
-            window.start.date_naive(),
-            last_inclusive.date_naive(),
-        );
-        let text = self.query(&sql).await?;
-        let row = serde_json::from_str::<EventCoverageRow>(text.trim())
-            .map_err(|error| format!("invalid historical coverage response: {error}"))?;
+        let plan = self.source_plan(window).await?;
+        let ticker_filter = if window.tickers.is_empty() {
+            String::new()
+        } else {
+            let tickers = window
+                .tickers
+                .iter()
+                .map(|ticker| normalize_ticker(ticker))
+                .collect::<Result<Vec<_>, _>>()?
+                .into_iter()
+                .map(|ticker| sql_literal(&ticker))
+                .collect::<Vec<_>>()
+                .join(",");
+            format!(" AND ticker IN ({tickers})")
+        };
+        let mut selects = Vec::new();
+        let mut source_tables = Vec::new();
+        for segment in plan
+            .segments
+            .iter()
+            .filter(|segment| segment.queryable_by_history)
+        {
+            match segment.tier {
+                MarketSourceTier::Archive => {
+                    let last_inclusive = segment.end - chrono::Duration::microseconds(1);
+                    for year in segment.start.year()..=last_inclusive.year() {
+                        let table = format!(
+                            "{}.{}{}",
+                            self.config.clickhouse_database, self.config.table_prefix, year
+                        );
+                        source_tables.push(table.clone());
+                        selects.push(event_select(
+                            &table,
+                            false,
+                            segment.start,
+                            segment.end,
+                            &ticker_filter,
+                            None,
+                        ));
+                    }
+                }
+                MarketSourceTier::Recent => {
+                    let table = format!(
+                        "{}.{}",
+                        self.config.recent_database, self.config.recent_event_table
+                    );
+                    source_tables.push(table.clone());
+                    selects.push(event_select(
+                        &table,
+                        true,
+                        segment.start,
+                        segment.end,
+                        &ticker_filter,
+                        None,
+                    ));
+                }
+                MarketSourceTier::CurrentLive | MarketSourceTier::Gap => {}
+            }
+        }
+        source_tables.sort();
+        source_tables.dedup();
+        let row = if selects.is_empty() {
+            EventCoverageRow {
+                event_count: 0,
+                first_sip_timestamp_us: 0,
+                last_sip_timestamp_us: 0,
+                ticker_count: 0,
+            }
+        } else {
+            let sql = format!(
+                r#"SELECT
+                    count() AS event_count,
+                    uniqExact(ticker) AS ticker_count,
+                    if(event_count = 0, 0, min(sip_timestamp_us)) AS first_sip_timestamp_us,
+                    if(event_count = 0, 0, max(sip_timestamp_us)) AS last_sip_timestamp_us
+                FROM ({})
+                FORMAT JSONEachRow"#,
+                selects.join(" UNION ALL ")
+            );
+            let text = self.query(&sql).await?;
+            serde_json::from_str::<EventCoverageRow>(text.trim())
+                .map_err(|error| format!("invalid planned coverage response: {error}"))?
+        };
         Ok(EventCoverage {
-            coverage_table,
+            complete: plan.complete_for_history,
+            coverage_table: format!(
+                "{}.events_ordinal_continuity+{}.{}",
+                self.config.clickhouse_database,
+                self.config.recent_database,
+                self.config.recent_event_coverage_table
+            ),
             end: window.end,
             event_count: row.event_count,
             first_sip_timestamp_us: row.first_sip_timestamp_us,
             last_sip_timestamp_us: row.last_sip_timestamp_us,
-            source_tables: years
-                .iter()
-                .map(|year| {
-                    format!(
-                        "{}.{}{}",
-                        self.config.clickhouse_database, self.config.table_prefix, year
-                    )
-                })
-                .collect(),
+            source_plan_hash: plan.plan_hash,
+            source_tables,
             start: window.start,
             ticker_count: row.ticker_count,
         })
@@ -1080,11 +1130,7 @@ fn event_select(
     } else {
         "source.ordinal"
     };
-    let source_sequence = if recent {
-        "source.source_sequence"
-    } else {
-        "source.ordinal"
-    };
+    let source_sequence = "source.source_sequence";
     let final_clause = if recent { " FINAL" } else { "" };
     let cursor_filter = cursor
         .filter(|value| value.sip_timestamp_us > 0)
@@ -1128,6 +1174,14 @@ fn event_select(
         start_us = start.timestamp_micros(),
         end_us = end.timestamp_micros(),
     )
+}
+
+fn archive_session_end_utc(date: NaiveDate) -> Result<DateTime<Utc>, String> {
+    New_York
+        .with_ymd_and_hms(date.year(), date.month(), date.day(), 20, 0, 0)
+        .single()
+        .map(|value| value.with_timezone(&Utc))
+        .ok_or_else(|| format!("invalid New York archive session boundary for {date}"))
 }
 
 fn merge_coverage_intervals(intervals: Vec<CoverageInterval>) -> Vec<CoverageInterval> {
@@ -1335,9 +1389,9 @@ fn sql_literal(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_source_plan, event_select, macro_bar_is_closed, merge_coverage_intervals,
-        normalize_ticker, row_to_event, CoverageInterval, EventWindow, HistoricalRow,
-        MarketSourceTier,
+        archive_session_end_utc, build_source_plan, event_select, macro_bar_is_closed,
+        merge_coverage_intervals, normalize_ticker, row_to_event, CoverageInterval, EventWindow,
+        HistoricalRow, MarketSourceTier,
     };
     use crate::config::HistoricalGatewayConfig;
     use chrono::{TimeZone, Utc};
@@ -1471,6 +1525,18 @@ mod tests {
     }
 
     #[test]
+    fn archive_watermark_ends_at_new_york_extended_session_close_across_dst() {
+        assert_eq!(
+            archive_session_end_utc(chrono::NaiveDate::from_ymd_opt(2026, 7, 1).unwrap()).unwrap(),
+            Utc.with_ymd_and_hms(2026, 7, 2, 0, 0, 0).unwrap(),
+        );
+        assert_eq!(
+            archive_session_end_utc(chrono::NaiveDate::from_ymd_opt(2026, 1, 2).unwrap()).unwrap(),
+            Utc.with_ymd_and_hms(2026, 1, 3, 1, 0, 0).unwrap(),
+        );
+    }
+
+    #[test]
     fn recent_coverage_intervals_merge_before_planning() {
         let first = Utc.with_ymd_and_hms(2026, 7, 2, 0, 0, 0).unwrap();
         let second = Utc.with_ymd_and_hms(2026, 7, 2, 12, 0, 0).unwrap();
@@ -1499,9 +1565,10 @@ mod tests {
             "",
             None,
         );
+        assert!(archive.contains("source.source_sequence AS source_sequence"));
         let recent = event_select("q_live.events", true, start, end, "", None);
         assert!(archive.contains("source.ordinal AS ordinal"));
-        assert!(archive.contains("source.ordinal AS source_sequence"));
+        assert!(!archive.contains("source.ordinal AS source_sequence"));
         assert!(recent.contains("source.arrival_sequence AS ordinal"));
         assert!(recent.contains("source.source_sequence AS source_sequence"));
         assert!(recent.contains("FROM q_live.events AS source FINAL"));

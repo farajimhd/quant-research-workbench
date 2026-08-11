@@ -51,26 +51,29 @@ one backend registry record and one executable implementation status.
 
 ## 1. Unified QMD distribution
 
-- [ ] Define shared `MarketRequest`, `MarketSourcePlan`, coverage, provenance,
-      continuation, and failure schemas.
+- [x] Define the shared source-plan, coverage, provenance, continuation, and
+      explicit-gap contracts used by QMD History and its consumers.
 - [ ] Route current requests to QMD memory/live tail.
-- [ ] Route recent requests to `q_live.events` and recent bar products.
-- [ ] Route older requests to `market_sip_compact.events_YYYY` and completed bars.
-- [ ] Select boundaries from verified watermarks rather than assumed dates.
-- [ ] Split multi-year requests across archive tables.
-- [ ] Deduplicate overlaps using stable event identity/ordinal semantics.
-- [ ] Preserve event-time, source-sequence, event-identity ordering.
-- [ ] Return explicit missing and partial segments.
+- [x] Route recent historical requests to `q_live.events` under verified
+      coverage intervals.
+- [x] Route older requests to `market_sip_compact.events_YYYY` and completed bars.
+- [x] Select archive/recent boundaries from verified watermarks and the New
+      York extended-session close rather than assumed UTC dates.
+- [x] Split multi-year requests across archive tables.
+- [x] Prevent overlaps through ordered non-overlapping source segments and
+      stable ordinal/arrival cursor semantics.
+- [x] Preserve event-time, source-sequence, event-identity ordering.
+- [x] Return explicit missing and live-continuation segments.
 - [ ] Pin source plans/revisions for Replay and Backtest.
 - [ ] Permit advancing tail watermarks for Live consumers.
 - [ ] Put routing behind one QMD client contract.
-- [ ] Make QMD History read recent and archive tiers.
-- [ ] Keep live tail ownership in QMD Gateway.
-- [ ] Reuse the same `qmd_core` decoder, bars, indicators, structure, and signals.
+- [x] Make QMD History read recent and archive tiers.
+- [x] Keep live tail ownership in QMD Gateway through explicit continuation.
+- [x] Reuse the same `qmd_core` decoder, bars, indicators, structure, and signals.
 - [ ] Stabilize live compact-event and bounded ticker-snapshot contracts.
 - [ ] Add reconnect continuation and sequence-gap repair.
-- [ ] Expose bounded historical events, bars, indicators, signals, and scanner products.
-- [ ] Return source-plan hash, schemas, calculations, coverage, `as_of`, and cursor.
+- [x] Expose bounded historical events, bars, indicators, signals, and scanner products.
+- [x] Return source-plan hash, event schema, coverage, `as_of`, and continuation cursor.
 - [ ] Provide a consumer-neutral historical contract suitable for future Market AI use.
 - [ ] Prove approved direct ClickHouse reads match QMD History decoding/results.
 - [ ] Prevent clients from choosing physical QMD databases/tables.

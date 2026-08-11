@@ -10,6 +10,14 @@ canonical-event, and enriched-bar resource schemas. Bars are calculated from
 events by the exact `qmd_core::bars` implementation used by live QMD; no
 historical bar table is used.
 
+The archive watermark is the verified 20:00 America/New_York close of the last
+covered market session, converted to UTC with daylight-saving rules; it is not
+an assumed UTC-midnight boundary. Every emitted event is globally ordered by
+`sip_timestamp_us`, ticker, and source ordinal/arrival sequence, while the
+original `source_sequence` remains part of the shared compact-event contract.
+Any uncovered interval is explicit, and the current live tail remains a QMD
+Gateway continuation rather than a hidden physical-table read.
+
 Live trading must use `services/qmd-gateway`. This service is deliberately
 read-only: it cannot connect to Massive, run live gap repair, or write live QMD
 state.
@@ -108,6 +116,8 @@ Supported bar timeframes are the live QMD set: `100ms`, `1s`, `5s`, `10s`,
 - `GET /health`
 - `GET /config`
 - `GET /coverage?start=...&end=...`
+  reports the exact archive-plus-recent source tables selected by the source
+  plan, its hash and completeness, and combined event/ticker/time bounds.
 - `GET /coverage/latest` (latest market day with canonical event coverage)
 - `GET /source-plan?start=...&end=...&tickers=AAPL,MSFT` (ordered archive,
   recent, gap, and current-live continuation segments; clients never choose a
