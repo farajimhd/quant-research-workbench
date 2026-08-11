@@ -91,6 +91,85 @@ export function canvasRuntimeWorkspaceStorageKey(scope: string, revision: string
   return `${CANVAS_RUNTIME_OVERLAY_PREFIX}.workspace.${storageToken(scope)}.${storageToken(revision)}.${storageToken(canvasId)}`;
 }
 
+export type CanvasRuntimeOverlayRecord = {
+  baseRegistry: CanvasRegistry;
+  baseWorkspace: CanvasWorkspaceState | null;
+  overlayRegistry: CanvasRegistry;
+  overlayWorkspace: CanvasWorkspaceState | null;
+  revision: string;
+  schemaVersion: 1;
+  updatedAt: string;
+};
+
+export type CanvasRuntimeRebase = {
+  conflicts: string[];
+  registry: CanvasRegistry;
+  workspace: CanvasWorkspaceState | null;
+};
+
+export function canvasRuntimeOverlayRecordKey(scope: string, canvasId: string) {
+  return `${CANVAS_RUNTIME_OVERLAY_PREFIX}.record.${storageToken(scope)}.${storageToken(canvasId)}`;
+}
+
+export function readCanvasRuntimeOverlayRecord(scope: string, canvasId: string): CanvasRuntimeOverlayRecord | null {
+  try {
+    const value = JSON.parse(window.localStorage.getItem(canvasRuntimeOverlayRecordKey(scope, canvasId)) || "null") as CanvasRuntimeOverlayRecord | null;
+    if (!value || value.schemaVersion !== 1 || !value.revision || !value.baseRegistry || !value.overlayRegistry) return null;
+    return {
+      ...value,
+      baseWorkspace: normalizeWorkspaceState(value.baseWorkspace),
+      overlayWorkspace: normalizeWorkspaceState(value.overlayWorkspace),
+    };
+  } catch {
+    return null;
+  }
+}
+
+export function writeCanvasRuntimeOverlayRecord(scope: string, canvasId: string, record: CanvasRuntimeOverlayRecord) {
+  window.localStorage.setItem(canvasRuntimeOverlayRecordKey(scope, canvasId), JSON.stringify(record));
+}
+
+export function rebaseCanvasRuntimeOverlay(record: CanvasRuntimeOverlayRecord, nextBase: CanvasRegistry, canvasId: string): CanvasRuntimeRebase {
+  const conflicts: string[] = [];
+  const nextBaseWorkspace = nextBase.workspaceStates?.[canvasId] ?? (canvasId === MAIN_CANVAS_ID ? nextBase.defaultState : undefined) ?? null;
+  const registry = threeWayMerge(record.baseRegistry, record.overlayRegistry, nextBase, "registry", conflicts) as CanvasRegistry;
+  const workspace = normalizeWorkspaceState(
+    threeWayMerge(record.baseWorkspace, record.overlayWorkspace, nextBaseWorkspace, "workspace", conflicts) as CanvasWorkspaceState | null,
+  );
+  return { conflicts: [...new Set(conflicts)].sort(), registry, workspace };
+}
+
+function threeWayMerge(base: unknown, overlay: unknown, next: unknown, path: string, conflicts: string[]): unknown {
+  if (jsonEqual(overlay, base)) return next;
+  if (jsonEqual(next, base) || jsonEqual(overlay, next)) return overlay;
+  if (plainObject(base) && plainObject(overlay) && plainObject(next)) {
+    const result: Record<string, unknown> = {};
+    const keys = new Set([...Object.keys(base), ...Object.keys(overlay), ...Object.keys(next)]);
+    for (const key of keys) {
+      const merged = threeWayMerge(base[key], overlay[key], next[key], `${path}.${key}`, conflicts);
+      if (merged !== undefined) result[key] = merged;
+    }
+    return result;
+  }
+  conflicts.push(path);
+  return overlay;
+}
+
+function plainObject(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function jsonEqual(left: unknown, right: unknown) {
+  return canonicalJson(left) === canonicalJson(right);
+}
+
+function canonicalJson(value: unknown): string {
+  if (value === undefined) return "undefined";
+  if (value === null || typeof value !== "object") return JSON.stringify(value) ?? "undefined";
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  return `{${Object.keys(value as Record<string, unknown>).sort().map((key) => `${JSON.stringify(key)}:${canonicalJson((value as Record<string, unknown>)[key])}`).join(",")}}`;
+}
+
 export function readCanvasRuntimeRegistry(base: CanvasRegistry, storageKey: string): CanvasRegistry {
   try {
     const parsed = JSON.parse(window.localStorage.getItem(storageKey) || "null") as Partial<CanvasRegistry> | null;

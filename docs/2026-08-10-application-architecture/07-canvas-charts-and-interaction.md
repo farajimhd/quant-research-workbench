@@ -147,9 +147,11 @@ Live, Paper, Replay, and Backtest workspaces must be visually explicit and canno
   settings without writing to Configuration storage. Each workspace can
   reset its overlay to the approved profile or clone its current state into a
   separate revision-scoped workspace. Live/Paper and Backtest still need this
-  same integration as part of their shared-controller migration, and rebasing
-  an overlay onto a newer approved revision still needs explicit three-way
-  conflict handling.
+  same integration as part of their shared-controller migration. For overlays
+  saved under the current overlay-record schema, a newer approved revision is
+  compared through a three-way base/overlay/new-base merge. The UI reports
+  conflicting leaf paths and requires an explicit choice to apply the
+  overlay-preferred rebase or keep the new approved default.
 - Intraday historical charts now request a QMD `bars` stage first and render it
   before requesting the `full` indicator, signal, and structure stage from the
   same single-flight cache entry. Archive/recent source selection remains owned

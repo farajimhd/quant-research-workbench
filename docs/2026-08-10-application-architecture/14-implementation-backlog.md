@@ -325,11 +325,14 @@ Acceptance gate: UI availability equals backend registry and runnable truth.
       declare value type, producers, consumers, clock and identity policies,
       modes, and schema version; registry validation rejects broken container,
       product, link, mode, or direction references.
-- [ ] Implement draft, validate, preview, publish, reset, and rebase.
+- [x] Implement draft, validate, preview, publish, reset, and rebase.
   - [x] Draft, validate, preview, publish, and reset-to-approved are wired.
   - [x] Save a customized approved Canvas or Replay overlay as a separate
         revision-scoped workspace without changing Configuration defaults.
-  - [ ] Add explicit three-way overlay rebase/conflict presentation.
+  - [x] Add explicit three-way overlay rebase/conflict presentation for
+        overlays recorded by the current schema. Conflicting leaf paths are
+        shown before the user applies the overlay-preferred merge or keeps the
+        new approved default.
 - [ ] Instantiate published defaults in Live, Replay, Backtest, and research workspaces.
   - [x] Standalone Canvas resolves the approved profile; Replay uses its pinned
         release profile.

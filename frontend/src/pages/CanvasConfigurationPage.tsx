@@ -21,20 +21,24 @@ import {
   ensureNewsReaderCanvas,
   readCanvasRegistry,
   readCanvasRuntimeRegistry,
+  readCanvasRuntimeOverlayRecord,
   readCanvasWorkspaceState,
   readCanvasWorkspaceStateByStorageKey,
   readReplayCanvasFocusHandoff,
   removeCanvasRecord,
   replayFocusCanvasUrl,
+  rebaseCanvasRuntimeOverlay,
   snapshotCanvasWorkspaceState,
   writeReplayCanvasFocusHandoff,
   writeCanvasRegistry,
+  writeCanvasRuntimeOverlayRecord,
   writeCanvasWorkspaceState,
   type CanvasAssignedLinkGroupId,
   type CanvasChartTimeframe,
   type CanvasLinkContext,
   type CanvasLinkGroupId,
   type CanvasRegistry,
+  type CanvasRuntimeRebase,
   type CanvasWorkspaceState,
 } from "../app/canvasWorkspace";
 import { latestReplayRun, useReplayRunEvents, type CanvasReplayRun } from "../app/replayRun";
@@ -1514,6 +1518,13 @@ export function CanvasWorkspaceSurface({ approvedCanvas, canvasId, manager, mode
     ? canvasRuntimeWorkspaceStorageKey(runtimeScope, runtimeRevision, canvasId)
     : canvasWorkspaceStorageKey(canvasId);
   const [overlayEpoch, setOverlayEpoch] = useState(0);
+  const [runtimeRebase, setRuntimeRebase] = useState<CanvasRuntimeRebase | null>(() => {
+    if (!runtimeBase) return null;
+    const previous = readCanvasRuntimeOverlayRecord(runtimeScope, canvasId);
+    return previous && previous.revision !== runtimeRevision
+      ? rebaseCanvasRuntimeOverlay(previous, runtimeBase, canvasId)
+      : null;
+  });
   const initialCanvasState = useMemo<CanvasWorkspaceState | null>(() => runtimeBase
     ? runtimeCanvasState(runtimeBase, workspaceStorageKey, canvasId, requestedInstanceId)
     : focusCanvasState(canvasId, requestedInstanceId), [canvasId, overlayEpoch, requestedInstanceId, runtimeBase, workspaceStorageKey]);
@@ -1588,6 +1599,22 @@ export function CanvasWorkspaceSurface({ approvedCanvas, canvasId, manager, mode
     }
     writeCanvasRegistry(registry);
   }, [registry, runtimeBase, runtimeRegistryStorageKey]);
+
+  useEffect(() => {
+    if (!runtimeBase || runtimeRebase || !workspaceState) return;
+    const baseWorkspace = runtimeBase.workspaceStates?.[canvasId]
+      ?? (canvasId === MAIN_CANVAS_ID ? runtimeBase.defaultState : undefined)
+      ?? null;
+    writeCanvasRuntimeOverlayRecord(runtimeScope, canvasId, {
+      baseRegistry: runtimeBase,
+      baseWorkspace,
+      overlayRegistry: registry,
+      overlayWorkspace: snapshotCanvasWorkspaceState(workspaceState),
+      revision: runtimeRevision,
+      schemaVersion: 1,
+      updatedAt: new Date().toISOString(),
+    });
+  }, [canvasId, registry, runtimeBase, runtimeRebase, runtimeRevision, runtimeScope, workspaceState]);
 
   useEffect(() => {
     if (replayRun) return;
@@ -1973,6 +2000,7 @@ export function CanvasWorkspaceSurface({ approvedCanvas, canvasId, manager, mode
     window.localStorage.removeItem(workspaceStorageKey);
     setRegistry(runtimeBase);
     setWorkspaceState(runtimeCanvasState(runtimeBase, workspaceStorageKey, canvasId, requestedInstanceId, false));
+    setRuntimeRebase(null);
     setOverlayEpoch((value) => value + 1);
   }
 
@@ -2005,6 +2033,27 @@ export function CanvasWorkspaceSurface({ approvedCanvas, canvasId, manager, mode
       "noopener,noreferrer",
     );
     if (focusedWindow) focusedWindow.opener = null;
+  }
+
+  function applyRuntimeRebase() {
+    if (!runtimeBase || !runtimeRebase) return;
+    window.localStorage.setItem(runtimeRegistryStorageKey, JSON.stringify(runtimeRebase.registry));
+    if (runtimeRebase.workspace) window.localStorage.setItem(workspaceStorageKey, JSON.stringify(runtimeRebase.workspace));
+    else window.localStorage.removeItem(workspaceStorageKey);
+    setRegistry(runtimeRebase.registry);
+    setWorkspaceState(runtimeRebase.workspace);
+    setRuntimeRebase(null);
+    setOverlayEpoch((value) => value + 1);
+  }
+
+  function keepApprovedAfterRebase() {
+    if (!runtimeBase) return;
+    window.localStorage.removeItem(runtimeRegistryStorageKey);
+    window.localStorage.removeItem(workspaceStorageKey);
+    setRegistry(runtimeBase);
+    setWorkspaceState(runtimeCanvasState(runtimeBase, workspaceStorageKey, canvasId, requestedInstanceId, false));
+    setRuntimeRebase(null);
+    setOverlayEpoch((value) => value + 1);
   }
 
   function saveDefaultLayout() {
@@ -2055,7 +2104,7 @@ export function CanvasWorkspaceSurface({ approvedCanvas, canvasId, manager, mode
         managementContent={manager
           ? <CanvasManager registry={registry} onCreate={() => openNewCanvas()} onOpen={(id) => window.open(focusCanvasUrl(id), "_blank", "noopener,noreferrer")} onRemove={removeCanvas} />
           : runtimeBase
-            ? <><CanvasManager availableCanvasIds={new Set(Object.keys(registry.workspaceStates ?? {}))} registry={registry} onOpen={openRuntimeConfiguredCanvas} /><RuntimeCanvasScope mode={replayRun ? "Replay" : "Canvas"} onReset={resetRuntimeOverlay} onSaveAs={saveRuntimeWorkspace} revision={replayRun?.canvas_revision || approvedCanvas?.canvas_revision || runtimeRevision} /></>
+            ? <><CanvasManager availableCanvasIds={new Set(Object.keys(registry.workspaceStates ?? {}))} registry={registry} onOpen={openRuntimeConfiguredCanvas} /><RuntimeCanvasScope mode={replayRun ? "Replay" : "Canvas"} onApplyRebase={applyRuntimeRebase} onKeepApproved={keepApprovedAfterRebase} onReset={resetRuntimeOverlay} onSaveAs={saveRuntimeWorkspace} rebase={runtimeRebase} revision={replayRun?.canvas_revision || approvedCanvas?.canvas_revision || runtimeRevision} /></>
             : null}
         managementOpen={managementEnabled && managementOpen}
         metaForContainer={metaForContainer}
@@ -2182,10 +2231,11 @@ function CanvasManager({ availableCanvasIds, onCreate, onOpen, onRemove, registr
   </section>;
 }
 
-function RuntimeCanvasScope({ mode, onReset, onSaveAs, revision }: { mode: "Canvas" | "Replay"; onReset: () => void; onSaveAs: () => void; revision: string }) {
+function RuntimeCanvasScope({ mode, onApplyRebase, onKeepApproved, onReset, onSaveAs, rebase, revision }: { mode: "Canvas" | "Replay"; onApplyRebase: () => void; onKeepApproved: () => void; onReset: () => void; onSaveAs: () => void; rebase: CanvasRuntimeRebase | null; revision: string }) {
   return <section aria-label={`${mode} layout scope`} className="replay-layout-scope">
     <ShieldCheck aria-hidden="true" size={15} />
-    <div><strong>{mode} workspace overlay</strong><small>Starts from approved Canvas {revision.slice(0, 10)}. Changes persist only for this revision and never rewrite Configuration defaults.</small></div>
+    <div><strong>{mode} workspace overlay</strong><small>{rebase ? `A newer approved Canvas is available. Three-way rebase found ${rebase.conflicts.length} conflict${rebase.conflicts.length === 1 ? "" : "s"}.` : `Starts from approved Canvas ${revision.slice(0, 10)}. Changes persist only for this revision and never rewrite Configuration defaults.`}</small>{rebase?.conflicts.length ? <span title={rebase.conflicts.join("\n")}>{rebase.conflicts.slice(0, 3).join(", ")}{rebase.conflicts.length > 3 ? ` +${rebase.conflicts.length - 3}` : ""}</span> : null}</div>
+    {rebase ? <><button className="button primary compact" onClick={onApplyRebase} type="button"><RefreshCcw size={12} /> Apply rebase</button><button className="button secondary compact" onClick={onKeepApproved} type="button">Keep approved</button></> : null}
     <button className="button secondary compact" onClick={onSaveAs} type="button"><Save size={12} /> Save as workspace</button>
     <button className="button secondary compact" onClick={onReset} type="button"><RefreshCcw size={12} /> Reset to approved</button>
   </section>;

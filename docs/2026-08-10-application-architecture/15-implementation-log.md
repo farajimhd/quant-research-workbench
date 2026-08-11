@@ -527,6 +527,16 @@ bounded direct ClickHouse paths remain documented in
     never mutates the published Configuration default. Reset-to-approved remains
     unchanged. Three-way rebase/conflict handling is still open. The managed
     external-runtime frontend production build passed.
+76. Added explicit Canvas overlay rebase authority. Runtime overlays now retain
+    the approved base, user overlay, revision, and normalized workspace state.
+    When the approved revision changes, a deterministic three-way merge keeps
+    non-conflicting changes from both sides, lists conflicting leaf paths, and
+    waits for the user to apply the overlay-preferred result or keep the new
+    approved default. Records are isolated by mode/run scope and Canvas ID.
+    Legacy overlays without a base record remain safely revision-isolated and
+    are not guessed forward. The managed external-runtime frontend production
+    build passed; real browser conflict-state validation remains part of the
+    broader UI acceptance gate.
 
 The authoritative remaining work and acceptance gates are maintained in the
 [complete implementation backlog](14-implementation-backlog.md). A checked
