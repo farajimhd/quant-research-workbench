@@ -246,6 +246,8 @@ budgets and invalid scope broadening fails configuration validation.
         same causal daily-bar plan instead of wrapping it in service-local SQL.
   - [x] Move Live market-data schema preview reads into the registered,
         current-database-bounded `market.schema_inventory.v1` plan.
+  - [x] Move Services table statistics, column discovery, bounded row preview,
+        and time-bucket counts into the same configured-target-only plan.
   - [x] Move bounded ticker branding and issuer-name lookup into the registered
         `market.ticker_presentation.v1` plan while retaining the existing
         service import as a compatibility re-export.

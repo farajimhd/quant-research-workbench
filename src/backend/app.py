@@ -134,6 +134,13 @@ from src.backend.qmd_gateway_client import (
     qmd_status,
     qmd_websocket_url,
 )
+from src.backend.query_plans.market_schema_inventory_v1 import (
+    TIME_COLUMN_CANDIDATES,
+    configured_table_columns,
+    configured_table_count_buckets,
+    configured_table_preview,
+    configured_table_stats,
+)
 from src.backend.real_live_trading_service import (
     apply_tradable_filter_to_scanner_payload,
     configured_real_live_accounts,
@@ -261,28 +268,7 @@ SERVICE_SEC_HISTOGRAM_BIN_SECONDS = SERVICE_NEWS_HISTOGRAM_BIN_SECONDS
 SERVICE_NEWS_TODAY_ROWS_LIMIT = 5000
 SERVICE_SEC_TODAY_ROWS_LIMIT = 5000
 SERVICE_TABLE_STATE_START_YEAR = 2019
-SERVICE_TABLE_TIME_COLUMN_CANDIDATES = (
-    "published_at_utc",
-    "accepted_at_utc",
-    "observed_at_utc",
-    "source_timestamp_utc",
-    "event_time",
-    "sip_timestamp_utc",
-    "timestamp_utc",
-    "created_at_utc",
-    "updated_at_utc",
-    "started_at_utc",
-    "coverage_start_utc",
-    "last_started_at_utc",
-    "updated_at",
-    "source_archive_date",
-    "filing_date",
-    "trade_date",
-    "universe_date",
-    "coverage_start_date",
-    "period_end_date",
-    "list_date",
-)
+SERVICE_TABLE_TIME_COLUMN_CANDIDATES = TIME_COLUMN_CANDIDATES
 _SERVICE_TABLE_STATE_CACHE = BoundedTtlCache[str, dict[str, Any]](
     max_entries=SERVICE_TABLE_STATE_CACHE_MAX_ENTRIES,
     ttl_seconds=SERVICE_TABLE_STATE_CACHE_SECONDS,
@@ -1443,15 +1429,13 @@ def service_database_table_preview(service_id: str, database: str, table: str, l
     target = service_database_table_target(service_id, database, table)
     columns = clickhouse_table_columns([target])
     time_column = table_time_column(columns.get((database, table), set()))
-    order_clause = f"\n        ORDER BY {quote_ident(time_column)} DESC" if time_column else ""
     safe_limit = max(1, min(limit, 100))
-    query = f"""
-        SELECT *
-        FROM {quote_ident(database)}.{quote_ident(table)}
-        {order_clause}
-        LIMIT {safe_limit}
-        FORMAT JSONEachRow
-    """
+    query = configured_table_preview(
+        database=database,
+        table=table,
+        time_column=time_column,
+        limit=safe_limit,
+    )
     rows: list[dict[str, Any]] = []
     for line in clickhouse_status_query(query).splitlines():
         if not line.strip():
@@ -3178,29 +3162,9 @@ def preview_cell_value(value: Any) -> Any:
 
 
 def clickhouse_table_stats(targets: list[dict[str, str]]) -> dict[tuple[str, str], dict[str, Any]]:
-    pairs = ", ".join(f"({sql_string(target['database'])}, {sql_string(target['table'])})" for target in targets)
-    if not pairs:
+    query = configured_table_stats(targets)
+    if not query:
         return {}
-    query = f"""
-        SELECT
-            t.database,
-            t.name AS table,
-            t.engine,
-            toUInt64(ifNull(sum(p.rows), 0)) AS rows,
-            toUInt64(ifNull(sum(p.bytes_on_disk), 0)) AS bytes_on_disk,
-            ifNull(toString(max(p.modification_time)), '') AS latest_update
-        FROM system.tables AS t
-        LEFT JOIN system.parts AS p
-            ON p.database = t.database
-           AND p.table = t.name
-           AND p.active
-        WHERE (t.database, t.name) IN ({pairs})
-        GROUP BY
-            t.database,
-            t.name,
-            t.engine
-        FORMAT TSV
-    """
     stats: dict[tuple[str, str], dict[str, Any]] = {}
     for line in clickhouse_status_query(query).splitlines():
         database, table, engine, rows, bytes_on_disk, latest_update = (line.split("\t") + ["", "", "", "", "", ""])[:6]
@@ -3221,21 +3185,9 @@ def clickhouse_table_stats(targets: list[dict[str, str]]) -> dict[tuple[str, str
 
 
 def clickhouse_table_columns(targets: list[dict[str, str]]) -> dict[tuple[str, str], set[str]]:
-    pairs = ", ".join(f"({sql_string(target['database'])}, {sql_string(target['table'])})" for target in targets)
-    if not pairs:
+    query = configured_table_columns(targets)
+    if not query:
         return {}
-    query = f"""
-        SELECT
-            database,
-            table,
-            groupArray(name) AS names
-        FROM system.columns
-        WHERE (database, table) IN ({pairs})
-        GROUP BY
-            database,
-            table
-        FORMAT TSV
-    """
     columns: dict[tuple[str, str], set[str]] = {}
     for line in clickhouse_status_query(query).splitlines():
         database, table, raw_names = (line.split("\t") + ["", "", ""])[:3]
@@ -3248,33 +3200,14 @@ def clickhouse_table_count_buckets(
     targets: list[dict[str, str]],
     columns: dict[tuple[str, str], set[str]],
 ) -> dict[tuple[str, str], dict[str, Any]]:
-    selects: list[str] = []
     years = service_table_state_years()
-    for target in targets:
-        key = (target["database"], target["table"])
-        time_column = table_time_column(columns.get(key, set()))
-        if not time_column:
-            continue
-        date_expr = f"toDate({quote_ident(time_column)})"
-        year_exprs = ",\n                ".join(
-            f"toUInt64(countIf(toYear({date_expr}) = {year})) AS rows_{year}" for year in years
-        )
-        selects.append(
-            f"""
-            SELECT
-                {sql_string(target["database"])} AS database,
-                {sql_string(target["table"])} AS table,
-                {sql_string(time_column)} AS time_column,
-                toUInt64(countIf({date_expr} = today())) AS rows_today,
-                toUInt64(countIf({date_expr} >= today() - 7)) AS rows_last_week,
-                toUInt64(countIf({date_expr} >= today() - 30)) AS rows_last_month,
-                {year_exprs}
-            FROM {quote_ident(target["database"])}.{quote_ident(target["table"])}
-            """
-        )
-    if not selects:
+    query = configured_table_count_buckets(
+        targets,
+        columns,
+        years=tuple(years),
+    )
+    if not query:
         return {}
-    query = "\nUNION ALL\n".join(selects) + "\nFORMAT TSV"
     buckets: dict[tuple[str, str], dict[str, Any]] = {}
     try:
         lines = clickhouse_status_query(query).splitlines()
