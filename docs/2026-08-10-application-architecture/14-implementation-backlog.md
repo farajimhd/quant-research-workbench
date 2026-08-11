@@ -441,6 +441,9 @@ broker command outside OMS.
 - [x] Add discovery computation-cost metrics.
 - [x] Add Portfolio disposition/reservation and OMS reconciliation metrics.
 - [ ] Bound queues, caches, subscriptions, retries, concurrency, and result sets.
+  - [x] Bound Replay/Backtest subscriber queues and resident controllers;
+        coalesce replaceable snapshots, evict only terminal controllers, and
+        return HTTP 429 when all configured resident slots are active.
 - [ ] Shed replaceable projections before authoritative events or journal writes.
 - [ ] Test QMD boundaries, retention, and live/history parity.
 - [ ] Test point-in-time identity and enrichment behavior.

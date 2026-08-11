@@ -344,6 +344,12 @@ bounded direct ClickHouse paths remain documented in
     projection contract is explicitly versioned, refresh still bypasses reads,
     and at most 32 account-selector projections are retained. Five focused
     cache tests, Python compile, and diff validation passed.
+55. Bounded Replay and Backtest controller residency. Existing per-subscriber
+    queues already held four coalesced snapshots; the service now retains at
+    most 32 controllers by default, evicts only the oldest terminal controller,
+    preserves durable run directories, and returns HTTP 429 instead of growing
+    without bound when every slot is active. Three focused service/API tests,
+    Python compile, and diff validation passed.
 
 The authoritative remaining work and acceptance gates are maintained in the
 [complete implementation backlog](14-implementation-backlog.md). A checked

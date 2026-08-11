@@ -76,6 +76,11 @@ REPLAY_STATUSES = {
 }
 TERMINAL_REPLAY_STATUSES = {"completed", "stopped", "failed"}
 PLAYBACK_SPEEDS = (1.0, 5.0, 30.0, 120.0, 0.0)
+DEFAULT_MAX_RESIDENT_RUNS = 32
+
+
+class ReplayRunCapacityError(RuntimeError):
+    pass
 
 
 @dataclass(frozen=True, slots=True)
@@ -1192,14 +1197,51 @@ class ReplayRunController:
 
 
 class ReplayRunService:
-    def __init__(self, runtime_root: Path | None = None) -> None:
+    def __init__(
+        self,
+        runtime_root: Path | None = None,
+        *,
+        max_resident_runs: int | None = None,
+    ) -> None:
         self.runtime_root = (runtime_root or replay_runtime_root()).resolve()
+        configured_limit = max_resident_runs
+        if configured_limit is None:
+            try:
+                configured_limit = int(
+                    os.environ.get(
+                        "TRADING_REPLAY_MAX_RESIDENT_RUNS",
+                        str(DEFAULT_MAX_RESIDENT_RUNS),
+                    )
+                )
+            except ValueError as exc:
+                raise ValueError(
+                    "TRADING_REPLAY_MAX_RESIDENT_RUNS must be an integer"
+                ) from exc
+        if configured_limit < 1:
+            raise ValueError("max_resident_runs must be positive")
+        self.max_resident_runs = configured_limit
         self._runs: dict[str, ReplayRunController] = {}
         self._lock = asyncio.Lock()
 
     async def create(self, definition: ReplayRunDefinition) -> ReplayRunController:
         controller = ReplayRunController(definition, runtime_root=self.runtime_root)
         async with self._lock:
+            terminal = sorted(
+                (
+                    resident
+                    for resident in self._runs.values()
+                    if resident.status in TERMINAL_REPLAY_STATUSES
+                ),
+                key=lambda resident: resident.updated_at,
+            )
+            while len(self._runs) >= self.max_resident_runs and terminal:
+                evicted = terminal.pop(0)
+                self._runs.pop(evicted.run_id, None)
+            if len(self._runs) >= self.max_resident_runs:
+                raise ReplayRunCapacityError(
+                    "Replay resident-run capacity is full; stop or finish an active run "
+                    "before creating another"
+                )
             self._runs[controller.run_id] = controller
         await controller.start()
         return controller

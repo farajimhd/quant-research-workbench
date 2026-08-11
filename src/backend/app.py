@@ -47,6 +47,7 @@ from src.backend.portfolio_management_service import (
 )
 from src.backend.replay_run_service import (
     ReplayRunDefinition,
+    ReplayRunCapacityError,
     ReplayRunService,
     backtest_preflight,
     backtest_runtime_root,
@@ -5079,6 +5080,8 @@ async def trading_replay_run_create(payload: ReplayRunCreateRequest) -> dict[str
             raise ValueError("Replay dependencies changed after approval; run preflight again")
         controller = await replay_run_service.create(definition)
         return controller.snapshot()
+    except ReplayRunCapacityError as exc:
+        raise HTTPException(status_code=429, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -5108,6 +5111,8 @@ async def trading_backtest_run_create(payload: BacktestRunCreateRequest) -> dict
         )
         controller = await backtest_run_service.create(definition)
         return controller.snapshot()
+    except ReplayRunCapacityError as exc:
+        raise HTTPException(status_code=429, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 

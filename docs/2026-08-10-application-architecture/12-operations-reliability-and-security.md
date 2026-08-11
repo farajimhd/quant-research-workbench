@@ -84,6 +84,12 @@ state and active reservation totals are computed from durable state rather than
 treated as lifetime counters. The UI highlights rejection, unknown outcome,
 reconciliation failure, and unprotected-quantity evidence.
 
+Replay and Backtest subscriber queues hold at most four replaceable snapshots.
+Their service retains at most 32 resident run controllers by default, evicts
+only the oldest terminal controller, preserves its durable run directory, and
+rejects new runs with HTTP 429 when every resident slot is active. The bound is
+configurable through `TRADING_REPLAY_MAX_RESIDENT_RUNS`.
+
 Logs are structured, bounded and redact credentials, account identifiers where required, licensed payloads and sensitive model prompts. Audit records are append-only and include actor, action, target, before/after version references and result.
 
 ## 7. Security and storage topology

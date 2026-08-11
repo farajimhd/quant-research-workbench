@@ -11,7 +11,9 @@ from zoneinfo import ZoneInfo
 from src.backend.replay_run_service import (
     ReplayDerivedFrame,
     ReplayRunController,
+    ReplayRunCapacityError,
     ReplayRunDefinition,
+    ReplayRunService,
     _attach_historical_signals,
     _canvas_profile_tickers,
     backtest_preflight,
@@ -114,6 +116,97 @@ class ReplayRunDefinitionTests(unittest.TestCase):
                 start_time=time(3, 59),
                 configuration_revision=approved_configuration(),
             )
+
+
+class ReplayRunServiceCapacityTests(unittest.IsolatedAsyncioTestCase):
+    async def test_evicts_only_the_oldest_terminal_resident_run(self) -> None:
+        service = ReplayRunService(
+            runtime_root=Path(tempfile.gettempdir()),
+            max_resident_runs=2,
+        )
+        controllers = [
+            MagicMock(
+                run_id=f"00000000-0000-0000-0000-00000000000{index}",
+                status=status,
+                updated_at=datetime(2026, 8, 10, index, tzinfo=NEW_YORK),
+                start=AsyncMock(),
+            )
+            for index, status in ((1, "completed"), (2, "running"), (3, "created"))
+        ]
+        with patch(
+            "src.backend.replay_run_service.ReplayRunController",
+            side_effect=controllers,
+        ):
+            await service.create(MagicMock())
+            await service.create(MagicMock())
+            await service.create(MagicMock())
+
+        with self.assertRaises(KeyError):
+            service.get(controllers[0].run_id)
+        self.assertIs(service.get(controllers[1].run_id), controllers[1])
+        self.assertIs(service.get(controllers[2].run_id), controllers[2])
+
+    async def test_rejects_new_run_when_every_resident_run_is_active(self) -> None:
+        service = ReplayRunService(
+            runtime_root=Path(tempfile.gettempdir()),
+            max_resident_runs=1,
+        )
+        first = MagicMock(
+            run_id="00000000-0000-0000-0000-000000000001",
+            status="running",
+            updated_at=datetime(2026, 8, 10, tzinfo=NEW_YORK),
+            start=AsyncMock(),
+        )
+        second = MagicMock(
+            run_id="00000000-0000-0000-0000-000000000002",
+            status="created",
+            updated_at=datetime(2026, 8, 10, tzinfo=NEW_YORK),
+            start=AsyncMock(),
+        )
+        with patch(
+            "src.backend.replay_run_service.ReplayRunController",
+            side_effect=[first, second],
+        ):
+            await service.create(MagicMock())
+            with self.assertRaises(ReplayRunCapacityError):
+                await service.create(MagicMock())
+
+        second.start.assert_not_awaited()
+
+    async def test_replay_route_returns_typed_capacity_response(self) -> None:
+        from fastapi import HTTPException
+        from src.backend import app as backend_app
+
+        request = backend_app.ReplayRunCreateRequest(
+            session_date=date(2026, 8, 10),
+            configuration_revision_id="configuration-test",
+        )
+        definition = MagicMock(
+            session_date=request.session_date,
+            start_time=time(9, 45),
+            initial_cash=request.initial_cash,
+            assignment_ids=(),
+            tickers=(),
+        )
+        with (
+            patch.object(
+                backend_app,
+                "replay_configuration_snapshot",
+                return_value={"revision_id": "configuration-test"},
+            ),
+            patch.object(backend_app, "ReplayRunDefinition", return_value=definition),
+            patch.object(backend_app, "replay_preflight", return_value={"ready": True}),
+            patch.object(
+                backend_app.replay_run_service,
+                "create",
+                AsyncMock(side_effect=ReplayRunCapacityError("capacity full")),
+            ),
+        ):
+            with self.assertRaises(HTTPException) as raised:
+                await backend_app.trading_replay_run_create(request)
+
+        self.assertEqual(raised.exception.status_code, 429)
+        self.assertEqual(raised.exception.detail, "capacity full")
 
 
 class BacktestPreflightTests(unittest.TestCase):
