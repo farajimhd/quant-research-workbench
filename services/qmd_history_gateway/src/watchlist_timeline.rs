@@ -82,6 +82,13 @@ pub struct WatchlistCandidateFrame {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct WatchlistCandidateDeltaFrame {
+    pub effective_at: String,
+    pub removals: Vec<String>,
+    pub upserts: Vec<WatchlistCandidate>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct WatchlistTimelineMember {
     pub evidence: BTreeMap<String, Value>,
     pub membership_reason: String,
@@ -92,6 +99,7 @@ pub struct WatchlistTimelineMember {
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct WatchlistTimelineState {
+    pub candidates: BTreeMap<String, WatchlistCandidate>,
     pub members: BTreeMap<String, WatchlistTimelineMember>,
     pub next_evaluation_index: u64,
     pub plan_hash: String,
@@ -121,6 +129,77 @@ pub struct WatchlistTimelineChunk {
     pub start_evaluation_index: u64,
     pub transitions: Vec<WatchlistMembershipTransition>,
     pub watchlist_id: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct ExternalFeatureRevisionEvidence {
+    pub complete: bool,
+    pub field_id: String,
+    pub query_plan_id: String,
+    pub schema_version: u16,
+    pub source_revision: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct ExternalFeatureValueInterval {
+    pub end: Option<String>,
+    pub field_id: String,
+    pub start: String,
+    pub ticker: String,
+    pub value: Value,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct HistoricalWatchlistTimelineRequest {
+    pub external_feature_intervals: Vec<ExternalFeatureValueInterval>,
+    pub external_feature_revisions: Vec<ExternalFeatureRevisionEvidence>,
+    pub plan: HistoricalWatchlistPlan,
+}
+
+pub struct WatchlistTimelineReducer<'a> {
+    allowed_sources: BTreeSet<String>,
+    candidates: BTreeMap<String, WatchlistCandidate>,
+    eligible: BTreeMap<String, WatchlistTimelineMember>,
+    expected_count: usize,
+    frames_applied: usize,
+    members: BTreeMap<String, WatchlistTimelineMember>,
+    plan: &'a HistoricalWatchlistPlan,
+    ranked: BTreeSet<RankKey>,
+    start: DateTime<Utc>,
+    start_index: u64,
+    transitions: Vec<WatchlistMembershipTransition>,
+}
+
+#[derive(Clone, Debug)]
+struct RankKey {
+    missing: bool,
+    normalized_score: f64,
+    ticker: String,
+}
+
+impl PartialEq for RankKey {
+    fn eq(&self, other: &Self) -> bool {
+        self.missing == other.missing
+            && self.normalized_score.to_bits() == other.normalized_score.to_bits()
+            && self.ticker == other.ticker
+    }
+}
+
+impl Eq for RankKey {}
+
+impl PartialOrd for RankKey {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for RankKey {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.missing
+            .cmp(&other.missing)
+            .then_with(|| self.normalized_score.total_cmp(&other.normalized_score))
+            .then_with(|| self.ticker.cmp(&other.ticker))
+    }
 }
 
 pub fn validate_plan(
@@ -267,51 +346,102 @@ pub fn materialize_candidate_chunk(
     frames: &[WatchlistCandidateFrame],
     prior_state: Option<WatchlistTimelineState>,
 ) -> Result<WatchlistTimelineChunk, String> {
-    let validation = validate_plan(plan)?;
-    let start = parse_time(&plan.start, "start")?;
-    let start_index = prior_state
-        .as_ref()
-        .map(|state| {
-            if state.schema_version != WATCHLIST_TIMELINE_PLAN_SCHEMA_VERSION
-                || state.plan_hash != plan.plan_hash
-            {
-                return Err(
-                    "historical Watchlist timeline state does not match the admitted plan"
-                        .to_string(),
-                );
-            }
-            Ok(state.next_evaluation_index)
-        })
-        .transpose()?
-        .unwrap_or(0);
-    let remaining = validation.evaluation_count.saturating_sub(start_index);
-    let expected_count = remaining.min(plan.max_evaluations_per_chunk) as usize;
-    if frames.len() != expected_count {
-        return Err(format!(
-            "historical Watchlist chunk requires {expected_count} cadence frames, received {}",
-            frames.len()
-        ));
+    let mut reducer = WatchlistTimelineReducer::new(plan, prior_state)?;
+    for frame in frames {
+        reducer.apply(frame)?;
     }
-    let allowed_sources = plan
-        .qmd_sources
-        .iter()
-        .map(String::as_str)
-        .chain(
-            plan.external_features
-                .iter()
-                .map(|feature| feature.field_id.as_str()),
-        )
-        .collect::<BTreeSet<_>>();
-    let mut members = prior_state.map(|state| state.members).unwrap_or_default();
-    let mut transitions = Vec::new();
-    for (offset, frame) in frames.iter().enumerate() {
-        let evaluation_index = start_index.saturating_add(offset as u64);
-        let expected_at = start
+    reducer.finish()
+}
+
+impl<'a> WatchlistTimelineReducer<'a> {
+    pub fn new(
+        plan: &'a HistoricalWatchlistPlan,
+        prior_state: Option<WatchlistTimelineState>,
+    ) -> Result<Self, String> {
+        let validation = validate_plan(plan)?;
+        let start = parse_time(&plan.start, "start")?;
+        let start_index = prior_state
+            .as_ref()
+            .map(|state| {
+                if state.schema_version != WATCHLIST_TIMELINE_PLAN_SCHEMA_VERSION
+                    || state.plan_hash != plan.plan_hash
+                {
+                    return Err(
+                        "historical Watchlist timeline state does not match the admitted plan"
+                            .to_string(),
+                    );
+                }
+                Ok(state.next_evaluation_index)
+            })
+            .transpose()?
+            .unwrap_or(0);
+        let remaining = validation.evaluation_count.saturating_sub(start_index);
+        let expected_count = remaining.min(plan.max_evaluations_per_chunk) as usize;
+        let allowed_sources = plan
+            .qmd_sources
+            .iter()
+            .cloned()
+            .chain(
+                plan.external_features
+                    .iter()
+                    .map(|feature| feature.field_id.clone()),
+            )
+            .collect::<BTreeSet<_>>();
+        let (members, candidates) = prior_state
+            .map(|state| (state.members, state.candidates))
+            .unwrap_or_default();
+        let mut reducer = Self {
+            allowed_sources,
+            candidates,
+            eligible: BTreeMap::new(),
+            expected_count,
+            frames_applied: 0,
+            members,
+            plan,
+            ranked: BTreeSet::new(),
+            start,
+            start_index,
+            transitions: Vec::new(),
+        };
+        reducer.rebuild_rank_index()?;
+        Ok(reducer)
+    }
+
+    pub fn apply(&mut self, frame: &WatchlistCandidateFrame) -> Result<(), String> {
+        let incoming = frame
+            .candidates
+            .iter()
+            .map(|candidate| candidate.ticker.trim().to_ascii_uppercase())
+            .collect::<BTreeSet<_>>();
+        if incoming.len() != frame.candidates.len() || incoming.contains("") {
+            return Err(
+                "historical Watchlist candidate tickers must be non-empty and unique".to_string(),
+            );
+        }
+        let removals = self
+            .candidates
+            .keys()
+            .filter(|ticker| !incoming.contains(*ticker))
+            .cloned()
+            .collect::<Vec<_>>();
+        self.apply_delta(&WatchlistCandidateDeltaFrame {
+            effective_at: frame.effective_at.clone(),
+            removals,
+            upserts: frame.candidates.clone(),
+        })
+    }
+
+    pub fn apply_delta(&mut self, frame: &WatchlistCandidateDeltaFrame) -> Result<(), String> {
+        if self.frames_applied >= self.expected_count {
+            return Err("historical Watchlist chunk received too many cadence frames".to_string());
+        }
+        let evaluation_index = self.start_index.saturating_add(self.frames_applied as u64);
+        let expected_at = self.start
             + chrono::Duration::milliseconds(
-                i64::try_from(evaluation_index.saturating_mul(plan.cadence_ms))
+                i64::try_from(evaluation_index.saturating_mul(self.plan.cadence_ms))
                     .map_err(|_| "historical Watchlist cadence clock overflowed".to_string())?,
             );
-        let effective_at = parse_time(&frame.effective_at, "candidate frame effective_at")?;
+        let effective_at = parse_time(&frame.effective_at, "candidate delta effective_at")?;
         if effective_at != expected_at {
             return Err(format!(
                 "historical Watchlist cadence frame drift: expected={} actual={}",
@@ -319,39 +449,169 @@ pub fn materialize_candidate_chunk(
                 effective_at.to_rfc3339()
             ));
         }
-        let current = resolve_frame(plan, frame, &allowed_sources)?;
-        append_transitions(plan, effective_at, &members, &current, &mut transitions);
-        if transitions.len() as u64 > MAX_MEMBERSHIP_SLOTS_PER_CHUNK {
+        let removals = frame
+            .removals
+            .iter()
+            .map(|ticker| ticker.trim().to_ascii_uppercase())
+            .collect::<BTreeSet<_>>();
+        let upsert_tickers = frame
+            .upserts
+            .iter()
+            .map(|candidate| candidate.ticker.trim().to_ascii_uppercase())
+            .collect::<BTreeSet<_>>();
+        if removals.len() != frame.removals.len()
+            || upsert_tickers.len() != frame.upserts.len()
+            || removals.contains("")
+            || upsert_tickers.contains("")
+            || !removals.is_disjoint(&upsert_tickers)
+        {
+            return Err(
+                "historical Watchlist delta tickers are invalid, duplicated, or overlap"
+                    .to_string(),
+            );
+        }
+        for ticker in removals {
+            self.candidates.remove(&ticker);
+            self.remove_eligible(&ticker);
+        }
+        for candidate in &frame.upserts {
+            self.upsert_candidate(candidate.clone())?;
+        }
+        self.ensure_manual_missing();
+        let current = self.current_members();
+        append_transitions(
+            self.plan,
+            effective_at,
+            &self.members,
+            &current,
+            &mut self.transitions,
+        );
+        if self.transitions.len() as u64 > MAX_MEMBERSHIP_SLOTS_PER_CHUNK {
             return Err(format!(
                 "historical Watchlist transitions exceeded budget={MAX_MEMBERSHIP_SLOTS_PER_CHUNK}"
             ));
         }
-        members = current;
+        self.members = current;
+        self.frames_applied += 1;
+        Ok(())
     }
-    let end_index = start_index.saturating_add(frames.len() as u64);
-    let next_state = WatchlistTimelineState {
-        members,
-        next_evaluation_index: end_index,
-        plan_hash: plan.plan_hash.clone(),
-        schema_version: WATCHLIST_TIMELINE_PLAN_SCHEMA_VERSION,
-    };
-    Ok(WatchlistTimelineChunk {
-        cadence_ms: plan.cadence_ms,
-        end_evaluation_index: end_index,
-        next_state,
-        plan_hash: plan.plan_hash.clone(),
-        schema_version: WATCHLIST_TIMELINE_PLAN_SCHEMA_VERSION,
-        start_evaluation_index: start_index,
-        transitions,
-        watchlist_id: plan.watchlist_id.clone(),
-    })
+
+    fn rebuild_rank_index(&mut self) -> Result<(), String> {
+        let candidates = self.candidates.values().cloned().collect::<Vec<_>>();
+        self.candidates.clear();
+        self.eligible.clear();
+        self.ranked.clear();
+        for candidate in candidates {
+            self.upsert_candidate(candidate)?;
+        }
+        self.ensure_manual_missing();
+        Ok(())
+    }
+
+    fn upsert_candidate(&mut self, mut candidate: WatchlistCandidate) -> Result<(), String> {
+        let ticker = candidate.ticker.trim().to_ascii_uppercase();
+        if ticker.is_empty()
+            || candidate
+                .values
+                .keys()
+                .any(|source| !self.allowed_sources.contains(source))
+        {
+            return Err(format!(
+                "historical Watchlist candidate {ticker} is invalid or contains an undeclared source"
+            ));
+        }
+        candidate.ticker = ticker.clone();
+        self.remove_eligible(&ticker);
+        self.candidates.insert(ticker.clone(), candidate.clone());
+        if let Some(member) = evaluate_candidate(self.plan, &candidate)? {
+            self.ranked.insert(rank_key(self.plan, &member));
+            self.eligible.insert(ticker, member);
+        }
+        Ok(())
+    }
+
+    fn remove_eligible(&mut self, ticker: &str) {
+        if let Some(member) = self.eligible.remove(ticker) {
+            self.ranked.remove(&rank_key(self.plan, &member));
+        }
+    }
+
+    fn ensure_manual_missing(&mut self) {
+        let exclusions = self
+            .plan
+            .manual_exclusions
+            .iter()
+            .map(|value| value.to_ascii_uppercase())
+            .collect::<BTreeSet<_>>();
+        for ticker in self
+            .plan
+            .manual_inclusions
+            .iter()
+            .map(|value| value.to_ascii_uppercase())
+        {
+            if self.candidates.contains_key(&ticker) || exclusions.contains(&ticker) {
+                continue;
+            }
+            self.remove_eligible(&ticker);
+            let member = WatchlistTimelineMember {
+                evidence: BTreeMap::new(),
+                membership_reason: "manual inclusion; scanner evidence unavailable".to_string(),
+                rank: 0,
+                score: None,
+                ticker: ticker.clone(),
+            };
+            self.ranked.insert(rank_key(self.plan, &member));
+            self.eligible.insert(ticker, member);
+        }
+    }
+
+    fn current_members(&self) -> BTreeMap<String, WatchlistTimelineMember> {
+        self.ranked
+            .iter()
+            .take(self.plan.maximum_size)
+            .enumerate()
+            .filter_map(|(index, key)| {
+                self.eligible.get(&key.ticker).map(|member| {
+                    let mut member = member.clone();
+                    member.rank = index + 1;
+                    (member.ticker.clone(), member)
+                })
+            })
+            .collect()
+    }
+
+    pub fn finish(self) -> Result<WatchlistTimelineChunk, String> {
+        if self.frames_applied != self.expected_count {
+            return Err(format!(
+                "historical Watchlist chunk requires {} cadence frames, received {}",
+                self.expected_count, self.frames_applied
+            ));
+        }
+        let end_index = self.start_index.saturating_add(self.frames_applied as u64);
+        let next_state = WatchlistTimelineState {
+            candidates: self.candidates,
+            members: self.members,
+            next_evaluation_index: end_index,
+            plan_hash: self.plan.plan_hash.clone(),
+            schema_version: WATCHLIST_TIMELINE_PLAN_SCHEMA_VERSION,
+        };
+        Ok(WatchlistTimelineChunk {
+            cadence_ms: self.plan.cadence_ms,
+            end_evaluation_index: end_index,
+            next_state,
+            plan_hash: self.plan.plan_hash.clone(),
+            schema_version: WATCHLIST_TIMELINE_PLAN_SCHEMA_VERSION,
+            start_evaluation_index: self.start_index,
+            transitions: self.transitions,
+            watchlist_id: self.plan.watchlist_id.clone(),
+        })
+    }
 }
 
-fn resolve_frame(
+fn evaluate_candidate(
     plan: &HistoricalWatchlistPlan,
-    frame: &WatchlistCandidateFrame,
-    allowed_sources: &BTreeSet<&str>,
-) -> Result<BTreeMap<String, WatchlistTimelineMember>, String> {
+    candidate: &WatchlistCandidate,
+) -> Result<Option<WatchlistTimelineMember>, String> {
     let rules = plan
         .rule_sets
         .iter()
@@ -372,88 +632,53 @@ fn resolve_frame(
         .iter()
         .map(|value| value.to_ascii_uppercase())
         .collect::<BTreeSet<_>>();
-    let mut seen = BTreeSet::new();
-    let mut accepted = Vec::new();
-    for candidate in &frame.candidates {
-        let ticker = candidate.ticker.trim().to_ascii_uppercase();
-        if ticker.is_empty() || !seen.insert(ticker.clone()) {
-            return Err(
-                "historical Watchlist candidate tickers must be non-empty and unique".to_string(),
-            );
-        }
-        if candidate
-            .values
-            .keys()
-            .any(|source| !allowed_sources.contains(source.as_str()))
-        {
-            return Err(format!(
-                "historical Watchlist candidate {ticker} contains an undeclared source"
-            ));
-        }
-        if manual_exclusions.contains(&ticker) {
-            continue;
-        }
-        let include_results = plan
-            .inclusion_rule_sets
-            .iter()
-            .map(|rule_id| rule_matches(rules.get(rule_id.as_str()).copied(), &candidate.values))
-            .collect::<Vec<_>>();
-        let included = include_results.is_empty()
-            || if plan.inclusion_operator == "any" {
-                include_results.iter().any(|value| *value)
-            } else {
-                include_results.iter().all(|value| *value)
-            };
-        let excluded = plan
-            .exclusion_rule_sets
-            .iter()
-            .any(|rule_id| rule_matches(rules.get(rule_id.as_str()).copied(), &candidate.values));
-        if (included && !excluded) || manual_inclusions.contains(&ticker) {
-            accepted.push(WatchlistTimelineMember {
-                evidence: candidate.values.clone(),
-                membership_reason: if manual_inclusions.contains(&ticker) {
-                    "manual inclusion".to_string()
-                } else {
-                    "rules passed".to_string()
-                },
-                rank: 0,
-                score: numeric_value(candidate.values.get(&plan.ranking_field)),
-                ticker,
-            });
-        }
+    let ticker = candidate.ticker.to_ascii_uppercase();
+    if manual_exclusions.contains(&ticker) {
+        return Ok(None);
     }
-    for ticker in manual_inclusions.difference(&seen) {
-        if !manual_exclusions.contains(ticker) {
-            accepted.push(WatchlistTimelineMember {
-                evidence: BTreeMap::new(),
-                membership_reason: "manual inclusion; scanner evidence unavailable".to_string(),
-                rank: 0,
-                score: None,
-                ticker: ticker.clone(),
-            });
-        }
-    }
-    accepted.sort_by(|left, right| {
-        let score_order = match (left.score, right.score) {
-            (Some(left), Some(right)) if plan.ranking_direction == "descending" => {
-                right.total_cmp(&left)
-            }
-            (Some(left), Some(right)) => left.total_cmp(&right),
-            (Some(_), None) => std::cmp::Ordering::Less,
-            (None, Some(_)) => std::cmp::Ordering::Greater,
-            (None, None) => std::cmp::Ordering::Equal,
+    let include_results = plan
+        .inclusion_rule_sets
+        .iter()
+        .map(|rule_id| rule_matches(rules.get(rule_id.as_str()).copied(), &candidate.values))
+        .collect::<Vec<_>>();
+    let included = include_results.is_empty()
+        || if plan.inclusion_operator == "any" {
+            include_results.iter().any(|value| *value)
+        } else {
+            include_results.iter().all(|value| *value)
         };
-        score_order.then_with(|| left.ticker.cmp(&right.ticker))
-    });
-    accepted.truncate(plan.maximum_size);
-    Ok(accepted
-        .into_iter()
-        .enumerate()
-        .map(|(index, mut member)| {
-            member.rank = index + 1;
-            (member.ticker.clone(), member)
-        })
-        .collect())
+    let excluded = plan
+        .exclusion_rule_sets
+        .iter()
+        .any(|rule_id| rule_matches(rules.get(rule_id.as_str()).copied(), &candidate.values));
+    if !((included && !excluded) || manual_inclusions.contains(&ticker)) {
+        return Ok(None);
+    }
+    Ok(Some(WatchlistTimelineMember {
+        evidence: candidate.values.clone(),
+        membership_reason: if manual_inclusions.contains(&ticker) {
+            "manual inclusion".to_string()
+        } else {
+            "rules passed".to_string()
+        },
+        rank: 0,
+        score: numeric_value(candidate.values.get(&plan.ranking_field)),
+        ticker,
+    }))
+}
+
+fn rank_key(plan: &HistoricalWatchlistPlan, member: &WatchlistTimelineMember) -> RankKey {
+    RankKey {
+        missing: member.score.is_none(),
+        normalized_score: member.score.map_or(0.0, |score| {
+            if plan.ranking_direction == "descending" {
+                -score
+            } else {
+                score
+            }
+        }),
+        ticker: member.ticker.clone(),
+    }
 }
 
 fn rule_matches(

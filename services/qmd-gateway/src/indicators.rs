@@ -397,6 +397,7 @@ pub struct MarketStructureReferenceLevels {
     pub prior_month_high: f64,
     pub prior_month_low: f64,
     pub prior_month_close: f64,
+    pub previous_session_close: f64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -407,6 +408,8 @@ struct MarketStructureReferenceRow {
     prior_month_high: f64,
     prior_month_low: f64,
     prior_month_close: f64,
+    #[serde(default)]
+    previous_session_close: f64,
 }
 
 pub async fn load_live_market_structure_references(
@@ -483,7 +486,8 @@ pub fn market_structure_reference_sql(
             ifNull(minIf(low, low > 0 AND session_date >= addDays(toDate('{as_of_date}'), -364) AND session_date < toDate('{as_of_date}')), 0) AS low_52_week,
             ifNull(maxIf(high, toStartOfMonth(session_date) = addMonths(toStartOfMonth(toDate('{as_of_date}')), -1)), 0) AS prior_month_high,
             ifNull(minIf(low, low > 0 AND toStartOfMonth(session_date) = addMonths(toStartOfMonth(toDate('{as_of_date}')), -1)), 0) AS prior_month_low,
-            ifNull(argMaxIf(close, bar_end, toStartOfMonth(session_date) = addMonths(toStartOfMonth(toDate('{as_of_date}')), -1)), 0) AS prior_month_close
+            ifNull(argMaxIf(close, bar_end, toStartOfMonth(session_date) = addMonths(toStartOfMonth(toDate('{as_of_date}')), -1)), 0) AS prior_month_close,
+            ifNull(argMax(close, tuple(session_date, bar_end)), 0) AS previous_session_close
         FROM ({daily_bars})
         GROUP BY sym
         FORMAT JSONEachRow"#,
@@ -577,6 +581,7 @@ pub fn parse_market_structure_reference_rows(
                     prior_month_high: row.prior_month_high,
                     prior_month_low: row.prior_month_low,
                     prior_month_close: row.prior_month_close,
+                    previous_session_close: row.previous_session_close,
                 },
             ))
         })
@@ -2844,13 +2849,15 @@ mod tests {
         assert!(sql.contains("available_at_us <="));
         assert!(sql.contains("uniqExact(session_kind) = 3"));
         assert!(sql.contains("identity_status != 'ambiguous_source_ticker'"));
+        assert!(sql.contains("previous_session_close"));
         let rows = parse_market_structure_reference_rows(
-            r#"{"sym":"AAPL","high_52_week":331.78,"low_52_week":181.46,"prior_month_high":324.09,"prior_month_low":246.63,"prior_month_close":289.0}"#,
+            r#"{"sym":"AAPL","high_52_week":331.78,"low_52_week":181.46,"prior_month_high":324.09,"prior_month_low":246.63,"prior_month_close":289.0,"previous_session_close":301.0}"#,
         )
         .unwrap();
         let aapl = rows.get("AAPL").unwrap();
         assert_eq!(aapl.high_52_week, 331.78);
         assert_eq!(aapl.prior_month_close, 289.0);
+        assert_eq!(aapl.previous_session_close, 301.0);
     }
 
     #[tokio::test]

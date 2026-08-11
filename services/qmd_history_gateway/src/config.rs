@@ -34,6 +34,8 @@ pub struct HistoricalGatewayConfig {
     pub structure_database: String,
     pub structure_events_table: String,
     pub table_prefix: String,
+    pub watchlist_max_concurrent_materializations: usize,
+    pub watchlist_request_max_bytes: usize,
 }
 
 impl HistoricalGatewayConfig {
@@ -100,6 +102,16 @@ impl HistoricalGatewayConfig {
                 "qmd_structure_events_v2",
             ),
             table_prefix: env_string("QMD_HISTORY_TABLE_PREFIX", "events_"),
+            watchlist_max_concurrent_materializations: env_usize(
+                "QMD_HISTORY_WATCHLIST_MAX_CONCURRENT_MATERIALIZATIONS",
+                1,
+            )
+            .clamp(1, 8),
+            watchlist_request_max_bytes: env_usize(
+                "QMD_HISTORY_WATCHLIST_REQUEST_MAX_BYTES",
+                64 * 1024 * 1024,
+            )
+            .clamp(1024 * 1024, 256 * 1024 * 1024),
         }
     }
 

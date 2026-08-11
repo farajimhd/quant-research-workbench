@@ -172,12 +172,20 @@ impl SharedMarketState {
     }
 
     pub async fn ticker_snapshot(&self, ticker: &str) -> Option<SymbolSnapshot> {
+        self.ticker_snapshot_at(ticker, Utc::now()).await
+    }
+
+    pub async fn ticker_snapshot_at(
+        &self,
+        ticker: &str,
+        as_of: DateTime<Utc>,
+    ) -> Option<SymbolSnapshot> {
         let state = self.inner.read().await;
         let normalized = ticker.to_ascii_uppercase();
         state
             .symbols
             .get(&normalized)
-            .map(|symbol| symbol.snapshot(&normalized, Utc::now()))
+            .map(|symbol| symbol.snapshot(&normalized, as_of))
     }
 
     pub async fn ticker_state_snapshot(&self, ticker: &str) -> TickerStateSnapshot {

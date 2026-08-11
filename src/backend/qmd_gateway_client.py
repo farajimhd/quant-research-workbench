@@ -576,6 +576,32 @@ def qmd_validate_historical_watchlist_plan(plan: dict[str, Any]) -> dict[str, An
     return payload
 
 
+def qmd_materialize_historical_watchlist_timeline(
+    plan: dict[str, Any],
+    *,
+    external_feature_revisions: list[dict[str, Any]],
+    external_feature_intervals: list[dict[str, Any]],
+) -> dict[str, Any]:
+    payload = qmd_history_post_json(
+        "/materialize/watchlist-timeline",
+        {
+            "plan": plan,
+            "external_feature_revisions": external_feature_revisions,
+            "external_feature_intervals": external_feature_intervals,
+        },
+        timeout=300,
+    )
+    if not isinstance(payload, dict):
+        raise RuntimeError("QMD History returned an invalid historical Watchlist timeline")
+    if str(payload.get("plan_hash") or "") != str(plan.get("plan_hash") or ""):
+        raise RuntimeError("QMD History materialized a different historical Watchlist plan")
+    if not str(payload.get("materialization_id") or "").startswith("sha256:"):
+        raise RuntimeError("QMD History Watchlist timeline has no materialization identity")
+    if not isinstance(payload.get("chunks"), list):
+        raise RuntimeError("QMD History Watchlist timeline has no chunk projection")
+    return payload
+
+
 def _qmd_service_get_json(
     base_url: str,
     path: str,

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import unittest
 import urllib.error
 from io import BytesIO
@@ -17,6 +18,7 @@ from src.backend.qmd_gateway_client import (
     qmd_computation_demand,
     qmd_computation_requirements,
     qmd_history_base_url,
+    qmd_materialize_historical_watchlist_timeline,
     qmd_validate_historical_watchlist_plan,
     qmd_history_websocket_url,
     qmd_historical_scanner_snapshot,
@@ -35,6 +37,33 @@ from src.request_context import begin_request_context, current_request_identity,
 
 
 class QmdGatewayClientTests(unittest.TestCase):
+    @patch("src.backend.qmd_gateway_client.urllib.request.urlopen")
+    @patch("src.backend.qmd_gateway_client.qmd_history_base_url", return_value="http://127.0.0.1:8801")
+    def test_historical_watchlist_materialization_is_typed_and_content_bound(
+        self, _base_url, urlopen
+    ) -> None:
+        response = MagicMock()
+        response.read.return_value = (
+            b'{"plan_hash":"sha256:abc","materialization_id":"sha256:def","chunks":[]}'
+        )
+        urlopen.return_value.__enter__.return_value = response
+
+        payload = qmd_materialize_historical_watchlist_timeline(
+            {"schema_version": 1, "plan_hash": "sha256:abc"},
+            external_feature_revisions=[],
+            external_feature_intervals=[],
+        )
+
+        request = urlopen.call_args.args[0]
+        body = json.loads(request.data.decode("utf-8"))
+        self.assertEqual(
+            request.full_url,
+            "http://127.0.0.1:8801/materialize/watchlist-timeline",
+        )
+        self.assertEqual(body["plan"]["plan_hash"], "sha256:abc")
+        self.assertEqual(body["external_feature_intervals"], [])
+        self.assertEqual(payload["materialization_id"], "sha256:def")
+
     @patch("src.backend.qmd_gateway_client.urllib.request.urlopen")
     @patch("src.backend.qmd_gateway_client.qmd_history_base_url", return_value="http://127.0.0.1:8801")
     def test_historical_watchlist_plan_uses_typed_post_and_matching_hash(

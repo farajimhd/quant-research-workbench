@@ -13,6 +13,8 @@ use crate::source::HistoricalEventSource;
 use qmd_core::config::load_env_files;
 use std::io;
 use std::net::SocketAddr;
+use std::sync::Arc;
+use tokio::sync::Semaphore;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -37,6 +39,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         })?;
     let cache = HistoricalDerivedCache::new(config.clone(), source.clone());
     let scanner = HistoricalScannerDerivedCache::new(config.clone(), source.clone());
+    let watchlist_materialization_permits = Arc::new(Semaphore::new(
+        config.watchlist_max_concurrent_materializations,
+    ));
     let listener = tokio::net::TcpListener::bind(bind).await?;
     eprintln!(
         "qmd-history-gateway listening on {bind}; source={}.{}YYYY",
@@ -49,6 +54,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             config,
             scanner,
             source,
+            watchlist_materialization_permits,
         }),
     )
     .with_graceful_shutdown(async {

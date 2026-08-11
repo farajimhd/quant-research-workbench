@@ -1076,6 +1076,30 @@ bounded direct ClickHouse paths remain documented in
      materialization path: the single-pass event replay must still feed these
      frames, merge certified external-feature intervals, persist revisioned
      output, and replace Backtest's session-boundary fallback.
+127. Added the executable single-pass QMD History Watchlist materializer. A
+     bounded POST contract accepts the admitted plan plus exact external-feature
+     intervals and complete per-field revision evidence. It pins a complete
+     event-source revision, replays that stream once through shared QMD market,
+     bar, indicator, microstructure, and signal state, refreshes the completed
+     previous-session close at each New York session, and feeds only changed
+     symbols into the persistent rank index. Trade-rate decay and indicator
+     finalization also schedule causal updates without rescanning unchanged
+     rows. Output chunks carry plan, market, calculation, external-feature, and
+     materialization identities.
+
+     Admission now limits external request bodies to a configurable 64 MiB,
+     permits one materialization by default, caps event replay and transition
+     slots, and returns retryable HTTP 429 when busy. The backend has a typed
+     five-minute client that rejects a changed plan hash or missing
+     materialization identity. All 35 QMD History tests, all 99 shared QMD
+     library tests, and 36 backend client tests passed; Python compilation
+     passed.
+
+     This phase intentionally remains fail closed for aligned relative volume;
+     substituting prorated daily volume would violate the configured field
+     contract. Backend production of causal Reference/fundamental intervals,
+     ticker-sharded load acceptance, durable reuse, and Backtest cutover remain
+     explicit open items.
 
 The authoritative remaining work and acceptance gates are maintained in the
 [complete implementation backlog](14-implementation-backlog.md). A checked

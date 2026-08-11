@@ -4,16 +4,20 @@ use crate::cache::{
     HISTORICAL_ENGINE_VERSION,
 };
 use crate::config::HistoricalGatewayConfig;
-use crate::scanner::{HistoricalScannerDerivedCache, HistoricalScannerDerivedSnapshot};
+use crate::scanner::{
+    materialize_watchlist_timeline, HistoricalScannerDerivedCache,
+    HistoricalScannerDerivedSnapshot, HistoricalWatchlistTimelineMaterialization,
+};
 use crate::source::{
     EventCoverage, EventWindow, HistoricalCursor, HistoricalEventSource, LatestEventCoverage,
     MarketSourcePlan, SourceRevision,
 };
 use crate::watchlist_timeline::{
     validate_plan, HistoricalWatchlistPlan, HistoricalWatchlistPlanValidation,
+    HistoricalWatchlistTimelineRequest,
 };
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
-use axum::extract::{Path, Query, State};
+use axum::extract::{DefaultBodyLimit, Path, Query, State};
 use axum::http::StatusCode;
 use axum::middleware;
 use axum::response::IntoResponse;
@@ -33,6 +37,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::BTreeSet;
 use std::sync::Arc;
+use tokio::sync::Semaphore;
 use tower_http::cors::CorsLayer;
 
 #[derive(Clone)]
@@ -41,6 +46,7 @@ pub struct AppState {
     pub config: HistoricalGatewayConfig,
     pub scanner: HistoricalScannerDerivedCache,
     pub source: HistoricalEventSource,
+    pub watchlist_materialization_permits: Arc<Semaphore>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -178,6 +184,7 @@ struct MarketEventPage {
 type ApiError = (StatusCode, Json<Value>);
 
 pub fn app(state: AppState) -> Router {
+    let watchlist_request_max_bytes = state.config.watchlist_request_max_bytes;
     Router::new()
         .route("/health", get(health))
         .route("/config", get(config))
@@ -199,6 +206,11 @@ pub fn app(state: AppState) -> Router {
         .route(
             "/plans/watchlist-timeline/validate",
             post(validate_watchlist_timeline_plan),
+        )
+        .route(
+            "/materialize/watchlist-timeline",
+            post(materialize_watchlist_timeline_plan)
+                .layer(DefaultBodyLimit::max(watchlist_request_max_bytes)),
         )
         .route(
             "/snapshot/chart-macro-bars/{ticker}",
@@ -253,6 +265,29 @@ async fn validate_watchlist_timeline_plan(
     Json(plan): Json<HistoricalWatchlistPlan>,
 ) -> Result<Json<HistoricalWatchlistPlanValidation>, ApiError> {
     validate_plan(&plan).map(Json).map_err(bad_request)
+}
+
+async fn materialize_watchlist_timeline_plan(
+    State(state): State<Arc<AppState>>,
+    Json(request): Json<HistoricalWatchlistTimelineRequest>,
+) -> Result<Json<HistoricalWatchlistTimelineMaterialization>, ApiError> {
+    let _permit = state
+        .watchlist_materialization_permits
+        .clone()
+        .try_acquire_owned()
+        .map_err(|_| {
+            (
+                StatusCode::TOO_MANY_REQUESTS,
+                Json(json!({
+                    "error": "historical Watchlist materialization capacity is busy",
+                    "retryable": true,
+                })),
+            )
+        })?;
+    materialize_watchlist_timeline(state.config.clone(), state.source.clone(), request)
+        .await
+        .map(Json)
+        .map_err(bad_request)
 }
 
 async fn health(State(state): State<Arc<AppState>>) -> Result<Json<HealthPayload>, ApiError> {

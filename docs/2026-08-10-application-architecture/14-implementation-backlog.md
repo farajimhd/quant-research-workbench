@@ -552,8 +552,23 @@ load progressively without false continuity.
       - [x] Implement the bounded Rust predicate/rank reducer: exact cadence
             clocks, fail-closed missing evidence, inclusion/exclusion and score
             rules, deterministic rank/limit/overrides, add/remove/rank-change
-            deltas, and content-bound state carry between chunks. Event-derived
-            candidate-frame production and endpoint materialization remain open.
+            deltas, and content-bound state carry between chunks.
+      - [x] Add the bounded QMD History materialization endpoint. One pinned,
+            complete event stream advances shared market/bar/indicator state,
+            emits only dirty-symbol candidate deltas, refreshes causal daily
+            references by New York session, merges certified external value
+            intervals, and returns revision/content-bound chunks. Request bytes,
+            event count, output slots, and concurrent materializations are gated.
+      - [ ] Build the backend external-feature interval provider for every
+            registered Watchlist dependency and pass exact complete revision
+            evidence into QMD History.
+      - [ ] Implement the causal elapsed-session 20-session relative-volume
+            baseline; QMD History currently rejects this field rather than use
+            a daily-volume approximation.
+      - [ ] Partition materialization computation across bounded ticker shards
+            and complete representative active-session load acceptance.
+      - [ ] Persist/reuse the revisioned timeline product and replace Backtest's
+            session-boundary membership fallback with its transition stream.
   - [x] Build canonical Backtest performance, Portfolio, position, order,
         execution, and closed-trade result projections.
   - [x] Add strategy/run attribution and comparative analysis projections.
