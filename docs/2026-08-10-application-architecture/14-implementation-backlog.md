@@ -306,7 +306,7 @@ Replay and Backtest decisions.
 - [x] Journal every Portfolio decision and reservation transition.
 - [x] Expose Portfolio configuration and operational UI/API, including distinct
       Run Plan allocations and aggregated Strategy allocation labels.
-- [ ] Test races, lease expiry, restart, and shared-account conflicts.
+- [x] Test races, lease expiry, restart, and shared-account conflicts.
 
 Acceptance gate: two processes cannot allocate the same account capital without
 one fenced decision.

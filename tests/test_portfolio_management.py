@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import tempfile
 import time
 import unittest
@@ -254,6 +255,45 @@ class PortfolioManagementTests(unittest.IsolatedAsyncioTestCase):
         reservation = second.reservations[second_decision.reservation_id]
         self.assertGreater(reservation.admission_epoch, 0)
         self.assertTrue(reservation.admission_owner.startswith("process-b:"))
+
+    async def test_concurrent_cross_run_admission_cannot_overallocate_shared_account(self) -> None:
+        policy = PortfolioPolicy(
+            policy_id="concurrent",
+            maximum_position_fraction=1,
+            maximum_ticker_fraction=1,
+            maximum_planned_risk_fraction=1,
+            maximum_open_risk_fraction=1,
+            maximum_order_notional=1_000_000,
+        )
+        profile = PortfolioAccountProfile("cash", "CASH1", "live", "cash", policy)
+        second_journal = TradingJournal(Path(self.temp.name) / "portfolio.sqlite3")
+        engines = [
+            PortfolioManagementEngine(
+                [profile],
+                journal=journal,
+                run_id=f"concurrent-{index}",
+                strategy_id=f"strategy-{index}",
+                strategy_revision=1,
+            )
+            for index, journal in enumerate((self.journal, second_journal), start=1)
+        ]
+        for engine in engines:
+            engine.synchronize_snapshot(
+                "CASH1",
+                summary=summary("CASH1", equity=100_000, available=10_000),
+                ledger=ledger("CASH1", cash=10_000),
+                positions=[],
+            )
+
+        results = await asyncio.gather(
+            engines[0].approve(intent("race-a", quantity=80), account_id="CASH1"),
+            engines[1].approve(intent("race-b", quantity=80), account_id="CASH1"),
+        )
+        second_journal.close()
+
+        approved = [decision.approved_quantity for decision, _ in results]
+        self.assertEqual(sum(approved), 100)
+        self.assertEqual(sorted(approved), [20, 80])
 
     def test_stale_lease_owner_cannot_release_newer_epoch(self) -> None:
         first = self.journal.acquire_portfolio_admission_lease(

@@ -193,6 +193,11 @@ bounded direct ClickHouse paths remain documented in
     demand units derived from registered cost class, ticker count, and effective
     timeframe dependencies. QMD Service Core and Market Discovery consume the
     same snapshot; the UI labels absence rather than inventing zero cost.
+38. Closed the Portfolio fencing test gate with an explicit concurrent
+    cross-run admission case using separate journal connections to the shared
+    account authority. Together with the existing epoch-expiry, stale-owner,
+    state-recovery, and shared-account tests, the suite proves reservations
+    cannot overallocate the available account capacity.
 
 The authoritative remaining work and acceptance gates are maintained in the
 [complete implementation backlog](14-implementation-backlog.md). A checked
