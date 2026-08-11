@@ -577,6 +577,20 @@ load progressively without false continuity.
             source revisions. No prorated daily-volume substitute is used.
       - [ ] Partition materialization computation across bounded ticker shards
             and complete representative active-session load acceptance.
+        - [x] Partition daily-reference state, event application, indicator
+              finalization, relative-volume baselines, and candidate lookup by
+              stable ticker ownership across the configured History Scanner
+              shards. Global evaluation clocks remain coordinated across
+              shards so cross-sectional ranking has one causal boundary.
+        - [ ] Meet the representative active-session latency and memory budget.
+              Real archive acceptance on 2026-08-11 returned HTTP 200 and the
+              correct bounded product, but a two-second 2026-08-07 market
+              window (683,497 events, two evaluation clocks, 25 transitions)
+              required 25.779 seconds and left 1.268 GB resident. The preceding
+              one-minute run completed after roughly 212 seconds and reached
+              an 8.084 GB process peak. Stable ownership is implemented, but
+              shard finalization is still sequential and the full event stream
+              remains memory-expensive; therefore the parent gate stays open.
       - [x] Persist/reuse the revisioned timeline product and replace Backtest's
             session-boundary membership fallback with its transition stream.
         - [x] Replace the active single-Watchlist Backtest path with QMD History

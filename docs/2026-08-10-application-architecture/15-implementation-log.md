@@ -1188,6 +1188,27 @@ bounded direct ClickHouse paths remain documented in
      shared QMD tests passed. Representative database/load acceptance and
      multi-session baseline build optimization remain under the explicit
      sharding/performance gate rather than being inferred from unit coverage.
+133. Partitioned historical Watchlist materialization by stable ticker
+     ownership. Each configured History Scanner shard now owns its daily
+     reference state, compact-event updates, indicator finalization,
+     relative-volume baseline profiles, liquidity lookups, and focused
+     candidate projection. Evaluation clocks remain globally coordinated so
+     independently owned ticker state is finalized at the same causal boundary
+     before cross-sectional rank and membership reduction. The shard-ownership
+     test covers interleaved events and stable routing; all 38 QMD History Rust
+     tests passed.
+
+     The representative real-data load gate did not pass and remains open. An
+     isolated release service against `market_sip_compact` returned HTTP 200
+     for a 2026-08-07 13:30:00Z to 13:30:02Z full-market request, consuming
+     683,497 events into two evaluation clocks and 25 transitions in 25.779
+     seconds. Resident memory was 1.268 GB afterward. A preceding one-minute
+     request completed after roughly 212 seconds and the process recorded an
+     8.084 GB peak working set. Evidence is outside the repository at
+     `D:\TradingML\runtimes\qmd_goal_load\acceptance_2s.json`; the isolated
+     service was stopped. Ticker sharding currently bounds state ownership but
+     does not yet parallelize shard finalization or eliminate full-stream
+     memory pressure, so no throughput or memory approval is claimed.
 
 The authoritative remaining work and acceptance gates are maintained in the
 [complete implementation backlog](14-implementation-backlog.md). A checked

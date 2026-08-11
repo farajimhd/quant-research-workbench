@@ -989,7 +989,15 @@ pub async fn materialize_watchlist_timelines(
         .market_structure_reference_levels_all(start)
         .await
         .map_err(|error| format!("historical Watchlist daily references unavailable: {error}"))?;
-    let mut engine = CrossSectionEngine::new(&source, references);
+    let shard_count = config.scanner_shard_count.max(1);
+    let mut reference_partitions = vec![HashMap::new(); shard_count];
+    for (ticker, levels) in references {
+        reference_partitions[scanner_shard_index(&ticker, shard_count)].insert(ticker, levels);
+    }
+    let mut engines = reference_partitions
+        .into_iter()
+        .map(|references| CrossSectionEngine::new(&source, references))
+        .collect::<Vec<_>>();
     let mut known_tickers = BTreeSet::new();
     let mut core_liquidity = CoreLiquidityIndex::default();
     let mut recent_until = HashMap::<String, DateTime<Utc>>::new();
@@ -1010,7 +1018,7 @@ pub async fn materialize_watchlist_timelines(
                 advance_batch_clock(
                     &config,
                     &source,
-                    &mut engine,
+                    &mut engines,
                     &mut runtimes,
                     clock,
                     &known_tickers,
@@ -1026,7 +1034,8 @@ pub async fn materialize_watchlist_timelines(
             for runtime in &mut runtimes {
                 runtime.dirty.insert(ticker.clone());
             }
-            engine.apply_event(event).await?;
+            let shard = scanner_shard_index(&ticker, engines.len());
+            engines[shard].apply_event(event).await?;
             event_count = event_count.saturating_add(1);
             if event_count > config.scanner_max_events_per_snapshot as u64 {
                 return Err(format!(
@@ -1040,7 +1049,7 @@ pub async fn materialize_watchlist_timelines(
         advance_batch_clock(
             &config,
             &source,
-            &mut engine,
+            &mut engines,
             &mut runtimes,
             clock,
             &known_tickers,
@@ -1115,7 +1124,7 @@ fn next_batch_clock(runtimes: &[BatchPlanRuntime<'_>]) -> Result<Option<DateTime
 async fn advance_batch_clock(
     config: &HistoricalGatewayConfig,
     source: &HistoricalEventSource,
-    engine: &mut CrossSectionEngine,
+    engines: &mut [CrossSectionEngine],
     runtimes: &mut [BatchPlanRuntime<'_>],
     clock: DateTime<Utc>,
     known_tickers: &BTreeSet<String>,
@@ -1141,18 +1150,27 @@ async fn advance_batch_clock(
             .map_err(|error| {
                 format!("historical Watchlist daily references unavailable: {error}")
             })?;
-        engine.replace_indicator_references(references);
+        let mut partitions = vec![HashMap::new(); engines.len()];
+        for (ticker, levels) in references {
+            partitions[scanner_shard_index(&ticker, engines.len())].insert(ticker, levels);
+        }
+        for (engine, references) in engines.iter_mut().zip(partitions) {
+            engine.replace_indicator_references(references);
+        }
         *reference_session = session;
         rate_dirty.extend(known_tickers.iter().cloned());
     }
-    engine.finalize(clock).await?;
-    rate_dirty.extend(engine.take_changed_indicator_tickers());
+    for engine in engines.iter_mut() {
+        engine.finalize(clock).await?;
+        rate_dirty.extend(engine.take_changed_indicator_tickers());
+    }
     let mut core_dirty = rate_dirty.clone();
     for runtime in runtimes.iter() {
         core_dirty.extend(runtime.dirty.iter().cloned());
     }
     for ticker in core_dirty {
-        let score = engine.liquidity_score(&ticker, clock).await;
+        let shard = scanner_shard_index(&ticker, engines.len());
+        let score = engines[shard].liquidity_score(&ticker, clock).await;
         core_liquidity.update(ticker, score);
     }
     for runtime in runtimes {
@@ -1202,15 +1220,35 @@ async fn advance_batch_clock(
             preload.extend(runtime.seed_tickers.iter().cloned());
             let missing = preload
                 .iter()
-                .filter(|ticker| !engine.has_relative_volume_baseline(ticker, clock))
+                .filter(|ticker| {
+                    let shard = scanner_shard_index(ticker, engines.len());
+                    !engines[shard].has_relative_volume_baseline(ticker, clock)
+                })
                 .cloned()
                 .collect::<BTreeSet<_>>();
             if !missing.is_empty() {
                 let (baselines, revision) =
                     load_aligned_volume_baselines(config, source, &missing, clock).await?;
-                engine.install_relative_volume_baselines(clock, baselines, &revision);
+                let mut partitions = vec![HashMap::new(); engines.len()];
+                for (ticker, profile) in baselines {
+                    let shard = scanner_shard_index(&ticker, engines.len());
+                    partitions[shard].insert(ticker, profile);
+                }
+                for (engine, baselines) in engines.iter_mut().zip(partitions) {
+                    if !baselines.is_empty() {
+                        engine.install_relative_volume_baselines(clock, baselines, &revision);
+                    }
+                }
             }
-            for evidence in engine.relative_volume_evidence_for(&runtime.seed_tickers, clock) {
+            let mut seed_by_shard = vec![BTreeSet::new(); engines.len()];
+            for ticker in &runtime.seed_tickers {
+                seed_by_shard[scanner_shard_index(ticker, engines.len())].insert(ticker.clone());
+            }
+            for evidence in engines
+                .iter()
+                .zip(seed_by_shard.iter())
+                .flat_map(|(engine, tickers)| engine.relative_volume_evidence_for(tickers, clock))
+            {
                 if !runtime.relative_volume_revisions.iter().any(|existing| {
                     existing.session_date == evidence.session_date
                         && existing.ticker_hash == evidence.ticker_hash
@@ -1220,8 +1258,8 @@ async fn advance_batch_clock(
                 }
             }
         }
-        apply_timeline_candidates(
-            engine,
+        apply_timeline_candidates_sharded(
+            engines,
             runtime
                 .reducer
                 .as_mut()
@@ -1560,6 +1598,49 @@ async fn apply_timeline_candidates(
     Ok(())
 }
 
+async fn apply_timeline_candidates_sharded(
+    engines: &mut [CrossSectionEngine],
+    reducer: &mut WatchlistTimelineReducer<'_>,
+    external: &ExternalIntervalIndex,
+    qmd_sources: &BTreeSet<String>,
+    allowed_tickers: Option<&BTreeSet<String>>,
+    clock: DateTime<Utc>,
+    dirty: &mut BTreeSet<String>,
+) -> Result<(), String> {
+    let tickers = std::mem::take(dirty);
+    let mut upserts = Vec::new();
+    let mut removals = Vec::new();
+    for ticker in tickers {
+        if allowed_tickers.is_some_and(|allowed| !allowed.contains(&ticker)) {
+            removals.push(ticker);
+            continue;
+        }
+        let shard = scanner_shard_index(&ticker, engines.len());
+        match engines[shard]
+            .watchlist_candidate(&ticker, clock, qmd_sources)
+            .await?
+        {
+            Some(mut candidate) => {
+                if let Some(fields) = external.get(&ticker) {
+                    for (field_id, intervals) in fields {
+                        if let Some(value) = external_value_at(intervals, clock) {
+                            candidate.values.insert(field_id.clone(), value.clone());
+                        }
+                    }
+                }
+                upserts.push(candidate);
+            }
+            None => removals.push(ticker),
+        }
+    }
+    reducer.apply_delta(&WatchlistCandidateDeltaFrame {
+        effective_at: clock.to_rfc3339(),
+        removals,
+        upserts,
+    })?;
+    Ok(())
+}
+
 fn external_value_at(intervals: &[ParsedExternalInterval], clock: DateTime<Utc>) -> Option<&Value> {
     intervals
         .iter()
@@ -1731,8 +1812,8 @@ fn scanner_shard_index(ticker: &str, shard_count: usize) -> usize {
 mod tests {
     use super::{
         accumulate_aligned_volume_session, aligned_volume_bucket, empty_source_revision,
-        CoreLiquidityIndex, CrossSectionEngine, RelativeVolumeRevisionEvidence,
-        ALIGNED_VOLUME_BUCKET_COUNT,
+        scanner_shard_index, CoreLiquidityIndex, CrossSectionEngine,
+        RelativeVolumeRevisionEvidence, ALIGNED_VOLUME_BUCKET_COUNT,
     };
     use chrono::{TimeZone, Utc};
     use qmd_core::bars::{TradeAggregationRules, TradeUpdateRule};
@@ -1846,6 +1927,44 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["AAPL", "MSFT"]
         );
+    }
+
+    #[tokio::test]
+    async fn ticker_shards_preserve_interleaved_state_and_stable_ownership() {
+        let rules = TradeAggregationRules::new([(0, TradeUpdateRule::regular())]).unwrap();
+        let mut engines = (0..3)
+            .map(|_| CrossSectionEngine::new_with_trade_rules(rules.clone(), HashMap::new()))
+            .collect::<Vec<_>>();
+        let start = Utc
+            .with_ymd_and_hms(2026, 8, 7, 13, 30, 0)
+            .single()
+            .unwrap();
+        for event in [
+            trade("AAPL", start.timestamp_millis(), 200.0),
+            trade("MSFT", start.timestamp_millis() + 10, 500.0),
+            trade("AAPL", start.timestamp_millis() + 20, 201.0),
+        ] {
+            let shard = scanner_shard_index(event.ticker(), engines.len());
+            engines[shard].apply_event(event).await.unwrap();
+        }
+        for engine in &mut engines {
+            engine
+                .finalize(start + chrono::Duration::seconds(1))
+                .await
+                .unwrap();
+        }
+        let shard = scanner_shard_index("AAPL", engines.len());
+        let candidate = engines[shard]
+            .watchlist_candidate(
+                "AAPL",
+                start + chrono::Duration::seconds(1),
+                &BTreeSet::from(["market.volume".to_string()]),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(candidate.values["market.volume"], json!(200.0));
+        assert_eq!(shard, scanner_shard_index("AAPL", engines.len()));
     }
 
     #[test]
