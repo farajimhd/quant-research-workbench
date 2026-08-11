@@ -157,7 +157,7 @@ impl HistoricalScannerDerivedCache {
 struct CrossSectionEngine {
     active_signals: HashMap<String, MarketSignalEvent>,
     aggregates: HashMap<String, MicrostructureSampleAggregate>,
-    bars: SharedBarStore,
+    bars: Option<SharedBarStore>,
     calculators: HashMap<String, BarIndicatorCalculator>,
     changed_indicator_tickers: BTreeSet<String>,
     indicator_references: HashMap<String, MarketStructureReferenceLevels>,
@@ -204,18 +204,45 @@ impl CrossSectionEngine {
         trade_rules: TradeAggregationRules,
         indicator_references: HashMap<String, MarketStructureReferenceLevels>,
     ) -> Self {
+        Self::new_with_profile(trade_rules, indicator_references, true)
+    }
+
+    fn new_market_only(
+        source: &HistoricalEventSource,
+        indicator_references: HashMap<String, MarketStructureReferenceLevels>,
+    ) -> Self {
+        Self::new_market_only_with_trade_rules(
+            source.trade_aggregation_rules(),
+            indicator_references,
+        )
+    }
+
+    fn new_market_only_with_trade_rules(
+        trade_rules: TradeAggregationRules,
+        indicator_references: HashMap<String, MarketStructureReferenceLevels>,
+    ) -> Self {
+        Self::new_with_profile(trade_rules, indicator_references, false)
+    }
+
+    fn new_with_profile(
+        trade_rules: TradeAggregationRules,
+        indicator_references: HashMap<String, MarketStructureReferenceLevels>,
+        derived_enabled: bool,
+    ) -> Self {
         Self {
             active_signals: HashMap::new(),
             aggregates: HashMap::new(),
-            bars: SharedBarStore::new_without_structure(
-                SCANNER_TIMEFRAMES
-                    .iter()
-                    .map(|value| (*value).to_string())
-                    .collect(),
-                2,
-                1,
-                trade_rules.clone(),
-            ),
+            bars: derived_enabled.then(|| {
+                SharedBarStore::new_without_structure(
+                    SCANNER_TIMEFRAMES
+                        .iter()
+                        .map(|value| (*value).to_string())
+                        .collect(),
+                    2,
+                    1,
+                    trade_rules.clone(),
+                )
+            }),
             calculators: HashMap::new(),
             changed_indicator_tickers: BTreeSet::new(),
             indicator_references,
@@ -234,11 +261,14 @@ impl CrossSectionEngine {
     async fn apply_event(&mut self, event: MarketEvent) -> Result<(), String> {
         let ticker = event.ticker().to_ascii_uppercase();
         self.market_state.apply_event(&event).await;
+        let Some(bars) = self.bars.clone() else {
+            return Ok(());
+        };
         self.microstructure
             .entry(ticker)
             .or_default()
             .apply_event(&event);
-        for bar in self.bars.apply_event(&event).await {
+        for bar in bars.apply_event(&event).await {
             self.apply_bar(bar)?;
         }
         Ok(())
@@ -353,7 +383,10 @@ impl CrossSectionEngine {
     }
 
     async fn finalize(&mut self, as_of: DateTime<Utc>) -> Result<(), String> {
-        for bar in self.bars.finalize_due(as_of).await {
+        let Some(bars) = self.bars.clone() else {
+            return Ok(());
+        };
+        for bar in bars.finalize_due(as_of).await {
             self.apply_bar(bar)?;
         }
         Ok(())
@@ -994,9 +1027,18 @@ pub async fn materialize_watchlist_timelines(
     for (ticker, levels) in references {
         reference_partitions[scanner_shard_index(&ticker, shard_count)].insert(ticker, levels);
     }
+    let requires_derived = runtimes
+        .iter()
+        .any(|runtime| runtime.qmd_sources.contains("indicator.vwap.value"));
     let mut engines = reference_partitions
         .into_iter()
-        .map(|references| CrossSectionEngine::new(&source, references))
+        .map(|references| {
+            if requires_derived {
+                CrossSectionEngine::new(&source, references)
+            } else {
+                CrossSectionEngine::new_market_only(&source, references)
+            }
+        })
         .collect::<Vec<_>>();
     let mut known_tickers = BTreeSet::new();
     let mut core_liquidity = CoreLiquidityIndex::default();
@@ -1927,6 +1969,50 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["AAPL", "MSFT"]
         );
+    }
+
+    #[tokio::test]
+    async fn market_only_profile_skips_all_bar_indicator_and_signal_state() {
+        let rules = TradeAggregationRules::new([(0, TradeUpdateRule::regular())]).unwrap();
+        let mut engine = CrossSectionEngine::new_market_only_with_trade_rules(
+            rules,
+            HashMap::new(),
+        );
+        let start = Utc
+            .with_ymd_and_hms(2026, 8, 7, 13, 30, 0)
+            .single()
+            .unwrap();
+
+        engine
+            .apply_event(trade("AAPL", start.timestamp_millis(), 200.0))
+            .await
+            .unwrap();
+        engine
+            .finalize(start + chrono::Duration::seconds(1))
+            .await
+            .unwrap();
+
+        assert!(engine.bars.is_none());
+        assert!(engine.microstructure.is_empty());
+        assert!(engine.calculators.is_empty());
+        assert!(engine.latest_indicators.is_empty());
+        assert!(engine.active_signals.is_empty());
+        let candidate = engine
+            .watchlist_candidate(
+                "AAPL",
+                start + chrono::Duration::seconds(1),
+                &BTreeSet::from([
+                    "liquidity-rank".to_string(),
+                    "market.last_price".to_string(),
+                    "market.volume".to_string(),
+                ]),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(candidate.values["market.last_price"], json!(200.0));
+        assert_eq!(candidate.values["market.volume"], json!(100.0));
+        assert!(candidate.values["liquidity-rank"].as_f64().unwrap() > 0.0);
     }
 
     #[tokio::test]

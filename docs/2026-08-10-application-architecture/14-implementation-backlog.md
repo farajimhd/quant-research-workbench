@@ -601,14 +601,16 @@ load progressively without false continuity.
               correct bounded product, but a two-second 2026-08-07 market
               window (683,497 events, two evaluation clocks, 25 transitions)
               originally required 25.779 seconds and left 1.268 GB resident.
-              After removing Generic Structure from this plan schema's
-              incapable all-market engine, the exact request completed in
-              21.197 seconds with identical output and released to about 22 MB;
-              the fresh process peaked at 1.743 GB. The earlier 8.084 GB peak
-              followed a one-minute run and is not a clean direct comparison.
-              Stable ownership is implemented, but shard finalization remains
-              sequential and 21 seconds for two market seconds still fails the
-              throughput budget; therefore the parent gate stays open.
+              Removing Generic Structure reduced the exact request to 21.197
+              seconds. Compiling the batch's actual Watchlist QMD dependency
+              union then removed bars, indicators, microstructure, and signals
+              from this `liquidity-rank`-only run: the same output completed in
+              13.551 seconds, peaked at about 99.6 MB, and released to about
+              15.7 MB. The earlier 8.084 GB peak followed a one-minute run and
+              is not a clean direct comparison. Stable ownership and a
+              core-only engine are implemented, but roughly 50,000 events per
+              second still cannot keep pace with this 683,497-event two-second
+              burst; therefore the parent gate stays open.
       - [x] Persist/reuse the revisioned timeline product and replace Backtest's
             session-boundary membership fallback with its transition stream.
         - [x] Replace the active single-Watchlist Backtest path with QMD History

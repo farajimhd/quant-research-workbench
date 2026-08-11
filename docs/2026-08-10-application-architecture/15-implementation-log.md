@@ -1273,6 +1273,26 @@ bounded direct ClickHouse paths remain documented in
      sequence-safe focused-activation design. Evidence is outside the
      repository under `D:\TradingML\runtimes\qmd_goal_load` and the isolated
      PID 40184 was stopped with port 18801 verified free.
+137. Made the historical Watchlist engine compile its top-level computation
+     path from the admitted batch dependency union. A batch that needs only
+     Core market fields now instantiates the shared market-state authority and
+     skips bar stores, indicator calculators, microstructure intervals, and
+     market-signal state entirely. A batch declaring VWAP retains the
+     structure-disabled derived path, so missing evidence is never replaced by
+     a cheaper formula. Relative volume continues to use its separately pinned
+     20-session aligned baseline and current causal Core volume; it does not
+     activate bars.
+
+     All 39 QMD History tests passed, including a regression proving that the
+     market-only profile produces last price, volume, and liquidity rank while
+     allocating no bar, indicator, microstructure, or signal state. The exact
+     isolated 683,497-event release request returned the same two evaluation
+     clocks and 25 transitions in 13.551 seconds, 47.4 percent faster than the
+     original 25.779-second baseline. The fresh process peaked at 99.6 MB and
+     released to 15.7 MB. This remains only about 50,000 events per second and
+     therefore does not pass representative active-session throughput. Evidence
+     is under `D:\TradingML\runtimes\qmd_goal_load`; isolated PID 39452 was
+     stopped and port 18801 was verified free.
 
 The authoritative remaining work and acceptance gates are maintained in the
 [complete implementation backlog](14-implementation-backlog.md). A checked
