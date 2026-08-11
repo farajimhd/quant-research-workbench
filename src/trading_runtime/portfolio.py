@@ -5,6 +5,7 @@ import math
 from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timezone
 from enum import StrEnum
+from time import monotonic
 from typing import Any, Mapping
 from uuid import uuid4
 
@@ -197,6 +198,8 @@ class PortfolioReservation:
     created_at: datetime
     status: str = "reserved"
     filled_quantity: float = 0.0
+    admission_epoch: int = 0
+    admission_owner: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -391,6 +394,7 @@ class PortfolioManagementEngine:
             for group_id in self.groups
         }
         self._last_filled_by_reservation: dict[str, float] = {}
+        self._active_admission_lease: dict[str, Any] | None = None
         self._restore()
 
     def bind_control_plane(self, control_plane: TradingControlPlane) -> None:
@@ -608,12 +612,49 @@ class PortfolioManagementEngine:
             await lock.acquire()
         try:
             async with self._account_locks[account_id]:
-                # Another Strategy Run may have committed account reservations
-                # while this run was evaluating market evidence. Refresh the
-                # durable account state inside the shared admission lock.
-                if self.control_plane is not None:
+                resources = [
+                    *(f"portfolio-group:{value}" for value in group_ids),
+                    f"portfolio-account:{account_id}",
+                ]
+                owner_id = f"{self.run_id}:{uuid4()}"
+                leases: list[dict[str, Any]] = []
+                try:
+                    for resource_id in resources:
+                        deadline = monotonic() + 5.0
+                        lease = None
+                        while lease is None and monotonic() < deadline:
+                            lease = self.journal.acquire_portfolio_admission_lease(
+                                resource_id,
+                                owner_id=owner_id,
+                                ttl_seconds=30.0,
+                            )
+                            if lease is None:
+                                await asyncio.sleep(0.01)
+                        if lease is None:
+                            raise RuntimeError(
+                                f"Portfolio admission lease unavailable for {resource_id}"
+                            )
+                        leases.append(lease)
+                    account_lease = leases[-1]
+                    if not self.journal.portfolio_admission_lease_is_current(
+                        account_lease["resource_id"],
+                        owner_id=owner_id,
+                        epoch=int(account_lease["epoch"]),
+                    ):
+                        raise RuntimeError("Portfolio admission lease became stale")
+                    # Reload after all cross-process fences are held so this
+                    # admission sees reservations committed by every run.
                     self._restore()
-                return self._approve_locked(intent, state)
+                    self._active_admission_lease = account_lease
+                    return self._approve_locked(intent, state)
+                finally:
+                    self._active_admission_lease = None
+                    for lease in reversed(leases):
+                        self.journal.release_portfolio_admission_lease(
+                            lease["resource_id"],
+                            owner_id=owner_id,
+                            epoch=int(lease["epoch"]),
+                        )
         finally:
             for lock in reversed(locks):
                 lock.release()
@@ -1026,6 +1067,7 @@ class PortfolioManagementEngine:
             metrics_after["reserved_notional"] = float(metrics_before["reserved_notional"]) + notional
             metrics_after["gross_exposure"] = float(metrics_before["gross_exposure"]) + notional
             metrics_after["open_risk"] = float(metrics_before["open_risk"]) + planned_loss
+        self._assert_active_admission_lease()
         reservation = PortfolioReservation(
             reservation_id=reservation_id,
             decision_id=decision_id,
@@ -1042,6 +1084,8 @@ class PortfolioManagementEngine:
             reserved_notional=notional if entry else 0.0,
             reserved_planned_risk=planned_loss if entry else 0.0,
             created_at=now,
+            admission_epoch=int((self._active_admission_lease or {}).get("epoch") or 0),
+            admission_owner=str((self._active_admission_lease or {}).get("owner_id") or ""),
         )
         self.reservations[reservation_id] = reservation
         decision = self._decision(
@@ -1079,6 +1123,17 @@ class PortfolioManagementEngine:
         )
         self._persist_state(state)
         return decision, approved_intent
+
+    def _assert_active_admission_lease(self) -> None:
+        lease = self._active_admission_lease
+        if lease is None:
+            raise RuntimeError("Portfolio reservation requires a fenced admission lease")
+        if not self.journal.portfolio_admission_lease_is_current(
+            str(lease["resource_id"]),
+            owner_id=str(lease["owner_id"]),
+            epoch=int(lease["epoch"]),
+        ):
+            raise RuntimeError("Portfolio admission lease became stale before reservation commit")
 
     def _capital_request_quantity(
         self,

@@ -120,7 +120,11 @@ def portfolio_management_snapshot(canonical_state: dict[str, Any]) -> dict[str, 
                     {**asdict(candidate), "identity": candidate.identity}
                     for candidate in available_policies.values()
                 ],
-                "strategy_allocations": dict(profile.strategy_allocations),
+                "run_plan_allocations": dict(profile.strategy_allocations),
+                "strategy_allocations": _strategy_allocation_projection(
+                    profile.strategy_allocations,
+                    configuration,
+                ),
                 "disabled_strategy_allocations": sorted(
                     str(item) for item in state.get("disabled_strategy_allocations") or ()
                 ),
@@ -175,6 +179,45 @@ def portfolio_management_snapshot(canonical_state: dict[str, Any]) -> dict[str, 
             "revision": int(approved.get("revision") or 0) if approved else 0,
         },
     }
+
+
+def _strategy_allocation_projection(
+    run_plan_allocations: dict[str, float] | Any,
+    configuration: dict[str, Any] | None,
+) -> dict[str, float]:
+    """Present Strategy totals without erasing distinct Run Plan authority."""
+    allocations = {
+        str(key): float(value)
+        for key, value in dict(run_plan_allocations or {}).items()
+    }
+    if not configuration:
+        return allocations
+    plan_section = dict(
+        configuration.get("run_plans") or configuration.get("assignments") or {}
+    )
+    plans = {
+        str(row.get("run_plan_id") or row.get("deployment_id") or ""): row
+        for row in (plan_section.get("plans") or plan_section.get("deployments") or [])
+    }
+    profiles = {
+        str(row.get("profile_id") or ""): row
+        for row in dict(configuration.get("strategy") or {}).get("profiles") or []
+    }
+    projected: dict[str, float] = {}
+    for allocation_id, fraction in allocations.items():
+        plan = dict(plans.get(allocation_id) or {})
+        profile_id = str(
+            plan.get("strategy_profile_id") or plan.get("profile_id") or ""
+        )
+        profile = dict(profiles.get(profile_id) or {})
+        strategy_id = str(
+            profile.get("definition_id")
+            or profile.get("strategy_id")
+            or plan.get("strategy_id")
+            or allocation_id
+        )
+        projected[strategy_id] = projected.get(strategy_id, 0.0) + fraction
+    return projected
 
 
 def portfolio_management_command(

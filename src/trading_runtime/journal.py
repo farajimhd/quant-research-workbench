@@ -5,7 +5,7 @@ import sqlite3
 import threading
 import uuid
 from dataclasses import asdict, dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -131,6 +131,91 @@ class TradingJournal:
             "SELECT account_id, state_json FROM portfolio_states ORDER BY account_id"
         ).fetchall()
         return {str(row["account_id"]): json.loads(row["state_json"]) for row in rows}
+
+    def acquire_portfolio_admission_lease(
+        self,
+        resource_id: str,
+        *,
+        owner_id: str,
+        ttl_seconds: float = 30.0,
+    ) -> dict[str, Any] | None:
+        """Atomically acquire a cross-process fenced Portfolio admission lease."""
+        if not resource_id or not owner_id or ttl_seconds <= 0:
+            raise ValueError("Portfolio lease resource, owner, and positive TTL are required")
+        now = datetime.now(timezone.utc)
+        expires_at = now + timedelta(seconds=float(ttl_seconds))
+        with self._lock:
+            try:
+                self._connection.execute("BEGIN IMMEDIATE")
+                row = self._connection.execute(
+                    "SELECT owner_id, epoch, expires_at FROM portfolio_admission_leases WHERE resource_id = ?",
+                    (resource_id,),
+                ).fetchone()
+                if row is not None:
+                    existing_expiry = datetime.fromisoformat(str(row["expires_at"]))
+                    if existing_expiry > now and str(row["owner_id"]) != owner_id:
+                        self._connection.rollback()
+                        return None
+                    epoch = int(row["epoch"]) + 1
+                else:
+                    epoch = 1
+                self._connection.execute(
+                    """
+                    INSERT INTO portfolio_admission_leases(
+                        resource_id, owner_id, epoch, expires_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?)
+                    ON CONFLICT(resource_id) DO UPDATE SET
+                        owner_id=excluded.owner_id, epoch=excluded.epoch,
+                        expires_at=excluded.expires_at, updated_at=excluded.updated_at
+                    """,
+                    (
+                        resource_id,
+                        owner_id,
+                        epoch,
+                        expires_at.isoformat(),
+                        now.isoformat(),
+                    ),
+                )
+                self._connection.commit()
+                return {
+                    "resource_id": resource_id,
+                    "owner_id": owner_id,
+                    "epoch": epoch,
+                    "expires_at": expires_at.isoformat(),
+                }
+            except Exception:
+                self._connection.rollback()
+                raise
+
+    def portfolio_admission_lease_is_current(
+        self, resource_id: str, *, owner_id: str, epoch: int
+    ) -> bool:
+        now = datetime.now(timezone.utc)
+        with self._lock:
+            row = self._connection.execute(
+                "SELECT owner_id, epoch, expires_at FROM portfolio_admission_leases WHERE resource_id = ?",
+                (resource_id,),
+            ).fetchone()
+        return bool(
+            row is not None
+            and str(row["owner_id"]) == owner_id
+            and int(row["epoch"]) == int(epoch)
+            and datetime.fromisoformat(str(row["expires_at"])) > now
+        )
+
+    def release_portfolio_admission_lease(
+        self, resource_id: str, *, owner_id: str, epoch: int
+    ) -> bool:
+        """Release only the exact epoch; stale owners cannot clear newer leases."""
+        with self._lock, self._connection:
+            cursor = self._connection.execute(
+                """
+                DELETE FROM portfolio_admission_leases
+                WHERE resource_id = ? AND owner_id = ? AND epoch = ?
+                """,
+                (resource_id, owner_id, int(epoch)),
+            )
+        return cursor.rowcount == 1
 
     def save_order_management_state(
         self,
@@ -616,6 +701,10 @@ class TradingJournal:
                     ON strategy_assignments(account_id, ticker, updated_at);
                 CREATE TABLE IF NOT EXISTS portfolio_states(
                     account_id TEXT PRIMARY KEY, state_json TEXT NOT NULL, updated_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS portfolio_admission_leases(
+                    resource_id TEXT PRIMARY KEY, owner_id TEXT NOT NULL,
+                    epoch INTEGER NOT NULL, expires_at TEXT NOT NULL, updated_at TEXT NOT NULL
                 );
                 CREATE TABLE IF NOT EXISTS order_management_states(
                     group_id TEXT PRIMARY KEY, run_id TEXT NOT NULL, account_id TEXT NOT NULL,

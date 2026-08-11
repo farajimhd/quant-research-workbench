@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import tempfile
+import time
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -201,6 +202,84 @@ class PortfolioManagementTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(second.approved_quantity, 20)
         self.assertIsNotNone(first_intent)
         self.assertIsNotNone(second_intent)
+
+    async def test_separate_process_journals_share_fenced_account_capacity(self) -> None:
+        policy = PortfolioPolicy(
+            policy_id="cross-process",
+            maximum_position_fraction=1,
+            maximum_ticker_fraction=1,
+            maximum_planned_risk_fraction=1,
+            maximum_open_risk_fraction=1,
+            maximum_order_notional=1_000_000,
+        )
+        profile = PortfolioAccountProfile("cash", "CASH1", "live", "cash", policy)
+        second_journal = TradingJournal(Path(self.temp.name) / "portfolio.sqlite3")
+        first = PortfolioManagementEngine(
+            [profile],
+            journal=self.journal,
+            run_id="process-a",
+            strategy_id="strategy-a",
+            strategy_revision=1,
+        )
+        second = PortfolioManagementEngine(
+            [profile],
+            journal=second_journal,
+            run_id="process-b",
+            strategy_id="strategy-b",
+            strategy_revision=1,
+        )
+        first.synchronize_snapshot(
+            "CASH1",
+            summary=summary("CASH1", equity=100_000, available=10_000),
+            ledger=ledger("CASH1", cash=10_000),
+            positions=[],
+        )
+        second.synchronize_snapshot(
+            "CASH1",
+            summary=summary("CASH1", equity=100_000, available=10_000),
+            ledger=ledger("CASH1", cash=10_000),
+            positions=[],
+        )
+
+        first_decision, _ = await first.approve(
+            intent("process-a-request", quantity=80), account_id="CASH1"
+        )
+        second_decision, _ = await second.approve(
+            intent("process-b-request", quantity=80), account_id="CASH1"
+        )
+        second_journal.close()
+
+        self.assertEqual(first_decision.approved_quantity, 80)
+        self.assertEqual(second_decision.approved_quantity, 20)
+        reservation = second.reservations[second_decision.reservation_id]
+        self.assertGreater(reservation.admission_epoch, 0)
+        self.assertTrue(reservation.admission_owner.startswith("process-b:"))
+
+    def test_stale_lease_owner_cannot_release_newer_epoch(self) -> None:
+        first = self.journal.acquire_portfolio_admission_lease(
+            "portfolio-account:CASH1", owner_id="owner-a", ttl_seconds=0.001
+        )
+        self.assertIsNotNone(first)
+        time.sleep(0.01)
+        second = self.journal.acquire_portfolio_admission_lease(
+            "portfolio-account:CASH1", owner_id="owner-b", ttl_seconds=30
+        )
+        self.assertIsNotNone(second)
+        self.assertGreater(second["epoch"], first["epoch"])
+        self.assertFalse(
+            self.journal.release_portfolio_admission_lease(
+                "portfolio-account:CASH1",
+                owner_id="owner-a",
+                epoch=first["epoch"],
+            )
+        )
+        self.assertTrue(
+            self.journal.portfolio_admission_lease_is_current(
+                "portfolio-account:CASH1",
+                owner_id="owner-b",
+                epoch=second["epoch"],
+            )
+        )
 
     async def test_stale_live_state_blocks_entries_but_allows_broker_bounded_exit(self) -> None:
         old = NOW - timedelta(minutes=1)

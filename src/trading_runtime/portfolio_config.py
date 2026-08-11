@@ -103,10 +103,6 @@ def portfolio_profiles_from_configuration(
         str(row.get("run_plan_id") or row.get("deployment_id") or ""): row
         for row in (run_plan_section.get("plans") or run_plan_section.get("deployments") or [])
     }
-    strategy_profiles = {
-        str(row.get("profile_id") or ""): row
-        for row in dict(configuration.get("strategy") or {}).get("profiles") or []
-    }
     mandates_by_account: dict[str, list[dict[str, Any]]] = {}
     for mandate in portfolio.get("mandates") or []:
         if bool(mandate.get("enabled", True)):

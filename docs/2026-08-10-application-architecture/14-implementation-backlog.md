@@ -225,18 +225,21 @@ Replay and Backtest decisions.
 
 - [ ] Make Portfolio the exclusive account allocation, capital, and risk authority.
 - [ ] Define account/account-group ownership.
-- [ ] Add cross-run and cross-strategy arbitration.
-- [ ] Replace process-local safety with fenced ownership or transactional reservations.
-- [ ] Add lease epochs and stale-owner rejection.
-- [ ] Reserve capital for accepted unfilled intent.
+- [x] Add cross-run and cross-strategy admission arbitration for processes
+      sharing the authoritative trading journal.
+- [x] Replace process-local admission safety with SQLite-WAL-backed account and
+      account-group fencing plus durable reservations.
+- [x] Add lease epochs, bounded expiry, and stale-owner rejection.
+- [x] Reserve capital for accepted unfilled intent.
 - [ ] Release/resize reservations on fill, cancel, reject, or timeout.
-- [ ] Enforce buying power, leverage, concentration, exposure, loss, and drawdown limits.
+- [x] Enforce buying power, leverage, concentration, exposure, loss, and drawdown limits.
 - [ ] Implement portfolio-level flatten controls.
 - [ ] Return accept, resize, defer, queue, or reject dispositions.
 - [ ] Treat run priority as an arbitration input, never authority.
 - [ ] Reconcile reservations, positions, cash, and broker truth after restart.
-- [ ] Journal every proposal and disposition.
-- [ ] Expose Portfolio configuration and operational UI/API.
+- [x] Journal every Portfolio decision and reservation transition.
+- [x] Expose Portfolio configuration and operational UI/API, including distinct
+      Run Plan allocations and aggregated Strategy allocation labels.
 - [ ] Test races, lease expiry, restart, and shared-account conflicts.
 
 Acceptance gate: two processes cannot allocate the same account capital without

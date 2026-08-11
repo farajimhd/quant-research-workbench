@@ -77,7 +77,7 @@ Portfolio Management exclusively owns:
 - portfolio-level loss, drawdown and flatten controls;
 - acceptance, resize, defer, queue, or rejection of proposals.
 
-Priority fields on individual runs are inputs to this authority; they are not themselves arbitration. Process-local locks are insufficient when multiple backend/run processes share an account. The target requires one fenced owner per account/account-group or a transactional shared reservation service with lease epochs and idempotent commands.
+Priority fields on individual runs are inputs to this authority; they are not themselves arbitration. Portfolio admission now acquires SQLite-WAL-backed account and account-group leases before reloading and committing durable reservations. Every acquisition advances a fencing epoch, expires after a bounded TTL, and can be released only by the exact owner/epoch; a stale owner cannot clear a newer lease. Process-local locks remain useful for scheduling inside one broker session but are no longer the shared-capital authority.
 
 ## 5. OMS authority
 
@@ -122,7 +122,7 @@ Stale market data, QMD loss, intelligence loss, broker disconnect, reconciliatio
 ## 9. Current drift
 
 - Replay has the strongest shared controller/runtime direction; Live and Backtest still contain legacy or incomplete paths.
-- Current Portfolio engine locking/reservations do not establish cross-process, cross-run shared-capital arbitration.
+- Portfolio admission is fenced across backend/run processes sharing the same authoritative trading journal. A multi-host deployment would still need to move the same lease/reservation contract to a networked transactional authority.
 - Several UI pages imply configuration objects without one backend compiler and immutable Run Plan contract.
 - Account bindings are partly environment-backed as desired, but broker/account readiness and generated deployment review are not yet one complete flow.
 

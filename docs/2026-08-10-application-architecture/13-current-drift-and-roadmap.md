@@ -21,7 +21,7 @@ The target in this package preserves strong existing authorities—QMD shared co
 | Canvas | Container/default concepts exist | Published container registry + exact runtime default + per-user overlay | Pages duplicate layouts and behavior |
 | Charts | Multiple chart/data paths exist | One progressive QMD source plan with request-scoped indicator DAG | Smoothness, parity and provenance vary |
 | Trading modes | Replay is most developed; Live has legacy paths; Backtest is incomplete | Shared controller/state machines with injected clock/source/fill adapters | Results and safety differ by mode |
-| Portfolio | Per-run engine/locks and policies exist | Cross-run/account fenced allocation and reservation authority | Shared-capital races remain possible |
+| Portfolio | Durable reservations plus account/account-group fencing epochs now arbitrate runs sharing the authoritative journal | Networked lease authority if Portfolio is deployed across hosts | Single-host cross-process shared-capital races are closed; multi-host authority remains an operational migration |
 | Deployments | UI/config drafts imply bindings | Deterministically compiled immutable Run Plan, optionally reviewable | Runtime authority is not fully inspectable |
 | Intelligence/models | Several services and research systems exist | Standard domain events/features, causal contracts and promotion registry | Integration is service-specific |
 | Backend | Broad route composition exists | Shared typed clients/planners and standard snapshot/delta envelope | Route logic and error semantics vary |

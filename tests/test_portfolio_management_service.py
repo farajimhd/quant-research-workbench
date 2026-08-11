@@ -162,6 +162,10 @@ class PortfolioManagementServiceTests(unittest.TestCase):
             payload["accounts"][0]["strategy_allocations"],
             {"approved-strategy": 0.25},
         )
+        self.assertEqual(
+            payload["accounts"][0]["run_plan_allocations"],
+            {"approved-live": 0.25},
+        )
 
     def test_control_command_is_durable_and_visible_in_snapshot(self) -> None:
         result = portfolio_management_command("margin", "reduce_only", reason="operator")
