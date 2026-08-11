@@ -106,6 +106,19 @@ flowchart TD
 publication. QMD owns the handoff audit and deletion of QMD-owned recent tables.
 Neither path copies recent rows directly into archive event tables as a shortcut.
 
+**Current:** QMD persists accepted compact events and canonical family bars in
+its singular recent tables. Compact and 100 ms base-bar confirmations are
+cumulative per service run but split by New York market-session date and their
+physical `event_date`/`local_date` partitions. QMD reads Market SIP ordinal
+continuity, requires both quote and trade handoffs, and compares count, ticker,
+timestamp, schema, and stable-identity fingerprints before deleting a session.
+QMD History likewise marks a streaming interval recent only when compact-event
+and base-bar confirmations from the same run overlap (or when an explicit
+repair/bootstrap row confirms it); it does not union one-sided writer rows.
+The remaining handoff gap is narrower: the source planner's archive watermark
+still comes from published archive continuity rather than a separately retained
+QMD equivalence certificate.
+
 ## Bar hierarchy
 
 ### Intraday
@@ -130,8 +143,8 @@ ticker/date—premarket, regular, and after-hours—with sufficient statistics a
 point-in-time identity.
 
 For the current/recent tier, QMD forms the same daily-session contract from
-recent family bars. A completed recent day can be served from a versioned recent
-daily cache until archive daily coverage takes authority.
+recent family bars. A completed recent day is served from the source-revisioned
+recent product cache until archive daily coverage takes authority.
 
 ### Weekly, monthly, and yearly
 
@@ -153,8 +166,9 @@ rescanned from raw events. The response states `partial`, `closed`, or
 identity is `1mo`; browser presentation may use `1M`.
 
 The legacy `macro_bars_by_time_symbol` remains a migration/training artifact,
-not the application candle authority. A future materialized macro cache must be
-derived from the daily authority and carry its source revision.
+not the application candle authority. QMD's active macro caches derive from the
+daily authority, carry source/product revisions, mark open periods partial, and
+invalidate by cache identity when those revisions change.
 
 ## Chart and computation products
 

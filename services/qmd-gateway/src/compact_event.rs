@@ -6,12 +6,13 @@ use crate::market_products::SharedMarketProductStore;
 use crate::metrics::SharedMetrics;
 use crate::timefmt::clickhouse_datetime64;
 use chrono::{DateTime, TimeZone, Utc};
+use chrono_tz::America::New_York;
 use reqwest::Client;
 use serde::Serialize;
 use serde_json::json;
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::sync::Arc;
-use tokio::sync::{broadcast, mpsc, RwLock};
+use tokio::sync::{broadcast, mpsc, Mutex, RwLock};
 use tokio::time::{interval, sleep, Duration, Instant};
 
 pub const LIVE_COMPACT_EVENT_SCHEMA_VERSION: u16 = 4;
@@ -619,6 +620,37 @@ struct CompactConversion {
     issue: Option<CompactEventIssue>,
 }
 
+#[derive(Clone, Debug)]
+struct CoverageWindow {
+    end: DateTime<Utc>,
+    rows_written: u64,
+    start: DateTime<Utc>,
+}
+
+fn compact_coverage_groups(
+    rows: &[LiveCompactEvent],
+) -> BTreeMap<(String, String), CoverageWindow> {
+    let mut grouped = BTreeMap::new();
+    for row in rows {
+        let Some(timestamp) = sip_us_to_datetime(row.sip_timestamp_us) else {
+            continue;
+        };
+        let key = (
+            row.event_date.clone(),
+            timestamp.with_timezone(&New_York).date_naive().to_string(),
+        );
+        let window = grouped.entry(key).or_insert_with(|| CoverageWindow {
+            end: timestamp,
+            rows_written: 0,
+            start: timestamp,
+        });
+        window.start = window.start.min(timestamp);
+        window.end = window.end.max(timestamp);
+        window.rows_written = window.rows_written.saturating_add(1);
+    }
+    grouped
+}
+
 #[derive(Clone)]
 pub struct CompactEventClickHouseWriter {
     client: Client,
@@ -630,6 +662,7 @@ pub struct CompactEventClickHouseWriter {
     references: CompactEventReferences,
     decoder: CompactEventDecoder,
     intraday_bar_router: IntradayBarRouter,
+    coverage_windows: Arc<Mutex<HashMap<(String, String), CoverageWindow>>>,
 }
 
 impl CompactEventClickHouseWriter {
@@ -653,6 +686,7 @@ impl CompactEventClickHouseWriter {
             references,
             decoder,
             intraday_bar_router,
+            coverage_windows: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -1164,39 +1198,53 @@ impl CompactEventClickHouseWriter {
             return Ok(());
         }
         let now = Utc::now();
-        let min_ts = rows
-            .iter()
-            .filter_map(|row| sip_us_to_datetime(row.sip_timestamp_us))
-            .min()
-            .unwrap_or(now);
-        let max_ts = rows
-            .iter()
-            .filter_map(|row| sip_us_to_datetime(row.sip_timestamp_us))
-            .max()
-            .unwrap_or(now);
-        let started_at = self
-            .config
-            .qmd_run_started_at()
-            .unwrap_or_else(|| min_ts.min(now));
-        let row = json!({
-            "coverage_kind": "q_live_events",
-            "coverage_id": format!("compact_{}", self.config.qmd_run_id),
-            "source": "qmd_compact_event_writer",
-            "status": status,
-            "coverage_start_utc": clickhouse_datetime64(&started_at.min(min_ts)),
-            "coverage_end_utc": clickhouse_datetime64(&max_ts),
-            "rows_written": rows.len(),
-            "event_rows": rows.len(),
-            "bar_rows": 0,
-            "error_count": error_count,
-            "started_at_utc": clickhouse_datetime64(&started_at),
-            "updated_at_utc": clickhouse_datetime64(&now),
-            "completed_at_utc": if status == "failed" { Some(clickhouse_datetime64(&now)) } else { None },
-            "metadata_json": json!({"run_id": self.config.qmd_run_id, "error": error}).to_string(),
-        });
+        let grouped = compact_coverage_groups(rows);
+        let mut windows = self.coverage_windows.lock().await;
+        let mut coverage_rows = Vec::with_capacity(grouped.len());
+        for ((partition, session_date), batch) in grouped {
+            let window = windows
+                .entry((partition.clone(), session_date.clone()))
+                .or_insert_with(|| CoverageWindow {
+                    end: batch.end,
+                    rows_written: 0,
+                    start: batch.start,
+                });
+            window.start = window.start.min(batch.start);
+            window.end = window.end.max(batch.end);
+            if status == "compact_persisted" {
+                window.rows_written = window.rows_written.saturating_add(batch.rows_written);
+            }
+            coverage_rows.push(json!({
+                "coverage_kind": "q_live_events",
+                "coverage_id": format!("compact_{}::{partition}::{session_date}", self.config.qmd_run_id),
+                "source": "qmd_compact_event_writer",
+                "status": status,
+                "coverage_start_utc": clickhouse_datetime64(&window.start),
+                "coverage_end_utc": clickhouse_datetime64(&window.end),
+                "rows_written": window.rows_written,
+                "event_rows": window.rows_written,
+                "bar_rows": 0,
+                "error_count": error_count,
+                "started_at_utc": clickhouse_datetime64(&window.start),
+                "updated_at_utc": clickhouse_datetime64(&now),
+                "completed_at_utc": if status == "failed" { Some(clickhouse_datetime64(&now)) } else { None },
+                "metadata_json": json!({
+                    "run_id": self.config.qmd_run_id,
+                    "event_partition": partition,
+                    "market_session_date": session_date,
+                    "error": error,
+                }).to_string(),
+            }));
+        }
+        drop(windows);
+        let body = coverage_rows
+            .into_iter()
+            .map(|row| row.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
         self.query(
             &format!(
-                "INSERT INTO {} FORMAT JSONEachRow\n{row}",
+                "INSERT INTO {} FORMAT JSONEachRow\n{body}",
                 self.config.qmd_live_event_coverage_table
             ),
             true,
@@ -1583,6 +1631,44 @@ mod tests {
             quote_indicators: [(7, 31)].into_iter().collect(),
             tapes: [(1, 0), (2, 1), (3, 2)].into_iter().collect(),
         }
+    }
+
+    fn compact_quote_at(timestamp: DateTime<Utc>, sequence: u64) -> LiveCompactEvent {
+        compact_quote_event(
+            &QuoteEvent {
+                ask_exchange: 11,
+                ask_price: 10.1,
+                ask_size: 10,
+                bid_exchange: 12,
+                bid_price: 10.0,
+                bid_size: 20,
+                conditions: vec![],
+                indicators: vec![],
+                ingest_ts: timestamp,
+                raw: serde_json::Value::Null,
+                sequence,
+                tape: 1,
+                ticker: "TEST".to_string(),
+                ts: timestamp,
+            },
+            &references(),
+        )
+        .unwrap()
+        .event
+    }
+
+    #[test]
+    fn coverage_groups_preserve_utc_partition_and_new_york_session() {
+        let evening = Utc.with_ymd_and_hms(2026, 1, 3, 0, 30, 0).unwrap();
+        let regular = Utc.with_ymd_and_hms(2026, 1, 3, 15, 30, 0).unwrap();
+        let rows = [compact_quote_at(evening, 1), compact_quote_at(regular, 2)];
+
+        let groups = compact_coverage_groups(&rows);
+
+        assert_eq!(groups.len(), 2);
+        assert!(groups.contains_key(&("2026-01-03".into(), "2026-01-02".into())));
+        assert!(groups.contains_key(&("2026-01-03".into(), "2026-01-03".into())));
+        assert_eq!(groups.values().map(|row| row.rows_written).sum::<u64>(), 2);
     }
 
     #[test]

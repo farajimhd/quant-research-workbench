@@ -14,6 +14,7 @@ use qmd_core::indicators::{
 };
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use tokio::sync::{mpsc, OnceCell};
 
@@ -183,8 +184,10 @@ struct SourceRevisionRow {
 
 #[derive(Debug, Deserialize)]
 struct CoverageIntervalRow {
+    coverage_id: String,
     coverage_end_utc: String,
     coverage_start_utc: String,
+    status: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -293,6 +296,8 @@ impl HistoricalEventSource {
         );
         let sql = format!(
             r#"SELECT
+                coverage_id,
+                status,
                 formatDateTime(coverage_start_utc, '%Y-%m-%dT%H:%i:%s.%fZ', 'UTC') AS coverage_start_utc,
                 formatDateTime(coverage_end_utc, '%Y-%m-%dT%H:%i:%s.%fZ', 'UTC') AS coverage_end_utc
             FROM {table} FINAL
@@ -306,20 +311,21 @@ impl HistoricalEventSource {
             end = sql_literal(&window.end.to_rfc3339()),
         );
         let text = self.query(&sql).await?;
-        let mut intervals = text
+        let rows = text
             .lines()
             .filter(|line| !line.trim().is_empty())
             .map(|line| {
                 let row = serde_json::from_str::<CoverageIntervalRow>(line)
                     .map_err(|error| format!("invalid recent coverage row: {error}"))?;
-                Ok(CoverageInterval {
+                Ok(RecentCoverageRow {
+                    coverage_id: row.coverage_id,
                     end: parse_clickhouse_datetime(&row.coverage_end_utc)?,
                     start: parse_clickhouse_datetime(&row.coverage_start_utc)?,
+                    status: row.status,
                 })
             })
             .collect::<Result<Vec<_>, String>>()?;
-        intervals.sort_by_key(|value| value.start);
-        Ok(merge_coverage_intervals(intervals))
+        Ok(materialize_confirmed_recent_coverage(&rows))
     }
 
     pub fn market_event(&self, event: &LiveCompactEvent) -> MarketEvent {
@@ -1211,6 +1217,63 @@ fn merge_coverage_intervals(intervals: Vec<CoverageInterval>) -> Vec<CoverageInt
     merged
 }
 
+#[derive(Clone, Debug)]
+struct RecentCoverageRow {
+    coverage_id: String,
+    end: DateTime<Utc>,
+    start: DateTime<Utc>,
+    status: String,
+}
+
+fn coverage_run_id(coverage_id: &str, prefix: &str) -> String {
+    coverage_id
+        .strip_prefix(prefix)
+        .unwrap_or(coverage_id)
+        .split("::")
+        .next()
+        .unwrap_or_default()
+        .to_string()
+}
+
+fn materialize_confirmed_recent_coverage(rows: &[RecentCoverageRow]) -> Vec<CoverageInterval> {
+    let mut direct = Vec::new();
+    let mut compact_by_run: BTreeMap<String, Vec<&RecentCoverageRow>> = BTreeMap::new();
+    let mut intraday_by_run: BTreeMap<String, Vec<&RecentCoverageRow>> = BTreeMap::new();
+    for row in rows {
+        match row.status.as_str() {
+            "repair_completed" | "coverage_bootstrap" => direct.push(CoverageInterval {
+                end: row.end,
+                start: row.start,
+            }),
+            "compact_persisted" => compact_by_run
+                .entry(coverage_run_id(&row.coverage_id, "compact_"))
+                .or_default()
+                .push(row),
+            "intraday_bars_persisted" => intraday_by_run
+                .entry(coverage_run_id(&row.coverage_id, "intraday_"))
+                .or_default()
+                .push(row),
+            _ => {}
+        }
+    }
+    for (run_id, compact_rows) in compact_by_run {
+        let Some(bar_rows) = intraday_by_run.get(&run_id) else {
+            continue;
+        };
+        for compact in compact_rows {
+            for bars in bar_rows {
+                let start = compact.start.max(bars.start);
+                let end = compact.end.min(bars.end);
+                if end > start {
+                    direct.push(CoverageInterval { end, start });
+                }
+            }
+        }
+    }
+    direct.sort_by_key(|interval| (interval.start, interval.end));
+    merge_coverage_intervals(direct)
+}
+
 fn build_source_plan(
     window: &EventWindow,
     tickers: Vec<String>,
@@ -1400,8 +1463,9 @@ fn sql_literal(value: &str) -> String {
 mod tests {
     use super::{
         archive_session_end_utc, build_source_plan, event_select, macro_bar_is_closed,
-        merge_coverage_intervals, normalize_ticker, row_to_event, CoverageInterval, EventWindow,
-        HistoricalRow, MarketSourceTier,
+        materialize_confirmed_recent_coverage, merge_coverage_intervals, normalize_ticker,
+        row_to_event, CoverageInterval, EventWindow, HistoricalRow, MarketSourceTier,
+        RecentCoverageRow,
     };
     use crate::config::HistoricalGatewayConfig;
     use chrono::{TimeZone, Utc};
@@ -1561,6 +1625,32 @@ mod tests {
         assert_eq!(merged.len(), 1);
         assert_eq!(merged[0].start, first);
         assert_eq!(merged[0].end, end);
+    }
+
+    #[test]
+    fn recent_coverage_requires_compact_and_bar_confirmation_for_one_run() {
+        let start = Utc.with_ymd_and_hms(2026, 1, 3, 0, 30, 0).unwrap();
+        let end = Utc.with_ymd_and_hms(2026, 1, 3, 1, 0, 0).unwrap();
+        let compact = RecentCoverageRow {
+            coverage_id: "compact_run-1::2026-01-03::2026-01-02".into(),
+            end,
+            start,
+            status: "compact_persisted".into(),
+        };
+        assert!(materialize_confirmed_recent_coverage(&[compact.clone()]).is_empty());
+
+        let confirmed = materialize_confirmed_recent_coverage(&[
+            compact,
+            RecentCoverageRow {
+                coverage_id: "intraday_run-1::2026-01-02".into(),
+                end,
+                start,
+                status: "intraday_bars_persisted".into(),
+            },
+        ]);
+        assert_eq!(confirmed.len(), 1);
+        assert_eq!(confirmed[0].start, start);
+        assert_eq!(confirmed[0].end, end);
     }
 
     #[test]

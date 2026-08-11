@@ -245,6 +245,20 @@ bounded direct ClickHouse paths remain documented in
     1600x1000 Market Discovery browser interaction passed with zero objective
     UI issues. The application-wide theme, scale, responsive, and accessibility
     matrix remains open.
+45. Closed the QMD recent-coverage evidence gap and reconciled the stale bar
+    authority backlog. Compact-event confirmations are now cumulative per run,
+    UTC event partition, and New York session; canonical base-bar confirmations
+    are cumulative per run and `local_date` partition. A UTC rollover during
+    after-hours therefore cannot blur the market-session or physical-partition
+    boundary. Existing code was confirmed to own singular recent event/family
+    persistence, three-family algebraic intraday rollups, daily-derived macro
+    bars, explicit partial periods, revision-keyed bounded caches, and the
+    retired legacy macro read path. QMD History now requires overlapping
+    compact-event and base-bar confirmations from the same run before planning
+    an interval as recent. All 85 QMD Gateway tests, 26 QMD History tests, and
+    both all-target compile gates passed. Archive watermark promotion
+    still needs an explicit retained QMD equivalence certificate and remains
+    open; no Market SIP producer or schema changed.
 
 The authoritative remaining work and acceptance gates are maintained in the
 [complete implementation backlog](14-implementation-backlog.md). A checked

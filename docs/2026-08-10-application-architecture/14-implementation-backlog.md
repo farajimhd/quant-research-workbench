@@ -105,9 +105,14 @@ duplicate-free, gap-explicit stream.
 
 ## 2. Retention and bar authority
 
-- [ ] Persist recent live events and family bars in QMD-owned `q_live` tables.
-- [ ] Record recent coverage by session and partition.
-- [ ] Read existing archive publication coverage from Market SIP outputs.
+- [x] Persist recent live events and family bars in QMD-owned `q_live` tables.
+- [x] Record recent coverage by session and partition. Compact-event writer
+      confirmations are cumulative by run, UTC event partition, and New York
+      session; canonical 100 ms bar confirmations are cumulative by run and
+      `local_date` partition.
+- [x] Read existing archive publication coverage from Market SIP outputs. QMD
+      consumes the authoritative ordinal-continuity publication and per-source
+      flatfile handoff state without writing Market SIP tables.
 - [x] Compare counts, bounds, stable identities, and schema versions before
       retention. Ordering remains preserved by the source contracts rather
       than accepted through an order-insensitive comparison.
@@ -115,14 +120,18 @@ duplicate-free, gap-explicit stream.
 - [x] Block retention when archive coverage is incomplete or inconsistent.
 - [x] Delete only QMD-owned event and intraday-bar partitions beyond the
       configured recent market-session window.
-- [ ] Preserve distinct `trade`, `quote_bid`, and `quote_ask` bar families.
-- [ ] Derive higher intraday resolutions algebraically.
-- [ ] Use completed daily-session bars as historical daily authority.
-- [ ] Produce recent/current daily-session state with the same schema.
-- [ ] Derive weekly, monthly, and yearly bars from daily authority.
-- [ ] Mark current macro periods explicitly partial.
-- [ ] Version and invalidate derived caches after correction.
-- [ ] Retire legacy macro authority only after parity and caller migration.
+- [x] Preserve distinct `trade`, `quote_bid`, and `quote_ask` bar families.
+- [x] Derive higher intraday resolutions algebraically from closed 100 ms bases.
+- [x] Use completed daily-session bars as historical daily authority.
+- [x] Produce recent/current daily-session state through the shared product schema.
+- [x] Derive weekly, monthly, and yearly bars from daily authority.
+- [x] Mark current macro periods explicitly partial.
+- [x] Version and invalidate derived caches after correction. Historical cache
+      identity includes source revision and engine/product contracts; live
+      corrected rows increase revision.
+- [x] Retire legacy macro authority after caller migration. The old macro table
+      remains only a migration/training artifact and is not read as QMD candle
+      authority.
 
 Acceptance gate: no recent row is deleted before verified archive coverage and
 macro bars agree across Live, History, Replay, Backtest, and charts.

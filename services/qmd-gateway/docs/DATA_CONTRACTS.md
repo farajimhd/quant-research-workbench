@@ -136,9 +136,11 @@ fine-grained source of truth for live time gaps.
 Live event coverage manifest: `qmd_live_event_coverage_v1`
 
 This table is the fine-grained recent q_live coverage source. It is maintained
-by the compact-event writer, the intraday-bar writer, and REST repair. Live streaming
-does not become covered from a single `running` row. Coverage is materialized
-as:
+by the compact-event writer, the intraday-bar writer, and REST repair. Live
+streaming does not become covered from a single `running` row. Writer rows are
+cumulative within one run and are split by New York market-session date and
+physical table partition, so a UTC date transition during after-hours trading
+cannot merge two different evidence boundaries. Coverage is materialized as:
 
 - `compact_persisted` intervals from `events` inserts.
 - `intraday_bars_persisted` intervals from closed 100ms bar inserts.
@@ -154,13 +156,13 @@ insert failure or bar insert failure from hiding a q_live time gap.
 | Field | Meaning |
 |---|---|
 | `coverage_kind` | `q_live_events` for live compact/bar coverage or `flatfile_events` in the flatfile table. |
-| `coverage_id` | Stable id for the row. Live confirmations use `compact_<run_id>` and `intraday_<run_id>`. REST repair rows use `repair_<run_id>_<started_ms>_<interval_index>`. |
+| `coverage_id` | Stable id for the row. Compact confirmations use `compact_<run_id>::<event_partition>::<market_session_date>`; intraday confirmations use `intraday_<run_id>::<local_date>`. The `::` suffix preserves run-level compact/bar intersection while distinguishing evidence boundaries. REST repair rows use `repair_<run_id>_<started_ms>_<interval_index>`. |
 | `source` | Writer or repair source, such as `qmd_compact_event_writer`, `qmd_intraday_bar_writer`, or `massive_rest_gap_repair`. |
 | `status` | `compact_persisted`, `intraday_bars_persisted`, `repair_completed`, or diagnostic statuses. |
 | `coverage_start_utc`, `coverage_end_utc` | UTC interval covered or diagnosed. |
 | `rows_written`, `event_rows`, `bar_rows` | Writer-specific row counts. Repair rows store per-interval counts, not one repeated global count. |
 | `error_count` | Nonzero when a diagnostic row records a failed or partial interval. |
-| `metadata_json` | Per-run metadata including excluded raw tables and repair interval details. |
+| `metadata_json` | Per-run metadata including compact-event partition, New York market-session date, intraday local-date partition, excluded raw tables, and repair interval details. |
 
 ## Live Abnormal Market-State Event Row
 

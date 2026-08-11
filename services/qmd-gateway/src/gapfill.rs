@@ -2601,6 +2601,29 @@ mod tests {
         drifted.identity_hash_xor += 1;
         assert_ne!(expected, drifted);
     }
+
+    #[test]
+    fn session_partition_coverage_ids_still_intersect_by_run() {
+        let start = Utc.with_ymd_and_hms(2026, 1, 3, 0, 30, 0).unwrap();
+        let end = Utc.with_ymd_and_hms(2026, 1, 3, 1, 0, 0).unwrap();
+        let rows = [
+            CoverageRow {
+                coverage_id: "compact_run-1::2026-01-03::2026-01-02".into(),
+                end,
+                start,
+                status: "compact_persisted".into(),
+            },
+            CoverageRow {
+                coverage_id: "intraday_run-1::2026-01-02".into(),
+                end,
+                start,
+                status: "intraday_bars_persisted".into(),
+            },
+        ];
+
+        assert_eq!(materialize_confirmed_live_coverage(&rows).len(), 1);
+        assert_eq!(run_suffix(&rows[0].coverage_id, "compact_"), "run-1");
+    }
 }
 
 fn live_event_table_expr(
@@ -2674,6 +2697,9 @@ fn run_suffix(coverage_id: &str, prefix: &str) -> String {
     coverage_id
         .strip_prefix(prefix)
         .unwrap_or(coverage_id)
+        .split("::")
+        .next()
+        .unwrap_or_default()
         .to_string()
 }
 

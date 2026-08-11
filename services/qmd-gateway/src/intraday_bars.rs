@@ -7,8 +7,9 @@ use chrono_tz::America::New_York;
 use reqwest::Client;
 use serde::Serialize;
 use serde_json::json;
-use std::collections::{HashMap, HashSet};
-use tokio::sync::{broadcast, mpsc};
+use std::collections::{BTreeMap, HashMap, HashSet};
+use std::sync::Arc;
+use tokio::sync::{broadcast, mpsc, Mutex};
 use tokio::task::JoinHandle;
 use tokio::time::{interval, sleep, timeout, Duration, Instant};
 
@@ -40,6 +41,45 @@ struct RepairRequest {
 enum WriterMessage {
     Row(IntradayBarRow),
     Repair(RepairRequest),
+}
+
+#[derive(Clone, Debug)]
+struct CoverageWindow {
+    end: chrono::DateTime<Utc>,
+    rows_written: u64,
+    start: chrono::DateTime<Utc>,
+}
+
+fn intraday_coverage_groups(rows: &[IntradayBarRow]) -> BTreeMap<String, CoverageWindow> {
+    let mut grouped = BTreeMap::new();
+    for row in rows
+        .iter()
+        .filter(|row| row.label_resolution_us == BASE_RESOLUTION_US)
+    {
+        let Ok(start_us) = i64::try_from(row.first_event_timestamp_us) else {
+            continue;
+        };
+        let Ok(end_us) = i64::try_from(row.last_event_timestamp_us) else {
+            continue;
+        };
+        let Some(start) = chrono::DateTime::<Utc>::from_timestamp_micros(start_us) else {
+            continue;
+        };
+        let Some(end) = chrono::DateTime::<Utc>::from_timestamp_micros(end_us) else {
+            continue;
+        };
+        let window = grouped
+            .entry(row.local_date.clone())
+            .or_insert_with(|| CoverageWindow {
+                end,
+                rows_written: 0,
+                start,
+            });
+        window.start = window.start.min(start);
+        window.end = window.end.max(end);
+        window.rows_written = window.rows_written.saturating_add(1);
+    }
+    grouped
 }
 
 #[derive(Clone)]
@@ -516,6 +556,7 @@ struct IntradayBarWriter {
     config: GatewayConfig,
     metrics: SharedMetrics,
     resolutions: Vec<i64>,
+    coverage_windows: Arc<Mutex<HashMap<String, CoverageWindow>>>,
 }
 
 impl IntradayBarWriter {
@@ -525,6 +566,7 @@ impl IntradayBarWriter {
             config,
             metrics,
             resolutions,
+            coverage_windows: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -1005,64 +1047,57 @@ impl IntradayBarWriter {
     }
 
     async fn record_coverage(&self, rows: &[IntradayBarRow]) -> Result<(), String> {
-        let base_rows = rows
-            .iter()
-            .filter(|row| row.label_resolution_us == BASE_RESOLUTION_US)
-            .collect::<Vec<_>>();
-        if base_rows.is_empty() {
-            return Ok(());
-        }
-        let min_us = base_rows
-            .iter()
-            .map(|row| row.first_event_timestamp_us)
-            .min()
-            .unwrap_or_default();
-        let max_us = base_rows
-            .iter()
-            .map(|row| row.last_event_timestamp_us)
-            .max()
-            .unwrap_or_default();
-        let Ok(min_us_i64) = i64::try_from(min_us) else {
-            return Err(format!("invalid intraday bar coverage start {min_us}"));
-        };
-        let Some(start) = chrono::DateTime::<Utc>::from_timestamp_micros(min_us_i64) else {
-            return Err(format!("invalid intraday bar coverage start {min_us}"));
-        };
-        let Ok(max_us_i64) = i64::try_from(max_us) else {
-            return Err(format!("invalid intraday bar coverage end {max_us}"));
-        };
-        let Some(end) = chrono::DateTime::<Utc>::from_timestamp_micros(max_us_i64) else {
-            return Err(format!("invalid intraday bar coverage end {max_us}"));
-        };
-        if end <= start {
+        let grouped = intraday_coverage_groups(rows);
+        if grouped.is_empty() {
             return Ok(());
         }
         let now = Utc::now();
-        let started_at = self.config.qmd_run_started_at().unwrap_or(start);
-        let row = json!({
-            "coverage_kind": "q_live_events",
-            "coverage_id": format!("intraday_{}", self.config.qmd_run_id),
-            "source": "qmd_intraday_bar_writer",
-            "status": "intraday_bars_persisted",
-            "coverage_start_utc": clickhouse_datetime64(&started_at.min(start)),
-            "coverage_end_utc": clickhouse_datetime64(&end),
-            "rows_written": base_rows.len() as u64,
-            "event_rows": 0u64,
-            "bar_rows": base_rows.len() as u64,
-            "error_count": 0u64,
-            "started_at_utc": clickhouse_datetime64(&started_at.min(start)),
-            "updated_at_utc": clickhouse_datetime64(&now),
-            "completed_at_utc": Option::<String>::None,
-            "metadata_json": json!({
-                "table": self.config.intraday_bar_table,
-                "base_resolution_us": BASE_RESOLUTION_US,
-                "rollup_resolutions_us": self.resolutions,
-                "coverage_rule": "base 100ms bars confirm the compact-event interval; higher bars roll up from closed base bars"
-            }).to_string(),
-        });
+        let mut windows = self.coverage_windows.lock().await;
+        let mut coverage_rows = Vec::with_capacity(grouped.len());
+        for (local_date, batch) in grouped {
+            let window = windows
+                .entry(local_date.clone())
+                .or_insert_with(|| CoverageWindow {
+                    end: batch.end,
+                    rows_written: 0,
+                    start: batch.start,
+                });
+            window.start = window.start.min(batch.start);
+            window.end = window.end.max(batch.end);
+            window.rows_written = window.rows_written.saturating_add(batch.rows_written);
+            coverage_rows.push(json!({
+                "coverage_kind": "q_live_events",
+                "coverage_id": format!("intraday_{}::{local_date}", self.config.qmd_run_id),
+                "source": "qmd_intraday_bar_writer",
+                "status": "intraday_bars_persisted",
+                "coverage_start_utc": clickhouse_datetime64(&window.start),
+                "coverage_end_utc": clickhouse_datetime64(&window.end),
+                "rows_written": window.rows_written,
+                "event_rows": 0u64,
+                "bar_rows": window.rows_written,
+                "error_count": 0u64,
+                "started_at_utc": clickhouse_datetime64(&window.start),
+                "updated_at_utc": clickhouse_datetime64(&now),
+                "completed_at_utc": Option::<String>::None,
+                "metadata_json": json!({
+                    "table": self.config.intraday_bar_table,
+                    "partition_local_date": local_date.clone(),
+                    "market_session_date": local_date,
+                    "base_resolution_us": BASE_RESOLUTION_US,
+                    "rollup_resolutions_us": self.resolutions,
+                    "coverage_rule": "base 100ms bars confirm the session partition; higher bars roll up from closed base bars"
+                }).to_string(),
+            }));
+        }
+        drop(windows);
+        let body = coverage_rows
+            .into_iter()
+            .map(|row| row.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
         self.query(&format!(
             "INSERT INTO {} FORMAT JSONEachRow\n{}",
-            self.config.qmd_live_event_coverage_table, row
+            self.config.qmd_live_event_coverage_table, body
         ))
         .await
         .map(|_| ())
@@ -1293,6 +1328,25 @@ mod tests {
             source_sequence: sequence,
             ticker: "TEST".into(),
         }
+    }
+
+    #[test]
+    fn coverage_groups_only_base_rows_by_session_partition() {
+        let first_event = quote_event(1_752_400_000_010_000, 1, 100_000, 101_000);
+        let second_event = quote_event(1_752_486_400_010_000, 2, 102_000, 103_000);
+        let first_point = event_points(&first_event).remove(0);
+        let second_point = event_points(&second_event).remove(0);
+        let first =
+            IntradayBarRow::from_event(&first_event, &first_point, 144_000, "2026-07-13".into());
+        let second =
+            IntradayBarRow::from_event(&second_event, &second_point, 144_000, "2026-07-14".into());
+        let rollup = IntradayBarRow::from_base(&first, 1_000_000);
+
+        let groups = intraday_coverage_groups(&[first, second, rollup]);
+
+        assert_eq!(groups.len(), 2);
+        assert_eq!(groups["2026-07-13"].rows_written, 1);
+        assert_eq!(groups["2026-07-14"].rows_written, 1);
     }
 
     #[test]
