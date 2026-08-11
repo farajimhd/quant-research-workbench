@@ -52,6 +52,20 @@ class WatchlistRuntimeServiceTests(unittest.TestCase):
                 ],
             }
         ]
+        discovery["core_scan"]["calculations"].extend(
+            [
+                {
+                    "capability_id": "qmd.family.momentum_core",
+                    "availability": "implemented",
+                    "selected_timeframes": ["1m"],
+                },
+                {
+                    "capability_id": "qmd.family.trend_moving_averages",
+                    "availability": "implemented",
+                    "selected_timeframes": ["1m"],
+                },
+            ]
+        )
 
     def test_normalizes_core_scanner_contract_for_watchlist_rules(self) -> None:
         row = normalize_watchlist_candidate(
@@ -190,6 +204,9 @@ class WatchlistRuntimeServiceTests(unittest.TestCase):
             owner="backend.strategy_runtime",
             scope="strategy_run",
             ttl_ms=300_000,
+            causation_seed=(
+                "top-small-cap-gainers:2026-08-10T16:00:00+00:00"
+            ),
         )
 
     @patch("src.backend.watchlist_runtime_service.publish_watchlist_target")
