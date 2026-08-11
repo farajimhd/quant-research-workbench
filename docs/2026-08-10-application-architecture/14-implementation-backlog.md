@@ -77,6 +77,9 @@ one backend registry record and one executable implementation status.
 - [x] Prevent overlaps through ordered non-overlapping source segments and
       stable ordinal/arrival cursor semantics.
 - [x] Preserve event-time, source-sequence, event-identity ordering.
+  - [x] Preserve each ticker's bar, indicator, microstructure, and signal state
+        when the full-market historical stream interleaves symbols in global
+        event-time order; finalize each shard only after its complete window.
 - [x] Return explicit missing and live-continuation segments.
 - [ ] Pin source plans/revisions for Replay and Backtest.
   - [x] Pin the first event page's source-plan hash and revision token across

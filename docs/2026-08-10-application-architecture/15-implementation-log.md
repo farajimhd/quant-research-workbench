@@ -1052,6 +1052,15 @@ bounded direct ClickHouse paths remain documented in
      Rust canonical JSON produce the same SHA-256 identity. All 32 QMD History
      tests and 39 focused backend compiler/client tests passed; the changed
      Python modules compiled.
+125. Corrected a state-loss defect in full-market QMD History Scanner replay.
+     The source contract is globally event-time ordered, but the worker had
+     treated each ticker change as end-of-symbol and finalized/dropped that
+     ticker's state; any later interleaved event restarted its bars and
+     indicators. Each shard now owns one multi-symbol shared-computation engine
+     for the entire window, preserving independent bar, indicator,
+     microstructure, and signal state until terminal finalization. A regression
+     test interleaves AAPL, MSFT, then AAPL and proves both symbol projections
+     survive. All 33 QMD History tests passed.
 
 The authoritative remaining work and acceptance gates are maintained in the
 [complete implementation backlog](14-implementation-backlog.md). A checked

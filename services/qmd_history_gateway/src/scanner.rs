@@ -1,7 +1,7 @@
 use crate::config::HistoricalGatewayConfig;
 use crate::source::{EventWindow, HistoricalEventSource, SourceRevision};
 use chrono::{DateTime, Utc};
-use qmd_core::bars::{BarRow, SharedBarStore};
+use qmd_core::bars::{BarRow, SharedBarStore, TradeAggregationRules};
 use qmd_core::event::MarketEvent;
 use qmd_core::indicators::{
     BarIndicatorCalculator, IndicatorRow, MarketStructureReferenceLevels,
@@ -138,7 +138,13 @@ impl CrossSectionEngine {
         source: &HistoricalEventSource,
         indicator_references: HashMap<String, MarketStructureReferenceLevels>,
     ) -> Self {
-        let trade_rules = source.trade_aggregation_rules();
+        Self::new_with_trade_rules(source.trade_aggregation_rules(), indicator_references)
+    }
+
+    fn new_with_trade_rules(
+        trade_rules: TradeAggregationRules,
+        indicator_references: HashMap<String, MarketStructureReferenceLevels>,
+    ) -> Self {
         Self {
             active_signals: HashMap::new(),
             aggregates: HashMap::new(),
@@ -335,42 +341,24 @@ async fn build_snapshot(
     }
     let mut senders = Vec::with_capacity(worker_count);
     let mut workers = Vec::with_capacity(worker_count);
-    for mut worker_references in reference_partitions {
+    for worker_references in reference_partitions {
         let (sender, mut receiver) = tokio::sync::mpsc::channel::<Vec<MarketEvent>>(2);
         let worker_source = source.clone();
         workers.push(tokio::spawn(async move {
-            let mut current_ticker = String::new();
-            let mut engine: Option<CrossSectionEngine> = None;
+            // The source is globally event-time ordered, so a ticker can recur
+            // after many other symbols. One multi-symbol engine per shard keeps
+            // every ticker's bar, indicator, microstructure and signal state
+            // alive across those interleavings.
+            let mut engine = CrossSectionEngine::new(&worker_source, worker_references);
             let mut result = ScannerWorkerResult::default();
             while let Some(events) = receiver.recv().await {
                 for event in events {
-                    let ticker = event.ticker().to_string();
-                    if ticker != current_ticker {
-                        if let Some(mut completed) = engine.take() {
-                            completed.finalize(as_of).await?;
-                            result.extend(completed.into_snapshot(
-                                as_of,
-                                0,
-                                empty_source_revision(),
-                            ));
-                        }
-                        let mut ticker_references = HashMap::new();
-                        if let Some(levels) = worker_references.remove(&ticker) {
-                            ticker_references.insert(ticker.clone(), levels);
-                        }
-                        engine = Some(CrossSectionEngine::new(&worker_source, ticker_references));
-                        current_ticker = ticker;
-                    }
                     result.event_count = result.event_count.saturating_add(1);
-                    if let Some(active) = engine.as_mut() {
-                        active.apply_event(event).await?;
-                    }
+                    engine.apply_event(event).await?;
                 }
             }
-            if let Some(mut completed) = engine {
-                completed.finalize(as_of).await?;
-                result.extend(completed.into_snapshot(as_of, 0, empty_source_revision()));
-            }
+            engine.finalize(as_of).await?;
+            result.extend(engine.into_snapshot(as_of, 0, empty_source_revision()));
             sort_and_bound_signal_events(&mut result.recent_signal_events);
             Ok::<ScannerWorkerResult, String>(result)
         }));
@@ -500,4 +488,75 @@ fn scanner_shard_index(ticker: &str, shard_count: usize) -> usize {
         hash = hash.wrapping_mul(1_099_511_628_211);
     }
     (hash as usize) % shard_count.max(1)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{empty_source_revision, CrossSectionEngine};
+    use chrono::{TimeZone, Utc};
+    use qmd_core::bars::{TradeAggregationRules, TradeUpdateRule};
+    use qmd_core::event::{MarketEvent, TradeEvent};
+    use serde_json::json;
+    use std::collections::HashMap;
+
+    fn trade(ticker: &str, millis: i64, price: f64) -> MarketEvent {
+        let ts = Utc.timestamp_millis_opt(millis).single().unwrap();
+        MarketEvent::Trade(TradeEvent {
+            conditions: vec![0],
+            exchange: 1,
+            ingest_ts: ts,
+            participant_ts: None,
+            price,
+            raw: json!({}),
+            sequence: millis as u64,
+            size: 100.0,
+            tape: 1,
+            ticker: ticker.to_string(),
+            trade_id: format!("{ticker}-{millis}"),
+            trf_id: 0,
+            trf_ts: None,
+            ts,
+        })
+    }
+
+    #[tokio::test]
+    async fn interleaved_tickers_retain_independent_indicator_state() {
+        let rules = TradeAggregationRules::new([(0, TradeUpdateRule::regular())]).unwrap();
+        let mut engine = CrossSectionEngine::new_with_trade_rules(rules, HashMap::new());
+        let start = Utc
+            .with_ymd_and_hms(2026, 8, 7, 13, 30, 0)
+            .single()
+            .unwrap();
+        engine
+            .apply_event(trade("AAPL", start.timestamp_millis(), 200.0))
+            .await
+            .unwrap();
+        engine
+            .apply_event(trade("MSFT", start.timestamp_millis() + 10, 500.0))
+            .await
+            .unwrap();
+        engine
+            .apply_event(trade("AAPL", start.timestamp_millis() + 20, 201.0))
+            .await
+            .unwrap();
+        engine
+            .finalize(start + chrono::Duration::seconds(1))
+            .await
+            .unwrap();
+
+        let snapshot = engine.into_snapshot(
+            start + chrono::Duration::seconds(1),
+            3,
+            empty_source_revision(),
+        );
+        assert_eq!(snapshot.ticker_count, 2);
+        assert_eq!(
+            snapshot
+                .indicators
+                .iter()
+                .map(|row| row.sym.as_str())
+                .collect::<Vec<_>>(),
+            vec!["AAPL", "MSFT"]
+        );
+    }
 }
