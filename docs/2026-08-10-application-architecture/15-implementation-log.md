@@ -112,6 +112,12 @@ bounded direct ClickHouse paths remain documented in
     Plans, and made exact Paper/Live Watchlist membership publish and retire
     separate `strategy_run` QMD leases. Deferred intelligence dependencies stay
     declared but are never misrouted to QMD.
+24. Upgraded the application registry contract to schema v3 and made validation
+    reject duplicate IDs, broken references or dependency cycles, unsupported
+    clocks/scopes/modes/statuses, missing local implementations, incomplete
+    source/query paths, and ungoverned compatibility aliases. The legacy QMD
+    scanner-primitives stream is registered as a deprecated alias of the
+    canonical signal stream with an explicit removal condition.
 
 The authoritative remaining work and acceptance gates are maintained in the
 [complete implementation backlog](14-implementation-backlog.md). A checked

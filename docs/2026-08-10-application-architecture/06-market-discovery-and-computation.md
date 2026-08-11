@@ -165,8 +165,10 @@ offline calculation is available in its proper scope.
 - Core Scan now uses the compact QMD Scanner row; broad indicators are opt-in.
 - Drift remains below the indicator router: the live all-market bar store still
   updates `GenericStructureEngine` for every observed symbol and embeds its
-  snapshot in every bar. That state must move behind focused computation leases
-  without changing QMD History's shared deterministic calculation path.
+  snapshot in every bar. Moving it behind focused leases requires an atomic
+  event-sequence barrier plus replay of every retained event since the restored
+  checkpoint; checkpoint-only activation is causally invalid. QMD History must
+  continue to use the same deterministic calculation implementation.
 - QMD's all-market state keeps one current row per observed symbol plus bounded
   per-second trade counters for the 10/60-second activity rates; it does not
   retain full trade objects for Core Scan rate calculation.

@@ -38,7 +38,7 @@ separate explicit authorization.
 - [x] Register Canvas container schemas and typed link contracts.
 - [x] Register Strategy, Watchlist, Canvas, Portfolio, OMS, execution,
       protection, account-binding, and mode schemas.
-- [ ] Validate unique IDs, references, dependency cycles, clocks, scopes, modes,
+- [x] Validate unique IDs, references, dependency cycles, clocks, scopes, modes,
       source paths, and retired compatibility aliases.
 - [x] Expose the registries through backend catalog APIs.
 - [x] Generate frontend choices and statuses from the backend catalogs.
@@ -119,7 +119,8 @@ macro bars agree across Live, History, Replay, Backtest, and charts.
 - [x] Publish scanner snapshots plus row deltas.
 - [ ] Remove broad expensive indicators from the default all-market path.
       Indicator shards are focused, but `GenericStructureEngine` still runs
-      inside the all-market bar store and must be moved behind the lease gate.
+      inside the all-market bar store. Safe lease activation needs an atomic
+      event-sequence barrier and exact replay since the restored checkpoint.
 - [x] Implement dynamic Watchlist inclusion, exclusion, ranking, maximum size,
       TTL, manual override, and promotion/demotion reasons.
 - [x] Persist membership add/remove/expire events.

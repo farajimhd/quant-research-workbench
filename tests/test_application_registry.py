@@ -4,6 +4,7 @@ import unittest
 
 from services.reference_gateway.table_groups import OWNED_REFERENCE_TABLES
 from src.backend.application_registry import (
+    COMPATIBILITY_ALIASES,
     CONFIGURATION_SCHEMAS,
     CONTAINER_DEFINITIONS,
     FIELD_DEFINITIONS,
@@ -58,7 +59,7 @@ class ApplicationRegistryTests(unittest.TestCase):
 
     def test_payload_includes_versions_and_counts(self) -> None:
         payload = application_registry_payload()
-        self.assertEqual(payload["schema_version"], 2)
+        self.assertEqual(payload["schema_version"], 3)
         self.assertEqual(payload["counts"]["fields"], len(FIELD_DEFINITIONS))
         self.assertEqual(payload["counts"]["query_plans"], len(QUERY_PLANS))
         self.assertEqual(payload["counts"]["market_sources"], len(MARKET_SOURCES))
@@ -66,6 +67,7 @@ class ApplicationRegistryTests(unittest.TestCase):
         self.assertEqual(payload["counts"]["containers"], len(CONTAINER_DEFINITIONS))
         self.assertEqual(payload["counts"]["link_contracts"], len(LINK_CONTRACTS))
         self.assertEqual(payload["counts"]["configuration_schemas"], len(CONFIGURATION_SCHEMAS))
+        self.assertEqual(payload["counts"]["compatibility_aliases"], len(COMPATIBILITY_ALIASES))
 
     def test_market_sources_declare_coverage_and_watermarks(self) -> None:
         sources = {source.source_id: source for source in MARKET_SOURCES}
@@ -84,6 +86,14 @@ class ApplicationRegistryTests(unittest.TestCase):
         self.assertTrue(all(set(container.product_ids).issubset(products) for container in CONTAINER_DEFINITIONS))
         self.assertTrue(all((set(container.input_links) | set(container.output_links)).issubset(links) for container in CONTAINER_DEFINITIONS))
         self.assertIn("strategy_intent", {schema.schema_id for schema in CONFIGURATION_SCHEMAS})
+
+    def test_compatibility_aliases_are_explicitly_retirement_governed(self) -> None:
+        aliases = {alias.alias_id: alias for alias in COMPATIBILITY_ALIASES}
+        scanner_alias = aliases["qmd.stream.scanner_primitives"]
+        self.assertEqual(scanner_alias.alias_path, "/stream/scanner-primitives")
+        self.assertEqual(scanner_alias.canonical_path, "/stream/signals")
+        self.assertEqual(scanner_alias.retirement_state, "deprecated")
+        self.assertTrue(scanner_alias.removal_condition)
 
     def test_runtime_capability_registry_requires_qmd_authority_and_hash(self) -> None:
         payload = runtime_capability_registry_payload({

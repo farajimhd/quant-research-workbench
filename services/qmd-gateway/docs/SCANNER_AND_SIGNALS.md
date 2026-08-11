@@ -78,7 +78,9 @@ requested capabilities against their allowed scopes, unions overlapping symbol
 demand, and rejects unrelated finalized timeframes before indicator shards.
 When the last lease for a symbol expires or is removed, QMD stops routing that
 symbol through the non-core indicator and signal engine. Reclaiming its retained
-warm state is still pending and must not be described as implemented.
+warm state is still pending and must not be described as implemented. Generic
+structure remains in the universal bar path until lease activation can establish
+an atomic event-sequence barrier and replay every event since its checkpoint.
 
 The compact Core Scanner remains independent and does not fetch indicator or
 signal cross-sections during an ordinary refresh. Consumers that explicitly

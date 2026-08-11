@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 from functools import lru_cache
+from pathlib import Path
 from typing import Iterable
 
 from services.reference_gateway.table_groups import REFERENCE_TABLE_GROUPS
@@ -120,6 +121,16 @@ class ConfigurationSchemaDefinition:
     modes: tuple[str, ...]
     immutable_when_published: bool
     status: str = "implemented"
+
+
+@dataclass(frozen=True, slots=True)
+class CompatibilityAliasDefinition:
+    alias_id: str
+    owner: str
+    alias_path: str
+    canonical_path: str
+    retirement_state: str
+    removal_condition: str
 
 
 ALL_MODES = ("live", "paper", "replay", "backtest", "backtest_debug")
@@ -347,6 +358,18 @@ CONFIGURATION_SCHEMAS = (
     ConfigurationSchemaDefinition("execution_policy", "oms", "src/trading_runtime/execution_policies.py", 1, ALL_MODES, True),
     ConfigurationSchemaDefinition("protection_profile", "oms", "src/trading_runtime/execution_policies.py", 1, ALL_MODES, True),
     ConfigurationSchemaDefinition("account_binding", "portfolio", "src/backend/trading_configuration_service.py", 1, ALL_MODES, True),
+)
+
+
+COMPATIBILITY_ALIASES = (
+    CompatibilityAliasDefinition(
+        "qmd.stream.scanner_primitives",
+        "qmd_gateway",
+        "/stream/scanner-primitives",
+        "/stream/signals",
+        "deprecated",
+        "remove after every registered consumer uses /stream/signals",
+    ),
 )
 
 
@@ -677,12 +700,14 @@ def validate_application_registry() -> None:
     link_ids = [link.link_id for link in LINK_CONTRACTS]
     container_ids = [container.container_id for container in CONTAINER_DEFINITIONS]
     schema_ids = [schema.schema_id for schema in CONFIGURATION_SCHEMAS]
+    alias_ids = [alias.alias_id for alias in COMPATIBILITY_ALIASES]
     for label, values in (
         ("market source", source_ids),
         ("product", product_ids),
         ("link", link_ids),
         ("container", container_ids),
         ("configuration schema", schema_ids),
+        ("compatibility alias", alias_ids),
     ):
         if len(values) != len(set(values)):
             raise ValueError(f"{label} IDs must be unique")
@@ -691,11 +716,33 @@ def validate_application_registry() -> None:
     known_products = set(product_ids)
     known_links = set(link_ids)
     supported_modes = set(ALL_MODES)
+    supported_scopes = {
+        "universal_ingest",
+        "core_scan",
+        "watchlist",
+        "strategy_run",
+        "request",
+        "offline",
+    }
+    supported_statuses = {
+        "implemented",
+        "integration_pending",
+        "live_only",
+        "planned",
+        "deprecated",
+        "retired",
+    }
     for source in MARKET_SOURCES:
         if not set(source.modes).issubset(supported_modes):
             raise ValueError(f"{source.source_id} has an unsupported mode")
         if not source.coverage_path or not source.watermark_path:
             raise ValueError(f"{source.source_id} must declare coverage and watermark authority")
+        _require_text(source.source_id, "owner", source.owner)
+        _require_text(source.source_id, "source path", source.source_path)
+        _require_text(source.source_id, "event clock", source.event_clock)
+        _require_text(source.source_id, "availability clock", source.availability_clock)
+        if source.schema_version < 1 or source.status not in supported_statuses:
+            raise ValueError(f"{source.source_id} has an invalid schema version or status")
     product_graph: dict[str, tuple[str, ...]] = {}
     for product in PRODUCT_DEFINITIONS:
         missing_sources = set(product.source_ids) - known_sources
@@ -707,12 +754,21 @@ def validate_application_registry() -> None:
             )
         if not set(product.modes).issubset(supported_modes):
             raise ValueError(f"{product.product_id} has an unsupported mode")
+        if not product.execution_scopes or not set(product.execution_scopes).issubset(supported_scopes):
+            raise ValueError(f"{product.product_id} has an invalid execution scope")
+        if product.schema_version < 1 or product.status not in supported_statuses:
+            raise ValueError(f"{product.product_id} has an invalid schema version or status")
+        _validate_implementation_reference(product.product_id, product.implementation)
         product_graph[product.product_id] = product.dependency_products
     _validate_acyclic_dependencies(product_graph)
 
     containers = set(container_ids)
     special_link_participants = {"all_containers", "workspace_controller"}
     for link in LINK_CONTRACTS:
+        if not set(link.modes).issubset(supported_modes) or link.schema_version < 1:
+            raise ValueError(f"{link.link_id} has an invalid mode or schema version")
+        _require_text(link.link_id, "clock policy", link.clock_policy)
+        _require_text(link.link_id, "identity policy", link.identity_policy)
         unknown = (set(link.producers) | set(link.consumers)) - containers - special_link_participants
         if unknown:
             raise ValueError(f"{link.link_id} references unknown containers: {sorted(unknown)}")
@@ -724,6 +780,11 @@ def validate_application_registry() -> None:
                 f"{container.container_id} has unknown links/products: "
                 f"{sorted(missing_links | missing_products)}"
             )
+        if not set(container.modes).issubset(supported_modes) or container.state_schema_version < 1:
+            raise ValueError(f"{container.container_id} has an invalid mode or state schema")
+        if container.status not in supported_statuses:
+            raise ValueError(f"{container.container_id} has an invalid status")
+        _validate_implementation_reference(container.container_id, container.implementation)
         for link_id in container.input_links:
             contract = next(link for link in LINK_CONTRACTS if link.link_id == link_id)
             if container.container_id not in contract.consumers and "all_containers" not in contract.consumers:
@@ -733,8 +794,13 @@ def validate_application_registry() -> None:
             if container.container_id not in contract.producers:
                 raise ValueError(f"{container.container_id} is not a producer of {link_id}")
     for schema in CONFIGURATION_SCHEMAS:
-        if schema.version < 1 or not set(schema.modes).issubset(supported_modes):
+        if (
+            schema.version < 1
+            or not set(schema.modes).issubset(supported_modes)
+            or schema.status not in supported_statuses
+        ):
             raise ValueError(f"{schema.schema_id} has an invalid version or mode")
+        _validate_implementation_reference(schema.schema_id, schema.implementation)
 
     plan_ids = [plan.plan_id for plan in QUERY_PLANS]
     if len(plan_ids) != len(set(plan_ids)):
@@ -744,6 +810,17 @@ def validate_application_registry() -> None:
         duplicates = sorted({value for value in field_ids if field_ids.count(value) > 1})
         raise ValueError(f"field IDs must be unique: {duplicates}")
     known_plans = set(plan_ids)
+    for plan in QUERY_PLANS:
+        _require_text(plan.plan_id, "owner", plan.owner)
+        _validate_implementation_reference(plan.plan_id, plan.implementation)
+        if not plan.source_paths or any(not path.strip() for path in plan.source_paths):
+            raise ValueError(f"{plan.plan_id} must declare non-empty source paths")
+        _require_text(plan.plan_id, "identity join", plan.identity_join)
+        _require_text(plan.plan_id, "event clock", plan.event_clock)
+        _require_text(plan.plan_id, "availability clock", plan.availability_clock)
+        _require_text(plan.plan_id, "coverage path", plan.coverage_path)
+        if plan.version < 1:
+            raise ValueError(f"{plan.plan_id} has an invalid version")
     for field in FIELD_DEFINITIONS:
         if field.query_plan_id not in known_plans:
             raise ValueError(f"{field.field_id} references unknown query plan {field.query_plan_id}")
@@ -753,6 +830,16 @@ def validate_application_registry() -> None:
             )
         if not field.modes:
             raise ValueError(f"{field.field_id} has no eligible mode")
+        if not set(field.modes).issubset(supported_modes):
+            raise ValueError(f"{field.field_id} has an unsupported mode")
+        if field.status not in supported_statuses or field.schema_version < 1:
+            raise ValueError(f"{field.field_id} has an invalid status or schema version")
+        _require_text(field.field_id, "source path", field.source_path)
+        _require_text(field.field_id, "identity join", field.identity_join)
+        _require_text(field.field_id, "event clock", field.event_at)
+        _require_text(field.field_id, "availability clock", field.available_at)
+        if field.ttl_seconds is not None and field.ttl_seconds <= 0:
+            raise ValueError(f"{field.field_id} has a non-positive TTL")
 
     registered_sources = {path for plan in QUERY_PLANS for path in plan.source_paths}
     missing_reference_tables = sorted(
@@ -763,6 +850,38 @@ def validate_application_registry() -> None:
     )
     if missing_reference_tables:
         raise ValueError(f"Reference table inventory is incomplete: {missing_reference_tables}")
+
+    alias_paths = [alias.alias_path for alias in COMPATIBILITY_ALIASES]
+    if len(alias_paths) != len(set(alias_paths)):
+        raise ValueError("compatibility alias paths must be unique")
+    for alias in COMPATIBILITY_ALIASES:
+        if alias.alias_path == alias.canonical_path:
+            raise ValueError(f"{alias.alias_id} must not alias itself")
+        if alias.retirement_state not in {"deprecated", "retired"}:
+            raise ValueError(f"{alias.alias_id} has an invalid retirement state")
+        _require_text(alias.alias_id, "canonical path", alias.canonical_path)
+        _require_text(alias.alias_id, "removal condition", alias.removal_condition)
+
+
+def _require_text(record_id: str, field: str, value: str) -> None:
+    if not value.strip():
+        raise ValueError(f"{record_id} must declare {field}")
+
+
+def _validate_implementation_reference(record_id: str, implementation: str) -> None:
+    _require_text(record_id, "implementation", implementation)
+    reference = implementation.split(":", 1)[0]
+    if "::" in implementation and not implementation.startswith(("src/", "services/", "frontend/")):
+        return
+    if reference.startswith(("src/", "services/", "frontend/")):
+        candidate = reference
+    elif reference.startswith(("src.", "services.")):
+        candidate = reference.replace(".", "/") + ".py"
+    else:
+        return
+    repository_root = Path(__file__).resolve().parents[2]
+    if not (repository_root / candidate).is_file():
+        raise ValueError(f"{record_id} implementation path does not exist: {candidate}")
 
 
 def _validate_acyclic_dependencies(graph: dict[str, tuple[str, ...]]) -> None:
@@ -788,12 +907,13 @@ def _validate_acyclic_dependencies(graph: dict[str, tuple[str, ...]]) -> None:
 def application_registry_payload() -> dict[str, object]:
     validate_application_registry()
     return {
-        "schema_version": 2,
+        "schema_version": 3,
         "market_sources": [asdict(source) for source in MARKET_SOURCES],
         "products": [asdict(product) for product in PRODUCT_DEFINITIONS],
         "link_contracts": [asdict(link) for link in LINK_CONTRACTS],
         "containers": [asdict(container) for container in CONTAINER_DEFINITIONS],
         "configuration_schemas": [asdict(schema) for schema in CONFIGURATION_SCHEMAS],
+        "compatibility_aliases": [asdict(alias) for alias in COMPATIBILITY_ALIASES],
         "fields": [asdict(field) for field in FIELD_DEFINITIONS],
         "query_plans": [asdict(plan) for plan in QUERY_PLANS],
         "counts": {
@@ -802,6 +922,7 @@ def application_registry_payload() -> dict[str, object]:
             "link_contracts": len(LINK_CONTRACTS),
             "containers": len(CONTAINER_DEFINITIONS),
             "configuration_schemas": len(CONFIGURATION_SCHEMAS),
+            "compatibility_aliases": len(COMPATIBILITY_ALIASES),
             "fields": len(FIELD_DEFINITIONS),
             "query_plans": len(QUERY_PLANS),
             "reference_tables": sum(len(group.tables) for group in REFERENCE_TABLE_GROUPS),
