@@ -3,6 +3,7 @@ mod cache;
 mod config;
 mod scanner;
 mod source;
+mod structure_checkpoint;
 mod watchlist_timeline;
 
 use crate::api::{app, AppState};
@@ -42,6 +43,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let watchlist_materialization_permits = Arc::new(Semaphore::new(
         config.watchlist_max_concurrent_materializations,
     ));
+    let structure_checkpoint_advancement_permits = Arc::new(Semaphore::new(
+        config.structure_checkpoint_max_concurrent_advancements,
+    ));
     let listener = tokio::net::TcpListener::bind(bind).await?;
     eprintln!(
         "qmd-history-gateway listening on {bind}; source={}.{}YYYY",
@@ -54,6 +58,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             config,
             scanner,
             source,
+            structure_checkpoint_advancement_permits,
             watchlist_materialization_permits,
         }),
     )

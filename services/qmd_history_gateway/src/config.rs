@@ -31,6 +31,9 @@ pub struct HistoricalGatewayConfig {
     pub scanner_cache_max_entries: usize,
     pub scanner_max_events_per_snapshot: usize,
     pub scanner_shard_count: usize,
+    pub structure_checkpoint_max_concurrent_advancements: usize,
+    pub structure_checkpoint_max_events: usize,
+    pub structure_checkpoint_max_window_hours: usize,
     pub structure_database: String,
     pub structure_events_table: String,
     pub table_prefix: String,
@@ -96,6 +99,21 @@ impl HistoricalGatewayConfig {
             )
             .max(1),
             scanner_shard_count: env_usize("QMD_HISTORY_SCANNER_SHARD_COUNT", 16).clamp(1, 128),
+            structure_checkpoint_max_concurrent_advancements: env_usize(
+                "QMD_HISTORY_STRUCTURE_CHECKPOINT_MAX_CONCURRENT_ADVANCEMENTS",
+                4,
+            )
+            .clamp(1, 32),
+            structure_checkpoint_max_events: env_usize(
+                "QMD_HISTORY_STRUCTURE_CHECKPOINT_MAX_EVENTS",
+                5_000_000,
+            )
+            .clamp(1_000, 50_000_000),
+            structure_checkpoint_max_window_hours: env_usize(
+                "QMD_HISTORY_STRUCTURE_CHECKPOINT_MAX_WINDOW_HOURS",
+                72,
+            )
+            .clamp(1, 168),
             structure_database: env_string("QMD_HISTORY_STRUCTURE_DATABASE", "q_live"),
             structure_events_table: env_string(
                 "QMD_HISTORY_STRUCTURE_EVENTS_TABLE",

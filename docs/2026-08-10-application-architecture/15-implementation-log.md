@@ -1914,6 +1914,25 @@ it does not imply all application work is complete.
      remain the next step; Generic Structure is not yet removed from the
      all-market path.
 
+173. Added the bounded QMD History Generic Structure checkpoint-advancement
+     product required before focused-only live computation can be safe. The
+     endpoint accepts one schema-versioned checkpoint, a causal as-of cutoff,
+     optional plan pin, and a bounded event limit. It replays the single ticker
+     through QMD History's existing three-tier planner and the shared
+     `qmd_core::GenericStructureEngine`, then returns the proposed checkpoint,
+     exact source plan, pre/post source revisions, and decoded/applied counts.
+
+     Exact live cursor identity is enforced rather than inferred: Recent and
+     Current-Live segments are accepted, while Archive ordinal identity and
+     gaps return a typed conflict. Windows, event counts, and concurrency are
+     independently bounded by configuration. All 43 QMD History tests passed.
+     A real PLAG replay advanced arrival `28435075` to `28435824`; 15 boundary
+     and new events were decoded, 14 advanced state, and the checkpoint-boundary
+     duplicate was ignored. The source tier was `recent` and the returned plan
+     hash was `fnv1a64:09579ec01698b4a3`. Scheduled pre-retention advancement,
+     staged focus activation, and removal from the all-market path remain the
+     next live-QMD phase.
+
 ---
 
 [Top](README.md) · [Previous](14-implementation-backlog.md) · [First](01-product-and-principles.md)

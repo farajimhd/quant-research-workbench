@@ -78,6 +78,10 @@ Configuration uses `QMD_HISTORY_CLICKHOUSE_URL`, `QMD_HISTORY_DATABASE`,
 bounded by `QMD_HISTORY_SCANNER_CACHE_MAX_ENTRIES`,
 `QMD_HISTORY_SCANNER_MAX_EVENTS_PER_SNAPSHOT`, and
 `QMD_HISTORY_SCANNER_SHARD_COUNT`.
+Generic Structure checkpoint advancement is bounded by
+`QMD_HISTORY_STRUCTURE_CHECKPOINT_MAX_CONCURRENT_ADVANCEMENTS`,
+`QMD_HISTORY_STRUCTURE_CHECKPOINT_MAX_EVENTS`, and
+`QMD_HISTORY_STRUCTURE_CHECKPOINT_MAX_WINDOW_HOURS`.
 
 Defaults:
 
@@ -112,6 +116,9 @@ without changing semantics across chart timeframes.
 - full-market Scanner cache entries: `2`
 - maximum events in one Scanner snapshot: `250000000`
 - Scanner calculation shards: `16`
+- concurrent Generic Structure checkpoint advancements: `4`
+- maximum events in one checkpoint advancement: `5000000`
+- maximum checkpoint advancement window: `72 hours`
 
 ## API
 
@@ -137,6 +144,13 @@ Supported bar timeframes are the live QMD set: `100ms`, `1s`, `5s`, `10s`,
   full-market 100 ms QMD indicator projection, active scored signals on their
   declared clocks, and the newest 20,000 lifecycle events; calculated with the
   shared live engines)
+- `POST /materialize/generic-structure-checkpoint` advances one versioned
+  Generic Structure checkpoint through one explicit ticker/as-of window. It
+  accepts only Recent and Current-Live source tiers because those preserve the
+  live arrival identity; Archive ordinal or a source gap returns a typed
+  conflict instead of fabricating an exact continuation. The response includes
+  the advanced checkpoint, event counts, source plan, and source revisions
+  before and after replay.
 - `GET /snapshot/family-bars/{ticker}?start=...&end=...&as_of=...&resolution=1m`
 - `GET /snapshot/condition-bars/{ticker}?start=...&end=...&as_of=...&resolution=1m`
 - `GET /snapshot/macro-bars/{ticker}?start=...&end=...&as_of=...&timeframe=1d`

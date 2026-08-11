@@ -46,6 +46,15 @@ on flush nor double-applied on replay. Older checkpoint JSON remains readable
 with a zero cursor, but zero explicitly means it cannot prove an exact replay
 continuation.
 
+QMD History exposes a bounded, read-only checkpoint-advancement product for
+inactive focused state. It accepts one versioned checkpoint and one explicit
+ticker/as-of cutoff, replays through the shared `qmd_core` engine, and returns
+the proposed checkpoint with the exact source plan and pre/post revisions. The
+product accepts only Recent and Current source segments: those retain the live
+arrival identity. If the window reaches Archive ordinal identity or a coverage
+gap, advancement fails closed. QMD Gateway remains responsible for verifying
+and persisting the returned checkpoint; QMD History never mutates live state.
+
 ## Three-source event distribution
 
 ```mermaid

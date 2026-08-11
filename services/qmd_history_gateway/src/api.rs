@@ -13,6 +13,10 @@ use crate::source::{
     EventCoverage, EventWindow, HistoricalCursor, HistoricalEventSource, LatestEventCoverage,
     MarketSourcePlan, SourceRevision,
 };
+use crate::structure_checkpoint::{
+    advance_structure_checkpoint, StructureCheckpointAdvanceRequest,
+    StructureCheckpointAdvanceResponse,
+};
 use crate::watchlist_timeline::{
     validate_plan, HistoricalWatchlistPlan, HistoricalWatchlistPlanValidation,
     HistoricalWatchlistTimelineBatchRequest, HistoricalWatchlistTimelineRequest,
@@ -47,6 +51,7 @@ pub struct AppState {
     pub config: HistoricalGatewayConfig,
     pub scanner: HistoricalScannerDerivedCache,
     pub source: HistoricalEventSource,
+    pub structure_checkpoint_advancement_permits: Arc<Semaphore>,
     pub watchlist_materialization_permits: Arc<Semaphore>,
 }
 
@@ -206,6 +211,10 @@ pub fn app(state: AppState) -> Router {
         .route("/snapshot/chart-bars/{ticker}", get(chart_bar_snapshot))
         .route("/snapshot/scanner-derived", get(scanner_derived_snapshot))
         .route(
+            "/materialize/generic-structure-checkpoint",
+            post(materialize_generic_structure_checkpoint),
+        )
+        .route(
             "/plans/watchlist-timeline/validate",
             post(validate_watchlist_timeline_plan),
         )
@@ -266,6 +275,32 @@ async fn scanner_derived_snapshot(
         .await
         .map(Json)
         .map_err(service_error)
+}
+
+async fn materialize_generic_structure_checkpoint(
+    State(state): State<Arc<AppState>>,
+    Json(request): Json<StructureCheckpointAdvanceRequest>,
+) -> Result<Json<StructureCheckpointAdvanceResponse>, ApiError> {
+    let _permit = state
+        .structure_checkpoint_advancement_permits
+        .clone()
+        .try_acquire_owned()
+        .map_err(|_| {
+            (
+                StatusCode::TOO_MANY_REQUESTS,
+                Json(json!({
+                    "error": "Generic Structure checkpoint advancement capacity is busy",
+                    "error_code": "structure_checkpoint_capacity_busy",
+                    "retryable": true,
+                    "retry_action": "retry_checkpoint_advancement",
+                    "source": "qmd_history_gateway",
+                })),
+            )
+        })?;
+    advance_structure_checkpoint(&state.config, &state.source, request)
+        .await
+        .map(Json)
+        .map_err(structure_checkpoint_advancement_error)
 }
 
 async fn validate_watchlist_timeline_plan(
@@ -1523,6 +1558,55 @@ fn service_error(message: String) -> ApiError {
     (
         StatusCode::BAD_GATEWAY,
         Json(json!({"error": message, "source": "historical_clickhouse"})),
+    )
+}
+
+fn structure_checkpoint_advancement_error(message: String) -> ApiError {
+    let normalized = message.to_ascii_lowercase();
+    let (status, error_code, retryable, retry_action) = if normalized.contains("archive")
+        || normalized.contains("gap")
+        || normalized.contains("source plan changed")
+    {
+        (
+            StatusCode::CONFLICT,
+            "structure_checkpoint_source_incompatible",
+            false,
+            "rebuild_checkpoint_from_canonical_history",
+        )
+    } else if normalized.contains("event limit") || normalized.contains("window exceeds") {
+        (
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "structure_checkpoint_resource_limit",
+            false,
+            "advance_checkpoint_more_frequently",
+        )
+    } else if normalized.contains("invalid")
+        || normalized.contains("must")
+        || normalized.contains("does not match")
+    {
+        (
+            StatusCode::BAD_REQUEST,
+            "invalid_structure_checkpoint_request",
+            false,
+            "correct_request",
+        )
+    } else {
+        (
+            StatusCode::BAD_GATEWAY,
+            "structure_checkpoint_source_unavailable",
+            true,
+            "retry_checkpoint_advancement",
+        )
+    };
+    (
+        status,
+        Json(json!({
+            "error": message,
+            "error_code": error_code,
+            "retryable": retryable,
+            "retry_action": retry_action,
+            "source": "qmd_history_gateway",
+        })),
     )
 }
 
