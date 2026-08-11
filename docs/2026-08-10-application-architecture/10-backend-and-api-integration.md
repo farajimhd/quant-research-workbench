@@ -125,11 +125,17 @@ persistence, cost/scope, mode support, and implementation status.
 `GET /api/registries/capabilities` exposes that QMD runtime authority with its
 content hash and family counts. It fails with a typed 503 when QMD cannot prove
 the runtime catalog; it never substitutes a Python-authored availability list.
-Configuration schema v18 carries the QMD capability key and warm-up bars from
+Configuration schema v19 carries the QMD capability key and warm-up bars from
 that catalog into the immutable release. The Run Plan pins those bars and the
 implementation revision per QMD observation dependency. Missing catalog
 evidence remains explicit as `catalog_unavailable`; it is never converted to a
 zero-bar warm-up assumption.
+
+Public configuration review is distinct from executable runtime resolution.
+Paper/Live responses expose stable account keys and server environment-key
+names only. The backend resolves the actual broker ID only while constructing
+an internal runtime configuration, and schema validation rejects storing that
+ID in a published configuration.
 
 The UI derives choices and statuses from this catalog. It must not maintain a competing handwritten list of “available” features.
 

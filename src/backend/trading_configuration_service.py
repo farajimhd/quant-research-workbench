@@ -43,7 +43,7 @@ from src.trading_runtime.strategy_campaign import validate_campaign_policy
 from src.trading_runtime.taxonomy import StrategyTaxonomy
 
 
-CONFIGURATION_SCHEMA_VERSION = 18
+CONFIGURATION_SCHEMA_VERSION = 19
 CONFIGURATION_SECTIONS = {
     "strategy",
     "market_discovery",
@@ -96,6 +96,27 @@ def _runtime_account_binding(binding: dict[str, Any]) -> dict[str, Any]:
     if str(resolved.get("source_account_env") or "").strip():
         resolved["source_account_id"] = _resolved_source_account_id(resolved)
     return resolved
+
+
+def public_configuration_revision(revision: dict[str, Any]) -> dict[str, Any]:
+    """Remove runtime-only broker identities from a configuration response."""
+
+    public = deepcopy(revision)
+
+    def scrub(model: dict[str, Any]) -> None:
+        for binding in dict(model.get("accounts") or {}).get("bindings") or []:
+            if str(binding.get("source_account_env") or "").strip() or set(
+                binding.get("modes") or []
+            ).intersection({"paper", "live"}):
+                binding["source_account_id"] = ""
+
+    payload = public.get("payload")
+    if isinstance(payload, dict):
+        scrub(payload)
+    configuration_model = public.get("configuration_model")
+    if isinstance(configuration_model, dict):
+        scrub(configuration_model)
+    return public
 
 
 def capability_catalog() -> list[dict[str, Any]]:
@@ -373,7 +394,11 @@ def effective_configuration_snapshot(
     )
     model = _migrate_draft(model)
     _validate_draft(model, require_runtime_ready=False)
-    runtimes = resolve_runtime_configurations(model, mode=mode)
+    runtimes = resolve_runtime_configurations(
+        model,
+        mode=mode,
+        resolve_broker_ids=False,
+    )
     policies = {
         str(row.get("policy_id") or ""): portfolio_policy_from_payload(dict(row))
         for row in dict(model["portfolio"]).get("policies") or []
@@ -410,6 +435,7 @@ def resolve_runtime_configurations(
     model: dict[str, Any],
     *,
     mode: str,
+    resolve_broker_ids: bool = True,
 ) -> list[dict[str, Any]]:
     migrated = _migrate_draft(model)
     eligible = [
@@ -428,12 +454,20 @@ def resolve_runtime_configurations(
             migrated,
             mode=mode,
             run_plan_id=str(row["run_plan_id"]),
+            resolve_broker_ids=resolve_broker_ids,
         )
         for row in eligible
     ]
 
 
-def resolve_runtime_configuration(model: dict[str, Any], *, mode: str, run_plan_id: str = "", deployment_id: str = "") -> dict[str, Any]:
+def resolve_runtime_configuration(
+    model: dict[str, Any],
+    *,
+    mode: str,
+    run_plan_id: str = "",
+    deployment_id: str = "",
+    resolve_broker_ids: bool = True,
+) -> dict[str, Any]:
     """Resolve one approved Strategy Run Plan into shared runtime contracts."""
 
     model = _migrate_draft(model)
@@ -471,7 +505,12 @@ def resolve_runtime_configuration(model: dict[str, Any], *, mode: str, run_plan_
     ]
     account_keys = {str(row["account_key"]) for row in mandates}
     bindings = [
-        _runtime_account_binding(dict(row)) for row in dict(model["accounts"]).get("bindings") or []
+        (
+            _runtime_account_binding(dict(row))
+            if resolve_broker_ids
+            else deepcopy(dict(row))
+        )
+        for row in dict(model["accounts"]).get("bindings") or []
         if str(row.get("account_key")) in account_keys
     ]
     mandate_by_account = {str(row["account_key"]): row for row in mandates}
@@ -2680,9 +2719,23 @@ def _validate_draft(draft: dict[str, Any], *, require_runtime_ready: bool = True
         modes = set(row.get("modes") or [])
         if not modes or not modes <= SUPPORTED_MODES:
             raise ValueError(f"Account {row.get('account_key')} has unsupported runtime modes")
-        if require_runtime_ready and modes.intersection({"paper", "live"}) and not _resolved_source_account_id(row):
-            reference = str(row.get("source_account_env") or "broker account id")
-            raise ValueError(f"Account {row.get('account_key')} requires an exact broker account id ({reference}) for Paper or Live")
+        if modes.intersection({"paper", "live"}):
+            if str(row.get("source_account_id") or "").strip():
+                raise ValueError(
+                    f"Account {row.get('account_key')} must resolve its broker account id "
+                    "server-side instead of storing source_account_id"
+                )
+            reference = str(row.get("source_account_env") or "").strip()
+            if not reference:
+                raise ValueError(
+                    f"Account {row.get('account_key')} requires a server-side broker "
+                    "account environment key for Paper or Live"
+                )
+            if require_runtime_ready and not _resolved_source_account_id(row):
+                raise ValueError(
+                    f"Account {row.get('account_key')} requires an exact broker account id "
+                    f"resolved from {reference} for Paper or Live"
+                )
         if not str(row.get("session_key") or "").strip():
             raise ValueError(f"Account {row.get('account_key')} requires a session key")
 
@@ -2967,6 +3020,7 @@ def _policy_catalog_payload(
 
 
 def _migrate_draft(raw: dict[str, Any]) -> dict[str, Any]:
+    source_schema_version = int(raw.get("schema_version") or 0)
     if (
         isinstance(raw.get("run_plans"), dict)
         or isinstance(raw.get("assignments"), dict)
@@ -3379,6 +3433,8 @@ def _migrate_draft(raw: dict[str, Any]) -> dict[str, Any]:
             oms_profile["settings"] = settings
         for binding in dict(result.get("accounts") or {}).get("bindings") or []:
             _normalize_account_binding(binding)
+            if source_schema_version < 19:
+                _migrate_server_side_broker_binding(binding)
         _ensure_environment_account_bindings(
             result["accounts"]["bindings"],
             str(result["portfolio"]["policies"][0]["policy_id"]),
@@ -3426,6 +3482,7 @@ def _migrate_draft(raw: dict[str, Any]) -> dict[str, Any]:
     base["accounts"] = deepcopy(old["accounts"])
     for binding in base["accounts"].get("bindings") or []:
         _normalize_account_binding(binding)
+        _migrate_server_side_broker_binding(binding)
     base["portfolio"]["policies"] = deepcopy(dict(old["portfolio"]).get("policies") or [])
     base["portfolio"]["groups"] = deepcopy(dict(old["portfolio"]).get("groups") or [])
     account_keys = [str(row["account_key"]) for row in dict(old["accounts"]).get("bindings") or []]
@@ -3465,6 +3522,18 @@ def _migrate_draft(raw: dict[str, Any]) -> dict[str, Any]:
     if "canvas" in old:
         base["canvas"] = deepcopy(old["canvas"])
     return base
+
+
+def _migrate_server_side_broker_binding(binding: dict[str, Any]) -> None:
+    modes = set(binding.get("modes") or [])
+    if not modes.intersection({"paper", "live"}):
+        return
+    if not str(binding.get("source_account_env") or "").strip():
+        if modes == {"paper"} or str(binding.get("account_class") or "") == "paper":
+            binding["source_account_env"] = "IBKR_PAPER_ACCOUNT_ID"
+        elif modes == {"live"}:
+            binding["source_account_env"] = "IBKR_CASH_ACCOUNT_ID"
+    binding["source_account_id"] = ""
 
 
 def _strategy_profile(

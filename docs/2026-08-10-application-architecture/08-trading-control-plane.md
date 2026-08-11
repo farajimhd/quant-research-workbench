@@ -167,7 +167,12 @@ Stale market data, QMD loss, intelligence loss, broker disconnect, reconciliatio
 - Configuration publishing emits immutable compiled Run Plans. Live still has
   shared-controller migration work, but no current backend route or retained
   legacy order helper can issue a broker command outside OMS.
-- Account bindings are partly environment-backed as desired, but broker/account readiness and generated deployment review are not yet one complete flow.
+- Paper/Live account bindings store only stable application keys, backend
+  environment-key names, and session keys. Configuration schema v19 migrates
+  older direct broker identifiers to the standard Paper/Cash environment keys;
+  public review APIs never resolve or return the underlying broker account ID.
+  Broker/account readiness and generated deployment review are not yet one
+  complete flow.
 
 ---
 

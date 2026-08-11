@@ -104,6 +104,9 @@ Logs are structured, bounded and redact credentials, account identifiers where r
 - ClickHouse and service credentials are least-privilege and scoped by function.
 - Live trading requires stronger role/mode/account authority than viewing, research, Replay, Backtest or Paper.
 - Browser clients communicate through the backend; internal services are not general public APIs.
+- Paper/Live broker account IDs never enter browser configuration payloads;
+  stable account keys map to named server-side environment bindings, and only
+  internal runtime resolution reads their values.
 
 Environment identity, code commit, configuration release and data/model versions are visible in diagnostics so laptop/workstation or stale-process drift is detectable.
 

@@ -364,6 +364,15 @@ bounded direct ClickHouse paths remain documented in
     This removes per-ticker duplicate Scanner computation and unbounded request
     concurrency. Five focused Replay capacity/fetch tests, Python compile, and
     diff validation passed.
+58. Moved Paper/Live broker identity fully behind the backend boundary.
+    Configuration schema v19 accepts only stable account keys and named server
+    environment bindings, rejects a stored broker account ID, and migrates older
+    releases to the standard Paper/Cash keys. Internal runtime compilation may
+    resolve the value; public effective and revision responses scrub it, and the
+    configuration UI no longer offers a direct-ID fallback. Thirty-six focused
+    configuration tests, Python compile, the managed frontend production build,
+    and four Account Configuration browser scenarios passed with zero objective
+    issues.
 
 The authoritative remaining work and acceptance gates are maintained in the
 [complete implementation backlog](14-implementation-backlog.md). A checked

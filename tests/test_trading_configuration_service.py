@@ -20,7 +20,9 @@ from src.backend.trading_configuration_service import (
     approved_configuration,
     capability_catalog,
     configuration_base,
+    effective_configuration_snapshot,
     publish_configuration,
+    public_configuration_revision,
     replay_configuration_snapshot,
     resolve_runtime_configuration,
     resolve_runtime_configurations,
@@ -221,6 +223,13 @@ class TradingConfigurationServiceTests(unittest.TestCase):
         ):
             legacy = _default_draft()
         legacy["schema_version"] = 6
+        paper_binding = next(
+            row
+            for row in legacy["accounts"]["bindings"]
+            if "paper" in row.get("modes", [])
+        )
+        paper_binding["source_account_env"] = ""
+        paper_binding["source_account_id"] = "DU-LEGACY"
         for capability in legacy["market_discovery"]["core_scan"]["calculations"]:
             if capability["name"] == "Last price":
                 capability["description"] = "Legacy repeated provider copy."
@@ -239,7 +248,14 @@ class TradingConfigurationServiceTests(unittest.TestCase):
 
         migrated = _migrate_draft(legacy)
 
-        self.assertEqual(migrated["schema_version"], 18)
+        self.assertEqual(migrated["schema_version"], 19)
+        migrated_paper = next(
+            row
+            for row in migrated["accounts"]["bindings"]
+            if "paper" in row.get("modes", [])
+        )
+        self.assertEqual(migrated_paper["source_account_env"], "IBKR_PAPER_ACCOUNT_ID")
+        self.assertEqual(migrated_paper["source_account_id"], "")
         self.assertTrue(migrated["market_discovery"]["core_scan"]["calculations"])
         self.assertTrue(migrated["market_discovery"]["watchlists"])
         capabilities = {
@@ -441,7 +457,7 @@ class TradingConfigurationServiceTests(unittest.TestCase):
         ):
             draft = _default_draft()
 
-        self.assertEqual(draft["schema_version"], 18)
+        self.assertEqual(draft["schema_version"], 19)
         self.assertEqual(len(draft["strategy"]["profiles"]), 1)
         self.assertEqual(len(draft["strategy"]["profile_templates"]), 1)
         self.assertEqual(
@@ -752,6 +768,7 @@ class TradingConfigurationServiceTests(unittest.TestCase):
         binding["modes"] = ["paper"]
         binding["account_class"] = "margin"
         binding["source_account_id"] = ""
+        binding["source_account_env"] = "TEST_PAPER_ACCOUNT_ID"
         deployment = draft["run_plans"]["plans"][0]
         deployment["allowed_environments"] = ["paper"]
 
@@ -761,12 +778,100 @@ class TradingConfigurationServiceTests(unittest.TestCase):
         ), self.assertRaisesRegex(ValueError, "exact broker account id"):
             _validate_draft(draft)
 
-        binding["source_account_id"] = "DU1234567"
-        with patch(
+        with patch.dict(os.environ, {"TEST_PAPER_ACCOUNT_ID": "DU1234567"}), patch(
             "src.backend.trading_configuration_service.get_strategy_definition",
             return_value=long_momentum_strategy_definition(),
         ):
             _validate_draft(draft)
+
+        binding["source_account_id"] = "DU-SHOULD-NOT-BE-STORED"
+        with self.assertRaisesRegex(ValueError, "server-side"):
+            _validate_draft(draft, require_runtime_ready=False)
+
+    def test_public_effective_configuration_never_resolves_broker_id(self) -> None:
+        draft = self._draft()
+        binding = draft["accounts"]["bindings"][0]
+        binding.update(
+            {
+                "modes": ["paper"],
+                "source_account_env": "TEST_PAPER_ACCOUNT_ID",
+                "source_account_id": "",
+            }
+        )
+        draft["run_plans"]["plans"][0]["allowed_environments"] = ["paper"]
+        with patch.dict(os.environ, {"TEST_PAPER_ACCOUNT_ID": "DU-SECRET"}), patch(
+            "src.backend.trading_configuration_service.get_strategy_definition",
+            return_value=long_momentum_strategy_definition(),
+        ):
+            payload = effective_configuration_snapshot(
+                mode="paper",
+                configuration=draft,
+            )
+            internal = resolve_runtime_configuration(draft, mode="paper")
+
+        runtime_binding = payload["runtimes"][0]["accounts"]["bindings"][0]
+        self.assertEqual(runtime_binding["source_account_env"], "TEST_PAPER_ACCOUNT_ID")
+        self.assertEqual(runtime_binding["source_account_id"], "")
+        self.assertEqual(
+            internal["accounts"]["bindings"][0]["source_account_id"],
+            "DU-SECRET",
+        )
+
+    def test_public_revision_scrubs_legacy_broker_id(self) -> None:
+        revision = {
+            "payload": {
+                "accounts": {
+                    "bindings": [
+                        {
+                            "modes": ["live"],
+                            "source_account_env": "IBKR_CASH_ACCOUNT_ID",
+                            "source_account_id": "U-SECRET",
+                        }
+                    ]
+                }
+            }
+        }
+
+        public = public_configuration_revision(revision)
+
+        self.assertEqual(
+            public["payload"]["accounts"]["bindings"][0]["source_account_id"],
+            "",
+        )
+        self.assertEqual(
+            revision["payload"]["accounts"]["bindings"][0]["source_account_id"],
+            "U-SECRET",
+        )
+
+    def test_approved_configuration_route_scrubs_legacy_broker_id(self) -> None:
+        from src.backend import app as backend_app
+
+        revision = {
+            "payload": {
+                "accounts": {
+                    "bindings": [
+                        {
+                            "modes": ["paper"],
+                            "source_account_env": "IBKR_PAPER_ACCOUNT_ID",
+                            "source_account_id": "DU-SECRET",
+                        }
+                    ]
+                }
+            }
+        }
+        with patch.object(
+            backend_app,
+            "approved_configuration",
+            return_value=revision,
+        ):
+            payload = backend_app.trading_configuration_approved()
+
+        self.assertEqual(
+            payload["approved"]["payload"]["accounts"]["bindings"][0][
+                "source_account_id"
+            ],
+            "",
+        )
 
     def test_runtime_resolves_every_eligible_run_plan_by_stable_identity(self) -> None:
         draft = self._draft()

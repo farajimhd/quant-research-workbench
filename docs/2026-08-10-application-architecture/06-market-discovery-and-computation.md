@@ -210,7 +210,7 @@ offline calculation is available in its proper scope.
   query plan, availability clock, and implementation status from the
   application field registry. Display guidance remains product copy, not an
   independent availability authority.
-- Market Discovery configuration schema v18 resolves every registered
+- Market Discovery configuration schema v19 resolves every registered
   application field and QMD capability into one backend-owned field catalog.
   Its visible Watchlist columns are projections of registered presentation
   metadata, and the custom Watchlist filter editor offers only fields and

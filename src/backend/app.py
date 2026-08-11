@@ -164,6 +164,7 @@ from src.backend.trading_configuration_service import (
     configuration_revisions,
     effective_configuration_snapshot,
     publish_configuration,
+    public_configuration_revision,
     replay_configuration_snapshot,
 )
 from src.trading_runtime.strategy_engine import STRATEGY_ID, STRATEGY_REVISION
@@ -4939,14 +4940,17 @@ def trading_configuration_base() -> dict[str, Any]:
 
 @app.get("/api/trading/configuration/revisions")
 def trading_configuration_revision_list() -> dict[str, Any]:
-    rows = configuration_revisions()
+    rows = [public_configuration_revision(row) for row in configuration_revisions()]
     return {"schema_version": 1, "rows": rows, "row_count": len(rows)}
 
 
 @app.get("/api/trading/configuration/approved")
 def trading_configuration_approved() -> dict[str, Any]:
     result = approved_configuration()
-    return {"schema_version": 1, "approved": result}
+    return {
+        "schema_version": 1,
+        "approved": public_configuration_revision(result) if result else None,
+    }
 
 
 @app.get("/api/trading/configuration/canvas-profile")

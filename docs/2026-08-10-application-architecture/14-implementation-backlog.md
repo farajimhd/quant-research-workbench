@@ -196,7 +196,7 @@ budgets and invalid scope broadening fails configuration validation.
 - [ ] Maintain a compact feature projection with source, version,
       `available_at`, freshness, and null reasons.
 - [x] Compile configuration dependencies, warm-up, modes, permissions, and
-      accounts. Configuration schema v18 carries QMD catalog capability keys,
+      accounts. Configuration schema v19 carries QMD catalog capability keys,
       warm-up bars, and implementation revisions into compiled observation
       dependencies. Missing matching catalog evidence is preserved as
       `catalog_unavailable`; environment/account bindings and action authority
@@ -231,7 +231,10 @@ budgets and invalid scope broadening fails configuration validation.
         configuration; Watchlist reference projections are bounded and keyed by
         explicit causal `as_of` revision.
 - [ ] Enforce user, workspace, environment, mode, account, and command authority.
-- [ ] Resolve secrets and broker identifiers server-side.
+- [x] Resolve secrets and broker identifiers server-side. Schema v19 requires
+      Paper/Live bindings to name a backend environment key, rejects stored
+      broker IDs, migrates older releases, and keeps resolved values out of
+      effective/revision browser responses.
 - [x] Aggregate service readiness separately from data readiness.
 
 Acceptance gate: browser code knows no database table, service credential,
@@ -263,7 +266,7 @@ internal topology, or producer formula.
       a chosen New York clock and shows the append-only Watchlist event journal.
 - [x] Generate fields, columns, and filters from registry metadata. Application
       registry schema v4 supplies Market Discovery presentation policy;
-      configuration schema v18 resolves the complete application/QMD field
+      configuration schema v19 resolves the complete application/QMD field
       catalog, projects Watchlist columns, and validates filter sources and
       operators. The Watchlist editor creates filters only from eligible
       registry rows and supported comparators.
