@@ -69,8 +69,14 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--root", type=Path, default=DEFAULT_PILOT_ROOT)
     parser.add_argument("--tickers", default="", help="Optional comma-separated ticker filter.")
-    parser.add_argument("--start-date", default="", help="Optional inclusive YYYY-MM-DD month boundary.")
-    parser.add_argument("--end-date", default="", help="Optional exclusive YYYY-MM-DD month boundary.")
+    parser.add_argument(
+        "--start-date", default="",
+        help="Optional inclusive YYYY-MM-DD date; every overlapping shard-month is eligible.",
+    )
+    parser.add_argument(
+        "--end-date", default="",
+        help="Optional exclusive YYYY-MM-DD date; every overlapping shard-month is eligible.",
+    )
     parser.add_argument("--max-shards", type=int, default=2)
     parser.add_argument("--seed", type=int, default=17)
     parser.add_argument(
@@ -98,8 +104,8 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     if args.start_date:
         start = dt.date.fromisoformat(str(args.start_date))
         end = dt.date.fromisoformat(str(args.end_date))
-        if start.day != 1 or end.day != 1 or start >= end:
-            parser.error("date filters must be non-empty month boundaries")
+        if start >= end:
+            parser.error("date filters must define a non-empty interval")
     return args
 
 
@@ -115,6 +121,10 @@ def discover_sidecars(
     allowed = {ticker.upper() for ticker in tickers}
     start = dt.date.fromisoformat(start_date) if start_date else None
     end = dt.date.fromisoformat(end_date) if end_date else None
+    if (start is None) != (end is None):
+        raise ValueError("start_date and end_date must be provided together")
+    if start is not None and start >= end:
+        raise ValueError("date filters must define a non-empty interval")
     candidates: list[tuple[bytes, Path]] = []
     for path in sorted(root.glob("tickers/*/*/*.json")):
         value = json.loads(path.read_text(encoding="utf-8"))
@@ -128,8 +138,18 @@ def discover_sidecars(
             raise RuntimeError(f"invalid unit_key in {path}: {unit_key!r}") from exc
         if allowed and ticker.upper() not in allowed:
             continue
-        if start is not None and not (start <= month_date < end):
-            continue
+        if start is not None:
+            month_end = (
+                dt.date(month_date.year + 1, 1, 1)
+                if month_date.month == 12
+                else dt.date(month_date.year, month_date.month + 1, 1)
+            )
+            # Shards are month-keyed even when their stored sessions cover a
+            # partial build interval. Select by interval overlap rather than
+            # requiring the shard's first day to fall inside the requested
+            # dates. The end date remains exclusive.
+            if not (month_date < end and month_end > start):
+                continue
         rank = hashlib.sha256(f"{int(seed)}|{unit_key}".encode("utf-8")).digest()
         candidates.append((rank, path))
     if not candidates:

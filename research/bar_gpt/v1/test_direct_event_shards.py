@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import unittest
 import datetime as dt
+import json
+import tempfile
 import threading
 from collections import deque
 from pathlib import Path
@@ -9,6 +11,10 @@ from pathlib import Path
 from rich.console import Console
 
 from research.bar_gpt.v1.cohort import BAR_GPT_TRAINING_TICKERS
+from research.bar_gpt.v1.audit_offline_shards import (
+    discover_sidecars,
+    parse_args as parse_audit_args,
+)
 from research.bar_gpt.v1.config import DataConfig
 from research.bar_gpt.v1.direct_event_shards import (
     _is_event_authority_boundary,
@@ -90,7 +96,7 @@ class DirectEventShardContractTest(unittest.TestCase):
         rendered = console.export_text()
         self.assertIn("3/25 pages", rendered)
         self.assertIn("calendar warmup", rendered)
-        self.assertIn("total available after source aggregation", rendered)
+        self.assertIn("block total discovered during source aggregation", rendered)
         self.assertNotIn("0/1", rendered)
 
     def test_prefetch_reports_completed_pages_immediately_but_yields_in_order(self) -> None:
@@ -164,7 +170,10 @@ class DirectEventShardContractTest(unittest.TestCase):
         )
         self.assertIn("GROUP BY local_date_value, second_start_us", daily_sql)
         self.assertIn("GROUP BY s.local_date\n", daily_sql)
-        self.assertIn("toUInt64(count()) AS eligible_trade_second_count", daily_sql)
+        # Condition-only sparse seconds are retained for condition context but
+        # are not eligible trade seconds, so the daily count must sum the
+        # explicit origin flag rather than count every sparse row.
+        self.assertIn("toUInt64(sum(s.origin_eligible)) AS eligible_trade_second_count", daily_sql)
 
     def test_pilot_builds_then_runs_complete_direct_source_audit(self) -> None:
         stages = dict(pilot_commands(parse_pilot_args(["--execute", "--workers", "32"])))
@@ -190,6 +199,38 @@ class DirectEventShardContractTest(unittest.TestCase):
         ])))["automatic complete pilot audit"]
         self.assertNotIn("--require-calendar-context", boundary)
         self.assertIn("--require-calendar-context", audit)
+
+    def test_audit_partial_date_interval_selects_overlapping_shard_months(self) -> None:
+        args = parse_audit_args([
+            "--start-date", "2021-01-25", "--end-date", "2021-02-01",
+        ])
+        self.assertEqual(args.start_date, "2021-01-25")
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for month in ("2020-12", "2021-01", "2021-02", "2021-03"):
+                path = root / "tickers" / "AMC" / month[:4] / f"{month}.json"
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(json.dumps({
+                    "status": "complete", "unit_key": f"AMC:{month}",
+                }), encoding="utf-8")
+
+            january = discover_sidecars(
+                root, tickers=("AMC",), start_date="2021-01-25",
+                end_date="2021-02-01", limit=10,
+            )
+            self.assertEqual({path.stem for path in january}, {"2021-01"})
+
+            crossing = discover_sidecars(
+                root, tickers=("AMC",), start_date="2021-01-31",
+                end_date="2021-02-02", limit=10,
+            )
+            self.assertEqual({path.stem for path in crossing}, {"2021-01", "2021-02"})
+
+            crossing_year = discover_sidecars(
+                root, tickers=("AMC",), start_date="2020-12-31",
+                end_date="2021-01-02", limit=10,
+            )
+            self.assertEqual({path.stem for path in crossing_year}, {"2020-12", "2021-01"})
 
     def test_calendar_lookback_is_derived_from_configured_daily_warmup(self) -> None:
         self.assertEqual(calendar_lookback_days(DataConfig(calendar_warmup_daily_bars=500)), 750)
