@@ -36,7 +36,7 @@ from research.bar_gpt.v1.offline_shards import (
     make_offline_dataloader,
     verify_shard_catalog_lock,
 )
-from research.bar_gpt.v1.model import BarGPTV1, CausalSelfAttention
+from research.bar_gpt.v1.model import BarGPTV1
 from research.bar_gpt.v1.metrics import ValidationAccumulator
 from research.bar_gpt.v1.objectives import compute_loss
 from research.bar_gpt.v1.prefetch import DeviceBatchPrefetcher
@@ -191,7 +191,7 @@ def _profile_sdpa_backends(
     *,
     device: torch.device,
 ) -> tuple[str, tuple[tuple[str, int], ...], int, float, str]:
-    """Audit bounded representative native-causal and banded-local kernels."""
+    """Audit bounded representative causal/local SDPA calls after timing."""
     if device.type != "cuda":
         return "not_run", (), 0, 0.0, "CUDA is required for an SDPA kernel audit"
     view_lengths = {name: int(value.shape[1]) for name, value in batch.views.items()}
@@ -215,23 +215,7 @@ def _profile_sdpa_backends(
     try:
         head_dim = model_config.d_model // model_config.n_heads
         for mode, length in probes:
-            if mode == "local_mask":
-                attention = CausalSelfAttention(model_config).to(device=device, dtype=torch.bfloat16)
-                local_input = torch.randn(
-                    (1, length, model_config.d_model),
-                    device=device,
-                    dtype=torch.bfloat16,
-                    requires_grad=True,
-                )
-                audited_output = attention(
-                    local_input,
-                    attention_window=min(128, length),
-                )
-                torch.cuda.synchronize(device)
-                counts["local_mask/banded_gqa"] = 1
-                del audited_output, local_input, attention
-                continue
-            kv_heads = model_config.n_kv_heads
+            kv_heads = model_config.n_heads if mode == "local_mask" else model_config.n_kv_heads
             query = torch.randn(
                 (1, model_config.n_heads, length, head_dim),
                 device=device,
@@ -245,6 +229,12 @@ def _profile_sdpa_backends(
                 requires_grad=True,
             )
             value = torch.randn_like(key, requires_grad=True)
+            mask = None
+            if mode == "local_mask":
+                positions = torch.arange(length, device=device)
+                mask = (positions[None, :] <= positions[:, None]) & (
+                    positions[None, :] > positions[:, None] - min(128, length)
+                )
             with torch.profiler.profile(
                 activities=[torch.profiler.ProfilerActivity.CPU, torch.profiler.ProfilerActivity.CUDA],
             ) as trace:
@@ -252,12 +242,13 @@ def _profile_sdpa_backends(
                     query,
                     key,
                     value,
+                    attn_mask=mask,
                     dropout_p=float(model_config.dropout),
-                    is_causal=True,
-                    enable_gqa=model_config.n_kv_heads != model_config.n_heads,
+                    is_causal=mode == "causal",
+                    enable_gqa=mode == "causal" and model_config.n_kv_heads != model_config.n_heads,
                 )
             torch.cuda.synchronize(device)
-            del audited_output, query, key, value
+            del audited_output, query, key, value, mask
             for event in trace.key_averages():
                 backend = _sdpa_backend(str(event.key))
                 if backend is not None:
@@ -794,7 +785,6 @@ def _profile_candidate(
                         valid_origin_indices=batch.valid_origin_indices,
                         asof_indices=batch.asof_indices,
                         valid_asof_origin_indices=batch.valid_asof_origin_indices,
-                        valid_view_indices=batch.valid_view_indices,
                         valid_view_token_indices=batch.valid_view_token_indices,
                         attention_windows=data.attention_window_by_name,
                         view_masks={name: batch.view_mask[name] for name in batch.masked_context_views},

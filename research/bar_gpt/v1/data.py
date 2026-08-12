@@ -177,7 +177,6 @@ class BarGPTBatch:
     # Packed-origin positions with valid as-of context are computed during CPU
     # collation, avoiding dynamic-shape CUDA nonzero operations in fusion.
     valid_asof_origin_indices: dict[str, torch.Tensor] = field(default_factory=dict)
-    valid_view_indices: dict[str, torch.Tensor] = field(default_factory=dict)
     valid_view_token_indices: dict[str, torch.Tensor] = field(default_factory=dict)
     # CPU-side counts exclude unavailable-history prefixes and rectangular
     # batch tails, so profiling does not need timed CUDA reductions.
@@ -199,7 +198,6 @@ class BarGPTBatch:
             self.autoregressive_targets,
             self.autoregressive_mask,
             self.valid_asof_origin_indices,
-            self.valid_view_indices,
             self.valid_view_token_indices,
         ):
             for value in values.values():
@@ -265,9 +263,6 @@ class BarGPTBatch:
             valid_origin_indices=self.valid_origin_indices.pin_memory(),
             valid_asof_origin_indices={
                 name: value.pin_memory() for name, value in self.valid_asof_origin_indices.items()
-            },
-            valid_view_indices={
-                name: value.pin_memory() for name, value in self.valid_view_indices.items()
             },
             valid_view_token_indices={
                 name: value.pin_memory() for name, value in self.valid_view_token_indices.items()
@@ -345,10 +340,6 @@ class BarGPTBatch:
             valid_asof_origin_indices={
                 name: value.to(device, non_blocking=non_blocking)
                 for name, value in self.valid_asof_origin_indices.items()
-            },
-            valid_view_indices={
-                name: value.to(device, non_blocking=non_blocking)
-                for name, value in self.valid_view_indices.items()
             },
             valid_view_token_indices={
                 name: value.to(device, non_blocking=non_blocking)
@@ -502,10 +493,6 @@ def collate_examples(examples: Sequence[BarGPTExample], *, balance_activity_regi
                 example.asof_indices[name] >= 0 for example in examples
             ])
             for name in view_names if name != "1s"
-        },
-        valid_view_indices={
-            name: torch.nonzero(view_mask[name].reshape(-1), as_tuple=False).squeeze(-1)
-            for name in view_names
         },
         valid_view_token_indices={
             name: torch.nonzero(view_mask[name][:, :-1].reshape(-1), as_tuple=False).squeeze(-1)

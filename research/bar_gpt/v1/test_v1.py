@@ -179,26 +179,25 @@ class BuilderSqlTest(unittest.TestCase):
         self.assertEqual(val.shape[1], 4)
         self.assertFalse(sdpa.call_args.kwargs["enable_gqa"])
 
-    def test_local_attention_keeps_compact_gqa_and_bounded_score_bands(self) -> None:
+    def test_local_attention_expands_kv_for_fused_sdpa_dispatch(self) -> None:
         config = BarGPTConfig(d_model=32, n_heads=4, n_kv_heads=2, dropout=0.0)
         attention = CausalSelfAttention(config).eval()
         value = torch.randn(2, 7, 32)
-        with patch.object(
-            attention,
-            "_window_attention",
-            wraps=attention._window_attention,
-        ) as window_attention:
+        with patch(
+            "research.bar_gpt.v1.model.F.scaled_dot_product_attention",
+            wraps=torch.nn.functional.scaled_dot_product_attention,
+        ) as sdpa:
             output = attention(value, attention_window=3)
         self.assertEqual(output.shape, value.shape)
-        query, key, val = window_attention.call_args.args[:3]
+        query, key, val = sdpa.call_args.args[:3]
         self.assertEqual(query.shape[1], 4)
-        self.assertEqual(key.shape[1], 2)
-        self.assertEqual(val.shape[1], 2)
-        plan = attention.build_window_plan(1024, 64, value.device)
-        self.assertLess(sum(allowed.numel() for *_bounds, allowed in plan), 1024 ** 2)
-        self.assertLessEqual(max(allowed.shape[1] for *_bounds, allowed in plan), 319)
+        self.assertEqual(key.shape[1], 4)
+        self.assertEqual(val.shape[1], 4)
+        self.assertFalse(sdpa.call_args.kwargs["is_causal"])
+        allowed = sdpa.call_args.kwargs["attn_mask"]
+        self.assertFalse(bool(torch.triu(allowed, diagonal=1).any()))
 
-    def test_banded_gqa_matches_dense_causal_window_outputs_and_gradients(self) -> None:
+    def test_fused_local_attention_matches_dense_reference_outputs_and_gradients(self) -> None:
         torch.manual_seed(19)
         config = BarGPTConfig(d_model=32, n_heads=4, n_kv_heads=2, dropout=0.0)
         attention = CausalSelfAttention(config).eval()
@@ -265,7 +264,7 @@ class BuilderSqlTest(unittest.TestCase):
                 actual = attention(changed, **kwargs)
             torch.testing.assert_close(actual[:, :5], expected[:, :5], atol=1e-6, rtol=1e-6)
 
-    def test_banded_attention_is_causal_across_query_chunk_boundary(self) -> None:
+    def test_long_local_attention_remains_causal(self) -> None:
         torch.manual_seed(23)
         config = BarGPTConfig(d_model=32, n_heads=4, n_kv_heads=2, dropout=0.0)
         attention = CausalSelfAttention(config).eval()
@@ -808,7 +807,7 @@ class ModelContractTest(unittest.TestCase):
         output.float().square().sum().backward()
         self.assertTrue(bool(torch.isfinite(state.grad).all()))
 
-    def test_packed_masked_encoder_matches_independent_sequences_and_gradients(self) -> None:
+    def test_masked_encoder_matches_independent_sequences_and_gradients(self) -> None:
         torch.manual_seed(37)
         config = BarGPTConfig(
             feature_dim=len(MODEL_FEATURE_NAMES), d_model=32, n_layers=2,
@@ -823,10 +822,9 @@ class ModelContractTest(unittest.TestCase):
             [False, False, True, True, True, True, True, True, True, True, False],
             [True, True, True, True, True, False, False, False, False, False, False],
         ])
-        indices = torch.nonzero(mask.reshape(-1), as_tuple=False).squeeze(-1)
         actual = model.encode(
             actual_input, 1_000_000, 0, attention_window=7,
-            token_mask=mask, valid_token_indices=indices,
+            token_mask=mask,
         )
         first = model.encode(
             reference_input[0:1, 2:10], 1_000_000, 0, attention_window=7

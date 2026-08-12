@@ -112,7 +112,6 @@ def collect_embeddings(
                 valid_origin_indices=batch.valid_origin_indices,
                 asof_indices=batch.asof_indices,
                 valid_asof_origin_indices=batch.valid_asof_origin_indices,
-                valid_view_indices=batch.valid_view_indices,
                 attention_windows=data_config.attention_window_by_name,
                 view_masks={name: batch.view_mask[name] for name in batch.masked_context_views},
             )

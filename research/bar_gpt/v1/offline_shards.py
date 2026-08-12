@@ -1612,10 +1612,6 @@ def collate_compiled_blocks(
             ])
             for name in view_names if name != "1s"
         },
-        valid_view_indices={
-            name: torch.nonzero(view_mask[name].reshape(-1), as_tuple=False).squeeze(-1)
-            for name in view_names
-        },
         valid_view_token_indices={
             name: torch.nonzero(view_mask[name][:, :-1].reshape(-1), as_tuple=False).squeeze(-1)
             for name in view_names

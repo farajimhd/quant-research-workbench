@@ -953,7 +953,6 @@ def _forward(model: torch.nn.Module, batch: BarGPTBatch, config: ExperimentConfi
         valid_origin_indices=batch.valid_origin_indices,
         asof_indices=batch.asof_indices,
         valid_asof_origin_indices=batch.valid_asof_origin_indices,
-        valid_view_indices=batch.valid_view_indices,
         valid_view_token_indices=batch.valid_view_token_indices,
         view_masks={name: batch.view_mask[name] for name in batch.masked_context_views},
         attention_windows=config.data.attention_window_by_name,

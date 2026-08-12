@@ -91,7 +91,6 @@ class BarGPTEncoder(nn.Module):
             valid_origin_indices=getattr(batch, "valid_origin_indices", None),
             asof_indices=batch.asof_indices,
             valid_asof_origin_indices=getattr(batch, "valid_asof_origin_indices", None),
-            valid_view_indices=getattr(batch, "valid_view_indices", None),
             attention_windows=self.attention_windows,
             view_masks={name: batch.view_mask[name] for name in batch.masked_context_views},
         )

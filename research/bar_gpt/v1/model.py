@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-import math
 from typing import Mapping
 
 import torch
@@ -65,27 +64,14 @@ class RotaryEmbedding(nn.Module):
         inverse = 1.0 / (float(base) ** (torch.arange(0, head_dim, 2, dtype=torch.float32) / head_dim))
         self.register_buffer("inverse_frequency", inverse, persistent=False)
 
-    def forward(
-        self,
-        length: int,
-        device: torch.device,
-        dtype: torch.dtype,
-        positions: torch.Tensor | None = None,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        if positions is None:
-            positions = torch.arange(length, device=device, dtype=torch.float32)
-        else:
-            if positions.shape != (length,):
-                raise ValueError("rotary positions must have shape [T]")
-            positions = positions.to(device=device, dtype=torch.float32)
+    def forward(self, length: int, device: torch.device, dtype: torch.dtype) -> tuple[torch.Tensor, torch.Tensor]:
+        positions = torch.arange(length, device=device, dtype=torch.float32)
         angles = torch.outer(positions, self.inverse_frequency.to(device=device))
         doubled = torch.cat((angles, angles), dim=-1)[None, None, :, :]
         return doubled.cos().to(dtype=dtype), doubled.sin().to(dtype=dtype)
 
 
 class CausalSelfAttention(nn.Module):
-    WINDOW_QUERY_CHUNK = 256
-
     def __init__(self, config: BarGPTConfig) -> None:
         super().__init__()
         self.n_heads = int(config.n_heads)
@@ -104,7 +90,6 @@ class CausalSelfAttention(nn.Module):
         self, value: torch.Tensor, *, attention_window: int | None = None,
         token_mask: torch.Tensor | None = None,
         rotary: tuple[torch.Tensor, torch.Tensor] | None = None,
-        window_plan: tuple[tuple[int, int, int, int, torch.Tensor], ...] | None = None,
     ) -> torch.Tensor:
         batch, length, _ = value.shape
         if token_mask is not None and token_mask.shape != (batch, length):
@@ -121,11 +106,7 @@ class CausalSelfAttention(nn.Module):
         # Fast path: a dense, unpadded sequence with no local-window limit can
         # delegate the lower-triangular mask directly to SDPA.  In this branch
         # ``is_causal=True`` is the sole mechanism that blocks future keys.
-        if (
-            token_mask is None
-            and window_plan is None
-            and (attention_window is None or int(attention_window) >= length)
-        ):
+        if token_mask is None and (attention_window is None or int(attention_window) >= length):
             enable_gqa = grouped_query and value.device.type == "cuda"
             if grouped_query and not enable_gqa:
                 repeats = self.n_heads // self.n_kv_heads
@@ -140,102 +121,42 @@ class CausalSelfAttention(nn.Module):
                 enable_gqa=enable_gqa,
             )
         else:
-            # Banded path: padding and/or a finite local window are combined
-            # with causality inside bounded query/key bands. Every band is
-            # lower triangular; its window only removes old keys and can never
-            # admit a key to the right of its query.
+            # Masked path: padding and/or a finite local window must be
+            # combined with causality in one explicit lower-triangular mask.
             window = length if attention_window is None else int(attention_window)
             if window <= 0:
                 raise ValueError("attention_window must be positive")
-            plan = window_plan or self.build_window_plan(length, window, value.device)
-            attended = self._window_attention(query, key, val, token_mask, plan)
+            positions = torch.arange(length, device=value.device)
+            query_positions = positions[:, None]
+            key_positions = positions[None, :]
+            allowed = (key_positions <= query_positions) & (key_positions > query_positions - window)
+            if token_mask is not None:
+                allowed = allowed.view(1, 1, length, length) & token_mask[:, None, None, :]
+                # Fully masked prefix queries are discarded below, but giving
+                # them a self edge avoids undefined all-masked SDPA rows.
+                invalid_query = ~token_mask
+                diagonal = torch.eye(length, dtype=torch.bool, device=value.device).view(1, 1, length, length)
+                allowed |= invalid_query[:, None, :, None] & diagonal
+            # Dense masks make native CUDA GQA fall back to the quadratic math
+            # kernel. Expanding compact K/V only on this masked branch lets
+            # SDPA select its fused memory-efficient CUDA implementation.
+            if grouped_query:
+                repeats = self.n_heads // self.n_kv_heads
+                key = key.repeat_interleave(repeats, dim=1)
+                val = val.repeat_interleave(repeats, dim=1)
+            attended = F.scaled_dot_product_attention(
+                query,
+                key,
+                val,
+                attn_mask=allowed,
+                dropout_p=self.dropout if self.training else 0.0,
+                # The explicit mask already contains causality, window, and
+                # padding constraints; adding implicit causality is redundant.
+                is_causal=False,
+            )
         attended = attended.transpose(1, 2).contiguous().view(batch, length, -1)
         output = self.out_proj(attended)
         return output if token_mask is None else output * token_mask.unsqueeze(-1)
-
-    @classmethod
-    def build_window_plan(
-        cls,
-        length: int,
-        window: int,
-        device: torch.device,
-        *,
-        sequence_ids: torch.Tensor | None = None,
-        positions: torch.Tensor | None = None,
-    ) -> tuple[tuple[int, int, int, int, torch.Tensor], ...]:
-        """Build exact causal bands whose score storage is O(T * (W + C))."""
-        if (sequence_ids is None) != (positions is None):
-            raise ValueError("packed attention requires both sequence ids and positions")
-        if sequence_ids is not None:
-            assert positions is not None
-            if sequence_ids.shape != (length,) or positions.shape != (length,):
-                raise ValueError("packed attention metadata must have shape [T]")
-        position_values = (
-            torch.arange(length, device=device) if positions is None else positions
-        )
-        chunks: list[tuple[int, int, int, int, torch.Tensor]] = []
-        for query_left in range(0, length, cls.WINDOW_QUERY_CHUNK):
-            query_right = min(length, query_left + cls.WINDOW_QUERY_CHUNK)
-            key_left = max(0, query_left - window + 1)
-            key_right = query_right
-            query_positions = position_values[query_left:query_right, None]
-            key_positions = position_values[None, key_left:key_right]
-            allowed = (
-                (key_positions <= query_positions)
-                & (key_positions > query_positions - window)
-            )
-            if sequence_ids is not None:
-                allowed &= (
-                    sequence_ids[query_left:query_right, None]
-                    == sequence_ids[None, key_left:key_right]
-                )
-            chunks.append((query_left, query_right, key_left, key_right, allowed))
-        return tuple(chunks)
-
-    def _window_attention(
-        self,
-        query: torch.Tensor,
-        key: torch.Tensor,
-        value: torch.Tensor,
-        token_mask: torch.Tensor | None,
-        plan: tuple[tuple[int, int, int, int, torch.Tensor], ...],
-    ) -> torch.Tensor:
-        """Exact grouped-query local attention without dense T-by-T scores."""
-        batch, _heads, _length, head_dim = query.shape
-        repeats = self.n_heads // self.n_kv_heads
-        grouped_query = query.reshape(
-            batch, self.n_kv_heads, repeats, query.shape[2], head_dim
-        )
-        chunks: list[torch.Tensor] = []
-        scale = 1.0 / math.sqrt(head_dim)
-        for query_left, query_right, key_left, key_right, base_allowed in plan:
-            query_chunk = grouped_query[:, :, :, query_left:query_right]
-            key_chunk = key[:, :, key_left:key_right]
-            value_chunk = value[:, :, key_left:key_right]
-            scores = torch.matmul(
-                query_chunk,
-                key_chunk.transpose(-2, -1).unsqueeze(2),
-            ) * scale
-            if token_mask is None:
-                allowed = base_allowed
-            else:
-                allowed = base_allowed.unsqueeze(0) & token_mask[:, None, key_left:key_right]
-                invalid_query = ~token_mask[:, query_left:query_right]
-                query_positions = torch.arange(query_left, query_right, device=query.device)[:, None]
-                key_positions = torch.arange(key_left, key_right, device=query.device)[None, :]
-                allowed |= invalid_query[:, :, None] & (query_positions == key_positions).unsqueeze(0)
-                allowed = allowed[:, None, None]
-            scores = scores.masked_fill(~allowed, torch.finfo(scores.dtype).min)
-            probabilities = torch.softmax(scores.float(), dim=-1).to(dtype=query.dtype)
-            probabilities = F.dropout(
-                probabilities,
-                p=self.dropout,
-                training=self.training,
-            )
-            chunks.append(torch.matmul(probabilities, value_chunk.unsqueeze(2)))
-        attended = torch.cat(chunks, dim=3)
-        return attended.reshape(batch, self.n_heads, query.shape[2], head_dim)
-
 
 class SwiGLU(nn.Module):
     def __init__(self, config: BarGPTConfig) -> None:
@@ -262,11 +183,10 @@ class DecoderBlock(nn.Module):
         self, value: torch.Tensor, *, attention_window: int | None = None,
         token_mask: torch.Tensor | None = None,
         rotary: tuple[torch.Tensor, torch.Tensor] | None = None,
-        window_plan: tuple[tuple[int, int, int, int, torch.Tensor], ...] | None = None,
     ) -> torch.Tensor:
         value = value + self.attention(
             self.attention_norm(value), attention_window=attention_window,
-            token_mask=token_mask, rotary=rotary, window_plan=window_plan,
+            token_mask=token_mask, rotary=rotary,
         )
         value = value + self.ffn(self.ffn_norm(value))
         return value if token_mask is None else value * token_mask.unsqueeze(-1)
@@ -359,34 +279,15 @@ class BarGPTV1(nn.Module):
         *,
         attention_window: int | None = None,
         token_mask: torch.Tensor | None = None,
-        valid_token_indices: torch.Tensor | None = None,
     ) -> torch.Tensor:
         if features.ndim != 3 or features.shape[-1] != self.config.feature_dim:
             raise ValueError(f"features must have shape [B,T,{self.config.feature_dim}]")
-        batch, original_length, _feature_dim = features.shape
-        packed = token_mask is not None
-        sequence_ids = None
-        rotary_positions = None
-        if token_mask is not None:
-            if token_mask.shape != (batch, original_length):
-                raise ValueError("token_mask must have shape [B,T]")
-            if valid_token_indices is None:
-                valid_token_indices = torch.nonzero(
-                    token_mask.reshape(-1), as_tuple=False
-                ).squeeze(-1)
-            if valid_token_indices.numel() == 0:
-                return features.new_zeros((batch, original_length, self.config.d_model))
-            sequence_ids = torch.div(
-                valid_token_indices, original_length, rounding_mode="floor"
-            )
-            rotary_positions = valid_token_indices.remainder(original_length)
-            features = features.reshape(-1, features.shape[-1]).index_select(
-                0, valid_token_indices
-            ).unsqueeze(0)
         state = self.input_projection(self.input_norm(features))
         scale = self.timeframe_embedding(timeframe_us, device=features.device, dtype=features.dtype).view(1, 1, -1)
         pathway = self.pathway_embedding.weight[int(pathway_id)].view(1, 1, -1)
         state = state + scale + pathway
+        if token_mask is not None:
+            state = state * token_mask.unsqueeze(-1)
         layer_windows: list[int | None]
         if attention_window is None:
             layer_windows = [None] * len(self.blocks)
@@ -399,37 +300,18 @@ class BarGPTV1(nn.Module):
             total_radius = max(0, int(attention_window) - 1)
             radius, extra = divmod(total_radius, max(1, len(self.blocks)))
             layer_windows = [radius + (1 if index < extra else 0) + 1 for index in range(len(self.blocks))]
-        effective_layer_windows = [
-            original_length if packed and window is None else window
-            for window in layer_windows
-        ]
+        # RoPE depends only on view length/device/dtype, so all shared decoder
+        # layers can reuse one exact table without changing attention math.
         rotary = self.blocks[0].attention.rope(
-            features.shape[1], features.device, features.dtype, rotary_positions
+            features.shape[1], features.device, features.dtype
         )
-        window_plans = {
-            window: CausalSelfAttention.build_window_plan(
-                features.shape[1], window, features.device,
-                sequence_ids=sequence_ids, positions=rotary_positions,
-            )
-            for window in set(effective_layer_windows)
-            if window is not None and (packed or window < features.shape[1])
-        }
-        for block, layer_window in zip(
-            self.blocks, effective_layer_windows, strict=True
-        ):
+        for block, layer_window in zip(self.blocks, layer_windows, strict=True):
             state = block(
-                state,
-                attention_window=layer_window,
-                rotary=rotary,
-                window_plan=window_plans.get(layer_window),
+                state, attention_window=layer_window,
+                token_mask=token_mask, rotary=rotary,
             )
         state = self.output_norm(state)
-        if not packed:
-            return state
-        output = state.new_zeros((batch * original_length, state.shape[-1]))
-        return output.index_copy(0, valid_token_indices, state.squeeze(0)).view(
-            batch, original_length, -1
-        )
+        return state if token_mask is None else state * token_mask.unsqueeze(-1)
 
     @staticmethod
     def _gather_sequence(state: torch.Tensor, indices: torch.Tensor) -> torch.Tensor:
@@ -451,7 +333,6 @@ class BarGPTV1(nn.Module):
         valid_origin_indices: torch.Tensor | None = None,
         asof_indices: Mapping[str, torch.Tensor] | None = None,
         valid_asof_origin_indices: Mapping[str, torch.Tensor] | None = None,
-        valid_view_indices: Mapping[str, torch.Tensor] | None = None,
         valid_view_token_indices: Mapping[str, torch.Tensor] | None = None,
         view_masks: Mapping[str, torch.Tensor] | None = None,
         attention_windows: Mapping[str, int] | None = None,
@@ -472,7 +353,6 @@ class BarGPTV1(nn.Module):
             valid_origin_indices=valid_origin_indices,
             asof_indices=asof_indices,
             valid_asof_origin_indices=valid_asof_origin_indices,
-            valid_view_indices=valid_view_indices,
             view_masks=view_masks,
             attention_windows=attention_windows,
         )
@@ -614,7 +494,6 @@ class BarGPTV1(nn.Module):
         valid_origin_indices: torch.Tensor | None = None,
         asof_indices: Mapping[str, torch.Tensor] | None = None,
         valid_asof_origin_indices: Mapping[str, torch.Tensor] | None = None,
-        valid_view_indices: Mapping[str, torch.Tensor] | None = None,
         view_masks: Mapping[str, torch.Tensor] | None = None,
         attention_windows: Mapping[str, int] | None = None,
     ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
@@ -631,10 +510,6 @@ class BarGPTV1(nn.Module):
                 pathway_ids[name],
                 attention_window=None if attention_windows is None else int(attention_windows[name]),
                 token_mask=None if view_masks is None else view_masks.get(name),
-                valid_token_indices=(
-                    None if valid_view_indices is None
-                    else valid_view_indices.get(name)
-                ),
             )
             for name, value in views.items()
         }
