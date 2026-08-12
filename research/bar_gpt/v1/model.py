@@ -57,6 +57,8 @@ def _rotate_half(value: torch.Tensor) -> torch.Tensor:
 
 
 class RotaryEmbedding(nn.Module):
+    inverse_frequency: torch.Tensor
+
     def __init__(self, head_dim: int, base: float) -> None:
         super().__init__()
         inverse = 1.0 / (float(base) ** (torch.arange(0, head_dim, 2, dtype=torch.float32) / head_dim))
@@ -197,6 +199,8 @@ class BarGPTOutput:
 
 class ContinuousTimeframeEmbedding(nn.Module):
     """Encode physical duration so the shared decoder can generalize beyond a fixed scale vocabulary."""
+
+    frequencies: torch.Tensor
 
     def __init__(self, config: BarGPTConfig) -> None:
         super().__init__()
