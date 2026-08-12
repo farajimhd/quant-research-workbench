@@ -116,6 +116,10 @@ class ProfileResult:
     optimizer_steps: int
     origins: int
     encoded_tokens: int
+    valid_encoded_tokens: int
+    encoded_padding_fraction: float
+    encoded_tokens_by_view: dict[str, int]
+    valid_encoded_tokens_by_view: dict[str, int]
     elapsed_seconds: float
     loader_wait_seconds: float
     gpu_seconds: float
@@ -601,6 +605,8 @@ class ProfileReporter:
             table.add_column("state")
             table.add_column("origins/s", justify="right")
             table.add_column("tokens/s", justify="right")
+            table.add_column("valid tokens/s", justify="right")
+            table.add_column("padding", justify="right")
             table.add_column("GPU memory", justify="right")
             table.add_column("forward", justify="right")
             table.add_column("backward", justify="right")
@@ -614,6 +620,8 @@ class ProfileReporter:
                     result.state,
                     f"{result.origins_per_second:,.0f}",
                     f"{result.encoded_tokens_per_second:,.0f}",
+                    f"{result.valid_encoded_tokens / max(result.elapsed_seconds, 1e-9):,.0f}",
+                    f"{result.encoded_padding_fraction * 100:,.1f}%",
                     f"{result.memory_fraction * 100:,.1f}%",
                     f"{result.forward_seconds * 1000 / steps:,.1f} ms",
                     f"{result.backward_seconds * 1000 / steps:,.1f} ms",
@@ -631,7 +639,11 @@ class ProfileReporter:
             steps = max(1, result.optimizer_steps)
             print(
                 f"result {result.candidate.model_size}: state={result.state} "
-                f"origins/s={result.origins_per_second:,.0f} memory={result.memory_fraction * 100:.1f}% "
+                f"origins/s={result.origins_per_second:,.0f} "
+                f"tokens/s={result.encoded_tokens_per_second:,.0f} "
+                f"valid_tokens/s={result.valid_encoded_tokens / max(result.elapsed_seconds, 1e-9):,.0f} "
+                f"padding={result.encoded_padding_fraction * 100:.1f}% "
+                f"memory={result.memory_fraction * 100:.1f}% "
                 f"forward={result.forward_seconds * 1000 / steps:.1f}ms/update "
                 f"backward={result.backward_seconds * 1000 / steps:.1f}ms/update "
                 f"optimizer={result.optimizer_seconds * 1000 / steps:.1f}ms/update "
@@ -704,7 +716,9 @@ def _profile_candidate(
         host_cache_batches=max(1, math.ceil(data.ready_queue_blocks / data.batch_size)),
     )
     total_steps = int(args.warmup_steps) + int(args.measured_steps)
-    measured_origins = measured_tokens = 0
+    measured_origins = measured_tokens = measured_valid_tokens = 0
+    measured_tokens_by_view: dict[str, int] = {}
+    measured_valid_tokens_by_view: dict[str, int] = {}
     measured_loader = measured_gpu = 0.0
     measured_forward = measured_backward = measured_optimizer = 0.0
     measured_started = 0.0
@@ -725,7 +739,9 @@ def _profile_candidate(
                 if device.type == "cuda":
                     torch.cuda.reset_peak_memory_stats(device)
             optimizer.zero_grad(set_to_none=True)
-            step_origins = step_tokens = 0
+            step_origins = step_tokens = step_valid_tokens = 0
+            step_tokens_by_view: dict[str, int] = {}
+            step_valid_tokens_by_view: dict[str, int] = {}
             step_loader = step_gpu = 0.0
             step_forward = step_backward = step_optimizer = 0.0
             forward_events: list[tuple[torch.cuda.Event, torch.cuda.Event]] = []
@@ -771,7 +787,15 @@ def _profile_candidate(
                     step_backward += time.perf_counter() - backward_started
                 step_loader += wait
                 step_origins += batch.origin_count
-                step_tokens += sum(int(value.shape[0] * value.shape[1]) for value in batch.views.values())
+                for name, value in batch.views.items():
+                    allocated = int(value.shape[0] * value.shape[1])
+                    valid = int(batch.valid_view_token_counts.get(name, allocated))
+                    step_tokens += allocated
+                    step_valid_tokens += valid
+                    step_tokens_by_view[name] = step_tokens_by_view.get(name, 0) + allocated
+                    step_valid_tokens_by_view[name] = (
+                        step_valid_tokens_by_view.get(name, 0) + valid
+                    )
             optimizer_started = time.perf_counter()
             step_start_event = step_end_event = None
             if device.type == "cuda":
@@ -792,6 +816,13 @@ def _profile_candidate(
             if step >= int(args.warmup_steps):
                 measured_origins += step_origins
                 measured_tokens += step_tokens
+                measured_valid_tokens += step_valid_tokens
+                for name, value in step_tokens_by_view.items():
+                    measured_tokens_by_view[name] = measured_tokens_by_view.get(name, 0) + value
+                for name, value in step_valid_tokens_by_view.items():
+                    measured_valid_tokens_by_view[name] = (
+                        measured_valid_tokens_by_view.get(name, 0) + value
+                    )
                 measured_loader += step_loader
                 measured_gpu += step_gpu
                 measured_forward += step_forward
@@ -866,6 +897,12 @@ def _profile_candidate(
         optimizer_steps=int(args.measured_steps),
         origins=measured_origins,
         encoded_tokens=measured_tokens,
+        valid_encoded_tokens=measured_valid_tokens,
+        encoded_padding_fraction=(
+            1.0 - measured_valid_tokens / measured_tokens if measured_tokens else 0.0
+        ),
+        encoded_tokens_by_view=measured_tokens_by_view,
+        valid_encoded_tokens_by_view=measured_valid_tokens_by_view,
         elapsed_seconds=elapsed,
         loader_wait_seconds=measured_loader,
         gpu_seconds=measured_gpu,
@@ -934,6 +971,10 @@ def main(argv: Iterable[str] | None = None) -> int:
                 optimizer_steps=0,
                 origins=0,
                 encoded_tokens=0,
+                valid_encoded_tokens=0,
+                encoded_padding_fraction=0.0,
+                encoded_tokens_by_view={},
+                valid_encoded_tokens_by_view={},
                 elapsed_seconds=0.0,
                 loader_wait_seconds=0.0,
                 gpu_seconds=0.0,
@@ -967,6 +1008,10 @@ def main(argv: Iterable[str] | None = None) -> int:
                     optimizer_steps=0,
                     origins=0,
                     encoded_tokens=0,
+                    valid_encoded_tokens=0,
+                    encoded_padding_fraction=0.0,
+                    encoded_tokens_by_view={},
+                    valid_encoded_tokens_by_view={},
                     elapsed_seconds=0.0,
                     loader_wait_seconds=0.0,
                     gpu_seconds=0.0,

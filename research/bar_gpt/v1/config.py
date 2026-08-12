@@ -140,7 +140,7 @@ class DataConfig:
     ready_queue_blocks: int = 64
     worker_prefetch_batches: int = 2
     # Bounded deterministic look-ahead used only by the offline loader to
-    # group blocks with similar valid-origin lengths and reduce padding.
+    # group blocks with similar origin and multiview tensor lengths.
     offline_length_bucket_batches: int = 4
     clickhouse_max_threads_per_worker: int = 1
     clickhouse_max_block_size: int = 65_536

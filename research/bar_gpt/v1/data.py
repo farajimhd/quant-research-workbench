@@ -173,6 +173,9 @@ class BarGPTBatch:
     # Computed once by CPU collation. Keeping this scalar off-device avoids a
     # CUDA synchronization from ``origin_mask.sum().item()`` every microbatch.
     valid_origin_count: int
+    # CPU-side counts exclude unavailable-history prefixes and rectangular
+    # batch tails, so profiling does not need timed CUDA reductions.
+    valid_view_token_counts: dict[str, int] = field(default_factory=dict)
     # CPU-side loader timings are deliberately retained off-device.  They are
     # diagnostic evidence only and never participate in model computation.
     loader_stage_seconds: dict[str, float] = field(default_factory=dict)
@@ -249,6 +252,7 @@ class BarGPTBatch:
             session_phases=self.session_phases,
             condition_blocks=self.condition_blocks,
             valid_origin_count=self.valid_origin_count,
+            valid_view_token_counts=dict(self.valid_view_token_counts),
             loader_stage_seconds=dict(self.loader_stage_seconds),
         )
     def to(self, device: torch.device | str, *, non_blocking: bool = True) -> "BarGPTBatch":
@@ -317,6 +321,7 @@ class BarGPTBatch:
             session_phases=self.session_phases,
             condition_blocks=self.condition_blocks,
             valid_origin_count=self.valid_origin_count,
+            valid_view_token_counts=dict(self.valid_view_token_counts),
             loader_stage_seconds=dict(self.loader_stage_seconds),
         )
 
@@ -445,6 +450,10 @@ def collate_examples(examples: Sequence[BarGPTExample], *, balance_activity_regi
         session_phases=tuple(example.session_phase for example in examples),
         condition_blocks=tuple(example.has_condition_target for example in examples),
         valid_origin_count=sum(int(example.origin_indices.numel()) for example in examples),
+        valid_view_token_counts={
+            name: sum(int(mask.sum()) for mask in masks)
+            for name, masks in masks_by_view.items()
+        },
         loader_stage_seconds=loader_stage_seconds,
     )
 

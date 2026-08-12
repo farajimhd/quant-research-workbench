@@ -1237,7 +1237,7 @@ class OfflineShardDataset(IterableDataset[CompiledBlock]):
     def _bucket_order(
         self, values: Sequence[Any], *, worker_id: int, sequence: int = 0,
     ) -> tuple[Any, ...]:
-        """Group similar origin lengths in bounded deterministic windows."""
+        """Group similar rectangular tensor shapes in deterministic windows."""
         window = self.batch_size * self.length_bucket_batches
         if window <= self.batch_size or len(values) <= self.batch_size:
             return tuple(values)
@@ -1248,10 +1248,7 @@ class OfflineShardDataset(IterableDataset[CompiledBlock]):
         for left in range(0, len(values), window):
             segment = sorted(
                 values[left:left + window],
-                key=lambda item: int(
-                    item.origins if isinstance(item, OfflineBlockRef)
-                    else item.origin_indices.numel()
-                ),
+                key=self._bucket_key,
             )
             chunks = [
                 segment[index:index + self.batch_size]
@@ -1260,6 +1257,26 @@ class OfflineShardDataset(IterableDataset[CompiledBlock]):
             for chunk_index in torch.randperm(len(chunks), generator=generator).tolist():
                 ordered.extend(chunks[chunk_index])
         return tuple(ordered)
+
+    @staticmethod
+    def _bucket_key(item: Any) -> tuple[int, ...]:
+        """Describe padding cost without reading tensor contents.
+
+        Explicit block references are ordered before materialization and only
+        expose their origin length. Materialized compiled blocks additionally
+        expose every view length, which is required because equal-origin
+        blocks can have substantially different multiview tensor shapes.
+        """
+        if isinstance(item, OfflineBlockRef):
+            return (int(item.origins),)
+        view_lengths = tuple(
+            int(item.views[name].shape[0]) for name in sorted(item.views)
+        )
+        return (
+            int(item.origin_indices.numel()),
+            sum(view_lengths),
+            *view_lengths,
+        )
 
     def _ordered_block_ref_groups(self) -> list[tuple[OfflineBlockRef, ...]]:
         """Shuffle explicit panels without destroying ticker-month mmap locality."""
@@ -1564,6 +1581,10 @@ def collate_compiled_blocks(
         session_phases=tuple(block.session_phase for block in blocks),
         condition_blocks=tuple(block.has_condition_target for block in blocks),
         valid_origin_count=sum(int(block.origin_indices.numel()) for block in blocks),
+        valid_view_token_counts={
+            name: sum(int(block.view_mask[name].sum()) for block in blocks)
+            for name in view_names
+        },
     )
     return batch.pin_memory() if pin_memory else batch
 

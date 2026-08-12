@@ -121,6 +121,29 @@ class V12RuntimeAlignmentTest(unittest.TestCase):
             lengths = [ref.origins for ref in first[left:left + 2]]
             self.assertLessEqual(max(lengths) - min(lengths), 1500)
 
+    def test_materialized_bucketing_uses_multiview_shapes(self) -> None:
+        blocks = tuple(
+            SimpleNamespace(
+                origin_indices=torch.empty(4096, dtype=torch.long),
+                views={
+                    "1s": torch.empty(4096, 1),
+                    "5s": torch.empty(length, 1),
+                    "1D": torch.empty(calendar_length, 1),
+                },
+            )
+            for length, calendar_length in (
+                (100, 4), (900, 20), (102, 5), (902, 21),
+                (300, 8), (700, 16), (302, 9), (702, 17),
+            )
+        )
+        dataset = OfflineShardDataset(
+            (), seed=17, shuffle_units=True, batch_size=2, length_bucket_batches=4,
+        )
+        ordered = dataset._bucket_order(blocks, worker_id=0)
+        for left in range(0, len(ordered), 2):
+            lengths = [int(block.views["5s"].shape[0]) for block in ordered[left:left + 2]]
+            self.assertLessEqual(max(lengths) - min(lengths), 2)
+
 
 if __name__ == "__main__":
     unittest.main()

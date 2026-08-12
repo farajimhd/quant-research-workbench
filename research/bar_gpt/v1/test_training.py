@@ -1096,6 +1096,12 @@ class LoaderTrainerContractTest(unittest.TestCase):
             self.assertTrue(audit["feature_coverage"]["1s"]["all_finite"])
             self.assertEqual(audit["feature_coverage"]["1s"]["columns_present"], len(MODEL_FEATURE_NAMES))
         live_batch = collate_examples(examples).to("cpu", non_blocking=False)
+        self.assertEqual(cached_batch.valid_view_token_counts, live_batch.valid_view_token_counts)
+        for name in live_batch.views:
+            self.assertEqual(
+                live_batch.valid_view_token_counts[name],
+                int(live_batch.view_mask[name].sum()),
+            )
         for name in live_batch.views:
             self.assertTrue(torch.equal(cached_batch.views[name], live_batch.views[name]), name)
         for name in live_batch.autoregressive_targets:
