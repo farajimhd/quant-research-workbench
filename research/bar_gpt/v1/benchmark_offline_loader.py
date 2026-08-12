@@ -241,7 +241,14 @@ def _consume_fixed_refs(
         persistent_workers=False,
     )
     data.validate()
-    dataset = OfflineShardDataset(units, seed=17, shuffle_units=True, block_refs=refs)
+    dataset = OfflineShardDataset(
+        units,
+        seed=17,
+        shuffle_units=True,
+        block_refs=refs,
+        batch_size=data.batch_size,
+        length_bucket_batches=data.offline_length_bucket_batches,
+    )
     loader = make_offline_dataloader(dataset, data, drop_last=False)
     cold_started = time.perf_counter()
     prefetcher = DeviceBatchPrefetcher(

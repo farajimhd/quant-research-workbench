@@ -681,7 +681,13 @@ def _profile_candidate(
             Path(args.offline_shard_root), data, tickers=data.training_tickers,
             start_date=data.start_date, end_date=data.end_date,
         )
-        dataset = OfflineShardDataset(units, seed=17, shuffle_units=True)
+        dataset = OfflineShardDataset(
+            units,
+            seed=17,
+            shuffle_units=True,
+            batch_size=data.batch_size,
+            length_bucket_batches=data.offline_length_bucket_batches,
+        )
         loader = make_offline_dataloader(dataset, data, drop_last=False)
     else:
         url, user, password = default_clickhouse_url(), default_clickhouse_user(), default_clickhouse_password()

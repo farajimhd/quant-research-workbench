@@ -826,6 +826,8 @@ def _loaders(
             shuffle_units=True,
             resume_cursors=resume_cursors,
             block_refs=panel_refs(manifest, "train") if manifest is not None else (),
+            batch_size=config.data.batch_size,
+            length_bucket_batches=config.data.offline_length_bucket_batches,
         )
         validation_workers = min(
             DISCOVERY_VALIDATION_WORKERS,

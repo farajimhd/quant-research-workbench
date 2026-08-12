@@ -1314,19 +1314,35 @@ class OfflineShardDataset(IterableDataset[CompiledBlock]):
         resume_reached = resume is None
         loaded_key = ""
         shard: dict[str, Any] | None = None
-        for ref in owned:
-            if not resume_reached:
-                if (
-                    int(ref.unit_index) != int(resume.unit_index)
-                    or int(ref.block_offset) != int(resume.block_offset)
-                ):
+        pending: list[CompiledBlock] = []
+        bucket_sequence = 0
+        window = max(self.batch_size, self.batch_size * self.length_bucket_batches)
+
+        def flush_pending() -> Iterator[CompiledBlock]:
+            nonlocal pending, bucket_sequence, resume_reached
+            values = (
+                self._bucket_order(pending, worker_id=worker_id, sequence=bucket_sequence)
+                if self.shuffle_units else tuple(pending)
+            )
+            pending = []
+            bucket_sequence += 1
+            for block in values:
+                if not resume_reached:
+                    if (
+                        int(block.unit_index) == int(resume.unit_index)
+                        and int(block.block_offset) == int(resume.block_offset)
+                    ):
+                        resume_reached = True
                     continue
-                resume_reached = True
-                continue
+                block.worker_id = worker_id
+                yield block
+
+        for ref in owned:
             unit = units.get(ref.unit_key)
             if unit is None:
                 raise RuntimeError(f"experiment block references unknown shard unit {ref.unit_key}")
             if loaded_key != ref.unit_key:
+                yield from flush_pending()
                 loaded_key = ref.unit_key
                 shard = load_certified_unit(unit)
             assert shard is not None
@@ -1350,8 +1366,10 @@ class OfflineShardDataset(IterableDataset[CompiledBlock]):
                     f"experiment block identity changed for {ref.unit_key}: "
                     f"expected={expected!r} observed={observed!r}"
                 )
-            block.worker_id = worker_id
-            yield block
+            pending.append(block)
+            if len(pending) >= window:
+                yield from flush_pending()
+        yield from flush_pending()
         if resume is not None and not resume_reached:
             raise RuntimeError(
                 f"experiment resume cursor unit={resume.unit_index} block={resume.block_offset} "
