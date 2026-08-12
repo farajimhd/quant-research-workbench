@@ -219,6 +219,7 @@ def reconstruct_clickhouse_example(
     *,
     data_config: DataConfig,
     stream_config: ClickHouseBarStreamConfig,
+    catalog_start_date: str | None = None,
     clickhouse_prefetch_pages: int | None = None,
     clickhouse_max_threads_per_worker: int | None = None,
 ):
@@ -232,10 +233,19 @@ def reconstruct_clickhouse_example(
             f"expected {sample.shard.get('config_hash')}, observed {expected_hash}"
         )
     coverage_start, coverage_end = _stored_session_interval(sample)
+    reconstruction_start = (
+        dt.date.fromisoformat(str(catalog_start_date)).isoformat()
+        if catalog_start_date is not None
+        else coverage_start
+    )
+    if reconstruction_start > coverage_start:
+        raise RuntimeError(
+            f"catalog reconstruction start {reconstruction_start} is after sampled coverage {coverage_start}"
+        )
     resolved = replace(
         data_config,
         tickers=(sample.ref.ticker,),
-        start_date=coverage_start,
+        start_date=reconstruction_start,
         end_date=coverage_end,
         validation_start_date=coverage_start,
         validation_slices=((sample.ref.ticker, coverage_start, coverage_end),),
@@ -263,6 +273,11 @@ def reconstruct_clickhouse_example(
         split="cache",
         seed=17,
         unit_tickers=(sample.ref.ticker,),
+        **(
+            {"emit_start_date": coverage_start}
+            if dataset_class is DirectEventShardDataset and reconstruction_start < coverage_start
+            else {}
+        ),
     )
     for example in dataset:
         if (

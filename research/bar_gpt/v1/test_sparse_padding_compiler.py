@@ -120,6 +120,50 @@ class SparsePaddingCompilerTest(unittest.TestCase):
         self.assertEqual(resolved.start_date, "2019-01-02")
         self.assertEqual(resolved.end_date, "2019-01-04")
 
+    def test_clickhouse_reconstruction_replays_frozen_catalog_history_without_emitting_it(self) -> None:
+        config = DataConfig(origin_bars_1s=4)
+        rebuilt = SimpleNamespace(local_date="2020-12-21", block_offset=37)
+        sample = SimpleNamespace(
+            ref=SimpleNamespace(
+                session_index=1,
+                unit_key="AAPL:2020-12",
+                ticker="AAPL",
+                local_date="2020-12-21",
+                block_offset=37,
+            ),
+            shard={
+                "config_hash": shard_compatibility_hash(config),
+                "sessions": [
+                    {"local_date": "2020-12-18"},
+                    {"local_date": "2020-12-21"},
+                ],
+            },
+        )
+        dataset_kwargs = {}
+
+        class FakeDirectDataset:
+            def __init__(self, **kwargs) -> None:
+                dataset_kwargs.update(kwargs)
+
+            def __iter__(self):
+                yield rebuilt
+
+        with patch(
+            "research.bar_gpt.v1.shard_data_audit.DirectEventShardDataset",
+            FakeDirectDataset,
+        ):
+            observed = reconstruct_clickhouse_example(
+                sample,
+                data_config=config,
+                stream_config=ClickHouseBarStreamConfig(
+                    url="http://localhost:8123", user="default", password=""
+                ),
+                catalog_start_date="2019-01-01",
+            )
+        self.assertIs(observed, rebuilt)
+        self.assertEqual(dataset_kwargs["data_config"].start_date, "2019-01-01")
+        self.assertEqual(dataset_kwargs["emit_start_date"], "2020-12-18")
+
 
 if __name__ == "__main__":
     unittest.main()

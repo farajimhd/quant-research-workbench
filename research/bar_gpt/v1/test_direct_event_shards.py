@@ -17,6 +17,7 @@ from research.bar_gpt.v1.audit_offline_shards import (
 )
 from research.bar_gpt.v1.config import DataConfig
 from research.bar_gpt.v1.direct_event_shards import (
+    DirectEventShardDataset,
     _is_event_authority_boundary,
     _iter_prefetched_pages_in_order,
     calendar_lookback_days,
@@ -44,6 +45,31 @@ from research.bar_gpt.v1.run_pilot_offline_shards import parse_args as parse_pil
 
 
 class DirectEventShardContractTest(unittest.TestCase):
+    def test_resume_replays_certified_units_as_state_only_history(self) -> None:
+        config = DataConfig(
+            tickers=("AAPL",),
+            start_date="2019-01-01",
+            end_date="2019-03-01",
+            validation_start_date="2019-02-01",
+            validation_slices=(("AAPL", "2019-02-01", "2019-03-01"),),
+        )
+        dataset = DirectEventShardDataset(
+            data_config=config,
+            stream_config=ClickHouseBarStreamConfig(
+                url="http://localhost:8123", user="default", password=""
+            ),
+            split="cache",
+            seed=17,
+            unit_tickers=("AAPL",),
+            skip_unit_keys=frozenset(("AAPL:2019-01",)),
+        )
+
+        self.assertEqual(
+            [unit.start_date for _index, unit in dataset._units()],
+            ["2019-01-01", "2019-02-01"],
+        )
+        self.assertEqual(dataset.state_only_unit_keys, frozenset(("AAPL:2019-01",)))
+
     def test_preflight_retains_event_empty_ticker_with_zero_scheduler_weight(self) -> None:
         config = DataConfig(
             tickers=("AAPL", "ARM"),

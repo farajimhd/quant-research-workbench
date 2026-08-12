@@ -30,6 +30,7 @@ from research.bar_gpt.v1.loader import (
     ArrowStreamClient,
     BarGPTIterableDataset,
     CONDITION_COUNT_COLUMNS,
+    TickerDateUnit,
     TickerInterval,
     _history_satisfies_intraday_context,
     build_session_examples,
@@ -759,10 +760,41 @@ class DirectEventShardDataset(BarGPTIterableDataset):
     """Single-pass event-to-shard dataset with ticker-owned rolling state."""
 
     def __init__(
-        self, *, progress_callback: Callable[[dict[str, object]], None] | None = None, **kwargs: object
+        self,
+        *,
+        progress_callback: Callable[[dict[str, object]], None] | None = None,
+        emit_start_date: str | None = None,
+        **kwargs: object,
     ) -> None:
+        # A direct-event build is stateful across ticker-months. Certified
+        # units must be replayed as state-only inputs on resume rather than
+        # removed from the dataset, or the first missing unit enters through a
+        # numerically different server-side calendar warm-up path.
+        skipped = frozenset(str(value) for value in kwargs.pop("skip_unit_keys", frozenset()))
+        kwargs["skip_unit_keys"] = frozenset()
         super().__init__(**kwargs)
         self.progress_callback = progress_callback
+        self.state_only_unit_keys = skipped
+        self.emit_start_date = (
+            dt.date.fromisoformat(str(emit_start_date)).isoformat()
+            if emit_start_date is not None
+            else None
+        )
+
+    def _units(self) -> list[tuple[int, TickerDateUnit]]:
+        units = super()._units()
+        if not self.state_only_unit_keys:
+            return units
+        emitting = [
+            index
+            for index, (_global_index, unit) in enumerate(units)
+            if f"{unit.ticker}:{unit.start_date[:7]}" not in self.state_only_unit_keys
+        ]
+        if not emitting:
+            return []
+        # Earlier certified units establish rolling state. Certified units
+        # after the final missing unit have no downstream consumer this run.
+        return units[: emitting[-1] + 1]
 
     def _page_progress(
         self,
@@ -840,6 +872,7 @@ class DirectEventShardDataset(BarGPTIterableDataset):
         emitted_by_unit: dict[str, int] = {}
 
         for unit_index, unit in units:
+            current_unit_key = f"{unit.ticker}:{unit.start_date[:7]}"
             if active_ticker != unit.ticker:
                 active_ticker = unit.ticker
                 history = FixedBucketHistoryCache(max_rows=max(
@@ -986,6 +1019,22 @@ class DirectEventShardDataset(BarGPTIterableDataset):
                     history.append(session, materialize=False)
                     if day not in excluded_daily:
                         daily = append_daily(daily, daily_bar_from_session(day, session), max_rows=int(self.data_config.calendar_warmup_daily_bars) + 32)
+                    continue
+                # Exact reconstruction audits replay the frozen catalog from
+                # its original start so rolling calendar statistics follow the
+                # same numerical path as the one-pass builder.  Retain that
+                # state without compiling or yielding unrelated earlier units.
+                if (
+                    current_unit_key in self.state_only_unit_keys
+                    or (self.emit_start_date is not None and day < self.emit_start_date)
+                ):
+                    history.append(session, materialize=False)
+                    if day not in excluded_daily:
+                        daily = append_daily(
+                            daily,
+                            daily_bar_from_session(day, session),
+                            max_rows=int(self.data_config.calendar_warmup_daily_bars) + 32,
+                        )
                     continue
                 for example in build_session_examples(
                     ticker=unit.ticker, local_date=day, session=session,

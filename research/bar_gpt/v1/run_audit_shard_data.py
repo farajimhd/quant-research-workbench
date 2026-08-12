@@ -65,6 +65,25 @@ def _atomic_json(path: Path, value: object) -> None:
     os.replace(temporary, path)
 
 
+def _catalog_start_date(root: Path) -> tuple[str, str]:
+    """Return the frozen one-pass start and config identity for reconstruction."""
+    path = root / "manifest" / "build_plan.json"
+    if not path.is_file():
+        raise RuntimeError(f"BarGPT shard reconstruction requires the frozen build plan: {path}")
+    value = json.loads(path.read_text(encoding="utf-8"))
+    selection = value.get("selection")
+    if not isinstance(selection, dict) or not selection.get("start_date"):
+        raise RuntimeError(f"BarGPT build plan has no frozen selection start: {path}")
+    config_hash = str(value.get("config_hash", ""))
+    if not config_hash:
+        raise RuntimeError(f"BarGPT build plan has no config hash: {path}")
+    try:
+        start = dt.date.fromisoformat(str(selection["start_date"])).isoformat()
+    except ValueError as exc:
+        raise RuntimeError(f"BarGPT build plan has an invalid selection start: {path}") from exc
+    return start, config_hash
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv)
     refs = select_random_audit_blocks(
@@ -78,6 +97,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     clickhouse_limit = min(int(args.clickhouse_samples), len(refs))
     if clickhouse_limit:
         load_env_files(discover_clickhouse_env_files(), verbose=True)
+        catalog_start_date, catalog_config_hash = _catalog_start_date(args.root)
+    else:
+        catalog_start_date, catalog_config_hash = "", ""
     samples = []
     audited_sidecars: set[Path] = set()
     failures: list[str] = []
@@ -107,10 +129,16 @@ def main(argv: Sequence[str] | None = None) -> int:
             "clickhouse_reconstruction": None,
         }
         if index < clickhouse_limit:
+            if str(sample.shard.get("config_hash", "")) != catalog_config_hash:
+                raise RuntimeError(
+                    f"sampled shard {ref.unit_key} does not match frozen build plan config "
+                    f"{catalog_config_hash}"
+                )
             rebuilt = reconstruct_clickhouse_example(
                 sample,
                 data_config=data_config,
                 stream_config=_stream_config(data_config),
+                catalog_start_date=catalog_start_date,
                 clickhouse_prefetch_pages=int(args.clickhouse_prefetch_pages),
                 clickhouse_max_threads_per_worker=int(args.clickhouse_max_threads_per_query),
             )
