@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+from collections import Counter
 from datetime import date
 from pathlib import Path
 
@@ -19,6 +20,7 @@ from .run_tfidf_supervision_v3 import _train_args as _v3_train_args
 from .run_tfidf_supervision_v4 import _train_args as _v4_train_args
 from .run_tfidf_supervision_v5 import _train_args as _v5_train_args
 from .run_tfidf_source_ablation_v6 import _train_args as _v6_train_args
+from .run_tfidf_supervision_v7 import _train_args as _v7_train_args
 from .tfidf_supervision import fit_tfidf_vocabulary, transform_tfidf
 from .tfidf_supervision_v2 import (
     fit_v2_vocabulary,
@@ -44,6 +46,11 @@ from .tfidf_supervision_v5 import (
     tfidf_v5_feature_counts,
 )
 from .tfidf_source_ablation_v6 import _provider_rendered_body, controlled_feature_fields
+from .tfidf_supervision_v7 import (
+    invariant_metadata_features,
+    tfidf_v7_feature_counts,
+    transform_v7,
+)
 
 
 class EmbeddingSupervisionTests(unittest.TestCase):
@@ -440,7 +447,10 @@ class EmbeddingSupervisionTests(unittest.TestCase):
     def test_tfidf_v6_rendered_lane_uses_only_provider_body(self) -> None:
         rendered = _provider_rendered_body(
             {
-                "body": "<p>Revenue <strong>rose</strong> 12%.</p><table><tr><td>EPS</td><td>1.2</td></tr></table>",
+                "body": (
+                    "<p>Revenue <strong>rose</strong> 12%.</p>"
+                    "<table><tr><td>EPS</td><td>1.2</td></tr></table>"
+                ),
                 "url": "https://example.test/article",
             }
         )
@@ -455,6 +465,93 @@ class EmbeddingSupervisionTests(unittest.TestCase):
             values.pop("data_root")
             values.pop("run_root")
         self.assertEqual(v5, v6)
+
+    def test_tfidf_v7_separates_and_gates_enrichment_by_issuer(self) -> None:
+        metadata_text, metadata_structural = invariant_metadata_features(
+            {"channels": [], "tags": [], "tickers": ["ABC"]},
+            target_ticker="ABC",
+            has_external=True,
+            has_pdf=True,
+        )
+        features = tfidf_v7_feature_counts(
+            original_fields={
+                "title": "Alpha raises guidance",
+                "teaser": "",
+                "body": "Alpha revenue rose 12%.",
+            },
+            normalized_fields={
+                "title": "Alpha raises guidance",
+                "teaser": "",
+                "body": "Alpha revenue rose 12%.",
+                "external": "Alpha won approval. Unrelated Corp failed a trial.",
+                "pdf": "Unrelated Corp missed estimates.",
+            },
+            metadata_text=metadata_text,
+            metadata_structural=metadata_structural,
+            ticker="ABC",
+            aliases=("ABC", "Alpha"),
+        )
+        self.assertIn("provider_title_word|u:<issuer>", features)
+        self.assertNotIn("provider_title_word|u:alpha", features)
+        self.assertIn("external_local_word|u:approval", features)
+        self.assertNotIn("external_local_word|u:unrelated", features)
+        self.assertFalse(any(term.startswith("pdf_local_word|") for term in features))
+
+    def test_tfidf_v7_metadata_excludes_author_and_domain_values(self) -> None:
+        text, structured = invariant_metadata_features(
+            {
+                "channels": ["Earnings"],
+                "tags": ["Guidance"],
+                "tickers": ["ABC", "XYZ"],
+                "author": "Unique Person",
+                "url": "https://unique.example/article",
+            },
+            target_ticker="ABC",
+            has_external=False,
+            has_pdf=False,
+        )
+        self.assertIn("Earnings", text)
+        self.assertIn("Guidance", text)
+        self.assertNotIn("Unique Person", text)
+        self.assertNotIn("unique.example", text)
+        self.assertIn("metadata_structural|has:author", structured)
+        self.assertIn("metadata_structural|has:url", structured)
+
+    def test_tfidf_v7_normalizes_provenance_views_independently(self) -> None:
+        vector = transform_v7(
+            {
+                "original_fields": {
+                    "title": "Alpha growth growth growth",
+                    "teaser": "",
+                    "body": "",
+                },
+                "normalized_fields": {
+                    "title": "Alpha growth",
+                    "teaser": "",
+                    "body": "",
+                    "external": "Alpha approval.",
+                    "pdf": "",
+                },
+                "metadata_text": "",
+                "metadata_structural": Counter(),
+            },
+            ticker="ABC",
+            aliases=("ABC", "Alpha"),
+            vocabulary={
+                "provider_title_word|u:growth": 0,
+                "external_local_word|u:approval": 1,
+            },
+            idf=np.ones(2, dtype=np.float32),
+        )
+        np.testing.assert_allclose(vector, [2 ** -0.5, 2 ** -0.5])
+
+    def test_tfidf_v7_keeps_v6_model_and_training_configuration(self) -> None:
+        v6 = vars(_v6_train_args(Path("v6-data"), Path("v6-run"), 8))
+        v7 = vars(_v7_train_args(Path("v7-data"), Path("v7-run"), 8))
+        for values in (v6, v7):
+            values.pop("data_root")
+            values.pop("run_root")
+        self.assertEqual(v6, v7)
 
 
 if __name__ == "__main__":

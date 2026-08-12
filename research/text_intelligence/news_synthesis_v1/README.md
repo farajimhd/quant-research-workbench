@@ -302,3 +302,29 @@ checkpoints, metrics, and the causal comparison are written only under
 $env:PYTHONDONTWRITEBYTECODE='1'
 python -m research.text_intelligence.news_synthesis_v1.run_tfidf_source_ablation_v6
 ```
+
+### TF-IDF V7 provenance-separated multi-view features
+
+V7 keeps the V6 exact-authority population, frozen split membership, labels,
+point-in-time aliases, model, seed, tuning boundary, and evaluation unchanged.
+It changes features only. Original provider title/teaser/body supply the lexical
+view, with the target issuer anonymized. Provider channels/tags and invariant
+metadata shape participate without author names or URL domains. Normalized
+provider text supplies generic structural and economic-relation features.
+External and PDF enrichment participate only through clauses locally grounded
+to the target issuer and have separate namespaces.
+
+Provider, normalized-semantic, enrichment, and metadata views are independently
+L2-normalized before equal-weight concatenation. Consequently, a long external
+page or PDF cannot numerically dominate the provider article. Vocabulary and
+IDF remain training-only; no gold labels, predictions, validation outcomes,
+company-specific rules, or learned feature selection enter extraction.
+
+```powershell
+$env:PYTHONDONTWRITEBYTECODE='1'
+python -m research.text_intelligence.news_synthesis_v1.run_tfidf_supervision_v7
+```
+
+Generated data, source authority, vocabulary, checkpoint, evaluation, and the
+V6/V7 comparison are written only beneath
+`D:\TradingML\runtimes\text_intelligence\news_synthesis_v1\tfidf_supervision_v7`.
