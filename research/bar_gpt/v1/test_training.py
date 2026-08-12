@@ -2300,7 +2300,18 @@ class LoaderTrainerContractTest(unittest.TestCase):
         self.assertEqual({item.model_size for item in parsed}, {"current", "medium", "large"})
         self.assertNotIn("small", {item.model_size for item in parsed})
         self.assertEqual({item.workers for item in parsed}, {8})
-        self.assertEqual({item.microbatch for item in parsed if item.model_size == "current"}, {8, 16, 24, 32})
+        self.assertEqual(
+            {item.microbatch for item in parsed if item.model_size == "current"},
+            {8, 16, 20, 24, 32},
+        )
+        self.assertEqual(
+            {item.microbatch for item in parsed if item.model_size == "medium"},
+            {4, 8, 10, 12, 16},
+        )
+        self.assertEqual(
+            {item.microbatch for item in parsed if item.model_size == "large"},
+            {2, 4, 6, 8, 12},
+        )
         self.assertNotIn("xlarge", {item.model_size for item in parsed})
         self.assertEqual(profile_launcher_args[profile_launcher_args.index("--target-effective-blocks") + 1], "32")
         resolved = {name: _model_config(_parse_candidates(f"{name}:4096:1:1:16:1:0")[0]) for name in MODEL_SIZE_PRESETS}
@@ -2313,7 +2324,12 @@ class LoaderTrainerContractTest(unittest.TestCase):
             candidate=ProfileCandidate(4096, 16, 1, 8, True),
             memory_fraction=0.59,
         )
+        intermediate = ProfileCandidate(4096, 20, 1, 8, True)
         candidate = ProfileCandidate(4096, 24, 1, 8, True)
+        self.assertLess(
+            _projected_memory_fraction(previous, intermediate),  # type: ignore[arg-type]
+            0.90,
+        )
         self.assertGreater(
             _projected_memory_fraction(previous, candidate),  # type: ignore[arg-type]
             0.90,

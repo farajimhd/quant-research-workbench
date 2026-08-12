@@ -85,9 +85,15 @@ MODEL_SIZE_PRESETS: dict[str, dict[str, int]] = {
 DEFAULT_JOINT_CANDIDATES = ",".join(
     f"{model}:4096:{microbatch}:1:{OFFLINE_PRODUCTION_LOADER_WORKERS}:1:0"
     for model, microbatches in (
-        ("current", (8, 16, 24, 32)),
-        ("medium", (4, 8, 12, 16)),
-        ("large", (2, 4, 8, 12)),
+        # Keep intermediate probes below the projected-memory cliff. The
+        # measured fused-SDPA profile fit current=16 at 62.6% and medium=8 at
+        # 58.2%, while the former coarse jumps to 24/12 were skipped without
+        # measuring potentially faster, safe shapes.
+        ("current", (8, 16, 20, 24, 32)),
+        ("medium", (4, 8, 10, 12, 16)),
+        # Large=8 already measured at 83.9%; six provides a bounded scaling
+        # point without weakening the 90% safety limit.
+        ("large", (2, 4, 6, 8, 12)),
     )
     for microbatch in microbatches
 )
