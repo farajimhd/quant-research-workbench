@@ -12,6 +12,12 @@ from .embedding_supervision import (
 )
 from .run_embedding_supervision import _fit_tuning_indexes
 from .tfidf_supervision import fit_tfidf_vocabulary, transform_tfidf
+from .tfidf_supervision_v2 import (
+    fit_v2_vocabulary,
+    normalize_financial_text,
+    parse_qwen_news_document,
+    tfidf_v2_feature_counts,
+)
 
 
 class EmbeddingSupervisionTests(unittest.TestCase):
@@ -121,6 +127,56 @@ class EmbeddingSupervisionTests(unittest.TestCase):
         self.assertEqual(report["training_documents"], 3)
         self.assertNotIn("u:unseen", vocabulary)
         self.assertGreater(float(np.linalg.norm(vector)), 0.0)
+
+    def test_tfidf_v2_preserves_fields_and_excludes_renderer_headers(self) -> None:
+        parsed = parse_qwen_news_document(
+            "NEWS\nprovider: wire\nticker: ABC\ntitle: Revenue Rose 20%\n"
+            "teaser: Guidance raised\nchannels: earnings\ntags: results\nBODY\n"
+            "ABC reported growth.\nEXTERNAL_TEXT\nExternal appendix."
+        )
+        self.assertEqual(parsed["title"], "Revenue Rose 20%")
+        self.assertEqual(parsed["body"], "ABC reported growth.")
+        self.assertEqual(parsed["external"], "External appendix.")
+        features = tfidf_v2_feature_counts(
+            "NEWS\nprovider: wire\nticker: ABC\ntitle: Revenue Rose 20%\n"
+            "teaser: Guidance raised\nchannels: earnings\ntags: results\nBODY\n"
+            "ABC reported growth.",
+            ticker="ABC",
+        )
+        self.assertIn("title_word|u:revenue", features)
+        self.assertIn("title_word|u:<percent>", features)
+        self.assertIn("structural|focality:ticker_in_content", features)
+        self.assertFalse(any("provider" in term for term in features))
+
+    def test_tfidf_v2_normalizes_financial_quantities(self) -> None:
+        normalized = normalize_financial_text("Sales rose 12.5% to $3.2 million in 2025.")
+        self.assertIn("<percent>", normalized)
+        self.assertIn("<money>", normalized)
+        self.assertIn("<year>", normalized)
+        self.assertNotIn("12.5", normalized)
+
+    def test_tfidf_v2_vocabulary_is_training_only_and_budgeted_by_field(self) -> None:
+        documents = [
+            ("AAA", "NEWS\nticker: AAA\ntitle: Alpha grows\nteaser: Margin up\nBODY\nAAA revenue grows."),
+            ("BBB", "NEWS\nticker: BBB\ntitle: Beta falls\nteaser: Margin down\nBODY\nBBB revenue falls."),
+        ]
+        terms, _, report = fit_v2_vocabulary(
+            documents,
+            min_document_frequency=1,
+            budgets={
+                "title_word": 3,
+                "teaser_word": 2,
+                "body_word": 3,
+                "supplemental_word": 0,
+                "title_char": 2,
+                "teaser_char": 2,
+                "local_word": 2,
+                "structural": 4,
+            },
+        )
+        self.assertLessEqual(len(terms), 18)
+        self.assertTrue(report["training_only_vocabulary"])
+        self.assertFalse(any("validation_only" in term for term in terms))
 
 
 if __name__ == "__main__":

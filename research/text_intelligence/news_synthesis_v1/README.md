@@ -190,3 +190,20 @@ runner reports both the full-population Qwen/TF-IDF comparison and a separately
 retrained three-way comparison on the exact OpenAI/Qwen/TF-IDF intersection.
 It never imputes missing OpenAI vectors or compares different validation
 denominators in the same table.
+
+TF-IDF V2 applies the generic structural lessons from News Synthesis without
+using certified outputs or prediction labels as inputs. It separates title,
+teaser, body, supplemental and exact target-ticker-local lexical features; adds
+title/teaser character n-grams; normalizes financial quantities; and adds
+generic temporal, conditional, origin, directional, concept-family, focality
+and source-structure indicators. All vocabularies are fitted only on the frozen
+training partition:
+
+```powershell
+$env:PYTHONDONTWRITEBYTECODE='1'
+python -m research.text_intelligence.news_synthesis_v1.run_tfidf_supervision_v2
+```
+
+V2 is a separately versioned experiment and does not replace V1. Its validation
+report and direct Qwen/V1/V2 comparison are written beneath
+`D:\TradingML\runtimes\text_intelligence\news_synthesis_v1\tfidf_supervision_v2`.
