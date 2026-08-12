@@ -579,7 +579,10 @@ class BarGPTV1(nn.Module):
             else torch.nonzero(active.reshape(-1), as_tuple=False).squeeze(-1)
         )
         packed = head(flattened.index_select(0, indices))
-        output = source.new_zeros((*source.shape[:-1], head.out_features))
+        # Autocast can keep the residual stream in FP32 while producing BF16
+        # linear outputs. Allocate from the head result so CUDA index_copy
+        # receives identical source/destination dtypes.
+        output = packed.new_zeros((*source.shape[:-1], head.out_features))
         return output.reshape(-1, head.out_features).index_copy(
             0, indices, packed
         ).view_as(output)

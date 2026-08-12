@@ -791,6 +791,23 @@ class TemporalContractTest(unittest.TestCase):
 
 
 class ModelContractTest(unittest.TestCase):
+    def test_packed_sequence_head_preserves_autocast_output_dtype(self) -> None:
+        head = torch.nn.Linear(8, 3)
+        state = torch.randn(2, 5, 8, requires_grad=True)
+        mask = torch.tensor([
+            [True, True, True, True, True],
+            [True, True, True, False, False],
+        ])
+        indices = torch.nonzero(
+            mask[:, :-1].reshape(-1), as_tuple=False
+        ).squeeze(-1)
+        with torch.autocast("cpu", dtype=torch.bfloat16):
+            output = BarGPTV1._sequence_head(head, state, mask, indices)
+        self.assertEqual(output.dtype, torch.bfloat16)
+        self.assertTrue(bool(torch.all(output[1, 3:] == 0)))
+        output.float().square().sum().backward()
+        self.assertTrue(bool(torch.isfinite(state.grad).all()))
+
     def test_packed_masked_encoder_matches_independent_sequences_and_gradients(self) -> None:
         torch.manual_seed(37)
         config = BarGPTConfig(
