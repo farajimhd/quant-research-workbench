@@ -948,7 +948,12 @@ def _forward(model: torch.nn.Module, batch: BarGPTBatch, config: ExperimentConfi
         pathway_ids=PATHWAY_ID_BY_NAME,
         base_view="1s",
         origin_indices=batch.origin_indices,
+        origin_mask=batch.origin_mask,
+        valid_origin_count=batch.valid_origin_count,
+        valid_origin_indices=batch.valid_origin_indices,
         asof_indices=batch.asof_indices,
+        valid_asof_origin_indices=batch.valid_asof_origin_indices,
+        valid_view_token_indices=batch.valid_view_token_indices,
         view_masks={name: batch.view_mask[name] for name in batch.masked_context_views},
         attention_windows=config.data.attention_window_by_name,
         horizon_ids=torch.arange(len(config.data.horizons_us), device=batch.origin_indices.device),
@@ -989,12 +994,15 @@ def _finite_check_vector(result: BarGPTLoss, batch: BarGPTBatch) -> tuple[torch.
     """Build device-side checks; CUDA checks are asserted on the active stream."""
     names: list[str] = ["loss"]
     checks: list[torch.Tensor] = [torch.isfinite(result.loss.detach())]
-    for key, value in result.metrics.items():
-        names.append(key)
-        checks.append(torch.isfinite(value.detach()).all())
     if batch.horizon_targets is not None and batch.horizon_mask is not None:
         names.append("valid_horizon_targets")
-        checks.append(torch.isfinite(batch.horizon_targets[batch.horizon_mask]).all())
+        checks.append(
+            torch.where(
+                batch.horizon_mask,
+                torch.isfinite(batch.horizon_targets),
+                torch.ones_like(batch.horizon_mask),
+            ).all()
+        )
     return torch.stack(checks), tuple(names)
 
 

@@ -25,20 +25,30 @@ def masked_quantile_loss(
     if prediction.shape[:-1] != target.shape or target.shape != mask.shape:
         raise ValueError("prediction, target, and mask shapes do not satisfy the quantile contract")
     q = torch.as_tensor(quantiles, device=prediction.device, dtype=prediction.dtype)
-    error = target.unsqueeze(-1).to(prediction.dtype) - prediction
+    safe_prediction = torch.where(
+        mask.unsqueeze(-1), prediction, torch.zeros_like(prediction)
+    )
+    safe_target = torch.where(mask, target, torch.zeros_like(target))
+    error = safe_target.unsqueeze(-1).to(prediction.dtype) - safe_prediction
     loss = torch.maximum(q * error, (q - 1.0) * error)
     valid = mask.unsqueeze(-1).expand_as(loss)
-    if not torch.any(valid):
-        return prediction.sum() * 0.0
-    return loss[valid].mean()
+    numerator = torch.where(valid, loss, torch.zeros_like(loss)).sum()
+    return numerator / valid.sum().clamp_min(1).to(numerator.dtype)
 
 
 def masked_huber_loss(prediction: torch.Tensor, target: torch.Tensor, mask: torch.Tensor, delta: float = 1.0) -> torch.Tensor:
     if prediction.shape != target.shape or target.shape != mask.shape:
         raise ValueError("prediction, target, and mask must have identical shapes")
-    if not torch.any(mask):
-        return prediction.sum() * 0.0
-    return torch.nn.functional.huber_loss(prediction[mask], target[mask].to(prediction.dtype), delta=delta)
+    safe_prediction = torch.where(mask, prediction, torch.zeros_like(prediction))
+    safe_target = torch.where(mask, target, torch.zeros_like(target))
+    loss = torch.nn.functional.huber_loss(
+        safe_prediction,
+        safe_target.to(prediction.dtype),
+        delta=delta,
+        reduction="none",
+    )
+    numerator = torch.where(mask, loss, torch.zeros_like(loss)).sum()
+    return numerator / mask.sum().clamp_min(1).to(numerator.dtype)
 
 
 @dataclass(slots=True)
@@ -49,10 +59,10 @@ class BarGPTLoss:
 
 def _weighted_mean(loss: torch.Tensor, mask: torch.Tensor, sample_weights: torch.Tensor) -> torch.Tensor:
     weights = sample_weights.view(sample_weights.shape[0], *([1] * (loss.ndim - 1))).expand_as(loss)
-    if not torch.any(mask):
-        return torch.nan_to_num(loss).sum() * 0.0
-    valid_weights = weights[mask]
-    return (loss[mask] * valid_weights).sum() / valid_weights.sum()
+    valid_weights = weights * mask.to(weights.dtype)
+    safe_loss = torch.where(mask, loss, torch.zeros_like(loss))
+    numerator = (safe_loss * valid_weights).sum()
+    return numerator / valid_weights.sum().clamp_min(1e-12)
 
 
 def _mixed_point_loss(
@@ -64,22 +74,44 @@ def _mixed_point_loss(
     continuous_target_count: int,
     condition_target_count: int,
 ) -> tuple[torch.Tensor, torch.Tensor]:
+    continuous_mask = mask[..., :continuous_target_count]
+    continuous_prediction = prediction[..., :continuous_target_count]
+    continuous_target = target[..., :continuous_target_count]
     continuous_error = torch.nn.functional.huber_loss(
-        prediction[..., :continuous_target_count],
-        target[..., :continuous_target_count].to(prediction.dtype),
+        torch.where(
+            continuous_mask,
+            continuous_prediction,
+            torch.zeros_like(continuous_prediction),
+        ),
+        torch.where(
+            continuous_mask,
+            continuous_target,
+            torch.zeros_like(continuous_target),
+        ).to(prediction.dtype),
         reduction="none",
     )
-    continuous = _weighted_mean(continuous_error, mask[..., :continuous_target_count], sample_weights)
+    continuous = _weighted_mean(continuous_error, continuous_mask, sample_weights)
     positive_weights = prediction.new_ones(prediction.shape[-1] - continuous_target_count)
     if condition_target_count:
         positive_weights[-condition_target_count:] = float(condition_positive_weight)
+    availability_mask = mask[..., continuous_target_count:]
+    availability_prediction = prediction[..., continuous_target_count:]
+    availability_target = target[..., continuous_target_count:]
     availability_error = torch.nn.functional.binary_cross_entropy_with_logits(
-        prediction[..., continuous_target_count:],
-        target[..., continuous_target_count:].to(prediction.dtype),
+        torch.where(
+            availability_mask,
+            availability_prediction,
+            torch.zeros_like(availability_prediction),
+        ),
+        torch.where(
+            availability_mask,
+            availability_target,
+            torch.zeros_like(availability_target),
+        ).to(prediction.dtype),
         reduction="none",
         pos_weight=positive_weights,
     )
-    availability = _weighted_mean(availability_error, mask[..., continuous_target_count:], sample_weights)
+    availability = _weighted_mean(availability_error, availability_mask, sample_weights)
     return continuous, availability
 
 
@@ -97,7 +129,7 @@ def _direction_loss(
     directional_mask = endpoint_mask & (endpoint_target.abs() > transformed_threshold)
     labels = endpoint_target > transformed_threshold
     loss = torch.nn.functional.binary_cross_entropy_with_logits(
-        logits,
+        torch.where(directional_mask, logits, torch.zeros_like(logits)),
         labels.to(logits.dtype),
         reduction="none",
     )
@@ -157,7 +189,12 @@ def compute_loss(output: BarGPTOutput, batch: BarGPTBatch, config: TrainConfig, 
         target = batch.horizon_targets[..., :CONTINUOUS_TARGET_COUNT]
         mask = batch.horizon_mask[..., :CONTINUOUS_TARGET_COUNT] & batch.origin_mask[:, :, None, None]
         q = torch.as_tensor(quantiles, device=output.horizon_quantiles.device, dtype=output.horizon_quantiles.dtype)
-        error = target.unsqueeze(-1).to(output.horizon_quantiles.dtype) - output.horizon_quantiles
+        safe_prediction = torch.where(
+            mask.unsqueeze(-1), output.horizon_quantiles,
+            torch.zeros_like(output.horizon_quantiles),
+        )
+        safe_target = torch.where(mask, target, torch.zeros_like(target))
+        error = safe_target.unsqueeze(-1).to(output.horizon_quantiles.dtype) - safe_prediction
         pinball = torch.maximum(q * error, (q - 1.0) * error)
         horizon_cont = _weighted_mean(pinball, mask.unsqueeze(-1).expand_as(pinball), batch.sample_weights)
     if output.horizon_availability_logits is not None:
@@ -168,8 +205,13 @@ def compute_loss(output: BarGPTOutput, batch: BarGPTBatch, config: TrainConfig, 
         )
         positive_weights[-4:] = float(config.condition_positive_weight)
         bce = torch.nn.functional.binary_cross_entropy_with_logits(
-            output.horizon_availability_logits,
-            target.to(output.horizon_availability_logits.dtype),
+            torch.where(
+                mask, output.horizon_availability_logits,
+                torch.zeros_like(output.horizon_availability_logits),
+            ),
+            torch.where(mask, target, torch.zeros_like(target)).to(
+                output.horizon_availability_logits.dtype
+            ),
             reduction="none",
             pos_weight=positive_weights,
         )

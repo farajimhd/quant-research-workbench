@@ -61,7 +61,12 @@ from research.bar_gpt.v1.metrics import ValidationAccumulator
 from research.bar_gpt.v1.features import MODEL_FEATURE_NAMES, project_stationary_features
 from research.bar_gpt.v1.model import BarGPTV1
 from research.bar_gpt.v1.linear_probe import fit_ridge_probes
-from research.bar_gpt.v1.objectives import _weighted_mean, compute_loss
+from research.bar_gpt.v1.objectives import (
+    _weighted_mean,
+    compute_loss,
+    masked_huber_loss,
+    masked_quantile_loss,
+)
 from research.bar_gpt.v1.offline_shards import (
     BuildRunLog,
     OFFLINE_SHARD_BUILD_STREAM_CONTRACT_VERSION,
@@ -1895,6 +1900,27 @@ class LoaderTrainerContractTest(unittest.TestCase):
         self.assertTrue(torch.isfinite(empty))
         self.assertEqual(float(empty), 0.0)
 
+    def test_masked_losses_do_not_backpropagate_nonfinite_padding(self) -> None:
+        huber_prediction = torch.tensor([1.0, float("nan")], requires_grad=True)
+        target = torch.tensor([0.0, float("nan")])
+        mask = torch.tensor([True, False])
+        huber = masked_huber_loss(huber_prediction, target, mask)
+        huber.backward()
+        self.assertTrue(bool(torch.isfinite(huber_prediction.grad).all()))
+        torch.testing.assert_close(huber_prediction.grad, torch.tensor([1.0, 0.0]))
+
+        quantile_prediction = torch.tensor(
+            [[1.0], [float("nan")]], requires_grad=True
+        )
+        quantile = masked_quantile_loss(
+            quantile_prediction, target, mask, (0.5,)
+        )
+        quantile.backward()
+        self.assertTrue(bool(torch.isfinite(quantile_prediction.grad).all()))
+        torch.testing.assert_close(
+            quantile_prediction.grad, torch.tensor([[0.5], [0.0]])
+        )
+
     def test_checkpoint_policy_selects_on_validation_not_training_loss(self) -> None:
         config = TrainConfig(checkpoint_validation_evaluations=3)
         policy = _checkpoint_policy(config)
@@ -2089,7 +2115,7 @@ class LoaderTrainerContractTest(unittest.TestCase):
         self.assertEqual(set(output.autoregressive), {"1s", "5s", "10s", "30s", "1m", "5m", "30m", "1h"})
         self.assertEqual(set(output.autoregressive_direction_logits), set(output.autoregressive))
         self.assertEqual(output.horizon_direction_logits.shape, (*batch.horizon_targets.shape[:-1], DIRECTION_TARGET_COUNT))
-        self.assertEqual(set(output.latent_predictions), set(batch.views))
+        self.assertEqual(set(output.latent_predictions), set(output.autoregressive))
         self.assertNotIn("1MO", output.autoregressive)
         loss = compute_loss(output, batch, TrainConfig(), model_config.quantiles)
         self.assertTrue(torch.isfinite(loss.loss))

@@ -107,7 +107,11 @@ def collect_embeddings(
                 pathway_ids=PATHWAY_ID_BY_NAME,
                 base_view="1s",
                 origin_indices=batch.origin_indices,
+                origin_mask=batch.origin_mask,
+                valid_origin_count=batch.valid_origin_count,
+                valid_origin_indices=batch.valid_origin_indices,
                 asof_indices=batch.asof_indices,
+                valid_asof_origin_indices=batch.valid_asof_origin_indices,
                 attention_windows=data_config.attention_window_by_name,
                 view_masks={name: batch.view_mask[name] for name in batch.masked_context_views},
             )

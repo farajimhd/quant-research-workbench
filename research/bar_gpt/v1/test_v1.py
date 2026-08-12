@@ -47,7 +47,7 @@ from research.bar_gpt.v1.config import BarGPTConfig, DataConfig
 from research.bar_gpt.v1.data import BarView, causal_asof_indices, densify_one_second_view, horizon_target_indices, rollup_intraday_view
 from research.bar_gpt.v1.features import MODEL_FEATURE_NAMES, project_stationary_features
 from research.bar_gpt.v1.direct_event_shards import direct_trade_bar_query
-from research.bar_gpt.v1.model import BarGPTV1, CausalSelfAttention, RMSNorm
+from research.bar_gpt.v1.model import BarGPTV1, CausalSelfAttention, RMSNorm, _rotate_half
 from research.bar_gpt.v1.loader import (
     ClickHouseBarStreamConfig,
     TickerInterval,
@@ -179,24 +179,73 @@ class BuilderSqlTest(unittest.TestCase):
         self.assertEqual(val.shape[1], 4)
         self.assertFalse(sdpa.call_args.kwargs["enable_gqa"])
 
-    def test_local_attention_expands_kv_to_preserve_efficient_sdpa_dispatch(self) -> None:
+    def test_local_attention_keeps_compact_gqa_and_bounded_score_bands(self) -> None:
         config = BarGPTConfig(d_model=32, n_heads=4, n_kv_heads=2, dropout=0.0)
         attention = CausalSelfAttention(config).eval()
         value = torch.randn(2, 7, 32)
-        with patch(
-            "research.bar_gpt.v1.model.F.scaled_dot_product_attention",
-            wraps=torch.nn.functional.scaled_dot_product_attention,
-        ) as sdpa:
+        with patch.object(
+            attention,
+            "_window_attention",
+            wraps=attention._window_attention,
+        ) as window_attention:
             output = attention(value, attention_window=3)
         self.assertEqual(output.shape, value.shape)
-        query, key, val = sdpa.call_args.args[:3]
+        query, key, val = window_attention.call_args.args[:3]
         self.assertEqual(query.shape[1], 4)
-        self.assertEqual(key.shape[1], 4)
-        self.assertEqual(val.shape[1], 4)
-        self.assertNotIn("enable_gqa", sdpa.call_args.kwargs)
-        self.assertFalse(sdpa.call_args.kwargs["is_causal"])
-        allowed = sdpa.call_args.kwargs["attn_mask"]
-        self.assertFalse(bool(torch.triu(allowed, diagonal=1).any()))
+        self.assertEqual(key.shape[1], 2)
+        self.assertEqual(val.shape[1], 2)
+        plan = attention.build_window_plan(1024, 64, value.device)
+        self.assertLess(sum(allowed.numel() for *_bounds, allowed in plan), 1024 ** 2)
+        self.assertLessEqual(max(allowed.shape[1] for *_bounds, allowed in plan), 319)
+
+    def test_banded_gqa_matches_dense_causal_window_outputs_and_gradients(self) -> None:
+        torch.manual_seed(19)
+        config = BarGPTConfig(d_model=32, n_heads=4, n_kv_heads=2, dropout=0.0)
+        attention = CausalSelfAttention(config).eval()
+        actual_input = torch.randn(2, 11, 32, requires_grad=True)
+        reference_input = actual_input.detach().clone().requires_grad_(True)
+        token_mask = torch.tensor([
+            [False, False, True, True, True, True, True, True, True, True, True],
+            [True, True, True, True, True, True, True, True, False, False, False],
+        ])
+        actual = attention(actual_input, attention_window=4, token_mask=token_mask)
+
+        batch, length, _ = reference_input.shape
+        query = attention.q_proj(reference_input).view(batch, length, 4, 8).transpose(1, 2)
+        key = attention.k_proj(reference_input).view(batch, length, 2, 8).transpose(1, 2)
+        value = attention.v_proj(reference_input).view(batch, length, 2, 8).transpose(1, 2)
+        query = attention.q_norm(query)
+        key = attention.k_norm(key)
+        cosine, sine = attention.rope(length, reference_input.device, reference_input.dtype)
+        query = query * cosine + _rotate_half(query) * sine
+        key = key * cosine + _rotate_half(key) * sine
+        positions = torch.arange(length)
+        allowed = (
+            (positions[None, :] <= positions[:, None])
+            & (positions[None, :] > positions[:, None] - 4)
+        ).view(1, 1, length, length) & token_mask[:, None, None, :]
+        invalid_query = ~token_mask
+        allowed |= invalid_query[:, None, :, None] & torch.eye(
+            length, dtype=torch.bool
+        ).view(1, 1, length, length)
+        reference = torch.nn.functional.scaled_dot_product_attention(
+            query,
+            key.repeat_interleave(2, dim=1),
+            value.repeat_interleave(2, dim=1),
+            attn_mask=allowed,
+        )
+        reference = attention.out_proj(reference.transpose(1, 2).contiguous().view(batch, length, -1))
+        reference = reference * token_mask.unsqueeze(-1)
+        torch.testing.assert_close(actual, reference, atol=2e-5, rtol=2e-5)
+
+        actual.square().sum().backward()
+        reference.square().sum().backward()
+        torch.testing.assert_close(
+            actual_input.grad,
+            reference_input.grad,
+            atol=3e-5,
+            rtol=3e-5,
+        )
 
     def test_future_tokens_cannot_change_past_states_in_either_attention_path(self) -> None:
         torch.manual_seed(17)
@@ -215,6 +264,31 @@ class BuilderSqlTest(unittest.TestCase):
                 expected = attention(value, **kwargs)
                 actual = attention(changed, **kwargs)
             torch.testing.assert_close(actual[:, :5], expected[:, :5], atol=1e-6, rtol=1e-6)
+
+    def test_banded_attention_is_causal_across_query_chunk_boundary(self) -> None:
+        torch.manual_seed(23)
+        config = BarGPTConfig(d_model=32, n_heads=4, n_kv_heads=2, dropout=0.0)
+        attention = CausalSelfAttention(config).eval()
+        value = torch.randn(1, 270, 32)
+        changed = value.clone()
+        changed[:, 257:] += torch.randn_like(changed[:, 257:]) * 100.0
+        with torch.no_grad():
+            expected = attention(value, attention_window=17)
+            actual = attention(changed, attention_window=17)
+        torch.testing.assert_close(actual[:, :257], expected[:, :257], atol=2e-5, rtol=2e-5)
+
+    def test_window_attention_dropout_remains_active_and_reproducible(self) -> None:
+        config = BarGPTConfig(d_model=32, n_heads=4, n_kv_heads=2, dropout=0.25)
+        attention = CausalSelfAttention(config).train()
+        value = torch.randn(2, 19, 32)
+        torch.manual_seed(31)
+        first = attention(value, attention_window=5)
+        torch.manual_seed(31)
+        second = attention(value, attention_window=5)
+        torch.testing.assert_close(first, second)
+        attention.eval()
+        deterministic = attention(value, attention_window=5)
+        self.assertFalse(torch.allclose(first, deterministic))
 
     def test_native_gqa_matches_explicit_kv_repetition(self) -> None:
         query = torch.randn(2, 4, 7, 8, requires_grad=True)
@@ -717,6 +791,50 @@ class TemporalContractTest(unittest.TestCase):
 
 
 class ModelContractTest(unittest.TestCase):
+    def test_packed_origin_fusion_matches_dense_valid_outputs(self) -> None:
+        torch.manual_seed(29)
+        config = BarGPTConfig(
+            feature_dim=len(MODEL_FEATURE_NAMES), d_model=32, n_layers=2,
+            n_heads=4, n_kv_heads=2, horizon_rank=8, dropout=0.0,
+        )
+        model = BarGPTV1(config).eval()
+        views = {
+            "1s": torch.randn(2, 9, len(MODEL_FEATURE_NAMES)),
+            "5s": torch.randn(2, 5, len(MODEL_FEATURE_NAMES)),
+        }
+        origins = torch.tensor([[3, 5, 8], [2, 7, 0]])
+        origin_mask = torch.tensor([[True, True, True], [True, True, False]])
+        asof = {"5s": torch.tensor([[1, 2, 4], [-1, 3, -1]])}
+        kwargs = {
+            "timeframe_us": {"1s": 1_000_000, "5s": 5_000_000},
+            "pathway_ids": {"1s": 0, "5s": 1},
+            "base_view": "1s",
+            "origin_indices": origins,
+            "asof_indices": asof,
+            "attention_windows": {"1s": 5, "5s": 3},
+            "horizon_ids": torch.tensor([0, 1]),
+        }
+        with torch.no_grad():
+            dense = model(views, **kwargs)
+            packed = model(
+                views,
+                **kwargs,
+                origin_mask=origin_mask,
+                valid_origin_count=5,
+                valid_origin_indices=torch.tensor([0, 1, 2, 3, 4]),
+                valid_asof_origin_indices={"5s": torch.tensor([0, 1, 2, 4])},
+            )
+        torch.testing.assert_close(packed.embeddings[origin_mask], dense.embeddings[origin_mask])
+        torch.testing.assert_close(
+            packed.horizon_quantiles[origin_mask], dense.horizon_quantiles[origin_mask]
+        )
+        torch.testing.assert_close(
+            packed.horizon_availability_logits[origin_mask],
+            dense.horizon_availability_logits[origin_mask],
+        )
+        self.assertTrue(bool(torch.all(packed.embeddings[~origin_mask] == 0)))
+        self.assertTrue(bool(torch.all(packed.horizon_quantiles[~origin_mask] == 0)))
+
     def test_forward_shapes_and_future_causality(self) -> None:
         torch.manual_seed(7)
         config = BarGPTConfig(
