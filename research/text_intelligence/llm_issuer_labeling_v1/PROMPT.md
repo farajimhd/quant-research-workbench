@@ -1,5 +1,8 @@
 # Standalone LLM Issuer-News Labeling Prompt
 
+> Superseded by `research/text_intelligence/llm_issuer_labeling_v2/PROMPT.md`,
+> which replaces verbose concept objects with compact fixed issuer-level tags.
+
 This contract is independent of News Synthesis. The LLM extracts the issuers,
 resolves their visible identities, and predicts all labels itself.
 
