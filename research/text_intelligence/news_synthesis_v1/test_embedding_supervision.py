@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import unittest
+from datetime import date
+from pathlib import Path
 
 import numpy as np
 
@@ -10,13 +12,24 @@ from .embedding_supervision import (
     match_issuer_embedding,
     pool_embedding_chunks,
 )
+from .engine import IssuerIdentity, IssuerIdentityIndex
 from .run_embedding_supervision import _fit_tuning_indexes
+from .run_tfidf_supervision_v2 import _train_args as _v2_train_args
+from .run_tfidf_supervision_v3 import _train_args as _v3_train_args
 from .tfidf_supervision import fit_tfidf_vocabulary, transform_tfidf
 from .tfidf_supervision_v2 import (
     fit_v2_vocabulary,
     normalize_financial_text,
     parse_qwen_news_document,
     tfidf_v2_feature_counts,
+)
+from .tfidf_supervision_v3 import (
+    anonymize_issuer_mentions,
+    economic_relation_features,
+    fit_v3_vocabulary,
+    issuer_local_clauses,
+    point_in_time_aliases,
+    tfidf_v3_feature_counts,
 )
 
 
@@ -177,6 +190,113 @@ class EmbeddingSupervisionTests(unittest.TestCase):
         self.assertLessEqual(len(terms), 18)
         self.assertTrue(report["training_only_vocabulary"])
         self.assertFalse(any("validation_only" in term for term in terms))
+
+    def test_tfidf_v3_uses_point_in_time_aliases_for_local_clauses(self) -> None:
+        identity_index = IssuerIdentityIndex(
+            (
+                IssuerIdentity(
+                    ticker="ABC",
+                    issuer_id="issuer-1",
+                    security_id="security-1",
+                    display_name="Alpha Biotech Corporation",
+                    aliases=("Alpha Biotech Corporation", "Alpha Biotech"),
+                    list_date=date(2020, 1, 1),
+                    delisted_date=date(2025, 1, 1),
+                ),
+            )
+        )
+        aliases = point_in_time_aliases(
+            identity_index,
+            ticker="ABC",
+            published_at_utc="2024-06-01 12:00:00",
+        )
+        clauses = issuer_local_clauses(
+            "A peer reported results. Alpha Biotech raised guidance. It expects growth.",
+            aliases=aliases,
+        )
+        self.assertIn("alpha biotech", {value.lower() for value in aliases})
+        self.assertEqual(
+            clauses,
+            ("Alpha Biotech raised guidance.", "It expects growth."),
+        )
+        self.assertEqual(
+            anonymize_issuer_mentions("Alpha Biotech raised guidance.", aliases=aliases),
+            "<issuer> raised guidance.",
+        )
+        self.assertEqual(
+            point_in_time_aliases(
+                identity_index,
+                ticker="ABC",
+                published_at_utc="2019-06-01 12:00:00",
+            ),
+            ("ABC",),
+        )
+
+    def test_tfidf_v3_structures_numeric_and_economic_relationships(self) -> None:
+        features = economic_relation_features(
+            "Revenue grew 12% and EPS of 1.20 beat the consensus estimate of 1.00. "
+            "The company raised guidance and repaid debt."
+        )
+        self.assertIn("economic_relation|change:increase:10_to_25", features)
+        self.assertIn("economic_relation|comparison:beat", features)
+        self.assertIn("economic_relation|numeric_actual_vs_estimate:above", features)
+        self.assertIn("economic_relation|guidance:raised", features)
+        self.assertIn("economic_relation|financing:debt_reduction", features)
+
+    def test_tfidf_v3_adds_features_without_gold_or_prediction_inputs(self) -> None:
+        text = (
+            "NEWS\nticker: ABC\npublished_at_utc: 2024-06-01 12:00:00\n"
+            "title: Alpha Biotech raises guidance\nteaser: Revenue beat estimates\n"
+            "BODY\nAlpha Biotech revenue rose 8%."
+        )
+        features = tfidf_v3_feature_counts(
+            text,
+            ticker="ABC",
+            aliases=("ABC", "Alpha Biotech"),
+        )
+        self.assertIn("issuer_clause_word|u:<issuer>", features)
+        self.assertNotIn("issuer_clause_word|u:alpha", features)
+        self.assertIn("economic_relation|guidance:raised", features)
+        self.assertFalse(any("gold" in term or "prediction" in term for term in features))
+
+    def test_tfidf_v3_vocabulary_is_training_only_and_feature_only(self) -> None:
+        documents = [
+            (
+                "ABC",
+                "NEWS\nticker: ABC\ntitle: Alpha raises guidance\nBODY\nAlpha revenue beat estimates.",
+                ("ABC", "Alpha"),
+            )
+        ]
+        terms, _, report = fit_v3_vocabulary(
+            documents,
+            min_document_frequency=1,
+            budgets={
+                "title_word": 2,
+                "teaser_word": 0,
+                "body_word": 2,
+                "supplemental_word": 0,
+                "title_char": 0,
+                "teaser_char": 0,
+                "local_word": 0,
+                "structural": 2,
+                "issuer_clause_word": 3,
+                "issuer_clause_char": 0,
+                "economic_relation": 3,
+            },
+        )
+        self.assertTrue(report["training_only_vocabulary"])
+        self.assertTrue(report["feature_only_change_from_v2"])
+        self.assertFalse(report["supervised_feature_selection"])
+        self.assertTrue(any(term.startswith("issuer_clause_word|") for term in terms))
+
+    def test_tfidf_v3_keeps_v2_model_and_training_configuration(self) -> None:
+        v2 = vars(_v2_train_args(Path("v2-data"), Path("v2-run"), 8))
+        v3 = vars(_v3_train_args(Path("v3-data"), Path("v3-run"), 8))
+        v2.pop("data_root")
+        v2.pop("run_root")
+        v3.pop("data_root")
+        v3.pop("run_root")
+        self.assertEqual(v2, v3)
 
 
 if __name__ == "__main__":

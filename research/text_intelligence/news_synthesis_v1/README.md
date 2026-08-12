@@ -207,3 +207,25 @@ python -m research.text_intelligence.news_synthesis_v1.run_tfidf_supervision_v2
 V2 is a separately versioned experiment and does not replace V1. Its validation
 report and direct Qwen/V1/V2 comparison are written beneath
 `D:\TradingML\runtimes\text_intelligence\news_synthesis_v1\tfidf_supervision_v2`.
+
+TF-IDF V3 is a feature-only experiment over the identical split and unchanged
+V2 residual multi-task MLP. It adds point-in-time canonical issuer aliases to
+identify issuer-local clauses, bounded one-clause anaphora, and generic
+structured economic relationships (actual-versus-estimate, beat/miss,
+increase/decrease magnitude buckets, profit/loss transitions, guidance
+changes, financing/debt/liquidity, capital returns, and regulatory outcomes).
+Issuer mentions in the new local-clause namespace are replaced by a generic
+`<issuer>` token. V3 does not use gold labels, predictions, source IDs, or
+company/ticker-specific hard-coded rules, and it does not perform supervised
+feature selection. The resolved as-of aliases used for each document are
+persisted in the runtime dataset for reproducibility:
+
+```powershell
+$env:PYTHONDONTWRITEBYTECODE='1'
+python -m research.text_intelligence.news_synthesis_v1.run_tfidf_supervision_v3
+```
+
+V3 refuses to overwrite an existing run. Its arrays, alias authority,
+vocabulary, checkpoint, evaluation, and V1/V2/V3 comparison are written only
+beneath
+`D:\TradingML\runtimes\text_intelligence\news_synthesis_v1\tfidf_supervision_v3`.
