@@ -31,6 +31,8 @@ TFIDF_V7_DATASET_VERSION = "news_synthesis_tfidf_provenance_multiview_v7"
 TFIDF_V7_MODEL_VERSION = "news_synthesis_tfidf_multitask_mlp_v7"
 TFIDF_V8_DATASET_VERSION = "news_synthesis_tfidf_entity_clause_invariant_v8"
 TFIDF_V8_MODEL_VERSION = "news_synthesis_tfidf_multitask_mlp_v8"
+TFIDF_V9_DATASET_VERSION = "news_synthesis_tfidf_clause_ir_sparse_v9"
+TFIDF_V9_MODEL_VERSION = "news_synthesis_tfidf_multitask_mlp_v9"
 COMPARISON_DATASET_VERSION = "news_synthesis_common_representation_supervision_v1"
 OPENAI_MODEL_VERSION = "news_synthesis_openai_multitask_mlp_v1"
 SUPPORTED_DATASET_VERSIONS = {
@@ -43,6 +45,7 @@ SUPPORTED_DATASET_VERSIONS = {
     TFIDF_V6_DATASET_VERSION,
     TFIDF_V7_DATASET_VERSION,
     TFIDF_V8_DATASET_VERSION,
+    TFIDF_V9_DATASET_VERSION,
     COMPARISON_DATASET_VERSION,
 }
 DEFAULT_EMBEDDING_MODEL = "Qwen/Qwen3-Embedding-0.6B"
@@ -428,9 +431,18 @@ def validate_prepared_dataset(root: Path) -> dict[str, Any]:
         path = root / name
         if not path.is_file() or file_sha256(path) != expected["sha256"]:
             raise RuntimeError(f"Prepared dataset hash mismatch: {name}")
-    article_x = np.load(root / "article_embeddings.npy", mmap_mode="r")
+    vector_storage = str((manifest.get("representation") or {}).get("vector_storage") or "dense_npy")
+    if vector_storage == "csr_npz":
+        from .sparse_features import load_csr_npz
+
+        article_x = load_csr_npz(root / "article_embeddings.npz")
+        issuer_x = load_csr_npz(root / "issuer_embeddings.npz")
+    elif vector_storage == "dense_npy":
+        article_x = np.load(root / "article_embeddings.npy", mmap_mode="r")
+        issuer_x = np.load(root / "issuer_embeddings.npy", mmap_mode="r")
+    else:
+        raise RuntimeError(f"Unsupported vector storage: {vector_storage}")
     article_y = np.load(root / "article_eligibility.npy", mmap_mode="r")
-    issuer_x = np.load(root / "issuer_embeddings.npy", mmap_mode="r")
     issuer_y = np.load(root / "issuer_eligibility.npy", mmap_mode="r")
     sentiment = np.load(root / "issuer_sentiment.npy", mmap_mode="r")
     concepts = np.load(root / "issuer_concepts.npy", mmap_mode="r")

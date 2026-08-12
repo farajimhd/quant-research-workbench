@@ -259,6 +259,12 @@ def fit_v7_vocabulary_from_document_frequency(
                 "normalized_economic",
                 "enrichment_economic",
                 "metadata_structural",
+                "target_clause_structure",
+                "target_clause_interaction",
+                "cross_view_agreement",
+                "predicate_role",
+                "state_transition",
+                "numeric_magnitude",
             }
             else min_document_frequency
         )

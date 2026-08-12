@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+import tempfile
 from collections import Counter
 from datetime import date
 from pathlib import Path
@@ -14,7 +15,7 @@ from .embedding_supervision import (
     pool_embedding_chunks,
 )
 from .engine import IssuerIdentity, IssuerIdentityIndex
-from .run_embedding_supervision import _fit_tuning_indexes
+from .run_embedding_supervision import _array_dataset_class, _fit_tuning_indexes
 from .run_tfidf_supervision_v2 import _train_args as _v2_train_args
 from .run_tfidf_supervision_v3 import _train_args as _v3_train_args
 from .run_tfidf_supervision_v4 import _train_args as _v4_train_args
@@ -56,6 +57,12 @@ from .tfidf_supervision_v7 import (
 from .tfidf_supervision_v8 import (
     V8_FIELD_BUDGETS,
     invariant_target_clause_features,
+)
+from .tfidf_supervision_v9 import (
+    V9_FIELD_BUDGETS,
+    _sparse_row,
+    analyze_clause_ir,
+    tfidf_v9_feature_counts,
 )
 
 
@@ -605,6 +612,102 @@ class EmbeddingSupervisionTests(unittest.TestCase):
         self.assertEqual(actor["target_clause_structure|role:actor"], 1)
         self.assertEqual(affected["target_clause_structure|role:affected"], 1)
         self.assertEqual(forward["target_clause_structure|currentness:forward"], 1)
+
+    def test_tfidf_v9_preserves_feature_budget(self) -> None:
+        self.assertEqual(sum(V9_FIELD_BUDGETS.values()), sum(V8_FIELD_BUDGETS.values()))
+
+    def test_tfidf_v9_clause_ir_handles_active_passive_and_receiver_roles(self) -> None:
+        active = analyze_clause_ir("Alpha acquired Beta.", aliases=("Alpha",))[0]
+        passive = analyze_clause_ir("Alpha was acquired by Beta.", aliases=("Alpha",))[0]
+        receiver = analyze_clause_ir("Alpha received FDA approval.", aliases=("Alpha",))[0]
+        self.assertEqual(active.role, "actor")
+        self.assertEqual(passive.role, "affected")
+        self.assertEqual(receiver.role, "affected_receiver")
+
+    def test_tfidf_v9_clause_ir_preserves_state_and_numeric_magnitude(self) -> None:
+        row = analyze_clause_ir(
+            "Alpha previously failed but has now regained compliance after raising $1.2 billion and revenue rose 12%.",
+            aliases=("Alpha",),
+        )[0]
+        self.assertIn("transition:historical_to_current", row.state_tokens)
+        self.assertIn("transition:adverse_to_recovery", row.state_tokens)
+        self.assertIn("currency:ge_1b", row.numeric_tokens)
+        self.assertIn("percent:10_to_25", row.numeric_tokens)
+
+    def test_tfidf_v9_keeps_v8_numeric_tokens_in_existing_lexical_channels(self) -> None:
+        values = tfidf_v9_feature_counts(
+            original_fields={
+                "title": "Alpha revenue rose 12 percent",
+                "teaser": "",
+                "body": "Alpha raised $1.2 billion",
+            },
+            normalized_fields={
+                "title": "Alpha revenue rose 12 percent",
+                "teaser": "",
+                "body": "Alpha raised $1.2 billion",
+                "external": "",
+                "pdf": "",
+            },
+            metadata_text="",
+            metadata_structural=Counter(),
+            ticker="ALPHA",
+            aliases=("Alpha",),
+        )
+        self.assertTrue(any("percent" in key for key in values if key.startswith("provider_title_word|")))
+        self.assertTrue(any("rate_value" in key for key in values if key.startswith("target_clause_word|")))
+
+    def test_sparse_array_dataset_densifies_only_selected_rows(self) -> None:
+        from .sparse_features import csr_from_rows, load_csr_npz, save_csr_npz
+
+        Dataset = _array_dataset_class()
+        matrix = csr_from_rows(
+            [
+                (np.asarray([1]), np.asarray([2.0], dtype=np.float32)),
+                (np.asarray([0]), np.asarray([3.0], dtype=np.float32)),
+            ],
+            columns=2,
+        )
+        dataset = Dataset(matrix)
+        self.assertEqual(len(dataset), 2)
+        np.testing.assert_allclose(dataset[1][0].numpy(), [3.0, 0.0])
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "features.npz"
+            save_csr_npz(path, matrix)
+            restored = load_csr_npz(path)
+            np.testing.assert_allclose(restored[0].toarray(), [[0.0, 2.0]])
+            np.testing.assert_allclose(restored[1].toarray(), [[3.0, 0.0]])
+
+    def test_sparse_transform_matches_dense_view_normalization(self) -> None:
+        from .tfidf_supervision_v7 import transform_v7_counts, v7_view_indexes
+
+        vocabulary = {
+            "provider_title_word|u:alpha": 0,
+            "provider_body_word|u:beta": 1,
+            "normalized_structural|has:body": 2,
+            "metadata_structural|has:author": 3,
+        }
+        counts = Counter(
+            {
+                "provider_title_word|u:alpha": 2,
+                "provider_body_word|u:beta": 1,
+                "normalized_structural|has:body": 1,
+                "metadata_structural|has:author": 1,
+            }
+        )
+        idf = np.asarray([1.2, 1.5, 1.1, 1.3], dtype=np.float32)
+        views = v7_view_indexes(vocabulary)
+        index_view = {
+            int(index): view for view, indexes in views.items() for index in indexes
+        }
+        indices, values = _sparse_row(
+            counts, vocabulary=vocabulary, idf=idf, index_view=index_view
+        )
+        sparse = np.zeros(len(vocabulary), dtype=np.float32)
+        sparse[indices] = values
+        dense = transform_v7_counts(
+            counts, vocabulary=vocabulary, idf=idf, view_indexes=views
+        )
+        np.testing.assert_allclose(sparse, dense, atol=1e-7)
 
 
 if __name__ == "__main__":

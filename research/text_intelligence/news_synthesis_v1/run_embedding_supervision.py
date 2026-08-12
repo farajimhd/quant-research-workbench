@@ -43,6 +43,7 @@ from .embedding_supervision import (
     TFIDF_V6_MODEL_VERSION,
     TFIDF_V7_MODEL_VERSION,
     TFIDF_V8_MODEL_VERSION,
+    TFIDF_V9_MODEL_VERSION,
     TrainConfig,
     assert_runtime_path,
     build_supervision_arrays,
@@ -383,14 +384,20 @@ def _array_dataset_class():
     torch, _, _, Dataset = _torch_imports()
 
     class ArrayDataset(Dataset):
-        def __init__(self, *arrays: np.ndarray) -> None:
+        def __init__(self, *arrays) -> None:
             self.arrays = arrays
 
         def __len__(self) -> int:
             return len(self.arrays[0])
 
         def __getitem__(self, index: int):
-            return tuple(torch.from_numpy(np.asarray(value[index])) for value in self.arrays)
+            result = []
+            for value in self.arrays:
+                row = value[index]
+                if hasattr(row, "toarray"):
+                    row = row.toarray().reshape(-1)
+                result.append(torch.from_numpy(np.asarray(row)))
+            return tuple(result)
 
     return ArrayDataset
 
@@ -491,6 +498,8 @@ def _model_version_for_dataset(data_root: Path) -> str:
         return TFIDF_V7_MODEL_VERSION
     if representation == "tfidf_v8_entity_clause_invariant":
         return TFIDF_V8_MODEL_VERSION
+    if representation == "tfidf_v9_clause_ir_sparse":
+        return TFIDF_V9_MODEL_VERSION
     if representation == "openai":
         return OPENAI_MODEL_VERSION
     raise RuntimeError(f"Unsupported supervision representation: {representation}")
@@ -717,10 +726,22 @@ def train_model(args: argparse.Namespace) -> dict[str, Any]:
 
 
 def _load_dataset(root: Path):
+    manifest = json.loads((root / "manifest.json").read_text(encoding="utf-8"))
+    vector_storage = str((manifest.get("representation") or {}).get("vector_storage") or "dense_npy")
+    if vector_storage == "csr_npz":
+        from .sparse_features import load_csr_npz
+
+        article_x = load_csr_npz(root / "article_embeddings.npz")
+        issuer_x = load_csr_npz(root / "issuer_embeddings.npz")
+    elif vector_storage == "dense_npy":
+        article_x = np.load(root / "article_embeddings.npy")
+        issuer_x = np.load(root / "issuer_embeddings.npy")
+    else:
+        raise RuntimeError(f"Unsupported vector storage: {vector_storage}")
     arrays = {
-        "article_x": np.load(root / "article_embeddings.npy"),
+        "article_x": article_x,
         "article_y": np.load(root / "article_eligibility.npy"),
-        "issuer_x": np.load(root / "issuer_embeddings.npy"),
+        "issuer_x": issuer_x,
         "issuer_y": np.load(root / "issuer_eligibility.npy"),
         "sentiment_y": np.load(root / "issuer_sentiment.npy"),
         "concept_y": np.load(root / "issuer_concepts.npy"),
