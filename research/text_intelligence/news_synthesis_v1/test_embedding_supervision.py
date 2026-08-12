@@ -21,6 +21,7 @@ from .run_tfidf_supervision_v4 import _train_args as _v4_train_args
 from .run_tfidf_supervision_v5 import _train_args as _v5_train_args
 from .run_tfidf_source_ablation_v6 import _train_args as _v6_train_args
 from .run_tfidf_supervision_v7 import _train_args as _v7_train_args
+from .run_tfidf_supervision_v7_cv import deterministic_stratified_folds
 from .tfidf_supervision import fit_tfidf_vocabulary, transform_tfidf
 from .tfidf_supervision_v2 import (
     fit_v2_vocabulary,
@@ -552,6 +553,25 @@ class EmbeddingSupervisionTests(unittest.TestCase):
             values.pop("data_root")
             values.pop("run_root")
         self.assertEqual(v6, v7)
+
+    def test_tfidf_v7_cv_is_deterministic_balanced_and_grouped(self) -> None:
+        source_ids = [f"source-{index:02d}" for index in range(20)]
+        labels = [0] * 10 + [1] * 10
+        left = deterministic_stratified_folds(
+            source_ids, labels, fold_count=5, seed="fixed"
+        )
+        right = deterministic_stratified_folds(
+            source_ids, labels, fold_count=5, seed="fixed"
+        )
+        self.assertEqual(left, right)
+        self.assertEqual(set(left), set(source_ids))
+        for fold in range(5):
+            held_out = [
+                labels[index]
+                for index, source_id in enumerate(source_ids)
+                if left[source_id] == fold
+            ]
+            self.assertEqual(Counter(held_out), Counter({0: 2, 1: 2}))
 
 
 if __name__ == "__main__":

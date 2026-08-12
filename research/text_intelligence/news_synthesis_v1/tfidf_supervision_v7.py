@@ -228,10 +228,25 @@ def fit_v7_vocabulary(
         raise ValueError("Training documents are empty")
     document_frequency: dict[str, Counter[str]] = defaultdict(Counter)
     for document, ticker, aliases in documents:
-        for term in tfidf_v7_feature_counts(
-            **document, ticker=ticker, aliases=aliases
-        ):
+        for term in tfidf_v7_feature_counts(**document, ticker=ticker, aliases=aliases):
             document_frequency[term.split("|", 1)[0]][term] += 1
+    return fit_v7_vocabulary_from_document_frequency(
+        document_frequency,
+        training_document_count=len(documents),
+        min_document_frequency=min_document_frequency,
+        budgets=budgets,
+    )
+
+
+def fit_v7_vocabulary_from_document_frequency(
+    document_frequency: Mapping[str, Counter[str]],
+    *,
+    training_document_count: int,
+    min_document_frequency: int = 3,
+    budgets: Mapping[str, int] = V7_FIELD_BUDGETS,
+) -> tuple[tuple[str, ...], np.ndarray, dict[str, Any]]:
+    if training_document_count <= 0:
+        raise ValueError("Training document count must be positive")
     selected: list[tuple[str, int]] = []
     families: dict[str, Any] = {}
     for family, budget in budgets.items():
@@ -247,23 +262,27 @@ def fit_v7_vocabulary(
             }
             else min_document_frequency
         )
-        candidates = [item for item in document_frequency[family].items() if item[1] >= minimum]
+        observed = document_frequency.get(family, Counter())
+        candidates = [item for item in observed.items() if item[1] >= minimum]
         candidates.sort(key=lambda item: (-item[1], item[0]))
         chosen = candidates[:budget]
         selected.extend(chosen)
         families[family] = {
-            "observed": len(document_frequency[family]),
+            "observed": len(observed),
             "selected": len(chosen),
             "budget": budget,
             "min_document_frequency": minimum,
         }
     terms = tuple(term for term, _ in selected)
     idf = np.asarray(
-        [math.log((1.0 + len(documents)) / (1.0 + count)) + 1.0 for _, count in selected],
+        [
+            math.log((1.0 + training_document_count) / (1.0 + count)) + 1.0
+            for _, count in selected
+        ],
         dtype=np.float32,
     )
     return terms, idf, {
-        "training_documents": len(documents),
+        "training_documents": training_document_count,
         "selected_features": len(terms),
         "families": families,
         "training_only_vocabulary": True,
@@ -288,6 +307,21 @@ def transform_v7(
     view_indexes: Mapping[str, np.ndarray] | None = None,
 ) -> np.ndarray:
     counts = tfidf_v7_feature_counts(**document, ticker=ticker, aliases=aliases)
+    return transform_v7_counts(
+        counts,
+        vocabulary=vocabulary,
+        idf=idf,
+        view_indexes=view_indexes,
+    )
+
+
+def transform_v7_counts(
+    counts: Mapping[str, int],
+    *,
+    vocabulary: Mapping[str, int],
+    idf: np.ndarray,
+    view_indexes: Mapping[str, np.ndarray] | None = None,
+) -> np.ndarray:
     vector = np.zeros(len(vocabulary), dtype=np.float32)
     for term, count in counts.items():
         index = vocabulary.get(term)
