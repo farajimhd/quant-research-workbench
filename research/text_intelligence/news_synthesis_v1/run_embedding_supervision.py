@@ -38,6 +38,7 @@ from .embedding_supervision import (
     TFIDF_MODEL_VERSION,
     TFIDF_V2_MODEL_VERSION,
     TFIDF_V3_MODEL_VERSION,
+    TFIDF_V4_MODEL_VERSION,
     TrainConfig,
     assert_runtime_path,
     build_supervision_arrays,
@@ -476,6 +477,8 @@ def _model_version_for_dataset(data_root: Path) -> str:
         return TFIDF_V2_MODEL_VERSION
     if representation == "tfidf_v3":
         return TFIDF_V3_MODEL_VERSION
+    if representation == "tfidf_v4":
+        return TFIDF_V4_MODEL_VERSION
     if representation == "openai":
         return OPENAI_MODEL_VERSION
     raise RuntimeError(f"Unsupported supervision representation: {representation}")

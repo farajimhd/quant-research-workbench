@@ -41,7 +41,6 @@ from .tfidf_supervision_v2 import (
     _structural_features,
     _word_features,
     parse_qwen_news_document,
-    tfidf_v2_feature_counts,
 )
 
 
@@ -218,6 +217,17 @@ def tfidf_v3_feature_counts(
     aliases: Sequence[str],
 ) -> Counter[str]:
     fields = parse_qwen_news_document(text)
+    return tfidf_v3_feature_counts_from_fields(fields, ticker=ticker, aliases=aliases)
+
+
+def tfidf_v3_feature_counts_from_fields(
+    fields: Mapping[str, str],
+    *,
+    ticker: str,
+    aliases: Sequence[str],
+) -> Counter[str]:
+    """Build V3 features from authoritative fields without requiring token text."""
+
     authoritative_text = "\n".join(
         fields[name] for name in ("title", "teaser", "body") if fields[name]
     )
@@ -225,7 +235,28 @@ def tfidf_v3_feature_counts(
         " ".join(issuer_local_clauses(authoritative_text, aliases=aliases)),
         aliases=aliases,
     )
-    result = tfidf_v2_feature_counts(text, ticker=ticker)
+    supplemental = "\n".join(
+        value for value in (fields["external"], fields["pdf"]) if value
+    )
+    local_sentences = [
+        sentence
+        for sentence in re.split(
+            r"(?<=[.!?])\s+|[\r\n]+",
+            "\n".join((fields["title"], fields["teaser"], fields["body"])),
+        )
+        if re.search(
+            rf"(?<![A-Z0-9]){re.escape(ticker)}(?![A-Z0-9])", sentence, re.I
+        )
+    ]
+    result = Counter()
+    result.update(_word_features("title_word", fields["title"]))
+    result.update(_word_features("teaser_word", fields["teaser"]))
+    result.update(_word_features("body_word", fields["body"]))
+    result.update(_word_features("supplemental_word", supplemental))
+    result.update(_char_features("title_char", fields["title"]))
+    result.update(_char_features("teaser_char", fields["teaser"]))
+    result.update(_word_features("local_word", " ".join(local_sentences)))
+    result.update(_structural_features(fields, ticker))
     result.update(_word_features("issuer_clause_word", local))
     result.update(_char_features("issuer_clause_char", local))
     result.update(economic_relation_features(local))

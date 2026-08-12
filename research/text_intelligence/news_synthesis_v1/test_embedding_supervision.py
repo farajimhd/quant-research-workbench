@@ -16,6 +16,7 @@ from .engine import IssuerIdentity, IssuerIdentityIndex
 from .run_embedding_supervision import _fit_tuning_indexes
 from .run_tfidf_supervision_v2 import _train_args as _v2_train_args
 from .run_tfidf_supervision_v3 import _train_args as _v3_train_args
+from .run_tfidf_supervision_v4 import _train_args as _v4_train_args
 from .tfidf_supervision import fit_tfidf_vocabulary, transform_tfidf
 from .tfidf_supervision_v2 import (
     fit_v2_vocabulary,
@@ -30,7 +31,9 @@ from .tfidf_supervision_v3 import (
     issuer_local_clauses,
     point_in_time_aliases,
     tfidf_v3_feature_counts,
+    tfidf_v3_feature_counts_from_fields,
 )
+from .tfidf_supervision_v4 import canonical_feature_fields, iter_canonical_news_rows
 
 
 class EmbeddingSupervisionTests(unittest.TestCase):
@@ -297,6 +300,62 @@ class EmbeddingSupervisionTests(unittest.TestCase):
         v3.pop("data_root")
         v3.pop("run_root")
         self.assertEqual(v2, v3)
+
+    def test_tfidf_v4_extracts_same_features_from_direct_fields(self) -> None:
+        fields = {
+            "provider": "wire",
+            "ticker": "ABC",
+            "published_at_utc": "2024-06-01 12:00:00",
+            "title": "Alpha Biotech raises guidance",
+            "teaser": "Revenue beat estimates",
+            "channels": "earnings",
+            "tags": "results",
+            "body": "Alpha Biotech revenue rose 8%.",
+            "external": "",
+            "pdf": "",
+        }
+        fielded_text = (
+            "NEWS\nprovider: wire\nticker: ABC\npublished_at_utc: 2024-06-01 12:00:00\n"
+            "title: Alpha Biotech raises guidance\nteaser: Revenue beat estimates\n"
+            "channels: earnings\ntags: results\nBODY\nAlpha Biotech revenue rose 8%."
+        )
+        aliases = ("ABC", "Alpha Biotech")
+        self.assertEqual(
+            tfidf_v3_feature_counts_from_fields(fields, ticker="ABC", aliases=aliases),
+            tfidf_v3_feature_counts(fielded_text, ticker="ABC", aliases=aliases),
+        )
+
+    def test_tfidf_v4_reads_normalized_source_without_token_tables(self) -> None:
+        class FakeClient:
+            def __init__(self) -> None:
+                self.sql = ""
+
+            def execute(self, sql: str) -> str:
+                self.sql = sql
+                return (
+                    '{"source_id":"s1","ticker":"ABC","published_at_utc":"2024-01-01",'
+                    '"provider":"wire","title":"Title","teaser":"Teaser","body":"Body",'
+                    '"external":"External","pdf":"PDF","channels":"news","tags":"tag",'
+                    '"normalized_text_hash":"hash",'
+                    '"normalizer_version":"v1","raw_payload_hash":"raw",'
+                    '"body_char_count":4,"external_char_count":8,"pdf_char_count":3}'
+                )
+
+        client = FakeClient()
+        rows = list(iter_canonical_news_rows(client, ["s1"]))
+        self.assertEqual(canonical_feature_fields(rows[0])["body"], "Body")
+        self.assertIn("benzinga_news_normalized_v1", client.sql)
+        self.assertNotIn("benzinga_news_ticker_v1", client.sql)
+        self.assertNotIn("news_text_tokens", client.sql)
+        self.assertNotIn("input_ids", client.sql)
+
+    def test_tfidf_v4_keeps_v3_model_and_training_configuration(self) -> None:
+        v3 = vars(_v3_train_args(Path("v3-data"), Path("v3-run"), 8))
+        v4 = vars(_v4_train_args(Path("v4-data"), Path("v4-run"), 8))
+        for values in (v3, v4):
+            values.pop("data_root")
+            values.pop("run_root")
+        self.assertEqual(v3, v4)
 
 
 if __name__ == "__main__":

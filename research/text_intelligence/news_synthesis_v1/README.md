@@ -229,3 +229,27 @@ V3 refuses to overwrite an existing run. Its arrays, alias authority,
 vocabulary, checkpoint, evaluation, and V1/V2/V3 comparison are written only
 beneath
 `D:\TradingML\runtimes\text_intelligence\news_synthesis_v1\tfidf_supervision_v3`.
+
+### TF-IDF V4 direct normalized-text authority
+
+V4 removes the Qwen tokenizer from TF-IDF feature extraction. It queries the
+exact frozen 14,253 source IDs directly from
+`q_live.benzinga_news_normalized_v1`, including its canonical ticker array,
+and consumes the original normalized title,
+teaser, body, external, and PDF fields. It reads neither `input_ids` nor Qwen
+token rows and performs no decode step. The Qwen supervision dataset remains
+only the frozen population, labels, and 75/25 split authority.
+
+V4 deliberately keeps V3's feature families, budgets, point-in-time issuer
+aliases, model architecture, hyperparameters, seed, internal tuning policy,
+and evaluation procedure unchanged. Its runtime manifest records normalizer
+and source hashes in `source_text_authority.jsonl`.
+
+```powershell
+$env:PYTHONDONTWRITEBYTECODE='1'
+python -m research.text_intelligence.news_synthesis_v1.run_tfidf_supervision_v4
+```
+
+V4 refuses to overwrite an existing run and writes generated data, model,
+evaluation, and comparison artifacts only under
+`D:\TradingML\runtimes\text_intelligence\news_synthesis_v1\tfidf_supervision_v4`.
