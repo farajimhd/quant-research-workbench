@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+from copy import deepcopy
 import datetime as dt
 import io
 import unittest
@@ -47,7 +48,13 @@ from research.bar_gpt.v1.config import BarGPTConfig, DataConfig
 from research.bar_gpt.v1.data import BarView, causal_asof_indices, densify_one_second_view, horizon_target_indices, rollup_intraday_view
 from research.bar_gpt.v1.features import MODEL_FEATURE_NAMES, project_stationary_features
 from research.bar_gpt.v1.direct_event_shards import direct_trade_bar_query
-from research.bar_gpt.v1.model import BarGPTV1, CausalSelfAttention, RMSNorm, _rotate_half
+from research.bar_gpt.v1.model import (
+    BarGPTV1,
+    CausalSelfAttention,
+    RMSNorm,
+    _fused_linear_group,
+    _rotate_half,
+)
 from research.bar_gpt.v1.loader import (
     ClickHouseBarStreamConfig,
     TickerInterval,
@@ -790,6 +797,200 @@ class TemporalContractTest(unittest.TestCase):
 
 
 class ModelContractTest(unittest.TestCase):
+    def test_fused_linear_group_matches_independent_outputs_and_gradients(self) -> None:
+        torch.manual_seed(41)
+        actual_layers = torch.nn.ModuleList((
+            torch.nn.Linear(7, 5, bias=False),
+            torch.nn.Linear(7, 3, bias=True),
+            torch.nn.Linear(7, 9, bias=True),
+        ))
+        reference_layers = deepcopy(actual_layers)
+        actual_input = torch.randn(2, 4, 7, requires_grad=True)
+        reference_input = actual_input.detach().clone().requires_grad_(True)
+
+        actual_outputs = _fused_linear_group(actual_input, *actual_layers)
+        reference_outputs = tuple(layer(reference_input) for layer in reference_layers)
+        for actual, reference in zip(actual_outputs, reference_outputs, strict=True):
+            torch.testing.assert_close(actual, reference, atol=2e-6, rtol=2e-6)
+
+        sum(output.square().sum() for output in actual_outputs).backward()
+        sum(output.square().sum() for output in reference_outputs).backward()
+        torch.testing.assert_close(actual_input.grad, reference_input.grad, atol=2e-5, rtol=2e-5)
+        for actual, reference in zip(actual_layers, reference_layers, strict=True):
+            torch.testing.assert_close(actual.weight.grad, reference.weight.grad, atol=2e-5, rtol=2e-5)
+            if actual.bias is not None and reference.bias is not None:
+                torch.testing.assert_close(actual.bias.grad, reference.bias.grad, atol=2e-5, rtol=2e-5)
+
+    def test_fused_linear_group_preserves_autocast_dtype_with_biases(self) -> None:
+        layers = (
+            torch.nn.Linear(8, 3, bias=False),
+            torch.nn.Linear(8, 4, bias=True),
+        )
+        value = torch.randn(2, 8, requires_grad=True)
+        with torch.autocast("cpu", dtype=torch.bfloat16):
+            outputs = _fused_linear_group(value, *layers)
+        self.assertEqual({output.dtype for output in outputs}, {torch.bfloat16})
+        sum(output.float().square().sum() for output in outputs).backward()
+        self.assertTrue(bool(torch.isfinite(value.grad).all()))
+
+    def test_precomputed_attention_mask_matches_per_call_mask_and_gradients(self) -> None:
+        torch.manual_seed(43)
+        config = BarGPTConfig(
+            feature_dim=len(MODEL_FEATURE_NAMES), d_model=32, n_layers=1,
+            n_heads=4, n_kv_heads=2, horizon_rank=8, dropout=0.0,
+        )
+        attention = CausalSelfAttention(config).eval()
+        actual_input = torch.randn(2, 9, 32, requires_grad=True)
+        reference_input = actual_input.detach().clone().requires_grad_(True)
+        token_mask = torch.tensor([
+            [False, False, True, True, True, True, True, True, True],
+            [False, True, True, True, True, True, True, True, True],
+        ])
+        shared_mask = attention.build_attention_mask(
+            9, attention_window=4, device=actual_input.device, token_mask=token_mask,
+        )
+        actual = attention(
+            actual_input, attention_window=4, token_mask=token_mask,
+            attention_mask=shared_mask,
+        )
+        reference = attention(
+            reference_input, attention_window=4, token_mask=token_mask,
+        )
+        torch.testing.assert_close(actual, reference, atol=2e-6, rtol=2e-6)
+        actual_gradient = torch.autograd.grad(actual.square().sum(), actual_input)[0]
+        reference_gradient = torch.autograd.grad(reference.square().sum(), reference_input)[0]
+        torch.testing.assert_close(actual_gradient, reference_gradient, atol=2e-5, rtol=2e-5)
+
+    def test_encoder_builds_each_unique_layer_mask_once(self) -> None:
+        config = BarGPTConfig(
+            feature_dim=len(MODEL_FEATURE_NAMES), d_model=32, n_layers=4,
+            n_heads=4, n_kv_heads=2, horizon_rank=8, dropout=0.0,
+        )
+        model = BarGPTV1(config).eval()
+        features = torch.randn(2, 13, len(MODEL_FEATURE_NAMES))
+        token_mask = torch.tensor([
+            [False, *([True] * 12)],
+            [False, False, *([True] * 11)],
+        ])
+        original = CausalSelfAttention.build_attention_mask
+        with patch.object(
+            CausalSelfAttention, "build_attention_mask", side_effect=original,
+        ) as build_mask:
+            model.encode(
+                features, 1_000_000, 0, attention_window=10,
+                token_mask=token_mask,
+            )
+        # Radius nine across four layers produces windows 4, 3, 3, 3.
+        self.assertEqual(build_mask.call_count, 2)
+
+    def test_fused_execution_preserves_legacy_parameter_keys(self) -> None:
+        config = BarGPTConfig(
+            feature_dim=len(MODEL_FEATURE_NAMES), d_model=32, n_layers=2,
+            n_heads=4, n_kv_heads=2, horizon_rank=8,
+        )
+        model = BarGPTV1(config)
+        state = model.state_dict()
+        self.assertIn("blocks.0.attention.q_proj.weight", state)
+        self.assertIn("blocks.0.attention.k_proj.weight", state)
+        self.assertIn("blocks.0.attention.v_proj.weight", state)
+        self.assertIn("blocks.0.ffn.gate.weight", state)
+        self.assertIn("blocks.0.ffn.up.weight", state)
+        self.assertFalse(any("qkv_proj" in key or "gate_up_proj" in key for key in state))
+        BarGPTV1(config).load_state_dict(state, strict=True)
+
+    def test_full_fused_model_matches_independent_projection_reference(self) -> None:
+        torch.manual_seed(47)
+        config = BarGPTConfig(
+            feature_dim=len(MODEL_FEATURE_NAMES), d_model=32, n_layers=2,
+            n_heads=4, n_kv_heads=2, horizon_rank=8, dropout=0.0,
+        )
+        actual_model = BarGPTV1(config).eval()
+        reference_model = deepcopy(actual_model)
+        actual_views = {
+            "1s": torch.randn(2, 7, len(MODEL_FEATURE_NAMES), requires_grad=True),
+            "5s": torch.randn(2, 4, len(MODEL_FEATURE_NAMES), requires_grad=True),
+        }
+        reference_views = {
+            name: value.detach().clone().requires_grad_(True)
+            for name, value in actual_views.items()
+        }
+        kwargs = {
+            "timeframe_us": {"1s": 1_000_000, "5s": 5_000_000},
+            "pathway_ids": {"1s": 0, "5s": 1},
+            "base_view": "1s",
+            "origin_indices": torch.tensor([[2, 4, 6], [1, 3, 5]]),
+            "asof_indices": {"5s": torch.tensor([[-1, 1, 3], [0, 2, 3]])},
+            "view_masks": {
+                "1s": torch.tensor([
+                    [False, True, True, True, True, True, True],
+                    [True, True, True, True, True, True, True],
+                ]),
+                "5s": torch.tensor([
+                    [False, True, True, True],
+                    [True, True, True, True],
+                ]),
+            },
+            "attention_windows": {"1s": 5, "5s": 3},
+            "horizon_ids": torch.tensor([0, 1]),
+        }
+
+        def independent(
+            value: torch.Tensor,
+            *layers: torch.nn.Linear,
+            fused_weight: torch.Tensor | None = None,
+            fused_bias: torch.Tensor | None = None,
+        ):
+            del fused_weight, fused_bias
+            return tuple(layer(value) for layer in layers)
+
+        actual = actual_model(actual_views, **kwargs)
+        with patch(
+            "research.bar_gpt.v1.model._fused_linear_group",
+            side_effect=independent,
+        ):
+            reference = reference_model(reference_views, **kwargs)
+
+        def tensors(output):
+            values = [output.embeddings]
+            values.extend(output.scale_embeddings.values())
+            values.extend(output.autoregressive.values())
+            values.extend(output.autoregressive_direction_logits.values())
+            values.extend(output.latent_predictions.values())
+            values.extend((
+                output.horizon_quantiles,
+                output.horizon_availability_logits,
+                output.horizon_direction_logits,
+            ))
+            return tuple(value for value in values if value is not None)
+
+        actual_tensors = tensors(actual)
+        reference_tensors = tensors(reference)
+        for actual_tensor, reference_tensor in zip(
+            actual_tensors, reference_tensors, strict=True,
+        ):
+            torch.testing.assert_close(
+                actual_tensor, reference_tensor, atol=3e-5, rtol=3e-5,
+            )
+        sum(value.float().square().mean() for value in actual_tensors).backward()
+        sum(value.float().square().mean() for value in reference_tensors).backward()
+        for name in actual_views:
+            torch.testing.assert_close(
+                actual_views[name].grad,
+                reference_views[name].grad,
+                atol=5e-5,
+                rtol=5e-5,
+            )
+        for (actual_name, actual_parameter), (reference_name, reference_parameter) in zip(
+            actual_model.named_parameters(), reference_model.named_parameters(), strict=True,
+        ):
+            self.assertEqual(actual_name, reference_name)
+            torch.testing.assert_close(
+                actual_parameter.grad,
+                reference_parameter.grad,
+                atol=5e-5,
+                rtol=5e-5,
+            )
+
     def test_masked_encoder_matches_independent_sequences_and_gradients(self) -> None:
         torch.manual_seed(37)
         config = BarGPTConfig(

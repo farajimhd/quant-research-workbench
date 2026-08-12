@@ -83,7 +83,8 @@ MODEL_SIZE_PRESETS: dict[str, dict[str, int]] = {
 # explicit opt-in preset but is excluded from the default sweep because its
 # cost is disproportionate for routine fit/throughput checks.
 DEFAULT_JOINT_CANDIDATES = ",".join(
-    f"{model}:4096:{microbatch}:1:{OFFLINE_PRODUCTION_LOADER_WORKERS}:1:0"
+    f"{model}:4096:{microbatch}:1:{OFFLINE_PRODUCTION_LOADER_WORKERS}:1:0:"
+    f"{OFFLINE_PRODUCTION_LENGTH_BUCKET_BATCHES}"
     for model, microbatches in (
         # Keep intermediate probes below the projected-memory cliff. The
         # measured fused-SDPA profile fit current=16 at 62.6% and medium=8 at
@@ -108,12 +109,14 @@ class ProfileCandidate:
     cuda_prefetch: bool
     compile_model: bool = False
     model_size: str = "current"
+    length_bucket_batches: int | None = None
 
     @property
     def name(self) -> str:
         return (
             f"model-{self.model_size}_origins-{self.origin_bars}_micro-{self.microbatch}_accum-{self.accumulation}_"
-            f"workers-{self.workers}_cuda-prefetch-{int(self.cuda_prefetch)}_compile-{int(self.compile_model)}"
+            f"workers-{self.workers}_cuda-prefetch-{int(self.cuda_prefetch)}_compile-{int(self.compile_model)}_"
+            f"length-bucket-{self.length_bucket_batches if self.length_bucket_batches is not None else 'default'}"
         )
 
 
@@ -280,16 +283,18 @@ def _parse_candidates(value: str) -> tuple[ProfileCandidate, ...]:
     for item in value.split(","):
         raw_parts = item.split(":")
         if raw_parts[0].isdigit():
-            if len(raw_parts) not in (5, 6):
+            if len(raw_parts) not in (5, 6, 7):
                 raise ValueError(
-                    "legacy profile candidates use origin:microbatch:accumulation:workers:prefetch[:compile]"
+                    "legacy profile candidates use origin:microbatch:accumulation:workers:"
+                    "prefetch[:compile[:length_bucket_batches]]"
                 )
             model_size = "current"
             parts = tuple(int(part) for part in raw_parts)
         else:
-            if len(raw_parts) not in (6, 7):
+            if len(raw_parts) not in (6, 7, 8):
                 raise ValueError(
-                    "joint profile candidates use model:origin:microbatch:accumulation:workers:prefetch[:compile]"
+                    "joint profile candidates use model:origin:microbatch:accumulation:workers:"
+                    "prefetch[:compile[:length_bucket_batches]]"
                 )
             model_size = raw_parts[0].strip().lower()
             if model_size not in MODEL_SIZE_PRESETS:
@@ -299,8 +304,15 @@ def _parse_candidates(value: str) -> tuple[ProfileCandidate, ...]:
             parts = tuple(int(part) for part in raw_parts[1:])
         origin, micro, accumulation, workers, prefetch = parts[:5]
         compile_model = bool(parts[5]) if len(parts) == 6 else False
+        if len(parts) >= 7:
+            compile_model = bool(parts[5])
+            length_bucket_batches = int(parts[6])
+        else:
+            length_bucket_batches = None
         if min(origin, micro, accumulation, workers) <= 0:
             raise ValueError("origin, microbatch, accumulation, and workers must be positive")
+        if length_bucket_batches is not None and length_bucket_batches <= 0:
+            raise ValueError("length_bucket_batches must be positive")
         candidates.append(
             ProfileCandidate(
                 origin,
@@ -310,6 +322,7 @@ def _parse_candidates(value: str) -> tuple[ProfileCandidate, ...]:
                 bool(prefetch),
                 compile_model,
                 model_size,
+                length_bucket_batches,
             )
         )
     if not candidates:
@@ -326,7 +339,8 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
         "--candidates",
         default=DEFAULT_JOINT_CANDIDATES,
         help=(
-            "model:origin:microbatch:accumulation:workers:cuda_prefetch[:compile] entries; "
+            "model:origin:microbatch:accumulation:workers:cuda_prefetch"
+            "[:compile[:length_bucket_batches]] entries; "
             "the legacy format without model remains current-size compatible"
         ),
     )
@@ -377,7 +391,11 @@ def _data(args: argparse.Namespace, candidate: ProfileCandidate) -> DataConfig:
         loader_workers=candidate.workers,
         ready_queue_blocks=int(args.ready_queue_blocks),
         worker_prefetch_batches=int(args.worker_prefetch_batches),
-        offline_length_bucket_batches=int(args.offline_length_bucket_batches),
+        offline_length_bucket_batches=(
+            int(args.offline_length_bucket_batches)
+            if candidate.length_bucket_batches is None
+            else int(candidate.length_bucket_batches)
+        ),
         clickhouse_max_threads_per_worker=int(args.clickhouse_max_threads_per_worker),
         coverage_mode="sequential",
         coverage_blocks_per_unit=16,
@@ -504,7 +522,10 @@ class ProfileReporter:
             )
             console.print(run)
             candidates_table = Table(title="Candidates")
-            for name in ("Model", "Width", "Layers", "Heads", "KV", "Micro", "Accum", "Effective", "Workers", "Prefetch", "Compile"):
+            for name in (
+                "Model", "Width", "Layers", "Heads", "KV", "Micro", "Accum",
+                "Effective", "Workers", "Bucket", "Prefetch", "Compile",
+            ):
                 candidates_table.add_column(name, justify="right" if name != "Model" else "left")
             for candidate in candidates:
                 model = MODEL_SIZE_PRESETS[candidate.model_size]
@@ -518,6 +539,11 @@ class ProfileReporter:
                     str(candidate.accumulation),
                     str(candidate.microbatch * candidate.accumulation),
                     str(candidate.workers),
+                    str(
+                        args.offline_length_bucket_batches
+                        if candidate.length_bucket_batches is None
+                        else candidate.length_bucket_batches
+                    ),
                     "yes" if candidate.cuda_prefetch else "no",
                     "yes" if candidate.compile_model else "no",
                 )
@@ -583,7 +609,9 @@ class ProfileReporter:
                 f"  {candidate.model_size:<8} width={model['d_model']} layers={model['n_layers']} "
                 f"heads={model['n_heads']} kv={model['n_kv_heads']} micro={candidate.microbatch} "
                 f"accum={candidate.accumulation} effective={candidate.microbatch * candidate.accumulation} "
-                f"workers={candidate.workers} prefetch={'yes' if candidate.cuda_prefetch else 'no'} "
+                f"workers={candidate.workers} bucket="
+                f"{args.offline_length_bucket_batches if candidate.length_bucket_batches is None else candidate.length_bucket_batches} "
+                f"prefetch={'yes' if candidate.cuda_prefetch else 'no'} "
                 f"compile={'yes' if candidate.compile_model else 'no'}",
                 flush=True,
             )
@@ -971,8 +999,8 @@ def main(argv: Iterable[str] | None = None) -> int:
     reporter = ProfileReporter(str(args.progress_layout))
     reporter.configuration(args, candidates, device)
     results: list[ProfileResult] = []
-    oom_microbatch: dict[tuple[str, int, int, bool], int] = {}
-    last_passed: dict[tuple[str, int, int, bool], ProfileResult] = {}
+    oom_microbatch: dict[tuple[str, int, int, bool, int], int] = {}
+    last_passed: dict[tuple[str, int, int, bool, int], ProfileResult] = {}
     jsonl = run_root / "profile.jsonl"
     # Candidates vary only loader/model shape; the authority/schema audit is
     # invariant.  Run it once so the measured sweep does not pay the same
@@ -988,7 +1016,18 @@ def main(argv: Iterable[str] | None = None) -> int:
         )
     for index, candidate in enumerate(candidates, start=1):
         reporter.start(candidate, index, len(candidates))
-        oom_key = (candidate.model_size, candidate.origin_bars, candidate.workers, candidate.compile_model)
+        bucket_batches = (
+            int(args.offline_length_bucket_batches)
+            if candidate.length_bucket_batches is None
+            else int(candidate.length_bucket_batches)
+        )
+        oom_key = (
+            candidate.model_size,
+            candidate.origin_bars,
+            candidate.workers,
+            candidate.compile_model,
+            bucket_batches,
+        )
         threshold = oom_microbatch.get(oom_key)
         previous = last_passed.get(oom_key)
         projected_memory = (

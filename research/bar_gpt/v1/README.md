@@ -256,8 +256,13 @@ following period proves it closed.
 
 - RMSNorm pre-normalized decoder blocks;
 - grouped-query causal attention and rotary positions;
+- one exact causal/window/padding mask per unique view-layer window, reused
+  across decoder layers for the lifetime of that view only;
 - 0.08 attention dropout for V1 training;
 - SwiGLU feed-forward blocks;
+- execution-fused Q/K/V, SwiGLU gate/up, autoregressive, and horizon projections
+  that retain the original parameter names and optimizer slots for strict
+  checkpoint resume;
 - one shared backbone for every timeframe;
 - continuous log-duration Fourier conditioning for unseen timeframes;
 - microstructure, intraday, and calendar pathway identities;
@@ -532,6 +537,21 @@ Profile the complete Arrow-to-optimizer path before the first full run:
 ```powershell
 python -B -m research.bar_gpt.v1.run_profile_model_performance --model-size current
 ```
+
+After selecting a microbatch, compare larger deterministic length-bucketing
+windows on the complete model path rather than inferring their benefit from a
+loader-only benchmark:
+
+```powershell
+python -B -m research.bar_gpt.v1.run_profile_length_buckets
+```
+
+The bounded default holds Current, microbatch 20, accumulation 1, workers,
+prefetch, dates, warm-up, and measurement steps fixed while comparing bucket
+windows 4, 8, and 16 in one report. Candidate strings may append
+`length_bucket_batches` after the compile flag, so the report records and ranks
+the actual window used. The sweep changes batch ordering only inside the
+deterministic loader window; it never drops or duplicates a block.
 
 Before model comparison, deliberately overfit the production Current
 architecture on a bounded panel drawn from the locked full v12 catalog:

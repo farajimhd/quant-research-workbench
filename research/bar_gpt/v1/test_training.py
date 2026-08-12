@@ -162,6 +162,10 @@ from research.bar_gpt.v1.run_train_model_comparison import (
     trainer_argv as comparison_trainer_argv,
 )
 from research.bar_gpt.v1.run_profile_model_performance import parse_args as parse_performance_profile_args, profiler_argv
+from research.bar_gpt.v1.run_profile_length_buckets import (
+    parse_args as parse_length_bucket_profile_args,
+    profiler_argv as length_bucket_profiler_argv,
+)
 from research.mlops.metrics import AsyncJsonlMetricLogger
 from research.mlops.schedulers import SampleCosineRestartScheduler, SampleWarmupCosineScheduler
 
@@ -2295,6 +2299,8 @@ class LoaderTrainerContractTest(unittest.TestCase):
         joint = _parse_candidates("xlarge:4096:2:1:16:1:0")
         self.assertEqual(joint[0].model_size, "xlarge")
         self.assertEqual(joint[0].microbatch, 2)
+        bucketed = _parse_candidates("current:4096:20:1:8:1:0:16")
+        self.assertEqual(bucketed[0].length_bucket_batches, 16)
         launcher_candidates = profile_launcher_args[profile_launcher_args.index("--candidates") + 1]
         parsed = _parse_candidates(launcher_candidates)
         self.assertEqual({item.model_size for item in parsed}, {"current", "medium", "large"})
@@ -2319,6 +2325,24 @@ class LoaderTrainerContractTest(unittest.TestCase):
         self.assertEqual((resolved["xlarge"].d_model, resolved["xlarge"].n_layers), (1024, 16))
         self.assertEqual({config.dropout for config in resolved.values()}, {0.08})
 
+    def test_length_bucket_profiler_is_bounded_to_identical_mb20_candidates(self) -> None:
+        launcher_args = parse_length_bucket_profile_args([])
+        resolved = length_bucket_profiler_argv(launcher_args)
+        candidates = _parse_candidates(resolved[resolved.index("--candidates") + 1])
+        self.assertEqual(len(candidates), 3)
+        self.assertEqual({candidate.model_size for candidate in candidates}, {"current"})
+        self.assertEqual({candidate.microbatch for candidate in candidates}, {20})
+        self.assertEqual({candidate.accumulation for candidate in candidates}, {1})
+        self.assertEqual({candidate.workers for candidate in candidates}, {8})
+        self.assertEqual(
+            tuple(candidate.length_bucket_batches for candidate in candidates),
+            (4, 8, 16),
+        )
+        with self.assertRaisesRegex(ValueError, "unique"):
+            length_bucket_profiler_argv(
+                parse_length_bucket_profile_args(["--length-bucket-batches", "4,4"])
+            )
+
     def test_profiler_skips_unsafe_projected_microbatch(self) -> None:
         previous = SimpleNamespace(
             candidate=ProfileCandidate(4096, 16, 1, 8, True),
@@ -2342,6 +2366,7 @@ class LoaderTrainerContractTest(unittest.TestCase):
         self.assertEqual(len(candidates), 1)
         self.assertEqual((candidates[0].model_size, candidates[0].microbatch, candidates[0].accumulation), ("medium", 8, 4))
         self.assertEqual(candidates[0].workers, 8)
+        self.assertEqual(candidates[0].length_bucket_batches, 4)
         profile_args = parse_profile_args(resolved)
         self.assertEqual(profile_args.ready_queue_blocks, 64)
         self.assertEqual(profile_args.worker_prefetch_batches, 1)

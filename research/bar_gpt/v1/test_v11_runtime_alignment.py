@@ -51,7 +51,9 @@ class V12RuntimeAlignmentTest(unittest.TestCase):
 
     def test_profiler_uses_same_manifest_authority(self) -> None:
         storage = dataclasses.replace(DataConfig(), origin_bars_1s=4096)
-        candidate = ProfileCandidate(4096, 8, 1, 4, True)
+        candidate = ProfileCandidate(
+            4096, 8, 1, 4, True, length_bucket_batches=16,
+        )
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             _write_manifest(root, storage)
@@ -59,6 +61,7 @@ class V12RuntimeAlignmentTest(unittest.TestCase):
             data = profile_data(args, candidate)
         self.assertEqual(data.loader_stream_contract_version, 13)
         self.assertEqual(data.origin_bars_1s, 4096)
+        self.assertEqual(data.offline_length_bucket_batches, 16)
 
     def test_encoder_propagates_only_required_view_masks(self) -> None:
         class Capture(torch.nn.Module):

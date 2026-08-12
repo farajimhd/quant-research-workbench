@@ -56,6 +56,47 @@ def _rotate_half(value: torch.Tensor) -> torch.Tensor:
     return torch.cat((-second, first), dim=-1)
 
 
+def _fused_linear_group(
+    value: torch.Tensor,
+    *layers: nn.Linear,
+    fused_weight: torch.Tensor | None = None,
+    fused_bias: torch.Tensor | None = None,
+) -> tuple[torch.Tensor, ...]:
+    """Evaluate compatible projections as one GEMM without changing parameters.
+
+    Keeping the original ``nn.Linear`` modules preserves model keys and
+    optimizer slots for strict checkpoint resume. Concatenating their weights
+    only for execution replaces several reads of the same activation with one
+    larger matrix multiplication; gradients still flow to each source weight.
+    """
+    if not layers:
+        raise ValueError("at least one linear layer is required")
+    input_features = int(layers[0].in_features)
+    if any(int(layer.in_features) != input_features for layer in layers):
+        raise ValueError("fused linear layers must have the same input width")
+    expected_output_features = sum(int(layer.out_features) for layer in layers)
+    if fused_weight is None:
+        fused_weight = torch.cat(tuple(layer.weight for layer in layers), dim=0)
+    if fused_weight.shape != (expected_output_features, input_features):
+        raise ValueError("fused linear weight has the wrong shape")
+    if fused_bias is None and any(layer.bias is not None for layer in layers):
+        bias_parts: list[torch.Tensor] = []
+        for layer in layers:
+            bias = layer.bias
+            bias_parts.append(
+                bias
+                if bias is not None
+                else layer.weight.new_zeros(int(layer.out_features))
+            )
+        fused_bias = torch.cat(bias_parts)
+    if fused_bias is not None and fused_bias.shape != (expected_output_features,):
+        raise ValueError("fused linear bias has the wrong shape")
+    projected = F.linear(value, fused_weight, fused_bias)
+    return projected.split(
+        tuple(int(layer.out_features) for layer in layers), dim=-1,
+    )
+
+
 class RotaryEmbedding(nn.Module):
     inverse_frequency: torch.Tensor
 
@@ -86,17 +127,54 @@ class CausalSelfAttention(nn.Module):
         self.rope = RotaryEmbedding(self.head_dim, config.rope_base)
         self.dropout = float(config.dropout)
 
+    @staticmethod
+    def build_attention_mask(
+        length: int,
+        *,
+        attention_window: int | None,
+        device: torch.device,
+        token_mask: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        """Build the exact combined causal, local-window, and padding mask."""
+        window = int(length) if attention_window is None else int(attention_window)
+        if window <= 0:
+            raise ValueError("attention_window must be positive")
+        positions = torch.arange(int(length), device=device)
+        query_positions = positions[:, None]
+        key_positions = positions[None, :]
+        allowed = (key_positions <= query_positions) & (
+            key_positions > query_positions - window
+        )
+        if token_mask is None:
+            return allowed
+        if token_mask.ndim != 2 or int(token_mask.shape[1]) != int(length):
+            raise ValueError("token_mask must have shape [B,T]")
+        allowed = allowed.view(1, 1, length, length) & token_mask[:, None, None, :]
+        # Fully masked prefix queries are discarded after attention, but a
+        # self edge prevents undefined all-masked SDPA rows.
+        invalid_query = ~token_mask
+        diagonal = torch.eye(
+            length, dtype=torch.bool, device=device
+        ).view(1, 1, length, length)
+        return allowed | (invalid_query[:, None, :, None] & diagonal)
+
     def forward(
         self, value: torch.Tensor, *, attention_window: int | None = None,
         token_mask: torch.Tensor | None = None,
         rotary: tuple[torch.Tensor, torch.Tensor] | None = None,
+        attention_mask: torch.Tensor | None = None,
+        qkv_weight: torch.Tensor | None = None,
     ) -> torch.Tensor:
         batch, length, _ = value.shape
         if token_mask is not None and token_mask.shape != (batch, length):
             raise ValueError("token_mask must have shape [B,T]")
-        query = self.q_proj(value).view(batch, length, self.n_heads, self.head_dim).transpose(1, 2)
-        key = self.k_proj(value).view(batch, length, self.n_kv_heads, self.head_dim).transpose(1, 2)
-        val = self.v_proj(value).view(batch, length, self.n_kv_heads, self.head_dim).transpose(1, 2)
+        query, key, val = _fused_linear_group(
+            value, self.q_proj, self.k_proj, self.v_proj,
+            fused_weight=qkv_weight,
+        )
+        query = query.view(batch, length, self.n_heads, self.head_dim).transpose(1, 2)
+        key = key.view(batch, length, self.n_kv_heads, self.head_dim).transpose(1, 2)
+        val = val.view(batch, length, self.n_kv_heads, self.head_dim).transpose(1, 2)
         query = self.q_norm(query)
         key = self.k_norm(key)
         cosine, sine = rotary or self.rope(length, value.device, value.dtype)
@@ -106,7 +184,11 @@ class CausalSelfAttention(nn.Module):
         # Fast path: a dense, unpadded sequence with no local-window limit can
         # delegate the lower-triangular mask directly to SDPA.  In this branch
         # ``is_causal=True`` is the sole mechanism that blocks future keys.
-        if token_mask is None and (attention_window is None or int(attention_window) >= length):
+        if (
+            attention_mask is None
+            and token_mask is None
+            and (attention_window is None or int(attention_window) >= length)
+        ):
             enable_gqa = grouped_query and value.device.type == "cuda"
             if grouped_query and not enable_gqa:
                 repeats = self.n_heads // self.n_kv_heads
@@ -123,20 +205,14 @@ class CausalSelfAttention(nn.Module):
         else:
             # Masked path: padding and/or a finite local window must be
             # combined with causality in one explicit lower-triangular mask.
-            window = length if attention_window is None else int(attention_window)
-            if window <= 0:
-                raise ValueError("attention_window must be positive")
-            positions = torch.arange(length, device=value.device)
-            query_positions = positions[:, None]
-            key_positions = positions[None, :]
-            allowed = (key_positions <= query_positions) & (key_positions > query_positions - window)
-            if token_mask is not None:
-                allowed = allowed.view(1, 1, length, length) & token_mask[:, None, None, :]
-                # Fully masked prefix queries are discarded below, but giving
-                # them a self edge avoids undefined all-masked SDPA rows.
-                invalid_query = ~token_mask
-                diagonal = torch.eye(length, dtype=torch.bool, device=value.device).view(1, 1, length, length)
-                allowed |= invalid_query[:, None, :, None] & diagonal
+            allowed = attention_mask
+            if allowed is None:
+                allowed = self.build_attention_mask(
+                    length,
+                    attention_window=attention_window,
+                    device=value.device,
+                    token_mask=token_mask,
+                )
             # Dense masks make native CUDA GQA fall back to the quadratic math
             # kernel. Expanding compact K/V only on this masked branch lets
             # SDPA select its fused memory-efficient CUDA implementation.
@@ -167,8 +243,13 @@ class SwiGLU(nn.Module):
         self.up = nn.Linear(config.d_model, hidden, bias=False)
         self.down = nn.Linear(hidden, config.d_model, bias=False)
 
-    def forward(self, value: torch.Tensor) -> torch.Tensor:
-        return self.down(F.silu(self.gate(value)) * self.up(value))
+    def forward(
+        self, value: torch.Tensor, *, gate_up_weight: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        gate, up = _fused_linear_group(
+            value, self.gate, self.up, fused_weight=gate_up_weight,
+        )
+        return self.down(F.silu(gate) * up)
 
 
 class DecoderBlock(nn.Module):
@@ -183,12 +264,18 @@ class DecoderBlock(nn.Module):
         self, value: torch.Tensor, *, attention_window: int | None = None,
         token_mask: torch.Tensor | None = None,
         rotary: tuple[torch.Tensor, torch.Tensor] | None = None,
+        attention_mask: torch.Tensor | None = None,
+        qkv_weight: torch.Tensor | None = None,
+        gate_up_weight: torch.Tensor | None = None,
     ) -> torch.Tensor:
         value = value + self.attention(
             self.attention_norm(value), attention_window=attention_window,
-            token_mask=token_mask, rotary=rotary,
+            token_mask=token_mask, rotary=rotary, attention_mask=attention_mask,
+            qkv_weight=qkv_weight,
         )
-        value = value + self.ffn(self.ffn_norm(value))
+        value = value + self.ffn(
+            self.ffn_norm(value), gate_up_weight=gate_up_weight,
+        )
         return value if token_mask is None else value * token_mask.unsqueeze(-1)
 
 
@@ -279,6 +366,9 @@ class BarGPTV1(nn.Module):
         *,
         attention_window: int | None = None,
         token_mask: torch.Tensor | None = None,
+        layer_projection_weights: tuple[
+            tuple[torch.Tensor, torch.Tensor], ...
+        ] | None = None,
     ) -> torch.Tensor:
         if features.ndim != 3 or features.shape[-1] != self.config.feature_dim:
             raise ValueError(f"features must have shape [B,T,{self.config.feature_dim}]")
@@ -305,10 +395,36 @@ class BarGPTV1(nn.Module):
         rotary = self.blocks[0].attention.rope(
             features.shape[1], features.device, features.dtype
         )
-        for block, layer_window in zip(self.blocks, layer_windows, strict=True):
+        # A view has at most two distinct per-layer windows. Materialize each
+        # exact dense mask once and retain it through this view's decoder
+        # stack, trading a small bounded amount of memory for fewer quadratic
+        # mask-building kernels. The same mask is never shared across batches.
+        attention_masks: dict[int | None, torch.Tensor] = {}
+        for layer_window in dict.fromkeys(layer_windows):
+            needs_explicit_mask = token_mask is not None or (
+                layer_window is not None and int(layer_window) < features.shape[1]
+            )
+            if needs_explicit_mask:
+                attention_masks[layer_window] = CausalSelfAttention.build_attention_mask(
+                    features.shape[1],
+                    attention_window=layer_window,
+                    device=features.device,
+                    token_mask=token_mask,
+                )
+        if layer_projection_weights is not None and len(layer_projection_weights) != len(self.blocks):
+            raise ValueError("layer_projection_weights must match the decoder depth")
+        for index, (block, layer_window) in enumerate(
+            zip(self.blocks, layer_windows, strict=True)
+        ):
+            qkv_weight = gate_up_weight = None
+            if layer_projection_weights is not None:
+                qkv_weight, gate_up_weight = layer_projection_weights[index]
             state = block(
                 state, attention_window=layer_window,
                 token_mask=token_mask, rotary=rotary,
+                attention_mask=attention_masks.get(layer_window),
+                qkv_weight=qkv_weight,
+                gate_up_weight=gate_up_weight,
             )
         state = self.output_norm(state)
         return state if token_mask is None else state * token_mask.unsqueeze(-1)
@@ -346,21 +462,44 @@ class BarGPTV1(nn.Module):
         autoregressive = {}
         autoregressive_direction_logits = {}
         latent_predictions = {}
+        autoregressive_weight = torch.cat((
+            self.autoregressive_continuous_head.weight,
+            self.autoregressive_availability_head.weight,
+            self.autoregressive_direction_head.weight,
+            self.latent_prediction_head.weight,
+        ), dim=0)
+        availability_bias = self.autoregressive_availability_head.bias
+        direction_bias = self.autoregressive_direction_head.bias
+        if availability_bias is None or direction_bias is None:
+            raise RuntimeError("autoregressive classification heads require biases")
+        autoregressive_bias = torch.cat((
+            self.autoregressive_continuous_head.weight.new_zeros(
+                self.autoregressive_continuous_head.out_features
+            ),
+            availability_bias,
+            direction_bias,
+            self.latent_prediction_head.weight.new_zeros(
+                self.latent_prediction_head.out_features
+            ),
+        ))
         for name in AUTOREGRESSIVE_VIEW_NAMES:
             if name not in encoded:
                 continue
             state = encoded[name]
             # Calendar views are context-only by contract and intentionally
             # have no autoregressive targets or heads.
-            autoregressive[name] = torch.cat(
-                (
-                    self.autoregressive_continuous_head(state[:, :-1]),
-                    self.autoregressive_availability_head(state[:, :-1]),
-                ),
-                dim=-1,
+            continuous, availability, direction, latent = _fused_linear_group(
+                state[:, :-1],
+                self.autoregressive_continuous_head,
+                self.autoregressive_availability_head,
+                self.autoregressive_direction_head,
+                self.latent_prediction_head,
+                fused_weight=autoregressive_weight,
+                fused_bias=autoregressive_bias,
             )
-            autoregressive_direction_logits[name] = self.autoregressive_direction_head(state[:, :-1])
-            latent_predictions[name] = self.latent_prediction_head(state[:, :-1])
+            autoregressive[name] = torch.cat((continuous, availability), dim=-1)
+            autoregressive_direction_logits[name] = direction
+            latent_predictions[name] = latent
         quantiles = None
         availability_logits = None
         direction_logits = None
@@ -370,7 +509,12 @@ class BarGPTV1(nn.Module):
             state_rank = self.horizon_state(fused).unsqueeze(2)
             horizon_rank = self.horizon_embedding(horizon_ids.long()).view(1, 1, -1, self.config.horizon_rank)
             conditioned = F.silu(state_rank + horizon_rank)
-            raw = self.horizon_head(conditioned)
+            raw, availability_logits, direction_logits = _fused_linear_group(
+                conditioned,
+                self.horizon_head,
+                self.horizon_availability_head,
+                self.horizon_direction_head,
+            )
             raw_quantiles = raw.view(
                 fused.shape[0],
                 fused.shape[1],
@@ -383,8 +527,6 @@ class BarGPTV1(nn.Module):
                 quantiles = torch.cat((first, first + F.softplus(raw_quantiles[..., 1:]).cumsum(dim=-1)), dim=-1)
             else:
                 quantiles = raw_quantiles
-            availability_logits = self.horizon_availability_head(conditioned)
-            direction_logits = self.horizon_direction_head(conditioned)
         return BarGPTOutput(
             embeddings=fused,
             scale_embeddings=encoded,
@@ -414,6 +556,21 @@ class BarGPTV1(nn.Module):
             missing = sorted(set(views) - set(attention_windows))
             if missing:
                 raise KeyError(f"missing attention windows for views: {missing}")
+        # Decoder weights are shared across all views and remain unchanged for
+        # the complete forward/backward pass. Concatenate each projection
+        # group once, retain the resulting autograd tensors while the views
+        # execute, and release them with this forward graph.
+        layer_projection_weights = tuple(
+            (
+                torch.cat((
+                    block.attention.q_proj.weight,
+                    block.attention.k_proj.weight,
+                    block.attention.v_proj.weight,
+                ), dim=0),
+                torch.cat((block.ffn.gate.weight, block.ffn.up.weight), dim=0),
+            )
+            for block in self.blocks
+        )
         encoded = {
             name: self.encode(
                 value,
@@ -421,6 +578,7 @@ class BarGPTV1(nn.Module):
                 pathway_ids[name],
                 attention_window=None if attention_windows is None else int(attention_windows[name]),
                 token_mask=None if view_masks is None else view_masks.get(name),
+                layer_projection_weights=layer_projection_weights,
             )
             for name, value in views.items()
         }
