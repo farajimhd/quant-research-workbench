@@ -4,7 +4,14 @@ import os
 import shlex
 import sys
 
-from research.bar_gpt.v1.config import BAR_GPT_WANDB_PROJECT
+from research.bar_gpt.v1.config import (
+    BAR_GPT_WANDB_PROJECT,
+    OFFLINE_PRODUCTION_BATCH_SIZE,
+    OFFLINE_PRODUCTION_LENGTH_BUCKET_BATCHES,
+    OFFLINE_PRODUCTION_LOADER_WORKERS,
+    OFFLINE_PRODUCTION_READY_QUEUE_BLOCKS,
+    OFFLINE_PRODUCTION_WORKER_PREFETCH_BATCHES,
+)
 from research.bar_gpt.v1.train import main
 
 
@@ -29,14 +36,13 @@ DEFAULT_ARGS: dict[str, str] = {
     # Loader-owned shape retained from the full-universe profile. Offline
     # shards contain 4,096-origin blocks but never this batch dimension; tune
     # it from the launcher without rebuilding storage.
-    "--batch-size": "32",
-    "--loader-workers": "16",
-    # Four host batches plus two batches per worker bound memory while the
-    # device stager overlaps producer wait and H2D. Increase only when the
-    # offline benchmark reports cache starvation.
-    "--ready-queue-blocks": "128",
-    "--worker-prefetch-batches": "2",
-    "--offline-length-bucket-batches": "4",
+    "--batch-size": str(OFFLINE_PRODUCTION_BATCH_SIZE),
+    "--loader-workers": str(OFFLINE_PRODUCTION_LOADER_WORKERS),
+    # The repeated fixed-workload v12 benchmark selected twelve workers, one
+    # prefetched batch per worker, four host batches, and bucket window four.
+    "--ready-queue-blocks": str(OFFLINE_PRODUCTION_READY_QUEUE_BLOCKS),
+    "--worker-prefetch-batches": str(OFFLINE_PRODUCTION_WORKER_PREFETCH_BATCHES),
+    "--offline-length-bucket-batches": str(OFFLINE_PRODUCTION_LENGTH_BUCKET_BATCHES),
     "--clickhouse-max-threads-per-worker": "1",
     "--clickhouse-query-days": "7",
     "--clickhouse-prefetch-pages": "4",

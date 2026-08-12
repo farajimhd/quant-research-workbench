@@ -14,7 +14,15 @@ from typing import Iterable
 import torch
 import torch.nn.functional as F
 
-from research.bar_gpt.v1.config import BarGPTConfig, DataConfig, TrainConfig
+from research.bar_gpt.v1.config import (
+    OFFLINE_PRODUCTION_LENGTH_BUCKET_BATCHES,
+    OFFLINE_PRODUCTION_LOADER_WORKERS,
+    OFFLINE_PRODUCTION_READY_QUEUE_BLOCKS,
+    OFFLINE_PRODUCTION_WORKER_PREFETCH_BATCHES,
+    BarGPTConfig,
+    DataConfig,
+    TrainConfig,
+)
 from research.bar_gpt.v1.data import BarGPTBatch, PATHWAY_ID_BY_NAME, TIMEFRAME_US_BY_NAME
 from research.bar_gpt.v1.loader import (
     BarGPTIterableDataset,
@@ -73,7 +81,7 @@ MODEL_SIZE_PRESETS: dict[str, dict[str, int]] = {
 # explicit opt-in preset but is excluded from the default sweep because its
 # cost is disproportionate for routine fit/throughput checks.
 DEFAULT_JOINT_CANDIDATES = ",".join(
-    f"{model}:4096:{microbatch}:1:16:1:0"
+    f"{model}:4096:{microbatch}:1:{OFFLINE_PRODUCTION_LOADER_WORKERS}:1:0"
     for model, microbatches in (
         ("current", (8, 16, 24, 32)),
         ("medium", (4, 8, 12, 16)),
@@ -301,9 +309,21 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--warmup-steps", type=int, default=1)
     parser.add_argument("--measured-steps", type=int, default=8)
-    parser.add_argument("--ready-queue-blocks", type=int, default=128)
-    parser.add_argument("--worker-prefetch-batches", type=int, default=2)
-    parser.add_argument("--offline-length-bucket-batches", type=int, default=4)
+    parser.add_argument(
+        "--ready-queue-blocks",
+        type=int,
+        default=OFFLINE_PRODUCTION_READY_QUEUE_BLOCKS,
+    )
+    parser.add_argument(
+        "--worker-prefetch-batches",
+        type=int,
+        default=OFFLINE_PRODUCTION_WORKER_PREFETCH_BATCHES,
+    )
+    parser.add_argument(
+        "--offline-length-bucket-batches",
+        type=int,
+        default=OFFLINE_PRODUCTION_LENGTH_BUCKET_BATCHES,
+    )
     parser.add_argument("--target-effective-blocks", type=int, default=32)
     parser.add_argument("--clickhouse-max-threads-per-worker", type=int, default=1)
     parser.add_argument("--output-root", default=str(DEFAULT_OUTPUT_ROOT))

@@ -58,7 +58,7 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--end-date", default="2020-01-01")
     parser.add_argument("--tickers", default="")
     parser.add_argument("--batch-size", type=int, default=32)
-    # Twelve focused candidates bracket the production 16/2/4/4 shape without
+    # Twelve focused candidates bracket the production loader shape without
     # the former 72-way Cartesian sweep. Larger queues were already shown to
     # amplify host memory and page-cache pressure without establishing a
     # training-throughput benefit.

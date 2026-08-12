@@ -13,7 +13,13 @@ from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Any, Iterable, Sequence
 
-from research.bar_gpt.v1.config import DataConfig
+from research.bar_gpt.v1.config import (
+    OFFLINE_PRODUCTION_LENGTH_BUCKET_BATCHES,
+    OFFLINE_PRODUCTION_LOADER_WORKERS,
+    OFFLINE_PRODUCTION_READY_QUEUE_BLOCKS,
+    OFFLINE_PRODUCTION_WORKER_PREFETCH_BATCHES,
+    DataConfig,
+)
 from research.bar_gpt.v1.offline_shards import (
     OfflineBlockRef,
     OfflineShardUnit,
@@ -464,7 +470,7 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--output-root", default=str(DEFAULT_OUTPUT_ROOT))
     parser.add_argument("--wandb-project", default=DISCOVERY_WANDB_PROJECT)
     parser.add_argument("--wandb-mode", choices=("auto", "online", "offline", "disabled"), default="online")
-    parser.add_argument("--workers", type=int, default=16)
+    parser.add_argument("--workers", type=int, default=OFFLINE_PRODUCTION_LOADER_WORKERS)
     parser.add_argument("--seed", type=int, default=17)
     parser.add_argument("--architectures", default="all", help="Comma-separated architecture names or all.")
     return parser.parse_args(list(argv) if argv is not None else None)
@@ -498,9 +504,9 @@ def _trainer_command(
         "--batch-size", str(architecture.microbatch),
         "--gradient-accumulation-steps", str(architecture.accumulation),
         "--loader-workers", str(workers),
-        "--ready-queue-blocks", "128",
-        "--worker-prefetch-batches", "2",
-        "--offline-length-bucket-batches", "4",
+        "--ready-queue-blocks", str(OFFLINE_PRODUCTION_READY_QUEUE_BLOCKS),
+        "--worker-prefetch-batches", str(OFFLINE_PRODUCTION_WORKER_PREFETCH_BATCHES),
+        "--offline-length-bucket-batches", str(OFFLINE_PRODUCTION_LENGTH_BUCKET_BATCHES),
         "--d-model", str(architecture.d_model),
         "--n-layers", str(architecture.n_layers),
         "--n-heads", str(architecture.n_heads),

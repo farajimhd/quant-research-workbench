@@ -4,6 +4,10 @@ import os
 import shlex
 import sys
 
+from research.bar_gpt.v1.config import (
+    OFFLINE_PRODUCTION_READY_QUEUE_BLOCKS,
+    OFFLINE_PRODUCTION_WORKER_PREFETCH_BATCHES,
+)
 from research.bar_gpt.v1.profile_train import DEFAULT_JOINT_CANDIDATES, main
 
 
@@ -14,8 +18,8 @@ DEFAULT_ARGS: tuple[str, ...] = (
     "--end-date", "2019-02-01",
     "--candidates",
     DEFAULT_JOINT_CANDIDATES,
-    "--ready-queue-blocks", "128",
-    "--worker-prefetch-batches", "2",
+    "--ready-queue-blocks", str(OFFLINE_PRODUCTION_READY_QUEUE_BLOCKS),
+    "--worker-prefetch-batches", str(OFFLINE_PRODUCTION_WORKER_PREFETCH_BATCHES),
     "--target-effective-blocks", "32",
     "--warmup-steps", "1",
     "--measured-steps", "3",

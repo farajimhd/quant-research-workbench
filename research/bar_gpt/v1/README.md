@@ -431,8 +431,8 @@ receptive field beyond that contract.
 The shard stores no microbatch dimension. `--batch-size` is the number of
 independent 4,096-origin blocks collated by the loader and may be tuned without
 rebuilding shards. The production default is 32 blocks per microbatch with one
-microbatch per optimizer update. Sixteen worker-owned mmap streams retain
-shard-local access, eight in-flight batches per worker, and a shared bounded
+microbatch per optimizer update. Twelve worker-owned mmap streams retain
+shard-local access, one prefetched batch per worker, and a shared bounded
 RAM cache sized in loader blocks. One pinned device batch transfers on a
 dedicated CUDA stream while the current batch computes. The terminal reports
 actual cache fill and per-update GPU duty so starvation is visible. Future target support
@@ -574,7 +574,7 @@ for an equal-effective-batch follow-up. OOM candidates fail independently and
 larger microbatches of the same model/device shape are skipped; only candidates
 at or below 90% reserved memory are eligible. `torch.compile` remains an
 explicit opt-in because Windows compilation can stall before the first measured
-update. Sixteen worker-owned offline mmap streams are held fixed so the sweep
+update. Twelve worker-owned offline mmap streams are held fixed so the sweep
 isolates model and GPU microbatch effects. Promote a selected per-model profile
 into a controlled equal-origin training comparison only after measuring it on
 the training workstation.
@@ -582,7 +582,7 @@ the training workstation.
 The separate offline-loader benchmark does not run model forward or backward
 compute, so Task Manager GPU utilization during that benchmark is not training
 utilization. Its default v12 grid contains 12 focused worker/prefetch/cache
-candidates, including the production 16-worker, prefetch-2, four-host-batch,
+candidates, including the production 12-worker, prefetch-1, four-host-batch,
 length-bucket-4 shape; the former 72-way Cartesian grid is no longer the default.
 Every candidate and each of its three trials consume the same immutable
 block-reference workload. Warmup uses a separate fixed block set, and workload

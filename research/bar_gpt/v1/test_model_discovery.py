@@ -21,6 +21,7 @@ from research.bar_gpt.v1.model_discovery import (
     _ranking_key,
     _resume_if_available,
     _trainer_command,
+    parse_args as parse_discovery_args,
     discovery_data_config,
     discovery_storage_config,
     discovery_shard_compatibility_hash,
@@ -62,6 +63,7 @@ class ModelDiscoveryContractTest(unittest.TestCase):
         self.assertEqual(DISCOVERY_EPOCHS * DISCOVERY_TRAIN_ORIGINS_PER_EPOCH, 200_000_000)
 
     def test_discovery_training_uses_production_loader_shape(self) -> None:
+        self.assertEqual(parse_discovery_args(()).workers, 12)
         command = _trainer_command(
             ARCHITECTURE_GRID[0],
             shard_root=Path("shards"),
@@ -69,13 +71,13 @@ class ModelDiscoveryContractTest(unittest.TestCase):
             output_root=Path("output"),
             project="project",
             wandb_mode="disabled",
-            workers=16,
+            workers=12,
             seed=17,
             run_name="run",
         )
-        self.assertEqual(command[command.index("--loader-workers") + 1], "16")
+        self.assertEqual(command[command.index("--loader-workers") + 1], "12")
         self.assertEqual(command[command.index("--ready-queue-blocks") + 1], "128")
-        self.assertEqual(command[command.index("--worker-prefetch-batches") + 1], "2")
+        self.assertEqual(command[command.index("--worker-prefetch-batches") + 1], "1")
         self.assertEqual(command[command.index("--offline-length-bucket-batches") + 1], "4")
 
     def test_fixed_panel_sampling_is_deterministic_and_date_disjoint(self) -> None:

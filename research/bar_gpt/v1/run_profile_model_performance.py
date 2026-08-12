@@ -8,6 +8,11 @@ from typing import Iterable
 
 import torch
 
+from research.bar_gpt.v1.config import (
+    OFFLINE_PRODUCTION_LOADER_WORKERS,
+    OFFLINE_PRODUCTION_READY_QUEUE_BLOCKS,
+    OFFLINE_PRODUCTION_WORKER_PREFETCH_BATCHES,
+)
 from research.bar_gpt.v1.profile_train import (
     DEFAULT_OUTPUT_ROOT,
     ProfileReporter,
@@ -25,7 +30,7 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--model-size", choices=tuple(COMPARISON_RUNS), default="current")
     parser.add_argument("--warmup-steps", type=int, default=2)
     parser.add_argument("--measured-steps", type=int, default=10)
-    parser.add_argument("--workers", type=int, default=16)
+    parser.add_argument("--workers", type=int, default=OFFLINE_PRODUCTION_LOADER_WORKERS)
     parser.add_argument("--start-date", default="2019-01-01")
     parser.add_argument("--end-date", default="2019-02-01")
     parser.add_argument("--output-root", default=str(DEFAULT_OUTPUT_ROOT))
@@ -55,9 +60,9 @@ def profiler_argv(args: argparse.Namespace) -> list[str]:
         "--candidates",
         candidate,
         "--ready-queue-blocks",
-        "128",
+        str(OFFLINE_PRODUCTION_READY_QUEUE_BLOCKS),
         "--worker-prefetch-batches",
-        "2",
+        str(OFFLINE_PRODUCTION_WORKER_PREFETCH_BATCHES),
         "--target-effective-blocks",
         "32",
         "--warmup-steps",
