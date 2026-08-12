@@ -45,7 +45,8 @@ class V12RuntimeAlignmentTest(unittest.TestCase):
         self.assertEqual(config.data.origin_bars_1s, 4096)
         self.assertEqual(config.data.batch_size, 16)
         self.assertEqual(config.train.gradient_accumulation_steps, 2)
-        self.assertEqual(config.data.loader_workers, 12)
+        self.assertEqual(config.data.loader_workers, 8)
+        self.assertEqual(config.data.ready_queue_blocks, 64)
         self.assertEqual(config.data.worker_prefetch_batches, 1)
 
     def test_profiler_uses_same_manifest_authority(self) -> None:

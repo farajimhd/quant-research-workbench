@@ -60,6 +60,8 @@ from research.mlops.env import load_env_files
 
 DEFAULT_OUTPUT_ROOT = Path(r"D:\TradingML\runtimes\bar_gpt\v1\profile_train")
 SDPA_PROBE_MAX_LENGTH = 512
+PROFILE_MEMORY_LIMIT = 0.90
+PROFILE_MEMORY_PROJECTION_MARGIN = 1.10
 
 MODEL_SIZE_PRESETS: dict[str, dict[str, int]] = {
     "current": {"d_model": 384, "n_layers": 8, "n_heads": 8, "n_kv_heads": 4},
@@ -147,6 +149,17 @@ class ProfileResult:
     sdpa_audit_seconds: float = 0.0
     sdpa_audit_message: str = ""
     message: str = ""
+
+
+def _projected_memory_fraction(
+    previous: ProfileResult,
+    candidate: ProfileCandidate,
+) -> float:
+    """Conservatively project peak memory before launching a larger batch."""
+    if previous.candidate.microbatch <= 0:
+        return 0.0
+    ratio = candidate.microbatch / previous.candidate.microbatch
+    return previous.memory_fraction * ratio * PROFILE_MEMORY_PROJECTION_MARGIN
 
 
 def _sdpa_backend(key: str) -> str | None:
@@ -953,6 +966,7 @@ def main(argv: Iterable[str] | None = None) -> int:
     reporter.configuration(args, candidates, device)
     results: list[ProfileResult] = []
     oom_microbatch: dict[tuple[str, int, int, bool], int] = {}
+    last_passed: dict[tuple[str, int, int, bool], ProfileResult] = {}
     jsonl = run_root / "profile.jsonl"
     # Candidates vary only loader/model shape; the authority/schema audit is
     # invariant.  Run it once so the measured sweep does not pay the same
@@ -970,7 +984,43 @@ def main(argv: Iterable[str] | None = None) -> int:
         reporter.start(candidate, index, len(candidates))
         oom_key = (candidate.model_size, candidate.origin_bars, candidate.workers, candidate.compile_model)
         threshold = oom_microbatch.get(oom_key)
-        if threshold is not None and candidate.microbatch >= threshold:
+        previous = last_passed.get(oom_key)
+        projected_memory = (
+            _projected_memory_fraction(previous, candidate)
+            if previous is not None and candidate.microbatch > previous.candidate.microbatch
+            else 0.0
+        )
+        if projected_memory > PROFILE_MEMORY_LIMIT:
+            assert previous is not None
+            result = ProfileResult(
+                candidate=candidate,
+                state="skipped_projected_memory",
+                optimizer_steps=0,
+                origins=0,
+                encoded_tokens=0,
+                valid_encoded_tokens=0,
+                encoded_padding_fraction=0.0,
+                encoded_tokens_by_view={},
+                valid_encoded_tokens_by_view={},
+                elapsed_seconds=0.0,
+                loader_wait_seconds=0.0,
+                gpu_seconds=0.0,
+                origins_per_second=0.0,
+                encoded_tokens_per_second=0.0,
+                peak_allocated_bytes=0,
+                peak_reserved_bytes=0,
+                total_device_bytes=previous.total_device_bytes,
+                memory_fraction=projected_memory,
+                model_parameters=previous.model_parameters,
+                effective_blocks_per_update=candidate.microbatch * candidate.accumulation,
+                recommended_accumulation=max(1, math.ceil(int(args.target_effective_blocks) / candidate.microbatch)),
+                message=(
+                    f"skipped before allocation: projected memory {projected_memory:.1%} exceeds "
+                    f"the {PROFILE_MEMORY_LIMIT:.0%} profiling limit from microbatch "
+                    f"{previous.candidate.microbatch}"
+                ),
+            )
+        elif threshold is not None and candidate.microbatch >= threshold:
             result = ProfileResult(
                 candidate=candidate,
                 state="skipped_after_oom",
@@ -1032,6 +1082,8 @@ def main(argv: Iterable[str] | None = None) -> int:
                     recommended_accumulation=max(1, math.ceil(int(args.target_effective_blocks) / candidate.microbatch)),
                     message=str(exc),
                 )
+        if result.state == "passed":
+            last_passed[oom_key] = result
         results.append(result)
         with jsonl.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(asdict(result), default=str, sort_keys=True) + "\n")
@@ -1040,7 +1092,10 @@ def main(argv: Iterable[str] | None = None) -> int:
         gc.collect()
         if device.type == "cuda":
             torch.cuda.empty_cache()
-    eligible = [result for result in results if result.state == "passed" and result.memory_fraction <= 0.90]
+    eligible = [
+        result for result in results
+        if result.state == "passed" and result.memory_fraction <= PROFILE_MEMORY_LIMIT
+    ]
     selected = max(eligible, key=lambda result: result.origins_per_second, default=None)
     selected_by_model = {
         model_size: asdict(best)

@@ -132,7 +132,7 @@ from research.bar_gpt.v1.train import (
     sequential_coverage_counts,
     validate,
 )
-from research.bar_gpt.v1.profile_train import MODEL_SIZE_PRESETS, ProfileReporter, _model_config, _parse_candidates, _sdpa_backend, parse_args as parse_profile_args
+from research.bar_gpt.v1.profile_train import MODEL_SIZE_PRESETS, ProfileCandidate, ProfileReporter, _model_config, _parse_candidates, _projected_memory_fraction, _sdpa_backend, parse_args as parse_profile_args
 from research.bar_gpt.v1.run_build_conditions_1s import default_argv as condition_builder_argv
 from research.bar_gpt.v1.run_build_offline_dataset import (
     commands as offline_dataset_commands,
@@ -1863,7 +1863,7 @@ class LoaderTrainerContractTest(unittest.TestCase):
         self.assertEqual(training_launcher_args["--checkpoint-validation-evaluations"], "1")
         self.assertNotIn("--checkpoint-latest-samples", training_launcher_args)
         self.assertEqual(training_launcher_args["--wandb-project"], BAR_GPT_WANDB_PROJECT)
-        self.assertEqual(training_launcher_args["--loader-workers"], "12")
+        self.assertEqual(training_launcher_args["--loader-workers"], "8")
         config = TrainConfig(warmup_samples=0, warmup_fraction=0.01)
         self.assertEqual(_resolved_warmup_samples(config, 7_563_836_672), 75_638_367)
         config.warmup_samples = 12_345
@@ -2273,7 +2273,7 @@ class LoaderTrainerContractTest(unittest.TestCase):
         parsed = _parse_candidates(launcher_candidates)
         self.assertEqual({item.model_size for item in parsed}, {"current", "medium", "large"})
         self.assertNotIn("small", {item.model_size for item in parsed})
-        self.assertEqual({item.workers for item in parsed}, {12})
+        self.assertEqual({item.workers for item in parsed}, {8})
         self.assertEqual({item.microbatch for item in parsed if item.model_size == "current"}, {8, 16, 24, 32})
         self.assertNotIn("xlarge", {item.model_size for item in parsed})
         self.assertEqual(profile_launcher_args[profile_launcher_args.index("--target-effective-blocks") + 1], "32")
@@ -2282,15 +2282,26 @@ class LoaderTrainerContractTest(unittest.TestCase):
         self.assertEqual((resolved["xlarge"].d_model, resolved["xlarge"].n_layers), (1024, 16))
         self.assertEqual({config.dropout for config in resolved.values()}, {0.08})
 
+    def test_profiler_skips_unsafe_projected_microbatch(self) -> None:
+        previous = SimpleNamespace(
+            candidate=ProfileCandidate(4096, 16, 1, 8, True),
+            memory_fraction=0.59,
+        )
+        candidate = ProfileCandidate(4096, 24, 1, 8, True)
+        self.assertGreater(
+            _projected_memory_fraction(previous, candidate),  # type: ignore[arg-type]
+            0.90,
+        )
+
     def test_performance_profiler_uses_selected_training_shape_and_readable_output(self) -> None:
         launcher_args = parse_performance_profile_args(["--model-size", "medium", "--progress-layout", "text"])
         resolved = profiler_argv(launcher_args)
         candidates = _parse_candidates(resolved[resolved.index("--candidates") + 1])
         self.assertEqual(len(candidates), 1)
         self.assertEqual((candidates[0].model_size, candidates[0].microbatch, candidates[0].accumulation), ("medium", 8, 4))
-        self.assertEqual(candidates[0].workers, 12)
+        self.assertEqual(candidates[0].workers, 8)
         profile_args = parse_profile_args(resolved)
-        self.assertEqual(profile_args.ready_queue_blocks, 128)
+        self.assertEqual(profile_args.ready_queue_blocks, 64)
         self.assertEqual(profile_args.worker_prefetch_batches, 1)
         self.assertEqual(profile_args.offline_length_bucket_batches, 4)
         stream = io.StringIO()
@@ -2321,8 +2332,8 @@ class LoaderTrainerContractTest(unittest.TestCase):
         self.assertEqual(training_launcher_args["--origin-bars-1s"], "4096")
         self.assertEqual(training_launcher_args["--batch-size"], "16")
         self.assertEqual(training_launcher_args["--gradient-accumulation-steps"], "2")
-        self.assertEqual(training_launcher_args["--loader-workers"], "12")
-        self.assertEqual(training_launcher_args["--ready-queue-blocks"], "128")
+        self.assertEqual(training_launcher_args["--loader-workers"], "8")
+        self.assertEqual(training_launcher_args["--ready-queue-blocks"], "64")
         self.assertEqual(training_launcher_args["--worker-prefetch-batches"], "1")
         self.assertEqual(training_launcher_args["--offline-length-bucket-batches"], "4")
         self.assertEqual(training_launcher_args["--wandb-mode"], "online")

@@ -66,7 +66,7 @@ class ModelDiscoveryContractTest(unittest.TestCase):
         self.assertEqual(DISCOVERY_EPOCHS * DISCOVERY_TRAIN_ORIGINS_PER_EPOCH, 200_000_000)
 
     def test_discovery_training_uses_production_loader_shape(self) -> None:
-        self.assertEqual(parse_discovery_args(()).workers, 12)
+        self.assertEqual(parse_discovery_args(()).workers, 8)
         command = _trainer_command(
             ARCHITECTURE_GRID[0],
             shard_root=Path("shards"),
@@ -79,7 +79,7 @@ class ModelDiscoveryContractTest(unittest.TestCase):
             run_name="run",
         )
         self.assertEqual(command[command.index("--loader-workers") + 1], "12")
-        self.assertEqual(command[command.index("--ready-queue-blocks") + 1], "128")
+        self.assertEqual(command[command.index("--ready-queue-blocks") + 1], "64")
         self.assertEqual(command[command.index("--worker-prefetch-batches") + 1], "1")
         self.assertEqual(command[command.index("--offline-length-bucket-batches") + 1], "4")
 
