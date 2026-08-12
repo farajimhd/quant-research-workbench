@@ -79,6 +79,7 @@ pub struct GatewayConfig {
     pub compact_event_channel_capacity: usize,
     pub compact_event_max_clickhouse_batch: usize,
     pub compact_event_live_buffer_events_per_ticker: usize,
+    pub compact_event_live_buffer_events_total: usize,
     pub compact_event_reorder_force_flush_ms: u64,
     pub compact_event_reorder_lag_ms: u64,
     pub compact_event_reorder_max_events_per_ticker: usize,
@@ -249,6 +250,10 @@ impl GatewayConfig {
             compact_event_live_buffer_events_per_ticker: env_usize(
                 "QMD_COMPACT_EVENT_LIVE_BUFFER_EVENTS_PER_TICKER",
                 512,
+            ),
+            compact_event_live_buffer_events_total: env_usize(
+                "QMD_COMPACT_EVENT_LIVE_BUFFER_EVENTS_TOTAL",
+                250_000,
             ),
             compact_event_reorder_force_flush_ms: env_u64(
                 "QMD_COMPACT_EVENT_REORDER_FORCE_FLUSH_MS",

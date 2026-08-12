@@ -6,6 +6,7 @@ param(
     [double]$TerminalRefreshSeconds = 1.0,
     [int]$TerminalEventLimit = 6,
     [string]$CargoTargetDir = "",
+    [string]$RuntimeRoot = "",
     [switch]$CheckOnly,
     [switch]$DebugBuild,
     [switch]$NoTerminal,
@@ -177,7 +178,19 @@ function Wait-QmdGatewayHealth {
 
 $baseUrl = Get-QmdBaseUrl
 $python = Resolve-QmdTerminalPython
-$logRoot = Join-Path $repoRoot ".tmp\qmd-gateway"
+$resolvedRuntimeRoot = if ($RuntimeRoot.Trim()) {
+    $RuntimeRoot.Trim()
+} elseif ($env:QMD_RUNTIME_ROOT) {
+    $env:QMD_RUNTIME_ROOT.Trim()
+} else {
+    "D:\TradingML\runtimes\qmd_gateway"
+}
+$resolvedRuntimeRoot = [IO.Path]::GetFullPath($resolvedRuntimeRoot).TrimEnd('\')
+if ($resolvedRuntimeRoot.Equals($resolvedRepo, [StringComparison]::OrdinalIgnoreCase) -or
+    $resolvedRuntimeRoot.StartsWith($resolvedRepo + '\', [StringComparison]::OrdinalIgnoreCase)) {
+    throw "QMD runtime output must be outside the repository: $resolvedRuntimeRoot"
+}
+$logRoot = Join-Path $resolvedRuntimeRoot "logs"
 New-Item -ItemType Directory -Force -Path $logRoot | Out-Null
 $runStamp = Get-Date -Format "yyyyMMdd_HHmmss"
 $stdoutLog = Join-Path $logRoot "qmd_gateway_$runStamp.out.log"

@@ -2025,6 +2025,50 @@ it does not imply all application work is complete.
      but cannot supply globally time-ordered full-market reads by itself, so no
      unapproved duplicate cache or Market SIP mutation was introduced.
 
+178. Recovered repository hygiene and the approved Canvas configuration before
+     continuing architecture work. Removed the ignored 1.69 GB
+     `services/qmd-gateway/target` tree and repository Python caches. Direct
+     Cargo commands now resolve to the external runtime through repository
+     `.cargo/config.toml`; Python and pytest disable bytecode/cache output; the
+     managed QMD Live launcher now rejects repository runtime roots and writes
+     logs under `D:\TradingML\runtimes\qmd_gateway`. Lifecycle assertions cover
+     all three boundaries.
+
+     Canvas Management had hidden its entire approved catalog because the
+     backend registry still advertised retired `signal_stream` while the
+     frontend correctly contained the replacement Strategy Activity container.
+     The registry now exposes the exact approved 22-container contract, adapter
+     drift preserves only the verified intersection, and the preview Portfolio
+     fixture supplies its current management fields. Browser validation mounted
+     all 22 kinds without an error boundary, then restored the approved default
+     five-window layout. The managed external frontend build and 21 focused
+     registry, preview, and lifecycle tests passed. Recovery commit `627f5aa3`
+     was pushed before the remaining QMD work.
+
+179. Closed the representative active-session QMD and application load gate.
+     The first five-minute run correctly failed: the live compact cache retained
+     up to 512 heap-heavy rows for each observed symbol, reaching roughly
+     2.5 GB RSS, while startup maintenance attempted REST repair across the
+     persisted 17,849-symbol universe and never left `catching_up`.
+
+     QMD now enforces both per-ticker and 250,000-event global retention limits;
+     global evictions advance the same explicit cursor-expiry evidence as
+     per-ticker eviction. During streaming hours, unresolved whole-market gaps
+     remain recorded and are deferred to after-hours repair. Focused
+     watchlist/strategy/chart activation keeps its existing immediate certified
+     ticker repair, so the computational funnel no longer performs optional
+     all-market REST work.
+
+     All 114 QMD tests passed. The corrected optimized release reached
+     `running`, processed 4,307,038 events across 12,321 symbols over 225
+     seconds, plateaued at 733.1 MB RSS under the 1.5 GB gate, and recorded zero
+     required-lane failures. The separate active application profile completed
+     9,832 Scanner, Watchlist, Canvas chart, and computation-plan requests in
+     60 seconds with zero errors and p95 latencies of 63.948, 71.542, 110.270,
+     and 68.504 ms. Evidence is external under
+     `D:\TradingML\runtimes\qmd_validation`; both validation processes were
+     stopped after measurement.
+
 ---
 
 [Top](README.md) · [Previous](14-implementation-backlog.md) · [First](01-product-and-principles.md)

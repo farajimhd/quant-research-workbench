@@ -234,7 +234,15 @@ fn causal_hash(parts: &[&[u8]]) -> u64 {
 #[derive(Clone)]
 pub struct SharedCompactEventStore {
     capacity_per_ticker: usize,
-    inner: Arc<RwLock<HashMap<String, TickerCompactEvents>>>,
+    capacity_total: usize,
+    inner: Arc<RwLock<CompactEventStoreState>>,
+}
+
+#[derive(Clone, Debug, Default)]
+struct CompactEventStoreState {
+    by_ticker: HashMap<String, TickerCompactEvents>,
+    arrival_order: VecDeque<(String, u64)>,
+    retained_events: usize,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -278,35 +286,91 @@ pub struct CompactEventMarketPage {
 }
 
 impl SharedCompactEventStore {
-    pub fn new(capacity_per_ticker: usize) -> Self {
+    pub fn new(capacity_per_ticker: usize, capacity_total: usize) -> Self {
         Self {
             capacity_per_ticker,
-            inner: Arc::new(RwLock::new(HashMap::new())),
+            capacity_total,
+            inner: Arc::new(RwLock::new(CompactEventStoreState::default())),
         }
     }
 
     pub async fn push(&self, event: LiveCompactEvent) {
-        if self.capacity_per_ticker == 0 {
+        if self.capacity_per_ticker == 0 || self.capacity_total == 0 {
             return;
         }
         let mut guard = self.inner.write().await;
-        let state = guard.entry(event.ticker.clone()).or_default();
-        state.events.push_back(event);
-        while state.events.len() > self.capacity_per_ticker {
-            if let Some(evicted) = state.events.pop_front() {
+        let ticker = event.ticker.clone();
+        let arrival_sequence = event.arrival_sequence;
+        guard
+            .arrival_order
+            .push_back((ticker.clone(), arrival_sequence));
+        guard.retained_events += 1;
+        let ticker_evictions = {
+            let state = guard.by_ticker.entry(ticker).or_default();
+            state.events.push_back(event);
+            let mut evictions = 0usize;
+            while state.events.len() > self.capacity_per_ticker {
+                if let Some(evicted) = state.events.pop_front() {
+                    evictions += 1;
+                    state.evicted_through_arrival_sequence = state
+                        .evicted_through_arrival_sequence
+                        .max(evicted.arrival_sequence);
+                    state.evicted_through_sip_timestamp_us = state
+                        .evicted_through_sip_timestamp_us
+                        .max(evicted.sip_timestamp_us);
+                }
+            }
+            evictions
+        };
+        guard.retained_events = guard.retained_events.saturating_sub(ticker_evictions);
+        if guard.arrival_order.len() > self.capacity_total.saturating_mul(2).max(1_024) {
+            let retained_starts = guard
+                .by_ticker
+                .iter()
+                .filter_map(|(ticker, state)| {
+                    state
+                        .events
+                        .front()
+                        .map(|event| (ticker.clone(), event.arrival_sequence))
+                })
+                .collect::<HashMap<_, _>>();
+            guard.arrival_order.retain(|(ticker, sequence)| {
+                retained_starts
+                    .get(ticker)
+                    .map(|start| sequence >= start)
+                    .unwrap_or(false)
+            });
+        }
+        while guard.retained_events > self.capacity_total {
+            let Some((ticker, sequence)) = guard.arrival_order.pop_front() else {
+                break;
+            };
+            let Some(state) = guard.by_ticker.get_mut(&ticker) else {
+                continue;
+            };
+            if state.events.front().map(|event| event.arrival_sequence) != Some(sequence) {
+                continue;
+            }
+            let evicted = if let Some(evicted) = state.events.pop_front() {
                 state.evicted_through_arrival_sequence = state
                     .evicted_through_arrival_sequence
                     .max(evicted.arrival_sequence);
                 state.evicted_through_sip_timestamp_us = state
                     .evicted_through_sip_timestamp_us
                     .max(evicted.sip_timestamp_us);
+                true
+            } else {
+                false
+            };
+            if evicted {
+                guard.retained_events = guard.retained_events.saturating_sub(1);
             }
         }
     }
 
     pub async fn latest_sorted(&self, ticker: &str, limit: usize) -> Vec<LiveCompactEvent> {
         let guard = self.inner.read().await;
-        let Some(state) = guard.get(&ticker.to_ascii_uppercase()) else {
+        let Some(state) = guard.by_ticker.get(&ticker.to_ascii_uppercase()) else {
             return Vec::new();
         };
         let mut out = state.events.iter().cloned().collect::<Vec<_>>();
@@ -326,7 +390,7 @@ impl SharedCompactEventStore {
     ) -> CompactEventPage {
         let normalized_ticker = ticker.trim().to_ascii_uppercase();
         let guard = self.inner.read().await;
-        let state = guard.get(&normalized_ticker);
+        let state = guard.by_ticker.get(&normalized_ticker);
         let buffer_start = state
             .and_then(|value| value.events.front())
             .map(|event| event.arrival_sequence)
@@ -374,7 +438,7 @@ impl SharedCompactEventStore {
     pub async fn latest_page(&self, ticker: &str, limit: usize) -> CompactEventPage {
         let normalized_ticker = ticker.trim().to_ascii_uppercase();
         let guard = self.inner.read().await;
-        let state = guard.get(&normalized_ticker);
+        let state = guard.by_ticker.get(&normalized_ticker);
         let buffer_start = state
             .and_then(|value| value.events.front())
             .map(|event| event.arrival_sequence)
@@ -421,7 +485,7 @@ impl SharedCompactEventStore {
 
     pub async fn tickers(&self) -> Vec<String> {
         let guard = self.inner.read().await;
-        let mut out = guard.keys().cloned().collect::<Vec<_>>();
+        let mut out = guard.by_ticker.keys().cloned().collect::<Vec<_>>();
         out.sort();
         out
     }
@@ -442,6 +506,7 @@ impl SharedCompactEventStore {
             .collect::<std::collections::HashSet<_>>();
         let guard = self.inner.read().await;
         let selected = guard
+            .by_ticker
             .iter()
             .filter(|(ticker, _)| requested.is_empty() || requested.contains(*ticker))
             .collect::<Vec<_>>();
@@ -2208,7 +2273,7 @@ mod tests {
 
     #[tokio::test]
     async fn bounded_page_reports_exact_cursor_eviction_and_forward_progress() {
-        let store = SharedCompactEventStore::new(2);
+        let store = SharedCompactEventStore::new(2, 100);
         for arrival_sequence in [10, 20, 30] {
             let trade = TradeEvent {
                 conditions: vec![],
@@ -2260,8 +2325,55 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn global_capacity_evicts_oldest_event_and_preserves_cursor_evidence() {
+        let store = SharedCompactEventStore::new(10, 3);
+        for (ticker, arrival_sequence) in [("AAPL", 10), ("MSFT", 20), ("AAPL", 30), ("NVDA", 40)] {
+            let trade = TradeEvent {
+                conditions: vec![],
+                exchange: 4,
+                ingest_ts: Utc.timestamp_millis_opt(1_700_000_000_000).unwrap(),
+                participant_ts: None,
+                price: 10.0,
+                raw: serde_json::Value::Null,
+                sequence: arrival_sequence,
+                size: 100.0,
+                tape: 1,
+                ticker: ticker.to_string(),
+                trade_id: arrival_sequence.to_string(),
+                trf_id: 0,
+                trf_ts: None,
+                ts: Utc
+                    .timestamp_millis_opt(1_700_000_000_000 + arrival_sequence as i64)
+                    .unwrap(),
+            };
+            let mut event = compact_trade_event(&trade, &references()).unwrap().event;
+            event.arrival_sequence = arrival_sequence;
+            store.push(event).await;
+        }
+
+        let aapl = store.page_after("AAPL", 5, 10).await;
+        assert!(aapl.cursor_expired);
+        assert_eq!(
+            aapl.events
+                .iter()
+                .map(|event| event.arrival_sequence)
+                .collect::<Vec<_>>(),
+            vec![30]
+        );
+        let market = store.market_page_after(0, 0, u64::MAX, &[], 10, None).await;
+        assert_eq!(
+            market
+                .events
+                .iter()
+                .map(|event| event.arrival_sequence)
+                .collect::<Vec<_>>(),
+            vec![20, 30, 40]
+        );
+    }
+
+    #[tokio::test]
     async fn market_page_is_bounded_filterable_and_reports_evicted_window_rows() {
-        let store = SharedCompactEventStore::new(2);
+        let store = SharedCompactEventStore::new(2, 100);
         for (ticker, arrival_sequence, offset_ms) in [
             ("AAPL", 10, 10),
             ("MSFT", 20, 20),

@@ -587,22 +587,43 @@ impl GapFillService {
             .live_event_coverage_intervals(window_start, window_end)
             .await?;
         let coverage_gaps = self.coverage_gaps_for_sessions(&market_dates, &coverage_intervals);
-        let symbols = self.recent_live_symbols(window_start).await?;
         let mut repair = RecentLiveRepair {
             status: "up_to_date".to_string(),
-            symbols_checked: symbols.len() as u64,
             ..RecentLiveRepair::default()
         };
         repair.intervals_checked = coverage_gaps.len() as u64;
         if coverage_gaps.is_empty() {
-            self.maintenance
-                .configure_totals(symbols.len() as u64, 0)
-                .await;
+            self.maintenance.configure_totals(0, 0).await;
             self.maintenance
                 .set_message("up_to_date", "No q_live recent coverage gaps were found.")
                 .await;
             return Ok(repair);
         }
+        if should_defer_whole_market_repair(Utc::now()) {
+            repair.status = "deferred_to_focused_repair".to_string();
+            self.maintenance
+                .configure_totals(0, coverage_gaps.len() as u64)
+                .await;
+            self.maintenance
+                .set_message(
+                    &repair.status,
+                    "Recent q_live coverage gaps remain explicit during streaming; focused ticker activation repairs demand immediately and whole-market repair resumes after hours.",
+                )
+                .await;
+            self.record_run(
+                started_at,
+                mode,
+                &phase,
+                "",
+                &repair.status,
+                0,
+                "Whole-market REST repair was deferred during streaming; coverage gaps remain recorded and focused ticker repair remains active.",
+            )
+            .await?;
+            return Ok(repair);
+        }
+        let symbols = self.recent_live_symbols(window_start).await?;
+        repair.symbols_checked = symbols.len() as u64;
         if symbols.is_empty() {
             repair.status = if is_streaming_phase(Utc::now()) {
                 "awaiting_live_symbols".to_string()
@@ -2608,6 +2629,10 @@ fn should_run_session_catch_up(mode: &str) -> bool {
     matches!(mode, "auto" | "session" | "session_catch_up")
 }
 
+fn should_defer_whole_market_repair(now: DateTime<Utc>) -> bool {
+    is_streaming_phase(now)
+}
+
 fn remote_object_changed(
     prior: &FlatfileCoverageState,
     current: &crate::flatfile::RemoteFlatfile,
@@ -2715,6 +2740,14 @@ mod tests {
         assert!(!remote_object_changed(&coverage_state(), &current));
         current.etag = "etag-b".to_string();
         assert!(remote_object_changed(&coverage_state(), &current));
+    }
+
+    #[test]
+    fn whole_market_repair_is_deferred_only_during_streaming_hours() {
+        let regular_session = Utc.with_ymd_and_hms(2026, 8, 11, 17, 0, 0).unwrap();
+        let maintenance_window = Utc.with_ymd_and_hms(2026, 8, 11, 2, 0, 0).unwrap();
+        assert!(should_defer_whole_market_repair(regular_session));
+        assert!(!should_defer_whole_market_repair(maintenance_window));
     }
 
     #[test]

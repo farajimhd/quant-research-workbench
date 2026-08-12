@@ -58,12 +58,16 @@ def test_tab_host_owns_children_with_manifest_and_kill_on_close_job() -> None:
 
 def test_qmd_cargo_output_is_external_and_binary_is_executed_directly() -> None:
     source = _source("run_qmd_history_gateway.ps1")
+    live_source = _source("run_qmd_gateway.ps1")
 
     assert r"d:\tradingml\runtimes\qmd_history_gateway\cargo-target" in source
     assert "--target-dir $resolvedcargotargetdir" in source
     assert "cargo run" not in source
     assert '& $gatewayexecutable' in source
     assert "cargo output must be outside the repository" in source
+    assert r"d:\tradingml\runtimes\qmd_gateway" in live_source
+    assert 'join-path $resolvedruntimeroot "logs"' in live_source
+    assert 'join-path $reporoot ".tmp' not in live_source
 
 
 def test_direct_cargo_commands_also_write_outside_the_repository() -> None:

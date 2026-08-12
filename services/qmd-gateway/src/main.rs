@@ -173,8 +173,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let market_calendar = MarketCalendarClient::new(config.clone());
     market_calendar.refresh(Utc::now()).await;
     let market_calendar_handle = tokio::spawn(run_market_calendar_refresh(market_calendar.clone()));
-    let compact_event_store =
-        SharedCompactEventStore::new(config.compact_event_live_buffer_events_per_ticker);
+    let compact_event_store = SharedCompactEventStore::new(
+        config.compact_event_live_buffer_events_per_ticker,
+        config.compact_event_live_buffer_events_total,
+    );
     let (writer_sender, writer_receiver) =
         mpsc::channel::<MarketEvent>(config.event_channel_capacity);
     let (compact_writer_sender, compact_writer_receiver) =

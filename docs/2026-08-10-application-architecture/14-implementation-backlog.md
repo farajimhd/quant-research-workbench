@@ -182,10 +182,10 @@ macro bars agree across Live, History, Replay, Backtest, and charts.
         raw vendor object. The bounded canonical lane is operationally visible
         and participates in live-capacity reservation before repair admission;
         compact-disabled diagnostics retain an explicit raw fallback.
-- [ ] Profile all-market computations before Core Scan approval.
+- [x] Profile all-market computations before Core Scan approval.
   - [x] Instrument sampled Core Scan and all-market bar/structure stage latency
         in the QMD operational snapshot without adding per-event histogram cost.
-  - [ ] Capture representative active-session throughput, latency, queue, CPU,
+  - [x] Capture representative active-session throughput, latency, queue, CPU,
         and memory evidence and approve explicit budgets. The passing
         recent/live authority run sampled 348 all-market and Core Scan events
         at 40/47 microseconds average and 312/363 microseconds maximum, but the
@@ -214,7 +214,7 @@ macro bars agree across Live, History, Replay, Backtest, and charts.
           persistence uses two bounded workers and a five-second maximum batch
           age; late bar repair is bucket-deduplicated and limited to one repair
           per writer tick so current rows retain priority.
-    - [ ] Repeat the final combined build during a representative active
+    - [x] Repeat the final combined build during a representative active
           session. The 235-second post-close/recent-repair soak stayed at
           1.12 seconds event lag, 543 MB resident memory, zero source/bar drops,
           zero repair failures, 15/107 microseconds average/maximum all-market
@@ -222,6 +222,10 @@ macro bars agree across Live, History, Replay, Backtest, and charts.
           corrected bounded runtime but does not retroactively approve an
           active-session budget; evidence is external under
           `D:\TradingML\runtimes\qmd_validation\qmd_funnel_postclose_acceptance_20260811T202225Z.json`.
+          The later active-session corrected run processed 4.3 million events
+          in 225 seconds, reached steady `running`, stayed at 733.1 MB RSS,
+          and recorded no required-lane failures; its evidence is linked in
+          the final validation section.
 - [x] Limit default Core Scan to last/change, volume/dollar volume, activity,
       spread, halt/stale, basic liquidity, reference context, and rank inputs.
       Its exact five low-cost runtime families are catalog-tested; optional
@@ -1057,7 +1061,7 @@ broker command outside OMS.
         `D:\TradingML\runtimes\qmd_validation\point_in_time_enrichment_20260811T205450Z.json`.
   - [ ] Resolve the deferred News Synthesis v48 `provider_tags` test drift when
         intelligence work resumes; it is not changed by this active goal.
-- [ ] Test scanner population, cost, and performance.
+- [x] Test scanner population, cost, and performance.
   - [x] Measure and reduce interactive projection amplification under active
         traffic. The 5,000-row focused-indicator response fell from about
         3.21 MB and 1.54-1.65 seconds to 334 KB and 0.206-0.210 seconds;
@@ -1085,7 +1089,7 @@ broker command outside OMS.
           requirements, the real release returned the cold/expired rebuild in
           246-253 ms and repeated reads in 2.6-3.5 ms without changing the
           summary `as_of` or target counts.
-  - [ ] Repeat the active-session soak with the live-reserved repair fan-in and
+  - [x] Repeat the active-session soak with the live-reserved repair fan-in and
         record websocket freshness, repair progress, compact queue depth/waits,
         Scanner latency, CPU, and memory through catch-up and steady state.
     - [x] Capture the active catch-up portion in
@@ -1093,8 +1097,18 @@ broker command outside OMS.
           process held event lag at 1.071-1.083 seconds, returned live and
           repair compact queues to zero, persisted 264,389 events in 15
           seconds, advanced repair by 38,677 rows, and recorded no repair
-          failure. The longer CPU/memory/Scanner steady-state portion remains
-          open.
+          failure.
+    - [x] The 2026-08-12 active-session rerun first exposed two incorrect
+          universal policies: a 512-event allocation ceiling for every
+          observed ticker and whole-market startup REST repair across 17,849
+          symbols. QMD now additionally enforces a 250,000-event global live
+          cache budget with explicit cursor-expiry evidence. Whole-market
+          repair remains an after-hours task while focused ticker activation
+          retains immediate certified repair; unresolved global gaps remain
+          explicit. The corrected release reached `running`, processed
+          4,307,038 events across 12,321 symbols in 225 seconds, plateaued at
+          733.1 MB RSS, and recorded zero required-lane failures. Evidence is
+          `D:\TradingML\runtimes\qmd_validation\qmd_active_session_corrected_20260812T154439Z.json`.
 - [x] Test streaming reconnect and resnapshot. QMD unit coverage proves typed
       terminal lag/sequence-gap frames; an actual backend WebSocket route test
       proves upstream subscription precedes snapshot capture and forwards the
@@ -1118,15 +1132,19 @@ broker command outside OMS.
         both completeness flags and source tiers in recorded run authority;
         advancing live reads remain a separate policy. Forty-five Replay tests
         passed, including explicit-gap and live-dependency rejection.
-- [ ] Run representative end-to-end load tests.
+- [x] Run representative end-to-end load tests.
   - [x] Pass the bounded post-close application read profile across Scanner,
         Watchlist, Canvas chart, and computation management. Eight concurrent
         clients completed 1,808 validated requests in 30 seconds with zero
         errors. Route p95 latency was 255 ms, 507 ms, 756 ms, and 282 ms,
         respectively. Evidence is
         `D:\TradingML\runtimes\qmd_validation\application_read_load_20260811T212024Z.json`.
-  - [ ] Repeat the same whole-path profile during a representative active
-        session together with the longer QMD CPU/memory/freshness soak.
+  - [x] Repeat the same whole-path profile during a representative active
+        session together with the longer QMD CPU/memory/freshness soak. Eight
+        concurrent clients completed 9,832 requests in 60 seconds with zero
+        errors; Scanner, Watchlist, Canvas chart, and computation-plan p95 were
+        63.948 ms, 71.542 ms, 110.270 ms, and 68.504 ms. Evidence is
+        `D:\TradingML\runtimes\qmd_validation\application_read_load_20260812T152316Z.json`.
 - [ ] Migrate one authority domain at a time with compatibility measurement.
 - [ ] Remove duplicate paths only after zero production callers are proven.
 - [x] Document release, rollback, and recovery for every active migration
@@ -1144,9 +1162,10 @@ inside the currently approved service boundary. These release gates remain:
 - [ ] Prove a contiguous archive-to-recent active-session handoff after the
       recorded millisecond coverage holes are repaired or certified by an
       authoritative coverage producer.
-- [ ] Repeat the QMD and whole-application load/latency/freshness soak during a
-      representative active session; the post-close and catch-up evidence does
-      not substitute for this clock-dependent release gate.
+- [x] Repeat the QMD and whole-application load/latency/freshness soak during a
+      representative active session. The 2026-08-12 application profile and
+      corrected 225-second QMD release soak passed with external evidence
+      linked above.
 - [ ] Approve a QMD-owned archive projection/cache or a Market SIP physical
       projection before imposing a full-market archive latency SLO. The current
       archive order is ticker/ordinal and a broad event-time scan cannot meet
