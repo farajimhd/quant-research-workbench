@@ -1,5 +1,9 @@
 # Minimal Issuer News Labeling Prompt V2
 
+> Superseded for standalone LLM labeling by
+> `research/text_intelligence/llm_issuer_labeling_v1/PROMPT.md`. This document
+> remains only as design history because it requires upstream issuer candidates.
+
 This version replaces the article-level V1 output with one clear label set for
 every issuer confirmed to be in the news.
 
