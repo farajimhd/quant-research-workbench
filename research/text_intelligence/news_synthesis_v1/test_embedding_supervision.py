@@ -18,6 +18,7 @@ from .run_tfidf_supervision_v2 import _train_args as _v2_train_args
 from .run_tfidf_supervision_v3 import _train_args as _v3_train_args
 from .run_tfidf_supervision_v4 import _train_args as _v4_train_args
 from .run_tfidf_supervision_v5 import _train_args as _v5_train_args
+from .run_tfidf_source_ablation_v6 import _train_args as _v6_train_args
 from .tfidf_supervision import fit_tfidf_vocabulary, transform_tfidf
 from .tfidf_supervision_v2 import (
     fit_v2_vocabulary,
@@ -42,6 +43,7 @@ from .tfidf_supervision_v5 import (
     resolve_raw_artifact_path,
     tfidf_v5_feature_counts,
 )
+from .tfidf_source_ablation_v6 import _provider_rendered_body, controlled_feature_fields
 
 
 class EmbeddingSupervisionTests(unittest.TestCase):
@@ -420,6 +422,39 @@ class EmbeddingSupervisionTests(unittest.TestCase):
             values.pop("data_root")
             values.pop("run_root")
         self.assertEqual(v4, v5)
+
+    def test_tfidf_v6_lanes_share_provider_only_field_contract(self) -> None:
+        fields = controlled_feature_fields(
+            ticker="ABC",
+            published_at_utc="2024-01-01 12:00:00",
+            title="Original title",
+            teaser="Original teaser",
+            body="Provider body",
+        )
+        self.assertEqual(fields["body"], "Provider body")
+        self.assertEqual(fields["external"], "")
+        self.assertEqual(fields["pdf"], "")
+        self.assertEqual(fields["channels"], "")
+        self.assertEqual(fields["tags"], "")
+
+    def test_tfidf_v6_rendered_lane_uses_only_provider_body(self) -> None:
+        rendered = _provider_rendered_body(
+            {
+                "body": "<p>Revenue <strong>rose</strong> 12%.</p><table><tr><td>EPS</td><td>1.2</td></tr></table>",
+                "url": "https://example.test/article",
+            }
+        )
+        self.assertIn("Revenue rose 12%.", rendered)
+        self.assertIn("EPS", rendered)
+        self.assertNotIn("Source [", rendered)
+
+    def test_tfidf_v6_keeps_v5_model_and_training_configuration(self) -> None:
+        v5 = vars(_v5_train_args(Path("v5-data"), Path("v5-run"), 8))
+        v6 = vars(_v6_train_args(Path("v6-data"), Path("v6-run"), 8))
+        for values in (v5, v6):
+            values.pop("data_root")
+            values.pop("run_root")
+        self.assertEqual(v5, v6)
 
 
 if __name__ == "__main__":

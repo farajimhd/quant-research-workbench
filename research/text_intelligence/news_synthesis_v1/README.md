@@ -280,3 +280,25 @@ under
 $env:PYTHONDONTWRITEBYTECODE='1'
 python -m research.text_intelligence.news_synthesis_v1.run_tfidf_supervision_v5
 ```
+
+### TF-IDF V6 controlled source-representation ablation
+
+V6 isolates source representation from the confounded V4/V5 comparison. It
+uses the same exact retained provider artifacts, frozen split membership,
+labels, source/ticker views, point-in-time aliases, feature extractor and
+budgets, model, seed, tuning boundary, and evaluation for three lanes. Only
+title/teaser/provider-body representation changes: original provider text,
+normalized provider text, or the structured renderer's provider-body text.
+External/PDF enrichment, channels/tags, and V5 metadata features are excluded
+from every lane. Vocabulary and IDF are fit on training articles only within
+each representation.
+
+Artifacts whose current raw bytes no longer match retained authority are
+excluded from all lanes rather than accepted asymmetrically. Generated data,
+checkpoints, metrics, and the causal comparison are written only under
+`D:\TradingML\runtimes\text_intelligence\news_synthesis_v1\tfidf_source_ablation_v6`.
+
+```powershell
+$env:PYTHONDONTWRITEBYTECODE='1'
+python -m research.text_intelligence.news_synthesis_v1.run_tfidf_source_ablation_v6
+```
