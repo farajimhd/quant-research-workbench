@@ -13,13 +13,21 @@ from rich.console import Console
 
 from research.bar_gpt.v1.build_1s import (
     BuildReporter,
-    LEGACY_COHORT_TABLE,
+    PREVIOUS_COHORT_TABLE,
     _query_tsv,
     _show_create_raw,
     create_target_table_sql,
-    drop_legacy_cohort_tables_first_run,
+    drop_previous_cohort_tables_first_run,
     insert_one_second_sql,
     ticker_fingerprint,
+)
+from research.bar_gpt.v1.trade_correction_overlay import (
+    CORRECTION_OVERLAY_VERSION,
+    DEFAULT_CORRECTION_OVERLAY_TABLE,
+    SourceFileIdentity,
+    overlay_insert_sql,
+    overlaid_event_source_sql,
+    staged_records_insert_sql,
 )
 from research.bar_gpt.v1.cohort import (
     BAR_GPT_COHORT_2TB,
@@ -38,6 +46,7 @@ from research.bar_gpt.v1.cohort import (
 from research.bar_gpt.v1.config import BarGPTConfig, DataConfig
 from research.bar_gpt.v1.data import BarView, causal_asof_indices, densify_one_second_view, horizon_target_indices, rollup_intraday_view
 from research.bar_gpt.v1.features import MODEL_FEATURE_NAMES, project_stationary_features
+from research.bar_gpt.v1.direct_event_shards import direct_trade_bar_query
 from research.bar_gpt.v1.model import BarGPTV1, CausalSelfAttention, RMSNorm
 from research.bar_gpt.v1.loader import (
     ClickHouseBarStreamConfig,
@@ -75,15 +84,74 @@ def builder_args() -> argparse.Namespace:
         target_table="bar_gpt_1s_bars_v1",
         events_table_base="events",
         condition_reference_table="event_condition_token_reference",
+        correction_overlay_table=DEFAULT_CORRECTION_OVERLAY_TABLE,
         max_quote_spread_bps=1000.0,
         storage_policy="ssd_policy",
         max_threads=2,
         max_memory_usage="4G",
         max_bytes_before_external_group_by="1G",
+        correction_record_table="bar_gpt_trade_correction_records_v1",
+        correction_record_manifest_table="bar_gpt_trade_correction_record_manifest_v1",
+        max_memory_usage_bytes=4 * 1024**3,
     )
 
 
 class BuilderSqlTest(unittest.TestCase):
+    def test_direct_event_query_requires_trade_for_every_sparse_token(self) -> None:
+        config = DataConfig(
+            tickers=("AAPL",), start_date="2026-01-01", end_date="2026-02-01",
+            validation_start_date="2026-01-01",
+            validation_slices=(("AAPL", "2026-01-01", "2026-02-01"),),
+        )
+        sql = direct_trade_bar_query(
+            config,
+            ClickHouseBarStreamConfig(url="http://localhost:8123", user="default", password=""),
+            ticker="AAPL",
+            start_date="2026-01-02",
+            end_date="2026-01-03",
+            source_intervals=(TickerInterval("AAPL", "AAPL", "2019-01-01", "9999-12-31"),),
+        )
+        self.assertIn("countIf(trade_origin_eligible) > 0) AS context_eligible", sql)
+        self.assertIn("countIf(trade_origin_eligible) > 0) AS origin_eligible", sql)
+        self.assertIn("HAVING eligible_trade_event_count>0", sql)
+        self.assertNotIn("bar_gpt_trade_correction_overlay", sql)
+        self.assertIn("FORMAT ArrowStream", sql)
+
+    def test_correction_overlay_preserves_both_tape_times_and_swaps_payloads(self) -> None:
+        args = builder_args()
+        sql = overlay_insert_sql(args, dt.date(2026, 8, 7))
+        self.assertIn("countIf(correction=1) AS count_01", sql)
+        self.assertIn("countIf(correction=12) AS count_12", sql)
+        self.assertIn("sip_timestamp_us_01 AS target_sip_timestamp_us", sql)
+        self.assertIn("event_meta_12 AS replacement_event_meta", sql)
+        self.assertIn("sip_timestamp_us_12,\n        event_meta_12", sql)
+        self.assertIn("event_meta_01", sql)
+        self.assertIn("FROM `market_sip_compact`.`events_2026` AS e", sql)
+        self.assertIn("INNER JOIN expected AS x", sql)
+        self.assertIn(CORRECTION_OVERLAY_VERSION, sql)
+
+    def test_correction_record_scan_is_bounded_to_pair_codes(self) -> None:
+        args = builder_args()
+        source = SourceFileIdentity(
+            source_date=dt.date(2026, 8, 7),
+            path_win=r"D:\market-data\flatfiles\us_stocks_sip\trades_v1\2026\08\2026-08-07.csv.gz",
+            path_ch="/mnt/d/market-data/flatfiles/us_stocks_sip/trades_v1/2026/08/2026-08-07.csv.gz",
+            size=123,
+            mtime_ns=456,
+        )
+        sql = staged_records_insert_sql(args, source)
+        self.assertIn("toInt16OrZero(correction) IN (1, 12)", sql)
+        self.assertNotIn("NOT IN (7, 8, 10, 11, 12)", sql)
+        self.assertIn("CSVWithNames", sql)
+
+    def test_overlaid_source_covers_both_utc_dates_for_new_york_day(self) -> None:
+        args = builder_args()
+        sql = overlaid_event_source_sql(args, dt.date(2026, 7, 24), ("AAPL",))
+        self.assertIn("event_date>=toDate('2026-07-24')", sql.replace(" ", ""))
+        self.assertIn("event_date<toDate('2026-07-26')", sql.replace(" ", ""))
+        self.assertIn("o.source_date=e.event_date", sql)
+        self.assertIn("e.ticker IN ('AAPL')", sql)
+
     def test_rms_norm_preserves_fp32_reference_numerics(self) -> None:
         value = torch.randn(2, 5, 16, dtype=torch.bfloat16)
         norm = RMSNorm(16)
@@ -231,7 +299,7 @@ class BuilderSqlTest(unittest.TestCase):
                     self.drops.append(query)
                     return ""
                 if "FROM system.tables" in query and "count()" in query:
-                    if f"name='{LEGACY_COHORT_TABLE}'" in query:
+                    if f"name='{PREVIOUS_COHORT_TABLE}'" in query:
                         return "1\n"
                     return "0\n"
                 if "SELECT storage_policy" in query:
@@ -239,8 +307,8 @@ class BuilderSqlTest(unittest.TestCase):
                 return "0\n"
 
         args = argparse.Namespace(
-            drop_v1_cohort_first_run=True,
-            confirm_drop_v1_table=LEGACY_COHORT_TABLE,
+            drop_previous_cohort_first_run=True,
+            confirm_drop_previous_table=PREVIOUS_COHORT_TABLE,
             target_table=BAR_GPT_COHORT_2TB_TABLE,
             manifest_table=BAR_GPT_COHORT_2TB_MANIFEST_TABLE,
             database="market_sip_compact",
@@ -248,14 +316,14 @@ class BuilderSqlTest(unittest.TestCase):
         )
         client = FakeClient()
         self.assertEqual(
-            drop_legacy_cohort_tables_first_run(client, args),  # type: ignore[arg-type]
-            (LEGACY_COHORT_TABLE,),
+            drop_previous_cohort_tables_first_run(client, args),  # type: ignore[arg-type]
+            (PREVIOUS_COHORT_TABLE,),
         )
         self.assertEqual(len(client.drops), 1)
-        self.assertIn(f"`{LEGACY_COHORT_TABLE}` SYNC", client.drops[0])
-        args.confirm_drop_v1_table = "wrong"
+        self.assertIn(f"`{PREVIOUS_COHORT_TABLE}` SYNC", client.drops[0])
+        args.confirm_drop_previous_table = "wrong"
         with self.assertRaisesRegex(RuntimeError, "exact confirmation"):
-            drop_legacy_cohort_tables_first_run(client, args)  # type: ignore[arg-type]
+            drop_previous_cohort_tables_first_run(client, args)  # type: ignore[arg-type]
 
     def test_alias_builder_has_separate_manifest_and_raw_source_tickers(self) -> None:
         args, extra = parse_alias_launcher_args([])
@@ -303,6 +371,9 @@ class BuilderSqlTest(unittest.TestCase):
         sql = insert_one_second_sql(builder_args(), dt.date(2026, 7, 24), ("AAPL", "MSFT"))
         self.assertNotIn("arrayJoin", sql)
         self.assertEqual(sql.count("FROM `market_sip_compact`.`events_2026`"), 1)
+        self.assertIn("bar_gpt_trade_correction_overlay_v1", sql)
+        self.assertIn("o.source_date=e.event_date", sql)
+        self.assertIn("event_date<toDate('2026-07-26')", sql.replace(" ", ""))
         self.assertNotIn("intraday_condition_bars_by_time_ticker", sql)
         self.assertNotIn("label_resolution_us", sql)
         self.assertIn("microprice", sql)
@@ -315,8 +386,8 @@ class BuilderSqlTest(unittest.TestCase):
         self.assertIn("unknown_condition_event_count", sql)
         self.assertIn("quote_spread_bps <= 1000", sql)
 
-    def test_unified_event_authority_excludes_original_incorrect_correction_12(self) -> None:
-        self.assertEqual(parse_trade_correction_codes(DEFAULT_DROP_TRADE_CORRECTION_CODES), [7, 8, 10, 11, 12])
+    def test_unified_event_authority_retains_correction_pair_sides_for_causal_overlay(self) -> None:
+        self.assertEqual(parse_trade_correction_codes(DEFAULT_DROP_TRADE_CORRECTION_CODES), [7, 8, 10, 11])
 
     def test_daily_context_reuses_same_second_level_condition_eligibility(self) -> None:
         args = parse_daily_args([
@@ -324,14 +395,19 @@ class BuilderSqlTest(unittest.TestCase):
             "--tickers", "AAPL",
             "--target-table", "bar_gpt_daily_v2_test",
             "--manifest-table", "bar_gpt_daily_manifest_v2_test",
-            "--schema-version", "2",
-            "--feature-version", "bar_gpt_1s_condition_eligible_sufficient_stats_v2",
         ])
+        self.assertEqual(args.schema_version, 5)
+        self.assertEqual(args.feature_version, "bar_gpt_direct_events_trade_sparse_v5")
         sql = insert_session_bars_sql(args, dt.date(2019, 1, 3), dt.date(2019, 1, 4))
         self.assertIn("second_has_origin", sql)
         self.assertIn("FROM eligible_events", sql)
         self.assertIn("trade_price_eligible_size_sum", sql)
         self.assertIn("arrayAll(token -> has(update_high_low_tokens, token)", sql)
+        self.assertIn("bar_gpt_trade_correction_overlay_v1", sql)
+        self.assertIn("modifier_int = 12) AS trade_model_ineligible_tokens", sql)
+        self.assertIn("modifier_int IN (-1, 12, 15", sql)
+        self.assertIn("condition_luld_limit_state_count", sql)
+        self.assertIn("countIf(event_retained)) AS source_event_count", sql)
 
     def test_training_query_is_ordered_incremental_arrow(self) -> None:
         sql = ticker_range_query(

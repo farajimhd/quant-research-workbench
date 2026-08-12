@@ -23,15 +23,15 @@ BAR_GPT_COHORT_2TB: tuple[str, ...] = (
 BAR_GPT_COHORT_2TB_SHA256 = hashlib.sha256(
     "\n".join(sorted(BAR_GPT_COHORT_2TB)).encode("utf-8")
 ).hexdigest()
-BAR_GPT_COHORT_2TB_TABLE = "bar_gpt_1s_bars_v2_cohort_2tb"
-BAR_GPT_COHORT_2TB_MANIFEST_TABLE = "bar_gpt_1s_build_manifest_v2_cohort_2tb"
+BAR_GPT_COHORT_2TB_TABLE = "bar_gpt_1s_bars_v3_cohort_2tb"
+BAR_GPT_COHORT_2TB_MANIFEST_TABLE = "bar_gpt_1s_build_manifest_v3_cohort_2tb"
 BAR_GPT_EVENTS_TABLE = "bar_gpt_events_v2"
 BAR_GPT_EVENTS_MANIFEST_TABLE = "bar_gpt_events_build_manifest_v2"
 BAR_GPT_EVENTS_CONTINUITY_TABLE = "bar_gpt_events_ordinal_continuity_v2"
 BAR_GPT_EVENTS_TRAIN_INDEX_TABLE = "bar_gpt_events_train_index_v2"
 BAR_GPT_EVENTS_VALIDATION_INDEX_TABLE = "bar_gpt_events_validation_index_v2"
 BAR_GPT_SOURCE_ALIAS_TICKERS: tuple[str, ...] = ("FB",)
-BAR_GPT_SOURCE_ALIAS_MANIFEST_TABLE = "bar_gpt_1s_build_manifest_v2_identity_aliases"
+BAR_GPT_SOURCE_ALIAS_MANIFEST_TABLE = "bar_gpt_1s_build_manifest_v3_identity_aliases"
 BAR_GPT_IDENTITY_QUARANTINE: tuple[str, ...] = ("MOGO",)
 BAR_GPT_MATERIALIZED_TICKERS_2TB: tuple[str, ...] = tuple(
     ticker for ticker in BAR_GPT_COHORT_2TB if ticker not in BAR_GPT_IDENTITY_QUARANTINE
@@ -91,5 +91,5 @@ BAR_GPT_IDENTITY_HOLDOUT_TICKERS: tuple[str, ...] = (
 BAR_GPT_VALIDATION_SLICES_2026: tuple[tuple[str, str, str], ...] = tuple(
     (ticker, "2026-01-01", "2026-08-01") for ticker in BAR_GPT_TRAINING_TICKERS
 )
-BAR_GPT_SIP_DAILY_SESSION_TABLE = "bar_gpt_daily_session_bars_v2"
-BAR_GPT_SIP_DAILY_SESSION_MANIFEST_TABLE = "bar_gpt_daily_session_bars_manifest_v2"
+BAR_GPT_SIP_DAILY_SESSION_TABLE = "bar_gpt_daily_session_bars_v3"
+BAR_GPT_SIP_DAILY_SESSION_MANIFEST_TABLE = "bar_gpt_daily_session_bars_manifest_v3"

@@ -33,6 +33,16 @@ from research.bar_gpt.v1.cohort import (  # noqa: E402
     BAR_GPT_COHORT_2TB_MANIFEST_TABLE,
     BAR_GPT_COHORT_2TB_TABLE,
 )
+from research.bar_gpt.v1.trade_correction_overlay import (  # noqa: E402
+    DEFAULT_CORRECTION_OVERLAY_TABLE,
+    DEFAULT_CORRECTION_RECORD_MANIFEST_TABLE,
+    DEFAULT_CORRECTION_RECORD_TABLE,
+    TradeCorrectionOverlayAuthority,
+    create_overlay_table_sql,
+    create_record_manifest_table_sql,
+    create_record_table_sql,
+    overlaid_event_source_sql,
+)
 from pipelines.market_sip.events.clickhouse_build_intraday_base_bars import (  # noqa: E402
     condition_event_select_sql,
     condition_token_array_aliases_sql,
@@ -50,19 +60,19 @@ from research.mlops.clickhouse import (  # noqa: E402
 from research.mlops.env import load_env_files, secret_status  # noqa: E402
 
 
-BUILD_VERSION = "bar_gpt_1s_condition_eligibility_state_counts_v2"
+BUILD_VERSION = "bar_gpt_1s_causal_corrections_condition_eligibility_v3"
 DEFAULT_DATABASE = "market_sip_compact"
 DEFAULT_EVENTS_TABLE_BASE = "events"
 DEFAULT_INDEX_TABLE = "events_ticker_day_index"
 DEFAULT_SOURCE_DAY_STATS_TABLE = "events_source_day_stats"
 DEFAULT_CONDITION_REFERENCE_TABLE = "event_condition_token_reference"
-DEFAULT_TARGET_TABLE = "bar_gpt_1s_bars_v2"
-DEFAULT_MANIFEST_TABLE = "bar_gpt_1s_build_manifest_v2"
+DEFAULT_TARGET_TABLE = "bar_gpt_1s_bars_v3"
+DEFAULT_MANIFEST_TABLE = "bar_gpt_1s_build_manifest_v3"
 DEFAULT_MAX_QUOTE_SPREAD_BPS = 1_000.0
 DEFAULT_RUNTIME_ROOT = Path(r"D:\TradingML\runtimes\bar_gpt\v1\build_1s")
-LEGACY_COHORT_TABLE = "bar_gpt_1s_bars_v1_cohort_2tb"
-LEGACY_COHORT_MANIFEST_TABLE = "bar_gpt_1s_build_manifest_v1_cohort_2tb"
-LEGACY_ALIAS_MANIFEST_TABLE = "bar_gpt_1s_build_manifest_v1_identity_aliases"
+PREVIOUS_COHORT_TABLE = "bar_gpt_1s_bars_v2_cohort_2tb"
+PREVIOUS_COHORT_MANIFEST_TABLE = "bar_gpt_1s_build_manifest_v2_cohort_2tb"
+PREVIOUS_ALIAS_MANIFEST_TABLE = "bar_gpt_1s_build_manifest_v2_identity_aliases"
 
 
 @dataclass(frozen=True, slots=True)
@@ -243,6 +253,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--index-table", default=DEFAULT_INDEX_TABLE)
     parser.add_argument("--source-day-stats-table", default=DEFAULT_SOURCE_DAY_STATS_TABLE)
     parser.add_argument("--condition-reference-table", default=DEFAULT_CONDITION_REFERENCE_TABLE)
+    parser.add_argument("--correction-record-table", default=DEFAULT_CORRECTION_RECORD_TABLE)
+    parser.add_argument("--correction-record-manifest-table", default=DEFAULT_CORRECTION_RECORD_MANIFEST_TABLE)
+    parser.add_argument("--correction-overlay-table", default=DEFAULT_CORRECTION_OVERLAY_TABLE)
     parser.add_argument("--target-table", default=DEFAULT_TARGET_TABLE)
     parser.add_argument("--manifest-table", default=DEFAULT_MANIFEST_TABLE)
     parser.add_argument("--clickhouse-url", default=default_clickhouse_url())
@@ -251,14 +264,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--storage-policy", default=os.environ.get("CLICKHOUSE_LIVE_STORAGE_POLICY", ""))
     parser.add_argument("--allow-empty-storage-policy", action="store_true")
     parser.add_argument(
-        "--drop-v1-cohort-first-run",
+        "--drop-previous-cohort-first-run",
         action="store_true",
-        help="Drop only the canonical v1 cohort 1s table/manifests before the first canonical v2 write.",
+        help="Drop only the canonical previous v2 cohort 1s table/manifests before the first canonical v3 write.",
     )
     parser.add_argument(
-        "--confirm-drop-v1-table",
+        "--confirm-drop-previous-table",
         default="",
-        help=f"Required exact confirmation value with --drop-v1-cohort-first-run: {LEGACY_COHORT_TABLE}",
+        help=f"Required exact confirmation value with --drop-previous-cohort-first-run: {PREVIOUS_COHORT_TABLE}",
     )
     parser.add_argument("--ticker-batch-max-events", type=int, default=40_000_000)
     parser.add_argument("--ticker-batch-max-tickers", type=int, default=256)
@@ -399,10 +412,7 @@ def _relation_aggregates(prefix: str, value: str, condition: str) -> list[str]:
 
 def insert_one_second_sql(args: argparse.Namespace, day: dt.date, tickers: tuple[str, ...]) -> str:
     target = f"{quote_ident(args.database)}.{quote_ident(args.target_table)}"
-    source = _event_source(args, day)
-    ticker_filter = ""
-    if tickers:
-        ticker_filter = "\n      AND e.ticker IN (" + ", ".join(sql_string(ticker) for ticker in tickers) + ")"
+    source = overlaid_event_source_sql(args, day, tickers)
     pair_valid = "quote_origin_eligible"
     aggregates = [
         *_trade_aggregates(),
@@ -435,8 +445,6 @@ def insert_one_second_sql(args: argparse.Namespace, day: dt.date, tickers: tuple
     ]
     aggregate_sql = ",\n    ".join(aggregates)
     insert_columns = ",\n    ".join(quote_ident(name) for name, _ in table_columns())
-    first_event_date = day.isoformat()
-    last_event_date = (day + dt.timedelta(days=1)).isoformat()
     condition_reference_table = str(getattr(args, "condition_reference_table", DEFAULT_CONDITION_REFERENCE_TABLE))
     condition_args = argparse.Namespace(
         database=args.database,
@@ -510,9 +518,6 @@ SELECT
     {aggregate_sql},
     now64(3, 'UTC') AS built_at
 FROM {source} AS e
-PREWHERE e.event_date >= toDate({sql_string(first_event_date)})
-  AND e.event_date < toDate({sql_string(last_event_date)})
-  {ticker_filter}
 WHERE local_date_value = toDate({sql_string(day.isoformat())})
   AND local_second >= {SESSION_START_SECOND}
   AND local_second < {SESSION_END_SECOND}
@@ -590,7 +595,8 @@ def plan_ticker_batches(client: ClickHouseHttpClient, args: argparse.Namespace, 
         f"""
 SELECT upper(ticker), sum(event_count)
 FROM {quote_ident(args.database)}.{quote_ident(args.index_table)}
-WHERE source_date = toDate({sql_string(day.isoformat())}){restriction}
+WHERE source_date >= toDate({sql_string(day.isoformat())})
+  AND source_date < toDate({sql_string((day + dt.timedelta(days=2)).isoformat())}){restriction}
 GROUP BY ticker
 HAVING sum(event_count) > 0
 ORDER BY sum(event_count) DESC, ticker
@@ -812,16 +818,17 @@ def _table_exists(client: ClickHouseHttpClient, database: str, table: str) -> bo
 
 
 def validate_source_authorities(client: ClickHouseHttpClient, args: argparse.Namespace, start: dt.date, end: dt.date) -> None:
+    source_end = end + dt.timedelta(days=1)
     required = (
         args.index_table,
         args.source_day_stats_table,
         args.condition_reference_table,
-        *(f"{args.events_table_base}_{year}" for year in range(start.year, (end - dt.timedelta(days=1)).year + 1)),
+        *(f"{args.events_table_base}_{year}" for year in range(start.year, source_end.year + 1)),
     )
     missing = [table for table in required if not _table_exists(client, args.database, table)]
     if missing:
         raise RuntimeError(f"BarGPT 1s source authorities are missing: {missing}")
-    required_filter = "drop_trade_correction_codes=07,08,10,11,12|condition_slots=5"
+    required_filter = "drop_trade_correction_codes=07,08,10,11|condition_slots=5"
     rows = _query_tsv(
         client,
         f"""
@@ -832,14 +839,14 @@ FROM
     SELECT DISTINCT source_date
     FROM {quote_ident(args.database)}.{quote_ident(args.index_table)}
     WHERE source_date >= toDate({sql_string(start.isoformat())})
-      AND source_date < toDate({sql_string(end.isoformat())})
+      AND source_date < toDate({sql_string(source_end.isoformat())})
 ) AS indexed
 LEFT JOIN
 (
     SELECT source_date, argMax(source_filter_key, updated_at) AS source_filter_key
     FROM {quote_ident(args.database)}.{quote_ident(args.source_day_stats_table)}
     WHERE source_date >= toDate({sql_string(start.isoformat())})
-      AND source_date < toDate({sql_string(end.isoformat())})
+      AND source_date < toDate({sql_string(source_end.isoformat())})
     GROUP BY source_date
 ) AS provenance USING source_date
 """,
@@ -847,26 +854,26 @@ LEFT JOIN
     if not rows or int(rows[0][0]) == 0 or int(rows[0][1]) > 0:
         observed = rows[0][2] if rows and len(rows[0]) > 2 else "[]"
         raise RuntimeError(
-            "yearly compact events are not certified with trade correction 12 excluded; "
+            "yearly compact events are not certified with the causal-correction source contract; "
             f"required source filter contains {required_filter!r}, observed incompatible filters={observed}. "
-            "The compact event schema does not retain the original correction code, so the 1s builder "
-            "cannot repair this downstream. Rebuild/replace the affected database event authority first."
+            "Correction 01 and 12 must both remain in compact events so the certified BarGPT overlay can "
+            "place the original payload at the original tape time and the corrected payload at correction time."
         )
 
 
-def drop_legacy_cohort_tables_first_run(client: ClickHouseHttpClient, args: argparse.Namespace) -> tuple[str, ...]:
-    if not args.drop_v1_cohort_first_run:
+def drop_previous_cohort_tables_first_run(client: ClickHouseHttpClient, args: argparse.Namespace) -> tuple[str, ...]:
+    if not args.drop_previous_cohort_first_run:
         return ()
-    if args.confirm_drop_v1_table != LEGACY_COHORT_TABLE:
+    if args.confirm_drop_previous_table != PREVIOUS_COHORT_TABLE:
         raise RuntimeError(
-            "--drop-v1-cohort-first-run requires the exact confirmation "
-            f"--confirm-drop-v1-table {LEGACY_COHORT_TABLE}"
+            "--drop-previous-cohort-first-run requires the exact confirmation "
+            f"--confirm-drop-previous-table {PREVIOUS_COHORT_TABLE}"
         )
     if args.target_table != BAR_GPT_COHORT_2TB_TABLE or args.manifest_table != BAR_GPT_COHORT_2TB_MANIFEST_TABLE:
-        raise RuntimeError("legacy v1 retirement is permitted only for the canonical v2 cohort target and manifest")
-    legacy_tables = (LEGACY_COHORT_TABLE, LEGACY_COHORT_MANIFEST_TABLE, LEGACY_ALIAS_MANIFEST_TABLE)
-    existing_legacy = tuple(table for table in legacy_tables if _table_exists(client, args.database, table))
-    if not existing_legacy:
+        raise RuntimeError("previous-cohort retirement is permitted only for the canonical v3 cohort target and manifest")
+    previous_tables = (PREVIOUS_COHORT_TABLE, PREVIOUS_COHORT_MANIFEST_TABLE, PREVIOUS_ALIAS_MANIFEST_TABLE)
+    existing_previous = tuple(table for table in previous_tables if _table_exists(client, args.database, table))
+    if not existing_previous:
         return ()
     if _table_exists(client, args.database, args.target_table):
         rows = _query_tsv(
@@ -874,9 +881,9 @@ def drop_legacy_cohort_tables_first_run(client: ClickHouseHttpClient, args: argp
             f"SELECT count() FROM {quote_ident(args.database)}.{quote_ident(args.target_table)}",
         )
         if rows and int(rows[0][0]) > 0:
-            raise RuntimeError("refusing first-run v1 retirement after canonical v2 rows already exist")
-    for table in existing_legacy:
-        if table != LEGACY_COHORT_TABLE:
+            raise RuntimeError("refusing previous-cohort retirement after canonical v3 rows already exist")
+    for table in existing_previous:
+        if table != PREVIOUS_COHORT_TABLE:
             continue
         policy_rows = _query_tsv(
             client,
@@ -889,7 +896,7 @@ def drop_legacy_cohort_tables_first_run(client: ClickHouseHttpClient, args: argp
                 f"does not match requested replacement policy {args.storage_policy!r}"
             )
     dropped: list[str] = []
-    for table in existing_legacy:
+    for table in existing_previous:
         _execute(
             client,
             f"DROP TABLE {quote_ident(args.database)}.{quote_ident(table)} SYNC\n"
@@ -947,6 +954,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.clickhouse_password == default_clickhouse_password():
         args.clickhouse_password = default_clickhouse_password()
     client = ClickHouseHttpClient(args.clickhouse_url, args.clickhouse_user, args.clickhouse_password, persistent=True)
+    args.max_memory_usage_bytes = int(_size_literal(args.max_memory_usage))
     validate_storage_policy(client, args)
     start, end = resolve_date_range(client, args)
     validate_source_authorities(client, args, start, end)
@@ -977,17 +985,23 @@ def main(argv: list[str] | None = None) -> int:
                 explained = explain_insert_select(client, sample_sql)
                 reporter.event("sql_validated", sample_day=sample_day, explained_characters=len(explained))
             if not args.no_print_sql:
+                print(create_record_table_sql(args).strip())
+                print(create_record_manifest_table_sql(args).strip())
+                print(create_overlay_table_sql(args).strip())
                 print(create_target_table_sql(args).strip())
                 print(create_manifest_table_sql(args).strip())
                 print(sample_sql.strip())
             reporter.update(stage="dry-run complete", day=sample_day.isoformat(), unit="sample", message="No ClickHouse writes executed")
             reporter.event("dry_run_complete", sample_day=sample_day, sample_ticker_count=len(sample_tickers))
             return 0
-        dropped = drop_legacy_cohort_tables_first_run(client, args)
+        correction_authority = TradeCorrectionOverlayAuthority(client, args)
+        correction_authority.ensure_tables()
+        correction_authority.load_sources(start, end + dt.timedelta(days=1))
+        dropped = drop_previous_cohort_tables_first_run(client, args)
         if dropped:
             reporter.event(
-                "legacy_v1_tables_dropped",
-                message="Canonical v1 1s authority retired before first v2 write",
+                "previous_tables_dropped",
+                message="Canonical v2 1s authority retired before first v3 write",
                 tables=dropped,
                 storage_policy=args.storage_policy,
             )
@@ -1002,6 +1016,15 @@ def main(argv: list[str] | None = None) -> int:
             if month not in months_touched:
                 months_touched.append(month)
             reporter.update(stage="planning", day=day_text, unit="-", message="Reading ticker/day index")
+            correction_stats = tuple(correction_authority.prepare_day(source_day) for source_day in (day, day + dt.timedelta(days=1)))
+            reporter.event(
+                "trade_correction_overlay_certified",
+                day=day_text,
+                source_dates=[item.source_date.isoformat() for item in correction_stats],
+                correction_records=sum(item.record_rows for item in correction_stats),
+                correction_pairs=sum(item.pair_count for item in correction_stats),
+                overlay_rows=sum(item.overlay_rows for item in correction_stats),
+            )
             batches = plan_ticker_batches(client, args, day)
             certification_units.setdefault(month, []).extend((day, batch.unit_id) for batch in batches)
             done = completed_units(client, args, day)
