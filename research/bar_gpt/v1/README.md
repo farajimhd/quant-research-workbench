@@ -598,19 +598,27 @@ The joint candidate sweep measures loader wait, GPU time, origins/second,
 encoded tokens/second, parameter count, effective blocks per update, the
 recommended accumulation for a 32-block target update, and peak device memory.
 It crosses Current (13.7M), Medium (38.9M), and Large (78.0M) architectures
-with bounded model-appropriate microbatches. XLarge remains available only as
-an explicit custom candidate; it is not part of routine profiling or model
-comparison. There is no Small candidate. The default fit sweep uses one
-microbatch per optimizer step so all three architectures finish in bounded time;
-use its recommended accumulation
-for an equal-effective-batch follow-up. OOM candidates fail independently and
-larger microbatches of the same model/device shape are skipped; only candidates
-at or below 90% reserved memory are eligible. `torch.compile` remains an
-explicit opt-in because Windows compilation can stall before the first measured
-update. Twelve worker-owned offline mmap streams are held fixed so the sweep
-isolates model and GPU microbatch effects. Promote a selected per-model profile
-into a controlled equal-origin training comparison only after measuring it on
-the training workstation.
+with the post-fusion aggressive grid: Current microbatches 16/20/24/28, Medium
+8/10/12/14, and Large 6/8/10, each at length-bucket windows 4/16/32. Run it with:
+
+```powershell
+python -B -m research.bar_gpt.v1.run_profile_train
+```
+
+The sweep uses two warm-up and ten measured optimizer updates per candidate.
+XLarge remains available only as an explicit custom candidate; it is not part
+of routine profiling or model comparison. There is no Small candidate. The
+default sweep uses one microbatch per optimizer step; use its recommended
+accumulation for an equal-effective-batch confirmation. Candidates ascend
+inside each model/bucket lane. OOM candidates fail independently, projected
+tails over 90% reserved memory are skipped only within their lane, and no grid
+candidate is allowed to establish a winner through system-memory paging.
+`torch.compile` remains explicit opt-in because Windows compilation can stall
+before the first measured update. Eight worker-owned offline mmap streams and
+all other loader controls remain fixed so the sweep isolates model,
+microbatch, and bucket effects. Because bucket windows change deterministic
+batch order, confirm each selected per-model winner over a longer identical
+configuration before promoting it to training defaults.
 
 The separate offline-loader benchmark does not run model forward or backward
 compute, so Task Manager GPU utilization during that benchmark is not training

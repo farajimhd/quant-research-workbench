@@ -137,7 +137,18 @@ from research.bar_gpt.v1.train import (
     sequential_coverage_counts,
     validate,
 )
-from research.bar_gpt.v1.profile_train import MODEL_SIZE_PRESETS, ProfileCandidate, ProfileReporter, _model_config, _parse_candidates, _projected_memory_fraction, _sdpa_backend, parse_args as parse_profile_args
+from research.bar_gpt.v1.profile_train import (
+    DEFAULT_PROFILE_LENGTH_BUCKET_BATCHES,
+    DEFAULT_PROFILE_MICROBATCHES,
+    MODEL_SIZE_PRESETS,
+    ProfileCandidate,
+    ProfileReporter,
+    _model_config,
+    _parse_candidates,
+    _projected_memory_fraction,
+    _sdpa_backend,
+    parse_args as parse_profile_args,
+)
 from research.bar_gpt.v1.run_build_conditions_1s import default_argv as condition_builder_argv
 from research.bar_gpt.v1.run_build_offline_dataset import (
     commands as offline_dataset_commands,
@@ -2307,19 +2318,31 @@ class LoaderTrainerContractTest(unittest.TestCase):
         self.assertNotIn("small", {item.model_size for item in parsed})
         self.assertEqual({item.workers for item in parsed}, {8})
         self.assertEqual(
-            {item.microbatch for item in parsed if item.model_size == "current"},
-            {8, 16, 20, 24, 32},
+            {item.length_bucket_batches for item in parsed},
+            set(DEFAULT_PROFILE_LENGTH_BUCKET_BATCHES),
         )
         self.assertEqual(
-            {item.microbatch for item in parsed if item.model_size == "medium"},
-            {4, 8, 10, 12, 16},
+            len(parsed),
+            len(DEFAULT_PROFILE_LENGTH_BUCKET_BATCHES)
+            * sum(len(values) for values in DEFAULT_PROFILE_MICROBATCHES.values()),
         )
-        self.assertEqual(
-            {item.microbatch for item in parsed if item.model_size == "large"},
-            {2, 4, 6, 8, 12},
-        )
+        for model_size, microbatches in DEFAULT_PROFILE_MICROBATCHES.items():
+            self.assertEqual(
+                {item.microbatch for item in parsed if item.model_size == model_size},
+                set(microbatches),
+            )
+            for bucket_batches in DEFAULT_PROFILE_LENGTH_BUCKET_BATCHES:
+                lane = [
+                    item.microbatch
+                    for item in parsed
+                    if item.model_size == model_size
+                    and item.length_bucket_batches == bucket_batches
+                ]
+                self.assertEqual(lane, list(microbatches))
         self.assertNotIn("xlarge", {item.model_size for item in parsed})
         self.assertEqual(profile_launcher_args[profile_launcher_args.index("--target-effective-blocks") + 1], "32")
+        self.assertEqual(profile_launcher_args[profile_launcher_args.index("--warmup-steps") + 1], "2")
+        self.assertEqual(profile_launcher_args[profile_launcher_args.index("--measured-steps") + 1], "10")
         resolved = {name: _model_config(_parse_candidates(f"{name}:4096:1:1:16:1:0")[0]) for name in MODEL_SIZE_PRESETS}
         self.assertEqual((resolved["current"].d_model, resolved["current"].n_layers), (384, 8))
         self.assertEqual((resolved["xlarge"].d_model, resolved["xlarge"].n_layers), (1024, 16))

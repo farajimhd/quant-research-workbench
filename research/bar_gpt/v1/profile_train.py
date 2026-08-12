@@ -61,7 +61,11 @@ from research.mlops.env import load_env_files
 DEFAULT_OUTPUT_ROOT = Path(r"D:\TradingML\runtimes\bar_gpt\v1\profile_train")
 SDPA_PROBE_MAX_LENGTH = 512
 PROFILE_MEMORY_LIMIT = 0.90
-PROFILE_MEMORY_PROJECTION_MARGIN = 1.10
+# Post-fusion measurements track close to linear microbatch scaling. Retain a
+# bounded 3% projection cushion so safe intermediate shapes such as Current=24
+# are measured, while the 90% hard eligibility gate still rejects paging-prone
+# tails from selection even if a projection underestimates them.
+PROFILE_MEMORY_PROJECTION_MARGIN = 1.03
 
 MODEL_SIZE_PRESETS: dict[str, dict[str, int]] = {
     "current": {"d_model": 384, "n_layers": 8, "n_heads": 8, "n_kv_heads": 4},
@@ -78,24 +82,23 @@ MODEL_SIZE_PRESETS: dict[str, dict[str, int]] = {
     "xlarge_1024x16": {"d_model": 1024, "n_layers": 16, "n_heads": 16, "n_kv_heads": 8},
 }
 
-# The joint default deliberately uses one microbatch per optimizer step. Keep
-# the routine grid to the three practical comparison sizes; xlarge remains an
-# explicit opt-in preset but is excluded from the default sweep because its
-# cost is disproportionate for routine fit/throughput checks.
+# The joint default deliberately uses one microbatch per optimizer step. It
+# revisits the three practical comparison sizes after projection fusion and
+# crosses each model shape with bounded length-bucketing windows. Candidate
+# microbatches ascend independently within each model/bucket lane, allowing the
+# profiler's 90% projected-memory guard to stop only an unsafe tail. XLarge
+# remains explicit-only because its cost is disproportionate for this sweep.
+DEFAULT_PROFILE_LENGTH_BUCKET_BATCHES: tuple[int, ...] = (4, 16, 32)
+DEFAULT_PROFILE_MICROBATCHES: dict[str, tuple[int, ...]] = {
+    "current": (16, 20, 24, 28),
+    "medium": (8, 10, 12, 14),
+    "large": (6, 8, 10),
+}
 DEFAULT_JOINT_CANDIDATES = ",".join(
     f"{model}:4096:{microbatch}:1:{OFFLINE_PRODUCTION_LOADER_WORKERS}:1:0:"
-    f"{OFFLINE_PRODUCTION_LENGTH_BUCKET_BATCHES}"
-    for model, microbatches in (
-        # Keep intermediate probes below the projected-memory cliff. The
-        # measured fused-SDPA profile fit current=16 at 62.6% and medium=8 at
-        # 58.2%, while the former coarse jumps to 24/12 were skipped without
-        # measuring potentially faster, safe shapes.
-        ("current", (8, 16, 20, 24, 32)),
-        ("medium", (4, 8, 10, 12, 16)),
-        # Large=8 already measured at 83.9%; six provides a bounded scaling
-        # point without weakening the 90% safety limit.
-        ("large", (2, 4, 6, 8, 12)),
-    )
+    f"{bucket_batches}"
+    for bucket_batches in DEFAULT_PROFILE_LENGTH_BUCKET_BATCHES
+    for model, microbatches in DEFAULT_PROFILE_MICROBATCHES.items()
     for microbatch in microbatches
 )
 

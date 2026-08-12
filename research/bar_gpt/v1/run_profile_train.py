@@ -21,8 +21,8 @@ DEFAULT_ARGS: tuple[str, ...] = (
     "--ready-queue-blocks", str(OFFLINE_PRODUCTION_READY_QUEUE_BLOCKS),
     "--worker-prefetch-batches", str(OFFLINE_PRODUCTION_WORKER_PREFETCH_BATCHES),
     "--target-effective-blocks", "32",
-    "--warmup-steps", "1",
-    "--measured-steps", "3",
+    "--warmup-steps", "2",
+    "--measured-steps", "10",
     "--progress-layout", "auto",
 )
 
