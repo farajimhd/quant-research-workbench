@@ -17,6 +17,7 @@ from .run_embedding_supervision import _fit_tuning_indexes
 from .run_tfidf_supervision_v2 import _train_args as _v2_train_args
 from .run_tfidf_supervision_v3 import _train_args as _v3_train_args
 from .run_tfidf_supervision_v4 import _train_args as _v4_train_args
+from .run_tfidf_supervision_v5 import _train_args as _v5_train_args
 from .tfidf_supervision import fit_tfidf_vocabulary, transform_tfidf
 from .tfidf_supervision_v2 import (
     fit_v2_vocabulary,
@@ -34,6 +35,13 @@ from .tfidf_supervision_v3 import (
     tfidf_v3_feature_counts_from_fields,
 )
 from .tfidf_supervision_v4 import canonical_feature_fields, iter_canonical_news_rows
+from .tfidf_supervision_v5 import (
+    _payload_hash_method,
+    original_body_text,
+    original_feature_document,
+    resolve_raw_artifact_path,
+    tfidf_v5_feature_counts,
+)
 
 
 class EmbeddingSupervisionTests(unittest.TestCase):
@@ -356,6 +364,62 @@ class EmbeddingSupervisionTests(unittest.TestCase):
             values.pop("data_root")
             values.pop("run_root")
         self.assertEqual(v3, v4)
+
+    def test_tfidf_v5_uses_original_provider_text_and_metadata(self) -> None:
+        payload = {
+            "title": "Alpha & Beta Raise Guidance",
+            "teaser": "Raw teaser",
+            "body": "<p>Alpha revenue rose <strong>12%</strong>.</p><script>noise</script>",
+            "published": "2024-06-01T12:00:00Z",
+            "last_updated": "2024-06-01T12:05:00Z",
+            "author": "News Desk",
+            "url": "https://example.test/raw/article",
+            "tickers": ["ABC", "XYZ"],
+            "channels": ["guidance"],
+            "tags": ["earnings"],
+        }
+        fields, metadata, structured = original_feature_document(payload, ticker="ABC")
+        features = tfidf_v5_feature_counts(
+            fields,
+            metadata,
+            structured,
+            ticker="ABC",
+            aliases=("ABC", "Alpha"),
+        )
+        self.assertEqual(fields["title"], payload["title"])
+        self.assertEqual(fields["body"], "Alpha revenue rose 12%.")
+        self.assertNotIn("noise", fields["body"])
+        self.assertIn("metadata_word|u:author", features)
+        self.assertIn("metadata_word|u:guidance", features)
+        self.assertIn("structural|metadata:target_in_provider_tickers", features)
+        self.assertFalse(any("external" in term or "pdf" in term for term in features))
+
+    def test_tfidf_v5_raw_hash_and_path_authority(self) -> None:
+        import hashlib
+        import json
+
+        payload = {"benzinga_id": 123, "title": "Original"}
+        raw = json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
+        retained = hashlib.blake2b(raw, digest_size=16).hexdigest()
+        self.assertEqual(
+            _payload_hash_method(payload, retained_hash=retained, raw_bytes=raw),
+            "exact_utf8_artifact_bytes",
+        )
+        self.assertEqual(
+            resolve_raw_artifact_path(
+                r"D:\market-data\news-benzinga\raw\2024\x.json",
+                raw_drive_root=Path(r"\\host\Workstation-D"),
+            ),
+            Path(r"\\host\Workstation-D\market-data\news-benzinga\raw\2024\x.json"),
+        )
+
+    def test_tfidf_v5_keeps_v4_model_and_training_configuration(self) -> None:
+        v4 = vars(_v4_train_args(Path("v4-data"), Path("v4-run"), 8))
+        v5 = vars(_v5_train_args(Path("v5-data"), Path("v5-run"), 8))
+        for values in (v4, v5):
+            values.pop("data_root")
+            values.pop("run_root")
+        self.assertEqual(v4, v5)
 
 
 if __name__ == "__main__":

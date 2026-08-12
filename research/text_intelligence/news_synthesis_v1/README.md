@@ -253,3 +253,30 @@ python -m research.text_intelligence.news_synthesis_v1.run_tfidf_supervision_v4
 V4 refuses to overwrite an existing run and writes generated data, model,
 evaluation, and comparison artifacts only under
 `D:\TradingML\runtimes\text_intelligence\news_synthesis_v1\tfidf_supervision_v4`.
+
+### TF-IDF V5 original-provider authority
+
+V5 replaces V4's normalized ClickHouse text fields with the retained original
+Benzinga provider JSON for each frozen source ID. By default every raw artifact
+must exist, match its retained BLAKE2b payload hash, and agree on provider
+article identity. The explicit `--allow-revised-original-artifacts` mode permits
+a current artifact with hash drift only when provider article ID, original
+publication timestamp, and title remain identical; drift counts and both hashes
+are retained in the runtime authority manifest.
+V5 consumes the original title and teaser, deterministically removes markup
+from the original provider body without using normalized-table text, and adds
+generic features from original publication/update timestamps, author, URL
+domain, channels, tags, and ticker-count metadata. Enriched external and PDF
+text are deliberately excluded because they are not part of the original
+provider payload.
+
+The 14,253-article population, labels, 75/25 split, point-in-time alias logic,
+model architecture, hyperparameters, seed, tuning boundary, and final
+evaluation procedure remain unchanged. Generated artifacts are written only
+under
+`D:\TradingML\runtimes\text_intelligence\news_synthesis_v1\tfidf_supervision_v5`.
+
+```powershell
+$env:PYTHONDONTWRITEBYTECODE='1'
+python -m research.text_intelligence.news_synthesis_v1.run_tfidf_supervision_v5
+```
