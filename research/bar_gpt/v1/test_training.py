@@ -779,6 +779,12 @@ class LoaderTrainerContractTest(unittest.TestCase):
             self.assertEqual(partial.raw_views[name].shape[0], config.calendar_context_by_name[name])
             self.assertTrue(bool(partial.raw_view_mask[name].any()))
             self.assertTrue(torch.all(partial.asof_indices[name] >= 0))
+        future_available = {name: value.clone() for name, value in partial.raw_view_available_at_us.items()}
+        selected_daily = partial.asof_indices["1D"]
+        future_available["1D"][selected_daily[0]] = partial.origin_timestamps_us[0] + 1
+        exposed_future = dataclasses.replace(partial, raw_view_available_at_us=future_available)
+        with self.assertRaisesRegex(RuntimeError, "unavailable at the origin timestamp"):
+            validate_origin_context(exposed_future, config)
         complete_config = dataclasses.replace(
             config,
             calendar_context_bars=(("1D", 1), ("1W", 1), ("1MO", 1)),

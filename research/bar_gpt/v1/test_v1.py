@@ -194,6 +194,27 @@ class BuilderSqlTest(unittest.TestCase):
         self.assertEqual(key.shape[1], 4)
         self.assertEqual(val.shape[1], 4)
         self.assertNotIn("enable_gqa", sdpa.call_args.kwargs)
+        self.assertFalse(sdpa.call_args.kwargs["is_causal"])
+        allowed = sdpa.call_args.kwargs["attn_mask"]
+        self.assertFalse(bool(torch.triu(allowed, diagonal=1).any()))
+
+    def test_future_tokens_cannot_change_past_states_in_either_attention_path(self) -> None:
+        torch.manual_seed(17)
+        config = BarGPTConfig(d_model=32, n_heads=4, n_kv_heads=2, dropout=0.0)
+        attention = CausalSelfAttention(config).eval()
+        value = torch.randn(2, 9, 32)
+        changed = value.clone()
+        changed[:, 5:] = torch.randn_like(changed[:, 5:]) * 100.0
+
+        for label, kwargs in (
+            ("native causal", {}),
+            ("explicit causal window", {"attention_window": 4}),
+            ("explicit causal padding", {"token_mask": torch.ones(2, 9, dtype=torch.bool)}),
+        ):
+            with self.subTest(path=label), torch.no_grad():
+                expected = attention(value, **kwargs)
+                actual = attention(changed, **kwargs)
+            torch.testing.assert_close(actual[:, :5], expected[:, :5], atol=1e-6, rtol=1e-6)
 
     def test_native_gqa_matches_explicit_kv_repetition(self) -> None:
         query = torch.randn(2, 4, 7, 8, requires_grad=True)

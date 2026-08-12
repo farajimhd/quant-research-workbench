@@ -883,10 +883,21 @@ def validate_origin_context(example: BarGPTExample, config: DataConfig) -> None:
             raise RuntimeError(f"{name} missing context must be one left prefix")
     if int(example.origin_indices.min()) != int(config.intraday_context_by_name["1s"]):
         raise RuntimeError(f"1s origins must follow exactly the configured fixed context slots")
+    if example.origin_indices.shape != example.origin_timestamps_us.shape:
+        raise RuntimeError("1s origin indices and timestamps must align")
+    base_available = example.raw_view_available_at_us["1s"]
+    if bool(torch.any(base_available[example.origin_indices] > example.origin_timestamps_us)):
+        raise RuntimeError("1s origin selects a row unavailable at the origin timestamp")
     for name, indices in example.asof_indices.items():
+        if indices.shape != example.origin_timestamps_us.shape:
+            raise RuntimeError(f"{name} as-of indices must align with origin timestamps")
         selected = indices >= 0
         if bool(torch.any(selected)) and not bool(torch.all(example.raw_view_mask[name][indices[selected]])):
             raise RuntimeError(f"{name} as-of index selects a masked context row")
+        if bool(torch.any(selected)):
+            selected_available = example.raw_view_available_at_us[name][indices[selected]]
+            if bool(torch.any(selected_available > example.origin_timestamps_us[selected])):
+                raise RuntimeError(f"{name} as-of index selects data unavailable at the origin timestamp")
 
 
 def compile_unit(examples: Sequence[BarGPTExample], config: DataConfig, key: str) -> dict[str, Any]:

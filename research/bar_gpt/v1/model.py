@@ -102,6 +102,9 @@ class CausalSelfAttention(nn.Module):
         query = query * cosine + _rotate_half(query) * sine
         key = key * cosine + _rotate_half(key) * sine
         grouped_query = self.n_kv_heads != self.n_heads
+        # Fast path: a dense, unpadded sequence with no local-window limit can
+        # delegate the lower-triangular mask directly to SDPA.  In this branch
+        # ``is_causal=True`` is the sole mechanism that blocks future keys.
         if token_mask is None and (attention_window is None or int(attention_window) >= length):
             enable_gqa = grouped_query and value.device.type == "cuda"
             if grouped_query and not enable_gqa:
@@ -117,6 +120,10 @@ class CausalSelfAttention(nn.Module):
                 enable_gqa=enable_gqa,
             )
         else:
+            # Custom-mask path: padding and/or a finite local window must be
+            # combined with causality in one explicit mask.  ``allowed`` is
+            # always lower triangular because key_positions <= query_positions;
+            # the window can only remove older keys, never admit future keys.
             window = length if attention_window is None else int(attention_window)
             if window <= 0:
                 raise ValueError("attention_window must be positive")
@@ -146,6 +153,10 @@ class CausalSelfAttention(nn.Module):
                 val,
                 attn_mask=allowed,
                 dropout_p=self.dropout if self.training else 0.0,
+                # False means "do not add SDPA's implicit causal mask".  It
+                # does not mean bidirectional attention: attn_mask=allowed
+                # already contains the causal, window, and padding constraints.
+                # Keeping both mechanisms active is unsupported/redundant.
                 is_causal=False,
             )
         attended = attended.transpose(1, 2).contiguous().view(batch, length, -1)
