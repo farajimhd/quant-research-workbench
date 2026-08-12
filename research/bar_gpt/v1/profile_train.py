@@ -794,6 +794,7 @@ def _profile_candidate(
                         valid_origin_indices=batch.valid_origin_indices,
                         asof_indices=batch.asof_indices,
                         valid_asof_origin_indices=batch.valid_asof_origin_indices,
+                        valid_view_indices=batch.valid_view_indices,
                         valid_view_token_indices=batch.valid_view_token_indices,
                         attention_windows=data.attention_window_by_name,
                         view_masks={name: batch.view_mask[name] for name in batch.masked_context_views},

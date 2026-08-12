@@ -791,6 +791,43 @@ class TemporalContractTest(unittest.TestCase):
 
 
 class ModelContractTest(unittest.TestCase):
+    def test_packed_masked_encoder_matches_independent_sequences_and_gradients(self) -> None:
+        torch.manual_seed(37)
+        config = BarGPTConfig(
+            feature_dim=len(MODEL_FEATURE_NAMES), d_model=32, n_layers=2,
+            n_heads=4, n_kv_heads=2, horizon_rank=8, dropout=0.0,
+        )
+        model = BarGPTV1(config).eval()
+        actual_input = torch.randn(
+            2, 11, len(MODEL_FEATURE_NAMES), requires_grad=True
+        )
+        reference_input = actual_input.detach().clone().requires_grad_(True)
+        mask = torch.tensor([
+            [False, False, True, True, True, True, True, True, True, True, False],
+            [True, True, True, True, True, False, False, False, False, False, False],
+        ])
+        indices = torch.nonzero(mask.reshape(-1), as_tuple=False).squeeze(-1)
+        actual = model.encode(
+            actual_input, 1_000_000, 0, attention_window=7,
+            token_mask=mask, valid_token_indices=indices,
+        )
+        first = model.encode(
+            reference_input[0:1, 2:10], 1_000_000, 0, attention_window=7
+        )
+        second = model.encode(
+            reference_input[1:2, :5], 1_000_000, 0, attention_window=7
+        )
+        reference = torch.zeros_like(actual)
+        reference[0:1, 2:10] = first
+        reference[1:2, :5] = second
+        torch.testing.assert_close(actual, reference, atol=3e-5, rtol=3e-5)
+
+        actual.square().sum().backward()
+        reference.square().sum().backward()
+        torch.testing.assert_close(
+            actual_input.grad, reference_input.grad, atol=5e-5, rtol=5e-5
+        )
+
     def test_packed_origin_fusion_matches_dense_valid_outputs(self) -> None:
         torch.manual_seed(29)
         config = BarGPTConfig(
