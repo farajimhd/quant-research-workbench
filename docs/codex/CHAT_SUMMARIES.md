@@ -2,6 +2,12 @@
 
 ## 2026
 
+### [2026-08-10 05:29 - Define and implement the unified QMD and trading application architecture](docs/codex/chat-summaries/2026/CHAT-20260810-0529-qmd-application-architecture-canvas-recovery.md)
+- Chat/task ID: `019feba6-725b-70e0-8df7-c3d174d4d890`
+- Related task: `TASK-0188`
+- Summary written: 2026-08-12 09:14 PDT
+- Scope: evolve the Market Discovery review into a complete computational-funnel and three-tier QMD design; implement the permitted QMD, backend, frontend, Canvas, Strategy, Replay, Backtest, Portfolio, OMS, chart, enrichment, and operational backlog; restore all approved Canvas containers; remove repository-local runtime output; pass active-session QMD and application load gates; and preserve explicit storage, coverage, intelligence, compatibility, archive-projection, and broker-deployment dependencies.
+
 ### [2026-08-08 (UNKNOWN time) - Expand, consolidate, and operationalize the News Synthesis certified gold authority](docs/codex/chat-summaries/2026/CHAT-20260808-UNKNOWN-consolidated-news-gold-evaluator.md)
 - Chat/task ID: `019fe37e-4165-7d82-acbd-54a08fccf81e`
 - Related tasks: `TASK-0182`, `TASK-0187`
