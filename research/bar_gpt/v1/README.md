@@ -584,6 +584,11 @@ compute, so Task Manager GPU utilization during that benchmark is not training
 utilization. Its default v12 grid contains 12 focused worker/prefetch/cache
 candidates, including the production 16-worker, prefetch-2, four-host-batch,
 length-bucket-4 shape; the former 72-way Cartesian grid is no longer the default.
+Every candidate and each of its three trials consume the same immutable
+block-reference workload. Warmup uses a separate fixed block set, and workload
+identity, block count, origin count, and SHA-256 are verified before a trial can
+pass. Recommendations use median steady-state throughput across the repeated
+trials, while cold-start time remains a separately reported cost.
 
 ### Offline training-ready tensor shards
 
@@ -790,10 +795,12 @@ python -B -m research.bar_gpt.v1.run_summarize_offline_dataset
 ```
 
 The command inventories every matching sidecar exactly, then opens a
-deterministic sample of 256 complete mmap shards by default. It always includes
-the earliest complete shard for each sampled ticker before filling the sample
-by stable hash. The report covers all 50 model inputs in every one of the 11
-views, all 23 physical targets at each of the six horizons, and all 18
+deterministic sample of 256 complete mmap shards by default. The sample allocates
+shards proportionally across catalog years and uses a stable hash within each
+year, preventing ticker-path order or earliest-history shards from dominating
+the statistical report. The report records its strategy, sampled ticker count,
+and exact per-year composition. It covers all 50 model inputs in every one of
+the 11 views, all 23 physical targets at each of the six horizons, and all 18
 autoregressive targets in each of the eight intraday views. Per-field CSV rows
 contain coverage/missingness, finite/nonfinite and zero rates, exact sampled
 mean/standard deviation/extrema, bounded-reservoir percentiles, model-space
@@ -803,7 +810,10 @@ direction balance where applicable.
 Separate tables report exact shard/session/block/origin/byte inventory,
 available versus missing historical context globally and by ticker/year for
 every view, context staleness, integrity findings, and simulated padding waste
-for microbatches 8, 16, and 32. Detailed summary/statistics JSON and CSV output is written under
+for microbatches 8, 16, and 32 using the production length-bucketing window.
+Staleness is defined only when the selected newest context row is valid; masked
+padding cannot contribute a timestamp. Detailed summary/statistics JSON and CSV
+output is written under
 `D:\TradingML\runtimes\bar_gpt\v1\dataset_reports`; shards are never changed
 and W&B is not used. `--sample-shards 0` samples every complete shard, while
 `--sample-shards`, `--blocks-per-shard`, `--rows-per-view`, and

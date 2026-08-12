@@ -20,6 +20,7 @@ from research.bar_gpt.v1.summarize_offline_dataset import (
     _prepare_shard_sample,
     _render,
     _select_sample,
+    _stable_seed,
     _update_autoregressive_distributions,
     parse_args,
 )
@@ -45,34 +46,45 @@ class OfflineDatasetSummaryTest(unittest.TestCase):
                 "1s": torch.tensor([False, False, True, True, True, True]),
                 "5s": torch.tensor([False, True, True]),
             },
-            origin_indices=torch.tensor([3, 4, 5]),
-            asof_indices={"5s": torch.tensor([-1, 1, 2])},
-            origin_timestamps_us=torch.tensor([10, 20, 30]) * 1_000_000,
+            origin_indices=torch.tensor([2, 3, 4, 5]),
+            asof_indices={"5s": torch.tensor([-1, -1, 1, 2])},
+            origin_timestamps_us=torch.tensor([5, 10, 20, 30]) * 1_000_000,
             view_available_at_us={
                 "1s": torch.tensor([0, 0, 8, 18, 28, 38]) * 1_000_000,
                 "5s": torch.tensor([0, 15, 25]) * 1_000_000,
             },
         )
-        rows = torch.arange(3)
+        rows = torch.arange(4)
         one_second, one_second_stale = _context_counts(block, "1s", rows, 2)
         coarse, coarse_stale = _context_counts(block, "5s", rows, 2)
-        self.assertEqual(one_second.tolist(), [1, 2, 2])
-        self.assertEqual(one_second_stale.tolist(), [2.0, 2.0, 2.0])
-        self.assertEqual(coarse.tolist(), [0, 1, 2])
+        self.assertEqual(one_second.tolist(), [0, 1, 2, 2])
+        self.assertTrue(torch.isnan(one_second_stale[0]))
+        self.assertEqual(one_second_stale[1:].tolist(), [2.0, 2.0, 2.0])
+        self.assertEqual(coarse.tolist(), [0, 0, 1, 2])
         self.assertTrue(torch.isnan(coarse_stale[0]))
-        self.assertEqual(coarse_stale[1:].tolist(), [5.0, 5.0])
+        self.assertTrue(torch.isnan(coarse_stale[1]))
+        self.assertEqual(coarse_stale[2:].tolist(), [5.0, 5.0])
 
-    def test_sample_includes_earliest_shard_per_ticker(self) -> None:
+    def test_sample_is_proportional_by_year_then_stable_hash(self) -> None:
         rows = [
-            {"unit_key": "AAA:2020-02", "status": "complete"},
-            {"unit_key": "AAA:2020-01", "status": "complete"},
-            {"unit_key": "BBB:2021-02", "status": "complete"},
-            {"unit_key": "BBB:2021-01", "status": "complete"},
-            {"unit_key": "CCC:2020-01", "status": "covered_empty"},
+            *({"unit_key": f"T{index:02d}:2020-01", "status": "complete"} for index in range(8)),
+            *({"unit_key": f"U{index:02d}:2021-01", "status": "complete"} for index in range(4)),
+            {"unit_key": "EMPTY:2020-01", "status": "covered_empty"},
         ]
-        selected = _select_sample(rows, 2, seed=17)
-        self.assertEqual({row["unit_key"] for row in selected}, {"AAA:2020-01", "BBB:2021-01"})
-        self.assertEqual(selected, _select_sample(rows, 2, seed=17))
+        selected = _select_sample(rows, 6, seed=17)
+        by_year = {year: 0 for year in ("2020", "2021")}
+        for row in selected:
+            by_year[str(row["unit_key"])[-7:-3]] += 1
+        self.assertEqual(by_year, {"2020": 4, "2021": 2})
+        expected_2020 = sorted(
+            (row for row in rows if ":2020-" in row["unit_key"] and row["status"] == "complete"),
+            key=lambda row: _stable_seed(17, "sample-unit", row["unit_key"]),
+        )[:4]
+        self.assertEqual(
+            {row["unit_key"] for row in selected if ":2020-" in row["unit_key"]},
+            {row["unit_key"] for row in expected_2020},
+        )
+        self.assertEqual(selected, _select_sample(rows, 6, seed=17))
 
     def test_decoding_and_padding_statistics_are_readable(self) -> None:
         decoded, unit, _transform = _decode_feature("trade_close_return", torch.asinh(torch.tensor([0.01])))
@@ -81,12 +93,17 @@ class OfflineDatasetSummaryTest(unittest.TestCase):
         padding = _padding_statistics([4096, 512], [2], seed=17)[0]
         self.assertAlmostEqual(padding["valid_fraction"], 0.5625)
         self.assertAlmostEqual(padding["padding_fraction"], 0.4375)
+        lengths = [1, 100, 2, 99, 3, 98, 4, 97]
+        bucketed = _padding_statistics(lengths, [2], seed=17, length_bucket_batches=4)[0]
+        unbucketed = _padding_statistics(lengths, [2], seed=17, length_bucket_batches=1)[0]
+        self.assertGreater(bucketed["valid_fraction"], unbucketed["valid_fraction"])
 
     def test_cli_and_compact_render(self) -> None:
         args = parse_args(["--sample-shards", "2", "--batch-sizes", "8,16"])
         self.assertEqual(args.sample_shards, 2)
         self.assertEqual(args.batch_sizes, (8, 16))
         self.assertEqual(args.workers, 8)
+        self.assertEqual(args.length_bucket_batches, 4)
         report = {
             "inventory": {"origins": 100, "blocks": 4, "bytes": 1024},
             "sampling": {"sampled_shards": 2, "sampled_blocks": 2, "sampled_origins": 20, "workers": 2},

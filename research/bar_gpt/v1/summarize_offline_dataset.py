@@ -260,6 +260,9 @@ def _context_counts(block: Any, view: str, origins: torch.Tensor, configured: in
     counts = prefix[end] - prefix[start]
     newest = end - 1
     valid = newest >= 0
+    if bool(valid.any()):
+        selected = valid.nonzero(as_tuple=False).flatten()
+        valid[selected] = block.view_mask[view][newest[selected]].bool()
     staleness = torch.full((origins.numel(),), float("nan"), dtype=torch.float64)
     if bool(valid.any()):
         available = block.view_available_at_us[view][newest[valid]].double()
@@ -304,29 +307,65 @@ def _select_sample(rows: Sequence[dict[str, Any]], limit: int, seed: int) -> lis
     complete = [row for row in rows if row.get("status") == "complete"]
     if limit <= 0 or len(complete) <= limit:
         return complete
-    earliest: dict[str, dict[str, Any]] = {}
+    by_year: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for row in complete:
-        ticker, month = _unit_parts(str(row["unit_key"]))
-        if ticker not in earliest or month < _unit_parts(str(earliest[ticker]["unit_key"]))[1]:
-            earliest[ticker] = row
-    selected = list(earliest.values())[:limit]
-    selected_keys = {str(row["unit_key"]) for row in selected}
-    remaining = sorted(
-        (row for row in complete if str(row["unit_key"]) not in selected_keys),
-        key=lambda row: _stable_seed(seed, row["unit_key"]),
+        _ticker, month = _unit_parts(str(row["unit_key"]))
+        by_year[month[:4]].append(row)
+    expected = {
+        year: limit * len(values) / len(complete)
+        for year, values in by_year.items()
+    }
+    quotas = {
+        year: min(len(by_year[year]), int(math.floor(value)))
+        for year, value in expected.items()
+    }
+    remaining = limit - sum(quotas.values())
+    allocation_order = sorted(
+        by_year,
+        key=lambda year: (
+            -(expected[year] - quotas[year]),
+            _stable_seed(seed, "sample-year", year),
+        ),
     )
-    return [*selected, *remaining[: max(0, limit - len(selected))]]
+    while remaining:
+        progressed = False
+        for year in allocation_order:
+            if quotas[year] >= len(by_year[year]):
+                continue
+            quotas[year] += 1
+            remaining -= 1
+            progressed = True
+            if remaining == 0:
+                break
+        if not progressed:
+            raise RuntimeError("unable to allocate deterministic shard sample")
+    selected = [
+        row
+        for year in sorted(by_year)
+        for row in sorted(
+            by_year[year],
+            key=lambda item: _stable_seed(seed, "sample-unit", item["unit_key"]),
+        )[: quotas[year]]
+    ]
+    return sorted(selected, key=lambda row: str(row["unit_key"]))
 
 
-def _padding_statistics(lengths: Sequence[int], batch_sizes: Sequence[int], seed: int) -> list[dict[str, Any]]:
+def _padding_statistics(
+    lengths: Sequence[int], batch_sizes: Sequence[int], seed: int, length_bucket_batches: int = 4,
+) -> list[dict[str, Any]]:
     if not lengths:
         return []
     order = np.random.default_rng(seed).permutation(np.asarray(lengths, dtype=np.int64))
     rows = []
     for batch_size in batch_sizes:
+        bucket_window = max(int(batch_size), int(batch_size) * int(length_bucket_batches))
+        bucketed = np.concatenate([
+            np.sort(order[start : start + bucket_window])
+            for start in range(0, len(order), bucket_window)
+        ])
         valid = padded = batches = 0
-        for start in range(0, len(order), batch_size):
-            batch = order[start : start + batch_size]
+        for start in range(0, len(bucketed), batch_size):
+            batch = bucketed[start : start + batch_size]
             if not batch.size:
                 continue
             valid += int(batch.sum())
@@ -334,6 +373,7 @@ def _padding_statistics(lengths: Sequence[int], batch_sizes: Sequence[int], seed
             batches += 1
         rows.append({
             "batch_size": int(batch_size), "simulated_batches": batches,
+            "length_bucket_batches": int(length_bucket_batches),
             "valid_origins": valid, "allocated_origin_slots": padded,
             "valid_fraction": valid / padded if padded else None,
             "padding_fraction": 1.0 - valid / padded if padded else None,
@@ -412,8 +452,13 @@ def _prepare_shard_sample(row: dict[str, Any], config: Any, args: argparse.Names
             prepared_context: dict[str, tuple[torch.Tensor, torch.Tensor]] = {}
             for view, configured in context_sizes.items():
                 counts, staleness = _context_counts(block, view, origin_rows, configured)
-                if bool(torch.any(staleness[torch.isfinite(staleness)] < 0)):
+                finite_staleness = torch.isfinite(staleness)
+                if bool(torch.any(staleness[finite_staleness] < 0)):
                     block_integrity["future_context_selection"] += 1
+                if bool(torch.any((counts == 0) & finite_staleness)):
+                    block_integrity["staleness_without_context"] += 1
+                if bool(torch.any((counts > 0) & ~finite_staleness)):
+                    block_integrity["context_without_staleness"] += 1
                 prepared_context[view] = (counts.clone(), staleness.clone())
             horizon_values = block.horizon_targets[origin_rows].clone()
             horizon_mask = block.horizon_mask[origin_rows].clone()
@@ -642,23 +687,37 @@ def summarize(args: argparse.Namespace, console: Console) -> tuple[dict[str, Any
     context_ticker_rows = [
         {"ticker": ticker, **stats.summary()} for (ticker, _view), stats in sorted(context_by_ticker.items())
     ]
-    padding_rows = _padding_statistics(block_lengths, tuple(args.batch_sizes), int(args.seed))
+    padding_rows = _padding_statistics(
+        block_lengths,
+        tuple(args.batch_sizes),
+        int(args.seed),
+        int(args.length_bucket_batches),
+    )
     status_counts: dict[str, int] = defaultdict(int)
     for row in sidecars:
         status_counts[str(row.get("status", "unknown"))] += 1
     complete = [row for row in inventory_rows if row["status"] == "complete"]
+    sampled_year_counts: dict[str, int] = defaultdict(int)
+    sampled_tickers: set[str] = set()
+    for row in sample:
+        ticker, month = _unit_parts(str(row["unit_key"]))
+        sampled_tickers.add(ticker)
+        sampled_year_counts[month[:4]] += 1
     report = {
-        "report_version": 1,
+        "report_version": 2,
         "created_at": dt.datetime.now().astimezone().isoformat(timespec="seconds"),
         "root": str(root),
         "scope": {"tickers": list(_csv_values(args.tickers)), "start_date": args.start_date, "end_date": args.end_date},
         "sampling": {
+            "strategy": "proportional_by_year_then_stable_hash_v2",
             "seed": int(args.seed), "candidate_complete_shards": len(complete), "sampled_shards": len(sample),
+            "sampled_tickers": len(sampled_tickers), "sampled_units_by_year": dict(sorted(sampled_year_counts.items())),
             "workers": min(max(1, int(args.workers)), max(1, len(sample))),
             "torch_threads": int(args.torch_threads),
             "blocks_per_shard": int(args.blocks_per_shard), "sampled_blocks": sampled_blocks,
             "rows_per_view": int(args.rows_per_view), "origins_per_block": int(args.origins_per_block),
             "sampled_origins": sampled_origins, "reservoir_size_per_field": capacity,
+            "length_bucket_batches": int(args.length_bucket_batches),
         },
         "inventory": {
             "units": len(sidecars), "status_counts": dict(status_counts),
@@ -750,11 +809,15 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--workers", type=int, default=8, help="Concurrent bounded shard preparation workers.")
     parser.add_argument("--torch-threads", type=int, default=1, help="Torch CPU threads shared by this process.")
     parser.add_argument("--batch-sizes", default="8,16,32")
+    parser.add_argument(
+        "--length-bucket-batches", type=int, default=4,
+        help="Bounded production-style length-bucketing window used by padding simulation.",
+    )
     parser.add_argument("--seed", type=int, default=17)
     args = parser.parse_args(list(argv) if argv is not None else None)
     if args.sample_shards < 0 or min(
         args.blocks_per_shard, args.rows_per_view, args.origins_per_block,
-        args.reservoir_size, args.workers, args.torch_threads,
+        args.reservoir_size, args.workers, args.torch_threads, args.length_bucket_batches,
     ) <= 0:
         parser.error("sample-shards cannot be negative and all other sample sizes must be positive")
     try:
