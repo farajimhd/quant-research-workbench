@@ -435,12 +435,13 @@ receptive field beyond that contract.
 
 The shard stores no microbatch dimension. `--batch-size` is the number of
 independent 4,096-origin blocks collated by the loader and may be tuned without
-rebuilding shards. The production Current comparison uses 16 blocks per
-microbatch with two microbatches per optimizer update. Medium and Large use
-8 blocks with four-way accumulation, so every comparison commits 32 blocks per
-optimizer update. Twelve worker-owned mmap streams retain
-shard-local access, one prefetched batch per worker, and a shared bounded
-RAM cache sized in loader blocks. One pinned device batch transfers on a
+rebuilding shards. The completed end-to-end v12 profile selected Current at 20
+blocks per microbatch with two-way accumulation, and Medium and Large at 10
+blocks with four-way accumulation. Every comparison therefore commits 40
+blocks per optimizer update. Eight worker-owned mmap streams retain shard-local
+access, one prefetched batch per worker, and a shared bounded RAM cache sized in
+loader blocks. A 16-batch deterministic length-bucketing window limits padding.
+One pinned device batch transfers on a
 dedicated CUDA stream while the current batch computes. The terminal reports
 actual cache fill and per-update GPU duty so starvation is visible. Future target support
 never enters `batch.views`; eager horizon targets and masks are read directly
@@ -553,16 +554,22 @@ windows 4, 8, and 16 in one report. Candidate strings may append
 the actual window used. The sweep changes batch ordering only inside the
 deterministic loader window; it never drops or duplicates a block.
 
-Before model comparison, deliberately overfit the production Current
-architecture on a bounded panel drawn from the locked full v12 catalog:
+Before model comparison, deliberately overfit each production architecture on
+the same bounded panel contract drawn from the locked full v12 catalog:
 
 ```powershell
 python -B -m research.bar_gpt.v1.run_overfit_pilot --model-size current
+python -B -m research.bar_gpt.v1.run_overfit_pilot --model-size medium
+python -B -m research.bar_gpt.v1.run_overfit_pilot --model-size large
 ```
 
 The overfit gate keeps only two blocks by default, disables W&B, reports the
-resolved 384-wide eight-layer architecture and parameter count, and writes its
-learning/gate report under `D:\TradingML\runtimes\bar_gpt\v1\overfit_pilot`.
+resolved architecture, parameter count, and production training reference, and
+writes its learning/gate report under
+`D:\TradingML\runtimes\bar_gpt\v1\overfit_pilot`. Its in-memory batch remains
+two blocks for every size: this is a memorization/gradient-path gate, not a
+throughput run, so production microbatching and accumulation do not belong in
+the overfit loop.
 
 This dedicated performance command never initializes or uploads to W&B. It
 prints the data, architecture, microbatch, accumulation, optimizer, precision,
@@ -618,7 +625,9 @@ before the first measured update. Eight worker-owned offline mmap streams and
 all other loader controls remain fixed so the sweep isolates model,
 microbatch, and bucket effects. Because bucket windows change deterministic
 batch order, confirm each selected per-model winner over a longer identical
-configuration before promoting it to training defaults.
+configuration before promoting it to training defaults. The completed
+2026-08-12 run promoted the origins-throughput winners to the shared defaults:
+Current 20x2, Medium 10x4, and Large 10x4, all with length bucket 16.
 
 The separate offline-loader benchmark does not run model forward or backward
 compute, so Task Manager GPU utilization during that benchmark is not training

@@ -10,7 +10,13 @@ from typing import Sequence
 
 import torch
 
-from research.bar_gpt.v1.config import BarGPTConfig, ExperimentConfig, TrainConfig
+from research.bar_gpt.v1.config import (
+    MODEL_SIZE_PRESETS,
+    PRODUCTION_MODEL_TRAINING_PRESETS,
+    BarGPTConfig,
+    ExperimentConfig,
+    TrainConfig,
+)
 from research.bar_gpt.v1.data import AUTOREGRESSIVE_VIEW_NAMES, BarGPTBatch
 from research.bar_gpt.v1.metrics import ValidationAccumulator
 from research.bar_gpt.v1.model import BarGPTV1
@@ -24,7 +30,6 @@ from research.bar_gpt.v1.offline_shards import (
 )
 from research.bar_gpt.v1.train import _forward
 from research.bar_gpt.v1.targets import DIRECTION_TARGET_COUNT, DIRECTION_TARGET_NAMES
-from research.bar_gpt.v1.profile_train import MODEL_SIZE_PRESETS
 
 
 DEFAULT_SHARD_ROOT = Path(r"D:\TradingML\runtimes\bar_gpt\v1\offline_shards_v12")
@@ -37,9 +42,9 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--shard-root", type=Path, default=DEFAULT_SHARD_ROOT)
     parser.add_argument(
         "--model-size",
-        choices=("current",),
+        choices=tuple(PRODUCTION_MODEL_TRAINING_PRESETS),
         default="current",
-        help="Production model architecture to overfit; this v12 gate is intentionally current-only.",
+        help="Production model architecture to overfit on the same bounded v12 learning gate.",
     )
     parser.add_argument("--tickers", default="AAPL,GOOGL")
     parser.add_argument("--start-date", default="2019-01-01")
@@ -354,6 +359,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     if len(blocks) < int(args.max_blocks):
         raise RuntimeError(f"pilot exposes only {len(blocks)} blocks; {args.max_blocks} required")
     model_config = BarGPTConfig(**MODEL_SIZE_PRESETS[str(args.model_size)], dropout=0.0)
+    production_preset = PRODUCTION_MODEL_TRAINING_PRESETS[str(args.model_size)]
     train_config = replace(
         TrainConfig(),
         learning_rate=float(args.learning_rate),
@@ -387,6 +393,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     print(
         f"Overfit model: {args.model_size} d_model={model_config.d_model} layers={model_config.n_layers} "
         f"heads={model_config.n_heads} kv_heads={model_config.n_kv_heads}",
+        flush=True,
+    )
+    print(
+        f"Production reference: microbatch={production_preset.microbatch} "
+        f"accumulation={production_preset.accumulation} "
+        f"length_bucket_batches={production_preset.length_bucket_batches}; "
+        "the overfit gate intentionally reuses only its bounded in-memory panel",
         flush=True,
     )
     print(
@@ -459,6 +472,12 @@ def main(argv: Sequence[str] | None = None) -> int:
             "n_heads": model_config.n_heads,
             "n_kv_heads": model_config.n_kv_heads,
             "parameters": sum(parameter.numel() for parameter in model.parameters()),
+        },
+        "production_training_reference": {
+            "microbatch": production_preset.microbatch,
+            "accumulation": production_preset.accumulation,
+            "effective_blocks": production_preset.effective_blocks,
+            "length_bucket_batches": production_preset.length_bucket_batches,
         },
         "shard_root": str(args.shard_root),
         "tickers": list(tickers),

@@ -18,13 +18,52 @@ from research.bar_gpt.v1.features import MODEL_FEATURE_NAMES
 from research.bar_gpt.v1.targets import AUTOREGRESSIVE_TARGET_NAMES, TARGET_NAMES
 
 
-OFFLINE_PRODUCTION_BATCH_SIZE = 16
-# Selected by the fixed-workload v12 loader benchmark. At production batch
-# size 16, 64 queued blocks retain four host-cache batches.
+MODEL_SIZE_PRESETS: dict[str, dict[str, int]] = {
+    "current": {"d_model": 384, "n_layers": 8, "n_heads": 8, "n_kv_heads": 4},
+    "medium": {"d_model": 512, "n_layers": 12, "n_heads": 8, "n_kv_heads": 4},
+    "large": {"d_model": 768, "n_layers": 12, "n_heads": 12, "n_kv_heads": 4},
+    "xlarge": {"d_model": 1024, "n_layers": 16, "n_heads": 16, "n_kv_heads": 8},
+    "anchor_384x8": {"d_model": 384, "n_layers": 8, "n_heads": 8, "n_kv_heads": 4},
+    "width_512x8": {"d_model": 512, "n_layers": 8, "n_heads": 8, "n_kv_heads": 4},
+    "depth_384x12": {"d_model": 384, "n_layers": 12, "n_heads": 8, "n_kv_heads": 4},
+    "medium_512x12": {"d_model": 512, "n_layers": 12, "n_heads": 8, "n_kv_heads": 4},
+    "depth_512x16": {"d_model": 512, "n_layers": 16, "n_heads": 8, "n_kv_heads": 4},
+    "mid_768x12": {"d_model": 768, "n_layers": 12, "n_heads": 12, "n_kv_heads": 6},
+    "width_1024x12": {"d_model": 1024, "n_layers": 12, "n_heads": 16, "n_kv_heads": 8},
+    "xlarge_1024x16": {"d_model": 1024, "n_layers": 16, "n_heads": 16, "n_kv_heads": 8},
+}
+
+
+@dataclass(frozen=True, slots=True)
+class ModelTrainingPreset:
+    microbatch: int
+    accumulation: int
+    length_bucket_batches: int
+
+    @property
+    def effective_blocks(self) -> int:
+        return self.microbatch * self.accumulation
+
+
+# Selected by the completed v12 end-to-end Arrow-to-optimizer grid on
+# 2026-08-12. All three winners used eight workers, one worker-prefetched
+# batch, and a deterministic 16-batch length-bucketing window.
+PRODUCTION_MODEL_TRAINING_PRESETS: dict[str, ModelTrainingPreset] = {
+    "current": ModelTrainingPreset(microbatch=20, accumulation=2, length_bucket_batches=16),
+    "medium": ModelTrainingPreset(microbatch=10, accumulation=4, length_bucket_batches=16),
+    "large": ModelTrainingPreset(microbatch=10, accumulation=4, length_bucket_batches=16),
+}
+
+
+OFFLINE_PRODUCTION_BATCH_SIZE = PRODUCTION_MODEL_TRAINING_PRESETS["current"].microbatch
+# Retain the measured bounded queue. The queue is expressed in blocks rather
+# than batches and was held fixed throughout the end-to-end model grid.
 OFFLINE_PRODUCTION_LOADER_WORKERS = 8
 OFFLINE_PRODUCTION_READY_QUEUE_BLOCKS = 64
 OFFLINE_PRODUCTION_WORKER_PREFETCH_BATCHES = 1
-OFFLINE_PRODUCTION_LENGTH_BUCKET_BATCHES = 4
+OFFLINE_PRODUCTION_LENGTH_BUCKET_BATCHES = (
+    PRODUCTION_MODEL_TRAINING_PRESETS["current"].length_bucket_batches
+)
 
 
 BAR_GPT_WANDB_PROJECT = "bar gpt"

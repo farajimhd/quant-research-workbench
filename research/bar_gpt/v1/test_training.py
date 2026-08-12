@@ -1876,7 +1876,7 @@ class LoaderTrainerContractTest(unittest.TestCase):
         self.assertEqual(training_launcher_args["--start-date"], "2019-01-01")
         self.assertEqual(training_launcher_args["--origin-bars-1s"], "4096")
         self.assertEqual(training_launcher_args["--offline-train-end-date"], "2026-01-01")
-        self.assertEqual(training_launcher_args["--batch-size"], "16")
+        self.assertEqual(training_launcher_args["--batch-size"], "20")
         self.assertEqual(training_launcher_args["--validation-blocks-per-slice"], "2")
         self.assertEqual(training_launcher_args["--gradient-accumulation-steps"], "2")
         self.assertEqual(training_launcher_args["--epochs"], "1")
@@ -2387,13 +2387,13 @@ class LoaderTrainerContractTest(unittest.TestCase):
         resolved = profiler_argv(launcher_args)
         candidates = _parse_candidates(resolved[resolved.index("--candidates") + 1])
         self.assertEqual(len(candidates), 1)
-        self.assertEqual((candidates[0].model_size, candidates[0].microbatch, candidates[0].accumulation), ("medium", 8, 4))
+        self.assertEqual((candidates[0].model_size, candidates[0].microbatch, candidates[0].accumulation), ("medium", 10, 4))
         self.assertEqual(candidates[0].workers, 8)
-        self.assertEqual(candidates[0].length_bucket_batches, 4)
+        self.assertEqual(candidates[0].length_bucket_batches, 16)
         profile_args = parse_profile_args(resolved)
         self.assertEqual(profile_args.ready_queue_blocks, 64)
         self.assertEqual(profile_args.worker_prefetch_batches, 1)
-        self.assertEqual(profile_args.offline_length_bucket_batches, 4)
+        self.assertEqual(profile_args.offline_length_bucket_batches, 16)
         stream = io.StringIO()
         with redirect_stdout(stream):
             ProfileReporter("text").configuration(profile_args, candidates, torch.device("cpu"))
@@ -2420,12 +2420,12 @@ class LoaderTrainerContractTest(unittest.TestCase):
 
     def test_training_launcher_uses_selected_worker_owned_profile(self) -> None:
         self.assertEqual(training_launcher_args["--origin-bars-1s"], "4096")
-        self.assertEqual(training_launcher_args["--batch-size"], "16")
+        self.assertEqual(training_launcher_args["--batch-size"], "20")
         self.assertEqual(training_launcher_args["--gradient-accumulation-steps"], "2")
         self.assertEqual(training_launcher_args["--loader-workers"], "8")
         self.assertEqual(training_launcher_args["--ready-queue-blocks"], "64")
         self.assertEqual(training_launcher_args["--worker-prefetch-batches"], "1")
-        self.assertEqual(training_launcher_args["--offline-length-bucket-batches"], "4")
+        self.assertEqual(training_launcher_args["--offline-length-bucket-batches"], "16")
         self.assertEqual(training_launcher_args["--wandb-mode"], "online")
 
     def test_offline_training_loads_runtime_secrets_before_wandb_initialization(self) -> None:
@@ -2457,9 +2457,9 @@ class LoaderTrainerContractTest(unittest.TestCase):
 
     def test_one_epoch_comparison_runs_match_profiled_winners(self) -> None:
         expected = {
-            "current": (384, 8, 8, 4, 16, 2),
-            "medium": (512, 12, 8, 4, 8, 4),
-            "large": (768, 12, 12, 4, 8, 4),
+            "current": (384, 8, 8, 4, 20, 2),
+            "medium": (512, 12, 8, 4, 10, 4),
+            "large": (768, 12, 12, 4, 10, 4),
         }
         names = set()
         for model_size, values in expected.items():
@@ -2477,11 +2477,11 @@ class LoaderTrainerContractTest(unittest.TestCase):
             self.assertEqual(parsed.epochs, 1)
             self.assertEqual(parsed.offline_train_end_date, "2026-01-01")
             self.assertEqual(parsed.wandb_project, BAR_GPT_WANDB_PROJECT)
-            self.assertEqual(COMPARISON_RUNS[model_size].effective_blocks, 32)
+            self.assertEqual(COMPARISON_RUNS[model_size].effective_blocks, 40)
             names.add(comparison_run_name(model_size, "fixed"))
         self.assertEqual(len(names), 3)
 
-    def test_overfit_launcher_binds_the_current_model_and_full_v12_catalog(self) -> None:
+    def test_overfit_launcher_supports_each_production_model_and_full_v12_catalog(self) -> None:
         args = parse_overfit_args(())
         self.assertEqual(args.model_size, "current")
         self.assertEqual(args.shard_root, OVERFIT_SHARD_ROOT)
@@ -2491,6 +2491,8 @@ class LoaderTrainerContractTest(unittest.TestCase):
             (preset["d_model"], preset["n_layers"], preset["n_heads"], preset["n_kv_heads"]),
             (384, 8, 8, 4),
         )
+        for model_size in ("current", "medium", "large"):
+            self.assertEqual(parse_overfit_args(("--model-size", model_size)).model_size, model_size)
 
     def test_holdout_and_regime_resampling_are_deterministic(self) -> None:
         tickers = tuple(f"T{index:02d}" for index in range(20))

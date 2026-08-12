@@ -8,8 +8,11 @@ import time
 from dataclasses import dataclass
 from typing import Iterable
 
-from research.bar_gpt.v1.config import BAR_GPT_WANDB_PROJECT
-from research.bar_gpt.v1.profile_train import MODEL_SIZE_PRESETS
+from research.bar_gpt.v1.config import (
+    BAR_GPT_WANDB_PROJECT,
+    MODEL_SIZE_PRESETS,
+    PRODUCTION_MODEL_TRAINING_PRESETS,
+)
 from research.bar_gpt.v1.run_train import default_argv
 from research.bar_gpt.v1.train import main as train_main
 
@@ -25,13 +28,16 @@ class ComparisonRun:
         return self.microbatch * self.accumulation
 
 
-# These equal-effective-batch shapes are the safe v12 winners from the
-# workstation model sweep. The next larger Current, Medium, and Large
-# microbatches reserved more than physical VRAM and collapsed into paging.
+# These are the safe v12 winners from the completed end-to-end workstation
+# sweep. Accumulation follows the profiler recommendation for at least 32
+# blocks per update; the measured microbatches make that 40 blocks for each.
 COMPARISON_RUNS: dict[str, ComparisonRun] = {
-    "current": ComparisonRun("current", microbatch=16, accumulation=2),
-    "medium": ComparisonRun("medium", microbatch=8, accumulation=4),
-    "large": ComparisonRun("large", microbatch=8, accumulation=4),
+    model_size: ComparisonRun(
+        model_size,
+        microbatch=preset.microbatch,
+        accumulation=preset.accumulation,
+    )
+    for model_size, preset in PRODUCTION_MODEL_TRAINING_PRESETS.items()
 }
 DEFAULT_WANDB_MODE = "online"
 

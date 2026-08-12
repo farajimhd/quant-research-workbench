@@ -21,6 +21,7 @@ from research.bar_gpt.v1.config import (
     OFFLINE_PRODUCTION_WORKER_PREFETCH_BATCHES,
     BarGPTConfig,
     DataConfig,
+    MODEL_SIZE_PRESETS,
     TrainConfig,
 )
 from research.bar_gpt.v1.data import BarGPTBatch, PATHWAY_ID_BY_NAME, TIMEFRAME_US_BY_NAME
@@ -66,21 +67,6 @@ PROFILE_MEMORY_LIMIT = 0.90
 # are measured, while the 90% hard eligibility gate still rejects paging-prone
 # tails from selection even if a projection underestimates them.
 PROFILE_MEMORY_PROJECTION_MARGIN = 1.03
-
-MODEL_SIZE_PRESETS: dict[str, dict[str, int]] = {
-    "current": {"d_model": 384, "n_layers": 8, "n_heads": 8, "n_kv_heads": 4},
-    "medium": {"d_model": 512, "n_layers": 12, "n_heads": 8, "n_kv_heads": 4},
-    "large": {"d_model": 768, "n_layers": 12, "n_heads": 12, "n_kv_heads": 4},
-    "xlarge": {"d_model": 1024, "n_layers": 16, "n_heads": 16, "n_kv_heads": 8},
-    "anchor_384x8": {"d_model": 384, "n_layers": 8, "n_heads": 8, "n_kv_heads": 4},
-    "width_512x8": {"d_model": 512, "n_layers": 8, "n_heads": 8, "n_kv_heads": 4},
-    "depth_384x12": {"d_model": 384, "n_layers": 12, "n_heads": 8, "n_kv_heads": 4},
-    "medium_512x12": {"d_model": 512, "n_layers": 12, "n_heads": 8, "n_kv_heads": 4},
-    "depth_512x16": {"d_model": 512, "n_layers": 16, "n_heads": 8, "n_kv_heads": 4},
-    "mid_768x12": {"d_model": 768, "n_layers": 12, "n_heads": 12, "n_kv_heads": 6},
-    "width_1024x12": {"d_model": 1024, "n_layers": 12, "n_heads": 16, "n_kv_heads": 8},
-    "xlarge_1024x16": {"d_model": 1024, "n_layers": 16, "n_heads": 16, "n_kv_heads": 8},
-}
 
 # The joint default deliberately uses one microbatch per optimizer step. It
 # revisits the three practical comparison sizes after projection fusion and

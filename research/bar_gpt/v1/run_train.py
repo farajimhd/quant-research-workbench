@@ -11,6 +11,7 @@ from research.bar_gpt.v1.config import (
     OFFLINE_PRODUCTION_LOADER_WORKERS,
     OFFLINE_PRODUCTION_READY_QUEUE_BLOCKS,
     OFFLINE_PRODUCTION_WORKER_PREFETCH_BATCHES,
+    PRODUCTION_MODEL_TRAINING_PRESETS,
 )
 from research.bar_gpt.v1.train import main
 
@@ -38,8 +39,8 @@ DEFAULT_ARGS: dict[str, str] = {
     # it from the launcher without rebuilding storage.
     "--batch-size": str(OFFLINE_PRODUCTION_BATCH_SIZE),
     "--loader-workers": str(OFFLINE_PRODUCTION_LOADER_WORKERS),
-    # The repeated fixed-workload v12 benchmark selected twelve workers, one
-    # prefetched batch per worker, four host batches, and bucket window four.
+    # The completed end-to-end v12 grid selected eight workers, one prefetched
+    # batch per worker, and bucket window sixteen for Current.
     "--ready-queue-blocks": str(OFFLINE_PRODUCTION_READY_QUEUE_BLOCKS),
     "--worker-prefetch-batches": str(OFFLINE_PRODUCTION_WORKER_PREFETCH_BATCHES),
     "--offline-length-bucket-batches": str(OFFLINE_PRODUCTION_LENGTH_BUCKET_BATCHES),
@@ -55,7 +56,9 @@ DEFAULT_ARGS: dict[str, str] = {
     "--n-heads": "8",
     "--n-kv-heads": "4",
     "--max-samples": "0",
-    "--gradient-accumulation-steps": "2",
+    "--gradient-accumulation-steps": str(
+        PRODUCTION_MODEL_TRAINING_PRESETS["current"].accumulation
+    ),
     "--epochs": "1",
     "--learning-rate": "0.0003",
     "--warmup-samples": "0",

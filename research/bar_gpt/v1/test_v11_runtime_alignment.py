@@ -43,7 +43,7 @@ class V12RuntimeAlignmentTest(unittest.TestCase):
             config = build_config(args)
         self.assertEqual(config.data.loader_stream_contract_version, 13)
         self.assertEqual(config.data.origin_bars_1s, 4096)
-        self.assertEqual(config.data.batch_size, 16)
+        self.assertEqual(config.data.batch_size, 20)
         self.assertEqual(config.train.gradient_accumulation_steps, 2)
         self.assertEqual(config.data.loader_workers, 8)
         self.assertEqual(config.data.ready_queue_blocks, 64)

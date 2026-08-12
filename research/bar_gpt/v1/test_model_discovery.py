@@ -81,7 +81,7 @@ class ModelDiscoveryContractTest(unittest.TestCase):
         self.assertEqual(command[command.index("--loader-workers") + 1], "12")
         self.assertEqual(command[command.index("--ready-queue-blocks") + 1], "64")
         self.assertEqual(command[command.index("--worker-prefetch-batches") + 1], "1")
-        self.assertEqual(command[command.index("--offline-length-bucket-batches") + 1], "4")
+        self.assertEqual(command[command.index("--offline-length-bucket-batches") + 1], "16")
 
     def test_fixed_panel_sampling_is_deterministic_and_date_disjoint(self) -> None:
         refs = tuple(
