@@ -39,6 +39,10 @@ class CanvasPreviewServiceTests(unittest.TestCase):
         self.assertEqual(payload["scanner"][0]["live_news_recency"], "none")
         self.assertTrue(payload["portfolio"]["fixture"])
         self.assertEqual(payload["orders"][0]["acctId"], "DU0000000")
+        preview_account = payload["trading"]["portfolio"]["management"]["accounts"][0]
+        self.assertEqual(preview_account["managed_order_groups"], [])
+        self.assertEqual(preview_account["pending_operational_commands"], [])
+        self.assertEqual(preview_account["continuous_risk"], {})
         scanner_mock.assert_called_once()
         self.assertEqual(scanner_mock.call_args.kwargs["lookback_minutes"], 15)
 

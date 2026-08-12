@@ -3793,7 +3793,7 @@ function PortfolioManagementPreview({ data, management }: { data: CanonicalTradi
         const metrics = account.metrics;
         const isPending = pending.startsWith(`${account.account_key}:`);
         const riskState = String(account.continuous_risk?.state || "");
-        const activeGroups = account.managed_order_groups.filter((row) => !["filled", "cancelled", "rejected", "policy_blocked"].includes(String(row.state.state || "")));
+        const activeGroups = (account.managed_order_groups ?? []).filter((row) => !["filled", "cancelled", "rejected", "policy_blocked"].includes(String(row.state.state || "")));
         const protectionDeficits = activeGroups.filter((row) =>
           Number(row.state.protection_required_quantity || 0) > Number(row.state.protection_coverage_quantity || 0));
         return <article className="portfolio-management-account" data-sync={account.sync_state} key={account.account_key}>
@@ -3812,12 +3812,12 @@ function PortfolioManagementPreview({ data, management }: { data: CanonicalTradi
             <TradingMetric label="Drawdown" value={money(metrics.drawdown || 0)} tone={Number(metrics.drawdown || 0) > 0 ? "negative" : undefined} />
           </div>
           <div className="portfolio-management-evidence">
-            <span>{account.reservations.length} reservations</span>
-            <span>{account.allocations.length} allocations</span>
-            <span data-tone={account.reconciliation.length ? "negative" : "positive"}>{account.reconciliation.length} reconciliation differences</span>
+            <span>{(account.reservations ?? []).length} reservations</span>
+            <span>{(account.allocations ?? []).length} allocations</span>
+            <span data-tone={(account.reconciliation ?? []).length ? "negative" : "positive"}>{(account.reconciliation ?? []).length} reconciliation differences</span>
             <span data-tone={protectionDeficits.length ? "negative" : "positive"}>{protectionDeficits.length ? `${protectionDeficits.length} protection deficits` : "Protection reconciled"}</span>
             <span>{activeGroups.length} managed order groups</span>
-            <span>{account.pending_operational_commands.filter((row) => row.status === "pending").length} pending operator commands</span>
+            <span>{(account.pending_operational_commands ?? []).filter((row) => row.status === "pending").length} pending operator commands</span>
             <span>{account.observed_at ? <>As of <MarketTime value={account.observed_at} /></> : "No broker watermark"}</span>
           </div>
           {operational ? <div className="portfolio-management-controls">
@@ -3829,7 +3829,7 @@ function PortfolioManagementPreview({ data, management }: { data: CanonicalTradi
                 onChange={(event) => void command(account.account_key, "select_policy", { policy_identity: event.target.value })}
                 value={String(account.policy.identity || "")}
               >
-                {account.available_policies.map((policy) => <option key={policy.identity} value={policy.identity}>{policy.identity}</option>)}
+                {(account.available_policies ?? []).map((policy) => <option key={policy.identity} value={policy.identity}>{policy.identity}</option>)}
               </select>
             </label>
             {account.control_mode === "enabled"
@@ -3852,7 +3852,7 @@ function PortfolioManagementPreview({ data, management }: { data: CanonicalTradi
               Emergency flatten
             </button>
             {Object.entries(account.strategy_allocations).map(([strategyId, fraction]) => {
-              const disabled = account.disabled_strategy_allocations.includes(strategyId);
+              const disabled = (account.disabled_strategy_allocations ?? []).includes(strategyId);
               return <button
                 className="button secondary compact portfolio-strategy-control"
                 data-disabled={disabled || undefined}

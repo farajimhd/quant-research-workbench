@@ -340,6 +340,9 @@ def _canonical_trading_fixture(
                 "reservations": [],
                 "allocations": [],
                 "reconciliation": [],
+                "continuous_risk": {},
+                "managed_order_groups": [],
+                "pending_operational_commands": [],
             }
         ],
         "groups": [],

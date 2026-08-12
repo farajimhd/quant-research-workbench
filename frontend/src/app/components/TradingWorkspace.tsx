@@ -248,7 +248,9 @@ export function TradingWorkspace({
     });
   }, [localDefinitions, mode, registeredContainers]);
   const definitionById = useMemo(() => new Map(definitions.map((definition) => [definition.id, definition])), [definitions]);
-  const selectableDefinitions = registeredContainers && !registryError && !registryAdapterError ? definitions : [];
+  // A registry drift must remain visible, but one stale or newly introduced row
+  // must not erase every container whose backend and frontend contracts agree.
+  const selectableDefinitions = registeredContainers && !registryError ? definitions : [];
   const storageKey = storageKeyOverride ?? `quant-research-workbench.trading-workspace.${mode}`;
   const initial = useMemo(
     () => initialStateOverride ? parseWorkspaceState(JSON.stringify(initialStateOverride), definitions) ?? initialStateOverride : readWorkspaceState(storageKey, mode, definitions, defaultOpenIds, layoutPreset),
@@ -707,7 +709,7 @@ export function TradingWorkspace({
         ) : null;
       })}
       {!commandBarVisible && (registryError || registryAdapterError) ? <div className="workspace-registry-warning" role="alert">
-        <BadgeInfo aria-hidden="true" size={13} /> Container registry unverified. Existing layout remains visible; adding containers is blocked.
+        <BadgeInfo aria-hidden="true" size={13} /> {registryError ? "Container registry unavailable. Existing layout remains visible; adding containers is blocked." : `${registryAdapterError} Registered containers with verified renderers remain available.`}
       </div> : null}
       {commandBarVisible ? <section className="trading-workspace-command" aria-label="Workspace context and controls">
         <div className="trading-workspace-identity">

@@ -66,6 +66,23 @@ def test_qmd_cargo_output_is_external_and_binary_is_executed_directly() -> None:
     assert "cargo output must be outside the repository" in source
 
 
+def test_direct_cargo_commands_also_write_outside_the_repository() -> None:
+    cargo_config = (REPO_ROOT / ".cargo" / "config.toml").read_text(encoding="utf-8").lower()
+
+    assert 'target-dir = "d:/tradingml/runtimes/cargo-target/quant-research-workbench"' in cargo_config
+    assert not (REPO_ROOT / "target").exists()
+
+
+def test_direct_python_and_pytest_commands_do_not_create_repository_caches() -> None:
+    sitecustomize = (REPO_ROOT / "sitecustomize.py").read_text(encoding="utf-8").lower()
+    pytest_bootstrap = (REPO_ROOT / "conftest.py").read_text(encoding="utf-8").lower()
+    pytest_config = (REPO_ROOT / "pytest.ini").read_text(encoding="utf-8").lower()
+
+    assert "sys.dont_write_bytecode = true" in sitecustomize
+    assert "sys.dont_write_bytecode = true" in pytest_bootstrap
+    assert "-p no:cacheprovider" in pytest_config
+
+
 def test_frontend_invokes_npm_without_the_windows_batch_wrapper() -> None:
     module_path = SCRIPTS / "run_frontend.py"
     spec = importlib.util.spec_from_file_location("run_frontend_under_test", module_path)

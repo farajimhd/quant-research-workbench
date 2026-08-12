@@ -187,9 +187,13 @@ class ApplicationRegistryTests(unittest.TestCase):
         validate_application_registry()
         products = {product.product_id for product in PRODUCT_DEFINITIONS}
         links = {link.link_id for link in LINK_CONTRACTS}
+        container_ids = {container.container_id for container in CONTAINER_DEFINITIONS}
         self.assertIn("qmd.chart", products)
         self.assertIn("qmd.scanner", products)
         self.assertIn("workspace.symbol_context", links)
+        self.assertEqual(len(container_ids), 22)
+        self.assertIn("strategy_activity", container_ids)
+        self.assertNotIn("signal_stream", container_ids)
         self.assertTrue(all(set(container.product_ids).issubset(products) for container in CONTAINER_DEFINITIONS))
         self.assertTrue(all((set(container.input_links) | set(container.output_links)).issubset(links) for container in CONTAINER_DEFINITIONS))
         self.assertIn("strategy_intent", {schema.schema_id for schema in CONFIGURATION_SCHEMAS})
