@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from typing import Iterable
 
 from research.bar_gpt.v1.config import (
-    BAR_GPT_WANDB_PROJECT,
+    BAR_GPT_MODEL_COMPARISON_WANDB_PROJECT,
     MODEL_SIZE_PRESETS,
     PRODUCTION_MODEL_TRAINING_PRESETS,
 )
@@ -22,6 +22,7 @@ class ComparisonRun:
     model_size: str
     microbatch: int
     accumulation: int
+    length_bucket_batches: int
 
     @property
     def effective_blocks(self) -> int:
@@ -36,6 +37,7 @@ COMPARISON_RUNS: dict[str, ComparisonRun] = {
         model_size,
         microbatch=preset.microbatch,
         accumulation=preset.accumulation,
+        length_bucket_batches=preset.length_bucket_batches,
     )
     for model_size, preset in PRODUCTION_MODEL_TRAINING_PRESETS.items()
 }
@@ -66,7 +68,7 @@ def comparison_run_name(model_size: str, run_stamp: str) -> str:
     run = COMPARISON_RUNS[model_size]
     return (
         f"bar-gpt-v1-epoch1-{model_size}-micro{run.microbatch}-"
-        f"accum{run.accumulation}-{run_stamp}"
+        f"accum{run.accumulation}-bucket{run.length_bucket_batches}-{run_stamp}"
     )
 
 
@@ -83,13 +85,19 @@ def trainer_argv(
         "--run-name",
         comparison_run_name(model_size, run_stamp),
         "--wandb-project",
-        BAR_GPT_WANDB_PROJECT,
+        BAR_GPT_MODEL_COMPARISON_WANDB_PROJECT,
         "--epochs",
         "1",
         "--batch-size",
         str(run.microbatch),
         "--gradient-accumulation-steps",
         str(run.accumulation),
+        "--offline-length-bucket-batches",
+        str(run.length_bucket_batches),
+        # A batch-count cap exposes different numbers of fixed validation
+        # blocks at MB20 and MB10. Zero consumes the complete identical panel.
+        "--validation-batches",
+        "0",
         "--d-model",
         str(model["d_model"]),
         "--n-layers",
@@ -128,7 +136,7 @@ def main(argv: Iterable[str] | None = None) -> int:
         raise SystemExit("--execute requires one explicit --model-size; long runs are never started in a chain")
     run_stamp = args.run_stamp or time.strftime("%Y%m%d-%H%M%S")
     selected = tuple(COMPARISON_RUNS) if args.model_size == "all" else (args.model_size,)
-    print(f"W&B project: {BAR_GPT_WANDB_PROJECT}", flush=True)
+    print(f"W&B project: {BAR_GPT_MODEL_COMPARISON_WANDB_PROJECT}", flush=True)
     for model_size in selected:
         run = COMPARISON_RUNS[model_size]
         model = MODEL_SIZE_PRESETS[model_size]
@@ -136,7 +144,8 @@ def main(argv: Iterable[str] | None = None) -> int:
             f"{model_size}: d_model={model['d_model']} layers={model['n_layers']} "
             f"heads={model['n_heads']} kv_heads={model['n_kv_heads']} "
             f"microbatch={run.microbatch} accumulation={run.accumulation} "
-            f"effective_blocks={run.effective_blocks}",
+            f"effective_blocks={run.effective_blocks} "
+            f"length_bucket_batches={run.length_bucket_batches} validation=complete_fixed_panel",
             flush=True,
         )
         print(

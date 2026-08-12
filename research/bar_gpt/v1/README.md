@@ -317,14 +317,18 @@ python -B -m research.bar_gpt.v1.run_train_model_comparison --model-size large -
 
 | Run | Width | Layers | Heads / KV heads | Microbatch | Accumulation | Effective blocks/update |
 |---|---:|---:|---:|---:|---:|---:|
-| Current | 384 | 8 | 8 / 4 | 16 | 2 | 32 |
-| Medium | 512 | 12 | 8 / 4 | 8 | 4 | 32 |
-| Large | 768 | 12 | 12 / 4 | 8 | 4 | 32 |
+| Current | 384 | 8 | 8 / 4 | 20 | 2 | 40 |
+| Medium | 512 | 12 | 8 / 4 | 10 | 4 | 40 |
+| Large | 768 | 12 | 12 / 4 | 10 | 4 | 40 |
 
 All three use one epoch, dropout `0.08`, the same certified training/validation
-populations, and W&B project `bar gpt`. Run names use one consistent schema and
-include model size, microbatch, accumulation, and a timestamp. Checkpoint resume
-continues the original W&B run ID rather than creating a same-name replacement.
+populations, the complete fixed 198-block 2026 validation panel, length bucket
+`16`, and W&B project `bar gpt model comparison`. The complete validation panel
+is required because a fixed batch-count cap would otherwise evaluate fewer
+blocks for the MB10 models than for Current at MB20. Run names use one consistent
+schema and include model size, microbatch, accumulation, bucket, and a timestamp.
+Checkpoint resume continues the original W&B run ID rather than creating a
+same-name replacement.
 
 ### Model-size and quality discovery campaign
 

@@ -23,7 +23,14 @@ from rich.text import Text
 from research.mlops.checkpoints import AsyncCheckpointManager, CheckpointPolicy
 
 from research.bar_gpt.v1.audit_offline_shards import audit_shard
-from research.bar_gpt.v1.config import BAR_GPT_WANDB_PROJECT, BarGPTConfig, DataConfig, ExperimentConfig, TrainConfig
+from research.bar_gpt.v1.config import (
+    BAR_GPT_MODEL_COMPARISON_WANDB_PROJECT,
+    BAR_GPT_WANDB_PROJECT,
+    BarGPTConfig,
+    DataConfig,
+    ExperimentConfig,
+    TrainConfig,
+)
 from research.bar_gpt.v1.data import FixedBucketHistoryCache, PATHWAY_ID_BY_NAME, TIMEFRAME_US_BY_NAME, BarView, collate_examples
 from research.bar_gpt.v1.loader import (
     ArrowStreamClient,
@@ -2466,6 +2473,7 @@ class LoaderTrainerContractTest(unittest.TestCase):
             "large": (768, 12, 12, 4, 10, 4),
         }
         names = set()
+        comparison_contracts = set()
         for model_size, values in expected.items():
             args = comparison_trainer_argv(model_size, run_stamp="fixed", wandb_mode="offline")
             parsed = parse_training_args(args)
@@ -2480,10 +2488,34 @@ class LoaderTrainerContractTest(unittest.TestCase):
             self.assertEqual(actual, values)
             self.assertEqual(parsed.epochs, 1)
             self.assertEqual(parsed.offline_train_end_date, "2026-01-01")
-            self.assertEqual(parsed.wandb_project, BAR_GPT_WANDB_PROJECT)
+            self.assertEqual(parsed.wandb_project, BAR_GPT_MODEL_COMPARISON_WANDB_PROJECT)
             self.assertEqual(COMPARISON_RUNS[model_size].effective_blocks, 40)
+            self.assertEqual(parsed.offline_length_bucket_batches, 16)
+            self.assertEqual(parsed.validation_batches, 0)
+            comparison_contracts.add((
+                parsed.offline_train_start_date,
+                parsed.offline_train_end_date,
+                parsed.offline_validation_start_date,
+                parsed.offline_validation_end_date,
+                parsed.coverage_mode,
+                parsed.epochs,
+                parsed.max_samples,
+                parsed.seed,
+                parsed.learning_rate,
+                parsed.dropout,
+                parsed.warmup_fraction,
+                parsed.minimum_learning_rate,
+                parsed.cosine_cycle_samples,
+                parsed.validation_blocks_per_slice,
+                parsed.validation_batches,
+                parsed.validation_runs_per_epoch,
+                parsed.loader_workers,
+                parsed.ready_queue_blocks,
+                parsed.worker_prefetch_batches,
+            ))
             names.add(comparison_run_name(model_size, "fixed"))
         self.assertEqual(len(names), 3)
+        self.assertEqual(len(comparison_contracts), 1)
 
     def test_overfit_launcher_supports_each_production_model_and_full_v12_catalog(self) -> None:
         args = parse_overfit_args(())
