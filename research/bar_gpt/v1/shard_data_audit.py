@@ -94,7 +94,16 @@ def _stored_session_interval(sample: LoadedAuditSample) -> tuple[str, str]:
 def _complete_sidecars(root: Path, tickers: Sequence[str] = ()) -> tuple[Path, ...]:
     allowed = {value.upper() for value in tickers}
     selected: list[Path] = []
-    for path in root.glob("tickers/*/*/*.json"):
+    paths = (
+        (
+            path
+            for ticker in sorted(allowed)
+            for path in (root / "tickers" / ticker).glob("*/*.json")
+        )
+        if allowed
+        else root.glob("tickers/*/*/*.json")
+    )
+    for path in paths:
         value = json.loads(path.read_text(encoding="utf-8"))
         if value.get("status") != "complete":
             continue

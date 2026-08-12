@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import unittest
+import json
+import tempfile
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -11,7 +14,7 @@ from research.bar_gpt.v1.loader import ClickHouseBarStreamConfig
 from research.bar_gpt.v1.offline_shards import _merge_view
 from research.bar_gpt.v1.offline_shards import shard_compatibility_hash
 from research.bar_gpt.v1.schema import FEATURE_NAMES
-from research.bar_gpt.v1.shard_data_audit import reconstruct_clickhouse_example
+from research.bar_gpt.v1.shard_data_audit import _complete_sidecars, reconstruct_clickhouse_example
 
 
 def _example(
@@ -39,6 +42,21 @@ def _example(
 
 
 class SparsePaddingCompilerTest(unittest.TestCase):
+    def test_ticker_filtered_audit_discovery_reads_only_requested_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for ticker in ("AAPL", "MSFT"):
+                sidecar = root / "tickers" / ticker / "2020" / "2020-01.json"
+                sidecar.parent.mkdir(parents=True, exist_ok=True)
+                sidecar.write_text(
+                    json.dumps({"status": "complete", "unit_key": f"{ticker}:2020-01"}),
+                    encoding="utf-8",
+                )
+
+            selected = _complete_sidecars(root, ("AAPL",))
+
+        self.assertEqual([path.parts[-3] for path in selected], ["AAPL"])
+
     def test_shrinking_missing_prefix_uses_one_canonical_padding_region(self) -> None:
         first = _example(
             name="30s",
