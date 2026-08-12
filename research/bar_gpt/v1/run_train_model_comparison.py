@@ -25,11 +25,12 @@ class ComparisonRun:
         return self.microbatch * self.accumulation
 
 
-# These are the fit/throughput winners selected from the workstation sweep.
-# Large uses the 8x4 configuration rather than the 16x2 near-capacity result.
+# These equal-effective-batch shapes are the safe v12 winners from the
+# workstation model sweep. The next larger Current, Medium, and Large
+# microbatches reserved more than physical VRAM and collapsed into paging.
 COMPARISON_RUNS: dict[str, ComparisonRun] = {
-    "current": ComparisonRun("current", microbatch=32, accumulation=1),
-    "medium": ComparisonRun("medium", microbatch=16, accumulation=2),
+    "current": ComparisonRun("current", microbatch=16, accumulation=2),
+    "medium": ComparisonRun("medium", microbatch=8, accumulation=4),
     "large": ComparisonRun("large", microbatch=8, accumulation=4),
 }
 DEFAULT_WANDB_MODE = "online"

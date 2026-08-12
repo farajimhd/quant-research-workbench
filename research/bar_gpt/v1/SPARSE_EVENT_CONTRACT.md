@@ -364,7 +364,8 @@ only bounds ticker/month scope. Automated audit must verify:
   ClickHouse reconstruction;
 * target and direction support by family, OHLC field, horizon, and AR view.
 
-Before the full cohort build, the current overfit runner must pass the total-loss
+Before model comparison, the Current architecture overfit runner must use a
+bounded certified panel from the locked full v12 catalog and pass the total-loss
 improvement gate and direction gates for every physical task with sufficient
 two-class support, and demonstrate each of the 12 autoregressive direction
 tasks on the configured minimum number of eligible views. It reports direct

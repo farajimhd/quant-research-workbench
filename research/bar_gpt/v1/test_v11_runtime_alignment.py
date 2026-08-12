@@ -43,8 +43,10 @@ class V12RuntimeAlignmentTest(unittest.TestCase):
             config = build_config(args)
         self.assertEqual(config.data.loader_stream_contract_version, 13)
         self.assertEqual(config.data.origin_bars_1s, 4096)
-        self.assertEqual(config.data.batch_size, 32)
-        self.assertEqual(config.data.worker_prefetch_batches, 2)
+        self.assertEqual(config.data.batch_size, 16)
+        self.assertEqual(config.train.gradient_accumulation_steps, 2)
+        self.assertEqual(config.data.loader_workers, 12)
+        self.assertEqual(config.data.worker_prefetch_batches, 1)
 
     def test_profiler_uses_same_manifest_authority(self) -> None:
         storage = dataclasses.replace(DataConfig(), origin_bars_1s=4096)

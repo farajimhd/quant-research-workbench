@@ -31,7 +31,7 @@ from research.bar_gpt.v1.offline_shards import (
 )
 
 
-DISCOVERY_CONTRACT_VERSION = 8
+DISCOVERY_CONTRACT_VERSION = 9
 DISCOVERY_WANDB_PROJECT = "bar gpt model discovery"
 DISCOVERY_ORIGIN_BARS_1S = 4_096
 DISCOVERY_TRAIN_ORIGINS_PER_EPOCH = 100_000_000
@@ -52,10 +52,10 @@ class Architecture:
 
 
 ARCHITECTURE_GRID: tuple[Architecture, ...] = (
-    Architecture("anchor_384x8", 384, 8, 8, 4, 32, 1),
+    Architecture("anchor_384x8", 384, 8, 8, 4, 16, 2),
     Architecture("width_512x8", 512, 8, 8, 4, 16, 2),
     Architecture("depth_384x12", 384, 12, 8, 4, 16, 2),
-    Architecture("medium_512x12", 512, 12, 8, 4, 16, 2),
+    Architecture("medium_512x12", 512, 12, 8, 4, 8, 4),
     Architecture("depth_512x16", 512, 16, 8, 4, 8, 4),
     Architecture("mid_768x12", 768, 12, 12, 6, 8, 4),
     Architecture("width_1024x12", 1024, 12, 16, 8, 8, 4),
@@ -581,7 +581,7 @@ def main(argv: Iterable[str] | None = None) -> int:
     if unknown:
         raise ValueError(f"unknown architectures: {unknown}")
     output_root = Path(args.output_root)
-    manifest_path = output_root / "fixed_panels_v8.json"
+    manifest_path = output_root / "fixed_panels_v9.json"
     print(f"W&B project: {args.wandb_project}", flush=True)
     print("Metric namespaces: monitor_*, validation_*, locked_test_*", flush=True)
     print(
@@ -616,7 +616,7 @@ def main(argv: Iterable[str] | None = None) -> int:
             config=discovery_data_config(Path(args.shard_root)),
         )
         print(f"Reusing verified manifest: {manifest_path}", flush=True)
-    state_path = output_root / "campaign_state_v8.json"
+    state_path = output_root / "campaign_state_v9.json"
     state = json.loads(state_path.read_text(encoding="utf-8")) if state_path.is_file() else {
         "contract_version": DISCOVERY_CONTRACT_VERSION,
         "campaign_id": time.strftime("%Y%m%d-%H%M%S"),

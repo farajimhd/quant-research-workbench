@@ -141,7 +141,13 @@ from research.bar_gpt.v1.run_build_offline_dataset import (
 )
 from research.bar_gpt.v1.run_profile_train import DEFAULT_ARGS as profile_launcher_args
 from research.bar_gpt.v1.run_pilot_offline_shards import commands as pilot_commands, parse_args as parse_pilot_args
-from research.bar_gpt.v1.overfit_pilot import _limit_ar_transitions, _limit_block_origins, _score_direction_gate
+from research.bar_gpt.v1.overfit_pilot import (
+    DEFAULT_SHARD_ROOT as OVERFIT_SHARD_ROOT,
+    _limit_ar_transitions,
+    _limit_block_origins,
+    _score_direction_gate,
+    parse_args as parse_overfit_args,
+)
 from research.bar_gpt.v1.run_train import DEFAULT_ARGS as training_launcher_args
 from research.bar_gpt.v1.run_train_model_comparison import (
     COMPARISON_RUNS,
@@ -1838,9 +1844,9 @@ class LoaderTrainerContractTest(unittest.TestCase):
         self.assertEqual(training_launcher_args["--start-date"], "2019-01-01")
         self.assertEqual(training_launcher_args["--origin-bars-1s"], "4096")
         self.assertEqual(training_launcher_args["--offline-train-end-date"], "2026-01-01")
-        self.assertEqual(training_launcher_args["--batch-size"], "32")
+        self.assertEqual(training_launcher_args["--batch-size"], "16")
         self.assertEqual(training_launcher_args["--validation-blocks-per-slice"], "2")
-        self.assertEqual(training_launcher_args["--gradient-accumulation-steps"], "1")
+        self.assertEqual(training_launcher_args["--gradient-accumulation-steps"], "2")
         self.assertEqual(training_launcher_args["--epochs"], "1")
         self.assertEqual(training_launcher_args["--checkpoint-validation-evaluations"], "1")
         self.assertNotIn("--checkpoint-latest-samples", training_launcher_args)
@@ -2269,7 +2275,7 @@ class LoaderTrainerContractTest(unittest.TestCase):
         resolved = profiler_argv(launcher_args)
         candidates = _parse_candidates(resolved[resolved.index("--candidates") + 1])
         self.assertEqual(len(candidates), 1)
-        self.assertEqual((candidates[0].model_size, candidates[0].microbatch, candidates[0].accumulation), ("medium", 16, 2))
+        self.assertEqual((candidates[0].model_size, candidates[0].microbatch, candidates[0].accumulation), ("medium", 8, 4))
         self.assertEqual(candidates[0].workers, 12)
         profile_args = parse_profile_args(resolved)
         self.assertEqual(profile_args.ready_queue_blocks, 128)
@@ -2301,8 +2307,8 @@ class LoaderTrainerContractTest(unittest.TestCase):
 
     def test_training_launcher_uses_selected_worker_owned_profile(self) -> None:
         self.assertEqual(training_launcher_args["--origin-bars-1s"], "4096")
-        self.assertEqual(training_launcher_args["--batch-size"], "32")
-        self.assertEqual(training_launcher_args["--gradient-accumulation-steps"], "1")
+        self.assertEqual(training_launcher_args["--batch-size"], "16")
+        self.assertEqual(training_launcher_args["--gradient-accumulation-steps"], "2")
         self.assertEqual(training_launcher_args["--loader-workers"], "12")
         self.assertEqual(training_launcher_args["--ready-queue-blocks"], "128")
         self.assertEqual(training_launcher_args["--worker-prefetch-batches"], "1")
@@ -2338,8 +2344,8 @@ class LoaderTrainerContractTest(unittest.TestCase):
 
     def test_one_epoch_comparison_runs_match_profiled_winners(self) -> None:
         expected = {
-            "current": (384, 8, 8, 4, 32, 1),
-            "medium": (512, 12, 8, 4, 16, 2),
+            "current": (384, 8, 8, 4, 16, 2),
+            "medium": (512, 12, 8, 4, 8, 4),
             "large": (768, 12, 12, 4, 8, 4),
         }
         names = set()
@@ -2361,6 +2367,17 @@ class LoaderTrainerContractTest(unittest.TestCase):
             self.assertEqual(COMPARISON_RUNS[model_size].effective_blocks, 32)
             names.add(comparison_run_name(model_size, "fixed"))
         self.assertEqual(len(names), 3)
+
+    def test_overfit_launcher_binds_the_current_model_and_full_v12_catalog(self) -> None:
+        args = parse_overfit_args(())
+        self.assertEqual(args.model_size, "current")
+        self.assertEqual(args.shard_root, OVERFIT_SHARD_ROOT)
+        self.assertEqual(args.shard_root.name, "offline_shards_v12")
+        preset = MODEL_SIZE_PRESETS[args.model_size]
+        self.assertEqual(
+            (preset["d_model"], preset["n_layers"], preset["n_heads"], preset["n_kv_heads"]),
+            (384, 8, 8, 4),
+        )
 
     def test_holdout_and_regime_resampling_are_deterministic(self) -> None:
         tickers = tuple(f"T{index:02d}" for index in range(20))

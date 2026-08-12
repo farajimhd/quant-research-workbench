@@ -58,6 +58,9 @@ class ModelDiscoveryContractTest(unittest.TestCase):
     def test_architecture_grid_keeps_effective_batch_fixed(self) -> None:
         self.assertEqual(len(ARCHITECTURE_GRID), 7)
         self.assertEqual({item.microbatch * item.accumulation for item in ARCHITECTURE_GRID}, {32})
+        selected = {item.name: (item.microbatch, item.accumulation) for item in ARCHITECTURE_GRID}
+        self.assertEqual(selected["anchor_384x8"], (16, 2))
+        self.assertEqual(selected["medium_512x12"], (8, 4))
         self.assertNotIn("xlarge_1024x16", {item.name for item in ARCHITECTURE_GRID})
         self.assertEqual(DISCOVERY_TRAIN_ORIGINS_PER_EPOCH, 100_000_000)
         self.assertEqual(DISCOVERY_EPOCHS * DISCOVERY_TRAIN_ORIGINS_PER_EPOCH, 200_000_000)
@@ -319,7 +322,7 @@ class ModelDiscoveryContractTest(unittest.TestCase):
                 architecture_names=("anchor_384x8", "width_1024x12"),
             )
         self.assertEqual([item.run_name for item in resolved], [completed_run, expected_wide])
-        self.assertEqual([item.batch_size for item in resolved], [32, 8])
+        self.assertEqual([item.batch_size for item in resolved], [16, 8])
 
     def test_final_validation_command_uses_separate_panel_namespace_and_project(self) -> None:
         item = ArchitectureCheckpoint("width_512x8", "source", Path("checkpoint.pt"), 16)

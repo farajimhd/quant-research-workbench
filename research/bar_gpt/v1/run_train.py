@@ -55,7 +55,7 @@ DEFAULT_ARGS: dict[str, str] = {
     "--n-heads": "8",
     "--n-kv-heads": "4",
     "--max-samples": "0",
-    "--gradient-accumulation-steps": "1",
+    "--gradient-accumulation-steps": "2",
     "--epochs": "1",
     "--learning-rate": "0.0003",
     "--warmup-samples": "0",

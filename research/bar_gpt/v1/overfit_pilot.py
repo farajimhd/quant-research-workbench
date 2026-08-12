@@ -10,7 +10,6 @@ from typing import Sequence
 
 import torch
 
-from research.bar_gpt.v1.audit_offline_shards import DEFAULT_PILOT_ROOT
 from research.bar_gpt.v1.config import BarGPTConfig, ExperimentConfig, TrainConfig
 from research.bar_gpt.v1.data import AUTOREGRESSIVE_VIEW_NAMES, BarGPTBatch
 from research.bar_gpt.v1.metrics import ValidationAccumulator
@@ -25,13 +24,23 @@ from research.bar_gpt.v1.offline_shards import (
 )
 from research.bar_gpt.v1.train import _forward
 from research.bar_gpt.v1.targets import DIRECTION_TARGET_COUNT, DIRECTION_TARGET_NAMES
+from research.bar_gpt.v1.profile_train import MODEL_SIZE_PRESETS
+
+
+DEFAULT_SHARD_ROOT = Path(r"D:\TradingML\runtimes\bar_gpt\v1\offline_shards_v12")
 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Deliberately overfit a tiny certified v12 sparse-event shard panel."
     )
-    parser.add_argument("--shard-root", type=Path, default=DEFAULT_PILOT_ROOT)
+    parser.add_argument("--shard-root", type=Path, default=DEFAULT_SHARD_ROOT)
+    parser.add_argument(
+        "--model-size",
+        choices=("current",),
+        default="current",
+        help="Production model architecture to overfit; this v12 gate is intentionally current-only.",
+    )
     parser.add_argument("--tickers", default="AAPL,GOOGL")
     parser.add_argument("--start-date", default="2019-01-01")
     parser.add_argument("--end-date", default="2019-02-01")
@@ -46,10 +55,6 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--minimum-direction-examples", type=int, default=32)
     parser.add_argument("--minimum-direction-class-examples", type=int, default=8)
     parser.add_argument("--minimum-ar-views", type=int, default=4)
-    parser.add_argument("--d-model", type=int, default=384)
-    parser.add_argument("--n-layers", type=int, default=8)
-    parser.add_argument("--n-heads", type=int, default=8)
-    parser.add_argument("--n-kv-heads", type=int, default=4)
     parser.add_argument("--output", type=Path, default=None)
     args = parser.parse_args(list(argv) if argv is not None else None)
     if any(int(value) <= 0 for value in (
@@ -348,13 +353,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         round_index += 1
     if len(blocks) < int(args.max_blocks):
         raise RuntimeError(f"pilot exposes only {len(blocks)} blocks; {args.max_blocks} required")
-    model_config = BarGPTConfig(
-        d_model=int(args.d_model),
-        n_layers=int(args.n_layers),
-        n_heads=int(args.n_heads),
-        n_kv_heads=int(args.n_kv_heads),
-        dropout=0.0,
-    )
+    model_config = BarGPTConfig(**MODEL_SIZE_PRESETS[str(args.model_size)], dropout=0.0)
     train_config = replace(
         TrainConfig(),
         learning_rate=float(args.learning_rate),
@@ -384,6 +383,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         counts["total"] >= int(args.minimum_direction_examples)
         and min(counts["up"], counts["down"]) >= int(args.minimum_direction_class_examples)
         for counts in ar_support.values()
+    )
+    print(
+        f"Overfit model: {args.model_size} d_model={model_config.d_model} layers={model_config.n_layers} "
+        f"heads={model_config.n_heads} kv_heads={model_config.n_kv_heads}",
+        flush=True,
     )
     print(
         f"Overfit population: blocks={len(blocks)} origins={sum(block.origin_indices.numel() for block in blocks):,} "
@@ -448,6 +452,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     report = {
         "contract": "bar_gpt_v12_sparse_event_overfit_v1",
         "device": str(device),
+        "model_size": str(args.model_size),
+        "model": {
+            "d_model": model_config.d_model,
+            "n_layers": model_config.n_layers,
+            "n_heads": model_config.n_heads,
+            "n_kv_heads": model_config.n_kv_heads,
+            "parameters": sum(parameter.numel() for parameter in model.parameters()),
+        },
+        "shard_root": str(args.shard_root),
         "tickers": list(tickers),
         "blocks": len(blocks),
         "origins": sum(block.origin_indices.numel() for block in blocks),

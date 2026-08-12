@@ -312,8 +312,8 @@ python -B -m research.bar_gpt.v1.run_train_model_comparison --model-size large -
 
 | Run | Width | Layers | Heads / KV heads | Microbatch | Accumulation | Effective blocks/update |
 |---|---:|---:|---:|---:|---:|---:|
-| Current | 384 | 8 | 8 / 4 | 32 | 1 | 32 |
-| Medium | 512 | 12 | 8 / 4 | 16 | 2 | 32 |
+| Current | 384 | 8 | 8 / 4 | 16 | 2 | 32 |
+| Medium | 512 | 12 | 8 / 4 | 8 | 4 | 32 |
 | Large | 768 | 12 | 12 / 4 | 8 | 4 | 32 |
 
 All three use one epoch, dropout `0.08`, the same certified training/validation
@@ -364,7 +364,7 @@ the fixed learning-rate (`1.5e-4`, `3e-4`) by dropout (`0.04`, `0.08`, `0.12`)
 grid. Exact duplicate anchor recipes are reused. The best two refined recipes
 are then evaluated on the locked test.
 
-Campaign state is durable under `model_discovery/campaign_state_v8.json`; rerunning
+Campaign state is durable under `model_discovery/campaign_state_v9.json`; rerunning
 the same command verifies the manifest and skips completed runs. Training,
 monitoring, validation, and locked-test metrics are written asynchronously.
 W&B uses the distinct project `bar gpt model discovery` and non-overlapping
@@ -430,8 +430,10 @@ receptive field beyond that contract.
 
 The shard stores no microbatch dimension. `--batch-size` is the number of
 independent 4,096-origin blocks collated by the loader and may be tuned without
-rebuilding shards. The production default is 32 blocks per microbatch with one
-microbatch per optimizer update. Twelve worker-owned mmap streams retain
+rebuilding shards. The production Current comparison uses 16 blocks per
+microbatch with two microbatches per optimizer update. Medium and Large use
+8 blocks with four-way accumulation, so every comparison commits 32 blocks per
+optimizer update. Twelve worker-owned mmap streams retain
 shard-local access, one prefetched batch per worker, and a shared bounded
 RAM cache sized in loader blocks. One pinned device batch transfers on a
 dedicated CUDA stream while the current batch computes. The terminal reports
@@ -530,6 +532,17 @@ Profile the complete Arrow-to-optimizer path before the first full run:
 ```powershell
 python -B -m research.bar_gpt.v1.run_profile_model_performance --model-size current
 ```
+
+Before model comparison, deliberately overfit the production Current
+architecture on a bounded panel drawn from the locked full v12 catalog:
+
+```powershell
+python -B -m research.bar_gpt.v1.run_overfit_pilot --model-size current
+```
+
+The overfit gate keeps only two blocks by default, disables W&B, reports the
+resolved 384-wide eight-layer architecture and parameter count, and writes its
+learning/gate report under `D:\TradingML\runtimes\bar_gpt\v1\overfit_pilot`.
 
 This dedicated performance command never initializes or uploads to W&B. It
 prints the data, architecture, microbatch, accumulation, optimizer, precision,
