@@ -307,13 +307,16 @@ runs. Plan all three without starting training:
 python -B -m research.bar_gpt.v1.run_train_model_comparison
 ```
 
-Start one run explicitly; long runs are deliberately never chained:
+Run the complete comparison sequentially with one command. Each size executes
+in a fresh Python process, and a failed run prevents later sizes from starting:
 
 ```powershell
-python -B -m research.bar_gpt.v1.run_train_model_comparison --model-size current --execute
-python -B -m research.bar_gpt.v1.run_train_model_comparison --model-size medium --execute
-python -B -m research.bar_gpt.v1.run_train_model_comparison --model-size large --execute
+python -B -m research.bar_gpt.v1.run_train_model_comparison --model-size all --execute
 ```
+
+An explicit `--run-stamp` gives all three runs one shared comparison label.
+Individual `--model-size current`, `medium`, or `large` execution remains
+available for isolated diagnosis or an operator-controlled rerun.
 
 | Run | Width | Layers | Heads / KV heads | Microbatch | Accumulation | Effective blocks/update |
 |---|---:|---:|---:|---:|---:|---:|

@@ -177,6 +177,7 @@ from research.bar_gpt.v1.run_train_model_comparison import (
     DEFAULT_WANDB_MODE,
     _launcher_command as comparison_launcher_command,
     comparison_run_name,
+    main as comparison_main,
     trainer_argv as comparison_trainer_argv,
 )
 from research.bar_gpt.v1.run_profile_model_performance import parse_args as parse_performance_profile_args, profiler_argv
@@ -2516,6 +2517,40 @@ class LoaderTrainerContractTest(unittest.TestCase):
             names.add(comparison_run_name(model_size, "fixed"))
         self.assertEqual(len(names), 3)
         self.assertEqual(len(comparison_contracts), 1)
+
+    def test_all_model_comparison_runs_fresh_processes_sequentially(self) -> None:
+        completed = SimpleNamespace(returncode=0)
+        with patch(
+            "research.bar_gpt.v1.run_train_model_comparison.subprocess.run",
+            side_effect=(completed, completed, completed),
+        ) as run:
+            with redirect_stdout(io.StringIO()):
+                exit_code = comparison_main((
+                    "--model-size", "all", "--run-stamp", "shared",
+                    "--wandb-mode", "disabled", "--execute",
+                ))
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(run.call_count, 3)
+        for call, model_size in zip(run.call_args_list, COMPARISON_RUNS, strict=True):
+            command = call.args[0]
+            self.assertEqual(command[command.index("--model-size") + 1], model_size)
+            self.assertEqual(command[command.index("--run-stamp") + 1], "shared")
+            self.assertEqual(command[command.index("--wandb-mode") + 1], "disabled")
+            self.assertIn("--execute", command)
+            self.assertEqual(call.kwargs["env"]["PYTHONDONTWRITEBYTECODE"], "1")
+            self.assertFalse(call.kwargs["check"])
+
+    def test_all_model_comparison_stops_after_first_failure(self) -> None:
+        with patch(
+            "research.bar_gpt.v1.run_train_model_comparison.subprocess.run",
+            side_effect=(SimpleNamespace(returncode=0), SimpleNamespace(returncode=7)),
+        ) as run:
+            with redirect_stdout(io.StringIO()):
+                exit_code = comparison_main((
+                    "--model-size", "all", "--run-stamp", "shared", "--execute",
+                ))
+        self.assertEqual(exit_code, 7)
+        self.assertEqual(run.call_count, 2)
 
     def test_overfit_launcher_supports_each_production_model_and_full_v12_catalog(self) -> None:
         args = parse_overfit_args(())

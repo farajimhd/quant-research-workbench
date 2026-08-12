@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import os
 import shlex
+import subprocess
 import sys
 import time
 from dataclasses import dataclass
@@ -132,8 +133,6 @@ def _launcher_command(model_size: str, *, run_stamp: str, wandb_mode: str, execu
 
 def main(argv: Iterable[str] | None = None) -> int:
     args = parse_args(argv)
-    if args.execute and args.model_size == "all":
-        raise SystemExit("--execute requires one explicit --model-size; long runs are never started in a chain")
     run_stamp = args.run_stamp or time.strftime("%Y%m%d-%H%M%S")
     selected = tuple(COMPARISON_RUNS) if args.model_size == "all" else (args.model_size,)
     print(f"W&B project: {BAR_GPT_MODEL_COMPARISON_WANDB_PROJECT}", flush=True)
@@ -162,6 +161,30 @@ def main(argv: Iterable[str] | None = None) -> int:
             flush=True,
         )
     if not args.execute:
+        return 0
+    if args.model_size == "all":
+        child_env = os.environ.copy()
+        child_env["PYTHONDONTWRITEBYTECODE"] = "1"
+        for index, model_size in enumerate(selected, start=1):
+            command = _launcher_command(
+                model_size,
+                run_stamp=run_stamp,
+                wandb_mode=args.wandb_mode,
+                execute=True,
+            )
+            print(
+                f"Starting comparison run {index}/{len(selected)}: {model_size}",
+                flush=True,
+            )
+            completed = subprocess.run(command, env=child_env, check=False)
+            if completed.returncode:
+                print(
+                    f"Comparison stopped: {model_size} exited with code {completed.returncode}; "
+                    "later model sizes were not started.",
+                    flush=True,
+                )
+                return int(completed.returncode)
+            print(f"Completed comparison run {index}/{len(selected)}: {model_size}", flush=True)
         return 0
     os.environ["PYTHONDONTWRITEBYTECODE"] = "1"
     resolved = trainer_argv(selected[0], run_stamp=run_stamp, wandb_mode=args.wandb_mode)
