@@ -11,6 +11,7 @@ from .embedding_supervision import (
     pool_embedding_chunks,
 )
 from .run_embedding_supervision import _fit_tuning_indexes
+from .tfidf_supervision import fit_tfidf_vocabulary, transform_tfidf
 
 
 class EmbeddingSupervisionTests(unittest.TestCase):
@@ -107,6 +108,19 @@ class EmbeddingSupervisionTests(unittest.TestCase):
         self.assertEqual(set(report["issuer_sentiment"]["per_label"]), {"positive", "negative", "neutral", "mixed"})
         self.assertEqual(set(report["issuer_concepts"]["per_label"]), {"one", "two"})
         self.assertEqual(report["issuer_concepts"]["subset_accuracy"], 1.0)
+
+    def test_tfidf_vocabulary_is_fit_only_from_supplied_training_text(self) -> None:
+        terms, idf, report = fit_tfidf_vocabulary(
+            ["alpha revenue grows", "alpha margin grows", "beta revenue falls"],
+            max_features=20,
+            min_document_frequency=1,
+            max_document_fraction=1.0,
+        )
+        vocabulary = {term: index for index, term in enumerate(terms)}
+        vector = transform_tfidf("alpha unseen validation phrase", vocabulary, idf)
+        self.assertEqual(report["training_documents"], 3)
+        self.assertNotIn("u:unseen", vocabulary)
+        self.assertGreater(float(np.linalg.norm(vector)), 0.0)
 
 
 if __name__ == "__main__":

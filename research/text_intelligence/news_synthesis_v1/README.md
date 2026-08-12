@@ -175,3 +175,18 @@ four-class issuer sentiment metrics, and multilabel concept metrics with
 per-label support, precision, recall, F1, and accuracy where meaningful. The
 baseline is not a production replacement: rare concepts and unmatched
 ticker-specific embeddings remain explicit coverage limitations.
+
+Run the controlled representation comparison with:
+
+```powershell
+$env:PYTHONDONTWRITEBYTECODE='1'
+python -m research.text_intelligence.news_synthesis_v1.run_representation_comparison
+```
+
+This trains the same residual multi-task MLP over Qwen embeddings, training-only
+TF-IDF features decoded from the exact durable Qwen token chunks, and stored
+OpenAI `text-embedding-3-large` vectors. Because OpenAI coverage is smaller, the
+runner reports both the full-population Qwen/TF-IDF comparison and a separately
+retrained three-way comparison on the exact OpenAI/Qwen/TF-IDF intersection.
+It never imputes missing OpenAI vectors or compares different validation
+denominators in the same table.

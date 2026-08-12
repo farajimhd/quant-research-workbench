@@ -33,7 +33,9 @@ from .embedding_supervision import (
     DEFAULT_GOLD_PATH,
     DEFAULT_RUN_ROOT,
     MODEL_VERSION,
+    OPENAI_MODEL_VERSION,
     SENTIMENT_LABELS,
+    TFIDF_MODEL_VERSION,
     TrainConfig,
     assert_runtime_path,
     build_supervision_arrays,
@@ -461,6 +463,18 @@ def _fit_tuning_indexes(
     return article_fit, article_tuning, issuer_fit, issuer_tuning
 
 
+def _model_version_for_dataset(data_root: Path) -> str:
+    manifest = json.loads((data_root / "manifest.json").read_text(encoding="utf-8"))
+    representation = str((manifest.get("representation") or {}).get("kind") or "qwen")
+    if representation == "qwen":
+        return MODEL_VERSION
+    if representation == "tfidf":
+        return TFIDF_MODEL_VERSION
+    if representation == "openai":
+        return OPENAI_MODEL_VERSION
+    raise RuntimeError(f"Unsupported supervision representation: {representation}")
+
+
 def train_model(args: argparse.Namespace) -> dict[str, Any]:
     torch, nn, DataLoader, _ = _torch_imports()
     config = TrainConfig(
@@ -488,6 +502,7 @@ def train_model(args: argparse.Namespace) -> dict[str, Any]:
     if run_root.exists():
         raise RuntimeError(f"Refusing to overwrite training run: {run_root}")
     validation = validate_prepared_dataset(data_root)
+    model_version = _model_version_for_dataset(data_root)
     arrays, metadata, contract = _load_dataset(data_root)
     _, article_validation = _split_indexes(metadata["article"])
     _, issuer_validation = _split_indexes(metadata["issuer"])
@@ -614,7 +629,14 @@ def train_model(args: argparse.Namespace) -> dict[str, Any]:
             best_epoch = epoch
             epochs_without_improvement = 0
             _save_checkpoint(
-                run_root / "best_model.pt", model, config, contract, data_root, epoch, score
+                run_root / "best_model.pt",
+                model,
+                config,
+                contract,
+                data_root,
+                epoch,
+                score,
+                model_version,
             )
         else:
             epochs_without_improvement += 1
@@ -644,7 +666,7 @@ def train_model(args: argparse.Namespace) -> dict[str, Any]:
     )
     final_report.update(
         {
-            "version": MODEL_VERSION,
+            "version": model_version,
             "status": "complete",
             "best_epoch": best_epoch,
             "epochs_run": len(history),
@@ -698,12 +720,13 @@ def _save_checkpoint(
     data_root: Path,
     epoch: int,
     score: float,
+    model_version: str,
 ) -> None:
     torch, _, _, _ = _torch_imports()
     temporary = path.with_name(f".{path.name}.tmp")
     torch.save(
         {
-            "version": MODEL_VERSION,
+            "version": model_version,
             "state_dict": model.state_dict(),
             "config": config_dict(config),
             "label_contract": dict(contract),
@@ -766,7 +789,8 @@ def evaluate_checkpoint(args: argparse.Namespace) -> dict[str, Any]:
     validate_prepared_dataset(data_root)
     arrays, metadata, contract = _load_dataset(data_root)
     checkpoint = torch.load(run_root / "best_model.pt", map_location="cpu", weights_only=False)
-    if checkpoint.get("version") != MODEL_VERSION:
+    expected_model_version = _model_version_for_dataset(data_root)
+    if checkpoint.get("version") != expected_model_version:
         raise RuntimeError("Checkpoint model version mismatch")
     if checkpoint.get("data_manifest_sha256") != file_sha256(data_root / "manifest.json"):
         raise RuntimeError("Checkpoint was trained against a different prepared dataset")
@@ -797,7 +821,7 @@ def evaluate_checkpoint(args: argparse.Namespace) -> dict[str, Any]:
     )
     report.update(
         {
-            "version": MODEL_VERSION,
+            "version": expected_model_version,
             "checkpoint_sha256": file_sha256(run_root / "best_model.pt"),
             "best_epoch": int(checkpoint["epoch"]),
             "device": str(device),

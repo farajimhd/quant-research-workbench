@@ -15,6 +15,15 @@ import numpy as np
 
 DATASET_VERSION = "news_synthesis_qwen_embedding_supervision_v1"
 MODEL_VERSION = "news_synthesis_qwen_multitask_mlp_v1"
+TFIDF_DATASET_VERSION = "news_synthesis_tfidf_supervision_v1"
+TFIDF_MODEL_VERSION = "news_synthesis_tfidf_multitask_mlp_v1"
+COMPARISON_DATASET_VERSION = "news_synthesis_common_representation_supervision_v1"
+OPENAI_MODEL_VERSION = "news_synthesis_openai_multitask_mlp_v1"
+SUPPORTED_DATASET_VERSIONS = {
+    DATASET_VERSION,
+    TFIDF_DATASET_VERSION,
+    COMPARISON_DATASET_VERSION,
+}
 DEFAULT_EMBEDDING_MODEL = "Qwen/Qwen3-Embedding-0.6B"
 DEFAULT_EMBEDDING_DIM = 1024
 DEFAULT_SPLIT_SEED = "news-synthesis-qwen-supervision-v1"
@@ -392,7 +401,7 @@ def dataset_file_manifest(root: Path, names: Sequence[str]) -> dict[str, Any]:
 
 def validate_prepared_dataset(root: Path) -> dict[str, Any]:
     manifest = json.loads((root / "manifest.json").read_text(encoding="utf-8"))
-    if manifest.get("version") != DATASET_VERSION:
+    if manifest.get("version") not in SUPPORTED_DATASET_VERSIONS:
         raise RuntimeError("Prepared dataset version mismatch")
     for name, expected in manifest["files"].items():
         path = root / name
