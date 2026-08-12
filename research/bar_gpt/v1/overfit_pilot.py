@@ -93,6 +93,9 @@ def _limit_block_origins(block: CompiledBlock, maximum: int) -> CompiledBlock:
     return replace(
         block,
         views={name: value[: view_lengths[name]].clone() for name, value in block.views.items()},
+        view_mask={
+            name: value[: view_lengths[name]].clone() for name, value in block.view_mask.items()
+        },
         view_start_us={name: value[: view_lengths[name]].clone() for name, value in block.view_start_us.items()},
         view_end_us={name: value[: view_lengths[name]].clone() for name, value in block.view_end_us.items()},
         view_available_at_us={

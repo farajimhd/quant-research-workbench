@@ -1141,9 +1141,13 @@ class LoaderTrainerContractTest(unittest.TestCase):
         self.assertEqual(limited.origin_indices.numel(), 2)
         self.assertEqual(limited.horizon_targets.shape[0], 2)
         self.assertLessEqual(limited.views["1s"].shape[0], compiled.views["1s"].shape[0])
+        for name, view in limited.views.items():
+            self.assertEqual(limited.view_mask[name].shape, view.shape[:1], name)
         batch = collate_compiled_blocks(
             [limited], horizons_us=config.horizons_us, base_timeframe_us=config.base_timeframe_us,
         )
+        for name, view in batch.views.items():
+            self.assertEqual(batch.view_mask[name].shape, view.shape[:2], name)
         _limit_ar_transitions(batch, 2, 0.0)
         self.assertTrue(all(int(mask[..., 0].sum()) <= 2 for mask in batch.autoregressive_mask.values()))
 
