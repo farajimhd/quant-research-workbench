@@ -29,6 +29,8 @@ TFIDF_V6_DATASET_VERSION = "news_synthesis_tfidf_source_ablation_v6"
 TFIDF_V6_MODEL_VERSION = "news_synthesis_tfidf_multitask_mlp_v6"
 TFIDF_V7_DATASET_VERSION = "news_synthesis_tfidf_provenance_multiview_v7"
 TFIDF_V7_MODEL_VERSION = "news_synthesis_tfidf_multitask_mlp_v7"
+TFIDF_V8_DATASET_VERSION = "news_synthesis_tfidf_entity_clause_invariant_v8"
+TFIDF_V8_MODEL_VERSION = "news_synthesis_tfidf_multitask_mlp_v8"
 COMPARISON_DATASET_VERSION = "news_synthesis_common_representation_supervision_v1"
 OPENAI_MODEL_VERSION = "news_synthesis_openai_multitask_mlp_v1"
 SUPPORTED_DATASET_VERSIONS = {
@@ -40,6 +42,7 @@ SUPPORTED_DATASET_VERSIONS = {
     TFIDF_V5_DATASET_VERSION,
     TFIDF_V6_DATASET_VERSION,
     TFIDF_V7_DATASET_VERSION,
+    TFIDF_V8_DATASET_VERSION,
     COMPARISON_DATASET_VERSION,
 }
 DEFAULT_EMBEDDING_MODEL = "Qwen/Qwen3-Embedding-0.6B"

@@ -48,9 +48,14 @@ from .tfidf_supervision_v5 import (
 )
 from .tfidf_source_ablation_v6 import _provider_rendered_body, controlled_feature_fields
 from .tfidf_supervision_v7 import (
+    V7_FIELD_BUDGETS,
     invariant_metadata_features,
     tfidf_v7_feature_counts,
     transform_v7,
+)
+from .tfidf_supervision_v8 import (
+    V8_FIELD_BUDGETS,
+    invariant_target_clause_features,
 )
 
 
@@ -572,6 +577,34 @@ class EmbeddingSupervisionTests(unittest.TestCase):
                 if left[source_id] == fold
             ]
             self.assertEqual(Counter(held_out), Counter({0: 2, 1: 2}))
+
+    def test_tfidf_v8_preserves_v7_feature_budget(self) -> None:
+        self.assertEqual(sum(V8_FIELD_BUDGETS.values()), sum(V7_FIELD_BUDGETS.values()))
+
+    def test_tfidf_v8_target_clause_is_name_and_value_invariant(self) -> None:
+        left = invariant_target_clause_features(
+            "Alpha reported revenue rose 10%.", aliases=("Alpha",)
+        )
+        right = invariant_target_clause_features(
+            "Beta reported revenue rose 25%.", aliases=("Beta",)
+        )
+        self.assertEqual(left, right)
+        self.assertIn("<issuer>", left[0])
+        self.assertIn("<rate_value>", left[0])
+
+    def test_tfidf_v8_target_clause_preserves_role_and_currentness(self) -> None:
+        _, actor, _ = invariant_target_clause_features(
+            "Alpha acquired Gamma.", aliases=("Alpha",)
+        )
+        _, affected, _ = invariant_target_clause_features(
+            "Gamma acquired Alpha.", aliases=("Alpha",)
+        )
+        _, forward, _ = invariant_target_clause_features(
+            "Alpha plans to acquire Gamma.", aliases=("Alpha",)
+        )
+        self.assertEqual(actor["target_clause_structure|role:actor"], 1)
+        self.assertEqual(affected["target_clause_structure|role:affected"], 1)
+        self.assertEqual(forward["target_clause_structure|currentness:forward"], 1)
 
 
 if __name__ == "__main__":

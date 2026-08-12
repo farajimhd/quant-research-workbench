@@ -6,8 +6,9 @@ import json
 import shutil
 import time
 from collections import Counter, defaultdict
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any, Callable, Mapping, Sequence
 
 import numpy as np
 
@@ -45,6 +46,7 @@ from .tfidf_supervision_v7 import (
     tfidf_v7_feature_counts,
     transform_v7_counts,
     v7_view_indexes,
+    V7_FIELD_BUDGETS,
 )
 
 
@@ -69,6 +71,33 @@ DEFAULT_NEWS_SYNTHESIS_GENERALIZATION_ROOT = (
     / "text_intelligence"
     / "news_synthesis_v1"
     / "consolidated_generalization_evaluation_v48_20260812"
+)
+
+
+@dataclass(frozen=True)
+class CrossValidationFeatureSpec:
+    dataset_version: str
+    experiment: str
+    comparison_key: str
+    representation_kind: str
+    feature_counter: Callable[..., Counter[str]]
+    budgets: Mapping[str, int]
+    view_indexes: Callable[[Mapping[str, int]], Mapping[str, np.ndarray]]
+    feature_metadata: Mapping[str, Any]
+
+
+V7_CV_FEATURE_SPEC = CrossValidationFeatureSpec(
+    dataset_version=TFIDF_V7_DATASET_VERSION,
+    experiment="tfidf_v7_grouped_stratified_cv5",
+    comparison_key="tfidf_v7_cross_validated",
+    representation_kind="tfidf_v7",
+    feature_counter=tfidf_v7_feature_counts,
+    budgets=V7_FIELD_BUDGETS,
+    view_indexes=v7_view_indexes,
+    feature_metadata={
+        "feature_version": "v7",
+        "feature_only_change": True,
+    },
 )
 
 
@@ -151,6 +180,7 @@ def _load_development_documents(
     source_database: str,
     identity_database: str,
     source_batch_size: int,
+    feature_counter: Callable[..., Counter[str]],
 ) -> tuple[
     dict[tuple[str, str], Counter[str]],
     set[tuple[str, str]],
@@ -200,7 +230,7 @@ def _load_development_documents(
             has_external=bool(normalized.get("external")),
             has_pdf=bool(normalized.get("pdf")),
         )
-        feature_counts[(source_id, ticker)] = tfidf_v7_feature_counts(
+        feature_counts[(source_id, ticker)] = feature_counter(
             original_fields={
                 "title": str(payload.get("title") or ""),
                 "teaser": str(payload.get("teaser") or ""),
@@ -243,6 +273,7 @@ def _prepare_fold_dataset(
     label_contract: Mapping[str, Any],
     output_root: Path,
     min_document_frequency: int,
+    feature_spec: CrossValidationFeatureSpec,
 ) -> dict[str, Any]:
     fold_root = output_root / "staging" / f"fold_{fold}"
     if fold_root.exists():
@@ -262,9 +293,10 @@ def _prepare_fold_dataset(
         document_frequency,
         training_document_count=training_document_count,
         min_document_frequency=min_document_frequency,
+        budgets=feature_spec.budgets,
     )
     vocabulary = {term: index for index, term in enumerate(terms)}
-    view_indexes = v7_view_indexes(vocabulary)
+    view_indexes = feature_spec.view_indexes(vocabulary)
     vectors = {
         key: transform_v7_counts(
             counts,
@@ -338,12 +370,13 @@ def _prepare_fold_dataset(
         row["split"] == "validation" for row in fold_article_metadata
     )
     manifest = {
-        "version": TFIDF_V7_DATASET_VERSION,
+        "version": feature_spec.dataset_version,
         "status": "complete",
         "representation": {
-            "kind": "tfidf_v7",
+            "kind": feature_spec.representation_kind,
             "cross_validation_fold": fold,
             **feature_report,
+            **feature_spec.feature_metadata,
         },
         "split": {
             "authority": "deterministic_stratified_grouped_development_cv",
@@ -590,7 +623,11 @@ def _news_synthesis_fold_report(
     )
 
 
-def run_cross_validation(args: argparse.Namespace) -> dict[str, Any]:
+def run_cross_validation(
+    args: argparse.Namespace,
+    *,
+    feature_spec: CrossValidationFeatureSpec = V7_CV_FEATURE_SPEC,
+) -> dict[str, Any]:
     started = time.perf_counter()
     output_root = assert_runtime_path(Path(args.root))
     source_data_root = assert_runtime_path(Path(args.source_data_root))
@@ -640,6 +677,7 @@ def run_cross_validation(args: argparse.Namespace) -> dict[str, Any]:
             source_database=str(args.source_database),
             identity_database=str(args.identity_database),
             source_batch_size=int(args.source_batch_size),
+            feature_counter=feature_spec.feature_counter,
         )
     )
     fold_reports: list[dict[str, Any]] = []
@@ -658,6 +696,7 @@ def run_cross_validation(args: argparse.Namespace) -> dict[str, Any]:
             label_contract=label_contract,
             output_root=output_root,
             min_document_frequency=int(args.min_document_frequency),
+            feature_spec=feature_spec,
         )
         run_root = output_root / "run" / f"fold_{fold}"
         report = train_model(
@@ -693,7 +732,7 @@ def run_cross_validation(args: argparse.Namespace) -> dict[str, Any]:
 
     result = {
         "status": "complete",
-        "experiment": "tfidf_v7_grouped_stratified_cv5",
+        "experiment": feature_spec.experiment,
         "folds": int(args.folds),
         "cv_seed": str(args.cv_seed),
         "population": {
@@ -716,7 +755,7 @@ def run_cross_validation(args: argparse.Namespace) -> dict[str, Any]:
         "source_report": source_report,
         "fold_summaries": fold_summaries,
         "comparison": {
-            "tfidf_v7_cross_validated": {
+            feature_spec.comparison_key: {
                 "aggregate_fold_metrics": _aggregate(fold_reports),
             },
             "news_synthesis_v48_latest_fixed": {
@@ -735,6 +774,20 @@ def run_cross_validation(args: argparse.Namespace) -> dict[str, Any]:
         "elapsed_seconds": time.perf_counter() - started,
         "staging_datasets_removed_after_training": True,
     }
+    prior_cv_path = getattr(args, "prior_cv_path", None)
+    prior_folds_identical = True
+    if prior_cv_path:
+        prior_path = Path(prior_cv_path)
+        prior = json.loads(prior_path.read_text(encoding="utf-8"))
+        for key, value in prior.get("comparison", {}).items():
+            if key.startswith("tfidf_") and key not in result["comparison"]:
+                result["comparison"][key] = value
+        current_assignments = (output_root / "fold_assignments.jsonl").read_bytes()
+        prior_assignments = (prior_path.parent / "fold_assignments.jsonl").read_bytes()
+        prior_folds_identical = current_assignments == prior_assignments
+        result["leakage_controls"]["same_fold_assignments_as_prior_cv"] = (
+            prior_folds_identical
+        )
     write_json(output_root / "cross_validation.json", result)
     validation = {
         "status": "pass",
@@ -759,6 +812,7 @@ def run_cross_validation(args: argparse.Namespace) -> dict[str, Any]:
             for fold in range(int(args.folds))
         ),
         "official_validation_excluded": True,
+        "same_fold_assignments_as_prior_cv": prior_folds_identical,
     }
     if not all(
         value
@@ -769,6 +823,7 @@ def run_cross_validation(args: argparse.Namespace) -> dict[str, Any]:
             "news_synthesis_source_coverage_complete",
             "fold_evaluations_present",
             "official_validation_excluded",
+            "same_fold_assignments_as_prior_cv",
         }
     ):
         raise RuntimeError(f"Cross-validation result failed validation: {validation}")
