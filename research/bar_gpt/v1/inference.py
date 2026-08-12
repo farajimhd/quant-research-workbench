@@ -86,11 +86,7 @@ class BarGPTEncoder(nn.Module):
             pathway_ids=PATHWAY_ID_BY_NAME,
             base_view="1s",
             origin_indices=batch.origin_indices,
-            origin_mask=batch.origin_mask,
-            valid_origin_count=getattr(batch, "valid_origin_count", None),
-            valid_origin_indices=getattr(batch, "valid_origin_indices", None),
             asof_indices=batch.asof_indices,
-            valid_asof_origin_indices=getattr(batch, "valid_asof_origin_indices", None),
             attention_windows=self.attention_windows,
             view_masks={name: batch.view_mask[name] for name in batch.masked_context_views},
         )

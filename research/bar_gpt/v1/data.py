@@ -173,11 +173,6 @@ class BarGPTBatch:
     # Computed once by CPU collation. Keeping this scalar off-device avoids a
     # CUDA synchronization from ``origin_mask.sum().item()`` every microbatch.
     valid_origin_count: int
-    valid_origin_indices: torch.Tensor = field(default_factory=lambda: torch.empty(0, dtype=torch.long))
-    # Packed-origin positions with valid as-of context are computed during CPU
-    # collation, avoiding dynamic-shape CUDA nonzero operations in fusion.
-    valid_asof_origin_indices: dict[str, torch.Tensor] = field(default_factory=dict)
-    valid_view_token_indices: dict[str, torch.Tensor] = field(default_factory=dict)
     # CPU-side counts exclude unavailable-history prefixes and rectangular
     # batch tails, so profiling does not need timed CUDA reductions.
     valid_view_token_counts: dict[str, int] = field(default_factory=dict)
@@ -197,8 +192,6 @@ class BarGPTBatch:
             self.asof_indices,
             self.autoregressive_targets,
             self.autoregressive_mask,
-            self.valid_asof_origin_indices,
-            self.valid_view_token_indices,
         ):
             for value in values.values():
                 value.record_stream(stream)
@@ -206,7 +199,6 @@ class BarGPTBatch:
             self.origin_indices,
             self.origin_timestamps_us,
             self.origin_mask,
-            self.valid_origin_indices,
             self.target_support,
             self.target_support_lengths,
             self.target_support_available_at_us,
@@ -260,13 +252,6 @@ class BarGPTBatch:
             session_phases=self.session_phases,
             condition_blocks=self.condition_blocks,
             valid_origin_count=self.valid_origin_count,
-            valid_origin_indices=self.valid_origin_indices.pin_memory(),
-            valid_asof_origin_indices={
-                name: value.pin_memory() for name, value in self.valid_asof_origin_indices.items()
-            },
-            valid_view_token_indices={
-                name: value.pin_memory() for name, value in self.valid_view_token_indices.items()
-            },
             valid_view_token_counts=dict(self.valid_view_token_counts),
             loader_stage_seconds=dict(self.loader_stage_seconds),
         )
@@ -336,15 +321,6 @@ class BarGPTBatch:
             session_phases=self.session_phases,
             condition_blocks=self.condition_blocks,
             valid_origin_count=self.valid_origin_count,
-            valid_origin_indices=self.valid_origin_indices.to(device, non_blocking=non_blocking),
-            valid_asof_origin_indices={
-                name: value.to(device, non_blocking=non_blocking)
-                for name, value in self.valid_asof_origin_indices.items()
-            },
-            valid_view_token_indices={
-                name: value.to(device, non_blocking=non_blocking)
-                for name, value in self.valid_view_token_indices.items()
-            },
             valid_view_token_counts=dict(self.valid_view_token_counts),
             loader_stage_seconds=dict(self.loader_stage_seconds),
         )
@@ -357,19 +333,6 @@ def _pad_first_dimension(values: list[torch.Tensor], *, fill: float | int | bool
     for row, value in enumerate(values):
         output[row, : value.shape[0]] = value
     return output
-
-
-def _packed_true_indices(values: Sequence[torch.Tensor]) -> torch.Tensor:
-    """Return true positions after concatenation, without quadratic prefix sums."""
-    indices: list[torch.Tensor] = []
-    offset = 0
-    for value in values:
-        flat = value.reshape(-1)
-        indices.append(torch.nonzero(flat, as_tuple=False).squeeze(-1) + offset)
-        offset += int(flat.numel())
-    if not indices:
-        return torch.empty(0, dtype=torch.long)
-    return torch.cat(indices)
 
 
 def collate_examples(examples: Sequence[BarGPTExample], *, balance_activity_regimes: bool = True) -> BarGPTBatch:
@@ -487,17 +450,6 @@ def collate_examples(examples: Sequence[BarGPTExample], *, balance_activity_regi
         session_phases=tuple(example.session_phase for example in examples),
         condition_blocks=tuple(example.has_condition_target for example in examples),
         valid_origin_count=sum(int(example.origin_indices.numel()) for example in examples),
-        valid_origin_indices=torch.nonzero(origin_mask.reshape(-1), as_tuple=False).squeeze(-1),
-        valid_asof_origin_indices={
-            name: _packed_true_indices([
-                example.asof_indices[name] >= 0 for example in examples
-            ])
-            for name in view_names if name != "1s"
-        },
-        valid_view_token_indices={
-            name: torch.nonzero(view_mask[name][:, :-1].reshape(-1), as_tuple=False).squeeze(-1)
-            for name in view_names
-        },
         valid_view_token_counts={
             name: sum(int(mask.sum()) for mask in masks)
             for name, masks in masks_by_view.items()

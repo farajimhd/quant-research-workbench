@@ -28,7 +28,6 @@ from research.bar_gpt.v1.data import (
     TIMEFRAME_US_BY_NAME,
     BarGPTBatch,
     BarGPTExample,
-    _packed_true_indices,
     _pad_first_dimension,
 )
 from research.bar_gpt.v1.features import project_stationary_features
@@ -1605,17 +1604,6 @@ def collate_compiled_blocks(
         session_phases=tuple(block.session_phase for block in blocks),
         condition_blocks=tuple(block.has_condition_target for block in blocks),
         valid_origin_count=sum(int(block.origin_indices.numel()) for block in blocks),
-        valid_origin_indices=torch.nonzero(origin_mask.reshape(-1), as_tuple=False).squeeze(-1),
-        valid_asof_origin_indices={
-            name: _packed_true_indices([
-                block.asof_indices[name] >= 0 for block in blocks
-            ])
-            for name in view_names if name != "1s"
-        },
-        valid_view_token_indices={
-            name: torch.nonzero(view_mask[name][:, :-1].reshape(-1), as_tuple=False).squeeze(-1)
-            for name in view_names
-        },
         valid_view_token_counts={
             name: sum(int(block.view_mask[name].sum()) for block in blocks)
             for name in view_names

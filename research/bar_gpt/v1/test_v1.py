@@ -790,23 +790,6 @@ class TemporalContractTest(unittest.TestCase):
 
 
 class ModelContractTest(unittest.TestCase):
-    def test_packed_sequence_head_preserves_autocast_output_dtype(self) -> None:
-        head = torch.nn.Linear(8, 3)
-        state = torch.randn(2, 5, 8, requires_grad=True)
-        mask = torch.tensor([
-            [True, True, True, True, True],
-            [True, True, True, False, False],
-        ])
-        indices = torch.nonzero(
-            mask[:, :-1].reshape(-1), as_tuple=False
-        ).squeeze(-1)
-        with torch.autocast("cpu", dtype=torch.bfloat16):
-            output = BarGPTV1._sequence_head(head, state, mask, indices)
-        self.assertEqual(output.dtype, torch.bfloat16)
-        self.assertTrue(bool(torch.all(output[1, 3:] == 0)))
-        output.float().square().sum().backward()
-        self.assertTrue(bool(torch.isfinite(state.grad).all()))
-
     def test_masked_encoder_matches_independent_sequences_and_gradients(self) -> None:
         torch.manual_seed(37)
         config = BarGPTConfig(
@@ -842,50 +825,6 @@ class ModelContractTest(unittest.TestCase):
         torch.testing.assert_close(
             actual_input.grad, reference_input.grad, atol=5e-5, rtol=5e-5
         )
-
-    def test_packed_origin_fusion_matches_dense_valid_outputs(self) -> None:
-        torch.manual_seed(29)
-        config = BarGPTConfig(
-            feature_dim=len(MODEL_FEATURE_NAMES), d_model=32, n_layers=2,
-            n_heads=4, n_kv_heads=2, horizon_rank=8, dropout=0.0,
-        )
-        model = BarGPTV1(config).eval()
-        views = {
-            "1s": torch.randn(2, 9, len(MODEL_FEATURE_NAMES)),
-            "5s": torch.randn(2, 5, len(MODEL_FEATURE_NAMES)),
-        }
-        origins = torch.tensor([[3, 5, 8], [2, 7, 0]])
-        origin_mask = torch.tensor([[True, True, True], [True, True, False]])
-        asof = {"5s": torch.tensor([[1, 2, 4], [-1, 3, -1]])}
-        kwargs = {
-            "timeframe_us": {"1s": 1_000_000, "5s": 5_000_000},
-            "pathway_ids": {"1s": 0, "5s": 1},
-            "base_view": "1s",
-            "origin_indices": origins,
-            "asof_indices": asof,
-            "attention_windows": {"1s": 5, "5s": 3},
-            "horizon_ids": torch.tensor([0, 1]),
-        }
-        with torch.no_grad():
-            dense = model(views, **kwargs)
-            packed = model(
-                views,
-                **kwargs,
-                origin_mask=origin_mask,
-                valid_origin_count=5,
-                valid_origin_indices=torch.tensor([0, 1, 2, 3, 4]),
-                valid_asof_origin_indices={"5s": torch.tensor([0, 1, 2, 4])},
-            )
-        torch.testing.assert_close(packed.embeddings[origin_mask], dense.embeddings[origin_mask])
-        torch.testing.assert_close(
-            packed.horizon_quantiles[origin_mask], dense.horizon_quantiles[origin_mask]
-        )
-        torch.testing.assert_close(
-            packed.horizon_availability_logits[origin_mask],
-            dense.horizon_availability_logits[origin_mask],
-        )
-        self.assertTrue(bool(torch.all(packed.embeddings[~origin_mask] == 0)))
-        self.assertTrue(bool(torch.all(packed.horizon_quantiles[~origin_mask] == 0)))
 
     def test_forward_shapes_and_future_causality(self) -> None:
         torch.manual_seed(7)

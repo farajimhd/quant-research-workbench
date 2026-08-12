@@ -328,31 +328,18 @@ class BarGPTV1(nn.Module):
         pathway_ids: Mapping[str, int],
         base_view: str,
         origin_indices: torch.Tensor,
-        origin_mask: torch.Tensor | None = None,
-        valid_origin_count: int | None = None,
-        valid_origin_indices: torch.Tensor | None = None,
         asof_indices: Mapping[str, torch.Tensor] | None = None,
-        valid_asof_origin_indices: Mapping[str, torch.Tensor] | None = None,
-        valid_view_token_indices: Mapping[str, torch.Tensor] | None = None,
         view_masks: Mapping[str, torch.Tensor] | None = None,
         attention_windows: Mapping[str, int] | None = None,
         horizon_ids: torch.Tensor | None = None,
     ) -> BarGPTOutput:
-        if origin_mask is not None and valid_origin_indices is None:
-            valid_origin_indices = torch.nonzero(
-                origin_mask.reshape(-1), as_tuple=False
-            ).squeeze(-1)
         fused, encoded = self.embed(
             views,
             timeframe_us=timeframe_us,
             pathway_ids=pathway_ids,
             base_view=base_view,
             origin_indices=origin_indices,
-            origin_mask=origin_mask,
-            valid_origin_count=valid_origin_count,
-            valid_origin_indices=valid_origin_indices,
             asof_indices=asof_indices,
-            valid_asof_origin_indices=valid_asof_origin_indices,
             view_masks=view_masks,
             attention_windows=attention_windows,
         )
@@ -363,52 +350,30 @@ class BarGPTV1(nn.Module):
             if name not in encoded:
                 continue
             state = encoded[name]
-            state_mask = None if view_masks is None else view_masks.get(name)
-            state_indices = (
-                None if valid_view_token_indices is None
-                else valid_view_token_indices.get(name)
-            )
             # Calendar views are context-only by contract and intentionally
             # have no autoregressive targets or heads.
             autoregressive[name] = torch.cat(
                 (
-                    self._sequence_head(
-                        self.autoregressive_continuous_head, state, state_mask, state_indices
-                    ),
-                    self._sequence_head(
-                        self.autoregressive_availability_head, state, state_mask, state_indices
-                    ),
+                    self.autoregressive_continuous_head(state[:, :-1]),
+                    self.autoregressive_availability_head(state[:, :-1]),
                 ),
                 dim=-1,
             )
-            autoregressive_direction_logits[name] = self._sequence_head(
-                self.autoregressive_direction_head, state, state_mask, state_indices
-            )
-            latent_predictions[name] = self._sequence_head(
-                self.latent_prediction_head, state, state_mask, state_indices
-            )
+            autoregressive_direction_logits[name] = self.autoregressive_direction_head(state[:, :-1])
+            latent_predictions[name] = self.latent_prediction_head(state[:, :-1])
         quantiles = None
         availability_logits = None
         direction_logits = None
         if horizon_ids is not None:
             if horizon_ids.ndim != 1:
                 raise ValueError("horizon_ids must have shape [H]")
-            horizon_input = (
-                fused
-                if origin_mask is None
-                else fused.reshape(-1, fused.shape[-1]).index_select(
-                    0,
-                    valid_origin_indices,
-                )
-            )
-            state_rank = self.horizon_state(horizon_input).unsqueeze(-2)
+            state_rank = self.horizon_state(fused).unsqueeze(2)
             horizon_rank = self.horizon_embedding(horizon_ids.long()).view(1, 1, -1, self.config.horizon_rank)
-            if origin_mask is not None:
-                horizon_rank = horizon_rank.squeeze(0)
             conditioned = F.silu(state_rank + horizon_rank)
             raw = self.horizon_head(conditioned)
             raw_quantiles = raw.view(
-                *horizon_input.shape[:-1],
+                fused.shape[0],
+                fused.shape[1],
                 horizon_ids.numel(),
                 self.continuous_target_dim,
                 len(self.config.quantiles),
@@ -420,16 +385,6 @@ class BarGPTV1(nn.Module):
                 quantiles = raw_quantiles
             availability_logits = self.horizon_availability_head(conditioned)
             direction_logits = self.horizon_direction_head(conditioned)
-            if origin_mask is not None:
-                quantiles = self._restore_origins(
-                    quantiles, origin_mask, valid_origin_indices
-                )
-                availability_logits = self._restore_origins(
-                    availability_logits, origin_mask, valid_origin_indices
-                )
-                direction_logits = self._restore_origins(
-                    direction_logits, origin_mask, valid_origin_indices
-                )
         return BarGPTOutput(
             embeddings=fused,
             scale_embeddings=encoded,
@@ -441,46 +396,6 @@ class BarGPTV1(nn.Module):
             horizon_direction_logits=direction_logits,
         )
 
-    @staticmethod
-    def _sequence_head(
-        head: nn.Linear,
-        state: torch.Tensor,
-        token_mask: torch.Tensor | None,
-        valid_indices: torch.Tensor | None,
-    ) -> torch.Tensor:
-        source = state[:, :-1]
-        if token_mask is None:
-            return head(source)
-        active = token_mask[:, :-1]
-        flattened = source.reshape(-1, source.shape[-1])
-        indices = (
-            valid_indices
-            if valid_indices is not None
-            else torch.nonzero(active.reshape(-1), as_tuple=False).squeeze(-1)
-        )
-        packed = head(flattened.index_select(0, indices))
-        # Autocast can keep the residual stream in FP32 while producing BF16
-        # linear outputs. Allocate from the head result so CUDA index_copy
-        # receives identical source/destination dtypes.
-        output = packed.new_zeros((*source.shape[:-1], head.out_features))
-        return output.reshape(-1, head.out_features).index_copy(
-            0, indices, packed
-        ).view_as(output)
-
-    @staticmethod
-    def _restore_origins(
-        value: torch.Tensor,
-        origin_mask: torch.Tensor,
-        valid_origin_indices: torch.Tensor | None,
-    ) -> torch.Tensor:
-        output = value.new_zeros((*origin_mask.shape, *value.shape[1:]))
-        indices = (
-            valid_origin_indices
-            if valid_origin_indices is not None
-            else torch.nonzero(origin_mask.reshape(-1), as_tuple=False).squeeze(-1)
-        )
-        return output.flatten(0, 1).index_copy(0, indices, value).view_as(output)
-
     def embed(
         self,
         views: Mapping[str, torch.Tensor],
@@ -489,11 +404,7 @@ class BarGPTV1(nn.Module):
         pathway_ids: Mapping[str, int],
         base_view: str,
         origin_indices: torch.Tensor,
-        origin_mask: torch.Tensor | None = None,
-        valid_origin_count: int | None = None,
-        valid_origin_indices: torch.Tensor | None = None,
         asof_indices: Mapping[str, torch.Tensor] | None = None,
-        valid_asof_origin_indices: Mapping[str, torch.Tensor] | None = None,
         view_masks: Mapping[str, torch.Tensor] | None = None,
         attention_windows: Mapping[str, int] | None = None,
     ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
@@ -513,23 +424,7 @@ class BarGPTV1(nn.Module):
             )
             for name, value in views.items()
         }
-        fused_full = self._gather_sequence(encoded[base_view], origin_indices)
-        if origin_mask is not None and origin_mask.shape != origin_indices.shape:
-            raise ValueError("origin_mask must have the same shape as origin_indices")
-        if origin_mask is not None and valid_origin_indices is None:
-            valid_origin_indices = torch.nonzero(
-                origin_mask.reshape(-1), as_tuple=False
-            ).squeeze(-1)
-        fused = (
-            fused_full
-            if origin_mask is None
-            else fused_full.reshape(-1, fused_full.shape[-1]).index_select(
-                0, valid_origin_indices
-            )
-        )
-        packed_origin_count = (
-            int(valid_origin_count) if valid_origin_count is not None else None
-        )
+        fused = self._gather_sequence(encoded[base_view], origin_indices)
         for name, state in encoded.items():
             if name == base_view:
                 continue
@@ -537,31 +432,7 @@ class BarGPTV1(nn.Module):
                 raise KeyError(f"missing causal as-of index for {name!r}")
             available = asof_indices[name] >= 0
             coarse = self._gather_sequence(state, asof_indices[name])
-            if origin_mask is not None:
-                available = available[origin_mask]
-                coarse = coarse[origin_mask]
-            active = (
-                None
-                if valid_asof_origin_indices is None
-                else valid_asof_origin_indices.get(name)
-            )
-            if (
-                origin_mask is not None
-                and packed_origin_count is not None
-                and active is not None
-                and int(active.shape[0]) < packed_origin_count
-            ):
-                selected_fused = fused.index_select(0, active)
-                selected_coarse = coarse.index_select(0, active)
-                gate = self.scale_gate(
-                    torch.cat((selected_fused, selected_coarse), dim=-1)
-                )
-                candidate = selected_fused + gate * selected_coarse
-                fused = fused.index_copy(0, active, candidate)
-            else:
-                gate = self.scale_gate(torch.cat((fused, coarse), dim=-1))
-                candidate = fused + gate * coarse
-                fused = torch.where(available.unsqueeze(-1), candidate, fused)
-        if origin_mask is not None:
-            fused = self._restore_origins(fused, origin_mask, valid_origin_indices)
+            gate = self.scale_gate(torch.cat((fused, coarse), dim=-1))
+            candidate = fused + gate * coarse
+            fused = torch.where(available.unsqueeze(-1), candidate, fused)
         return fused, encoded
