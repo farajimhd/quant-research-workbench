@@ -1482,11 +1482,28 @@ def main(argv: Iterable[str] | None = None) -> int:
     elif args.data_source == "offline":
         root = Path(args.offline_shard_root)
         verify_shard_catalog_lock(root)
-        validation_tickers = tuple(sorted({ticker for ticker, _start, _end in config.data.validation_slices}))
+        if args.experiment_manifest:
+            discovery_manifest = load_discovery_manifest(
+                Path(args.experiment_manifest),
+                shard_root=root,
+                config=config.data,
+            )
+            manifest_train_refs = panel_refs(discovery_manifest, "train")
+            manifest_evaluation_refs = (
+                *panel_refs(discovery_manifest, "monitor"),
+                *panel_refs(discovery_manifest, "validation"),
+            )
+            training_tickers = tuple(sorted({ref.ticker for ref in manifest_train_refs}))
+            validation_tickers = tuple(sorted({ref.ticker for ref in manifest_evaluation_refs}))
+        else:
+            training_tickers = tuple(config.data.training_tickers)
+            validation_tickers = tuple(
+                sorted({ticker for ticker, _start, _end in config.data.validation_slices})
+            )
         offline_train_units = discover_offline_units(
             root,
             config.data,
-            tickers=config.data.training_tickers,
+            tickers=training_tickers,
             start_date=str(args.offline_train_start_date),
             end_date=str(args.offline_train_end_date),
         )
@@ -1497,12 +1514,6 @@ def main(argv: Iterable[str] | None = None) -> int:
             start_date=str(args.offline_validation_start_date),
             end_date=str(args.offline_validation_end_date),
         )
-        if args.experiment_manifest:
-            discovery_manifest = load_discovery_manifest(
-                Path(args.experiment_manifest),
-                shard_root=root,
-                config=config.data,
-            )
         condition_counts = tuple(
             sum(unit.condition_positive_counts[index] for unit in offline_train_units)
             for index in range(4)
@@ -1605,15 +1616,28 @@ def main(argv: Iterable[str] | None = None) -> int:
     config.train.run_name = run_name
     run_root = Path(config.train.output_root) / run_name if args.output_root else default_run_root(MODEL_FAMILY, MODEL_VERSION, JOB_TYPE, run_name)
     paths = RunPaths.create(run_root)
-    validation_tickers = tuple(sorted({ticker for ticker, _start, _end in config.data.validation_slices}))
+    if discovery_manifest is not None:
+        plan_training_tickers = tuple(
+            sorted({ref.ticker for ref in panel_refs(discovery_manifest, "train")})
+        )
+        validation_tickers = tuple(sorted({
+            ref.ticker
+            for panel_name in ("monitor", "validation")
+            for ref in panel_refs(discovery_manifest, panel_name)
+        }))
+    else:
+        plan_training_tickers = tuple(config.data.training_tickers)
+        validation_tickers = tuple(
+            sorted({ticker for ticker, _start, _end in config.data.validation_slices})
+        )
     identity_holdouts = tuple(
         ticker for ticker in config.data.tickers
-        if ticker not in set(config.data.training_tickers)
+        if ticker not in set(plan_training_tickers)
     )
     plan = coverage_plan_summary(
         start_date=(str(args.offline_train_start_date) if args.data_source == "offline" else config.data.start_date),
         end_date=(str(args.offline_train_end_date) if args.data_source == "offline" else config.data.validation_start_date),
-        training_tickers=config.data.training_tickers,
+        training_tickers=plan_training_tickers,
         blocks_per_unit=config.data.coverage_blocks_per_unit,
         origin_bars=config.data.origin_bars_1s,
         epochs=config.train.epochs,

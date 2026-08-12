@@ -173,8 +173,13 @@ from research.bar_gpt.v1.overfit_pilot import (
 )
 from research.bar_gpt.v1.run_train import DEFAULT_ARGS as training_launcher_args
 from research.bar_gpt.v1.run_train_model_comparison import (
+    COMPARISON_MONITOR_INTERVAL_ORIGINS,
+    COMPARISON_MONITOR_ORIGINS,
     COMPARISON_RUNS,
+    COMPARISON_TRAIN_ORIGINS,
+    COMPARISON_VALIDATION_ORIGINS,
     DEFAULT_WANDB_MODE,
+    _validate_comparison_manifest,
     _launcher_command as comparison_launcher_command,
     comparison_run_name,
     main as comparison_main,
@@ -2489,10 +2494,22 @@ class LoaderTrainerContractTest(unittest.TestCase):
             self.assertEqual(actual, values)
             self.assertEqual(parsed.epochs, 1)
             self.assertEqual(parsed.offline_train_end_date, "2026-01-01")
+            self.assertTrue(parsed.experiment_manifest.endswith("fixed_panels_v1.json"))
             self.assertEqual(parsed.wandb_project, BAR_GPT_MODEL_COMPARISON_WANDB_PROJECT)
             self.assertEqual(COMPARISON_RUNS[model_size].effective_blocks, 40)
             self.assertEqual(parsed.offline_length_bucket_batches, 16)
             self.assertEqual(parsed.validation_batches, 0)
+            self.assertEqual(parsed.warmup_samples, 4_000_000)
+            self.assertEqual(parsed.scheduler_mode, "single-cosine")
+            self.assertEqual(parsed.validation_runs_per_epoch, 4)
+            self.assertEqual(
+                parsed.validation_interval_samples,
+                COMPARISON_MONITOR_INTERVAL_ORIGINS,
+            )
+            self.assertEqual(
+                parsed.validation_initial_samples,
+                COMPARISON_MONITOR_INTERVAL_ORIGINS,
+            )
             comparison_contracts.add((
                 parsed.offline_train_start_date,
                 parsed.offline_train_end_date,
@@ -2517,6 +2534,47 @@ class LoaderTrainerContractTest(unittest.TestCase):
             names.add(comparison_run_name(model_size, "fixed"))
         self.assertEqual(len(names), 3)
         self.assertEqual(len(comparison_contracts), 1)
+
+    def test_comparison_manifest_requires_all_tickers_and_disjoint_evaluation_dates(self) -> None:
+        tickers = ("AAA", "BBB")
+
+        def row(ticker: str, day: str, origins: int) -> dict[str, str | int]:
+            return {"ticker": ticker, "local_date": day, "origins": origins}
+
+        manifest = {
+            "targets": {
+                "train_origins_per_epoch": COMPARISON_TRAIN_ORIGINS,
+                "monitor_origins": COMPARISON_MONITOR_ORIGINS,
+                "validation_origins": COMPARISON_VALIDATION_ORIGINS,
+                "locked_test_origins": 0,
+            },
+            "ranges": {
+                "train": ["2019-01-01", "2026-01-01"],
+                "held_out": ["2026-01-01", "2026-08-01"],
+            },
+            "cohorts": {
+                "training_tickers": ["AAA", "BBB"],
+                "evaluation_tickers": ["AAA", "BBB"],
+            },
+            "panels": {
+                "train": [
+                    row("AAA", "2020-01-02", 50_000_000),
+                    row("BBB", "2020-01-02", 50_000_000),
+                ],
+                "monitor": [
+                    row("AAA", "2026-01-02", 500_000),
+                    row("BBB", "2026-01-02", 500_000),
+                ],
+                "validation": [
+                    row("AAA", "2026-01-05", 2_500_000),
+                    row("BBB", "2026-01-05", 2_500_000),
+                ],
+            },
+        }
+        _validate_comparison_manifest(manifest, all_tickers=tickers)
+        manifest["panels"]["validation"][0] = row("AAA", "2026-01-02", 2_500_000)
+        with self.assertRaisesRegex(RuntimeError, "overlap"):
+            _validate_comparison_manifest(manifest, all_tickers=tickers)
 
     def test_all_model_comparison_runs_fresh_processes_sequentially(self) -> None:
         completed = SimpleNamespace(returncode=0)

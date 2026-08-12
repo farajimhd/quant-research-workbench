@@ -327,21 +327,56 @@ def build_discovery_manifest(
     validation_origins: int = 5_000_000,
     locked_test_origins: int = 5_000_000,
     seed: int = 17,
+    training_tickers: Sequence[str] | None = None,
+    evaluation_tickers: Sequence[str] | None = None,
 ) -> dict[str, Any]:
     verify_shard_catalog_lock(shard_root)
     config = discovery_data_config(shard_root)
+    catalog_tickers = set(config.tickers)
+    resolved_training_tickers = tuple(
+        ticker.upper()
+        for ticker in (config.training_tickers if training_tickers is None else training_tickers)
+    )
+    default_evaluation_tickers = tuple(
+        sorted({ticker for ticker, _start, _end in config.validation_slices})
+    )
+    resolved_evaluation_tickers = tuple(
+        ticker.upper()
+        for ticker in (
+            default_evaluation_tickers if evaluation_tickers is None else evaluation_tickers
+        )
+    )
+    for label, tickers in (
+        ("training", resolved_training_tickers),
+        ("evaluation", resolved_evaluation_tickers),
+    ):
+        if not tickers:
+            raise ValueError(f"{label} tickers cannot be empty")
+        if len(set(tickers)) != len(tickers):
+            raise ValueError(f"{label} tickers must be unique")
+        unknown = sorted(set(tickers) - catalog_tickers)
+        if unknown:
+            raise ValueError(f"unknown {label} tickers: {unknown}")
+    for label, target in (
+        ("train_origins", train_origins),
+        ("monitor_origins", monitor_origins),
+        ("validation_origins", validation_origins),
+        ("locked_test_origins", locked_test_origins),
+    ):
+        if int(target) < 0 or (label != "locked_test_origins" and int(target) == 0):
+            requirement = "non-negative" if label == "locked_test_origins" else "positive"
+            raise ValueError(f"{label} must be {requirement}")
     training_units = discover_offline_units(
         shard_root,
         config,
-        tickers=config.training_tickers,
+        tickers=resolved_training_tickers,
         start_date="2019-01-01",
         end_date="2026-01-01",
     )
-    held_out_tickers = tuple(sorted({ticker for ticker, _start, _end in config.validation_slices}))
     held_out_units = discover_offline_units(
         shard_root,
         config,
-        tickers=held_out_tickers,
+        tickers=resolved_evaluation_tickers,
         start_date="2026-01-01",
         end_date="2026-08-01",
     )
@@ -395,25 +430,34 @@ def build_discovery_manifest(
         label="validation",
         used_dates=used_dates,
     )
-    locked_test = _held_out_panel(
-        held_out_refs,
-        target_origins=locked_test_origins,
-        seed=seed,
-        label="locked_test",
-        used_dates=used_dates,
+    locked_test = (
+        _held_out_panel(
+            held_out_refs,
+            target_origins=locked_test_origins,
+            seed=seed,
+            label="locked_test",
+            used_dates=used_dates,
+        )
+        if locked_test_origins > 0
+        else ()
     )
     panels = {
         "train": [asdict(ref) for ref in train],
         "monitor": [asdict(ref) for ref in monitor],
         "validation": [asdict(ref) for ref in validation],
-        "locked_test": [asdict(ref) for ref in locked_test],
     }
+    if locked_test:
+        panels["locked_test"] = [asdict(ref) for ref in locked_test]
     value = {
         "contract_version": DISCOVERY_CONTRACT_VERSION,
         "created_at": dt.datetime.now().astimezone().isoformat(timespec="seconds"),
         "seed": seed,
         "shard_root": str(shard_root),
         "shard_config_hash": discovery_shard_compatibility_hash(config),
+        "cohorts": {
+            "training_tickers": sorted(resolved_training_tickers),
+            "evaluation_tickers": sorted(resolved_evaluation_tickers),
+        },
         "ranges": {"train": ["2019-01-01", "2026-01-01"], "held_out": ["2026-01-01", "2026-08-01"]},
         "targets": {
             "train_origins_per_epoch": train_origins,

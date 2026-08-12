@@ -7,7 +7,8 @@ import subprocess
 import sys
 import time
 from dataclasses import dataclass
-from typing import Iterable
+from pathlib import Path
+from typing import Any, Iterable
 
 from research.bar_gpt.v1.config import (
     BAR_GPT_MODEL_COMPARISON_WANDB_PROJECT,
@@ -15,6 +16,11 @@ from research.bar_gpt.v1.config import (
     PRODUCTION_MODEL_TRAINING_PRESETS,
 )
 from research.bar_gpt.v1.run_train import default_argv
+from research.bar_gpt.v1.model_discovery import (
+    build_discovery_manifest,
+    discovery_data_config,
+    load_discovery_manifest,
+)
 from research.bar_gpt.v1.train import main as train_main
 
 
@@ -43,6 +49,13 @@ COMPARISON_RUNS: dict[str, ComparisonRun] = {
     for model_size, preset in PRODUCTION_MODEL_TRAINING_PRESETS.items()
 }
 DEFAULT_WANDB_MODE = "online"
+DEFAULT_SHARD_ROOT = Path(r"D:\TradingML\runtimes\bar_gpt\v1\offline_shards_v12")
+DEFAULT_OUTPUT_ROOT = Path(r"D:\TradingML\runtimes\bar_gpt\v1\model_comparison")
+COMPARISON_TRAIN_ORIGINS = 100_000_000
+COMPARISON_MONITOR_ORIGINS = 1_000_000
+COMPARISON_VALIDATION_ORIGINS = 5_000_000
+COMPARISON_SEED = 17
+COMPARISON_MONITOR_INTERVAL_ORIGINS = 25_000_000
 
 
 def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
@@ -51,6 +64,8 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--model-size", choices=("all", *COMPARISON_RUNS), default="all")
     parser.add_argument("--execute", action="store_true")
+    parser.add_argument("--shard-root", default=str(DEFAULT_SHARD_ROOT))
+    parser.add_argument("--output-root", default=str(DEFAULT_OUTPUT_ROOT))
     parser.add_argument(
         "--run-stamp",
         default="",
@@ -78,6 +93,9 @@ def trainer_argv(
     *,
     run_stamp: str,
     wandb_mode: str = DEFAULT_WANDB_MODE,
+    shard_root: Path = DEFAULT_SHARD_ROOT,
+    output_root: Path = DEFAULT_OUTPUT_ROOT,
+    manifest_path: Path | None = None,
 ) -> list[str]:
     run = COMPARISON_RUNS[model_size]
     model = MODEL_SIZE_PRESETS[model_size]
@@ -87,8 +105,16 @@ def trainer_argv(
         comparison_run_name(model_size, run_stamp),
         "--wandb-project",
         BAR_GPT_MODEL_COMPARISON_WANDB_PROJECT,
+        "--offline-shard-root",
+        str(shard_root),
+        "--experiment-manifest",
+        str(manifest_path or output_root / "fixed_panels_v1.json"),
+        "--output-root",
+        str(output_root / "runs"),
         "--epochs",
         "1",
+        "--max-samples",
+        "0",
         "--batch-size",
         str(run.microbatch),
         "--gradient-accumulation-steps",
@@ -99,6 +125,16 @@ def trainer_argv(
         # blocks at MB20 and MB10. Zero consumes the complete identical panel.
         "--validation-batches",
         "0",
+        "--warmup-samples",
+        "4000000",
+        "--scheduler-mode",
+        "single-cosine",
+        "--validation-runs-per-epoch",
+        "4",
+        "--validation-interval-samples",
+        str(COMPARISON_MONITOR_INTERVAL_ORIGINS),
+        "--validation-initial-samples",
+        str(COMPARISON_MONITOR_INTERVAL_ORIGINS),
         "--d-model",
         str(model["d_model"]),
         "--n-layers",
@@ -113,7 +149,15 @@ def trainer_argv(
     return argv
 
 
-def _launcher_command(model_size: str, *, run_stamp: str, wandb_mode: str, execute: bool) -> list[str]:
+def _launcher_command(
+    model_size: str,
+    *,
+    run_stamp: str,
+    wandb_mode: str,
+    execute: bool,
+    shard_root: Path = DEFAULT_SHARD_ROOT,
+    output_root: Path = DEFAULT_OUTPUT_ROOT,
+) -> list[str]:
     command = [
         sys.executable,
         "-B",
@@ -123,6 +167,10 @@ def _launcher_command(model_size: str, *, run_stamp: str, wandb_mode: str, execu
         model_size,
         "--run-stamp",
         run_stamp,
+        "--shard-root",
+        str(shard_root),
+        "--output-root",
+        str(output_root),
     ]
     if wandb_mode != DEFAULT_WANDB_MODE:
         command.extend(("--wandb-mode", wandb_mode))
@@ -131,11 +179,106 @@ def _launcher_command(model_size: str, *, run_stamp: str, wandb_mode: str, execu
     return command
 
 
+def _validate_comparison_manifest(manifest: dict[str, Any], *, all_tickers: tuple[str, ...]) -> None:
+    expected_targets = {
+        "train_origins_per_epoch": COMPARISON_TRAIN_ORIGINS,
+        "monitor_origins": COMPARISON_MONITOR_ORIGINS,
+        "validation_origins": COMPARISON_VALIDATION_ORIGINS,
+        "locked_test_origins": 0,
+    }
+    if manifest.get("targets") != expected_targets:
+        raise RuntimeError("model-comparison manifest has the wrong origin targets")
+    expected_ranges = {
+        "train": ["2019-01-01", "2026-01-01"],
+        "held_out": ["2026-01-01", "2026-08-01"],
+    }
+    if manifest.get("ranges") != expected_ranges:
+        raise RuntimeError("model-comparison manifest has the wrong temporal ranges")
+    expected_cohorts = {
+        "training_tickers": sorted(all_tickers),
+        "evaluation_tickers": sorted(all_tickers),
+    }
+    if manifest.get("cohorts") != expected_cohorts:
+        raise RuntimeError("model-comparison manifest does not include every catalog ticker")
+    panels = manifest.get("panels")
+    if not isinstance(panels, dict):
+        raise RuntimeError("model-comparison manifest has no panels")
+    panel_tickers: dict[str, set[str]] = {}
+    panel_dates: dict[str, set[tuple[str, str]]] = {}
+    minimum_origins = {
+        "train": COMPARISON_TRAIN_ORIGINS,
+        "monitor": COMPARISON_MONITOR_ORIGINS,
+        "validation": COMPARISON_VALIDATION_ORIGINS,
+    }
+    for name in ("train", "monitor", "validation"):
+        rows = panels.get(name)
+        if not isinstance(rows, list) or not rows:
+            raise RuntimeError(f"model-comparison manifest panel {name!r} is empty")
+        panel_tickers[name] = {str(row["ticker"]) for row in rows}
+        panel_dates[name] = {(str(row["ticker"]), str(row["local_date"])) for row in rows}
+        if panel_tickers[name] != set(all_tickers):
+            raise RuntimeError(f"model-comparison panel {name!r} does not represent every ticker")
+        origins = sum(int(row["origins"]) for row in rows)
+        if origins < minimum_origins[name]:
+            raise RuntimeError(f"model-comparison panel {name!r} is below its origin target")
+        start, end = expected_ranges["train" if name == "train" else "held_out"]
+        if any(not start <= day < end for _ticker, day in panel_dates[name]):
+            raise RuntimeError(f"model-comparison panel {name!r} contains an out-of-range date")
+    if panel_dates["monitor"] & panel_dates["validation"]:
+        raise RuntimeError("model-comparison monitor and validation ticker-dates overlap")
+
+
+def ensure_comparison_manifest(*, shard_root: Path, output_root: Path) -> Path:
+    manifest_path = output_root / "fixed_panels_v1.json"
+    config = discovery_data_config(shard_root)
+    all_tickers = tuple(config.tickers)
+    if manifest_path.is_file():
+        manifest = load_discovery_manifest(manifest_path, shard_root=shard_root, config=config)
+        _validate_comparison_manifest(manifest, all_tickers=all_tickers)
+        print(f"Reusing verified model-comparison manifest: {manifest_path}", flush=True)
+    else:
+        print("Building deterministic all-ticker model-comparison panels...", flush=True)
+        manifest = build_discovery_manifest(
+            shard_root=shard_root,
+            output_path=manifest_path,
+            train_origins=COMPARISON_TRAIN_ORIGINS,
+            monitor_origins=COMPARISON_MONITOR_ORIGINS,
+            validation_origins=COMPARISON_VALIDATION_ORIGINS,
+            locked_test_origins=0,
+            seed=COMPARISON_SEED,
+            training_tickers=all_tickers,
+            evaluation_tickers=all_tickers,
+        )
+        _validate_comparison_manifest(manifest, all_tickers=all_tickers)
+    summaries = manifest["summaries"]
+    for name in ("train", "monitor", "validation"):
+        summary = summaries[name]
+        print(
+            f"{name}: origins={int(summary['origins']):,} blocks={int(summary['blocks']):,} "
+            f"tickers={int(summary['tickers']):,}",
+            flush=True,
+        )
+    return manifest_path
+
+
 def main(argv: Iterable[str] | None = None) -> int:
     args = parse_args(argv)
     run_stamp = args.run_stamp or time.strftime("%Y%m%d-%H%M%S")
+    shard_root = Path(args.shard_root)
+    output_root = Path(args.output_root)
     selected = tuple(COMPARISON_RUNS) if args.model_size == "all" else (args.model_size,)
     print(f"W&B project: {BAR_GPT_MODEL_COMPARISON_WANDB_PROJECT}", flush=True)
+    print(
+        "Fixed population: >=100M train origins from 2019-2025; "
+        ">=1M monitor and >=5M validation origins from disjoint 2026 ticker-dates; "
+        "all catalog tickers in every panel",
+        flush=True,
+    )
+    print(
+        "Metric cadence: monitor_* uses the complete 1M panel at 25M, 50M, and 75M; "
+        "validation_* uses the complete 5M panel once at the 100M epoch boundary",
+        flush=True,
+    )
     for model_size in selected:
         run = COMPARISON_RUNS[model_size]
         model = MODEL_SIZE_PRESETS[model_size]
@@ -156,6 +299,8 @@ def main(argv: Iterable[str] | None = None) -> int:
                     run_stamp=run_stamp,
                     wandb_mode=args.wandb_mode,
                     execute=True,
+                    shard_root=shard_root,
+                    output_root=output_root,
                 )
             ),
             flush=True,
@@ -171,6 +316,8 @@ def main(argv: Iterable[str] | None = None) -> int:
                 run_stamp=run_stamp,
                 wandb_mode=args.wandb_mode,
                 execute=True,
+                shard_root=shard_root,
+                output_root=output_root,
             )
             print(
                 f"Starting comparison run {index}/{len(selected)}: {model_size}",
@@ -187,7 +334,15 @@ def main(argv: Iterable[str] | None = None) -> int:
             print(f"Completed comparison run {index}/{len(selected)}: {model_size}", flush=True)
         return 0
     os.environ["PYTHONDONTWRITEBYTECODE"] = "1"
-    resolved = trainer_argv(selected[0], run_stamp=run_stamp, wandb_mode=args.wandb_mode)
+    manifest_path = ensure_comparison_manifest(shard_root=shard_root, output_root=output_root)
+    resolved = trainer_argv(
+        selected[0],
+        run_stamp=run_stamp,
+        wandb_mode=args.wandb_mode,
+        shard_root=shard_root,
+        output_root=output_root,
+        manifest_path=manifest_path,
+    )
     equivalent = [sys.executable, "-B", "-m", "research.bar_gpt.v1.train", *resolved]
     print("Equivalent trainer command: " + " ".join(shlex.quote(item) for item in equivalent), flush=True)
     return int(train_main(resolved) or 0)

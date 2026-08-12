@@ -324,14 +324,25 @@ available for isolated diagnosis or an operator-controlled rerun.
 | Medium | 512 | 12 | 8 / 4 | 10 | 4 | 40 |
 | Large | 768 | 12 | 12 / 4 | 10 | 4 | 40 |
 
-All three use one epoch, dropout `0.08`, the same certified training/validation
-populations, the complete fixed 198-block 2026 validation panel, length bucket
-`16`, and W&B project `bar gpt model comparison`. The complete validation panel
-is required because a fixed batch-count cap would otherwise evaluate fewer
-blocks for the MB10 models than for Current at MB20. Run names use one consistent
-schema and include model size, microbatch, accumulation, bucket, and a timestamp.
-Checkpoint resume continues the original W&B run ID rather than creating a
-same-name replacement.
+All three use one frozen, hash-verified comparison manifest and therefore see
+the identical block population: at least 100 million training origins sampled
+across every catalog ticker from `[2019-01-01, 2026-01-01)`, a ticker-balanced
+monitor panel of at least 1 million origins, and a separate ticker-balanced
+validation panel of at least 5 million origins from
+`[2026-01-01, 2026-08-01)`. Monitor and validation reserve disjoint complete
+ticker-dates, and every catalog ticker is represented in all three panels.
+Whole 4,096-origin blocks are indivisible, so the recorded panel totals may
+slightly exceed their targets.
+
+The complete 1-million-origin monitor panel runs at 25, 50, and 75 million
+training origins under the `monitor_*` metric namespace. The complete
+5-million-origin validation panel runs once at the 100-million-origin epoch
+boundary under `validation_*`. Neither panel is truncated by model microbatch
+size. All runs use dropout `0.08`, a 4-million-origin warm-up, one cosine decay,
+length bucket `16`, and W&B project `bar gpt model comparison`. Run names use
+one consistent schema and include model size, microbatch, accumulation, bucket,
+and a timestamp. Checkpoint resume continues the original W&B run ID rather
+than creating a same-name replacement.
 
 ### Model-size and quality discovery campaign
 
