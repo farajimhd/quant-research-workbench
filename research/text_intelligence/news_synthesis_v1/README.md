@@ -143,3 +143,35 @@ are moved recoverably beneath `_archive` with a dry-run-first command:
 python -m research.text_intelligence.news_synthesis_v1.run_archive_stale_runtime_artifacts
 python -m research.text_intelligence.news_synthesis_v1.run_archive_stale_runtime_artifacts --apply
 ```
+
+## Qwen embedding supervision baseline
+
+`run_embedding_supervision.py` provides a reproducible learned baseline over the
+certified consolidated labels and durable `Qwen/Qwen3-Embedding-0.6B`
+embeddings. It keeps every article and all of its issuer units in one official
+partition, assigns 75% of embedding-complete articles to training and 25% to an
+untouched validation set, and uses a grouped tuning slice inside training for
+early stopping. Generated arrays, checkpoints, manifests, and reports are
+written only beneath `D:\TradingML\runtimes`.
+
+Run the stages independently:
+
+```powershell
+$env:PYTHONDONTWRITEBYTECODE='1'
+python -m research.text_intelligence.news_synthesis_v1.run_embedding_supervision prepare
+python -m research.text_intelligence.news_synthesis_v1.run_embedding_supervision train
+python -m research.text_intelligence.news_synthesis_v1.run_embedding_supervision evaluate
+```
+
+Or prepare and train in one invocation:
+
+```powershell
+$env:PYTHONDONTWRITEBYTECODE='1'
+python -m research.text_intelligence.news_synthesis_v1.run_embedding_supervision all
+```
+
+The evaluation JSON reports article and issuer forecast-eligibility metrics,
+four-class issuer sentiment metrics, and multilabel concept metrics with
+per-label support, precision, recall, F1, and accuracy where meaningful. The
+baseline is not a production replacement: rare concepts and unmatched
+ticker-specific embeddings remain explicit coverage limitations.
