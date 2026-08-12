@@ -64,6 +64,14 @@ from .tfidf_supervision_v9 import (
     analyze_clause_ir,
     tfidf_v9_feature_counts,
 )
+from .tfidf_supervision_v10 import (
+    V10_FIELD_BUDGETS,
+    _composition_features,
+    _metric_relation_features,
+    fit_v10_stable_vocabulary,
+    tfidf_v10_feature_counts,
+    v10_view_indexes,
+)
 
 
 class EmbeddingSupervisionTests(unittest.TestCase):
@@ -708,6 +716,84 @@ class EmbeddingSupervisionTests(unittest.TestCase):
             counts, vocabulary=vocabulary, idf=idf, view_indexes=views
         )
         np.testing.assert_allclose(sparse, dense, atol=1e-7)
+
+    def test_tfidf_v10_preserves_v9_feature_budget(self) -> None:
+        self.assertEqual(sum(V10_FIELD_BUDGETS.values()), sum(V9_FIELD_BUDGETS.values()))
+
+    def test_tfidf_v10_binds_metric_comparison_and_magnitude(self) -> None:
+        ir = analyze_clause_ir(
+            "Alpha revenue rose 12 percent year over year and beat consensus.",
+            aliases=("Alpha",),
+        )
+        features = _metric_relation_features(ir)
+        self.assertIn("metric_relation|metric:revenue|comparison:increase", features)
+        self.assertIn("metric_relation|metric:revenue|comparison:beat", features)
+        self.assertIn("metric_relation|metric:revenue|percent:10_to_25", features)
+
+    def test_tfidf_v10_composes_current_tradeoffs(self) -> None:
+        positive = analyze_clause_ir("Alpha reported revenue increased.", aliases=("Alpha",))[0]
+        negative = analyze_clause_ir("Alpha reported margin declined.", aliases=("Alpha",))[0]
+        features = _composition_features((positive, negative))
+        self.assertIn("evidence_composition|current_tradeoff:positive+negative", features)
+
+    def test_tfidf_v10_structured_families_have_separate_views(self) -> None:
+        vocabulary = {
+            "provider_title_word|u:alpha": 0,
+            "metric_relation|metric:revenue|comparison:beat": 1,
+            "evidence_composition|current_tradeoff:positive+negative": 2,
+            "cross_view_alignment|provider+normalized|event:earnings|role:same|time:same|direction:same": 3,
+            "evidence_position|issuer_in:title": 4,
+        }
+        views = v10_view_indexes(vocabulary)
+        self.assertEqual(views["provider"].tolist(), [0])
+        self.assertEqual(views["numeric"].tolist(), [1])
+        self.assertEqual(views["composition"].tolist(), [2])
+        self.assertEqual(views["agreement"].tolist(), [3])
+        self.assertEqual(views["position"].tolist(), [4])
+
+    def test_tfidf_v10_position_masking_requires_alias_boundaries(self) -> None:
+        features = tfidf_v10_feature_counts(
+            original_fields={
+                "title": "ON reported revenue increased",
+                "teaser": "",
+                "body": "Conditions improved across the market",
+            },
+            normalized_fields={"title": "", "teaser": "", "body": "", "external": "", "pdf": ""},
+            metadata_text="",
+            metadata_structural=Counter(),
+            ticker="ON",
+            aliases=("ON",),
+        )
+        self.assertIn("evidence_position|issuer_in:title", features)
+        self.assertNotIn("evidence_position|issuer_in:body", features)
+
+    def test_tfidf_v10_stability_selection_uses_training_sources_only(self) -> None:
+        counts = {}
+        training_sources = {f"source-{index:03d}" for index in range(80)}
+        for source_id in training_sources:
+            counts[(source_id, "ABC")] = Counter({"provider_title_word|u:stable": 1})
+        counts[("validation-only", "ABC")] = Counter(
+            {"provider_title_word|u:validation_leak": 1}
+        )
+        document_frequency = {
+            "provider_title_word": Counter(
+                {
+                    "provider_title_word|u:stable": 80,
+                    "provider_title_word|u:validation_leak": 1,
+                }
+            )
+        }
+        terms, _, report = fit_v10_stable_vocabulary(
+            document_frequency=document_frequency,
+            training_document_count=80,
+            min_document_frequency=3,
+            budgets={"provider_title_word": 16},
+            feature_counts=counts,
+            training_sources=training_sources,
+        )
+        self.assertIn("provider_title_word|u:stable", terms)
+        self.assertNotIn("provider_title_word|u:validation_leak", terms)
+        self.assertTrue(report["stability_selection"]["training_only"])
 
 
 if __name__ == "__main__":

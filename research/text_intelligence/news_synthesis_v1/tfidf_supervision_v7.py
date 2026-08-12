@@ -265,6 +265,10 @@ def fit_v7_vocabulary_from_document_frequency(
                 "predicate_role",
                 "state_transition",
                 "numeric_magnitude",
+                "metric_relation",
+                "evidence_composition",
+                "cross_view_alignment",
+                "evidence_position",
             }
             else min_document_frequency
         )

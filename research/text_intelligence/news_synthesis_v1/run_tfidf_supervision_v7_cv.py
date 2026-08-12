@@ -84,6 +84,7 @@ class CrossValidationFeatureSpec:
     budgets: Mapping[str, int]
     view_indexes: Callable[[Mapping[str, int]], Mapping[str, np.ndarray]]
     feature_metadata: Mapping[str, Any]
+    vocabulary_fitter: Callable[..., tuple[tuple[str, ...], np.ndarray, dict[str, Any]]] | None = None
 
 
 V7_CV_FEATURE_SPEC = CrossValidationFeatureSpec(
@@ -289,12 +290,22 @@ def _prepare_fold_dataset(
         training_document_count += 1
         for term in counts:
             document_frequency[term.split("|", 1)[0]][term] += 1
-    terms, idf, feature_report = fit_v7_vocabulary_from_document_frequency(
-        document_frequency,
-        training_document_count=training_document_count,
-        min_document_frequency=min_document_frequency,
-        budgets=feature_spec.budgets,
-    )
+    if feature_spec.vocabulary_fitter is None:
+        terms, idf, feature_report = fit_v7_vocabulary_from_document_frequency(
+            document_frequency,
+            training_document_count=training_document_count,
+            min_document_frequency=min_document_frequency,
+            budgets=feature_spec.budgets,
+        )
+    else:
+        terms, idf, feature_report = feature_spec.vocabulary_fitter(
+            document_frequency=document_frequency,
+            training_document_count=training_document_count,
+            min_document_frequency=min_document_frequency,
+            budgets=feature_spec.budgets,
+            feature_counts=feature_counts,
+            training_sources=training_sources,
+        )
     vocabulary = {term: index for index, term in enumerate(terms)}
     view_indexes = feature_spec.view_indexes(vocabulary)
     vectors = {
@@ -749,7 +760,8 @@ def run_cross_validation(
             "official_validation_excluded": True,
             "vocabulary_and_idf_refit_per_fold": True,
             "internal_tuning_within_fold_training_only": True,
-            "same_v7_feature_definition": True,
+            "feature_definition_frozen_before_cv": True,
+            "same_v7_feature_definition": feature_spec is V7_CV_FEATURE_SPEC,
             "same_model_and_training_configuration": True,
         },
         "source_report": source_report,

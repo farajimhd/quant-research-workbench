@@ -286,6 +286,7 @@ def tfidf_v9_feature_counts(
     metadata_structural: Counter[str],
     ticker: str,
     aliases: Sequence[str],
+    clause_ir: Mapping[str, Sequence[ClauseIR]] | None = None,
 ) -> Counter[str]:
     provider = {
         name: anonymize_issuer_mentions(
@@ -298,10 +299,11 @@ def tfidf_v9_feature_counts(
     normalized_text = "\n".join(str(normalized_provider.get(name) or "") for name in ("title", "teaser", "body"))
     external_text = str(normalized_fields.get("external") or "")
     pdf_text = str(normalized_fields.get("pdf") or "")
-    provider_ir = analyze_clause_ir(provider_text, aliases=aliases)
-    normalized_ir = analyze_clause_ir(normalized_text, aliases=aliases)
-    external_ir = analyze_clause_ir(external_text, aliases=aliases)
-    pdf_ir = analyze_clause_ir(pdf_text, aliases=aliases)
+    clause_ir = clause_ir or {}
+    provider_ir = tuple(clause_ir["provider"]) if "provider" in clause_ir else analyze_clause_ir(provider_text, aliases=aliases)
+    normalized_ir = tuple(clause_ir["normalized"]) if "normalized" in clause_ir else analyze_clause_ir(normalized_text, aliases=aliases)
+    external_ir = tuple(clause_ir["external"]) if "external" in clause_ir else analyze_clause_ir(external_text, aliases=aliases)
+    pdf_ir = tuple(clause_ir["pdf"]) if "pdf" in clause_ir else analyze_clause_ir(pdf_text, aliases=aliases)
     enrichment_ir = (*external_ir, *pdf_ir)
     provider_local = " ".join(row.masked for row in provider_ir)
     external_local = " ".join(row.masked for row in external_ir)
@@ -377,6 +379,7 @@ def prepare_sparse_feature_dataset(
     view_indexes: Callable[[Mapping[str, int]], Mapping[str, np.ndarray]],
     dataset_version: str,
     representation_kind: str,
+    vocabulary_fitter: Callable[..., tuple[tuple[str, ...], np.ndarray, dict[str, Any]]] | None = None,
     raw_drive_root: Path = DEFAULT_RAW_DRIVE_ROOT,
     source_database: str = "q_live",
     min_document_frequency: int = 3,
@@ -443,12 +446,22 @@ def prepare_sparse_feature_dataset(
         training_documents += 1
         for term in counts:
             document_frequency[term.split("|", 1)[0]][term] += 1
-    terms, idf, feature_report = fit_v7_vocabulary_from_document_frequency(
-        document_frequency,
-        training_document_count=training_documents,
-        min_document_frequency=min_document_frequency,
-        budgets=budgets,
-    )
+    if vocabulary_fitter is None:
+        terms, idf, feature_report = fit_v7_vocabulary_from_document_frequency(
+            document_frequency,
+            training_document_count=training_documents,
+            min_document_frequency=min_document_frequency,
+            budgets=budgets,
+        )
+    else:
+        terms, idf, feature_report = vocabulary_fitter(
+            document_frequency=document_frequency,
+            training_document_count=training_documents,
+            min_document_frequency=min_document_frequency,
+            budgets=budgets,
+            feature_counts=feature_counts,
+            training_sources=training_sources,
+        )
     vocabulary = {term: index for index, term in enumerate(terms)}
     views = view_indexes(vocabulary)
     index_view = {int(index): view for view, indexes in views.items() for index in indexes}
