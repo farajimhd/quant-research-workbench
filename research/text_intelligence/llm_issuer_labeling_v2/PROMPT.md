@@ -1,5 +1,8 @@
 # Standalone LLM Issuer-News Labeling Prompt V2
 
+> Superseded by `research/text_intelligence/llm_issuer_labeling_v3/PROMPT.md`,
+> which replaces copied evidence quotes with compact sentence IDs.
+
 This compact contract uses only fixed issuer-level tags. The LLM extracts
 issuers and labels each issuer independently.
 
