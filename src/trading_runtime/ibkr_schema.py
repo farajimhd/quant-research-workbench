@@ -115,6 +115,12 @@ class OrderRequest:
         payload = asdict(self)
         raw = payload.pop("raw", {})
         payload.update(raw)
+        # Canonical runtime lineage is persisted by the journal and simulated
+        # broker. It is not part of IBKR's order schema and must never be sent
+        # as an algo strategy or as unknown top-level CPAPI fields.
+        for key in tuple(payload):
+            if key.startswith("canonical_"):
+                payload.pop(key, None)
         payload["strategyParameters"] = list(self.strategyParameters)
         if not include_account:
             payload.pop("acctId", None)

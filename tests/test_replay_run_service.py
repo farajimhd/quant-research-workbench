@@ -44,6 +44,7 @@ from src.trading_runtime.strategy_engine import (
     default_long_momentum_parameters,
 )
 from src.trading_runtime.strategy_orders import RuntimeIbkrStrategyOrderPlanner
+from src.trading_runtime.signals import StrategyIntent
 from src.trading_runtime.runtime import RunMode
 
 
@@ -907,6 +908,8 @@ class ReplayHistoricalFetchBudgetTests(unittest.IsolatedAsyncioTestCase):
         ]
         controller._strategy = MagicMock()
         controller._strategy.assignments.return_value = assignments
+        controller._strategy_registration = MagicMock()
+        controller._strategy_registration.timeframe_resolver.return_value = {"1m"}
         active = 0
         maximum_active = 0
 
@@ -920,10 +923,6 @@ class ReplayHistoricalFetchBudgetTests(unittest.IsolatedAsyncioTestCase):
 
         signal_rows = {f"T{index}": [] for index in range(12)}
         with (
-            patch(
-                "src.backend.replay_run_service.strategy_rule_timeframes",
-                return_value={"1m"},
-            ),
             patch(
                 "src.backend.replay_run_service._historical_derived_frames",
                 side_effect=derived,
@@ -1685,6 +1684,7 @@ class ReplaySharedAbstractionTests(unittest.TestCase):
             {},
             strategy_id=STRATEGY_ID,
             strategy_revision=STRATEGY_REVISION,
+            run_id="replay-run",
         )
         planner.upsert_instrument(
             InstrumentContract(
@@ -1698,6 +1698,39 @@ class ReplaySharedAbstractionTests(unittest.TestCase):
         )
 
         self.assertEqual(planner.instruments["AAPL"].conid, 265598)
+
+    def test_runtime_planner_keeps_strategy_lineage_out_of_cpapi_payload(self) -> None:
+        planner = RuntimeIbkrStrategyOrderPlanner(
+            {
+                "AAPL": InstrumentContract(
+                    instrument_id="simulated:265598",
+                    conid=265598,
+                    symbol="AAPL",
+                    security_type="STK",
+                    currency="USD",
+                    exchange="SMART",
+                )
+            },
+            strategy_id=STRATEGY_ID,
+            strategy_revision=STRATEGY_REVISION,
+            run_id="replay-run",
+        )
+        intent = StrategyIntent(
+            intent_id="intent-1",
+            ticker="AAPL",
+            action="reduce_long",
+            quantity=1.0,
+            reference_price=100.0,
+            reason="test",
+            event_time=datetime(2026, 7, 28, 9, 45, tzinfo=NEW_YORK),
+            metadata={"assignment_id": "assignment-1"},
+        )
+
+        order = planner.plan(intent=intent, account_id="SIM-REPLAY", event=None).orders[0]
+
+        self.assertEqual(order.raw["canonical_run_id"], "replay-run")
+        self.assertNotIn("strategy", order.to_cpapi())
+        self.assertFalse(any(key.startswith("canonical_") for key in order.to_cpapi()))
 
     def test_assignment_commands_update_shared_strategy_state(self) -> None:
         observed_at = datetime(2026, 7, 28, 9, 45, tzinfo=NEW_YORK)

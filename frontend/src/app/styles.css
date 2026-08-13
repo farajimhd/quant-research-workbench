@@ -19410,7 +19410,14 @@ button {
   font-weight: 700;
 }
 
-.replay-definition-fields input {
+.replay-definition-fields input,
+.replay-definition-fields select {
+  background: var(--control-bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--foreground);
+  min-height: 38px;
+  padding: 7px 9px;
   min-width: 0;
   width: 100%;
 }

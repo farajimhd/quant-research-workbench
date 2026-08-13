@@ -50,6 +50,8 @@ type ReplayPreflight = {
   configuration_revision_id: string;
   canvas_profile: Record<string, unknown>;
   ready: boolean;
+  run_plan_id: string;
+  available_run_plans: Array<{ name: string; profile_id: string; run_plan_id: string; strategy_id: string; strategy_revision: number }>;
   tickers: string[];
 };
 
@@ -66,6 +68,7 @@ export function ReplayTradingPage() {
   const [refreshKey, setRefreshKey] = useState(0);
   const [run, setRun] = useState<CanvasReplayRun | null>(null);
   const [recentRuns, setRecentRuns] = useState<CanvasReplayRun[]>([]);
+  const [runPlanId, setRunPlanId] = useState("");
   const replayReady = Boolean(preflight?.ready);
 
   useEffect(() => {
@@ -99,6 +102,7 @@ export function ReplayTradingPage() {
         body: JSON.stringify({
           configuration_revision_id: preflight?.configuration_revision_id ?? "",
           initial_cash: initialCash,
+          run_plan_id: runPlanId,
           session_date: sessionDate,
           start_time: startTime,
         }),
@@ -106,7 +110,10 @@ export function ReplayTradingPage() {
         timeoutMs: 60_000,
       })
         .then((payload) => {
-          if (!cancelled) setPreflight(payload);
+          if (!cancelled) {
+            setPreflight(payload);
+            if (!runPlanId && payload.run_plan_id) setRunPlanId(payload.run_plan_id);
+          }
         })
         .catch((reason) => {
           if (!cancelled) {
@@ -122,7 +129,7 @@ export function ReplayTradingPage() {
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [initialCash, refreshKey, run, sessionDate, startTime]);
+  }, [initialCash, refreshKey, run, runPlanId, sessionDate, startTime]);
 
   useReplayRunEvents(
     run?.run_id,
@@ -139,6 +146,7 @@ export function ReplayTradingPage() {
         body: JSON.stringify({
           configuration_revision_id: preflight?.configuration_revision_id,
           initial_cash: initialCash,
+          run_plan_id: runPlanId,
           session_date: sessionDate,
           start_time: startTime,
         }),
@@ -188,6 +196,11 @@ export function ReplayTradingPage() {
               <button className="button secondary compact" disabled={checking} onClick={() => setRefreshKey((value) => value + 1)} type="button"><RefreshCcw size={14} /> Check again</button>
             </header>
             <div className="replay-definition-fields">
+              <label>
+                <span>Strategy Run Plan</span>
+                <select aria-label="Strategy Run Plan" onChange={(event) => setRunPlanId(event.target.value)} value={runPlanId}>{(preflight?.available_run_plans ?? []).map((plan) => <option key={plan.run_plan_id} value={plan.run_plan_id}>{plan.name} · {plan.strategy_id} r{plan.strategy_revision}</option>)}</select>
+                <small>The selected published profile and exact installed executor revision are pinned to this run.</small>
+              </label>
               <label>
                 <span>Exchange date</span>
                 <input onChange={(event) => setSessionDate(event.target.value)} type="date" value={sessionDate} />

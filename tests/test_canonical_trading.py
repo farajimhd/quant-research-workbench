@@ -291,11 +291,17 @@ class CanonicalAdapterTests(unittest.IsolatedAsyncioTestCase):
             time_in_force="DAY",
             quantity=Decimal("5"),
             limit_price=Decimal("100"),
+            run_id="run-1",
+            strategy_id="dynamic-strategy",
+            strategy_revision=2,
             created_at=NOW,
         )
         request = intent_to_ibkr_request(intent)
         self.assertEqual(request.acctId, "SIM")
         self.assertEqual(request.price, 100.0)
+        self.assertEqual(request.raw["canonical_strategy_id"], "dynamic-strategy")
+        self.assertNotIn("strategy", request.to_cpapi())
+        self.assertFalse(any(key.startswith("canonical_") for key in request.to_cpapi()))
         events = await broker.submit_intents("SIM", [intent])
         self.assertEqual([row.event_type for row in events], [BrokerEventType.ORDER_COMMAND, BrokerEventType.ORDER_ACKNOWLEDGED])
         self.assertEqual(events[-1].mode, TradingMode.BACKTEST)

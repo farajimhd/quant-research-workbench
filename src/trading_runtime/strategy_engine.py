@@ -239,10 +239,8 @@ class StrategyAssignment:
     def __post_init__(self) -> None:
         if not self.assignment_id or not self.account_id or not self.ticker:
             raise ValueError("Strategy assignment identity, account, and ticker are required")
-        if self.strategy_id != STRATEGY_ID:
-            raise ValueError(f"Unsupported strategy assignment: {self.strategy_id}")
-        if self.strategy_revision != STRATEGY_REVISION:
-            raise ValueError(f"Unsupported strategy revision: {self.strategy_revision}")
+        if not self.strategy_id or self.strategy_revision <= 0:
+            raise ValueError("Strategy assignment requires a versioned Strategy identity")
         if self.conid <= 0:
             raise ValueError("Strategy assignment conid must be positive")
 

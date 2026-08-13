@@ -271,10 +271,10 @@ class RuntimeIbkrStrategyOrderPlanner:
         enriched_by_identity = {
             id(order): replace(
                 order,
-                strategy=self.strategy_id,
                 raw={
                     **dict(order.raw),
                     "canonical_run_id": self.run_id,
+                    "canonical_strategy_id": self.strategy_id,
                     "canonical_strategy_revision": self.strategy_revision,
                     "canonical_metadata": {
                         **dict(intent.metadata),

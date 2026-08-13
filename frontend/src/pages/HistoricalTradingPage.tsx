@@ -22,6 +22,8 @@ type HistoricalPreflight = {
   configuration_revision_id: string;
   configuration_revision: number;
   configuration_content_hash: string;
+  run_plan_id: string;
+  available_run_plans: Array<{ name: string; profile_id: string; run_plan_id: string; strategy_id: string; strategy_revision: number }>;
   window: {
     end: string;
     session_count: number;
@@ -72,6 +74,7 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
   const [comparison, setComparison] = useState<BacktestComparison | null>(null);
   const [comparisonError, setComparisonError] = useState("");
   const [controlBusy, setControlBusy] = useState("");
+  const [runPlanId, setRunPlanId] = useState("");
 
   useEffect(() => {
     let cancelled = false;
@@ -82,13 +85,17 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
         body: JSON.stringify({
           anchor_date: anchorDate,
           mode,
+          run_plan_id: runPlanId,
           session_count: sessionCount,
         }),
         method: "POST",
         timeoutMs: 60_000,
       })
         .then((payload) => {
-          if (!cancelled) setPreflight(payload);
+          if (!cancelled) {
+            setPreflight(payload);
+            if (!runPlanId && payload.run_plan_id) setRunPlanId(payload.run_plan_id);
+          }
         })
         .catch((reason) => {
           if (!cancelled) {
@@ -104,7 +111,7 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [anchorDate, mode, refreshKey, sessionCount]);
+  }, [anchorDate, mode, refreshKey, runPlanId, sessionCount]);
 
   useEffect(() => {
     if (!run || ["completed", "stopped", "failed"].includes(run.status)) return;
@@ -140,6 +147,7 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
           anchor_date: anchorDate,
           configuration_revision_id: preflight.configuration_revision_id,
           initial_cash: initialCash,
+          run_plan_id: runPlanId,
           session_count: sessionCount,
         }),
         method: "POST",
@@ -217,6 +225,7 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
               <button className="button secondary" disabled={checking} onClick={() => setRefreshKey((value) => value + 1)} type="button"><RefreshCcw size={16} /> Check again</button>
             </header>
             <div className="historical-large-fields">
+              <label><span>Strategy Run Plan</span><select aria-label="Strategy Run Plan" onChange={(event) => setRunPlanId(event.target.value)} value={runPlanId}>{(preflight?.available_run_plans ?? []).map((plan) => <option key={plan.run_plan_id} value={plan.run_plan_id}>{plan.name} · {plan.strategy_id} r{plan.strategy_revision}</option>)}</select><small>The exact Strategy Studio profile and installed executor revision used for this Backtest.</small></label>
               <label><span>Anchor date · exclusive</span><input onChange={(event) => setAnchorDate(event.target.value)} type="date" value={anchorDate} /><small>The selected date is never included in the result window.</small></label>
               <label><span>Prior exchange sessions</span><input max={260} min={1} onChange={(event) => setSessionCount(Math.max(1, Number(event.target.value) || 1))} type="number" value={sessionCount} /><small>Resolved backward from the exclusive anchor.</small></label>
               <label><span>Initial cash</span><input max={1_000_000_000} min={1_000} onChange={(event) => setInitialCash(Math.max(1_000, Number(event.target.value) || 1_000))} step={1_000} type="number" value={initialCash} /><small>Applied to each isolated simulated account for the full run.</small></label>

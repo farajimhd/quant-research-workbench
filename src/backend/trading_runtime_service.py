@@ -28,14 +28,14 @@ from src.trading_runtime.runtime import RunMode
 from src.trading_runtime.taxonomy import StrategyTaxonomy, taxonomy_catalog_payload
 from src.trading_runtime.strategy_engine import (
     AssignmentStatus,
-    LongMomentumStrategyEngine,
-    STRATEGY_ID,
-    STRATEGY_REVISION,
     StrategyAssignment,
     StrategyObservation,
     StrategyPermissions,
-    long_momentum_strategy_definition,
-    resolve_long_momentum_parameters,
+)
+from src.trading_runtime.strategy_registry import (
+    installed_strategy_definitions,
+    strategy_executor,
+    strategy_executor_optional,
 )
 from src.trading_runtime.strategy_campaign import (
     StrategyCampaignOrchestrator,
@@ -82,15 +82,21 @@ def save_strategy_definition(payload: dict[str, Any]) -> dict[str, Any]:
     if not strategy_id or not name or not implementation:
         raise ValueError("strategy_id, name, and implementation are required")
     revision = int(payload.get("revision") or 0)
+    if revision <= 0:
+        raise ValueError(
+            "Strategy definitions are immutable installed executor revisions; revision is required"
+        )
+    registration = strategy_executor(strategy_id, revision)
+    if implementation != registration.implementation:
+        raise ValueError(
+            f"Strategy definition implementation does not match installed executor {strategy_id}@{revision}"
+        )
     automatic = bool(payload.get("automatic", True))
     config = dict(payload.get("config") or {})
     taxonomy = StrategyTaxonomy.from_payload(payload.get("taxonomy") or config.get("taxonomy"))
     if automatic and not (taxonomy.indicators or taxonomy.signals):
         raise ValueError("Automatic strategies must declare at least one indicator or signal input")
     config["taxonomy"] = taxonomy.payload()
-    if revision <= 0:
-        existing = trading_journal().strategy(strategy_id)
-        revision = int(existing["revision"]) + 1 if existing else 1
     trading_journal().save_strategy(
         strategy_id=strategy_id,
         revision=revision,
@@ -105,11 +111,22 @@ def save_strategy_definition(payload: dict[str, Any]) -> dict[str, Any]:
 
 def list_strategy_definitions(latest_only: bool = True) -> list[dict[str, Any]]:
     ensure_builtin_strategy_definition()
-    return [
+    rows = [
         _strategy_definition_payload(row)
         for row in trading_journal().strategies(latest_only=latest_only)
-        if row.get("strategy_id") == STRATEGY_ID
     ]
+    for row in rows:
+        registration = strategy_executor_optional(
+            str(row.get("strategy_id") or ""), int(row.get("revision") or 0)
+        )
+        row["executor"] = {
+            "installed": registration is not None,
+            "schema_version": (
+                registration.executor_schema_version if registration is not None else None
+            ),
+            "key": f"{row.get('strategy_id')}@{row.get('revision')}",
+        }
+    return rows
 
 
 def get_strategy_definition(strategy_id: str, revision: int | None = None) -> dict[str, Any]:
@@ -117,7 +134,18 @@ def get_strategy_definition(strategy_id: str, revision: int | None = None) -> di
     result = trading_journal().strategy(strategy_id, revision)
     if result is None:
         raise KeyError(strategy_id)
-    return _strategy_definition_payload(result)
+    payload = _strategy_definition_payload(result)
+    registration = strategy_executor_optional(
+        str(payload.get("strategy_id") or ""), int(payload.get("revision") or 0)
+    )
+    payload["executor"] = {
+        "installed": registration is not None,
+        "schema_version": (
+            registration.executor_schema_version if registration is not None else None
+        ),
+        "key": f"{payload.get('strategy_id')}@{payload.get('revision')}",
+    }
+    return payload
 
 
 def trading_taxonomy_catalog() -> dict[str, Any]:
@@ -125,11 +153,12 @@ def trading_taxonomy_catalog() -> dict[str, Any]:
 
 
 def ensure_builtin_strategy_definition() -> None:
-    definition = long_momentum_strategy_definition()
     with BUILTIN_STRATEGY_LOCK:
-        if trading_journal().strategy(STRATEGY_ID, STRATEGY_REVISION) is not None:
-            return
-        save_strategy_definition(definition)
+        for definition in installed_strategy_definitions():
+            strategy_id = str(definition["strategy_id"])
+            revision = int(definition["revision"])
+            if trading_journal().strategy(strategy_id, revision) is None:
+                save_strategy_definition(definition)
 
 
 def create_strategy_assignment(payload: dict[str, Any]) -> dict[str, Any]:
@@ -145,6 +174,9 @@ def create_strategy_assignment(payload: dict[str, Any]) -> dict[str, Any]:
     )
     now = datetime.now(ZoneInfo("UTC"))
     ticker = str(payload.get("ticker") or "").strip().upper()
+    strategy_id = str(payload.get("strategy_id") or "").strip()
+    strategy_revision = int(payload.get("strategy_revision") or 0)
+    registration = strategy_executor(strategy_id, strategy_revision)
     state = dict(payload.get("state") or {})
     side = str(
         payload.get("side")
@@ -154,7 +186,7 @@ def create_strategy_assignment(payload: dict[str, Any]) -> dict[str, Any]:
     ).lower()
     state.update(
         campaign_state(
-            campaign_id=str(payload.get("campaign_id") or state.get("campaign_id") or f"{payload.get('strategy_id') or STRATEGY_ID}:{ticker}:{side}"),
+            campaign_id=str(payload.get("campaign_id") or state.get("campaign_id") or f"{strategy_id}:{ticker}:{side}"),
             deployment_id=str(payload.get("deployment_id") or state.get("campaign_deployment_id") or ""),
             profile_id=str(payload.get("profile_id") or state.get("campaign_profile_id") or ""),
             book_id=str(payload.get("book_id") or state.get("campaign_book_id") or "default"),
@@ -166,14 +198,16 @@ def create_strategy_assignment(payload: dict[str, Any]) -> dict[str, Any]:
         state["campaign_policy"] = dict(payload["campaign_policy"])
     assignment = StrategyAssignment(
         assignment_id=str(payload.get("assignment_id") or uuid4()),
-        strategy_id=str(payload.get("strategy_id") or STRATEGY_ID),
-        strategy_revision=int(payload.get("strategy_revision") or STRATEGY_REVISION),
+        strategy_id=strategy_id,
+        strategy_revision=strategy_revision,
         account_id=str(payload.get("account_id") or "").strip(),
         ticker=ticker,
         conid=int(payload.get("conid") or 0),
         status=AssignmentStatus(str(payload.get("status") or AssignmentStatus.WATCHING)),
         permissions=permissions,
-        parameters=resolve_long_momentum_parameters(dict(payload.get("parameters") or {})),
+        parameters=registration.parameter_resolver(
+            dict(payload.get("parameters") or {})
+        ),
         state=state,
         source=str(payload.get("source") or "order_entry"),
         created_at=now,
@@ -302,7 +336,9 @@ def evaluate_strategy_assignment(assignment_id: str, payload: dict[str, Any]) ->
     observation_payload["observed_at"] = _aware_datetime(observation_payload.get("observed_at"))
     assignment = replace(assignment, state=state)
     observation = StrategyObservation(**observation_payload)
-    result = LongMomentumStrategyEngine().evaluate(assignment, observation)
+    result = strategy_executor(
+        assignment.strategy_id, assignment.strategy_revision
+    ).assignment_evaluator(assignment, observation)
     now = datetime.now(ZoneInfo("UTC"))
     updated = replace(assignment, state=result.state, status=result.status, updated_at=now)
     trading_journal().save_strategy_assignment(updated.payload())
@@ -352,9 +388,36 @@ def evaluate_strategy_assignment(assignment_id: str, payload: dict[str, Any]) ->
 
 def strategy_canvas_payload(*, as_of: datetime, ticker: str) -> dict[str, Any]:
     ensure_builtin_strategy_definition()
-    definition = get_strategy_definition(STRATEGY_ID, STRATEGY_REVISION)
+    assignments = trading_journal().strategy_assignments(ticker=ticker)
+    active = next(
+        (
+            row
+            for row in assignments
+            if row["status"] not in {"disabled", "completed", "error"}
+            and strategy_executor_optional(
+                str(row.get("strategy_id") or ""),
+                int(row.get("strategy_revision") or 0),
+            )
+            is not None
+        ),
+        None,
+    )
+    definition = (
+        get_strategy_definition(
+            str(active["strategy_id"]), int(active["strategy_revision"])
+        )
+        if active is not None
+        else next(
+            row
+            for row in list_strategy_definitions()
+            if bool(dict(row.get("executor") or {}).get("installed"))
+        )
+    )
     records = trading_journal().strategy_records(
-        ticker=ticker, strategy_id=STRATEGY_ID, as_of=as_of, limit=5000
+        ticker=ticker,
+        strategy_id=str(definition["strategy_id"]),
+        as_of=as_of,
+        limit=5000,
     )
     decisions = []
     for record in records:
@@ -371,7 +434,6 @@ def strategy_canvas_payload(*, as_of: datetime, ticker: str) -> dict[str, Any]:
                 "reference_price": record.payload.get("reference_price") or metadata.get("reference_price"),
             }
         )
-    assignments = trading_journal().strategy_assignments(ticker=ticker)
     order_management = [
         {
             **record.payload,
@@ -383,20 +445,11 @@ def strategy_canvas_payload(*, as_of: datetime, ticker: str) -> dict[str, Any]:
         }
         for record in trading_journal().order_management_records(
             ticker=ticker,
-            strategy_id=STRATEGY_ID,
+            strategy_id=str(definition["strategy_id"]),
             as_of=as_of,
             limit=1000,
         )
     ]
-    active = next(
-        (
-            row
-            for row in assignments
-            if int(row["strategy_revision"]) == STRATEGY_REVISION
-            and row["status"] not in {"disabled", "completed", "error"}
-        ),
-        None,
-    )
     return {
         "fixture": False,
         "strategy_id": definition["strategy_id"],

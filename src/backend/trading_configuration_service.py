@@ -7,7 +7,7 @@ import time
 from copy import deepcopy
 from dataclasses import asdict
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from uuid import uuid4
 
 from dotenv import load_dotenv
@@ -19,6 +19,7 @@ from src.backend.application_registry import (
 from src.backend.qmd_gateway_client import qmd_catalogs
 from src.backend.trading_runtime_service import (
     get_strategy_definition,
+    list_strategy_definitions,
     list_strategy_assignments,
     trading_journal,
 )
@@ -36,8 +37,11 @@ from src.trading_runtime.strategy_engine import (
     STRATEGY_REVISION,
     default_entry_decision_rules,
     default_long_momentum_parameters,
-    resolve_long_momentum_parameters,
-    strategy_input_catalog,
+)
+from src.trading_runtime.strategy_registry import (
+    installed_strategy_input_catalog,
+    strategy_executor,
+    strategy_executor_optional,
 )
 from src.trading_runtime.strategy_campaign import validate_campaign_policy
 from src.trading_runtime.taxonomy import StrategyTaxonomy
@@ -335,19 +339,29 @@ def publish_configuration(
     return published
 
 
-def replay_configuration_snapshot() -> dict[str, Any]:
+def replay_configuration_snapshot(run_plan_id: str = "") -> dict[str, Any]:
+    if run_plan_id:
+        return approved_runtime_configuration_snapshot("replay", run_plan_id=run_plan_id)
     return approved_runtime_configuration_snapshot("replay")
 
 
-def backtest_configuration_snapshot() -> dict[str, Any]:
+def backtest_configuration_snapshot(run_plan_id: str = "") -> dict[str, Any]:
+    if run_plan_id:
+        return approved_runtime_configuration_snapshot("backtest", run_plan_id=run_plan_id)
     return approved_runtime_configuration_snapshot("backtest")
 
 
-def backtest_debug_configuration_snapshot() -> dict[str, Any]:
+def backtest_debug_configuration_snapshot(run_plan_id: str = "") -> dict[str, Any]:
+    if run_plan_id:
+        return approved_runtime_configuration_snapshot(
+            "backtest_debug", run_plan_id=run_plan_id
+        )
     return approved_runtime_configuration_snapshot("backtest_debug")
 
 
-def approved_runtime_configuration_snapshot(mode: str) -> dict[str, Any]:
+def approved_runtime_configuration_snapshot(
+    mode: str, *, run_plan_id: str = ""
+) -> dict[str, Any]:
     if mode not in SUPPORTED_MODES:
         raise ValueError(f"Unsupported trading configuration mode: {mode}")
     approved = approved_configuration(required=True)
@@ -359,29 +373,17 @@ def approved_runtime_configuration_snapshot(mode: str) -> dict[str, Any]:
     runtimes = resolve_runtime_configurations(model, mode=mode)
     if not runtimes:
         raise ValueError(f"No enabled Strategy Run Plan supports {mode}")
-    runtime_payload = deepcopy(runtimes[0])
-    runtime_payload["run_plans"] = [
-        deepcopy(runtime["run_plan"]) for runtime in runtimes
-    ]
-    runtime_payload["universes"] = [
-        deepcopy(runtime["universe"]) for runtime in runtimes
-    ]
-    runtime_payload["assignments"] = [
-        deepcopy(assignment)
-        for runtime in runtimes
-        for assignment in runtime["assignments"]
-    ]
-    runtime_payload["portfolio"]["mandates"] = [
-        deepcopy(mandate)
-        for runtime in runtimes
-        for mandate in runtime["portfolio"]["mandates"]
-    ]
-    binding_by_key = {
-        str(binding["account_key"]): deepcopy(binding)
-        for runtime in runtimes
-        for binding in runtime["accounts"]["bindings"]
-    }
-    runtime_payload["accounts"]["bindings"] = list(binding_by_key.values())
+    selected = next(
+        (
+            runtime
+            for runtime in runtimes
+            if str(runtime["run_plan"].get("run_plan_id") or "") == run_plan_id
+        ),
+        runtimes[0] if not run_plan_id else None,
+    )
+    if selected is None:
+        raise ValueError(f"No enabled Strategy Run Plan named {run_plan_id} supports {mode}")
+    runtime_payload = deepcopy(selected)
     runtime_payload["canvas"] = deepcopy(model["canvas"])
     return {
         "revision_id": approved["revision_id"],
@@ -392,6 +394,16 @@ def approved_runtime_configuration_snapshot(mode: str) -> dict[str, Any]:
         "schema_version": CONFIGURATION_SCHEMA_VERSION,
         "mode": mode,
         "run_plan_id": runtime_payload["run_plan"]["run_plan_id"],
+        "available_run_plans": [
+            {
+                "run_plan_id": str(runtime["run_plan"]["run_plan_id"]),
+                "name": str(runtime["run_plan"].get("name") or ""),
+                "strategy_id": str(runtime["strategy"]["strategy_id"]),
+                "strategy_revision": int(runtime["strategy"]["revision"]),
+                "profile_id": str(runtime["strategy"].get("profile_id") or ""),
+            }
+            for runtime in runtimes
+        ],
         "configuration_model": model,
         "payload": runtime_payload,
     }
@@ -2135,7 +2147,7 @@ def _default_market_discovery(
         *_discovery_reference_capabilities(),
     ]
     seen: set[str] = {str(row["capability_id"]) for row in calculation_rows}
-    for source in strategy_input_catalog():
+    for source in installed_strategy_input_catalog():
         capability_id = str(source.get("source_id") or "")
         if not capability_id or capability_id in seen:
             continue
@@ -2262,6 +2274,28 @@ def _default_profile_composition() -> dict[str, Any]:
     }
 
 
+def _strategy_definition_summary(definition: dict[str, Any]) -> dict[str, Any]:
+    config = dict(definition.get("config") or {})
+    executor = dict(definition.get("executor") or {})
+    return {
+        "strategy_id": str(definition.get("strategy_id") or ""),
+        "revision": int(definition.get("revision") or 0),
+        "name": str(definition.get("name") or ""),
+        "automatic": bool(definition.get("automatic", True)),
+        "direction": str(config.get("direction") or ""),
+        "supported_sides": list(config.get("supported_sides") or ["long"]),
+        "executor_installed": bool(executor.get("installed")),
+        "executor_key": str(executor.get("key") or ""),
+        "executor_schema_version": executor.get("schema_version"),
+        "parameter_defaults": deepcopy(dict(config.get("parameters") or {})),
+        "input_source_ids": [
+            str(row.get("source_id") or "")
+            for row in config.get("input_catalog") or []
+            if str(row.get("source_id") or "")
+        ],
+    }
+
+
 def _default_draft() -> dict[str, Any]:
     definition = get_strategy_definition(STRATEGY_ID, STRATEGY_REVISION)
     parameters = deepcopy(definition.get("config", {}).get("parameters") or default_long_momentum_parameters())
@@ -2349,19 +2383,9 @@ def _default_draft() -> dict[str, Any]:
         "schema_version": CONFIGURATION_SCHEMA_VERSION,
         "strategy": {
             "default_profile_id": "long-momentum-balanced",
-            "definitions": [{
-                "strategy_id": definition["strategy_id"],
-                "revision": int(definition["revision"]),
-                "name": definition["name"],
-                "automatic": bool(definition.get("automatic", True)),
-                "direction": str(dict(definition.get("config") or {}).get("direction") or ""),
-                "supported_sides": list(
-                    dict(definition.get("config") or {}).get("supported_sides")
-                    or ["long"]
-                ),
-            }],
+            "definitions": [_strategy_definition_summary(row) for row in list_strategy_definitions()],
             "capability_catalog": capability_catalog(),
-            "input_catalog": strategy_input_catalog(),
+            "input_catalog": installed_strategy_input_catalog(),
             "profile_templates": profile_templates,
             "profiles": system_profiles,
         },
@@ -2776,13 +2800,22 @@ def _validate_draft(draft: dict[str, Any], *, require_runtime_ready: bool = True
         )
         if not definition.get("enabled", True):
             raise ValueError(f"Strategy definition for {profile.get('name')} is disabled")
+        registration = strategy_executor(
+            str(profile.get("definition_id") or ""),
+            int(profile.get("definition_revision") or 0),
+        )
         if str(profile.get("profile_id")) == default_profile_id and not bool(
             profile.get("protected")
         ):
             raise ValueError("The default Strategy Profile must remain protected")
         lifecycle = dict(profile.get("lifecycle") or {})
         rule_set_catalog = list(profile.get("rule_set_catalog") or [])
-        _validate_strategy_lifecycle(lifecycle, rule_set_catalog)
+        _validate_strategy_lifecycle(
+            lifecycle,
+            rule_set_catalog,
+            registration.parameter_resolver,
+            dict(profile.get("parameters") or {}),
+        )
         definition_config = dict(definition.get("config") or {})
         direction = str(definition_config.get("direction") or "")
         configured_side = str(dict(lifecycle.get("trading_behavior") or {}).get("side") or "")
@@ -3088,7 +3121,11 @@ def merged_assignment_parameters(configuration: dict[str, Any], assignment: dict
         "maximum_risk_pct": float(protection.get("maximum_risk_pct") or 0),
     })
     base["protection"].setdefault("trailing", {})["enabled"] = bool(protection.get("trailing_enabled", True))
-    return resolve_long_momentum_parameters(base)
+    identity = dict(configuration.get("strategy") or {})
+    return strategy_executor(
+        str(identity.get("strategy_id") or assignment.get("strategy_id") or ""),
+        int(identity.get("revision") or assignment.get("strategy_revision") or 0),
+    ).parameter_resolver(base)
 
 
 def _policy_catalog_payload(
@@ -3314,7 +3351,7 @@ def _migrate_draft(raw: dict[str, Any]) -> dict[str, Any]:
         result["strategy"]["definitions"] = deepcopy(
             defaults["strategy"]["definitions"]
         )
-        result["strategy"]["input_catalog"] = strategy_input_catalog()
+        result["strategy"]["input_catalog"] = installed_strategy_input_catalog()
         for profile in result["strategy"]["profiles"]:
             profile.setdefault(
                 "publication_status",
@@ -3329,9 +3366,16 @@ def _migrate_draft(raw: dict[str, Any]) -> dict[str, Any]:
                 profile["editable"] = False
             elif str(profile.get("origin") or "") == "system":
                 profile["editable"] = False
-            profile["definition_revision"] = STRATEGY_REVISION
-            parameters = resolve_long_momentum_parameters(
-                dict(profile.get("parameters") or {})
+            profile.setdefault("definition_id", STRATEGY_ID)
+            profile.setdefault("definition_revision", STRATEGY_REVISION)
+            registration = strategy_executor_optional(
+                str(profile.get("definition_id") or ""),
+                int(profile.get("definition_revision") or 0),
+            )
+            parameters = (
+                registration.parameter_resolver(dict(profile.get("parameters") or {}))
+                if registration is not None
+                else dict(profile.get("parameters") or {})
             )
             if not isinstance(parameters.get("entry_rules"), dict):
                 parameters["entry_rules"] = default_entry_decision_rules(parameters)
@@ -3740,6 +3784,8 @@ def _lifecycle_order_intents(lifecycle: dict[str, Any]) -> list[dict[str, Any]]:
 def _validate_strategy_lifecycle(
     lifecycle: dict[str, Any],
     raw_rule_set_catalog: list[dict[str, Any]],
+    parameter_resolver: Callable[[dict[str, Any] | None], dict[str, Any]],
+    engine_parameters: dict[str, Any],
 ) -> None:
     required = {"phase_modes", "trading_behavior", "initial_entry", "reentry", "exit"}
     missing = required - set(lifecycle)
@@ -3785,9 +3831,9 @@ def _validate_strategy_lifecycle(
             f"Initial entry {stage_name}",
             rule_set_ids,
         )
-    parameters = default_long_momentum_parameters()
+    parameters = deepcopy(engine_parameters)
     parameters["entry_rules"] = runtime_rules
-    resolve_long_momentum_parameters(parameters)
+    parameter_resolver(parameters)
     _validate_capital_request(dict(initial_entry.get("capital_request") or {}), "Initial entry")
     _validate_order_intent(dict(initial_entry.get("order_intent") or {}), "Initial entry")
     add_steps = list(initial_entry.get("add_steps") or [])
@@ -3815,9 +3861,9 @@ def _validate_strategy_lifecycle(
             f"Reentry {stage_name}",
             rule_set_ids,
         )
-    reentry_parameters = default_long_momentum_parameters()
+    reentry_parameters = deepcopy(engine_parameters)
     reentry_parameters["entry_rules"] = runtime_reentry_rules
-    resolve_long_momentum_parameters(reentry_parameters)
+    parameter_resolver(reentry_parameters)
     _validate_capital_request(dict(reentry.get("capital_request") or {}), "Reentry")
     _validate_order_intent(dict(reentry.get("order_intent") or {}), "Reentry")
     routes = list(dict(lifecycle["exit"]).get("rule_sets") or [])
@@ -4120,7 +4166,10 @@ def _parameters_with_capabilities(profile: dict[str, Any]) -> dict[str, Any]:
                 settings.get("maximum_adds") or add_steps[0].get("maximum_uses") or 1
             )
             parameters["phase_policy"]["initial_entry"]["add_steps"] = add_steps
-    return resolve_long_momentum_parameters(parameters)
+    return strategy_executor(
+        str(profile.get("definition_id") or ""),
+        int(profile.get("definition_revision") or 0),
+    ).parameter_resolver(parameters)
 
 
 def _validate_oms_settings(oms: dict[str, Any]) -> None:

@@ -2940,6 +2940,8 @@
 .strategy-create-workflow > header > p,
 .strategy-clone-workflow > header > p { color: var(--muted-foreground); font-size: 12px; line-height: 1.55; margin: 0; max-width: 920px; }
 .strategy-start-name { display: grid; gap: 6px; max-width: 720px; }
+.strategy-start-name > .configuration-lookup-button { width: 100%; }
+.strategy-executor-evidence { color: var(--muted-foreground); font-size: 11px; line-height: 1.45; margin: 0; padding: 0 15px 15px; }
 .strategy-start-name > span[role="alert"] { color: var(--danger); font-size: 11px; }
 
 .strategy-blank-summary { border: 1px solid var(--border); border-radius: 8px; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); overflow: hidden; }

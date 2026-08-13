@@ -19,6 +19,8 @@ type DebugPreflight = {
   configuration_revision: number;
   configuration_revision_id: string;
   ready: boolean;
+  run_plan_id: string;
+  available_run_plans: Array<{ name: string; profile_id: string; run_plan_id: string; strategy_id: string; strategy_revision: number }>;
   tickers: string[];
 };
 
@@ -53,6 +55,7 @@ export function BacktestDebugPage() {
   const [controlBusy, setControlBusy] = useState("");
   const [error, setError] = useState("");
   const [run, setRun] = useState<DebugRun | null>(null);
+  const [runPlanId, setRunPlanId] = useState("");
   const parsed = useMemo(() => parseFixture(marketEvents, derivedFrames), [derivedFrames, marketEvents]);
 
   useEffect(() => {
@@ -61,16 +64,16 @@ export function BacktestDebugPage() {
     setError("");
     const timer = window.setTimeout(() => {
       api<DebugPreflight>("/api/trading/backtest_debug/preflight", {
-        body: JSON.stringify({ session_date: sessionDate, start_time: startTime, tickers: [symbol] }),
+        body: JSON.stringify({ run_plan_id: runPlanId, session_date: sessionDate, start_time: startTime, tickers: [symbol] }),
         method: "POST",
         timeoutMs: 20_000,
       })
-        .then((payload) => { if (!cancelled) setPreflight(payload); })
+        .then((payload) => { if (!cancelled) { setPreflight(payload); if (!runPlanId && payload.run_plan_id) setRunPlanId(payload.run_plan_id); } })
         .catch((reason) => { if (!cancelled) { setPreflight(null); setError(message(reason)); } })
         .finally(() => { if (!cancelled) setChecking(false); });
     }, 300);
     return () => { cancelled = true; window.clearTimeout(timer); };
-  }, [sessionDate, startTime, symbol]);
+  }, [runPlanId, sessionDate, startTime, symbol]);
 
   useEffect(() => {
     if (!run || terminal(run.status)) return;
@@ -130,6 +133,7 @@ export function BacktestDebugPage() {
           derived_frames: parsed.derivedFrames,
           fixture_id: fixtureId,
           market_events: parsed.marketEvents,
+          run_plan_id: runPlanId,
           session_date: sessionDate,
           start_time: startTime,
           tickers: [symbol],
@@ -197,6 +201,7 @@ export function BacktestDebugPage() {
         <section className="historical-run-card">
           <header><div><span>Fixture identity</span><strong>Saved local cases and causal scope</strong></div><div className="debug-fixture-actions"><button className="button secondary" onClick={saveFixture} type="button"><Save size={15} /> Save</button><button aria-label="Delete selected fixture" className="button secondary" disabled={!selectedFixture} onClick={deleteFixture} type="button"><Trash2 size={15} /></button></div></header>
           <div className="historical-large-fields">
+            <label><span>Strategy Run Plan</span><select aria-label="Strategy Run Plan" onChange={(event) => setRunPlanId(event.target.value)} value={runPlanId}>{(preflight?.available_run_plans ?? []).map((plan) => <option key={plan.run_plan_id} value={plan.run_plan_id}>{plan.name} · {plan.strategy_id} r{plan.strategy_revision}</option>)}</select><small>The fixture runs through this exact Strategy Studio profile and installed executor.</small></label>
             <label><span>Fixture library</span><select onChange={(event) => loadFixture(event.target.value)} value={selectedFixture}><option value="">Unsaved fixture</option>{library.map((row) => <option key={row.fixtureId} value={row.fixtureId}>{row.fixtureId}</option>)}</select><small>Stored in this browser; exact submitted records are persisted with the backend run.</small></label>
             <label><span>Stable fixture ID</span><input onChange={(event) => setFixtureId(event.target.value)} value={fixtureId} /><small>Used with the backend content hash to identify evidence.</small></label>
             <label><span>Session date</span><input onChange={(event) => updateTemplate(event.target.value, symbol)} type="date" value={sessionDate} /></label>

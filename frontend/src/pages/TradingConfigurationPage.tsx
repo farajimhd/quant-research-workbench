@@ -331,10 +331,24 @@ type StrategyLifecycle = {
   exit: { rule_sets: ExitRuleSet[] };
 };
 
+type StrategyDefinition = {
+  automatic: boolean;
+  direction: string;
+  executor_installed?: boolean;
+  executor_key?: string;
+  executor_schema_version?: number | null;
+  input_source_ids: string[];
+  name: string;
+  parameter_defaults?: ParameterMap;
+  revision: number;
+  strategy_id: string;
+  supported_sides: Array<"long" | "short">;
+};
+
 type StrategySection = {
   capability_catalog: CapabilityDefinition[];
   default_profile_id: string;
-  definitions: Array<{ automatic: boolean; direction: string; name: string; revision: number; strategy_id: string; supported_sides: Array<"long" | "short"> }>;
+  definitions: StrategyDefinition[];
   input_catalog: StrategyInput[];
   profile_templates: StrategyProfile[];
   profiles: StrategyProfile[];
@@ -825,7 +839,20 @@ const CONFIGURATION_SESSION_KEY = "trading-configuration-session-v1";
 function readSessionConfiguration(base: Draft): Draft {
   try {
     const stored = window.sessionStorage.getItem(CONFIGURATION_SESSION_KEY);
-    return stored ? normalizeDraft(JSON.parse(stored)) : base;
+    if (!stored) return base;
+    const session = normalizeDraft(JSON.parse(stored));
+    return {
+      ...session,
+      strategy: {
+        ...session.strategy,
+        // Profiles are user draft state. Executor definitions and their input
+        // contracts are backend authority and must not be frozen by an older
+        // browser session when a new strategy implementation is installed.
+        capability_catalog: base.strategy.capability_catalog,
+        definitions: base.strategy.definitions,
+        input_catalog: base.strategy.input_catalog,
+      },
+    };
   } catch {
     window.sessionStorage.removeItem(CONFIGURATION_SESSION_KEY);
     return base;
@@ -1418,6 +1445,8 @@ function GuidedStrategyConfiguration({ draft, onChange, onContinue, onProfileCha
   const [startMode, setStartMode] = useState<"create" | "clone" | null>(null);
   const [cloneSourceId, setCloneSourceId] = useState("");
   const [profileName, setProfileName] = useState("");
+  const executableDefinitions = draft.strategy.definitions.filter((row) => row.executor_installed !== false);
+  const [definitionId, setDefinitionId] = useState(profile.definition_id);
   const definition = draft.strategy.definitions.find((row) => row.strategy_id === profile.definition_id);
   const supportedSides = definition?.supported_sides?.length ? definition.supported_sides : ["long" as const];
   const initial = profile.lifecycle.initial_entry;
@@ -1431,7 +1460,9 @@ function GuidedStrategyConfiguration({ draft, onChange, onContinue, onProfileCha
     });
   }
   function createNewProfile() {
-    const nextProfile = blankStrategyProfile(profile, draft);
+    const selectedDefinition = executableDefinitions.find((row) => row.strategy_id === definitionId);
+    if (!selectedDefinition) return;
+    const nextProfile = blankStrategyProfile(profile, draft, selectedDefinition);
     nextProfile.name = profileName.trim() || "Untitled Strategy";
     onChange("strategy", { ...draft.strategy, profiles: [...draft.strategy.profiles, nextProfile] });
     onProfileChange(nextProfile.profile_id);
@@ -1446,7 +1477,10 @@ function GuidedStrategyConfiguration({ draft, onChange, onContinue, onProfileCha
   }
   function chooseStartMode(mode: "create" | "clone") {
     setStartMode(mode);
-    if (mode === "create") setProfileName(uniqueProfileName("Untitled Strategy", draft.strategy.profiles));
+    if (mode === "create") {
+      setDefinitionId(executableDefinitions.find((row) => row.strategy_id === profile.definition_id)?.strategy_id ?? executableDefinitions[0]?.strategy_id ?? "");
+      setProfileName(uniqueProfileName("Untitled Strategy", draft.strategy.profiles));
+    }
     else {
       setCloneSourceId("");
       setProfileName("");
@@ -1512,7 +1546,7 @@ function GuidedStrategyConfiguration({ draft, onChange, onContinue, onProfileCha
       id: "profile", section: "Behavior", title: "How do you want to build this strategy?",
       description: "Start with a blank strategy and answer every decision, or copy an existing strategy after reviewing exactly what it contains.",
       guide: "A new strategy begins with no active entry rules, position adds, reentry, strategic exits, or capabilities. A clone is an independent editable copy; the source remains unchanged.",
-      content: <StrategyStartWorkflow cloneSourceId={cloneSourceId} mode={startMode} name={profileName} onClone={cloneExistingProfile} onCloneSourceChange={chooseCloneSource} onCreate={createNewProfile} onModeChange={chooseStartMode} onNameChange={setProfileName} profiles={draft.strategy.profiles} section={draft.strategy} />,
+      content: <StrategyStartWorkflow cloneSourceId={cloneSourceId} definitionId={definitionId} mode={startMode} name={profileName} onClone={cloneExistingProfile} onCloneSourceChange={chooseCloneSource} onCreate={createNewProfile} onDefinitionChange={setDefinitionId} onModeChange={chooseStartMode} onNameChange={setProfileName} profiles={draft.strategy.profiles} section={draft.strategy} />,
     },
     {
       id: "identity", section: "Behavior", title: "How should this plan be identified?",
@@ -1699,13 +1733,15 @@ function GuidedStrategyConfiguration({ draft, onChange, onContinue, onProfileCha
   </main>;
 }
 
-function StrategyStartWorkflow({ cloneSourceId, mode, name, onClone, onCloneSourceChange, onCreate, onModeChange, onNameChange, profiles, section }: {
+function StrategyStartWorkflow({ cloneSourceId, definitionId, mode, name, onClone, onCloneSourceChange, onCreate, onDefinitionChange, onModeChange, onNameChange, profiles, section }: {
   cloneSourceId: string;
+  definitionId: string;
   mode: "create" | "clone" | null;
   name: string;
   onClone: () => void;
   onCloneSourceChange: (profileId: string) => void;
   onCreate: () => void;
+  onDefinitionChange: (strategyId: string) => void;
   onModeChange: (mode: "create" | "clone") => void;
   onNameChange: (value: string) => void;
   profiles: StrategyProfile[];
@@ -1715,6 +1751,8 @@ function StrategyStartWorkflow({ cloneSourceId, mode, name, onClone, onCloneSour
   const normalizedName = name.trim().toLocaleLowerCase();
   const nameConflict = Boolean(normalizedName) && profiles.some((row) => row.name.trim().toLocaleLowerCase() === normalizedName);
   const invalidName = !source || !normalizedName || nameConflict;
+  const executableDefinitions = section.definitions.filter((row) => row.executor_installed !== false);
+  const selectedDefinition = executableDefinitions.find((row) => row.strategy_id === definitionId);
   return <div className="strategy-start-workflow">
     <div className="strategy-start-paths">
       <button aria-pressed={mode === "create"} onClick={() => onModeChange("create")} type="button"><span className="strategy-start-icon"><Plus size={18} /></span><span><small>Build from zero</small><strong>Create new strategy</strong><em>Begin with no active trading decisions. The guide will ask about identity, entries, adds, reentry, exits, protection, and capabilities.</em></span><ChevronRight size={17} /></button>
@@ -1728,8 +1766,9 @@ function StrategyStartWorkflow({ cloneSourceId, mode, name, onClone, onCloneSour
         <span><Check size={15} /><span><strong>Session only</strong><small>The protected system fallback remains unchanged until this strategy is complete and published.</small></span></span>
       </div>
       <NextActionArea active description="Give the blank draft a distinct operator-facing name." focusKey="create-name" title="Name the new strategy">
-        <div className="strategy-start-name"><TextField help={nameConflict ? "Choose a name not already used by another Strategy Profile." : "You can refine this name in the next question."} label="Strategy name" nextAction onChange={onNameChange} value={name} />{nameConflict ? <span role="alert">A strategy with this name already exists.</span> : null}</div>
-        <footer><button className="button primary" disabled={!normalizedName || nameConflict} onClick={onCreate} type="button">Create blank strategy <ArrowRight size={15} /></button></footer>
+        <div className="strategy-start-name"><InventoryFilterSelect ariaLabel="Strategy executor" className="configuration-lookup-button" onChange={onDefinitionChange} options={executableDefinitions.map((definition) => ({ description: strategyExecutorDescription(definition), label: definition.name, value: definition.strategy_id }))} searchable={executableDefinitions.length > 7} showAllOnOpen value={definitionId} /><TextField help={nameConflict ? "Choose a name not already used by another Strategy Profile." : "You can refine this name in the next question."} label="Strategy name" nextAction onChange={onNameChange} value={name} />{nameConflict ? <span role="alert">A strategy with this name already exists.</span> : null}</div>
+        <p className="strategy-executor-evidence">{selectedDefinition ? `${selectedDefinition.name} revision ${selectedDefinition.revision} is installed and will be pinned when this profile is published.` : "No installed Strategy executor is available. Deploy a registered executor before authoring a profile."}</p>
+        <footer><button className="button primary" disabled={!normalizedName || nameConflict || !selectedDefinition} onClick={onCreate} type="button">Create blank strategy <ArrowRight size={15} /></button></footer>
       </NextActionArea>
     </section> : null}
     {mode === "clone" ? <section className="strategy-clone-workflow">
@@ -1886,7 +1925,7 @@ function countRuleReferences(expression?: RuleExpression): number {
   return expression.kind === "rule_set" ? 1 : expression.children.reduce((sum, child) => sum + countRuleReferences(child), 0);
 }
 
-function blankStrategyProfile(source: StrategyProfile, draft: Draft): StrategyProfile {
+function blankStrategyProfile(source: StrategyProfile, draft: Draft, definition?: StrategyDefinition): StrategyProfile {
   const profileId = uniqueId("new-strategy", draft.strategy.profiles.map((row) => row.profile_id));
   const emptyStage = (): RuleStage => ({ expression: { children: [], kind: "operator", operator: "and" } });
   const executionPolicy = draft.oms.execution_policies.find((row) => row.policy_id === "adaptive_regular")?.policy_id ?? draft.oms.execution_policies[0]?.policy_id ?? "";
@@ -1897,6 +1936,8 @@ function blankStrategyProfile(source: StrategyProfile, draft: Draft): StrategyPr
     ...deepClone(source),
     capabilities: source.capabilities.map((row) => ({ ...deepClone(row), enabled: false })),
     description: "",
+    definition_id: definition?.strategy_id ?? source.definition_id,
+    definition_revision: definition?.revision ?? source.definition_revision,
     editable: true,
     enabled: false,
     rule_set_catalog: [],
@@ -1914,7 +1955,23 @@ function blankStrategyProfile(source: StrategyProfile, draft: Draft): StrategyPr
     publication_status: "draft",
     derived_from_profile_id: "",
     revision: 1,
+    parameters: definition ? strategyDefinitionParameters(definition) : deepClone(source.parameters),
   };
+}
+
+function strategyDefinitionParameters(definition: StrategyDefinition): ParameterMap {
+  const parameters = deepClone(definition.parameter_defaults ?? {});
+  delete parameters.entry_rules;
+  delete parameters.phase_policy;
+  delete parameters.strategy_behavior;
+  return parameters;
+}
+
+function strategyExecutorDescription(definition: StrategyDefinition) {
+  const key = definition.executor_key || `${definition.strategy_id}@${definition.revision}`;
+  return definition.executor_schema_version
+    ? `${key} · executor schema ${definition.executor_schema_version}`
+    : `${key} · installed execution contract`;
 }
 
 function cloneStrategyProfile(source: StrategyProfile, existing: StrategyProfile[], requestedName: string): StrategyProfile {
@@ -2494,6 +2551,7 @@ function StrategyStudio({ approved, draft, label, onChange, onDeleteProfile, onD
   const [catalogItem, setCatalogItem] = useState<StrategyCatalogItem | null>(null);
   const [creationMode, setCreationMode] = useState<"blank" | null>(null);
   const [creationName, setCreationName] = useState("");
+  const [creationDefinitionId, setCreationDefinitionId] = useState("");
   const selected = section.profiles.find((row) => row.profile_id === selectedId) ?? section.profiles[0];
   useEffect(() => {
     if (!section.profiles.some((row) => row.profile_id === selectedId)) setSelectedId(section.profiles[0]?.profile_id ?? "");
@@ -2517,13 +2575,16 @@ function StrategyStudio({ approved, draft, label, onChange, onDeleteProfile, onD
 
   function beginProfileCreation() {
     setCreationMode("blank");
+    setCreationDefinitionId(section.definitions.find((row) => row.executor_installed !== false)?.strategy_id ?? "");
     setCreationName(uniqueProfileName("Untitled Strategy", section.profiles));
   }
 
   function createProfile() {
     const normalizedName = creationName.trim();
     if (!creationMode || !normalizedName || section.profiles.some((row) => row.name.trim().toLocaleLowerCase() === normalizedName.toLocaleLowerCase())) return;
-    const next = { ...blankStrategyProfile(selected, draft), name: normalizedName };
+    const definition = section.definitions.find((row) => row.executor_installed !== false && row.strategy_id === creationDefinitionId);
+    if (!definition) return;
+    const next = { ...blankStrategyProfile(selected, draft, definition), name: normalizedName };
     onChange({ ...section, profiles: [...section.profiles, next] });
     setSelectedId(next.profile_id);
     setActiveStage("identity");
@@ -2531,6 +2592,7 @@ function StrategyStudio({ approved, draft, label, onChange, onDeleteProfile, onD
     setStudioView("configure");
     setCreationMode(null);
     setCreationName("");
+    setCreationDefinitionId("");
   }
 
   function publishSelected() {
@@ -2564,11 +2626,14 @@ function StrategyStudio({ approved, draft, label, onChange, onDeleteProfile, onD
 
   if (studioView === "select") return <StrategySelectionPage
     creationMode={creationMode}
+    definitionId={creationDefinitionId}
+    definitions={section.definitions}
     name={creationName}
     nameConflict={creationNameConflict}
-    onCancel={() => { setCreationMode(null); setCreationName(""); }}
+    onCancel={() => { setCreationMode(null); setCreationName(""); setCreationDefinitionId(""); }}
     onCreate={createProfile}
     onCreateStart={beginProfileCreation}
+    onDefinitionChange={setCreationDefinitionId}
     onDelete={(profileId) => void removeProfile(profileId)}
     onClone={cloneProfileFromSelection}
     onNameChange={setCreationName}
@@ -2739,19 +2804,23 @@ function StrategyStudio({ approved, draft, label, onChange, onDeleteProfile, onD
   );
 }
 
-function StrategySelectionPage({ creationMode, name, nameConflict, onCancel, onClone, onCreate, onCreateStart, onDelete, onModify, onNameChange, profiles }: {
+function StrategySelectionPage({ creationMode, definitionId, definitions, name, nameConflict, onCancel, onClone, onCreate, onCreateStart, onDefinitionChange, onDelete, onModify, onNameChange, profiles }: {
   creationMode: "blank" | null;
+  definitionId: string;
+  definitions: StrategyDefinition[];
   name: string;
   nameConflict: boolean;
   onCancel: () => void;
   onClone: (value: string) => void;
   onCreate: () => void;
   onCreateStart: () => void;
+  onDefinitionChange: (strategyId: string) => void;
   onDelete: (value: string) => void;
   onModify: (value: string) => void;
   onNameChange: (value: string) => void;
   profiles: StrategyProfile[];
 }) {
+  const executableDefinitions = definitions.filter((row) => row.executor_installed !== false);
   return <main className="strategy-selection-page" aria-label="Choose a strategy">
     <section className="strategy-profile-command" aria-label="Create a strategy">
       <div className="strategy-profile-create-choice">
@@ -2762,8 +2831,9 @@ function StrategySelectionPage({ creationMode, name, nameConflict, onCancel, onC
       </div>
       {creationMode ? <div className="strategy-profile-create-detail">
       <header><span>Empty strategy</span><strong>Create a strategy with disabled lifecycle decisions</strong></header>
+      <InventoryFilterSelect ariaLabel="Strategy executor" className="configuration-lookup-button" onChange={onDefinitionChange} options={executableDefinitions.map((definition) => ({ description: strategyExecutorDescription(definition), label: definition.name, value: definition.strategy_id }))} searchable={executableDefinitions.length > 7} showAllOnOpen value={definitionId} />
       <TextField help={nameConflict ? "This name is already used." : "You can change it later."} label="Strategy name" onChange={onNameChange} value={name} />
-      <div><button className="button" onClick={onCancel} type="button">Cancel</button><button className="button primary" disabled={!name.trim() || nameConflict} onClick={onCreate} type="button">Create strategy <ArrowRight size={14} /></button></div>
+      <div><button className="button" onClick={onCancel} type="button">Cancel</button><button className="button primary" disabled={!name.trim() || nameConflict || !definitionId} onClick={onCreate} type="button">Create strategy <ArrowRight size={14} /></button></div>
       </div> : null}
     </section>
     <header className="strategy-selection-heading"><span>Available strategies</span><h2>Choose a strategy to configure</h2><p>The protected template and every strategy you create appear here.</p></header>

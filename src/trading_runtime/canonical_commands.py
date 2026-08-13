@@ -35,10 +35,10 @@ def intent_to_ibkr_request(intent: OrderIntent) -> OrderRequest:
         trailingType=intent.trailing_type or None,
         listingExchange=intent.instrument.exchange,
         isSingleGroup=bool(intent.oca_group),
-        strategy=intent.strategy_id or None,
         raw={
             "canonical_command_id": intent.command_id,
             "canonical_run_id": intent.run_id,
+            "canonical_strategy_id": intent.strategy_id,
             "canonical_strategy_revision": intent.strategy_revision,
             "canonical_metadata": json_safe(intent.metadata),
         },

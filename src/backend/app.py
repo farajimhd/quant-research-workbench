@@ -217,7 +217,6 @@ from src.backend.trading_configuration_service import (
     public_configuration_revision,
     replay_configuration_snapshot,
 )
-from src.trading_runtime.strategy_engine import STRATEGY_ID, STRATEGY_REVISION
 from src.trading_runtime.runtime import RunMode
 from src.backend.ticker_presentation_service import ticker_presentation_payload
 from src.backend.ticker_facts_service import ticker_fact_history_payload, ticker_facts_payload
@@ -770,7 +769,7 @@ class LiveTradingNewsAtRequest(BaseModel):
 
 class StrategyDefinitionSubmit(BaseModel):
     strategy_id: str
-    revision: int = Field(default=0, ge=0)
+    revision: int = Field(gt=0)
     name: str
     implementation: str
     automatic: bool = True
@@ -781,8 +780,8 @@ class StrategyDefinitionSubmit(BaseModel):
 
 class StrategyAssignmentSubmit(BaseModel):
     assignment_id: str = ""
-    strategy_id: str = STRATEGY_ID
-    strategy_revision: int = STRATEGY_REVISION
+    strategy_id: str = Field(min_length=1)
+    strategy_revision: int = Field(gt=0)
     campaign_id: str = ""
     deployment_id: str = ""
     profile_id: str = ""
@@ -828,6 +827,7 @@ class HistoricalPreflightRequest(BaseModel):
     mode: str
     anchor_date: date
     session_count: int = Field(default=20, ge=1, le=260)
+    run_plan_id: str = Field(default="", max_length=128)
 
 
 class HistoricalBarChunkRequest(BaseModel):
@@ -845,6 +845,7 @@ class ReplayPreflightRequest(BaseModel):
     assignment_ids: list[str] = Field(default_factory=list, max_length=100)
     tickers: list[str] = Field(default_factory=list, max_length=100)
     configuration_revision_id: str = Field(default="", max_length=128)
+    run_plan_id: str = Field(default="", max_length=128)
 
 
 class ReplayRunCreateRequest(ReplayPreflightRequest):
@@ -856,6 +857,7 @@ class BacktestRunCreateRequest(BaseModel):
     session_count: int = Field(default=20, ge=1, le=260)
     initial_cash: float = Field(default=100_000.0, ge=1_000, le=1_000_000_000)
     configuration_revision_id: str = Field(default="", max_length=128)
+    run_plan_id: str = Field(default="", max_length=128)
 
 
 class BacktestDebugRunCreateRequest(BaseModel):
@@ -865,6 +867,7 @@ class BacktestDebugRunCreateRequest(BaseModel):
     assignment_ids: list[str] = Field(default_factory=list, max_length=100)
     tickers: list[str] = Field(default_factory=list, max_length=100)
     configuration_revision_id: str = Field(default="", max_length=128)
+    run_plan_id: str = Field(default="", max_length=128)
     fixture_id: str = Field(min_length=1, max_length=128)
     market_events: list[dict[str, Any]] = Field(default_factory=list, max_length=20_000)
     derived_frames: list[dict[str, Any]] = Field(default_factory=list, max_length=20_000)
@@ -4574,6 +4577,11 @@ def trading_historical_preflight(payload: HistoricalPreflightRequest) -> dict[st
             return backtest_preflight(
                 anchor_date=payload.anchor_date,
                 session_count=payload.session_count,
+                configuration_revision=(
+                    backtest_configuration_snapshot(payload.run_plan_id)
+                    if payload.run_plan_id
+                    else backtest_configuration_snapshot()
+                ),
             )
         return historical_preflight(
             mode=payload.mode,
@@ -4587,7 +4595,11 @@ def trading_historical_preflight(payload: HistoricalPreflightRequest) -> dict[st
 @app.post("/api/trading/replay/preflight")
 def trading_replay_preflight(payload: ReplayPreflightRequest) -> dict[str, Any]:
     try:
-        configuration_revision = replay_configuration_snapshot()
+        configuration_revision = (
+            replay_configuration_snapshot(payload.run_plan_id)
+            if payload.run_plan_id
+            else replay_configuration_snapshot()
+        )
         if (
             payload.configuration_revision_id
             and payload.configuration_revision_id != configuration_revision["revision_id"]
@@ -4608,7 +4620,11 @@ def trading_replay_preflight(payload: ReplayPreflightRequest) -> dict[str, Any]:
 @app.post("/api/trading/replay/runs")
 async def trading_replay_run_create(payload: ReplayRunCreateRequest) -> dict[str, Any]:
     try:
-        configuration_revision = replay_configuration_snapshot()
+        configuration_revision = (
+            replay_configuration_snapshot(payload.run_plan_id)
+            if payload.run_plan_id
+            else replay_configuration_snapshot()
+        )
         if payload.configuration_revision_id != configuration_revision["revision_id"]:
             raise ValueError("The approved configuration changed; review Replay preflight again")
         definition = ReplayRunDefinition(
@@ -4640,7 +4656,11 @@ async def trading_replay_run_create(payload: ReplayRunCreateRequest) -> dict[str
 @app.post("/api/trading/backtest/runs")
 async def trading_backtest_run_create(payload: BacktestRunCreateRequest) -> dict[str, Any]:
     try:
-        configuration_revision = backtest_configuration_snapshot()
+        configuration_revision = (
+            backtest_configuration_snapshot(payload.run_plan_id)
+            if payload.run_plan_id
+            else backtest_configuration_snapshot()
+        )
         if payload.configuration_revision_id != configuration_revision["revision_id"]:
             raise ValueError("The approved configuration changed; review Backtest preflight again")
         preflight = backtest_preflight(
@@ -4673,7 +4693,11 @@ async def trading_backtest_debug_run_create(
     payload: BacktestDebugRunCreateRequest,
 ) -> dict[str, Any]:
     try:
-        configuration_revision = backtest_debug_configuration_snapshot()
+        configuration_revision = (
+            backtest_debug_configuration_snapshot(payload.run_plan_id)
+            if payload.run_plan_id
+            else backtest_debug_configuration_snapshot()
+        )
         if payload.configuration_revision_id != configuration_revision["revision_id"]:
             raise ValueError(
                 "The approved configuration changed; review Backtest Debug again"
@@ -4704,7 +4728,11 @@ async def trading_backtest_debug_run_create(
 @app.post("/api/trading/backtest_debug/preflight")
 def trading_backtest_debug_preflight(payload: ReplayPreflightRequest) -> dict[str, Any]:
     try:
-        configuration_revision = backtest_debug_configuration_snapshot()
+        configuration_revision = (
+            backtest_debug_configuration_snapshot(payload.run_plan_id)
+            if payload.run_plan_id
+            else backtest_debug_configuration_snapshot()
+        )
         if (
             payload.configuration_revision_id
             and payload.configuration_revision_id != configuration_revision["revision_id"]

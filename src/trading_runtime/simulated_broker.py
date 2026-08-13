@@ -656,7 +656,7 @@ class SimulatedBrokerAdapter:
             commission=commission,
             currency=self.config.base_currency,
             raw={
-                "strategy_id": state.request.strategy or "",
+                "strategy_id": state.request.raw.get("canonical_strategy_id", ""),
                 "canonical_strategy_revision": state.request.raw.get("canonical_strategy_revision", 0),
                 "canonical_run_id": state.request.raw.get("canonical_run_id", ""),
                 "canonical_metadata": state.request.raw.get("canonical_metadata", {}),

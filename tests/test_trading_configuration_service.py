@@ -18,6 +18,7 @@ from src.backend.trading_configuration_service import (
     _validate_market_discovery,
     approved_canvas_profile,
     approved_configuration,
+    approved_runtime_configuration_snapshot,
     backtest_configuration_snapshot,
     backtest_debug_configuration_snapshot,
     capability_catalog,
@@ -34,6 +35,46 @@ from src.trading_runtime.strategy_engine import long_momentum_strategy_definitio
 
 
 class TradingConfigurationServiceTests(unittest.TestCase):
+    def test_historical_snapshot_selects_one_exact_run_plan_and_strategy(self) -> None:
+        approved = {
+            "revision_id": "release-1",
+            "revision": 4,
+            "label": "Two strategies",
+            "content_hash": "hash-1",
+            "approved_at": "2026-08-13T12:00:00+00:00",
+            "payload": {"canvas": {"revision": "canvas-1", "profile": {"workspaceStates": {}}}},
+        }
+        runtimes = [
+            {
+                "run_plan": {"run_plan_id": "plan-a", "name": "Plan A"},
+                "strategy": {"strategy_id": "strategy-a", "revision": 1, "profile_id": "profile-a"},
+            },
+            {
+                "run_plan": {"run_plan_id": "plan-b", "name": "Plan B"},
+                "strategy": {"strategy_id": "strategy-b", "revision": 7, "profile_id": "profile-b"},
+            },
+        ]
+        with patch(
+            "src.backend.trading_configuration_service.approved_configuration",
+            return_value=approved,
+        ), patch(
+            "src.backend.trading_configuration_service._migrate_draft",
+            return_value=approved["payload"],
+        ), patch(
+            "src.backend.trading_configuration_service._validate_draft",
+        ), patch(
+            "src.backend.trading_configuration_service.resolve_runtime_configurations",
+            return_value=runtimes,
+        ):
+            snapshot = approved_runtime_configuration_snapshot("backtest", run_plan_id="plan-b")
+
+        self.assertEqual(snapshot["run_plan_id"], "plan-b")
+        self.assertEqual(snapshot["payload"]["strategy"]["strategy_id"], "strategy-b")
+        self.assertEqual(
+            [row["run_plan_id"] for row in snapshot["available_run_plans"]],
+            ["plan-a", "plan-b"],
+        )
+
     def test_historical_snapshot_entrypoints_preserve_runtime_mode(self) -> None:
         with patch(
             "src.backend.trading_configuration_service.approved_runtime_configuration_snapshot",

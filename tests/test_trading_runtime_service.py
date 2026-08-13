@@ -18,6 +18,11 @@ from src.backend.trading_runtime_service import (
     save_strategy_definition,
     trading_taxonomy_catalog,
 )
+from src.trading_runtime.strategy_registry import (
+    StrategyExecutorRegistration,
+    register_strategy_executor,
+    unregister_strategy_executor,
+)
 
 
 class HistoricalTradingServiceTests(unittest.TestCase):
@@ -31,6 +36,32 @@ class HistoricalTradingServiceTests(unittest.TestCase):
 
         journal.save_strategy.side_effect = save_strategy
         journal.strategy.side_effect = lambda *_args: dict(stored) if stored else None
+        register_strategy_executor(
+            StrategyExecutorRegistration(
+                strategy_id="continuation",
+                revision=1,
+                implementation="tests.strategy:Continuation",
+                definition_factory=lambda: {
+                    "strategy_id": "continuation",
+                    "revision": 1,
+                    "name": "Continuation",
+                    "implementation": "tests.strategy:Continuation",
+                    "automatic": True,
+                    "taxonomy": {
+                        "signals": [{"key": "market.vwap_reclaim"}],
+                        "presentation": {"label": "Continuation"},
+                    },
+                },
+                parameter_resolver=lambda value: dict(value or {}),
+                strategy_factory=lambda assignments: assignments,
+                input_catalog_factory=list,
+                timeframe_resolver=lambda _parameters: {"1m"},
+                observation_projector=lambda _observation, _timeframe: {},
+                assignment_evaluator=lambda _assignment, _observation: None,
+            ),
+            replace=True,
+        )
+        self.addCleanup(unregister_strategy_executor, "continuation", 1)
         with patch("src.backend.trading_runtime_service.trading_journal", return_value=journal):
             with self.assertRaisesRegex(ValueError, "declare at least one"):
                 save_strategy_definition(
@@ -38,6 +69,7 @@ class HistoricalTradingServiceTests(unittest.TestCase):
                         "strategy_id": "continuation",
                         "name": "Continuation",
                         "implementation": "tests.strategy:Continuation",
+                        "revision": 1,
                         "automatic": True,
                     }
                 )
@@ -47,6 +79,7 @@ class HistoricalTradingServiceTests(unittest.TestCase):
                     "strategy_id": "continuation",
                     "name": "Continuation",
                     "implementation": "tests.strategy:Continuation",
+                    "revision": 1,
                     "automatic": True,
                     "taxonomy": {
                         "signals": [{"key": "market.vwap_reclaim"}],

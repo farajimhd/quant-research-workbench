@@ -903,6 +903,8 @@ class LongMomentumServiceTests(unittest.TestCase):
                         "account_id": "DU123",
                         "ticker": "AAPL",
                         "conid": 265598,
+                        "strategy_id": STRATEGY_ID,
+                        "strategy_revision": STRATEGY_REVISION,
                         "permissions": {"enter": True, "add": True, "reenter": True},
                     }
                 )
@@ -914,6 +916,8 @@ class LongMomentumServiceTests(unittest.TestCase):
                             "account_id": "DU123",
                             "ticker": "AAPL",
                             "conid": 265598,
+                            "strategy_id": STRATEGY_ID,
+                            "strategy_revision": STRATEGY_REVISION,
                             "permissions": {"enter": True},
                         }
                     )

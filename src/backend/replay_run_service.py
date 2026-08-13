@@ -51,13 +51,13 @@ from src.trading_runtime.simulated_broker import SimulatedBrokerAdapter, Simulat
 from src.trading_runtime.signals import StrategyIntent
 from src.trading_runtime.strategy_engine import (
     AssignmentStatus,
-    AssignedLongMomentumStrategy,
     StrategyAssignment,
     StrategyObservation,
     StrategyPermissions,
-    strategy_rule_timeframes,
-    strategy_input_catalog,
-    strategy_observation_source_values,
+)
+from src.trading_runtime.strategy_registry import (
+    StrategyExecutorRegistration,
+    strategy_executor,
 )
 from src.trading_runtime.strategy_orders import RuntimeIbkrStrategyOrderPlanner
 from src.trading_runtime.strategy_campaign import campaign_state
@@ -83,7 +83,7 @@ PLAYBACK_SPEEDS = (1.0, 5.0, 30.0, 120.0, 0.0)
 DEFAULT_MAX_RESIDENT_RUNS = 32
 DEFAULT_HISTORY_FETCH_CONCURRENCY = 8
 MAX_DEBUG_FIXTURE_EVENTS = 20_000
-RESTART_CHECKPOINT_SCHEMA_VERSION = 2
+RESTART_CHECKPOINT_SCHEMA_VERSION = 3
 
 
 class ReplayRunCapacityError(RuntimeError):
@@ -268,7 +268,8 @@ class ReplayRunController:
         self._subscribers: set[asyncio.Queue[dict[str, Any]]] = set()
         self._last_publish_monotonic = 0.0
         self._runtime: TradingRuntime | None = None
-        self._strategy: AssignedLongMomentumStrategy | None = None
+        self._strategy: Any | None = None
+        self._strategy_registration: StrategyExecutorRegistration | None = None
         self._planner: RuntimeIbkrStrategyOrderPlanner | None = None
         self._journal: TradingJournal | None = None
         self._account_map: dict[str, str] = {}
@@ -690,6 +691,16 @@ class ReplayRunController:
                     else ""
                 ),
                 "account_ids": list(self.account_ids),
+                "strategy_executor": (
+                    {
+                        "strategy_id": self._strategy_registration.strategy_id,
+                        "revision": self._strategy_registration.revision,
+                        "implementation": self._strategy_registration.implementation,
+                        "schema_version": self._strategy_registration.executor_schema_version,
+                    }
+                    if self._strategy_registration is not None
+                    else None
+                ),
             },
             "controller": {
                 "current_time": self.current_time.isoformat() if self.current_time else None,
@@ -1012,7 +1023,19 @@ class ReplayRunController:
                 _strategy_assignment_from_checkpoint(dict(row))
                 for row in checkpoint_assignments
             ]
-        self._strategy = AssignedLongMomentumStrategy(assignments)
+        self._strategy_registration = strategy_executor(
+            str(strategy_configuration["strategy_id"]),
+            int(strategy_configuration["revision"]),
+        )
+        assignment_identities = {
+            (assignment.strategy_id, assignment.strategy_revision)
+            for assignment in assignments
+        }
+        if assignment_identities - {self._strategy_registration.key}:
+            raise ValueError(
+                "Historical Run Plan contains assignments for a different Strategy executor"
+            )
+        self._strategy = self._strategy_registration.strategy_factory(assignments)
         instruments = {
             assignment.ticker: InstrumentContract(
                 instrument_id=f"simulated:{assignment.conid}",
@@ -1162,6 +1185,16 @@ class ReplayRunController:
                 else ""
             ),
             "account_ids": list(self.account_ids),
+            "strategy_executor": (
+                {
+                    "strategy_id": self._strategy_registration.strategy_id,
+                    "revision": self._strategy_registration.revision,
+                    "implementation": self._strategy_registration.implementation,
+                    "schema_version": self._strategy_registration.executor_schema_version,
+                }
+                if self._strategy_registration is not None
+                else None
+            ),
         }
         if identity != expected_identity:
             raise ValueError("Historical restart checkpoint identity changed")
@@ -1301,7 +1334,11 @@ class ReplayRunController:
             source_timeframe=frame.timeframe,
         )
         source_cache = self._strategy_source_values.setdefault(frame.ticker, {})
-        changed_source_values = strategy_observation_source_values(base, frame.timeframe)
+        if self._strategy_registration is None:
+            raise RuntimeError("Historical Strategy executor registration is unavailable")
+        changed_source_values = self._strategy_registration.observation_projector(
+            base, frame.timeframe
+        )
         source_cache.update(changed_source_values)
         evaluation_events = ["indicator_update", "bar_close"]
         changed_source_ids = [
@@ -1311,7 +1348,7 @@ class ReplayRunController:
         ]
         if frame.signals:
             evaluation_events.append("signal_event")
-            for source in strategy_input_catalog():
+            for source in self._strategy_registration.input_catalog_factory():
                 source_id = str(source["source_id"])
                 if not source_id.startswith("signal."):
                     continue
@@ -1661,12 +1698,14 @@ class ReplayRunController:
             if fixture is None:
                 raise RuntimeError("Backtest Debug fixture disappeared before execution")
             return _debug_derived_frames(fixture.derived_frames)
-        if self._strategy is None:
+        if self._strategy is None or self._strategy_registration is None:
             return []
         requests = {
             (assignment.ticker, timeframe)
             for assignment in self._strategy.assignments()
-            for timeframe in strategy_rule_timeframes(assignment.parameters)
+            for timeframe in self._strategy_registration.timeframe_resolver(
+                assignment.parameters
+            )
         }
         if not requests:
             return []
@@ -2626,6 +2665,8 @@ def replay_preflight(
         "configuration_revision": approved["revision"],
         "configuration_label": approved["label"],
         "configuration_content_hash": approved["content_hash"],
+        "run_plan_id": approved.get("run_plan_id", ""),
+        "available_run_plans": deepcopy(approved.get("available_run_plans") or []),
         "canvas_revision": canvas["revision"],
         "canvas_profile": canvas["profile"],
     }
@@ -2770,6 +2811,8 @@ def backtest_preflight(
         "configuration_revision": approved.get("revision", 0),
         "configuration_content_hash": approved.get("content_hash", ""),
         "configuration_label": approved.get("label", ""),
+        "run_plan_id": approved.get("run_plan_id", ""),
+        "available_run_plans": deepcopy(approved.get("available_run_plans") or []),
         "historical_watchlist_plans": watchlist_plans,
         "initial_cash": initial_cash,
     }
@@ -2874,6 +2917,8 @@ def backtest_debug_preflight(
         "configuration_revision_id": approved.get("revision_id", ""),
         "configuration_revision": approved.get("revision", 0),
         "configuration_content_hash": approved.get("content_hash", ""),
+        "run_plan_id": approved.get("run_plan_id", ""),
+        "available_run_plans": deepcopy(approved.get("available_run_plans") or []),
         "configuration_label": approved.get("label", ""),
     }
 
