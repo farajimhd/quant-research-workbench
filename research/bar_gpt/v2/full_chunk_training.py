@@ -540,6 +540,7 @@ def load_full_training_refs(
     manifest_path: Path,
     units: Sequence[OfflineShardUnit],
     manifest: dict[str, Any],
+    ticker_order: Sequence[str],
 ) -> tuple[OfflineBlockRef, ...]:
     """Load and verify the compact stable block index used for chunk replay."""
     cache_path = manifest_path.parent / "full_catalog_index_v1" / "training.jsonl"
@@ -547,7 +548,26 @@ def load_full_training_refs(
         raise RuntimeError(
             f"full-training block index is missing: {cache_path}; rebuild the manifest"
         )
-    unit_keys = tuple(unit.unit_key for unit in units)
+    ticker_rank = {
+        str(ticker): index for index, ticker in enumerate(ticker_order)
+    }
+    unit_by_key = {unit.unit_key: unit for unit in units}
+    if len(unit_by_key) != len(units):
+        raise RuntimeError("certified full-training units contain duplicate keys")
+    try:
+        unit_keys = tuple(
+            sorted(
+                unit_by_key,
+                key=lambda key: (
+                    key.split(":", 1)[1],
+                    ticker_rank[key.split(":", 1)[0]],
+                ),
+            )
+        )
+    except KeyError as exc:
+        raise RuntimeError(
+            f"certified full-training unit has no storage ticker rank: {exc.args[0]}"
+        ) from exc
     expected_unit_hash = hashlib.sha256("\n".join(unit_keys).encode("utf-8")).hexdigest()
     by_unit: dict[str, tuple[OfflineBlockRef, ...]] = {}
     with cache_path.open("r", encoding="utf-8") as handle:

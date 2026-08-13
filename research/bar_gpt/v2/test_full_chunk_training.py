@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import io
+import hashlib
 import json
 import tempfile
 import unittest
 from contextlib import redirect_stdout
+from dataclasses import asdict
 from pathlib import Path
 
 import torch
@@ -14,9 +16,11 @@ from research.bar_gpt.v2.full_chunk_training import (
     FULL_CHUNK_CONTRACT_VERSION,
     build_epoch_chunk_plan,
     load_epoch_chunk_plan,
+    load_full_training_refs,
     write_epoch_chunk_plan,
 )
-from research.bar_gpt.v2.offline_shards import OfflineBlockRef
+from research.bar_gpt.v2.model_discovery import DISCOVERY_CONTRACT_VERSION
+from research.bar_gpt.v2.offline_shards import OfflineBlockRef, OfflineShardUnit
 from research.bar_gpt.v2.progress import TrainingProgressState, TrainingReporter
 from research.bar_gpt.v2.run_train_full_chunks import (
     DEFAULT_MODEL_SIZE,
@@ -144,6 +148,86 @@ class FullChunkPlanTest(unittest.TestCase):
             path.write_text(json.dumps(value), encoding="utf-8")
             with self.assertRaisesRegex(RuntimeError, "hash mismatch"):
                 load_epoch_chunk_plan(path)
+
+    def test_full_training_index_uses_storage_ticker_order(self) -> None:
+        ticker_order = ("BBB", "AAA")
+        keys = (
+            "BBB:2020-01",
+            "AAA:2020-01",
+            "BBB:2020-02",
+            "AAA:2020-02",
+        )
+        refs = tuple(
+            OfflineBlockRef(
+                unit_key=key,
+                session_index=0,
+                block_index=0,
+                origins=10,
+                ticker=key.split(":", 1)[0],
+                local_date=key.split(":", 1)[1] + "-03",
+                activity_regime=1,
+                session_phase="regular_open",
+                has_condition_target=False,
+                unit_index=index,
+                block_offset=0,
+            )
+            for index, key in enumerate(keys)
+        )
+        units = tuple(
+            OfflineShardUnit(
+                unit_key=key,
+                path=Path(f"{key}.pt"),
+                sessions=1,
+                blocks=1,
+                origins=10,
+                stable_unit_index=index,
+                condition_positive_counts=(0, 0, 0, 0),
+            )
+            for index, key in enumerate(sorted(keys))
+        )
+        unit_hash = hashlib.sha256("\n".join(keys).encode("utf-8")).hexdigest()
+        catalog_digest = hashlib.sha256()
+        for ref in refs:
+            identity = (
+                f"{ref.unit_key}|{ref.session_index}|{ref.block_index}|"
+                f"{ref.ticker}|{ref.local_date}|{ref.block_offset}"
+            )
+            catalog_digest.update(identity.encode("utf-8"))
+            catalog_digest.update(b"\n")
+        manifest = {
+            "full_chunk_training": {
+                "training_blocks": 4,
+                "training_origins": 40,
+                "training_catalog_hash": catalog_digest.hexdigest(),
+            }
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            manifest_path = Path(directory) / "full_catalog_chunks_v2.json"
+            cache = manifest_path.parent / "full_catalog_index_v1" / "training.jsonl"
+            cache.parent.mkdir(parents=True)
+            rows = [{
+                "contract_version": DISCOVERY_CONTRACT_VERSION,
+                "unit_keys_hash": unit_hash,
+            }]
+            # Completion order may differ from the authoritative catalog order.
+            rows.extend(
+                {
+                    "unit_key": ref.unit_key,
+                    "refs": [asdict(ref)],
+                }
+                for ref in reversed(refs)
+            )
+            cache.write_text(
+                "\n".join(json.dumps(row) for row in rows) + "\n",
+                encoding="utf-8",
+            )
+            restored = load_full_training_refs(
+                manifest_path=manifest_path,
+                units=units,
+                manifest=manifest,
+                ticker_order=ticker_order,
+            )
+        self.assertEqual(restored, refs)
 
     def test_train_config_rejects_invalid_chunk_controls(self) -> None:
         with self.assertRaisesRegex(ValueError, "chunk and validation"):

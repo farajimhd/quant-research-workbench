@@ -2204,6 +2204,7 @@ def main(argv: Iterable[str] | None = None) -> int:
             manifest_path=Path(args.experiment_manifest),
             units=offline_train_units,
             manifest=discovery_manifest,
+            ticker_order=config.data.tickers,
         )
         monitor_pool_refs = panel_refs(discovery_manifest, "monitor_pool")
         chunk_plan_root = paths.run_root / "chunk_plans"
