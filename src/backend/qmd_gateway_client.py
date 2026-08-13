@@ -1397,6 +1397,7 @@ def qmd_scanner_payload(rows: list[dict[str, Any]], raw_payload: dict[str, Any],
 
 
 def normalize_qmd_symbol_snapshot(row: dict[str, Any]) -> dict[str, Any]:
+    ticker = str(row.get("ticker") or "").upper()
     last_price = float_value(row.get("last_price"))
     bid = float_value(row.get("bid"))
     ask = float_value(row.get("ask"))
@@ -1406,13 +1407,20 @@ def normalize_qmd_symbol_snapshot(row: dict[str, Any]) -> dict[str, Any]:
     trade_rate_60s = float_value(row.get("trade_rate_60s"))
     day_dollar_volume = float_value(row.get("day_dollar_volume"))
     return {
-        "ticker": str(row.get("ticker") or "").upper(),
+        "ticker": ticker,
+        "symbol": ticker,
         "bar_time_market": str(row.get("last_event_ts") or ""),
+        "market_event_at": str(row.get("last_event_ts") or ""),
+        "market_event_age_ms": row.get("event_age_ms"),
+        "market_quality_state": row.get("quality_state"),
+        "market_quality_flags": row.get("quality_flags"),
+        "market_degradation_reason": row.get("degradation_reason"),
         "current_open": last_price,
         "last_close": last_price,
         "bid": bid or None,
         "ask": ask or None,
         "spread_bps_abs": spread_bps or None,
+        "spread_bps": spread_bps or None,
         "last_day_volume_so_far": float_value(row.get("day_volume")),
         "last_day_dollar_volume_so_far": day_dollar_volume,
         "last_transactions": int(float_value(row.get("day_trade_count"))),
@@ -1424,6 +1432,7 @@ def normalize_qmd_symbol_snapshot(row: dict[str, Any]) -> dict[str, Any]:
         "last_price": last_price,
         "volume": float_value(row.get("day_volume")),
         "liquidity_rank": day_dollar_volume / 1_000_000 + trade_rate_10s * 100,
+        "liquidity_score": day_dollar_volume / 1_000_000 + trade_rate_10s * 100,
     }
 
 

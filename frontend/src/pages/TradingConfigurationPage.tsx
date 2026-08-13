@@ -407,6 +407,7 @@ type DiscoveryCapability = {
   availability: "implemented" | "integration_pending" | "planned_realtime" | "strategy_specific" | "offline_only" | "reference_only";
   inputs: string[];
   fields: string[];
+  scanner_columns: Array<{ column_id: string; name: string; source_id: string }>;
   calculation: string;
   timeframes: string[];
   selected_timeframes: string[];
@@ -601,6 +602,7 @@ function normalizedDiscoveryCapability(capability: DiscoveryCapability): Discove
     calculation: value.calculation ?? value.description ?? "QMD publishes this causally available observation.",
     capability_type: canonicalCapabilityType(value),
     fields: value.fields ?? [value.capability_id],
+    scanner_columns: value.scanner_columns ?? [],
     inputs: value.inputs ?? [value.provider || "QMD"],
     priority: value.priority ?? (value.system_required ? "p0" : "p2"),
     selected_timeframes: value.selected_timeframes ?? value.timeframes ?? [],
@@ -2213,7 +2215,7 @@ function MarketDiscoveryStudio({ onChange, section }: { onChange: (value: Market
               const configurationStatus = capability.configuration_policy === "locked" ? "Locked" : capability.configuration_policy === "configurable" ? capability.enabled ? "Active" : "Available" : readableLabel(capability.configuration_policy);
               return <article data-status={configurationStatus.toLowerCase().replaceAll(" ", "-")} key={capability.capability_id}>
                 <span aria-label={`Capability ${index + 1} of ${filteredDiscoveryCapabilities.length}`} className="discovery-capability-index">{index + 1}</span>
-                <div className="discovery-capability-copy"><div className="discovery-capability-title"><strong>{capability.name}</strong><span data-type={capability.capability_type}>{capabilityTypeLabel(capability.capability_type)}</span><span>{capability.priority.toUpperCase()}</span></div><small>{capability.calculation || capability.description}</small><dl><div><dt>Inputs</dt><dd>{capability.inputs.join(", ") || "Service owned"}</dd></div><div><dt>Outputs</dt><dd>{capability.fields.slice(0, 8).join(", ") || capability.output_type}{capability.fields.length > 8 ? ` +${capability.fields.length - 8} more` : ""}</dd></div><div><dt>Authority</dt><dd>{capability.owner} · v{capability.implementation_version} · {readableLabel(capability.persistence_policy)}</dd></div><div><dt>{capability.enabled ? "Active cadence" : "Supported cadence"}</dt><dd>{(capability.enabled ? capability.selected_timeframes : capability.timeframes).length ? (capability.enabled ? capability.selected_timeframes : capability.timeframes).join(", ") : readableLabel(capability.cadence)}</dd></div><div><dt>Consumers</dt><dd>{capability.consumers.map(capabilityScopeLabel).join(", ") || "No registered consumer scope"}</dd></div></dl></div>
+                <div className="discovery-capability-copy"><div className="discovery-capability-title"><strong>{capability.name}</strong><span data-type={capability.capability_type}>{capabilityTypeLabel(capability.capability_type)}</span><span>{capability.priority.toUpperCase()}</span></div><small>{capability.calculation || capability.description}</small><dl><div><dt>Inputs</dt><dd>{capability.inputs.join(", ") || "Service owned"}</dd></div><div><dt>Outputs</dt><dd>{capability.fields.slice(0, 8).join(", ") || capability.output_type}{capability.fields.length > 8 ? ` +${capability.fields.length - 8} more` : ""}</dd></div><div><dt>Scanner columns</dt><dd>{capability.scanner_columns.map((column) => column.name).join(", ") || "Not published"}</dd></div><div><dt>Authority</dt><dd>{capability.owner} · v{capability.implementation_version} · {readableLabel(capability.persistence_policy)}</dd></div><div><dt>{capability.enabled ? "Active cadence" : "Supported cadence"}</dt><dd>{(capability.enabled ? capability.selected_timeframes : capability.timeframes).length ? (capability.enabled ? capability.selected_timeframes : capability.timeframes).join(", ") : readableLabel(capability.cadence)}</dd></div><div><dt>Consumers</dt><dd>{capability.consumers.map(capabilityScopeLabel).join(", ") || "No registered consumer scope"}</dd></div></dl></div>
                 <div className="discovery-capability-actions"><em>{configurationStatus}</em><small>{readableLabel(capability.implementation_status)} · {readableLabel(capability.operational_status)} · coverage {readableLabel(capability.coverage_status)}</small>{removable && runnable ? <button aria-label={`Modify ${capability.name}`} className="button compact secondary" onClick={() => setEditingCapabilityId(capability.capability_id)} type="button"><PencilLine size={13} /> Modify</button> : null}{removable && capability.enabled ? <button aria-label={`Remove ${capability.name}`} className="button compact danger" onClick={() => setDiscoveryCapabilityEnabled(capability.capability_id, false)} type="button"><Trash2 size={13} /> Remove</button> : null}</div>
               </article>;
             })}

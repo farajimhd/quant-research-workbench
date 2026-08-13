@@ -6,6 +6,8 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
+const SCANNER_STALE_AFTER_MS: u64 = 60_000;
+
 #[derive(Clone)]
 pub struct SharedMarketState {
     inner: Arc<RwLock<MarketState>>,
@@ -51,8 +53,12 @@ pub struct SymbolSnapshot {
     pub day_dollar_volume: f64,
     pub day_trade_count: u64,
     pub day_volume: f64,
+    pub degradation_reason: Option<String>,
+    pub event_age_ms: Option<u64>,
     pub last_event_ts: Option<DateTime<Utc>>,
     pub last_price: f64,
+    pub quality_flags: Vec<String>,
+    pub quality_state: String,
     pub spread: f64,
     pub ticker: String,
     pub trade_rate_10s: f64,
@@ -321,6 +327,20 @@ impl SymbolState {
                 )
             })
             .unwrap_or((0.0, 0, 0.0, 0));
+        let event_age_ms = self.last_event_ts.map(|last_event| {
+            as_of.signed_duration_since(last_event).num_milliseconds().max(0) as u64
+        });
+        let (quality_state, quality_flags, degradation_reason) = if self.last_event_ts.is_none() {
+            ("unavailable", vec!["missing_market_event"], Some("No accepted market event is available."))
+        } else if bid > 0.0 && ask > 0.0 && bid > ask {
+            ("crossed", vec!["crossed_nbbo"], Some("Best bid exceeds best ask."))
+        } else if bid > 0.0 && ask > 0.0 && bid == ask {
+            ("locked", vec!["locked_nbbo"], Some("Best bid equals best ask."))
+        } else if event_age_ms.unwrap_or_default() > SCANNER_STALE_AFTER_MS {
+            ("stale", vec!["stale_market_event"], Some("Latest accepted market event exceeds the QMD freshness threshold."))
+        } else {
+            ("ready", Vec::new(), None)
+        };
         SymbolSnapshot {
             ask,
             ask_size,
@@ -329,8 +349,12 @@ impl SymbolState {
             day_dollar_volume: self.day_dollar_volume,
             day_trade_count: self.day_trade_count,
             day_volume: self.day_volume,
+            degradation_reason: degradation_reason.map(str::to_string),
+            event_age_ms,
             last_event_ts: self.last_event_ts,
             last_price: self.last_price,
+            quality_flags: quality_flags.into_iter().map(str::to_string).collect(),
+            quality_state: quality_state.to_string(),
             spread: if bid > 0.0 && ask > 0.0 {
                 (ask - bid).max(0.0)
             } else {
@@ -415,6 +439,26 @@ mod tests {
         assert!(state.trade_rate(60, active) > 0.0);
         let stale = "2026-07-14T14:03:00Z".parse::<DateTime<Utc>>().unwrap();
         assert_eq!(state.trade_rate(60, stale), 0.0);
+    }
+
+    #[test]
+    fn scanner_snapshot_publishes_qmd_freshness_state() {
+        let mut state = SymbolState::new();
+        state.apply_trade(trade("2026-07-14T14:00:00Z", 10.0, 1.0));
+        let ready = state.snapshot(
+            "TEST",
+            "2026-07-14T14:00:30Z".parse::<DateTime<Utc>>().unwrap(),
+        );
+        assert_eq!(ready.quality_state, "ready");
+        assert_eq!(ready.event_age_ms, Some(30_000));
+
+        let stale = state.snapshot(
+            "TEST",
+            "2026-07-14T14:01:01Z".parse::<DateTime<Utc>>().unwrap(),
+        );
+        assert_eq!(stale.quality_state, "stale");
+        assert_eq!(stale.quality_flags, vec!["stale_market_event"]);
+        assert!(stale.degradation_reason.is_some());
     }
 
     #[test]

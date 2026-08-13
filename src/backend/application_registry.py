@@ -360,7 +360,7 @@ CONTAINER_DEFINITIONS = (
 
 
 CONFIGURATION_SCHEMAS = (
-    ConfigurationSchemaDefinition("trading_configuration", "backend", "src/backend/trading_configuration_service.py", 18, ALL_MODES, True),
+    ConfigurationSchemaDefinition("trading_configuration", "backend", "src/backend/trading_configuration_service.py", 20, ALL_MODES, True),
     ConfigurationSchemaDefinition("strategy_profile", "strategy_runtime", "src/trading_runtime/strategy_engine.py", 3, ALL_MODES, True),
     ConfigurationSchemaDefinition("watchlist", "backend", "src/backend/watchlist_runtime_service.py", 1, ALL_MODES, True),
     ConfigurationSchemaDefinition("historical_watchlist_plan", "backend", "src/backend/historical_watchlist_plan.py", 2, ("replay", "backtest"), False),
@@ -845,6 +845,39 @@ def _field(
 def _fields() -> tuple[FieldDefinition, ...]:
     rows: list[FieldDefinition] = []
 
+    for field_id, value_type, unit in (
+        ("market.last_price", "number", "currency"),
+        ("market.previous_close", "number", "currency"),
+        ("market.change_pct", "number", "percent"),
+        ("market.volume", "number", "shares"),
+        ("market.relative_volume", "number", "multiple"),
+        ("market.vwap", "number", "currency"),
+        ("market.spread_bps", "number", "basis_points"),
+        ("market.trade_rate_10s", "number", "events_per_second"),
+        ("market.trade_rate_60s", "number", "events_per_second"),
+        ("market.liquidity_score", "number", "score"),
+        ("market.event_at", "string", "timestamp"),
+        ("market.event_age_ms", "number", "milliseconds"),
+        ("market.quality_state", "string", "state"),
+        ("market.quality_flags", "json", "flags"),
+        ("market.degradation_reason", "string", "text"),
+        ("market.liquidity_rank", "number", "score"),
+    ):
+        rows.append(_field(
+            field_id,
+            "qmd_scanner",
+            "qmd_gateway",
+            "service://qmd/scanner",
+            "qmd.scanner.snapshot.v1",
+            value_type=value_type,
+            unit=unit,
+            entity_grain="security_at_market_clock",
+            ttl_seconds=60,
+            publication_cadence="event_driven",
+            provenance="derived" if field_id not in {"market.last_price", "market.volume", "market.event_at"} else "raw",
+            coverage_query_plan="qmd.scanner.snapshot.v1",
+        ))
+
     reference_specs = {
         "identity": (
             "q_live.id_symbol_interval_v1",
@@ -988,11 +1021,24 @@ FIELD_DEFINITIONS = _fields()
 DISCOVERY_FIELD_PRESENTATIONS = (
     DiscoveryFieldPresentation("identity.symbol", "identity.symbol", "symbol", "Symbol", "Point-in-time ticker identity for the eligible listing.", "reference", True, False, True, (), ("event",)),
     DiscoveryFieldPresentation("identity.company_name", "identity.company_name", "company_name", "Company", "Issuer or security name available for the listing at evaluation time.", "reference", True, False, True, (), ("event",)),
-    DiscoveryFieldPresentation("market.last_price", "", "last_price", "Last price", "Most recent causally available eligible trade price.", "market_data", True, True, True, ("greater_or_equal", "greater_than", "less_or_equal", "less_than", "equals", "above_by_bps"), ("1s", "10s", "30s", "1m")),
-    DiscoveryFieldPresentation("market.change_pct", "", "change_pct", "Change %", "Percentage change from the completed previous-session close.", "market_data", True, True, True, ("greater_or_equal", "greater_than", "less_or_equal", "less_than", "equals"), ("1s", "10s", "30s", "1m")),
-    DiscoveryFieldPresentation("market.volume", "", "volume", "Volume", "Cumulative eligible share volume for the current session.", "market_data", True, True, True, ("greater_or_equal", "greater_than", "less_or_equal", "less_than", "equals"), ("1s", "10s", "30s", "1m")),
-    DiscoveryFieldPresentation("market.relative_volume", "", "relative_volume", "Relative volume", "Cumulative volume versus the aligned 20-session baseline.", "indicator", True, True, True, ("greater_or_equal", "greater_than", "less_or_equal", "less_than", "equals"), ("10s", "30s", "1m")),
-    DiscoveryFieldPresentation("indicator.vwap.value", "", "vwap", "VWAP", "Causal session volume-weighted average eligible trade price.", "indicator", True, True, True, ("greater_or_equal", "greater_than", "less_or_equal", "less_than", "equals", "above_by_bps"), ("1s", "10s", "30s", "1m")),
+    DiscoveryFieldPresentation("market.last_price", "market.last_price", "last_price", "Last price", "Most recent causally available eligible trade price.", "market_data", True, True, True, ("greater_or_equal", "greater_than", "less_or_equal", "less_than", "equals", "above_by_bps"), ("1s", "10s", "30s", "1m")),
+    DiscoveryFieldPresentation("market.previous_close", "market.previous_close", "previous_close", "Previous close", "Completed prior regular-session close available at the scanner clock.", "reference", True, True, True, ("greater_or_equal", "greater_than", "less_or_equal", "less_than", "equals"), ("session",)),
+    DiscoveryFieldPresentation("market.change_pct", "market.change_pct", "change_pct", "Change %", "Percentage change from the completed previous-session close.", "market_data", True, True, True, ("greater_or_equal", "greater_than", "less_or_equal", "less_than", "equals"), ("1s", "10s", "30s", "1m")),
+    DiscoveryFieldPresentation("market.volume", "market.volume", "volume", "Volume", "Cumulative eligible share volume for the current session.", "market_data", True, True, True, ("greater_or_equal", "greater_than", "less_or_equal", "less_than", "equals"), ("1s", "10s", "30s", "1m")),
+    DiscoveryFieldPresentation("market.relative_volume", "market.relative_volume", "relative_volume", "Relative volume", "Cumulative volume versus the aligned 20-session baseline.", "indicator", True, True, True, ("greater_or_equal", "greater_than", "less_or_equal", "less_than", "equals"), ("10s", "30s", "1m")),
+    DiscoveryFieldPresentation("indicator.vwap.value", "market.vwap", "vwap", "VWAP", "Causal session volume-weighted average eligible trade price.", "indicator", True, True, True, ("greater_or_equal", "greater_than", "less_or_equal", "less_than", "equals", "above_by_bps"), ("1s", "10s", "30s", "1m")),
+    DiscoveryFieldPresentation("identity.exchange", "listing.exchange", "exchange", "Exchange", "Point-in-time listing venue for the eligible security.", "reference", False, False, True, (), ("event",)),
+    DiscoveryFieldPresentation("identity.is_tradable", "tradability.is_tradable", "is_tradable", "Tradable", "Whether the listing is admitted to the QMD scanner universe at this clock.", "reference", False, False, True, (), ("event",)),
+    DiscoveryFieldPresentation("market.event_at", "market.event_at", "market_event_at", "Last market event", "Timestamp of the latest accepted quote or eligible trade represented by this row.", "market_data", False, False, True, (), ("event",)),
+    DiscoveryFieldPresentation("market.event_age_ms", "market.event_age_ms", "market_event_age_ms", "Market data age", "Elapsed milliseconds between the scanner clock and the latest accepted market event.", "market_data", True, True, True, ("greater_or_equal", "greater_than", "less_or_equal", "less_than", "equals"), ("event",)),
+    DiscoveryFieldPresentation("market.quality_state", "market.quality_state", "market_quality_state", "Market quality", "QMD-owned ready, stale, locked, crossed, or unavailable market-state classification.", "market_data", True, False, True, (), ("event",)),
+    DiscoveryFieldPresentation("market.quality_flags", "market.quality_flags", "market_quality_flags", "Quality flags", "QMD-owned market-data quality flags active at the scanner clock.", "market_data", False, False, True, (), ("event",)),
+    DiscoveryFieldPresentation("market.degradation_reason", "market.degradation_reason", "market_degradation_reason", "Quality detail", "QMD explanation for a degraded market-quality state.", "market_data", False, False, True, (), ("event",)),
+    DiscoveryFieldPresentation("market.liquidity_rank", "market.liquidity_rank", "liquidity_rank", "Liquidity rank", "QMD base candidate rank from causal price, activity, spread, and liquidity evidence.", "indicator", True, True, True, ("greater_or_equal", "greater_than", "less_or_equal", "less_than", "equals"), ("event",)),
+    DiscoveryFieldPresentation("market.spread_bps", "market.spread_bps", "spread_bps", "Spread", "Current quoted spread in basis points when both NBBO sides are available.", "market_data", False, True, True, ("greater_or_equal", "greater_than", "less_or_equal", "less_than", "equals"), ("event",)),
+    DiscoveryFieldPresentation("market.trade_rate_10s", "market.trade_rate_10s", "trade_rate_10s", "Trades / sec (10s)", "Eligible trade-event rate over the latest ten seconds.", "market_data", False, True, True, ("greater_or_equal", "greater_than", "less_or_equal", "less_than", "equals"), ("10s",)),
+    DiscoveryFieldPresentation("market.trade_rate_60s", "market.trade_rate_60s", "trade_rate_60s", "Trades / sec (60s)", "Eligible trade-event rate over the latest sixty seconds.", "market_data", False, True, True, ("greater_or_equal", "greater_than", "less_or_equal", "less_than", "equals"), ("1m",)),
+    DiscoveryFieldPresentation("market.liquidity_score", "market.liquidity_score", "liquidity_score", "Liquidity score", "QMD liquidity evidence score used in the base candidate ranking.", "indicator", False, True, True, ("greater_or_equal", "greater_than", "less_or_equal", "less_than", "equals"), ("event",)),
     DiscoveryFieldPresentation("reference.market_cap", "reference.market_cap", "market_cap", "Market cap", "Latest point-in-time market capitalization.", "reference", True, True, True, ("greater_or_equal", "greater_than", "less_or_equal", "less_than", "equals"), ("1d",)),
     DiscoveryFieldPresentation("classification.market_cap", "classification.market_cap", "market_cap_category", "Cap category", "Small, Mid, or Large classification from the published configuration.", "reference", True, False, True, (), ("1d",)),
     DiscoveryFieldPresentation("reference.float_shares", "reference.float_shares", "float_shares", "Public float", "Tradable share supply with SEC-derived fallback provenance.", "reference", True, True, True, ("greater_or_equal", "greater_than", "less_or_equal", "less_than", "equals"), ("1d",)),

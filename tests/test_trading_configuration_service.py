@@ -248,7 +248,7 @@ class TradingConfigurationServiceTests(unittest.TestCase):
 
         migrated = _migrate_draft(legacy)
 
-        self.assertEqual(migrated["schema_version"], 19)
+        self.assertEqual(migrated["schema_version"], 20)
         migrated_paper = next(
             row
             for row in migrated["accounts"]["bindings"]
@@ -393,6 +393,26 @@ class TradingConfigurationServiceTests(unittest.TestCase):
                 for row in discovery["column_catalog"]
             )
         )
+        active_core = [
+            row for row in discovery["core_scan"]["calculations"]
+            if row["execution_scope"] == "core_scan"
+            and (row["enabled"] or row["system_required"])
+        ]
+        self.assertEqual(len(active_core), 9)
+        self.assertTrue(all(row["scanner_columns"] for row in active_core))
+        self.assertEqual(sum(len(row["scanner_columns"]) for row in active_core), 9)
+        self.assertIn(
+            "Market quality",
+            next(row for row in active_core if row["capability_id"] == "market-quality")["scanner_columns"][0]["name"],
+        )
+
+        invalid = deepcopy(discovery)
+        next(
+            row for row in invalid["core_scan"]["calculations"]
+            if row["capability_id"] == active_core[0]["capability_id"]
+        )["scanner_columns"] = []
+        with self.assertRaisesRegex(ValueError, "has no registered scanner column"):
+            _validate_market_discovery(invalid)
 
         custom = deepcopy(discovery["rule_sets"][0])
         custom["rule_set_id"] = "invalid-unregistered-field"
@@ -457,7 +477,7 @@ class TradingConfigurationServiceTests(unittest.TestCase):
         ):
             draft = _default_draft()
 
-        self.assertEqual(draft["schema_version"], 19)
+        self.assertEqual(draft["schema_version"], 20)
         self.assertEqual(len(draft["strategy"]["profiles"]), 1)
         self.assertEqual(len(draft["strategy"]["profile_templates"]), 1)
         self.assertEqual(

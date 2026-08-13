@@ -35,7 +35,11 @@ export type ScannerCustomColumn = {
 type TechnicalListSettings = { columns: string[]; customColumns: ScannerCustomColumn[] };
 export type MarketScannerSettings = TechnicalListSettings & { limit: number; preset: string };
 export type SignalStreamSettings = TechnicalListSettings & { limit: number; preset: string };
-export type WatchUniverseSettings = TechnicalListSettings & { limit: number; universeId: string };
+export type WatchUniverseSettings = TechnicalListSettings & { limit: number; watchlistId: string; universeId?: string };
+type DiscoveryScannerColumn = { column_id: string; name: string; source_id: string };
+type DiscoveryCapability = { enabled?: boolean; execution_scope?: string; scanner_columns?: DiscoveryScannerColumn[]; system_required?: boolean };
+type DiscoveryColumn = { column_id: string; description?: string; name: string; provenance?: string; semantic_type?: string; source_id?: string; unit?: string; value_type?: string };
+type DiscoveryWatchlist = { availability?: string; columns?: string[]; description?: string; enabled?: boolean; name: string; watchlist_id: string };
 export type WatchUniverseDefinition = {
   description?: string;
   enabled?: boolean;
@@ -47,7 +51,10 @@ export type WatchUniverseDefinition = {
 };
 export type StrategyActivitySettings = { eventType: string; limit: number; runId: string; strategyId: string; ticker: string };
 type StrategyActivityResponse = { as_of: string; complete: boolean; rows: ScreenerRow[]; source: string };
-type WatchUniverseCatalogResponse = { run_plans?: { plans?: Array<{ name?: string; run_plan_id: string; universe_id: string }>; universes?: WatchUniverseDefinition[] } };
+type WatchUniverseCatalogResponse = {
+  market_discovery?: { column_catalog?: DiscoveryColumn[]; core_scan?: { calculations?: DiscoveryCapability[] }; watchlists?: DiscoveryWatchlist[] };
+  run_plans?: { plans?: Array<{ name?: string; run_plan_id: string; universe_id: string }>; universes?: WatchUniverseDefinition[] };
+};
 type WatchlistRuntimeResponse = {
   as_of?: string;
   status?: "awaiting_first_resolution" | "degraded" | "ready" | string;
@@ -199,18 +206,7 @@ const FIELD_CATALOG: FieldDefinition[] = [
   field("qmd_structure_confidence_pct", "Structure confidence", "Indicators · Flow & structure", "derived", "percentPlain", "Evidence quality for the current structure observation."),
 ];
 
-const SCANNER_PRESETS: Record<string, string[]> = {
-  Overview: ["ticker", "last", "change_pct", "change_5m_pct", "volume", "trade_count", "news_labels", "sec_labels"],
-  Momentum: ["ticker", "last", "change_5m_pct", "change_pct", "dollar_volume", "trade_count", "quote_count"],
-  Intelligence: ["ticker", "last", "change_pct", "live_news_count", "sec_count", "news_labels", "sec_labels"],
-  Fundamentals: ["ticker", "xbrl_quality_score", "financial_trajectory_score", "xbrl_profitability_score", "xbrl_growth_score", "xbrl_cash_quality_score", "xbrl_balance_sheet_score", "xbrl_capital_discipline_score", "fundamental_revenue_growth_pct", "fundamental_operating_margin_pct", "valuation_pe"],
-  Signals: ["ticker", "signal_domain", "signal_producer", "signal_type", "direction", "signal_score", "signal_rank_score", "signal_confidence_pct", "active_signal_count", "working_timeframe", "input_basis", "update_trigger", "evidence"],
-  Indicators: ["ticker", "indicator_type", "indicator_producer", "indicator_timeframe", "flow_structure_composite_score", "flow_structure_composite_confidence_pct", "flow_structure_composite_bias", "flow_structure_composite_reason", "microstructure_unified_signal", "microstructure_unified_confidence_pct", "microstructure_signed_volume_imbalance", "microstructure_level1_ofi", "microstructure_queue_imbalance", "qmd_structure_score", "qmd_structure_confidence_pct"],
-};
-const LEGACY_SCANNER_PRESET_COLUMNS: Record<string, string[]> = {
-  Signals: ["ticker", "signal_domain", "signal_type", "direction", "signal_score", "signal_rank_score", "signal_confidence_pct", "active_signal_count", "working_timeframe", "evidence"],
-  "QMD indicators": ["ticker", "flow_structure_composite_score", "flow_structure_composite_confidence_pct", "flow_structure_composite_bias", "microstructure_unified_signal", "microstructure_unified_confidence_pct", "microstructure_signed_volume_imbalance", "microstructure_level1_ofi", "microstructure_queue_imbalance", "qmd_structure_score", "qmd_structure_confidence_pct", "indicator_timeframe"],
-};
+const QMD_SCANNER_PRESET = "Core Scan";
 const LOCKED_MARKET_LIST_COLUMNS = ["logo", "ticker", "news_labels", "sec_labels"];
 const SIGNAL_PRESETS: Record<string, string[]> = {
   All: ["ticker", "event_time", "signal_domain", "signal_type", "signal_state", "direction", "working_timeframe", "signal_score", "signal_rank_score", "signal_confidence_pct", "last", "source", "evidence", "news_labels", "sec_labels"],
@@ -219,39 +215,70 @@ const SIGNAL_PRESETS: Record<string, string[]> = {
   SEC: ["ticker", "event_time", "signal_type", "direction", "signal_score", "signal_confidence_pct", "source", "evidence", "sec_labels"],
   Strategy: ["ticker", "event_time", "signal_type", "action", "direction", "working_timeframe", "signal_score", "signal_confidence_pct", "last", "source", "evidence"],
 };
-const WATCHLIST_DEFAULT_COLUMNS = ["ticker", "last", "change_pct", "change_5m_pct", "volume", "news_labels", "sec_labels"];
+
+function useDiscoveryPresentation() {
+  const [configuration, setConfiguration] = useState<WatchUniverseCatalogResponse | null>(null);
+  useEffect(() => {
+    const controller = new AbortController();
+    api<WatchUniverseCatalogResponse>("/api/trading/configuration/base", { signal: controller.signal, timeoutMs: 10000 })
+      .then(setConfiguration)
+      .catch(() => undefined);
+    return () => controller.abort();
+  }, []);
+  const discovery = configuration?.market_discovery;
+  const catalog = useMemo(() => (discovery?.column_catalog ?? []).map(discoveryField), [discovery?.column_catalog]);
+  const coreColumns = useMemo(() => [...new Set((discovery?.core_scan?.calculations ?? [])
+    .filter((capability) => capability.execution_scope === "core_scan" && Boolean(capability.enabled || capability.system_required))
+    .flatMap((capability) => capability.scanner_columns ?? [])
+    .map((column) => column.column_id)
+    .filter(Boolean))], [discovery?.core_scan?.calculations]);
+  return { catalog, configuration, coreColumns, discovery };
+}
+
+function discoveryField(column: DiscoveryColumn): FieldDefinition {
+  const unit = String(column.unit ?? "").toLowerCase();
+  const valueType = String(column.value_type ?? "").toLowerCase();
+  const format: FieldDefinition["format"] = unit === "currency" ? "money"
+    : unit === "percent" ? "percent"
+      : unit === "shares" || unit === "milliseconds" ? "integer"
+        : unit === "multiple" ? "multiple"
+          : unit === "score" ? "score"
+            : unit === "timestamp" ? "date"
+              : valueType === "number" ? "number" : "text";
+  const provenance = String(column.provenance ?? "raw");
+  const kind: FieldKind = provenance === "derived" ? "derived" : provenance === "estimated" ? "estimated" : "raw";
+  return field(column.column_id, column.name, readableGroup(column.semantic_type), kind, format, column.description || `QMD-published ${column.name} field.`);
+}
+
+function readableGroup(value: unknown) {
+  const text = String(value ?? "QMD").replaceAll("_", " ");
+  return text ? `${text.charAt(0).toUpperCase()}${text.slice(1)}` : "QMD";
+}
 
 export function MarketScannerContainer({ asOf, meta, onSettingsChange, onTickerSelect, rows, settings }: { asOf: string; meta?: ScannerSnapshotMeta; onSettingsChange: (patch: Partial<MarketScannerSettings>) => void; onTickerSelect: (ticker: string) => void; rows: ScreenerRow[]; settings: MarketScannerSettings }) {
   const normalizedRows = useMemo(() => normalizeScannerRows(rows), [rows]);
-  const preset = normalizeMarketScannerPreset(settings.preset);
-  const qmdStatus = meta?.qmd_derived_status;
-  const qmdPreset = preset === "Signals" || preset === "Indicators";
-  const subtitle = qmdPreset && qmdStatus === "building"
-    ? "Building the causal QMD cross-section from canonical events · market rows remain available while replay completes"
-    : qmdPreset && qmdStatus === "error"
-      ? `QMD cross-section unavailable · ${meta?.qmd_derived_error || "the replay will retry automatically"}`
-      : qmdPreset && qmdStatus === "ready"
-        ? `${Number(meta?.qmd_indicator_row_count || 0).toLocaleString()} indicator rows · ${Number(meta?.qmd_signal_event_count || 0).toLocaleString()} recent signal events`
-        : meta?.complete_universe
-          ? `Full historical universe · ${meta.lookback_minutes ?? 15}-minute discovery window · cached interval analytics`
-          : "Scanner universe unavailable or incomplete";
+  const { catalog, coreColumns } = useDiscoveryPresentation();
+  const subtitle = meta?.complete_universe
+    ? `QMD Core Scan · full historical universe · ${meta.lookback_minutes ?? 15}-minute discovery window`
+    : "QMD Core Scan universe unavailable or incomplete";
   return <MarketListSurface
     asOf={asOf}
-    columns={withLockedColumns(settings.columns.length ? settings.columns : SCANNER_PRESETS[preset] ?? SCANNER_PRESETS.Overview, LOCKED_MARKET_LIST_COLUMNS)}
+    catalog={catalog}
+    columns={settings.columns.length ? settings.columns : (coreColumns.length ? coreColumns : ["symbol", "last_price", "change_pct", "volume"])}
     customColumns={settings.customColumns}
     empty="No securities are available at this market clock."
     eyebrow="Market snapshot"
     fieldCoverage={meta?.field_coverage}
     limit={settings.limit}
-    lockedColumns={LOCKED_MARKET_LIST_COLUMNS}
+    lockedColumns={["symbol"]}
     onColumnsChange={(columns) => onSettingsChange({ columns })}
     onCustomColumnsChange={(customColumns) => onSettingsChange({ customColumns })}
-    onPresetChange={(preset) => onSettingsChange({ columns: SCANNER_PRESETS[preset] ?? settings.columns, preset })}
+    onPresetChange={() => undefined}
     onTickerSelect={onTickerSelect}
-    presets={Object.keys(SCANNER_PRESETS)}
-    preset={preset}
+    presets={[QMD_SCANNER_PRESET]}
+    preset={QMD_SCANNER_PRESET}
     rows={normalizedRows}
-    sortColumn={preset === "Signals" ? "signal_rank_score" : preset === "Indicators" ? "flow_structure_composite_confidence" : "change_pct"}
+    sortColumn="liquidity_rank"
     subtitle={subtitle}
     title="Scanner"
   />;
@@ -261,26 +288,12 @@ export function migrateMarketScannerSettings(
   settings: MarketScannerSettings,
   storedVersion: number | undefined,
 ): MarketScannerSettings {
-  const preset = normalizeMarketScannerPreset(settings.preset);
-  const legacyColumns = LEGACY_SCANNER_PRESET_COLUMNS[settings.preset];
-  const refreshBuiltInView = Number(storedVersion ?? 0) < 21
-    && (settings.preset === "QMD indicators"
-      || Boolean(legacyColumns && sameColumns(settings.columns, legacyColumns)));
-  return {
-    ...settings,
-    preset,
-    columns: refreshBuiltInView ? [...(SCANNER_PRESETS[preset] ?? SCANNER_PRESETS.Overview)] : settings.columns,
-  };
+  return { ...settings, columns: Number(storedVersion ?? 0) < 25 ? [] : settings.columns, preset: QMD_SCANNER_PRESET };
 }
 
 export function normalizeMarketScannerPreset(value: unknown): string {
-  const preset = String(value || "");
-  if (preset === "QMD indicators") return "Indicators";
-  return Object.hasOwn(SCANNER_PRESETS, preset) ? preset : "Overview";
-}
-
-function sameColumns(left: string[], right: string[]): boolean {
-  return left.length === right.length && left.every((column, index) => column === right[index]);
+  void value;
+  return QMD_SCANNER_PRESET;
 }
 
 export function SignalStreamContainer({ asOf, onSettingsChange, onTickerSelect, scannerRows, settings, strategySignals }: { asOf: string; onSettingsChange: (patch: Partial<SignalStreamSettings>) => void; onTickerSelect: (ticker: string) => void; scannerRows: ScreenerRow[]; settings: SignalStreamSettings; strategySignals: ScreenerRow[] }) {
@@ -316,16 +329,9 @@ export function SignalStreamContainer({ asOf, onSettingsChange, onTickerSelect, 
 }
 
 export function WatchUniverseContainer({ asOf, onSettingsChange, onTickerSelect, scannerRows, settings }: { asOf: string; onSettingsChange: (patch: Partial<WatchUniverseSettings>) => void; onTickerSelect: (ticker: string) => void; scannerRows: ScreenerRow[]; settings: WatchUniverseSettings }) {
-  const [catalog, setCatalog] = useState<WatchUniverseCatalogResponse | null>(null);
+  const { catalog: fieldCatalog, configuration, discovery } = useDiscoveryPresentation();
   const [runtime, setRuntime] = useState<WatchlistRuntimeResponse | null>(null);
   const [runtimeError, setRuntimeError] = useState("");
-  useEffect(() => {
-    const controller = new AbortController();
-    api<WatchUniverseCatalogResponse>("/api/trading/configuration/base", { signal: controller.signal, timeoutMs: 10000 })
-      .then(setCatalog)
-      .catch(() => undefined);
-    return () => controller.abort();
-  }, []);
   useEffect(() => {
     const controller = new AbortController();
     let pending = false;
@@ -346,58 +352,57 @@ export function WatchUniverseContainer({ asOf, onSettingsChange, onTickerSelect,
     const interval = window.setInterval(() => void refresh(), 5_000);
     return () => { controller.abort(); window.clearInterval(interval); };
   }, []);
-  const universes = catalog?.run_plans?.universes ?? [];
-  const runPlans = catalog?.run_plans?.plans ?? [];
+  const watchlists = discovery?.watchlists ?? [];
+  const universes = configuration?.run_plans?.universes ?? [];
+  const runPlans = configuration?.run_plans?.plans ?? [];
   const sourceRows = useMemo(() => normalizeScannerRows(scannerRows), [scannerRows]);
   const rowByTicker = useMemo(() => new Map(sourceRows.map((row) => [String(row.ticker), row])), [sourceRows]);
-  const universe = universes.find((row) => row.universe_id === settings.universeId) ?? universes[0];
-  const symbols = (universe?.symbols ?? []).map((ticker) => ticker.trim().toUpperCase()).filter(Boolean);
-  const runtimeWatchlist = runtime?.watchlists?.find((row) => row.watchlist_id === universe?.scanner_view_id);
+  const watchlist = watchlists.find((row) => row.watchlist_id === settings.watchlistId) ?? watchlists.find((row) => row.enabled && row.availability !== "integration_pending") ?? watchlists[0];
+  const runtimeWatchlist = runtime?.watchlists?.find((row) => row.watchlist_id === watchlist?.watchlist_id);
   const runtimeMembers = runtimeWatchlist?.members ?? [];
   const runtimeReady = runtime?.status === "ready" && runtimeWatchlist !== undefined;
-  const resolvedSymbols = universe?.source === "watchlist"
-    ? runtimeMembers.map((row) => String(row.ticker ?? "").trim().toUpperCase()).filter(Boolean)
-    : symbols;
+  const resolvedSymbols = runtimeMembers.map((row) => String(row.ticker ?? row.symbol ?? "").trim().toUpperCase()).filter(Boolean);
   const runtimeMemberByTicker = new Map(runtimeMembers.map((row) => [String(row.ticker ?? "").trim().toUpperCase(), row]));
   const rows: ScreenerRow[] = resolvedSymbols.map((ticker) => ({
     ...(runtimeMemberByTicker.get(ticker) ?? {}),
     ...(rowByTicker.get(ticker) ?? {}),
     ticker,
   }));
-  const linkedPlans = runPlans.filter((plan) => plan.universe_id === universe?.universe_id);
-  const resolved = universe?.source === "configured_symbols" || (universe?.source === "watchlist" && runtimeReady);
-  const resolutionClock = universe?.source === "watchlist" ? runtime?.as_of ?? asOf : asOf;
-  const unresolvedDetail = universe?.source === "scanner_view"
-    ? `Legacy Scanner view ${universe.scanner_view_id || "not selected"} is presentation-only. Convert this universe to a Watchlist or configured symbols.`
-    : runtimeError
-      ? `Watchlist runtime could not be read: ${runtimeError}`
-      : runtime === null
-        ? "Loading the current Watchlist membership projection."
-        : runtime.status !== "ready"
-          ? "Waiting for the first complete causal Watchlist resolution."
-          : `Watchlist ${universe?.scanner_view_id || "not selected"} has no runtime snapshot.`;
-  return <section className="market-list-surface watchlist-surface" aria-label={`${universe?.name ?? "Watch"} universe`}>
+  const linkedUniverseIds = universes.filter((row) => row.source === "watchlist" && row.scanner_view_id === watchlist?.watchlist_id).map((row) => row.universe_id);
+  const linkedPlans = runPlans.filter((plan) => linkedUniverseIds.includes(plan.universe_id));
+  const resolved = runtimeReady;
+  const resolutionClock = runtime?.as_of ?? asOf;
+  const unresolvedDetail = runtimeError
+    ? `Watchlist runtime could not be read: ${runtimeError}`
+    : runtime === null
+      ? "Loading the current QMD Watchlist membership projection."
+      : runtime.status !== "ready"
+        ? "Waiting for the first complete causal QMD Watchlist resolution."
+        : `QMD Watchlist ${watchlist?.watchlist_id || "not selected"} has no runtime snapshot.`;
+  const columns = settings.columns.length ? settings.columns : watchlist?.columns ?? ["symbol"];
+  return <section className="market-list-surface watchlist-surface" aria-label={`${watchlist?.name ?? "Watchlist"} watchlist`}>
     <header className="market-list-heading">
-      <div><span className="market-list-eyebrow"><Star size={12} /> Run Plan boundary</span><h3>{universe?.name ?? "No watch universe configured"}</h3><p>{resolved ? `${rows.length} eligible securities` : "Dynamic membership awaits its causal resolver"} · state at <MarketTime value={resolutionClock} /></p></div>
-      <span className="market-list-owner strategy">{universe?.source?.replaceAll("_", " ") ?? "unavailable"}</span>
+      <div><span className="market-list-eyebrow"><Star size={12} /> QMD Watchlist</span><h3>{watchlist?.name ?? "No Watchlist configured"}</h3><p>{resolved ? `${rows.length} eligible securities` : "Dynamic membership awaits its causal resolver"} · state at <MarketTime value={resolutionClock} /></p></div>
+      <span className="market-list-owner strategy">QMD</span>
     </header>
     <div className="watch-universe-context">
-      <label><span>Watch universe</span><select aria-label="Watch universe" onChange={(event) => onSettingsChange({ universeId: event.target.value })} value={universe?.universe_id ?? ""}>{universes.map((row) => <option key={row.universe_id} value={row.universe_id}>{row.name}</option>)}</select></label>
+      <label><span>Watchlist</span><select aria-label="Watchlist" onChange={(event) => onSettingsChange({ columns: [], watchlistId: event.target.value })} value={watchlist?.watchlist_id ?? ""}>{watchlists.map((row) => <option disabled={!row.enabled || row.availability === "integration_pending"} key={row.watchlist_id} value={row.watchlist_id}>{row.name}</option>)}</select></label>
       <div><span>Used by</span><strong>{linkedPlans.map((plan) => plan.name || plan.run_plan_id).join(", ") || "No Run Plan"}</strong></div>
-      <button onClick={() => { window.location.hash = "assignment-configuration"; }} type="button">Configure in Run Plans <ArrowRight size={13} /></button>
+      <button onClick={() => { window.location.hash = "market-discovery-configuration"; }} type="button">Configure in Market Discovery <ArrowRight size={13} /></button>
     </div>
     {!resolved ? <div className="watch-universe-warning" role="status"><strong>Membership is not runtime-ready</strong><span>{unresolvedDetail}</span></div> : null}
     <MarketListTable
-      columns={withLockedColumns(settings.columns.length ? settings.columns : WATCHLIST_DEFAULT_COLUMNS, LOCKED_MARKET_LIST_COLUMNS)}
+      catalog={fieldCatalog}
+      columns={columns}
       customColumns={settings.customColumns}
-      empty={resolved ? (universe?.source === "watchlist" ? "This Watchlist currently has no members." : "This watch universe has no configured members.") : "No resolved membership is available."}
+      empty={resolved ? "This QMD Watchlist currently has no members." : "No resolved membership is available."}
       limit={settings.limit}
-      lockedColumns={LOCKED_MARKET_LIST_COLUMNS}
+      lockedColumns={["symbol"]}
       onColumnsChange={(columns) => onSettingsChange({ columns })}
       onCustomColumnsChange={(customColumns) => onSettingsChange({ customColumns })}
       onTickerSelect={onTickerSelect}
       rows={rows}
-      title={`${universe?.name ?? "Watch"} universe`}
+      title={`${watchlist?.name ?? "Watchlist"} watchlist`}
     />
   </section>;
 }
@@ -443,6 +448,7 @@ function uniqueValues(rows: ScreenerRow[], key: string) {
 
 function MarketListSurface({
   asOf,
+  catalog = FIELD_CATALOG,
   columns,
   customColumns,
   empty,
@@ -463,6 +469,7 @@ function MarketListSurface({
   title,
 }: {
   asOf: string;
+  catalog?: FieldDefinition[];
   columns: string[];
   customColumns: ScannerCustomColumn[];
   empty: string;
@@ -488,12 +495,13 @@ function MarketListSurface({
       <strong>{formatCompact(rows.length)} rows</strong>
     </header>
     {guide}
-    <nav className="market-list-presets" aria-label={`${title} views`}>{presets.map((item) => <button aria-pressed={preset === item} className={preset === item ? "active" : undefined} key={item} onClick={() => onPresetChange(item)} type="button">{item}</button>)}</nav>
-    <MarketListTable columns={columns} customColumns={customColumns} empty={empty} fieldCoverage={fieldCoverage} limit={limit} lockedColumns={lockedColumns} onColumnsChange={onColumnsChange} onCustomColumnsChange={onCustomColumnsChange} onTickerSelect={onTickerSelect} rows={rows} sortColumn={sortColumn} title={title} />
+    {presets.length > 1 ? <nav className="market-list-presets" aria-label={`${title} views`}>{presets.map((item) => <button aria-pressed={preset === item} className={preset === item ? "active" : undefined} key={item} onClick={() => onPresetChange(item)} type="button">{item}</button>)}</nav> : null}
+    <MarketListTable catalog={catalog} columns={columns} customColumns={customColumns} empty={empty} fieldCoverage={fieldCoverage} limit={limit} lockedColumns={lockedColumns} onColumnsChange={onColumnsChange} onCustomColumnsChange={onCustomColumnsChange} onTickerSelect={onTickerSelect} rows={rows} sortColumn={sortColumn} title={title} />
   </section>;
 }
 
 function MarketListTable({
+  catalog = FIELD_CATALOG,
   columns,
   customColumns,
   empty,
@@ -508,6 +516,7 @@ function MarketListTable({
   sortColumn,
   title,
 }: {
+  catalog?: FieldDefinition[];
   columns: string[];
   customColumns: ScannerCustomColumn[];
   empty: string;
@@ -626,8 +635,8 @@ function MarketListTable({
       <span>{visibleRows.length} of {rows.length}</span>
       <button aria-expanded={columnPickerOpen} className="market-list-columns-button" onClick={() => setColumnPickerOpen((open) => !open)} type="button"><Columns3 size={14} /> Columns <b>{columns.length}</b></button>
     </div>
-    <div className="market-list-table-scroll"><table className="market-list-table"><thead><tr>{columns.map((column) => { const definition = catalogField(column, customColumns); const sorted = sort.column === column; const className = columnClass(column); const menuOpen = headerMenuColumn === column; return column === "logo" ? <th aria-label="Ticker logo" className={className} key={column} /> : <th aria-sort={sorted ? (sort.direction === "asc" ? "ascending" : "descending") : "none"} className={className} data-menu-open={menuOpen ? "true" : undefined} key={column}><button aria-expanded={menuOpen} onClick={() => setHeaderMenuColumn((current) => current === column ? null : column)} title={`Configure ${definition.label}`} type="button"><span>{definition.label}<small data-kind={definition.kind}>{technicalScopeLabel(definition) ?? definition.kind}</small></span>{sorted ? sort.direction === "asc" ? <ArrowUp size={12} /> : <ArrowDown size={12} /> : <ChevronDown size={12} />}</button>{menuOpen ? <ColumnHeaderMenu column={column} definition={definition} locked={lockedColumns.includes(column)} onAnchorChange={(value) => changeTechnicalAnchor(column, value)} onMove={(target) => moveColumn(column, target)} onRemove={() => removeColumn(column)} onSort={(direction) => changeSort(column, direction)} onSourceChange={(value) => changeTechnicalSource(column, value)} onTimeframeChange={(value) => changeTechnicalTimeframe(column, value)} ref={headerMenuRef} /> : null}</th>; })}{rowAction ? <th aria-label="Row actions" /> : null}</tr></thead><tbody>{visibleRows.length ? visibleRows.map((row, index) => { const ticker = String(row.ticker ?? row.symbol ?? "").trim().toUpperCase(); const selectable = Boolean(ticker && onTickerSelect); const select = () => { if (selectable) onTickerSelect?.(ticker); }; return <tr aria-label={selectable ? `Open ${ticker} Charts & Quotes` : undefined} data-selectable={selectable ? "true" : undefined} key={`${ticker || "row"}:${row.event_time ?? index}:${index}`} onClick={(event) => { if (!(event.target as HTMLElement).closest("button, input, select, a")) select(); }} onKeyDown={(event) => { if (selectable && (event.key === "Enter" || event.key === " ")) { event.preventDefault(); select(); } }} tabIndex={selectable ? 0 : undefined}>{columns.map((column) => <td className={`${toneClass(row[column], column, customColumns)} ${columnClass(column)}`.trim()} key={column}>{renderMarketCell(row, column, presentations, customColumns)}</td>)}{rowAction ? <td className="market-list-row-action">{rowAction(row)}</td> : null}</tr>; }) : <tr><td className="market-list-empty" colSpan={columns.length + (rowAction ? 1 : 0)}>{empty}</td></tr>}</tbody></table></div>
-    {columnPickerOpen ? <ColumnPicker columns={columns} customColumns={customColumns} fieldCoverage={fieldCoverage} lockedColumns={lockedColumns} onAddTechnical={addTechnicalColumn} onChange={onColumnsChange} onClose={() => setColumnPickerOpen(false)} /> : null}
+    <div className="market-list-table-scroll"><table className="market-list-table"><thead><tr>{columns.map((column) => { const definition = catalogField(column, customColumns, catalog); const sorted = sort.column === column; const className = columnClass(column); const menuOpen = headerMenuColumn === column; return column === "logo" ? <th aria-label="Ticker logo" className={className} key={column} /> : <th aria-sort={sorted ? (sort.direction === "asc" ? "ascending" : "descending") : "none"} className={className} data-menu-open={menuOpen ? "true" : undefined} key={column}><button aria-expanded={menuOpen} onClick={() => setHeaderMenuColumn((current) => current === column ? null : column)} title={`Configure ${definition.label}`} type="button"><span>{definition.label}<small data-kind={definition.kind}>{technicalScopeLabel(definition) ?? definition.kind}</small></span>{sorted ? sort.direction === "asc" ? <ArrowUp size={12} /> : <ArrowDown size={12} /> : <ChevronDown size={12} />}</button>{menuOpen ? <ColumnHeaderMenu column={column} definition={definition} locked={lockedColumns.includes(column)} onAnchorChange={(value) => changeTechnicalAnchor(column, value)} onMove={(target) => moveColumn(column, target)} onRemove={() => removeColumn(column)} onSort={(direction) => changeSort(column, direction)} onSourceChange={(value) => changeTechnicalSource(column, value)} onTimeframeChange={(value) => changeTechnicalTimeframe(column, value)} ref={headerMenuRef} /> : null}</th>; })}{rowAction ? <th aria-label="Row actions" /> : null}</tr></thead><tbody>{visibleRows.length ? visibleRows.map((row, index) => { const ticker = String(row.ticker ?? row.symbol ?? "").trim().toUpperCase(); const selectable = Boolean(ticker && onTickerSelect); const select = () => { if (selectable) onTickerSelect?.(ticker); }; return <tr aria-label={selectable ? `Open ${ticker} Charts & Quotes` : undefined} data-selectable={selectable ? "true" : undefined} key={`${ticker || "row"}:${row.event_time ?? index}:${index}`} onClick={(event) => { if (!(event.target as HTMLElement).closest("button, input, select, a")) select(); }} onKeyDown={(event) => { if (selectable && (event.key === "Enter" || event.key === " ")) { event.preventDefault(); select(); } }} tabIndex={selectable ? 0 : undefined}>{columns.map((column) => <td className={`${toneClass(row[column], column, customColumns, catalog)} ${columnClass(column)}`.trim()} key={column}>{renderMarketCell(row, column, presentations, customColumns, catalog)}</td>)}{rowAction ? <td className="market-list-row-action">{rowAction(row)}</td> : null}</tr>; }) : <tr><td className="market-list-empty" colSpan={columns.length + (rowAction ? 1 : 0)}>{empty}</td></tr>}</tbody></table></div>
+    {columnPickerOpen ? <ColumnPicker catalog={catalog} columns={columns} customColumns={customColumns} fieldCoverage={fieldCoverage} lockedColumns={lockedColumns} onAddTechnical={addTechnicalColumn} onChange={onColumnsChange} onClose={() => setColumnPickerOpen(false)} /> : null}
   </div>;
 }
 
@@ -657,6 +666,7 @@ const ColumnHeaderMenu = forwardRef<HTMLDivElement, {
 });
 
 function ColumnPicker({
+  catalog = FIELD_CATALOG,
   columns,
   customColumns,
   fieldCoverage,
@@ -665,6 +675,7 @@ function ColumnPicker({
   onChange,
   onClose,
 }: {
+  catalog?: FieldDefinition[];
   columns: string[];
   customColumns: ScannerCustomColumn[];
   fieldCoverage?: Record<string, number>;
@@ -674,11 +685,11 @@ function ColumnPicker({
   onClose: () => void;
 }) {
   const customDefinitions = customColumns.map(customField);
-  const groups = [...new Set([...FIELD_CATALOG.map((item) => item.group), "Technicals", ...(customDefinitions.length ? ["Custom"] : [])])];
+  const groups = [...new Set([...catalog.map((item) => item.group), "Technicals", ...(customDefinitions.length ? ["Custom"] : [])])];
   const [group, setGroup] = useState(groups[0]);
   const [query, setQuery] = useState("");
   const deferredQuery = useDeferredValue(query.trim().toLowerCase());
-  const availableDefinitions = [...FIELD_CATALOG, ...TECHNICAL_METRICS.map((item) => ({ ...item, group: "Technicals", key: `template:${item.metric}` } as FieldDefinition)), ...customDefinitions];
+  const availableDefinitions = [...catalog, ...TECHNICAL_METRICS.map((item) => ({ ...item, group: "Technicals", key: `template:${item.metric}` } as FieldDefinition)), ...customDefinitions];
   const matches = availableDefinitions.filter((item) => (!deferredQuery || `${item.label} ${item.key} ${item.description}`.toLowerCase().includes(deferredQuery)) && (deferredQuery || item.group === group));
   function toggle(key: string) { if (lockedColumns.includes(key)) return; onChange(columns.includes(key) ? columns.filter((column) => column !== key) : [...columns, key]); }
   return <aside aria-label="Add scanner columns" className="market-column-picker">
@@ -736,10 +747,15 @@ function filterSignalPreset(rows: ScreenerRow[], preset: string) {
 function normalizeScannerRows(rows: ScreenerRow[]) {
   return rows.map((row) => {
     const ticker = String(row.ticker ?? row.symbol ?? "").trim().toUpperCase();
-    const last = numberValue(row.last ?? row.snapshot_last_price ?? row.close);
-    const volume = numberValue(row.volume);
+    const last = numberValue(row.last_price ?? row.last ?? row.snapshot_last_price ?? row.close);
+    const volume = numberValue(row.volume ?? row.day_volume ?? row.last_day_volume_so_far);
     return {
       ...row,
+      symbol: ticker,
+      last_price: row.last_price ?? last,
+      market_event_at: row.market_event_at ?? row.last_event_ts ?? row.bar_end ?? row.bar_time_market,
+      spread_bps: row.spread_bps ?? row.spread_bps_abs,
+      volume,
       dollar_volume: row.dollar_volume ?? (last > 0 && volume > 0 ? last * volume : undefined),
       microstructure_unified_confidence_pct: numberValue(row.microstructure_unified_confidence) * 100,
       flow_structure_composite_confidence_pct: numberValue(row.flow_structure_composite_confidence) * 100,
@@ -750,11 +766,11 @@ function normalizeScannerRows(rows: ScreenerRow[]) {
   });
 }
 
-function renderMarketCell(row: ScreenerRow, column: string, presentations: ReturnType<typeof useTickerPresentations>, customColumns: ScannerCustomColumn[]) {
+function renderMarketCell(row: ScreenerRow, column: string, presentations: ReturnType<typeof useTickerPresentations>, customColumns: ScannerCustomColumn[], catalog = FIELD_CATALOG) {
   const value = row[column];
   const ticker = String(row.ticker ?? row.symbol ?? "").trim().toUpperCase();
   if (column === "logo") return <TickerLogo logoUrl={String(row.logo_url ?? presentations[ticker]?.logo_url ?? "")} ticker={ticker} />;
-  if (column === "ticker") {
+  if (column === "ticker" || column === "symbol") {
     return <span className="market-list-ticker-cell">
       <strong>{ticker}</strong>
       <span className="market-list-ticker-events">
@@ -769,7 +785,7 @@ function renderMarketCell(row: ScreenerRow, column: string, presentations: Retur
     const labels = rowLabels(value);
     return labels.length ? <span className="market-list-label-badges" data-source={column === "news_labels" ? "news" : "sec"} title={labels.join(", ")}>{labels.slice(0, 1).map((labelValue) => <span key={labelValue}>{labelValue}</span>)}{labels.length > 1 ? <span className="market-list-label-overflow">+{labels.length - 1}</span> : null}</span> : <span className="market-list-unavailable">—</span>;
   }
-  const definition = catalogField(column, customColumns);
+  const definition = catalogField(column, customColumns, catalog);
   if (value === null || value === undefined || value === "") return <span className="market-list-unavailable" title={`${definition.label} is not available from the active source at this clock.`}>—</span>;
   if (definition.format === "date") return <MarketTime value={String(value)} />;
   if (definition.format === "percent") return `${numberValue(value) > 0 ? "+" : ""}${numberValue(value).toFixed(Math.abs(numberValue(value)) < 1 ? 2 : 1)}%`;
@@ -790,9 +806,9 @@ function TickerEventIcon({ source, value }: { source: "News" | "SEC"; value: str
   return <span aria-label={label} className="market-list-ticker-event" data-source={source.toLowerCase()} data-state={state} title={label}><Icon aria-hidden="true" fill={source === "News" ? "currentColor" : "none"} size={15} /></span>;
 }
 
-function toneClass(value: unknown, column: string, customColumns: ScannerCustomColumn[] = []) {
+function toneClass(value: unknown, column: string, customColumns: ScannerCustomColumn[] = [], catalog = FIELD_CATALOG) {
   const numeric = numberValue(value);
-  const definition = catalogField(column, customColumns);
+  const definition = catalogField(column, customColumns, catalog);
   if (["change_pct", "change_5m_pct", "gap_pct", "magnitude", "qmd_signal"].includes(column) || ["change_pct", "vwap_distance_pct"].includes(definition.metric ?? "")) return numeric > 0 ? "positive" : numeric < 0 ? "negative" : "neutral";
   if (definition.metric === "relative_volume") return numeric >= 1.5 ? "positive" : numeric < 0.75 ? "muted" : "neutral";
   if (definition.format === "score") return numeric >= 65 ? "positive" : numeric < 45 ? "negative" : "neutral";
@@ -809,9 +825,9 @@ function toneClass(value: unknown, column: string, customColumns: ScannerCustomC
   return "";
 }
 
-function catalogField(key: string, customColumns: ScannerCustomColumn[] = []) {
-  const catalog = FIELD_CATALOG.find((item) => item.key === key);
-  if (catalog) return catalog;
+function catalogField(key: string, customColumns: ScannerCustomColumn[] = [], catalog = FIELD_CATALOG) {
+  const definition = catalog.find((item) => item.key === key) ?? FIELD_CATALOG.find((item) => item.key === key);
+  if (definition) return definition;
   const custom = customColumns.find((item) => item.key === key);
   return custom ? customField(custom) : field(key, label(key), "Other", "raw", "text", "Available source field.");
 }
@@ -820,7 +836,7 @@ function withLockedColumns(columns: string[], lockedColumns: string[]) {
   const trailing = lockedColumns.filter((column) => !leading.includes(column));
   return [...leading, ...columns.filter((column) => !lockedColumns.includes(column)), ...trailing];
 }
-function columnClass(column: string) { return column === "logo" ? "market-list-logo-column" : column === "ticker" ? "market-list-symbol-column" : column === "news_labels" || column === "sec_labels" ? "market-list-label-column" : ""; }
+function columnClass(column: string) { return column === "logo" ? "market-list-logo-column" : column === "ticker" || column === "symbol" ? "market-list-symbol-column" : column === "news_labels" || column === "sec_labels" ? "market-list-label-column" : ""; }
 function rowLabels(value: unknown) { return [...new Set(String(value ?? "").split(",").map((item) => item.trim()).filter(Boolean))]; }
 function collectLabels(rows: ScreenerRow[], column: "news_labels" | "sec_labels") { return [...new Set(rows.flatMap((row) => rowLabels(row[column])))].sort((left, right) => left.localeCompare(right)); }
 function normalizeLabel(value: string) { return value.trim().toLowerCase(); }

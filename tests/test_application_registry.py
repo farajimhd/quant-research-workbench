@@ -159,7 +159,7 @@ class ApplicationRegistryTests(unittest.TestCase):
         self.assertEqual(payload["counts"]["configuration_schemas"], len(CONFIGURATION_SCHEMAS))
         self.assertEqual(payload["counts"]["compatibility_aliases"], len(COMPATIBILITY_ALIASES))
         schemas = {row["schema_id"]: row for row in payload["configuration_schemas"]}
-        self.assertEqual(schemas["trading_configuration"]["version"], 18)
+        self.assertEqual(schemas["trading_configuration"]["version"], 20)
         self.assertEqual(
             payload["counts"]["market_discovery_fields"],
             len(DISCOVERY_FIELD_PRESENTATIONS),
@@ -168,6 +168,9 @@ class ApplicationRegistryTests(unittest.TestCase):
     def test_market_discovery_presentations_register_columns_and_filter_operators(self) -> None:
         rows = {row.source_id: row for row in DISCOVERY_FIELD_PRESENTATIONS}
         self.assertEqual(rows["market.last_price"].column_id, "last_price")
+        self.assertEqual(rows["market.previous_close"].column_id, "previous_close")
+        self.assertEqual(rows["market.quality_state"].column_id, "market_quality_state")
+        self.assertEqual(rows["market.liquidity_rank"].column_id, "liquidity_rank")
         self.assertIn("greater_or_equal", rows["market.last_price"].filter_operators)
         self.assertEqual(
             rows["signal.company_news.score"].field_id,

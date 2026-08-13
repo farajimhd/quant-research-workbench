@@ -43,7 +43,7 @@ from src.trading_runtime.strategy_campaign import validate_campaign_policy
 from src.trading_runtime.taxonomy import StrategyTaxonomy
 
 
-CONFIGURATION_SCHEMA_VERSION = 19
+CONFIGURATION_SCHEMA_VERSION = 20
 CONFIGURATION_SECTIONS = {
     "strategy",
     "market_discovery",
@@ -73,6 +73,18 @@ DISCOVERY_EXECUTION_SCOPES = {
 }
 DISCOVERY_CONFIGURATION_POLICIES = {"locked", "configurable", "generated", "retired"}
 _QMD_RUNTIME_CATALOG_CACHE: tuple[float, list[dict[str, Any]]] = (0.0, [])
+QMD_CORE_SCANNER_FIELDS = {
+    "core_bars": ["market.last_price", "market.volume", "indicator.vwap.value"],
+    "quote_mid_spread_bars": ["market.spread_bps"],
+    "tape_rates": ["market.trade_rate_10s", "market.trade_rate_60s"],
+    "nbbo_liquidity": ["market.spread_bps", "market.liquidity_score"],
+    "reference_context": ["identity.company_name", "reference.market_cap"],
+}
+QMD_CORE_PRIMARY_SCANNER_FIELD = {
+    "instrument-identity": "identity.symbol",
+    "market-quality": "market.quality_state",
+    "liquidity-rank": "market.liquidity_rank",
+}
 
 
 def _load_configuration_env() -> None:
@@ -1510,7 +1522,11 @@ def _qmd_runtime_capabilities() -> list[dict[str, Any]]:
             "priority": priority,
             "availability": status,
             "inputs": list(row.get("inputs") or []),
-            "fields": list(row.get("outputs") or []),
+            "fields": list(
+                QMD_CORE_SCANNER_FIELDS.get(key)
+                or row.get("outputs")
+                or []
+            ),
             "timeframes": timeframes,
             "selected_timeframes": timeframes,
             "enabled": enabled,
@@ -2021,6 +2037,56 @@ def _watchlist_column_catalog(
     return [deepcopy(row) for row in field_catalog if str(row.get("column_id") or "")]
 
 
+def _bind_discovery_scanner_columns(
+    calculation_rows: list[dict[str, Any]],
+    field_catalog: list[dict[str, Any]],
+) -> None:
+    """Bind QMD capability outputs to the registered scanner presentation.
+
+    Capability rows declare semantic outputs. The field registry owns how those
+    outputs are presented, so frontend consumers never infer columns from names
+    or maintain a second scanner catalog.
+    """
+
+    columns_by_source = {
+        str(row.get("source_id") or ""): row
+        for row in field_catalog
+        if str(row.get("column_id") or "")
+    }
+    for capability in calculation_rows:
+        if str(capability.get("execution_scope") or "") == "core_scan":
+            capability["consumers"] = list(dict.fromkeys([
+                *(str(value) for value in capability.get("consumers") or [] if str(value)),
+                "core_scan",
+                "watchlist",
+            ]))
+        sources = [
+            str(value)
+            for value in capability.get("fields") or []
+            if str(value)
+        ]
+        capability_id = str(capability.get("capability_id") or "")
+        primary_source = QMD_CORE_PRIMARY_SCANNER_FIELD.get(capability_id)
+        if primary_source:
+            sources = [primary_source]
+        if capability_id:
+            sources.append(capability_id)
+        seen: set[str] = set()
+        scanner_columns: list[dict[str, str]] = []
+        for source_id in sources:
+            presentation = columns_by_source.get(source_id)
+            column_id = str((presentation or {}).get("column_id") or "")
+            if not column_id or column_id in seen:
+                continue
+            seen.add(column_id)
+            scanner_columns.append({
+                "column_id": column_id,
+                "name": str(presentation.get("name") or column_id),
+                "source_id": source_id,
+            })
+        capability["scanner_columns"] = scanner_columns
+
+
 def _default_watchlist_templates(symbols: list[str], calculation_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     focused = [row["capability_id"] for row in calculation_rows if row["tier"] == "watchlist" and row["enabled"]]
     common_columns = ["symbol", "company_name", "last_price", "change_pct", "volume", "relative_volume", "market_cap", "market_cap_category", "float_shares", "float_category", "short_interest_pct"]
@@ -2122,7 +2188,11 @@ def _default_market_discovery(
             "priority": "p0" if required else "p2",
             "availability": "implemented",
             "inputs": ["QMD services"],
-            "fields": [capability_id],
+            "fields": {
+                "instrument-identity": ["identity.symbol", "identity.company_name", "identity.exchange", "identity.is_tradable"],
+                "market-quality": ["market.quality_state", "market.event_age_ms", "market.event_at", "market.quality_flags", "market.degradation_reason"],
+                "liquidity-rank": ["market.liquidity_rank", "market.liquidity_score", "market.spread_bps"],
+            }.get(capability_id, [capability_id]),
             "calculation": description,
             "timeframes": [],
             "selected_timeframes": [],
@@ -2148,6 +2218,7 @@ def _default_market_discovery(
         rule_set_ids.add(rule_set_id)
         merged_rule_sets.append(deepcopy(rule_set))
     field_catalog = _market_discovery_field_catalog(calculation_rows)
+    _bind_discovery_scanner_columns(calculation_rows, field_catalog)
     return {
         "security_universe": {
             "universe_id": "qmd-security-universe",
@@ -2438,6 +2509,14 @@ def _validate_market_discovery(section: dict[str, Any]) -> None:
         if bool(calculation.get("system_required")) and not bool(calculation.get("enabled")):
             raise ValueError(
                 f"Required QMD capability {calculation.get('name')} cannot be disabled"
+            )
+        if (
+            execution_scope == "core_scan"
+            and bool(calculation.get("enabled") or calculation.get("system_required"))
+            and not list(calculation.get("scanner_columns") or [])
+        ):
+            raise ValueError(
+                f"Active Core Scan capability {calculation.get('name')} has no registered scanner column"
             )
         supported_timeframes = {
             str(value) for value in calculation.get("timeframes") or [] if str(value)
@@ -3081,6 +3160,8 @@ def _migrate_draft(raw: dict[str, Any]) -> dict[str, Any]:
                 "coverage_status": str(default_calculation.get("coverage_status") or "unknown"),
                 "cost_class": str(default_calculation.get("cost_class") or "unknown"),
                 "stateful": bool(default_calculation.get("stateful")),
+                "scanner_columns": deepcopy(default_calculation.get("scanner_columns") or []),
+                "consumers": deepcopy(default_calculation.get("consumers") or []),
             })
             supported_timeframes = list(calculation["timeframes"])
             selected_timeframes = [
