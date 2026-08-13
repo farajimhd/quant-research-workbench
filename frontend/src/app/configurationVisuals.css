@@ -389,7 +389,7 @@
 .discovery-capability-copy > span { color: var(--muted-foreground); font-size: 9.5px; font-weight: 620; letter-spacing: .035em; text-transform: uppercase; }
 .discovery-capability-matrix small { color: var(--muted-foreground); font-size: 12px; line-height: 1.45; }
 .discovery-capability-title { align-items: center; display: flex; flex-wrap: wrap; gap: 7px; }
-.discovery-capability-title > strong { font-size: 14px; margin-right: 3px; }
+.discovery-capability-title > strong { font-size: 15px; font-weight: 560; line-height: 1.35; margin-right: 3px; }
 .discovery-capability-title > span {
   background: var(--configuration-soft);
   border: 1px solid var(--configuration-rule);
@@ -560,7 +560,7 @@
 }
 .discovery-watchlist-available article:hover { background: var(--configuration-soft); border-color: var(--border-strong, var(--border)); }
 .discovery-watchlist-available article > span:nth-child(2) { display: grid; gap: 3px; min-width: 0; }
-.discovery-watchlist-available article strong { font-size: 13px; }
+.discovery-watchlist-available article strong { font-size: 15px; font-weight: 560; line-height: 1.35; }
 .discovery-watchlist-available article em { margin-top: 2px; }
 .discovery-watchlist-card-title { align-items: center; display: flex; flex-wrap: wrap; gap: 7px; }
 .discovery-watchlist-card-title em { background: var(--configuration-soft); border: 1px solid var(--configuration-rule); border-radius: 999px; color: var(--muted-foreground); font-size: 9px; font-weight: 700; margin: 0; padding: 2px 6px; text-transform: uppercase; }
@@ -721,6 +721,7 @@
 .discovery-rule-card-list > article[data-assignment="exclude"] { border-left: 3px solid #dc2626; }
 .discovery-rule-card-list > article > div:nth-child(2) { display: grid; gap: 8px; }
 .discovery-rule-card-list > article > div:nth-child(2) > header { align-items: center; display: flex; flex-wrap: wrap; gap: 8px; }
+.discovery-rule-card-list > article > div:nth-child(2) > header > strong { font-size: 15px; font-weight: 560; line-height: 1.35; }
 .discovery-rule-card-list > article > div:nth-child(2) > header span { color: var(--muted-foreground); font-size: 9px; font-weight: 700; text-transform: uppercase; }
 .discovery-rule-card-list p { color: var(--muted-foreground); line-height: 1.5; margin: 0; }
 .discovery-rule-assignment { display: flex; gap: 6px; }
