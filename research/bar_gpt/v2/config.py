@@ -68,6 +68,7 @@ OFFLINE_PRODUCTION_LENGTH_BUCKET_BATCHES = (
 
 BAR_GPT_WANDB_PROJECT = "bar gpt v2"
 BAR_GPT_MODEL_COMPARISON_WANDB_PROJECT = "bar gpt v2 model comparison"
+BAR_GPT_FULL_TRAINING_WANDB_PROJECT = "bar gpt v2 full training"
 
 
 INTRADAY_TIMEFRAMES_US: tuple[int, ...] = (
@@ -359,6 +360,14 @@ class TrainConfig:
     # for the final epoch. Ordinary/full training retains validation at every
     # epoch boundary.
     full_validation_final_epoch_only: bool = False
+    # Full-catalog mode keeps the worker-owned shuffled epoch stream intact
+    # and inserts block-aligned monitoring boundaries of approximately this
+    # many origins. Every block is consumed exactly once per outer epoch.
+    full_chunk_training: bool = False
+    chunk_target_origins: int = 30_000_000
+    chunk_monitor_origins: int = 1_000_000
+    outer_early_stopping_patience: int = 0
+    outer_early_stopping_min_relative_delta: float = 0.001
     warmup_samples: int = 0
     warmup_fraction: float = 0.01
     minimum_learning_rate: float = 3e-5
@@ -383,6 +392,12 @@ class TrainConfig:
             raise ValueError("epoch_train_evaluation_origins must be positive")
         if self.monitor_evaluation_origins <= 0:
             raise ValueError("monitor_evaluation_origins must be positive")
+        if self.chunk_target_origins <= 0 or self.chunk_monitor_origins <= 0:
+            raise ValueError("full-training chunk and monitor origin targets must be positive")
+        if self.outer_early_stopping_patience < 0:
+            raise ValueError("outer early-stopping patience cannot be negative")
+        if not 0 <= self.outer_early_stopping_min_relative_delta < 1:
+            raise ValueError("outer early-stopping relative delta must satisfy 0 <= delta < 1")
         if self.checkpoint_validation_evaluations <= 0:
             raise ValueError("checkpoint_validation_evaluations must be positive")
         if self.validation_runs_per_epoch <= 0 or self.validation_batches < 0:

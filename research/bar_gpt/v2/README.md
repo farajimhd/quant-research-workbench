@@ -120,6 +120,30 @@ evaluations at each epoch boundary. Every completed epoch writes an immutable
 `checkpoints/checkpoint_epoch_NNNN.pt` alongside latest and best-validation
 checkpoints.
 
+Run final full-catalog chunk training (Medium by default):
+
+```powershell
+python -m research.bar_gpt.v2.run_train_full_chunks
+python -m research.bar_gpt.v2.run_train_full_chunks --prepare-manifest-only
+python -m research.bar_gpt.v2.run_train_full_chunks --execute
+```
+
+The launcher freezes every eligible 2019-2025 block into the training
+authority and keeps disjoint 2026 monitor-pool, validation, and locked-test
+authorities. Every outer epoch consumes every training block exactly once.
+The manifest binds that complete population by certified catalog hash and
+summary; the loader streams the immutable units directly instead of copying
+roughly one million block-reference records into every worker.
+The worker-owned stream receives a new deterministic shuffle each epoch and
+is divided into block-aligned boundaries averaging 30M origins; blocks are
+never split. A different stratified 1M monitor panel is evaluated after each
+chunk, while the fixed 5M validation panel is evaluated only at the outer
+epoch boundary. The next epoch's lightweight monitor/chunk metadata plan is
+prepared concurrently without reading shard tensors. Training stops after at
+most ten epochs or two non-improving complete validations. W&B continues to
+use cumulative `samples_seen` as its step; epoch and chunk position are logged
+as additional `train_progress/*` fields.
+
 Run the paired data-diversity/repetition experiment after the baseline
 comparison finishes:
 

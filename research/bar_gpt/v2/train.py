@@ -13,6 +13,7 @@ import sys
 import threading
 import time
 import traceback
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import Any, Iterable, Iterator, Sequence
@@ -47,12 +48,20 @@ from research.bar_gpt.v2.loader import (
     validation_block_plan,
 )
 from research.bar_gpt.v2.offline_shards import (
+    OfflineBlockRef,
     OfflineShardDataset,
     OfflineShardUnit,
     discover_offline_units,
     hydrate_offline_runtime_config,
     make_offline_dataloader,
     verify_shard_catalog_lock,
+)
+from research.bar_gpt.v2.full_chunk_training import (
+    EpochChunkPlan,
+    build_epoch_chunk_plan,
+    load_epoch_chunk_plan,
+    load_full_chunk_manifest,
+    write_epoch_chunk_plan,
 )
 from research.bar_gpt.v2.model_discovery import load_discovery_manifest, panel_refs
 from research.bar_gpt.v2.prefetch import DeviceBatchPrefetcher
@@ -225,6 +234,35 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
             "paired training/full-validation evaluation for the final epoch"
         ),
     )
+    parser.add_argument(
+        "--full-chunk-training",
+        action=argparse.BooleanOptionalAction,
+        default=train.full_chunk_training,
+        help=(
+            "train the complete offline panel once per epoch with block-aligned "
+            "chunk monitors and epoch-level early stopping"
+        ),
+    )
+    parser.add_argument(
+        "--chunk-target-origins",
+        type=int,
+        default=train.chunk_target_origins,
+    )
+    parser.add_argument(
+        "--chunk-monitor-origins",
+        type=int,
+        default=train.chunk_monitor_origins,
+    )
+    parser.add_argument(
+        "--outer-early-stopping-patience",
+        type=int,
+        default=train.outer_early_stopping_patience,
+    )
+    parser.add_argument(
+        "--outer-early-stopping-min-relative-delta",
+        type=float,
+        default=train.outer_early_stopping_min_relative_delta,
+    )
     parser.add_argument("--validation-interval-samples", type=int, default=train.validation_interval_samples)
     parser.add_argument("--validation-initial-samples", type=int, default=train.validation_initial_samples)
     parser.add_argument(
@@ -359,6 +397,13 @@ def build_config(args: argparse.Namespace) -> ExperimentConfig:
         training_metrics_interval_samples=int(args.training_metrics_interval_samples),
         epoch_train_evaluation_origins=int(args.epoch_train_evaluation_origins),
         full_validation_final_epoch_only=bool(args.full_validation_final_epoch_only),
+        full_chunk_training=bool(args.full_chunk_training),
+        chunk_target_origins=int(args.chunk_target_origins),
+        chunk_monitor_origins=int(args.chunk_monitor_origins),
+        outer_early_stopping_patience=int(args.outer_early_stopping_patience),
+        outer_early_stopping_min_relative_delta=float(
+            args.outer_early_stopping_min_relative_delta
+        ),
         validation_interval_samples=int(args.validation_interval_samples),
         validation_initial_samples=int(args.validation_initial_samples),
         monitor_evaluation_origins=int(args.monitor_evaluation_origins),
@@ -621,6 +666,41 @@ def _reached_diagnostic_limit(
     return training_limit < planned_samples and samples_seen >= training_limit
 
 
+def _chunk_boundary_due(
+    *,
+    blocks_seen: int,
+    chunk_start_blocks: int,
+    chunk_index: int,
+    plan: EpochChunkPlan | None,
+) -> bool:
+    if plan is None or chunk_index < 0 or chunk_index >= plan.chunk_count - 1:
+        return False
+    return blocks_seen - chunk_start_blocks >= plan.chunks[chunk_index].target_blocks
+
+
+def _outer_early_stopping_update(
+    *,
+    observed_loss: float,
+    best_loss: float,
+    reference_loss: float,
+    epochs_without_improvement: int,
+    patience: int,
+    minimum_relative_delta: float,
+) -> tuple[float, float, int, bool]:
+    if not math.isfinite(observed_loss):
+        raise FloatingPointError("outer-epoch validation loss is non-finite")
+    required = reference_loss * (1.0 - minimum_relative_delta)
+    improved = not math.isfinite(reference_loss) or observed_loss < required
+    best_loss = min(best_loss, observed_loss)
+    if improved:
+        reference_loss = observed_loss
+        epochs_without_improvement = 0
+    else:
+        epochs_without_improvement += 1
+    stopped = patience > 0 and epochs_without_improvement >= patience
+    return best_loss, reference_loss, epochs_without_improvement, stopped
+
+
 def _validation_milestones(
     *,
     epoch_origins: int,
@@ -829,6 +909,7 @@ def _loaders(
     validation_plan: SequentialBlockPlan | None = None,
     offline_train_units: Sequence[OfflineShardUnit] = (),
     offline_validation_units: Sequence[OfflineShardUnit] = (),
+    offline_manifest: dict[str, Any] | None = None,
 ) -> tuple[DataLoader[Any], DataLoader[Any]]:
     if args.dummy_data:
         example = _dummy_example(config.data)
@@ -840,7 +921,7 @@ def _loaders(
         if not offline_train_units or not offline_validation_units:
             raise ValueError("offline training requires certified train and validation shard units")
         experiment_manifest = str(getattr(args, "experiment_manifest", ""))
-        manifest = (
+        manifest = offline_manifest or (
             load_discovery_manifest(
                 Path(experiment_manifest),
                 shard_root=Path(args.offline_shard_root),
@@ -854,7 +935,15 @@ def _loaders(
             seed=config.train.seed,
             shuffle_units=True,
             resume_cursors=resume_cursors,
-            block_refs=panel_refs(manifest, "train") if manifest is not None else (),
+            # Full-catalog mode uses the certified unit stream directly. Its
+            # manifest binds the exact population by summary and catalog hash;
+            # materializing ~1M block-reference dictionaries here would only
+            # inflate parent/worker memory and startup time.
+            block_refs=(
+                ()
+                if config.train.full_chunk_training
+                else panel_refs(manifest, "train") if manifest is not None else ()
+            ),
             batch_size=config.data.batch_size,
             length_bucket_batches=config.data.offline_length_bucket_batches,
         )
@@ -1137,6 +1226,11 @@ def _wandb_metric_key(key: str) -> str:
         "h2d_completed_batches": "train_runtime_loader/h2d_completed_batches",
         "h2d_seconds": "train_runtime_loader/h2d_seconds",
         "condition_positive_rate": "train_data/condition_positive_rate",
+        "outer_epoch": "train_progress/outer_epoch",
+        "chunk_index": "train_progress/chunk_index",
+        "chunks_completed": "train_progress/chunks_completed",
+        "chunk_origins_seen": "train_progress/chunk_origins_seen",
+        "chunk_blocks_seen": "train_progress/chunk_blocks_seen",
     }
     if key.startswith("train/"):
         leaf = key.removeprefix("train/")
@@ -1294,6 +1388,43 @@ class ReusableValidationBatches:
             self._loader._iterator = None
 
 
+def _offline_reference_evaluation_cache(
+    config: ExperimentConfig,
+    *,
+    units: Sequence[OfflineShardUnit],
+    refs: Sequence[OfflineBlockRef],
+    seed: int,
+) -> ReusableValidationBatches:
+    """Build one bounded evaluation stream from already-planned block refs."""
+    if not refs:
+        raise ValueError("offline reference evaluation requires at least one block")
+    evaluation_data = replace(
+        config.data,
+        batch_size=8,
+        loader_workers=min(4, int(config.data.loader_workers)),
+        worker_prefetch_batches=1,
+        persistent_workers=False,
+        balance_activity_regimes=False,
+        offline_length_bucket_batches=1,
+    )
+    dataset = OfflineShardDataset(
+        units,
+        seed=int(seed),
+        shuffle_units=False,
+        block_refs=tuple(refs),
+        batch_size=evaluation_data.batch_size,
+        length_bucket_batches=1,
+    )
+    return ReusableValidationBatches(
+        make_offline_dataloader(
+            dataset,
+            evaluation_data,
+            drop_last=False,
+            persistent_workers=False,
+        )
+    )
+
+
 def _epoch_training_evaluation_loader(
     config: ExperimentConfig,
     args: argparse.Namespace,
@@ -1332,7 +1463,14 @@ def _epoch_training_evaluation_loader(
         offline_train_units,
         seed=config.train.seed,
         shuffle_units=False,
-        block_refs=panel_refs(manifest, "train") if manifest is not None else (),
+        block_refs=(
+            panel_refs(
+                manifest,
+                "epoch_train" if config.train.full_chunk_training else "train",
+            )
+            if manifest is not None
+            else ()
+        ),
         batch_size=evaluation_data.batch_size,
         length_bucket_batches=1,
     )
@@ -1464,6 +1602,7 @@ def checkpoint_payload(
     epoch_train_metrics: dict[str, float] | None = None,
     epoch_validation_metrics: dict[str, float] | None = None,
     generalization_gap_metrics: dict[str, float] | None = None,
+    full_chunk_state: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     return {
         "model_family": MODEL_FAMILY,
@@ -1493,6 +1632,7 @@ def checkpoint_payload(
         "epoch_train_metrics": dict(epoch_train_metrics or {}),
         "epoch_validation_metrics": dict(epoch_validation_metrics or {}),
         "generalization_gap_metrics": dict(generalization_gap_metrics or {}),
+        "full_chunk_state": dict(full_chunk_state or {}),
         "wandb_run_id": wandb_run_id,
         # Raw cache tensors are intentionally not checkpointed: they can be
         # gigabytes per worker and are deterministically rebuilt from these
@@ -1651,6 +1791,12 @@ def main(argv: Iterable[str] | None = None) -> int:
     # logged or copied into manifests.
     load_env_files(discover_clickhouse_env_files(), verbose=True)
     config = build_config(args)
+    if config.train.full_chunk_training and (
+        args.data_source != "offline" or not str(args.experiment_manifest)
+    ):
+        raise ValueError(
+            "full chunk training requires offline shards and a full-catalog experiment manifest"
+        )
     set_seed(config.train.seed)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     if device.type == "cuda":
@@ -1666,18 +1812,36 @@ def main(argv: Iterable[str] | None = None) -> int:
         root = Path(args.offline_shard_root)
         verify_shard_catalog_lock(root)
         if args.experiment_manifest:
-            discovery_manifest = load_discovery_manifest(
-                Path(args.experiment_manifest),
-                shard_root=root,
-                config=config.data,
+            discovery_manifest = (
+                load_full_chunk_manifest(
+                    Path(args.experiment_manifest),
+                    shard_root=root,
+                    config=config.data,
+                )
+                if config.train.full_chunk_training
+                else load_discovery_manifest(
+                    Path(args.experiment_manifest),
+                    shard_root=root,
+                    config=config.data,
+                )
             )
-            manifest_train_refs = panel_refs(discovery_manifest, "train")
-            manifest_evaluation_refs = (
-                *panel_refs(discovery_manifest, "monitor"),
-                *panel_refs(discovery_manifest, "validation"),
-            )
-            training_tickers = tuple(sorted({ref.ticker for ref in manifest_train_refs}))
-            validation_tickers = tuple(sorted({ref.ticker for ref in manifest_evaluation_refs}))
+            if config.train.full_chunk_training:
+                training_tickers = tuple(
+                    str(value)
+                    for value in discovery_manifest["cohorts"]["training_tickers"]
+                )
+                validation_tickers = tuple(
+                    str(value)
+                    for value in discovery_manifest["cohorts"]["evaluation_tickers"]
+                )
+            else:
+                manifest_train_refs = panel_refs(discovery_manifest, "train")
+                manifest_evaluation_refs = (
+                    *panel_refs(discovery_manifest, "monitor"),
+                    *panel_refs(discovery_manifest, "validation"),
+                )
+                training_tickers = tuple(sorted({ref.ticker for ref in manifest_train_refs}))
+                validation_tickers = tuple(sorted({ref.ticker for ref in manifest_evaluation_refs}))
         else:
             training_tickers = tuple(config.data.training_tickers)
             validation_tickers = tuple(
@@ -1750,10 +1914,16 @@ def main(argv: Iterable[str] | None = None) -> int:
     bounded_validation_plan: SequentialBlockPlan | None = None
     if not args.dummy_data and args.data_source == "offline":
         if discovery_manifest is not None:
-            train_refs = panel_refs(discovery_manifest, "train")
-            sequential_sessions = len({(ref.ticker, ref.local_date) for ref in train_refs})
-            sequential_blocks = len(train_refs)
-            sequential_origins = sum(ref.origins for ref in train_refs)
+            if config.train.full_chunk_training:
+                summary = discovery_manifest["summaries"]["train"]
+                sequential_sessions = int(summary["ticker_dates"])
+                sequential_blocks = int(summary["blocks"])
+                sequential_origins = int(summary["origins"])
+            else:
+                train_refs = panel_refs(discovery_manifest, "train")
+                sequential_sessions = len({(ref.ticker, ref.local_date) for ref in train_refs})
+                sequential_blocks = len(train_refs)
+                sequential_origins = sum(ref.origins for ref in train_refs)
         else:
             sequential_sessions = sum(unit.sessions for unit in offline_train_units)
             sequential_blocks = sum(unit.blocks for unit in offline_train_units)
@@ -1800,14 +1970,24 @@ def main(argv: Iterable[str] | None = None) -> int:
     run_root = Path(config.train.output_root) / run_name if args.output_root else default_run_root(MODEL_FAMILY, MODEL_VERSION, JOB_TYPE, run_name)
     paths = RunPaths.create(run_root)
     if discovery_manifest is not None:
-        plan_training_tickers = tuple(
-            sorted({ref.ticker for ref in panel_refs(discovery_manifest, "train")})
-        )
-        validation_tickers = tuple(sorted({
-            ref.ticker
-            for panel_name in ("monitor", "validation")
-            for ref in panel_refs(discovery_manifest, panel_name)
-        }))
+        if config.train.full_chunk_training:
+            plan_training_tickers = tuple(
+                str(value)
+                for value in discovery_manifest["cohorts"]["training_tickers"]
+            )
+            validation_tickers = tuple(
+                str(value)
+                for value in discovery_manifest["cohorts"]["evaluation_tickers"]
+            )
+        else:
+            plan_training_tickers = tuple(
+                sorted({ref.ticker for ref in panel_refs(discovery_manifest, "train")})
+            )
+            validation_tickers = tuple(sorted({
+                ref.ticker
+                for panel_name in ("monitor", "validation")
+                for ref in panel_refs(discovery_manifest, panel_name)
+            }))
     else:
         plan_training_tickers = tuple(config.data.training_tickers)
         validation_tickers = tuple(
@@ -1844,13 +2024,21 @@ def main(argv: Iterable[str] | None = None) -> int:
     # A diagnostic/safety cap must not shorten the epoch learning-rate curve.
     schedule_samples = max(2, training_limit if args.dummy_data else planned_samples)
     epoch_plan_origins = max(1, math.ceil(plan.expected_origins / config.train.epochs))
-    validation_milestones = _validation_milestones(
-        epoch_origins=epoch_plan_origins,
-        runs_per_epoch=config.train.validation_runs_per_epoch,
-        explicit_interval=config.train.validation_interval_samples,
-        initial_samples=config.train.validation_initial_samples,
+    validation_milestones = (
+        (epoch_plan_origins,)
+        if config.train.full_chunk_training
+        else _validation_milestones(
+            epoch_origins=epoch_plan_origins,
+            runs_per_epoch=config.train.validation_runs_per_epoch,
+            explicit_interval=config.train.validation_interval_samples,
+            initial_samples=config.train.validation_initial_samples,
+        )
     )
     validation_interval = validation_milestones[0]
+    if config.train.full_chunk_training and config.train.scheduler_mode == "cosine-restarts":
+        # The complete shuffled population is one natural optimization cycle.
+        # Chunk boundaries never reset optimizer or scheduler state.
+        config.train.cosine_cycle_samples = epoch_plan_origins
     (paths.run_root / "config.json").write_text(json.dumps(to_dict(config), indent=2, default=str), encoding="utf-8")
     (paths.run_root / "coverage_plan.json").write_text(json.dumps(plan.to_dict(), indent=2), encoding="utf-8")
     model: torch.nn.Module = BarGPTV2(config.model).to(device)
@@ -1928,6 +2116,49 @@ def main(argv: Iterable[str] | None = None) -> int:
         )
     scaler = torch.amp.GradScaler("cuda", enabled=config.train.amp and config.train.amp_dtype == "fp16" and device.type == "cuda")
     restored = restore_checkpoint(args.resume_checkpoint, model, optimizer, scaler, scheduler, device, config, plan_hash)
+    chunk_planner: ThreadPoolExecutor | None = None
+    next_epoch_plan_future: Future[tuple[EpochChunkPlan, float]] | None = None
+    current_epoch_chunk_plan: EpochChunkPlan | None = None
+    chunk_plan_seconds = 0.0
+    if config.train.full_chunk_training:
+        assert discovery_manifest is not None
+        monitor_pool_refs = panel_refs(discovery_manifest, "monitor_pool")
+        chunk_plan_root = paths.run_root / "chunk_plans"
+
+        def prepare_chunk_plan(epoch: int) -> tuple[EpochChunkPlan, float]:
+            started = time.perf_counter()
+            output = chunk_plan_root / f"epoch_{epoch + 1:04d}.json"
+            if output.is_file():
+                prepared = load_epoch_chunk_plan(output)
+            else:
+                prepared = build_epoch_chunk_plan(
+                    epoch=epoch,
+                    seed=config.train.seed,
+                    training_blocks=sequential_blocks,
+                    training_origins=sequential_origins,
+                    target_chunk_origins=config.train.chunk_target_origins,
+                    monitor_origins=config.train.chunk_monitor_origins,
+                    monitor_pool=monitor_pool_refs,
+                )
+                write_epoch_chunk_plan(prepared, output)
+            if (
+                prepared.epoch != epoch
+                or prepared.training_blocks != sequential_blocks
+                or prepared.training_origins != sequential_origins
+                or prepared.target_chunk_origins != config.train.chunk_target_origins
+            ):
+                raise RuntimeError(
+                    f"full-training epoch plan {output} does not match the active coverage contract"
+                )
+            return prepared, time.perf_counter() - started
+
+        current_epoch_chunk_plan, chunk_plan_seconds = prepare_chunk_plan(
+            int(restored.get("epoch", 0))
+        )
+        chunk_planner = ThreadPoolExecutor(
+            max_workers=1,
+            thread_name_prefix="bar-gpt-next-epoch-plan",
+        )
     resume_cursors = _cursor_map(restored.get("data_cursors"))
     train_loader, validation_loader = _loaders(
         config,
@@ -1937,6 +2168,7 @@ def main(argv: Iterable[str] | None = None) -> int:
         validation_plan=bounded_validation_plan,
         offline_train_units=offline_train_units,
         offline_validation_units=offline_validation_units,
+        offline_manifest=discovery_manifest,
     )
     validation_cache = (
         ReusableValidationBatches(validation_loader)
@@ -2064,6 +2296,28 @@ def main(argv: Iterable[str] | None = None) -> int:
     units_seen = set(str(value) for value in restored.get("units_seen", []))
     condition_blocks_seen = int(restored.get("condition_blocks_seen", 0))
     resume_epoch = int(restored.get("epoch", 0))
+    restored_chunk_state = dict(restored.get("full_chunk_state") or {})
+    epoch_start_blocks = int(
+        restored_chunk_state.get("epoch_start_blocks", resume_epoch * sequential_blocks)
+    )
+    chunk_index = int(restored_chunk_state.get("chunk_index", 0))
+    chunk_start_samples = int(
+        restored_chunk_state.get("chunk_start_samples", restored.get("epoch_start_samples", 0))
+    )
+    chunk_start_blocks = int(
+        restored_chunk_state.get("chunk_start_blocks", epoch_start_blocks)
+    )
+    chunks_completed = int(restored_chunk_state.get("chunks_completed", 0))
+    best_outer_validation_loss = float(
+        restored_chunk_state.get("best_outer_validation_loss", math.inf)
+    )
+    early_stopping_reference_loss = float(
+        restored_chunk_state.get("early_stopping_reference_loss", math.inf)
+    )
+    outer_epochs_without_improvement = int(
+        restored_chunk_state.get("outer_epochs_without_improvement", 0)
+    )
+    early_stopped = bool(restored_chunk_state.get("early_stopped", False))
     last_checkpoint_samples = int(
         restored.get("last_checkpoint_samples", restored.get("last_latest_samples", 0))
     )
@@ -2095,6 +2349,23 @@ def main(argv: Iterable[str] | None = None) -> int:
         warmup_samples=resolved_warmup_samples,
         schedule_samples=schedule_samples,
         unit_plans=sequential_unit_plans,
+        full_chunk_training=config.train.full_chunk_training,
+        chunk_index=chunk_index + 1,
+        chunk_count=(current_epoch_chunk_plan.chunk_count if current_epoch_chunk_plan else 0),
+        chunk_start_origins=chunk_start_samples,
+        chunk_origin_budget=(
+            current_epoch_chunk_plan.chunks[chunk_index].approximate_target_origins
+            if current_epoch_chunk_plan and chunk_index < current_epoch_chunk_plan.chunk_count
+            else 0
+        ),
+        chunk_start_blocks=chunk_start_blocks,
+        chunk_block_budget=(
+            current_epoch_chunk_plan.chunks[chunk_index].target_blocks
+            if current_epoch_chunk_plan and chunk_index < current_epoch_chunk_plan.chunk_count
+            else 0
+        ),
+        chunk_planner_seconds=chunk_plan_seconds,
+        next_epoch_plan_ready=False,
     )
     reporter = TrainingReporter(state, layout=config.train.progress_layout)
     log_interval = max(1, config.train.logging_samples)
@@ -2105,10 +2376,21 @@ def main(argv: Iterable[str] | None = None) -> int:
     restored_validation_runs = restored.get("validation_runs_in_epoch")
     validation_state_missing = restored_validation_runs is None
     validation_runs_in_epoch = int(restored_validation_runs or 0)
+    evaluations_per_full_epoch = (
+        current_epoch_chunk_plan.chunk_count + 1
+        if current_epoch_chunk_plan is not None
+        else 1
+    )
     validation_evaluations_completed = int(
         restored.get(
             "validation_evaluations_completed",
-            resume_epoch * len(validation_milestones) + validation_runs_in_epoch,
+            resume_epoch
+            * (
+                evaluations_per_full_epoch
+                if config.train.full_chunk_training
+                else len(validation_milestones)
+            )
+            + validation_runs_in_epoch,
         )
     )
     epoch_validation_milestones = validation_milestones
@@ -2121,9 +2403,22 @@ def main(argv: Iterable[str] | None = None) -> int:
     last_validation_samples = int(restored.get("last_validation_samples", -1))
     last_full_validation_samples = int(restored.get("last_full_validation_samples", -1))
     if not pending_resume_validation:
-        validation_runs_in_epoch = min(validation_runs_in_epoch, max(0, len(epoch_validation_milestones) - 1))
-    state.validation_runs_completed = resume_epoch * len(epoch_validation_milestones) + validation_runs_in_epoch
-    state.validation_runs_total = max(1, config.train.epochs) * len(epoch_validation_milestones)
+        validation_runs_in_epoch = min(
+            validation_runs_in_epoch,
+            (
+                current_epoch_chunk_plan.chunk_count
+                if config.train.full_chunk_training
+                and current_epoch_chunk_plan is not None
+                else max(0, len(epoch_validation_milestones) - 1)
+            ),
+        )
+    state.validation_runs_completed = validation_evaluations_completed
+    state.validation_runs_total = (
+        max(1, config.train.epochs)
+        * ((current_epoch_chunk_plan.chunk_count + 1) if current_epoch_chunk_plan else 1)
+        if config.train.full_chunk_training
+        else max(1, config.train.epochs) * len(epoch_validation_milestones)
+    )
     state.next_validation_origins = next_validation
     last_metrics: dict[str, float] = {"train/loss": math.inf}
     last_val: dict[str, float] = {}
@@ -2133,6 +2428,29 @@ def main(argv: Iterable[str] | None = None) -> int:
     current_epoch = resume_epoch
     completed_normally = False
     active_iterator: DeviceBatchPrefetcher | None = None
+
+    def full_chunk_checkpoint_state() -> dict[str, Any]:
+        if not config.train.full_chunk_training:
+            return {}
+        return {
+            "epoch_start_blocks": int(epoch_start_blocks),
+            "chunk_index": int(chunk_index),
+            "chunk_start_samples": int(chunk_start_samples),
+            "chunk_start_blocks": int(chunk_start_blocks),
+            "chunks_completed": int(chunks_completed),
+            "epoch_plan_hash": (
+                current_epoch_chunk_plan.plan_hash
+                if current_epoch_chunk_plan is not None
+                and current_epoch_chunk_plan.epoch == current_epoch
+                else ""
+            ),
+            "best_outer_validation_loss": float(best_outer_validation_loss),
+            "early_stopping_reference_loss": float(
+                early_stopping_reference_loss
+            ),
+            "outer_epochs_without_improvement": int(outer_epochs_without_improvement),
+            "early_stopped": bool(early_stopped),
+        }
 
     def schedule_checkpoint(
         *, force: bool = False, epoch_checkpoint: int | None = None
@@ -2160,6 +2478,7 @@ def main(argv: Iterable[str] | None = None) -> int:
                 epoch_train_metrics=last_epoch_train,
                 epoch_validation_metrics=last_epoch_validation,
                 generalization_gap_metrics=last_generalization_gap,
+                full_chunk_state=full_chunk_checkpoint_state(),
             ),
             train_metrics=last_metrics,
             val_metrics=last_val,
@@ -2194,6 +2513,59 @@ def main(argv: Iterable[str] | None = None) -> int:
             schedule_checkpoint(force=True)
         reporter.phase("running")
 
+    def run_chunk_monitor(active_chunk: Any) -> None:
+        nonlocal last_val, last_validation_samples, validation_runs_in_epoch
+        nonlocal validation_evaluations_completed
+        reporter.message(
+            f"Evaluating chunk {chunk_index + 1}/{current_epoch_chunk_plan.chunk_count if current_epoch_chunk_plan else 0} "
+            f"on rotating monitor {active_chunk.monitor_hash[:12]}"
+        )
+        reporter.phase("validating_chunk")
+        monitor_cache = _offline_reference_evaluation_cache(
+            config,
+            units=offline_validation_units,
+            refs=active_chunk.monitor_refs,
+            seed=(
+                current_epoch_chunk_plan.shuffle_seed + chunk_index
+                if current_epoch_chunk_plan is not None
+                else config.train.seed
+            ),
+        )
+        try:
+            chunk_metrics = validate(
+                model,
+                monitor_cache,
+                config,
+                device,
+                namespace="chunk_monitor",
+                max_batches=None,
+                max_origins=None,
+            )
+        finally:
+            monitor_cache.close()
+        chunk_metrics.update(
+            {
+                "chunk/outer_epoch": float(current_epoch + 1),
+                "chunk/index": float(chunk_index + 1),
+                "chunk/count": float(
+                    current_epoch_chunk_plan.chunk_count
+                    if current_epoch_chunk_plan is not None
+                    else 0
+                ),
+                "chunk/train_origins": float(samples_seen - chunk_start_samples),
+                "chunk/train_blocks": float(blocks_seen - chunk_start_blocks),
+                "chunk/monitor_origins": float(active_chunk.monitor_origins),
+            }
+        )
+        last_val = chunk_metrics
+        if not deferred_losses.merge_last(chunk_metrics):
+            metrics_logger.log(chunk_metrics, samples_seen)
+        deferred_losses.flush(metrics_logger)
+        reporter.chunk_monitor(chunk_metrics)
+        last_validation_samples = samples_seen
+        validation_runs_in_epoch += 1
+        validation_evaluations_completed += 1
+
     try:
         with reporter:
             checkpointer.set_message_callback(reporter.message)
@@ -2213,6 +2585,41 @@ def main(argv: Iterable[str] | None = None) -> int:
             )
             for epoch in range(resume_epoch, max(1, config.train.epochs)):
                 current_epoch = epoch
+                if config.train.full_chunk_training:
+                    if epoch != resume_epoch:
+                        if next_epoch_plan_future is None:
+                            raise RuntimeError("next full-training epoch plan was not scheduled")
+                        current_epoch_chunk_plan, chunk_plan_seconds = (
+                            next_epoch_plan_future.result()
+                        )
+                        next_epoch_plan_future = None
+                        epoch_start_blocks = blocks_seen
+                        chunk_index = 0
+                        chunk_start_samples = samples_seen
+                        chunk_start_blocks = blocks_seen
+                    if current_epoch_chunk_plan is None:
+                        raise RuntimeError("full-training epoch has no chunk plan")
+                    restored_plan_hash = str(
+                        restored_chunk_state.get("epoch_plan_hash", "")
+                    )
+                    if (
+                        epoch == resume_epoch
+                        and restored_plan_hash
+                        and restored_plan_hash != current_epoch_chunk_plan.plan_hash
+                    ):
+                        raise RuntimeError(
+                            "resume checkpoint full-training epoch plan does not match "
+                            "the durable plan"
+                        )
+                    state.chunk_planner_seconds = chunk_plan_seconds
+                    state.next_epoch_plan_ready = False
+                    if (
+                        chunk_planner is not None
+                        and epoch + 1 < max(1, config.train.epochs)
+                    ):
+                        next_epoch_plan_future = chunk_planner.submit(
+                            prepare_chunk_plan, epoch + 1
+                        )
                 if epoch != resume_epoch:
                     train_loader, _unused_validation = _loaders(
                         config,
@@ -2222,6 +2629,7 @@ def main(argv: Iterable[str] | None = None) -> int:
                         validation_plan=bounded_validation_plan,
                         offline_train_units=offline_train_units,
                         offline_validation_units=offline_validation_units,
+                        offline_manifest=discovery_manifest,
                     )
                     durable_cursors = {}
                     validation_runs_in_epoch = 0
@@ -2231,6 +2639,21 @@ def main(argv: Iterable[str] | None = None) -> int:
                     next_validation = epoch_start_samples + epoch_validation_milestones[0]
                 reporter.schedule_validation(next_validation)
                 reporter.epoch(epoch + 1, epoch_start_samples)
+                if current_epoch_chunk_plan is not None:
+                    if not 0 <= chunk_index < current_epoch_chunk_plan.chunk_count:
+                        raise RuntimeError(
+                            f"resume chunk index {chunk_index} is outside epoch plan"
+                        )
+                    active_chunk = current_epoch_chunk_plan.chunks[chunk_index]
+                    reporter.chunk(
+                        index=chunk_index + 1,
+                        count=current_epoch_chunk_plan.chunk_count,
+                        start_origins=chunk_start_samples,
+                        origin_budget=active_chunk.approximate_target_origins,
+                        start_blocks=chunk_start_blocks,
+                        block_budget=active_chunk.target_blocks,
+                        monitor_hash=active_chunk.monitor_hash,
+                    )
                 if isinstance(train_loader.dataset, (BarGPTIterableDataset, OfflineShardDataset)):
                     train_loader.dataset.epoch = epoch
                 if durable_cursors:
@@ -2491,6 +2914,20 @@ def main(argv: Iterable[str] | None = None) -> int:
                             "train/learning_rate": float(optimizer.param_groups[0]["lr"]),
                             "train/amp_scale": float(scaler.get_scale()) if scaler.is_enabled() else 1.0,
                         }
+                        if config.train.full_chunk_training:
+                            update_metadata.update(
+                                {
+                                    "train/outer_epoch": float(current_epoch + 1),
+                                    "train/chunk_index": float(chunk_index + 1),
+                                    "train/chunks_completed": float(chunks_completed),
+                                    "train/chunk_origins_seen": float(
+                                        samples_seen - chunk_start_samples
+                                    ),
+                                    "train/chunk_blocks_seen": float(
+                                        blocks_seen - chunk_start_blocks
+                                    ),
+                                }
+                            )
                         if telemetry_due:
                             update_metadata.update(
                                 {
@@ -2524,7 +2961,42 @@ def main(argv: Iterable[str] | None = None) -> int:
                             unit_indices=batch.unit_indices if batch is not None else (),
                             block_offsets=batch.block_offsets if batch is not None else (),
                         )
+                        chunk_due = bool(
+                            config.train.full_chunk_training
+                            and _chunk_boundary_due(
+                                blocks_seen=blocks_seen,
+                                chunk_start_blocks=chunk_start_blocks,
+                                chunk_index=chunk_index,
+                                plan=current_epoch_chunk_plan,
+                            )
+                        )
+                        if chunk_due:
+                            run_chunk_monitor(
+                                current_epoch_chunk_plan.chunks[chunk_index]
+                            )
+                            chunks_completed += 1
+                            chunk_index += 1
+                            chunk_start_samples = samples_seen
+                            chunk_start_blocks = blocks_seen
+                            next_chunk = current_epoch_chunk_plan.chunks[chunk_index]
+                            state.chunks_completed = chunks_completed
+                            state.next_epoch_plan_ready = bool(
+                                next_epoch_plan_future is not None
+                                and next_epoch_plan_future.done()
+                            )
+                            reporter.chunk(
+                                index=chunk_index + 1,
+                                count=current_epoch_chunk_plan.chunk_count,
+                                start_origins=chunk_start_samples,
+                                origin_budget=next_chunk.approximate_target_origins,
+                                start_blocks=chunk_start_blocks,
+                                block_budget=next_chunk.target_blocks,
+                                monitor_hash=next_chunk.monitor_hash,
+                            )
+                            checkpoint_after_validation()
                         validation_due = (
+                            not config.train.full_chunk_training
+                            and
                             samples_seen >= next_validation
                             and validation_runs_in_epoch < len(epoch_validation_milestones) - 1
                         )
@@ -2591,6 +3063,7 @@ def main(argv: Iterable[str] | None = None) -> int:
                                     validation_plan=bounded_validation_plan,
                                     offline_train_units=offline_train_units,
                                     offline_validation_units=offline_validation_units,
+                                    offline_manifest=discovery_manifest,
                                 )
                                 if isinstance(train_loader.dataset, (BarGPTIterableDataset, OfflineShardDataset)):
                                     train_loader.dataset.epoch = epoch
@@ -2629,9 +3102,15 @@ def main(argv: Iterable[str] | None = None) -> int:
                 )
                 if _INTERRUPTED or reached_diagnostic_limit:
                     break
-                current_epoch = epoch + 1
-                epoch_start_samples = samples_seen
-                durable_cursors = {}
+                if config.train.full_chunk_training:
+                    assert current_epoch_chunk_plan is not None
+                    if chunk_index != current_epoch_chunk_plan.chunk_count - 1:
+                        raise RuntimeError(
+                            "training stream ended before every planned chunk boundary"
+                        )
+                    run_chunk_monitor(current_epoch_chunk_plan.chunks[chunk_index])
+                    chunks_completed += 1
+                    state.chunks_completed = chunks_completed
                 needs_epoch_validation = (
                     last_full_validation_samples != samples_seen
                     if discovery_manifest is not None
@@ -2639,7 +3118,7 @@ def main(argv: Iterable[str] | None = None) -> int:
                 )
                 if needs_epoch_validation:
                     boundary_namespace = _epoch_boundary_evaluation_namespace(
-                        epoch=current_epoch,
+                        epoch=epoch + 1,
                         epochs=config.train.epochs,
                         full_validation_final_epoch_only=(
                             config.train.full_validation_final_epoch_only
@@ -2698,6 +3177,38 @@ def main(argv: Iterable[str] | None = None) -> int:
                             **last_epoch_validation,
                             **last_generalization_gap,
                         }
+                        if config.train.full_chunk_training:
+                            observed_loss = float(
+                                last_epoch_validation["validation_loss/total"]
+                            )
+                            (
+                                best_outer_validation_loss,
+                                early_stopping_reference_loss,
+                                outer_epochs_without_improvement,
+                                early_stopped,
+                            ) = _outer_early_stopping_update(
+                                observed_loss=observed_loss,
+                                best_loss=best_outer_validation_loss,
+                                reference_loss=early_stopping_reference_loss,
+                                epochs_without_improvement=outer_epochs_without_improvement,
+                                patience=config.train.outer_early_stopping_patience,
+                                minimum_relative_delta=(
+                                    config.train.outer_early_stopping_min_relative_delta
+                                ),
+                            )
+                            last_val.update(
+                                {
+                                    "training_control/best_validation_loss": float(
+                                        best_outer_validation_loss
+                                    ),
+                                    "training_control/epochs_without_improvement": float(
+                                        outer_epochs_without_improvement
+                                    ),
+                                    "training_control/early_stopped": float(
+                                        early_stopped
+                                    ),
+                                }
+                            )
                         last_validation_samples = samples_seen
                         last_full_validation_samples = samples_seen
                     if not deferred_losses.merge_last(last_val):
@@ -2706,6 +3217,18 @@ def main(argv: Iterable[str] | None = None) -> int:
                     reporter.validation(last_val)
                     validation_runs_in_epoch += 1
                     validation_evaluations_completed += 1
+                    # Advance the durable epoch cursor only after every
+                    # end-of-epoch evaluation succeeded. If evaluation fails,
+                    # the failure checkpoint stays at the exhausted prior
+                    # epoch; resume then reaches EOF without replaying an
+                    # optimizer update and retries the missing evaluation.
+                    current_epoch = epoch + 1
+                    epoch_start_samples = samples_seen
+                    epoch_start_blocks = blocks_seen
+                    chunk_index = 0
+                    chunk_start_samples = samples_seen
+                    chunk_start_blocks = blocks_seen
+                    durable_cursors = {}
                     # The durable cursor and epoch clock already describe the
                     # next epoch at this boundary. Its validation schedule must
                     # therefore resume from zero, not inherit the completed
@@ -2720,6 +3243,23 @@ def main(argv: Iterable[str] | None = None) -> int:
                         epoch_checkpoint=current_epoch,
                     )
                     reporter.phase("running")
+                    if early_stopped:
+                        reporter.message(
+                            "Global early stopping selected after "
+                            f"{outer_epochs_without_improvement} non-improving outer epochs"
+                        )
+                        break
+                else:
+                    # An evaluation may already have run exactly at the epoch
+                    # boundary in ordinary (non-chunk) training. Preserve its
+                    # existing behavior while still advancing the next epoch.
+                    current_epoch = epoch + 1
+                    epoch_start_samples = samples_seen
+                    epoch_start_blocks = blocks_seen
+                    chunk_index = 0
+                    chunk_start_samples = samples_seen
+                    chunk_start_blocks = blocks_seen
+                    durable_cursors = {}
             if optimizer_steps == 0:
                 raise RuntimeError("coverage epoch produced no optimizer updates")
             stopped_at_limit = _reached_diagnostic_limit(
@@ -2772,6 +3312,11 @@ def main(argv: Iterable[str] | None = None) -> int:
     finally:
         original_failure = sys.exc_info()[1]
         cleanup_failures: list[BaseException] = []
+        if chunk_planner is not None:
+            try:
+                chunk_planner.shutdown(wait=True, cancel_futures=False)
+            except BaseException as exc:
+                cleanup_failures.append(exc)
         if active_iterator is not None:
             try:
                 active_iterator.close()
@@ -2829,6 +3374,15 @@ def main(argv: Iterable[str] | None = None) -> int:
             "condition_blocks_seen": condition_blocks_seen,
             "coverage_plan": plan.to_dict(),
             "completed_normally": completed_normally,
+            "full_chunk_training": config.train.full_chunk_training,
+            "chunks_completed": chunks_completed,
+            "early_stopped": early_stopped,
+            "best_outer_validation_loss": (
+                best_outer_validation_loss
+                if math.isfinite(best_outer_validation_loss)
+                else None
+            ),
+            "outer_epochs_without_improvement": outer_epochs_without_improvement,
             "stopped_at_limit": _reached_diagnostic_limit(
                 training_limit=training_limit,
                 planned_samples=planned_samples,

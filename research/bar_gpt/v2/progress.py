@@ -74,6 +74,19 @@ class TrainingProgressState:
     warmup_samples: int = 0
     schedule_samples: int = 0
     unit_plans: dict[str, tuple[int, int]] = field(default_factory=dict)
+    full_chunk_training: bool = False
+    chunk_index: int = 0
+    chunk_count: int = 0
+    chunk_start_origins: int = 0
+    chunk_origin_budget: int = 0
+    chunk_origins_seen: int = 0
+    chunk_start_blocks: int = 0
+    chunk_block_budget: int = 0
+    chunk_blocks_seen: int = 0
+    chunks_completed: int = 0
+    chunk_monitor_hash: str = "-"
+    chunk_planner_seconds: float = 0.0
+    next_epoch_plan_ready: bool = False
     loss: float = 0.0
     validation_loss: float | None = None
     learning_rate: float = 0.0
@@ -169,9 +182,11 @@ class TrainingReporter:
         s = self.state
         s.samples_seen = int(metrics.get("train/samples_seen", s.samples_seen))
         s.epoch_origins_seen = max(0, s.samples_seen - s.epoch_start_origins)
+        s.chunk_origins_seen = max(0, s.samples_seen - s.chunk_start_origins)
         s.batches_seen = int(metrics.get("train/batches_seen", s.batches_seen))
         s.optimizer_steps = int(metrics.get("train/optimizer_steps", s.optimizer_steps))
         s.blocks_seen = int(metrics.get("train/blocks_seen", s.blocks_seen))
+        s.chunk_blocks_seen = max(0, s.blocks_seen - s.chunk_start_blocks)
         s.units_seen = int(metrics.get("train/units_seen", s.units_seen))
         s.condition_blocks_seen = int(metrics.get("train/condition_blocks_seen", s.condition_blocks_seen))
         s.loss = float(metrics.get("train/loss", s.loss))
@@ -230,6 +245,29 @@ class TrainingReporter:
         self.state.epoch_origins_seen = max(0, self.state.samples_seen - self.state.epoch_start_origins)
         self.message(f"Epoch {self.state.epoch_index}/{self.state.epochs_total} started")
 
+    def chunk(
+        self,
+        *,
+        index: int,
+        count: int,
+        start_origins: int,
+        origin_budget: int,
+        start_blocks: int,
+        block_budget: int,
+        monitor_hash: str,
+    ) -> None:
+        s = self.state
+        s.chunk_index = int(index)
+        s.chunk_count = int(count)
+        s.chunk_start_origins = int(start_origins)
+        s.chunk_origin_budget = int(origin_budget)
+        s.chunk_origins_seen = max(0, s.samples_seen - s.chunk_start_origins)
+        s.chunk_start_blocks = int(start_blocks)
+        s.chunk_block_budget = int(block_budget)
+        s.chunk_blocks_seen = max(0, s.blocks_seen - s.chunk_start_blocks)
+        s.chunk_monitor_hash = str(monitor_hash)
+        self.message(f"Chunk {s.chunk_index}/{s.chunk_count} started")
+
     def phase(self, value: str) -> None:
         self.state.state = str(value)
         self.refresh(force=True)
@@ -252,6 +290,20 @@ class TrainingReporter:
             self.message(f"Monitor completed: loss={monitor_loss:.6f}")
         else:
             self.message("Evaluation completed: metrics recorded")
+
+    def chunk_monitor(self, metrics: Mapping[str, float]) -> None:
+        self.state.validation_metrics = {
+            "validation_" + key.removeprefix("chunk_monitor_"): float(value)
+            for key, value in metrics.items()
+            if key.startswith("chunk_monitor_")
+        }
+        loss = metrics.get("chunk_monitor_loss/total")
+        self.state.validation_loss = float(loss) if loss is not None else None
+        self.state.validation_runs_completed += 1
+        if loss is None:
+            self.message("Chunk monitor completed: metrics recorded")
+        else:
+            self.message(f"Chunk monitor completed: loss={float(loss):.6f}")
 
     def schedule_validation(self, next_origins: int) -> None:
         self.state.next_validation_origins = max(0, int(next_origins))
@@ -287,7 +339,12 @@ class TrainingReporter:
             s = self.state
             print(
                 f"state={s.state} epoch={s.epoch_index}/{s.epochs_total} "
-                f"epoch_origins={s.epoch_origins_seen:,}/{s.epoch_origin_budget:,} "
+                + (
+                    f"chunk={s.chunk_index}/{s.chunk_count} "
+                    f"chunk_blocks={s.chunk_blocks_seen:,}/{s.chunk_block_budget:,} "
+                    if s.full_chunk_training else ""
+                )
+                + f"epoch_origins={s.epoch_origins_seen:,}/{s.epoch_origin_budget:,} "
                 f"run_origins={s.samples_seen:,}/{s.max_samples:,} steps={s.optimizer_steps:,} "
                 f"blocks={s.blocks_seen:,}/{s.planned_blocks:,} units={s.units_seen:,}/{s.planned_units:,} "
                 f"loss={s.loss:.6f} validation={_format_value(s.validation_loss, 'loss')} "
@@ -347,13 +404,26 @@ class TrainingReporter:
         progress_group = Table.grid(expand=True)
         progress_group.add_column()
         progress_group.add_row(progress_line("Epoch", s.epoch_origins_seen, s.epoch_origin_budget, "bright_cyan"))
+        if s.full_chunk_training:
+            progress_group.add_row(
+                progress_line(
+                    "Chunk",
+                    s.chunk_blocks_seen,
+                    s.chunk_block_budget,
+                    "bright_yellow",
+                )
+            )
         progress_group.add_row(progress_line("Full run", s.samples_seen, s.max_samples, "blue"))
         progress_group.add_row(progress_line("Ticker-month", s.current_unit_block, s.current_unit_blocks, "green"))
         eta_table = Table.grid(padding=(0, 2))
         eta_table.add_column(); eta_table.add_column(); eta_table.add_column(); eta_table.add_column()
         eta_table.add_row(
             f"[bold]Epoch[/] {_ratio_markup(s.epoch_index, s.epochs_total)}",
-            f"[bold]Run ETA[/] {_duration(eta) if eta else '-'}",
+            (
+                f"[bold]Chunk[/] {_ratio_markup(s.chunk_index, s.chunk_count)}"
+                if s.full_chunk_training
+                else f"[bold]Run ETA[/] {_duration(eta) if eta else '-'}"
+            ),
             f"[bold]Finish[/] {finish_at}",
             f"[bold]Unit ETA[/] {_duration(unit_eta) if unit_eta else '-'}",
         )
@@ -386,8 +456,17 @@ class TrainingReporter:
             ("Microbatches", s.batches_seen, "integer"),
         )
         checkpoint = Path(s.last_checkpoint).name if s.last_checkpoint not in ("", "-") else "-"
+        chunk_rows = (
+            ("Chunk origins", (s.chunk_origins_seen, s.chunk_origin_budget, ""), "ratio"),
+            ("Chunk blocks", (s.chunk_blocks_seen, s.chunk_block_budget, ""), "ratio"),
+            ("Chunks completed", s.chunks_completed, "integer"),
+            ("Chunk monitor", s.chunk_monitor_hash[:12], "text"),
+            ("Next plan", "ready" if s.next_epoch_plan_ready else "planning", "text"),
+            ("Planner time", s.chunk_planner_seconds, "seconds"),
+        ) if s.full_chunk_training else ()
         data_rows = (
             ("Origins", (s.samples_seen, s.max_samples, ""), "ratio"),
+            *chunk_rows,
             ("Blocks", (s.blocks_seen, s.planned_blocks, ""), "ratio"),
             ("Units touched", (s.units_seen, s.planned_units, ""), "ratio"),
             ("Condition blocks", s.condition_blocks_seen, "integer"),
@@ -411,11 +490,16 @@ class TrainingReporter:
             message_table.add_row(message)
 
         root = Layout(name="root")
+        training_title = (
+            "BarGPT v2 full-catalog chunk training"
+            if s.full_chunk_training
+            else "BarGPT v2 training"
+        )
         root.split_column(
-            Layout(Panel(header, title="BarGPT v2 training", border_style="cyan", padding=(0, 0)), name="header", size=4),
-            Layout(Panel(progress_group, title="Progress and ETA", border_style="cyan", padding=(0, 0)), name="progress", size=7),
+            Layout(Panel(header, title=training_title, border_style="cyan", padding=(0, 0)), name="header", size=4),
+            Layout(Panel(progress_group, title="Progress and ETA", border_style="cyan", padding=(0, 0)), name="progress", size=8 if s.full_chunk_training else 7),
             Layout(name="scores", size=11),
-            Layout(name="operations", size=9),
+            Layout(name="operations", size=12 if s.full_chunk_training else 9),
             Layout(Panel(message_table, title="Recent events", border_style="yellow", padding=(0, 0)), name="messages", minimum_size=6),
         )
         root["scores"].split_row(
