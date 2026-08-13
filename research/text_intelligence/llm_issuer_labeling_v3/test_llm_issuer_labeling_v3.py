@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import json
+import tempfile
+from pathlib import Path
 
+from .codex_2026 import compare_labels, synthetic_dry_run
 from .pipeline import _binary_metrics, _sentiment, normalize_source
 from .prompt import build_messages
 from .schema import SCHEMA_VERSION, TRANSPORT_SCHEMA, canonicalize_output, validate_output
@@ -39,3 +42,40 @@ def test_canonicalize_output_changes_only_order_and_duplicates() -> None:
     assert [row["issuer_name"] for row in fixed["issuers"]] == ["Alpha", "Beta"]
     assert fixed["issuers"][1]["event_tags"] == ["earnings", "legal"]
     assert fixed["unresolved_issuer_mentions"] == ["Able", "Zed"]
+
+
+def test_strict_validator_rejects_extra_and_missing_fields() -> None:
+    payload = {"schema_version": SCHEMA_VERSION, "issuers": [], "unresolved_issuer_mentions": [], "extra": True}
+    assert "unexpected output fields" in " ".join(validate_output(payload, [1]))
+
+
+def test_agreement_uses_discrete_thresholds_not_probability_equality() -> None:
+    base = {
+        "schema_version": SCHEMA_VERSION,
+        "issuers": [{
+            "issuer_name": "Acme", "ticker": "ACME", "exchange": None,
+            "identity_source": "explicit_text", "identity_confidence_probability": 0.99,
+            "forecast_relevance_probability": 0.51,
+            "positive_implication_probability": 0.81,
+            "negative_implication_probability": 0.10,
+            "event_tags": ["earnings"], "issuer_roles": ["primary_subject"],
+            "time_scope": "current", "claim_source": "issuer", "evidence_sentence_ids": [1],
+        }],
+        "unresolved_issuer_mentions": [],
+    }
+    other = json.loads(json.dumps(base))
+    other["issuers"][0]["forecast_relevance_probability"] = 0.93
+    other["issuers"][0]["positive_implication_probability"] = 0.55
+    other["issuers"][0]["evidence_sentence_ids"] = [2]
+    result = compare_labels(base, other)
+    assert result["discrete_agreement"] is True
+    assert result["evidence_disagreements"]
+    assert any(row["tolerance_band"] == ">0.25" for row in result["probability_differences"])
+
+
+def test_synthetic_restart_safe_controller_path() -> None:
+    with tempfile.TemporaryDirectory() as temporary:
+        result = synthetic_dry_run(Path(temporary))
+        assert result["first_ingest"]["status"] == "validated"
+        assert result["restart_ingest"]["status"] == "already_validated"
+        assert result["validation"]["status"] == "complete"

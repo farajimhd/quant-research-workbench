@@ -20,6 +20,16 @@ ISSUER_ROLES = (
 TIME_SCOPES = ("current", "forward", "historical", "mixed", "unclear")
 CLAIM_SOURCES = ("issuer", "regulator", "analyst", "editorial", "mixed", "unknown")
 IDENTITY_SOURCES = ("explicit_text", "metadata", "llm_inference")
+ISSUER_REQUIRED_FIELDS = tuple(
+    [
+        "issuer_name", "ticker", "exchange", "identity_source",
+        "identity_confidence_probability", "forecast_relevance_probability",
+        "positive_implication_probability", "negative_implication_probability",
+        "event_tags", "issuer_roles", "time_scope", "claim_source",
+        "evidence_sentence_ids",
+    ]
+)
+OUTPUT_REQUIRED_FIELDS = ("schema_version", "issuers", "unresolved_issuer_mentions")
 
 
 ISSUER_SCHEMA: dict[str, Any] = {
@@ -105,6 +115,12 @@ def canonicalize_output(payload: Mapping[str, Any]) -> dict[str, Any]:
 
 def validate_output(payload: Mapping[str, Any], sentence_ids: Sequence[int]) -> list[str]:
     errors: list[str] = []
+    unexpected = sorted(set(payload) - set(OUTPUT_REQUIRED_FIELDS))
+    missing = sorted(set(OUTPUT_REQUIRED_FIELDS) - set(payload))
+    if unexpected:
+        errors.append(f"unexpected output fields: {unexpected}")
+    if missing:
+        errors.append(f"missing output fields: {missing}")
     if payload.get("schema_version") != SCHEMA_VERSION:
         errors.append("invalid schema_version")
     issuers = payload.get("issuers")
@@ -119,9 +135,21 @@ def validate_output(payload: Mapping[str, Any], sentence_ids: Sequence[int]) -> 
         if not isinstance(row, Mapping):
             errors.append(f"{prefix} must be an object")
             continue
+        unexpected_fields = sorted(set(row) - set(ISSUER_REQUIRED_FIELDS))
+        missing_fields = sorted(set(ISSUER_REQUIRED_FIELDS) - set(row))
+        if unexpected_fields:
+            errors.append(f"{prefix} has unexpected fields: {unexpected_fields}")
+        if missing_fields:
+            errors.append(f"{prefix} is missing fields: {missing_fields}")
         name = str(row.get("issuer_name") or "").strip()
-        if not name:
+        if not isinstance(row.get("issuer_name"), str) or not name:
             errors.append(f"{prefix}.issuer_name is empty")
+        ticker_value = row.get("ticker")
+        exchange_value = row.get("exchange")
+        if ticker_value is not None and not isinstance(ticker_value, str):
+            errors.append(f"{prefix}.ticker must be a string or null")
+        if exchange_value is not None and not isinstance(exchange_value, str):
+            errors.append(f"{prefix}.exchange must be a string or null")
         if name.casefold() < previous_name.casefold():
             errors.append("issuers are not sorted by issuer_name")
         previous_name = name
@@ -150,11 +178,13 @@ def validate_output(payload: Mapping[str, Any], sentence_ids: Sequence[int]) -> 
             errors.append(f"{prefix}.evidence_sentence_ids must contain 1-3 IDs")
         elif evidence != sorted(set(evidence)):
             errors.append(f"{prefix}.evidence_sentence_ids must be unique and sorted")
-        elif any(not isinstance(value, int) or value not in valid_sentence_ids for value in evidence):
+        elif any(isinstance(value, bool) or not isinstance(value, int) or value not in valid_sentence_ids for value in evidence):
             errors.append(f"{prefix}.evidence_sentence_ids contains an unknown ID")
     unresolved = payload.get("unresolved_issuer_mentions")
-    if not isinstance(unresolved, list) or any(not str(value).strip() for value in unresolved):
+    if not isinstance(unresolved, list) or any(not isinstance(value, str) or not value.strip() for value in unresolved):
         errors.append("unresolved_issuer_mentions must be a list of nonempty strings")
+    elif unresolved != sorted(set(unresolved), key=str.casefold):
+        errors.append("unresolved_issuer_mentions must be unique and sorted")
     return errors
 
 
