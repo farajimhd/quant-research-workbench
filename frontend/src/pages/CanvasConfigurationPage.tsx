@@ -1572,6 +1572,7 @@ export function CanvasFocusPage() {
   const requestedNewsId = params.get("news") || undefined;
   const requestedSecCik = params.get("sec_cik") || undefined;
   const requestedSecAccession = params.get("sec_accession") || undefined;
+  if (params.get("canvas_profile") === "draft") return <CanvasWorkspaceSurface canvasId={canvasId} manager={false} requestedInstanceId={requestedInstanceId} requestedNewsId={requestedNewsId} requestedSecAccession={requestedSecAccession} requestedSecCik={requestedSecCik} />;
   return <ApprovedCanvasFocusPage canvasId={canvasId} requestedInstanceId={requestedInstanceId} requestedNewsId={requestedNewsId} requestedSecAccession={requestedSecAccession} requestedSecCik={requestedSecCik} />;
 }
 
@@ -2004,7 +2005,7 @@ export function CanvasWorkspaceSurface({ accountKeys, approvedCanvas, canvasId, 
     writeCanvasWorkspaceState(created.canvas.id, state);
     writeCanvasRegistry(created.registry);
     setRegistry(created.registry);
-    window.open(focusCanvasUrl(created.canvas.id, instanceId), "_blank", "noopener,noreferrer");
+    window.open(focusCanvasUrl(created.canvas.id, instanceId, runtimeBase ? "approved" : "draft"), "_blank", "noopener,noreferrer");
   }
 
   function openNewCanvas(instanceId?: string, sourceLayout?: WorkspaceWindowLayout) {
@@ -2031,7 +2032,7 @@ export function CanvasWorkspaceSurface({ accountKeys, approvedCanvas, canvasId, 
         };
     writeCanvasWorkspaceState(created.canvas.id, state);
     setRegistry(created.registry);
-    window.open(focusCanvasUrl(created.canvas.id, instanceId), "_blank", "noopener,noreferrer");
+    window.open(focusCanvasUrl(created.canvas.id, instanceId, runtimeBase ? "approved" : "draft"), "_blank", "noopener,noreferrer");
   }
 
   function moveContainer(instanceId: string, targetCanvasId: string, sourceLayout: WorkspaceWindowLayout) {
@@ -2079,7 +2080,7 @@ export function CanvasWorkspaceSurface({ accountKeys, approvedCanvas, canvasId, 
     const state = { ...sourceState, groups, layoutVersion: TRADING_WORKSPACE_LAYOUT_VERSION };
     writeCanvasWorkspaceState(created.canvas.id, state);
     setRegistry(created.registry);
-    window.open(focusCanvasUrl(created.canvas.id), "_blank", "noopener,noreferrer");
+    window.open(focusCanvasUrl(created.canvas.id, undefined, runtimeBase ? "approved" : "draft"), "_blank", "noopener,noreferrer");
   }
 
   function openReplayFocus(profile: CanvasRegistry, state: CanvasWorkspaceState) {
@@ -2232,7 +2233,7 @@ export function CanvasWorkspaceSurface({ accountKeys, approvedCanvas, canvasId, 
         initialStateOverride={manager ? null : initialCanvasState}
         layoutPreset={managementEnabled ? "global" : "focus"}
         managementContent={manager
-          ? <CanvasManager registry={registry} onCreate={() => openNewCanvas()} onOpen={(id) => window.open(focusCanvasUrl(id), "_blank", "noopener,noreferrer")} onRemove={removeCanvas} />
+          ? <CanvasManager registry={registry} onCreate={() => openNewCanvas()} onOpen={(id) => window.open(focusCanvasUrl(id, undefined, "draft"), "_blank", "noopener,noreferrer")} onRemove={removeCanvas} />
           : runtimeBase
             ? <><CanvasManager availableCanvasIds={new Set(Object.keys(registry.workspaceStates ?? {}))} registry={registry} onOpen={openRuntimeConfiguredCanvas} /><RuntimeCanvasScope mode={runtimeMode === "backtest_debug" ? "Backtest Debug" : runtimeMode === "backtest" ? "Backtest" : runtimeMode === "replay" ? "Replay" : runtimeMode === "research" ? "Research" : runtimeMode === "live" ? "Live" : runtimeMode === "paper" ? "Paper" : "Canvas"} onApplyRebase={applyRuntimeRebase} onKeepApproved={keepApprovedAfterRebase} onReset={resetRuntimeOverlay} onSaveAs={saveRuntimeWorkspace} rebase={runtimeRebase} revision={replayRun?.canvas_revision || approvedCanvas?.canvas_revision || runtimeRevision} /></>
             : null}

@@ -307,11 +307,15 @@ export function snapshotCanvasProfile(registry = readCanvasRegistry()): CanvasRe
   return { ...registry, workspaceStates };
 }
 
-export function focusCanvasUrl(canvasId: string, containerId?: string) {
+export type CanvasFocusProfileAuthority = "approved" | "draft";
+
+export function focusCanvasUrl(canvasId: string, containerId?: string, profileAuthority: CanvasFocusProfileAuthority = "approved") {
   const url = new URL(window.location.href);
   url.searchParams.set("canvas", canvasId);
   if (containerId) url.searchParams.set("container", containerId);
   else url.searchParams.delete("container");
+  if (profileAuthority === "draft") url.searchParams.set("canvas_profile", "draft");
+  else url.searchParams.delete("canvas_profile");
   url.searchParams.delete("replay_focus");
   url.searchParams.delete("replay_run");
   url.hash = "canvas-focus";
@@ -348,6 +352,7 @@ export function replayFocusCanvasUrl(runId: string, handoffToken: string) {
   const url = new URL(window.location.href);
   url.searchParams.delete("canvas");
   url.searchParams.delete("container");
+  url.searchParams.delete("canvas_profile");
   url.searchParams.set("replay_focus", handoffToken);
   url.searchParams.set("replay_run", runId);
   url.hash = "canvas-focus";
@@ -358,6 +363,7 @@ export function configurationCanvasUrl() {
   const url = new URL(window.location.href);
   url.searchParams.delete("canvas");
   url.searchParams.delete("container");
+  url.searchParams.delete("canvas_profile");
   url.searchParams.delete("replay_focus");
   url.searchParams.delete("replay_run");
   url.hash = "canvas-configuration";
