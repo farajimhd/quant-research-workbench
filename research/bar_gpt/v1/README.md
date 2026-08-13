@@ -614,6 +614,8 @@ training metrics run every 8,388,608 origins (64 full optimizer updates) using
 the already-produced predictions and no extra forward pass. W&B keys put their
 semantic category at the first level (`train_loss`, `train_direction`,
 `validation_return`, and so on), with at most 16 scalar series in any group.
+The complete formula, range, interpretation, and cleanup review for every
+emitted metric family is in [METRICS_REFERENCE.md](METRICS_REFERENCE.md).
 Direction supervision uses dedicated autoregressive and physical-horizon logits,
 so classification gradients do not distort the calibrated return quantiles.
 Targets within the configurable one-basis-point neutral band are excluded from
@@ -628,9 +630,10 @@ prediction against a two-class target reports balanced accuracy `0.5` and MCC
 `0.0`; a genuinely single-class evaluation reports both as undefined. Each
 direction head also records directional count, actual positive fraction, and
 predicted positive fraction, so prediction collapse is visible rather than
-silently omitted from macros. Return metrics include skill versus the causal
-current-return persistence baseline; positive skill means lower MAE than that
-baseline.
+silently omitted from macros. Return metrics currently report skill versus a
+causal current-return continuation baseline; positive skill means lower MAE
+than that baseline. It is not the same as a zero-return price-persistence
+baseline, as the metric review explains.
 
 The joint candidate sweep measures loader wait, GPU time, origins/second,
 encoded tokens/second, parameter count, effective blocks per update, the
