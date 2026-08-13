@@ -128,6 +128,13 @@ python -m research.bar_gpt.v2.run_train_full_chunks --prepare-manifest-only
 python -m research.bar_gpt.v2.run_train_full_chunks --execute
 ```
 
+The first manifest preparation builds a resumable block index using
+metadata-only shard loads and four bounded worker processes. It does not
+materialize tensor storage. Rerunning after interruption reuses completed
+index rows. Override the bounded concurrency only when needed, for example
+`--manifest-index-workers 6` on a workstation with sufficient CPU and NVMe
+headroom.
+
 The default `production` run stamp is stable: rerunning the same `--execute`
 command resumes `checkpoint_latest.pt`. Use `--run-stamp NAME` only when
 starting an independent run.

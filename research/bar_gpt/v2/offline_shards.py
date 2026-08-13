@@ -1021,6 +1021,14 @@ def load_shard(path: Path, *, verify_sha256: str = "") -> dict[str, Any]:
     return value
 
 
+def load_shard_metadata(path: Path) -> dict[str, Any]:
+    """Load shard structure without materializing tensor storage."""
+    value = torch.load(path, map_location="meta", weights_only=False)
+    if int(value.get("contract_version", -1)) != OFFLINE_SHARD_CONTRACT_VERSION:
+        raise RuntimeError(f"unsupported offline shard contract: {value.get('contract_version')}")
+    return value
+
+
 def load_certified_unit(unit: OfflineShardUnit) -> dict[str, Any]:
     """Fail closed if a discovered path no longer contains its certified unit."""
     value = load_shard(unit.path)

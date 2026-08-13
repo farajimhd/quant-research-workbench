@@ -32,7 +32,12 @@ from research.bar_gpt.v2.model_discovery_final_validation import (
     evaluation_command,
     resolve_architecture_checkpoints,
 )
-from research.bar_gpt.v2.offline_shards import OfflineBlockRef, OfflineShardDataset, OfflineShardUnit
+from research.bar_gpt.v2.offline_shards import (
+    OFFLINE_SHARD_CONTRACT_VERSION,
+    OfflineBlockRef,
+    OfflineShardDataset,
+    OfflineShardUnit,
+)
 from research.bar_gpt.v2.offline_shards import shard_compatibility_hash
 from research.bar_gpt.v2.train import _wandb_metric_key, parse_args
 from research.mlops.schedulers import SampleWarmupCosineScheduler
@@ -163,6 +168,7 @@ class ModelDiscoveryContractTest(unittest.TestCase):
             condition_positive_counts=(0, 0, 0, 0),
         )
         shard = {
+            "unit_key": "AAA:2020-01",
             "sessions": [{
                 "ticker": "AAA",
                 "local_date": "2020-01-02",
@@ -178,14 +184,60 @@ class ModelDiscoveryContractTest(unittest.TestCase):
         }
         with tempfile.TemporaryDirectory() as directory:
             cache = Path(directory) / "index.jsonl"
-            with patch("research.bar_gpt.v2.model_discovery.load_shard", return_value=shard):
+            with patch(
+                "research.bar_gpt.v2.model_discovery.load_shard_metadata",
+                return_value=shard,
+            ):
                 first = enumerate_block_refs((unit,), label="test", cache_path=cache)
             with patch(
-                "research.bar_gpt.v2.model_discovery.load_shard",
+                "research.bar_gpt.v2.model_discovery.load_shard_metadata",
                 side_effect=AssertionError("cache should avoid shard reopen"),
             ):
                 repeated = enumerate_block_refs((unit,), label="test", cache_path=cache)
         self.assertEqual(first, repeated)
+
+    def test_block_index_process_workers_preserve_catalog_order(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            units: list[OfflineShardUnit] = []
+            for index, ticker in enumerate(("AAA", "BBB")):
+                path = root / f"{ticker}.pt"
+                torch.save(
+                    {
+                        "contract_version": OFFLINE_SHARD_CONTRACT_VERSION,
+                        "unit_key": f"{ticker}:2020-01",
+                        "sessions": [{
+                            "ticker": ticker,
+                            "local_date": "2020-01-02",
+                            "blocks": [{
+                                "origin_indices": torch.arange(10 + index),
+                                "activity_regime": 1,
+                                "session_phase": "regular_midday",
+                                "has_condition_target": False,
+                                "unit_index": index,
+                                "block_offset": 0,
+                            }],
+                        }],
+                    },
+                    path,
+                )
+                units.append(OfflineShardUnit(
+                    unit_key=f"{ticker}:2020-01",
+                    path=path,
+                    sessions=1,
+                    blocks=1,
+                    origins=10 + index,
+                    stable_unit_index=index,
+                    condition_positive_counts=(0, 0, 0, 0),
+                ))
+            refs = enumerate_block_refs(
+                units,
+                label="concurrent-test",
+                cache_path=root / "index.jsonl",
+                workers=2,
+            )
+        self.assertEqual([ref.ticker for ref in refs], ["AAA", "BBB"])
+        self.assertEqual([ref.origins for ref in refs], [10, 11])
 
     def test_metric_namespaces_remain_separate_at_wandb_first_level(self) -> None:
         for namespace in ("monitor", "validation", "locked_test"):

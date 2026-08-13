@@ -40,6 +40,7 @@ DEFAULT_CHUNK_EARLY_STOPPING_MIN_RELATIVE_DELTA = 0.001
 DEFAULT_EARLY_STOPPING_PATIENCE = 2
 DEFAULT_EARLY_STOPPING_MIN_RELATIVE_DELTA = 0.001
 DEFAULT_EPOCH_LR_DECAY = 0.95
+DEFAULT_MANIFEST_INDEX_WORKERS = 4
 
 
 def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
@@ -86,6 +87,12 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--output-root", default=str(DEFAULT_OUTPUT_ROOT))
     parser.add_argument("--manifest", default="")
     parser.add_argument(
+        "--manifest-index-workers",
+        type=int,
+        default=DEFAULT_MANIFEST_INDEX_WORKERS,
+        help="bounded metadata-only shard-index worker processes",
+    )
+    parser.add_argument(
         "--run-stamp",
         default="production",
         help=(
@@ -130,10 +137,16 @@ def ensure_full_training_manifest(args: argparse.Namespace) -> Path:
             "Building complete 2019-2025 training and disjoint 2026 evaluation authority...",
             flush=True,
         )
+        print(
+            f"Shard index: metadata-only loading with "
+            f"{args.manifest_index_workers} bounded worker processes; cache is resumable",
+            flush=True,
+        )
         manifest = build_full_chunk_manifest(
             shard_root=shard_root,
             output_path=output,
             seed=17,
+            index_workers=args.manifest_index_workers,
         )
     for name in ("train", "epoch_train", "monitor_pool", "validation", "locked_test"):
         summary = manifest["summaries"][name]
@@ -219,6 +232,8 @@ def main(argv: Iterable[str] | None = None) -> int:
         raise ValueError("chunk origin targets must be positive")
     if args.max_chunk_epochs <= 0 or args.chunk_early_stopping_patience <= 0:
         raise ValueError("chunk epochs and early-stopping patience must be positive")
+    if args.manifest_index_workers <= 0:
+        raise ValueError("manifest-index-workers must be positive")
     if args.early_stopping_patience < 0:
         raise ValueError("early-stopping patience cannot be negative")
     planned_manifest = manifest_path(args)

@@ -326,8 +326,11 @@ def build_full_chunk_manifest(
     monitor_origins: int = FULL_CHUNK_STOPPING_VALIDATION_ORIGINS,
     validation_origins: int = FULL_CHUNK_VALIDATION_ORIGINS,
     locked_test_origins: int = FULL_CHUNK_LOCKED_TEST_ORIGINS,
+    index_workers: int = 4,
 ) -> dict[str, Any]:
     """Freeze complete training coverage and disjoint held-out authorities."""
+    if index_workers <= 0:
+        raise ValueError("index_workers must be positive")
     verify_shard_catalog_lock(shard_root)
     config = discovery_data_config(shard_root)
     tickers = tuple(config.tickers)
@@ -350,11 +353,13 @@ def build_full_chunk_manifest(
         training_units,
         label="full-training",
         cache_path=index_root / "training.jsonl",
+        workers=index_workers,
     )
     held_out_refs = enumerate_block_refs(
         held_out_units,
         label="full-held-out",
         cache_path=index_root / "held_out.jsonl",
+        workers=index_workers,
     )
     used_dates: set[tuple[str, str]] = set()
     validation = _held_out_panel(

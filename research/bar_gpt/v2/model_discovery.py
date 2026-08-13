@@ -9,6 +9,7 @@ import shlex
 import subprocess
 import sys
 import time
+from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Any, Iterable, Sequence
@@ -25,8 +26,8 @@ from research.bar_gpt.v2.offline_shards import (
     OfflineBlockRef,
     OfflineShardUnit,
     discover_offline_units,
-    load_shard,
     hydrate_offline_runtime_config,
+    load_shard_metadata,
     shard_compatibility_hash,
     verify_shard_catalog_lock,
 )
@@ -124,7 +125,11 @@ def enumerate_block_refs(
     *,
     label: str = "panel",
     cache_path: Path | None = None,
+    workers: int = 1,
 ) -> tuple[OfflineBlockRef, ...]:
+    """Build a deterministic, resumable block index from shard metadata."""
+    if workers <= 0:
+        raise ValueError("block-index workers must be positive")
     units = tuple(units)
     unit_keys_hash = hashlib.sha256(
         "\n".join(unit.unit_key for unit in units).encode("utf-8")
@@ -132,26 +137,34 @@ def enumerate_block_refs(
     cached: dict[str, tuple[OfflineBlockRef, ...]] = {}
     rewrite_cache = False
     if cache_path is not None and cache_path.is_file():
-        lines = cache_path.read_text(encoding="utf-8").splitlines()
         try:
-            header = json.loads(lines[0])
-            if (
-                int(header.get("contract_version", -1)) == DISCOVERY_CONTRACT_VERSION
-                and header.get("unit_keys_hash") == unit_keys_hash
-            ):
-                for line in lines[1:]:
-                    try:
-                        row = json.loads(line)
-                    except (TypeError, ValueError, json.JSONDecodeError):
-                        rewrite_cache = True
-                        break
-                    key = str(row["unit_key"])
-                    if key in cached:
-                        raise RuntimeError(f"duplicate cached shard index row: {key}")
-                    cached[key] = tuple(OfflineBlockRef(**item) for item in row["refs"])
-            else:
-                print(f"Discarding incompatible cached {label} shard index", flush=True)
-                rewrite_cache = True
+            with cache_path.open("r", encoding="utf-8") as handle:
+                header = json.loads(handle.readline())
+                if (
+                    int(header.get("contract_version", -1))
+                    == DISCOVERY_CONTRACT_VERSION
+                    and header.get("unit_keys_hash") == unit_keys_hash
+                ):
+                    for line in handle:
+                        if not line.strip():
+                            continue
+                        try:
+                            row = json.loads(line)
+                        except (TypeError, ValueError, json.JSONDecodeError):
+                            rewrite_cache = True
+                            break
+                        key = str(row["unit_key"])
+                        if key in cached:
+                            raise RuntimeError(f"duplicate cached shard index row: {key}")
+                        cached[key] = tuple(
+                            OfflineBlockRef(**item) for item in row["refs"]
+                        )
+                else:
+                    print(
+                        f"Discarding incompatible cached {label} shard index",
+                        flush=True,
+                    )
+                    rewrite_cache = True
         except (IndexError, KeyError, TypeError, ValueError, json.JSONDecodeError):
             print(f"Discarding incomplete cached {label} shard index", flush=True)
             cached = {}
@@ -164,65 +177,135 @@ def enumerate_block_refs(
                 "units": len(units),
                 "label": label,
             }, sort_keys=True)
-        rows = [header]
-        rows.extend(
-            json.dumps({
-                "unit_key": key,
-                "refs": [asdict(ref) for ref in values],
-            }, separators=(",", ":"))
-            for key, values in cached.items()
-        )
         temporary = cache_path.with_suffix(cache_path.suffix + f".tmp.{os.getpid()}")
-        temporary.write_text("\n".join(rows) + "\n", encoding="utf-8")
+        with temporary.open("w", encoding="utf-8") as handle:
+            handle.write(header + "\n")
+            for key, values in cached.items():
+                handle.write(
+                    json.dumps(
+                        {
+                            "unit_key": key,
+                            "refs": [asdict(ref) for ref in values],
+                        },
+                        separators=(",", ":"),
+                    )
+                    + "\n"
+                )
+            handle.flush()
+            os.fsync(handle.fileno())
         os.replace(temporary, cache_path)
-    refs: list[OfflineBlockRef] = []
-    started = time.perf_counter()
-    for index, unit in enumerate(units, start=1):
-        if unit.unit_key in cached:
-            unit_refs = cached[unit.unit_key]
-            refs.extend(unit_refs)
-            print(
-                f"Indexing {label} shards {index:,}/{len(units):,}: "
-                f"{unit.unit_key} cached | blocks={len(refs):,}",
-                flush=True,
-            )
-            continue
-        shard = load_shard(unit.path)
-        unit_refs: list[OfflineBlockRef] = []
-        for session_index, session in enumerate(shard["sessions"]):
-            for block_index, block in enumerate(session["blocks"]):
-                unit_refs.append(OfflineBlockRef(
-                    unit_key=unit.unit_key,
-                    session_index=session_index,
-                    block_index=block_index,
-                    origins=int(block["origin_indices"].numel()),
-                    ticker=str(session["ticker"]),
-                    local_date=str(session["local_date"]),
-                    activity_regime=int(block["activity_regime"]),
-                    session_phase=str(block["session_phase"]),
-                    has_condition_target=bool(block["has_condition_target"]),
-                    unit_index=int(block["unit_index"]),
-                    block_offset=int(block["block_offset"]),
-                ))
-        refs.extend(unit_refs)
-        del shard
-        if cache_path is not None:
-            with cache_path.open("a", encoding="utf-8") as handle:
-                handle.write(json.dumps({
-                    "unit_key": unit.unit_key,
-                    "refs": [asdict(ref) for ref in unit_refs],
-                }, separators=(",", ":")) + "\n")
-                handle.flush()
-                os.fsync(handle.fileno())
-        elapsed = max(time.perf_counter() - started, 1e-9)
-        rate = index / elapsed
-        eta = (len(units) - index) / rate if rate else 0.0
+
+    missing_units = tuple(unit for unit in units if unit.unit_key not in cached)
+    cached_before = len(cached)
+    completed = cached_before
+    block_count = sum(len(values) for values in cached.values())
+    if cached_before:
         print(
-            f"Indexing {label} shards {index:,}/{len(units):,}: {unit.unit_key} | "
-            f"blocks={len(refs):,} rate={rate:.2f} shards/s eta={eta / 60:.1f}m",
+            f"Reusing cached {label} index: shards={cached_before:,}/{len(units):,} "
+            f"blocks={block_count:,}",
             flush=True,
         )
-    return tuple(refs)
+    started = time.perf_counter()
+    cache_handle = (
+        cache_path.open("a", encoding="utf-8") if cache_path is not None else None
+    )
+    rows_since_sync = 0
+    try:
+        for unit_key, unit_refs in _parallel_unit_block_refs(
+            missing_units, workers=workers
+        ):
+            cached[unit_key] = unit_refs
+            completed += 1
+            block_count += len(unit_refs)
+            if cache_handle is not None:
+                cache_handle.write(
+                    json.dumps(
+                        {
+                            "unit_key": unit_key,
+                            "refs": [asdict(ref) for ref in unit_refs],
+                        },
+                        separators=(",", ":"),
+                    )
+                    + "\n"
+                )
+                rows_since_sync += 1
+                if rows_since_sync >= 32:
+                    cache_handle.flush()
+                    os.fsync(cache_handle.fileno())
+                    rows_since_sync = 0
+            elapsed = max(time.perf_counter() - started, 1e-9)
+            newly_completed = completed - cached_before
+            rate = newly_completed / elapsed
+            eta = (len(units) - completed) / rate if rate else 0.0
+            print(
+                f"Indexing {label} shards {completed:,}/{len(units):,}: {unit_key} | "
+                f"blocks={block_count:,} workers={workers} "
+                f"rate={rate:.2f} shards/s eta={eta / 60:.1f}m",
+                flush=True,
+            )
+    finally:
+        if cache_handle is not None:
+            cache_handle.flush()
+            os.fsync(cache_handle.fileno())
+            cache_handle.close()
+    return tuple(ref for unit in units for ref in cached[unit.unit_key])
+
+
+def _index_unit_block_refs(
+    unit: OfflineShardUnit,
+) -> tuple[str, tuple[OfflineBlockRef, ...]]:
+    shard = load_shard_metadata(unit.path)
+    if str(shard.get("unit_key", "")) != unit.unit_key:
+        raise RuntimeError(
+            f"offline shard identity mismatch while indexing: {unit.unit_key}"
+        )
+    if unit.config_hash and str(shard.get("config_hash", "")) != unit.config_hash:
+        raise RuntimeError(
+            f"offline shard config mismatch while indexing: {unit.unit_key}"
+        )
+    refs: list[OfflineBlockRef] = []
+    for session_index, session in enumerate(shard["sessions"]):
+        for block_index, block in enumerate(session["blocks"]):
+            refs.append(OfflineBlockRef(
+                unit_key=unit.unit_key,
+                session_index=session_index,
+                block_index=block_index,
+                origins=int(block["origin_indices"].numel()),
+                ticker=str(session["ticker"]),
+                local_date=str(session["local_date"]),
+                activity_regime=int(block["activity_regime"]),
+                session_phase=str(block["session_phase"]),
+                has_condition_target=bool(block["has_condition_target"]),
+                unit_index=int(block["unit_index"]),
+                block_offset=int(block["block_offset"]),
+            ))
+    return unit.unit_key, tuple(refs)
+
+
+def _parallel_unit_block_refs(
+    units: Sequence[OfflineShardUnit], *, workers: int
+) -> Iterable[tuple[str, tuple[OfflineBlockRef, ...]]]:
+    if workers == 1:
+        return map(_index_unit_block_refs, units)
+
+    def results() -> Iterable[tuple[str, tuple[OfflineBlockRef, ...]]]:
+        unit_iterator = iter(units)
+        with ProcessPoolExecutor(max_workers=workers) as executor:
+            initial = tuple(next(unit_iterator, None) for _ in range(workers * 2))
+            pending = {
+                executor.submit(_index_unit_block_refs, unit)
+                for unit in initial
+                if unit is not None
+            }
+            while pending:
+                done, pending = wait(pending, return_when=FIRST_COMPLETED)
+                for future in done:
+                    yield future.result()
+                    unit = next(unit_iterator, None)
+                    if unit is not None:
+                        pending.add(executor.submit(_index_unit_block_refs, unit))
+
+    return results()
 
 
 def _balanced_sample(
