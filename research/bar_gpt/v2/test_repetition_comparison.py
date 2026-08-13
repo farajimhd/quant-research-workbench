@@ -10,6 +10,7 @@ from unittest.mock import patch
 
 from research.bar_gpt.v2.config import BAR_GPT_MODEL_COMPARISON_WANDB_PROJECT
 from research.bar_gpt.v2.run_train_model_comparison import (
+    COMPARISON_MANIFEST_NAME,
     COMPARISON_RUNS,
     trainer_argv as baseline_trainer_argv,
 )
@@ -18,6 +19,7 @@ from research.bar_gpt.v2.run_train_repetition_comparison import (
     REPETITION_MANIFEST_NAME,
     _distribution_audit,
     _launcher_command,
+    ensure_repetition_manifest,
     main,
     repetition_run_name,
     select_repetition_subset,
@@ -55,6 +57,20 @@ def _row(index: int) -> dict[str, object]:
 
 
 class RepetitionComparisonTests(unittest.TestCase):
+    def test_missing_parent_manifest_fails_closed_without_creating_a_replacement(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            parent = root / COMPARISON_MANIFEST_NAME
+            child = root / REPETITION_MANIFEST_NAME
+            with self.assertRaisesRegex(
+                FileNotFoundError, "refusing to build or replace"
+            ):
+                ensure_repetition_manifest(
+                    shard_root=root / "unused-shards", output_root=root
+                )
+            self.assertFalse(parent.exists())
+            self.assertFalse(child.exists())
+
     def test_four_pass_launcher_preserves_baseline_model_and_metric_contracts(self) -> None:
         for model_size in COMPARISON_RUNS:
             baseline = parse_training_args(

@@ -123,14 +123,20 @@ python -m research.bar_gpt.v2.run_train_repetition_comparison --prepare-manifest
 python -m research.bar_gpt.v2.run_train_repetition_comparison --execute
 ```
 
-This separate launcher does not alter the baseline comparison. It derives a
-deterministic nested 25M-origin training panel from `fixed_panels_v2.json`,
-audits ticker, year, month, activity-regime, session-phase, and block-length
+This separate launcher does not alter the baseline comparison. It requires the
+existing baseline `fixed_panels_v2.json` and fails closed if that exact parent
+manifest is absent; it never creates or replaces the baseline manifest. The
+`--prepare-manifest-only` command creates only the child repetition manifest.
+That child derives a deterministic nested 25M-origin training panel from the
+baseline manifest; audits ticker, year, month, activity-regime, session-phase,
+and block-length
 distributions, and exposes that exact panel for four deterministically
 reshuffled epochs. The model therefore sees approximately the same 100M total
 origins as the baseline but only one quarter as many unique origins. Model
 profiles, initialization seed, cumulative learning-rate schedule, W&B project,
-monitor panel, validation panel, and metric names remain identical. Epochs
+and metric names remain identical. Its monitor and validation block lists are
+copied exactly from the baseline and verified by exact equality, while the
+parent manifest hash is recorded as experiment provenance. Epochs
 1-3 end with the bounded monitor; the expensive paired training/full-validation
 audit runs only after epoch 4.
 

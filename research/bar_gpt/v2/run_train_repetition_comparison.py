@@ -23,6 +23,7 @@ from research.bar_gpt.v2.model_discovery import (
 )
 from research.bar_gpt.v2.run_train import default_argv
 from research.bar_gpt.v2.run_train_model_comparison import (
+    COMPARISON_MANIFEST_NAME,
     COMPARISON_MONITOR_INTERVAL_ORIGINS,
     COMPARISON_MONITOR_ORIGINS,
     COMPARISON_RUNS,
@@ -31,7 +32,7 @@ from research.bar_gpt.v2.run_train_model_comparison import (
     DEFAULT_OUTPUT_ROOT,
     DEFAULT_SHARD_ROOT,
     DEFAULT_WANDB_MODE,
-    ensure_comparison_manifest,
+    _validate_comparison_manifest,
 )
 from research.bar_gpt.v2.train import main as train_main
 
@@ -328,9 +329,20 @@ def _validate_repetition_manifest(
 
 
 def ensure_repetition_manifest(*, shard_root: Path, output_root: Path) -> Path:
-    parent_path = ensure_comparison_manifest(shard_root=shard_root, output_root=output_root)
+    # This is a paired experiment, so its evaluation panels must come from the
+    # exact manifest used by the baseline comparison. Never rebuild that parent
+    # here: even a deterministic replacement would weaken the provenance of the
+    # comparison and could make its validation results incomparable.
+    parent_path = output_root / COMPARISON_MANIFEST_NAME
+    if not parent_path.is_file():
+        raise FileNotFoundError(
+            "the original model-comparison manifest is required at "
+            f"{parent_path}; refusing to build or replace it from the repetition "
+            "launcher"
+        )
     config = discovery_data_config(shard_root)
     parent = load_discovery_manifest(parent_path, shard_root=shard_root, config=config)
+    _validate_comparison_manifest(parent, all_tickers=tuple(config.tickers))
     destination = output_root / REPETITION_MANIFEST_NAME
     if destination.is_file():
         manifest = load_discovery_manifest(destination, shard_root=shard_root, config=config)
