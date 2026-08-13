@@ -361,6 +361,7 @@ type ChartAppearanceSettings = {
   daySeparatorStyle: DaySeparatorStyle;
   daySeparatorsVisible: boolean;
   downColor: string;
+  gridVisible: boolean;
   legendGutterVisible: boolean;
   rightLegendGutterVisible: boolean;
   premarketColor: string;
@@ -457,6 +458,7 @@ const defaultChartAppearanceSettings: ChartAppearanceSettings = {
   daySeparatorStyle: "dashed",
   daySeparatorsVisible: true,
   downColor: "#FD0E50",
+  gridVisible: true,
   legendGutterVisible: true,
   rightLegendGutterVisible: true,
   premarketColor: "#F2A65A",
@@ -2782,7 +2784,7 @@ function ChartSettingsPopover({
       <div className="chart-settings-header">
         <div>
           <b>Chart Settings</b>
-          <span>Appearance settings for candles, sessions, and day dividers.</span>
+          <span>Appearance settings for candles, sessions, grid, and layout.</span>
         </div>
         <button aria-label="Close chart settings" className="toolbar-button" onClick={onClose} title="Close" type="button">
           <X size={14} />
@@ -2904,8 +2906,12 @@ function ChartSettingsPopover({
 
       <ChartSettingsSection title="Layout">
         <p className="chart-settings-help">
-          Reserved gutters keep plot widths aligned across panes. Turning one off removes its fixed minimum while preserving any required axis labels.
+          Grid lines help align time and price across the plot. Reserved gutters keep plot widths aligned across panes.
         </p>
+        <label className="chart-setting-toggle">
+          <input checked={settings.gridVisible} type="checkbox" onChange={(event) => onChange("gridVisible", event.target.checked)} />
+          Show chart grid
+        </label>
         <label className="chart-setting-toggle">
           <input checked={settings.legendGutterVisible} type="checkbox" onChange={(event) => onChange("legendGutterVisible", event.target.checked)} />
           Reserve left legend gutter
@@ -3207,6 +3213,7 @@ function normalizeChartAppearanceSettings(settings: Partial<ChartAppearanceSetti
     daySeparatorsVisible:
       typeof settings.daySeparatorsVisible === "boolean" ? settings.daySeparatorsVisible : defaultChartAppearanceSettings.daySeparatorsVisible,
     downColor: validHexColor(settings.downColor, defaultChartAppearanceSettings.downColor),
+    gridVisible: typeof settings.gridVisible === "boolean" ? settings.gridVisible : defaultChartAppearanceSettings.gridVisible,
     legendGutterVisible: typeof settings.legendGutterVisible === "boolean" ? settings.legendGutterVisible : defaultChartAppearanceSettings.legendGutterVisible,
     rightLegendGutterVisible: typeof settings.rightLegendGutterVisible === "boolean" ? settings.rightLegendGutterVisible : defaultChartAppearanceSettings.rightLegendGutterVisible,
     premarketColor: premarketColor.toUpperCase() === "#FBBF24" ? defaultChartAppearanceSettings.premarketColor : premarketColor,
@@ -3846,8 +3853,8 @@ function chartOptions(
       textColor: palette.text,
     },
     grid: {
-      vertLines: { color: palette.grid },
-      horzLines: { color: palette.grid }
+      vertLines: { color: palette.grid, visible: settings.gridVisible },
+      horzLines: { color: palette.grid, visible: settings.gridVisible }
     },
     localization: {
       timeFormatter: (timeValue: Time) => formatMarketDateTime(timeValue, timeframe)
