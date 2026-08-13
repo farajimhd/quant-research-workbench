@@ -2180,7 +2180,25 @@ function MarketDiscoveryStudio({ onChange, section }: { onChange: (value: Market
         </> : null}
       </main>
     </div> : mode === "enrichments" ? <div className="configuration-workbench strategy-editor-catalog discovery-capability-workbench">
-      <aside className="strategy-parameter-catalog"><header><div><span>Application field registry</span><strong>{visibleEnrichmentFields.length} of {enrichmentFields.length}</strong></div><p>Every Scanner, Watchlist, Strategy, chart, and research enrichment must resolve through one registered causal path.</p></header><label className="strategy-parameter-search"><Search aria-hidden="true" size={15} /><input aria-label="Search enrichment fields" onChange={(event) => setEnrichmentQuery(event.target.value)} placeholder="Search field, owner, source or plan" type="search" value={enrichmentQuery} /></label><div className="strategy-parameter-list">{[...new Set(visibleEnrichmentFields.map((field) => field.group))].map((group) => <section className="strategy-parameter-group" key={group}><header><strong>{readableLabel(group)}</strong><span>{visibleEnrichmentFields.filter((field) => field.group === group).length}</span></header>{visibleEnrichmentFields.filter((field) => field.group === group).slice(0, 12).map((field) => <span key={field.field_id}><span><strong>{field.label}</strong><small>{field.owner} · {readableLabel(field.status)}</small></span></span>)}</section>)}{enrichmentError ? <div className="strategy-parameter-empty-list"><TriangleAlert size={18} /><span>{enrichmentError}</span></div> : null}</div></aside>
+      <aside className="strategy-parameter-catalog discovery-enrichment-catalog">
+        <header><div><span>Application field registry</span><strong>{visibleEnrichmentFields.length} of {enrichmentFields.length}</strong></div><p>Every Scanner, Watchlist, Strategy, chart, and research enrichment must resolve through one registered causal path.</p></header>
+        <label className="strategy-parameter-search"><Search aria-hidden="true" size={15} /><input aria-label="Search enrichment fields" onChange={(event) => setEnrichmentQuery(event.target.value)} placeholder="Search field, owner, source or plan" type="search" value={enrichmentQuery} /></label>
+        <div className="strategy-parameter-list discovery-enrichment-list">
+          {[...new Set(visibleEnrichmentFields.map((field) => field.group))].map((group) => {
+            const groupFields = visibleEnrichmentFields.filter((field) => field.group === group);
+            return <section className="strategy-parameter-group discovery-enrichment-group" key={group}>
+              <header><strong>{registryGroupLabel(group)}</strong><span>{groupFields.length}</span></header>
+              <div className="discovery-enrichment-rows">
+                {groupFields.slice(0, 12).map((field) => <article className="discovery-enrichment-row" key={field.field_id}>
+                  <div className="discovery-enrichment-row-heading"><strong>{field.label}</strong><span>{readableLabel(field.status)}</span></div>
+                  <small>{field.owner}</small>
+                </article>)}
+              </div>
+            </section>;
+          })}
+          {enrichmentError ? <div className="strategy-parameter-empty-list"><TriangleAlert size={18} /><span>{enrichmentError}</span></div> : null}
+        </div>
+      </aside>
       <main className="strategy-parameter-detail-page discovery-capability-detail"><header><span>Registry-driven integration contract</span><h2>Enrichment provenance and causal availability</h2><p>These records identify where each value comes from, when it becomes legal to use, how freshness and coverage are evaluated, and why a value may be null.</p></header><div className="discovery-capability-matrix">{visibleEnrichmentFields.slice(0, 100).map((field, index) => <article data-status={field.status.replaceAll("_", "-")} key={field.field_id}><span aria-label={`Enrichment field ${index + 1} of ${visibleEnrichmentFields.length}`} className="discovery-capability-index">{index + 1}</span><div className="discovery-capability-copy"><div className="discovery-capability-title"><strong>{field.label}</strong><span data-type="reference">{readableLabel(field.group)}</span><span>{readableLabel(field.status)}</span></div><small>{field.field_id}</small><dl><div><dt>Owner / source</dt><dd>{field.owner} · {field.source_path}</dd></div><div><dt>Point-in-time plan</dt><dd>{field.query_plan_id}</dd></div><div><dt>Available at</dt><dd>{field.available_at}</dd></div><div><dt>Freshness</dt><dd>{field.freshness_policy}</dd></div><div><dt>Coverage</dt><dd>{field.coverage_query_plan}</dd></div><div><dt>Null reasons</dt><dd>{field.null_reasons.map(readableLabel).join(", ")}</dd></div></dl></div><div className="discovery-capability-actions"><em>{readableLabel(field.provenance)}</em><small>{readableLabel(field.historical_support)} · {readableLabel(field.publication_cadence)}</small></div></article>)}</div>{visibleEnrichmentFields.length > 100 ? <p className="configuration-safety-note"><CircleHelp size={15} />Showing the first 100 matching fields. Narrow the registry search to inspect another field family.</p> : null}</main>
     </div> : <article className="strategy-authoring discovery-guided-authoring">
       <div className="strategy-authoring-step-navigation discovery-step-navigation">
@@ -5791,6 +5809,9 @@ function strategyParameterDocumentation(path: string, group: string, value: Cata
 
 function helpForPath(path: string) { return `Advanced ${readableLabel(path)} setting. Changes are validated by the registered strategy implementation before publication.`; }
 function readableLabel(value: string) { return value.replaceAll(".", " · ").replaceAll("_", " ").replace(/\b\w/g, (letter) => letter.toUpperCase()); }
+function registryGroupLabel(value: string) {
+  return readableLabel(value).replace(/\bQmd\b/g, "QMD").replace(/\bSec\b/g, "SEC");
+}
 function uniqueId(base: string, existing: string[]) { let value = base; let index = 2; while (existing.includes(value)) value = `${base}-${index++}`; return value; }
 function round(value: number) { return Math.round(value * 10_000) / 10_000; }
 function percent(value: number) { return `${round(value * 100)}%`; }
