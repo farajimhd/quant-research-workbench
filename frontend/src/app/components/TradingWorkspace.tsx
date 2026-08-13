@@ -264,6 +264,11 @@ export function TradingWorkspace({
   const [libraryOpen, setLibraryOpen] = useState(false);
   const canvasRef = useRef<HTMLElement | null>(null);
   const managementBodyRef = useRef<HTMLDivElement | null>(null);
+  // Close actions can arrive in the same browser task when stacked windows share
+  // the same close-button position. React has not rendered the first update yet,
+  // so the event handlers need a synchronous authority for the latest open set.
+  const openIdsRef = useRef(openIds);
+  openIdsRef.current = openIds;
 
   useLayoutEffect(() => {
     if (managementOpen && managementBodyRef.current) managementBodyRef.current.scrollTop = 0;
@@ -289,6 +294,7 @@ export function TradingWorkspace({
       if (event.key !== storageKey || !event.newValue) return;
       const next = parseWorkspaceState(event.newValue, definitions);
       if (!next) return;
+      openIdsRef.current = next.openIds;
       setOpenIds(next.openIds);
       setLayouts(next.layouts);
       setInstances(next.instances);
@@ -425,7 +431,8 @@ export function TradingWorkspace({
   }
 
   function closeContainer(id: string) {
-    const nextOpenIds = openIds.filter((candidate) => candidate !== id);
+    const nextOpenIds = openIdsRef.current.filter((candidate) => candidate !== id);
+    openIdsRef.current = nextOpenIds;
     setOpenIds(nextOpenIds);
     setInstances((current) => Object.fromEntries(Object.entries(current).filter(([candidate]) => candidate !== id)) as Record<string, WorkspaceContainerId>);
     setLayouts((current) => Object.fromEntries(Object.entries(current).filter(([candidate]) => candidate !== id)));

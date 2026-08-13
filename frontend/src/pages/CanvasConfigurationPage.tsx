@@ -2444,7 +2444,7 @@ function ContainerPreview({ canvasId, chartCutoffMs, definition, instanceId, lin
           ? <div className="canvas-preview-loading">Loading the historical watchlist snapshot…</div>
           : scannerError && !scannerSnapshot
             ? <div className="canvas-inline-error">Historical watchlist unavailable: {scannerError}</div>
-            : <WatchUniverseContainer asOf={new Date(chartCutoffMs).toISOString()} onSettingsChange={(patch) => updateSettings((state) => ({ ...state, watchlist: { ...state.watchlist, ...patch } }))} onTickerSelect={onTickerWorkspaceOpen} runtime={scannerSnapshot?.watchlist_runtime ?? null} scannerRows={scannerSnapshot?.rows ?? preview?.scanner ?? []} settings={settings.watchlist} />
+            : <WatchUniverseContainer asOf={new Date(chartCutoffMs).toISOString()} onSettingsChange={(change) => updateSettings((state) => ({ ...state, watchlist: { ...state.watchlist, ...(typeof change === "function" ? change(state.watchlist) : change) } }))} onTickerSelect={onTickerWorkspaceOpen} runtime={scannerSnapshot?.watchlist_runtime ?? null} scannerRows={scannerSnapshot?.rows ?? preview?.scanner ?? []} settings={settings.watchlist} />
       : definition.id === "strategy_activity"
         ? <StrategyActivityContainer asOf={new Date(chartCutoffMs).toISOString()} onSettingsChange={(patch) => updateSettings((state) => ({ ...state, strategy_activity: { ...state.strategy_activity, ...patch } }))} onTickerSelect={onTickerWorkspaceOpen} settings={settings.strategy_activity} />
       : loading && !preview

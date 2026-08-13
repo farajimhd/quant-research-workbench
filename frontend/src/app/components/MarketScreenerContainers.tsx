@@ -331,7 +331,7 @@ export function SignalStreamContainer({ asOf, onSettingsChange, onTickerSelect, 
   />;
 }
 
-export function WatchUniverseContainer({ asOf, onSettingsChange, onTickerSelect, runtime, scannerRows, settings }: { asOf: string; onSettingsChange: (patch: Partial<WatchUniverseSettings>) => void; onTickerSelect: (ticker: string) => void; runtime: WatchlistRuntimeResponse | null; scannerRows: ScreenerRow[]; settings: WatchUniverseSettings }) {
+export function WatchUniverseContainer({ asOf, onSettingsChange, onTickerSelect, runtime, scannerRows, settings }: { asOf: string; onSettingsChange: (update: Partial<WatchUniverseSettings> | ((current: WatchUniverseSettings) => Partial<WatchUniverseSettings>)) => void; onTickerSelect: (ticker: string) => void; runtime: WatchlistRuntimeResponse | null; scannerRows: ScreenerRow[]; settings: WatchUniverseSettings }) {
   const { catalog: fieldCatalog, configuration, discovery } = useDiscoveryPresentation();
   const [addingWatchlist, setAddingWatchlist] = useState(false);
   const watchlists = discovery?.watchlists ?? [];
@@ -369,16 +369,18 @@ export function WatchUniverseContainer({ asOf, onSettingsChange, onTickerSelect,
           ? `Membership projection is ${String(runtime.status || "unavailable").replaceAll("_", " ")}.`
           : `QMD Watchlist ${watchlist?.watchlist_id || "not selected"} has no membership snapshot.`);
   const columns = settings.columns.length ? settings.columns : watchlist?.columns ?? ["symbol"];
-  const selectWatchlist = (watchlistId: string) => onSettingsChange({ columns: [], watchlistId, watchlistIds: visibleWatchlists.map((row) => row.watchlist_id) });
+  const selectWatchlist = (watchlistId: string) => onSettingsChange((current) => ({ columns: [], watchlistId, watchlistIds: current.watchlistIds }));
   const addWatchlist = (watchlistId: string) => {
     if (!watchlistId || !selectableWatchlists.some((row) => row.watchlist_id === watchlistId)) return;
-    onSettingsChange({ columns: [], watchlistId, watchlistIds: [...visibleWatchlists.map((row) => row.watchlist_id), watchlistId] });
+    onSettingsChange((current) => ({ columns: [], watchlistId, watchlistIds: Array.from(new Set([...current.watchlistIds, watchlistId])) }));
     setAddingWatchlist(false);
   };
   const removeWatchlist = (watchlistId: string) => {
-    const nextIds = visibleWatchlists.map((row) => row.watchlist_id).filter((id) => id !== watchlistId);
-    const nextActiveId = watchlistId === watchlist?.watchlist_id ? nextIds[0] ?? "" : watchlist?.watchlist_id ?? "";
-    onSettingsChange({ columns: [], watchlistId: nextActiveId, watchlistIds: nextIds });
+    onSettingsChange((current) => {
+      const nextIds = current.watchlistIds.filter((id) => id !== watchlistId);
+      const nextActiveId = watchlistId === current.watchlistId ? nextIds[0] ?? "" : current.watchlistId;
+      return { columns: [], watchlistId: nextActiveId, watchlistIds: nextIds };
+    });
   };
   return <section className="market-list-surface watchlist-surface" aria-label={`${watchlist?.name ?? "Watchlist"} watchlist`}>
     <header className="market-list-heading">

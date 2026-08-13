@@ -492,6 +492,60 @@ def validate_loading_window_interactions(page: Any, window: Any, issues: list[st
         reset.click()
 
 
+def validate_watch_universe_close_lifecycle(page: Any, issues: list[str]) -> None:
+    """Closing tabs or the container must not synthesize replacement instances."""
+    page.get_by_role("button", name="Canvas management", exact=True).click()
+    management = page.get_by_role("complementary", name="Canvas management")
+    library = management.get_by_role("region", name="Container library")
+    watchlist_card = library.locator("article").filter(has_text="Watch Universe")
+    watchlist_definition_count = watchlist_card.count()
+    if watchlist_definition_count != 1:
+        issues.append(f"Container library exposes {watchlist_definition_count} Watch Universe definitions instead of one")
+        management.get_by_role("button", name="Close canvas management").click()
+        return
+    watchlist_card.get_by_role("button", name="Add", exact=True).click()
+    watchlists = page.locator('.workspace-window[data-window-kind="watchlist"]')
+    watchlists.first.wait_for(state="visible", timeout=5000)
+    if watchlists.count() != 1:
+        issues.append("adding one Watch Universe created multiple container instances")
+        return
+
+    watchlist = watchlists.first
+    remove_tabs = watchlist.locator(".watchlist-tab-remove")
+    while remove_tabs.count():
+        remove_tabs.first.click()
+    page.wait_for_timeout(500)
+    if watchlists.count() != 1 or watchlist.locator(".watchlist-tab-remove").count():
+        issues.append("closing all Watchlist tabs recreated tabs or Watch Universe containers")
+        return
+
+    page.get_by_role("button", name="Canvas management", exact=True).click()
+    management = page.get_by_role("complementary", name="Canvas management")
+    library = management.get_by_role("region", name="Container library")
+    library.locator("article").filter(has_text="Watch Universe").get_by_role("button", name="Add", exact=True).click()
+    page.wait_for_timeout(100)
+    if watchlists.count() != 2:
+        issues.append("adding a second Watch Universe did not create exactly two instances")
+        return
+
+    # Reproduce stacked-window close clicks before React can render either state
+    # update. Each close must subtract from the latest open-container set.
+    page.evaluate("""() => {
+        const buttons = Array.from(document.querySelectorAll(
+            '.workspace-window[data-window-kind="watchlist"] button[aria-label^="Close Watch Universe"]'
+        ));
+        buttons.forEach((button) => button.click());
+    }""")
+    page.wait_for_timeout(500)
+    if watchlists.count():
+        issues.append("simultaneous Watch Universe closes reintroduced a previously closed container")
+        return
+    page.reload(wait_until="domcontentloaded")
+    page.wait_for_timeout(500)
+    if page.locator('.workspace-window[data-window-kind="watchlist"]').count():
+        issues.append("closed Watch Universe did not remain closed after Canvas reload")
+
+
 def validate_canvas_interactions(
     page: Any,
     scenario: dict[str, Any],
@@ -500,6 +554,7 @@ def validate_canvas_interactions(
     chart_stress_cycles: int = 24,
     chart_stress_pattern: str = "mixed",
     chart_stress_only: bool = False,
+    watchlist_close_only: bool = False,
 ) -> list[str]:
     """Exercise the Canvas behaviors that static screenshots cannot prove."""
     issues: list[str] = []
@@ -634,6 +689,10 @@ def validate_canvas_interactions(
             symbol_header = scanner.locator("th.market-list-symbol-column").first
             if symbol_header.count() and symbol_header.evaluate("element => getComputedStyle(element).boxShadow") != "none":
                 issues.append("Scanner symbol column renders an unwanted right-edge shadow")
+        validate_watch_universe_close_lifecycle(page, issues)
+        if watchlist_close_only:
+            return issues
+        chart = page.locator('.workspace-window[data-window-kind="chart"]').first
         chart.get_by_text("Loading chart data...", exact=True).wait_for(state="hidden", timeout=120_000)
         chart.locator(".chart-pane-canvas canvas").first.wait_for(state="visible", timeout=30_000)
         timeframe_button = chart.get_by_role("button", name=chart_timeframe, exact=True)
@@ -1630,6 +1689,7 @@ def capture(args: argparse.Namespace) -> int:
                         page, scenario, interaction_screenshot,
                         args.canvas_chart_timeframe, args.chart_stress_cycles,
                         args.chart_stress_pattern, args.chart_stress_only,
+                        args.watchlist_close_only,
                     ))
                     objective_issues += len(issues)
                     result.update({
@@ -1689,6 +1749,7 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--chart-stress-cycles", type=int, default=24, help="mixed pan, zoom, and axis-scale cycles in the Canvas interaction stress")
     result.add_argument("--chart-stress-pattern", choices=("mixed", "pathological", "left-paging"), default="mixed", help="alternate gestures, accumulate them in one direction, or force left-edge history paging")
     result.add_argument("--chart-stress-only", action="store_true", help="stop the Canvas interaction review after chart stress")
+    result.add_argument("--watchlist-close-only", action="store_true", help="stop after the Watch Universe close and persistence regression")
     result.add_argument("--seed-core-containers", action="store_true", help="seed portfolio and scanner containers for child-canvas review")
     result.add_argument("--mode", choices=("targeted", "full"), default="targeted")
     result.add_argument("--matrix", choices=("bounded", "exhaustive"), default="bounded")
