@@ -387,7 +387,7 @@ type CanvasLiveChartState = {
 
 type CanvasChartSettings = { showVolume: boolean; symbol: string; timeframe: CanvasChartTimeframe; visibleIndicators: string[] };
 type ContainerSettings = {
-  version: 26;
+  version: 27;
   chart: CanvasChartSettings;
   charts_quotes: {
     daily: CanvasChartSettings;
@@ -423,8 +423,9 @@ type LinkedContainerState = { status: WorkspaceWindowStatus; symbol: string; tit
 
 const ALL_CONTAINER_IDS = TRADING_WORKSPACE_CONTAINERS.map((definition) => definition.id);
 const MANAGER_DEFAULT_CONTAINER_IDS: WorkspaceContainerId[] = ["scanner", "chart", "portfolio", "positions", "orders"];
+const DEFAULT_WATCHLIST_TAB_IDS = ["top-large-cap-gainers", "top-mid-cap-gainers", "top-small-cap-gainers", "top-penny-gainers"];
 const DEFAULT_SETTINGS: ContainerSettings = {
-  version: 26,
+  version: 27,
   chart: { showVolume: true, symbol: "AAPL", timeframe: "1m", visibleIndicators: ["indicator.vwap", "indicator.macd", "indicator.flow_structure_composite", "strategy.presentation"] },
   charts_quotes: {
     main: { showVolume: true, symbol: "AAPL", timeframe: "10s", visibleIndicators: ["indicator.macd", "strategy.presentation"] },
@@ -445,7 +446,7 @@ const DEFAULT_SETTINGS: ContainerSettings = {
   portfolio: { showExposure: true, showPnl: true },
   scanner: { columns: [], customColumns: [], limit: 250, preset: "Core Scan" },
   signal_stream: { columns: [], customColumns: [], limit: 250, preset: "All" },
-  watchlist: { columns: [], customColumns: [], limit: 50, watchlistId: "", watchlistIds: [] },
+  watchlist: { columns: [], customColumns: [], limit: 50, watchlistId: DEFAULT_WATCHLIST_TAB_IDS[0], watchlistIds: DEFAULT_WATCHLIST_TAB_IDS },
   strategy_activity: { eventType: "", limit: 250, runId: "", strategyId: "", ticker: "" },
   sec: { content: "all", endDate: "", label: "", limit: 100, lookbackHours: 168, rangeMode: "preset", startDate: "", ticker: "" },
   ticker_sec: { lookbackHours: 720 },
@@ -4421,6 +4422,16 @@ function normalizeSettings(stored: Partial<ContainerSettings>): ContainerSetting
   const storedPerformance = stored.performance_journal as (Partial<ContainerSettings["performance_journal"]> & { showFees?: boolean }) | undefined;
   const storedWatchlist = stored.watchlist as Partial<WatchUniverseSettings> | undefined;
   const storedWatchlistIds = Array.isArray(storedWatchlist?.watchlistIds) ? storedWatchlist.watchlistIds : [];
+  const normalizedStoredWatchlistIds = Array.from(new Set([
+    ...storedWatchlistIds.filter((value): value is string => typeof value === "string" && Boolean(value.trim())),
+    String(storedWatchlist?.watchlistId ?? ""),
+  ].filter(Boolean)));
+  const legacyDefaultWatchlist = normalizedStoredWatchlistIds.length === 0
+    || (normalizedStoredWatchlistIds.length === 1 && normalizedStoredWatchlistIds[0] === "top-penny-gainers");
+  const migrateLegacyWatchlist = Number(stored.version ?? 0) < 27 && legacyDefaultWatchlist;
+  const watchlistIds = migrateLegacyWatchlist
+    ? [...DEFAULT_WATCHLIST_TAB_IDS]
+    : normalizedStoredWatchlistIds;
   return {
     version: DEFAULT_SETTINGS.version,
     chart: { ...DEFAULT_SETTINGS.chart, ...(stored.chart ?? {}), timeframe, visibleIndicators: [...visibleIndicators] },
@@ -4458,11 +4469,8 @@ function normalizeSettings(stored: Partial<ContainerSettings>): ContainerSetting
       ...(stored.watchlist ?? {}),
       columns: Number(stored.version ?? 0) < 25 ? [] : normalizeScannerColumnKeys(stored.watchlist?.columns, stored.watchlist?.customColumns),
       customColumns: normalizeScannerCustomColumns(stored.watchlist?.customColumns),
-      watchlistId: String(storedWatchlist?.watchlistId ?? ""),
-      watchlistIds: Array.from(new Set([
-        ...storedWatchlistIds.filter((value): value is string => typeof value === "string" && Boolean(value.trim())),
-        String(storedWatchlist?.watchlistId ?? ""),
-      ].filter(Boolean))),
+      watchlistId: migrateLegacyWatchlist ? watchlistIds[0] : watchlistIds.includes(String(storedWatchlist?.watchlistId ?? "")) ? String(storedWatchlist?.watchlistId) : watchlistIds[0] ?? "",
+      watchlistIds,
     },
     strategy_activity: { ...DEFAULT_SETTINGS.strategy_activity, ...(stored.strategy_activity ?? {}) },
     sec: { ...DEFAULT_SETTINGS.sec, ...(stored.sec ?? {}) },
