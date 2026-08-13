@@ -330,9 +330,12 @@ across every catalog ticker from `[2019-01-01, 2026-01-01)`, a ticker-balanced
 monitor panel of at least 1 million origins, and a separate ticker-balanced
 validation panel of at least 5 million origins from
 `[2026-01-01, 2026-08-01)`. Monitor and validation reserve disjoint complete
-ticker-dates, and every catalog ticker is represented in all three panels.
-Whole 4,096-origin blocks are indivisible, so the recorded panel totals may
-slightly exceed their targets.
+ticker-dates. Every catalog ticker is represented in training and final
+validation. A ticker with only one eligible 2026 date is reserved for final
+validation and omitted from monitoring so validation remains uncontaminated;
+the manifest records and verifies this availability-derived exception. Whole
+4,096-origin blocks are indivisible, so the recorded panel totals may slightly
+exceed their targets.
 
 The complete 1-million-origin monitor panel runs at 25, 50, and 75 million
 training origins under the `monitor_*` metric namespace. The complete

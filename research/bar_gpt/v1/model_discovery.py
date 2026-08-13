@@ -269,8 +269,12 @@ def _held_out_panel(
     seed: int,
     label: str,
     used_dates: set[tuple[str, str]],
+    reserve_dates_per_ticker: int = 0,
+    require_every_ticker: bool = True,
 ) -> tuple[OfflineBlockRef, ...]:
-    """Select a ticker-balanced panel while reserving complete ticker-dates."""
+    """Select a ticker-balanced panel while reserving dates for later panels."""
+    if reserve_dates_per_ticker < 0:
+        raise ValueError("reserve_dates_per_ticker cannot be negative")
     dates: dict[str, dict[str, list[OfflineBlockRef]]] = {}
     for ref in refs:
         if (ref.ticker, ref.local_date) not in used_dates:
@@ -283,7 +287,8 @@ def _held_out_panel(
     for ticker in tickers:
         ticker_origins = 0
         ordered_dates = sorted(dates[ticker], key=lambda day: _hash(seed, label, ticker, day))
-        for day in ordered_dates:
+        selectable_count = max(0, len(ordered_dates) - reserve_dates_per_ticker)
+        for day in ordered_dates[:selectable_count]:
             day_refs = sorted(
                 dates[ticker][day],
                 key=lambda ref: _hash(seed, label, ticker, day, ref.block_offset),
@@ -296,7 +301,7 @@ def _held_out_panel(
                     break
             if ticker_origins >= per_ticker:
                 break
-        if ticker_origins == 0:
+        if ticker_origins == 0 and require_every_ticker:
             raise RuntimeError(f"ticker {ticker} has no unused date for {label}")
     selected.sort(key=lambda ref: _hash(seed, label, ref.ticker, ref.local_date, ref.block_offset))
     origins = sum(ref.origins for ref in selected)
@@ -409,6 +414,20 @@ def build_discovery_manifest(
         label="held-out",
         cache_path=index_root / "held_out.jsonl",
     )
+    evaluation_dates = {ticker: set() for ticker in resolved_evaluation_tickers}
+    for ref in held_out_refs:
+        evaluation_dates[ref.ticker].add(ref.local_date)
+    evaluation_date_counts = {
+        ticker: len(evaluation_dates[ticker]) for ticker in sorted(evaluation_dates)
+    }
+    missing_evaluation = sorted(
+        ticker for ticker, count in evaluation_date_counts.items() if count == 0
+    )
+    if missing_evaluation:
+        raise RuntimeError(
+            "evaluation tickers have no eligible held-out dates: "
+            + ", ".join(missing_evaluation)
+        )
     train = _balanced_sample(
         training_refs,
         target_origins=train_origins,
@@ -422,6 +441,8 @@ def build_discovery_manifest(
         seed=seed,
         label="monitor",
         used_dates=used_dates,
+        reserve_dates_per_ticker=1 + int(locked_test_origins > 0),
+        require_every_ticker=False,
     )
     validation = _held_out_panel(
         held_out_refs,
@@ -429,6 +450,8 @@ def build_discovery_manifest(
         seed=seed,
         label="validation",
         used_dates=used_dates,
+        reserve_dates_per_ticker=int(locked_test_origins > 0),
+        require_every_ticker=locked_test_origins == 0,
     )
     locked_test = (
         _held_out_panel(
@@ -457,6 +480,7 @@ def build_discovery_manifest(
         "cohorts": {
             "training_tickers": sorted(resolved_training_tickers),
             "evaluation_tickers": sorted(resolved_evaluation_tickers),
+            "evaluation_available_ticker_dates": evaluation_date_counts,
         },
         "ranges": {"train": ["2019-01-01", "2026-01-01"], "held_out": ["2026-01-01", "2026-08-01"]},
         "targets": {

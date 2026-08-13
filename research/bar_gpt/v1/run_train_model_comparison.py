@@ -56,6 +56,7 @@ COMPARISON_MONITOR_ORIGINS = 1_000_000
 COMPARISON_VALIDATION_ORIGINS = 5_000_000
 COMPARISON_SEED = 17
 COMPARISON_MONITOR_INTERVAL_ORIGINS = 25_000_000
+COMPARISON_MANIFEST_NAME = "fixed_panels_v2.json"
 
 
 def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
@@ -108,7 +109,7 @@ def trainer_argv(
         "--offline-shard-root",
         str(shard_root),
         "--experiment-manifest",
-        str(manifest_path or output_root / "fixed_panels_v1.json"),
+        str(manifest_path or output_root / COMPARISON_MANIFEST_NAME),
         "--output-root",
         str(output_root / "runs"),
         "--epochs",
@@ -194,12 +195,19 @@ def _validate_comparison_manifest(manifest: dict[str, Any], *, all_tickers: tupl
     }
     if manifest.get("ranges") != expected_ranges:
         raise RuntimeError("model-comparison manifest has the wrong temporal ranges")
-    expected_cohorts = {
-        "training_tickers": sorted(all_tickers),
-        "evaluation_tickers": sorted(all_tickers),
-    }
-    if manifest.get("cohorts") != expected_cohorts:
+    cohorts = manifest.get("cohorts")
+    if not isinstance(cohorts, dict):
+        raise RuntimeError("model-comparison manifest has no ticker cohorts")
+    if cohorts.get("training_tickers") != sorted(all_tickers) or cohorts.get(
+        "evaluation_tickers"
+    ) != sorted(all_tickers):
         raise RuntimeError("model-comparison manifest does not include every catalog ticker")
+    available_dates = cohorts.get("evaluation_available_ticker_dates")
+    if not isinstance(available_dates, dict) or set(available_dates) != set(all_tickers):
+        raise RuntimeError("model-comparison manifest has incomplete evaluation availability")
+    expected_monitor_tickers = {
+        ticker for ticker in all_tickers if int(available_dates[ticker]) >= 2
+    }
     panels = manifest.get("panels")
     if not isinstance(panels, dict):
         raise RuntimeError("model-comparison manifest has no panels")
@@ -216,7 +224,8 @@ def _validate_comparison_manifest(manifest: dict[str, Any], *, all_tickers: tupl
             raise RuntimeError(f"model-comparison manifest panel {name!r} is empty")
         panel_tickers[name] = {str(row["ticker"]) for row in rows}
         panel_dates[name] = {(str(row["ticker"]), str(row["local_date"])) for row in rows}
-        if panel_tickers[name] != set(all_tickers):
+        expected_tickers = expected_monitor_tickers if name == "monitor" else set(all_tickers)
+        if panel_tickers[name] != expected_tickers:
             raise RuntimeError(f"model-comparison panel {name!r} does not represent every ticker")
         origins = sum(int(row["origins"]) for row in rows)
         if origins < minimum_origins[name]:
@@ -229,7 +238,7 @@ def _validate_comparison_manifest(manifest: dict[str, Any], *, all_tickers: tupl
 
 
 def ensure_comparison_manifest(*, shard_root: Path, output_root: Path) -> Path:
-    manifest_path = output_root / "fixed_panels_v1.json"
+    manifest_path = output_root / COMPARISON_MANIFEST_NAME
     config = discovery_data_config(shard_root)
     all_tickers = tuple(config.tickers)
     if manifest_path.is_file():
@@ -271,7 +280,8 @@ def main(argv: Iterable[str] | None = None) -> int:
     print(
         "Fixed population: >=100M train origins from 2019-2025; "
         ">=1M monitor and >=5M validation origins from disjoint 2026 ticker-dates; "
-        "all catalog tickers in every panel",
+        "all catalog tickers in training and validation, with monitor reserving each "
+        "ticker's only 2026 date for validation",
         flush=True,
     )
     print(

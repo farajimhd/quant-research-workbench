@@ -100,6 +100,36 @@ class ModelDiscoveryContractTest(unittest.TestCase):
         validation_dates = {(item.ticker, item.local_date) for item in validation}
         self.assertFalse(monitor_dates & validation_dates)
 
+    def test_monitor_reserves_a_sparse_tickers_only_date_for_validation(self) -> None:
+        refs = (
+            ref("AAA", "2026-01-02", 0),
+            ref("AAA", "2026-01-05", 1),
+            ref("BBB", "2026-01-02", 0),
+        )
+        used: set[tuple[str, str]] = set()
+        monitor = _held_out_panel(
+            refs,
+            target_origins=100,
+            seed=17,
+            label="monitor",
+            used_dates=used,
+            reserve_dates_per_ticker=1,
+            require_every_ticker=False,
+        )
+        validation = _held_out_panel(
+            refs,
+            target_origins=200,
+            seed=17,
+            label="validation",
+            used_dates=used,
+        )
+        self.assertEqual({item.ticker for item in monitor}, {"AAA"})
+        self.assertEqual({item.ticker for item in validation}, {"AAA", "BBB"})
+        self.assertFalse(
+            {(item.ticker, item.local_date) for item in monitor}
+            & {(item.ticker, item.local_date) for item in validation}
+        )
+
     def test_shard_preselection_is_ticker_balanced_and_time_spread(self) -> None:
         units = tuple(
             OfflineShardUnit(
