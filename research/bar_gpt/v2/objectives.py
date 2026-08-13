@@ -1,0 +1,312 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+import torch
+import torch.nn.functional as F
+
+from research.bar_gpt.v2.config import TrainConfig
+from research.bar_gpt.v2.data import BarGPTBatch
+from research.bar_gpt.v2.model import BarGPTOutput
+from research.bar_gpt.v2.targets import (
+    AUTOREGRESSIVE_BINARY_TARGET_NAMES,
+    AUTOREGRESSIVE_CONTINUOUS_TARGET_COUNT,
+    AUTOREGRESSIVE_CONTINUOUS_TARGET_NAMES,
+    BINARY_TARGET_NAMES,
+    CONTINUOUS_TARGET_COUNT,
+    CONTINUOUS_TARGET_NAMES,
+    RETURN_CLASS_COUNT,
+    RETURN_TARGET_COUNT,
+    RETURN_TARGET_NAMES,
+    autoregressive_return_class_labels,
+    physical_return_class_labels,
+)
+
+
+@dataclass(slots=True)
+class BarGPTLoss:
+    loss: torch.Tensor
+    metrics: dict[str, torch.Tensor]
+
+
+def masked_quantile_loss(
+    prediction: torch.Tensor,
+    target: torch.Tensor,
+    mask: torch.Tensor,
+    quantiles: tuple[float, ...],
+) -> torch.Tensor:
+    """Compatibility utility; v2 training uses per-target `_quantile_stats`."""
+    if prediction.shape[:-1] != target.shape or target.shape != mask.shape:
+        raise ValueError("quantile prediction, target, and mask do not align")
+    q = torch.as_tensor(quantiles, device=prediction.device, dtype=prediction.dtype)
+    safe_prediction = torch.where(mask.unsqueeze(-1), prediction, torch.zeros_like(prediction))
+    safe_target = torch.where(mask, target, torch.zeros_like(target)).to(prediction.dtype)
+    error = safe_target.unsqueeze(-1) - safe_prediction
+    loss = torch.maximum(q * error, (q - 1.0) * error)
+    valid = mask.unsqueeze(-1).expand_as(loss)
+    return torch.where(valid, loss, torch.zeros_like(loss)).sum() / valid.sum().clamp_min(1)
+
+
+def masked_huber_loss(
+    prediction: torch.Tensor, target: torch.Tensor, mask: torch.Tensor, delta: float = 1.0
+) -> torch.Tensor:
+    if prediction.shape != target.shape or target.shape != mask.shape:
+        raise ValueError("prediction, target, and mask must have identical shapes")
+    safe_prediction = torch.where(mask, prediction, torch.zeros_like(prediction))
+    safe_target = torch.where(mask, target, torch.zeros_like(target)).to(prediction.dtype)
+    loss = F.huber_loss(safe_prediction, safe_target, delta=delta, reduction="none")
+    return torch.where(mask, loss, torch.zeros_like(loss)).sum() / mask.sum().clamp_min(1)
+
+
+def _target_stats(
+    loss: torch.Tensor,
+    mask: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Return unweighted numerator/count vectors for the final target axis."""
+    if loss.shape != mask.shape or loss.ndim < 2:
+        raise ValueError("loss and mask must match and retain a final target axis")
+    dimensions = tuple(range(loss.ndim - 1))
+    numerator = torch.where(mask, loss, torch.zeros_like(loss)).sum(dimensions)
+    denominator = mask.to(loss.dtype).sum(dimensions)
+    return numerator, denominator
+
+
+def _target_means(numerator: torch.Tensor, denominator: torch.Tensor) -> torch.Tensor:
+    if numerator.shape != denominator.shape:
+        raise ValueError("target numerator and denominator must align")
+    return torch.where(
+        denominator > 0,
+        numerator / denominator.clamp_min(1e-12),
+        numerator * 0.0,
+    )
+
+
+def _add_stats(
+    current: tuple[torch.Tensor, torch.Tensor] | None,
+    value: tuple[torch.Tensor, torch.Tensor],
+) -> tuple[torch.Tensor, torch.Tensor]:
+    return value if current is None else (current[0] + value[0], current[1] + value[1])
+
+
+def _point_regression_stats(
+    prediction: torch.Tensor,
+    target: torch.Tensor,
+    mask: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    if prediction.shape != target.shape or target.shape != mask.shape:
+        raise ValueError("point prediction, target, and mask must have identical shapes")
+    safe_prediction = torch.where(mask, prediction, torch.zeros_like(prediction))
+    safe_target = torch.where(mask, target, torch.zeros_like(target)).to(prediction.dtype)
+    return _target_stats(F.huber_loss(safe_prediction, safe_target, reduction="none"), mask)
+
+
+def _binary_stats(
+    logits: torch.Tensor,
+    target: torch.Tensor,
+    mask: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    if logits.shape != target.shape or target.shape != mask.shape:
+        raise ValueError("binary logits, target, and mask must have identical shapes")
+    safe_logits = torch.where(mask, logits, torch.zeros_like(logits))
+    safe_target = torch.where(mask, target, torch.zeros_like(target)).to(logits.dtype)
+    return _target_stats(
+        F.binary_cross_entropy_with_logits(safe_logits, safe_target, reduction="none"),
+        mask,
+    )
+
+
+def _return_class_stats(
+    logits: torch.Tensor,
+    labels: torch.Tensor,
+    mask: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    if logits.shape[:-1] != labels.shape or labels.shape != mask.shape:
+        raise ValueError("return-class logits, labels, and mask do not align")
+    if logits.shape[-1] != RETURN_CLASS_COUNT:
+        raise ValueError("return-class logits must have five classes")
+    loss = F.cross_entropy(
+        logits.reshape(-1, RETURN_CLASS_COUNT), labels.reshape(-1), reduction="none"
+    ).view_as(labels)
+    return _target_stats(loss, mask)
+
+
+def _quantile_stats(
+    prediction: torch.Tensor,
+    target: torch.Tensor,
+    mask: torch.Tensor,
+    quantiles: tuple[float, ...],
+) -> tuple[torch.Tensor, torch.Tensor]:
+    if prediction.shape[:-1] != target.shape or target.shape != mask.shape:
+        raise ValueError("quantile prediction, target, and mask do not align")
+    q = torch.as_tensor(quantiles, device=prediction.device, dtype=prediction.dtype)
+    safe_prediction = torch.where(mask.unsqueeze(-1), prediction, torch.zeros_like(prediction))
+    safe_target = torch.where(mask, target, torch.zeros_like(target)).to(prediction.dtype)
+    error = safe_target.unsqueeze(-1) - safe_prediction
+    pinball = torch.maximum(q * error, (q - 1.0) * error)
+    # Move target behind quantile so _target_stats retains the target axis.
+    pinball = pinball.movedim(-2, -1)
+    valid = mask.unsqueeze(-1).expand_as(prediction).movedim(-2, -1)
+    return _target_stats(pinball, valid)
+
+
+def _record_target_metrics(
+    metrics: dict[str, torch.Tensor],
+    *,
+    group: str,
+    names: tuple[str, ...],
+    means: torch.Tensor,
+    support: torch.Tensor,
+) -> None:
+    if means.numel() != len(names):
+        raise ValueError(f"metric target schema mismatch for {group}")
+    for index, name in enumerate(names):
+        metrics[f"train/loss_{group}_{name}"] = means[index].detach()
+        metrics[f"train/support_{group}_{name}"] = support[index].detach()
+
+
+def compute_loss(
+    output: BarGPTOutput,
+    batch: BarGPTBatch,
+    config: TrainConfig,
+    quantiles: tuple[float, ...],
+) -> BarGPTLoss:
+    """Sum independently normalized v2 target losses without coefficients."""
+    if batch.horizon_targets is None or batch.horizon_mask is None:
+        raise ValueError("physical horizon targets must be materialized before loss computation")
+
+    ar_regression_stats: tuple[torch.Tensor, torch.Tensor] | None = None
+    ar_binary_stats: tuple[torch.Tensor, torch.Tensor] | None = None
+    ar_class_stats: tuple[torch.Tensor, torch.Tensor] | None = None
+    for view, prediction in output.autoregressive.items():
+        target = batch.autoregressive_targets[view][:, : prediction.shape[1]]
+        mask = batch.autoregressive_mask[view][:, : prediction.shape[1]]
+        continuous_prediction = prediction[..., :AUTOREGRESSIVE_CONTINUOUS_TARGET_COUNT]
+        continuous_target = target[..., :AUTOREGRESSIVE_CONTINUOUS_TARGET_COUNT]
+        continuous_mask = mask[..., :AUTOREGRESSIVE_CONTINUOUS_TARGET_COUNT]
+        ar_regression_stats = _add_stats(
+            ar_regression_stats,
+            _point_regression_stats(
+                continuous_prediction, continuous_target, continuous_mask
+            ),
+        )
+        ar_binary_stats = _add_stats(
+            ar_binary_stats,
+            _binary_stats(
+                prediction[..., AUTOREGRESSIVE_CONTINUOUS_TARGET_COUNT:],
+                target[..., AUTOREGRESSIVE_CONTINUOUS_TARGET_COUNT:],
+                mask[..., AUTOREGRESSIVE_CONTINUOUS_TARGET_COUNT:],
+            ),
+        )
+        return_target = continuous_target[..., :RETURN_TARGET_COUNT]
+        return_mask = continuous_mask[..., :RETURN_TARGET_COUNT]
+        ar_class_stats = _add_stats(
+            ar_class_stats,
+            _return_class_stats(
+                output.autoregressive_return_class_logits[view],
+                autoregressive_return_class_labels(return_target, view),
+                return_mask,
+            ),
+        )
+
+    if ar_regression_stats is None or ar_binary_stats is None or ar_class_stats is None:
+        zero = output.embeddings.sum() * 0.0
+        raise ValueError(f"v2 requires every autoregressive objective; got zero={zero}")
+    ar_regression = _target_means(*ar_regression_stats)
+    ar_binary = _target_means(*ar_binary_stats)
+    ar_classes = _target_means(*ar_class_stats)
+
+    continuous_target = batch.horizon_targets[..., :CONTINUOUS_TARGET_COUNT]
+    continuous_mask = (
+        batch.horizon_mask[..., :CONTINUOUS_TARGET_COUNT]
+        & batch.origin_mask[:, :, None, None]
+    )
+    if output.horizon_quantiles is None:
+        raise ValueError("v2 requires physical-horizon quantile predictions")
+    horizon_regression_stats = _quantile_stats(
+        output.horizon_quantiles,
+        continuous_target,
+        continuous_mask,
+        quantiles,
+    )
+    horizon_regression = _target_means(*horizon_regression_stats)
+
+    if output.horizon_availability_logits is None:
+        raise ValueError("v2 requires physical-horizon categorical predictions")
+    binary_target = batch.horizon_targets[..., CONTINUOUS_TARGET_COUNT:]
+    binary_mask = (
+        batch.horizon_mask[..., CONTINUOUS_TARGET_COUNT:]
+        & batch.origin_mask[:, :, None, None]
+    )
+    horizon_binary_stats = _binary_stats(
+        output.horizon_availability_logits, binary_target, binary_mask
+    )
+    horizon_binary = _target_means(*horizon_binary_stats)
+
+    if output.horizon_return_class_logits is None:
+        raise ValueError("v2 requires physical-horizon five-class return predictions")
+    return_target = continuous_target[..., :RETURN_TARGET_COUNT]
+    return_mask = continuous_mask[..., :RETURN_TARGET_COUNT]
+    horizon_class_stats = _return_class_stats(
+        output.horizon_return_class_logits,
+        physical_return_class_labels(return_target, batch.horizons_us),
+        return_mask,
+    )
+    horizon_classes = _target_means(*horizon_class_stats)
+
+    ar_loss = ar_regression.sum() + ar_binary.sum() + ar_classes.sum()
+    horizon_loss = horizon_regression.sum() + horizon_binary.sum() + horizon_classes.sum()
+    total = ar_loss + horizon_loss
+    metrics: dict[str, torch.Tensor] = {
+        "train/loss": total.detach(),
+        "train/loss_autoregressive": ar_loss.detach(),
+        "train/loss_horizon": horizon_loss.detach(),
+        "train/loss_ar_regression": ar_regression.sum().detach(),
+        "train/loss_ar_categorical": ar_binary.sum().detach(),
+        "train/loss_ar_return_class": ar_classes.sum().detach(),
+        "train/loss_horizon_quantile": horizon_regression.sum().detach(),
+        "train/loss_horizon_categorical": horizon_binary.sum().detach(),
+        "train/loss_horizon_return_class": horizon_classes.sum().detach(),
+    }
+    _record_target_metrics(
+        metrics,
+        group="ar_regression",
+        names=AUTOREGRESSIVE_CONTINUOUS_TARGET_NAMES,
+        means=ar_regression,
+        support=ar_regression_stats[1],
+    )
+    _record_target_metrics(
+        metrics,
+        group="ar_categorical",
+        names=AUTOREGRESSIVE_BINARY_TARGET_NAMES,
+        means=ar_binary,
+        support=ar_binary_stats[1],
+    )
+    _record_target_metrics(
+        metrics,
+        group="ar_return_class",
+        names=RETURN_TARGET_NAMES,
+        means=ar_classes,
+        support=ar_class_stats[1],
+    )
+    _record_target_metrics(
+        metrics,
+        group="horizon_regression",
+        names=CONTINUOUS_TARGET_NAMES,
+        means=horizon_regression,
+        support=horizon_regression_stats[1],
+    )
+    _record_target_metrics(
+        metrics,
+        group="horizon_categorical",
+        names=BINARY_TARGET_NAMES,
+        means=horizon_binary,
+        support=horizon_binary_stats[1],
+    )
+    _record_target_metrics(
+        metrics,
+        group="horizon_return_class",
+        names=RETURN_TARGET_NAMES,
+        means=horizon_classes,
+        support=horizon_class_stats[1],
+    )
+    return BarGPTLoss(loss=total, metrics=metrics)
