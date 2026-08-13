@@ -2828,13 +2828,26 @@ class LoaderTrainerContractTest(unittest.TestCase):
             "Data and durability",
             "Recent events",
             "Trade OHLC MAE",
-            "Trade balanced",
+            "Close balanced",
             "MCC",
             "Trade rank",
             "Overall speed",
             "Training loss and metrics",
         ):
             self.assertIn(heading, output.getvalue())
+
+        reporter.validation(
+            {
+                "monitor_loss/total": 0.25,
+                "monitor_close_direction_summary/balanced_accuracy_macro": 0.57,
+                "monitor_close_direction_summary/mcc_macro": 0.14,
+            }
+        )
+        self.assertEqual(reporter.state.validation_metrics["monitor_loss/total"], 0.25)
+        self.assertEqual(
+            reporter.state.validation_metrics["validation_close_direction_summary/mcc_macro"],
+            0.14,
+        )
 
         empty_state = TrainingProgressState(
             run_name="empty", device="cuda", precision="bf16", output_dir="-",

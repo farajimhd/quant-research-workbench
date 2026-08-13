@@ -222,6 +222,19 @@ class ModelDiscoveryContractTest(unittest.TestCase):
         better_mcc = {"validation_loss/total": 0.3, "validation_trade_summary/mcc_macro": 0.8}
         self.assertLess(_ranking_key(better_loss), _ranking_key(better_mcc))
 
+    def test_ranking_prefers_close_direction_mcc_over_legacy_extrema_mix(self) -> None:
+        close_skill = {
+            "validation_loss/total": 0.2,
+            "validation_close_direction_summary/mcc_macro": 0.4,
+            "validation_trade_summary/mcc_macro": -0.5,
+        }
+        extrema_skill = {
+            "validation_loss/total": 0.2,
+            "validation_close_direction_summary/mcc_macro": 0.1,
+            "validation_trade_summary/mcc_macro": 0.9,
+        }
+        self.assertLess(_ranking_key(close_skill), _ranking_key(extrema_skill))
+
     def test_explicit_block_stream_is_identity_checked_and_resumable(self) -> None:
         refs = tuple(ref("AAA", "2026-01-02", offset) for offset in range(3))
         unit = OfflineShardUnit(

@@ -22,8 +22,8 @@ TRAINING_OBJECTIVES: tuple[tuple[str, str, str], ...] = (
     ("Horizon direction", "train/loss_horizon_direction", "loss"),
     ("Latent prediction", "train/loss_latent_prediction", "loss"),
     ("Trade OHLC MAE", "train_trade_summary/mae_macro", "bps"),
-    ("Bid MCC", "train_bid_summary/mcc_macro", "number"),
-    ("Ask MCC", "train_ask_summary/mcc_macro", "number"),
+    ("Close balanced", "train_close_direction_summary/balanced_accuracy_macro", "percent"),
+    ("Close MCC", "train_close_direction_summary/mcc_macro", "number"),
     ("AR balanced", "train_ar_direction_balanced/balanced_accuracy_macro", "percent"),
     ("AR MCC", "train_ar_direction_mcc/mcc_macro", "number"),
 )
@@ -33,10 +33,9 @@ VALIDATION_SCORECARD: tuple[tuple[str, str, str], ...] = (
     ("AR loss", "validation_loss/autoregressive", "loss"),
     ("Horizon loss", "validation_loss/horizon", "loss"),
     ("Trade OHLC MAE", "validation_trade_summary/mae_macro", "bps"),
-    ("Trade balanced", "validation_trade_summary/balanced_macro", "percent"),
-    ("Trade MCC", "validation_trade_summary/mcc_macro", "number"),
-    ("Bid MCC", "validation_bid_summary/mcc_macro", "number"),
-    ("Ask MCC", "validation_ask_summary/mcc_macro", "number"),
+    ("Close balanced", "validation_close_direction_summary/balanced_accuracy_macro", "percent"),
+    ("Close MCC", "validation_close_direction_summary/mcc_macro", "number"),
+    ("Trade close MCC", "validation_trade_close_direction_summary/mcc_macro", "number"),
     ("AR accuracy", "validation_ar_direction_accuracy/accuracy_macro", "percent"),
     ("AR balanced", "validation_ar_direction_balanced/balanced_accuracy_macro", "percent"),
     ("AR MCC", "validation_ar_direction_mcc/mcc_macro", "number"),
@@ -236,6 +235,12 @@ class TrainingReporter:
 
     def validation(self, metrics: Mapping[str, float]) -> None:
         self.state.validation_metrics = {str(key): float(value) for key, value in metrics.items()}
+        if "validation_loss/total" not in self.state.validation_metrics:
+            self.state.validation_metrics.update({
+                "validation_" + key.removeprefix("monitor_"): value
+                for key, value in tuple(self.state.validation_metrics.items())
+                if key.startswith("monitor_")
+            })
         loss = self.state.validation_metrics.get("validation_loss/total")
         monitor_loss = self.state.validation_metrics.get("monitor_loss/total")
         self.state.validation_loss = loss

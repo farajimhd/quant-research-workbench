@@ -159,11 +159,17 @@ def _summary_matches_checkpoint(summary: dict[str, Any], checkpoint: Path) -> bo
 
 
 def _write_consolidated_summary(output_root: Path, summaries: list[dict[str, Any]]) -> None:
+    def close_mcc(item: dict[str, Any]) -> float:
+        return float(item.get(
+            "final_validation_close_direction_summary/mcc_macro",
+            item.get("final_validation_trade_summary/mcc_macro", float("-inf")),
+        ))
+
     ordered = sorted(
         summaries,
         key=lambda item: (
             float(item.get("final_validation_loss/total", float("inf"))),
-            -float(item.get("final_validation_trade_summary/mcc_macro", float("-inf"))),
+            -close_mcc(item),
             -float(item.get("final_validation_ar_direction_mcc/mcc_macro", float("-inf"))),
         ),
     )
@@ -184,6 +190,8 @@ def _write_consolidated_summary(output_root: Path, summaries: list[dict[str, Any
         "final_validation_trade_summary/mae_macro",
         "final_validation_trade_summary/balanced_macro",
         "final_validation_trade_summary/mcc_macro",
+        "final_validation_close_direction_summary/balanced_accuracy_macro",
+        "final_validation_close_direction_summary/mcc_macro",
         "final_validation_ar_direction_balanced/balanced_accuracy_macro",
         "final_validation_ar_direction_mcc/mcc_macro",
         "final_validation_trade_summary/rank_macro",
@@ -198,7 +206,7 @@ def _write_consolidated_summary(output_root: Path, summaries: list[dict[str, Any
         writer.writerows(ordered)
     os.replace(temporary, csv_path)
     print("\nFinal validation scorecard", flush=True)
-    print("architecture             train       complete  loss      MAE bps   H-MCC     AR-MCC    Spearman", flush=True)
+    print("architecture             train       complete  loss      MAE bps   CloseMCC  AR-MCC    Spearman", flush=True)
     for item in ordered:
         print(
             f"{str(item['architecture']):<24} "
@@ -206,7 +214,7 @@ def _write_consolidated_summary(output_root: Path, summaries: list[dict[str, Any
             f"{str(bool(item['training_complete'])):<8}  "
             f"{float(item['final_validation_loss/total']):>8.4f}  "
             f"{float(item['final_validation_trade_summary/mae_macro']):>8.2f}  "
-            f"{float(item['final_validation_trade_summary/mcc_macro']):>8.4f}  "
+            f"{close_mcc(item):>8.4f}  "
             f"{float(item['final_validation_ar_direction_mcc/mcc_macro']):>8.4f}  "
             f"{float(item.get('final_validation_trade_summary/rank_macro', float('nan'))):>8.4f}",
             flush=True,

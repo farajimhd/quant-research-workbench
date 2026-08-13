@@ -621,9 +621,13 @@ def _final_validation_metrics(run_root: Path) -> dict[str, float]:
 
 def _ranking_key(metrics: dict[str, float]) -> tuple[float, float, float, float]:
     """Quality-first ranking; both direction paths and return error break close loss ties."""
+    close_direction_mcc = metrics.get(
+        "validation_close_direction_summary/mcc_macro",
+        metrics.get("validation_trade_summary/mcc_macro", float("-inf")),
+    )
     return (
         metrics.get("validation_loss/total", float("inf")),
-        -metrics.get("validation_trade_summary/mcc_macro", float("-inf")),
+        -close_direction_mcc,
         -metrics.get("validation_ar_direction_mcc/mcc_macro", float("-inf")),
         metrics.get("validation_trade_summary/mae_macro", float("inf")),
     )
