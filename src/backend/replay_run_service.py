@@ -1028,6 +1028,7 @@ class ReplayRunController:
             instruments,
             strategy_id=str(strategy_configuration["strategy_id"]),
             strategy_revision=int(strategy_configuration["revision"]),
+            run_id=self.run_id,
             limit_offset_bps=float(configuration["oms"]["limit_offset_bps"]),
         )
         self._journal = TradingJournal(self.run_dir / "journal.sqlite3")

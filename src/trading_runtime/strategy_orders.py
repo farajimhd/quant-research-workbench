@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from math import floor
 from uuid import uuid4
 
@@ -236,11 +236,13 @@ class RuntimeIbkrStrategyOrderPlanner:
         *,
         strategy_id: str,
         strategy_revision: int,
+        run_id: str = "",
         limit_offset_bps: float = 5.0,
     ) -> None:
         self.instruments = {ticker.upper(): instrument for ticker, instrument in instruments.items()}
         self.strategy_id = strategy_id
         self.strategy_revision = strategy_revision
+        self.run_id = run_id
         self.limit_offset_bps = limit_offset_bps
         self._planner = IbkrStrategyOrderPlanner()
 
@@ -258,13 +260,39 @@ class RuntimeIbkrStrategyOrderPlanner:
         instrument = self.instruments.get(intent.ticker.upper())
         if instrument is None:
             raise ValueError(f"No point-in-time instrument contract for strategy ticker: {intent.ticker}")
-        return self._planner.plan(
+        planned = self._planner.plan(
             account_id=account_id,
             instrument=instrument,
             intent=intent,
             strategy_id=self.strategy_id,
             strategy_revision=self.strategy_revision,
             limit_offset_bps=self.limit_offset_bps,
+        )
+        enriched_by_identity = {
+            id(order): replace(
+                order,
+                strategy=self.strategy_id,
+                raw={
+                    **dict(order.raw),
+                    "canonical_run_id": self.run_id,
+                    "canonical_strategy_revision": self.strategy_revision,
+                    "canonical_metadata": {
+                        **dict(intent.metadata),
+                        "action": intent.action,
+                        "reason": intent.reason,
+                        "signal_price": intent.reference_price,
+                    },
+                },
+            )
+            for order in planned.orders
+        }
+        return replace(
+            planned,
+            orders=tuple(enriched_by_identity[id(order)] for order in planned.orders),
+            batches=tuple(
+                tuple(enriched_by_identity[id(order)] for order in batch)
+                for batch in planned.batches
+            ),
         )
 
     def should_cancel_strategy_protection(self, intent: StrategyIntent) -> bool:

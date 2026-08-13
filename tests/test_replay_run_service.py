@@ -472,6 +472,14 @@ class HistoricalDebugFixtureTests(unittest.IsolatedAsyncioTestCase):
                     ]
                 )
                 self.assertEqual(len(trading["closed_trades"]), 1)
+                self.assertEqual(
+                    trading["closed_trades"][0]["strategy_id"],
+                    STRATEGY_ID,
+                )
+                self.assertEqual(
+                    trading["closed_trades"][0]["run_id"],
+                    controller.run_id,
+                )
                 self.assertTrue(
                     any(row.get("action") == "enter_long" for row in journal),
                     journal,
