@@ -106,6 +106,12 @@ class OpenAIClient:
     def retrieve_batch(self, batch_id: str) -> dict[str, Any]:
         return self._request("GET", f"/batches/{batch_id}").json()
 
+    def cancel_batch(self, batch_id: str) -> dict[str, Any]:
+        return self._request("POST", f"/batches/{batch_id}/cancel").json()
+
+    def create_chat_completion(self, body: dict[str, Any]) -> dict[str, Any]:
+        return self._request("POST", "/chat/completions", json=body).json()
+
     def list_batches(self, *, limit: int = 100) -> Iterable[dict[str, Any]]:
         after = ""
         while True:

@@ -93,8 +93,10 @@ true for this issuer:
 1. The issuer is identifiable as a security tradable at publication time.
 2. Trustworthy evidence in the article is specifically about that issuer.
 3. The article newly reports a current issuer event or new issuer guidance.
-4. The event materially changes expectations for earnings, cash flow, assets,
-   liabilities, financing, operations, regulatory/legal position, or survival.
+4. The event is material to earnings, cash flow, assets, liabilities,
+   financing, operations, regulatory/legal position, capital structure, or
+   survival. Its directional implication may be positive, negative, mixed,
+   neutral, or uncertain.
 5. The article reports the event itself, rather than only analyst opinion,
    preview, historical recap, price-move explanation, market observation,
    background, or a reference to another article.
@@ -105,6 +107,9 @@ observed price change without a new underlying event is not forecast relevant.
 
 Positive and negative probabilities are independent. Both high means mixed;
 both low means neutral or no directional implication.
+
+A neutral material event can therefore have high forecast relevance. Forecast
+relevance is event eligibility, not a synonym for directional sentiment.
 
 ## Ready-to-use system prompt
 
@@ -127,8 +132,9 @@ issuer and sort issuers by issuer_name.
 forecast_relevance_probability is the probability that all five are true:
 (1) a security tradable at publication is identified; (2) trustworthy local
 issuer evidence exists; (3) the article newly reports a current issuer event or
-new issuer guidance; (4) the event materially changes expected fundamentals,
-financing, operations, legal/regulatory position, or survival; and (5) the text
+new issuer guidance; (4) the event is material to fundamentals, financing,
+operations, assets, liabilities, legal/regulatory position, capital structure,
+or survival even when its direction is neutral or uncertain; and (5) the text
 reports the event rather than only analyst opinion, preview, recap, observed
 price movement, background, or a reference. If any requirement is absent, use
 a low probability.
@@ -137,6 +143,9 @@ positive_implication_probability is the chance that the issuer-specific news is
 materially favorable. negative_implication_probability is the chance it is
 materially adverse. They are independent and must not sum to one. Do not borrow
 events or direction from another issuer.
+
+A neutral material issuer event may have high forecast relevance while both
+directional probabilities remain low.
 
 Use only the allowed categorical values. Add every supported event tag and role
 and no unsupported value. Use other_material only for a material event that fits
@@ -159,7 +168,40 @@ Extract and label every issuer using llm_issuer_news_labels_v3:
 {{INPUT_JSON}}
 ```
 
+## Gold-250 Batch workflow
+
+Generated samples, answer keys, raw responses, labels, and metrics are written
+under `D:\TradingML\runtimes\text_intelligence\llm_issuer_labeling_v3`; none
+are stored in the repository. The default run is reproducible and disjoint from
+the fixed gold-example bank.
+
+```powershell
+$env:PYTHONDONTWRITEBYTECODE='1'
+python -m research.text_intelligence.llm_issuer_labeling_v3.run_batch prepare
+python -m research.text_intelligence.llm_issuer_labeling_v3.run_batch submit --authorize-cost-usd <plan protected_batch_cost_usd>
+python -m research.text_intelligence.llm_issuer_labeling_v3.run_batch status
+python -m research.text_intelligence.llm_issuer_labeling_v3.run_batch collect
+```
+
+`collect` persists validated issuer labels and automatically evaluates a
+completed batch. `evaluate` can be rerun independently from the persisted
+labels and disjoint gold answer key. The CLI also provides bounded
+`prepare-retry`, `submit-retry`, `collect-retry`, and `merge-retry` commands for
+responses that are valid but truncated at the configured output-token ceiling;
+retry inputs and lineage remain separate from the primary run.
+
 ## Examples
+
+The executable prompt uses the fixed bank in `gold_examples.json`: 11 short,
+contrasting examples covering positive, negative, mixed, and neutral eligible
+events; analyst actions, price observations, and previews that are not forecast
+eligible; and a two-issuer acquisition. The preparation script resolves each
+example input from the certified source catalog, verifies its labels against
+gold, injects compact cards into the system prompt, and excludes every example
+source from the 250-row evaluation sample. Source IDs are never sent to the
+model.
+
+The examples below are readable illustrations of the same decision boundaries.
 
 ### Current positive guidance
 

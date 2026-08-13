@@ -1,0 +1,84 @@
+{
+  "version": "llm_issuer_news_gold_examples_v1",
+  "selection_policy": "Short contrasting examples from the development-authorized audit population; excluded from every evaluation sample.",
+  "examples": [
+    {
+      "source_id": "32ca525064796afb0da97c4df9d145c8",
+      "issuers": [
+        {"issuer_name": "Viatris", "ticker": "VTRS", "exchange": null, "identity_source": "explicit_text", "identity_confidence_probability": 0.99, "forecast_relevance_probability": 0.99, "positive_implication_probability": 0.97, "negative_implication_probability": 0.02, "event_tags": ["guidance"], "issuer_roles": ["primary_subject"], "time_scope": "forward", "claim_source": "issuer", "evidence_sentence_ids": [1]}
+      ],
+      "unresolved_issuer_mentions": []
+    },
+    {
+      "source_id": "decc15660128bf90231dad1abdf93c8a",
+      "issuers": [
+        {"issuer_name": "Kodak", "ticker": "KODK", "exchange": null, "identity_source": "explicit_text", "identity_confidence_probability": 0.99, "forecast_relevance_probability": 0.98, "positive_implication_probability": 0.02, "negative_implication_probability": 0.96, "event_tags": ["earnings"], "issuer_roles": ["primary_subject"], "time_scope": "current", "claim_source": "issuer", "evidence_sentence_ids": [1]}
+      ],
+      "unresolved_issuer_mentions": []
+    },
+    {
+      "source_id": "c0f5b04b550fad6bd13325fbe5998ea9",
+      "issuers": [
+        {"issuer_name": "Universal Display", "ticker": "OLED", "exchange": null, "identity_source": "explicit_text", "identity_confidence_probability": 0.99, "forecast_relevance_probability": 0.99, "positive_implication_probability": 0.91, "negative_implication_probability": 0.88, "event_tags": ["earnings"], "issuer_roles": ["primary_subject"], "time_scope": "current", "claim_source": "issuer", "evidence_sentence_ids": [1]}
+      ],
+      "unresolved_issuer_mentions": []
+    },
+    {
+      "source_id": "d574c08b486c4fbaf3b06887e2665376",
+      "issuers": [
+        {"issuer_name": "SemiLEDs", "ticker": "LEDS", "exchange": null, "identity_source": "explicit_text", "identity_confidence_probability": 0.99, "forecast_relevance_probability": 0.91, "positive_implication_probability": 0.08, "negative_implication_probability": 0.08, "event_tags": ["capital_structure"], "issuer_roles": ["primary_subject"], "time_scope": "current", "claim_source": "issuer", "evidence_sentence_ids": [1]}
+      ],
+      "unresolved_issuer_mentions": []
+    },
+    {
+      "source_id": "d615f8cdd67dc7c5827999b6e8fa25cb",
+      "issuers": [
+        {"issuer_name": "MGP Ingredients", "ticker": "MGPI", "exchange": null, "identity_source": "explicit_text", "identity_confidence_probability": 0.99, "forecast_relevance_probability": 0.97, "positive_implication_probability": 0.95, "negative_implication_probability": 0.02, "event_tags": ["capital_return"], "issuer_roles": ["primary_subject"], "time_scope": "current", "claim_source": "issuer", "evidence_sentence_ids": [1]}
+      ],
+      "unresolved_issuer_mentions": []
+    },
+    {
+      "source_id": "0bdbe5fa00609221ef2ea522bd04e086",
+      "issuers": [
+        {"issuer_name": "Krystal Biotech", "ticker": "KRYS", "exchange": null, "identity_source": "explicit_text", "identity_confidence_probability": 0.99, "forecast_relevance_probability": 0.99, "positive_implication_probability": 0.97, "negative_implication_probability": 0.02, "event_tags": ["regulatory"], "issuer_roles": ["regulatory_subject"], "time_scope": "current", "claim_source": "issuer", "evidence_sentence_ids": [1]}
+      ],
+      "unresolved_issuer_mentions": []
+    },
+    {
+      "source_id": "83593ede8b78a650007af1d59201ee41",
+      "issuers": [
+        {"issuer_name": "Vaxart", "ticker": "VXRT", "exchange": null, "identity_source": "explicit_text", "identity_confidence_probability": 0.99, "forecast_relevance_probability": 0.96, "positive_implication_probability": 0.04, "negative_implication_probability": 0.93, "event_tags": ["workforce"], "issuer_roles": ["primary_subject"], "time_scope": "current", "claim_source": "issuer", "evidence_sentence_ids": [1]}
+      ],
+      "unresolved_issuer_mentions": []
+    },
+    {
+      "source_id": "bdd562e623b966d95fcd1014e8740cee",
+      "issuers": [
+        {"issuer_name": "Fortinet", "ticker": "FTNT", "exchange": null, "identity_source": "explicit_text", "identity_confidence_probability": 0.99, "forecast_relevance_probability": 0.03, "positive_implication_probability": 0.03, "negative_implication_probability": 0.95, "event_tags": ["analyst_action"], "issuer_roles": ["primary_subject"], "time_scope": "current", "claim_source": "analyst", "evidence_sentence_ids": [1]}
+      ],
+      "unresolved_issuer_mentions": []
+    },
+    {
+      "source_id": "48da1117d5efbbdc737b39989852c521",
+      "issuers": [
+        {"issuer_name": "GoPro", "ticker": "GPRO", "exchange": null, "identity_source": "explicit_text", "identity_confidence_probability": 0.99, "forecast_relevance_probability": 0.02, "positive_implication_probability": 0.94, "negative_implication_probability": 0.02, "event_tags": ["market_observation"], "issuer_roles": ["primary_subject"], "time_scope": "current", "claim_source": "editorial", "evidence_sentence_ids": [1]}
+      ],
+      "unresolved_issuer_mentions": []
+    },
+    {
+      "source_id": "b6c0c83f2bfdae12f3d18f0896e72a74",
+      "issuers": [
+        {"issuer_name": "PPG", "ticker": "PPG", "exchange": null, "identity_source": "explicit_text", "identity_confidence_probability": 0.99, "forecast_relevance_probability": 0.02, "positive_implication_probability": 0.03, "negative_implication_probability": 0.02, "event_tags": [], "issuer_roles": ["primary_subject"], "time_scope": "forward", "claim_source": "editorial", "evidence_sentence_ids": [1]}
+      ],
+      "unresolved_issuer_mentions": []
+    },
+    {
+      "source_id": "ce3e5f9f8c0bb1c46dba21484cdc909c",
+      "issuers": [
+        {"issuer_name": "Rovi", "ticker": "ROVI", "exchange": null, "identity_source": "explicit_text", "identity_confidence_probability": 0.99, "forecast_relevance_probability": 0.99, "positive_implication_probability": 0.84, "negative_implication_probability": 0.78, "event_tags": ["acquisition"], "issuer_roles": ["acquirer"], "time_scope": "current", "claim_source": "issuer", "evidence_sentence_ids": [1]},
+        {"issuer_name": "TiVo", "ticker": "TIVO", "exchange": null, "identity_source": "explicit_text", "identity_confidence_probability": 0.99, "forecast_relevance_probability": 0.99, "positive_implication_probability": 0.96, "negative_implication_probability": 0.05, "event_tags": ["acquisition"], "issuer_roles": ["target"], "time_scope": "current", "claim_source": "issuer", "evidence_sentence_ids": [1]}
+      ],
+      "unresolved_issuer_mentions": []
+    }
+  ]
+}
