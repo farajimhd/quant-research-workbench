@@ -337,16 +337,23 @@ class TrainConfig:
     # A default optimizer update currently covers 131,072 origins.  Logging
     # below that cadence forces a CUDA-to-host scalar transfer after every
     # update and prevents the CPU from getting ahead of the GPU.
-    logging_samples: int = 1_048_576
-    training_metrics_interval_samples: int = 8_388_608
-    validation_batches: int = 16
-    # Validation is intentionally spread across the epoch to expose drift;
-    # the epoch-end evaluation is included in this count.
-    validation_runs_per_epoch: int = 100
-    validation_interval_samples: int = 0
-    # First validation is deliberately early enough to catch a bad run; the
-    # remaining validations are spread across the epoch.
-    validation_initial_samples: int = 33_554_432
+    # Losses are calculated every microbatch and accumulated on device; one
+    # bounded host/W&B record is emitted per one million training origins.
+    logging_samples: int = 1_000_000
+    # F1: reuse predictions from the optimizer update crossing each boundary.
+    training_metrics_interval_samples: int = 5_000_000
+    validation_batches: int = 0
+    # F2: evaluate the fixed monitor population every 25M origins. When an
+    # explicit interval is set it is authoritative; the run-count setting is
+    # retained only for callers that explicitly set the interval to zero.
+    validation_runs_per_epoch: int = 4
+    validation_interval_samples: int = 25_000_000
+    validation_initial_samples: int = 25_000_000
+    # F2 is deliberately a bounded trend panel. Complete validation is
+    # reserved for the epoch boundary so monitoring cannot dominate a long
+    # full-catalog training epoch.
+    monitor_evaluation_origins: int = 250_000
+    epoch_train_evaluation_origins: int = 1_000_000
     warmup_samples: int = 0
     warmup_fraction: float = 0.01
     minimum_learning_rate: float = 3e-5
@@ -367,6 +374,10 @@ class TrainConfig:
             raise ValueError("gradient_accumulation_steps must be positive")
         if self.training_metrics_interval_samples <= 0:
             raise ValueError("training_metrics_interval_samples must be positive")
+        if self.epoch_train_evaluation_origins <= 0:
+            raise ValueError("epoch_train_evaluation_origins must be positive")
+        if self.monitor_evaluation_origins <= 0:
+            raise ValueError("monitor_evaluation_origins must be positive")
         if self.checkpoint_validation_evaluations <= 0:
             raise ValueError("checkpoint_validation_evaluations must be positive")
         if self.validation_runs_per_epoch <= 0 or self.validation_batches < 0:

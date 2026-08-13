@@ -875,8 +875,6 @@ def _profile_candidate(
             model_config.quantiles,
             namespace="train",
             include_loss_metrics=False,
-            include_condition_metrics=False,
-            include_ranking_metrics=False,
             include_confidence_metrics=False,
         )
         metric_started = time.perf_counter()

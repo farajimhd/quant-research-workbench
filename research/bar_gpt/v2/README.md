@@ -105,6 +105,14 @@ The comparison uses the fixed experiment manifest, all catalog tickers,
 100,000,000 training origins from 2019-2025, 1,000,000 monitor origins from
 2026, and 5,000,000 final-validation origins from 2026. W&B project authority
 is `bar gpt v2 model comparison`; sample count is the comparison step axis.
+The shared comparison/full-training schedule calculates losses every
+microbatch, logs objective aggregates every 1M origins, reuses the crossing
+training update for F1 metrics every 5M origins, evaluates a deterministic
+250K-origin monitor prefix every 25M origins, and runs paired fixed training
+and complete validation
+evaluations at each epoch boundary. Every completed epoch writes an immutable
+`checkpoints/checkpoint_epoch_NNNN.pt` alongside latest and best-validation
+checkpoints.
 
 Analyze return-class support concurrently and resumably over the same fixed
 panels:
@@ -128,10 +136,11 @@ five-class experiments.
 ## Interpretation and safety
 
 See `METRICS_REFERENCE.md` for metric formulas and ranges. Three-class balanced
-accuracy is macro recall over classes with actual support; inspect
-`active_actual_classes` and per-class support alongside it. A value of one
-third is the natural three-class chance reference only when all three classes are
-represented and predictions are uninformative.
+accuracy is macro recall over classes with actual support. A value of one third
+is the natural three-class chance reference only when all three classes are
+represented and predictions are uninformative. Normal W&B logging keeps
+close-return balanced accuracy and MCC; detailed class supports are retained
+only by the overfit artifact that requires them for its pass gate.
 
 The model remains causal: full attention uses native causal SDPA, while masked
 or local attention supplies an explicit lower-triangular/local allowed mask and

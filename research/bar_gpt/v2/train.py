@@ -211,8 +211,19 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
         type=int,
         default=train.training_metrics_interval_samples,
     )
+    parser.add_argument(
+        "--epoch-train-evaluation-origins",
+        type=int,
+        default=train.epoch_train_evaluation_origins,
+    )
     parser.add_argument("--validation-interval-samples", type=int, default=train.validation_interval_samples)
     parser.add_argument("--validation-initial-samples", type=int, default=train.validation_initial_samples)
+    parser.add_argument(
+        "--monitor-evaluation-origins",
+        type=int,
+        default=train.monitor_evaluation_origins,
+        help="maximum origins consumed by each periodic F2 monitor evaluation",
+    )
     parser.add_argument("--validation-batches", type=int, default=train.validation_batches)
     parser.add_argument("--validation-runs-per-epoch", type=int, default=train.validation_runs_per_epoch)
     parser.add_argument("--warmup-samples", type=int, default=train.warmup_samples)
@@ -337,8 +348,10 @@ def build_config(args: argparse.Namespace) -> ExperimentConfig:
         wandb_init_timeout=int(args.wandb_init_timeout),
         logging_samples=int(args.logging_samples),
         training_metrics_interval_samples=int(args.training_metrics_interval_samples),
+        epoch_train_evaluation_origins=int(args.epoch_train_evaluation_origins),
         validation_interval_samples=int(args.validation_interval_samples),
         validation_initial_samples=int(args.validation_initial_samples),
+        monitor_evaluation_origins=int(args.monitor_evaluation_origins),
         validation_batches=int(args.validation_batches),
         validation_runs_per_epoch=int(args.validation_runs_per_epoch),
         warmup_samples=int(args.warmup_samples),
@@ -607,13 +620,17 @@ def _validation_milestones(
 ) -> tuple[int, ...]:
     """Return local origin milestones, including the epoch-end evaluation.
 
-    The early milestone catches broken runs, while the remaining milestones
-    spread the required 100 validation evaluations across the epoch.
+    A positive explicit interval is the authoritative F2 sample clock. The
+    epoch boundary is always included separately for the paired epoch audit.
     """
     if epoch_origins <= 0 or runs_per_epoch <= 0:
         raise ValueError("validation schedule requires positive epoch and run counts")
     if explicit_interval > 0:
-        offsets = [explicit_interval * index for index in range(1, runs_per_epoch)]
+        offsets = [
+            value
+            for value in range(explicit_interval, epoch_origins, explicit_interval)
+            if epoch_origins - value >= explicit_interval
+        ]
     elif runs_per_epoch == 1:
         offsets = []
     else:
@@ -841,8 +858,12 @@ def _loaders(
         )
         validation_data = replace(
             config.data,
+            # A model-independent evaluation batch shape makes the bounded
+            # monitor prefix identical across model-size comparisons.
+            batch_size=8,
             loader_workers=validation_workers,
             worker_prefetch_batches=(1 if manifest is not None else config.data.worker_prefetch_batches),
+            offline_length_bucket_batches=1,
             persistent_workers=manifest is not None,
             balance_activity_regimes=False,
         )
@@ -875,7 +896,9 @@ def _loaders(
     )
     validation_data = replace(
         config.data,
+        batch_size=8,
         loader_workers=validation_workers,
+        offline_length_bucket_batches=1,
         persistent_workers=False,
         balance_activity_regimes=False,
     )
@@ -1096,9 +1119,11 @@ def _wandb_metric_key(key: str) -> str:
 @dataclass(slots=True)
 class _DeferredUpdateLossBuffer:
     names: tuple[str, ...] = ()
-    rows: list[torch.Tensor] = field(default_factory=list)
-    steps: list[int] = field(default_factory=list)
-    metadata: list[dict[str, float]] = field(default_factory=list)
+    loss_sums: torch.Tensor | None = None
+    origins: int = 0
+    gradient_norm: torch.Tensor | None = None
+    step: int = 0
+    metadata: dict[str, float] = field(default_factory=dict)
 
     def append(
         self,
@@ -1116,34 +1141,47 @@ class _DeferredUpdateLossBuffer:
         if self.names and names != self.names:
             raise RuntimeError(f"training loss schema changed: expected={self.names}, actual={names}")
         self.names = names
-        values = []
-        for key in names:
-            value = metrics[key].detach()
-            values.append(value if key == "train/gradient_norm" else value / max(1, origins))
-        self.rows.append(torch.stack(values))
-        self.steps.append(int(step))
-        self.metadata.append(dict(metadata))
+        loss_names = tuple(name for name in names if name != "train/gradient_norm")
+        values = torch.stack([metrics[name].detach() for name in loss_names])
+        self.loss_sums = values if self.loss_sums is None else self.loss_sums + values
+        self.origins += int(origins)
+        self.gradient_norm = metrics["train/gradient_norm"].detach()
+        self.step = int(step)
+        self.metadata = dict(metadata)
 
     def flush(self, logger: AsyncJsonlMetricLogger) -> None:
-        if not self.rows:
+        if self.loss_sums is None:
             return
-        values = torch.stack(self.rows).cpu().tolist()
-        for step, row, metadata in zip(self.steps, values, self.metadata, strict=True):
-            logger.log(
-                {
-                    **{name: float(value) for name, value in zip(self.names, row, strict=True)},
-                    **metadata,
-                },
-                step,
+        loss_names = tuple(name for name in self.names if name != "train/gradient_norm")
+        assert self.gradient_norm is not None
+        row = torch.cat(
+            (
+                self.loss_sums / max(1, self.origins),
+                self.gradient_norm.reshape(1),
             )
-        self.rows.clear()
-        self.steps.clear()
+        ).cpu().tolist()
+        logger.log(
+            {
+                **{
+                    name: float(value)
+                    for name, value in zip(
+                        (*loss_names, "train/gradient_norm"), row, strict=True
+                    )
+                },
+                **self.metadata,
+            },
+            self.step,
+        )
+        self.loss_sums = None
+        self.origins = 0
+        self.gradient_norm = None
+        self.step = 0
         self.metadata.clear()
 
     def merge_last(self, metrics: dict[str, float]) -> bool:
-        if not self.metadata:
+        if self.loss_sums is None:
             return False
-        self.metadata[-1].update(metrics)
+        self.metadata.update(metrics)
         return True
 
 
@@ -1228,6 +1266,58 @@ class ReusableValidationBatches:
             self._loader._iterator = None
 
 
+def _epoch_training_evaluation_loader(
+    config: ExperimentConfig,
+    args: argparse.Namespace,
+    *,
+    offline_train_units: Sequence[OfflineShardUnit],
+    manifest: dict[str, Any] | None,
+) -> ReusableValidationBatches | None:
+    """Build a deterministic, fixed-shape training-population evaluator.
+
+    Production BarGPT training is offline. A constant evaluation batch shape
+    makes the selected prefix independent of each model's optimized training
+    microbatch. Direct ClickHouse training remains available, but cannot claim
+    the fixed offline epoch-training panel and therefore returns ``None``.
+    """
+    if args.dummy_data:
+        example = _dummy_example(config.data)
+        loader = DataLoader(
+            _DummyDataset(example),
+            batch_size=1,
+            num_workers=0,
+            collate_fn=collate_examples,
+        )
+        return ReusableValidationBatches(loader)
+    if args.data_source != "offline":
+        return None
+    evaluation_data = replace(
+        config.data,
+        batch_size=8,
+        loader_workers=min(4, int(config.data.loader_workers)),
+        worker_prefetch_batches=1,
+        persistent_workers=True,
+        balance_activity_regimes=False,
+        offline_length_bucket_batches=1,
+    )
+    dataset = OfflineShardDataset(
+        offline_train_units,
+        seed=config.train.seed,
+        shuffle_units=False,
+        block_refs=panel_refs(manifest, "train") if manifest is not None else (),
+        batch_size=evaluation_data.batch_size,
+        length_bucket_batches=1,
+    )
+    return ReusableValidationBatches(
+        make_offline_dataloader(
+            dataset,
+            evaluation_data,
+            drop_last=False,
+            persistent_workers=True,
+        )
+    )
+
+
 @torch.no_grad()
 def validate(
     model: torch.nn.Module,
@@ -1237,6 +1327,7 @@ def validate(
     *,
     namespace: str = "validation",
     max_batches: int | None = None,
+    max_origins: int | None = None,
 ) -> dict[str, float]:
     model.eval()
     accumulator = ValidationAccumulator(
@@ -1252,7 +1343,9 @@ def validate(
     )
     try:
         completed = 0
-        while max_batches is None or completed < max_batches:
+        while (max_batches is None or completed < max_batches) and (
+            max_origins is None or accumulator.origins < max_origins
+        ):
             try:
                 batch = next(iterator)
             except StopIteration:
@@ -1265,6 +1358,38 @@ def validate(
         iterator.close()
     model.train()
     return accumulator.finalize()
+
+
+def _generalization_gap_metrics(
+    train_metrics: dict[str, float], validation_metrics: dict[str, float]
+) -> dict[str, float]:
+    """Return positive degradation gaps for the epoch scorecard."""
+    pairs = {
+        "loss_total": ("loss/total", False),
+        "trade_mae_bps": ("trade_summary/mae_bps_macro", False),
+        "close_balanced_accuracy": (
+            "close_return_class_summary/balanced_accuracy_macro",
+            True,
+        ),
+        "close_mcc": ("close_return_class_summary/mcc_macro", True),
+        "ar_close_balanced_accuracy": (
+            "ar_close_return_class_summary/balanced_accuracy_macro",
+            True,
+        ),
+        "ar_close_mcc": ("ar_close_return_class_summary/mcc_macro", True),
+    }
+    result: dict[str, float] = {}
+    for name, (suffix, higher_is_better) in pairs.items():
+        train_value = train_metrics.get(f"epoch_train_{suffix}")
+        validation_value = validation_metrics.get(f"validation_{suffix}")
+        if train_value is None or validation_value is None:
+            continue
+        result[f"epoch_generalization_gap/{name}"] = (
+            float(train_value) - float(validation_value)
+            if higher_is_better
+            else float(validation_value) - float(train_value)
+        )
+    return result
 
 
 def checkpoint_payload(
@@ -1291,6 +1416,9 @@ def checkpoint_payload(
     validation_runs_in_epoch: int = 0,
     last_validation_samples: int = -1,
     last_full_validation_samples: int = -1,
+    epoch_train_metrics: dict[str, float] | None = None,
+    epoch_validation_metrics: dict[str, float] | None = None,
+    generalization_gap_metrics: dict[str, float] | None = None,
 ) -> dict[str, Any]:
     return {
         "model_family": MODEL_FAMILY,
@@ -1317,6 +1445,9 @@ def checkpoint_payload(
         "validation_runs_in_epoch": validation_runs_in_epoch,
         "last_validation_samples": last_validation_samples,
         "last_full_validation_samples": last_full_validation_samples,
+        "epoch_train_metrics": dict(epoch_train_metrics or {}),
+        "epoch_validation_metrics": dict(epoch_validation_metrics or {}),
+        "generalization_gap_metrics": dict(generalization_gap_metrics or {}),
         "wandb_run_id": wandb_run_id,
         # Raw cache tensors are intentionally not checkpointed: they can be
         # gigabytes per worker and are deterministically rebuilt from these
@@ -1773,8 +1904,10 @@ def main(argv: Iterable[str] | None = None) -> int:
         )
         validation_data = replace(
             config.data,
+            batch_size=8,
             loader_workers=validation_workers,
             worker_prefetch_batches=1,
+            offline_length_bucket_batches=1,
             persistent_workers=True,
             balance_activity_regimes=False,
         )
@@ -1791,6 +1924,16 @@ def main(argv: Iterable[str] | None = None) -> int:
                 drop_last=False,
                 persistent_workers=True,
             )
+        )
+    epoch_training_cache = _epoch_training_evaluation_loader(
+        config,
+        args,
+        offline_train_units=offline_train_units,
+        manifest=discovery_manifest,
+    )
+    if epoch_training_cache is None:
+        raise RuntimeError(
+            "paired epoch training evaluation requires the offline or dummy-data path"
         )
     resumed_wandb_id = restored.get("wandb_run_id")
     if args.resume_checkpoint and config.train.wandb_mode != "disabled" and not resumed_wandb_id:
@@ -1906,7 +2049,8 @@ def main(argv: Iterable[str] | None = None) -> int:
         unit_plans=sequential_unit_plans,
     )
     reporter = TrainingReporter(state, layout=config.train.progress_layout)
-    next_log = samples_seen
+    log_interval = max(1, config.train.logging_samples)
+    next_log = ((samples_seen // log_interval) + 1) * log_interval
     metric_interval = max(1, config.train.training_metrics_interval_samples)
     next_training_metrics = ((samples_seen // metric_interval) + 1) * metric_interval
     deferred_losses = _DeferredUpdateLossBuffer()
@@ -1935,11 +2079,16 @@ def main(argv: Iterable[str] | None = None) -> int:
     state.next_validation_origins = next_validation
     last_metrics: dict[str, float] = {"train/loss": math.inf}
     last_val: dict[str, float] = {}
+    last_epoch_train: dict[str, float] = {}
+    last_epoch_validation: dict[str, float] = {}
+    last_generalization_gap: dict[str, float] = {}
     current_epoch = resume_epoch
     completed_normally = False
     active_iterator: DeviceBatchPrefetcher | None = None
 
-    def schedule_checkpoint(*, force: bool = False) -> None:
+    def schedule_checkpoint(
+        *, force: bool = False, epoch_checkpoint: int | None = None
+    ) -> None:
         """Stage one consistent snapshot; the checkpoint worker owns disk I/O."""
         nonlocal last_checkpoint_samples
         snapshot_cursors = dict(durable_cursors)
@@ -1960,10 +2109,18 @@ def main(argv: Iterable[str] | None = None) -> int:
                 validation_runs_in_epoch=validation_runs_in_epoch,
                 last_validation_samples=last_validation_samples,
                 last_full_validation_samples=last_full_validation_samples,
+                epoch_train_metrics=last_epoch_train,
+                epoch_validation_metrics=last_epoch_validation,
+                generalization_gap_metrics=last_generalization_gap,
             ),
             train_metrics=last_metrics,
             val_metrics=last_val,
             force=force,
+            named_destinations=(
+                ((f"checkpoint_epoch_{epoch_checkpoint:04d}.pt", "epoch_end"),)
+                if epoch_checkpoint is not None
+                else ()
+            ),
         )
         staging_seconds = time.perf_counter() - staging_started
         reporter.state.checkpoint_stage_seconds = staging_seconds
@@ -2078,8 +2235,6 @@ def main(argv: Iterable[str] | None = None) -> int:
                                     config.model.quantiles,
                                     namespace="train",
                                     include_loss_metrics=False,
-                                    include_condition_metrics=False,
-                                    include_ranking_metrics=False,
                                     include_confidence_metrics=False,
                                 )
                                 if samples_seen + nominal_update_origins >= next_training_metrics
@@ -2322,7 +2477,8 @@ def main(argv: Iterable[str] | None = None) -> int:
                             # per-update losses; file and W&B writes happen on
                             # the background metric-writer thread.
                             deferred_losses.flush(metrics_logger)
-                            next_log = samples_seen + max(1, config.train.logging_samples)
+                            while next_log <= samples_seen:
+                                next_log += log_interval
                         if validation_due:
                             preserve_training_prefetch = _preserve_training_prefetch_during_validation(train_loader)
                             if preserve_training_prefetch:
@@ -2347,17 +2503,19 @@ def main(argv: Iterable[str] | None = None) -> int:
                                 validation_cache,
                                 config,
                                 device,
-                                namespace="monitor" if discovery_manifest is not None else "validation",
+                                namespace="monitor",
                                 max_batches=(
                                     None if config.train.validation_batches == 0
                                     else config.train.validation_batches
                                 ),
+                                max_origins=config.train.monitor_evaluation_origins,
                             )
                             if not deferred_losses.merge_last(last_val):
                                 metrics_logger.log(last_val, samples_seen)
                             deferred_losses.flush(metrics_logger)
                             if telemetry_due:
-                                next_log = samples_seen + max(1, config.train.logging_samples)
+                                while next_log <= samples_seen:
+                                    next_log += log_interval
                             reporter.validation(last_val)
                             last_validation_samples = samples_seen
                             validation_runs_in_epoch += 1
@@ -2424,10 +2582,23 @@ def main(argv: Iterable[str] | None = None) -> int:
                     else last_validation_samples != samples_seen
                 )
                 if needs_epoch_validation:
+                    reporter.message(
+                        "Running fixed training-population epoch evaluation"
+                    )
+                    reporter.phase("validating")
+                    last_epoch_train = validate(
+                        model,
+                        epoch_training_cache,
+                        config,
+                        device,
+                        namespace="epoch_train",
+                        max_batches=None,
+                        max_origins=config.train.epoch_train_evaluation_origins,
+                    )
+                    metrics_logger.log(last_epoch_train, samples_seen)
                     if not full_validation_cache.ready:
                         reporter.message("Waiting for full fixed validation panel preparation")
-                    reporter.phase("validating")
-                    last_val = validate(
+                    last_epoch_validation = validate(
                         model,
                         full_validation_cache,
                         config,
@@ -2438,6 +2609,13 @@ def main(argv: Iterable[str] | None = None) -> int:
                             else config.train.validation_batches
                         ),
                     )
+                    last_generalization_gap = _generalization_gap_metrics(
+                        last_epoch_train, last_epoch_validation
+                    )
+                    last_val = {
+                        **last_epoch_validation,
+                        **last_generalization_gap,
+                    }
                     if not deferred_losses.merge_last(last_val):
                         metrics_logger.log(last_val, samples_seen)
                     deferred_losses.flush(metrics_logger)
@@ -2451,7 +2629,15 @@ def main(argv: Iterable[str] | None = None) -> int:
                     # therefore resume from zero, not inherit the completed
                     # epoch's final evaluation count.
                     validation_runs_in_epoch = 0
-                    checkpoint_after_validation()
+                    reporter.phase("checkpointing")
+                    reporter.message(
+                        f"Staging immutable epoch checkpoint {current_epoch:04d}"
+                    )
+                    schedule_checkpoint(
+                        force=True,
+                        epoch_checkpoint=current_epoch,
+                    )
+                    reporter.phase("running")
             if optimizer_steps == 0:
                 raise RuntimeError("coverage epoch produced no optimizer updates")
             stopped_at_limit = _reached_diagnostic_limit(
@@ -2513,6 +2699,7 @@ def main(argv: Iterable[str] | None = None) -> int:
             validation_cache.close()
             if full_validation_cache is not validation_cache:
                 full_validation_cache.close()
+            epoch_training_cache.close()
         except BaseException as exc:
             cleanup_failures.append(exc)
         try:

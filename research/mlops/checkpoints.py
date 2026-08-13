@@ -67,6 +67,7 @@ class AsyncCheckpointManager:
         train_metrics: dict[str, float] | None = None,
         val_metrics: dict[str, float] | None = None,
         force: bool = False,
+        named_destinations: tuple[tuple[str, str], ...] = (),
     ) -> bool:
         self._raise_worker_failure()
         reasons: list[tuple[Path, str]] = []
@@ -94,6 +95,14 @@ class AsyncCheckpointManager:
         )
         if force or latest_due:
             reasons.append((self.checkpoint_dir / "checkpoint_latest.pt", "latest"))
+        for filename, reason in named_destinations:
+            path = Path(filename)
+            if path.name != filename or path.suffix != ".pt":
+                raise ValueError(f"named checkpoint must be a .pt basename: {filename!r}")
+            destination = self.checkpoint_dir / filename
+            if destination.exists():
+                raise FileExistsError(f"immutable named checkpoint already exists: {destination}")
+            reasons.append((destination, reason))
         train_loss = train_metrics.get(self.policy.monitor_train_key)
         val_loss = val_metrics.get(self.policy.monitor_val_key)
         if has_nonfinite_monitor(train_loss, val_loss):

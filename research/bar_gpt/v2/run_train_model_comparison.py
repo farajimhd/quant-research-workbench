@@ -141,6 +141,8 @@ def trainer_argv(
         str(COMPARISON_MONITOR_INTERVAL_ORIGINS),
         "--validation-initial-samples",
         str(COMPARISON_MONITOR_INTERVAL_ORIGINS),
+        "--monitor-evaluation-origins",
+        "250000",
         "--d-model",
         str(model["d_model"]),
         "--n-layers",
@@ -299,7 +301,8 @@ def main(argv: Iterable[str] | None = None) -> int:
         flush=True,
     )
     print(
-        "Metric cadence: monitor_* uses the complete 1M panel at 25M, 50M, and 75M; "
+        "Metric cadence: monitor_* uses a deterministic 250K-origin prefix of the "
+        "fixed monitor authority at 25M, 50M, and 75M; "
         "validation_* uses the complete 5M panel once at the 100M epoch boundary",
         flush=True,
     )

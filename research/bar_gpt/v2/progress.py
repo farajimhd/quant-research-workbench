@@ -29,17 +29,20 @@ TRAINING_OBJECTIVES: tuple[tuple[str, str, str], ...] = (
 
 VALIDATION_SCORECARD: tuple[tuple[str, str, str], ...] = (
     ("Total loss", "validation_loss/total", "loss"),
-    ("AR loss", "validation_loss/autoregressive", "loss"),
-    ("Horizon loss", "validation_loss/horizon", "loss"),
+    ("AR regression", "validation_loss/ar_regression", "loss"),
+    ("AR categorical", "validation_loss/ar_categorical", "loss"),
+    ("AR return class", "validation_loss/ar_return_class", "loss"),
+    ("Horizon quantile", "validation_loss/horizon_quantile", "loss"),
+    ("Horizon categorical", "validation_loss/horizon_categorical", "loss"),
+    ("Horizon return class", "validation_loss/horizon_return_class", "loss"),
     ("Trade OHLC MAE", "validation_trade_summary/mae_bps_macro", "bps"),
     ("Close balanced", "validation_close_return_class_summary/balanced_accuracy_macro", "percent"),
     ("Close MCC", "validation_close_return_class_summary/mcc_macro", "number"),
     ("Trade close MCC", "validation_trade_close_return_class_summary/mcc_macro", "number"),
-    ("AR close accuracy", "validation_ar_close_return_class_summary/accuracy_macro", "percent"),
     ("AR close balanced", "validation_ar_close_return_class_summary/balanced_accuracy_macro", "percent"),
     ("AR close MCC", "validation_ar_close_return_class_summary/mcc_macro", "number"),
     ("Availability Brier", "validation_availability/brier_macro", "number"),
-    ("Trade rank", "validation_trade_summary/rank_macro", "number"),
+    ("Trade calibration", "validation_trade_summary/calibration_macro", "number"),
 )
 
 

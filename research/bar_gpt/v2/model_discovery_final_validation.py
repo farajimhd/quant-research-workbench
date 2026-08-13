@@ -196,7 +196,6 @@ def _write_consolidated_summary(output_root: Path, summaries: list[dict[str, Any
         "final_validation_close_return_class_summary/mcc_macro",
         "final_validation_ar_close_return_class_summary/balanced_accuracy_macro",
         "final_validation_ar_close_return_class_summary/mcc_macro",
-        "final_validation_trade_summary/rank_macro",
         "final_validation_trade_summary/calibration_macro",
         "final_validation_availability/brier_macro",
     )
@@ -208,7 +207,7 @@ def _write_consolidated_summary(output_root: Path, summaries: list[dict[str, Any
         writer.writerows(ordered)
     os.replace(temporary, csv_path)
     print("\nFinal validation scorecard", flush=True)
-    print("architecture             train       complete  loss      MAE bps   CloseMCC  AR-MCC    Spearman", flush=True)
+    print("architecture             train       complete  loss      MAE bps   CloseMCC  AR-MCC    CalError", flush=True)
     for item in ordered:
         print(
             f"{str(item['architecture']):<24} "
@@ -218,7 +217,7 @@ def _write_consolidated_summary(output_root: Path, summaries: list[dict[str, Any
             f"{float(item['final_validation_trade_summary/mae_bps_macro']):>8.2f}  "
             f"{close_mcc(item):>8.4f}  "
             f"{float(item['final_validation_ar_close_return_class_summary/mcc_macro']):>8.4f}  "
-            f"{float(item.get('final_validation_trade_summary/rank_macro', float('nan'))):>8.4f}",
+            f"{float(item.get('final_validation_trade_summary/calibration_macro', float('nan'))):>8.4f}",
             flush=True,
         )
     print(f"Consolidated JSON: {output_root / 'summary.json'}", flush=True)

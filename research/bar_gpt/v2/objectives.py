@@ -27,6 +27,7 @@ from research.bar_gpt.v2.targets import (
 class BarGPTLoss:
     loss: torch.Tensor
     metrics: dict[str, torch.Tensor]
+    target_stats: dict[str, tuple[torch.Tensor, torch.Tensor]]
 
 
 def masked_quantile_loss(
@@ -149,8 +150,8 @@ def _quantile_stats(
     return _target_stats(pinball, valid)
 
 
-def _record_target_metrics(
-    metrics: dict[str, torch.Tensor],
+def _record_target_stats(
+    stats: dict[str, tuple[torch.Tensor, torch.Tensor]],
     *,
     group: str,
     names: tuple[str, ...],
@@ -160,8 +161,7 @@ def _record_target_metrics(
     if means.numel() != len(names):
         raise ValueError(f"metric target schema mismatch for {group}")
     for index, name in enumerate(names):
-        metrics[f"train/loss_{group}_{name}"] = means[index].detach()
-        metrics[f"train/support_{group}_{name}"] = support[index].detach()
+        stats[f"{group}_{name}"] = (means[index].detach(), support[index].detach())
 
 
 def compute_loss(
@@ -256,10 +256,12 @@ def compute_loss(
     ar_loss = ar_regression.sum() + ar_binary.sum() + ar_classes.sum()
     horizon_loss = horizon_regression.sum() + horizon_binary.sum() + horizon_classes.sum()
     total = ar_loss + horizon_loss
+    # Only the seven losses needed for optimization observability remain on
+    # the every-microbatch metric path. Per-target numerators and supports are
+    # carried separately for scheduled evaluation, avoiding 130 dictionary
+    # entries and detach operations in normal training telemetry.
     metrics: dict[str, torch.Tensor] = {
         "train/loss": total.detach(),
-        "train/loss_autoregressive": ar_loss.detach(),
-        "train/loss_horizon": horizon_loss.detach(),
         "train/loss_ar_regression": ar_regression.sum().detach(),
         "train/loss_ar_categorical": ar_binary.sum().detach(),
         "train/loss_ar_return_class": ar_classes.sum().detach(),
@@ -267,46 +269,47 @@ def compute_loss(
         "train/loss_horizon_categorical": horizon_binary.sum().detach(),
         "train/loss_horizon_return_class": horizon_classes.sum().detach(),
     }
-    _record_target_metrics(
-        metrics,
+    target_stats: dict[str, tuple[torch.Tensor, torch.Tensor]] = {}
+    _record_target_stats(
+        target_stats,
         group="ar_regression",
         names=AUTOREGRESSIVE_CONTINUOUS_TARGET_NAMES,
         means=ar_regression,
         support=ar_regression_stats[1],
     )
-    _record_target_metrics(
-        metrics,
+    _record_target_stats(
+        target_stats,
         group="ar_categorical",
         names=AUTOREGRESSIVE_BINARY_TARGET_NAMES,
         means=ar_binary,
         support=ar_binary_stats[1],
     )
-    _record_target_metrics(
-        metrics,
+    _record_target_stats(
+        target_stats,
         group="ar_return_class",
         names=RETURN_TARGET_NAMES,
         means=ar_classes,
         support=ar_class_stats[1],
     )
-    _record_target_metrics(
-        metrics,
+    _record_target_stats(
+        target_stats,
         group="horizon_regression",
         names=CONTINUOUS_TARGET_NAMES,
         means=horizon_regression,
         support=horizon_regression_stats[1],
     )
-    _record_target_metrics(
-        metrics,
+    _record_target_stats(
+        target_stats,
         group="horizon_categorical",
         names=BINARY_TARGET_NAMES,
         means=horizon_binary,
         support=horizon_binary_stats[1],
     )
-    _record_target_metrics(
-        metrics,
+    _record_target_stats(
+        target_stats,
         group="horizon_return_class",
         names=RETURN_TARGET_NAMES,
         means=horizon_classes,
         support=horizon_class_stats[1],
     )
-    return BarGPTLoss(loss=total, metrics=metrics)
+    return BarGPTLoss(loss=total, metrics=metrics, target_stats=target_stats)

@@ -10,9 +10,7 @@ from research.bar_gpt.v2.model import BarGPTOutput
 from research.bar_gpt.v2.objectives import BarGPTLoss
 from research.bar_gpt.v2.targets import (
     BINARY_TARGET_NAMES,
-    CONDITION_TARGET_NAMES,
     CONTINUOUS_TARGET_COUNT,
-    OHLC_FIELDS,
     PRICE_FAMILIES,
     RETURN_CLASS_COUNT,
     RETURN_CLASS_NAMES,
@@ -24,48 +22,14 @@ from research.bar_gpt.v2.targets import (
 )
 
 
+CLOSE_RETURN_TARGET_INDICES = tuple(
+    index for index, name in enumerate(RETURN_TARGET_NAMES) if "_close_" in name
+)
+
+
 def _macro(values: list[float]) -> float:
     finite = [value for value in values if math.isfinite(value)]
     return float(sum(finite) / len(finite)) if finite else float("nan")
-
-
-def _average_precision(scores: torch.Tensor, targets: torch.Tensor) -> float:
-    positives = int(targets.sum())
-    if positives == 0:
-        return float("nan")
-    order = torch.argsort(scores, descending=True)
-    ranked = targets[order].to(torch.float64)
-    precision = ranked.cumsum(0) / torch.arange(1, ranked.numel() + 1, dtype=torch.float64)
-    return float((precision * ranked).sum() / positives)
-
-
-def _average_rank(values: torch.Tensor) -> torch.Tensor:
-    values = values.to(torch.float64)
-    if values.numel() == 0:
-        return values
-    order = torch.argsort(values, stable=True)
-    sorted_values = values[order]
-    group_start = torch.ones(sorted_values.numel(), dtype=torch.bool)
-    group_start[1:] = sorted_values[1:] != sorted_values[:-1]
-    group = group_start.cumsum(0) - 1
-    counts = torch.bincount(group)
-    ends = counts.cumsum(0)
-    starts = ends - counts
-    average = (starts + ends - 1).to(torch.float64) / 2.0
-    ranks = torch.empty_like(values)
-    ranks[order] = average[group]
-    return ranks
-
-
-def _spearman(scores: torch.Tensor, targets: torch.Tensor) -> float:
-    if scores.numel() < 2:
-        return float("nan")
-    score_rank = _average_rank(scores)
-    target_rank = _average_rank(targets)
-    score_rank -= score_rank.mean()
-    target_rank -= target_rank.mean()
-    denominator = score_rank.square().sum().sqrt() * target_rank.square().sum().sqrt()
-    return float("nan") if float(denominator) == 0.0 else float((score_rank * target_rank).sum() / denominator)
 
 
 def _confusion(labels: torch.Tensor, predictions: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
@@ -137,53 +101,32 @@ def _direction_scores(confusion: torch.Tensor) -> tuple[float, float, float]:
     return accuracy, balanced, mcc
 
 
-def _class_support(confusion: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-    total = confusion.sum()
-    if float(total) <= 0:
-        nan = torch.full((RETURN_CLASS_COUNT,), float("nan"), dtype=torch.float64)
-        return nan, nan
-    return confusion.sum(dim=1) / total, confusion.sum(dim=0) / total
-
-
 @dataclass(slots=True)
 class ValidationAccumulator:
     horizons_us: tuple[int, ...]
     quantiles: tuple[float, ...]
     namespace: str = "validation"
     include_loss_metrics: bool = True
-    include_condition_metrics: bool = True
-    include_ranking_metrics: bool = True
     include_confidence_metrics: bool = True
+    include_class_diagnostics: bool = False
     loss_numerators: dict[str, float] = field(default_factory=dict)
     loss_denominators: dict[str, float] = field(default_factory=dict)
     origins: int = 0
     batches: int = 0
     return_abs_error_percent: torch.Tensor | None = None
     return_count: torch.Tensor | None = None
-    zero_baseline_abs_error_percent: torch.Tensor | None = None
-    continuation_abs_error_percent: torch.Tensor | None = None
     horizon_return_confusion: torch.Tensor | None = None
     autoregressive_return_confusion: dict[str, torch.Tensor] = field(default_factory=dict)
     binary_brier_sum: torch.Tensor | None = None
     binary_count: torch.Tensor | None = None
     coverage_hits: torch.Tensor | None = None
     coverage_count: torch.Tensor | None = None
-    endpoint_scores: dict[tuple[int, int], list[torch.Tensor]] = field(default_factory=dict)
-    endpoint_targets: dict[tuple[int, int], list[torch.Tensor]] = field(default_factory=dict)
-    condition_scores: dict[tuple[int, int], list[torch.Tensor]] = field(default_factory=dict)
-    condition_targets: dict[tuple[int, int], list[torch.Tensor]] = field(default_factory=dict)
 
     def _update_losses(self, result: BarGPTLoss) -> None:
         if not self.include_loss_metrics:
             return
-        for key, value in result.metrics.items():
-            if not key.startswith("train/loss_"):
-                continue
-            suffix = key.removeprefix("train/loss_")
-            support_key = f"train/support_{suffix}"
-            if support_key not in result.metrics:
-                continue
-            support = float(result.metrics[support_key])
+        for suffix, (value, support_value) in result.target_stats.items():
+            support = float(support_value)
             self.loss_numerators[suffix] = self.loss_numerators.get(suffix, 0.0) + float(value) * support
             self.loss_denominators[suffix] = self.loss_denominators.get(suffix, 0.0) + support
 
@@ -193,10 +136,16 @@ class ValidationAccumulator:
         self._update_losses(result)
 
         for view, logits in output.autoregressive_return_class_logits.items():
-            target = batch.autoregressive_targets[view][:, : logits.shape[1], :RETURN_TARGET_COUNT]
-            valid = batch.autoregressive_mask[view][:, : logits.shape[1], :RETURN_TARGET_COUNT]
+            target = batch.autoregressive_targets[view][
+                :, : logits.shape[1], :RETURN_TARGET_COUNT
+            ][..., CLOSE_RETURN_TARGET_INDICES]
+            valid = batch.autoregressive_mask[view][
+                :, : logits.shape[1], :RETURN_TARGET_COUNT
+            ][..., CLOSE_RETURN_TARGET_INDICES]
             confusion = _confusion(
-                autoregressive_return_class_labels(target, view), logits.detach().argmax(dim=-1), valid
+                autoregressive_return_class_labels(target, view),
+                logits.detach().argmax(dim=-1)[..., CLOSE_RETURN_TARGET_INDICES],
+                valid,
             )
             previous = self.autoregressive_return_confusion.get(view)
             self.autoregressive_return_confusion[view] = confusion if previous is None else previous + confusion
@@ -223,73 +172,51 @@ class ValidationAccumulator:
         count = return_mask.sum((0, 1)).double().cpu()
         self.return_abs_error_percent = error_sum if self.return_abs_error_percent is None else self.return_abs_error_percent + error_sum
         self.return_count = count if self.return_count is None else self.return_count + count
-        zero_error = torch.where(return_mask, target_percent.abs(), torch.zeros_like(target_percent)).sum((0, 1)).cpu()
-        self.zero_baseline_abs_error_percent = zero_error if self.zero_baseline_abs_error_percent is None else self.zero_baseline_abs_error_percent + zero_error
-
-        # The v12 model input stores current one-second close returns, providing
-        # the historical continuation baseline without requiring raw prices.
-        from research.bar_gpt.v2.features import MODEL_FEATURE_NAMES
-        return_indices = [
-            MODEL_FEATURE_NAMES.index(f"{family}_close_return")
-            for family in PRICE_FAMILIES for _field in OHLC_FIELDS
-        ]
-        rows = torch.arange(batch.origin_indices.shape[0], device=batch.origin_indices.device)[:, None]
-        current = batch.views["1s"][rows, batch.origin_indices.long()][..., return_indices]
-        continuation = transformed_return_to_percent(current)
-        continuation_error = torch.where(
-            return_mask,
-            (continuation[:, :, None, :] - target_percent).abs(),
-            torch.zeros_like(target_percent),
-        ).sum((0, 1)).cpu()
-        self.continuation_abs_error_percent = continuation_error if self.continuation_abs_error_percent is None else self.continuation_abs_error_percent + continuation_error
-
         confusion = torch.stack([
             _confusion(
-                physical_return_class_labels(return_target, batch.horizons_us)[:, :, horizon_index],
-                output.horizon_return_class_logits.detach().argmax(dim=-1)[:, :, horizon_index],
-                return_mask[:, :, horizon_index],
+                physical_return_class_labels(return_target, batch.horizons_us)[
+                    :, :, horizon_index, CLOSE_RETURN_TARGET_INDICES
+                ],
+                output.horizon_return_class_logits.detach().argmax(dim=-1)[
+                    :, :, horizon_index, CLOSE_RETURN_TARGET_INDICES
+                ],
+                return_mask[:, :, horizon_index, CLOSE_RETURN_TARGET_INDICES],
             )
             for horizon_index in range(len(self.horizons_us))
         ])
         self.horizon_return_confusion = confusion if self.horizon_return_confusion is None else self.horizon_return_confusion + confusion
 
-        endpoint_quantiles = output.horizon_quantiles[..., :RETURN_TARGET_COUNT, :].detach()
-        hits = ((return_target[..., None] <= endpoint_quantiles) & return_mask[..., None]).sum((0, 1)).double().cpu()
-        coverage_count = count[..., None].expand_as(hits)
-        self.coverage_hits = hits if self.coverage_hits is None else self.coverage_hits + hits
-        self.coverage_count = coverage_count if self.coverage_count is None else self.coverage_count + coverage_count
+        if self.include_confidence_metrics:
+            endpoint_quantiles = output.horizon_quantiles[..., :RETURN_TARGET_COUNT, :].detach()
+            hits = (
+                (return_target[..., None] <= endpoint_quantiles) & return_mask[..., None]
+            ).sum((0, 1)).double().cpu()
+            coverage_count = count[..., None].expand_as(hits)
+            self.coverage_hits = hits if self.coverage_hits is None else self.coverage_hits + hits
+            self.coverage_count = (
+                coverage_count
+                if self.coverage_count is None
+                else self.coverage_count + coverage_count
+            )
 
-        binary_target = batch.horizon_targets[..., CONTINUOUS_TARGET_COUNT:]
-        binary_mask = (
-            batch.horizon_mask[..., CONTINUOUS_TARGET_COUNT:]
-            & batch.origin_mask[:, :, None, None]
-        )
-        probability = output.horizon_availability_logits.detach().sigmoid()
-        brier_sum = torch.where(
-            binary_mask, (probability - binary_target).square(), torch.zeros_like(probability)
-        ).sum((0, 1)).double().cpu()
-        binary_count = binary_mask.sum((0, 1)).double().cpu()
-        self.binary_brier_sum = brier_sum if self.binary_brier_sum is None else self.binary_brier_sum + brier_sum
-        self.binary_count = binary_count if self.binary_count is None else self.binary_count + binary_count
-
-        if self.include_ranking_metrics:
-            for horizon_index in range(len(self.horizons_us)):
-                for target_index in range(RETURN_TARGET_COUNT):
-                    selected = return_mask[:, :, horizon_index, target_index]
-                    if torch.any(selected):
-                        key = (target_index, horizon_index)
-                        self.endpoint_scores.setdefault(key, []).append(predicted_percent[:, :, horizon_index, target_index][selected].float().cpu())
-                        self.endpoint_targets.setdefault(key, []).append(target_percent[:, :, horizon_index, target_index][selected].float().cpu())
-
-        if self.include_condition_metrics:
-            for condition_index in range(len(CONDITION_TARGET_NAMES)):
-                channel = binary_target.shape[-1] - len(CONDITION_TARGET_NAMES) + condition_index
-                for horizon_index in range(len(self.horizons_us)):
-                    selected = binary_mask[:, :, horizon_index, channel]
-                    if torch.any(selected):
-                        key = (condition_index, horizon_index)
-                        self.condition_scores.setdefault(key, []).append(probability[:, :, horizon_index, channel][selected].float().cpu())
-                        self.condition_targets.setdefault(key, []).append(binary_target[:, :, horizon_index, channel][selected].bool().cpu())
+            binary_target = batch.horizon_targets[..., CONTINUOUS_TARGET_COUNT:]
+            binary_mask = (
+                batch.horizon_mask[..., CONTINUOUS_TARGET_COUNT:]
+                & batch.origin_mask[:, :, None, None]
+            )
+            probability = output.horizon_availability_logits.detach().sigmoid()
+            brier_sum = torch.where(
+                binary_mask,
+                (probability - binary_target).square(),
+                torch.zeros_like(probability),
+            ).sum((0, 1)).double().cpu()
+            binary_count = binary_mask.sum((0, 1)).double().cpu()
+            self.binary_brier_sum = (
+                brier_sum if self.binary_brier_sum is None else self.binary_brier_sum + brier_sum
+            )
+            self.binary_count = (
+                binary_count if self.binary_count is None else self.binary_count + binary_count
+            )
 
     def _finalize_losses(self, metrics: dict[str, float]) -> None:
         groups = {
@@ -308,8 +235,6 @@ class ValidationAccumulator:
                     if math.isfinite(value):
                         groups[group].append(value)
                     break
-            metrics[f"{self.namespace}_loss_{metric_group}/{metric_target}"] = value
-            metrics[f"{self.namespace}_support_{metric_group}/{metric_target}"] = denominator
         group_sums = {name: float(sum(values)) for name, values in groups.items()}
         ar = group_sums["ar_regression"] + group_sums["ar_categorical"] + group_sums["ar_return_class"]
         horizon = group_sums["horizon_regression"] + group_sums["horizon_categorical"] + group_sums["horizon_return_class"]
@@ -320,8 +245,6 @@ class ValidationAccumulator:
             f"{self.namespace}_loss/horizon_quantile": group_sums["horizon_regression"],
             f"{self.namespace}_loss/horizon_categorical": group_sums["horizon_categorical"],
             f"{self.namespace}_loss/horizon_return_class": group_sums["horizon_return_class"],
-            f"{self.namespace}_loss/autoregressive": ar,
-            f"{self.namespace}_loss/horizon": horizon,
             f"{self.namespace}_loss/total": ar + horizon,
         })
 
@@ -334,44 +257,50 @@ class ValidationAccumulator:
         }
         self._finalize_losses(metrics)
 
-        ar_summary: dict[str, list[float]] = {name: [] for name in ("accuracy", "balanced_accuracy", "macro_f1", "mcc", "class_distance")}
-        ar_close_summary: dict[str, list[float]] = {name: [] for name in ar_summary}
+        ar_close_summary: dict[str, list[float]] = {
+            name: [] for name in ("balanced_accuracy", "mcc")
+        }
         for view in sorted(self.autoregressive_return_confusion):
             by_target = self.autoregressive_return_confusion[view]
-            for target_index, target_name in enumerate(RETURN_TARGET_NAMES):
+            for target_index, return_target_index in enumerate(CLOSE_RETURN_TARGET_INDICES):
+                target_name = RETURN_TARGET_NAMES[return_target_index]
                 scores = multiclass_scores(by_target[target_index])
                 prefix = f"{self.namespace}_ar_{target_name}_class_{view}"
-                for metric_name, value in zip(ar_summary, scores, strict=True):
+                for metric_name, value in (
+                    ("balanced_accuracy", scores[1]),
+                    ("mcc", scores[3]),
+                ):
                     metrics[f"{prefix}/{metric_name}"] = value
-                    ar_summary[metric_name].append(value)
-                    if "_close_" in target_name:
-                        ar_close_summary[metric_name].append(value)
-                actual, predicted = _class_support(by_target[target_index])
-                metrics[f"{prefix}_support/count"] = float(by_target[target_index].sum())
-                metrics[f"{prefix}_support/active_actual_classes"] = float(
-                    (by_target[target_index].sum(dim=1) > 0).sum()
-                )
-                for class_index, class_name in enumerate(RETURN_CLASS_NAMES):
-                    metrics[f"{prefix}_support/{class_name}"] = float(
-                        by_target[target_index, class_index].sum()
-                    )
-                    metrics[f"{prefix}_actual_fraction/{class_name}"] = float(actual[class_index])
-                    metrics[f"{prefix}_predicted_fraction/{class_name}"] = float(predicted[class_index])
-        for metric_name, values in ar_summary.items():
-            metrics[f"{self.namespace}_ar_return_class_summary/{metric_name}_macro"] = _macro(values)
+                    ar_close_summary[metric_name].append(value)
+                if self.include_class_diagnostics:
+                    matrix = by_target[target_index]
+                    metrics[f"{prefix}_support/count"] = float(matrix.sum())
+                    for class_index, class_name in enumerate(RETURN_CLASS_NAMES):
+                        metrics[f"{prefix}_support/{class_name}"] = float(
+                            matrix[class_index].sum()
+                        )
+        for metric_name, values in ar_close_summary.items():
             metrics[f"{self.namespace}_ar_close_return_class_summary/{metric_name}_macro"] = _macro(ar_close_summary[metric_name])
 
         if self.return_abs_error_percent is None or self.return_count is None or self.horizon_return_confusion is None:
             return metrics
         count = self.return_count
         mae = torch.where(count > 0, self.return_abs_error_percent / count, torch.full_like(count, float("nan")))
-        zero_mae = torch.where(count > 0, self.zero_baseline_abs_error_percent / count, torch.full_like(count, float("nan")))
-        continuation_mae = torch.where(count > 0, self.continuation_abs_error_percent / count, torch.full_like(count, float("nan")))
-        coverage = torch.where(self.coverage_count > 0, self.coverage_hits / self.coverage_count, torch.full_like(self.coverage_hits, float("nan")))
+        coverage = (
+            torch.where(
+                self.coverage_count > 0,
+                self.coverage_hits / self.coverage_count,
+                torch.full_like(self.coverage_hits, float("nan")),
+            )
+            if self.include_confidence_metrics
+            else None
+        )
 
-        close_summary: dict[str, list[float]] = {name: [] for name in ("accuracy", "balanced_accuracy", "macro_f1", "mcc", "class_distance")}
+        close_summary: dict[str, list[float]] = {
+            name: [] for name in ("balanced_accuracy", "mcc")
+        }
         family_values: dict[str, dict[str, list[float]]] = {
-            family: {"mae_percent": [], "rank": [], "calibration": [], **{name: [] for name in close_summary}}
+            family: {"mae_bps": [], "calibration": [], **{name: [] for name in close_summary}}
             for family in PRICE_FAMILIES
         }
         for horizon_index, horizon_us in enumerate(self.horizons_us):
@@ -380,54 +309,40 @@ class ValidationAccumulator:
                 family, field, _return = target_name.split("_", 2)
                 prefix = f"{self.namespace}_{family}_{field}"
                 value = float(mae[horizon_index, target_index])
-                zero = float(zero_mae[horizon_index, target_index])
-                continuation = float(continuation_mae[horizon_index, target_index])
-                metrics[f"{prefix}_return_error/mae_percent_{horizon}"] = value
                 metrics[f"{prefix}_return_error/mae_bps_{horizon}"] = value * 100.0
-                metrics[f"{prefix}_return_baseline/zero_mae_percent_{horizon}"] = zero
-                metrics[f"{prefix}_return_baseline/continuation_mae_percent_{horizon}"] = continuation
-                metrics[f"{prefix}_return_skill/skill_vs_zero_{horizon}"] = 1.0 - value / zero if zero > 0 else float("nan")
-                metrics[f"{prefix}_return_skill/skill_vs_continuation_{horizon}"] = 1.0 - value / continuation if continuation > 0 else float("nan")
-                family_values[family]["mae_percent"].append(value)
-                scores = multiclass_scores(self.horizon_return_confusion[horizon_index, target_index])
-                class_prefix = f"{prefix}_return_class_{horizon}"
-                for metric_name, score in zip(close_summary, scores, strict=True):
-                    metrics[f"{class_prefix}/{metric_name}"] = score
-                    if field == "close":
+                family_values[family]["mae_bps"].append(value * 100.0)
+                if target_index in CLOSE_RETURN_TARGET_INDICES:
+                    close_index = CLOSE_RETURN_TARGET_INDICES.index(target_index)
+                    scores = multiclass_scores(
+                        self.horizon_return_confusion[horizon_index, close_index]
+                    )
+                    class_prefix = f"{prefix}_return_class_{horizon}"
+                    for metric_name, score in (
+                        ("balanced_accuracy", scores[1]),
+                        ("mcc", scores[3]),
+                    ):
+                        metrics[f"{class_prefix}/{metric_name}"] = score
                         close_summary[metric_name].append(score)
                         family_values[family][metric_name].append(score)
-                actual, predicted = _class_support(self.horizon_return_confusion[horizon_index, target_index])
-                metrics[f"{class_prefix}_support/count"] = float(self.horizon_return_confusion[horizon_index, target_index].sum())
-                metrics[f"{class_prefix}_support/active_actual_classes"] = float(
-                    (self.horizon_return_confusion[horizon_index, target_index].sum(dim=1) > 0).sum()
-                )
-                for class_index, class_name in enumerate(RETURN_CLASS_NAMES):
-                    metrics[f"{class_prefix}_support/{class_name}"] = float(
-                        self.horizon_return_confusion[horizon_index, target_index, class_index].sum()
-                    )
-                    metrics[f"{class_prefix}_actual_fraction/{class_name}"] = float(actual[class_index])
-                    metrics[f"{class_prefix}_predicted_fraction/{class_name}"] = float(predicted[class_index])
-                calibration_errors = []
-                for quantile_index, quantile in enumerate(self.quantiles):
-                    observed = float(coverage[horizon_index, target_index, quantile_index])
-                    quantile_name = f"q{int(round(quantile * 100)):02d}"
-                    metrics[f"{prefix}_coverage_{quantile_name}/{horizon}"] = observed
-                    calibration_errors.append(abs(observed - quantile))
-                calibration = _macro(calibration_errors)
-                metrics[f"{prefix}_calibration/error_{horizon}"] = calibration
-                family_values[family]["calibration"].append(calibration)
-                key = (target_index, horizon_index)
-                if key in self.endpoint_scores:
-                    rank = _spearman(torch.cat(self.endpoint_scores[key]), torch.cat(self.endpoint_targets[key]))
-                    metrics[f"{prefix}_ranking/spearman_{horizon}"] = rank
-                    family_values[family]["rank"].append(rank)
+                    if self.include_class_diagnostics:
+                        matrix = self.horizon_return_confusion[horizon_index, close_index]
+                        metrics[f"{class_prefix}_support/count"] = float(matrix.sum())
+                        for class_index, class_name in enumerate(RETURN_CLASS_NAMES):
+                            metrics[f"{class_prefix}_support/{class_name}"] = float(
+                                matrix[class_index].sum()
+                            )
+                if coverage is not None:
+                    calibration = _macro([
+                        abs(float(coverage[horizon_index, target_index, quantile_index]) - quantile)
+                        for quantile_index, quantile in enumerate(self.quantiles)
+                    ])
+                    family_values[family]["calibration"].append(calibration)
         for metric_name, values in close_summary.items():
             metrics[f"{self.namespace}_close_return_class_summary/{metric_name}_macro"] = _macro(values)
         for family, values in family_values.items():
-            metrics[f"{self.namespace}_{family}_summary/mae_percent_macro"] = _macro(values["mae_percent"])
-            metrics[f"{self.namespace}_{family}_summary/mae_bps_macro"] = _macro(values["mae_percent"]) * 100.0
-            metrics[f"{self.namespace}_{family}_summary/rank_macro"] = _macro(values["rank"])
-            metrics[f"{self.namespace}_{family}_summary/calibration_macro"] = _macro(values["calibration"])
+            metrics[f"{self.namespace}_{family}_summary/mae_bps_macro"] = _macro(values["mae_bps"])
+            if self.include_confidence_metrics:
+                metrics[f"{self.namespace}_{family}_summary/calibration_macro"] = _macro(values["calibration"])
             for metric_name in close_summary:
                 metrics[f"{self.namespace}_{family}_close_return_class_summary/{metric_name}_macro"] = _macro(values[metric_name])
 
@@ -441,29 +356,6 @@ class ValidationAccumulator:
                         float(self.binary_brier_sum[horizon_index, target_index]) / support
                         if support > 0 else float("nan")
                     )
-                    metrics[f"{self.namespace}_{target_name}_brier/brier_{horizon}"] = value
-                    metrics[f"{self.namespace}_{target_name}_brier/support_{horizon}"] = support
                     brier_values.append(value)
             metrics[f"{self.namespace}_availability/brier_macro"] = _macro(brier_values)
-
-        if self.include_condition_metrics:
-            for condition_index, condition_name in enumerate(CONDITION_TARGET_NAMES):
-                group = condition_name.removesuffix("_within_horizon")
-                average_precisions = []
-                for horizon_index, horizon_us in enumerate(self.horizons_us):
-                    key = (condition_index, horizon_index)
-                    if key not in self.condition_scores:
-                        continue
-                    scores = torch.cat(self.condition_scores[key])
-                    targets = torch.cat(self.condition_targets[key])
-                    horizon = f"{horizon_us // 1_000_000}s"
-                    total = int(targets.numel())
-                    positives = int(targets.sum())
-                    metrics[f"{self.namespace}_condition_{group}/total_{horizon}"] = float(total)
-                    metrics[f"{self.namespace}_condition_{group}/positives_{horizon}"] = float(positives)
-                    metrics[f"{self.namespace}_condition_{group}/prevalence_{horizon}"] = positives / total if total else float("nan")
-                    value = _average_precision(scores, targets)
-                    metrics[f"{self.namespace}_condition_{group}/average_precision_{horizon}"] = value
-                    average_precisions.append(value)
-                metrics[f"{self.namespace}_condition_{group}/average_precision_macro"] = _macro(average_precisions)
         return metrics

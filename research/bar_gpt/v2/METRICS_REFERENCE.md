@@ -1,8 +1,33 @@
 # BarGPT v2 metric reference
 
 This is the metric contract implemented by `metrics.py` and `objectives.py`.
-Lower loss and error metrics are better; higher skill and classification
+Lower loss, error, and calibration metrics are better; higher classification
 metrics are better unless noted.
+
+## Sample-clock phases
+
+The shared trainer uses the same schedule for model comparison and ordinary
+full training. Cumulative valid training origins are the frequency clock;
+microbatch count is not used because model sizes have different efficient
+microbatches.
+
+| Phase | Frequency | Population | Additional forward pass |
+|---|---:|---|---|
+| Required objective | Every microbatch | Current training microbatch | No |
+| Host/W&B objective record | Every 1,000,000 origins | Origin-weighted microbatch accumulation | No |
+| F1 training evaluation | Every 5,000,000 origins | Optimizer update crossing the threshold | No; reuses predictions |
+| F2 monitor evaluation | Every 25,000,000 origins | Deterministic prefix capped at 250,000 origins | Yes, inference only |
+| Epoch evaluation | End of every epoch | Fixed training prefix up to 1,000,000 origins and complete validation panel | Yes, inference only |
+
+If an F2 boundary would fall within one F2 interval of the epoch boundary, the
+paired epoch evaluation replaces it. For a 100M-origin comparison epoch this
+means monitor evaluations at 25M, 50M, and 75M, followed by the epoch audit.
+Losses and finite-value safety checks are still calculated every microbatch;
+only the bounded host transfer and W&B emission wait for the 1M clock.
+The monitor cap is shared by comparison and full training. Because whole
+collated batches are consumed, the observed count can exceed 250,000 by less
+than one fixed eight-block evaluation batch. Complete validation is never run
+between epoch boundaries.
 
 ## Objective metrics
 
@@ -31,8 +56,6 @@ coefficients, and a final target-count division are not used.
 | `*_loss/horizon_quantile` | Sum of per-target pinball-loss means across horizons and quantiles | 0 | Unbounded |
 | `*_loss/horizon_categorical` | Sum of per-target binary cross-entropy means | 0 | Unbounded |
 | `*_loss/horizon_return_class` | Sum of per-return-target three-class cross-entropy means | 0 | Unbounded |
-| `*_loss/autoregressive` | Sum of the three AR groups | 0 | Unbounded |
-| `*_loss/horizon` | Sum of the three physical groups | 0 | Unbounded |
 | `*_loss/total` | AR plus physical loss | 0 | Unbounded |
 
 The underlying losses are:
@@ -73,35 +96,25 @@ positive: return > +0.01%
 The same rule applies to all AR views and physical horizons. Regression and
 quantile heads continue to learn return magnitude independently.
 
-These are emitted per return target and physical horizon, and per return target
-and AR view. Summary metrics are arithmetic macros over their stated members.
+Training, monitor, and validation logging deliberately report direction metrics
+only for close-return heads. High/low/open categorical heads remain in the
+objective, but their redundant per-head metric series are not sent to W&B.
+Summary metrics are arithmetic macros over their stated close heads.
 
 | Metric suffix | Calculation | Best | Worst / reference |
 |---|---|---:|---:|
-| `accuracy` | Correct predictions divided by valid examples | 1 | 0 |
 | `balanced_accuracy` | Mean recall over actual classes with support | 1 | 0; chance is 1/3 only with all three classes |
-| `macro_f1` | Mean per-class F1 over classes present in actual or predicted data | 1 | 0 |
 | `mcc` | Gorodkin multiclass Matthews correlation coefficient | 1 | -1; 0 is no correlation |
-| `class_distance` | Mean absolute distance between ordinal class indices | 0 | 2 |
-
-Every head also emits:
-
-- `support/count`: valid observations.
-- `support/active_actual_classes`: number of represented actual classes, 0-3.
-- `support/<class>`: actual count for each named class.
-- `actual_fraction/<class>` and `predicted_fraction/<class>`: prevalence and
-  prediction-collapse diagnostics.
 
 The most useful generalization summaries are
 `validation_close_return_class_summary/mcc_macro`,
 `validation_close_return_class_summary/balanced_accuracy_macro`, and their
 `validation_ar_close_return_class_summary/*` counterparts. Always read them
-with support and loss.
-
-`accuracy` can be high for a collapsed head when one class dominates.
-`balanced_accuracy`, macro F1, MCC, the confusion support, and predicted class
-fractions expose that failure. MCC is reported as `NaN` when only one actual
-class exists, because directional association is then undefined.
+with loss. MCC exposes majority-class collapse more reliably than plain
+accuracy. MCC is `NaN` when only one actual class exists because directional
+association is then undefined. The bounded overfit report retains per-class
+support locally because its pass gate needs it; normal training does not create
+those W&B series.
 
 ## Return regression and quantiles
 
@@ -110,19 +123,15 @@ before error measurement.
 
 | Metric | Calculation | Best | Worst |
 |---|---|---:|---:|
-| `*_return_error/mae_percent_<horizon>` | Mean absolute simple-percent error | 0 | Unbounded |
-| `*_return_error/mae_bps_<horizon>` | Percent MAE multiplied by 100 | 0 | Unbounded |
-| `*_return_baseline/zero_mae_percent_*` | MAE for a zero-return forecast | 0 | Unbounded |
-| `*_return_baseline/continuation_mae_percent_*` | MAE for current-return continuation | 0 | Unbounded |
-| `*_return_skill/skill_vs_*` | `1 - model_mae / baseline_mae` | 1 | Unbounded below; 0 ties baseline |
-| `*_coverage_qNN/<horizon>` | Fraction of targets at or below qNN prediction | Nominal quantile | 0-1 |
-| `*_calibration/error_<horizon>` | Mean absolute deviation from nominal coverage | 0 | 1 |
-| `*_ranking/spearman_<horizon>` | Spearman rank correlation of median prediction and target | 1 | -1 |
+| `*_return_error/mae_bps_<horizon>` | Mean absolute simple-return error in basis points | 0 | Unbounded |
+| `*_<family>_summary/mae_bps_macro` | Macro mean over that family's OHLC/horizon MAEs | 0 | Unbounded |
+| `*_<family>_summary/calibration_macro` | Macro absolute quantile-coverage error | 0 | 1 |
 
-`mae_percent` is computed after exactly inverting the stored
-`asinh(log_return*100)` transform to simple percentage return. `mae_bps` is
-`mae_percent * 100`. A positive skill value beats its named baseline; a
-negative value is worse.
+`mae_bps` is computed after exactly inverting the stored
+`asinh(log_return*100)` transform to simple return. Percent MAE, zero and
+continuation baselines, skill ratios, per-target coverage series, and Spearman
+sorting were removed as redundant or unused. Calibration remains because the
+physical value heads are probabilistic quantile heads.
 
 ## Existing categorical targets
 
@@ -132,22 +141,39 @@ heads.
 | Metric | Calculation | Best | Worst |
 |---|---|---:|---:|
 | `*_availability/brier_macro` | Mean squared probability error across availability heads | 0 | 1 |
-| `*_condition_<name>/average_precision_*` | Precision-recall area for the condition label | 1 | 0; compare with prevalence |
-| `*_condition_<name>/prevalence_*` | Positive fraction, diagnostic only | N/A | N/A |
-| `*_condition_<name>/total_*` | Valid evaluated examples | N/A | N/A |
-| `*_condition_<name>/positives_*` | Positive examples | N/A | N/A |
+
+Condition heads still receive their own binary losses where support exists.
+The comparison monitor and validation panels contain no positive condition
+blocks, so condition average precision and prevalence series are not reported
+as if they measured held-out generalization. A future condition claim requires
+a separately certified condition-enriched evaluation panel.
 
 ## Namespaces and comparison step
 
 - `train_*`: bounded training diagnostics.
-- `monitor_*`: repeated 2026 monitor panel.
+- `monitor_*`: repeated deterministic 250K-origin prefix of the 2026 monitor
+  authority; intended for trend detection, not the final model claim.
+- `epoch_train_*`: deterministic training-population epoch audit.
 - `validation_*`: final 2026 validation panel.
+- `epoch_generalization_gap/*`: positive means validation degraded relative to
+  the epoch training audit.
 - `overfit_before_*` / `overfit_after_*`: tiny-panel memorization experiment.
 
 Model-comparison W&B logs use cumulative training origins as the step axis, so
 curves remain aligned even when efficient microbatch sizes differ. Monitor and
 validation populations remain manifest-fixed and identity-disjoint from the
 training panel.
+
+## Epoch checkpoints
+
+After the paired epoch evaluation, the trainer atomically queues one immutable
+checkpoint named `checkpoint_epoch_NNNN.pt`, for example
+`checkpoint_epoch_0001.pt`. It contains the model, optimizer, scaler,
+scheduler, sample clocks, durable cursors, contracts, epoch-training metrics,
+validation metrics, generalization gaps, and W&B run identity.
+`checkpoint_latest.pt` and `checkpoint_best_val.pt` remain available, but do
+not replace the immutable epoch checkpoint. An existing epoch filename is
+never silently overwritten.
 
 ## Overfit acceptance contract
 

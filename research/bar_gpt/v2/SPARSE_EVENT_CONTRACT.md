@@ -328,12 +328,15 @@ Other float targets are regression-only and existing categorical targets are
 categorical-only. Latent prediction and the old binary direction heads do not
 exist in v2.
 
-Validation reports exact simple-percent and basis-point MAE, zero and
-continuation baselines, quantile coverage/calibration, three-class accuracy,
-balanced accuracy, macro F1, multiclass MCC, ordinal class distance, class
-support/fractions, ranking, availability Brier score, and condition average
-precision. Aggregate family and close-return summaries remain available for
-dashboard and model-discovery ranking.
+Validation reports basis-point MAE, family-level quantile calibration,
+close-return balanced accuracy and multiclass MCC, and availability Brier
+score. Redundant accuracy/F1/distance, skill/baseline, per-target coverage,
+Spearman, and unsupported condition series are not part of normal W&B logging.
+The overfit artifact retains class supports for its memorization gate. The
+shared trainer uses 1M objective logging, 5M F1 training evaluation, a bounded
+250K-origin F2 monitor evaluation every 25M origins, and paired
+training/complete-validation evaluation at epoch end. Complete validation is
+never run between epoch boundaries.
 
 ## Builder, shard, and certification contract
 

@@ -627,7 +627,7 @@ def _ranking_key(metrics: dict[str, float]) -> tuple[float, float, float, float]
         metrics.get("validation_loss/total", float("inf")),
         -close_class_mcc,
         -metrics.get("validation_ar_close_return_class_summary/mcc_macro", float("-inf")),
-        metrics.get("validation_trade_summary/mae_percent_macro", float("inf")),
+        metrics.get("validation_trade_summary/mae_bps_macro", float("inf")),
     )
 
 

@@ -173,7 +173,7 @@ def _evaluate(model: BarGPTV2, batches: list[BarGPTBatch], config: ExperimentCon
     model.eval()
     accumulator = ValidationAccumulator(
         config.data.horizons_us, config.model.quantiles, namespace=namespace,
-        include_condition_metrics=False, include_ranking_metrics=False, include_confidence_metrics=False,
+        include_confidence_metrics=False, include_class_diagnostics=True,
     )
     with torch.inference_mode():
         for batch in batches:

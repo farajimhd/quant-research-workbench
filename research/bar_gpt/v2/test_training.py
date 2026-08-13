@@ -127,6 +127,7 @@ from research.bar_gpt.v2.train import (
     checkpoint_payload,
     _condition_certification_coverage,
     _forward,
+    _generalization_gap_metrics,
     _loaders,
     _mask_inactive_condition_targets,
     _assert_finite_before_step,
@@ -478,6 +479,17 @@ class LoaderTrainerContractTest(unittest.TestCase):
             (round(7_563_836_672 / 3), round(2 * 7_563_836_672 / 3)),
         )
 
+    def test_explicit_validation_interval_is_authoritative_sample_clock(self) -> None:
+        self.assertEqual(
+            _validation_milestones(
+                epoch_origins=100_003_578,
+                runs_per_epoch=999,
+                explicit_interval=25_000_000,
+                initial_samples=1,
+            ),
+            (25_000_000, 50_000_000, 75_000_000, 100_003_578),
+        )
+
     def test_natural_plan_limit_still_allows_epoch_end_validation(self) -> None:
         self.assertFalse(
             _reached_diagnostic_limit(
@@ -493,6 +505,29 @@ class LoaderTrainerContractTest(unittest.TestCase):
                 samples_seen=10_000_000,
             )
         )
+
+    def test_epoch_generalization_gaps_are_positive_for_degradation(self) -> None:
+        gaps = _generalization_gap_metrics(
+            {
+                "epoch_train_loss/total": 1.0,
+                "epoch_train_trade_summary/mae_bps_macro": 2.0,
+                "epoch_train_close_return_class_summary/balanced_accuracy_macro": 0.8,
+                "epoch_train_close_return_class_summary/mcc_macro": 0.6,
+                "epoch_train_ar_close_return_class_summary/balanced_accuracy_macro": 0.7,
+                "epoch_train_ar_close_return_class_summary/mcc_macro": 0.5,
+            },
+            {
+                "validation_loss/total": 1.2,
+                "validation_trade_summary/mae_bps_macro": 2.5,
+                "validation_close_return_class_summary/balanced_accuracy_macro": 0.7,
+                "validation_close_return_class_summary/mcc_macro": 0.4,
+                "validation_ar_close_return_class_summary/balanced_accuracy_macro": 0.6,
+                "validation_ar_close_return_class_summary/mcc_macro": 0.3,
+            },
+        )
+        self.assertAlmostEqual(gaps["epoch_generalization_gap/loss_total"], 0.2)
+        self.assertAlmostEqual(gaps["epoch_generalization_gap/trade_mae_bps"], 0.5)
+        self.assertAlmostEqual(gaps["epoch_generalization_gap/close_mcc"], 0.2)
 
     def test_direction_scores_penalize_prediction_collapse_without_inventing_missing_class(self) -> None:
         accuracy, balanced, mcc = _direction_scores(
@@ -1607,6 +1642,8 @@ class LoaderTrainerContractTest(unittest.TestCase):
                 offline_train_units=train_units,
                 offline_validation_units=validation_units,
             )
+            self.assertEqual(train_loader.batch_size, 2)
+            self.assertEqual(validation_loader.batch_size, 8)
             device = torch.device("cpu")
             model = BarGPTV2(model_config).to(device)
             optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3)
@@ -1930,6 +1967,7 @@ class LoaderTrainerContractTest(unittest.TestCase):
         self.assertEqual(training_launcher_args["--gradient-accumulation-steps"], "2")
         self.assertEqual(training_launcher_args["--epochs"], "1")
         self.assertEqual(training_launcher_args["--checkpoint-validation-evaluations"], "1")
+        self.assertEqual(training_launcher_args["--monitor-evaluation-origins"], "250000")
         self.assertNotIn("--checkpoint-latest-samples", training_launcher_args)
         self.assertEqual(training_launcher_args["--wandb-project"], BAR_GPT_WANDB_PROJECT)
         self.assertEqual(training_launcher_args["--loader-workers"], "8")
@@ -2079,6 +2117,7 @@ class LoaderTrainerContractTest(unittest.TestCase):
                 train_metrics={"train/loss": 1.0},
                 val_metrics={"validation_loss/total": 1.0},
                 force=True,
+                named_destinations=(("checkpoint_epoch_0001.pt", "epoch_end"),),
             )
             manager.close(wait=True, timeout=10)
             self.assertFalse(manager.worker.is_alive())
@@ -2089,6 +2128,7 @@ class LoaderTrainerContractTest(unittest.TestCase):
                 str(root / "checkpoints" / "checkpoint_latest.pt"),
                 model, optimizer, scaler, scheduler, torch.device("cpu"), config, "plan-1",
             )
+            self.assertTrue((root / "checkpoints" / "checkpoint_epoch_0001.pt").is_file())
         self.assertEqual(restored["samples_seen"], 131_072)
         self.assertEqual(restored["validation_evaluations_completed"], 1)
         self.assertEqual(restored["last_checkpoint_samples"], 131_072)
@@ -2190,22 +2230,25 @@ class LoaderTrainerContractTest(unittest.TestCase):
         self.assertGreater(float(model.autoregressive_return_class_head.weight.grad.abs().sum()), 0.0)
         self.assertGreater(float(model.horizon_return_class_head.weight.grad.abs().sum()), 0.0)
         self.assertTrue(bool(torch.all(model.horizon_return_class_head.weight.grad.abs().sum(dim=1) > 0)))
-        accumulator = ValidationAccumulator(self.data_config().horizons_us, model_config.quantiles)
+        accumulator = ValidationAccumulator(
+            self.data_config().horizons_us,
+            model_config.quantiles,
+            include_class_diagnostics=True,
+        )
         accumulator.update(output, batch, loss)
         validation = accumulator.finalize()
         self.assertEqual(validation["validation_data/origins"], 6.0)
         self.assertIn("validation_trade_close_return_error/mae_bps_5s", validation)
         self.assertIn("validation_trade_close_return_class_5s/balanced_accuracy", validation)
         self.assertIn("validation_trade_close_return_class_5s/mcc", validation)
-        self.assertIn("validation_trade_close_return_class_5s/accuracy", validation)
         self.assertIn("validation_trade_close_return_class_5s_support/count", validation)
-        self.assertIn("validation_trade_close_return_class_5s_predicted_fraction/neutral", validation)
-        self.assertIn("validation_trade_close_return_skill/skill_vs_zero_5s", validation)
+        self.assertNotIn("validation_trade_close_return_class_5s/accuracy", validation)
+        self.assertNotIn("validation_trade_close_return_skill/skill_vs_zero_5s", validation)
         self.assertIn("validation_trade_close_return_class_summary/mcc_macro", validation)
         self.assertIn("validation_close_return_class_summary/mcc_macro", validation)
         self.assertIn("validation_ar_trade_close_return_class_5s/balanced_accuracy", validation)
         self.assertIn("validation_ar_trade_close_return_class_5s/mcc", validation)
-        self.assertEqual(validation["validation_condition_halt_pause/positives_5s"], 0.0)
+        self.assertIn("validation_availability/brier_macro", validation)
         grouped_counts: dict[str, int] = {}
         for key in validation:
             group = key.split("/", 1)[0]
@@ -2236,8 +2279,6 @@ class LoaderTrainerContractTest(unittest.TestCase):
         accumulator = ValidationAccumulator(
             self.data_config().horizons_us,
             model_config.quantiles,
-            include_condition_metrics=False,
-            include_ranking_metrics=False,
             include_confidence_metrics=False,
         )
         accumulator.update(output, batch, loss)
@@ -2247,9 +2288,10 @@ class LoaderTrainerContractTest(unittest.TestCase):
             math.expm1(0.0001) * 10_000.0,
             places=5,
         )
-        self.assertIn("validation_trade_open_return_skill/skill_vs_zero_5s", metrics)
+        self.assertNotIn("validation_trade_open_return_skill/skill_vs_zero_5s", metrics)
+        self.assertNotIn("validation_availability/brier_macro", metrics)
 
-    def test_deferred_update_losses_preserve_each_update_and_async_logging(self) -> None:
+    def test_deferred_update_losses_aggregate_to_sample_clock_logging(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             logger = AsyncJsonlMetricLogger(Path(directory) / "metrics.jsonl")
             buffer = _DeferredUpdateLossBuffer()
@@ -2268,16 +2310,21 @@ class LoaderTrainerContractTest(unittest.TestCase):
             buffer.flush(logger)
             logger.close()
             rows = [json.loads(line) for line in (Path(directory) / "metrics.jsonl").read_text().splitlines()]
-        self.assertEqual([row["step"] for row in rows], [4, 8])
-        self.assertEqual([row["train/loss"] for row in rows], [2.0, 5.0])
-        self.assertEqual([row["train/gradient_norm"] for row in rows], [3.0, 5.0])
+        self.assertEqual([row["step"] for row in rows], [8])
+        self.assertEqual([row["train/loss"] for row in rows], [3.5])
+        self.assertEqual([row["train/gradient_norm"] for row in rows], [5.0])
+        self.assertEqual(rows[0]["train/optimizer_steps"], 2.0)
 
     def test_wandb_metric_categories_are_first_level_and_bounded(self) -> None:
         self.assertEqual(_wandb_metric_key("train/loss"), "train_loss/total")
         self.assertEqual(_wandb_metric_key("train/loss_horizon"), "train_loss/horizon")
         self.assertEqual(_wandb_metric_key("train/loader_wait_seconds"), "train_runtime/loader_wait_seconds")
         self.assertEqual(_wandb_metric_key("val/loss"), "validation_loss/total")
-        self.assertEqual(TrainConfig().training_metrics_interval_samples, 8_388_608)
+        self.assertEqual(TrainConfig().logging_samples, 1_000_000)
+        self.assertEqual(TrainConfig().training_metrics_interval_samples, 5_000_000)
+        self.assertEqual(TrainConfig().validation_interval_samples, 25_000_000)
+        self.assertEqual(TrainConfig().monitor_evaluation_origins, 250_000)
+        self.assertEqual(TrainConfig().epoch_train_evaluation_origins, 1_000_000)
 
     def test_cursor_advances_per_worker_only_after_consumed_batch(self) -> None:
         examples = list(build_session_examples(
@@ -2538,6 +2585,7 @@ class LoaderTrainerContractTest(unittest.TestCase):
             self.assertEqual(COMPARISON_RUNS[model_size].effective_blocks, 40)
             self.assertEqual(parsed.offline_length_bucket_batches, 16)
             self.assertEqual(parsed.validation_batches, 0)
+            self.assertEqual(parsed.monitor_evaluation_origins, 250_000)
             self.assertEqual(parsed.warmup_samples, 4_000_000)
             self.assertEqual(parsed.scheduler_mode, "single-cosine")
             self.assertEqual(parsed.validation_runs_per_epoch, 4)
@@ -2827,7 +2875,7 @@ class LoaderTrainerContractTest(unittest.TestCase):
             "Trade OHLC MAE",
             "Close balanced",
             "MCC",
-            "Trade rank",
+            "Trade calibration",
             "Overall speed",
             "Training loss and metrics",
         ):
@@ -2859,7 +2907,7 @@ class LoaderTrainerContractTest(unittest.TestCase):
         self.assertIn("Training loss and metrics", empty_output.getvalue())
         self.assertIn("Validation scorecard", empty_output.getvalue())
         self.assertIn("Horizon return class", empty_output.getvalue())
-        self.assertIn("Trade rank", empty_output.getvalue())
+        self.assertIn("Trade calibration", empty_output.getvalue())
 
         text_output = io.StringIO()
         with redirect_stdout(text_output):
