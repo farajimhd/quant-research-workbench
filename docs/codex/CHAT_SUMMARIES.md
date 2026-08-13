@@ -2,6 +2,12 @@
 
 ## 2026
 
+### [2026-08-10 16:18 PDT - Audit News Synthesis, develop invariant sparse features, and establish standalone LLM issuer labeling](docs/codex/chat-summaries/2026/CHAT-20260810-1618-news-synthesis-features-llm-labeling.md)
+- Chat/task ID: `019fedf8-0541-72f1-ac5c-795d21248aa3`
+- Related tasks: `TASK-0182`, `TASK-0189`, `TASK-0190`, `TASK-0191`
+- Summary written: 2026-08-13 05:16 PDT
+- Scope: consolidate the frozen News Synthesis diagnosis, develop and evaluate invariant TF-IDF feature authorities through V10, implement and evaluate the independent V3 LLM issuer-label schema on 250 disjoint gold articles, and specify a restart-safe, isolated Codex-subagent pipeline for all non-gold 2026 news.
+
 ### [2026-08-10 05:29 - Define and implement the unified QMD and trading application architecture](docs/codex/chat-summaries/2026/CHAT-20260810-0529-qmd-application-architecture-canvas-recovery.md)
 - Chat/task ID: `019feba6-725b-70e0-8df7-c3d174d4d890`
 - Related task: `TASK-0188`
