@@ -27489,3 +27489,70 @@ button {
 .trading-configuration-page[data-configuration-section="strategy"] .configuration-help,
 .trading-configuration-page[data-configuration-section="strategy"] .configuration-help > button,
 .trading-configuration-page[data-configuration-section="strategy"] .configuration-help > button svg { color: var(--muted-foreground); }
+
+/* Shared Scanner and Watchlist table readability. */
+.market-list-table td.market-list-numeric-column {
+  font-size: 11.5px;
+  font-weight: 540;
+  letter-spacing: -0.012em;
+}
+
+.market-list-table td.market-list-numeric-column.positive,
+.market-list-table td.market-list-numeric-column.negative {
+  font-weight: 650;
+}
+
+.market-list-table.with-company-identity .market-list-symbol-column {
+  max-width: 236px;
+  min-width: 204px;
+  width: 224px;
+}
+
+.market-list-table.with-company-identity .market-list-symbol-column > button {
+  max-width: 216px;
+}
+
+.market-list-ticker-cell.company-card {
+  background: color-mix(in oklab, var(--surface-alt) 62%, var(--surface));
+  border: 1px solid color-mix(in oklab, var(--border) 78%, transparent);
+  border-radius: 7px;
+  box-sizing: border-box;
+  gap: 8px;
+  justify-content: space-between;
+  max-width: 216px;
+  min-height: 34px;
+  padding: 4px 6px 4px 7px;
+  width: 100%;
+}
+
+.market-list-identity-copy {
+  display: grid;
+  gap: 1px;
+  min-width: 0;
+}
+
+.market-list-identity-copy > strong {
+  color: var(--foreground);
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  font-weight: 730;
+  letter-spacing: -0.015em;
+  line-height: 1.05;
+}
+
+.market-list-identity-copy > small {
+  color: var(--muted-foreground);
+  display: block;
+  font-family: var(--font-sans);
+  font-size: 9.5px;
+  font-weight: 520;
+  line-height: 1.2;
+  max-width: 156px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.market-list-ticker-cell.company-card .market-list-ticker-events {
+  flex: 0 0 auto;
+}

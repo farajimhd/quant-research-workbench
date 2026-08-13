@@ -411,6 +411,7 @@ export function WatchUniverseContainer({ asOf, onSettingsChange, onTickerSelect,
       empty={!watchlist ? "No Watchlist tabs are open. Use Add to choose one." : resolved ? "This QMD Watchlist currently has no members." : "No resolved membership is available."}
       limit={settings.limit}
       lockedColumns={["symbol"]}
+      mergeCompanyWithIdentity
       onColumnsChange={(columns) => onSettingsChange({ columns })}
       onCustomColumnsChange={(customColumns) => onSettingsChange({ customColumns })}
       onTickerSelect={onTickerSelect}
@@ -521,6 +522,7 @@ function MarketListTable({
   fieldCoverage,
   limit,
   lockedColumns = [],
+  mergeCompanyWithIdentity = false,
   onColumnsChange,
   onCustomColumnsChange,
   onTickerSelect,
@@ -536,6 +538,7 @@ function MarketListTable({
   fieldCoverage?: Record<string, number>;
   limit: number;
   lockedColumns?: string[];
+  mergeCompanyWithIdentity?: boolean;
   onColumnsChange: (columns: string[]) => void;
   onCustomColumnsChange: (columns: ScannerCustomColumn[]) => void;
   onTickerSelect?: (ticker: string) => void;
@@ -553,7 +556,9 @@ function MarketListTable({
   const deferredQuery = useDeferredValue(query.trim().toLowerCase());
   const identityColumn = columns.includes("symbol") ? "symbol" : "ticker";
   const effectiveLockedColumns = useMemo(() => [...new Set(["logo", identityColumn, ...lockedColumns])], [identityColumn, lockedColumns]);
-  const tableColumns = useMemo(() => withLockedColumns(columns, effectiveLockedColumns), [columns, effectiveLockedColumns]);
+  const selectedColumns = useMemo(() => withLockedColumns(columns, effectiveLockedColumns), [columns, effectiveLockedColumns]);
+  const companyInIdentity = mergeCompanyWithIdentity && selectedColumns.includes("company_name");
+  const tableColumns = useMemo(() => selectedColumns.filter((column) => !(companyInIdentity && column === "company_name")), [companyInIdentity, selectedColumns]);
   useEffect(() => {
     if (sortColumn) setSort({ column: sortColumn, direction: "desc" });
   }, [sortColumn]);
@@ -574,7 +579,10 @@ function MarketListTable({
     if (filterMode.startsWith("sec_label:") && !rowLabels(row.sec_labels).some((labelValue) => normalizeLabel(labelValue) === filterMode.slice(10))) return false;
     return true;
   }).sort((left, right) => compareValues(left[sort.column], right[sort.column]) * (sort.direction === "asc" ? 1 : -1)).slice(0, limit), [deferredQuery, filterMode, limit, rows, sort]);
-  const tickers = visibleRows.filter((row) => !String(row.logo_url ?? "").trim()).map((row) => String(row.ticker ?? row.symbol ?? "")).filter(Boolean);
+  const tickers = visibleRows
+    .filter((row) => !String(row.logo_url ?? "").trim() || (companyInIdentity && !String(row.company_name ?? "").trim()))
+    .map((row) => String(row.ticker ?? row.symbol ?? ""))
+    .filter(Boolean);
   const presentations = useTickerPresentations(tickers);
   useEffect(() => {
     if (!headerMenuColumn) return;
@@ -597,12 +605,15 @@ function MarketListTable({
     const nextIndex = target === "start" ? 0 : target === "end" ? unlocked.length - 1 : Math.max(0, Math.min(unlocked.length - 1, unlockedIndex + (target === "left" ? -1 : 1)));
     unlocked.splice(unlockedIndex, 1);
     unlocked.splice(nextIndex, 0, column);
-    onColumnsChange(withLockedColumns(unlocked, effectiveLockedColumns));
+    const nextColumns = withLockedColumns(unlocked, effectiveLockedColumns);
+    const identityIndex = nextColumns.indexOf(identityColumn);
+    if (companyInIdentity && identityIndex >= 0) nextColumns.splice(identityIndex + 1, 0, "company_name");
+    onColumnsChange(nextColumns);
     setHeaderMenuColumn(null);
   }
   function removeColumn(column: string) {
     if (effectiveLockedColumns.includes(column)) return;
-    onColumnsChange(tableColumns.filter((item) => item !== column));
+    onColumnsChange(selectedColumns.filter((item) => item !== column));
     if (isTechnicalKey(column)) onCustomColumnsChange(customColumns.filter((item) => item.key !== column));
     setHeaderMenuColumn(null);
   }
@@ -610,7 +621,7 @@ function MarketListTable({
     const column = defaultTechnicalColumn(metric);
     const key = column.key;
     if (!customColumns.some((item) => item.key === key)) onCustomColumnsChange([...customColumns, column]);
-    if (!tableColumns.includes(key)) onColumnsChange(withLockedColumns([...tableColumns.filter((item) => !effectiveLockedColumns.includes(item)), key], effectiveLockedColumns));
+    if (!selectedColumns.includes(key)) onColumnsChange(withLockedColumns([...selectedColumns.filter((item) => !effectiveLockedColumns.includes(item)), key], effectiveLockedColumns));
   }
   function changeTechnicalTimeframe(column: string, nextTimeframe: ScannerTimeframe) {
     const existing = customColumns.find((item) => item.key === column);
@@ -649,10 +660,10 @@ function MarketListTable({
       <label className="market-list-search"><Search size={14} /><input aria-label={`Search ${title}`} onChange={(event) => setQuery(event.target.value)} placeholder="Search symbols and values" value={query} /></label>
       <label className="market-list-filter"><Filter size={13} /><select aria-label={`Filter ${title}`} onChange={(event) => setFilterMode(event.target.value)} value={filterMode}><option value="all">All rows</option><option value="advancing">Advancing</option><option value="declining">Declining</option><option value="news_hot">Hot news</option><option value="news_cold">Cold news</option><option value="sec_hot">Hot SEC</option><option value="sec_cold">Cold SEC</option>{labelFilters.news.length ? <optgroup label="News labels">{labelFilters.news.map((labelValue) => <option key={`news:${labelValue}`} value={`news_label:${normalizeLabel(labelValue)}`}>{labelValue}</option>)}</optgroup> : null}{labelFilters.sec.length ? <optgroup label="SEC labels">{labelFilters.sec.map((labelValue) => <option key={`sec:${labelValue}`} value={`sec_label:${normalizeLabel(labelValue)}`}>{labelValue}</option>)}</optgroup> : null}</select></label>
       <span>{visibleRows.length} of {rows.length}</span>
-      <button aria-expanded={columnPickerOpen} className="market-list-columns-button" onClick={() => setColumnPickerOpen((open) => !open)} type="button"><Columns3 size={14} /> Columns <b>{tableColumns.length}</b></button>
+      <button aria-expanded={columnPickerOpen} className="market-list-columns-button" onClick={() => setColumnPickerOpen((open) => !open)} type="button"><Columns3 size={14} /> Columns <b>{selectedColumns.length}</b></button>
     </div>
-    <div className="market-list-table-scroll"><table className="market-list-table"><thead><tr>{tableColumns.map((column) => { const definition = catalogField(column, customColumns, catalog); const sorted = sort.column === column; const className = columnClass(column, definition); const menuOpen = headerMenuColumn === column; return column === "logo" ? <th aria-label="Ticker logo" className={className} key={column} /> : <th aria-sort={sorted ? (sort.direction === "asc" ? "ascending" : "descending") : "none"} className={className} data-menu-open={menuOpen ? "true" : undefined} key={column}><button aria-expanded={menuOpen} onClick={() => setHeaderMenuColumn((current) => current === column ? null : column)} title={`Configure ${definition.label}`} type="button"><span>{definition.label}<small data-kind={definition.kind}>{technicalScopeLabel(definition) ?? definition.kind}</small></span>{sorted ? sort.direction === "asc" ? <ArrowUp size={12} /> : <ArrowDown size={12} /> : <ChevronDown size={12} />}</button>{menuOpen ? <ColumnHeaderMenu column={column} definition={definition} locked={effectiveLockedColumns.includes(column)} onAnchorChange={(value) => changeTechnicalAnchor(column, value)} onMove={(target) => moveColumn(column, target)} onRemove={() => removeColumn(column)} onSort={(direction) => changeSort(column, direction)} onSourceChange={(value) => changeTechnicalSource(column, value)} onTimeframeChange={(value) => changeTechnicalTimeframe(column, value)} ref={headerMenuRef} /> : null}</th>; })}{rowAction ? <th aria-label="Row actions" /> : null}</tr></thead><tbody>{visibleRows.length ? visibleRows.map((row, index) => { const ticker = String(row.ticker ?? row.symbol ?? "").trim().toUpperCase(); const selectable = Boolean(ticker && onTickerSelect); const select = () => { if (selectable) onTickerSelect?.(ticker); }; return <tr aria-label={selectable ? `Open ${ticker} Charts & Quotes` : undefined} data-selectable={selectable ? "true" : undefined} key={`${ticker || "row"}:${row.event_time ?? index}:${index}`} onClick={(event) => { if (!(event.target as HTMLElement).closest("button, input, select, a")) select(); }} onKeyDown={(event) => { if (selectable && (event.key === "Enter" || event.key === " ")) { event.preventDefault(); select(); } }} tabIndex={selectable ? 0 : undefined}>{tableColumns.map((column) => { const definition = catalogField(column, customColumns, catalog); return <td className={`${toneClass(row[column], column, customColumns, catalog)} ${columnClass(column, definition)}`.trim()} key={column}>{renderMarketCell(row, column, presentations, customColumns, catalog)}</td>; })}{rowAction ? <td className="market-list-row-action">{rowAction(row)}</td> : null}</tr>; }) : <tr><td className="market-list-empty" colSpan={tableColumns.length + (rowAction ? 1 : 0)}>{empty}</td></tr>}</tbody></table></div>
-    {columnPickerOpen ? <ColumnPicker catalog={catalog} columns={tableColumns} customColumns={customColumns} fieldCoverage={fieldCoverage} lockedColumns={effectiveLockedColumns} onAddTechnical={addTechnicalColumn} onChange={onColumnsChange} onClose={() => setColumnPickerOpen(false)} /> : null}
+    <div className="market-list-table-scroll"><table className={`market-list-table${companyInIdentity ? " with-company-identity" : ""}`}><thead><tr>{tableColumns.map((column) => { const definition = catalogField(column, customColumns, catalog); const sorted = sort.column === column; const className = columnClass(column, definition); const menuOpen = headerMenuColumn === column; return column === "logo" ? <th aria-label="Ticker logo" className={className} key={column} /> : <th aria-sort={sorted ? (sort.direction === "asc" ? "ascending" : "descending") : "none"} className={className} data-menu-open={menuOpen ? "true" : undefined} key={column}><button aria-expanded={menuOpen} onClick={() => setHeaderMenuColumn((current) => current === column ? null : column)} title={`Configure ${definition.label}`} type="button"><span>{definition.label}<small data-kind={definition.kind}>{technicalScopeLabel(definition) ?? definition.kind}</small></span>{sorted ? sort.direction === "asc" ? <ArrowUp size={12} /> : <ArrowDown size={12} /> : <ChevronDown size={12} />}</button>{menuOpen ? <ColumnHeaderMenu column={column} definition={definition} locked={effectiveLockedColumns.includes(column)} onAnchorChange={(value) => changeTechnicalAnchor(column, value)} onMove={(target) => moveColumn(column, target)} onRemove={() => removeColumn(column)} onSort={(direction) => changeSort(column, direction)} onSourceChange={(value) => changeTechnicalSource(column, value)} onTimeframeChange={(value) => changeTechnicalTimeframe(column, value)} ref={headerMenuRef} /> : null}</th>; })}{rowAction ? <th aria-label="Row actions" /> : null}</tr></thead><tbody>{visibleRows.length ? visibleRows.map((row, index) => { const ticker = String(row.ticker ?? row.symbol ?? "").trim().toUpperCase(); const selectable = Boolean(ticker && onTickerSelect); const select = () => { if (selectable) onTickerSelect?.(ticker); }; return <tr aria-label={selectable ? `Open ${ticker} Charts & Quotes` : undefined} data-selectable={selectable ? "true" : undefined} key={`${ticker || "row"}:${row.event_time ?? index}:${index}`} onClick={(event) => { if (!(event.target as HTMLElement).closest("button, input, select, a")) select(); }} onKeyDown={(event) => { if (selectable && (event.key === "Enter" || event.key === " ")) { event.preventDefault(); select(); } }} tabIndex={selectable ? 0 : undefined}>{tableColumns.map((column) => { const definition = catalogField(column, customColumns, catalog); return <td className={`${toneClass(row[column], column, customColumns, catalog)} ${columnClass(column, definition)}`.trim()} key={column}>{renderMarketCell(row, column, presentations, customColumns, catalog, companyInIdentity)}</td>; })}{rowAction ? <td className="market-list-row-action">{rowAction(row)}</td> : null}</tr>; }) : <tr><td className="market-list-empty" colSpan={tableColumns.length + (rowAction ? 1 : 0)}>{empty}</td></tr>}</tbody></table></div>
+    {columnPickerOpen ? <ColumnPicker catalog={catalog} columns={selectedColumns} customColumns={customColumns} fieldCoverage={fieldCoverage} lockedColumns={effectiveLockedColumns} onAddTechnical={addTechnicalColumn} onChange={onColumnsChange} onClose={() => setColumnPickerOpen(false)} /> : null}
   </div>;
 }
 
@@ -782,13 +793,14 @@ function normalizeScannerRows(rows: ScreenerRow[]) {
   });
 }
 
-function renderMarketCell(row: ScreenerRow, column: string, presentations: ReturnType<typeof useTickerPresentations>, customColumns: ScannerCustomColumn[], catalog = FIELD_CATALOG) {
+function renderMarketCell(row: ScreenerRow, column: string, presentations: ReturnType<typeof useTickerPresentations>, customColumns: ScannerCustomColumn[], catalog = FIELD_CATALOG, companyInIdentity = false) {
   const value = row[column];
   const ticker = String(row.ticker ?? row.symbol ?? "").trim().toUpperCase();
   if (column === "logo") return <TickerLogo logoUrl={String(row.logo_url ?? presentations[ticker]?.logo_url ?? "")} showLogoPlaceholder ticker={ticker} />;
   if (column === "ticker" || column === "symbol") {
-    return <span className="market-list-ticker-cell">
-      <strong>{ticker}</strong>
+    const companyName = companyInIdentity ? String(row.company_name ?? presentations[ticker]?.issuer_name ?? "").trim() : "";
+    return <span className={`market-list-ticker-cell${companyName ? " company-card" : ""}`} title={companyName ? `${ticker} · ${companyName}` : ticker}>
+      <span className="market-list-identity-copy"><strong>{ticker}</strong>{companyName ? <small>{companyName}</small> : null}</span>
       <span className="market-list-ticker-events">
         <TickerEventIcon source="News" value={String(row.live_news_recency ?? "none")} />
         <TickerEventIcon source="SEC" value={String(row.sec_recency ?? "none")} />
