@@ -515,19 +515,24 @@ def validate_canvas_interactions(
             page.get_by_label("Watchlist configuration steps").get_by_role(
                 "button", name=re.compile(r"^2\s+Rules$")
             ).click()
-            create_filter = page.get_by_role(
-                "button", name="New registry filter", exact=True
-            )
-            if create_filter.count() != 1 or create_filter.is_disabled():
-                issues.append("Watchlist rules do not expose an enabled registry-backed filter action")
+            rule_lookup = page.get_by_role("button", name="Rule to include", exact=True)
+            include_rule = page.get_by_role("button", name="Include rule", exact=True)
+            initial_cards = page.locator(".discovery-rule-card-list > article").count()
+            if rule_lookup.count() != 1 or rule_lookup.is_disabled() or include_rule.count() != 1:
+                issues.append("Watchlist rules do not expose the QMD registry inclusion lookup")
             else:
-                create_filter.click()
-                dialog = page.get_by_role("dialog")
-                if dialog.count() != 1 or "Define a registry-backed membership rule" not in dialog.inner_text():
-                    issues.append("registry-backed Watchlist filter dialog did not open")
-                elif "Data source" not in dialog.inner_text() or "Comparison" not in dialog.inner_text():
-                    issues.append("Watchlist filter dialog does not expose registered field and comparator controls")
-                dialog.get_by_role("button", name="Cancel", exact=True).click()
+                rule_lookup.click()
+                page.get_by_role("searchbox", name="Search Rule to include").fill("Penny Stocks")
+                page.get_by_role("option", name=re.compile(r"^Penny Stocks\b")).click()
+                if include_rule.is_disabled():
+                    issues.append("Watchlist rule inclusion stays disabled after selecting a QMD rule")
+                else:
+                    include_rule.click()
+                    assigned_cards = page.locator(".discovery-rule-card-list > article")
+                    if assigned_cards.count() != initial_cards + 1:
+                        issues.append("selected QMD rule was not added to the Watchlist")
+                    if page.locator('.discovery-rule-card-list > article[data-assignment="unused"]').count():
+                        issues.append("Watchlist rule list exposes unassigned registry cards")
             if page.evaluate("document.documentElement.scrollWidth > document.documentElement.clientWidth"):
                 issues.append("Market Discovery page leaks horizontal scrolling to the document")
         except Exception as exc:

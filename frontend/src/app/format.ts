@@ -60,6 +60,24 @@ export function formatMoney(value: unknown): string {
   return numeric.toLocaleString(undefined, { style: "currency", currency: "USD" });
 }
 
+export function formatSemanticNumber(value: unknown, unit = "", maximumFractionDigits = 4): string {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return "-";
+  const normalizedUnit = unit.trim().toLocaleLowerCase();
+  if (["currency", "usd", "us dollar", "us dollars", "$"].includes(normalizedUnit)) {
+    return numeric.toLocaleString("en-US", {
+      currency: "USD",
+      maximumFractionDigits,
+      style: "currency",
+    });
+  }
+  if (["percent", "percentage", "%"].includes(normalizedUnit)) {
+    return `${numeric.toLocaleString("en-US", { maximumFractionDigits })}%`;
+  }
+  const formatted = numeric.toLocaleString("en-US", { maximumFractionDigits });
+  return unit && !["number", "count", "integer", "float"].includes(normalizedUnit) ? `${formatted} ${unit}` : formatted;
+}
+
 const titleAcronyms: Record<string, string> = {
   atr: "ATR",
   bb: "BB",

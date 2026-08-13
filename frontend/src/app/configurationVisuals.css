@@ -709,12 +709,15 @@
 .discovery-calculation-choices small { color: var(--muted-foreground); font-size: 11px; line-height: 1.4; }
 
 .discovery-rule-catalog { display: grid; gap: 14px; }
-.discovery-rule-catalog > header { align-items: end; display: grid; gap: 18px; grid-template-columns: minmax(0, 1fr) minmax(260px, .7fr); }
+.discovery-rule-catalog > header { align-items: end; display: grid; gap: 12px 18px; grid-template-columns: minmax(220px, .8fr) minmax(240px, .55fr) minmax(330px, 1fr); }
 .discovery-rule-catalog > header > div { display: grid; gap: 4px; }
 .discovery-rule-catalog > header span { color: var(--muted-foreground); font-size: 10px; font-weight: 700; letter-spacing: .055em; text-transform: uppercase; }
 .discovery-rule-catalog > header small { color: var(--muted-foreground); }
 .discovery-rule-catalog > header label { align-items: center; border: 1px solid var(--configuration-rule); border-radius: 8px; display: flex; gap: 8px; min-height: 38px; padding: 0 11px; }
 .discovery-rule-catalog > header input { background: transparent; border: 0; min-width: 0; outline: 0; width: 100%; }
+.discovery-rule-add { align-items: stretch; display: grid; gap: 8px; grid-template-columns: minmax(220px, 1fr) auto; }
+.discovery-rule-add .configuration-lookup-button { min-height: 38px; width: 100%; }
+.discovery-rule-add .button { min-height: 38px; white-space: nowrap; }
 .discovery-rule-card-list { display: grid; gap: 10px; }
 .discovery-rule-card-list > article { align-items: start; border: 1px solid var(--configuration-rule); border-radius: 9px; display: grid; gap: 14px; grid-template-columns: 32px minmax(0, 1fr) auto; padding: 15px; }
 .discovery-rule-card-list > article[data-assignment="include"] { border-left: 3px solid #16a34a; }
@@ -771,6 +774,8 @@
   .strategy-authoring-step-navigation { grid-template-columns: 120px minmax(0, 1fr) 120px; }
   .strategy-editor-guided .strategy-authoring-steps { grid-template-columns: repeat(11, minmax(92px, 1fr)); }
   .discovery-guided-stage { width: 90%; }
+  .discovery-rule-catalog > header { grid-template-columns: minmax(220px, .8fr) minmax(330px, 1fr); }
+  .discovery-rule-catalog > header > label { grid-column: 1 / -1; grid-row: 2; }
 }
 
 @media (max-width: 760px) {
@@ -788,6 +793,11 @@
   .discovery-watchlist-ranking-fields,
   .discovery-classification-reference section > div,
   .discovery-column-card-list { grid-template-columns: 1fr; }
+  .discovery-rule-catalog > header,
+  .discovery-rule-add { grid-template-columns: 1fr; }
+  .discovery-rule-catalog > header > label { grid-column: auto; grid-row: auto; }
+  .discovery-rule-card-list > article { grid-template-columns: 28px minmax(0, 1fr); }
+  .discovery-rule-assignment { grid-column: 2; }
 }
 
 /* Configuration Workbench v2: one shared hierarchy for every non-Canvas route. */

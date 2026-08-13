@@ -37,6 +37,7 @@ import { createPortal } from "react-dom";
 import { api } from "../api/client";
 import { readCanvasRegistry, snapshotCanvasProfile } from "../app/canvasWorkspace";
 import { InventoryFilterSelect } from "../app/components/InventoryFilterSelect";
+import { formatSemanticNumber } from "../app/format";
 
 export type TradingConfigurationSection =
   | "strategy"
@@ -128,6 +129,7 @@ type StrategyInput = {
   timeframes: string[];
   value_type: string;
   filter_operators?: string[];
+  unit?: string;
 };
 
 type StrategyCatalogItem = {
@@ -578,6 +580,7 @@ function discoveryFieldInput(field: DiscoveryField): StrategyInput {
     source_id: field.source_id,
     summary: field.description,
     timeframes: field.timeframes.length ? field.timeframes : ["event"],
+    unit: field.unit,
     value_type: field.value_type,
     filter_operators: field.filter_operators,
   };
@@ -2242,7 +2245,7 @@ function MarketDiscoveryStudio({ onChange, section }: { onChange: (value: Market
           </div>
           <section className="discovery-watchlist-question">
             {watchlistQuestion === "identity" ? <><header><h2>Name and describe this Watchlist</h2></header><div className="strategy-identity-fields"><label className="strategy-identity-field"><span>Watchlist name</span><input onChange={(event) => replaceWatchlist({ ...selectedWatchlist, name: event.target.value })} value={selectedWatchlist.name} /><small>Strategies use this name when selecting their discovery source.</small></label><label className="strategy-identity-field"><span>Description</span><textarea onChange={(event) => replaceWatchlist({ ...selectedWatchlist, description: event.target.value })} rows={3} value={selectedWatchlist.description} /><small>Explain which candidates this Watchlist is intended to retain.</small></label><label className="configuration-field configuration-boolean"><span>Enabled</span><small>{selectedWatchlist.availability === "integration_pending" ? selectedWatchlist.availability_detail || "The upstream integration required by this template is not available." : `Controls whether the causal resolver maintains this Watchlist. Current runtime projection: ${selectedRuntimeWatchlist?.member_count ?? 0} members.`}</small><input checked={selectedWatchlist.enabled} disabled={selectedWatchlist.availability === "integration_pending"} onChange={(event) => replaceWatchlist({ ...selectedWatchlist, enabled: event.target.checked })} type="checkbox" /></label></div><WatchlistRuleSummary capabilities={discoveryCapabilities} ruleSets={section.rule_sets} watchlist={selectedWatchlist} /></> : null}
-            {watchlistQuestion === "rules" ? <><header><h2>Which candidates may enter or must be excluded?</h2></header><ClassificationReference classifications={section.classifications} /><WatchlistRuleChoices fields={section.field_catalog} onCatalogChange={(ruleSets, watchlist) => onChange({ ...section, rule_sets: ruleSets, watchlists: section.watchlists.map((row) => row.watchlist_id === watchlist.watchlist_id ? watchlist : row) })} onChange={replaceWatchlist} ruleSets={section.rule_sets} watchlist={selectedWatchlist} /></> : null}
+            {watchlistQuestion === "rules" ? <><header><h2>Which candidates may enter or must be excluded?</h2></header><ClassificationReference classifications={section.classifications} /><WatchlistRuleChoices fields={section.field_catalog} onChange={replaceWatchlist} ruleSets={section.rule_sets} watchlist={selectedWatchlist} /></> : null}
             {watchlistQuestion === "ranking" ? <><header><h2>How should passing candidates be ranked and limited?</h2></header><div className="configuration-field-grid discovery-watchlist-ranking-fields"><SelectField help="QMD sorts passing candidates by this published observation before applying maximum membership." label="Ranking field" onChange={(ranking_field) => replaceWatchlist({ ...selectedWatchlist, ranking_field })} options={section.core_scan.calculations.filter((row) => row.enabled || row.capability_id === selectedWatchlist.ranking_field).map((row) => ({ description: row.description, label: row.name, value: row.capability_id }))} searchable value={selectedWatchlist.ranking_field} /><SelectField help="Descending keeps the largest scores first. Ascending keeps the smallest or most negative scores first." label="Ranking direction" onChange={(ranking_direction) => replaceWatchlist({ ...selectedWatchlist, ranking_direction: ranking_direction as WatchlistConfig['ranking_direction'] })} options={[{ label: "Highest first", value: "descending", description: "Largest values receive the best rank." }, { label: "Lowest first", value: "ascending", description: "Smallest or most negative values receive the best rank." }]} value={selectedWatchlist.ranking_direction} /><NumberField help="Configurable N. Templates start at 10 and may be changed for this Watchlist." label="Maximum members (N)" minimum={1} onChange={(maximum_size) => replaceWatchlist({ ...selectedWatchlist, maximum_size })} step={1} unit="symbols" value={selectedWatchlist.maximum_size} /></div></> : null}
             {watchlistQuestion === "columns" ? <><header><h2>Which facts should this Watchlist show?</h2></header><WatchlistColumnChoices columns={section.column_catalog} onChange={(columns) => replaceWatchlist({ ...selectedWatchlist, columns })} selected={selectedWatchlist.columns} /></> : null}
             {watchlistQuestion === "timing" ? <><header><h2>How often should membership be refreshed and expire?</h2></header><div className="configuration-field-grid"><NumberField help="How often QMD resolves the Watchlist from its source scan." label="Refresh interval" minimum={1} onChange={(refresh_interval_ms) => replaceWatchlist({ ...selectedWatchlist, refresh_interval_ms })} step={100} unit="ms" value={selectedWatchlist.refresh_interval_ms} /><fieldset className="configuration-choice-set discovery-expiry-policy"><legend>Membership expiry</legend><p>A symbol leaves at the end of its New York trading day by default. Choose an override only when this Watchlist requires different persistence.</p><div>{[["end_of_trading_day", "End of trading day", "Remove the symbol at the applicable New York session boundary."], ["time_to_live", "Time to live", "Remove membership when it is not reconfirmed within a fixed duration."], ["never", "No automatic expiry", "Keep membership until a rule or manual action removes it."]].map(([value, label, detail]) => <label key={value}><input checked={selectedWatchlist.membership_expiry === value} name={`expiry-${selectedWatchlist.watchlist_id}`} onChange={() => replaceWatchlist({ ...selectedWatchlist, membership_expiry: value as WatchlistConfig["membership_expiry"] })} type="radio" /><span><strong>{label}</strong><small>{detail}</small></span></label>)}</div></fieldset>{selectedWatchlist.membership_expiry === "time_to_live" ? <NumberField help="Positive duration without a confirming refresh before membership expires." label="Membership TTL" minimum={1} onChange={(membership_ttl_ms) => replaceWatchlist({ ...selectedWatchlist, membership_ttl_ms })} step={1000} unit="ms" value={selectedWatchlist.membership_ttl_ms} /> : null}</div></> : null}
@@ -2425,21 +2428,18 @@ function WatchlistColumnChoices({ columns, onChange, selected }: { columns: Watc
   </section>;
 }
 
-function WatchlistRuleChoices({ fields, onCatalogChange, onChange, ruleSets, watchlist }: { fields: DiscoveryField[]; onCatalogChange: (ruleSets: RuleSetDefinition[], watchlist: WatchlistConfig) => void; onChange: (value: WatchlistConfig) => void; ruleSets: RuleSetDefinition[]; watchlist: WatchlistConfig }) {
+function WatchlistRuleChoices({ fields, onChange, ruleSets, watchlist }: { fields: DiscoveryField[]; onChange: (value: WatchlistConfig) => void; ruleSets: RuleSetDefinition[]; watchlist: WatchlistConfig }) {
   const [query, setQuery] = useState("");
-  const [filter, setFilter] = useState("all");
-  const [newRuleSet, setNewRuleSet] = useState<RuleSetDefinition | null>(null);
+  const [ruleToAddId, setRuleToAddId] = useState("");
   const catalog = fields.map(discoveryFieldInput);
   const fieldBySource = new Map(fields.map((field) => [field.source_id, field]));
-  const eligibleFields = fields.filter((field) => field.filterable && ["implemented", "reference_only", "live_only"].includes(field.implementation_status));
   const watchlistRules = ruleSets.filter((ruleSet) => ruleSet.scope === "watchlist" || watchlist.inclusion_rule_sets.includes(ruleSet.rule_set_id) || watchlist.exclusion_rule_sets.includes(ruleSet.rule_set_id));
   const ruleSourceTypes = (ruleSet: RuleSetDefinition) => [...new Set(ruleSet.conditions.flatMap((condition) => [condition.left_source_id, condition.right_source_id]).filter(Boolean).map((sourceId) => fieldBySource.get(sourceId)?.semantic_type).filter(Boolean))];
-  const visibleRules = watchlistRules.filter((ruleSet) => {
-    const sourceTypes = new Set(ruleSourceTypes(ruleSet));
-    const selected = watchlist.inclusion_rule_sets.includes(ruleSet.rule_set_id) || watchlist.exclusion_rule_sets.includes(ruleSet.rule_set_id);
-    const matchesFilter = filter === "all" || (filter === "selected" && selected) || sourceTypes.has(filter as DiscoveryCapability["capability_type"]);
+  const selectedRules = watchlistRules.filter((ruleSet) => watchlist.inclusion_rule_sets.includes(ruleSet.rule_set_id) || watchlist.exclusion_rule_sets.includes(ruleSet.rule_set_id));
+  const availableRules = watchlistRules.filter((ruleSet) => !watchlist.inclusion_rule_sets.includes(ruleSet.rule_set_id) && !watchlist.exclusion_rule_sets.includes(ruleSet.rule_set_id));
+  const visibleRules = selectedRules.filter((ruleSet) => {
     const search = query.trim().toLocaleLowerCase();
-    return matchesFilter && (!search || [ruleSet.name, ruleSet.description, ruleSetMeaning(ruleSet, catalog)].some((value) => value.toLocaleLowerCase().includes(search)));
+    return !search || [ruleSet.name, ruleSet.description, ruleSetMeaning(ruleSet, catalog)].some((value) => value.toLocaleLowerCase().includes(search));
   });
   function assign(ruleSetId: string, target: "include" | "exclude" | "unused") {
     onChange({
@@ -2448,36 +2448,18 @@ function WatchlistRuleChoices({ fields, onCatalogChange, onChange, ruleSets, wat
       exclusion_rule_sets: target === "exclude" ? [...watchlist.exclusion_rule_sets.filter((id) => id !== ruleSetId), ruleSetId] : watchlist.exclusion_rule_sets.filter((id) => id !== ruleSetId),
     });
   }
-  function createRuleSet() {
-    const ruleSetId = uniqueId("watchlist-rule", ruleSets.map((row) => row.rule_set_id));
-    const field = eligibleFields[0];
-    const comparator = field?.filter_operators[0] ?? "greater_or_equal";
-    setNewRuleSet({
-      conditions: field ? [{ comparator, condition_id: `${ruleSetId}-condition`, enabled: true, left_source_id: field.source_id, left_timeframe: field.timeframes[0] ?? "event", right_source_id: "", right_timeframe: "", value: comparator === "is_true" ? null : 0 }] : [],
-      description: "",
-      enabled: true,
-      name: "New Watchlist filter",
-      operator: "all",
-      required_score: 1,
-      rule_set_id: ruleSetId,
-      scope: "watchlist",
-    });
-  }
-  function saveRuleSet() {
-    if (!newRuleSet?.name.trim() || !newRuleSet.conditions.length) return;
-    const saved = { ...newRuleSet, name: newRuleSet.name.trim(), scope: "watchlist" as const };
-    onCatalogChange([...ruleSets, saved], { ...watchlist, inclusion_rule_sets: [...watchlist.inclusion_rule_sets, saved.rule_set_id] });
-    setNewRuleSet(null);
+  function addRule() {
+    if (!ruleToAddId || !availableRules.some((ruleSet) => ruleSet.rule_set_id === ruleToAddId)) return;
+    assign(ruleToAddId, "include");
+    setRuleToAddId("");
   }
   return <div className="discovery-rule-catalog">
-    <header><div><span>Reusable rule sets</span><strong>{visibleRules.length} of {watchlistRules.length}</strong><small>Choose whether each passing rule admits or excludes a Core Scan candidate.</small></div><label><Search size={15} /><input aria-label="Search Watchlist rules" onChange={(event) => setQuery(event.target.value)} placeholder="Search rule meaning" type="search" value={query} /></label><button className="button compact secondary" disabled={!eligibleFields.length} onClick={createRuleSet} type="button"><Plus size={14} /> New registry filter</button></header>
-    <div className="discovery-rule-filters" role="group" aria-label="Watchlist rule filters">{[["all", "All"], ["selected", "Selected"], ["market_data", "Market data"], ["reference", "Reference data"], ["indicator", "Indicators"], ["signal", "Signals"], ["event", "Events"]].map(([value, label]) => <button aria-pressed={filter === value} key={value} onClick={() => setFilter(value)} type="button">{label}</button>)}</div>
+    <header><div><span>Selected rule sets</span><strong>{selectedRules.length} selected · {availableRules.length} available</strong><small>Only rules assigned to this Watchlist appear below. Add another QMD registry rule as an inclusion rule.</small></div><label><Search size={15} /><input aria-label="Search selected Watchlist rules" onChange={(event) => setQuery(event.target.value)} placeholder="Search selected rules" type="search" value={query} /></label><div className="discovery-rule-add"><InventoryFilterSelect ariaLabel="Rule to include" className="configuration-lookup-button" onChange={setRuleToAddId} options={[{ description: availableRules.length ? "Choose a QMD registry rule to include in this Watchlist." : "Every available QMD rule is already assigned.", label: availableRules.length ? "Choose a rule to include" : "No rules available", value: "" }, ...availableRules.map((ruleSet) => ({ description: ruleSet.description || ruleSetMeaning(ruleSet, catalog), label: ruleSet.name, value: ruleSet.rule_set_id }))]} searchable={availableRules.length > 7} searchPlaceholder="Find a QMD rule…" value={ruleToAddId} /><button className="button compact" disabled={!ruleToAddId} onClick={addRule} type="button"><Plus size={14} /> Include rule</button></div></header>
     <div className="discovery-rule-card-list">{visibleRules.map((ruleSet, index) => {
       const assignment = watchlist.inclusion_rule_sets.includes(ruleSet.rule_set_id) ? "include" : watchlist.exclusion_rule_sets.includes(ruleSet.rule_set_id) ? "exclude" : "unused";
       const types = ruleSourceTypes(ruleSet);
       return <article data-assignment={assignment} key={ruleSet.rule_set_id}><span className="discovery-capability-index">{index + 1}</span><div><header><strong>{ruleSet.name}</strong><span>{types.length ? types.map((type) => type === "system" ? "System" : capabilityTypeLabel(type as DiscoveryCapability["capability_type"])).join(" · ") : "Rule set"}</span></header>{ruleSet.description ? <p>{ruleSet.description}</p> : null}<RuleSetMeaning catalog={catalog} ruleSet={ruleSet} /></div><div className="discovery-rule-assignment" role="group" aria-label={`Use ${ruleSet.name}`}><button aria-pressed={assignment === "include"} onClick={() => assign(ruleSet.rule_set_id, assignment === "include" ? "unused" : "include")} type="button">Include</button><button aria-pressed={assignment === "exclude"} onClick={() => assign(ruleSet.rule_set_id, assignment === "exclude" ? "unused" : "exclude")} type="button">Exclude</button></div></article>;
-    })}{!visibleRules.length ? <EmptyState title="No matching rule sets" detail="Change the search or filter to show reusable Watchlist rules." /> : null}</div>
-    {newRuleSet ? <RuleSetCreationDialog catalog={eligibleFields.map(discoveryFieldInput)} description="Choose only registered fields and supported operators. The saved filter becomes part of this Market Discovery draft and is automatically included in the Watchlist." eyebrow="New Watchlist filter" onCancel={() => setNewRuleSet(null)} onChange={setNewRuleSet} onSave={saveRuleSet} ruleSet={newRuleSet} title="Define a registry-backed membership rule" /> : null}
+    })}{!visibleRules.length ? <EmptyState title={selectedRules.length ? "No matching selected rules" : "No rules selected"} detail={selectedRules.length ? "Clear the search to show the rules assigned to this Watchlist." : "Choose a QMD registry rule above and include it in this Watchlist."} /> : null}</div>
   </div>;
 }
 
@@ -3780,9 +3762,9 @@ function formatRuleCondition(condition: RuleCondition, catalog: StrategyInput[])
   const leftReference = sourceReference(left, condition.left_source_id, condition.left_timeframe);
   const rightReference = condition.right_source_id
     ? sourceReference(right, condition.right_source_id, condition.right_timeframe)
-    : condition.value === null || condition.value === undefined ? "an unset threshold" : String(condition.value);
+    : condition.value === null || condition.value === undefined ? "an unset threshold" : formatRuleThreshold(condition.value, left);
   if (condition.comparator === "is_true") return `${leftReference} is true`;
-  if (condition.comparator === "above_by_bps") return `${leftReference} is ${condition.value ?? 0} bps above ${rightReference}`;
+  if (condition.comparator === "above_by_bps") return `${leftReference} is ${formatSemanticNumber(condition.value ?? 0)} bps above ${rightReference}`;
   const comparator = {
     equals: "equals",
     greater_or_equal: "is at least",
@@ -3791,6 +3773,10 @@ function formatRuleCondition(condition: RuleCondition, catalog: StrategyInput[])
     less_than: "is less than",
   }[condition.comparator] ?? readableLabel(condition.comparator).toLocaleLowerCase();
   return `${leftReference} ${comparator} ${rightReference}`;
+}
+
+function formatRuleThreshold(value: unknown, source: StrategyInput | undefined | null): string {
+  return formatSemanticNumber(value, source?.unit);
 }
 
 function ruleSetMeaning(ruleSet: Pick<RuleSetDefinition, "conditions" | "enabled" | "operator" | "required_score">, catalog: StrategyInput[]): string {
@@ -3815,7 +3801,7 @@ function RuleEvidenceOperand({ catalog, sourceId, timeframe }: { catalog: Strate
 
 function RuleConditionMeaning({ catalog, condition }: { catalog: StrategyInput[]; condition: RuleCondition }) {
   const relation = condition.comparator === "above_by_bps"
-    ? `${condition.value ?? 0} bps above`
+    ? `${formatSemanticNumber(condition.value ?? 0)} bps above`
     : ({
         equals: "equals",
         greater_or_equal: "is at least",
@@ -3830,7 +3816,7 @@ function RuleConditionMeaning({ catalog, condition }: { catalog: StrategyInput[]
     <span className="strategy-rule-evidence-relation">{relation}</span>
     {showTarget ? condition.right_source_id
       ? <RuleEvidenceOperand catalog={catalog} sourceId={condition.right_source_id} timeframe={condition.right_timeframe} />
-      : <strong className="strategy-rule-evidence-value">{condition.value === null || condition.value === undefined ? "Unset" : String(condition.value)}</strong> : null}
+      : <strong className="strategy-rule-evidence-value">{condition.value === null || condition.value === undefined ? "Unset" : formatRuleThreshold(condition.value, inputSource(catalog, condition.left_source_id))}</strong> : null}
   </div>;
 }
 
