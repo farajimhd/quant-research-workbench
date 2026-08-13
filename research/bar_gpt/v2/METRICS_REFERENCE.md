@@ -43,17 +43,18 @@ The separate full-catalog chunk trainer has a different evaluation cadence:
 | Required objective | Every microbatch | Current training microbatch | No |
 | Host/W&B objective record | Every 1,000,000 seen origins | Origin-weighted accumulation | No |
 | F1 training evaluation | Every 5,000,000 seen origins | Threshold-crossing update | No |
-| Chunk monitor | After each approximately 30M-origin block-aligned chunk | A different deterministic stratified panel of at least 1,000,000 held-out origins | Yes |
+| Chunk validation | After every complete repetition of one approximately 30M-origin chunk | The chunk's fixed deterministic stratified panel of at least 1,000,000 held-out origins | Yes |
 | Outer-epoch evaluation | After every complete training-population pass | Fixed 1M training audit and fixed complete 5M validation | Yes |
 
-Every training block is consumed once per outer epoch. Chunk boundaries are
-defined by complete blocks, so observed chunk origins vary around 30M. The
-next epoch uses a different deterministic worker-owned shuffle and therefore
-different chunk membership. Monitor panels vary by epoch and chunk but are
-disjoint from training, fixed validation, and locked test. They are diagnostic
-and never select the final model directly. Complete validation drives
-epoch-level early stopping. All records, including chunk and validation
-records, retain cumulative valid training origins as the W&B step.
+Every training block belongs to exactly one chunk per outer epoch. Chunk
+boundaries are defined by complete blocks, so observed chunk origins vary
+around 30M. The exact block membership is replayed for up to 20 repetitions.
+Each chunk has one fixed 1M validation panel, disjoint from training, fixed
+outer validation, and locked test. Its total loss drives chunk-level adaptive
+stopping. The next outer epoch uses a different deterministic shuffle and
+therefore different chunk membership and fixed chunk-validation panels.
+Complete 5M validation drives outer-epoch early stopping. All records retain
+cumulative valid training origins as the W&B step.
 
 ## Objective metrics
 
@@ -179,8 +180,9 @@ a separately certified condition-enriched evaluation panel.
 - `train_*`: bounded training diagnostics.
 - `monitor_*`: repeated deterministic 250K-origin prefix of the 2026 monitor
   authority; intended for trend detection, not the final model claim.
-- `chunk_monitor_*`: rotating stratified 1M-origin panels used by full-catalog
-  chunk training; each record also carries `chunk/*` epoch and chunk metadata.
+- `chunk_validation_*`: fixed stratified 1M-origin panel reused across all
+  repetitions of its full-catalog chunk; each record also carries `chunk/*`
+  outer-epoch, chunk, and repetition metadata.
 - `epoch_train_*`: deterministic training-population epoch audit.
 - `validation_*`: final 2026 validation panel.
 - `epoch_generalization_gap/*`: positive means validation degraded relative to
@@ -194,6 +196,7 @@ training panel.
 
 Full-catalog W&B logs use the same cumulative-origin step. The additional
 `train_progress/outer_epoch`, `train_progress/chunk_index`,
+`train_progress/chunk_epoch`,
 `train_progress/chunk_origins_seen`, and
 `train_progress/chunk_blocks_seen` fields describe position without replacing
 the sample clock.
@@ -201,10 +204,10 @@ the sample clock.
 Full training logs `train_optimization/learning_rate`,
 `train_optimization/epoch_peak_learning_rate`, and
 `train_optimization/chunk_cosine_progress`. The W&B step remains cumulative
-origins seen. Chunk cosine progress is completed blocks divided by the active
-block-aligned chunk budget. It reaches 1 at the chunk boundary, restarts for
-the next chunk, and the epoch peak decays by 0.95 only at an outer-epoch
-transition.
+origins seen. Chunk cosine progress is cumulative origins within the chunk
+divided by `exact_chunk_origins * 20`. It does not restart between chunk
+repetitions. It restarts only when the trainer advances to another chunk; the
+epoch peak decays by 0.95 only at an outer-epoch transition.
 
 ## Epoch checkpoints
 
@@ -217,10 +220,12 @@ validation metrics, generalization gaps, and W&B run identity.
 not replace the immutable epoch checkpoint. An existing epoch filename is
 never silently overwritten.
 
-Full-catalog training additionally stages `checkpoint_latest.pt` after each
-chunk monitor. Its full-chunk state contains the outer epoch, chunk boundary,
-durable worker cursors, epoch-plan hash, and early-stopping counters, so resume
-does not regenerate a different active plan. Immutable epoch checkpoints and
+Full-catalog training additionally stages `checkpoint_latest.pt` after every
+chunk repetition validation. Its state contains outer epoch, exact chunk,
+repetition, durable worker cursors, epoch-plan hash, fixed validation identity,
+cosine position, and both chunk/outer early-stopping counters. Resume therefore
+does not regenerate membership, repeat an accepted optimizer update, or count
+one validation twice. Immutable epoch checkpoints and
 `checkpoint_best_val.pt` retain their ordinary meanings.
 
 ## Overfit acceptance contract

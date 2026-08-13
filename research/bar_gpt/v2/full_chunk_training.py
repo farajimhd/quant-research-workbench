@@ -5,6 +5,7 @@ import hashlib
 import json
 import math
 import os
+import random
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Sequence
@@ -21,15 +22,16 @@ from research.bar_gpt.v2.model_discovery import (
 )
 from research.bar_gpt.v2.offline_shards import (
     OfflineBlockRef,
+    OfflineShardUnit,
     discover_offline_units,
     verify_shard_catalog_lock,
 )
 
 
-FULL_CHUNK_CONTRACT_VERSION = 1
-FULL_CHUNK_MANIFEST_NAME = "full_catalog_chunks_v1.json"
+FULL_CHUNK_CONTRACT_VERSION = 2
+FULL_CHUNK_MANIFEST_NAME = "full_catalog_chunks_v2.json"
 FULL_CHUNK_TARGET_ORIGINS = 30_000_000
-FULL_CHUNK_MONITOR_ORIGINS = 1_000_000
+FULL_CHUNK_STOPPING_VALIDATION_ORIGINS = 1_000_000
 FULL_CHUNK_VALIDATION_ORIGINS = 5_000_000
 FULL_CHUNK_LOCKED_TEST_ORIGINS = 5_000_000
 
@@ -103,7 +105,7 @@ def _sample_grouped_monitor_panel(
     selected.sort(
         key=lambda ref: hashlib.sha256(
             (
-                f"monitor-order|{seed}|{epoch}|{chunk_index}|"
+                f"chunk-validation-order|{seed}|{epoch}|{chunk_index}|"
                 f"{_ref_identity(ref)}"
             ).encode("utf-8")
         ).digest()
@@ -111,7 +113,7 @@ def _sample_grouped_monitor_panel(
     origins = sum(int(ref.origins) for ref in selected)
     if origins < target_origins:
         raise RuntimeError(
-            f"chunk monitor panel has only {origins:,} origins; "
+            f"chunk validation panel has only {origins:,} origins; "
             f"{target_origins:,} required"
         )
     return tuple(selected)
@@ -122,18 +124,20 @@ class ChunkEvaluationPlan:
     index: int
     target_blocks: int
     approximate_target_origins: int
-    monitor_origins: int
-    monitor_hash: str
-    monitor_refs: tuple[OfflineBlockRef, ...]
+    training_ref_indices: tuple[int, ...]
+    validation_origins: int
+    validation_hash: str
+    validation_refs: tuple[OfflineBlockRef, ...]
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "index": self.index,
             "target_blocks": self.target_blocks,
             "approximate_target_origins": self.approximate_target_origins,
-            "monitor_origins": self.monitor_origins,
-            "monitor_hash": self.monitor_hash,
-            "monitor_refs": [asdict(ref) for ref in self.monitor_refs],
+            "training_ref_indices": list(self.training_ref_indices),
+            "validation_origins": self.validation_origins,
+            "validation_hash": self.validation_hash,
+            "validation_refs": [asdict(ref) for ref in self.validation_refs],
         }
 
 
@@ -145,6 +149,7 @@ class EpochChunkPlan:
     training_blocks: int
     training_origins: int
     target_chunk_origins: int
+    target_validation_origins: int
     chunks: tuple[ChunkEvaluationPlan, ...]
     plan_hash: str
 
@@ -160,6 +165,7 @@ class EpochChunkPlan:
             "training_blocks": self.training_blocks,
             "training_origins": self.training_origins,
             "target_chunk_origins": self.target_chunk_origins,
+            "target_validation_origins": self.target_validation_origins,
             "chunks": [chunk.to_dict() for chunk in self.chunks],
             "plan_hash": self.plan_hash,
         }
@@ -171,28 +177,31 @@ def build_epoch_chunk_plan(
     seed: int,
     training_blocks: int,
     training_origins: int,
+    training_refs: Sequence[OfflineBlockRef],
     target_chunk_origins: int,
-    monitor_origins: int,
+    validation_origins: int,
     monitor_pool: Sequence[OfflineBlockRef],
 ) -> EpochChunkPlan:
-    """Plan block-aligned chunk boundaries and rotating held-out monitors.
+    """Plan block-aligned chunks and their fixed held-out validation panels.
 
-    Training membership is supplied by the loader's epoch-specific shuffled
-    stream. Only lightweight metadata is planned here, so the next epoch can
-    be prepared concurrently without reading shard tensors or competing for
-    NVMe bandwidth.
+    Training membership is an exact shuffled partition of stable catalog-ref
+    indices. The plan therefore supports replaying one chunk without copying
+    full block dictionaries or reading shard tensors during planning.
     """
     if epoch < 0:
         raise ValueError("epoch must be non-negative")
     if training_blocks <= 0 or training_origins <= 0:
         raise ValueError("training coverage must be positive")
-    if target_chunk_origins <= 0:
-        raise ValueError("target chunk origins must be positive")
+    if len(training_refs) != training_blocks:
+        raise ValueError("training reference count does not match training_blocks")
+    if sum(int(ref.origins) for ref in training_refs) != training_origins:
+        raise ValueError("training reference origins do not match training_origins")
+    if target_chunk_origins <= 0 or validation_origins <= 0:
+        raise ValueError("chunk and validation origin targets must be positive")
     chunk_count = max(1, math.ceil(training_origins / target_chunk_origins))
     base_blocks, extra = divmod(training_blocks, chunk_count)
     if base_blocks <= 0:
         raise RuntimeError("chunk target creates more chunks than training blocks")
-    average_origins = training_origins / training_blocks
     monitor_groups: dict[str, list[OfflineBlockRef]] = {}
     for ref in monitor_pool:
         monitor_groups.setdefault(ref.ticker, []).append(ref)
@@ -200,12 +209,22 @@ def build_epoch_chunk_plan(
         ticker: tuple(sorted(values, key=_ref_identity))
         for ticker, values in monitor_groups.items()
     }
+    shuffled_indices = list(range(training_blocks))
+    random.Random(seed + epoch * 1_000_003).shuffle(shuffled_indices)
     chunks: list[ChunkEvaluationPlan] = []
+    cursor = 0
     for chunk_index in range(chunk_count):
         target_blocks = base_blocks + int(chunk_index < extra)
+        training_ref_indices = tuple(
+            shuffled_indices[cursor:cursor + target_blocks]
+        )
+        cursor += target_blocks
+        chunk_origins = sum(
+            int(training_refs[index].origins) for index in training_ref_indices
+        )
         panel = _sample_grouped_monitor_panel(
             grouped_monitor_pool,
-            target_origins=monitor_origins,
+            target_origins=validation_origins,
             seed=seed,
             epoch=epoch,
             chunk_index=chunk_index,
@@ -215,20 +234,23 @@ def build_epoch_chunk_plan(
             ChunkEvaluationPlan(
                 index=chunk_index,
                 target_blocks=target_blocks,
-                approximate_target_origins=int(round(target_blocks * average_origins)),
-                monitor_origins=sum(int(ref.origins) for ref in panel),
-                monitor_hash=hashlib.sha256(
+                approximate_target_origins=chunk_origins,
+                training_ref_indices=training_ref_indices,
+                validation_origins=sum(int(ref.origins) for ref in panel),
+                validation_hash=hashlib.sha256(
                     json.dumps(
                         panel_rows, sort_keys=True, separators=(",", ":")
                     ).encode("utf-8")
                 ).hexdigest(),
-                monitor_refs=panel,
+                validation_refs=panel,
             )
         )
-    monitor_hashes = [chunk.monitor_hash for chunk in chunks]
-    if len(monitor_hashes) != len(set(monitor_hashes)):
+    if cursor != training_blocks or len(set(shuffled_indices)) != training_blocks:
+        raise RuntimeError("epoch chunk plan did not partition every training block exactly once")
+    validation_hashes = [chunk.validation_hash for chunk in chunks]
+    if len(validation_hashes) != len(set(validation_hashes)):
         raise RuntimeError(
-            "monitor reservoir cannot provide a distinct deterministic panel for every chunk"
+            "validation reservoir cannot provide a distinct deterministic panel for every chunk"
         )
     unsigned = {
         "contract_version": FULL_CHUNK_CONTRACT_VERSION,
@@ -237,6 +259,7 @@ def build_epoch_chunk_plan(
         "training_blocks": int(training_blocks),
         "training_origins": int(training_origins),
         "target_chunk_origins": int(target_chunk_origins),
+        "target_validation_origins": int(validation_origins),
         "chunks": [chunk.to_dict() for chunk in chunks],
     }
     return EpochChunkPlan(
@@ -246,6 +269,7 @@ def build_epoch_chunk_plan(
         training_blocks=int(training_blocks),
         training_origins=int(training_origins),
         target_chunk_origins=int(target_chunk_origins),
+        target_validation_origins=int(validation_origins),
         chunks=tuple(chunks),
         plan_hash=_canonical_hash(unsigned),
     )
@@ -270,10 +294,13 @@ def load_epoch_chunk_plan(output_path: Path) -> EpochChunkPlan:
             index=int(row["index"]),
             target_blocks=int(row["target_blocks"]),
             approximate_target_origins=int(row["approximate_target_origins"]),
-            monitor_origins=int(row["monitor_origins"]),
-            monitor_hash=str(row["monitor_hash"]),
-            monitor_refs=tuple(
-                OfflineBlockRef(**ref) for ref in row["monitor_refs"]
+            training_ref_indices=tuple(
+                int(index) for index in row["training_ref_indices"]
+            ),
+            validation_origins=int(row["validation_origins"]),
+            validation_hash=str(row["validation_hash"]),
+            validation_refs=tuple(
+                OfflineBlockRef(**ref) for ref in row["validation_refs"]
             ),
         )
         for row in value["chunks"]
@@ -285,6 +312,7 @@ def load_epoch_chunk_plan(output_path: Path) -> EpochChunkPlan:
         training_blocks=int(value["training_blocks"]),
         training_origins=int(value["training_origins"]),
         target_chunk_origins=int(value["target_chunk_origins"]),
+        target_validation_origins=int(value["target_validation_origins"]),
         chunks=chunks,
         plan_hash=stored_hash,
     )
@@ -295,7 +323,7 @@ def build_full_chunk_manifest(
     shard_root: Path,
     output_path: Path,
     seed: int,
-    monitor_origins: int = FULL_CHUNK_MONITOR_ORIGINS,
+    monitor_origins: int = FULL_CHUNK_STOPPING_VALIDATION_ORIGINS,
     validation_origins: int = FULL_CHUNK_VALIDATION_ORIGINS,
     locked_test_origins: int = FULL_CHUNK_LOCKED_TEST_ORIGINS,
 ) -> dict[str, Any]:
@@ -412,11 +440,12 @@ def build_full_chunk_manifest(
             "training_blocks": len(training_refs),
             "training_origins": sum(ref.origins for ref in training_refs),
             "training_catalog_hash": training_catalog_hash.hexdigest(),
-            "training_population": "implicit certified unit stream for 2019-01-01 through 2025-12-31",
+            "training_population": "certified stable block index for 2019-01-01 through 2025-12-31",
             "monitor_pool_blocks": len(monitor_pool),
             "monitor_pool_origins": sum(ref.origins for ref in monitor_pool),
             "block_atomic": True,
-            "epoch_sampling": "worker-owned deterministic shuffled stream without replacement",
+            "epoch_sampling": "deterministic shuffled exact-ref partition without replacement",
+            "chunk_replay": "exact stable block-reference membership",
         },
     }
     unsigned = dict(value)
@@ -468,3 +497,66 @@ def load_full_chunk_manifest(
     if validation_dates & locked_dates or validation_dates & monitor_dates or locked_dates & monitor_dates:
         raise RuntimeError("full-training held-out authorities overlap by ticker-date")
     return value
+
+
+def load_full_training_refs(
+    *,
+    manifest_path: Path,
+    units: Sequence[OfflineShardUnit],
+    manifest: dict[str, Any],
+) -> tuple[OfflineBlockRef, ...]:
+    """Load and verify the compact stable block index used for chunk replay."""
+    cache_path = manifest_path.parent / "full_catalog_index_v1" / "training.jsonl"
+    if not cache_path.is_file():
+        raise RuntimeError(
+            f"full-training block index is missing: {cache_path}; rebuild the manifest"
+        )
+    unit_keys = tuple(unit.unit_key for unit in units)
+    expected_unit_hash = hashlib.sha256("\n".join(unit_keys).encode("utf-8")).hexdigest()
+    by_unit: dict[str, tuple[OfflineBlockRef, ...]] = {}
+    with cache_path.open("r", encoding="utf-8") as handle:
+        first = handle.readline()
+        try:
+            header = json.loads(first)
+        except (TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise RuntimeError(f"invalid full-training block-index header: {cache_path}") from exc
+        if (
+            int(header.get("contract_version", -1)) != DISCOVERY_CONTRACT_VERSION
+            or str(header.get("unit_keys_hash", "")) != expected_unit_hash
+        ):
+            raise RuntimeError("full-training block index does not match the certified units")
+        for line_number, line in enumerate(handle, start=2):
+            if not line.strip():
+                continue
+            try:
+                row = json.loads(line)
+                unit_key = str(row["unit_key"])
+                refs = tuple(OfflineBlockRef(**item) for item in row["refs"])
+            except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+                raise RuntimeError(
+                    f"invalid full-training block-index row {line_number}: {cache_path}"
+                ) from exc
+            if unit_key in by_unit:
+                raise RuntimeError(f"duplicate unit in full-training block index: {unit_key}")
+            by_unit[unit_key] = refs
+    missing = [key for key in unit_keys if key not in by_unit]
+    unexpected = sorted(set(by_unit) - set(unit_keys))
+    if missing or unexpected:
+        raise RuntimeError(
+            "full-training block index unit coverage changed: "
+            f"missing={missing[:5]} unexpected={unexpected[:5]}"
+        )
+    refs = tuple(ref for key in unit_keys for ref in by_unit[key])
+    contract = manifest["full_chunk_training"]
+    if (
+        len(refs) != int(contract["training_blocks"])
+        or sum(int(ref.origins) for ref in refs) != int(contract["training_origins"])
+    ):
+        raise RuntimeError("full-training block index totals do not match the manifest")
+    digest = hashlib.sha256()
+    for ref in refs:
+        digest.update(_ref_identity(ref).encode("utf-8"))
+        digest.update(b"\n")
+    if digest.hexdigest() != str(contract["training_catalog_hash"]):
+        raise RuntimeError("full-training block index hash does not match the manifest")
+    return refs

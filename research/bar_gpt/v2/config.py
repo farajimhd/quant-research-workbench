@@ -360,12 +360,15 @@ class TrainConfig:
     # for the final epoch. Ordinary/full training retains validation at every
     # epoch boundary.
     full_validation_final_epoch_only: bool = False
-    # Full-catalog mode keeps the worker-owned shuffled epoch stream intact
-    # and inserts block-aligned monitoring boundaries of approximately this
-    # many origins. Every block is consumed exactly once per outer epoch.
+    # Full-catalog mode partitions the stable block index into exact chunks.
+    # Each chunk may be replayed adaptively against its fixed held-out
+    # validation panel before the outer epoch advances to the next chunk.
     full_chunk_training: bool = False
     chunk_target_origins: int = 30_000_000
-    chunk_monitor_origins: int = 1_000_000
+    chunk_validation_origins: int = 1_000_000
+    max_chunk_epochs: int = 20
+    chunk_early_stopping_patience: int = 1
+    chunk_early_stopping_min_relative_delta: float = 0.001
     outer_early_stopping_patience: int = 0
     outer_early_stopping_min_relative_delta: float = 0.001
     warmup_samples: int = 0
@@ -392,8 +395,16 @@ class TrainConfig:
             raise ValueError("epoch_train_evaluation_origins must be positive")
         if self.monitor_evaluation_origins <= 0:
             raise ValueError("monitor_evaluation_origins must be positive")
-        if self.chunk_target_origins <= 0 or self.chunk_monitor_origins <= 0:
-            raise ValueError("full-training chunk and monitor origin targets must be positive")
+        if self.chunk_target_origins <= 0 or self.chunk_validation_origins <= 0:
+            raise ValueError("full-training chunk and validation origin targets must be positive")
+        if self.max_chunk_epochs <= 0:
+            raise ValueError("max_chunk_epochs must be positive")
+        if self.chunk_early_stopping_patience <= 0:
+            raise ValueError("chunk early-stopping patience must be positive")
+        if not 0 <= self.chunk_early_stopping_min_relative_delta < 1:
+            raise ValueError(
+                "chunk early-stopping relative delta must satisfy 0 <= delta < 1"
+            )
         if self.outer_early_stopping_patience < 0:
             raise ValueError("outer early-stopping patience cannot be negative")
         if not 0 <= self.outer_early_stopping_min_relative_delta < 1:

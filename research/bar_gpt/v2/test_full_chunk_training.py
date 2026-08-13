@@ -24,7 +24,7 @@ from research.bar_gpt.v2.run_train_full_chunks import (
     trainer_argv,
 )
 from research.bar_gpt.v2.train import (
-    _chunk_boundary_due,
+    _chunk_repetition_complete,
     _outer_early_stopping_update,
     parse_args as parse_train_args,
 )
@@ -50,6 +50,7 @@ def _ref(ticker: str, index: int, *, origins: int = 10) -> OfflineBlockRef:
 
 class FullChunkPlanTest(unittest.TestCase):
     def setUp(self) -> None:
+        self.training_refs = tuple(_ref("TRN", index) for index in range(10))
         self.monitor_pool = tuple(
             _ref(ticker, index)
             for ticker in ("AAA", "BBB", "CCC")
@@ -62,22 +63,27 @@ class FullChunkPlanTest(unittest.TestCase):
             seed=17,
             training_blocks=10,
             training_origins=100,
+            training_refs=self.training_refs,
             target_chunk_origins=30,
-            monitor_origins=30,
+            validation_origins=30,
             monitor_pool=self.monitor_pool,
         )
         self.assertEqual(plan.contract_version, FULL_CHUNK_CONTRACT_VERSION)
         self.assertEqual(plan.chunk_count, 4)
         self.assertEqual(sum(chunk.target_blocks for chunk in plan.chunks), 10)
+        planned_indices = tuple(
+            index for chunk in plan.chunks for index in chunk.training_ref_indices
+        )
+        self.assertEqual(sorted(planned_indices), list(range(10)))
         self.assertLessEqual(
             max(chunk.target_blocks for chunk in plan.chunks)
             - min(chunk.target_blocks for chunk in plan.chunks),
             1,
         )
-        self.assertTrue(all(chunk.monitor_origins >= 30 for chunk in plan.chunks))
+        self.assertTrue(all(chunk.validation_origins >= 30 for chunk in plan.chunks))
         self.assertTrue(
             all(
-                {ref.ticker for ref in chunk.monitor_refs}
+                {ref.ticker for ref in chunk.validation_refs}
                 == {"AAA", "BBB", "CCC"}
                 for chunk in plan.chunks
             )
@@ -89,8 +95,12 @@ class FullChunkPlanTest(unittest.TestCase):
             seed=17,
             training_blocks=100,
             training_origins=1_000,
+            training_refs=tuple(
+                _ref("TRN", index, origins=10)
+                for index in range(100)
+            ),
             target_chunk_origins=300,
-            monitor_origins=30,
+            validation_origins=30,
             monitor_pool=self.monitor_pool,
         )
         second = build_epoch_chunk_plan(
@@ -98,15 +108,19 @@ class FullChunkPlanTest(unittest.TestCase):
             seed=17,
             training_blocks=100,
             training_origins=1_000,
+            training_refs=tuple(
+                _ref("TRN", index, origins=10)
+                for index in range(100)
+            ),
             target_chunk_origins=300,
-            monitor_origins=30,
+            validation_origins=30,
             monitor_pool=self.monitor_pool,
         )
         self.assertNotEqual(first.shuffle_seed, second.shuffle_seed)
         self.assertNotEqual(first.plan_hash, second.plan_hash)
         self.assertNotEqual(
-            first.chunks[0].monitor_hash,
-            second.chunks[0].monitor_hash,
+            first.chunks[0].validation_hash,
+            second.chunks[0].validation_hash,
         )
 
     def test_epoch_plan_round_trip_and_tamper_detection(self) -> None:
@@ -115,8 +129,9 @@ class FullChunkPlanTest(unittest.TestCase):
             seed=17,
             training_blocks=10,
             training_origins=100,
+            training_refs=self.training_refs,
             target_chunk_origins=30,
-            monitor_origins=30,
+            validation_origins=30,
             monitor_pool=self.monitor_pool,
         )
         with tempfile.TemporaryDirectory() as directory:
@@ -131,43 +146,28 @@ class FullChunkPlanTest(unittest.TestCase):
                 load_epoch_chunk_plan(path)
 
     def test_train_config_rejects_invalid_chunk_controls(self) -> None:
-        with self.assertRaisesRegex(ValueError, "chunk and monitor"):
+        with self.assertRaisesRegex(ValueError, "chunk and validation"):
             TrainConfig(chunk_target_origins=0).validate()
+        with self.assertRaisesRegex(ValueError, "max_chunk_epochs"):
+            TrainConfig(max_chunk_epochs=0).validate()
+        with self.assertRaisesRegex(ValueError, "chunk early-stopping patience"):
+            TrainConfig(chunk_early_stopping_patience=0).validate()
         with self.assertRaisesRegex(ValueError, "patience"):
             TrainConfig(outer_early_stopping_patience=-1).validate()
 
-    def test_chunk_boundary_never_splits_or_preempts_the_last_chunk(self) -> None:
-        plan = build_epoch_chunk_plan(
-            epoch=0,
-            seed=17,
-            training_blocks=10,
-            training_origins=100,
-            target_chunk_origins=30,
-            monitor_origins=30,
-            monitor_pool=self.monitor_pool,
-        )
+    def test_chunk_repetition_completes_only_at_its_block_boundary(self) -> None:
         self.assertFalse(
-            _chunk_boundary_due(
+            _chunk_repetition_complete(
                 blocks_seen=2,
-                chunk_start_blocks=0,
-                chunk_index=0,
-                plan=plan,
+                repetition_start_blocks=0,
+                target_blocks=3,
             )
         )
         self.assertTrue(
-            _chunk_boundary_due(
+            _chunk_repetition_complete(
                 blocks_seen=3,
-                chunk_start_blocks=0,
-                chunk_index=0,
-                plan=plan,
-            )
-        )
-        self.assertFalse(
-            _chunk_boundary_due(
-                blocks_seen=10,
-                chunk_start_blocks=8,
-                chunk_index=plan.chunk_count - 1,
-                plan=plan,
+                repetition_start_blocks=0,
+                target_blocks=3,
             )
         )
 
@@ -202,7 +202,7 @@ class FullChunkPlanTest(unittest.TestCase):
         )
         self.assertEqual((stale, stopped), (2, True))
 
-    def test_chunk_cosine_restarts_each_chunk_and_decays_only_by_epoch(self) -> None:
+    def test_chunk_cosine_spans_all_repetitions_and_restarts_per_chunk(self) -> None:
         parameter = torch.nn.Parameter(torch.ones(()))
         optimizer = torch.optim.SGD((parameter,), lr=1e-3)
         scheduler = EpochChunkCosineScheduler(
@@ -212,28 +212,32 @@ class FullChunkPlanTest(unittest.TestCase):
         )
         scheduler.start_chunk(
             epoch=0,
-            start_blocks=0,
-            chunk_blocks=100,
+            start_samples=0,
+            chunk_samples=2_000_000,
             samples_seen=0,
-            blocks_seen=0,
         )
         self.assertAlmostEqual(optimizer.param_groups[0]["lr"], 1e-3)
-        scheduler.step(samples_seen=10_000, blocks_seen=100)
+        scheduler.step(samples_seen=100_000)
+        self.assertGreater(optimizer.param_groups[0]["lr"], 9e-4)
+        # Crossing ten nominal 100K-origin repetitions does not restart the
+        # cycle: this is the midpoint of one 20-repetition chunk schedule.
+        scheduler.step(samples_seen=1_000_000)
+        self.assertAlmostEqual(optimizer.param_groups[0]["lr"], 5.5e-4)
+        scheduler.step(samples_seen=2_000_000)
         self.assertAlmostEqual(optimizer.param_groups[0]["lr"], 1e-4)
         scheduler.start_chunk(
             epoch=0,
-            start_blocks=100,
-            chunk_blocks=80,
-            samples_seen=10_000,
-            blocks_seen=100,
+            start_samples=2_000_000,
+            chunk_samples=1_600_000,
+            samples_seen=2_000_000,
         )
         self.assertAlmostEqual(optimizer.param_groups[0]["lr"], 1e-3)
+        scheduler.step(samples_seen=3_600_000)
         scheduler.start_chunk(
             epoch=1,
-            start_blocks=180,
-            chunk_blocks=100,
-            samples_seen=20_000,
-            blocks_seen=180,
+            start_samples=3_600_000,
+            chunk_samples=2_000_000,
+            samples_seen=3_600_000,
         )
         expected_epoch_one_peak = 1e-3 * 0.95
         self.assertAlmostEqual(
@@ -258,7 +262,7 @@ class FullChunkLauncherTest(unittest.TestCase):
         self.assertEqual(args.run_stamp, "production")
         argv = trainer_argv(
             args,
-            resolved_manifest=Path(r"D:\runtime\full_catalog_chunks_v1.json"),
+            resolved_manifest=Path(r"D:\runtime\full_catalog_chunks_v2.json"),
         )
         self.assertEqual(argv.count("--batch-size"), 1)
         self.assertEqual(argv.count("--wandb-project"), 1)
@@ -272,7 +276,9 @@ class FullChunkLauncherTest(unittest.TestCase):
         self.assertEqual(parsed.gradient_accumulation_steps, 4)
         self.assertEqual(parsed.epochs, 10)
         self.assertEqual(parsed.chunk_target_origins, 30_000_000)
-        self.assertEqual(parsed.chunk_monitor_origins, 1_000_000)
+        self.assertEqual(parsed.chunk_validation_origins, 1_000_000)
+        self.assertEqual(parsed.max_chunk_epochs, 20)
+        self.assertEqual(parsed.chunk_early_stopping_patience, 1)
         self.assertEqual(parsed.scheduler_mode, "epoch-chunk-cosine")
         self.assertEqual(parsed.cosine_restart_decay, 0.95)
 

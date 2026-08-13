@@ -134,28 +134,30 @@ starting an independent run.
 
 The launcher freezes every eligible 2019-2025 block into the training
 authority and keeps disjoint 2026 monitor-pool, validation, and locked-test
-authorities. Every outer epoch consumes every training block exactly once.
-The manifest binds that complete population by certified catalog hash and
-summary; the loader streams the immutable units directly instead of copying
-roughly one million block-reference records into every worker.
-The worker-owned stream receives a new deterministic shuffle each epoch and
-is divided into block-aligned boundaries averaging 30M origins; blocks are
-never split. A different stratified 1M monitor panel is evaluated after each
-chunk, while the fixed 5M validation panel is evaluated only at the outer
-epoch boundary. The next epoch's lightweight monitor/chunk metadata plan is
-prepared concurrently without reading shard tensors. Training stops after at
-most ten epochs or two non-improving complete validations. W&B continues to
-use cumulative `samples_seen` as its step; epoch and chunk position are logged
-as additional `train_progress/*` fields.
+authorities. Every outer epoch assigns every training block to exactly one
+chunk; the block is then consumed once per repetition of that chunk.
+The manifest binds that complete population by certified catalog hash and a
+stable block index. At each outer epoch, a new deterministic shuffle is
+partitioned into exact, block-aligned chunks averaging 30M origins; blocks are
+never split and each block belongs to exactly one chunk. Each chunk is then
+replayed over precisely the same block membership for at most 20 repetitions.
+A fixed randomly sampled, stratified 1M-origin held-out panel is assigned to
+that chunk and reused after every repetition. A reduction smaller than 0.1%
+counts as no improvement; the default patience of one moves to the next chunk
+after the first non-improving repetition. The fixed 5M validation panel is
+evaluated only at the outer-epoch boundary and drives outer early stopping.
+The next epoch's compact index plan is prepared concurrently without reading
+shard tensors. W&B continues to use cumulative `samples_seen` as its step;
+outer epoch, chunk, and chunk repetition are additional fields.
 
-The full trainer uses block-aligned cosine annealing. After the initial 4M
-origin warmup, each complete chunk is one cosine cycle and the next chunk
-restarts at that outer epoch's peak learning rate. The peak is unchanged
-between chunks in the same epoch and decays by `0.95` only when a new outer
-epoch starts; the minimum learning rate remains `3e-5`. Because cosine
-progress follows completed blocks, variable origins per block cannot drift
-the restart away from the real chunk boundary. Rich displays the active
-chunk-cosine phase, progress, epoch peak, and epoch decay.
+The full trainer uses one sample-clock cosine cycle per chunk, not one cycle
+per repetition. After the initial 4M-origin warmup, its exact horizon is
+`chunk_origins * 20` (approximately 600M origins for a 30M chunk). Early
+stopping may truncate that cycle. Moving to the next chunk restarts cosine at
+the current outer epoch's peak. The peak is unchanged across repetitions and
+chunks in the same outer epoch, then decays by `0.95` at the next outer epoch;
+the minimum learning rate remains `3e-5`. Rich displays the active repetition,
+cosine progress, epoch peak, and early-stopping state.
 
 Run the paired data-diversity/repetition experiment after the baseline
 comparison finishes:

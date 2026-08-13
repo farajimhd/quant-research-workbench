@@ -159,13 +159,7 @@ class SampleCosineRestartScheduler:
 
 
 class EpochChunkCosineScheduler:
-    """Cosine cycles aligned to block-complete chunks.
-
-    Warmup remains governed by the cumulative sample clock. After warmup,
-    cosine progress follows blocks within the active chunk so variable block
-    origin counts cannot make the schedule drift past a real chunk boundary.
-    The peak decays once per outer epoch, never once per chunk.
-    """
+    """One sample-clock cosine cycle across all allowed replays of a chunk."""
 
     def __init__(
         self,
@@ -187,12 +181,11 @@ class EpochChunkCosineScheduler:
         if any(self.minimum_lr < 0 or self.minimum_lr > base for base in self.base_lrs):
             raise ValueError("minimum_lr must be between zero and every base learning rate")
         self.samples_seen = 0
-        self.blocks_seen = 0
         self.epoch = 0
-        self.chunk_start_blocks = 0
-        self.chunk_blocks = 1
-        self.warmup_completed_blocks: int | None = None
-        self.step(samples_seen=0, blocks_seen=0)
+        self.chunk_start_samples = 0
+        self.chunk_samples = 1
+        self.warmup_completed_samples: int | None = None
+        self.step(samples_seen=0)
 
     def _epoch_peak(self, base_lr: float) -> float:
         return max(self.minimum_lr, base_lr * self.epoch_decay**self.epoch)
@@ -201,48 +194,48 @@ class EpochChunkCosineScheduler:
     def chunk_progress(self) -> float:
         if self.warmup_samples and self.samples_seen < self.warmup_samples:
             return 0.0
-        cosine_start_blocks = max(
-            self.chunk_start_blocks,
-            self.warmup_completed_blocks or self.chunk_start_blocks,
+        cosine_start_samples = max(
+            self.chunk_start_samples,
+            self.warmup_completed_samples or self.chunk_start_samples,
         )
-        cosine_blocks = max(
+        cosine_samples = max(
             1,
-            self.chunk_start_blocks + self.chunk_blocks - cosine_start_blocks,
+            self.chunk_start_samples + self.chunk_samples - cosine_start_samples,
         )
         return min(
             1.0,
-            max(0.0, (self.blocks_seen - cosine_start_blocks) / cosine_blocks),
+            max(0.0, (self.samples_seen - cosine_start_samples) / cosine_samples),
         )
 
     def start_chunk(
         self,
         *,
         epoch: int,
-        start_blocks: int,
-        chunk_blocks: int,
+        start_samples: int,
+        chunk_samples: int,
         samples_seen: int,
-        blocks_seen: int,
     ) -> None:
-        if epoch < 0 or start_blocks < 0 or chunk_blocks <= 0:
-            raise ValueError("chunk scheduler requires non-negative epoch/start and positive blocks")
-        if blocks_seen < start_blocks:
-            raise ValueError("blocks_seen cannot precede the active chunk start")
+        if epoch < 0 or start_samples < 0 or chunk_samples <= 0:
+            raise ValueError(
+                "chunk scheduler requires non-negative epoch/start and positive samples"
+            )
+        if samples_seen < start_samples:
+            raise ValueError("samples_seen cannot precede the active chunk start")
         self.epoch = int(epoch)
-        self.chunk_start_blocks = int(start_blocks)
-        self.chunk_blocks = int(chunk_blocks)
-        self.step(samples_seen=samples_seen, blocks_seen=blocks_seen)
+        self.chunk_start_samples = int(start_samples)
+        self.chunk_samples = int(chunk_samples)
+        self.step(samples_seen=samples_seen)
 
-    def step(self, *, samples_seen: int, blocks_seen: int) -> None:
+    def step(self, *, samples_seen: int) -> None:
         self.samples_seen = max(0, int(samples_seen))
-        self.blocks_seen = max(0, int(blocks_seen))
         if self.warmup_samples and self.samples_seen < self.warmup_samples:
             progress = self.samples_seen / self.warmup_samples
             for group, base_lr in zip(self.optimizer.param_groups, self.base_lrs, strict=True):
                 peak = self._epoch_peak(base_lr)
                 group["lr"] = self.minimum_lr + (peak - self.minimum_lr) * progress
             return
-        if self.warmup_samples and self.warmup_completed_blocks is None:
-            self.warmup_completed_blocks = self.blocks_seen
+        if self.warmup_samples and self.warmup_completed_samples is None:
+            self.warmup_completed_samples = self.samples_seen
         progress = self.chunk_progress
         cosine = 0.5 * (1.0 + math.cos(math.pi * progress))
         for group, base_lr in zip(self.optimizer.param_groups, self.base_lrs, strict=True):
@@ -253,11 +246,10 @@ class EpochChunkCosineScheduler:
         return {
             "scheduler_type": "epoch_chunk_cosine",
             "samples_seen": self.samples_seen,
-            "blocks_seen": self.blocks_seen,
             "epoch": self.epoch,
-            "chunk_start_blocks": self.chunk_start_blocks,
-            "chunk_blocks": self.chunk_blocks,
-            "warmup_completed_blocks": self.warmup_completed_blocks,
+            "chunk_start_samples": self.chunk_start_samples,
+            "chunk_samples": self.chunk_samples,
+            "warmup_completed_samples": self.warmup_completed_samples,
             "base_lrs": self.base_lrs,
             "warmup_samples": self.warmup_samples,
             "minimum_lr": self.minimum_lr,
@@ -285,15 +277,12 @@ class EpochChunkCosineScheduler:
         if saved_contract != current_contract:
             raise RuntimeError("scheduler configuration does not match the resumed run")
         self.epoch = int(state.get("epoch", 0))
-        self.chunk_start_blocks = int(state.get("chunk_start_blocks", 0))
-        self.chunk_blocks = int(state.get("chunk_blocks", 1))
-        warmup_completed_blocks = state.get("warmup_completed_blocks")
-        self.warmup_completed_blocks = (
+        self.chunk_start_samples = int(state.get("chunk_start_samples", 0))
+        self.chunk_samples = int(state.get("chunk_samples", 1))
+        warmup_completed_samples = state.get("warmup_completed_samples")
+        self.warmup_completed_samples = (
             None
-            if warmup_completed_blocks is None
-            else int(warmup_completed_blocks)
+            if warmup_completed_samples is None
+            else int(warmup_completed_samples)
         )
-        self.step(
-            samples_seen=int(state.get("samples_seen", 0)),
-            blocks_seen=int(state.get("blocks_seen", 0)),
-        )
+        self.step(samples_seen=int(state.get("samples_seen", 0)))

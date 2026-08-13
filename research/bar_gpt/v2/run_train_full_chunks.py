@@ -18,7 +18,7 @@ from research.bar_gpt.v2.config import (
 )
 from research.bar_gpt.v2.full_chunk_training import (
     FULL_CHUNK_MANIFEST_NAME,
-    FULL_CHUNK_MONITOR_ORIGINS,
+    FULL_CHUNK_STOPPING_VALIDATION_ORIGINS,
     FULL_CHUNK_TARGET_ORIGINS,
     build_full_chunk_manifest,
     load_full_chunk_manifest,
@@ -34,6 +34,9 @@ from research.bar_gpt.v2.train import main as train_main
 DEFAULT_OUTPUT_ROOT = Path(r"D:\TradingML\runtimes\bar_gpt\v2\full_training")
 DEFAULT_MODEL_SIZE = "medium"
 DEFAULT_EPOCHS = 10
+DEFAULT_MAX_CHUNK_EPOCHS = 20
+DEFAULT_CHUNK_EARLY_STOPPING_PATIENCE = 1
+DEFAULT_CHUNK_EARLY_STOPPING_MIN_RELATIVE_DELTA = 0.001
 DEFAULT_EARLY_STOPPING_PATIENCE = 2
 DEFAULT_EARLY_STOPPING_MIN_RELATIVE_DELTA = 0.001
 DEFAULT_EPOCH_LR_DECAY = 0.95
@@ -43,7 +46,7 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
             "Train BarGPT v2 over every eligible 2019-2025 shard block using "
-            "one-pass randomized chunks and rotating 2026 monitor panels."
+            "randomized replayable chunks and fixed per-chunk 2026 validation panels."
         )
     )
     parser.add_argument(
@@ -53,7 +56,22 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--epochs", type=int, default=DEFAULT_EPOCHS)
     parser.add_argument("--chunk-target-origins", type=int, default=FULL_CHUNK_TARGET_ORIGINS)
-    parser.add_argument("--chunk-monitor-origins", type=int, default=FULL_CHUNK_MONITOR_ORIGINS)
+    parser.add_argument(
+        "--chunk-validation-origins",
+        type=int,
+        default=FULL_CHUNK_STOPPING_VALIDATION_ORIGINS,
+    )
+    parser.add_argument("--max-chunk-epochs", type=int, default=DEFAULT_MAX_CHUNK_EPOCHS)
+    parser.add_argument(
+        "--chunk-early-stopping-patience",
+        type=int,
+        default=DEFAULT_CHUNK_EARLY_STOPPING_PATIENCE,
+    )
+    parser.add_argument(
+        "--chunk-early-stopping-min-relative-delta",
+        type=float,
+        default=DEFAULT_CHUNK_EARLY_STOPPING_MIN_RELATIVE_DELTA,
+    )
     parser.add_argument(
         "--early-stopping-patience",
         type=int,
@@ -145,6 +163,7 @@ def trainer_argv(args: argparse.Namespace, *, resolved_manifest: Path) -> list[s
     run_name = (
         f"bar-gpt-v2-full-{args.model_size}-chunks{int(args.chunk_target_origins) // 1_000_000}m-"
         f"epoch{args.epochs}-"
+        f"chunkepochs{args.max_chunk_epochs}-"
         f"chunkcosine-decay{int(DEFAULT_EPOCH_LR_DECAY * 100)}-"
         f"micro{profile.microbatch}-accum{profile.accumulation}-"
         f"bucket{profile.length_bucket_batches}-{run_stamp}"
@@ -167,12 +186,17 @@ def trainer_argv(args: argparse.Namespace, *, resolved_manifest: Path) -> list[s
             "--worker-prefetch-batches": OFFLINE_PRODUCTION_WORKER_PREFETCH_BATCHES,
             "--epochs": args.epochs,
             "--chunk-target-origins": args.chunk_target_origins,
-            "--chunk-monitor-origins": args.chunk_monitor_origins,
+            "--chunk-validation-origins": args.chunk_validation_origins,
+            "--max-chunk-epochs": args.max_chunk_epochs,
+            "--chunk-early-stopping-patience": args.chunk_early_stopping_patience,
+            "--chunk-early-stopping-min-relative-delta": (
+                args.chunk_early_stopping_min_relative_delta
+            ),
             "--outer-early-stopping-patience": args.early_stopping_patience,
             "--outer-early-stopping-min-relative-delta": (
                 args.early_stopping_min_relative_delta
             ),
-            "--monitor-evaluation-origins": args.chunk_monitor_origins,
+            "--monitor-evaluation-origins": args.chunk_validation_origins,
             "--warmup-samples": 4_000_000,
             "--scheduler-mode": "epoch-chunk-cosine",
             "--cosine-restart-decay": DEFAULT_EPOCH_LR_DECAY,
@@ -191,26 +215,35 @@ def main(argv: Iterable[str] | None = None) -> int:
     args = parse_args(argv)
     if args.epochs <= 0:
         raise ValueError("epochs must be positive")
-    if args.chunk_target_origins <= 0 or args.chunk_monitor_origins <= 0:
+    if args.chunk_target_origins <= 0 or args.chunk_validation_origins <= 0:
         raise ValueError("chunk origin targets must be positive")
+    if args.max_chunk_epochs <= 0 or args.chunk_early_stopping_patience <= 0:
+        raise ValueError("chunk epochs and early-stopping patience must be positive")
     if args.early_stopping_patience < 0:
         raise ValueError("early-stopping patience cannot be negative")
     planned_manifest = manifest_path(args)
     print(f"Model size: {args.model_size} (default: medium)", flush=True)
     print(
-        f"Training: every 2019-2025 block once per outer epoch; "
+        f"Training: every 2019-2025 block belongs to one chunk per outer epoch; "
         f"approximately {args.chunk_target_origins:,} origins/chunk; "
         f"maximum {args.epochs} epochs; patience={args.early_stopping_patience}",
         flush=True,
     )
     print(
-        "Sampling: a new deterministic worker-owned shuffle each epoch; next-epoch "
-        "monitor metadata is planned concurrently; W&B step remains samples_seen",
+        "Sampling: a new deterministic exact block partition each outer epoch; "
+        "the next epoch plan is prepared concurrently; W&B step remains samples_seen",
         flush=True,
     )
     print(
-        "Schedule: 4M-origin warmup; cosine restart at each block-complete chunk; "
-        f"peak LR decays once per outer epoch by {DEFAULT_EPOCH_LR_DECAY:.2f}",
+        f"Chunk adaptation: up to {args.max_chunk_epochs} exact repetitions; fixed "
+        f"{args.chunk_validation_origins:,}-origin validation; patience="
+        f"{args.chunk_early_stopping_patience}",
+        flush=True,
+    )
+    print(
+        "Schedule: 4M-origin warmup; one cosine cycle spans the chunk's maximum "
+        f"{args.max_chunk_epochs} repetitions; restart only when the chunk changes; "
+        f"outer-epoch peak decay={DEFAULT_EPOCH_LR_DECAY:.2f}",
         flush=True,
     )
     preview_args = trainer_argv(args, resolved_manifest=planned_manifest)

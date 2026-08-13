@@ -81,6 +81,14 @@ class TrainingProgressState:
     full_chunk_training: bool = False
     chunk_index: int = 0
     chunk_count: int = 0
+    chunk_epoch_index: int = 1
+    chunk_epochs_total: int = 1
+    chunk_epoch_start_origins: int = 0
+    chunk_epoch_start_blocks: int = 0
+    chunk_epoch_origins_seen: int = 0
+    chunk_epoch_blocks_seen: int = 0
+    chunk_best_validation_loss: float | None = None
+    chunk_epochs_without_improvement: int = 0
     chunk_start_origins: int = 0
     chunk_origin_budget: int = 0
     chunk_origins_seen: int = 0
@@ -187,10 +195,16 @@ class TrainingReporter:
         s.samples_seen = int(metrics.get("train/samples_seen", s.samples_seen))
         s.epoch_origins_seen = max(0, s.samples_seen - s.epoch_start_origins)
         s.chunk_origins_seen = max(0, s.samples_seen - s.chunk_start_origins)
+        s.chunk_epoch_origins_seen = max(
+            0, s.samples_seen - s.chunk_epoch_start_origins
+        )
         s.batches_seen = int(metrics.get("train/batches_seen", s.batches_seen))
         s.optimizer_steps = int(metrics.get("train/optimizer_steps", s.optimizer_steps))
         s.blocks_seen = int(metrics.get("train/blocks_seen", s.blocks_seen))
         s.chunk_blocks_seen = max(0, s.blocks_seen - s.chunk_start_blocks)
+        s.chunk_epoch_blocks_seen = max(
+            0, s.blocks_seen - s.chunk_epoch_start_blocks
+        )
         s.units_seen = int(metrics.get("train/units_seen", s.units_seen))
         s.condition_blocks_seen = int(metrics.get("train/condition_blocks_seen", s.condition_blocks_seen))
         s.loss = float(metrics.get("train/loss", s.loss))
@@ -276,6 +290,30 @@ class TrainingReporter:
         s.chunk_monitor_hash = str(monitor_hash)
         self.message(f"Chunk {s.chunk_index}/{s.chunk_count} started")
 
+    def chunk_epoch(
+        self,
+        *,
+        index: int,
+        total: int,
+        start_origins: int,
+        start_blocks: int,
+        best_validation_loss: float | None,
+        epochs_without_improvement: int,
+    ) -> None:
+        s = self.state
+        s.chunk_epoch_index = int(index)
+        s.chunk_epochs_total = int(total)
+        s.chunk_epoch_start_origins = int(start_origins)
+        s.chunk_epoch_start_blocks = int(start_blocks)
+        s.chunk_epoch_origins_seen = max(0, s.samples_seen - start_origins)
+        s.chunk_epoch_blocks_seen = max(0, s.blocks_seen - start_blocks)
+        s.chunk_best_validation_loss = best_validation_loss
+        s.chunk_epochs_without_improvement = int(epochs_without_improvement)
+        self.message(
+            f"Chunk {s.chunk_index}/{s.chunk_count} repetition "
+            f"{s.chunk_epoch_index}/{s.chunk_epochs_total} started"
+        )
+
     def phase(self, value: str) -> None:
         self.state.state = str(value)
         self.refresh(force=True)
@@ -299,19 +337,19 @@ class TrainingReporter:
         else:
             self.message("Evaluation completed: metrics recorded")
 
-    def chunk_monitor(self, metrics: Mapping[str, float]) -> None:
+    def chunk_validation(self, metrics: Mapping[str, float]) -> None:
         self.state.validation_metrics = {
-            "validation_" + key.removeprefix("chunk_monitor_"): float(value)
+            "validation_" + key.removeprefix("chunk_validation_"): float(value)
             for key, value in metrics.items()
-            if key.startswith("chunk_monitor_")
+            if key.startswith("chunk_validation_")
         }
-        loss = metrics.get("chunk_monitor_loss/total")
+        loss = metrics.get("chunk_validation_loss/total")
         self.state.validation_loss = float(loss) if loss is not None else None
         self.state.validation_runs_completed += 1
         if loss is None:
-            self.message("Chunk monitor completed: metrics recorded")
+            self.message("Chunk validation completed: metrics recorded")
         else:
-            self.message(f"Chunk monitor completed: loss={float(loss):.6f}")
+            self.message(f"Chunk validation completed: loss={float(loss):.6f}")
 
     def schedule_validation(self, next_origins: int) -> None:
         self.state.next_validation_origins = max(0, int(next_origins))
@@ -349,6 +387,7 @@ class TrainingReporter:
                 f"state={s.state} epoch={s.epoch_index}/{s.epochs_total} "
                 + (
                     f"chunk={s.chunk_index}/{s.chunk_count} "
+                    f"chunk_epoch={s.chunk_epoch_index}/{s.chunk_epochs_total} "
                     f"chunk_blocks={s.chunk_blocks_seen:,}/{s.chunk_block_budget:,} "
                     if s.full_chunk_training else ""
                 )
@@ -469,8 +508,12 @@ class TrainingReporter:
         chunk_rows = (
             ("Chunk origins", (s.chunk_origins_seen, s.chunk_origin_budget, ""), "ratio"),
             ("Chunk blocks", (s.chunk_blocks_seen, s.chunk_block_budget, ""), "ratio"),
+            ("Chunk repetition", (s.chunk_epoch_index, s.chunk_epochs_total, ""), "ratio"),
+            ("Repetition blocks", s.chunk_epoch_blocks_seen, "integer"),
+            ("Chunk best val", s.chunk_best_validation_loss, "number"),
+            ("Chunk stale", s.chunk_epochs_without_improvement, "integer"),
             ("Chunks completed", s.chunks_completed, "integer"),
-            ("Chunk monitor", s.chunk_monitor_hash[:12], "text"),
+            ("Chunk validation", s.chunk_monitor_hash[:12], "text"),
             ("Next plan", "ready" if s.next_epoch_plan_ready else "planning", "text"),
             ("Planner time", s.chunk_planner_seconds, "seconds"),
         ) if s.full_chunk_training else ()
