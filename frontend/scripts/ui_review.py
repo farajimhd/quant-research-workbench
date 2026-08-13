@@ -416,6 +416,82 @@ def validate_native_pane_resize(page: Any, chart: Any, issues: list[str]) -> Non
         issues.append("native pane proportions are not persisted after resize")
 
 
+def validate_loading_window_interactions(page: Any, window: Any, issues: list[str]) -> None:
+    """Keep a loading container stable while pointer geometry is previewed and committed."""
+    loading = window.locator(".canvas-preview-loading")
+    if loading.count() and loading.is_visible():
+        spinner = loading.evaluate(
+            "element => ({ animation: getComputedStyle(element, '::before').animationName, content: getComputedStyle(element, '::before').content })"
+        )
+        if spinner["animation"] == "none" or spinner["content"] in ("none", "normal"):
+            issues.append("Canvas loading message does not render an animated indicator on its left")
+
+    resize_handle = window.locator(".workspace-window-resize")
+    resize_box = resize_handle.bounding_box()
+    before = window.bounding_box()
+    if not resize_box or not before:
+        issues.append("loading-container resize handle is not measurable")
+        return
+
+    origin_x = resize_box["x"] + resize_box["width"] / 2
+    origin_y = resize_box["y"] + resize_box["height"] / 2
+    page.mouse.move(origin_x, origin_y)
+    page.mouse.down()
+    samples: list[tuple[float, float]] = []
+    for step in range(1, 9):
+        page.mouse.move(origin_x + step * 6, origin_y + step * 5)
+        sample = window.bounding_box()
+        if sample:
+            samples.append((sample["width"], sample["height"]))
+    if window.get_attribute("data-resizing") != "true":
+        issues.append("loading container does not expose its transient resize state")
+    page.mouse.up()
+    page.wait_for_timeout(100)
+    after = window.bounding_box()
+    if any(
+        current[0] + 0.5 < previous[0] or current[1] + 0.5 < previous[1]
+        for previous, current in zip(samples, samples[1:])
+    ):
+        issues.append("loading container oscillates while pointer resize advances monotonically")
+    if not after or after["width"] < before["width"] + 42 or after["height"] < before["height"] + 34:
+        issues.append("loading-container resize does not commit the final pointer geometry")
+    if window.get_attribute("data-resizing") is not None:
+        issues.append("loading container remains in transient resize state after pointer release")
+
+    header = window.locator(":scope > .workspace-window-header")
+    header_box = header.bounding_box()
+    move_before = window.bounding_box()
+    if not header_box or not move_before:
+        issues.append("loading-container move handle is not measurable")
+        return
+    move_x = header_box["x"] + min(100, header_box["width"] * 0.3)
+    move_y = header_box["y"] + header_box["height"] / 2
+    page.mouse.move(move_x, move_y)
+    page.mouse.down()
+    move_samples: list[tuple[float, float]] = []
+    for step in range(1, 9):
+        page.mouse.move(move_x + step * 5, move_y + step * 3)
+        sample = window.bounding_box()
+        if sample:
+            move_samples.append((sample["x"], sample["y"]))
+    page.mouse.up()
+    page.wait_for_timeout(100)
+    move_after = window.bounding_box()
+    if any(
+        current[0] + 0.5 < previous[0] or current[1] + 0.5 < previous[1]
+        for previous, current in zip(move_samples, move_samples[1:])
+    ):
+        issues.append("loading container oscillates while pointer movement advances monotonically")
+    if not move_after or move_after["x"] < move_before["x"] + 34 or move_after["y"] < move_before["y"] + 18:
+        issues.append("loading-container move does not commit the final pointer geometry")
+    if window.get_attribute("data-dragging") is not None:
+        issues.append("loading container remains in transient drag state after pointer release")
+
+    reset = window.get_by_role("button", name=re.compile(r"^Reset .+ to its default layout$"))
+    if reset.count() == 1:
+        reset.click()
+
+
 def validate_canvas_interactions(
     page: Any,
     scenario: dict[str, Any],
@@ -552,6 +628,9 @@ def validate_canvas_interactions(
         return ["main canvas does not render a Chart container"]
     chart = charts.first
     try:
+        scanner = page.get_by_role("region", name="Scanner", exact=True)
+        if scanner.count() == 1:
+            validate_loading_window_interactions(page, scanner, issues)
         chart.get_by_text("Loading chart data...", exact=True).wait_for(state="hidden", timeout=120_000)
         chart.locator(".chart-pane-canvas canvas").first.wait_for(state="visible", timeout=30_000)
         timeframe_button = chart.get_by_role("button", name=chart_timeframe, exact=True)

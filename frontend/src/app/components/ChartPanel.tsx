@@ -1537,8 +1537,8 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
         <div className="empty-state chart-empty-state">{emptyMessage}</div>
       ) : (
         <div className="chart-canvas-stack">
-          {loading ? <div className="chart-update-status">Updating chart...</div> : null}
-          {loadingEarlier ? <div className="chart-update-status">Loading earlier data...</div> : null}
+          {loading ? <div className="chart-update-status"><span className="loading-spinner" aria-hidden="true" />Updating chart...</div> : null}
+          {loadingEarlier ? <div className="chart-update-status"><span className="loading-spinner" aria-hidden="true" />Loading earlier data...</div> : null}
           {infoMessage ? <div aria-label={infoMessage} className="chart-update-status info" role="status" title={infoMessage}>{infoMessage}</div> : null}
           {errorMessage ? <div aria-label={`Chart update failed: ${errorMessage}`} className="chart-update-status error" role="status" title={errorMessage}>Chart update failed</div> : null}
           <div className="chart-native-surface chart-price" style={{ height: nativeChartHeight }}>

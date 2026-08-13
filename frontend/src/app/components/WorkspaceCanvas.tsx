@@ -20,7 +20,7 @@ import type {
   PointerEvent,
   ReactNode,
 } from "react";
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 
 export type WorkspaceWindowId = string;
 
@@ -88,6 +88,85 @@ const MIN_WINDOW_WIDTH = 320;
 const MIN_WINDOW_HEIGHT = 240;
 const KEYBOARD_MOVE_STEP = 10;
 const KEYBOARD_MOVE_STEP_LARGE = 40;
+
+type WorkspaceResizeSize = Pick<WorkspaceWindowLayout, "h" | "w">;
+
+function useTransientWorkspaceResize(
+  layout: WorkspaceWindowLayout,
+  minWidth: number,
+  minHeight: number,
+  onCommit: (w: number, h: number) => void,
+) {
+  const [previewSize, setPreviewSize] = useState<WorkspaceResizeSize | null>(null);
+  const cleanupRef = useRef<(() => void) | null>(null);
+
+  useEffect(() => () => cleanupRef.current?.(), []);
+
+  function startResize(event: PointerEvent<HTMLButtonElement>) {
+    if (layout.fullscreen || layout.minimized) return;
+    event.preventDefault();
+    event.stopPropagation();
+    cleanupRef.current?.();
+
+    const originX = event.clientX;
+    const originY = event.clientY;
+    const startW = layout.w;
+    const startH = layout.h;
+    const pointerId = event.pointerId;
+    const target = event.currentTarget;
+    const windowElement = target.closest<HTMLElement>(".workspace-window");
+    let frame = 0;
+    let nextSize = { h: startH, w: startW };
+    let finished = false;
+
+    const measure = (pointerEvent: globalThis.PointerEvent) => {
+      nextSize = {
+        h: Math.max(minHeight, startH + pointerEvent.clientY - originY),
+        w: Math.max(minWidth, startW + pointerEvent.clientX - originX),
+      };
+    };
+    const render = () => {
+      frame = 0;
+      setPreviewSize(nextSize);
+    };
+    const move = (moveEvent: globalThis.PointerEvent) => {
+      measure(moveEvent);
+      if (!frame) frame = requestAnimationFrame(render);
+    };
+    const removeListeners = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", stop);
+      window.removeEventListener("pointercancel", stop);
+      target.removeEventListener("lostpointercapture", stop);
+      cleanupRef.current = null;
+    };
+    const stop = (stopEvent?: globalThis.PointerEvent) => {
+      if (finished) return;
+      finished = true;
+      if (frame) cancelAnimationFrame(frame);
+      if (stopEvent?.type === "pointerup") measure(stopEvent);
+      removeListeners();
+      if (target.hasPointerCapture(pointerId)) target.releasePointerCapture(pointerId);
+      windowElement?.removeAttribute("data-resizing");
+      onCommit(nextSize.w, nextSize.h);
+      setPreviewSize(null);
+    };
+
+    cleanupRef.current = () => {
+      if (frame) cancelAnimationFrame(frame);
+      removeListeners();
+      windowElement?.removeAttribute("data-resizing");
+    };
+    target.setPointerCapture(pointerId);
+    windowElement?.setAttribute("data-resizing", "true");
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", stop);
+    window.addEventListener("pointercancel", stop);
+    target.addEventListener("lostpointercapture", stop);
+  }
+
+  return { previewSize, startResize };
+}
 
 function beginWorkspaceDrag(
   event: PointerEvent<HTMLElement>,
@@ -181,11 +260,12 @@ export function WorkspaceWindow({
   title,
 }: WorkspaceWindowProps) {
   const windowRef = useWorkspaceWindowFocus(id, onFocus);
+  const { previewSize, startResize } = useTransientWorkspaceResize(layout, MIN_WINDOW_WIDTH, MIN_WINDOW_HEIGHT, resizeWindow);
   const edge = compact ? 0 : 12;
   const minimizedHeight = compact ? 24 : 44;
   const geometry = layout.fullscreen
     ? { bottom: edge, left: edge, right: fullscreenRightInset || edge, top: edge, zIndex: 1000 + layout.z }
-    : { height: layout.minimized ? minimizedHeight : layout.h, left: layout.x, top: layout.y, width: layout.w, zIndex: layout.z };
+    : { height: layout.minimized ? minimizedHeight : (previewSize?.h ?? layout.h), left: layout.x, top: layout.y, width: previewSize?.w ?? layout.w, zIndex: layout.z };
   const style = {
     ...geometry,
     ...(linkColor ? { "--workspace-link-color": linkColor } : {}),
@@ -220,28 +300,6 @@ export function WorkspaceWindow({
     const dx = event.key === "ArrowLeft" ? -step : event.key === "ArrowRight" ? step : 0;
     const dy = event.key === "ArrowUp" ? -step : event.key === "ArrowDown" ? step : 0;
     moveWindow(layout.x + dx, layout.y + dy);
-  }
-
-  function startResize(event: PointerEvent<HTMLButtonElement>) {
-    if (layout.fullscreen || layout.minimized) return;
-    event.stopPropagation();
-    const originX = event.clientX;
-    const originY = event.clientY;
-    const startW = layout.w;
-    const startH = layout.h;
-    event.currentTarget.setPointerCapture(event.pointerId);
-    const target = event.currentTarget;
-    const move = (moveEvent: globalThis.PointerEvent) => {
-      resizeWindow(startW + moveEvent.clientX - originX, startH + moveEvent.clientY - originY);
-    };
-    const stop = () => {
-      target.removeEventListener("pointermove", move);
-      target.removeEventListener("pointerup", stop);
-      target.removeEventListener("pointercancel", stop);
-    };
-    target.addEventListener("pointermove", move);
-    target.addEventListener("pointerup", stop);
-    target.addEventListener("pointercancel", stop);
   }
 
   function resizeWithKeyboard(event: KeyboardEvent<HTMLButtonElement>) {
@@ -379,6 +437,7 @@ export function WorkspaceGroupWindow({
   title,
 }: WorkspaceGroupWindowProps) {
   const windowRef = useWorkspaceWindowFocus(id, onFocus);
+  const { previewSize, startResize } = useTransientWorkspaceResize(layout, minWidth, minHeight, resizeGroup);
   const edge = compact ? 0 : 12;
   const headerHeight = compact ? 24 : 44;
   const groupTop = Math.max(0, layout.y - headerHeight);
@@ -387,10 +446,10 @@ export function WorkspaceGroupWindow({
     ? { "--workspace-group-header-height": `${headerHeight}px`, bottom: edge, left: edge, right: fullscreenRightInset || edge, top: edge, zIndex: 1000 + layout.z }
     : {
       "--workspace-group-header-height": `${headerHeight}px`,
-      height: layout.minimized ? headerHeight : layout.h + headerOffset,
+      height: layout.minimized ? headerHeight : (previewSize?.h ?? layout.h) + headerOffset,
       left: layout.x,
       top: groupTop,
-      width: layout.w,
+      width: previewSize?.w ?? layout.w,
       zIndex: layout.z,
     };
 
@@ -414,26 +473,6 @@ export function WorkspaceGroupWindow({
     event.preventDefault();
     const step = event.shiftKey ? KEYBOARD_MOVE_STEP_LARGE : KEYBOARD_MOVE_STEP;
     moveGroup(layout.x + (event.key === "ArrowLeft" ? -step : event.key === "ArrowRight" ? step : 0), layout.y + (event.key === "ArrowUp" ? -step : event.key === "ArrowDown" ? step : 0));
-  }
-
-  function startResize(event: PointerEvent<HTMLButtonElement>) {
-    if (layout.fullscreen || layout.minimized) return;
-    event.stopPropagation();
-    const originX = event.clientX;
-    const originY = event.clientY;
-    const startW = layout.w;
-    const startH = layout.h;
-    event.currentTarget.setPointerCapture(event.pointerId);
-    const target = event.currentTarget;
-    const move = (moveEvent: globalThis.PointerEvent) => resizeGroup(startW + moveEvent.clientX - originX, startH + moveEvent.clientY - originY);
-    const stop = () => {
-      target.removeEventListener("pointermove", move);
-      target.removeEventListener("pointerup", stop);
-      target.removeEventListener("pointercancel", stop);
-    };
-    target.addEventListener("pointermove", move);
-    target.addEventListener("pointerup", stop);
-    target.addEventListener("pointercancel", stop);
   }
 
   function resizeWithKeyboard(event: KeyboardEvent<HTMLButtonElement>) {
