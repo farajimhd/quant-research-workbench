@@ -581,7 +581,6 @@
 .discovery-watchlist-rule-summary-list { display: grid; gap: 8px; }
 .discovery-watchlist-rule-summary-list > span { align-items: start; display: grid; gap: 9px; grid-template-columns: 52px minmax(0, 1fr); }
 .discovery-watchlist-rule-summary-list > span > em { color: var(--configuration-section-accent); font-size: 8px; font-weight: 750; letter-spacing: .055em; line-height: 1.6; margin: 0; text-transform: uppercase; }
-.discovery-watchlist-rule-summary-list > span[data-purpose="exclude"] > em { color: var(--danger); }
 .discovery-watchlist-rule-summary-list > span > span { display: grid; gap: 3px; }
 .discovery-watchlist-rule-summary-list > span strong { font-size: 11px; }
 .discovery-watchlist-rule-summary-list > span small { color: var(--muted-foreground); font-size: 10px; line-height: 1.45; }
@@ -711,17 +710,13 @@
 .discovery-rule-add .button { min-height: 38px; white-space: nowrap; }
 .discovery-rule-card-list { display: grid; gap: 10px; }
 .discovery-rule-card-list > article { align-items: start; border: 1px solid var(--configuration-rule); border-radius: 9px; display: grid; gap: 14px; grid-template-columns: 32px minmax(0, 1fr) auto; padding: 15px; }
-.discovery-rule-card-list > article[data-assignment="include"] { border-left: 3px solid #16a34a; }
-.discovery-rule-card-list > article[data-assignment="exclude"] { border-left: 3px solid #dc2626; }
+.discovery-rule-card-list > article[data-assignment="active"] { border-left: 3px solid var(--configuration-section-accent); }
 .discovery-rule-card-list > article > div:nth-child(2) { display: grid; gap: 8px; }
 .discovery-rule-card-list > article > div:nth-child(2) > header { align-items: center; display: flex; flex-wrap: wrap; gap: 8px; }
 .discovery-rule-card-list > article > div:nth-child(2) > header > strong { font-size: 15px; font-weight: 560; line-height: 1.35; }
 .discovery-rule-card-list > article > div:nth-child(2) > header span { color: var(--muted-foreground); font-size: 9px; font-weight: 700; text-transform: uppercase; }
 .discovery-rule-card-list p { color: var(--muted-foreground); line-height: 1.5; margin: 0; }
-.discovery-rule-assignment { display: flex; gap: 6px; }
-.discovery-rule-assignment button { background: var(--surface); border: 1px solid var(--configuration-rule); border-radius: 7px; cursor: pointer; font-size: 10.5px; min-height: 32px; padding: 5px 10px; }
-.discovery-rule-assignment button:first-child[aria-pressed="true"] { background: color-mix(in oklab, #16a34a 9%, var(--surface)); border-color: #16a34a; color: #15803d; }
-.discovery-rule-assignment button:last-child[aria-pressed="true"] { background: color-mix(in oklab, #dc2626 7%, var(--surface)); border-color: #dc2626; color: #b91c1c; }
+.discovery-rule-remove { align-self: start; justify-self: end; }
 .discovery-expiry-policy { grid-column: 1 / -1; }
 .discovery-expiry-policy > div { display: grid; gap: 8px; grid-template-columns: repeat(3, minmax(0, 1fr)); }
 .discovery-expiry-policy label { align-items: flex-start; border: 1px solid var(--configuration-rule); border-radius: 8px; display: flex; gap: 9px; padding: 12px; }
@@ -787,7 +782,7 @@
   .discovery-rule-add { grid-template-columns: 1fr; }
   .discovery-rule-catalog > header > label { grid-column: auto; grid-row: auto; }
   .discovery-rule-card-list > article { grid-template-columns: 28px minmax(0, 1fr); }
-  .discovery-rule-assignment { grid-column: 2; }
+  .discovery-rule-remove { grid-column: 2; justify-self: start; }
 }
 
 /* Configuration Workbench v2: one shared hierarchy for every non-Canvas route. */
