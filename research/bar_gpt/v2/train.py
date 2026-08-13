@@ -25,7 +25,12 @@ REPO_ROOT = next(parent for parent in Path(__file__).resolve().parents if (paren
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from research.bar_gpt.v2 import MODEL_FAMILY, MODEL_VERSION, assert_checkpoint_version
+from research.bar_gpt.v2 import (
+    LEARNING_CONTRACT,
+    MODEL_FAMILY,
+    MODEL_VERSION,
+    assert_checkpoint_version,
+)
 from research.bar_gpt.v2.config import BarGPTConfig, DataConfig, ExperimentConfig, TrainConfig, to_dict
 from research.bar_gpt.v2.data import AUTOREGRESSIVE_VIEW_NAMES, PATHWAY_ID_BY_NAME, TIMEFRAME_US_BY_NAME, BarGPTBatch, BarGPTExample, BarView, collate_examples
 from research.bar_gpt.v2.loader import (
@@ -515,6 +520,7 @@ FORMAT TSVRaw
     return {
         "model_family": MODEL_FAMILY,
         "model_version": MODEL_VERSION,
+        "learning_contract": LEARNING_CONTRACT,
         "certified_start": config.start_date,
         "certified_end": cursor,
         "certified_ranges": str(len(intervals)),
@@ -1289,6 +1295,7 @@ def checkpoint_payload(
     return {
         "model_family": MODEL_FAMILY,
         "model_version": MODEL_VERSION,
+        "learning_contract": LEARNING_CONTRACT,
         "model": _unwrap(model).state_dict(),
         "optimizer": optimizer.state_dict(),
         "scaler": scaler.state_dict(),
@@ -1816,6 +1823,7 @@ def main(argv: Iterable[str] | None = None) -> int:
         args=vars(args),
         config={
             **to_dict(config),
+            "learning_contract": LEARNING_CONTRACT,
             "data_evidence": evidence,
             "validation_tickers": validation_tickers,
             "identity_holdout_tickers": identity_holdouts,
@@ -2542,6 +2550,7 @@ def main(argv: Iterable[str] | None = None) -> int:
         {
             "model_family": MODEL_FAMILY,
             "version": MODEL_VERSION,
+            "learning_contract": LEARNING_CONTRACT,
             "run_name": run_name,
             "samples_seen": samples_seen,
             "batches_seen": batches_seen,

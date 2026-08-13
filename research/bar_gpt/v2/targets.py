@@ -17,34 +17,36 @@ DIRECTION_TARGET_COUNT = len(DIRECTION_TARGET_NAMES)
 RETURN_TARGET_NAMES: tuple[str, ...] = OHLC_RETURN_TARGET_NAMES
 RETURN_TARGET_COUNT = len(RETURN_TARGET_NAMES)
 RETURN_CLASS_NAMES: tuple[str, ...] = (
-    "strong_negative",
     "negative",
     "neutral",
     "positive",
-    "strong_positive",
 )
 RETURN_CLASS_COUNT = len(RETURN_CLASS_NAMES)
 
-# Authoritative simple-percentage thresholds. These are deliberately defined
-# in human-readable percentage units and converted from the reversible shard
-# transform only when labels are materialized.
-PHYSICAL_RETURN_CLASS_THRESHOLDS_PERCENT: dict[int, tuple[float, float]] = {
-    5_000_000: (0.05, 0.20),
-    30_000_000: (0.08, 0.30),
-    60_000_000: (0.10, 0.40),
-    300_000_000: (0.20, 0.75),
-    900_000_000: (0.30, 1.25),
-    3_600_000_000: (0.50, 2.00),
+# One contract applies to every stored OHLC return: negative below -1 bp,
+# neutral on the inclusive [-1 bp, +1 bp] interval, and positive above +1 bp.
+# The shards remain unchanged; labels are derived from their reversible return
+# transform by mapping this human-readable simple-percentage threshold into
+# stored-target space.
+RETURN_CLASS_NEUTRAL_BPS = 1.0
+RETURN_CLASS_NEUTRAL_PERCENT = RETURN_CLASS_NEUTRAL_BPS / 100.0
+PHYSICAL_RETURN_CLASS_THRESHOLDS_PERCENT: dict[int, float] = {
+    5_000_000: RETURN_CLASS_NEUTRAL_PERCENT,
+    30_000_000: RETURN_CLASS_NEUTRAL_PERCENT,
+    60_000_000: RETURN_CLASS_NEUTRAL_PERCENT,
+    300_000_000: RETURN_CLASS_NEUTRAL_PERCENT,
+    900_000_000: RETURN_CLASS_NEUTRAL_PERCENT,
+    3_600_000_000: RETURN_CLASS_NEUTRAL_PERCENT,
 }
-AUTOREGRESSIVE_RETURN_CLASS_THRESHOLDS_PERCENT: dict[str, tuple[float, float]] = {
-    "1s": (0.03, 0.12),
-    "5s": (0.05, 0.20),
-    "10s": (0.06, 0.25),
-    "30s": (0.08, 0.30),
-    "1m": (0.10, 0.40),
-    "5m": (0.20, 0.75),
-    "30m": (0.40, 1.50),
-    "1h": (0.50, 2.00),
+AUTOREGRESSIVE_RETURN_CLASS_THRESHOLDS_PERCENT: dict[str, float] = {
+    "1s": RETURN_CLASS_NEUTRAL_PERCENT,
+    "5s": RETURN_CLASS_NEUTRAL_PERCENT,
+    "10s": RETURN_CLASS_NEUTRAL_PERCENT,
+    "30s": RETURN_CLASS_NEUTRAL_PERCENT,
+    "1m": RETURN_CLASS_NEUTRAL_PERCENT,
+    "5m": RETURN_CLASS_NEUTRAL_PERCENT,
+    "30m": RETURN_CLASS_NEUTRAL_PERCENT,
+    "1h": RETURN_CLASS_NEUTRAL_PERCENT,
 }
 
 
@@ -57,13 +59,11 @@ def return_class_labels(
     target: torch.Tensor,
     *,
     neutral_percent: float,
-    strong_percent: float,
 ) -> torch.Tensor:
-    """Map transformed returns to the five authoritative movement classes."""
+    """Map transformed returns to negative, neutral, or positive."""
     neutral = float(neutral_percent)
-    strong = float(strong_percent)
-    if not 0.0 < neutral < strong < 100.0:
-        raise ValueError("return thresholds must satisfy 0 < neutral < strong < 100 percent")
+    if not 0.0 < neutral < 100.0:
+        raise ValueError("return neutral threshold must be between 0 and 100 percent")
     # The shard target is already a monotonic transform of simple percentage
     # return. Convert the human-readable thresholds through that same transform
     # and compare in stored-target space. This makes boundary membership stable
@@ -73,24 +73,20 @@ def return_class_labels(
         value = torch.as_tensor(percent, dtype=target.dtype, device=target.device)
         return torch.asinh(torch.log1p(value / 100.0) * 100.0)
 
-    negative_strong = encoded_threshold(-strong)
     negative_neutral = encoded_threshold(-neutral)
     positive_neutral = encoded_threshold(neutral)
-    positive_strong = encoded_threshold(strong)
     labels = torch.zeros_like(target, dtype=torch.long)
-    labels = torch.where(target >= negative_strong, torch.ones_like(labels), labels)
-    labels = torch.where(target >= negative_neutral, torch.full_like(labels, 2), labels)
-    labels = torch.where(target > positive_neutral, torch.full_like(labels, 3), labels)
-    labels = torch.where(target > positive_strong, torch.full_like(labels, 4), labels)
+    labels = torch.where(target >= negative_neutral, torch.ones_like(labels), labels)
+    labels = torch.where(target > positive_neutral, torch.full_like(labels, 2), labels)
     return labels
 
 
 def autoregressive_return_class_labels(target: torch.Tensor, view: str) -> torch.Tensor:
     try:
-        neutral, strong = AUTOREGRESSIVE_RETURN_CLASS_THRESHOLDS_PERCENT[view]
+        neutral = AUTOREGRESSIVE_RETURN_CLASS_THRESHOLDS_PERCENT[view]
     except KeyError as exc:
         raise KeyError(f"no v2 return-class thresholds for autoregressive view {view!r}") from exc
-    return return_class_labels(target, neutral_percent=neutral, strong_percent=strong)
+    return return_class_labels(target, neutral_percent=neutral)
 
 
 def physical_return_class_labels(target: torch.Tensor, horizons_us: tuple[int, ...]) -> torch.Tensor:
@@ -99,11 +95,11 @@ def physical_return_class_labels(target: torch.Tensor, horizons_us: tuple[int, .
     labels = torch.empty_like(target, dtype=torch.long)
     for index, horizon_us in enumerate(horizons_us):
         try:
-            neutral, strong = PHYSICAL_RETURN_CLASS_THRESHOLDS_PERCENT[int(horizon_us)]
+            neutral = PHYSICAL_RETURN_CLASS_THRESHOLDS_PERCENT[int(horizon_us)]
         except KeyError as exc:
             raise KeyError(f"no v2 return-class thresholds for physical horizon {horizon_us}") from exc
         labels[..., index, :] = return_class_labels(
-            target[..., index, :], neutral_percent=neutral, strong_percent=strong
+            target[..., index, :], neutral_percent=neutral
         )
     return labels
 

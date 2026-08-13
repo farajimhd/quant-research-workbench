@@ -171,6 +171,7 @@ from research.bar_gpt.v2.overfit_pilot import (
     DEFAULT_SHARD_ROOT as OVERFIT_SHARD_ROOT,
     _limit_ar_transitions,
     _limit_block_origins,
+    _supported_close_tasks,
     parse_args as parse_overfit_args,
 )
 from research.bar_gpt.v2.run_train import DEFAULT_ARGS as training_launcher_args
@@ -1174,7 +1175,7 @@ class LoaderTrainerContractTest(unittest.TestCase):
         self.assertTrue(torch.equal(cached_batch.horizon_targets, live_batch.horizon_targets))
         self.assertTrue(torch.equal(cached_batch.horizon_mask, live_batch.horizon_mask))
 
-    def test_overfit_population_is_bounded_and_five_class_scores_are_independent(self) -> None:
+    def test_overfit_population_is_bounded_and_three_class_scores_are_independent(self) -> None:
         config = self.data_config()
         examples = list(build_session_examples(
             ticker="AAA", local_date="2026-01-02", session=session_view(), daily=None,
@@ -1199,11 +1200,37 @@ class LoaderTrainerContractTest(unittest.TestCase):
         accuracy, balanced, f1, mcc, distance = multiclass_scores(perfect)
         self.assertEqual((accuracy, balanced, f1, mcc, distance), (1.0, 1.0, 1.0, 1.0, 0.0))
         collapsed = torch.zeros_like(perfect)
-        collapsed[:, 2] = 10
+        collapsed[:, 1] = 10
         _accuracy, collapsed_balanced, _f1, collapsed_mcc, collapsed_distance = multiclass_scores(collapsed)
-        self.assertAlmostEqual(collapsed_balanced, 0.2)
+        self.assertAlmostEqual(collapsed_balanced, 1.0 / 3.0)
         self.assertEqual(collapsed_mcc, 0.0)
         self.assertGreater(collapsed_distance, 0.0)
+
+        metric_prefix = "overfit_after_trade_close_return_class_5s"
+        metrics = {
+            f"{metric_prefix}_support/negative": 8.0,
+            f"{metric_prefix}_support/neutral": 9.0,
+            f"{metric_prefix}_support/positive": 10.0,
+            f"{metric_prefix}/balanced_accuracy": 0.95,
+            f"{metric_prefix}/mcc": 0.90,
+        }
+        supported = _supported_close_tasks(
+            metrics,
+            namespace="overfit_after",
+            minimum_class_support=8,
+            autoregressive=False,
+        )
+        self.assertEqual(len(supported), 1)
+        self.assertEqual(supported[0]["minimum_class_support"], 8.0)
+        self.assertEqual(
+            _supported_close_tasks(
+                metrics,
+                namespace="overfit_after",
+                minimum_class_support=9,
+                autoregressive=False,
+            ),
+            [],
+        )
 
     def test_strict_2026_audit_rejects_masked_calendar_context(self) -> None:
         config = self.data_config()

@@ -9,7 +9,7 @@ from typing import Iterable
 
 import torch
 
-from research.bar_gpt.v2 import assert_checkpoint_version
+from research.bar_gpt.v2 import LEARNING_CONTRACT, assert_checkpoint_version
 from research.bar_gpt.v2.config import BarGPTConfig, DataConfig, ExperimentConfig, TrainConfig, to_dict
 from research.bar_gpt.v2.model import BarGPTV2
 from research.bar_gpt.v2.model_discovery import (
@@ -120,6 +120,7 @@ def main(argv: Iterable[str] | None = None) -> int:
             "evaluation_panel": str(args.panel),
             "metric_namespace": namespace,
             "manifest_hash": manifest["manifest_hash"],
+            "learning_contract": LEARNING_CONTRACT,
             "source_architecture": str(args.architecture),
             "source_checkpoint": str(checkpoint_path),
             "source_training_origins": source_samples,
@@ -152,6 +153,7 @@ def main(argv: Iterable[str] | None = None) -> int:
             "panel": str(args.panel),
             "namespace": namespace,
             "manifest_hash": manifest["manifest_hash"],
+            "learning_contract": LEARNING_CONTRACT,
             **metrics,
         }
         summary_path = run_root / "summary.json"

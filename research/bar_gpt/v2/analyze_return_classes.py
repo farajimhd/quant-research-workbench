@@ -13,6 +13,7 @@ from typing import Any, Iterable
 
 import torch
 
+from research.bar_gpt.v2 import LEARNING_CONTRACT
 from research.bar_gpt.v2.model_discovery import (
     discovery_data_config,
     load_discovery_manifest,
@@ -42,11 +43,16 @@ def _worker_init() -> None:
 
 
 def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Concurrently audit BarGPT v2 five-class return labels from certified v12 shards.")
+    parser = argparse.ArgumentParser(
+        description=(
+            "Concurrently audit BarGPT v2 three-class 1 bp return labels "
+            "from certified v12 shards."
+        )
+    )
     parser.add_argument("--experiment-manifest", required=True, help="Fixed model-comparison panel manifest.")
     parser.add_argument("--shard-root", default=str(DEFAULT_SHARD_ROOT))
     parser.add_argument("--output-root", default=str(DEFAULT_OUTPUT_ROOT))
-    parser.add_argument("--run-name", default="percent_thresholds_v2")
+    parser.add_argument("--run-name", default="direction_3class_1bp_v2")
     parser.add_argument("--panels", nargs="+", default=("train", "monitor", "validation"))
     parser.add_argument("--workers", type=int, default=max(1, min(8, (os.cpu_count() or 2) // 2)))
     parser.add_argument("--execute", action="store_true")
@@ -149,7 +155,7 @@ def _rows(summary: dict[str, Any], horizons_us: tuple[int, ...]) -> list[dict[st
     for population, raw in summary["physical"].items():
         counts = torch.as_tensor(raw, dtype=torch.int64)
         for horizon_index, horizon_us in enumerate(horizons_us):
-            neutral, strong = PHYSICAL_RETURN_CLASS_THRESHOLDS_PERCENT[horizon_us]
+            neutral = PHYSICAL_RETURN_CLASS_THRESHOLDS_PERCENT[horizon_us]
             for target_index, target in enumerate(RETURN_TARGET_NAMES):
                 total = int(counts[horizon_index, target_index].sum())
                 for class_index, class_name in enumerate(RETURN_CLASS_NAMES):
@@ -158,12 +164,12 @@ def _rows(summary: dict[str, Any], horizons_us: tuple[int, ...]) -> list[dict[st
                         "population": population, "pathway": "horizon", "scale": f"{horizon_us // 1_000_000}s",
                         "target": target, "class": class_name, "count": count,
                         "fraction": count / total if total else None,
-                        "neutral_percent": neutral, "strong_percent": strong,
+                        "neutral_percent": neutral,
                     })
     for population, views in summary["autoregressive"].items():
         for view, raw in views.items():
             counts = torch.as_tensor(raw, dtype=torch.int64)
-            neutral, strong = AUTOREGRESSIVE_RETURN_CLASS_THRESHOLDS_PERCENT[view]
+            neutral = AUTOREGRESSIVE_RETURN_CLASS_THRESHOLDS_PERCENT[view]
             for target_index, target in enumerate(RETURN_TARGET_NAMES):
                 total = int(counts[target_index].sum())
                 for class_index, class_name in enumerate(RETURN_CLASS_NAMES):
@@ -172,7 +178,7 @@ def _rows(summary: dict[str, Any], horizons_us: tuple[int, ...]) -> list[dict[st
                         "population": population, "pathway": "autoregressive", "scale": view,
                         "target": target, "class": class_name, "count": count,
                         "fraction": count / total if total else None,
-                        "neutral_percent": neutral, "strong_percent": strong,
+                        "neutral_percent": neutral,
                     })
     return rows
 
@@ -204,6 +210,7 @@ def main(argv: Iterable[str] | None = None) -> int:
     command = {
         "manifest": str(manifest_path), "manifest_hash": manifest.get("manifest_hash"),
         "shard_root": str(shard_root), "panels": panels, "workers": int(args.workers),
+        "learning_contract": LEARNING_CONTRACT,
         "units": len(by_unit), "thresholds_physical": PHYSICAL_RETURN_CLASS_THRESHOLDS_PERCENT,
         "thresholds_autoregressive": AUTOREGRESSIVE_RETURN_CLASS_THRESHOLDS_PERCENT,
     }

@@ -46,7 +46,7 @@ class ModelTrainingPreset:
 
 
 # Provisional v2 baselines inherited from the completed v1 grid. The v2
-# profiler owns reselection because its five-class heads and loss graph change
+# profiler owns reselection because its three-class heads and loss graph change
 # memory and backward cost. Comparison/overfit use this one authority.
 PRODUCTION_MODEL_TRAINING_PRESETS: dict[str, ModelTrainingPreset] = {
     "current": ModelTrainingPreset(microbatch=20, accumulation=2, length_bucket_batches=16),

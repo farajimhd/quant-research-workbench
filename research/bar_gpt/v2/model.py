@@ -30,7 +30,7 @@ def build_model_mermaid() -> str:
       F["Origin embedding\\nmodel representation"]
       G["Autoregressive heads\\n14 regression + 4 categorical targets per intraday view"]
       H["Physical horizon heads\\n15 quantile-regression + 8 categorical targets"]
-      I["Five-class return heads\\n12 OHLC returns on AR and physical paths"]
+      I["Three-class return heads\\n12 OHLC returns on AR and physical paths"]
       A --> B --> C --> D --> E --> F
       F --> G
       F --> H

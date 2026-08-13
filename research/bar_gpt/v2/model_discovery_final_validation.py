@@ -12,19 +12,22 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable
 
+from research.bar_gpt.v2 import LEARNING_CONTRACT
 from research.bar_gpt.v2.model_discovery import (
     ARCHITECTURE_GRID,
     DEFAULT_OUTPUT_ROOT,
     DEFAULT_SHARD_ROOT,
+    DISCOVERY_CAMPAIGN_STATE_NAME,
     DISCOVERY_CONTRACT_VERSION,
     DISCOVERY_EPOCHS,
+    DISCOVERY_MANIFEST_NAME,
     discovery_data_config,
     load_discovery_manifest,
 )
 from research.bar_gpt.v2.offline_shards import verify_shard_catalog_lock
 
 
-FINAL_VALIDATION_CONTRACT_VERSION = 7
+FINAL_VALIDATION_CONTRACT_VERSION = 8
 FINAL_VALIDATION_WANDB_PROJECT = "bar gpt model discovery final validation"
 
 
@@ -155,6 +158,7 @@ def _summary_matches_checkpoint(summary: dict[str, Any], checkpoint: Path) -> bo
         and int(summary.get("checkpoint_mtime_ns", -1)) == checkpoint.stat().st_mtime_ns
         and summary.get("panel") == "validation"
         and summary.get("namespace") == "final_validation"
+        and summary.get("learning_contract") == LEARNING_CONTRACT
     )
 
 
@@ -228,13 +232,19 @@ def main(argv: Iterable[str] | None = None) -> int:
     discovery_root = Path(args.discovery_root)
     shard_root = Path(args.shard_root)
     verify_shard_catalog_lock(shard_root)
-    manifest_path = Path(args.manifest) if args.manifest else discovery_root / "fixed_panels_v8.json"
-    campaign_state_path = discovery_root / "campaign_state_v8.json"
+    manifest_path = (
+        Path(args.manifest)
+        if args.manifest
+        else discovery_root / DISCOVERY_MANIFEST_NAME
+    )
+    campaign_state_path = discovery_root / DISCOVERY_CAMPAIGN_STATE_NAME
     if not campaign_state_path.is_file():
         raise RuntimeError(f"discovery campaign state is missing: {campaign_state_path}")
     campaign_state = json.loads(campaign_state_path.read_text(encoding="utf-8"))
     if int(campaign_state.get("contract_version", -1)) != DISCOVERY_CONTRACT_VERSION:
         raise RuntimeError("final validation requires the active discovery campaign contract")
+    if campaign_state.get("learning_contract") != LEARNING_CONTRACT:
+        raise RuntimeError("final validation requires the active v2 learning contract")
     if Path(str(campaign_state.get("manifest", ""))).resolve() != manifest_path.resolve():
         raise RuntimeError("discovery campaign state belongs to a different fixed-panel manifest")
     manifest = load_discovery_manifest(
@@ -253,10 +263,11 @@ def main(argv: Iterable[str] | None = None) -> int:
         batch_size_override=int(args.batch_size),
     )
     target_training_origins = int(manifest["targets"]["train_origins_per_epoch"]) * DISCOVERY_EPOCHS
-    output_root = discovery_root / "final_validation_v3"
+    output_root = discovery_root / "final_validation_3class_1bp_v1"
     state_path = output_root / "state.json"
     state = json.loads(state_path.read_text(encoding="utf-8")) if state_path.is_file() else {
         "contract_version": FINAL_VALIDATION_CONTRACT_VERSION,
+        "learning_contract": LEARNING_CONTRACT,
         "evaluation_id": time.strftime("%Y%m%d-%H%M%S"),
         "source_campaign_id": str(campaign_state["campaign_id"]),
         "manifest": str(manifest_path),
@@ -266,6 +277,8 @@ def main(argv: Iterable[str] | None = None) -> int:
     }
     if int(state.get("contract_version", -1)) != FINAL_VALIDATION_CONTRACT_VERSION:
         raise RuntimeError("unsupported final-validation state contract")
+    if state.get("learning_contract") != LEARNING_CONTRACT:
+        raise RuntimeError("final-validation state has an incompatible learning contract")
     if state.get("manifest_hash") != manifest["manifest_hash"]:
         raise RuntimeError("final-validation state belongs to a different manifest")
     print(f"W&B project: {args.wandb_project}", flush=True)

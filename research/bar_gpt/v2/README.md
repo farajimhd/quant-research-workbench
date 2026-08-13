@@ -14,8 +14,8 @@ under `D:\TradingML\runtimes\bar_gpt\v2`.
 - Latent prediction is removed from the model, objective, metrics, and
   checkpoint contract.
 - Each of the 12 trade/bid/ask OHLC return targets retains its regression head
-  and gains an independent five-class head: `strong_negative`, `negative`,
-  `neutral`, `positive`, and `strong_positive`.
+  and gains an independent three-class direction head: `negative`, `neutral`,
+  and `positive`.
 - The old binary direction heads are replaced, not retained.
 - Non-return floating-point targets remain regression-only. Existing
   categorical targets remain categorical-only.
@@ -27,7 +27,7 @@ under `D:\TradingML\runtimes\bar_gpt\v2`.
   checkpoints fail closed on restore.
 
 The causal model and certified target tensors are otherwise unchanged. The
-five-class labels are derived on the training/evaluation side from the stored
+three-class labels are derived on the training/evaluation side from the stored
 continuous return targets; shards are not relabeled or duplicated.
 
 ## Return-class contract
@@ -39,39 +39,18 @@ log_return = sinh(z) / 100
 simple_percent_return = expm1(log_return) * 100
 ```
 
-For neutral threshold `N` and strong threshold `S`, both in percent:
+One fixed one-basis-point neutral band applies to every return target, physical
+horizon, and autoregressive view. One basis point is `0.01%`:
 
 ```text
-strong_negative: pct < -S
-negative:        -S <= pct < -N
-neutral:         -N <= pct <= N
-positive:         N < pct <= S
-strong_positive:  pct > S
+negative: pct < -0.01%
+neutral:  -0.01% <= pct <= +0.01%
+positive: pct > +0.01%
 ```
 
-Physical horizons use:
-
-| Horizon | N | S |
-|---|---:|---:|
-| 5s | 0.05% | 0.20% |
-| 30s | 0.08% | 0.30% |
-| 60s | 0.10% | 0.40% |
-| 300s | 0.20% | 0.75% |
-| 900s | 0.30% | 1.25% |
-| 3600s | 0.50% | 2.00% |
-
-Autoregressive views use:
-
-| View | N | S |
-|---|---:|---:|
-| 1s | 0.03% | 0.12% |
-| 5s | 0.05% | 0.20% |
-| 10s | 0.06% | 0.25% |
-| 30s | 0.08% | 0.30% |
-| 1m | 0.10% | 0.40% |
-| 5m | 0.20% | 0.75% |
-| 30m | 0.40% | 1.50% |
-| 1h | 0.50% | 2.00% |
+Boundary values at exactly `-1 bp` and `+1 bp` are neutral. Labels are formed
+in the reversible stored-target basis so an unnecessary floating-point decode
+cannot move a value across a boundary.
 
 ## Loss contract
 
@@ -141,14 +120,17 @@ python -m research.bar_gpt.v2.run_analyze_return_classes `
 The comparison and analyzer require `--execute`; profiler and overfit launchers
 execute by default after printing their equivalent command. The analyzer
 writes per-unit checkpoints and aggregate JSON/CSV reports under
-the v2 runtime root; reruns skip completed units.
+`return_class_analysis/direction_3class_1bp_v2`; reruns skip only unit results
+bound to the same manifest and three-class contract. The overfit report is
+written under `overfit_pilot_3class_1bp_v1`, separately from obsolete
+five-class experiments.
 
 ## Interpretation and safety
 
-See `METRICS_REFERENCE.md` for metric formulas and ranges. Five-class balanced
+See `METRICS_REFERENCE.md` for metric formulas and ranges. Three-class balanced
 accuracy is macro recall over classes with actual support; inspect
-`active_actual_classes` and per-class support alongside it. A value of 0.20 is
-the natural five-class chance reference only when all five actual classes are
+`active_actual_classes` and per-class support alongside it. A value of one
+third is the natural three-class chance reference only when all three classes are
 represented and predictions are uninformative.
 
 The model remains causal: full attention uses native causal SDPA, while masked

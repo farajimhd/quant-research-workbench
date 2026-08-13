@@ -2,6 +2,7 @@
 
 MODEL_FAMILY = "bar_gpt"
 MODEL_VERSION = "v2"
+LEARNING_CONTRACT = "return_direction_3class_1bp_v1"
 
 
 def assert_checkpoint_version(payload: object) -> None:
@@ -10,10 +11,16 @@ def assert_checkpoint_version(payload: object) -> None:
         raise RuntimeError("checkpoint payload must be a mapping")
     family = payload.get("model_family")
     version = payload.get("model_version")
-    if family != MODEL_FAMILY or version != MODEL_VERSION:
+    learning_contract = payload.get("learning_contract")
+    if (
+        family != MODEL_FAMILY
+        or version != MODEL_VERSION
+        or learning_contract != LEARNING_CONTRACT
+    ):
         raise RuntimeError(
-            f"checkpoint version mismatch: expected {MODEL_FAMILY}/{MODEL_VERSION}, "
-            f"observed {family}/{version}"
+            "checkpoint version mismatch: expected "
+            f"{MODEL_FAMILY}/{MODEL_VERSION}/{LEARNING_CONTRACT}, observed "
+            f"{family}/{version}/{learning_contract}"
         )
 
 __all__ = [
@@ -23,6 +30,7 @@ __all__ = [
     "BarGPTV2",
     "DataConfig",
     "ExperimentConfig",
+    "LEARNING_CONTRACT",
     "PackedBarEmbeddingAdapter",
     "TrainConfig",
     "assert_checkpoint_version",

@@ -13,6 +13,7 @@ from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Any, Iterable, Sequence
 
+from research.bar_gpt.v2 import LEARNING_CONTRACT
 from research.bar_gpt.v2.config import (
     OFFLINE_PRODUCTION_LENGTH_BUCKET_BATCHES,
     OFFLINE_PRODUCTION_LOADER_WORKERS,
@@ -33,6 +34,8 @@ from research.bar_gpt.v2.offline_shards import (
 
 DISCOVERY_CONTRACT_VERSION = 9
 DISCOVERY_WANDB_PROJECT = "bar gpt model discovery"
+DISCOVERY_MANIFEST_NAME = "fixed_panels_v9.json"
+DISCOVERY_CAMPAIGN_STATE_NAME = "campaign_state_3class_1bp_v1.json"
 DISCOVERY_ORIGIN_BARS_1S = 4_096
 DISCOVERY_TRAIN_ORIGINS_PER_EPOCH = 100_000_000
 DISCOVERY_EPOCHS = 2
@@ -618,7 +621,7 @@ def _final_validation_metrics(run_root: Path) -> dict[str, float]:
 
 
 def _ranking_key(metrics: dict[str, float]) -> tuple[float, float, float, float]:
-    """Quality-first ranking with five-class return quality as the first tie-breaker."""
+    """Quality-first ranking with three-class return quality as the first tie-breaker."""
     close_class_mcc = metrics.get("validation_close_return_class_summary/mcc_macro", float("-inf"))
     return (
         metrics.get("validation_loss/total", float("inf")),
@@ -648,7 +651,7 @@ def main(argv: Iterable[str] | None = None) -> int:
     if unknown:
         raise ValueError(f"unknown architectures: {unknown}")
     output_root = Path(args.output_root)
-    manifest_path = output_root / "fixed_panels_v9.json"
+    manifest_path = output_root / DISCOVERY_MANIFEST_NAME
     print(f"W&B project: {args.wandb_project}", flush=True)
     print("Metric namespaces: monitor_*, validation_*, locked_test_*", flush=True)
     print(
@@ -683,9 +686,10 @@ def main(argv: Iterable[str] | None = None) -> int:
             config=discovery_data_config(Path(args.shard_root)),
         )
         print(f"Reusing verified manifest: {manifest_path}", flush=True)
-    state_path = output_root / "campaign_state_v9.json"
+    state_path = output_root / DISCOVERY_CAMPAIGN_STATE_NAME
     state = json.loads(state_path.read_text(encoding="utf-8")) if state_path.is_file() else {
         "contract_version": DISCOVERY_CONTRACT_VERSION,
+        "learning_contract": LEARNING_CONTRACT,
         "campaign_id": time.strftime("%Y%m%d-%H%M%S"),
         "manifest": str(manifest_path),
         "runs": {},
@@ -694,6 +698,8 @@ def main(argv: Iterable[str] | None = None) -> int:
     }
     if int(state.get("contract_version", -1)) != DISCOVERY_CONTRACT_VERSION:
         raise RuntimeError(f"unsupported discovery campaign state: {state_path}")
+    if state.get("learning_contract") != LEARNING_CONTRACT:
+        raise RuntimeError(f"discovery campaign uses an incompatible learning contract: {state_path}")
     if Path(str(state.get("manifest", ""))).resolve() != manifest_path.resolve():
         raise RuntimeError("discovery campaign state belongs to a different fixed-panel manifest")
     campaign_id = str(state["campaign_id"])

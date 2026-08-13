@@ -14,6 +14,7 @@ from typing import Iterable
 import torch
 import torch.nn.functional as F
 
+from research.bar_gpt.v2 import LEARNING_CONTRACT
 from research.bar_gpt.v2.config import (
     OFFLINE_PRODUCTION_LENGTH_BUCKET_BATCHES,
     OFFLINE_PRODUCTION_LOADER_WORKERS,
@@ -1133,6 +1134,7 @@ def main(argv: Iterable[str] | None = None) -> int:
         )) is not None
     }
     summary = {
+        "learning_contract": LEARNING_CONTRACT,
         "device": str(device),
         "runtime": _runtime_evidence(device),
         "args": vars(args),

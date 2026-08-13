@@ -17,7 +17,7 @@ contract still lost material price geometry:
 * autoregressive targets blended midpoint and trade into one endpoint and
   clamped high/low excursions;
 * the v1 learning contract used binary direction heads and weighted loss
-  composition rather than the v2 five-class, per-target sum;
+  composition rather than the v2 three-class, per-target sum;
 * the model-ready low-from-open input was stored as a positive magnitude.
 
 The v5 pilot exposed a further semantic defect: every structurally positive
@@ -315,11 +315,12 @@ token and `next_*` is the next stored nonempty completed bar in that view.
 
 ## V2 return-class learning and metrics
 
-Every one of the 12 OHLC returns has its own five-class physical logit and its
-own five-class autoregressive logit per view. Classes are derived from exact
-simple percentage returns using horizon/view-specific neutral and strong
-thresholds documented in `README.md`. Neutral observations participate in
-cross-entropy like every other class; no class is dropped or reweighted.
+Every one of the 12 OHLC returns has its own three-class physical logit and its
+own three-class autoregressive logit per view. Classes are negative below
+`-1 bp`, neutral on the inclusive `[-1 bp,+1 bp]` interval, and positive above
+`+1 bp`, using the same rule for every horizon and view. Neutral observations
+participate in cross-entropy like every other class; no class is dropped or
+reweighted.
 
 Each target is independently mean-normalized over valid observations and all
 target means are summed without coefficients or a final target-count divisor.
@@ -328,7 +329,7 @@ categorical-only. Latent prediction and the old binary direction heads do not
 exist in v2.
 
 Validation reports exact simple-percent and basis-point MAE, zero and
-continuation baselines, quantile coverage/calibration, five-class accuracy,
+continuation baselines, quantile coverage/calibration, three-class accuracy,
 balanced accuracy, macro F1, multiclass MCC, ordinal class distance, class
 support/fractions, ranking, availability Brier score, and condition average
 precision. Aggregate family and close-return summaries remain available for
@@ -361,11 +362,11 @@ only bounds ticker/month scope. Automated audit must verify:
 * same-family future updates, valid-zero versus masked semantics, finite values,
   target ranges, condition coverage, sidecar hashes, and deterministic
   ClickHouse reconstruction;
-* target and five-class support by family, OHLC field, horizon, and AR view.
+* target and three-class support by family, OHLC field, horizon, and AR view.
 
 Before model comparison, the Current architecture overfit runner must use a
 bounded certified panel from the locked full v12 catalog and pass the total-loss
-improvement gate and five-class close-return quality gates with explicit
+improvement gate and three-class close-return quality gates with explicit
 per-class support. It reports direct
 per-head physical MAE in basis points without imposing an unapproved absolute
 MAE threshold. Insufficiently supported return-class tasks are reported

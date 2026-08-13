@@ -123,7 +123,7 @@ def _return_class_stats(
     if logits.shape[:-1] != labels.shape or labels.shape != mask.shape:
         raise ValueError("return-class logits, labels, and mask do not align")
     if logits.shape[-1] != RETURN_CLASS_COUNT:
-        raise ValueError("return-class logits must have five classes")
+        raise ValueError("return-class logits must have three classes")
     loss = F.cross_entropy(
         logits.reshape(-1, RETURN_CLASS_COUNT), labels.reshape(-1), reduction="none"
     ).view_as(labels)
@@ -243,7 +243,7 @@ def compute_loss(
     horizon_binary = _target_means(*horizon_binary_stats)
 
     if output.horizon_return_class_logits is None:
-        raise ValueError("v2 requires physical-horizon five-class return predictions")
+        raise ValueError("v2 requires physical-horizon three-class return predictions")
     return_target = continuous_target[..., :RETURN_TARGET_COUNT]
     return_mask = continuous_mask[..., :RETURN_TARGET_COUNT]
     horizon_class_stats = _return_class_stats(

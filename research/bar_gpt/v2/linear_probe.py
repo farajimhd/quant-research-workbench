@@ -13,7 +13,12 @@ REPO_ROOT = next(parent for parent in Path(__file__).resolve().parents if (paren
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from research.bar_gpt.v2 import MODEL_FAMILY, MODEL_VERSION, assert_checkpoint_version
+from research.bar_gpt.v2 import (
+    LEARNING_CONTRACT,
+    MODEL_FAMILY,
+    MODEL_VERSION,
+    assert_checkpoint_version,
+)
 from research.bar_gpt.v2.config import BarGPTConfig, DataConfig, ExperimentConfig, TrainConfig, to_dict
 from research.bar_gpt.v2.data import PATHWAY_ID_BY_NAME, TIMEFRAME_US_BY_NAME, BarGPTBatch
 from research.bar_gpt.v2.loader import BarGPTIterableDataset, ClickHouseBarStreamConfig, make_dataloader
@@ -217,7 +222,11 @@ def main(argv: Iterable[str] | None = None) -> int:
         job_type=JOB_TYPE,
         run_name=run_name,
         args=vars(args),
-        config={**to_dict(config), "data_evidence": evidence},
+        config={
+            **to_dict(config),
+            "learning_contract": LEARNING_CONTRACT,
+            "data_evidence": evidence,
+        },
         data_roots={"clickhouse": default_clickhouse_url(), "database": config.data.database},
         output_root=paths.run_root,
         source_checkpoint=checkpoint,
