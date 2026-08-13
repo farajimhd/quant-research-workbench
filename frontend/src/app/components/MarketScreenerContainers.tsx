@@ -385,8 +385,15 @@ export function WatchUniverseContainer({ asOf, onSettingsChange, onTickerSelect,
       <div><span className="market-list-eyebrow"><Star size={12} /> QMD Watchlist</span><h3>{watchlist?.name ?? "No Watchlist configured"}</h3><p>{resolved ? `${rows.length} eligible securities` : "Dynamic membership awaits its causal resolver"} · state at <MarketTime value={resolutionClock} /></p></div>
       <span className="market-list-owner strategy">QMD</span>
     </header>
+    <nav aria-label="QMD Watchlists" className="watchlist-tabs" role="tablist">
+      {watchlists.map((row) => {
+        const selected = row.watchlist_id === watchlist?.watchlist_id;
+        const unavailable = !row.enabled || row.availability === "integration_pending";
+        return <button aria-selected={selected} className={selected ? "active" : undefined} disabled={unavailable} key={row.watchlist_id} onClick={() => onSettingsChange({ columns: [], watchlistId: row.watchlist_id })} role="tab" title={row.description || row.name} type="button">{row.name}</button>;
+      })}
+    </nav>
     <div className="watch-universe-context">
-      <label><span>Watchlist</span><select aria-label="Watchlist" onChange={(event) => onSettingsChange({ columns: [], watchlistId: event.target.value })} value={watchlist?.watchlist_id ?? ""}>{watchlists.map((row) => <option disabled={!row.enabled || row.availability === "integration_pending"} key={row.watchlist_id} value={row.watchlist_id}>{row.name}</option>)}</select></label>
+      <div><span>Description</span><strong>{watchlist?.description || "No Watchlist selected"}</strong></div>
       <div><span>Used by</span><strong>{linkedPlans.map((plan) => plan.name || plan.run_plan_id).join(", ") || "No Run Plan"}</strong></div>
       <button onClick={() => { window.location.hash = "market-discovery-configuration"; }} type="button">Configure in Market Discovery <ArrowRight size={13} /></button>
     </div>

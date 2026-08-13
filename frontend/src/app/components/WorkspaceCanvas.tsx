@@ -89,6 +89,61 @@ const MIN_WINDOW_HEIGHT = 240;
 const KEYBOARD_MOVE_STEP = 10;
 const KEYBOARD_MOVE_STEP_LARGE = 40;
 
+function beginWorkspaceDrag(
+  event: PointerEvent<HTMLElement>,
+  startX: number,
+  startY: number,
+  onCommit: (x: number, y: number) => void,
+) {
+  event.preventDefault();
+  const originX = event.clientX;
+  const originY = event.clientY;
+  const pointerId = event.pointerId;
+  const target = event.currentTarget;
+  const windowElement = target.closest<HTMLElement>(".workspace-window");
+  let frame = 0;
+  let deltaX = 0;
+  let deltaY = 0;
+  let finished = false;
+
+  target.setPointerCapture(pointerId);
+  windowElement?.setAttribute("data-dragging", "true");
+
+  const render = () => {
+    frame = 0;
+    if (windowElement) windowElement.style.transform = `translate3d(${deltaX}px, ${deltaY}px, 0)`;
+  };
+  const move = (moveEvent: globalThis.PointerEvent) => {
+    deltaX = moveEvent.clientX - originX;
+    deltaY = moveEvent.clientY - originY;
+    if (!frame) frame = requestAnimationFrame(render);
+  };
+  const stop = (stopEvent?: globalThis.PointerEvent) => {
+    if (finished) return;
+    finished = true;
+    if (frame) cancelAnimationFrame(frame);
+    if (stopEvent?.type === "pointerup") {
+      deltaX = stopEvent.clientX - originX;
+      deltaY = stopEvent.clientY - originY;
+    }
+    window.removeEventListener("pointermove", move);
+    window.removeEventListener("pointerup", stop);
+    window.removeEventListener("pointercancel", stop);
+    target.removeEventListener("lostpointercapture", stop);
+    if (target.hasPointerCapture(pointerId)) target.releasePointerCapture(pointerId);
+    if (windowElement) {
+      windowElement.style.transform = "";
+      windowElement.removeAttribute("data-dragging");
+    }
+    onCommit(Math.max(0, startX + deltaX), Math.max(0, startY + deltaY));
+  };
+
+  window.addEventListener("pointermove", move);
+  window.addEventListener("pointerup", stop);
+  window.addEventListener("pointercancel", stop);
+  target.addEventListener("lostpointercapture", stop);
+}
+
 function useWorkspaceWindowFocus(id: WorkspaceWindowId, onFocus: (id: WorkspaceWindowId) => void) {
   const windowRef = useRef<HTMLElement>(null);
   useEffect(() => {
@@ -154,23 +209,7 @@ export function WorkspaceWindow({
     if (layout.fullscreen) return;
     if ((event.target as HTMLElement).closest("button, summary, input, select, textarea, a, [role='menu']")) return;
     onFocus(id);
-    const originX = event.clientX;
-    const originY = event.clientY;
-    const startX = layout.x;
-    const startY = layout.y;
-    event.currentTarget.setPointerCapture(event.pointerId);
-    const target = event.currentTarget;
-    const move = (moveEvent: globalThis.PointerEvent) => {
-      moveWindow(startX + moveEvent.clientX - originX, startY + moveEvent.clientY - originY);
-    };
-    const stop = () => {
-      target.removeEventListener("pointermove", move);
-      target.removeEventListener("pointerup", stop);
-      target.removeEventListener("pointercancel", stop);
-    };
-    target.addEventListener("pointermove", move);
-    target.addEventListener("pointerup", stop);
-    target.addEventListener("pointercancel", stop);
+    beginWorkspaceDrag(event, layout.x, layout.y, moveWindow);
   }
 
   function moveWithKeyboard(event: KeyboardEvent<HTMLDivElement>) {
@@ -367,21 +406,7 @@ export function WorkspaceGroupWindow({
     if (layout.fullscreen) return;
     if ((event.target as HTMLElement).closest("button, summary, input, select, textarea, a, [role='menu']")) return;
     onFocus(id);
-    const originX = event.clientX;
-    const originY = event.clientY;
-    const startX = layout.x;
-    const startY = layout.y;
-    event.currentTarget.setPointerCapture(event.pointerId);
-    const target = event.currentTarget;
-    const move = (moveEvent: globalThis.PointerEvent) => moveGroup(startX + moveEvent.clientX - originX, startY + moveEvent.clientY - originY);
-    const stop = () => {
-      target.removeEventListener("pointermove", move);
-      target.removeEventListener("pointerup", stop);
-      target.removeEventListener("pointercancel", stop);
-    };
-    target.addEventListener("pointermove", move);
-    target.addEventListener("pointerup", stop);
-    target.addEventListener("pointercancel", stop);
+    beginWorkspaceDrag(event, layout.x, layout.y, moveGroup);
   }
 
   function moveWithKeyboard(event: KeyboardEvent<HTMLDivElement>) {
