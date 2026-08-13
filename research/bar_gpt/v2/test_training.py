@@ -2261,6 +2261,22 @@ class LoaderTrainerContractTest(unittest.TestCase):
         self.assertIn("validation_ar_trade_close_return_class_5s/balanced_accuracy", validation)
         self.assertIn("validation_ar_trade_close_return_class_5s/mcc", validation)
         self.assertIn("validation_availability/brier_macro", validation)
+        training_metrics_accumulator = ValidationAccumulator(
+            self.data_config().horizons_us,
+            model_config.quantiles,
+            namespace="train",
+            include_loss_metrics=False,
+            include_confidence_metrics=False,
+        )
+        training_metrics_accumulator.update(output, batch, training_loss)
+        periodic_training_metrics = training_metrics_accumulator.finalize()
+        self.assertFalse(
+            any(key.startswith("train_loss/") for key in periodic_training_metrics)
+        )
+        self.assertIn(
+            "train_ar_close_return_class_summary/mcc_macro",
+            periodic_training_metrics,
+        )
         grouped_counts: dict[str, int] = {}
         for key in validation:
             group = key.split("/", 1)[0]

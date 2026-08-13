@@ -219,6 +219,8 @@ class ValidationAccumulator:
             )
 
     def _finalize_losses(self, metrics: dict[str, float]) -> None:
+        if not self.include_loss_metrics:
+            return
         groups = {
             "ar_regression": [], "ar_categorical": [], "ar_return_class": [],
             "horizon_regression": [], "horizon_categorical": [], "horizon_return_class": [],
