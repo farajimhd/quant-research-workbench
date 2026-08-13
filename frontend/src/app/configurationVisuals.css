@@ -674,14 +674,17 @@
 .discovery-column-filters { display: flex; flex-wrap: wrap; gap: 7px; }
 .discovery-column-filters button { background: var(--surface); border: 1px solid var(--configuration-rule); border-radius: 999px; color: var(--muted-foreground); cursor: pointer; font-size: 10px; min-height: 28px; padding: 4px 10px; }
 .discovery-column-filters button[aria-pressed="true"] { border-color: var(--configuration-section-accent); color: var(--configuration-section-accent); }
-.discovery-column-card-list { display: grid; gap: 9px; grid-template-columns: repeat(2, minmax(0, 1fr)); }
-.discovery-column-card-list > label { align-items: start; border: 1px solid var(--configuration-rule); border-radius: 9px; cursor: pointer; display: grid; gap: 12px; grid-template-columns: 30px minmax(0, 1fr) auto; min-height: 92px; padding: 13px; }
-.discovery-column-card-list > label[data-selected="true"] { border-color: color-mix(in oklab, var(--configuration-section-accent) 45%, var(--configuration-rule)); }
-.discovery-column-card-list > label > span:nth-child(2) { display: grid; gap: 5px; }
-.discovery-column-card-list > label > span:nth-child(2) > span { align-items: center; display: flex; flex-wrap: wrap; gap: 7px; }
-.discovery-column-card-list strong { font-size: 12px; }
-.discovery-column-card-list small { color: var(--muted-foreground); line-height: 1.45; }
-.discovery-column-card-list em { color: var(--muted-foreground); font-size: 9px; font-style: normal; font-weight: 700; text-transform: uppercase; }
+.discovery-column-card-list { display: grid; gap: 10px; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.discovery-column-card-list > label { align-items: start; background: var(--surface); border: 1px solid var(--configuration-rule); border-radius: 10px; cursor: pointer; display: grid; gap: 13px; grid-template-columns: 30px minmax(0, 1fr) auto; min-height: 96px; padding: 14px 15px; transition: background-color 120ms ease, border-color 120ms ease; }
+.discovery-column-card-list > label:hover { background: color-mix(in oklab, var(--configuration-soft) 42%, var(--surface)); border-color: var(--border-strong); }
+.discovery-column-card-list > label[data-selected="true"] { background: color-mix(in oklab, var(--configuration-section-accent) 3%, var(--surface)); border-color: color-mix(in oklab, var(--configuration-section-accent) 45%, var(--configuration-rule)); }
+.discovery-column-card-list > label > .discovery-capability-index { font-weight: 560; }
+.discovery-column-card-copy { display: grid; gap: 7px; min-width: 0; }
+.discovery-column-card-heading { align-items: center; display: flex; flex-wrap: wrap; gap: 8px; }
+.discovery-column-card-heading > strong { color: var(--foreground); font-size: 14px; font-weight: 540; line-height: 1.3; }
+.discovery-column-card-heading > em { background: var(--configuration-soft); border: 1px solid var(--configuration-rule); border-radius: 999px; color: var(--muted-foreground); font-size: 9px; font-style: normal; font-weight: 520; letter-spacing: .035em; padding: 2px 6px; text-transform: uppercase; }
+.discovery-column-card-copy > small { color: var(--muted-foreground); font-size: 11.5px; line-height: 1.5; }
+.discovery-column-card-source { color: var(--muted-foreground); font-size: 9px; font-style: normal; font-weight: 500; letter-spacing: .025em; line-height: 1.35; text-transform: uppercase; }
 .discovery-rule-choices { display: grid; gap: 18px; grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .discovery-rule-choices fieldset,
 .discovery-calculation-choices { border: 1px solid var(--configuration-rule); border-radius: 10px; padding: 16px; }

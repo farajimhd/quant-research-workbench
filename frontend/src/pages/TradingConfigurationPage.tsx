@@ -2415,7 +2415,7 @@ function WatchlistColumnChoices({ columns, onChange, selected }: { columns: Watc
     <div className="discovery-column-card-list">{visible.map((column, index) => {
       const checked = selected.includes(column.column_id) || column.column_id === "symbol";
       const available = ["implemented", "reference_only", "live_only"].includes(column.implementation_status);
-      return <label data-selected={checked} key={column.column_id}><span className="discovery-capability-index">{index + 1}</span><span><span><strong>{column.name}</strong><em>{column.value_type}</em></span><small>{column.description}</small><em>{column.source} · {column.query_plan_id} · {readableLabel(column.implementation_status)}</em></span><input checked={checked} disabled={column.column_id === "symbol" || !available} onChange={() => toggle(column.column_id)} type="checkbox" /></label>;
+      return <label data-selected={checked} key={column.column_id}><span className="discovery-capability-index">{index + 1}</span><span className="discovery-column-card-copy"><span className="discovery-column-card-heading"><strong>{column.name}</strong><em>{column.value_type}</em></span><small>{column.description}</small><em className="discovery-column-card-source">{column.source} · {column.query_plan_id} · {readableLabel(column.implementation_status)}</em></span><input checked={checked} disabled={column.column_id === "symbol" || !available} onChange={() => toggle(column.column_id)} type="checkbox" /></label>;
     })}{!visible.length ? <EmptyState title="No matching columns" detail="Change the search or source filter." /> : null}</div>
   </section>;
 }
