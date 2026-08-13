@@ -111,8 +111,9 @@ export function TickerChangeBadge({ asOf, ticker }: { asOf: string; ticker: stri
   return <span className="ticker-change-badge" data-tone={tone} title={`Versus ${change.previous_session_date} 20:00 ET close ${formatTickerPrice(change.previous_close)}; current ${formatTickerPrice(change.current_price ?? 0)}.`}><Icon size={13} /><strong>{sign}{change.percent_change.toFixed(2)}%</strong><small>{formatTickerChange(change.absolute_change)}</small></span>;
 }
 
-export function TickerLogo({ logoUrl, ticker }: { logoUrl?: string; ticker: string }) {
-  return <TickerLogoImage className="ticker-logo" logoUrl={logoUrl} title={ticker} />;
+export function TickerLogo({ logoUrl, showLogoPlaceholder = false, ticker }: { logoUrl?: string; showLogoPlaceholder?: boolean; ticker: string }) {
+  const normalized = ticker.trim().toUpperCase();
+  return <TickerLogoImage className="ticker-logo" fallbackText={showLogoPlaceholder ? normalized.slice(0, 2) : ""} logoUrl={logoUrl} title={normalized} />;
 }
 
 function TickerLogoImage({ className, fallbackText = "", logoUrl, title }: { className?: string; fallbackText?: string; logoUrl?: string; title?: string }) {

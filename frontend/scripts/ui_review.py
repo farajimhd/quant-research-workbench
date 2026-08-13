@@ -631,6 +631,9 @@ def validate_canvas_interactions(
         scanner = page.get_by_role("region", name="Scanner", exact=True)
         if scanner.count() == 1:
             validate_loading_window_interactions(page, scanner, issues)
+            symbol_header = scanner.locator("th.market-list-symbol-column").first
+            if symbol_header.count() and symbol_header.evaluate("element => getComputedStyle(element).boxShadow") != "none":
+                issues.append("Scanner symbol column renders an unwanted right-edge shadow")
         chart.get_by_text("Loading chart data...", exact=True).wait_for(state="hidden", timeout=120_000)
         chart.locator(".chart-pane-canvas canvas").first.wait_for(state="visible", timeout=30_000)
         timeframe_button = chart.get_by_role("button", name=chart_timeframe, exact=True)

@@ -781,7 +781,7 @@ function normalizeScannerRows(rows: ScreenerRow[]) {
 function renderMarketCell(row: ScreenerRow, column: string, presentations: ReturnType<typeof useTickerPresentations>, customColumns: ScannerCustomColumn[], catalog = FIELD_CATALOG) {
   const value = row[column];
   const ticker = String(row.ticker ?? row.symbol ?? "").trim().toUpperCase();
-  if (column === "logo") return <TickerLogo logoUrl={String(row.logo_url ?? presentations[ticker]?.logo_url ?? "")} ticker={ticker} />;
+  if (column === "logo") return <TickerLogo logoUrl={String(row.logo_url ?? presentations[ticker]?.logo_url ?? "")} showLogoPlaceholder ticker={ticker} />;
   if (column === "ticker" || column === "symbol") {
     return <span className="market-list-ticker-cell">
       <strong>{ticker}</strong>
