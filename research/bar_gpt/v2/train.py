@@ -93,7 +93,11 @@ from research.mlops.manifest import write_run_manifest
 from research.mlops.metrics import AsyncJsonlMetricLogger
 from research.mlops.model_artifacts import parameter_summary, write_model_artifacts, write_model_card
 from research.mlops.paths import RunPaths, default_run_root
-from research.mlops.schedulers import SampleCosineRestartScheduler, SampleWarmupCosineScheduler
+from research.mlops.schedulers import (
+    EpochChunkCosineScheduler,
+    SampleCosineRestartScheduler,
+    SampleWarmupCosineScheduler,
+)
 from research.mlops.seeds import set_seed
 from research.mlops.wandb_utils import init_wandb
 
@@ -101,6 +105,11 @@ from research.mlops.wandb_utils import init_wandb
 JOB_TYPE = "train"
 DISCOVERY_VALIDATION_WORKERS = 8
 _INTERRUPTED = False
+TrainingScheduler = (
+    SampleCosineRestartScheduler
+    | SampleWarmupCosineScheduler
+    | EpochChunkCosineScheduler
+)
 _RESUME_RUNTIME_DATA_FIELDS = frozenset(
     {
         "ready_queue_blocks",
@@ -304,7 +313,7 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--scheduler-mode",
-        choices=("cosine-restarts", "single-cosine"),
+        choices=("cosine-restarts", "single-cosine", "epoch-chunk-cosine"),
         default="cosine-restarts",
     )
     parser.add_argument("--dummy-data", action="store_true")
@@ -1211,6 +1220,8 @@ def _wandb_metric_key(key: str) -> str:
         "condition_blocks_seen": "train_progress/condition_blocks_seen",
         "accumulation_microbatches": "train_optimization/accumulation_microbatches",
         "learning_rate": "train_optimization/learning_rate",
+        "epoch_peak_learning_rate": "train_optimization/epoch_peak_learning_rate",
+        "chunk_cosine_progress": "train_optimization/chunk_cosine_progress",
         "gradient_norm": "train_optimization/gradient_norm",
         "amp_scale": "train_optimization/amp_scale",
         "loader_wait_seconds": "train_runtime/loader_wait_seconds",
@@ -1579,7 +1590,7 @@ def checkpoint_payload(
     model: torch.nn.Module,
     optimizer: torch.optim.Optimizer,
     scaler: torch.amp.GradScaler,
-    scheduler: SampleCosineRestartScheduler,
+    scheduler: TrainingScheduler,
     checkpointer: AsyncCheckpointManager,
     config: ExperimentConfig,
     *,
@@ -1657,7 +1668,7 @@ def restore_checkpoint(
     model: torch.nn.Module,
     optimizer: torch.optim.Optimizer,
     scaler: torch.amp.GradScaler,
-    scheduler: SampleCosineRestartScheduler,
+    scheduler: TrainingScheduler,
     device: torch.device,
     config: ExperimentConfig,
     plan_hash: str,
@@ -2035,10 +2046,8 @@ def main(argv: Iterable[str] | None = None) -> int:
         )
     )
     validation_interval = validation_milestones[0]
-    if config.train.full_chunk_training and config.train.scheduler_mode == "cosine-restarts":
-        # The complete shuffled population is one natural optimization cycle.
-        # Chunk boundaries never reset optimizer or scheduler state.
-        config.train.cosine_cycle_samples = epoch_plan_origins
+    if config.train.scheduler_mode == "epoch-chunk-cosine" and not config.train.full_chunk_training:
+        raise ValueError("epoch-chunk-cosine requires --full-chunk-training")
     (paths.run_root / "config.json").write_text(json.dumps(to_dict(config), indent=2, default=str), encoding="utf-8")
     (paths.run_root / "coverage_plan.json").write_text(json.dumps(plan.to_dict(), indent=2), encoding="utf-8")
     model: torch.nn.Module = BarGPTV2(config.model).to(device)
@@ -2105,6 +2114,13 @@ def main(argv: Iterable[str] | None = None) -> int:
             warmup_samples=resolved_warmup_samples,
             total_samples=schedule_samples,
             minimum_lr=config.train.minimum_learning_rate,
+        )
+    elif config.train.scheduler_mode == "epoch-chunk-cosine":
+        scheduler = EpochChunkCosineScheduler(
+            optimizer,
+            warmup_samples=resolved_warmup_samples,
+            minimum_lr=config.train.minimum_learning_rate,
+            epoch_decay=config.train.cosine_restart_decay,
         )
     else:
         scheduler = SampleCosineRestartScheduler(
@@ -2348,6 +2364,9 @@ def main(argv: Iterable[str] | None = None) -> int:
         origin_bars=config.data.origin_bars_1s,
         warmup_samples=resolved_warmup_samples,
         schedule_samples=schedule_samples,
+        scheduler_mode=config.train.scheduler_mode,
+        epoch_lr_decay=config.train.cosine_restart_decay,
+        epoch_peak_lr=config.train.learning_rate,
         unit_plans=sequential_unit_plans,
         full_chunk_training=config.train.full_chunk_training,
         chunk_index=chunk_index + 1,
@@ -2645,6 +2664,27 @@ def main(argv: Iterable[str] | None = None) -> int:
                             f"resume chunk index {chunk_index} is outside epoch plan"
                         )
                     active_chunk = current_epoch_chunk_plan.chunks[chunk_index]
+                    if _chunk_boundary_due(
+                        blocks_seen=blocks_seen,
+                        chunk_start_blocks=chunk_start_blocks,
+                        chunk_index=chunk_index,
+                        plan=current_epoch_chunk_plan,
+                    ):
+                        # A monitor failure can occur after the optimizer has
+                        # durably reached a chunk boundary. Retry that monitor
+                        # before reading or optimizing the first block of the
+                        # next chunk.
+                        reporter.message(
+                            f"Retrying pending monitor for completed chunk {chunk_index + 1}"
+                        )
+                        run_chunk_monitor(active_chunk)
+                        chunks_completed += 1
+                        chunk_index += 1
+                        chunk_start_samples = samples_seen
+                        chunk_start_blocks = blocks_seen
+                        state.chunks_completed = chunks_completed
+                        active_chunk = current_epoch_chunk_plan.chunks[chunk_index]
+                        checkpoint_after_validation()
                     reporter.chunk(
                         index=chunk_index + 1,
                         count=current_epoch_chunk_plan.chunk_count,
@@ -2654,6 +2694,14 @@ def main(argv: Iterable[str] | None = None) -> int:
                         block_budget=active_chunk.target_blocks,
                         monitor_hash=active_chunk.monitor_hash,
                     )
+                    if isinstance(scheduler, EpochChunkCosineScheduler):
+                        scheduler.start_chunk(
+                            epoch=epoch,
+                            start_blocks=chunk_start_blocks,
+                            chunk_blocks=active_chunk.target_blocks,
+                            samples_seen=samples_seen,
+                            blocks_seen=blocks_seen,
+                        )
                 if isinstance(train_loader.dataset, (BarGPTIterableDataset, OfflineShardDataset)):
                     train_loader.dataset.epoch = epoch
                 if durable_cursors:
@@ -2832,7 +2880,13 @@ def main(argv: Iterable[str] | None = None) -> int:
                         units_seen.update(accumulated_units)
                         condition_blocks_seen += accumulated_condition_blocks
                         durable_cursors = dict(pending_cursors)
-                        scheduler.step(samples_seen)
+                        if isinstance(scheduler, EpochChunkCosineScheduler):
+                            scheduler.step(
+                                samples_seen=samples_seen,
+                                blocks_seen=blocks_seen,
+                            )
+                        else:
+                            scheduler.step(samples_seen)
                         telemetry_due = samples_seen >= next_log or optimizer_steps == 1
                         if telemetry_due and device.type == "cuda":
                             # Deliberately synchronize only at the bounded
@@ -2928,6 +2982,21 @@ def main(argv: Iterable[str] | None = None) -> int:
                                     ),
                                 }
                             )
+                        if isinstance(scheduler, EpochChunkCosineScheduler):
+                            update_metadata.update(
+                                {
+                                    "train/epoch_peak_learning_rate": float(
+                                        max(
+                                            config.train.minimum_learning_rate,
+                                            config.train.learning_rate
+                                            * config.train.cosine_restart_decay**current_epoch,
+                                        )
+                                    ),
+                                    "train/chunk_cosine_progress": float(
+                                        scheduler.chunk_progress
+                                    ),
+                                }
+                            )
                         if telemetry_due:
                             update_metadata.update(
                                 {
@@ -2953,6 +3022,16 @@ def main(argv: Iterable[str] | None = None) -> int:
                         assert batch is not None or exhausted
                         reporter_metrics = dict(metrics)
                         reporter_metrics["train/amp_scale"] = update_metadata["train/amp_scale"]
+                        reporter_metrics["train/learning_rate"] = update_metadata[
+                            "train/learning_rate"
+                        ]
+                        if isinstance(scheduler, EpochChunkCosineScheduler):
+                            reporter_metrics["train/epoch_peak_learning_rate"] = (
+                                update_metadata["train/epoch_peak_learning_rate"]
+                            )
+                            reporter_metrics["train/chunk_cosine_progress"] = (
+                                update_metadata["train/chunk_cosine_progress"]
+                            )
                         reporter_metrics.update(periodic_metrics)
                         reporter.update(
                             reporter_metrics,
@@ -2993,6 +3072,14 @@ def main(argv: Iterable[str] | None = None) -> int:
                                 block_budget=next_chunk.target_blocks,
                                 monitor_hash=next_chunk.monitor_hash,
                             )
+                            if isinstance(scheduler, EpochChunkCosineScheduler):
+                                scheduler.start_chunk(
+                                    epoch=epoch,
+                                    start_blocks=chunk_start_blocks,
+                                    chunk_blocks=next_chunk.target_blocks,
+                                    samples_seen=samples_seen,
+                                    blocks_seen=blocks_seen,
+                                )
                             checkpoint_after_validation()
                         validation_due = (
                             not config.train.full_chunk_training

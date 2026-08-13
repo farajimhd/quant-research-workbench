@@ -148,6 +148,15 @@ most ten epochs or two non-improving complete validations. W&B continues to
 use cumulative `samples_seen` as its step; epoch and chunk position are logged
 as additional `train_progress/*` fields.
 
+The full trainer uses block-aligned cosine annealing. After the initial 4M
+origin warmup, each complete chunk is one cosine cycle and the next chunk
+restarts at that outer epoch's peak learning rate. The peak is unchanged
+between chunks in the same epoch and decays by `0.95` only when a new outer
+epoch starts; the minimum learning rate remains `3e-5`. Because cosine
+progress follows completed blocks, variable origins per block cannot drift
+the restart away from the real chunk boundary. Rich displays the active
+chunk-cosine phase, progress, epoch peak, and epoch decay.
+
 Run the paired data-diversity/repetition experiment after the baseline
 comparison finishes:
 

@@ -198,6 +198,14 @@ Full-catalog W&B logs use the same cumulative-origin step. The additional
 `train_progress/chunk_blocks_seen` fields describe position without replacing
 the sample clock.
 
+Full training logs `train_optimization/learning_rate`,
+`train_optimization/epoch_peak_learning_rate`, and
+`train_optimization/chunk_cosine_progress`. The W&B step remains cumulative
+origins seen. Chunk cosine progress is completed blocks divided by the active
+block-aligned chunk budget. It reaches 1 at the chunk boundary, restarts for
+the next chunk, and the epoch peak decays by 0.95 only at an outer-epoch
+transition.
+
 ## Epoch checkpoints
 
 After the paired epoch evaluation, the trainer atomically queues one immutable

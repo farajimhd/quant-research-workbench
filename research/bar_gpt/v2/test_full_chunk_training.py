@@ -7,6 +7,8 @@ import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
 
+import torch
+
 from research.bar_gpt.v2.config import TrainConfig
 from research.bar_gpt.v2.full_chunk_training import (
     FULL_CHUNK_CONTRACT_VERSION,
@@ -27,6 +29,7 @@ from research.bar_gpt.v2.train import (
     parse_args as parse_train_args,
 )
 from research.mlops.metrics import AsyncJsonlMetricLogger
+from research.mlops.schedulers import EpochChunkCosineScheduler
 
 
 def _ref(ticker: str, index: int, *, origins: int = 10) -> OfflineBlockRef:
@@ -199,6 +202,54 @@ class FullChunkPlanTest(unittest.TestCase):
         )
         self.assertEqual((stale, stopped), (2, True))
 
+    def test_chunk_cosine_restarts_each_chunk_and_decays_only_by_epoch(self) -> None:
+        parameter = torch.nn.Parameter(torch.ones(()))
+        optimizer = torch.optim.SGD((parameter,), lr=1e-3)
+        scheduler = EpochChunkCosineScheduler(
+            optimizer,
+            minimum_lr=1e-4,
+            epoch_decay=0.95,
+        )
+        scheduler.start_chunk(
+            epoch=0,
+            start_blocks=0,
+            chunk_blocks=100,
+            samples_seen=0,
+            blocks_seen=0,
+        )
+        self.assertAlmostEqual(optimizer.param_groups[0]["lr"], 1e-3)
+        scheduler.step(samples_seen=10_000, blocks_seen=100)
+        self.assertAlmostEqual(optimizer.param_groups[0]["lr"], 1e-4)
+        scheduler.start_chunk(
+            epoch=0,
+            start_blocks=100,
+            chunk_blocks=80,
+            samples_seen=10_000,
+            blocks_seen=100,
+        )
+        self.assertAlmostEqual(optimizer.param_groups[0]["lr"], 1e-3)
+        scheduler.start_chunk(
+            epoch=1,
+            start_blocks=180,
+            chunk_blocks=100,
+            samples_seen=20_000,
+            blocks_seen=180,
+        )
+        expected_epoch_one_peak = 1e-3 * 0.95
+        self.assertAlmostEqual(
+            optimizer.param_groups[0]["lr"], expected_epoch_one_peak
+        )
+        restored_optimizer = torch.optim.SGD(
+            (torch.nn.Parameter(torch.ones(())),), lr=1e-3
+        )
+        restored = EpochChunkCosineScheduler(
+            restored_optimizer,
+            minimum_lr=1e-4,
+            epoch_decay=0.95,
+        )
+        restored.load_state_dict(scheduler.state_dict())
+        self.assertEqual(restored.state_dict(), scheduler.state_dict())
+
 
 class FullChunkLauncherTest(unittest.TestCase):
     def test_defaults_to_medium_and_preserves_samples_seen_as_training_clock(self) -> None:
@@ -222,6 +273,8 @@ class FullChunkLauncherTest(unittest.TestCase):
         self.assertEqual(parsed.epochs, 10)
         self.assertEqual(parsed.chunk_target_origins, 30_000_000)
         self.assertEqual(parsed.chunk_monitor_origins, 1_000_000)
+        self.assertEqual(parsed.scheduler_mode, "epoch-chunk-cosine")
+        self.assertEqual(parsed.cosine_restart_decay, 0.95)
 
     def test_text_reporter_prints_epoch_chunk_and_sample_progress(self) -> None:
         state = TrainingProgressState(

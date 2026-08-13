@@ -36,6 +36,7 @@ DEFAULT_MODEL_SIZE = "medium"
 DEFAULT_EPOCHS = 10
 DEFAULT_EARLY_STOPPING_PATIENCE = 2
 DEFAULT_EARLY_STOPPING_MIN_RELATIVE_DELTA = 0.001
+DEFAULT_EPOCH_LR_DECAY = 0.95
 
 
 def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
@@ -144,6 +145,7 @@ def trainer_argv(args: argparse.Namespace, *, resolved_manifest: Path) -> list[s
     run_name = (
         f"bar-gpt-v2-full-{args.model_size}-chunks{int(args.chunk_target_origins) // 1_000_000}m-"
         f"epoch{args.epochs}-"
+        f"chunkcosine-decay{int(DEFAULT_EPOCH_LR_DECAY * 100)}-"
         f"micro{profile.microbatch}-accum{profile.accumulation}-"
         f"bucket{profile.length_bucket_batches}-{run_stamp}"
     )
@@ -172,7 +174,8 @@ def trainer_argv(args: argparse.Namespace, *, resolved_manifest: Path) -> list[s
             ),
             "--monitor-evaluation-origins": args.chunk_monitor_origins,
             "--warmup-samples": 4_000_000,
-            "--scheduler-mode": "cosine-restarts",
+            "--scheduler-mode": "epoch-chunk-cosine",
+            "--cosine-restart-decay": DEFAULT_EPOCH_LR_DECAY,
             "--wandb-project": args.wandb_project,
             "--wandb-mode": args.wandb_mode,
         },
@@ -203,6 +206,11 @@ def main(argv: Iterable[str] | None = None) -> int:
     print(
         "Sampling: a new deterministic worker-owned shuffle each epoch; next-epoch "
         "monitor metadata is planned concurrently; W&B step remains samples_seen",
+        flush=True,
+    )
+    print(
+        "Schedule: 4M-origin warmup; cosine restart at each block-complete chunk; "
+        f"peak LR decays once per outer epoch by {DEFAULT_EPOCH_LR_DECAY:.2f}",
         flush=True,
     )
     preview_args = trainer_argv(args, resolved_manifest=planned_manifest)

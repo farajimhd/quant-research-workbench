@@ -410,8 +410,15 @@ class TrainConfig:
             raise ValueError("learning rates must satisfy 0 < minimum <= peak")
         if self.cosine_cycle_samples <= 0 or not 0 < self.cosine_restart_decay <= 1:
             raise ValueError("cosine restart settings are invalid")
-        if self.scheduler_mode not in {"cosine-restarts", "single-cosine"}:
-            raise ValueError("scheduler_mode must be cosine-restarts or single-cosine")
+        if self.scheduler_mode not in {
+            "cosine-restarts",
+            "single-cosine",
+            "epoch-chunk-cosine",
+        }:
+            raise ValueError(
+                "scheduler_mode must be cosine-restarts, single-cosine, "
+                "or epoch-chunk-cosine"
+            )
         if self.grad_clip_norm <= 0:
             raise ValueError("grad_clip_norm must be positive")
 

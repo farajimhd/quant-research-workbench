@@ -73,6 +73,10 @@ class TrainingProgressState:
     origin_bars: int = 0
     warmup_samples: int = 0
     schedule_samples: int = 0
+    scheduler_mode: str = "cosine-restarts"
+    epoch_lr_decay: float = 1.0
+    epoch_peak_lr: float = 0.0
+    chunk_cosine_progress: float = 0.0
     unit_plans: dict[str, tuple[int, int]] = field(default_factory=dict)
     full_chunk_training: bool = False
     chunk_index: int = 0
@@ -191,6 +195,10 @@ class TrainingReporter:
         s.condition_blocks_seen = int(metrics.get("train/condition_blocks_seen", s.condition_blocks_seen))
         s.loss = float(metrics.get("train/loss", s.loss))
         s.learning_rate = float(metrics.get("train/learning_rate", s.learning_rate))
+        s.epoch_peak_lr = float(metrics.get("train/epoch_peak_learning_rate", s.epoch_peak_lr))
+        s.chunk_cosine_progress = float(
+            metrics.get("train/chunk_cosine_progress", s.chunk_cosine_progress)
+        )
         if "train/gradient_norm" in metrics:
             s.gradient_norm = float(metrics["train/gradient_norm"])
         if "train/amp_scale" in metrics:
@@ -441,6 +449,8 @@ class TrainingReporter:
 
         runtime_rows = (
             ("Learning rate", s.learning_rate, "scientific"),
+            ("Epoch peak LR", s.epoch_peak_lr, "scientific"),
+            ("Epoch LR decay", s.epoch_lr_decay, "number"),
             ("Schedule", schedule_phase, "text"),
             ("Schedule progress", schedule_progress / 100.0, "percent"),
             ("AMP scale", s.amp_scale, "number"),
@@ -608,6 +618,8 @@ def _duration(value: float) -> str:
 def _schedule_status(state: TrainingProgressState) -> tuple[str, float]:
     if state.warmup_samples > 0 and state.samples_seen < state.warmup_samples:
         return "warmup", 100.0 * state.samples_seen / state.warmup_samples
+    if state.scheduler_mode == "epoch-chunk-cosine":
+        return "chunk cosine", 100.0 * state.chunk_cosine_progress
     decay_span = max(1, state.schedule_samples - state.warmup_samples)
     progress = 100.0 * (state.samples_seen - state.warmup_samples) / decay_span
     return "cosine", min(100.0, max(0.0, progress))
