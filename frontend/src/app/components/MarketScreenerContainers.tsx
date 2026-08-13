@@ -550,6 +550,9 @@ function MarketListTable({
   const [sort, setSort] = useState<{ column: string; direction: "asc" | "desc" }>({ column: title === "Signal stream" || title === "Strategy activity" ? "event_time" : "change_pct", direction: "desc" });
   const headerMenuRef = useRef<HTMLDivElement | null>(null);
   const deferredQuery = useDeferredValue(query.trim().toLowerCase());
+  const identityColumn = columns.includes("symbol") ? "symbol" : "ticker";
+  const effectiveLockedColumns = useMemo(() => [...new Set(["logo", identityColumn, ...lockedColumns])], [identityColumn, lockedColumns]);
+  const tableColumns = useMemo(() => withLockedColumns(columns, effectiveLockedColumns), [columns, effectiveLockedColumns]);
   useEffect(() => {
     if (sortColumn) setSort({ column: sortColumn, direction: "desc" });
   }, [sortColumn]);
@@ -586,19 +589,19 @@ function MarketListTable({
     setHeaderMenuColumn(null);
   }
   function moveColumn(column: string, target: "left" | "right" | "start" | "end") {
-    const currentIndex = columns.indexOf(column);
-    if (currentIndex < 0 || lockedColumns.includes(column)) return;
-    const unlocked = columns.filter((item) => !lockedColumns.includes(item));
+    const currentIndex = tableColumns.indexOf(column);
+    if (currentIndex < 0 || effectiveLockedColumns.includes(column)) return;
+    const unlocked = tableColumns.filter((item) => !effectiveLockedColumns.includes(item));
     const unlockedIndex = unlocked.indexOf(column);
     const nextIndex = target === "start" ? 0 : target === "end" ? unlocked.length - 1 : Math.max(0, Math.min(unlocked.length - 1, unlockedIndex + (target === "left" ? -1 : 1)));
     unlocked.splice(unlockedIndex, 1);
     unlocked.splice(nextIndex, 0, column);
-    onColumnsChange(withLockedColumns(unlocked, lockedColumns));
+    onColumnsChange(withLockedColumns(unlocked, effectiveLockedColumns));
     setHeaderMenuColumn(null);
   }
   function removeColumn(column: string) {
-    if (lockedColumns.includes(column)) return;
-    onColumnsChange(columns.filter((item) => item !== column));
+    if (effectiveLockedColumns.includes(column)) return;
+    onColumnsChange(tableColumns.filter((item) => item !== column));
     if (isTechnicalKey(column)) onCustomColumnsChange(customColumns.filter((item) => item.key !== column));
     setHeaderMenuColumn(null);
   }
@@ -606,7 +609,7 @@ function MarketListTable({
     const column = defaultTechnicalColumn(metric);
     const key = column.key;
     if (!customColumns.some((item) => item.key === key)) onCustomColumnsChange([...customColumns, column]);
-    if (!columns.includes(key)) onColumnsChange(withLockedColumns([...columns.filter((item) => !lockedColumns.includes(item)), key], lockedColumns));
+    if (!tableColumns.includes(key)) onColumnsChange(withLockedColumns([...tableColumns.filter((item) => !effectiveLockedColumns.includes(item)), key], effectiveLockedColumns));
   }
   function changeTechnicalTimeframe(column: string, nextTimeframe: ScannerTimeframe) {
     const existing = customColumns.find((item) => item.key === column);
@@ -645,10 +648,10 @@ function MarketListTable({
       <label className="market-list-search"><Search size={14} /><input aria-label={`Search ${title}`} onChange={(event) => setQuery(event.target.value)} placeholder="Search symbols and values" value={query} /></label>
       <label className="market-list-filter"><Filter size={13} /><select aria-label={`Filter ${title}`} onChange={(event) => setFilterMode(event.target.value)} value={filterMode}><option value="all">All rows</option><option value="advancing">Advancing</option><option value="declining">Declining</option><option value="news_hot">Hot news</option><option value="news_cold">Cold news</option><option value="sec_hot">Hot SEC</option><option value="sec_cold">Cold SEC</option>{labelFilters.news.length ? <optgroup label="News labels">{labelFilters.news.map((labelValue) => <option key={`news:${labelValue}`} value={`news_label:${normalizeLabel(labelValue)}`}>{labelValue}</option>)}</optgroup> : null}{labelFilters.sec.length ? <optgroup label="SEC labels">{labelFilters.sec.map((labelValue) => <option key={`sec:${labelValue}`} value={`sec_label:${normalizeLabel(labelValue)}`}>{labelValue}</option>)}</optgroup> : null}</select></label>
       <span>{visibleRows.length} of {rows.length}</span>
-      <button aria-expanded={columnPickerOpen} className="market-list-columns-button" onClick={() => setColumnPickerOpen((open) => !open)} type="button"><Columns3 size={14} /> Columns <b>{columns.length}</b></button>
+      <button aria-expanded={columnPickerOpen} className="market-list-columns-button" onClick={() => setColumnPickerOpen((open) => !open)} type="button"><Columns3 size={14} /> Columns <b>{tableColumns.length}</b></button>
     </div>
-    <div className="market-list-table-scroll"><table className="market-list-table"><thead><tr>{columns.map((column) => { const definition = catalogField(column, customColumns, catalog); const sorted = sort.column === column; const className = columnClass(column); const menuOpen = headerMenuColumn === column; return column === "logo" ? <th aria-label="Ticker logo" className={className} key={column} /> : <th aria-sort={sorted ? (sort.direction === "asc" ? "ascending" : "descending") : "none"} className={className} data-menu-open={menuOpen ? "true" : undefined} key={column}><button aria-expanded={menuOpen} onClick={() => setHeaderMenuColumn((current) => current === column ? null : column)} title={`Configure ${definition.label}`} type="button"><span>{definition.label}<small data-kind={definition.kind}>{technicalScopeLabel(definition) ?? definition.kind}</small></span>{sorted ? sort.direction === "asc" ? <ArrowUp size={12} /> : <ArrowDown size={12} /> : <ChevronDown size={12} />}</button>{menuOpen ? <ColumnHeaderMenu column={column} definition={definition} locked={lockedColumns.includes(column)} onAnchorChange={(value) => changeTechnicalAnchor(column, value)} onMove={(target) => moveColumn(column, target)} onRemove={() => removeColumn(column)} onSort={(direction) => changeSort(column, direction)} onSourceChange={(value) => changeTechnicalSource(column, value)} onTimeframeChange={(value) => changeTechnicalTimeframe(column, value)} ref={headerMenuRef} /> : null}</th>; })}{rowAction ? <th aria-label="Row actions" /> : null}</tr></thead><tbody>{visibleRows.length ? visibleRows.map((row, index) => { const ticker = String(row.ticker ?? row.symbol ?? "").trim().toUpperCase(); const selectable = Boolean(ticker && onTickerSelect); const select = () => { if (selectable) onTickerSelect?.(ticker); }; return <tr aria-label={selectable ? `Open ${ticker} Charts & Quotes` : undefined} data-selectable={selectable ? "true" : undefined} key={`${ticker || "row"}:${row.event_time ?? index}:${index}`} onClick={(event) => { if (!(event.target as HTMLElement).closest("button, input, select, a")) select(); }} onKeyDown={(event) => { if (selectable && (event.key === "Enter" || event.key === " ")) { event.preventDefault(); select(); } }} tabIndex={selectable ? 0 : undefined}>{columns.map((column) => <td className={`${toneClass(row[column], column, customColumns, catalog)} ${columnClass(column)}`.trim()} key={column}>{renderMarketCell(row, column, presentations, customColumns, catalog)}</td>)}{rowAction ? <td className="market-list-row-action">{rowAction(row)}</td> : null}</tr>; }) : <tr><td className="market-list-empty" colSpan={columns.length + (rowAction ? 1 : 0)}>{empty}</td></tr>}</tbody></table></div>
-    {columnPickerOpen ? <ColumnPicker catalog={catalog} columns={columns} customColumns={customColumns} fieldCoverage={fieldCoverage} lockedColumns={lockedColumns} onAddTechnical={addTechnicalColumn} onChange={onColumnsChange} onClose={() => setColumnPickerOpen(false)} /> : null}
+    <div className="market-list-table-scroll"><table className="market-list-table"><thead><tr>{tableColumns.map((column) => { const definition = catalogField(column, customColumns, catalog); const sorted = sort.column === column; const className = columnClass(column, definition); const menuOpen = headerMenuColumn === column; return column === "logo" ? <th aria-label="Ticker logo" className={className} key={column} /> : <th aria-sort={sorted ? (sort.direction === "asc" ? "ascending" : "descending") : "none"} className={className} data-menu-open={menuOpen ? "true" : undefined} key={column}><button aria-expanded={menuOpen} onClick={() => setHeaderMenuColumn((current) => current === column ? null : column)} title={`Configure ${definition.label}`} type="button"><span>{definition.label}<small data-kind={definition.kind}>{technicalScopeLabel(definition) ?? definition.kind}</small></span>{sorted ? sort.direction === "asc" ? <ArrowUp size={12} /> : <ArrowDown size={12} /> : <ChevronDown size={12} />}</button>{menuOpen ? <ColumnHeaderMenu column={column} definition={definition} locked={effectiveLockedColumns.includes(column)} onAnchorChange={(value) => changeTechnicalAnchor(column, value)} onMove={(target) => moveColumn(column, target)} onRemove={() => removeColumn(column)} onSort={(direction) => changeSort(column, direction)} onSourceChange={(value) => changeTechnicalSource(column, value)} onTimeframeChange={(value) => changeTechnicalTimeframe(column, value)} ref={headerMenuRef} /> : null}</th>; })}{rowAction ? <th aria-label="Row actions" /> : null}</tr></thead><tbody>{visibleRows.length ? visibleRows.map((row, index) => { const ticker = String(row.ticker ?? row.symbol ?? "").trim().toUpperCase(); const selectable = Boolean(ticker && onTickerSelect); const select = () => { if (selectable) onTickerSelect?.(ticker); }; return <tr aria-label={selectable ? `Open ${ticker} Charts & Quotes` : undefined} data-selectable={selectable ? "true" : undefined} key={`${ticker || "row"}:${row.event_time ?? index}:${index}`} onClick={(event) => { if (!(event.target as HTMLElement).closest("button, input, select, a")) select(); }} onKeyDown={(event) => { if (selectable && (event.key === "Enter" || event.key === " ")) { event.preventDefault(); select(); } }} tabIndex={selectable ? 0 : undefined}>{tableColumns.map((column) => { const definition = catalogField(column, customColumns, catalog); return <td className={`${toneClass(row[column], column, customColumns, catalog)} ${columnClass(column, definition)}`.trim()} key={column}>{renderMarketCell(row, column, presentations, customColumns, catalog)}</td>; })}{rowAction ? <td className="market-list-row-action">{rowAction(row)}</td> : null}</tr>; }) : <tr><td className="market-list-empty" colSpan={tableColumns.length + (rowAction ? 1 : 0)}>{empty}</td></tr>}</tbody></table></div>
+    {columnPickerOpen ? <ColumnPicker catalog={catalog} columns={tableColumns} customColumns={customColumns} fieldCoverage={fieldCoverage} lockedColumns={effectiveLockedColumns} onAddTechnical={addTechnicalColumn} onChange={onColumnsChange} onClose={() => setColumnPickerOpen(false)} /> : null}
   </div>;
 }
 
@@ -800,14 +803,20 @@ function renderMarketCell(row: ScreenerRow, column: string, presentations: Retur
   const definition = catalogField(column, customColumns, catalog);
   if (value === null || value === undefined || value === "") return <span className="market-list-unavailable" title={`${definition.label} is not available from the active source at this clock.`}>—</span>;
   if (definition.format === "date") return <MarketTime value={String(value)} />;
-  if (definition.format === "percent") return `${numberValue(value) > 0 ? "+" : ""}${numberValue(value).toFixed(Math.abs(numberValue(value)) < 1 ? 2 : 1)}%`;
-  if (definition.format === "percentPlain") return `${numberValue(value).toFixed(Math.abs(numberValue(value)) < 1 ? 2 : 1)}%`;
-  if (definition.format === "money") return formatMoney(numberValue(value));
-  if (definition.format === "integer") return formatCompact(numberValue(value));
-  if (definition.format === "multiple") return `${numberValue(value).toFixed(numberValue(value) < 10 ? 2 : 1)}\u00d7`;
-  if (definition.format === "number") return numberValue(value).toFixed(2);
-  if (definition.format === "score") return numberValue(value).toFixed(0);
+  const numeric = numberValue(value);
+  if (definition.format === "percent") return marketNumber(formatPercent(numeric, true), numeric, definition);
+  if (definition.format === "percentPlain") return marketNumber(formatPercent(numeric), numeric, definition);
+  if (definition.format === "money") return marketNumber(formatMoney(numeric), numeric, definition);
+  if (definition.format === "integer") return marketNumber(formatCompact(numeric), numeric, definition);
+  if (definition.format === "multiple") return marketNumber(`${formatDecimal(numeric, Math.abs(numeric) < 10 ? 2 : 1)}\u00d7`, numeric, definition);
+  if (definition.format === "number") return marketNumber(formatDecimal(numeric), numeric, definition);
+  if (definition.format === "score") return marketNumber(formatDecimal(numeric, 0), numeric, definition);
   return String(value);
+}
+
+function marketNumber(display: string, value: number, definition: FieldDefinition) {
+  const exact = new Intl.NumberFormat("en-US", { maximumFractionDigits: 8 }).format(value);
+  return <span className="market-list-number" title={`${definition.label}: ${exact}`}>{display}</span>;
 }
 
 function TickerEventIcon({ source, value }: { source: "News" | "SEC"; value: string }) {
@@ -844,11 +853,15 @@ function catalogField(key: string, customColumns: ScannerCustomColumn[] = [], ca
   return custom ? customField(custom) : field(key, label(key), "Other", "raw", "text", "Available source field.");
 }
 function withLockedColumns(columns: string[], lockedColumns: string[]) {
-  const leading: string[] = lockedColumns.filter((column) => column === "logo" || column === "ticker");
+  const leading: string[] = lockedColumns.filter((column) => column === "logo" || column === "ticker" || column === "symbol");
   const trailing = lockedColumns.filter((column) => !leading.includes(column));
   return [...leading, ...columns.filter((column) => !lockedColumns.includes(column)), ...trailing];
 }
-function columnClass(column: string) { return column === "logo" ? "market-list-logo-column" : column === "ticker" || column === "symbol" ? "market-list-symbol-column" : column === "news_labels" || column === "sec_labels" ? "market-list-label-column" : ""; }
+function columnClass(column: string, definition = catalogField(column)) {
+  const identityClass = column === "logo" ? "market-list-logo-column" : column === "ticker" || column === "symbol" ? "market-list-symbol-column" : column === "news_labels" || column === "sec_labels" ? "market-list-label-column" : "";
+  const numericClass = ["integer", "money", "multiple", "number", "percent", "percentPlain", "score"].includes(definition.format) ? "market-list-numeric-column" : "";
+  return `${identityClass} ${numericClass}`.trim();
+}
 function rowLabels(value: unknown) { return [...new Set(String(value ?? "").split(",").map((item) => item.trim()).filter(Boolean))]; }
 function collectLabels(rows: ScreenerRow[], column: "news_labels" | "sec_labels") { return [...new Set(rows.flatMap((row) => rowLabels(row[column])))].sort((left, right) => left.localeCompare(right)); }
 function normalizeLabel(value: string) { return value.trim().toLowerCase(); }
@@ -952,3 +965,11 @@ function numberValue(value: unknown) { const numeric = Number(value); return Num
 function compareValues(left: unknown, right: unknown) { const leftNumber = Number(left); const rightNumber = Number(right); if (Number.isFinite(leftNumber) && Number.isFinite(rightNumber)) return leftNumber - rightNumber; return String(left ?? "").localeCompare(String(right ?? ""), undefined, { numeric: true }); }
 function formatCompact(value: number) { return new Intl.NumberFormat("en-US", { maximumFractionDigits: 1, notation: Math.abs(value) >= 1000 ? "compact" : "standard" }).format(value); }
 function formatMoney(value: number) { if (!Number.isFinite(value)) return "—"; const compact = Math.abs(value) >= 100_000; return new Intl.NumberFormat("en-US", { currency: "USD", maximumFractionDigits: compact ? 1 : value < 10 ? 4 : 2, notation: compact ? "compact" : "standard", style: "currency" }).format(value); }
+function formatDecimal(value: number, maximumFractionDigits?: number) {
+  const digits = maximumFractionDigits ?? (Math.abs(value) < 0.01 ? 4 : Math.abs(value) < 1 ? 3 : Math.abs(value) < 100 ? 2 : 1);
+  return new Intl.NumberFormat("en-US", { maximumFractionDigits: digits }).format(value);
+}
+function formatPercent(value: number, signed = false) {
+  const digits = Math.abs(value) < 1 ? 2 : 1;
+  return `${signed && value > 0 ? "+" : ""}${new Intl.NumberFormat("en-US", { minimumFractionDigits: digits, maximumFractionDigits: digits }).format(value)}%`;
+}
