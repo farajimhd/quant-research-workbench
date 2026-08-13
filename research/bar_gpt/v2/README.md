@@ -135,6 +135,12 @@ index rows. Override the bounded concurrency only when needed, for example
 `--manifest-index-workers 6` on a workstation with sufficient CPU and NVMe
 headroom.
 
+All certified 2019-2025 tickers remain in training. A ticker is included in
+the fixed 2026 validation cohort only when it has at least two eligible
+ticker-dates, because validation and locked test are date-disjoint. The
+manifest explicitly records tickers with no 2026 blocks or only one eligible
+2026 date instead of failing preparation or silently claiming coverage.
+
 The default `production` run stamp is stable: rerunning the same `--execute`
 command resumes `checkpoint_latest.pt`. Use `--run-stamp NAME` only when
 starting an independent run.

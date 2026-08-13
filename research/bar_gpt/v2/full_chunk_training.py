@@ -361,6 +361,18 @@ def build_full_chunk_manifest(
         cache_path=index_root / "held_out.jsonl",
         workers=index_workers,
     )
+    held_out_dates_by_ticker: dict[str, set[str]] = {}
+    for ref in held_out_refs:
+        held_out_dates_by_ticker.setdefault(ref.ticker, set()).add(ref.local_date)
+    held_out_available_tickers = set(held_out_dates_by_ticker)
+    # Validation must leave at least one distinct ticker-date for locked test.
+    # Tickers with only one held-out date cannot honestly participate in both
+    # authorities, but remain part of the complete training population.
+    validation_eligible_tickers = {
+        ticker
+        for ticker, dates in held_out_dates_by_ticker.items()
+        if len(dates) > 1
+    }
     used_dates: set[tuple[str, str]] = set()
     validation = _held_out_panel(
         held_out_refs,
@@ -369,8 +381,16 @@ def build_full_chunk_manifest(
         label="full_validation",
         used_dates=used_dates,
         reserve_dates_per_ticker=1,
-        require_every_ticker=True,
+        require_every_ticker=False,
     )
+    validation_tickers = {ref.ticker for ref in validation}
+    if validation_tickers != validation_eligible_tickers:
+        missing = sorted(validation_eligible_tickers - validation_tickers)
+        unexpected = sorted(validation_tickers - validation_eligible_tickers)
+        raise RuntimeError(
+            "full validation ticker coverage is inconsistent: "
+            f"missing={missing[:5]} unexpected={unexpected[:5]}"
+        )
     locked_test = _held_out_panel(
         held_out_refs,
         target_origins=locked_test_origins,
@@ -420,7 +440,18 @@ def build_full_chunk_manifest(
         "shard_config_hash": discovery_shard_compatibility_hash(config),
         "cohorts": {
             "training_tickers": sorted(tickers),
-            "evaluation_tickers": sorted(tickers),
+            "evaluation_tickers": sorted(validation_tickers),
+            "held_out_available_tickers": sorted(held_out_available_tickers),
+            "held_out_unavailable_tickers": sorted(
+                set(tickers) - held_out_available_tickers
+            ),
+            "validation_ineligible_tickers": sorted(
+                held_out_available_tickers - validation_eligible_tickers
+            ),
+            "held_out_ticker_date_counts": {
+                ticker: len(dates)
+                for ticker, dates in sorted(held_out_dates_by_ticker.items())
+            },
         },
         "ranges": {
             "train": ["2019-01-01", "2026-01-01"],

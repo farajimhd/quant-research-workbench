@@ -155,6 +155,16 @@ def ensure_full_training_manifest(args: argparse.Namespace) -> Path:
             f"blocks={int(summary['blocks']):,} tickers={int(summary['tickers']):,}",
             flush=True,
         )
+    cohorts = manifest["cohorts"]
+    unavailable = tuple(cohorts.get("held_out_unavailable_tickers", ()))
+    ineligible = tuple(cohorts.get("validation_ineligible_tickers", ()))
+    if unavailable or ineligible:
+        print(
+            "Held-out exclusions (training retained): "
+            f"no_2026_blocks={list(unavailable)} "
+            f"only_one_2026_date={list(ineligible)}",
+            flush=True,
+        )
     return output
 
 
