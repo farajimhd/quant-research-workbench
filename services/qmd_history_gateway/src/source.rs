@@ -239,8 +239,8 @@ struct PersistedStructureEventRow {
     sell_volume: f64,
     neutral_volume: f64,
     trade_count: u64,
-    pivot_at: String,
-    confirmed_at: String,
+    pivot_at_text: String,
+    confirmed_at_text: String,
 }
 
 impl HistoricalEventSource {
@@ -1312,41 +1312,7 @@ impl HistoricalEventSource {
         if !available {
             return Ok(Vec::new());
         }
-        let sql = format!(
-            r#"SELECT
-                algorithm_version,
-                toString(event_id) AS event_id,
-                toString(level_id) AS level_id,
-                sym,
-                timeframe,
-                event_kind,
-                direction,
-                price,
-                lower,
-                upper,
-                strength,
-                confidence,
-                lifecycle,
-                total_volume,
-                buy_volume,
-                sell_volume,
-                neutral_volume,
-                trade_count,
-                formatDateTime(pivot_at, '%Y-%m-%dT%H:%i:%s.%fZ', 'UTC') AS pivot_at,
-                formatDateTime(confirmed_at, '%Y-%m-%dT%H:%i:%s.%fZ', 'UTC') AS confirmed_at
-            FROM {table} FINAL
-            WHERE algorithm_version = {version}
-              AND sym = {ticker}
-              AND confirmed_at < parseDateTime64BestEffort({before})
-              AND confirmed_at >= parseDateTime64BestEffort({before}) - INTERVAL 90 DAY
-            ORDER BY confirmed_at DESC, event_id DESC
-            LIMIT 5000
-            FORMAT JSONEachRow"#,
-            table = table,
-            version = GENERIC_STRUCTURE_ALGORITHM_VERSION,
-            ticker = sql_literal(&ticker),
-            before = sql_literal(&before.to_rfc3339()),
-        );
+        let sql = persisted_structure_events_sql(&table, &ticker, before);
         let text = self.query(&sql).await?;
         let mut events = text
             .lines()
@@ -1377,8 +1343,8 @@ impl HistoricalEventSource {
                     sell_volume: row.sell_volume,
                     neutral_volume: row.neutral_volume,
                     trade_count: row.trade_count,
-                    pivot_at: parse_clickhouse_datetime(&row.pivot_at)?,
-                    confirmed_at: parse_clickhouse_datetime(&row.confirmed_at)?,
+                    pivot_at: parse_clickhouse_datetime(&row.pivot_at_text)?,
+                    confirmed_at: parse_clickhouse_datetime(&row.confirmed_at_text)?,
                 })
             })
             .collect::<Result<Vec<_>, String>>()?;
@@ -1983,13 +1949,51 @@ fn recent_coverage_sql(table: &str, window: &EventWindow) -> String {
     )
 }
 
+fn persisted_structure_events_sql(table: &str, ticker: &str, before: DateTime<Utc>) -> String {
+    format!(
+        r#"SELECT
+                algorithm_version,
+                toString(event_id) AS event_id,
+                toString(level_id) AS level_id,
+                sym,
+                timeframe,
+                event_kind,
+                direction,
+                price,
+                lower,
+                upper,
+                strength,
+                confidence,
+                lifecycle,
+                total_volume,
+                buy_volume,
+                sell_volume,
+                neutral_volume,
+                trade_count,
+                formatDateTime(pivot_at, '%Y-%m-%dT%H:%i:%s.%fZ', 'UTC') AS pivot_at_text,
+                formatDateTime(confirmed_at, '%Y-%m-%dT%H:%i:%s.%fZ', 'UTC') AS confirmed_at_text
+            FROM {table} FINAL
+            WHERE algorithm_version = {version}
+              AND sym = {ticker}
+              AND confirmed_at < parseDateTime64BestEffort({before})
+              AND confirmed_at >= parseDateTime64BestEffort({before}) - INTERVAL 90 DAY
+            ORDER BY confirmed_at DESC, event_id DESC
+            LIMIT 5000
+            FORMAT JSONEachRow"#,
+        version = GENERIC_STRUCTURE_ALGORITHM_VERSION,
+        ticker = sql_literal(ticker),
+        before = sql_literal(&before.to_rfc3339()),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
         append_scheduled_gap_segments, archive_session_end_utc, build_source_plan, event_select,
         macro_bar_is_closed, materialize_confirmed_recent_coverage, merge_coverage_intervals,
-        normalize_ticker, parse_historical_tsv_row, recent_coverage_sql, row_to_event,
-        CoverageInterval, EventWindow, HistoricalRow, MarketSourceTier, RecentCoverageRow,
+        normalize_ticker, parse_historical_tsv_row, persisted_structure_events_sql,
+        recent_coverage_sql, row_to_event, CoverageInterval, EventWindow, HistoricalRow,
+        MarketSourceTier, RecentCoverageRow,
     };
     use crate::config::HistoricalGatewayConfig;
     use chrono::{TimeZone, Utc};
@@ -2120,6 +2124,19 @@ mod tests {
         assert!(!sql.contains("AS coverage_end_utc"));
         assert!(sql.contains("AND coverage_end_utc > parseDateTime64BestEffort"));
         assert!(sql.contains("AND coverage_start_utc < parseDateTime64BestEffort"));
+    }
+
+    #[test]
+    fn persisted_structure_query_does_not_shadow_datetime_predicates_with_text_aliases() {
+        let before = Utc.with_ymd_and_hms(2026, 8, 11, 18, 20, 0).unwrap();
+        let sql =
+            persisted_structure_events_sql("q_derived.generic_structure_events_v1", "AAPL", before);
+        assert!(sql.contains("AS pivot_at_text"));
+        assert!(sql.contains("AS confirmed_at_text"));
+        assert!(!sql.contains("AS pivot_at,"));
+        assert!(!sql.contains("AS confirmed_at\n"));
+        assert!(sql.contains("AND confirmed_at < parseDateTime64BestEffort"));
+        assert!(sql.contains("AND confirmed_at >= parseDateTime64BestEffort"));
     }
 
     #[test]
