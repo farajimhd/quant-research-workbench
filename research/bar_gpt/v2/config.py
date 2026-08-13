@@ -354,6 +354,11 @@ class TrainConfig:
     # full-catalog training epoch.
     monitor_evaluation_origins: int = 250_000
     epoch_train_evaluation_origins: int = 1_000_000
+    # Experimental repeated-panel runs can preserve the ordinary sample-clock
+    # monitor cadence while reserving the expensive complete validation panel
+    # for the final epoch. Ordinary/full training retains validation at every
+    # epoch boundary.
+    full_validation_final_epoch_only: bool = False
     warmup_samples: int = 0
     warmup_fraction: float = 0.01
     minimum_learning_rate: float = 3e-5

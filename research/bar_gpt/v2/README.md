@@ -114,6 +114,26 @@ evaluations at each epoch boundary. Every completed epoch writes an immutable
 `checkpoints/checkpoint_epoch_NNNN.pt` alongside latest and best-validation
 checkpoints.
 
+Run the paired data-diversity/repetition experiment after the baseline
+comparison finishes:
+
+```powershell
+python -m research.bar_gpt.v2.run_train_repetition_comparison
+python -m research.bar_gpt.v2.run_train_repetition_comparison --prepare-manifest-only
+python -m research.bar_gpt.v2.run_train_repetition_comparison --execute
+```
+
+This separate launcher does not alter the baseline comparison. It derives a
+deterministic nested 25M-origin training panel from `fixed_panels_v2.json`,
+audits ticker, year, month, activity-regime, session-phase, and block-length
+distributions, and exposes that exact panel for four deterministically
+reshuffled epochs. The model therefore sees approximately the same 100M total
+origins as the baseline but only one quarter as many unique origins. Model
+profiles, initialization seed, cumulative learning-rate schedule, W&B project,
+monitor panel, validation panel, and metric names remain identical. Epochs
+1-3 end with the bounded monitor; the expensive paired training/full-validation
+audit runs only after epoch 4.
+
 Analyze return-class support concurrently and resumably over the same fixed
 panels:
 

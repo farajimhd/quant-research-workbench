@@ -29,6 +29,13 @@ collated batches are consumed, the observed count can exceed 250,000 by less
 than one fixed eight-block evaluation batch. Complete validation is never run
 between epoch boundaries.
 
+The dedicated repetition experiment uses four 25M-origin data epochs while
+retaining the baseline's evaluation sample clock. Its first three epoch
+boundaries emit the same bounded `monitor_*` schema; only the fourth/final
+boundary emits `epoch_train_*`, `validation_*`, and
+`epoch_generalization_gap/*`. This explicit experimental option does not
+change ordinary full-training or baseline-comparison epoch behavior.
+
 ## Objective metrics
 
 Each `*_loss/<group>` is reconstructed from the same per-target valid-support

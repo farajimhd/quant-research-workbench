@@ -216,6 +216,15 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
         type=int,
         default=train.epoch_train_evaluation_origins,
     )
+    parser.add_argument(
+        "--full-validation-final-epoch-only",
+        action=argparse.BooleanOptionalAction,
+        default=train.full_validation_final_epoch_only,
+        help=(
+            "use the bounded monitor at non-final epoch boundaries and reserve "
+            "paired training/full-validation evaluation for the final epoch"
+        ),
+    )
     parser.add_argument("--validation-interval-samples", type=int, default=train.validation_interval_samples)
     parser.add_argument("--validation-initial-samples", type=int, default=train.validation_initial_samples)
     parser.add_argument(
@@ -349,6 +358,7 @@ def build_config(args: argparse.Namespace) -> ExperimentConfig:
         logging_samples=int(args.logging_samples),
         training_metrics_interval_samples=int(args.training_metrics_interval_samples),
         epoch_train_evaluation_origins=int(args.epoch_train_evaluation_origins),
+        full_validation_final_epoch_only=bool(args.full_validation_final_epoch_only),
         validation_interval_samples=int(args.validation_interval_samples),
         validation_initial_samples=int(args.validation_initial_samples),
         monitor_evaluation_origins=int(args.monitor_evaluation_origins),
@@ -1390,6 +1400,17 @@ def _generalization_gap_metrics(
             else float(validation_value) - float(train_value)
         )
     return result
+
+
+def _epoch_boundary_evaluation_namespace(
+    *, epoch: int, epochs: int, full_validation_final_epoch_only: bool
+) -> str:
+    """Select the bounded or complete evaluation contract at an epoch boundary."""
+    if epoch <= 0 or epochs <= 0 or epoch > epochs:
+        raise ValueError("epoch boundary requires 1 <= epoch <= epochs")
+    if full_validation_final_epoch_only and epoch < epochs:
+        return "monitor"
+    return "validation"
 
 
 def checkpoint_payload(
@@ -2582,46 +2603,72 @@ def main(argv: Iterable[str] | None = None) -> int:
                     else last_validation_samples != samples_seen
                 )
                 if needs_epoch_validation:
-                    reporter.message(
-                        "Running fixed training-population epoch evaluation"
-                    )
-                    reporter.phase("validating")
-                    last_epoch_train = validate(
-                        model,
-                        epoch_training_cache,
-                        config,
-                        device,
-                        namespace="epoch_train",
-                        max_batches=None,
-                        max_origins=config.train.epoch_train_evaluation_origins,
-                    )
-                    metrics_logger.log(last_epoch_train, samples_seen)
-                    if not full_validation_cache.ready:
-                        reporter.message("Waiting for full fixed validation panel preparation")
-                    last_epoch_validation = validate(
-                        model,
-                        full_validation_cache,
-                        config,
-                        device,
-                        namespace="validation",
-                        max_batches=(
-                            None if discovery_manifest is not None or config.train.validation_batches == 0
-                            else config.train.validation_batches
+                    boundary_namespace = _epoch_boundary_evaluation_namespace(
+                        epoch=current_epoch,
+                        epochs=config.train.epochs,
+                        full_validation_final_epoch_only=(
+                            config.train.full_validation_final_epoch_only
                         ),
                     )
-                    last_generalization_gap = _generalization_gap_metrics(
-                        last_epoch_train, last_epoch_validation
-                    )
-                    last_val = {
-                        **last_epoch_validation,
-                        **last_generalization_gap,
-                    }
+                    reporter.phase("validating")
+                    if boundary_namespace == "monitor":
+                        reporter.message(
+                            "Running bounded monitor at repeated-panel epoch boundary; "
+                            "complete validation remains reserved for the final epoch"
+                        )
+                        last_val = validate(
+                            model,
+                            validation_cache,
+                            config,
+                            device,
+                            namespace="monitor",
+                            max_batches=(
+                                None if config.train.validation_batches == 0
+                                else config.train.validation_batches
+                            ),
+                            max_origins=config.train.monitor_evaluation_origins,
+                        )
+                        last_validation_samples = samples_seen
+                    else:
+                        reporter.message(
+                            "Running fixed training-population epoch evaluation"
+                        )
+                        last_epoch_train = validate(
+                            model,
+                            epoch_training_cache,
+                            config,
+                            device,
+                            namespace="epoch_train",
+                            max_batches=None,
+                            max_origins=config.train.epoch_train_evaluation_origins,
+                        )
+                        metrics_logger.log(last_epoch_train, samples_seen)
+                        if not full_validation_cache.ready:
+                            reporter.message("Waiting for full fixed validation panel preparation")
+                        last_epoch_validation = validate(
+                            model,
+                            full_validation_cache,
+                            config,
+                            device,
+                            namespace="validation",
+                            max_batches=(
+                                None if discovery_manifest is not None or config.train.validation_batches == 0
+                                else config.train.validation_batches
+                            ),
+                        )
+                        last_generalization_gap = _generalization_gap_metrics(
+                            last_epoch_train, last_epoch_validation
+                        )
+                        last_val = {
+                            **last_epoch_validation,
+                            **last_generalization_gap,
+                        }
+                        last_validation_samples = samples_seen
+                        last_full_validation_samples = samples_seen
                     if not deferred_losses.merge_last(last_val):
                         metrics_logger.log(last_val, samples_seen)
                     deferred_losses.flush(metrics_logger)
                     reporter.validation(last_val)
-                    last_validation_samples = samples_seen
-                    last_full_validation_samples = samples_seen
                     validation_runs_in_epoch += 1
                     validation_evaluations_completed += 1
                     # The durable cursor and epoch clock already describe the
