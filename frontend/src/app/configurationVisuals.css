@@ -664,18 +664,6 @@
 .discovery-watchlist-review span { color: var(--muted-foreground); font-size: 10px; font-weight: 700; letter-spacing: .055em; text-transform: uppercase; }
 .discovery-watchlist-review small { color: var(--muted-foreground); }
 .discovery-watchlist-ranking-fields { grid-template-columns: repeat(3, minmax(0, 1fr)); }
-.discovery-classification-reference { border: 1px solid var(--configuration-rule); border-radius: 9px; }
-.discovery-classification-reference > summary { align-items: center; cursor: pointer; display: flex; justify-content: space-between; list-style: none; min-height: 52px; padding: 10px 14px; }
-.discovery-classification-reference > summary::-webkit-details-marker { display: none; }
-.discovery-classification-reference > summary > span:first-child { display: grid; gap: 3px; }
-.discovery-classification-reference > summary small,
-.discovery-classification-reference > summary > span:last-child { color: var(--muted-foreground); font-size: 10px; }
-.discovery-classification-reference > div { border-top: 1px solid var(--configuration-rule); display: grid; gap: 18px; padding: 16px; }
-.discovery-classification-reference section { display: grid; gap: 9px; }
-.discovery-classification-reference section > header { color: var(--muted-foreground); font-size: 10px; font-weight: 700; letter-spacing: .055em; text-transform: uppercase; }
-.discovery-classification-reference section > div { display: grid; gap: 8px; grid-template-columns: repeat(4, minmax(0, 1fr)); }
-.discovery-classification-reference article { border: 1px solid var(--configuration-rule); border-radius: 8px; display: grid; gap: 4px; padding: 11px; }
-.discovery-classification-reference article small { color: var(--muted-foreground); line-height: 1.4; }
 .discovery-column-catalog { display: grid; gap: 14px; }
 .discovery-column-catalog > header { align-items: end; display: grid; gap: 18px; grid-template-columns: minmax(0, 1fr) minmax(260px, .7fr); }
 .discovery-column-catalog > header > div { display: grid; gap: 4px; }
@@ -791,7 +779,6 @@
   .discovery-watchlist-direction { font-size: 0; gap: 0; padding: 8px; }
   .discovery-watchlist-review { grid-template-columns: 1fr; }
   .discovery-watchlist-ranking-fields,
-  .discovery-classification-reference section > div,
   .discovery-column-card-list { grid-template-columns: 1fr; }
   .discovery-rule-catalog > header,
   .discovery-rule-add { grid-template-columns: 1fr; }
