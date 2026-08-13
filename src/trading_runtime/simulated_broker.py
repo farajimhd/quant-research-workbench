@@ -113,6 +113,7 @@ class _OrderState:
     filled: float = 0.0
     avg_price: float = 0.0
     stop_triggered: bool = False
+    trailing_reference: float = 0.0
     status_description: str = ""
 
     @property
@@ -204,6 +205,7 @@ class SimulatedBrokerAdapter:
                     "filled": state.filled,
                     "avg_price": state.avg_price,
                     "stop_triggered": state.stop_triggered,
+                    "trailing_reference": state.trailing_reference,
                     "status_description": state.status_description,
                 }
                 for state in self._orders.values()
@@ -261,6 +263,7 @@ class SimulatedBrokerAdapter:
                 filled=float(values.get("filled") or 0),
                 avg_price=float(values.get("avg_price") or 0),
                 stop_triggered=bool(values.get("stop_triggered")),
+                trailing_reference=float(values.get("trailing_reference") or 0),
                 status_description=str(values.get("status_description") or ""),
             )
             orders[state.order_id] = state
@@ -582,6 +585,35 @@ class SimulatedBrokerAdapter:
                 return None
             if order_type == "STP":
                 order_type = "MKT"
+        if order_type == "TRAIL":
+            trailing_amount = float(request.trailingAmt or 0)
+            if trailing_amount <= 0:
+                return None
+            if side == "SELL":
+                state.trailing_reference = max(
+                    state.trailing_reference or market_price,
+                    market_price,
+                )
+                trigger_price = (
+                    state.trailing_reference * (1 - trailing_amount / 100)
+                    if str(request.trailingType or "").strip() == "%"
+                    else state.trailing_reference - trailing_amount
+                )
+                if market_price > trigger_price:
+                    return None
+            else:
+                state.trailing_reference = min(
+                    state.trailing_reference or market_price,
+                    market_price,
+                )
+                trigger_price = (
+                    state.trailing_reference * (1 + trailing_amount / 100)
+                    if str(request.trailingType or "").strip() == "%"
+                    else state.trailing_reference + trailing_amount
+                )
+                if market_price < trigger_price:
+                    return None
+            order_type = "MKT"
         if order_type in {"LMT", "STOP_LIMIT", "TRAILLMT"}:
             limit = float(request.price or 0)
             if (side == "BUY" and market_price > limit) or (side == "SELL" and market_price < limit):

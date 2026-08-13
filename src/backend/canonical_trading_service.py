@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from decimal import Decimal
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -160,6 +161,15 @@ def canonical_live_snapshot(
 
 
 def trading_state_payload(snapshot: TradingStateSnapshot) -> dict[str, Any]:
+    if (
+        snapshot.mode in {TradingMode.BACKTEST, TradingMode.BACKTEST_DEBUG}
+        and snapshot.executions
+        and not snapshot.closed_trades
+    ):
+        snapshot = replace(
+            snapshot,
+            closed_trades=tuple(derive_round_trip_trades(list(snapshot.executions))),
+        )
     payload = snapshot.to_dict()
     metrics = portfolio_metrics(payload.get("account_values", []), payload.get("ledger", []), payload.get("positions", []))
     payload["portfolio"] = {

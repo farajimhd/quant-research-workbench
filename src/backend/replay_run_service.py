@@ -31,6 +31,8 @@ from src.backend.trading_runtime_service import (
     historical_preflight,
 )
 from src.backend.trading_configuration_service import (
+    backtest_configuration_snapshot,
+    backtest_debug_configuration_snapshot,
     merged_assignment_parameters,
     replay_configuration_snapshot,
 )
@@ -1333,12 +1335,12 @@ class ReplayRunController:
             if (
                 "historical_watchlist" in assignment.source
                 and assignment.ticker not in self._active_historical_watchlist_tickers
-                and (position is None or float(position.quantity) == 0)
+                and (position is None or float(position.position) == 0)
             ):
                 continue
             observation = replace(
                 base,
-                position_quantity=float(position.quantity if position else 0),
+                position_quantity=float(position.position if position else 0),
                 average_price=float(position.avgPrice if position else 0),
                 manual_entry_request=bool(
                     assignment.state.get("manual_entry_requested")
@@ -2635,7 +2637,7 @@ def backtest_preflight(
     initial_cash: float = 100_000.0,
     configuration_revision: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    approved = configuration_revision or replay_configuration_snapshot()
+    approved = configuration_revision or backtest_configuration_snapshot()
     base = historical_preflight(
         mode=RunMode.BACKTEST.value,
         anchor_date=anchor_date,
@@ -2781,7 +2783,7 @@ def backtest_debug_preflight(
     tickers: tuple[str, ...] = (),
     configuration_revision: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    approved = configuration_revision or replay_configuration_snapshot()
+    approved = configuration_revision or backtest_debug_configuration_snapshot()
     configuration = dict(approved.get("payload") or {})
     bindings = [
         dict(row)

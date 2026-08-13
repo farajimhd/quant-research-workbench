@@ -92,6 +92,65 @@ class SimulatedBrokerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(snapshots[2].order_status, OrderStatus.CANCELLED)
         self.assertEqual((await self.broker.positions("DU123")), [])
 
+    async def test_trailing_stop_tracks_favorable_price_before_triggering(self) -> None:
+        entry = OrderRequest(
+            acctId="DU123",
+            conid=265598,
+            cOID="trail-entry",
+            ticker="AAPL",
+            orderType="MKT",
+            side="BUY",
+            quantity=10,
+        )
+        await self.broker.place_orders("DU123", [entry])
+        await self.broker.on_market_event(
+            quote(bid=99, ask=100, bid_size=20, ask_size=20)
+        )
+        trailing = OrderRequest(
+            acctId="DU123",
+            conid=265598,
+            cOID="trail-exit",
+            ticker="AAPL",
+            orderType="TRAIL",
+            side="SELL",
+            quantity=10,
+            trailingAmt=2,
+            trailingType="amt",
+        )
+        await self.broker.place_orders("DU123", [trailing])
+
+        self.assertEqual(
+            await self.broker.on_market_event(quote(bid=101, ask=102, bid_size=20)),
+            [],
+        )
+        self.assertEqual(
+            await self.broker.on_market_event(quote(bid=105, ask=106, bid_size=20)),
+            [],
+        )
+        checkpoint = self.broker.checkpoint_state()
+        restored = SimulatedBrokerAdapter(
+            ["DU123"],
+            SimulationConfig(
+                initial_cash=10_000,
+                commission_per_share=0.0,
+                minimum_commission=0.0,
+                liquidity_participation=0.5,
+            ),
+        )
+        await restored.initialize()
+        restored.restore_checkpoint_state(checkpoint)
+        self.assertEqual(
+            await restored.on_market_event(quote(bid=104, ask=105, bid_size=20)),
+            [],
+        )
+        fills = await restored.on_market_event(
+            quote(bid=103, ask=104, bid_size=20)
+        )
+
+        self.assertEqual(len(fills), 1)
+        self.assertEqual(fills[0].price, 103)
+        self.assertEqual(await restored.positions("DU123"), [])
+
 
 class JournalTests(unittest.TestCase):
     def test_strategy_activity_is_newest_first_and_excludes_broker_records(self) -> None:

@@ -18,6 +18,8 @@ from src.backend.trading_configuration_service import (
     _validate_market_discovery,
     approved_canvas_profile,
     approved_configuration,
+    backtest_configuration_snapshot,
+    backtest_debug_configuration_snapshot,
     capability_catalog,
     configuration_base,
     effective_configuration_snapshot,
@@ -32,6 +34,23 @@ from src.trading_runtime.strategy_engine import long_momentum_strategy_definitio
 
 
 class TradingConfigurationServiceTests(unittest.TestCase):
+    def test_historical_snapshot_entrypoints_preserve_runtime_mode(self) -> None:
+        with patch(
+            "src.backend.trading_configuration_service.approved_runtime_configuration_snapshot",
+            side_effect=lambda mode: {"mode": mode},
+        ) as snapshot:
+            replay = replay_configuration_snapshot()
+            backtest = backtest_configuration_snapshot()
+            debug = backtest_debug_configuration_snapshot()
+
+        self.assertEqual(replay["mode"], "replay")
+        self.assertEqual(backtest["mode"], "backtest")
+        self.assertEqual(debug["mode"], "backtest_debug")
+        self.assertEqual(
+            [call.args[0] for call in snapshot.call_args_list],
+            ["replay", "backtest", "backtest_debug"],
+        )
+
     @patch("src.backend.trading_configuration_service.qmd_catalogs")
     def test_market_discovery_projects_qmd_runtime_catalog_authority(self, catalogs) -> None:
         catalogs.return_value = {

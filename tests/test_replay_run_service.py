@@ -239,6 +239,104 @@ class HistoricalDebugFixtureTests(unittest.IsolatedAsyncioTestCase):
             },),
         )
 
+    def lifecycle_fixture(self) -> HistoricalDebugFixture:
+        entry = {
+            "close": 101.0,
+            "previous_close": 100.0,
+            "previous_high": 100.5,
+            "structure_swing_high": 100.5,
+            "structure_swing_low": 99.5,
+            "vwap": 100.2,
+            "macd_line": 0.4,
+            "macd_signal": 0.2,
+            "macd_histogram": 0.2,
+            "flow_structure_composite_score": 0.6,
+            "flow_structure_composite_confidence": 0.8,
+            "flow_structure_composite_bias": "bullish",
+            "atr_14": 0.4,
+            "structure_luld_upper": 110.0,
+        }
+        strategic_exit = {
+            **entry,
+            "close": 100.0,
+            "vwap": 100.1,
+        }
+        return HistoricalDebugFixture(
+            fixture_id="strategy-round-trip-aapl",
+            market_events=(
+                {
+                    "kind": "quote",
+                    "ticker": "AAPL",
+                    "ts": "2026-07-28T09:45:00-04:00",
+                    "sequence": 1,
+                    "bid_price": 100.99,
+                    "ask_price": 101.01,
+                    "bid_size": 1_000,
+                    "ask_size": 1_000,
+                },
+                {
+                    "kind": "trade",
+                    "ticker": "AAPL",
+                    "ts": "2026-07-28T09:45:02-04:00",
+                    "sequence": 2,
+                    "price": 101.0,
+                    "size": 1_000,
+                },
+                {
+                    "kind": "quote",
+                    "ticker": "AAPL",
+                    "ts": "2026-07-28T09:45:03-04:00",
+                    "sequence": 3,
+                    "bid_price": 100.8,
+                    "ask_price": 100.82,
+                    "bid_size": 1_000,
+                    "ask_size": 1_000,
+                },
+                {
+                    "kind": "trade",
+                    "ticker": "AAPL",
+                    "ts": "2026-07-28T09:45:05-04:00",
+                    "sequence": 4,
+                    "price": 100.0,
+                    "size": 1_000,
+                },
+            ),
+            derived_frames=(
+                {
+                    "ticker": "AAPL",
+                    "timeframe": "100ms",
+                    "as_of": "2026-07-28T09:45:00.500-04:00",
+                    "sequence": 1,
+                    "bar": {"close": 101.0},
+                    "indicator": entry,
+                },
+                {
+                    "ticker": "AAPL",
+                    "timeframe": "5s",
+                    "as_of": "2026-07-28T09:45:00.750-04:00",
+                    "sequence": 2,
+                    "bar": {"close": 101.0},
+                    "indicator": entry,
+                },
+                {
+                    "ticker": "AAPL",
+                    "timeframe": "1s",
+                    "as_of": "2026-07-28T09:45:01-04:00",
+                    "sequence": 3,
+                    "bar": {"close": 101.0},
+                    "indicator": entry,
+                },
+                {
+                    "ticker": "AAPL",
+                    "timeframe": "1s",
+                    "as_of": "2026-07-28T09:45:04-04:00",
+                    "sequence": 4,
+                    "bar": {"close": 100.0},
+                    "indicator": strategic_exit,
+                },
+            ),
+        )
+
     def test_parses_canonical_events_and_frames_without_qmd(self) -> None:
         fixture = self.fixture()
         events = _debug_market_events(fixture.market_events)
@@ -314,6 +412,79 @@ class HistoricalDebugFixtureTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(checkpoint["status"], "available")
                 self.assertEqual(checkpoint["processed_events"], 2)
                 self.assertTrue(checkpoint["resume_supported"])
+                qmd_source.assert_not_called()
+            finally:
+                if controller._journal is not None:
+                    controller._journal.close()
+
+    async def test_debug_fixture_runs_strategy_round_trip_to_terminal_flat_state(self) -> None:
+        assignment = {
+            "assignment_id": "round-trip-aapl",
+            "account_key": "primary",
+            "ticker": "AAPL",
+            "conid": 265598,
+            "status": "watching",
+            "permissions": {
+                "observe": True,
+                "enter": True,
+                "add": True,
+                "reduce": True,
+                "exit": True,
+                "reenter": True,
+            },
+            "parameters": default_long_momentum_parameters(),
+        }
+        with tempfile.TemporaryDirectory() as directory, patch(
+            "src.backend.replay_run_service.QmdHistoricalEventSource"
+        ) as qmd_source:
+            controller = ReplayRunController(
+                ReplayRunDefinition(
+                    session_date=date(2026, 7, 28),
+                    start_time=time(9, 45),
+                    mode=RunMode.BACKTEST_DEBUG,
+                    tickers=("AAPL",),
+                    debug_fixture=self.lifecycle_fixture(),
+                    configuration_revision=approved_configuration(
+                        assignments=[assignment]
+                    ),
+                ),
+                runtime_root=Path(directory),
+            )
+            await controller.start()
+            assert controller._task is not None
+            await controller._task
+            try:
+                journal = [
+                    record.payload
+                    for record in controller._journal.records(controller.run_id)
+                ]
+                self.assertEqual(controller.status, "completed", controller.error)
+                payload = await controller.canvas_payload("AAPL")
+                trading = payload["trading"]
+
+                self.assertEqual(controller.processed_events, 4)
+                self.assertGreaterEqual(len(trading["executions"]), 2)
+                self.assertFalse(
+                    [
+                        row
+                        for row in trading["positions"]
+                        if float(row.get("quantity") or 0) != 0
+                    ]
+                )
+                self.assertEqual(len(trading["closed_trades"]), 1)
+                self.assertTrue(
+                    any(row.get("action") == "enter_long" for row in journal),
+                    journal,
+                )
+                self.assertTrue(
+                    any(
+                        row.get("action") == "exit"
+                        and row.get("reason") == "failed_breakout"
+                        for row in journal
+                    ),
+                    journal,
+                )
+                self.assertIsNotNone(controller._journal.load_checkpoint(controller.run_id))
                 qmd_source.assert_not_called()
             finally:
                 if controller._journal is not None:

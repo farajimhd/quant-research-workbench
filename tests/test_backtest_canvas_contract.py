@@ -8,10 +8,12 @@ from fastapi import HTTPException
 
 from src.backend.app import (
     BacktestDebugRunCreateRequest,
+    BacktestRunCreateRequest,
     ReplayRunCommandRequest,
     trading_backtest_debug_run_command,
     trading_backtest_debug_run_canvas,
     trading_backtest_debug_run_create,
+    trading_backtest_run_create,
     trading_backtest_run_canvas,
     trading_backtest_run_command,
 )
@@ -64,7 +66,10 @@ class BacktestCanvasContractTests(unittest.IsolatedAsyncioTestCase):
             }],
         )
         with (
-            patch("src.backend.app.replay_configuration_snapshot", return_value=approved),
+            patch(
+                "src.backend.app.backtest_debug_configuration_snapshot",
+                return_value=approved,
+            ) as configuration_snapshot,
             patch(
                 "src.backend.app.backtest_debug_run_service.create",
                 new=AsyncMock(return_value=controller),
@@ -73,9 +78,44 @@ class BacktestCanvasContractTests(unittest.IsolatedAsyncioTestCase):
             payload = await trading_backtest_debug_run_create(request)
 
         definition = create.await_args.args[0]
+        configuration_snapshot.assert_called_once_with()
         self.assertEqual(definition.mode, RunMode.BACKTEST_DEBUG)
         self.assertEqual(definition.debug_fixture.fixture_id, "gap-open")
         self.assertEqual(payload["mode"], "backtest_debug")
+
+    async def test_backtest_create_uses_backtest_configuration_authority(self) -> None:
+        controller = MagicMock()
+        controller.snapshot.return_value = {"mode": "backtest"}
+        approved = {"revision_id": "approved-backtest", "payload": {}}
+        request = BacktestRunCreateRequest(
+            anchor_date=date(2026, 7, 28),
+            session_count=1,
+            configuration_revision_id="approved-backtest",
+        )
+        with (
+            patch(
+                "src.backend.app.backtest_configuration_snapshot",
+                return_value=approved,
+            ) as configuration_snapshot,
+            patch(
+                "src.backend.app.backtest_preflight",
+                return_value={
+                    "strategy_run_ready": True,
+                    "window": {"sessions": ["2026-07-28"]},
+                },
+            ),
+            patch(
+                "src.backend.app.backtest_run_service.create",
+                new=AsyncMock(return_value=controller),
+            ) as create,
+        ):
+            payload = await trading_backtest_run_create(request)
+
+        configuration_snapshot.assert_called_once_with()
+        definition = create.await_args.args[0]
+        self.assertEqual(definition.mode, RunMode.BACKTEST)
+        self.assertIs(definition.configuration_revision, approved)
+        self.assertEqual(payload["mode"], "backtest")
 
     async def test_debug_canvas_uses_debug_service_and_preserves_runtime_mode(self) -> None:
         controller = MagicMock()

@@ -339,6 +339,14 @@ def replay_configuration_snapshot() -> dict[str, Any]:
     return approved_runtime_configuration_snapshot("replay")
 
 
+def backtest_configuration_snapshot() -> dict[str, Any]:
+    return approved_runtime_configuration_snapshot("backtest")
+
+
+def backtest_debug_configuration_snapshot() -> dict[str, Any]:
+    return approved_runtime_configuration_snapshot("backtest_debug")
+
+
 def approved_runtime_configuration_snapshot(mode: str) -> dict[str, Any]:
     if mode not in SUPPORTED_MODES:
         raise ValueError(f"Unsupported trading configuration mode: {mode}")

@@ -208,6 +208,8 @@ from src.backend.trading_runtime_service import (
 from src.backend.trading_configuration_service import (
     approved_canvas_profile,
     approved_configuration,
+    backtest_configuration_snapshot,
+    backtest_debug_configuration_snapshot,
     configuration_base,
     configuration_revisions,
     effective_configuration_snapshot,
@@ -4638,7 +4640,7 @@ async def trading_replay_run_create(payload: ReplayRunCreateRequest) -> dict[str
 @app.post("/api/trading/backtest/runs")
 async def trading_backtest_run_create(payload: BacktestRunCreateRequest) -> dict[str, Any]:
     try:
-        configuration_revision = replay_configuration_snapshot()
+        configuration_revision = backtest_configuration_snapshot()
         if payload.configuration_revision_id != configuration_revision["revision_id"]:
             raise ValueError("The approved configuration changed; review Backtest preflight again")
         preflight = backtest_preflight(
@@ -4671,7 +4673,7 @@ async def trading_backtest_debug_run_create(
     payload: BacktestDebugRunCreateRequest,
 ) -> dict[str, Any]:
     try:
-        configuration_revision = replay_configuration_snapshot()
+        configuration_revision = backtest_debug_configuration_snapshot()
         if payload.configuration_revision_id != configuration_revision["revision_id"]:
             raise ValueError(
                 "The approved configuration changed; review Backtest Debug again"
@@ -4702,7 +4704,7 @@ async def trading_backtest_debug_run_create(
 @app.post("/api/trading/backtest_debug/preflight")
 def trading_backtest_debug_preflight(payload: ReplayPreflightRequest) -> dict[str, Any]:
     try:
-        configuration_revision = replay_configuration_snapshot()
+        configuration_revision = backtest_debug_configuration_snapshot()
         if (
             payload.configuration_revision_id
             and payload.configuration_revision_id != configuration_revision["revision_id"]
