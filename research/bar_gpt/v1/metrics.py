@@ -67,14 +67,33 @@ def _macro(values: list[float]) -> float:
 
 def _direction_scores(confusion: torch.Tensor) -> tuple[float, float, float]:
     tp, tn, fp, fn = (float(value) for value in confusion)
-    tpr = tp / (tp + fn) if tp + fn else float("nan")
-    tnr = tn / (tn + fp) if tn + fp else float("nan")
-    balanced = _macro([tpr, tnr])
+    positive_support = tp + fn
+    negative_support = tn + fp
+    tpr = tp / positive_support if positive_support else float("nan")
+    tnr = tn / negative_support if negative_support else float("nan")
+    # Balanced accuracy is a two-sided generalization metric. It is not
+    # identifiable when the evaluated population contains only one class.
+    balanced = (tpr + tnr) / 2.0 if positive_support and negative_support else float("nan")
     total = tp + tn + fp + fn
     accuracy = (tp + tn) / total if total else float("nan")
     denominator = math.sqrt((tp + fp) * (tp + fn) * (tn + fp) * (tn + fn))
-    mcc = ((tp * tn) - (fp * fn)) / denominator if denominator else float("nan")
+    if denominator:
+        mcc = ((tp * tn) - (fp * fn)) / denominator
+    elif positive_support and negative_support:
+        # A constant prediction against a genuinely two-class target has no
+        # correlation. Returning zero keeps failed heads in macro summaries.
+        mcc = 0.0
+    else:
+        mcc = float("nan")
     return accuracy, balanced, mcc
+
+
+def _direction_support(confusion: torch.Tensor) -> tuple[float, float, float]:
+    tp, tn, fp, fn = (float(value) for value in confusion)
+    total = tp + tn + fp + fn
+    if not total:
+        return 0.0, float("nan"), float("nan")
+    return total, (tp + fn) / total, (tp + fp) / total
 
 
 @dataclass(slots=True)
@@ -313,6 +332,14 @@ class ValidationAccumulator:
                 metrics[f"{prefix}_balanced/balanced_accuracy_{name}"] = target_balanced
                 metrics[f"{prefix}_mcc/mcc_{name}"] = target_mcc
                 metrics[f"{prefix}_neutral/neutral_fraction_{name}"] = target_neutral
+                directional_count, positive_fraction, predicted_positive_fraction = _direction_support(
+                    confusion_by_target[target_index]
+                )
+                metrics[f"{prefix}_count/directional_count_{name}"] = directional_count
+                metrics[f"{prefix}_prevalence/positive_fraction_{name}"] = positive_fraction
+                metrics[f"{prefix}_prevalence/predicted_positive_fraction_{name}"] = (
+                    predicted_positive_fraction
+                )
         if ar_accuracy_values:
             metrics[f"{self.namespace}_ar_direction_accuracy/accuracy_macro"] = _macro(ar_accuracy_values)
             metrics[f"{self.namespace}_ar_direction_balanced/balanced_accuracy_macro"] = _macro(ar_balanced_values)
@@ -329,7 +356,7 @@ class ValidationAccumulator:
         family_names = PRICE_FAMILIES
         family_summary = {
             family: {key: [] for key in (
-                "mae", "persistence_mae", "accuracy",
+                "mae", "persistence_mae", "skill_vs_persistence", "accuracy",
                 "balanced", "mcc", "neutral", "calibration", "rank", "top10", "top20",
             )}
             for family in family_names
@@ -337,6 +364,11 @@ class ValidationAccumulator:
         coverage_macros = {
             family: [[] for _ in self.quantiles] for family in family_names
         }
+        close_direction_by_family = {
+            family: {"accuracy": [], "balanced_accuracy": [], "mcc": []}
+            for family in family_names
+        }
+        close_direction_all = {"accuracy": [], "balanced_accuracy": [], "mcc": []}
         for horizon_index, horizon_us in enumerate(self.horizons_us):
             label = f"{horizon_us // 1_000_000}s"
             brier_value = float(brier[horizon_index])
@@ -350,8 +382,17 @@ class ValidationAccumulator:
                 target_prefix = f"{self.namespace}_{family}_{field}"
                 metrics[f"{target_prefix}_return_error/mae_bps_{label}"] = mae_value
                 metrics[f"{target_prefix}_return_error/persistence_mae_bps_{label}"] = persistence_mae_value
+                skill_vs_persistence = (
+                    1.0 - mae_value / persistence_mae_value
+                    if persistence_mae_value > 0
+                    else float("nan")
+                )
+                metrics[f"{target_prefix}_return_skill/skill_vs_persistence_{label}"] = (
+                    skill_vs_persistence
+                )
                 summary["mae"].append(mae_value)
                 summary["persistence_mae"].append(persistence_mae_value)
+                summary["skill_vs_persistence"].append(skill_vs_persistence)
 
                 accuracy, balanced, mcc = _direction_scores(self.direction_confusion[horizon_index, target_index])
                 direction_total = float(self.direction_total_count[horizon_index, target_index])
@@ -361,10 +402,25 @@ class ValidationAccumulator:
                 metrics[f"{direction_group}/balanced_accuracy_{label}"] = balanced
                 metrics[f"{target_prefix}_direction_quality/mcc_{label}"] = mcc
                 metrics[f"{target_prefix}_direction_quality/neutral_fraction_{label}"] = neutral_fraction
+                directional_count, positive_fraction, predicted_positive_fraction = _direction_support(
+                    self.direction_confusion[horizon_index, target_index]
+                )
+                metrics[f"{target_prefix}_direction_count/directional_count_{label}"] = directional_count
+                metrics[f"{target_prefix}_direction_prevalence/positive_fraction_{label}"] = positive_fraction
+                metrics[f"{target_prefix}_direction_prevalence/predicted_positive_fraction_{label}"] = (
+                    predicted_positive_fraction
+                )
                 summary["accuracy"].append(accuracy)
                 summary["balanced"].append(balanced)
                 summary["mcc"].append(mcc)
                 summary["neutral"].append(neutral_fraction)
+                if field == "close":
+                    close_direction_by_family[family]["accuracy"].append(accuracy)
+                    close_direction_by_family[family]["balanced_accuracy"].append(balanced)
+                    close_direction_by_family[family]["mcc"].append(mcc)
+                    close_direction_all["accuracy"].append(accuracy)
+                    close_direction_all["balanced_accuracy"].append(balanced)
+                    close_direction_all["mcc"].append(mcc)
 
                 errors = []
                 for quantile_index, quantile in enumerate(self.quantiles):
@@ -393,6 +449,15 @@ class ValidationAccumulator:
                         summary[f"top{percentage}"].append(value)
 
         metrics[f"{self.namespace}_availability/brier_macro"] = _macro(brier_values)
+        for family, values_by_metric in close_direction_by_family.items():
+            for metric_name, values in values_by_metric.items():
+                metrics[
+                    f"{self.namespace}_{family}_close_direction_summary/{metric_name}_macro"
+                ] = _macro(values)
+        for metric_name, values in close_direction_all.items():
+            metrics[f"{self.namespace}_close_direction_summary/{metric_name}_macro"] = _macro(
+                values
+            )
         for family in family_names:
             summary = family_summary[family]
             for name, values in summary.items():

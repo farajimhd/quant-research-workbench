@@ -620,7 +620,17 @@ Targets within the configurable one-basis-point neutral band are excluded from
 binary up/down loss and accuracy, while their fraction is reported separately.
 Accuracy, balanced accuracy, and MCC are reported for every trade/bid/ask OHLC
 return per physical horizon and per autoregressive intraday view, together with
-bounded family/view macro summaries.
+bounded family/view macro summaries. Use the `*_close_direction_summary` MCC
+and balanced-accuracy groups as the primary directional-generalization view:
+high/low targets are horizon extrema and are mechanically one-sided. Raw
+accuracy is therefore not decision-grade for those targets. A constant
+prediction against a two-class target reports balanced accuracy `0.5` and MCC
+`0.0`; a genuinely single-class evaluation reports both as undefined. Each
+direction head also records directional count, actual positive fraction, and
+predicted positive fraction, so prediction collapse is visible rather than
+silently omitted from macros. Return metrics include skill versus the causal
+current-return persistence baseline; positive skill means lower MAE than that
+baseline.
 
 The joint candidate sweep measures loader wait, GPU time, origins/second,
 encoded tokens/second, parameter count, effective blocks per update, the

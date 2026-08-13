@@ -147,6 +147,15 @@ def trainer_argv(
     ]
     if wandb_mode != DEFAULT_WANDB_MODE:
         argv.extend(("--wandb-mode", wandb_mode))
+    checkpoint = (
+        output_root
+        / "runs"
+        / comparison_run_name(model_size, run_stamp)
+        / "checkpoints"
+        / "checkpoint_latest.pt"
+    )
+    if checkpoint.is_file():
+        argv.extend(("--resume-checkpoint", str(checkpoint)))
     return argv
 
 

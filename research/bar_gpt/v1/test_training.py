@@ -5,6 +5,7 @@ import dataclasses
 import datetime as dt
 import http.client
 import json
+import math
 import multiprocessing as mp
 import os
 import threading
@@ -64,7 +65,7 @@ from research.bar_gpt.v1.shard_data_audit import (
 )
 from research.bar_gpt.v1.prefetch import DeviceBatchPrefetcher
 from research.bar_gpt.v1.integration import PackedBarEmbeddingAdapter
-from research.bar_gpt.v1.metrics import ValidationAccumulator
+from research.bar_gpt.v1.metrics import ValidationAccumulator, _direction_scores
 from research.bar_gpt.v1.features import MODEL_FEATURE_NAMES, project_stationary_features
 from research.bar_gpt.v1.model import BarGPTV1
 from research.bar_gpt.v1.linear_probe import fit_ridge_probes
@@ -133,6 +134,7 @@ from research.bar_gpt.v1.train import (
     _validation_checkpoint_due,
     _wandb_metric_key,
     _resolved_warmup_samples,
+    _reached_diagnostic_limit,
     restore_checkpoint,
     _resume_data_contract,
     _preserve_training_prefetch_during_validation,
@@ -474,6 +476,35 @@ class LoaderTrainerContractTest(unittest.TestCase):
             milestones[1:3],
             (round(7_563_836_672 / 3), round(2 * 7_563_836_672 / 3)),
         )
+
+    def test_natural_plan_limit_still_allows_epoch_end_validation(self) -> None:
+        self.assertFalse(
+            _reached_diagnostic_limit(
+                training_limit=100_000_000,
+                planned_samples=100_000_000,
+                samples_seen=100_000_000,
+            )
+        )
+        self.assertTrue(
+            _reached_diagnostic_limit(
+                training_limit=10_000_000,
+                planned_samples=100_000_000,
+                samples_seen=10_000_000,
+            )
+        )
+
+    def test_direction_scores_penalize_prediction_collapse_without_inventing_missing_class(self) -> None:
+        accuracy, balanced, mcc = _direction_scores(
+            torch.tensor([0.0, 90.0, 0.0, 10.0])
+        )
+        self.assertEqual(accuracy, 0.9)
+        self.assertEqual(balanced, 0.5)
+        self.assertEqual(mcc, 0.0)
+        _accuracy, single_class_balanced, single_class_mcc = _direction_scores(
+            torch.tensor([0.0, 100.0, 0.0, 0.0])
+        )
+        self.assertTrue(math.isnan(single_class_balanced))
+        self.assertTrue(math.isnan(single_class_mcc))
 
     def test_fixed_validation_batches_materialize_once_and_reiterate(self) -> None:
         first = {"batch": 1}
@@ -2049,6 +2080,7 @@ class LoaderTrainerContractTest(unittest.TestCase):
                 last_checkpoint_samples=131_072, validation_evaluations_completed=1,
                 wandb_run_id="wandb-1", validation_runs_in_epoch=1,
                 last_validation_samples=131_072,
+                last_full_validation_samples=131_072,
             )
             manager.maybe_save(
                 step=1, payload=payload,
@@ -2068,6 +2100,7 @@ class LoaderTrainerContractTest(unittest.TestCase):
         self.assertEqual(restored["samples_seen"], 131_072)
         self.assertEqual(restored["validation_evaluations_completed"], 1)
         self.assertEqual(restored["last_checkpoint_samples"], 131_072)
+        self.assertEqual(restored["last_full_validation_samples"], 131_072)
         for key, value in model.state_dict().items():
             torch.testing.assert_close(value, expected[key])
 
@@ -2167,6 +2200,15 @@ class LoaderTrainerContractTest(unittest.TestCase):
         self.assertIn("validation_trade_close_direction_quality/mcc_1s", validation)
         self.assertIn("validation_trade_close_direction/accuracy_1s", validation)
         self.assertIn("validation_trade_close_direction_quality/neutral_fraction_1s", validation)
+        self.assertIn("validation_trade_close_direction_count/directional_count_1s", validation)
+        self.assertIn("validation_trade_close_direction_prevalence/positive_fraction_1s", validation)
+        self.assertIn(
+            "validation_trade_close_direction_prevalence/predicted_positive_fraction_1s",
+            validation,
+        )
+        self.assertIn("validation_trade_close_return_skill/skill_vs_persistence_1s", validation)
+        self.assertIn("validation_trade_close_direction_summary/mcc_macro", validation)
+        self.assertIn("validation_close_direction_summary/mcc_macro", validation)
         self.assertIn("validation_ar_direction_balanced/balanced_accuracy_5s", validation)
         self.assertIn("validation_ar_direction_mcc/mcc_5s", validation)
         self.assertIn("validation_ar_direction_neutral/neutral_fraction_1s", validation)
@@ -2534,6 +2576,26 @@ class LoaderTrainerContractTest(unittest.TestCase):
             names.add(comparison_run_name(model_size, "fixed"))
         self.assertEqual(len(names), 3)
         self.assertEqual(len(comparison_contracts), 1)
+
+    def test_comparison_rerun_resumes_its_existing_checkpoint(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            output_root = Path(directory)
+            checkpoint = (
+                output_root
+                / "runs"
+                / comparison_run_name("current", "fixed")
+                / "checkpoints"
+                / "checkpoint_latest.pt"
+            )
+            checkpoint.parent.mkdir(parents=True)
+            checkpoint.touch()
+            args = comparison_trainer_argv(
+                "current",
+                run_stamp="fixed",
+                wandb_mode="disabled",
+                output_root=output_root,
+            )
+        self.assertEqual(args[args.index("--resume-checkpoint") + 1], str(checkpoint))
 
     def test_comparison_manifest_requires_all_tickers_and_disjoint_evaluation_dates(self) -> None:
         tickers = ("AAA", "BBB", "CCC")

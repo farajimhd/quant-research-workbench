@@ -596,6 +596,13 @@ def _resolved_warmup_samples(config: TrainConfig, schedule_samples: int) -> int:
     return min(requested, schedule_samples - 1)
 
 
+def _reached_diagnostic_limit(
+    *, training_limit: int, planned_samples: int, samples_seen: int
+) -> bool:
+    """Return true only for an explicit cap shorter than the natural plan."""
+    return training_limit < planned_samples and samples_seen >= training_limit
+
+
 def _validation_milestones(
     *,
     epoch_origins: int,
@@ -1289,6 +1296,7 @@ def checkpoint_payload(
     wandb_run_id: str | None,
     validation_runs_in_epoch: int = 0,
     last_validation_samples: int = -1,
+    last_full_validation_samples: int = -1,
 ) -> dict[str, Any]:
     return {
         "model": _unwrap(model).state_dict(),
@@ -1311,6 +1319,7 @@ def checkpoint_payload(
         "validation_evaluations_completed": validation_evaluations_completed,
         "validation_runs_in_epoch": validation_runs_in_epoch,
         "last_validation_samples": last_validation_samples,
+        "last_full_validation_samples": last_full_validation_samples,
         "wandb_run_id": wandb_run_id,
         # Raw cache tensors are intentionally not checkpointed: they can be
         # gigabytes per worker and are deterministically rebuilt from these
@@ -1918,8 +1927,8 @@ def main(argv: Iterable[str] | None = None) -> int:
         if pending_resume_validation
         else epoch_start_samples + epoch_validation_milestones[min(validation_runs_in_epoch, len(epoch_validation_milestones) - 1)]
     )
-    last_validation_samples = -1
-    last_full_validation_samples = -1
+    last_validation_samples = int(restored.get("last_validation_samples", -1))
+    last_full_validation_samples = int(restored.get("last_full_validation_samples", -1))
     if not pending_resume_validation:
         validation_runs_in_epoch = min(validation_runs_in_epoch, max(0, len(epoch_validation_milestones) - 1))
     state.validation_runs_completed = resume_epoch * len(epoch_validation_milestones) + validation_runs_in_epoch
@@ -1951,6 +1960,7 @@ def main(argv: Iterable[str] | None = None) -> int:
                 wandb_run_id=wandb_run_id,
                 validation_runs_in_epoch=validation_runs_in_epoch,
                 last_validation_samples=last_validation_samples,
+                last_full_validation_samples=last_full_validation_samples,
             ),
             train_metrics=last_metrics,
             val_metrics=last_val,
@@ -2400,7 +2410,12 @@ def main(argv: Iterable[str] | None = None) -> int:
                         break
                 iterator.close()
                 active_iterator = None
-                if _INTERRUPTED or (training_limit > 0 and samples_seen >= training_limit):
+                reached_diagnostic_limit = _reached_diagnostic_limit(
+                    training_limit=training_limit,
+                    planned_samples=planned_samples,
+                    samples_seen=samples_seen,
+                )
+                if _INTERRUPTED or reached_diagnostic_limit:
                     break
                 current_epoch = epoch + 1
                 epoch_start_samples = samples_seen
@@ -2441,7 +2456,11 @@ def main(argv: Iterable[str] | None = None) -> int:
                     checkpoint_after_validation()
             if optimizer_steps == 0:
                 raise RuntimeError("coverage epoch produced no optimizer updates")
-            stopped_at_limit = training_limit < planned_samples and samples_seen >= training_limit
+            stopped_at_limit = _reached_diagnostic_limit(
+                training_limit=training_limit,
+                planned_samples=planned_samples,
+                samples_seen=samples_seen,
+            )
             completed_normally = not _INTERRUPTED and not stopped_at_limit
             reporter.state.state = (
                 "interrupted" if _INTERRUPTED else ("stopped_at_limit" if stopped_at_limit else "completed")
@@ -2542,7 +2561,11 @@ def main(argv: Iterable[str] | None = None) -> int:
             "condition_blocks_seen": condition_blocks_seen,
             "coverage_plan": plan.to_dict(),
             "completed_normally": completed_normally,
-            "stopped_at_limit": training_limit < planned_samples and samples_seen >= training_limit,
+            "stopped_at_limit": _reached_diagnostic_limit(
+                training_limit=training_limit,
+                planned_samples=planned_samples,
+                samples_seen=samples_seen,
+            ),
             "validation_tickers": validation_tickers,
             "identity_holdout_tickers": identity_holdouts,
             "parameters": parameter_summary(_unwrap(model)),
