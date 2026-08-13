@@ -386,7 +386,7 @@ type CanvasLiveChartState = {
 
 type CanvasChartSettings = { showVolume: boolean; symbol: string; timeframe: CanvasChartTimeframe; visibleIndicators: string[] };
 type ContainerSettings = {
-  version: 25;
+  version: 26;
   chart: CanvasChartSettings;
   charts_quotes: {
     daily: CanvasChartSettings;
@@ -423,7 +423,7 @@ type LinkedContainerState = { status: WorkspaceWindowStatus; symbol: string; tit
 const ALL_CONTAINER_IDS = TRADING_WORKSPACE_CONTAINERS.map((definition) => definition.id);
 const MANAGER_DEFAULT_CONTAINER_IDS: WorkspaceContainerId[] = ["scanner", "chart", "portfolio", "positions", "orders"];
 const DEFAULT_SETTINGS: ContainerSettings = {
-  version: 25,
+  version: 26,
   chart: { showVolume: true, symbol: "AAPL", timeframe: "1m", visibleIndicators: ["indicator.vwap", "indicator.macd", "indicator.flow_structure_composite", "strategy.presentation"] },
   charts_quotes: {
     main: { showVolume: true, symbol: "AAPL", timeframe: "10s", visibleIndicators: ["indicator.macd", "strategy.presentation"] },
@@ -444,7 +444,7 @@ const DEFAULT_SETTINGS: ContainerSettings = {
   portfolio: { showExposure: true, showPnl: true },
   scanner: { columns: [], customColumns: [], limit: 250, preset: "Core Scan" },
   signal_stream: { columns: [], customColumns: [], limit: 250, preset: "All" },
-  watchlist: { columns: [], customColumns: [], limit: 50, watchlistId: "" },
+  watchlist: { columns: [], customColumns: [], limit: 50, watchlistId: "", watchlistIds: [] },
   strategy_activity: { eventType: "", limit: 250, runId: "", strategyId: "", ticker: "" },
   sec: { content: "all", endDate: "", label: "", limit: 100, lookbackHours: 168, rangeMode: "preset", startDate: "", ticker: "" },
   ticker_sec: { lookbackHours: 720 },
@@ -4418,6 +4418,8 @@ function normalizeSettings(stored: Partial<ContainerSettings>): ContainerSetting
     : Array.from(new Set([...migratedIndicators, "indicator.flow_structure_composite", "strategy.presentation"]));
   const timeframe = HISTORICAL_TIMEFRAMES.includes(stored.chart?.timeframe as CanvasChartTimeframe) ? stored.chart!.timeframe! : DEFAULT_SETTINGS.chart.timeframe;
   const storedPerformance = stored.performance_journal as (Partial<ContainerSettings["performance_journal"]> & { showFees?: boolean }) | undefined;
+  const storedWatchlist = stored.watchlist as Partial<WatchUniverseSettings> | undefined;
+  const storedWatchlistIds = Array.isArray(storedWatchlist?.watchlistIds) ? storedWatchlist.watchlistIds : [];
   return {
     version: DEFAULT_SETTINGS.version,
     chart: { ...DEFAULT_SETTINGS.chart, ...(stored.chart ?? {}), timeframe, visibleIndicators: [...visibleIndicators] },
@@ -4455,7 +4457,11 @@ function normalizeSettings(stored: Partial<ContainerSettings>): ContainerSetting
       ...(stored.watchlist ?? {}),
       columns: Number(stored.version ?? 0) < 25 ? [] : normalizeScannerColumnKeys(stored.watchlist?.columns, stored.watchlist?.customColumns),
       customColumns: normalizeScannerCustomColumns(stored.watchlist?.customColumns),
-      watchlistId: String((stored.watchlist as Partial<WatchUniverseSettings> | undefined)?.watchlistId ?? ""),
+      watchlistId: String(storedWatchlist?.watchlistId ?? ""),
+      watchlistIds: Array.from(new Set([
+        ...storedWatchlistIds.filter((value): value is string => typeof value === "string" && Boolean(value.trim())),
+        String(storedWatchlist?.watchlistId ?? ""),
+      ].filter(Boolean))),
     },
     strategy_activity: { ...DEFAULT_SETTINGS.strategy_activity, ...(stored.strategy_activity ?? {}) },
     sec: { ...DEFAULT_SETTINGS.sec, ...(stored.sec ?? {}) },

@@ -2,6 +2,7 @@ import { ArrowDown, ArrowLeft, ArrowRight, ArrowUp, ArrowUpDown, Check, ChevronD
 import { forwardRef, useDeferredValue, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
 import { api } from "../../api/client";
+import { InventoryFilterSelect } from "./InventoryFilterSelect";
 import { MarketTime } from "./MarketTime";
 import { TickerLogo, useTickerPresentations } from "./TickerIdentity";
 
@@ -35,7 +36,7 @@ export type ScannerCustomColumn = {
 type TechnicalListSettings = { columns: string[]; customColumns: ScannerCustomColumn[] };
 export type MarketScannerSettings = TechnicalListSettings & { limit: number; preset: string };
 export type SignalStreamSettings = TechnicalListSettings & { limit: number; preset: string };
-export type WatchUniverseSettings = TechnicalListSettings & { limit: number; watchlistId: string; universeId?: string };
+export type WatchUniverseSettings = TechnicalListSettings & { limit: number; watchlistId: string; watchlistIds: string[]; universeId?: string };
 type DiscoveryScannerColumn = { column_id: string; name: string; source_id: string };
 type DiscoveryCapability = { enabled?: boolean; execution_scope?: string; scanner_columns?: DiscoveryScannerColumn[]; system_required?: boolean };
 type DiscoveryColumn = { column_id: string; description?: string; name: string; provenance?: string; semantic_type?: string; source_id?: string; unit?: string; value_type?: string };
@@ -330,6 +331,7 @@ export function SignalStreamContainer({ asOf, onSettingsChange, onTickerSelect, 
 
 export function WatchUniverseContainer({ asOf, onSettingsChange, onTickerSelect, scannerRows, settings }: { asOf: string; onSettingsChange: (patch: Partial<WatchUniverseSettings>) => void; onTickerSelect: (ticker: string) => void; scannerRows: ScreenerRow[]; settings: WatchUniverseSettings }) {
   const { catalog: fieldCatalog, configuration, discovery } = useDiscoveryPresentation();
+  const [addingWatchlist, setAddingWatchlist] = useState(false);
   const [runtime, setRuntime] = useState<WatchlistRuntimeResponse | null>(null);
   const [runtimeError, setRuntimeError] = useState("");
   useEffect(() => {
@@ -357,7 +359,14 @@ export function WatchUniverseContainer({ asOf, onSettingsChange, onTickerSelect,
   const runPlans = configuration?.run_plans?.plans ?? [];
   const sourceRows = useMemo(() => normalizeScannerRows(scannerRows), [scannerRows]);
   const rowByTicker = useMemo(() => new Map(sourceRows.map((row) => [String(row.ticker), row])), [sourceRows]);
-  const watchlist = watchlists.find((row) => row.watchlist_id === settings.watchlistId) ?? watchlists.find((row) => row.enabled && row.availability !== "integration_pending") ?? watchlists[0];
+  const selectableWatchlists = watchlists.filter((row) => row.enabled && row.availability !== "integration_pending");
+  const configuredWatchlistIds = Array.from(new Set(settings.watchlistIds)).filter((id) => selectableWatchlists.some((row) => row.watchlist_id === id));
+  const fallbackWatchlist = selectableWatchlists.find((row) => row.watchlist_id === settings.watchlistId) ?? selectableWatchlists[0] ?? watchlists[0];
+  const visibleWatchlists = configuredWatchlistIds.length
+    ? configuredWatchlistIds.map((id) => selectableWatchlists.find((row) => row.watchlist_id === id)).filter((row): row is DiscoveryWatchlist => Boolean(row))
+    : fallbackWatchlist ? [fallbackWatchlist] : [];
+  const watchlist = visibleWatchlists.find((row) => row.watchlist_id === settings.watchlistId) ?? visibleWatchlists[0] ?? fallbackWatchlist;
+  const availableWatchlists = selectableWatchlists.filter((row) => !visibleWatchlists.some((visible) => visible.watchlist_id === row.watchlist_id));
   const runtimeWatchlist = runtime?.watchlists?.find((row) => row.watchlist_id === watchlist?.watchlist_id);
   const runtimeMembers = runtimeWatchlist?.members ?? [];
   const runtimeReady = runtime?.status === "ready" && runtimeWatchlist !== undefined;
@@ -380,24 +389,36 @@ export function WatchUniverseContainer({ asOf, onSettingsChange, onTickerSelect,
         ? "Waiting for the first complete causal QMD Watchlist resolution."
         : `QMD Watchlist ${watchlist?.watchlist_id || "not selected"} has no runtime snapshot.`;
   const columns = settings.columns.length ? settings.columns : watchlist?.columns ?? ["symbol"];
+  const selectWatchlist = (watchlistId: string) => onSettingsChange({ columns: [], watchlistId, watchlistIds: visibleWatchlists.map((row) => row.watchlist_id) });
+  const addWatchlist = (watchlistId: string) => {
+    if (!watchlistId) return;
+    onSettingsChange({ columns: [], watchlistId, watchlistIds: [...visibleWatchlists.map((row) => row.watchlist_id), watchlistId] });
+    setAddingWatchlist(false);
+  };
+  const removeWatchlist = (watchlistId: string) => {
+    const nextIds = visibleWatchlists.map((row) => row.watchlist_id).filter((id) => id !== watchlistId);
+    const nextActiveId = watchlistId === watchlist?.watchlist_id ? nextIds[0] ?? "" : watchlist?.watchlist_id ?? "";
+    onSettingsChange({ columns: [], watchlistId: nextActiveId, watchlistIds: nextIds });
+  };
   return <section className="market-list-surface watchlist-surface" aria-label={`${watchlist?.name ?? "Watchlist"} watchlist`}>
     <header className="market-list-heading">
       <div><span className="market-list-eyebrow"><Star size={12} /> QMD Watchlist</span><h3>{watchlist?.name ?? "No Watchlist configured"}</h3><p>{resolved ? `${rows.length} eligible securities` : "Dynamic membership awaits its causal resolver"} · state at <MarketTime value={resolutionClock} /></p></div>
       <span className="market-list-owner strategy">QMD</span>
     </header>
     <nav aria-label="QMD Watchlists" className="watchlist-tabs" role="tablist">
-      {watchlists.map((row) => {
+      {visibleWatchlists.map((row) => {
         const selected = row.watchlist_id === watchlist?.watchlist_id;
-        const unavailable = !row.enabled || row.availability === "integration_pending";
-        return <button aria-selected={selected} className={selected ? "active" : undefined} disabled={unavailable} key={row.watchlist_id} onClick={() => onSettingsChange({ columns: [], watchlistId: row.watchlist_id })} role="tab" title={row.description || row.name} type="button">{row.name}</button>;
+        return <span className={selected ? "active" : undefined} key={row.watchlist_id}><button aria-selected={selected} onClick={() => selectWatchlist(row.watchlist_id)} role="tab" title={row.description || row.name} type="button">{row.name}</button>{visibleWatchlists.length > 1 ? <button aria-label={`Remove ${row.name} tab`} className="watchlist-tab-remove" onClick={() => removeWatchlist(row.watchlist_id)} title={`Remove ${row.name} from this container`} type="button"><X size={10} /></button> : null}</span>;
       })}
+      <button aria-expanded={addingWatchlist} aria-label="Add Watchlist tab" className="watchlist-tab-add" disabled={!availableWatchlists.length} onClick={() => setAddingWatchlist((open) => !open)} role="tab" title={availableWatchlists.length ? "Add a QMD Watchlist to this container" : "All available Watchlists are already open"} type="button"><Plus size={12} /><span>Add</span></button>
     </nav>
+    {addingWatchlist ? <div className="watchlist-tab-lookup"><InventoryFilterSelect ariaLabel="Watchlist to add" className="watchlist-add-lookup" onChange={addWatchlist} options={[{ description: "Select another QMD Watchlist for a persistent tab in this container.", label: "Choose a Watchlist", value: "" }, ...availableWatchlists.map((row) => ({ description: row.description, label: row.name, value: row.watchlist_id }))]} searchable={availableWatchlists.length > 7} searchPlaceholder="Find a Watchlistâ€¦" value="" /><button onClick={() => { window.location.hash = "market-discovery-configuration"; }} type="button">Create or configure Watchlists <ArrowRight size={13} /></button></div> : null}
     <div className="watch-universe-context">
       <div><span>Description</span><strong>{watchlist?.description || "No Watchlist selected"}</strong></div>
       <div><span>Used by</span><strong>{linkedPlans.map((plan) => plan.name || plan.run_plan_id).join(", ") || "No Run Plan"}</strong></div>
       <button onClick={() => { window.location.hash = "market-discovery-configuration"; }} type="button">Configure in Market Discovery <ArrowRight size={13} /></button>
     </div>
-    {!resolved ? <div className="watch-universe-warning" role="status"><strong>Membership is not runtime-ready</strong><span>{unresolvedDetail}</span></div> : null}
+    {!resolved ? <div className="watch-universe-warning" data-error={runtimeError ? "true" : "false"} role="status">{!runtimeError ? <span className="loading-spinner" aria-hidden="true" /> : null}<span><strong>{runtimeError ? "Membership service unavailable" : "Resolving membership"}</strong><small>{unresolvedDetail}</small></span></div> : null}
     <MarketListTable
       catalog={fieldCatalog}
       columns={columns}
