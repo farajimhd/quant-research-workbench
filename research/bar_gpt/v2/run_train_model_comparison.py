@@ -65,6 +65,11 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--model-size", choices=("all", *COMPARISON_RUNS), default="all")
     parser.add_argument("--execute", action="store_true")
+    parser.add_argument(
+        "--prepare-manifest-only",
+        action="store_true",
+        help="build or verify the fixed comparison panels without starting training",
+    )
     parser.add_argument("--shard-root", default=str(DEFAULT_SHARD_ROOT))
     parser.add_argument("--output-root", default=str(DEFAULT_OUTPUT_ROOT))
     parser.add_argument(
@@ -324,6 +329,12 @@ def main(argv: Iterable[str] | None = None) -> int:
             ),
             flush=True,
         )
+    if args.prepare_manifest_only:
+        manifest_path = ensure_comparison_manifest(
+            shard_root=shard_root, output_root=output_root
+        )
+        print(f"Comparison manifest ready: {manifest_path}", flush=True)
+        return 0
     if not args.execute:
         return 0
     if args.model_size == "all":

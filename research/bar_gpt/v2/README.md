@@ -131,6 +131,8 @@ Analyze return-class support concurrently and resumably over the same fixed
 panels:
 
 ```powershell
+python -m research.bar_gpt.v2.run_train_model_comparison --prepare-manifest-only
+
 python -m research.bar_gpt.v2.run_analyze_return_classes `
   --experiment-manifest D:\TradingML\runtimes\bar_gpt\v2\model_comparison\fixed_panels_v2.json `
   --execute
