@@ -428,6 +428,7 @@ def project_watchlists_from_candidates(
     candidates: list[dict[str, Any]],
     *,
     as_of: datetime,
+    available_fields: set[str] | None = None,
     source_complete: bool,
     source_status: str,
 ) -> dict[str, Any]:
@@ -443,20 +444,30 @@ def project_watchlists_from_candidates(
     discovery = dict(configuration.get("market_discovery") or {})
     rule_sets = list(discovery.get("rule_sets") or [])
     normalized_candidates = [normalize_watchlist_candidate(row) for row in candidates]
+    effective_available_fields = None if available_fields is None else set(available_fields)
     snapshots: list[dict[str, Any]] = []
     projection_ready = source_complete and source_status == "ready"
+    unresolved_source_status = (
+        source_status
+        if source_status in {"awaiting_first_resolution", "building", "error", "refreshing"}
+        else "partial"
+    )
     for watchlist in discovery.get("watchlists") or []:
         watchlist_id = str(watchlist.get("watchlist_id") or "").strip()
         if not watchlist_id:
             continue
         availability = str(watchlist.get("availability") or "available")
         enabled = bool(watchlist.get("enabled", True)) and availability == "available"
+        member_fields = watchlist_dependency_fields(watchlist, rule_sets)
+        watchlist_ready = projection_ready and (
+            effective_available_fields is None
+            or set(member_fields).issubset(effective_available_fields)
+        )
         resolved = (
             resolve_watchlist_membership(watchlist, rule_sets, normalized_candidates)
-            if enabled
+            if enabled and watchlist_ready
             else []
         )
-        member_fields = watchlist_dependency_fields(watchlist, rule_sets)
         members = [
             compact_watchlist_member(
                 {
@@ -480,10 +491,10 @@ def project_watchlists_from_candidates(
                 "candidate_population_count": len(normalized_candidates),
                 "status": (
                     "ready"
-                    if enabled and projection_ready
+                    if enabled and watchlist_ready
                     else "disabled"
                     if not enabled
-                    else source_status or "partial"
+                    else "partial" if projection_ready else unresolved_source_status
                 ),
             }
         )
@@ -492,7 +503,13 @@ def project_watchlists_from_candidates(
         "watchlist_count": len(snapshots),
         "member_count": sum(row["member_count"] for row in snapshots),
         "watchlists": snapshots,
-        "status": "ready" if projection_ready else source_status or "partial",
+        "status": (
+            "ready"
+            if projection_ready and all(row["status"] in {"ready", "disabled"} for row in snapshots)
+            else "partial"
+            if projection_ready
+            else unresolved_source_status
+        ),
         "source_complete": source_complete,
         "source": "canvas_scanner_snapshot",
     }

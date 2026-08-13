@@ -5097,6 +5097,7 @@ def trading_canvas_preview(payload: CanvasPreviewRequest) -> dict[str, Any]:
 @app.get("/api/trading/canvas-scanner")
 def trading_canvas_scanner(
     as_of: datetime,
+    enrichment_scope: str = Query(default="full", pattern="^(?:core|full)$"),
     lookback_minutes: int = Query(default=15, ge=1, le=120),
     technical_windows: str = Query(default=""),
     technical_timeframes: str = Query(default="", deprecated=True),
@@ -5109,6 +5110,7 @@ def trading_canvas_scanner(
         ]
         return scanner_snapshot_payload(
             as_of=as_of,
+            enrichment_scope=enrichment_scope,
             lookback_minutes=lookback_minutes,
             technical_windows=requested_windows,
         )

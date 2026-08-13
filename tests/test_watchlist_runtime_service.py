@@ -109,6 +109,46 @@ class WatchlistRuntimeServiceTests(unittest.TestCase):
             projection["watchlists"][0]["candidate_population_count"], 3
         )
 
+    def test_progressive_projection_keeps_dependency_incomplete_watchlist_partial(self) -> None:
+        candidates = [
+            {"ticker": "AAA", "market_cap": 1_000_000_000, "change_pct": 4.0},
+        ]
+        partial = project_watchlists_from_candidates(
+            self.configuration,
+            candidates,
+            as_of=datetime(2026, 8, 10, 16, tzinfo=UTC),
+            available_fields={"ticker", "change_pct"},
+            source_complete=True,
+            source_status="ready",
+        )
+        ready = project_watchlists_from_candidates(
+            self.configuration,
+            candidates,
+            as_of=datetime(2026, 8, 10, 16, tzinfo=UTC),
+            available_fields={"ticker", "change_pct", "market_cap"},
+            source_complete=True,
+            source_status="ready",
+        )
+
+        self.assertEqual(partial["status"], "partial")
+        self.assertEqual(partial["watchlists"][0]["status"], "partial")
+        self.assertEqual(partial["watchlists"][0]["members"], [])
+        self.assertEqual(ready["status"], "ready")
+        self.assertEqual(ready["watchlists"][0]["status"], "ready")
+        self.assertEqual([row["ticker"] for row in ready["watchlists"][0]["members"]], ["AAA"])
+
+    def test_incomplete_source_cannot_report_ready_membership(self) -> None:
+        projection = project_watchlists_from_candidates(
+            self.configuration,
+            [],
+            as_of=datetime(2026, 8, 10, 16, tzinfo=UTC),
+            source_complete=False,
+            source_status="ready",
+        )
+
+        self.assertEqual(projection["status"], "partial")
+        self.assertEqual(projection["watchlists"][0]["status"], "partial")
+
     @patch("src.backend.watchlist_runtime_service.publish_watchlist_target")
     def test_resolves_ranks_journals_and_publishes_exact_membership(self, publish) -> None:
         runtime = WatchlistRuntime()

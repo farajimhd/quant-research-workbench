@@ -9,6 +9,8 @@ import { TickerLogo, useTickerPresentations } from "./TickerIdentity";
 export type ScreenerRow = Record<string, unknown>;
 export type ScannerSnapshotMeta = {
   complete_universe?: boolean;
+  enrichment_scope?: "core" | "full";
+  enrichment_status?: "partial" | "ready";
   field_coverage?: Record<string, number>;
   lookback_minutes?: number;
   materialized?: boolean;
@@ -61,7 +63,7 @@ export type WatchlistRuntimeResponse = {
   error?: string;
   status?: "awaiting_first_resolution" | "degraded" | "ready" | string;
   target_errors?: Array<{ error?: string; watchlist_id?: string }>;
-  watchlists?: Array<{ member_count?: number; members?: ScreenerRow[]; watchlist_id: string }>;
+  watchlists?: Array<{ member_count?: number; members?: ScreenerRow[]; status?: string; watchlist_id: string }>;
 };
 type SignalMethod = { key: string; label: string; signal_version: number; status: string; compute_mode: string; working_timeframes: string[]; confirmation_timeframes: string[]; trigger_rules: string[]; rationale: string; domain?: string; producer?: string; input_basis?: string; evaluation_mode?: string; update_trigger?: string; publication_cadence?: string; publication_interval_ms?: number | null; score_required?: boolean; rank_score_required?: boolean };
 
@@ -346,7 +348,7 @@ export function WatchUniverseContainer({ asOf, onSettingsChange, onTickerSelect,
   const availableWatchlists = watchlists.filter((row) => !visibleWatchlists.some((visible) => visible.watchlist_id === row.watchlist_id));
   const runtimeWatchlist = runtime?.watchlists?.find((row) => row.watchlist_id === watchlist?.watchlist_id);
   const runtimeMembers = runtimeWatchlist?.members ?? [];
-  const runtimeReady = ["ready", "degraded"].includes(runtime?.status ?? "") && runtimeWatchlist !== undefined;
+  const runtimeReady = runtimeWatchlist !== undefined && ["ready", "degraded"].includes(runtimeWatchlist.status ?? runtime?.status ?? "");
   const resolvedSymbols = runtimeMembers.map((row) => String(row.ticker ?? row.symbol ?? "").trim().toUpperCase()).filter(Boolean);
   const runtimeMemberByTicker = new Map(runtimeMembers.map((row) => [String(row.ticker ?? "").trim().toUpperCase(), row]));
   const rows: ScreenerRow[] = resolvedSymbols.map((ticker) => ({
@@ -358,7 +360,7 @@ export function WatchUniverseContainer({ asOf, onSettingsChange, onTickerSelect,
   const linkedPlans = runPlans.filter((plan) => linkedUniverseIds.includes(plan.universe_id));
   const resolved = !watchlist || runtimeReady;
   const resolutionClock = runtime?.as_of ?? asOf;
-  const resolving = ["awaiting_first_resolution", "building", "refreshing"].includes(runtime?.status ?? "");
+  const resolving = ["awaiting_first_resolution", "building", "partial", "refreshing"].includes(runtimeWatchlist?.status ?? runtime?.status ?? "");
   const runtimeError = runtime?.status === "error" ? runtime.error || "The scanner did not return a Watchlist membership projection." : "";
   const unresolvedDetail = runtimeError
     || (runtime === null

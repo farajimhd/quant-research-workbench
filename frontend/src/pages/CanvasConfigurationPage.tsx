@@ -4601,6 +4601,7 @@ function useCanvasScannerSnapshot({ cutoffMs, enabled, technicalWindows }: { cut
   const mountedRef = useRef(true);
   const inFlightRef = useRef(false);
   const loadedKeyRef = useRef("");
+  const requestControllerRef = useRef<AbortController | null>(null);
   const retryTimerRef = useRef<number | null>(null);
 
   const pump = useCallback(() => {
@@ -4613,22 +4614,42 @@ function useCanvasScannerSnapshot({ cutoffMs, enabled, technicalWindows }: { cut
           if (!target.enabled || target.key === loadedKeyRef.current) break;
           setLoading(true);
           setError("");
+          const requestController = new AbortController();
+          requestControllerRef.current = requestController;
           try {
-            const payload = await api<CanvasScannerSnapshot>(`/api/trading/canvas-scanner${query({
+            const corePayload = await api<CanvasScannerSnapshot>(`/api/trading/canvas-scanner${query({
               as_of: target.asOf,
+              enrichment_scope: "core",
               lookback_minutes: 15,
               technical_windows: target.technicalWindows,
-            })}`, { timeoutMs: 90_000 });
+            })}`, { signal: requestController.signal, timeoutMs: 20_000 });
             if (!mountedRef.current) return;
             if (!targetRef.current.enabled) return;
-            setSnapshot(payload);
+            setSnapshot(corePayload);
             setError("");
             loadedKeyRef.current = target.key;
-            const refreshStatus = payload.meta?.status === "building" || payload.meta?.status === "error"
-              ? payload.meta.status
-              : payload.meta?.refresh_status === "building" || payload.meta?.refresh_status === "error"
-                ? payload.meta.refresh_status
-                : payload.meta?.qmd_derived_status;
+            let refreshStatus = corePayload.meta?.status === "building" || corePayload.meta?.status === "error"
+              ? corePayload.meta.status
+              : corePayload.meta?.refresh_status === "building" || corePayload.meta?.refresh_status === "error"
+                ? corePayload.meta.refresh_status
+                : undefined;
+            if (corePayload.rows.length && targetRef.current.key === target.key) {
+              const fullPayload = await api<CanvasScannerSnapshot>(`/api/trading/canvas-scanner${query({
+                as_of: target.asOf,
+                enrichment_scope: "full",
+                lookback_minutes: 15,
+                technical_windows: target.technicalWindows,
+              })}`, { signal: requestController.signal, timeoutMs: 90_000 });
+              if (!mountedRef.current || !targetRef.current.enabled || targetRef.current.key !== target.key) return;
+              setSnapshot(fullPayload);
+              refreshStatus = fullPayload.meta?.status === "building" || fullPayload.meta?.status === "error"
+                ? fullPayload.meta.status
+                : fullPayload.meta?.refresh_status === "building" || fullPayload.meta?.refresh_status === "error"
+                  ? fullPayload.meta.refresh_status
+                  : fullPayload.meta?.qmd_derived_status === "building" || fullPayload.meta?.qmd_derived_status === "error"
+                    ? fullPayload.meta.qmd_derived_status
+                    : undefined;
+            }
             if (
               targetRef.current.key === target.key
               && (refreshStatus === "building" || refreshStatus === "error")
@@ -4643,9 +4664,12 @@ function useCanvasScannerSnapshot({ cutoffMs, enabled, technicalWindows }: { cut
             }
           } catch (reason) {
             if (!mountedRef.current) return;
+            if (requestController.signal.aborted) continue;
             loadedKeyRef.current = target.key;
             setError(reason instanceof Error ? reason.message : String(reason));
             break;
+          } finally {
+            if (requestControllerRef.current === requestController) requestControllerRef.current = null;
           }
           if (targetRef.current.key === target.key) break;
         }
@@ -4664,11 +4688,13 @@ function useCanvasScannerSnapshot({ cutoffMs, enabled, technicalWindows }: { cut
     mountedRef.current = true;
     return () => {
       mountedRef.current = false;
+      requestControllerRef.current?.abort();
       if (retryTimerRef.current !== null) window.clearTimeout(retryTimerRef.current);
     };
   }, []);
 
   useEffect(() => {
+    requestControllerRef.current?.abort();
     const asOf = new Date(cutoffMs).toISOString();
     const key = `${asOf}:${technicalWindows}`;
     targetRef.current = { asOf, enabled, key, technicalWindows };

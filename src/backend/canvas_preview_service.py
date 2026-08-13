@@ -130,10 +130,13 @@ def canvas_preview_payload(
 def scanner_snapshot_payload(
     *,
     as_of: datetime,
+    enrichment_scope: str = "full",
     lookback_minutes: int = 15,
     technical_windows: list[str] | tuple[str, ...] = (),
 ) -> dict[str, Any]:
     """Return the causal cross-sectional scanner independently of other Canvas sources."""
+    if enrichment_scope not in {"core", "full"}:
+        raise ValueError("enrichment_scope must be core or full")
     rows, meta = historical_scanner_snapshot(as_of, lookback_minutes=lookback_minutes)
     effective_as_of = datetime.fromisoformat(
         str(meta.get("snapshot_at_utc") or as_of.isoformat()).replace("Z", "+00:00")
@@ -159,22 +162,29 @@ def scanner_snapshot_payload(
         for row in rows:
             row.update(technical_projection.get(str(row.get("symbol") or "").upper(), {}))
         meta = {**meta, **technical_meta}
-    with ThreadPoolExecutor(max_workers=4) as executor:
-        futures = {
-            "fundamentals": executor.submit(
+    enrichment_names: list[str] = []
+    if rows:
+        enrichment_names = ["reference"] if enrichment_scope == "core" else ["fundamentals", "news", "qmd", "reference", "sec"]
+    with ThreadPoolExecutor(max_workers=max(1, len(enrichment_names))) as executor:
+        futures = {}
+        if "fundamentals" in enrichment_names:
+            futures["fundamentals"] = executor.submit(
                 historical_scanner_fundamental_projection,
                 effective_as_of,
                 prices_by_ticker=prices_by_ticker,
-            ),
-            "news": executor.submit(_query_scanner_news_intelligence, cutoff),
-            "qmd": executor.submit(
+            )
+        if "news" in enrichment_names:
+            futures["news"] = executor.submit(_query_scanner_news_intelligence, cutoff)
+        if "qmd" in enrichment_names:
+            futures["qmd"] = executor.submit(
                 historical_scanner_qmd_projection_or_schedule,
                 effective_as_of,
                 source_revision=str(meta.get("source_revision") or ""),
-            ),
-            "reference": executor.submit(historical_scanner_reference_projection, effective_as_of),
-            "sec": executor.submit(_query_scanner_sec_intelligence, cutoff),
-        }
+            )
+        if "reference" in enrichment_names:
+            futures["reference"] = executor.submit(historical_scanner_reference_projection, effective_as_of)
+        if "sec" in enrichment_names:
+            futures["sec"] = executor.submit(_query_scanner_sec_intelligence, cutoff)
         for name, future in futures.items():
             try:
                 if name == "fundamentals":
@@ -196,7 +206,8 @@ def scanner_snapshot_payload(
                     sec = future.result()
             except Exception as exc:
                 errors[name] = str(exc)
-    _merge_scanner_intelligence(rows, news, sec, effective_as_of)
+    if enrichment_scope == "full":
+        _merge_scanner_intelligence(rows, news, sec, effective_as_of)
     rows.sort(key=lambda row: (-abs(float(row.get("change_5m_pct") or 0)), str(row.get("symbol") or "")))
     for rank, row in enumerate(rows, start=1):
         row["rank"] = rank
@@ -225,6 +236,9 @@ def scanner_snapshot_payload(
     total = max(1, len(rows))
     meta = {
         **meta,
+        "enrichment_scope": enrichment_scope,
+        "enrichment_status": "ready" if enrichment_scope == "full" else "partial",
+        "included_enrichments": enrichment_names,
         "field_coverage": {
             field: round(sum(row.get(field) not in (None, "") for row in rows) / total * 100, 1)
             for field in projected_fields
@@ -238,6 +252,11 @@ def scanner_snapshot_payload(
             configuration_base(),
             rows,
             as_of=effective_as_of,
+            available_fields=(
+                None
+                if enrichment_scope == "full"
+                else set().union(*(set(row) for row in rows))
+            ),
             source_complete=bool(meta.get("complete_universe")),
             source_status=str(meta.get("status") or "partial"),
         )

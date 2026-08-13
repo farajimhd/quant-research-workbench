@@ -13,6 +13,76 @@ from src.backend.canvas_preview_service import (
 
 
 class CanvasScannerPayloadTest(unittest.TestCase):
+    def test_core_scope_returns_reference_rows_without_waiting_for_full_enrichment(self) -> None:
+        as_of = datetime(2026, 7, 17, 13, 45, tzinfo=UTC)
+        snapshot = (
+            [{"symbol": "AAPL", "last": 200.0, "change_pct": 1.0}],
+            {
+                "complete_universe": True,
+                "row_count": 1,
+                "snapshot_at_utc": as_of.isoformat(),
+                "status": "ready",
+            },
+        )
+        with (
+            patch("src.backend.canvas_preview_service.historical_scanner_snapshot", return_value=snapshot),
+            patch("src.backend.trading_configuration_service.configuration_base", return_value={"market_discovery": {}}),
+            patch(
+                "src.backend.canvas_preview_service.historical_scanner_reference_projection",
+                return_value={"AAPL": {"company_name": "APPLE INC", "market_cap": 4_000_000_000_000}},
+            ) as reference,
+            patch("src.backend.canvas_preview_service.historical_scanner_fundamental_projection") as fundamentals,
+            patch("src.backend.canvas_preview_service._query_scanner_news_intelligence") as news,
+            patch("src.backend.canvas_preview_service._query_scanner_sec_intelligence") as sec,
+            patch("src.backend.canvas_preview_service.historical_scanner_qmd_projection_or_schedule") as qmd,
+            patch(
+                "src.backend.watchlist_runtime_service.project_watchlists_from_candidates",
+                return_value={"status": "ready", "watchlists": []},
+            ) as watchlists,
+        ):
+            payload = scanner_snapshot_payload(as_of=as_of, enrichment_scope="core")
+
+        reference.assert_called_once()
+        fundamentals.assert_not_called()
+        news.assert_not_called()
+        sec.assert_not_called()
+        qmd.assert_not_called()
+        self.assertEqual(payload["rows"][0]["company_name"], "APPLE INC")
+        self.assertEqual(payload["meta"]["enrichment_scope"], "core")
+        self.assertEqual(payload["meta"]["included_enrichments"], ["reference"])
+        self.assertIn("market_cap", watchlists.call_args.kwargs["available_fields"])
+
+    def test_empty_snapshot_skips_every_enrichment_branch(self) -> None:
+        as_of = datetime(2026, 7, 17, 13, 45, tzinfo=UTC)
+        snapshot = (
+            [],
+            {
+                "complete_universe": False,
+                "row_count": 0,
+                "snapshot_at_utc": as_of.isoformat(),
+                "status": "building",
+            },
+        )
+        with (
+            patch("src.backend.canvas_preview_service.historical_scanner_snapshot", return_value=snapshot),
+            patch("src.backend.trading_configuration_service.configuration_base", return_value={"market_discovery": {}}),
+            patch("src.backend.canvas_preview_service.historical_scanner_fundamental_projection") as fundamentals,
+            patch("src.backend.canvas_preview_service.historical_scanner_reference_projection") as reference,
+            patch("src.backend.canvas_preview_service._query_scanner_news_intelligence") as news,
+            patch("src.backend.canvas_preview_service._query_scanner_sec_intelligence") as sec,
+            patch("src.backend.canvas_preview_service.historical_scanner_qmd_projection_or_schedule") as qmd,
+            patch(
+                "src.backend.watchlist_runtime_service.project_watchlists_from_candidates",
+                return_value={"status": "building", "watchlists": []},
+            ),
+        ):
+            payload = scanner_snapshot_payload(as_of=as_of)
+
+        for enrichment in (fundamentals, reference, news, sec, qmd):
+            enrichment.assert_not_called()
+        self.assertEqual(payload["rows"], [])
+        self.assertEqual(payload["meta"]["included_enrichments"], [])
+
     def test_reference_fields_merge_and_publish_coverage(self) -> None:
         as_of = datetime(2026, 7, 17, 13, 45, tzinfo=UTC)
         snapshot = (
