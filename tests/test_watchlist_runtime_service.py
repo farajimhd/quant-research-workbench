@@ -15,6 +15,7 @@ from src.backend.watchlist_runtime_service import (
     focused_target_contract,
     live_market_reference_projection,
     normalize_watchlist_candidate,
+    project_watchlists_from_candidates,
     publish_watchlist_target,
     publish_computation_target,
     resolve_historical_watchlist,
@@ -83,6 +84,30 @@ class WatchlistRuntimeServiceTests(unittest.TestCase):
         self.assertAlmostEqual(row["change_pct"], 10)
         self.assertEqual(row["volume"], 50_000)
         self.assertEqual(row["liquidity_rank"], 9)
+
+    def test_projects_canvas_watchlists_from_the_same_causal_candidates(self) -> None:
+        projection = project_watchlists_from_candidates(
+            self.configuration,
+            [
+                {"ticker": "AAA", "market_cap": 1_000_000_000, "change_pct": 4.0},
+                {"ticker": "BBB", "market_cap": 500_000_000, "change_pct": 9.0},
+                {"ticker": "CCC", "market_cap": 3_000_000_000, "change_pct": 12.0},
+            ],
+            as_of=datetime(2026, 8, 10, 16, tzinfo=UTC),
+            source_complete=True,
+            source_status="ready",
+        )
+
+        self.assertEqual(projection["status"], "ready")
+        self.assertEqual(projection["source"], "canvas_scanner_snapshot")
+        self.assertEqual(projection["watchlist_count"], 1)
+        self.assertEqual(
+            [row["ticker"] for row in projection["watchlists"][0]["members"]],
+            ["BBB", "AAA"],
+        )
+        self.assertEqual(
+            projection["watchlists"][0]["candidate_population_count"], 3
+        )
 
     @patch("src.backend.watchlist_runtime_service.publish_watchlist_target")
     def test_resolves_ranks_journals_and_publishes_exact_membership(self, publish) -> None:

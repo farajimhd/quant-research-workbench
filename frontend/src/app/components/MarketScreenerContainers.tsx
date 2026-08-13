@@ -56,9 +56,11 @@ type WatchUniverseCatalogResponse = {
   market_discovery?: { column_catalog?: DiscoveryColumn[]; core_scan?: { calculations?: DiscoveryCapability[] }; watchlists?: DiscoveryWatchlist[] };
   run_plans?: { plans?: Array<{ name?: string; run_plan_id: string; universe_id: string }>; universes?: WatchUniverseDefinition[] };
 };
-type WatchlistRuntimeResponse = {
+export type WatchlistRuntimeResponse = {
   as_of?: string;
+  error?: string;
   status?: "awaiting_first_resolution" | "degraded" | "ready" | string;
+  target_errors?: Array<{ error?: string; watchlist_id?: string }>;
   watchlists?: Array<{ member_count?: number; members?: ScreenerRow[]; watchlist_id: string }>;
 };
 type SignalMethod = { key: string; label: string; signal_version: number; status: string; compute_mode: string; working_timeframes: string[]; confirmation_timeframes: string[]; trigger_rules: string[]; rationale: string; domain?: string; producer?: string; input_basis?: string; evaluation_mode?: string; update_trigger?: string; publication_cadence?: string; publication_interval_ms?: number | null; score_required?: boolean; rank_score_required?: boolean };
@@ -329,31 +331,9 @@ export function SignalStreamContainer({ asOf, onSettingsChange, onTickerSelect, 
   />;
 }
 
-export function WatchUniverseContainer({ asOf, onSettingsChange, onTickerSelect, scannerRows, settings }: { asOf: string; onSettingsChange: (patch: Partial<WatchUniverseSettings>) => void; onTickerSelect: (ticker: string) => void; scannerRows: ScreenerRow[]; settings: WatchUniverseSettings }) {
+export function WatchUniverseContainer({ asOf, onSettingsChange, onTickerSelect, runtime, scannerRows, settings }: { asOf: string; onSettingsChange: (patch: Partial<WatchUniverseSettings>) => void; onTickerSelect: (ticker: string) => void; runtime: WatchlistRuntimeResponse | null; scannerRows: ScreenerRow[]; settings: WatchUniverseSettings }) {
   const { catalog: fieldCatalog, configuration, discovery } = useDiscoveryPresentation();
   const [addingWatchlist, setAddingWatchlist] = useState(false);
-  const [runtime, setRuntime] = useState<WatchlistRuntimeResponse | null>(null);
-  const [runtimeError, setRuntimeError] = useState("");
-  useEffect(() => {
-    const controller = new AbortController();
-    let pending = false;
-    const refresh = async () => {
-      if (pending) return;
-      pending = true;
-      try {
-        const payload = await api<WatchlistRuntimeResponse>("/api/market-discovery/watchlists/runtime", { signal: controller.signal, timeoutMs: 10000 });
-        setRuntime(payload);
-        setRuntimeError("");
-      } catch (reason) {
-        if (!controller.signal.aborted) setRuntimeError(reason instanceof Error ? reason.message : String(reason));
-      } finally {
-        pending = false;
-      }
-    };
-    void refresh();
-    const interval = window.setInterval(() => void refresh(), 5_000);
-    return () => { controller.abort(); window.clearInterval(interval); };
-  }, []);
   const watchlists = discovery?.watchlists ?? [];
   const universes = configuration?.run_plans?.universes ?? [];
   const runPlans = configuration?.run_plans?.plans ?? [];
@@ -366,10 +346,10 @@ export function WatchUniverseContainer({ asOf, onSettingsChange, onTickerSelect,
     ? configuredWatchlistIds.map((id) => selectableWatchlists.find((row) => row.watchlist_id === id)).filter((row): row is DiscoveryWatchlist => Boolean(row))
     : fallbackWatchlist ? [fallbackWatchlist] : [];
   const watchlist = visibleWatchlists.find((row) => row.watchlist_id === settings.watchlistId) ?? visibleWatchlists[0] ?? fallbackWatchlist;
-  const availableWatchlists = selectableWatchlists.filter((row) => !visibleWatchlists.some((visible) => visible.watchlist_id === row.watchlist_id));
+  const availableWatchlists = watchlists.filter((row) => !visibleWatchlists.some((visible) => visible.watchlist_id === row.watchlist_id));
   const runtimeWatchlist = runtime?.watchlists?.find((row) => row.watchlist_id === watchlist?.watchlist_id);
   const runtimeMembers = runtimeWatchlist?.members ?? [];
-  const runtimeReady = runtime?.status === "ready" && runtimeWatchlist !== undefined;
+  const runtimeReady = ["ready", "degraded"].includes(runtime?.status ?? "") && runtimeWatchlist !== undefined;
   const resolvedSymbols = runtimeMembers.map((row) => String(row.ticker ?? row.symbol ?? "").trim().toUpperCase()).filter(Boolean);
   const runtimeMemberByTicker = new Map(runtimeMembers.map((row) => [String(row.ticker ?? "").trim().toUpperCase(), row]));
   const rows: ScreenerRow[] = resolvedSymbols.map((ticker) => ({
@@ -381,17 +361,20 @@ export function WatchUniverseContainer({ asOf, onSettingsChange, onTickerSelect,
   const linkedPlans = runPlans.filter((plan) => linkedUniverseIds.includes(plan.universe_id));
   const resolved = runtimeReady;
   const resolutionClock = runtime?.as_of ?? asOf;
+  const resolving = ["awaiting_first_resolution", "building", "refreshing"].includes(runtime?.status ?? "");
+  const runtimeError = runtime?.status === "error" ? runtime.error || "The scanner did not return a Watchlist membership projection." : "";
   const unresolvedDetail = runtimeError
-    ? `Watchlist runtime could not be read: ${runtimeError}`
-    : runtime === null
-      ? "Loading the current QMD Watchlist membership projection."
-      : runtime.status !== "ready"
-        ? "Waiting for the first complete causal QMD Watchlist resolution."
-        : `QMD Watchlist ${watchlist?.watchlist_id || "not selected"} has no runtime snapshot.`;
+    || (runtime === null
+      ? "This scanner snapshot did not include QMD Watchlist membership."
+      : resolving
+        ? "Waiting for the complete causal scanner snapshot used by this Watchlist."
+        : runtime.status !== "ready" && runtime.status !== "degraded"
+          ? `Membership projection is ${String(runtime.status || "unavailable").replaceAll("_", " ")}.`
+          : `QMD Watchlist ${watchlist?.watchlist_id || "not selected"} has no membership snapshot.`);
   const columns = settings.columns.length ? settings.columns : watchlist?.columns ?? ["symbol"];
   const selectWatchlist = (watchlistId: string) => onSettingsChange({ columns: [], watchlistId, watchlistIds: visibleWatchlists.map((row) => row.watchlist_id) });
   const addWatchlist = (watchlistId: string) => {
-    if (!watchlistId) return;
+    if (!watchlistId || !selectableWatchlists.some((row) => row.watchlist_id === watchlistId)) return;
     onSettingsChange({ columns: [], watchlistId, watchlistIds: [...visibleWatchlists.map((row) => row.watchlist_id), watchlistId] });
     setAddingWatchlist(false);
   };
@@ -410,15 +393,16 @@ export function WatchUniverseContainer({ asOf, onSettingsChange, onTickerSelect,
         const selected = row.watchlist_id === watchlist?.watchlist_id;
         return <span className={selected ? "active" : undefined} key={row.watchlist_id}><button aria-selected={selected} onClick={() => selectWatchlist(row.watchlist_id)} role="tab" title={row.description || row.name} type="button">{row.name}</button>{visibleWatchlists.length > 1 ? <button aria-label={`Remove ${row.name} tab`} className="watchlist-tab-remove" onClick={() => removeWatchlist(row.watchlist_id)} title={`Remove ${row.name} from this container`} type="button"><X size={10} /></button> : null}</span>;
       })}
-      <button aria-expanded={addingWatchlist} aria-label="Add Watchlist tab" className="watchlist-tab-add" disabled={!availableWatchlists.length} onClick={() => setAddingWatchlist((open) => !open)} role="tab" title={availableWatchlists.length ? "Add a QMD Watchlist to this container" : "All available Watchlists are already open"} type="button"><Plus size={12} /><span>Add</span></button>
+      <button aria-expanded={addingWatchlist} aria-label="Add Watchlist tab" className="watchlist-tab-add" disabled={!availableWatchlists.length} onClick={() => setAddingWatchlist((open) => !open)} role="tab" title={availableWatchlists.length ? "Add a QMD Watchlist to this container" : "All configured Watchlists are already open"} type="button"><Plus size={12} /><span>Add</span></button>
     </nav>
-    {addingWatchlist ? <div className="watchlist-tab-lookup"><InventoryFilterSelect ariaLabel="Watchlist to add" className="watchlist-add-lookup" onChange={addWatchlist} options={[{ description: "Select another QMD Watchlist for a persistent tab in this container.", label: "Choose a Watchlist", value: "" }, ...availableWatchlists.map((row) => ({ description: row.description, label: row.name, value: row.watchlist_id }))]} searchable={availableWatchlists.length > 7} searchPlaceholder="Find a Watchlistâ€¦" value="" /><button onClick={() => { window.location.hash = "market-discovery-configuration"; }} type="button">Create or configure Watchlists <ArrowRight size={13} /></button></div> : null}
+    {addingWatchlist ? <div className="watchlist-tab-lookup"><InventoryFilterSelect ariaLabel="Watchlist to add" className="watchlist-add-lookup" onChange={addWatchlist} options={[{ description: "Select another configured QMD Watchlist for a persistent tab in this container.", label: "Choose a Watchlist", value: "" }, ...availableWatchlists.map((row) => ({ description: selectableWatchlists.some((candidate) => candidate.watchlist_id === row.watchlist_id) ? row.description : `${row.description || row.name} Unavailable until its Market Discovery integration is enabled.`, disabled: !selectableWatchlists.some((candidate) => candidate.watchlist_id === row.watchlist_id), label: row.name, value: row.watchlist_id }))]} searchable={availableWatchlists.length > 7} searchPlaceholder="Find a Watchlist…" showAllOnOpen value="" /><button onClick={() => { window.location.hash = "market-discovery-configuration"; }} type="button">Create or configure Watchlists <ArrowRight size={13} /></button></div> : null}
     <div className="watch-universe-context">
       <div><span>Description</span><strong>{watchlist?.description || "No Watchlist selected"}</strong></div>
       <div><span>Used by</span><strong>{linkedPlans.map((plan) => plan.name || plan.run_plan_id).join(", ") || "No Run Plan"}</strong></div>
       <button onClick={() => { window.location.hash = "market-discovery-configuration"; }} type="button">Configure in Market Discovery <ArrowRight size={13} /></button>
     </div>
-    {!resolved ? <div className="watch-universe-warning" data-error={runtimeError ? "true" : "false"} role="status">{!runtimeError ? <span className="loading-spinner" aria-hidden="true" /> : null}<span><strong>{runtimeError ? "Membership service unavailable" : "Resolving membership"}</strong><small>{unresolvedDetail}</small></span></div> : null}
+    {!resolved ? <div className="watch-universe-warning" data-error={!resolving ? "true" : "false"} role="status">{resolving ? <span className="loading-spinner" aria-hidden="true" /> : null}<span><strong>{resolving ? "Resolving membership" : "Membership unavailable"}</strong><small>{unresolvedDetail}</small></span></div> : null}
+    {resolved && runtime?.status === "degraded" ? <div className="watch-universe-warning" data-error="true" role="status"><span><strong>Membership resolved with publication warnings</strong><small>{runtime.target_errors?.[0]?.error || "The member list is available, but a downstream QMD computation target could not be updated."}</small></span></div> : null}
     <MarketListTable
       catalog={fieldCatalog}
       columns={columns}

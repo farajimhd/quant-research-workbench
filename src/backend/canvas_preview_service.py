@@ -230,6 +230,25 @@ def scanner_snapshot_payload(
             for field in projected_fields
         },
     }
+    try:
+        from src.backend.trading_configuration_service import configuration_base
+        from src.backend.watchlist_runtime_service import project_watchlists_from_candidates
+
+        watchlist_runtime = project_watchlists_from_candidates(
+            configuration_base(),
+            rows,
+            as_of=effective_as_of,
+            source_complete=bool(meta.get("complete_universe")),
+            source_status=str(meta.get("status") or "partial"),
+        )
+    except Exception as exc:
+        errors["watchlists"] = str(exc)
+        watchlist_runtime = {
+            "as_of": effective_as_of.isoformat(),
+            "error": str(exc),
+            "status": "error",
+            "watchlists": [],
+        }
     return {
         "as_of": effective_as_of.isoformat(),
         "errors": errors,
@@ -242,6 +261,7 @@ def scanner_snapshot_payload(
         "meta": meta,
         "rows": rows,
         "signal_rows": signal_rows,
+        "watchlist_runtime": watchlist_runtime,
     }
 
 

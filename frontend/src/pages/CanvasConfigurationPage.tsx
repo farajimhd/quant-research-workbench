@@ -48,7 +48,7 @@ import { AllSecContainer, SecDetailContainer, TickerSecContainer } from "../app/
 import { MarketTime } from "../app/components/MarketTime";
 import { MarketStatusBadge, historicalMarketStatus } from "../app/components/MarketStatusBadge";
 import { ChartsQuotesMarketLayout, QuotesTapeContainer, type ChartsQuotesLayoutSettings } from "../app/components/MarketMicrostructureContainers";
-import { MarketScannerContainer, migrateMarketScannerSettings, SCANNER_TIMEFRAMES, SignalStreamContainer, StrategyActivityContainer, WatchUniverseContainer, type MarketScannerSettings, type ScannerCustomColumn, type ScannerSnapshotMeta, type ScannerTimeframe, type SignalStreamSettings, type StrategyActivitySettings, type WatchUniverseSettings } from "../app/components/MarketScreenerContainers";
+import { MarketScannerContainer, migrateMarketScannerSettings, SCANNER_TIMEFRAMES, SignalStreamContainer, StrategyActivityContainer, WatchUniverseContainer, type MarketScannerSettings, type ScannerCustomColumn, type ScannerSnapshotMeta, type ScannerTimeframe, type SignalStreamSettings, type StrategyActivitySettings, type WatchlistRuntimeResponse, type WatchUniverseSettings } from "../app/components/MarketScreenerContainers";
 import { StockFactsContainer } from "../app/components/StockFactsContainer";
 import { XbrlAnalysisContainer, type XbrlAnalysisSettings } from "../app/components/XbrlAnalysisContainer";
 import { TickerIdentity, TickerIdentityWithChange, useTickerPresentations } from "../app/components/TickerIdentity";
@@ -274,6 +274,7 @@ type CanvasScannerSnapshot = {
   meta: ScannerSnapshotMeta;
   rows: Record<string, unknown>[];
   signal_rows?: Record<string, unknown>[];
+  watchlist_runtime?: WatchlistRuntimeResponse;
 };
 type CanvasContext = { coverage: { event_count: number; session_date: string | null; ticker_count: number }; preview_time: string; session_date: string | null };
 type QmdLiveBar = HistoricalBar & { session_date?: string };
@@ -2442,7 +2443,7 @@ function ContainerPreview({ canvasId, chartCutoffMs, definition, instanceId, lin
           ? <div className="canvas-preview-loading">Loading the historical watchlist snapshot…</div>
           : scannerError && !scannerSnapshot
             ? <div className="canvas-inline-error">Historical watchlist unavailable: {scannerError}</div>
-            : <WatchUniverseContainer asOf={new Date(chartCutoffMs).toISOString()} onSettingsChange={(patch) => updateSettings((state) => ({ ...state, watchlist: { ...state.watchlist, ...patch } }))} onTickerSelect={onTickerWorkspaceOpen} scannerRows={scannerSnapshot?.rows ?? preview?.scanner ?? []} settings={settings.watchlist} />
+            : <WatchUniverseContainer asOf={new Date(chartCutoffMs).toISOString()} onSettingsChange={(patch) => updateSettings((state) => ({ ...state, watchlist: { ...state.watchlist, ...patch } }))} onTickerSelect={onTickerWorkspaceOpen} runtime={scannerSnapshot?.watchlist_runtime ?? null} scannerRows={scannerSnapshot?.rows ?? preview?.scanner ?? []} settings={settings.watchlist} />
       : definition.id === "strategy_activity"
         ? <StrategyActivityContainer asOf={new Date(chartCutoffMs).toISOString()} onSettingsChange={(patch) => updateSettings((state) => ({ ...state, strategy_activity: { ...state.strategy_activity, ...patch } }))} onTickerSelect={onTickerWorkspaceOpen} settings={settings.strategy_activity} />
       : loading && !preview
@@ -4699,7 +4700,7 @@ function useCanvasLiveScannerSnapshot(enabled: boolean) {
       const request = new AbortController();
       controller = request;
       try {
-        const payload = await api<{ market_time?: string; provider?: string; rows?: Record<string, unknown>[]; session_date?: string }>("/api/real-live-trading/scanner?row_limit=500", { signal: request.signal, timeoutMs: 45_000 });
+        const payload = await api<{ market_time?: string; provider?: string; rows?: Record<string, unknown>[]; session_date?: string; watchlist_runtime?: WatchlistRuntimeResponse }>("/api/real-live-trading/scanner?row_limit=500", { signal: request.signal, timeoutMs: 45_000 });
         if (cancelled || request.signal.aborted) return;
         const rows = payload.rows ?? [];
         const asOfContext = payload.session_date && payload.market_time
@@ -4711,6 +4712,7 @@ function useCanvasLiveScannerSnapshot(enabled: boolean) {
           meta: { complete_universe: true, row_count: rows.length, source: payload.provider || "qmd-gateway", status: "ready" } as ScannerSnapshotMeta,
           rows,
           signal_rows: [],
+          watchlist_runtime: payload.watchlist_runtime,
         });
         setError("");
       } catch (reason) {

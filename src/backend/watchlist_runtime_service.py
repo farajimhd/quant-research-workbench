@@ -423,6 +423,81 @@ class WatchlistRuntime:
 WATCHLIST_RUNTIME = WatchlistRuntime()
 
 
+def project_watchlists_from_candidates(
+    configuration: dict[str, Any],
+    candidates: list[dict[str, Any]],
+    *,
+    as_of: datetime,
+    source_complete: bool,
+    source_status: str,
+) -> dict[str, Any]:
+    """Project every configured Watchlist from one causal scanner snapshot.
+
+    Canvas uses this read-only projection so historical membership shares the
+    exact same as-of candidate population as its Scanner container. It must not
+    mutate the advancing live runtime, journal membership, or publish targets.
+    """
+    if as_of.tzinfo is None:
+        raise ValueError("Watchlist projection as_of must be timezone-aware")
+    as_of = as_of.astimezone(UTC)
+    discovery = dict(configuration.get("market_discovery") or {})
+    rule_sets = list(discovery.get("rule_sets") or [])
+    normalized_candidates = [normalize_watchlist_candidate(row) for row in candidates]
+    snapshots: list[dict[str, Any]] = []
+    projection_ready = source_complete and source_status == "ready"
+    for watchlist in discovery.get("watchlists") or []:
+        watchlist_id = str(watchlist.get("watchlist_id") or "").strip()
+        if not watchlist_id:
+            continue
+        availability = str(watchlist.get("availability") or "available")
+        enabled = bool(watchlist.get("enabled", True)) and availability == "available"
+        resolved = (
+            resolve_watchlist_membership(watchlist, rule_sets, normalized_candidates)
+            if enabled
+            else []
+        )
+        member_fields = watchlist_dependency_fields(watchlist, rule_sets)
+        members = [
+            compact_watchlist_member(
+                {
+                    **row,
+                    "watchlist_id": watchlist_id,
+                    "confirmed_at": as_of.isoformat(),
+                    "rank": row.get("rank", rank),
+                },
+                member_fields,
+            )
+            for rank, row in enumerate(resolved, start=1)
+        ]
+        snapshots.append(
+            {
+                "watchlist_id": watchlist_id,
+                "name": str(watchlist.get("name") or watchlist_id),
+                "enabled": enabled,
+                "availability": availability,
+                "member_count": len(members),
+                "members": members,
+                "candidate_population_count": len(normalized_candidates),
+                "status": (
+                    "ready"
+                    if enabled and projection_ready
+                    else "disabled"
+                    if not enabled
+                    else source_status or "partial"
+                ),
+            }
+        )
+    return {
+        "as_of": as_of.isoformat(),
+        "watchlist_count": len(snapshots),
+        "member_count": sum(row["member_count"] for row in snapshots),
+        "watchlists": snapshots,
+        "status": "ready" if projection_ready else source_status or "partial",
+        "source_complete": source_complete,
+        "source": "canvas_scanner_snapshot",
+    }
+
+
 def watchlist_resolution_revision(
     watchlist: dict[str, Any],
     rule_sets: list[dict[str, Any]],

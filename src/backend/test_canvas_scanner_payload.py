@@ -50,6 +50,10 @@ class CanvasScannerPayloadTest(unittest.TestCase):
                 "src.backend.canvas_preview_service.historical_scanner_qmd_projection_or_schedule",
                 return_value=({}, [], {"qmd_derived_status": "ready"}),
             ),
+            patch(
+                "src.backend.watchlist_runtime_service.project_watchlists_from_candidates",
+                return_value={"status": "ready", "watchlists": [{"watchlist_id": "core-candidates", "members": []}]},
+            ),
         ):
             payload = scanner_snapshot_payload(as_of=as_of)
 
@@ -66,6 +70,7 @@ class CanvasScannerPayloadTest(unittest.TestCase):
         self.assertEqual(payload["meta"]["field_coverage"]["xbrl_quality_score"], 100.0)
         self.assertEqual(payload["errors"], {})
         self.assertEqual(payload["as_of"], "2026-07-17T13:44:00+00:00")
+        self.assertEqual(payload["watchlist_runtime"]["status"], "ready")
 
     def test_company_news_and_sec_labels_are_enriched_separately(self) -> None:
         as_of = datetime(2026, 7, 17, 13, 45, tzinfo=UTC)

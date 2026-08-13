@@ -24975,6 +24975,8 @@ button {
 .inventory-filter-option[aria-selected="true"] { background: transparent; color: var(--muted-foreground); font-weight: 400; }
 .inventory-filter-option[data-detailed="true"][aria-selected="true"] { background: var(--surface-alt); border-color: var(--border); }
 .inventory-filter-option:not([aria-selected="true"]):hover, .inventory-filter-option:not([aria-selected="true"]):focus-visible { background: color-mix(in oklab, var(--muted) 52%, transparent); }
+.inventory-filter-option:disabled { cursor: not-allowed; opacity: .58; }
+.inventory-filter-option:disabled:hover { background: transparent; }
 .inventory-filter-option:focus-visible { outline: 0; }
 .inventory-filter-options { display: contents; }
 .inventory-filter-search { display: block; padding: calc(4px * var(--inventory-overlay-scale)); position: sticky; top: 0; z-index: 1; }
