@@ -86,6 +86,12 @@ After selecting a candidate, rerun a longer final profile for one size with:
 python -m research.bar_gpt.v2.run_profile_model_performance --model-size current
 ```
 
+The final profiler defaults to the fixed model-comparison training manifest,
+so its block-density and ticker mix represent the real 100M-origin experiment
+instead of the denser first month of the shard catalog. Pass
+`--experiment-manifest ""` only when a deliberate date-range profile is
+required.
+
 Run a bounded overfit experiment for any model size:
 
 ```powershell

@@ -169,6 +169,8 @@ def compute_loss(
     batch: BarGPTBatch,
     config: TrainConfig,
     quantiles: tuple[float, ...],
+    *,
+    collect_target_stats: bool = True,
 ) -> BarGPTLoss:
     """Sum independently normalized v2 target losses without coefficients."""
     if batch.horizon_targets is None or batch.horizon_mask is None:
@@ -270,46 +272,49 @@ def compute_loss(
         "train/loss_horizon_return_class": horizon_classes.sum().detach(),
     }
     target_stats: dict[str, tuple[torch.Tensor, torch.Tensor]] = {}
-    _record_target_stats(
-        target_stats,
-        group="ar_regression",
-        names=AUTOREGRESSIVE_CONTINUOUS_TARGET_NAMES,
-        means=ar_regression,
-        support=ar_regression_stats[1],
-    )
-    _record_target_stats(
-        target_stats,
-        group="ar_categorical",
-        names=AUTOREGRESSIVE_BINARY_TARGET_NAMES,
-        means=ar_binary,
-        support=ar_binary_stats[1],
-    )
-    _record_target_stats(
-        target_stats,
-        group="ar_return_class",
-        names=RETURN_TARGET_NAMES,
-        means=ar_classes,
-        support=ar_class_stats[1],
-    )
-    _record_target_stats(
-        target_stats,
-        group="horizon_regression",
-        names=CONTINUOUS_TARGET_NAMES,
-        means=horizon_regression,
-        support=horizon_regression_stats[1],
-    )
-    _record_target_stats(
-        target_stats,
-        group="horizon_categorical",
-        names=BINARY_TARGET_NAMES,
-        means=horizon_binary,
-        support=horizon_binary_stats[1],
-    )
-    _record_target_stats(
-        target_stats,
-        group="horizon_return_class",
-        names=RETURN_TARGET_NAMES,
-        means=horizon_classes,
-        support=horizon_class_stats[1],
-    )
+    if collect_target_stats:
+        # Validation needs per-target numerators/supports to combine batches
+        # exactly. The optimizer path only consumes the already-normalized
+        # scalar objectives above, so avoid constructing and detaching dozens
+        # of Python dictionary entries on every training microbatch.
+        for group, names, means, support in (
+            (
+                "ar_regression",
+                AUTOREGRESSIVE_CONTINUOUS_TARGET_NAMES,
+                ar_regression,
+                ar_regression_stats[1],
+            ),
+            (
+                "ar_categorical",
+                AUTOREGRESSIVE_BINARY_TARGET_NAMES,
+                ar_binary,
+                ar_binary_stats[1],
+            ),
+            ("ar_return_class", RETURN_TARGET_NAMES, ar_classes, ar_class_stats[1]),
+            (
+                "horizon_regression",
+                CONTINUOUS_TARGET_NAMES,
+                horizon_regression,
+                horizon_regression_stats[1],
+            ),
+            (
+                "horizon_categorical",
+                BINARY_TARGET_NAMES,
+                horizon_binary,
+                horizon_binary_stats[1],
+            ),
+            (
+                "horizon_return_class",
+                RETURN_TARGET_NAMES,
+                horizon_classes,
+                horizon_class_stats[1],
+            ),
+        ):
+            _record_target_stats(
+                target_stats,
+                group=group,
+                names=names,
+                means=means,
+                support=support,
+            )
     return BarGPTLoss(loss=total, metrics=metrics, target_stats=target_stats)

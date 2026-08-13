@@ -976,7 +976,18 @@ def _mask_inactive_condition_targets(
     batch.horizon_mask[..., -4:] &= active
 
 
-def _forward(model: torch.nn.Module, batch: BarGPTBatch, config: ExperimentConfig) -> tuple[Any, BarGPTLoss]:
+def _forward(
+    model: torch.nn.Module,
+    batch: BarGPTBatch,
+    config: ExperimentConfig,
+    *,
+    collect_target_stats: bool = True,
+    horizon_ids: torch.Tensor | None = None,
+) -> tuple[Any, BarGPTLoss]:
+    if horizon_ids is None:
+        horizon_ids = torch.arange(
+            len(config.data.horizons_us), device=batch.origin_indices.device
+        )
     output = model(
         batch.views,
         timeframe_us=TIMEFRAME_US_BY_NAME,
@@ -986,10 +997,16 @@ def _forward(model: torch.nn.Module, batch: BarGPTBatch, config: ExperimentConfi
         asof_indices=batch.asof_indices,
         view_masks={name: batch.view_mask[name] for name in batch.masked_context_views},
         attention_windows=config.data.attention_window_by_name,
-        horizon_ids=torch.arange(len(config.data.horizons_us), device=batch.origin_indices.device),
+        horizon_ids=horizon_ids,
     )
     _mask_inactive_condition_targets(batch, config.data.condition_target_active)
-    return output, compute_loss(output, batch, config.train, config.model.quantiles)
+    return output, compute_loss(
+        output,
+        batch,
+        config.train,
+        config.model.quantiles,
+        collect_target_stats=collect_target_stats,
+    )
 
 
 def _nonfinite_loss_diagnostic(result: BarGPTLoss, batch: BarGPTBatch) -> str:
@@ -1021,25 +1038,21 @@ def _nonfinite_loss_diagnostic(result: BarGPTLoss, batch: BarGPTBatch) -> str:
 
 
 def _finite_check_vector(result: BarGPTLoss, batch: BarGPTBatch) -> tuple[torch.Tensor, tuple[str, ...]]:
-    """Build device-side checks; CUDA checks are asserted on the active stream."""
-    names: list[str] = ["loss"]
-    checks: list[torch.Tensor] = [torch.isfinite(result.loss.detach())]
-    if batch.horizon_targets is not None and batch.horizon_mask is not None:
-        names.append("valid_horizon_targets")
-        checks.append(
-            torch.where(
-                batch.horizon_mask,
-                torch.isfinite(batch.horizon_targets),
-                torch.ones_like(batch.horizon_mask),
-            ).all()
-        )
-    return torch.stack(checks), tuple(names)
+    """Check the optimized scalar without rescanning every certified target.
+
+    Every objective replaces masked targets before arithmetic and the total
+    loss includes every active target. A non-finite contributing target must
+    therefore make this scalar non-finite. Scanning the full horizon tensor a
+    second time was redundant memory-bandwidth work on every microbatch.
+    """
+    del batch
+    return torch.isfinite(result.loss.detach()).reshape(1), ("loss",)
 
 
 def _assert_finite_before_step(
     checks: list[torch.Tensor],
     names: tuple[str, ...],
-    batches: list[str],
+    batches: list[tuple[tuple[str, ...], tuple[str, ...]]],
     *,
     device: torch.device,
 ) -> None:
@@ -1059,7 +1072,8 @@ def _assert_finite_before_step(
         return
     bad_rows = torch.nonzero(~finite_matrix, as_tuple=False).tolist()
     details = "; ".join(
-        f"micro={row + 1} field={names[column]} batch={batches[row]}"
+        f"micro={row + 1} field={names[column]} "
+        f"batch={tuple(zip(*batches[row], strict=True))!r}"
         for row, column in bad_rows[:8]
     )
     raise FloatingPointError(f"non-finite training values before optimizer update: {details}")
@@ -1068,7 +1082,11 @@ def _assert_finite_before_step(
 def _batch_eligibility_metrics(batch: BarGPTBatch) -> dict[str, torch.Tensor]:
     """Expose context availability separately from event-timed AR supervision."""
     result: dict[str, torch.Tensor] = {}
-    if batch.horizon_targets is not None and batch.horizon_mask is not None:
+    if (
+        batch.horizon_targets is not None
+        and batch.horizon_mask is not None
+        and any(batch.condition_blocks)
+    ):
         condition_target = batch.horizon_targets[..., -4:]
         condition_mask = batch.horizon_mask[..., -4:]
         valid = condition_mask.sum().clamp_min(1)
@@ -1351,6 +1369,7 @@ def validate(
         enabled=config.train.cuda_prefetch,
         close_iterator=not isinstance(loader, ReusableValidationBatches),
     )
+    horizon_ids = torch.arange(len(config.data.horizons_us), device=device)
     try:
         completed = 0
         while (max_batches is None or completed < max_batches) and (
@@ -1361,7 +1380,12 @@ def validate(
             except StopIteration:
                 break
             with torch.autocast(device_type=device.type, dtype=_amp_dtype(config.train.amp_dtype), enabled=config.train.amp and device.type == "cuda"):
-                output, result = _forward(model, batch, config)
+                output, result = _forward(
+                    model,
+                    batch,
+                    config,
+                    horizon_ids=horizon_ids,
+                )
             accumulator.update(output, batch, result)
             completed += 1
     finally:
@@ -1882,6 +1906,9 @@ def main(argv: Iterable[str] | None = None) -> int:
     )
     if config.train.compile_model and hasattr(torch, "compile"):
         model = torch.compile(model, dynamic=True)
+    training_horizon_ids = torch.arange(
+        len(config.data.horizons_us), device=device
+    )
     optimizer = torch.optim.AdamW(model.parameters(), lr=config.train.learning_rate, weight_decay=config.train.weight_decay, foreach=device.type == "cuda")
     resolved_warmup_samples = _resolved_warmup_samples(config.train, schedule_samples)
     if config.train.scheduler_mode == "single-cosine":
@@ -2226,7 +2253,7 @@ def main(argv: Iterable[str] | None = None) -> int:
                 accumulated_metrics: dict[str, torch.Tensor] = {}
                 finite_checks: list[torch.Tensor] = []
                 finite_check_names: tuple[str, ...] = ()
-                finite_check_batches: list[str] = []
+                finite_check_batches: list[tuple[tuple[str, ...], tuple[str, ...]]] = []
                 accumulated_blocks = 0
                 accumulated_units: set[str] = set()
                 accumulated_condition_blocks = 0
@@ -2268,7 +2295,13 @@ def main(argv: Iterable[str] | None = None) -> int:
                             gpu_end_event = torch.cuda.Event(enable_timing=True)
                             gpu_start_event.record()
                         with torch.autocast(device_type=device.type, dtype=_amp_dtype(config.train.amp_dtype), enabled=config.train.amp and device.type == "cuda"):
-                            output, result = _forward(model, batch, config)
+                            output, result = _forward(
+                                model,
+                                batch,
+                                config,
+                                collect_target_stats=False,
+                                horizon_ids=training_horizon_ids,
+                            )
                             scaled_loss = result.loss / config.train.gradient_accumulation_steps
                         if device.type != "cuda" and not torch.isfinite(result.loss):
                             detail = _nonfinite_loss_diagnostic(result, batch)
@@ -2284,7 +2317,9 @@ def main(argv: Iterable[str] | None = None) -> int:
                             )
                         finite_checks.append(check)
                         finite_check_names = check_names
-                        finite_check_batches.append(str(list(zip(batch.tickers, batch.local_dates, strict=True))))
+                        # Retain compact immutable context and format it only
+                        # on the exceptional non-finite path.
+                        finite_check_batches.append((batch.tickers, batch.local_dates))
                         if scaler.is_enabled():
                             scaler.scale(scaled_loss).backward()
                         else:

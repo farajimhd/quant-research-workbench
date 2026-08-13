@@ -304,7 +304,7 @@ class LoaderTrainerContractTest(unittest.TestCase):
             _assert_finite_before_step(
                 [torch.tensor([True, False])],
                 ("loss", "train/loss"),
-                ["[(AAA, 2026-01-02)]"],
+                [(("AAA",), ("2026-01-02",))],
                 device=torch.device("cpu"),
             )
 
@@ -833,6 +833,7 @@ class LoaderTrainerContractTest(unittest.TestCase):
         batch = collate_examples([example])
         self.assertNotIn("1D", batch.autoregressive_mask)
         metrics = _batch_eligibility_metrics(batch)
+        self.assertEqual(metrics, {})
         self.assertNotIn("train/context_available_1D", metrics)
 
     def test_calendar_context_grows_from_explicit_unavailable_history_without_lookahead(self) -> None:
@@ -2218,6 +2219,17 @@ class LoaderTrainerContractTest(unittest.TestCase):
         self.assertFalse(hasattr(output, "latent_predictions"))
         self.assertNotIn("1MO", output.autoregressive)
         loss = compute_loss(output, batch, TrainConfig(), model_config.quantiles)
+        training_loss = compute_loss(
+            output,
+            batch,
+            TrainConfig(),
+            model_config.quantiles,
+            collect_target_stats=False,
+        )
+        torch.testing.assert_close(training_loss.loss, loss.loss)
+        self.assertEqual(training_loss.metrics.keys(), loss.metrics.keys())
+        self.assertEqual(training_loss.target_stats, {})
+        self.assertTrue(loss.target_stats)
         self.assertTrue(torch.isfinite(loss.loss))
         self.assertIn("train/loss_ar_return_class", loss.metrics)
         self.assertIn("train/loss_horizon_return_class", loss.metrics)
@@ -2497,6 +2509,10 @@ class LoaderTrainerContractTest(unittest.TestCase):
         self.assertEqual(profile_args.ready_queue_blocks, 64)
         self.assertEqual(profile_args.worker_prefetch_batches, 1)
         self.assertEqual(profile_args.offline_length_bucket_batches, 16)
+        self.assertEqual(profile_args.experiment_panel, "train")
+        self.assertTrue(profile_args.experiment_manifest.endswith("fixed_panels_v2.json"))
+        self.assertEqual(profile_args.start_date, "2019-01-01")
+        self.assertEqual(profile_args.end_date, "2026-01-01")
         stream = io.StringIO()
         with redirect_stdout(stream):
             ProfileReporter("text").configuration(profile_args, candidates, torch.device("cpu"))

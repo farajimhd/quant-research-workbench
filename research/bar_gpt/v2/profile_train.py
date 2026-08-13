@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import datetime as dt
 import gc
 import json
 import math
@@ -39,6 +40,10 @@ from research.bar_gpt.v2.offline_shards import (
     verify_shard_catalog_lock,
 )
 from research.bar_gpt.v2.model import BarGPTV2
+from research.bar_gpt.v2.model_discovery import (
+    load_discovery_manifest,
+    panel_refs,
+)
 from research.bar_gpt.v2.metrics import ValidationAccumulator
 from research.bar_gpt.v2.objectives import compute_loss
 from research.bar_gpt.v2.prefetch import DeviceBatchPrefetcher
@@ -360,6 +365,15 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--sdpa-audit", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--data-source", choices=("offline", "clickhouse"), default="offline")
     parser.add_argument("--offline-shard-root", default=r"D:\TradingML\runtimes\bar_gpt\v1\offline_shards_v12")
+    parser.add_argument(
+        "--experiment-manifest",
+        default="",
+        help=(
+            "optional fixed-panel manifest; when set, profiling samples its "
+            "explicit block population instead of a date-prefix stream"
+        ),
+    )
+    parser.add_argument("--experiment-panel", choices=("train", "monitor", "validation"), default="train")
     return parser.parse_args(list(argv) if argv is not None else None)
 
 
@@ -706,14 +720,43 @@ def _profile_candidate(
             f"workers={candidate.workers}, training_tickers={len(data.training_tickers)}"
         )
     if args.data_source == "offline":
+        manifest = (
+            load_discovery_manifest(
+                Path(args.experiment_manifest),
+                shard_root=Path(args.offline_shard_root),
+                config=data,
+            )
+            if str(args.experiment_manifest)
+            else None
+        )
+        refs = (
+            panel_refs(manifest, str(args.experiment_panel))
+            if manifest is not None
+            else ()
+        )
+        discovery_tickers = (
+            tuple(sorted({ref.ticker for ref in refs}))
+            if refs
+            else data.training_tickers
+        )
+        discovery_start = min(ref.local_date for ref in refs) if refs else data.start_date
+        discovery_end = (
+            (
+                dt.date.fromisoformat(max(ref.local_date for ref in refs))
+                + dt.timedelta(days=1)
+            ).isoformat()
+            if refs
+            else data.end_date
+        )
         units = discover_offline_units(
-            Path(args.offline_shard_root), data, tickers=data.training_tickers,
-            start_date=data.start_date, end_date=data.end_date,
+            Path(args.offline_shard_root), data, tickers=discovery_tickers,
+            start_date=discovery_start, end_date=discovery_end,
         )
         dataset = OfflineShardDataset(
             units,
             seed=17,
             shuffle_units=True,
+            block_refs=refs,
             batch_size=data.batch_size,
             length_bucket_batches=data.offline_length_bucket_batches,
         )
@@ -744,6 +787,7 @@ def _profile_candidate(
         model = torch.compile(model, dynamic=True)
     optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4, weight_decay=0.1, foreach=device.type == "cuda")
     train_config = TrainConfig(gradient_accumulation_steps=candidate.accumulation, cuda_prefetch=candidate.cuda_prefetch)
+    horizon_ids = torch.arange(len(data.horizons_us), device=device)
     prefetcher = DeviceBatchPrefetcher(
         loader,
         device,
@@ -799,9 +843,15 @@ def _profile_candidate(
                         asof_indices=batch.asof_indices,
                         attention_windows=data.attention_window_by_name,
                         view_masks={name: batch.view_mask[name] for name in batch.masked_context_views},
-                        horizon_ids=torch.arange(len(data.horizons_us), device=device),
+                        horizon_ids=horizon_ids,
                     )
-                    loss_result = compute_loss(output, batch, train_config, model_config.quantiles)
+                    loss_result = compute_loss(
+                        output,
+                        batch,
+                        train_config,
+                        model_config.quantiles,
+                        collect_target_stats=False,
+                    )
                     loss = loss_result.loss / candidate.accumulation
                 if forward_end_event is not None and forward_start_event is not None:
                     forward_end_event.record()

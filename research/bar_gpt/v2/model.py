@@ -103,12 +103,31 @@ class RotaryEmbedding(nn.Module):
         super().__init__()
         inverse = 1.0 / (float(base) ** (torch.arange(0, head_dim, 2, dtype=torch.float32) / head_dim))
         self.register_buffer("inverse_frequency", inverse, persistent=False)
+        self._cache_key: tuple[torch.device, torch.dtype] | None = None
+        self._cosine_cache: torch.Tensor | None = None
+        self._sine_cache: torch.Tensor | None = None
 
     def forward(self, length: int, device: torch.device, dtype: torch.dtype) -> tuple[torch.Tensor, torch.Tensor]:
+        key = (device, dtype)
+        if (
+            self._cache_key == key
+            and self._cosine_cache is not None
+            and self._sine_cache is not None
+            and int(self._cosine_cache.shape[2]) >= int(length)
+        ):
+            return (
+                self._cosine_cache[:, :, :length],
+                self._sine_cache[:, :, :length],
+            )
         positions = torch.arange(length, device=device, dtype=torch.float32)
         angles = torch.outer(positions, self.inverse_frequency.to(device=device))
         doubled = torch.cat((angles, angles), dim=-1)[None, None, :, :]
-        return doubled.cos().to(dtype=dtype), doubled.sin().to(dtype=dtype)
+        cosine = doubled.cos().to(dtype=dtype)
+        sine = doubled.sin().to(dtype=dtype)
+        self._cache_key = key
+        self._cosine_cache = cosine
+        self._sine_cache = sine
+        return cosine, sine
 
 
 class CausalSelfAttention(nn.Module):
@@ -367,6 +386,7 @@ class BarGPTV2(nn.Module):
         *,
         attention_window: int | None = None,
         token_mask: torch.Tensor | None = None,
+        scale_embedding: torch.Tensor | None = None,
         layer_projection_weights: tuple[
             tuple[torch.Tensor, torch.Tensor], ...
         ] | None = None,
@@ -374,7 +394,15 @@ class BarGPTV2(nn.Module):
         if features.ndim != 3 or features.shape[-1] != self.config.feature_dim:
             raise ValueError(f"features must have shape [B,T,{self.config.feature_dim}]")
         state = self.input_projection(self.input_norm(features))
-        scale = self.timeframe_embedding(timeframe_us, device=features.device, dtype=features.dtype).view(1, 1, -1)
+        scale = (
+            self.timeframe_embedding(
+                timeframe_us,
+                device=features.device,
+                dtype=features.dtype,
+            )
+            if scale_embedding is None
+            else scale_embedding
+        ).view(1, 1, -1)
         pathway = self.pathway_embedding.weight[int(pathway_id)].view(1, 1, -1)
         state = state + scale + pathway
         if token_mask is not None:
@@ -572,6 +600,24 @@ class BarGPTV2(nn.Module):
             )
             for block in self.blocks
         )
+        view_names = tuple(views)
+        reference = views[base_view]
+        # Durations are constant for a forward pass. Evaluate the shared
+        # trainable timeframe MLP once for all views instead of launching its
+        # small Fourier/linear sequence independently eleven times. Indexing
+        # rows preserves exactly the same parameters and gradient aggregation.
+        scale_rows = self.timeframe_embedding(
+            torch.as_tensor(
+                [timeframe_us[name] for name in view_names],
+                device=reference.device,
+                dtype=torch.float32,
+            ),
+            device=reference.device,
+            dtype=reference.dtype,
+        )
+        scale_by_name = {
+            name: scale_rows[index] for index, name in enumerate(view_names)
+        }
         encoded = {
             name: self.encode(
                 value,
@@ -579,6 +625,7 @@ class BarGPTV2(nn.Module):
                 pathway_ids[name],
                 attention_window=None if attention_windows is None else int(attention_windows[name]),
                 token_mask=None if view_masks is None else view_masks.get(name),
+                scale_embedding=scale_by_name[name],
                 layer_projection_weights=layer_projection_weights,
             )
             for name, value in views.items()

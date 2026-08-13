@@ -21,7 +21,11 @@ from research.bar_gpt.v2.profile_train import (
     main as profile_main,
     parse_args as parse_profile_args,
 )
-from research.bar_gpt.v2.run_train_model_comparison import COMPARISON_RUNS
+from research.bar_gpt.v2.run_train_model_comparison import (
+    COMPARISON_MANIFEST_NAME,
+    COMPARISON_RUNS,
+    DEFAULT_OUTPUT_ROOT as COMPARISON_OUTPUT_ROOT,
+)
 
 
 def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
@@ -33,7 +37,12 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--measured-steps", type=int, default=10)
     parser.add_argument("--workers", type=int, default=OFFLINE_PRODUCTION_LOADER_WORKERS)
     parser.add_argument("--start-date", default="2019-01-01")
-    parser.add_argument("--end-date", default="2019-02-01")
+    parser.add_argument("--end-date", default="2026-01-01")
+    parser.add_argument(
+        "--experiment-manifest",
+        default=str(COMPARISON_OUTPUT_ROOT / COMPARISON_MANIFEST_NAME),
+        help="fixed comparison manifest whose training panel supplies representative blocks",
+    )
     parser.add_argument("--output-root", default=str(DEFAULT_OUTPUT_ROOT))
     parser.add_argument("--device", choices=("auto", "cpu", "cuda"), default="cuda")
     parser.add_argument("--progress-layout", choices=("auto", "rich", "text", "none"), default="auto")
@@ -50,7 +59,7 @@ def profiler_argv(args: argparse.Namespace) -> list[str]:
         f"{args.workers}:1:{int(args.compile_model)}:"
         f"{OFFLINE_PRODUCTION_LENGTH_BUCKET_BATCHES}"
     )
-    return [
+    resolved = [
         "--data-source",
         "offline",
         "--offline-shard-root",
@@ -79,6 +88,9 @@ def profiler_argv(args: argparse.Namespace) -> list[str]:
         str(args.progress_layout),
         "--sdpa-audit" if args.sdpa_audit else "--no-sdpa-audit",
     ]
+    if str(args.experiment_manifest):
+        resolved.extend(("--experiment-manifest", str(args.experiment_manifest)))
+    return resolved
 
 
 def main(argv: Iterable[str] | None = None) -> int:

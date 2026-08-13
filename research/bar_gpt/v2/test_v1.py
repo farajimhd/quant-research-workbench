@@ -170,6 +170,50 @@ class BuilderSqlTest(unittest.TestCase):
         ).to(dtype=value.dtype) * norm.weight
         torch.testing.assert_close(actual, expected)
 
+    def test_rotary_embedding_reuses_and_slices_the_largest_table(self) -> None:
+        config = BarGPTConfig(d_model=32, n_heads=4, n_kv_heads=2)
+        rotary = CausalSelfAttention(config).rope
+        cosine, sine = rotary(11, torch.device("cpu"), torch.float32)
+        shorter_cosine, shorter_sine = rotary(7, torch.device("cpu"), torch.float32)
+        self.assertEqual(shorter_cosine.untyped_storage().data_ptr(), cosine.untyped_storage().data_ptr())
+        self.assertEqual(shorter_sine.untyped_storage().data_ptr(), sine.untyped_storage().data_ptr())
+        torch.testing.assert_close(shorter_cosine, cosine[:, :, :7])
+        torch.testing.assert_close(shorter_sine, sine[:, :, :7])
+
+    def test_model_batches_constant_timeframe_embedding_without_changing_gradients(self) -> None:
+        torch.manual_seed(13)
+        config = BarGPTConfig(
+            feature_dim=len(MODEL_FEATURE_NAMES), d_model=32, n_layers=1,
+            n_heads=4, n_kv_heads=2, horizon_rank=8, dropout=0.0,
+        )
+        model = BarGPTV2(config).eval()
+        views = {
+            "1s": torch.randn(2, 7, len(MODEL_FEATURE_NAMES), requires_grad=True),
+            "5s": torch.randn(2, 4, len(MODEL_FEATURE_NAMES), requires_grad=True),
+        }
+        kwargs = {
+            "timeframe_us": {"1s": 1_000_000, "5s": 5_000_000},
+            "pathway_ids": {"1s": 0, "5s": 1},
+            "base_view": "1s",
+            "origin_indices": torch.tensor([[2, 4], [1, 5]]),
+            "asof_indices": {"5s": torch.tensor([[0, 2], [1, 3]])},
+            "horizon_ids": torch.tensor([0, 1]),
+        }
+        with patch.object(
+            model.timeframe_embedding,
+            "forward",
+            wraps=model.timeframe_embedding.forward,
+        ) as timeframe_forward:
+            output = model(views, **kwargs)
+        self.assertEqual(timeframe_forward.call_count, 1)
+        output.embeddings.square().sum().backward()
+        self.assertTrue(
+            all(
+                parameter.grad is not None and bool(torch.isfinite(parameter.grad).all())
+                for parameter in model.timeframe_embedding.parameters()
+            )
+        )
+
     def test_cpu_causal_attention_uses_compatible_explicit_gqa(self) -> None:
         config = BarGPTConfig(d_model=32, n_heads=4, n_kv_heads=2, dropout=0.0)
         attention = CausalSelfAttention(config).eval()
