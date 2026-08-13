@@ -347,6 +347,37 @@ one consistent schema and include model size, microbatch, accumulation, bucket,
 and a timestamp. Checkpoint resume continues the original W&B run ID rather
 than creating a same-name replacement.
 
+The comparison runs completed before the validation-coverage and direction-
+metric corrections can be re-evaluated without retraining. First verify the
+resolved checkpoints, fixed panel, and original W&B identities:
+
+```powershell
+python -B -m research.bar_gpt.v1.run_model_comparison_final_validation --dry-run
+```
+
+Then evaluate Current, Medium, and Large sequentially:
+
+```powershell
+python -B -m research.bar_gpt.v1.run_model_comparison_final_validation
+```
+
+The command selects the newest complete comparison stamp by default; use
+`--run-stamp 20260812-171224` to bind the known one-epoch comparison
+explicitly. It requires the corrected `fixed_panels_v2.json` manifest, verifies
+that the panel contains every catalog ticker, loads each run's latest completed
+checkpoint, and appends corrected `validation_*` history to that run's durable
+W&B ID. The new record uses the checkpoint's training-origin count plus the
+evaluation attempt number, leaving the original history intact while making
+the corrected record the final point. Interpretation-critical final metrics
+and provenance are also pinned in the W&B run summary.
+
+Local results and restart state are written under
+`model_comparison/corrected_final_validation_v1/<run-stamp>`. A rerun verifies
+the checkpoint path, size, timestamp, manifest hash, and W&B ID before skipping
+a completed model. `--force` deliberately appends another record at the next
+step and should only be used when a fresh evaluation is intended. This process
+does not modify checkpoints or perform additional training.
+
 ### Model-size and quality discovery campaign
 
 The controlled discovery campaign is a separate authority from the older

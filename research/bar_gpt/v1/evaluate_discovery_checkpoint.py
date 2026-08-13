@@ -31,6 +31,19 @@ from research.mlops.metrics import AsyncJsonlMetricLogger
 from research.mlops.wandb_utils import init_wandb
 
 
+FINAL_VALIDATION_SUMMARY_KEYS = (
+    "validation_loss/total",
+    "validation_trade_summary/mae_macro",
+    "validation_close_direction_summary/balanced_accuracy_macro",
+    "validation_close_direction_summary/mcc_macro",
+    "validation_ar_direction_balanced/balanced_accuracy_macro",
+    "validation_ar_direction_mcc/mcc_macro",
+    "validation_trade_summary/rank_macro",
+    "validation_trade_summary/calibration_macro",
+    "validation_availability/brier_macro",
+)
+
+
 def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Evaluate a BarGPT discovery checkpoint on one certified panel.")
     parser.add_argument("--checkpoint", required=True)
@@ -47,6 +60,32 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--wandb-project", default=DISCOVERY_WANDB_PROJECT)
     parser.add_argument("--wandb-entity", default="mehdifaraji")
     parser.add_argument("--wandb-mode", choices=("auto", "online", "offline", "disabled"), default="online")
+    parser.add_argument(
+        "--wandb-run-id",
+        default="",
+        help="explicit existing W&B run ID to resume; empty creates an independent evaluation run",
+    )
+    parser.add_argument(
+        "--wandb-run-name",
+        default="",
+        help="existing W&B run name when --wandb-run-id is supplied; defaults to --run-name",
+    )
+    parser.add_argument(
+        "--wandb-log-step",
+        type=int,
+        default=0,
+        help="history step for the evaluation record; 0 uses checkpoint training origins",
+    )
+    parser.add_argument(
+        "--corrected-final-record",
+        action="store_true",
+        help="append corrected validation_* metrics to an explicitly resumed source-training run",
+    )
+    parser.add_argument(
+        "--evaluation-contract",
+        default="",
+        help="durable caller contract recorded in local and W&B provenance",
+    )
     return parser.parse_args(list(argv) if argv is not None else None)
 
 
@@ -56,6 +95,12 @@ def main(argv: Iterable[str] | None = None) -> int:
         raise ValueError("batch size must be positive and loader workers cannot be negative")
     if args.target_training_origins < 0:
         raise ValueError("target training origins cannot be negative")
+    if args.wandb_log_step < 0:
+        raise ValueError("W&B log step cannot be negative")
+    if args.corrected_final_record and not args.wandb_run_id:
+        raise ValueError("a corrected final record requires --wandb-run-id")
+    if args.corrected_final_record and str(args.namespace).strip() != "validation":
+        raise ValueError("a corrected final record must use the validation metric namespace")
     load_env_files(discover_clickhouse_env_files(), verbose=True)
     checkpoint_path = Path(args.checkpoint)
     checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
@@ -105,45 +150,80 @@ def main(argv: Iterable[str] | None = None) -> int:
     source_samples = int(checkpoint.get("samples_seen", 0))
     target_samples = int(args.target_training_origins)
     source_complete = target_samples == 0 or source_samples >= target_samples
+    checkpoint_wandb_run_id = str(checkpoint.get("wandb_run_id") or "")
+    if args.corrected_final_record and not source_complete:
+        raise ValueError(
+            "a corrected final record requires a checkpoint that completed the target training origins"
+        )
+    if args.corrected_final_record and checkpoint_wandb_run_id != str(args.wandb_run_id):
+        raise ValueError(
+            "explicit W&B run ID does not match the durable identity in the checkpoint: "
+            f"expected {checkpoint_wandb_run_id!r}, received {args.wandb_run_id!r}"
+        )
+    wandb_log_step = int(args.wandb_log_step) or source_samples
+    if args.corrected_final_record and wandb_log_step <= source_samples:
+        raise ValueError(
+            "a corrected final W&B record must use a step above checkpoint training origins"
+        )
     parameter_count = sum(parameter.numel() for parameter in model.parameters())
     namespace = str(args.namespace).strip() or str(args.panel)
     run_root = Path(args.output_root) / args.run_name
     run_root.mkdir(parents=True, exist_ok=True)
+    evaluation_provenance = {
+        "evaluation_panel": str(args.panel),
+        "metric_namespace": namespace,
+        "manifest_hash": manifest["manifest_hash"],
+        "source_architecture": str(args.architecture),
+        "source_checkpoint": str(checkpoint_path),
+        "source_checkpoint_wandb_run_id": checkpoint_wandb_run_id,
+        "source_training_origins": source_samples,
+        "target_training_origins": target_samples,
+        "source_training_complete": source_complete,
+        "model_parameters": parameter_count,
+        "corrected_final_record": bool(args.corrected_final_record),
+        "corrected_validation_log_step": wandb_log_step,
+        "evaluation_contract": str(args.evaluation_contract),
+    }
+    wandb_run_name = str(args.wandb_run_name).strip() or str(args.run_name)
     wandb_run = init_wandb(
         entity=str(args.wandb_entity),
         project=str(args.wandb_project),
-        run_name=str(args.run_name),
-        config={
-            **to_dict(config),
-            "evaluation_panel": str(args.panel),
-            "metric_namespace": namespace,
-            "manifest_hash": manifest["manifest_hash"],
-            "source_architecture": str(args.architecture),
-            "source_checkpoint": str(checkpoint_path),
-            "source_training_origins": source_samples,
-            "target_training_origins": target_samples,
-            "source_training_complete": source_complete,
-            "model_parameters": parameter_count,
-        },
+        run_name=wandb_run_name,
+        # Resuming an existing training run with a reconstructed evaluation
+        # config can conflict with its immutable training keys. Resume with an
+        # empty init config, then append evaluation-only provenance explicitly.
+        config={} if args.wandb_run_id else {**to_dict(config), **evaluation_provenance},
         run_dir=run_root / "wandb",
         mode=str(args.wandb_mode),
         timeout_seconds=train_config.wandb_init_timeout,
+        run_id=str(args.wandb_run_id).strip() or None,
     )
+    if wandb_run is not None and args.wandb_run_id:
+        wandb_run.config.update(evaluation_provenance, allow_val_change=True)
     logger = AsyncJsonlMetricLogger(run_root / "metrics.jsonl", wandb_run, wandb_key_mapper=_wandb_metric_key)
+    metrics: dict[str, float] = {}
     try:
         metrics = validate(model, loader, config, device, namespace=namespace, max_batches=None)
         metrics.update({
             f"{namespace}_meta/training_origins": float(source_samples),
             f"{namespace}_meta/training_complete": float(source_complete),
             f"{namespace}_meta/model_parameters": float(parameter_count),
+            f"{namespace}_meta/corrected_final_record": float(bool(args.corrected_final_record)),
         })
-        logger.log(metrics, source_samples)
+        logger.log(metrics, wandb_log_step)
         summary = {
             "architecture": str(args.architecture),
             "checkpoint": str(checkpoint_path),
             "checkpoint_size": checkpoint_path.stat().st_size,
             "checkpoint_mtime_ns": checkpoint_path.stat().st_mtime_ns,
             "step": source_samples,
+            "wandb_log_step": wandb_log_step,
+            "wandb_project": str(args.wandb_project),
+            "wandb_entity": str(args.wandb_entity),
+            "wandb_run_id": str(args.wandb_run_id),
+            "wandb_run_name": wandb_run_name,
+            "corrected_final_record": bool(args.corrected_final_record),
+            "evaluation_contract": str(args.evaluation_contract),
             "target_training_origins": target_samples,
             "training_complete": source_complete,
             "model_parameters": parameter_count,
@@ -159,6 +239,25 @@ def main(argv: Iterable[str] | None = None) -> int:
     finally:
         logger.close(timeout=300)
         if wandb_run is not None:
+            if metrics:
+                final_summary = {
+                    _wandb_metric_key(key): metrics[key]
+                    for key in FINAL_VALIDATION_SUMMARY_KEYS
+                    if key in metrics
+                }
+                # The logger writes the complete metric record to W&B history.
+                # Pin only the interpretation-critical values in the summary
+                # instead of duplicating hundreds of per-target fields there.
+                wandb_run.summary.update(final_summary)
+                wandb_run.summary.update({
+                    "validation_record/status": (
+                        "corrected_final" if args.corrected_final_record else "evaluated"
+                    ),
+                    "validation_record/manifest_hash": manifest["manifest_hash"],
+                    "validation_record/source_checkpoint": str(checkpoint_path),
+                    "validation_record/source_training_origins": source_samples,
+                    "validation_record/wandb_log_step": wandb_log_step,
+                })
             wandb_run.finish()
     print(f"{args.panel} evaluation complete: {run_root}", flush=True)
     return 0
