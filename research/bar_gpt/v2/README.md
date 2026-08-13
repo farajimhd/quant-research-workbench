@@ -128,6 +128,10 @@ python -m research.bar_gpt.v2.run_train_full_chunks --prepare-manifest-only
 python -m research.bar_gpt.v2.run_train_full_chunks --execute
 ```
 
+The default `production` run stamp is stable: rerunning the same `--execute`
+command resumes `checkpoint_latest.pt`. Use `--run-stamp NAME` only when
+starting an independent run.
+
 The launcher freezes every eligible 2019-2025 block into the training
 authority and keeps disjoint 2026 monitor-pool, validation, and locked-test
 authorities. Every outer epoch consumes every training block exactly once.

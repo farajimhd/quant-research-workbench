@@ -204,6 +204,7 @@ class FullChunkLauncherTest(unittest.TestCase):
     def test_defaults_to_medium_and_preserves_samples_seen_as_training_clock(self) -> None:
         args = parse_full_args([])
         self.assertEqual(args.model_size, DEFAULT_MODEL_SIZE)
+        self.assertEqual(args.run_stamp, "production")
         argv = trainer_argv(
             args,
             resolved_manifest=Path(r"D:\runtime\full_catalog_chunks_v1.json"),

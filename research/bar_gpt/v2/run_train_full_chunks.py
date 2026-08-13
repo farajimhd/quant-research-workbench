@@ -66,7 +66,14 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--shard-root", default=str(DEFAULT_SHARD_ROOT))
     parser.add_argument("--output-root", default=str(DEFAULT_OUTPUT_ROOT))
     parser.add_argument("--manifest", default="")
-    parser.add_argument("--run-stamp", default="")
+    parser.add_argument(
+        "--run-stamp",
+        default="production",
+        help=(
+            "stable run identity suffix; rerunning the same command resumes its "
+            "latest checkpoint (choose a new value for an independent run)"
+        ),
+    )
     parser.add_argument(
         "--wandb-project", default=BAR_GPT_FULL_TRAINING_WANDB_PROJECT
     )
