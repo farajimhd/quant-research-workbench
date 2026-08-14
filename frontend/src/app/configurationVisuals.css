@@ -559,6 +559,125 @@
   .discovery-capability-dialog-cadences > div { grid-template-columns: 1fr; }
 }
 
+/* Canonical registry-object presentation. Every configuration surface uses this shell. */
+.abstraction-card {
+  --abstraction-accent: var(--canvas-link-blue);
+  align-items: start;
+  background: var(--surface);
+  border: 1px solid var(--configuration-rule, var(--border));
+  border-left: 3px solid color-mix(in oklab, var(--abstraction-accent) 72%, var(--border));
+  border-radius: 9px;
+  color: var(--foreground);
+  display: grid;
+  gap: 12px;
+  grid-template-columns: 30px minmax(0, 1fr) auto;
+  min-width: 0;
+  padding: 14px 15px;
+  position: relative;
+  text-align: left;
+  transition: background-color 120ms ease, border-color 120ms ease;
+}
+.abstraction-card[data-kind="processing_step"] { --abstraction-accent: var(--canvas-link-cyan); }
+.abstraction-card[data-kind="derivation"] { --abstraction-accent: var(--canvas-link-violet); }
+.abstraction-card[data-kind="signal"] { --abstraction-accent: var(--canvas-link-rose); }
+.abstraction-card[data-kind="column"] { --abstraction-accent: var(--canvas-link-amber); }
+.abstraction-card[data-kind="rule_set"] { --abstraction-accent: var(--canvas-link-orange); }
+.abstraction-card[data-kind="watchlist"] { --abstraction-accent: var(--canvas-link-green); }
+.abstraction-card[data-kind="strategy"],
+.abstraction-card[data-kind="strategy_profile"] { --abstraction-accent: var(--canvas-link-violet); }
+.abstraction-card[data-kind="account_binding"] { --abstraction-accent: var(--canvas-link-cyan); }
+.abstraction-card[data-kind="portfolio_policy"],
+.abstraction-card[data-kind="portfolio_mandate"],
+.abstraction-card[data-kind="portfolio_group"] { --abstraction-accent: var(--canvas-link-green); }
+.abstraction-card[data-kind="oms_profile"],
+.abstraction-card[data-kind="execution_policy"],
+.abstraction-card[data-kind="protection_profile"] { --abstraction-accent: var(--canvas-link-orange); }
+.abstraction-card[data-kind="run_plan"] { --abstraction-accent: var(--canvas-link-violet); }
+.abstraction-card[data-kind="canvas_profile"] { --abstraction-accent: var(--canvas-link-blue); }
+.abstraction-card:hover { background: color-mix(in oklab, var(--abstraction-accent) 2.5%, var(--surface)); }
+.abstraction-card[data-selected="true"] {
+  background: color-mix(in oklab, var(--abstraction-accent) 5%, var(--surface));
+  border-color: color-mix(in oklab, var(--abstraction-accent) 48%, var(--configuration-rule, var(--border)));
+}
+.abstraction-card[data-unavailable="true"] { opacity: .64; }
+.abstraction-card-icon {
+  align-items: center;
+  background: color-mix(in oklab, var(--abstraction-accent) 9%, var(--surface-alt));
+  border: 1px solid color-mix(in oklab, var(--abstraction-accent) 22%, var(--border));
+  border-radius: 7px;
+  color: var(--abstraction-accent);
+  display: inline-flex;
+  height: 28px;
+  justify-content: center;
+  width: 28px;
+}
+.abstraction-card-main { display: grid; gap: 9px; min-width: 0; }
+.abstraction-card-header { display: grid; gap: 4px; min-width: 0; }
+.abstraction-card-heading { align-items: center; display: flex; flex-wrap: wrap; gap: 7px; }
+.abstraction-card-kind,
+.abstraction-card-status {
+  color: var(--abstraction-accent);
+  font-size: 9px;
+  font-weight: 620;
+  letter-spacing: .06em;
+  line-height: 1.2;
+  text-transform: uppercase;
+}
+.abstraction-card-status {
+  border-left: 1px solid var(--configuration-rule, var(--border));
+  color: var(--muted-foreground);
+  padding-left: 7px;
+}
+.abstraction-card-title { font-size: 14px; font-weight: 560; line-height: 1.35; }
+.abstraction-card-identity {
+  color: var(--muted-foreground);
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  font-weight: 480;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.abstraction-card-description { color: var(--muted-foreground); font-size: 11.5px; line-height: 1.5; }
+.abstraction-card-metadata { display: grid; gap: 8px 14px; grid-template-columns: repeat(2, minmax(0, 1fr)); margin: 0; }
+.abstraction-card-metadata > div { border-top: 1px solid var(--configuration-rule, var(--border)); display: grid; gap: 3px; min-width: 0; padding-top: 7px; }
+.abstraction-card-metadata dt { color: var(--muted-foreground); font-size: 8.5px; font-weight: 560; letter-spacing: .045em; text-transform: uppercase; }
+.abstraction-card-metadata dd { font-size: 10.5px; line-height: 1.4; margin: 0; overflow-wrap: anywhere; }
+.abstraction-card-content { min-width: 0; }
+.abstraction-card-actions { align-items: flex-end; display: flex; flex-direction: column; gap: 7px; justify-content: flex-start; }
+.abstraction-card-actions > input { accent-color: var(--abstraction-accent); margin: 7px 2px 0; }
+.abstraction-card-ordinal {
+  align-items: center;
+  background: var(--surface-alt);
+  border: 1px solid var(--configuration-rule, var(--border));
+  border-radius: 999px;
+  color: var(--muted-foreground);
+  display: flex;
+  font-size: 9px;
+  height: 20px;
+  justify-content: center;
+  left: -10px;
+  position: absolute;
+  top: 12px;
+  width: 20px;
+}
+.abstraction-card.compact { gap: 9px; grid-template-columns: 26px minmax(0, 1fr) auto; min-height: 68px; padding: 11px 12px; }
+.abstraction-card.compact .abstraction-card-icon { height: 24px; width: 24px; }
+.abstraction-card.compact .abstraction-card-description { font-size: 10.5px; }
+.abstraction-card.compact .abstraction-card-title { font-size: 13px; }
+.abstraction-card-grid { display: grid; gap: 10px; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.abstraction-card-grid.single { grid-template-columns: minmax(0, 1fr); }
+
+@container configuration-workbench (max-width: 780px) {
+  .abstraction-card-grid { grid-template-columns: minmax(0, 1fr); }
+}
+
+@media (max-width: 640px) {
+  .abstraction-card { grid-template-columns: 28px minmax(0, 1fr); }
+  .abstraction-card-actions { align-items: flex-start; flex-direction: row; grid-column: 2; }
+  .abstraction-card-metadata { grid-template-columns: minmax(0, 1fr); }
+}
+
 .discovery-watchlist-heading { align-items: end; display: flex; justify-content: space-between; }
 .discovery-watchlist-layout { display: grid; gap: 32px; grid-template-columns: minmax(210px, .55fr) minmax(0, 1.45fr); }
 .discovery-watchlist-layout > nav { border-right: 1px solid var(--configuration-rule); display: grid; gap: 5px; padding-right: 20px; }
@@ -4447,6 +4566,71 @@
     max-height: 560px;
     min-height: 420px;
     position: static;
+  }
+}
+
+/* Abstraction cards are the single presentation contract. These compatibility
+   rules prevent retired page-specific card selectors from changing its anatomy. */
+.trading-configuration-page .discovery-watchlist-available .abstraction-card,
+.trading-configuration-page :is(
+  .discovery-column-card-list,
+  .discovery-calculation-choices,
+  .discovery-rule-card-list,
+  .strategy-selection-list
+) > .abstraction-card {
+  align-items: start;
+  background: color-mix(in oklab, var(--surface) 96%, var(--abstraction-accent));
+  border: 1px solid var(--configuration-rule);
+  border-left: 3px solid var(--abstraction-accent);
+  border-radius: 11px;
+  display: grid;
+  gap: 12px;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  min-height: 0;
+  padding: 14px;
+}
+
+.trading-configuration-page .abstraction-card > .abstraction-card-main {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+}
+
+.trading-configuration-page .abstraction-card .abstraction-card-title {
+  font-size: 15px;
+  font-weight: 560;
+  line-height: 1.35;
+}
+
+.trading-configuration-page .abstraction-card .abstraction-card-description,
+.trading-configuration-page .abstraction-card .abstraction-card-description small {
+  color: var(--muted-foreground);
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: normal;
+}
+
+.trading-configuration-page .abstraction-card .abstraction-card-actions {
+  align-items: flex-end;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.trading-configuration-page .abstraction-card .abstraction-card-content {
+  min-width: 0;
+}
+
+@media (max-width: 760px) {
+  .trading-configuration-page .abstraction-card {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .trading-configuration-page .abstraction-card .abstraction-card-actions {
+    align-items: flex-start;
+    grid-column: 2;
   }
 }
 
