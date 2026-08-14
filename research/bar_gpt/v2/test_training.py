@@ -2570,8 +2570,13 @@ class LoaderTrainerContractTest(unittest.TestCase):
         )
         config_build = source.index("config = build_config(args)", environment_load)
         wandb_init = source.index("wandb_run = init_wandb(", config_build)
+        wandb_init_end = source.index("\n    )", wandb_init)
         self.assertLess(environment_load, config_build)
         self.assertLess(config_build, wandb_init)
+        self.assertIn(
+            "capture_console=False",
+            source[wandb_init:wandb_init_end],
+        )
         self.assertEqual(
             source.count("load_env_files(discover_clickhouse_env_files(), verbose=True)"),
             1,

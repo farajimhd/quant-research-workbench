@@ -2339,6 +2339,10 @@ def main(argv: Iterable[str] | None = None) -> int:
         mode=config.train.wandb_mode,
         timeout_seconds=config.train.wandb_init_timeout,
         run_id=str(resumed_wandb_id) if resumed_wandb_id else None,
+        # Structured metrics and artifacts remain enabled. Only W&B's stdout/
+        # stderr interception is disabled because the Rich dashboard redraws
+        # continuously and otherwise produces unbounded output.log growth.
+        capture_console=False,
     )
     wandb_run_id = str(getattr(wandb_run, "id", "")) or None
     metrics_logger = AsyncJsonlMetricLogger(

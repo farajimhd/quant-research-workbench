@@ -27,6 +27,7 @@ def init_wandb(
     mode: str,
     timeout_seconds: int,
     run_id: str | None = None,
+    capture_console: bool = True,
 ) -> Any | None:
     if not project or project.lower() in {"off", "none", "disabled"}:
         print("*** WANDB project disabled; writing metrics locally only.", flush=True)
@@ -71,6 +72,10 @@ def init_wandb(
                 settings=wandb.Settings(
                     init_timeout=max(1, int(timeout_seconds)),
                     login_timeout=max(1, min(int(timeout_seconds), 30)),
+                    # Rich live displays redraw the whole terminal. Capturing
+                    # those frames can grow output.log by tens of megabytes
+                    # per hour without adding useful experiment evidence.
+                    console="auto" if capture_console else "off",
                 ),
             )
             result_queue.put(("ok", run))
