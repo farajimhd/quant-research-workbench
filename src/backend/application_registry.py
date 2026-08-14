@@ -207,8 +207,8 @@ CONFIGURATION_BINDINGS = (
     ConfigurationBindingDefinition("market_discovery.conditions", "market_discovery.rule_sets[].conditions[]", "condition", "condition_id", "editable_instance", ("left_source_id", "left_timeframe", "comparator", "right_source_id", "right_timeframe", "value", "enabled"), ("left_source_id", "right_source_id")),
     ConfigurationBindingDefinition("market_discovery.rules", "market_discovery.rule_sets[]", "rule_set", "rule_set_id", "editable_instance", ("name", "description", "operator", "conditions", "enabled")),
     ConfigurationBindingDefinition("market_discovery.watchlists", "market_discovery.watchlists[]", "watchlist", "watchlist_id", "editable_instance", ("name", "description", "inclusion_rule_sets", "ranking_field", "ranking_direction", "maximum_size", "refresh_interval_ms", "membership_expiry", "membership_ttl_ms", "manual_inclusions", "manual_exclusions", "columns", "calculations", "enabled")),
-    ConfigurationBindingDefinition("strategy.profiles", "strategy.profiles[]", "strategy_profile", "profile_id", "editable_instance", ("name", "description", "parameters", "capabilities", "composition"), ("definition_id",)),
-    ConfigurationBindingDefinition("run_plans", "assignments.deployments[]", "run_plan", "run_plan_id", "editable_instance", ("name", "description", "profile_id", "oms_profile_id", "universe_id", "allowed_environments", "action_authority", "campaign_lifecycle", "enabled"), ("profile_id", "oms_profile_id", "universe_id")),
+    ConfigurationBindingDefinition("strategy.profiles", "strategy.profiles[]", "strategy_profile", "profile_id", "editable_instance", ("name", "description", "parameters", "capabilities", "lifecycle", "rule_set_catalog"), ("definition_id",)),
+    ConfigurationBindingDefinition("run_plans", "assignments.deployments[]", "run_plan", "run_plan_id", "editable_instance", ("name", "description", "profile_id", "watchlist_ids", "mandate_ids", "oms_profile_id", "canvas_profile_id", "allowed_environments", "data_plan_ids", "source_revision_policy", "action_authority", "campaign_lifecycle", "enabled"), ("profile_id", "watchlist_ids", "mandate_ids", "oms_profile_id", "canvas_profile_id", "data_plan_ids")),
     ConfigurationBindingDefinition("accounts", "accounts.bindings[]", "account_binding", "account_key", "editable_instance", ("name", "account_class", "base_currency", "session_key", "portfolio_policy_id", "enabled", "modes"), ("portfolio_policy_id",)),
     ConfigurationBindingDefinition("portfolio.policies", "portfolio.policies[]", "portfolio_policy", "policy_id", "editable_instance", ("*",)),
     ConfigurationBindingDefinition("portfolio.mandates", "portfolio.mandates[]", "portfolio_mandate", "mandate_id", "editable_instance", ("run_plan_id", "account_key", "maximum_cash_fraction", "maximum_planned_risk_fraction", "maximum_positions", "assignment_mode", "allocation_weight", "maximum_action_authority", "allow_replacement", "minimum_replacement_improvement_pct", "enabled"), ("run_plan_id", "account_key")),
@@ -1675,6 +1675,7 @@ def _configuration_information_definitions(
                 relationships={"strategy_ids": (f"strategy.{definition_id}@{definition_revision}",)},
             ))
     assignments = dict(configuration.get("assignments") or {})
+    portfolio = dict(configuration.get("portfolio") or {})
     for run_plan in assignments.get("deployments") or []:
         run_plan_id = str(run_plan.get("run_plan_id") or "").strip()
         if run_plan_id:
@@ -1685,7 +1686,14 @@ def _configuration_information_definitions(
                 relationships={
                     "strategy_profile_ids": (f"strategy_profile.{run_plan.get('profile_id')}",),
                     "oms_profile_ids": (f"oms_profile.{run_plan.get('oms_profile_id')}",),
-                    "watchlist_ids": (f"watchlist.{run_plan.get('universe_id')}",),
+                    "watchlist_ids": tuple(f"watchlist.{value}" for value in run_plan.get("watchlist_ids") or []),
+                    "portfolio_mandate_ids": tuple(
+                        f"portfolio_mandate.{row.get('mandate_id')}"
+                        for row in portfolio.get("mandates") or []
+                        if str(row.get("run_plan_id") or "") == run_plan_id
+                    ),
+                    "canvas_profile_ids": (f"canvas_profile.{run_plan.get('canvas_profile_id')}",),
+                    "query_plan_ids": tuple(str(value) for value in dict(run_plan.get("data_plan_ids") or {}).values()),
                 },
             ))
     accounts = dict(configuration.get("accounts") or {})
@@ -1698,7 +1706,6 @@ def _configuration_information_definitions(
                 "implemented", configuration_binding_id="accounts",
                 relationships={"portfolio_policy_ids": (f"portfolio_policy.{account.get('portfolio_policy_id')}",)},
             ))
-    portfolio = dict(configuration.get("portfolio") or {})
     for policy in portfolio.get("policies") or []:
         policy_id = str(policy.get("policy_id") or "").strip()
         if policy_id:

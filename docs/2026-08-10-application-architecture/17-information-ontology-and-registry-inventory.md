@@ -1,6 +1,6 @@
 # Information ontology and registry inventory
 
-Status: schema v1 implemented across QMD, backend, and configuration UI; runtime-value migration remains tracked below
+Status: registry schema v1 and configuration schema v21 implemented; runtime-value migration remains tracked below
 
 Audit date: 2026-08-14
 
@@ -16,6 +16,27 @@ trading records, and physical ClickHouse storage
 | Application | `GET /api/registries/definitions`, schema v1 | `application_information_registry` | Configuration frontend |
 | Frontend | `DefinitionRegistryProvider` | Application response only | Shared `AbstractionCard` renderer |
 | Configuration | `configuration_bindings[]` | Versioned trading configuration | Existing Market Discovery, Strategy, Run Plan, Portfolio, OMS, account, and Canvas editors |
+
+### Implemented configuration composition
+
+| Object | Owns | References | User-facing element |
+| --- | --- | --- | --- |
+| Strategy Profile | Strategy parameters, input bindings, lifecycle rules | Strategy Definition, Fields, Rule Sets | Editable Strategy card |
+| Watchlist | Candidate rules, ranking, columns, refresh/expiry | Rule Sets, Fields, Columns | Watchlist card / Canvas tab |
+| Account Binding | Stable account key, modes, session binding | Portfolio Policy | Account card |
+| Portfolio Mandate | Account allocation and authority ceiling | Run Plan, Account Binding | Allocation card |
+| OMS Profile | Execution/protection composition | Execution Policy, Protection Profile | OMS card |
+| Run Plan | Runtime modes, data plans, source revision policy | Strategy Profile, Watchlists, Portfolio Mandates, OMS Profile, Canvas Profile | Three-region composition editor |
+| Published Release | Immutable referenced graph | Run Plan and exact dependency revisions | Review/readiness matrix |
+
+| Migration | Implemented value |
+| --- | --- |
+| Configuration schema | `21` |
+| Removed authority | `StrategyProfile.composition` |
+| Legacy mapping | Strategy composition → Run Plan references + Portfolio mandates |
+| Runtime compilation | All Run Plans preserved; each Watchlist set compiles to a causal membership union |
+| Publication selector | `run_plan_id` |
+| Configuration order | Strategy → Accounts → Portfolio → OMS → Run Plan → Canvas → Review |
 
 ### Implemented definition envelope
 

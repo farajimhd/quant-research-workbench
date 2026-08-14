@@ -14,6 +14,7 @@ import {
   FileInput,
   GitBranch,
   LockKeyhole,
+  LayoutGrid,
   Network,
   PencilLine,
   Plus,
@@ -50,7 +51,7 @@ export type TradingConfigurationSection =
   | "accounts"
   | "revisions";
 
-type StrategyAuthoringStage = "identity" | "discovery" | "overview" | "entry" | "position" | "reentry" | "exit" | "portfolio" | "oms" | "authority" | "handoff";
+type StrategyAuthoringStage = "identity" | "overview" | "entry" | "position" | "reentry" | "exit" | "handoff";
 
 type RuntimeMode = "replay" | "backtest" | "backtest_debug" | "paper" | "live";
 type ActionAuthority = "disabled" | "manual" | "confirm" | "automatic" | "inherit";
@@ -108,16 +109,6 @@ type StrategyProfile = {
   revision: number;
   publication_status: "draft" | "published" | "template";
   derived_from_profile_id: string;
-  composition: StrategyComposition;
-};
-
-type StrategyComposition = {
-  watchlist_id: string;
-  portfolio_policy_id: string;
-  oms_profile_id: string;
-  account_keys: string[];
-  allowed_environments: RuntimeMode[];
-  action_authority: StrategyRunPlan["action_authority"];
 };
 
 type StrategyInput = {
@@ -378,6 +369,7 @@ type StrategyRunPlan = {
   };
   allowed_environments: RuntimeMode[];
   book_id: string;
+  canvas_profile_id: string;
   campaign_lifecycle: {
     exit_authority: string;
     initial_entry_authority: string;
@@ -391,6 +383,7 @@ type StrategyRunPlan = {
   };
   run_plan_id: string;
   description: string;
+  data_plan_ids: Partial<Record<RuntimeMode, string>>;
   enabled: boolean;
   mandate_ids: string[];
   name: string;
@@ -398,7 +391,9 @@ type StrategyRunPlan = {
   profile_id: string;
   runtime_assignments: RuntimeAssignment[];
   safety_supervisor: { enabled_by_environment: Record<RuntimeMode, boolean> };
+  source_revision_policy: "require_complete" | "allow_partial";
   universe_id: string;
+  watchlist_ids: string[];
 };
 
 type WatchUniverse = {
@@ -798,21 +793,12 @@ function normalizeDraft(payload: any): Draft {
       exit: "automatic",
       ...(profile.lifecycle?.phase_modes ?? {}),
     };
+    const profileWithoutComposition = { ...profile };
+    delete profileWithoutComposition.composition;
     return {
-      ...profile,
+      ...profileWithoutComposition,
       publication_status: profile.publication_status ?? (profile.origin === "system" ? "template" : "draft"),
       derived_from_profile_id: profile.derived_from_profile_id ?? "",
-      composition: {
-        watchlist_id: "core-candidates",
-        portfolio_policy_id: payload?.portfolio?.policies?.[0]?.policy_id ?? "default",
-        oms_profile_id: payload?.oms?.profiles?.[0]?.profile_id ?? "adaptive-regular",
-        account_keys: (payload?.accounts?.bindings ?? []).filter((row: any) => row.enabled).map((row: any) => row.account_key),
-        allowed_environments: ["replay", "backtest", "backtest_debug"],
-        action_authority: {
-          default: "confirm", initial_entry: "inherit", add: "inherit", reentry: "inherit", strategic_exit: "automatic", protective_exit: "automatic", emergency_exit: "automatic",
-        },
-        ...(profile.composition ?? {}),
-      },
       lifecycle: {
         ...profile.lifecycle,
         phase_modes: phaseModes,
@@ -836,7 +822,18 @@ function normalizeDraft(payload: any): Draft {
       profiles: (strategy.profiles ?? []).map(normalizeProfile),
     },
     assignments: {
-      deployments: runPlans.plans ?? runPlans.deployments ?? [],
+      deployments: (runPlans.plans ?? runPlans.deployments ?? []).map((runPlan: any) => {
+        const legacy = (strategy.profiles ?? []).find((profile: any) => profile.profile_id === runPlan.profile_id)?.composition ?? {};
+        const modes: RuntimeMode[] = runPlan.allowed_environments ?? legacy.allowed_environments ?? ["replay"];
+        return {
+          ...runPlan,
+          watchlist_ids: runPlan.watchlist_ids ?? [legacy.watchlist_id ?? "core-candidates"],
+          canvas_profile_id: runPlan.canvas_profile_id ?? "current-canvas",
+          data_plan_ids: runPlan.data_plan_ids ?? Object.fromEntries(modes.map((mode) => [mode, mode === "paper" || mode === "live" ? "qmd.scanner.snapshot.v1" : "market.historical_scanner_materialization.v1"])),
+          source_revision_policy: runPlan.source_revision_policy ?? "require_complete",
+          allowed_environments: modes,
+        };
+      }),
       universes: runPlans.universes ?? [],
     },
   } as Draft;
@@ -891,7 +888,7 @@ function writeSessionConfiguration(draft: Draft) {
 
 type ConfigurationExperience = "guided" | "expert";
 type OmsGuidedStage = "execution" | "protection";
-type GuidedStep = TradingConfigurationSection | OmsGuidedStage;
+type GuidedStep = TradingConfigurationSection | OmsGuidedStage | "canvas";
 
 type Revision = {
   approved_at: string;
@@ -916,25 +913,25 @@ const SECTION_META = {
     description: "Configure reusable strategy behavior, lifecycle rules, and capabilities.",
   },
   assignments: {
-    eyebrow: "Step 2 · Make it usable",
+    eyebrow: "Step 5 · Assemble runtime",
     icon: Network,
     title: "Strategy Run Plans",
     description: "Bind a Strategy Profile to environments, action authority, OMS, and account mandates.",
   },
   portfolio: {
-    eyebrow: "Step 3 · Allocate capital",
+    eyebrow: "Step 3 · Govern capital",
     icon: BriefcaseBusiness,
     title: "Portfolio & Risk",
     description: "Define account risk limits, capital mandates, and replacement permissions.",
   },
   oms: {
-    eyebrow: "Shared execution authority",
+    eyebrow: "Step 4 · Define execution",
     icon: ShieldCheck,
     title: "OMS & Protection",
     description: "Define reusable execution tactics, partial-fill behavior, and position protection.",
   },
   accounts: {
-    eyebrow: "Stable runtime boundaries",
+    eyebrow: "Step 2 · Bind accounts",
     icon: Boxes,
     title: "Accounts & Sessions",
     description: "Bind application accounts to broker or simulated sessions and permissions.",
@@ -1075,15 +1072,21 @@ export function TradingConfigurationPage({ section }: { section: TradingConfigur
     return next;
   }
 
-  async function publish(strategyProfileId = "") {
+  async function publish(selectionId = "") {
     if (!draft) return;
     setStatus("saving");
     setMessage("");
     try {
       const canvas = canvasApprovalSnapshot();
       if (!canvas.ready) throw new Error("Configure at least one Canvas container before publishing.");
+      const selectedRunPlan = draft.assignments.deployments.find((row) => row.run_plan_id === selectionId)
+        ?? draft.assignments.deployments.find((row) => row.profile_id === selectionId)
+        ?? draft.assignments.deployments.find((row) => row.enabled)
+        ?? draft.assignments.deployments[0];
+      if (!selectedRunPlan) throw new Error("Configure a Run Plan before publishing.");
+      const configuration = serializeDraft({ ...draft, assignments: { ...draft.assignments, deployments: draft.assignments.deployments.map((row) => row.run_plan_id === selectedRunPlan.run_plan_id ? { ...row, canvas_profile_id: canvas.revision } : row) } });
       const revision = await api<Revision>("/api/trading/configuration/publish", {
-        body: JSON.stringify({ canvas_profile: canvas.profile, canvas_revision: canvas.revision, configuration: serializeDraft(draft), label, strategy_profile_id: strategyProfileId }),
+        body: JSON.stringify({ canvas_profile: canvas.profile, canvas_revision: canvas.revision, configuration, label, run_plan_id: selectedRunPlan.run_plan_id }),
         method: "POST",
       });
       setApproved(revision);
@@ -1100,6 +1103,16 @@ export function TradingConfigurationPage({ section }: { section: TradingConfigur
       setMessageTone("error");
       setMessage(reason instanceof Error ? reason.message : String(reason));
     }
+  }
+
+  function validateSession() {
+    if (!draft) return;
+    const failed = releaseReadiness(draft).filter((check) => !check.ready);
+    const canvas = canvasApprovalSnapshot();
+    if (!canvas.ready) failed.push({ detail: "configure at least one container", label: "Canvas", ready: false });
+    setMessageTone(failed.length ? "error" : "success");
+    setMessage(failed.length ? `Validation found ${failed.length} incomplete dependencies: ${failed.map((check) => check.label).join(", ")}.` : "Configuration graph is complete and ready for publication.");
+    setStatus(failed.length ? "error" : "ready");
   }
 
   if (!definitionRegistry) {
@@ -1122,6 +1135,9 @@ export function TradingConfigurationPage({ section }: { section: TradingConfigur
           <p>{meta.description}</p>
         </div>
         <div className="configuration-header-controls">
+          {draft ? <div className="configuration-session-state"><span>Session draft</span><strong>Schema v{draft.schema_version}</strong></div> : null}
+          {draft && section !== "revisions" ? <button className="button compact" onClick={validateSession} type="button"><BadgeCheck size={14} /> Validate</button> : null}
+          {draft && section !== "revisions" ? <a className="button compact primary" href="#revision-configuration">Review release <ChevronRight size={13} /></a> : null}
           <RevisionBadge approved={approved} />
         </div>
       </header>
@@ -1163,6 +1179,7 @@ export function TradingConfigurationPage({ section }: { section: TradingConfigur
             section={section}
           />}
           onChange={(value) => updateDraft(section, value as never)}
+          onDraftChange={updateConfigurationBook}
           section={section}
         />
       ) : experience === "guided" && draft ? (
@@ -1196,7 +1213,7 @@ export function TradingConfigurationPage({ section }: { section: TradingConfigur
           <div className="configuration-expert-editor">
             {section === "strategy" ? <StrategyStudio approved={approved} draft={draft} label={label} onChange={(value) => updateDraft("strategy", value)} onDeleteProfile={deleteStrategyProfile} onDraftChange={updateConfigurationBook} onLabelChange={setLabel} onPublish={publish} publishing={status === "saving"} revisions={revisions} section={draft.strategy} /> : null}
             {section === "discovery" ? <MarketDiscoveryStudio onChange={(value) => updateDraft("market_discovery", value)} section={draft.market_discovery} /> : null}
-            {section === "assignments" ? <DeploymentEditor draft={draft} onChange={(value) => updateDraft("assignments", value)} /> : null}
+            {section === "assignments" ? <RunPlanCompositionEditor draft={draft} onChange={(value) => updateDraft("assignments", value)} onDraftChange={updateConfigurationBook} /> : null}
             {section === "portfolio" ? <PortfolioEditor draft={draft} onChange={(value) => updateDraft("portfolio", value)} /> : null}
             {section === "oms" ? <OmsEditor section={draft.oms} onChange={(value) => updateDraft("oms", value)} /> : null}
             {section === "accounts" ? <AccountsEditor draft={draft} onChange={(value) => updateDraft("accounts", value)} /> : null}
@@ -1251,11 +1268,12 @@ function ConfigurationJourney({ active, draft, experience, onOmsStageChange }: {
 }) {
   const steps = [
     { caption: "Decisions", key: "strategy", label: "Strategy" },
-    { caption: "Runtime", key: "assignments", label: "Run Plan" },
+    { caption: "Bindings", key: "accounts", label: "Accounts" },
     { caption: "Capital", key: "portfolio", label: "Portfolio" },
     { caption: "Orders", key: "execution", label: "Execute" },
     { caption: "Stops", key: "protection", label: "Protect" },
-    { caption: "Bindings", key: "accounts", label: "Accounts" },
+    { caption: "Runtime", key: "assignments", label: "Run Plan" },
+    { caption: "Workspace", key: "canvas", label: "Canvas" },
     { caption: "Release", key: "revisions", label: "Review" },
   ];
   const activeIndex = steps.findIndex((step) => step.key === active);
@@ -1337,7 +1355,7 @@ function GuidedConfiguration({ approved, draft, label, omsStage, onChange, onCon
   const executionPolicy = draft.oms.execution_policies.find((row) => row.policy_id === omsProfile?.settings.entry_execution_policy_id) ?? draft.oms.execution_policies[0];
   const protectionProfile = draft.oms.protection_profiles.find((row) => row.profile_id === omsProfile?.settings.protection_profile_id) ?? draft.oms.protection_profiles[0];
   const account = draft.accounts.bindings.find((row) => row.account_key === mandate?.account_key) ?? draft.accounts.bindings[0];
-  const steps: GuidedStep[] = ["strategy", "assignments", "portfolio", "execution", "protection", "accounts", "revisions"];
+  const steps: GuidedStep[] = ["strategy", "accounts", "portfolio", "execution", "protection", "assignments", "revisions"];
   const index = steps.indexOf(step);
   const previous = steps[index - 1];
   const next = steps[index + 1];
@@ -1377,23 +1395,27 @@ function GuidedConfiguration({ approved, draft, label, omsStage, onChange, onCon
     onChange("accounts", { bindings: draft.accounts.bindings.map((row) => row.account_key === account.account_key ? nextAccount : row) });
   }
 
-  if (section === "revisions") return <GuidedReview approved={approved} draft={draft} label={label} onLabelChange={onLabelChange} onPublish={onPublish} onReturn={() => navigateGuidedStep("accounts", onOmsStageChange)} publishing={publishing} revisions={revisions} />;
+  if (section === "revisions") return <GuidedReview approved={approved} draft={draft} label={label} onLabelChange={onLabelChange} onPublish={onPublish} onReturn={() => navigateGuidedStep("assignments", onOmsStageChange)} publishing={publishing} revisions={revisions} />;
   if (!profile || !deployment || !mandate || !omsProfile || !executionPolicy || !protectionProfile || !account) return <GuidedEmpty onSwitchToExpert={onSwitchToExpert} />;
-  if (step === "strategy") return <GuidedStrategyConfiguration draft={draft} onChange={onChange} onContinue={() => onContinue("assignments")} onProfileChange={selectStrategyProfile} profile={profile} />;
+  if (step === "strategy") return <GuidedStrategyConfiguration draft={draft} onChange={onChange} onContinue={() => onContinue("accounts")} onProfileChange={selectStrategyProfile} profile={profile} />;
 
   const questions: Array<ReactElement<{ label: string }>> = [];
   if (step === "assignments") questions.push(
     <GuidedQuestion description="The Strategy Profile owns trading behavior and lifecycle decisions. Choosing it does not select symbols, capital, or broker behavior." key="deployment-strategy" label="Which Strategy Profile should this Run Plan execute?" status={deployment.enabled ? "Configured" : "Needs review"}>
       <SelectField help="Select the reusable trading behavior evaluated by this Run Plan. Its entries, adds, reentries, and strategic exits remain unchanged." label="Strategy Profile" onChange={(profile_id) => replaceDeployment({ ...deployment, profile_id })} options={draft.strategy.profiles.map((row) => ({ label: row.name, value: row.profile_id }))} value={deployment.profile_id} />
     </GuidedQuestion>,
-    <GuidedQuestion description="The Watch Universe is the symbol-selection boundary. The Run Plan can evaluate only tickers supplied by this universe." key="deployment-universe" label="Which symbols may this Run Plan watch?" status="Configured">
-      <SelectField help="Select the reusable universe that supplies eligible symbols. This changes what may be watched, not how a Strategy decides or how OMS executes." label="Watch Universe" onChange={(universe_id) => replaceDeployment({ ...deployment, universe_id })} options={draft.assignments.universes.map((row) => ({ label: row.name, value: row.universe_id }))} value={deployment.universe_id} />
+    <GuidedQuestion description="QMD Watchlists are reusable causal membership definitions. A Run Plan may reference several; runtime evaluates their membership union." key="deployment-watchlists" label="Which QMD Watchlists supply candidates?" status={deployment.watchlist_ids.length ? "Configured" : "Needs decision"}>
+      <div className="configuration-reference-grid">{draft.market_discovery.watchlists.map((watchlist) => <AbstractionCard compact control={<input checked={deployment.watchlist_ids.includes(watchlist.watchlist_id)} disabled={watchlist.availability === "integration_pending"} onChange={() => replaceDeployment({ ...deployment, watchlist_ids: deployment.watchlist_ids.includes(watchlist.watchlist_id) ? deployment.watchlist_ids.filter((value) => value !== watchlist.watchlist_id) : [...deployment.watchlist_ids, watchlist.watchlist_id] })} type="checkbox" />} description={watchlist.description} identity={watchlist.watchlist_id} key={watchlist.watchlist_id} kind="watchlist" metadata={[{ label: "Columns", value: watchlist.columns.length }, { label: "Maximum members", value: watchlist.maximum_size }]} selected={deployment.watchlist_ids.includes(watchlist.watchlist_id)} status={watchlist.availability === "integration_pending" ? "Unavailable" : deployment.watchlist_ids.includes(watchlist.watchlist_id) ? "Selected" : "Available"} title={watchlist.name} unavailable={watchlist.availability === "integration_pending"} />)}</div>
     </GuidedQuestion>,
     <GuidedQuestion description="The OMS profile supplies reusable execution and protection defaults after Portfolio approves quantity. It cannot change Strategy intent or Portfolio limits." key="deployment-oms" label="Which execution profile should the Run Plan use?" status="Configured">
       <SelectField help="Select the reusable OMS profile that resolves execution policy and protection defaults for this Run Plan." label="OMS profile" onChange={(oms_profile_id) => replaceDeployment({ ...deployment, oms_profile_id })} options={draft.oms.profiles.map((row) => ({ label: row.name, value: row.profile_id }))} value={deployment.oms_profile_id} />
     </GuidedQuestion>,
     <GuidedQuestion description="Select environments whose bindings will be validated before publication." key="deployment-modes" label="Where may this Run Plan run?" status={deployment.allowed_environments.length ? "Configured" : "Needs decision"}>
-      <ModeSelector modes={deployment.allowed_environments} onChange={(allowed_environments) => replaceDeployment({ ...deployment, allowed_environments })} />
+      <ModeSelector modes={deployment.allowed_environments} onChange={(allowed_environments) => replaceDeployment({ ...deployment, allowed_environments, data_plan_ids: { ...deployment.data_plan_ids, ...Object.fromEntries(allowed_environments.map((mode) => [mode, deployment.data_plan_ids[mode] ?? (mode === "paper" || mode === "live" ? "qmd.scanner.snapshot.v1" : "market.historical_scanner_materialization.v1")])) } })} />
+      <div className="configuration-data-plan-grid">{deployment.allowed_environments.map((mode) => <div className="configuration-fixed-value" key={mode}><span>{readableLabel(mode)}</span><strong>{deployment.data_plan_ids[mode]}</strong><small>Registered query plan</small></div>)}</div>
+    </GuidedQuestion>,
+    <GuidedQuestion description="The current Canvas layout is a reusable workspace dependency and is frozen with the release." key="deployment-canvas" label="Which workspace will this Run Plan open?" status={canvasApprovalSnapshot().ready ? "Configured" : "Needs Canvas"}>
+      <div className="configuration-fixed-value"><span>Canvas profile</span><strong>{canvasApprovalSnapshot().revision}</strong><small>{canvasApprovalSnapshot().containerCount} configured containers</small></div>
     </GuidedQuestion>,
   );
   const portfolioPolicy = draft.portfolio.policies.find((row) => String(row.policy_id ?? "") === account.portfolio_policy_id) ?? draft.portfolio.policies[0];
@@ -2992,16 +3014,12 @@ function StrategyAuthoringFlow({ activeStage, advanced, approved, draft, entryRu
   const remainingParameters = advanced.filter((item) => !assignedParameterPaths.has(item.path));
   const stages: Array<[StrategyAuthoringStage, string, string, string]> = [
     ["identity", "1", "Identity", "Name and description"],
-    ["discovery", "2", "Discovery", "Watchlist"],
-    ["overview", "3", "Observe", "Market context"],
-    ["entry", "4", "Enter", "Evidence and request"],
-    ["position", "5", "Manage", "Adds and capabilities"],
-    ["reentry", "6", "Reentry", "Flat-to-open rules"],
-    ["exit", "7", "Exit", "Reduction conditions"],
-    ["portfolio", "8", "Portfolio", "Capital and accounts"],
-    ["oms", "9", "OMS", "Execution and protection"],
-    ["authority", "10", "Authority", "Modes and confirmation"],
-    ["handoff", "11", "Review", "Publish readiness"],
+    ["overview", "2", "Observe", "Market context"],
+    ["entry", "3", "Enter", "Evidence and request"],
+    ["position", "4", "Manage", "Adds and capabilities"],
+    ["reentry", "5", "Reentry", "Flat-to-open rules"],
+    ["exit", "6", "Exit", "Reduction conditions"],
+    ["handoff", "7", "Review", "Behavior readiness"],
   ];
   const activeIndex = stages.findIndex(([stage]) => stage === activeStage);
   const activeEntryIndex = ENTRY_AUTHORING_PAGES.findIndex((page) => page.id === activeEntryPage);
@@ -3157,13 +3175,6 @@ function StrategyAuthoringFlow({ activeStage, advanced, approved, draft, entryRu
           </label>
         </div>
       </> : null}
-      {activeStage === "discovery" ? <>
-        <header className="strategy-identity-intro"><h2>Which Watchlist should this strategy evaluate?</h2></header>
-        <div className="strategy-connection-surface">
-          <SelectField help={{ role: "Selects the QMD-owned candidate membership evaluated for new entries.", values: Object.fromEntries(draft.market_discovery.watchlists.map((watchlist) => [watchlist.name, watchlist.description || "QMD resolves this Watchlist from the Core Scan."])), note: "Leaving a Watchlist blocks new entries but never abandons an open position; management, protection, and exits continue until safe close." }} label="Watchlist" onChange={(watchlist_id) => onProfileChange({ ...profile, composition: { ...profile.composition, watchlist_id } })} options={draft.market_discovery.watchlists.map((watchlist) => ({ label: watchlist.name, value: watchlist.watchlist_id }))} value={profile.composition.watchlist_id} />
-          {draft.market_discovery.watchlists.filter((watchlist) => watchlist.watchlist_id === profile.composition.watchlist_id).map((watchlist) => <article className="strategy-connection-summary" key={watchlist.watchlist_id}><ScanSearch size={20} /><div><strong>{watchlist.name}</strong><p>{watchlist.description}</p><span>{watchlist.maximum_size} maximum members · resolves every {watchlist.refresh_interval_ms} ms · {watchlist.calculations.length} focused calculations</span></div></article>)}
-        </div>
-      </> : null}
       {activeStage === "overview" ? <>
         <header className="strategy-identity-intro strategy-observe-intro"><h2>What market context does the strategy use?</h2></header>
         <div className="strategy-observe-fields"><TradingBehaviorEditor definition={definition} profile={profile} onChange={onProfileChange} /></div>
@@ -3203,43 +3214,17 @@ function StrategyAuthoringFlow({ activeStage, advanced, approved, draft, entryRu
         <ExitAuthoringSurface activePage={activeExitPage} activeRoute={activeExitRoute} catalog={section.input_catalog} draft={draft} luldTargetParameters={luldTargetParameters} mode={phaseModes.exit} onAddRoute={addExitRoute} onModeChange={(mode) => replacePhaseMode("exit", mode)} onPageChange={setActiveExitPage} onProfileChange={onProfileChange} onReplaceRoute={replaceExitRoute} onRuleSetEdit={onRuleSetEdit} onSelectedRouteChange={setSelectedExitRouteId} profile={profile} profitPocketParameters={profitPocketParameters} />
       </> : null}
 
-      {activeStage === "portfolio" ? <>
-        <header className="strategy-identity-intro"><h2>Which Portfolio policy and accounts may fund this strategy?</h2></header>
-        <div className="strategy-connection-surface">
-          <SelectField help="Portfolio remains the sole authority for sizing, shared-capital arbitration, reservations, exposure, loss, and drawdown limits." label="Portfolio policy" onChange={(portfolio_policy_id) => onProfileChange({ ...profile, composition: { ...profile.composition, portfolio_policy_id } })} options={draft.portfolio.policies.map((policy) => ({ label: String(policy.name || policy.policy_id), value: String(policy.policy_id) }))} value={profile.composition.portfolio_policy_id} />
-          <fieldset className="configuration-choice-set strategy-account-choices"><legend>Eligible accounts</legend><div>{draft.accounts.bindings.map((account) => <label key={account.account_key}><input checked={profile.composition.account_keys.includes(account.account_key)} onChange={(event) => onProfileChange({ ...profile, composition: { ...profile.composition, account_keys: event.target.checked ? [...profile.composition.account_keys, account.account_key] : profile.composition.account_keys.filter((key) => key !== account.account_key) } })} type="checkbox" /><span><strong>{account.name}</strong><small>{readableLabel(account.account_class)} · {account.modes.map(readableLabel).join(", ")}</small></span></label>)}</div></fieldset>
-        </div>
-      </> : null}
-
-      {activeStage === "oms" ? <>
-        <header className="strategy-identity-intro"><h2>Which OMS configuration should execute approved intent?</h2></header>
-        <div className="strategy-connection-surface">
-          <SelectField help={{ role: "Selects the reusable execution, routing, partial-fill, and protection defaults used after Portfolio approves quantity.", values: Object.fromEntries(draft.oms.profiles.map((oms) => [oms.name, oms.description])), note: "OMS cannot create intent or increase Portfolio's approved quantity." }} label="OMS and protection" onChange={(oms_profile_id) => onProfileChange({ ...profile, composition: { ...profile.composition, oms_profile_id } })} options={draft.oms.profiles.map((oms) => ({ label: oms.name, value: oms.profile_id }))} value={profile.composition.oms_profile_id} />
-          {draft.oms.profiles.filter((oms) => oms.profile_id === profile.composition.oms_profile_id).map((oms) => <article className="strategy-connection-summary" key={oms.profile_id}><ShieldCheck size={20} /><div><strong>{oms.name}</strong><p>{oms.description}</p><span>{readableLabel(oms.settings.entry_urgency)} entry · {readableLabel(oms.settings.exit_urgency)} exit · {readableLabel(oms.settings.session_routing)} routing</span></div></article>)}
-        </div>
-      </> : null}
-
-      {activeStage === "authority" ? <>
-        <header className="strategy-identity-intro"><h2>Where may this strategy run and who confirms its actions?</h2></header>
-        <div className="strategy-connection-surface">
-          <fieldset className="configuration-choice-set"><legend>Permitted environments</legend><ModeChoices onChange={(values) => onProfileChange({ ...profile, composition: { ...profile.composition, allowed_environments: values as RuntimeMode[] } })} options={["replay", "backtest", "backtest_debug", "paper", "live"]} values={profile.composition.allowed_environments} /></fieldset>
-          <SelectField help="This is the default exposure-increasing action authority. Phase-specific automatic/manual modes still determine whether Strategy evaluates that phase. Portfolio and mandatory safety may always reduce or reject exposure." label="Default action authority" onChange={(value) => onProfileChange({ ...profile, composition: { ...profile.composition, action_authority: { ...profile.composition.action_authority, default: value as StrategyRunPlan["action_authority"]["default"] } } })} options={[{ label: "Manual", value: "manual" }, { label: "Confirm", value: "confirm" }, { label: "Automatic", value: "automatic" }]} value={profile.composition.action_authority.default} />
-          <div className="strategy-safety-lock"><LockKeyhole size={19} /><div><strong>Live guardrails cannot be disabled</strong><p>Portfolio limits, broker and data health, protective exits, and emergency authority remain mandatory in Live. Replay and Backtest may explicitly disable selected non-production checks.</p></div></div>
-        </div>
-      </> : null}
-
       {activeStage === "handoff" ? <>
-        <StrategyStageIntro title="Review the complete strategy before publication">Publication freezes this Strategy and every connected configuration. It cannot be modified afterward; use Clone to create a new draft derived from it.</StrategyStageIntro>
+        <StrategyStageIntro title="Review reusable strategy behavior">The Strategy Profile contains decision behavior only. Watchlists, accounts, Portfolio mandates, OMS, Canvas, data plans, environments, and action authority are selected later by a Run Plan.</StrategyStageIntro>
         <div className="strategy-publication-review">
-          <article><span>Watchlist</span><strong>{draft.market_discovery.watchlists.find((row) => row.watchlist_id === profile.composition.watchlist_id)?.name ?? "Not selected"}</strong></article>
-          <article><span>Portfolio</span><strong>{String(draft.portfolio.policies.find((row) => String(row.policy_id) === profile.composition.portfolio_policy_id)?.name ?? profile.composition.portfolio_policy_id)}</strong></article>
-          <article><span>OMS</span><strong>{draft.oms.profiles.find((row) => row.profile_id === profile.composition.oms_profile_id)?.name ?? "Not selected"}</strong></article>
-          <article><span>Accounts</span><strong>{profile.composition.account_keys.length} selected</strong></article>
-          <article><span>Environments</span><strong>{profile.composition.allowed_environments.map(readableLabel).join(", ")}</strong></article>
-          <article><span>Default authority</span><strong>{readableLabel(profile.composition.action_authority.default)}</strong></article>
+          <article><span>Definition</span><strong>{profile.definition_id}@{profile.definition_revision}</strong></article>
+          <article><span>Rule sets</span><strong>{profile.rule_set_catalog.length}</strong></article>
+          <article><span>Capabilities</span><strong>{profile.capabilities.filter((row) => row.enabled).length} enabled</strong></article>
+          <article><span>Entry mode</span><strong>{readableLabel(profile.lifecycle.phase_modes.initial_entry)}</strong></article>
+          <article><span>Reentry mode</span><strong>{readableLabel(profile.lifecycle.phase_modes.reentry)}</strong></article>
+          <article><span>Exit mode</span><strong>{readableLabel(profile.lifecycle.phase_modes.exit)}</strong></article>
         </div>
-        <div className="strategy-safety-lock"><BadgeCheck size={19} /><div><strong>{profile.publication_status === "published" ? "Published and immutable" : "Unpublished strategy"}</strong><p>{profile.publication_status === "published" ? "Runtime results remain permanently associated with this identity. Clone it to make changes." : "Changes remain in this browser session. Publish from the final review to retain and activate them for new runs."}</p></div></div>
-        {profile.publication_status !== "published" ? <RevisionPublisher approved={approved} draft={draft} guided label={label} onLabelChange={onLabelChange} onPublish={onPublish} publishing={publishing} revisions={revisions} /> : null}
+        <div className="strategy-safety-lock"><BadgeCheck size={19} /><div><strong>{profile.publication_status === "published" ? "Referenced by a published release" : "Available to Run Plans"}</strong><p>{profile.publication_status === "published" ? "Runtime results remain associated with this immutable revision. Clone it to change behavior." : "Continue to Accounts, Portfolio, OMS, and Run Plans to assemble a runnable configuration."}</p></div></div>
         <StrategyEngineParameterGroup items={remainingParameters} onChange={(path, value) => onProfileChange({ ...profile, parameters: setPath(profile.parameters, path, value) })} summary="Definition-specific values not assigned to another lifecycle step" title="Other engine parameters" />
       </> : null}
     </section>
@@ -4546,13 +4531,14 @@ const SECTION_SYSTEM_KEYS = new Set([
   "assignment_id", "condition_id", "group_id", "revision", "slice_id", "origin", "editable", "runtime_assignments", "mandate_ids",
 ]);
 
-function ConfigurationSectionStudio({ draft, guided, onChange, section }: {
+function ConfigurationSectionStudio({ draft, guided, onChange, onDraftChange, section }: {
   draft: Draft;
   guided: ReactNode;
   onChange: (value: Draft[ConfigurableSection]) => void;
+  onDraftChange: (value: Draft) => void;
   section: ConfigurableSection;
 }) {
-  const [view, setView] = useState<SectionStudioView>("guided");
+  const [view, setView] = useState<SectionStudioView>("structure");
   const items = useMemo(() => sectionCatalogItems(section, draft), [draft, section]);
   const [selectedPath, setSelectedPath] = useState(items[0]?.path ?? "");
   const selected = items.find((item) => item.path === selectedPath) ?? items[0];
@@ -4560,9 +4546,9 @@ function ConfigurationSectionStudio({ draft, guided, onChange, section }: {
     if (!selectedPath || !items.some((item) => item.path === selectedPath)) setSelectedPath(items[0]?.path ?? "");
   }, [items, selectedPath]);
   const copy = SECTION_STUDIO_COPY[section];
-  const hasSeparateStructureView = section === "assignments" || section === "accounts";
+  const hasSeparateStructureView = true;
   const structure = section === "assignments"
-    ? <DeploymentEditor draft={draft} onChange={onChange as (value: AssignmentSection) => void} />
+    ? <RunPlanCompositionEditor draft={draft} onChange={onChange as (value: AssignmentSection) => void} onDraftChange={onDraftChange} />
     : section === "portfolio"
       ? <PortfolioEditor draft={draft} onChange={onChange as (value: PortfolioSection) => void} />
       : section === "oms"
@@ -4761,6 +4747,122 @@ function sectionParameterDocumentation(section: ConfigurableSection, item: Secti
   };
 }
 
+function RunPlanCompositionEditor({ draft, onChange, onDraftChange }: {
+  draft: Draft;
+  onChange: (value: AssignmentSection) => void;
+  onDraftChange: (value: Draft) => void;
+}) {
+  const section = draft.assignments;
+  const [selectedId, setSelectedId] = useState(section.deployments[0]?.run_plan_id ?? "");
+  const [mandateAccountKey, setMandateAccountKey] = useState(draft.accounts.bindings.find((row) => row.enabled)?.account_key ?? "");
+  const selected = section.deployments.find((row) => row.run_plan_id === selectedId) ?? section.deployments[0];
+  const canvas = useMemo(canvasApprovalSnapshot, [draft]);
+
+  function createDeployment() {
+    const run_plan_id = uniqueId("new-run-plan", section.deployments.map((row) => row.run_plan_id));
+    const accountKey = draft.accounts.bindings.find((row) => row.enabled)?.account_key ?? draft.accounts.bindings[0]?.account_key ?? "";
+    const mandate = accountKey ? createRunPlanMandate(run_plan_id, accountKey, draft.portfolio.mandates) : null;
+    const runPlan: StrategyRunPlan = {
+      run_plan_id,
+      name: "New Run Plan",
+      description: "",
+      profile_id: draft.strategy.profiles[0]?.profile_id ?? "",
+      oms_profile_id: draft.oms.profiles[0]?.profile_id ?? "",
+      universe_id: "",
+      watchlist_ids: draft.market_discovery.watchlists.filter((row) => row.enabled && row.availability !== "integration_pending").slice(0, 1).map((row) => row.watchlist_id),
+      canvas_profile_id: "current-canvas",
+      data_plan_ids: { replay: "market.historical_scanner_materialization.v1" },
+      source_revision_policy: "require_complete",
+      book_id: "default",
+      campaign_lifecycle: { initial_entry_authority: "confirm", reentry_authority: "confirm", exit_authority: "automatic", protective_exit_authority: "automatic", maximum_reentries: 3, reentry_cooldown_ms: 1000, maximum_initial_watch_ms: 0, session_end_behavior: "keep_watching", retain_ticker_while_paused: true },
+      mandate_ids: mandate ? [mandate.mandate_id] : [],
+      enabled: true,
+      allowed_environments: ["replay"],
+      action_authority: { default: "confirm", initial_entry: "inherit", add: "inherit", reentry: "inherit", strategic_exit: "inherit", protective_exit: "automatic", emergency_exit: "automatic" },
+      safety_supervisor: { enabled_by_environment: { replay: true, backtest: true, backtest_debug: true, paper: true, live: true } },
+      runtime_assignments: [],
+    };
+    onDraftChange({ ...draft, assignments: { ...section, deployments: [...section.deployments, runPlan] }, portfolio: { ...draft.portfolio, mandates: mandate ? [...draft.portfolio.mandates, mandate] : draft.portfolio.mandates } });
+    setSelectedId(run_plan_id);
+  }
+
+  if (!selected) return <div className="configuration-empty-composer"><EmptyState title="No Run Plans" detail="Create the final runnable composition from the existing reusable definitions." /><button className="button primary" onClick={createDeployment} type="button"><Plus size={14} /> Create Run Plan</button></div>;
+
+  const linkedMandates = draft.portfolio.mandates.filter((row) => row.run_plan_id === selected.run_plan_id);
+  const selectedStrategy = draft.strategy.profiles.find((row) => row.profile_id === selected.profile_id);
+  const selectedOms = draft.oms.profiles.find((row) => row.profile_id === selected.oms_profile_id);
+  const selectedWatchlists = draft.market_discovery.watchlists.filter((row) => selected.watchlist_ids.includes(row.watchlist_id));
+  const availableMandateAccounts = draft.accounts.bindings.filter((account) => !linkedMandates.some((mandate) => mandate.account_key === account.account_key));
+  const mandateAccountValue = availableMandateAccounts.some((account) => account.account_key === mandateAccountKey) ? mandateAccountKey : availableMandateAccounts[0]?.account_key ?? "";
+  const readiness = [
+    { label: "Strategy", selection: selectedStrategy?.name ?? "Not selected", ready: Boolean(selectedStrategy) },
+    { label: "Watchlists", selection: selectedWatchlists.length ? `${selectedWatchlists.length} selected` : "None", ready: selectedWatchlists.length > 0 && selectedWatchlists.every((row) => row.availability !== "integration_pending") },
+    { label: "Account mandates", selection: linkedMandates.length ? `${linkedMandates.length} linked` : "None", ready: linkedMandates.length > 0 },
+    { label: "Portfolio policies", selection: `${new Set(linkedMandates.map((mandate) => draft.accounts.bindings.find((account) => account.account_key === mandate.account_key)?.portfolio_policy_id).filter(Boolean)).size} resolved`, ready: linkedMandates.length > 0 && linkedMandates.every((mandate) => Boolean(draft.accounts.bindings.find((account) => account.account_key === mandate.account_key)?.portfolio_policy_id)) },
+    { label: "OMS", selection: selectedOms?.name ?? "Not selected", ready: Boolean(selectedOms) },
+    { label: "Canvas", selection: canvas.ready ? `${canvas.containerCount} containers` : "Empty", ready: canvas.ready },
+    { label: "Data plans", selection: `${selected.allowed_environments.length} modes`, ready: selected.allowed_environments.length > 0 && selected.allowed_environments.every((mode) => Boolean(selected.data_plan_ids[mode])) },
+    { label: "Historical coverage", selection: readableLabel(selected.source_revision_policy), ready: selected.source_revision_policy === "require_complete" },
+  ];
+
+  function replace(next: StrategyRunPlan) {
+    onChange({ ...section, deployments: section.deployments.map((row) => row.run_plan_id === selected.run_plan_id ? next : row) });
+  }
+
+  function cloneDeployment() {
+    const run_plan_id = uniqueId(`${selected.run_plan_id}-copy`, section.deployments.map((row) => row.run_plan_id));
+    const mandates = linkedMandates.map((row) => ({ ...deepClone(row), mandate_id: uniqueId(`${run_plan_id}-${row.account_key}`, draft.portfolio.mandates.map((item) => item.mandate_id)), run_plan_id }));
+    const clone = { ...deepClone(selected), run_plan_id, name: `${selected.name} copy`, mandate_ids: mandates.map((row) => row.mandate_id) };
+    onDraftChange({ ...draft, assignments: { ...section, deployments: [...section.deployments, clone] }, portfolio: { ...draft.portfolio, mandates: [...draft.portfolio.mandates, ...mandates] } });
+    setSelectedId(run_plan_id);
+  }
+
+  function deleteDeployment() {
+    if (selected.enabled) return;
+    const deployments = section.deployments.filter((row) => row.run_plan_id !== selected.run_plan_id);
+    onDraftChange({ ...draft, assignments: { ...section, deployments }, portfolio: { ...draft.portfolio, mandates: draft.portfolio.mandates.filter((row) => row.run_plan_id !== selected.run_plan_id) } });
+    setSelectedId(deployments[0]?.run_plan_id ?? "");
+  }
+
+  function toggleWatchlist(watchlistId: string) {
+    replace({ ...selected, watchlist_ids: selected.watchlist_ids.includes(watchlistId) ? selected.watchlist_ids.filter((value) => value !== watchlistId) : [...selected.watchlist_ids, watchlistId] });
+  }
+
+  function replaceModes(allowed_environments: RuntimeMode[]) {
+    const data_plan_ids = { ...selected.data_plan_ids };
+    for (const mode of allowed_environments) data_plan_ids[mode] ??= mode === "paper" || mode === "live" ? "qmd.scanner.snapshot.v1" : "market.historical_scanner_materialization.v1";
+    replace({ ...selected, allowed_environments, data_plan_ids });
+  }
+
+  function addMandate() {
+    if (!mandateAccountValue) return;
+    const mandate = createRunPlanMandate(selected.run_plan_id, mandateAccountValue, draft.portfolio.mandates);
+    onDraftChange({ ...draft, assignments: { ...section, deployments: section.deployments.map((row) => row.run_plan_id === selected.run_plan_id ? { ...row, mandate_ids: [...row.mandate_ids, mandate.mandate_id] } : row) }, portfolio: { ...draft.portfolio, mandates: [...draft.portfolio.mandates, mandate] } });
+  }
+
+  return <div className="configuration-composition-workspace">
+    <aside className="configuration-library">
+      <header><div><span>Run Plans</span><strong>{section.deployments.length} configured</strong></div><button onClick={createDeployment} title="Create Run Plan" type="button"><Plus size={15} /></button></header>
+      <div>{section.deployments.map((row) => <button className={row.run_plan_id === selected.run_plan_id ? "active" : ""} key={row.run_plan_id} onClick={() => setSelectedId(row.run_plan_id)} type="button"><span><strong>{row.name}</strong><small>{row.enabled ? "Enabled" : "Disabled"} · {row.allowed_environments.map(readableLabel).join(", ")}</small></span><ChevronRight size={14} /></button>)}</div>
+    </aside>
+    <main className="configuration-detail configuration-composition-editor">
+      <section className="configuration-detail-heading"><div><span>Run Plan · {selected.run_plan_id}</span><input aria-label="Run Plan name" onChange={(event) => replace({ ...selected, name: event.target.value })} value={selected.name} /><textarea aria-label="Run Plan summary" onChange={(event) => replace({ ...selected, description: event.target.value })} rows={2} value={selected.description} /></div><div className="configuration-object-actions"><button className="button compact" onClick={cloneDeployment} type="button">Clone</button><label className="configuration-enabled"><input checked={selected.enabled} onChange={(event) => replace({ ...selected, enabled: event.target.checked })} type="checkbox" /> Enabled</label><button className="button compact danger" disabled={selected.enabled} onClick={deleteDeployment} type="button">Delete draft</button></div></section>
+      <AbstractionCard description={selected.description || "Final composition of reusable decision, discovery, capital, execution, workspace, and data definitions."} identity={selected.run_plan_id} kind="run_plan" metadata={[{ label: "Strategy", value: selectedStrategy?.name ?? selected.profile_id }, { label: "Watchlists", value: selectedWatchlists.length }, { label: "Mandates", value: linkedMandates.length }, { label: "OMS", value: selectedOms?.name ?? selected.oms_profile_id }, { label: "Canvas", value: canvas.revision }, { label: "Modes", value: selected.allowed_environments.map(readableLabel).join(", ") }]} selected={selected.enabled} status={selected.enabled ? "Enabled" : "Disabled"} title={selected.name} />
+      <GuideCallout icon={<Network size={17} />} title="Reusable definitions → Run Plan → Runtime">Strategy owns decisions. Watchlists own candidates. Portfolio mandates own account allocation. OMS owns execution. Canvas owns workspace presentation. The Run Plan selects their immutable revisions.</GuideCallout>
+      <ConfigGroup summary="Reference one or more existing QMD Watchlists. Runtime evaluates their causal membership union." title="1. Watchlists"><div className="configuration-reference-grid">{draft.market_discovery.watchlists.map((watchlist) => <AbstractionCard compact control={<input checked={selected.watchlist_ids.includes(watchlist.watchlist_id)} disabled={watchlist.availability === "integration_pending"} onChange={() => toggleWatchlist(watchlist.watchlist_id)} type="checkbox" />} description={watchlist.description} identity={watchlist.watchlist_id} key={watchlist.watchlist_id} kind="watchlist" metadata={[{ label: "Members", value: watchlist.maximum_size }, { label: "Columns", value: watchlist.columns.length }]} selected={selected.watchlist_ids.includes(watchlist.watchlist_id)} status={watchlist.availability === "integration_pending" ? "Unavailable" : selected.watchlist_ids.includes(watchlist.watchlist_id) ? "Selected" : "Available"} title={watchlist.name} unavailable={watchlist.availability === "integration_pending"} />)}</div></ConfigGroup>
+      <div className="configuration-two-column"><ConfigGroup summary="References existing behavior and execution definitions." title="2. Strategy and OMS"><div className="configuration-field-grid one-column"><SelectField help="Reusable decision behavior." label="Strategy Profile" onChange={(profile_id) => replace({ ...selected, profile_id })} options={draft.strategy.profiles.map((row) => ({ label: row.name, value: row.profile_id }))} value={selected.profile_id} /><SelectField help="Reusable execution and protection composition." label="OMS Profile" onChange={(oms_profile_id) => replace({ ...selected, oms_profile_id })} options={draft.oms.profiles.map((row) => ({ label: row.name, value: row.profile_id }))} value={selected.oms_profile_id} /></div></ConfigGroup><ConfigGroup summary="The current configured workspace is frozen at publication." title="3. Canvas"><div className="configuration-fixed-value"><span>Canvas profile</span><strong>{canvas.revision}</strong><small>{canvas.containerCount} containers · {canvas.ready ? "ready" : "not ready"}</small></div></ConfigGroup></div>
+      <ConfigGroup summary="Create or reference Portfolio mandates here; edit their limits under Portfolio & Risk." title="4. Account mandates"><div className="deployment-mandates">{linkedMandates.map((mandate) => <article key={mandate.mandate_id}><strong>{accountName(draft.accounts, mandate.account_key)}</strong><span>{percent(mandate.maximum_cash_fraction)} cash · {readableLabel(mandate.assignment_mode)} · max {readableLabel(mandate.maximum_action_authority)}</span></article>)}</div><div className="configuration-inline-add"><SelectField help="Existing governed account." label="Account to add" onChange={setMandateAccountKey} options={availableMandateAccounts.map((account) => ({ label: account.name, value: account.account_key }))} value={mandateAccountValue} /><button className="button compact" disabled={!mandateAccountValue} onClick={addMandate} type="button"><Plus size={14} /> Add mandate</button></div><a className="configuration-inline-link" href="#portfolio-configuration">Edit allocation and risk limits <ChevronRight size={13} /></a></ConfigGroup>
+      <ConfigGroup summary="Portfolio mandate authority remains a hard upper bound." title="5. Action authority"><CampaignPolicyEditor deployment={selected} onChange={replace} /></ConfigGroup>
+      <ConfigGroup summary="Every enabled environment resolves through an explicit registered query plan." title="6. Runtime modes and data plans"><ModeSelector modes={selected.allowed_environments} onChange={replaceModes} /><div className="configuration-data-plan-grid">{selected.allowed_environments.map((mode) => <div className="configuration-fixed-value" key={mode}><span>{readableLabel(mode)}</span><strong>{selected.data_plan_ids[mode]}</strong><small>Registered query plan</small></div>)}</div><SelectField help="Historical modes should fail before the first event when source coverage is incomplete." label="Source revision policy" onChange={(source_revision_policy) => replace({ ...selected, source_revision_policy: source_revision_policy as StrategyRunPlan["source_revision_policy"] })} options={[{ label: "Require complete", value: "require_complete" }, { label: "Allow partial (research only)", value: "allow_partial" }]} value={selected.source_revision_policy} /><div className="configuration-field-grid">{(["replay", "backtest", "backtest_debug", "paper", "live"] as RuntimeMode[]).map((mode) => <BooleanField disabled={mode === "paper" || mode === "live"} help={mode === "paper" || mode === "live" ? "Mandatory in this environment." : "Historical safety policy."} key={mode} label={`${readableLabel(mode)} safety`} onChange={(enabled) => replace({ ...selected, safety_supervisor: { enabled_by_environment: { ...selected.safety_supervisor.enabled_by_environment, [mode]: enabled } } })} value={selected.safety_supervisor.enabled_by_environment[mode]} />)}</div></ConfigGroup>
+    </main>
+    <aside className="configuration-dependency-inspector"><header><span>Run Plan graph</span><strong>Dependencies and validation</strong></header><section><h3>Readiness</h3><div className="configuration-readiness">{readiness.map((item) => <span data-ready={item.ready ? "true" : "false"} key={item.label}>{item.ready ? <CheckCircle2 size={14} /> : <TriangleAlert size={14} />}<span><strong>{item.label}</strong><small>{item.selection}</small></span></span>)}</div></section><section><h3>Used by</h3><p>{selected.enabled ? "Available to new published runtime releases." : "Disabled draft; safe to delete with its mandates."}</p></section><section><h3>Identity</h3><code>{selected.run_plan_id}</code><small>Schema v{draft.schema_version} · {selected.enabled ? "draft enabled" : "draft disabled"}</small></section><a className="button compact" href="#revision-configuration">Review and publish <ChevronRight size={13} /></a></aside>
+  </div>;
+}
+
+function createRunPlanMandate(runPlanId: string, accountKey: string, existing: Mandate[]): Mandate {
+  return { mandate_id: uniqueId(`${runPlanId}-${accountKey}`, existing.map((row) => row.mandate_id)), run_plan_id: runPlanId, account_key: accountKey, enabled: true, maximum_cash_fraction: 1, maximum_planned_risk_fraction: 0.01, maximum_positions: 10, assignment_mode: "single", allocation_weight: 1, maximum_action_authority: "confirm", allow_replacement: false, minimum_replacement_improvement_pct: 20 };
+}
+
 function DeploymentEditor({ draft, onChange }: { draft: Draft; onChange: (value: AssignmentSection) => void }) {
   const section = draft.assignments;
   const [selectedId, setSelectedId] = useState(section.deployments[0]?.run_plan_id ?? "");
@@ -4788,6 +4890,10 @@ function DeploymentEditor({ draft, onChange }: { draft: Draft; onChange: (value:
       profile_id: draft.strategy.profiles[0]?.profile_id ?? "",
       oms_profile_id: draft.oms.profiles[0]?.profile_id ?? "",
       universe_id: section.universes[0]?.universe_id ?? "",
+      watchlist_ids: draft.market_discovery.watchlists.slice(0, 1).map((row) => row.watchlist_id),
+      canvas_profile_id: "current-canvas",
+      data_plan_ids: { replay: "market.historical_scanner_materialization.v1" },
+      source_revision_policy: "require_complete",
       book_id: "default",
       campaign_lifecycle: {
         initial_entry_authority: "confirm",
@@ -4934,6 +5040,7 @@ function CampaignPolicyEditor({ deployment, onChange }: {
 
 function PortfolioEditor({ draft, onChange }: { draft: Draft; onChange: (value: PortfolioSection) => void }) {
   const section = draft.portfolio;
+  const [activeTab, setActiveTab] = useState<"policies" | "mandates" | "groups">("policies");
   const [selectedPolicyId, setSelectedPolicyId] = useState(String(section.policies[0]?.policy_id ?? ""));
   const policyIndex = Math.max(0, section.policies.findIndex((row) => String(row.policy_id) === selectedPolicyId));
   const policy = section.policies[policyIndex];
@@ -4991,7 +5098,8 @@ function PortfolioEditor({ draft, onChange }: { draft: Draft; onChange: (value: 
       <GuideCallout icon={<BriefcaseBusiness size={17} />} title="Strategy requests are relative; Portfolio makes them account-specific">
         A strategy may request an aggressive allocation, but the mandate and current account state determine final quantity. Replacement is a separately governed, auditable proposal—not an implicit strategy side effect.
       </GuideCallout>
-      <ConfigGroup summary="Stable account-level limits apply to every strategy using the account." title="Account safety policy">
+      <nav aria-label="Portfolio configuration" className="configuration-domain-tabs">{([{"key":"policies","label":"Policies","count":section.policies.length},{"key":"mandates","label":"Mandates","count":section.mandates.length},{"key":"groups","label":"Groups","count":section.groups.length}] as const).map((tab) => <button aria-current={activeTab === tab.key ? "page" : undefined} key={tab.key} onClick={() => setActiveTab(tab.key)} type="button"><span>{tab.label}</span><em>{tab.count}</em></button>)}</nav>
+      {activeTab === "policies" ? <ConfigGroup summary="Stable account-level limits apply to every strategy using the account." title="Account safety policy">
         <div className="configuration-toolbar">
           <SelectField help="Policy revision being edited." label="Policy" onChange={setSelectedPolicyId} options={section.policies.map((row) => ({ label: String(row.policy_id), value: String(row.policy_id) }))} value={selectedPolicyId} />
           <button className="button compact" onClick={clonePolicy} type="button"><Clipboard size={14} /> Clone policy</button>
@@ -5046,8 +5154,8 @@ function PortfolioEditor({ draft, onChange }: { draft: Draft; onChange: (value: 
             ["allowed_protection_profiles", "Protection allowlist", "Profile IDs or immutable identities; use * for all."],
           ].map(([key, label, help]) => <TextField help={help} key={key} label={label} onChange={(value) => updatePolicy(key, value.split(",").map((item) => item.trim()).filter(Boolean))} value={Array.isArray(policy[key]) ? (policy[key] as string[]).join(", ") : ""} />)}
         </div> : null}
-      </ConfigGroup>
-      <ConfigGroup
+      </ConfigGroup> : null}
+      {activeTab === "mandates" ? <ConfigGroup
         action={<button className="button compact" onClick={addMandate} type="button"><Plus size={14} /> Add mandate</button>}
         summary="Assign each Run Plan to one or more governed accounts."
         title="Strategy-account mandates"
@@ -5069,8 +5177,8 @@ function PortfolioEditor({ draft, onChange }: { draft: Draft; onChange: (value: 
             </AbstractionCard>
           ))}
         </div>
-      </ConfigGroup>
-      <ConfigGroup action={<button className="button compact" onClick={addGroup} type="button"><Plus size={14} /> Add account group</button>} summary="Optional aggregate limits serialize decisions across several independently configured accounts." title="Cross-account risk groups">
+      </ConfigGroup> : null}
+      {activeTab === "groups" ? <ConfigGroup action={<button className="button compact" onClick={addGroup} type="button"><Plus size={14} /> Add account group</button>} summary="Optional aggregate limits serialize decisions across several independently configured accounts." title="Cross-account risk groups">
         <div className="mandate-grid">
           {section.groups.map((group) => {
             const groupId = String(group.group_id || "");
@@ -5086,12 +5194,13 @@ function PortfolioEditor({ draft, onChange }: { draft: Draft; onChange: (value: 
           })}
           {!section.groups.length ? <EmptyState title="No cross-account groups" detail="Each account remains independently governed until an aggregate group is added." /> : null}
         </div>
-      </ConfigGroup>
+      </ConfigGroup> : null}
     </div>
   );
 }
 
 function OmsEditor({ onChange, section }: { onChange: (value: OmsSection) => void; section: OmsSection }) {
+  const [activeTab, setActiveTab] = useState<"profiles" | "execution" | "protection">("profiles");
   const [selectedId, setSelectedId] = useState(section.profiles[0]?.profile_id ?? "");
   const selected = section.profiles.find((row) => row.profile_id === selectedId) ?? section.profiles[0];
   if (!selected) return <EmptyState title="No OMS profile" detail="Create a shared execution and protection profile." />;
@@ -5106,7 +5215,8 @@ function OmsEditor({ onChange, section }: { onChange: (value: OmsSection) => voi
   }
   return (
     <div className="configuration-stack">
-    <div className="configuration-workbench">
+    <nav aria-label="OMS configuration" className="configuration-domain-tabs">{([{"key":"profiles","label":"OMS Profiles","count":section.profiles.length},{"key":"execution","label":"Execution Policies","count":section.execution_policies.length},{"key":"protection","label":"Protection Profiles","count":section.protection_profiles.length}] as const).map((tab) => <button aria-current={activeTab === tab.key ? "page" : undefined} key={tab.key} onClick={() => setActiveTab(tab.key)} type="button"><span>{tab.label}</span><em>{tab.count}</em></button>)}</nav>
+    {activeTab === "profiles" ? <div className="configuration-workbench">
       <aside className="configuration-library">
         <header><div><span>OMS profiles</span><strong>{section.profiles.length} configured</strong></div><button onClick={clone} title="Clone OMS profile" type="button"><Plus size={15} /></button></header>
         <p>Reusable profiles keep execution mechanics consistent across strategies and modes.</p>
@@ -5144,9 +5254,9 @@ function OmsEditor({ onChange, section }: { onChange: (value: OmsSection) => voi
           </div>
         </ConfigGroup>
       </main>
-    </div>
-    <ExecutionPoliciesEditor policies={section.execution_policies} onChange={(execution_policies) => onChange({ ...section, execution_policies })} />
-    <ProtectionProfilesEditor profiles={section.protection_profiles} onChange={(protection_profiles) => onChange({ ...section, protection_profiles })} />
+    </div> : null}
+    {activeTab === "execution" ? <ExecutionPoliciesEditor policies={section.execution_policies} onChange={(execution_policies) => onChange({ ...section, execution_policies })} /> : null}
+    {activeTab === "protection" ? <ProtectionProfilesEditor profiles={section.protection_profiles} onChange={(protection_profiles) => onChange({ ...section, protection_profiles })} /> : null}
     </div>
   );
 }
@@ -5331,15 +5441,23 @@ function releaseReadiness(draft: Draft) {
   const profileIds = new Set(draft.strategy.profiles.map((row) => row.profile_id));
   const omsIds = new Set(draft.oms.profiles.map((row) => row.profile_id));
   const accountKeys = new Set(draft.accounts.bindings.map((row) => row.account_key));
+  const policyIds = new Set(draft.portfolio.policies.map((row) => String(row.policy_id ?? "")));
+  const watchlists = new Map(draft.market_discovery.watchlists.map((row) => [row.watchlist_id, row]));
   const deployments = draft.assignments.deployments;
   const deploymentsReady = deployments.length > 0 && deployments.every((deployment) => (
     profileIds.has(deployment.profile_id)
     && omsIds.has(deployment.oms_profile_id)
     && draft.portfolio.mandates.some((mandate) => mandate.enabled && mandate.run_plan_id === deployment.run_plan_id)
   ));
+  const watchlistsReady = deployments.length > 0 && deployments.every((deployment) => deployment.watchlist_ids.length > 0 && deployment.watchlist_ids.every((watchlistId) => {
+    const watchlist = watchlists.get(watchlistId);
+    return Boolean(watchlist && watchlist.enabled && watchlist.availability !== "integration_pending");
+  }));
+  const dataPlansReady = deployments.length > 0 && deployments.every((deployment) => deployment.allowed_environments.length > 0 && deployment.allowed_environments.every((mode) => Boolean(deployment.data_plan_ids[mode])) && Boolean(deployment.canvas_profile_id));
   const mandatesReady = draft.portfolio.mandates.length > 0 && draft.portfolio.mandates.every((mandate) => (
     deployments.some((deployment) => deployment.run_plan_id === mandate.run_plan_id)
     && accountKeys.has(mandate.account_key)
+    && policyIds.has(draft.accounts.bindings.find((account) => account.account_key === mandate.account_key)?.portfolio_policy_id ?? "")
   ));
   const configuredModes = new Set(draft.accounts.bindings.filter((account) => account.enabled).flatMap((account) => account.modes));
   const modeCoverageReady = draft.accounts.bindings.filter((account) => account.enabled).every((account) => account.modes.every((mode) => deployments.some((deployment) => (
@@ -5351,9 +5469,11 @@ function releaseReadiness(draft: Draft) {
   return [
     { detail: String(draft.strategy.profiles.length), label: "Strategy Profiles", ready: draft.strategy.profiles.length > 0 },
     { detail: deploymentsReady ? `${deployments.length} ready` : "needs mandate or strategy", label: "Runtime compilation", ready: deploymentsReady },
+    { detail: watchlistsReady ? "causal membership references" : "missing or unavailable Watchlist", label: "QMD Watchlists", ready: watchlistsReady },
     { detail: String(draft.portfolio.mandates.length), label: "Account mandates", ready: mandatesReady },
     { detail: String(draft.oms.profiles.length), label: "OMS profiles", ready: draft.oms.profiles.length > 0 },
     { detail: String(draft.accounts.bindings.length), label: "Accounts", ready: draft.accounts.bindings.length > 0 },
+    { detail: dataPlansReady ? "mode plans and Canvas selected" : "query plan or Canvas missing", label: "Run Plan dependencies", ready: dataPlansReady },
     { detail: modeCoverageReady ? [...configuredModes].map(readableLabel).join(", ") : "runtime coverage missing", label: "Mode coverage", ready: modeCoverageReady },
     { detail: liveBindingsReady ? "exact bindings" : "broker id or session missing", label: "Paper and Live bindings", ready: liveBindingsReady },
     { detail: `${draft.oms.execution_policies.length} execution · ${draft.oms.protection_profiles.length} protection`, label: "Policy catalogs", ready: draft.oms.execution_policies.length > 0 && draft.oms.protection_profiles.length > 0 },
@@ -5954,8 +6074,9 @@ function navigateGuidedStep(step: GuidedStep, onOmsStageChange: (value: OmsGuide
 }
 
 function pageForGuidedStep(step: GuidedStep) {
+  if (step === "canvas") return "canvas-configuration";
   if (step === "execution" || step === "protection") return "oms-configuration";
-  return pageForSection(step);
+  return pageForSection(step as TradingConfigurationSection);
 }
 
 function reviewRows(draft: Draft, approved: Revision | null) {
@@ -5967,15 +6088,17 @@ function reviewRows(draft: Draft, approved: Revision | null) {
   const protection = draft.oms.protection_profiles.find((row) => row.profile_id === oms?.settings.protection_profile_id) ?? draft.oms.protection_profiles[0];
   const account = draft.accounts.bindings.find((row) => row.account_key === mandate?.account_key) ?? draft.accounts.bindings[0];
   const checks = releaseReadiness(draft);
+  const ready = (label: string) => Boolean(checks.find((check) => check.label === label)?.ready);
   const inherited = <K extends keyof Draft>(key: K) => Boolean(approved && stableStringify(draft[key]) === stableStringify(approved.payload[key]));
   const state = (key: keyof Draft, valid: boolean, recommended: boolean): "Inherited" | "Invalid" | "Using recommended" | "Customized" => !valid ? "Invalid" : inherited(key) ? "Inherited" : recommended ? "Using recommended" : "Customized";
   return [
     { icon: GitBranch, label: "Strategy", selection: profile?.name ?? "Missing", state: state("strategy", Boolean(profile), Boolean(profile?.protected)), step: "strategy" as GuidedStep },
-    { icon: Network, label: "Run Plan", selection: deployment?.name ?? "Missing", state: state("assignments", Boolean(deployment && checks[1]?.ready), false), step: "assignments" as GuidedStep },
-    { icon: BriefcaseBusiness, label: "Portfolio", selection: mandate ? `${account?.name ?? mandate.account_key} · ${percent(mandate.maximum_planned_risk_fraction)} risk` : "Missing", state: state("portfolio", Boolean(checks[2]?.ready), false), step: "portfolio" as GuidedStep },
+    { icon: Boxes, label: "Accounts", selection: account ? `${account.name} · ${account.modes.map(readableLabel).join(", ")}` : "Missing", state: state("accounts", ready("Accounts") && ready("Paper and Live bindings"), false), step: "accounts" as GuidedStep },
+    { icon: BriefcaseBusiness, label: "Portfolio", selection: mandate ? `${account?.name ?? mandate.account_key} · ${percent(mandate.maximum_planned_risk_fraction)} risk` : "Missing", state: state("portfolio", ready("Account mandates"), false), step: "portfolio" as GuidedStep },
     { icon: Send, label: "Execution", selection: execution ? readableLabel(execution.name) : "Missing", state: state("oms", Boolean(execution), execution?.origin === "system"), step: "execution" as GuidedStep },
     { icon: ShieldCheck, label: "Protection", selection: protection?.name ?? "Missing", state: state("oms", Boolean(protection?.mandatory_catastrophic_backstop), protection?.origin === "system"), step: "protection" as GuidedStep },
-    { icon: Boxes, label: "Accounts", selection: account ? `${account.name} · ${account.modes.map(readableLabel).join(", ")}` : "Missing", state: state("accounts", Boolean(checks[4]?.ready && checks[6]?.ready), false), step: "accounts" as GuidedStep },
+    { icon: Network, label: "Run Plan", selection: deployment?.name ?? "Missing", state: state("assignments", Boolean(deployment && ready("Runtime compilation") && ready("QMD Watchlists") && ready("Run Plan dependencies")), false), step: "assignments" as GuidedStep },
+    { icon: LayoutGrid, label: "Canvas", selection: canvasApprovalSnapshot().ready ? `${canvasApprovalSnapshot().containerCount} containers` : "Missing", state: canvasApprovalSnapshot().ready ? "Customized" : "Invalid", step: "canvas" as GuidedStep },
   ];
 }
 

@@ -4560,6 +4560,189 @@
   }
 }
 
+/* Shared composition-studio shell. Reusable definitions stay in the library,
+   the selected object owns the center editor, and graph status stays visible. */
+.configuration-composition-workspace {
+  align-items: start;
+  display: grid;
+  gap: 16px;
+  grid-template-columns: minmax(190px, 228px) minmax(520px, 1fr) minmax(220px, 270px);
+  margin: 0 auto;
+  max-width: 1760px;
+  width: 100%;
+}
+
+.configuration-composition-workspace > .configuration-library,
+.configuration-dependency-inspector {
+  max-height: calc(100vh - 170px);
+  overflow: auto;
+  position: sticky;
+  top: 12px;
+}
+
+.configuration-composition-editor { min-width: 0; }
+
+.configuration-object-actions {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.configuration-object-actions .danger {
+  color: var(--destructive);
+}
+
+.configuration-reference-grid {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.configuration-inline-add {
+  align-items: end;
+  display: grid;
+  gap: 10px;
+  grid-template-columns: minmax(220px, 1fr) auto;
+  margin-top: 12px;
+}
+
+.configuration-data-plan-grid {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  margin: 10px 0 14px;
+}
+
+.configuration-dependency-inspector {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  display: grid;
+  gap: 0;
+  overflow-wrap: anywhere;
+}
+
+.configuration-dependency-inspector > header,
+.configuration-dependency-inspector > section,
+.configuration-dependency-inspector > a {
+  margin: 0;
+  padding: 14px;
+}
+
+.configuration-dependency-inspector > header,
+.configuration-dependency-inspector > section {
+  border-bottom: 1px solid var(--border);
+}
+
+.configuration-dependency-inspector > header,
+.configuration-dependency-inspector > section,
+.configuration-dependency-inspector > section > span {
+  display: grid;
+  gap: 5px;
+}
+
+.configuration-dependency-inspector > header span,
+.configuration-dependency-inspector h3 {
+  color: var(--muted-foreground);
+  font-size: 9.5px;
+  font-weight: 650;
+  letter-spacing: .06em;
+  margin: 0;
+  text-transform: uppercase;
+}
+
+.configuration-dependency-inspector > header strong { font-size: 13px; font-weight: 620; }
+.configuration-dependency-inspector p,
+.configuration-dependency-inspector small { color: var(--muted-foreground); font-size: 10.5px; line-height: 1.45; margin: 0; }
+.configuration-dependency-inspector code { font-size: 10px; }
+.configuration-dependency-inspector > a { border: 0; border-radius: 0 0 9px 9px; justify-content: space-between; }
+
+.configuration-session-state {
+  border-right: 1px solid var(--border);
+  display: grid;
+  gap: 1px;
+  padding-right: 12px;
+  text-align: right;
+}
+
+.configuration-session-state span {
+  color: var(--muted-foreground);
+  font-size: 9px;
+  font-weight: 650;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+}
+
+.configuration-session-state strong { font-size: 11px; font-weight: 600; }
+
+.configuration-empty-composer {
+  align-items: center;
+  display: grid;
+  gap: 14px;
+  justify-items: center;
+  min-height: 320px;
+}
+
+.configuration-domain-tabs {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  overflow: hidden;
+}
+
+.configuration-domain-tabs button {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  border-right: 1px solid var(--border);
+  color: var(--muted-foreground);
+  cursor: pointer;
+  display: flex;
+  font: inherit;
+  font-size: 11px;
+  gap: 8px;
+  justify-content: center;
+  min-height: 42px;
+  padding: 8px 12px;
+}
+
+.configuration-domain-tabs button:last-child { border-right: 0; }
+.configuration-domain-tabs button:hover { background: var(--surface-alt); color: var(--foreground); }
+.configuration-domain-tabs button[aria-current="page"] { box-shadow: inset 0 -2px var(--configuration-accent); color: var(--foreground); font-weight: 620; }
+.configuration-domain-tabs em { background: var(--surface-alt); border-radius: 999px; font-size: 9px; font-style: normal; min-width: 20px; padding: 2px 6px; }
+
+@media (max-width: 1320px) {
+  .configuration-composition-workspace {
+    grid-template-columns: minmax(190px, 220px) minmax(0, 1fr);
+  }
+
+  .configuration-dependency-inspector {
+    grid-column: 2;
+    max-height: none;
+    position: static;
+  }
+}
+
+@media (max-width: 900px) {
+  .configuration-composition-workspace { grid-template-columns: minmax(0, 1fr); }
+  .configuration-composition-workspace > .configuration-library,
+  .configuration-dependency-inspector { grid-column: 1; max-height: none; position: static; }
+  .configuration-reference-grid { grid-template-columns: minmax(0, 1fr); }
+}
+
+@media (max-width: 620px) {
+  .configuration-inline-add { grid-template-columns: minmax(0, 1fr); }
+  .configuration-object-actions { justify-content: flex-start; }
+  .configuration-session-state { border-right: 0; padding-right: 0; text-align: left; }
+  .configuration-domain-tabs { grid-template-columns: minmax(0, 1fr); }
+  .configuration-domain-tabs button { border-bottom: 1px solid var(--border); border-right: 0; }
+  .configuration-domain-tabs button:last-child { border-bottom: 0; }
+}
+
 /* Abstraction cards are the single presentation contract. These compatibility
    rules prevent retired page-specific card selectors from changing its anatomy. */
 .trading-configuration-page .discovery-watchlist-available .abstraction-card,

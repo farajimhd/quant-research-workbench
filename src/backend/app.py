@@ -901,6 +901,7 @@ class TradingConfigurationPublishSubmit(BaseModel):
     canvas_revision: str = Field(min_length=1, max_length=128)
     canvas_profile: dict[str, Any]
     configuration: dict[str, Any]
+    run_plan_id: str = Field(default="", max_length=200)
     strategy_profile_id: str = Field(default="", max_length=200)
 
 
@@ -4557,6 +4558,7 @@ def trading_configuration_publish(
             label=payload.label,
             canvas_revision=payload.canvas_revision,
             canvas_profile=payload.canvas_profile,
+            run_plan_id=payload.run_plan_id,
             strategy_profile_id=payload.strategy_profile_id,
             configuration=payload.configuration,
         )

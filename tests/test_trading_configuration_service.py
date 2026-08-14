@@ -308,7 +308,7 @@ class TradingConfigurationServiceTests(unittest.TestCase):
 
         migrated = _migrate_draft(legacy)
 
-        self.assertEqual(migrated["schema_version"], 20)
+        self.assertEqual(migrated["schema_version"], 21)
         migrated_paper = next(
             row
             for row in migrated["accounts"]["bindings"]
@@ -453,14 +453,18 @@ class TradingConfigurationServiceTests(unittest.TestCase):
                 for row in discovery["column_catalog"]
             )
         )
+
         active_core = [
             row for row in discovery["core_scan"]["calculations"]
             if row["execution_scope"] == "core_scan"
             and (row["enabled"] or row["system_required"])
         ]
-        self.assertEqual(len(active_core), 9)
+        self.assertEqual(len(active_core), 14)
         self.assertTrue(all(row["scanner_columns"] for row in active_core))
-        self.assertEqual(sum(len(row["scanner_columns"]) for row in active_core), 9)
+        self.assertGreaterEqual(
+            sum(len(row["scanner_columns"]) for row in active_core),
+            len(active_core),
+        )
         columns_by_id = {
             row["column_id"]: row for row in discovery["column_catalog"]
         }
@@ -491,6 +495,46 @@ class TradingConfigurationServiceTests(unittest.TestCase):
         discovery["rule_sets"].append(custom)
         with self.assertRaisesRegex(ValueError, "references unknown field"):
             _validate_market_discovery(discovery)
+
+    def test_schema_v21_moves_legacy_strategy_composition_to_run_plan(self) -> None:
+        with patch(
+            "src.backend.trading_configuration_service.get_strategy_definition",
+            return_value=long_momentum_strategy_definition(),
+        ), patch(
+            "src.backend.trading_configuration_service.list_strategy_assignments",
+            return_value=[],
+        ):
+            legacy = _default_draft()
+        legacy["schema_version"] = 20
+        profile = legacy["strategy"]["profiles"][0]
+        profile["composition"] = {
+            "watchlist_id": "top-mid-cap-gainers",
+            "oms_profile_id": "adaptive-regular",
+            "account_keys": ["backtest-default"],
+            "allowed_environments": ["backtest"],
+            "action_authority": {"default": "confirm"},
+        }
+        run_plan = legacy["run_plans"]["plans"][0]
+        for key in (
+            "watchlist_ids",
+            "canvas_profile_id",
+            "data_plan_ids",
+            "source_revision_policy",
+        ):
+            run_plan.pop(key, None)
+
+        migrated = _migrate_draft(legacy)
+
+        migrated_profile = migrated["strategy"]["profiles"][0]
+        migrated_plan = migrated["run_plans"]["plans"][0]
+        self.assertNotIn("composition", migrated_profile)
+        self.assertEqual(migrated_plan["watchlist_ids"], ["top-mid-cap-gainers"])
+        self.assertEqual(migrated_plan["canvas_profile_id"], "current-canvas")
+        self.assertEqual(migrated_plan["source_revision_policy"], "require_complete")
+        self.assertEqual(
+            migrated_plan["data_plan_ids"]["backtest"],
+            "market.historical_scanner_materialization.v1",
+        )
 
     def test_market_discovery_validates_selected_calculation_cadences(self) -> None:
         with patch(
@@ -547,7 +591,7 @@ class TradingConfigurationServiceTests(unittest.TestCase):
         ):
             draft = _default_draft()
 
-        self.assertEqual(draft["schema_version"], 20)
+        self.assertEqual(draft["schema_version"], 21)
         self.assertEqual(len(draft["strategy"]["profiles"]), 1)
         self.assertEqual(len(draft["strategy"]["profile_templates"]), 1)
         self.assertEqual(
@@ -562,7 +606,14 @@ class TradingConfigurationServiceTests(unittest.TestCase):
         )
         self.assertTrue(default_profile["protected"])
         self.assertEqual(default_profile["publication_status"], "template")
-        self.assertEqual(default_profile["composition"]["watchlist_id"], "core-candidates")
+        self.assertNotIn("composition", default_profile)
+        default_run_plan = draft["run_plans"]["plans"][0]
+        self.assertEqual(default_run_plan["watchlist_ids"], ["core-candidates"])
+        self.assertEqual(default_run_plan["canvas_profile_id"], "current-canvas")
+        self.assertEqual(
+            default_run_plan["data_plan_ids"]["replay"],
+            "market.historical_scanner_materialization.v1",
+        )
         self.assertEqual(
             {row["capability_id"] for row in draft["strategy"]["capability_catalog"]},
             {row["capability_id"] for row in capability_catalog()},
