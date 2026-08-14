@@ -47,7 +47,7 @@ from src.trading_runtime.strategy_campaign import validate_campaign_policy
 from src.trading_runtime.taxonomy import StrategyTaxonomy
 
 
-CONFIGURATION_SCHEMA_VERSION = 21
+CONFIGURATION_SCHEMA_VERSION = 22
 CONFIGURATION_SECTIONS = {
     "strategy",
     "market_discovery",
@@ -913,7 +913,7 @@ def _catalog_stage_rules(
         catalog.append({
             "rule_set_id": rule_set_id,
             "name": str(group.pop("label", "") or f"Rule set {index + 1}"),
-            "description": "",
+            "description": f"Reusable {context.replace('-', ' ')} evidence with {len(group.get('conditions') or [])} registered condition(s).",
             **group,
         })
         children.append({"kind": "rule_set", "rule_set_id": rule_set_id})
@@ -993,6 +993,27 @@ def _migrate_profile_rule_catalog(profile: dict[str, Any]) -> None:
         canonical_by_fingerprint[fingerprint] = rule_set_id
         remapped_ids[rule_set_id] = rule_set_id
         deduplicated.append(rule_set)
+
+    origin = str(profile.get("origin") or "user")
+    atomic = origin == "system"
+    for rule_set in deduplicated:
+        rule_set_id = str(rule_set.get("rule_set_id") or "rule-set")
+        readable_name = " ".join(part.capitalize() for part in rule_set_id.replace("_", "-").split("-") if part)
+        rule_set["name"] = str(rule_set.get("name") or readable_name or "Rule set")
+        rule_set["description"] = str(
+            rule_set.get("description")
+            or f"Reusable strategy evidence composed from {len(rule_set.get('conditions') or [])} registered condition(s)."
+        )
+        rule_set["scope"] = str(rule_set.get("scope") or "strategy")
+        rule_set["origin"] = str(rule_set.get("origin") or origin)
+        rule_set["atomic"] = bool(rule_set.get("atomic", atomic))
+        rule_set["editable"] = bool(rule_set.get("editable", not rule_set["atomic"]))
+        rule_set["protected"] = bool(rule_set.get("protected", rule_set["atomic"]))
+        rule_set["revision"] = max(1, int(rule_set.get("revision") or 1))
+        rule_set["publication_status"] = str(
+            rule_set.get("publication_status")
+            or ("published" if rule_set["atomic"] else "draft")
+        )
 
     def remap_expression(expression: dict[str, Any]) -> dict[str, Any]:
         result = deepcopy(expression)
@@ -1917,15 +1938,53 @@ def _watchlist_condition(condition_id: str, source_id: str, comparator: str, val
 
 
 def _watchlist_rule(rule_set_id: str, name: str, description: str, conditions: list[dict[str, Any]], *, operator: str = "all") -> dict[str, Any]:
-    return {"rule_set_id": rule_set_id, "name": name, "description": description, "enabled": True, "operator": operator, "required_score": 1.0, "conditions": conditions, "scope": "watchlist"}
+    return {
+        "rule_set_id": rule_set_id,
+        "name": name,
+        "description": description,
+        "enabled": True,
+        "operator": operator,
+        "required_score": 1.0,
+        "conditions": conditions,
+        "scope": "watchlist",
+        "origin": "system",
+        "atomic": True,
+        "editable": False,
+        "protected": True,
+        "revision": 1,
+        "publication_status": "published",
+    }
+
+
+def _normalize_data_rule_set_metadata(rule_set: dict[str, Any], *, atomic: bool) -> None:
+    rule_set_id = str(rule_set.get("rule_set_id") or "rule-set")
+    readable_name = " ".join(
+        part.capitalize()
+        for part in rule_set_id.replace("_", "-").split("-")
+        if part
+    )
+    rule_set["name"] = str(rule_set.get("name") or readable_name or "Rule set")
+    rule_set["description"] = str(
+        rule_set.get("description")
+        or f"Reusable data rule composed from {len(rule_set.get('conditions') or [])} registered condition(s)."
+    )
+    rule_set["scope"] = str(rule_set.get("scope") or "shared")
+    rule_set["origin"] = "system" if atomic else str(rule_set.get("origin") or "user")
+    rule_set["atomic"] = atomic
+    rule_set["editable"] = not atomic
+    rule_set["protected"] = atomic
+    rule_set["revision"] = max(1, int(rule_set.get("revision") or 1))
+    rule_set["publication_status"] = str(
+        rule_set.get("publication_status") or ("published" if atomic else "draft")
+    )
 
 
 def _default_watchlist_rule_sets() -> list[dict[str, Any]]:
     categories = [
-        _watchlist_rule("watchlist-penny-stocks", "Penny Stocks", "Retains positive-priced instruments trading below $1.", [_watchlist_condition("penny-positive", "market.last_price", "greater_than", 0, "1s"), _watchlist_condition("penny-under-one", "market.last_price", "less_than", 1, "1s")]),
-        _watchlist_rule("watchlist-small-caps", "Small Caps", "Retains issuers with positive market capitalization below $2 billion.", [_watchlist_condition("small-cap-positive", "reference.market_cap", "greater_than", 0, "1d"), _watchlist_condition("small-cap-maximum", "reference.market_cap", "less_than", 2_000_000_000, "1d")]),
-        _watchlist_rule("watchlist-mid-caps", "Mid Caps", "Retains issuers from $2 billion up to $10 billion in market capitalization.", [_watchlist_condition("mid-cap-minimum", "reference.market_cap", "greater_or_equal", 2_000_000_000, "1d"), _watchlist_condition("mid-cap-maximum", "reference.market_cap", "less_than", 10_000_000_000, "1d")]),
-        _watchlist_rule("watchlist-large-caps", "Large Caps", "Retains issuers with at least $10 billion in market capitalization.", [_watchlist_condition("large-cap-minimum", "reference.market_cap", "greater_or_equal", 10_000_000_000, "1d")]),
+        _watchlist_rule("watchlist-penny-stocks", "Sub-dollar price band", "Passes when last price is positive and below $1.", [_watchlist_condition("penny-positive", "market.last_price", "greater_than", 0, "1s"), _watchlist_condition("penny-under-one", "market.last_price", "less_than", 1, "1s")]),
+        _watchlist_rule("watchlist-small-caps", "Small-cap market value band", "Passes when market capitalization is positive and below $2 billion.", [_watchlist_condition("small-cap-positive", "reference.market_cap", "greater_than", 0, "1d"), _watchlist_condition("small-cap-maximum", "reference.market_cap", "less_than", 2_000_000_000, "1d")]),
+        _watchlist_rule("watchlist-mid-caps", "Mid-cap market value band", "Passes when market capitalization is at least $2 billion and below $10 billion.", [_watchlist_condition("mid-cap-minimum", "reference.market_cap", "greater_or_equal", 2_000_000_000, "1d"), _watchlist_condition("mid-cap-maximum", "reference.market_cap", "less_than", 10_000_000_000, "1d")]),
+        _watchlist_rule("watchlist-large-caps", "Large-cap market value band", "Passes when market capitalization is at least $10 billion.", [_watchlist_condition("large-cap-minimum", "reference.market_cap", "greater_or_equal", 10_000_000_000, "1d")]),
     ]
     float_rules = []
     for row in _market_discovery_classifications():
@@ -2374,6 +2433,8 @@ def _default_draft() -> dict[str, Any]:
         runtime_assignments,
         list(system_profiles[0].get("rule_set_catalog") or []),
     )
+    system_profiles[0]["rule_set_catalog"] = deepcopy(discovery["rule_sets"])
+    profile_templates[0]["rule_set_catalog"] = deepcopy(discovery["rule_sets"])
     policy = asdict(PortfolioPolicy())
     bindings = [
         {
@@ -3204,6 +3265,15 @@ def _migrate_draft(raw: dict[str, Any]) -> dict[str, Any]:
             {**default_rule_set, **current_rule_sets.pop(str(default_rule_set.get("rule_set_id") or ""), {})}
             for default_rule_set in defaults["market_discovery"].get("rule_sets") or []
         ] + list(current_rule_sets.values())
+        default_rule_set_ids = {
+            str(row.get("rule_set_id") or "")
+            for row in defaults["market_discovery"].get("rule_sets") or []
+        }
+        for rule_set in result["market_discovery"]["rule_sets"]:
+            _normalize_data_rule_set_metadata(
+                rule_set,
+                atomic=str(rule_set.get("rule_set_id") or "") in default_rule_set_ids,
+            )
         default_calculations = list(defaults["market_discovery"]["core_scan"]["calculations"])
         current_calculations = {
             str(row.get("capability_id") or ""): deepcopy(row)
@@ -3976,6 +4046,10 @@ def _validate_strategy_lifecycle(
 
 
 def _validate_rule_set_definition(rule_set: dict[str, Any], label: str) -> None:
+    if not str(rule_set.get("name") or "").strip():
+        raise ValueError(f"{label} requires a name")
+    if not str(rule_set.get("description") or "").strip():
+        raise ValueError(f"{label} requires a description")
     operator = str(rule_set.get("operator") or "")
     if operator not in {"all", "any", "score"}:
         raise ValueError(f"{label} has unsupported condition logic")

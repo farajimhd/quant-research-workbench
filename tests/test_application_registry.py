@@ -354,7 +354,7 @@ class ApplicationRegistryTests(unittest.TestCase):
                         },
                     ]
                 },
-                "rule_sets": [{"rule_set_id": "gainers", "name": "Gainers", "conditions": [{"condition_id": "change-positive", "left_source_id": "market.change_pct", "comparator": "greater_than", "value": 0}]}],
+                "rule_sets": [{"rule_set_id": "gainers", "name": "Gainers", "description": "Positive change rule.", "atomic": True, "conditions": [{"condition_id": "change-positive", "left_source_id": "market.change_pct", "comparator": "greater_than", "value": 0}]}],
                 "watchlists": [{
                     "watchlist_id": "top-gainers",
                     "name": "Top gainers",
@@ -381,6 +381,13 @@ class ApplicationRegistryTests(unittest.TestCase):
         self.assertIn("reference.market_cap", definitions)
         self.assertIn("column.last_price", definitions)
         self.assertIn("rule_set.gainers", definitions)
+        self.assertFalse(definitions["rule_set.gainers"]["configurable"])
+        self.assertEqual(definitions["rule_set.gainers"]["configuration_mode"], "locked")
+        self.assertEqual(definitions["signal.company_news"]["kind"], "signal")
+        self.assertEqual(
+            definitions["signal.company_news"]["relationships"]["producer_ids"],
+            ["news_gateway", "text_intelligence"],
+        )
         self.assertIn("condition.gainers.change-positive", definitions)
         self.assertEqual(definitions["instrument-identity"]["kind"], "processing_step")
         self.assertFalse(definitions["instrument-identity"]["configurable"])

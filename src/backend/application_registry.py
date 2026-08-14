@@ -177,7 +177,7 @@ REGISTRY_TYPES = (
     RegistryTypeDefinition("source", "Source", "External or persisted evidence authority.", "server", "slate", "locked", False),
     RegistryTypeDefinition("processing_step", "Processing step", "Compiled state transition in an owned event path.", "cable", "cyan", "locked", True),
     RegistryTypeDefinition("derivation", "Derivation", "Vectorized, set-based, or incremental transformation from Fields to Fields.", "sigma", "violet", "parameterized_reference", True),
-    RegistryTypeDefinition("signal", "Signal", "Versioned event lifecycle derived from registered Fields.", "activity", "rose", "parameterized_reference", True),
+    RegistryTypeDefinition("signal", "Signal", "Versioned event lifecycle published by QMD, News, SEC, model, or another registered producer.", "activity", "rose", "parameterized_reference", True),
     RegistryTypeDefinition("event_schema", "Event schema", "Typed event identity, clocks, properties, and evidence.", "braces", "rose", "locked", False),
     RegistryTypeDefinition("product", "Product", "Delivered record, dataset, or stream over registered definitions.", "package", "slate", "locked", False),
     RegistryTypeDefinition("query_plan", "Query plan", "Bounded causal retrieval implementation.", "route", "slate", "locked", False),
@@ -1564,6 +1564,40 @@ def _application_information_definitions() -> list[dict[str, Any]]:
         )
         for presentation in DISCOVERY_FIELD_PRESENTATIONS
     )
+    rows.extend((
+        _registry_definition(
+            "signal.company_news",
+            "signal",
+            "Company news intelligence",
+            "Versioned company-news event lifecycle published from News Gateway content and validated Text Intelligence outputs.",
+            "text_intelligence",
+            1,
+            "integration_pending",
+            configurable=False,
+            configuration_mode="locked",
+            tags=("news", "external_service", "event_signal"),
+            relationships={
+                "field_ids": ("signal.news_labeled", "signal.company_news.score"),
+                "producer_ids": ("news_gateway", "text_intelligence"),
+            },
+        ),
+        _registry_definition(
+            "signal.sec_filing",
+            "signal",
+            "SEC filing intelligence",
+            "Versioned filing-event lifecycle published from SEC Gateway evidence and validated Text Intelligence outputs.",
+            "text_intelligence",
+            1,
+            "integration_pending",
+            configurable=False,
+            configuration_mode="locked",
+            tags=("sec", "external_service", "event_signal"),
+            relationships={
+                "field_ids": ("signal.sec_labeled", "signal.sec_filing.score"),
+                "producer_ids": ("sec_gateway", "text_intelligence"),
+            },
+        ),
+    ))
     return rows
 
 
@@ -1635,8 +1669,14 @@ def _configuration_information_definitions(
                 ))
             rows.append(_registry_definition(
                 f"rule_set.{rule_id}", "rule_set", str(rule_set.get("name") or rule_id),
-                str(rule_set.get("description") or "Reusable Watchlist rule composition."), "application_configuration", 1,
-                "implemented", configuration_binding_id="market_discovery.rules",
+                str(rule_set.get("description") or "Reusable rule composition."),
+                str(rule_set.get("origin") or "application_configuration"),
+                int(rule_set.get("revision") or 1),
+                "implemented",
+                configurable=not bool(rule_set.get("atomic")),
+                configuration_mode="locked" if bool(rule_set.get("atomic")) else "editable_instance",
+                configuration_binding_id="market_discovery.rules",
+                tags=(str(rule_set.get("scope") or "shared"), "atomic" if rule_set.get("atomic") else "custom"),
                 relationships={"condition_ids": tuple(condition_ids)},
             ))
     for watchlist in discovery.get("watchlists") or []:

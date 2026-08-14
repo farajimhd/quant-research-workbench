@@ -308,7 +308,7 @@ class TradingConfigurationServiceTests(unittest.TestCase):
 
         migrated = _migrate_draft(legacy)
 
-        self.assertEqual(migrated["schema_version"], 21)
+        self.assertEqual(migrated["schema_version"], 22)
         migrated_paper = next(
             row
             for row in migrated["accounts"]["bindings"]
@@ -591,7 +591,25 @@ class TradingConfigurationServiceTests(unittest.TestCase):
         ):
             draft = _default_draft()
 
-        self.assertEqual(draft["schema_version"], 21)
+        self.assertEqual(draft["schema_version"], 22)
+        self.assertTrue(all(rule_set["name"] for rule_set in draft["market_discovery"]["rule_sets"]))
+        self.assertTrue(all(rule_set["description"] for rule_set in draft["market_discovery"]["rule_sets"]))
+        self.assertTrue(all(rule_set["atomic"] for rule_set in draft["market_discovery"]["rule_sets"]))
+        self.assertTrue(all(not rule_set["editable"] for rule_set in draft["market_discovery"]["rule_sets"]))
+        self.assertTrue(
+            {"Penny Stocks", "Small Caps", "Mid Caps", "Large Caps"}.isdisjoint(
+                {rule_set["name"] for rule_set in draft["market_discovery"]["rule_sets"]}
+            )
+        )
+        canonical_rule_set_ids = {
+            rule_set["rule_set_id"]
+            for rule_set in draft["market_discovery"]["rule_sets"]
+        }
+        self.assertTrue(all(
+            {rule_set["rule_set_id"] for rule_set in profile["rule_set_catalog"]}
+            == canonical_rule_set_ids
+            for profile in draft["strategy"]["profiles"]
+        ))
         self.assertEqual(len(draft["strategy"]["profiles"]), 1)
         self.assertEqual(len(draft["strategy"]["profile_templates"]), 1)
         self.assertEqual(

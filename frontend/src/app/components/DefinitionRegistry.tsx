@@ -24,6 +24,19 @@ export type RegistryDefinition = {
   kind: string;
   label: string;
   owner: string;
+  execution_scopes?: string[];
+  input_field_ids?: string[];
+  output_field_ids?: string[];
+  parameters?: Array<{
+    default?: unknown;
+    description?: string;
+    label?: string;
+    name: string;
+    required?: boolean;
+    type?: string;
+    unit?: string;
+  }>;
+  producer_id?: string;
   presentation: RegistryPresentation;
   registry_id: string;
   relationships?: Record<string, string[]>;

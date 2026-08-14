@@ -41,8 +41,11 @@ import { AbstractionCard, type AbstractionKind } from "../app/components/Abstrac
 import { DefinitionRegistryProvider, validateInformationRegistry, type InformationRegistry } from "../app/components/DefinitionRegistry";
 import { InventoryFilterSelect } from "../app/components/InventoryFilterSelect";
 import { formatSemanticNumber } from "../app/format";
+import { DataCatalogPage, RuleSetLibraryPage, type DataRuleSet } from "./DataConfigurationPages";
 
 export type TradingConfigurationSection =
+  | "data_catalog"
+  | "rule_sets"
   | "strategy"
   | "discovery"
   | "assignments"
@@ -171,14 +174,20 @@ type RuleGroup = {
 };
 
 type RuleSetDefinition = {
+  atomic?: boolean;
   conditions: RuleCondition[];
   description: string;
   enabled: boolean;
+  editable?: boolean;
   name: string;
   operator: "all" | "any" | "score";
   required_score: number;
   rule_set_id: string;
-  scope?: "strategy" | "watchlist";
+  origin?: string;
+  protected?: boolean;
+  publication_status?: string;
+  revision?: number;
+  scope?: "shared" | "strategy" | "watchlist";
 };
 
 type RuleExpression =
@@ -900,6 +909,18 @@ type Revision = {
 };
 
 const SECTION_META = {
+  data_catalog: {
+    eyebrow: "Data configuration · semantic authority",
+    icon: Boxes,
+    title: "Data Catalog",
+    description: "Search and inspect every registered field, derivation, and signal used throughout the application.",
+  },
+  rule_sets: {
+    eyebrow: "Data configuration · reusable decisions",
+    icon: BookOpenCheck,
+    title: "Rule Set Library",
+    description: "Inspect atomic defaults and compose editable rule sets from registered data definitions.",
+  },
   discovery: {
     eyebrow: "QMD discovery authority",
     icon: ScanSearch,
@@ -1136,8 +1157,8 @@ export function TradingConfigurationPage({ section }: { section: TradingConfigur
         </div>
         <div className="configuration-header-controls">
           {draft ? <div className="configuration-session-state"><span>Session draft</span><strong>Schema v{draft.schema_version}</strong></div> : null}
-          {draft && section !== "revisions" ? <button className="button compact" onClick={validateSession} type="button"><BadgeCheck size={14} /> Validate</button> : null}
-          {draft && section !== "revisions" ? <a className="button compact primary" href="#revision-configuration">Review release <ChevronRight size={13} /></a> : null}
+          {draft && !["revisions", "data_catalog"].includes(section) ? <button className="button compact" onClick={validateSession} type="button"><BadgeCheck size={14} /> Validate</button> : null}
+          {draft && !["revisions", "data_catalog"].includes(section) ? <a className="button compact primary" href="#revision-configuration">Review release <ChevronRight size={13} /></a> : null}
           <RevisionBadge approved={approved} />
         </div>
       </header>
@@ -1160,7 +1181,18 @@ export function TradingConfigurationPage({ section }: { section: TradingConfigur
         </div>
       ) : null}
 
-      {section !== "strategy" && section !== "discovery" && section !== "revisions" && draft ? (
+      {section === "data_catalog" ? <DataCatalogPage registry={definitionRegistry} /> : section === "rule_sets" && draft ? <RuleSetLibraryPage
+        fields={definitionRegistry.definitions}
+        ruleSets={draft.market_discovery.rule_sets as DataRuleSet[]}
+        onChange={(ruleSets) => updateConfigurationBook({
+          ...draft,
+          market_discovery: { ...draft.market_discovery, rule_sets: ruleSets as RuleSetDefinition[] },
+          strategy: {
+            ...draft.strategy,
+            profiles: draft.strategy.profiles.map((profile) => ({ ...profile, rule_set_catalog: ruleSets as RuleSetDefinition[] })),
+          },
+        })}
+      /> : (["assignments", "portfolio", "oms", "accounts"] as TradingConfigurationSection[]).includes(section) && draft ? (
         <ConfigurationSectionStudio
           draft={draft}
           guided={<GuidedConfiguration
@@ -1178,9 +1210,9 @@ export function TradingConfigurationPage({ section }: { section: TradingConfigur
             revisions={revisions}
             section={section}
           />}
-          onChange={(value) => updateDraft(section, value as never)}
+          onChange={(value) => updateDraft(section as ConfigurableSection, value as never)}
           onDraftChange={updateConfigurationBook}
-          section={section}
+          section={section as ConfigurableSection}
         />
       ) : experience === "guided" && draft ? (
         <div className="configuration-guided-workspace"><GuidedConfiguration
@@ -1244,6 +1276,8 @@ function ConfigurationExperienceBar({ experience, onExperienceChange, onOpenHome
 }
 
 const EXPERT_GUIDANCE: Record<Exclude<TradingConfigurationSection, "revisions">, { authority: string; outcome: string; subjects: string[] }> = {
+  data_catalog: { authority: "Producer registries own data semantics; this page is read-only documentation.", outcome: "One complete searchable catalog of registered fields, derivations, and signals.", subjects: ["Semantic contracts", "Producer provenance", "Dependencies and parameters"] },
+  rule_sets: { authority: "Rule sets reference registered data definitions without copying their semantics.", outcome: "Named, described reusable decisions with locked atomic defaults and editable custom definitions.", subjects: ["Atomic defaults", "Custom rule sets", "Registered operands"] },
   discovery: { authority: "QMD owns the broad universe, observations, candidate ranking, and point-in-time Watchlist membership.", outcome: "One visible Core Scan and reusable Watchlists selected by Strategies.", subjects: ["QMD capabilities", "Core Scan", "Watchlists and membership history"] },
   strategy: { authority: "Strategy owns trading decisions. Portfolio sizes approved intent; OMS executes it.", outcome: "A reusable Strategy Profile with explicit lifecycle rules and optional capabilities.", subjects: ["Behavior and evaluation", "Entry, add, and reentry", "Exit and capabilities"] },
   assignments: { authority: "Run Plan binds reusable objects to environments and authority.", outcome: "A runnable plan with explicit strategy, accounts, OMS, and safety.", subjects: ["Watch universe", "Profile and OMS", "Action authority"] },
@@ -2275,12 +2309,7 @@ function MarketDiscoveryStudio({ onChange, section }: { onChange: (value: Market
 
   return <div className="strategy-studio-workspace market-discovery-studio">
     <nav className="strategy-editor-toolbar" aria-label="Market Discovery navigation">
-      <span><strong>QMD MARKET DISCOVERY</strong><small>{mode === "catalog" ? "Capability Catalog" : mode === "enrichments" ? "Enrichment Field Registry" : "Guided Configuration"}</small></span>
-      <div className="strategy-editor-modes" role="tablist" aria-label="Market Discovery views">
-        <button aria-selected={mode === "catalog"} onClick={() => setMode("catalog")} role="tab" type="button"><Search size={14} /> Capability Catalog</button>
-        <button aria-selected={mode === "enrichments"} onClick={() => setMode("enrichments")} role="tab" type="button"><FileInput size={14} /> Enrichment Fields</button>
-        <button aria-selected={mode === "guided"} onClick={() => setMode("guided")} role="tab" type="button"><BookOpenCheck size={14} /> Guided Configuration</button>
-      </div>
+      <span><strong>QMD MARKET DISCOVERY</strong><small>Guided Configuration</small></span>
     </nav>
     {mode === "catalog" ? <div className="configuration-workbench strategy-editor-catalog discovery-capability-workbench">
       <aside className="strategy-parameter-catalog">
@@ -4517,7 +4546,7 @@ function AddStepsEditor({ catalog, eligibleSessions, executionPolicies, onChange
   );
 }
 
-type ConfigurableSection = Exclude<TradingConfigurationSection, "strategy" | "discovery" | "revisions">;
+type ConfigurableSection = Extract<TradingConfigurationSection, "assignments" | "portfolio" | "oms" | "accounts">;
 type SectionStudioView = "guided" | "catalog" | "structure";
 
 const SECTION_STUDIO_COPY: Record<ConfigurableSection, { managed: string; title: string }> = {

@@ -31,6 +31,8 @@ PAGES = (
     "backtest-debug",
     "research-workspace",
     "canvas-configuration",
+    "data-catalog-configuration",
+    "rule-set-configuration",
     "market-discovery-configuration",
     "strategy-configuration",
     "assignment-configuration",
@@ -52,7 +54,7 @@ VIEWPORTS = {
     "normal": {"width": 1600, "height": 1000},
     "compact": {"width": 1280, "height": 720},
 }
-REPRESENTATIVE_PAGES = ("real-live-trading", "replay-trading", "backtest-trading", "backtest-debug", "research-workspace", "canvas-configuration", "market-discovery-configuration", "portfolio-configuration", "oms-configuration", "account-configuration", "revision-configuration", "canvas-focus", "services-dashboard")
+REPRESENTATIVE_PAGES = ("real-live-trading", "replay-trading", "backtest-trading", "backtest-debug", "research-workspace", "canvas-configuration", "data-catalog-configuration", "rule-set-configuration", "market-discovery-configuration", "portfolio-configuration", "oms-configuration", "account-configuration", "revision-configuration", "canvas-focus", "services-dashboard")
 REPRESENTATIVE_THEMES = ("light", "dark")
 TARGETED_SCALES = (0.8, 1.0, 1.25)
 
@@ -639,22 +641,20 @@ def validate_canvas_interactions(
         ):
             return issues
         try:
-            page.get_by_role("tab", name="Guided Configuration", exact=True).click()
             page.get_by_role("button", name=re.compile(r"^3\s+Watchlists$")).click()
             available = page.get_by_label("Available Watchlists")
             available.get_by_role("button", name="Configure").first.click()
             page.get_by_label("Watchlist configuration steps").get_by_role(
                 "button", name=re.compile(r"^2\s+Rules$")
             ).click()
-            rule_lookup = page.get_by_role("button", name="Rule to include", exact=True)
-            include_rule = page.get_by_role("button", name="Include rule", exact=True)
+            rule_lookup = page.get_by_role("button", name="Rule set to add", exact=True)
+            include_rule = page.get_by_role("button", name="Add rule set", exact=True)
             initial_cards = page.locator(".discovery-rule-card-list > article").count()
             if rule_lookup.count() != 1 or rule_lookup.is_disabled() or include_rule.count() != 1:
                 issues.append("Watchlist rules do not expose the QMD registry inclusion lookup")
             else:
                 rule_lookup.click()
-                page.get_by_role("searchbox", name="Search Rule to include").fill("Penny Stocks")
-                page.get_by_role("option", name=re.compile(r"^Penny Stocks\b")).click()
+                page.get_by_role("option").nth(1).click()
                 if include_rule.is_disabled():
                     issues.append("Watchlist rule inclusion stays disabled after selecting a QMD rule")
                 else:
