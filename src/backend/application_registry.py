@@ -927,16 +927,16 @@ def _fields() -> tuple[FieldDefinition, ...]:
                 "market_reference",
                 "reference_gateway",
                 f"q_live.{table}",
-                "reference.ticker_facts.v1" if table not in {"market_security_market_snapshot_v1", "market_security_float_v1", "market_short_interest_v1"} else "reference.scanner_asof.v1",
+                "reference.scanner_asof.v1",
                 value_type="string" if name in {"float_source", "float_quality", "borrow_status"} else "boolean" if name == "reg_sho_threshold" else "number",
-                unit="shares" if name in {"shares_outstanding", "float_shares", "short_interest", "short_volume", "fails_to_deliver", "borrow_shares"} else "percent" if name.endswith("_pct") else "currency" if name in {"market_cap", "ftd_value", "borrow_fee"} else "scalar",
+                unit="shares" if name in {"shares_outstanding", "float_shares", "short_interest", "short_volume", "fails_to_deliver", "borrow_shares"} else "percent" if name.endswith("_pct") or name == "borrow_fee" else "currency" if name in {"market_cap", "ftd_value"} else "scalar",
                 historical_support="live_observation_only" if live_only else "point_in_time",
                 modes=("live", "paper") if live_only else ALL_MODES,
                 status="live_only" if live_only else "implemented",
-                coverage_query_plan="reference.ticker_facts.v1",
+                coverage_query_plan="reference.scanner_asof.v1",
             ))
 
-    for name in ("sector", "industry", "market_cap", "float"):
+    for name in ("sector", "industry", "market_cap", "float", "short_pressure"):
         rows.append(_field(f"classification.{name}", "classification", "backend", "derived://reference-classification", "reference.scanner_asof.v1", value_type="string", provenance="derived"))
 
     corporate_events = {
@@ -1028,6 +1028,8 @@ DISCOVERY_FIELD_PRESENTATIONS = (
     DiscoveryFieldPresentation("market.relative_volume", "market.relative_volume", "relative_volume", "Relative volume", "Cumulative volume versus the aligned 20-session baseline.", "indicator", True, True, True, ("greater_or_equal", "greater_than", "less_or_equal", "less_than", "equals"), ("10s", "30s", "1m")),
     DiscoveryFieldPresentation("indicator.vwap.value", "market.vwap", "vwap", "VWAP", "Causal session volume-weighted average eligible trade price.", "indicator", True, True, True, ("greater_or_equal", "greater_than", "less_or_equal", "less_than", "equals", "above_by_bps"), ("1s", "10s", "30s", "1m")),
     DiscoveryFieldPresentation("identity.exchange", "listing.exchange", "exchange", "Exchange", "Point-in-time listing venue for the eligible security.", "reference", False, False, True, (), ("event",)),
+    DiscoveryFieldPresentation("country.effective", "country.effective", "country", "Country", "Best point-in-time country assertion selected by the Reference Gateway.", "reference", False, False, True, (), ("1d",)),
+    DiscoveryFieldPresentation("classification.sector", "classification.sector", "sector", "Sector", "Published issuer sector or the best available SIC description.", "reference", False, False, True, (), ("1d",)),
     DiscoveryFieldPresentation("identity.is_tradable", "tradability.is_tradable", "is_tradable", "Tradable", "Whether the listing is admitted to the QMD scanner universe at this clock.", "reference", False, False, True, (), ("event",)),
     DiscoveryFieldPresentation("market.event_at", "market.event_at", "market_event_at", "Last market event", "Timestamp of the latest accepted quote or eligible trade represented by this row.", "market_data", False, False, True, (), ("event",)),
     DiscoveryFieldPresentation("market.event_age_ms", "market.event_age_ms", "market_event_age_ms", "Market data age", "Elapsed milliseconds between the scanner clock and the latest accepted market event.", "market_data", True, True, True, ("greater_or_equal", "greater_than", "less_or_equal", "less_than", "equals"), ("event",)),
@@ -1041,11 +1043,23 @@ DISCOVERY_FIELD_PRESENTATIONS = (
     DiscoveryFieldPresentation("market.liquidity_score", "market.liquidity_score", "liquidity_score", "Liquidity score", "QMD liquidity evidence score used in the base candidate ranking.", "indicator", False, True, True, ("greater_or_equal", "greater_than", "less_or_equal", "less_than", "equals"), ("event",)),
     DiscoveryFieldPresentation("reference.market_cap", "reference.market_cap", "market_cap", "Market cap", "Latest point-in-time market capitalization.", "reference", True, True, True, ("greater_or_equal", "greater_than", "less_or_equal", "less_than", "equals"), ("1d",)),
     DiscoveryFieldPresentation("classification.market_cap", "classification.market_cap", "market_cap_category", "Cap category", "Small, Mid, or Large classification from the published configuration.", "reference", True, False, True, (), ("1d",)),
+    DiscoveryFieldPresentation("reference.shares_outstanding", "reference.shares_outstanding", "shares_outstanding", "Shares outstanding", "Latest point-in-time reported share-class or provider outstanding shares.", "reference", False, True, True, ("greater_or_equal", "greater_than", "less_or_equal", "less_than", "equals"), ("1d",)),
     DiscoveryFieldPresentation("reference.float_shares", "reference.float_shares", "float_shares", "Public float", "Tradable share supply with SEC-derived fallback provenance.", "reference", True, True, True, ("greater_or_equal", "greater_than", "less_or_equal", "less_than", "equals"), ("1d",)),
     DiscoveryFieldPresentation("classification.float", "classification.float", "float_category", "Float category", "Tiny through Broad Float classification from the published configuration.", "reference", True, False, True, (), ("1d",)),
+    DiscoveryFieldPresentation("reference.float_source", "reference.float_source", "float_source", "Float source", "Reference publication tag identifying the evidence used for public float.", "reference", False, False, True, (), ("1d",)),
+    DiscoveryFieldPresentation("reference.float_quality", "reference.float_quality", "float_quality", "Float coverage", "Reported float, shares-outstanding-only, or unavailable coverage state.", "reference", False, False, True, (), ("1d",)),
+    DiscoveryFieldPresentation("classification.short_pressure", "classification.short_pressure", "short_pressure", "Short pressure", "Reference Gateway classification of reported short and volume evidence.", "reference", False, False, True, (), ("settlement",)),
     DiscoveryFieldPresentation("reference.short_interest", "reference.short_interest", "short_interest", "Short interest", "Latest reported short shares available before evaluation.", "reference", False, True, True, ("greater_or_equal", "greater_than", "less_or_equal", "less_than", "equals"), ("settlement",)),
     DiscoveryFieldPresentation("reference.short_interest_pct", "reference.short_interest_pct", "short_interest_pct", "Short % float", "Short interest divided by point-in-time public float.", "reference", True, True, True, ("greater_or_equal", "greater_than", "less_or_equal", "less_than", "equals"), ("settlement",)),
     DiscoveryFieldPresentation("reference.days_to_cover", "reference.days_to_cover", "days_to_cover", "Days to cover", "Reported short interest divided by average daily volume.", "reference", False, True, True, ("greater_or_equal", "greater_than", "less_or_equal", "less_than", "equals"), ("settlement",)),
+    DiscoveryFieldPresentation("reference.short_volume", "reference.short_volume", "short_volume", "Short volume", "Latest published daily short-sale volume available before evaluation.", "reference", False, True, True, ("greater_or_equal", "greater_than", "less_or_equal", "less_than", "equals"), ("1d",)),
+    DiscoveryFieldPresentation("reference.short_volume_pct", "reference.short_volume_pct", "short_volume_pct", "Short volume %", "Latest published short-sale volume ratio.", "reference", False, True, True, ("greater_or_equal", "greater_than", "less_or_equal", "less_than", "equals"), ("1d",)),
+    DiscoveryFieldPresentation("reference.fails_to_deliver", "reference.fails_to_deliver", "fails_to_deliver", "Fails to deliver", "Latest SEC fails-to-deliver quantity available before evaluation.", "reference", False, True, True, ("greater_or_equal", "greater_than", "less_or_equal", "less_than", "equals"), ("settlement",)),
+    DiscoveryFieldPresentation("reference.ftd_value", "reference.ftd_value", "ftd_value", "FTD value", "Fails-to-deliver quantity multiplied by its published previous close.", "reference", False, True, True, ("greater_or_equal", "greater_than", "less_or_equal", "less_than", "equals"), ("settlement",)),
+    DiscoveryFieldPresentation("reference.reg_sho_threshold", "reference.reg_sho_threshold", "reg_sho_threshold", "Reg SHO threshold", "Whether a threshold-security publication exists at the scanner clock.", "reference", False, False, True, (), ("1d",)),
+    DiscoveryFieldPresentation("reference.borrow_status", "reference.borrow_status", "borrow_status", "Borrow status", "Latest persisted broker shortability status available at the scanner clock.", "reference", False, False, True, (), ("event",)),
+    DiscoveryFieldPresentation("reference.borrow_shares", "reference.borrow_shares", "borrow_shares", "Borrow shares", "Latest persisted shortable-share quantity available at the scanner clock.", "reference", False, True, True, ("greater_or_equal", "greater_than", "less_or_equal", "less_than", "equals"), ("event",)),
+    DiscoveryFieldPresentation("reference.borrow_fee", "reference.borrow_fee", "borrow_fee", "Borrow fee", "Latest persisted broker fee or indicative borrow rate.", "reference", False, True, True, ("greater_or_equal", "greater_than", "less_or_equal", "less_than", "equals"), ("event",)),
     DiscoveryFieldPresentation("fundamental.trajectory_score", "fundamental.trajectory_score", "fundamental_trajectory", "Fundamental trajectory", "SEC-derived 0-100 financial trajectory score.", "reference", False, True, True, ("greater_or_equal", "greater_than", "less_or_equal", "less_than", "equals"), ("filing",)),
     DiscoveryFieldPresentation("fundamental.quality_score", "fundamental.quality_score", "fundamental_quality", "Fundamental quality", "Coverage and comparability of the supporting SEC facts.", "reference", False, True, True, ("greater_or_equal", "greater_than", "less_or_equal", "less_than", "equals"), ("filing",)),
     DiscoveryFieldPresentation("signal.news_labeled", "signal.news_labeled", "", "News labeled", "Validated point-in-time Text Intelligence news-label availability.", "signal", False, True, False, ("is_true",), ("event",)),

@@ -97,9 +97,21 @@ class CanvasScannerPayloadTest(unittest.TestCase):
                 "market_cap": 4_374_000_000_000,
                 "shares_outstanding": 14_687_000_000,
                 "float_shares": 14_400_000_000,
+                "float_source": "massive",
+                "float_quality": "reported",
+                "short_pressure": "moderate",
                 "short_interest": 144_248_000,
                 "short_crowding_pct": 1.0017,
+                "short_interest_pct": 1.0017,
                 "days_to_cover": 2.76,
+                "short_volume": 12_000_000,
+                "short_volume_pct": 41.2,
+                "fails_to_deliver": 120_000,
+                "ftd_value": 24_000_000,
+                "reg_sho_threshold": True,
+                "borrow_status": "shortable",
+                "borrow_shares": 3_000_000,
+                "borrow_fee": 0.25,
             }
         }
         fundamentals = {
@@ -130,6 +142,12 @@ class CanvasScannerPayloadTest(unittest.TestCase):
         row = payload["rows"][0]
         self.assertEqual(row["company_name"], "APPLE INC")
         self.assertEqual(row["float_shares"], 14_400_000_000)
+        self.assertEqual(row["market_cap_category"], "Large Cap")
+        self.assertEqual(row["float_category"], "Broad Float")
+        self.assertEqual(row["float_quality"], "reported")
+        self.assertEqual(row["short_interest_pct"], 1.0017)
+        self.assertEqual(row["short_volume_pct"], 41.2)
+        self.assertEqual(row["borrow_status"], "shortable")
         self.assertEqual(row["logo_url"], "/api/real-live-trading/logo?path=branding%2Flogo%2Faapl.svg")
         self.assertEqual(row["xbrl_quality_score"], 78.0)
         self.assertEqual(row["fundamental_operating_margin_pct"], 32.0)
@@ -138,6 +156,8 @@ class CanvasScannerPayloadTest(unittest.TestCase):
         self.assertEqual(payload["meta"]["field_coverage"]["company_name"], 100.0)
         self.assertEqual(payload["meta"]["field_coverage"]["exchange"], 0.0)
         self.assertEqual(payload["meta"]["field_coverage"]["xbrl_quality_score"], 100.0)
+        self.assertEqual(payload["meta"]["field_coverage"]["float_quality"], 100.0)
+        self.assertEqual(payload["meta"]["field_coverage"]["short_volume"], 100.0)
         self.assertEqual(payload["errors"], {})
         self.assertEqual(payload["as_of"], "2026-07-17T13:44:00+00:00")
         self.assertEqual(payload["watchlist_runtime"]["status"], "ready")

@@ -153,8 +153,15 @@ impl SharedMarketState {
     }
 
     pub async fn scanner_snapshot(&self, limit: usize) -> ScannerSnapshot {
+        self.scanner_snapshot_at(Utc::now(), limit).await
+    }
+
+    pub async fn scanner_snapshot_at(
+        &self,
+        as_of: DateTime<Utc>,
+        limit: usize,
+    ) -> ScannerSnapshot {
         let state = self.inner.read().await;
-        let as_of = Utc::now();
         let mut rows: Vec<_> = state
             .symbols
             .iter()

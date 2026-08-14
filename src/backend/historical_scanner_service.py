@@ -49,6 +49,7 @@ from src.backend.real_live_market_data.startup import logo_asset_url
 from src.backend.qmd_gateway_client import (
     normalize_qmd_indicator_scanner_row,
     normalize_qmd_market_signal,
+    normalize_qmd_symbol_snapshot,
 )
 from src.backend.ticker_facts_service import (
     FUNDAMENTAL_TAGS,
@@ -105,12 +106,25 @@ SCANNER_REFERENCE_FIELDS = (
     "exchange",
     "country",
     "sector",
+    "industry",
     "market_cap",
     "shares_outstanding",
     "float_shares",
+    "float_source",
+    "float_quality",
+    "short_pressure",
     "short_interest",
     "short_crowding_pct",
+    "short_interest_pct",
     "days_to_cover",
+    "short_volume",
+    "short_volume_pct",
+    "fails_to_deliver",
+    "ftd_value",
+    "reg_sho_threshold",
+    "borrow_status",
+    "borrow_shares",
+    "borrow_fee",
     "ipo_days_to_event",
     "split_days_to_event",
     "ibkr_conid",
@@ -528,11 +542,16 @@ def historical_scanner_qmd_projection(
     cached_rows = _cached_qmd_rows(client, snapshot_at, source_revision)
     projection: dict[str, dict[str, Any]] = {}
     active_signal_count = 0
+    market_row_count = 0
+    indicator_row_count = 0
     for cached in cached_rows:
         ticker = str(cached.get("ticker") or "").strip().upper()
         if not ticker:
             continue
+        market = json.loads(str(cached.get("market_json") or "{}"))
         indicator = json.loads(str(cached.get("indicator_json") or "{}"))
+        market_row_count += bool(market)
+        indicator_row_count += bool(indicator)
         active_signals = json.loads(str(cached.get("active_signals_json") or "[]"))
         normalized_signals = [
             normalize_qmd_market_signal(row)
@@ -549,6 +568,7 @@ def historical_scanner_qmd_projection(
         )
         active_signal_count += len(normalized_signals)
         projection[ticker] = {
+            **normalize_qmd_symbol_snapshot(market),
             **normalize_qmd_indicator_scanner_row(indicator),
             **strongest,
             "active_signal_count": len(normalized_signals),
@@ -562,7 +582,8 @@ def historical_scanner_qmd_projection(
         "qmd_active_signal_count": active_signal_count,
         "qmd_derived_materialized": True,
         "qmd_derived_schema_version": SCANNER_QMD_SCHEMA_VERSION,
-        "qmd_indicator_row_count": len(projection),
+        "qmd_market_row_count": market_row_count,
+        "qmd_indicator_row_count": indicator_row_count,
         "qmd_signal_event_count": len(signal_rows),
     }
 
@@ -623,6 +644,7 @@ def historical_scanner_qmd_projection_or_schedule(
         "qmd_derived_materialized": False,
         "qmd_derived_schema_version": SCANNER_QMD_SCHEMA_VERSION,
         "qmd_derived_status": status,
+        "qmd_market_row_count": 0,
         "qmd_indicator_row_count": 0,
         "qmd_signal_event_count": 0,
     }
@@ -678,15 +700,15 @@ def _qmd_snapshot_complete(
     )
     if not rows or int(rows[0].get("complete") or 0) != 1:
         return False
-    expected_indicators = int(rows[0].get("indicator_count") or 0)
-    if expected_indicators <= 0:
+    expected_rows = int(rows[0].get("row_count") or 0)
+    if expected_rows <= 0:
         return False
     stored = _json_rows(
         client.execute(count_query)
     )
     return bool(
         stored
-        and int(stored[0].get("indicator_count") or 0) == expected_indicators
+        and int(stored[0].get("row_count") or 0) == expected_rows
     )
 
 
@@ -735,22 +757,35 @@ def _materialize_qmd_snapshot(
         ticker = str(signal.get("ticker") or "").strip().upper()
         if ticker:
             active_by_ticker[ticker].append(signal)
-    indicator_rows = [
+    indicators_by_ticker = {
+        str(indicator.get("sym") or "").strip().upper(): indicator
+        for indicator in payload.get("indicators") or []
+        if isinstance(indicator, dict) and str(indicator.get("sym") or "").strip()
+    }
+    market_by_ticker = {
+        str(market.get("ticker") or "").strip().upper(): market
+        for market in payload.get("market_rows") or []
+        if isinstance(market, dict) and str(market.get("ticker") or "").strip()
+    }
+    snapshot_rows = [
         {
             "snapshot_at_utc": _clock(snapshot_at),
             "schema_version": SCANNER_QMD_SCHEMA_VERSION,
             "source_revision": source_revision,
             "ticker": ticker,
-            "indicator_json": json.dumps(indicator, separators=(",", ":"), sort_keys=True),
+            "market_json": json.dumps(
+                market_by_ticker.get(ticker, {}), separators=(",", ":"), sort_keys=True
+            ),
+            "indicator_json": json.dumps(
+                indicators_by_ticker.get(ticker, {}), separators=(",", ":"), sort_keys=True
+            ),
             "active_signals_json": json.dumps(
                 active_by_ticker.get(ticker, []),
                 separators=(",", ":"),
                 sort_keys=True,
             ),
         }
-        for indicator in payload.get("indicators") or []
-        if isinstance(indicator, dict)
-        if (ticker := str(indicator.get("sym") or "").strip().upper())
+        for ticker in sorted(set(indicators_by_ticker) | set(market_by_ticker))
     ]
     event_rows = [
         {
@@ -763,7 +798,7 @@ def _materialize_qmd_snapshot(
         for event in payload.get("recent_signal_events") or []
         if isinstance(event, dict) and event.get("event_id")
     ]
-    _insert_json_rows(client, SCANNER_QMD_TABLE, indicator_rows)
+    _insert_json_rows(client, SCANNER_QMD_TABLE, snapshot_rows)
     _insert_json_rows(client, SCANNER_QMD_EVENT_TABLE, event_rows)
     active_signal_count = sum(len(rows) for rows in active_by_ticker.values())
     _insert_json_rows(
@@ -776,7 +811,9 @@ def _materialize_qmd_snapshot(
                 "source_revision": source_revision,
                 "engine_version": str(payload.get("engine_version") or ""),
                 "event_count": int(payload.get("event_count") or 0),
-                "indicator_count": len(indicator_rows),
+                "market_count": len(market_by_ticker),
+                "indicator_count": len(indicators_by_ticker),
+                "row_count": len(snapshot_rows),
                 "active_signal_count": active_signal_count,
                 "signal_event_count": len(event_rows),
                 "complete": 1,

@@ -1406,6 +1406,7 @@ def normalize_qmd_symbol_snapshot(row: dict[str, Any]) -> dict[str, Any]:
     trade_rate_10s = float_value(row.get("trade_rate_10s"))
     trade_rate_60s = float_value(row.get("trade_rate_60s"))
     day_dollar_volume = float_value(row.get("day_dollar_volume"))
+    previous_close = optional_float(row.get("previous_close"))
     return {
         "ticker": ticker,
         "symbol": ticker,
@@ -1430,6 +1431,12 @@ def normalize_qmd_symbol_snapshot(row: dict[str, Any]) -> dict[str, Any]:
         "provider": "qmd-gateway",
         "live_priority": day_dollar_volume / 1_000_000 + trade_rate_10s * 100,
         "last_price": last_price,
+        "previous_close": previous_close,
+        "change_pct": (
+            (last_price / previous_close - 1) * 100
+            if previous_close is not None and previous_close > 0 and last_price > 0
+            else None
+        ),
         "volume": float_value(row.get("day_volume")),
         "liquidity_rank": day_dollar_volume / 1_000_000 + trade_rate_10s * 100,
         "liquidity_score": day_dollar_volume / 1_000_000 + trade_rate_10s * 100,

@@ -37,6 +37,7 @@ from src.trading_runtime.domain import BrokerAccount, BrokerEventEnvelope, Broke
 from src.trading_runtime.ibkr_normalizer import normalize_account_values, normalize_execution, normalize_ledger, normalize_order, normalize_position_snapshot
 from src.trading_runtime.projector import TradingStateProjector
 from src.trading_runtime.round_trips import derive_round_trip_trades
+from src.trading_runtime.watchlist_resolver import classify_watchlist_row
 
 
 NEW_YORK = ZoneInfo("America/New_York")
@@ -208,12 +209,21 @@ def scanner_snapshot_payload(
                 errors[name] = str(exc)
     if enrichment_scope == "full":
         _merge_scanner_intelligence(rows, news, sec, effective_as_of)
+    for index, row in enumerate(rows):
+        rows[index] = classify_watchlist_row(row)
     rows.sort(key=lambda row: (-abs(float(row.get("change_5m_pct") or 0)), str(row.get("symbol") or "")))
     for rank, row in enumerate(rows, start=1):
         row["rank"] = rank
     projected_fields = (
-        "company_name", "exchange", "country", "sector", "market_cap", "shares_outstanding",
-        "float_shares", "short_interest", "short_crowding_pct", "days_to_cover",
+        "company_name", "exchange", "country", "sector", "industry", "market_cap",
+        "market_cap_category", "shares_outstanding", "float_shares", "float_category",
+        "float_source", "float_quality", "short_pressure", "short_interest",
+        "short_crowding_pct", "short_interest_pct", "days_to_cover", "short_volume",
+        "short_volume_pct", "fails_to_deliver", "ftd_value", "reg_sho_threshold",
+        "borrow_status", "borrow_shares", "borrow_fee", "previous_close",
+        "market_event_at", "market_event_age_ms", "market_quality_state",
+        "market_quality_flags", "market_degradation_reason", "spread_bps",
+        "trade_rate_10s", "trade_rate_60s", "liquidity_rank", "liquidity_score",
         *SCANNER_FUNDAMENTAL_FIELDS,
         "indicator_type", "indicator_producer", "indicator_timeframe",
         "flow_structure_composite_score", "flow_structure_composite_confidence",

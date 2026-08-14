@@ -44,13 +44,33 @@ def scanner_reference_projection(cutoff: datetime, database: str = "q_live") -> 
             coalesce(nullIf(s.security_name, ''), nullIf(i.legal_name, ''), nullIf(i.issuer_name, '')) AS company_name,
             coalesce(nullIf(c.effective_country_code, ''), nullIf(i.domicile_country_code, '')) AS country,
             coalesce(nullIf(i.sector, ''), nullIf(i.industry, ''), nullIf(i.sic_description, '')) AS sector,
-            m.market_cap AS market_cap,
+            nullIf(i.industry, '') AS industry,
+            coalesce(m.market_cap, scanner.market_cap) AS market_cap,
             coalesce(f.shares_outstanding, m.shares_outstanding) AS shares_outstanding,
-            f.free_float AS float_shares,
-            si.short_interest AS short_interest,
-            if(f.free_float > 0 AND si.short_interest IS NOT NULL,
-               toFloat64(si.short_interest) / toFloat64(f.free_float) * 100, NULL) AS short_crowding_pct,
-            si.days_to_cover AS days_to_cover,
+            coalesce(f.free_float, scanner.free_float) AS float_shares,
+            nullIf(f.float_source_tag, '') AS float_source,
+            multiIf(
+                coalesce(f.free_float, scanner.free_float) IS NOT NULL, 'reported',
+                coalesce(f.shares_outstanding, m.shares_outstanding) IS NOT NULL, 'shares_outstanding_only',
+                'unavailable'
+            ) AS float_quality,
+            scanner.short_pressure_label AS short_pressure,
+            coalesce(si.short_interest, scanner.short_interest) AS short_interest,
+            if(coalesce(f.free_float, scanner.free_float) > 0 AND coalesce(si.short_interest, scanner.short_interest) IS NOT NULL,
+               toFloat64(coalesce(si.short_interest, scanner.short_interest)) / toFloat64(coalesce(f.free_float, scanner.free_float)) * 100, NULL) AS short_crowding_pct,
+            if(coalesce(f.free_float, scanner.free_float) > 0 AND coalesce(si.short_interest, scanner.short_interest) IS NOT NULL,
+               toFloat64(coalesce(si.short_interest, scanner.short_interest)) / toFloat64(coalesce(f.free_float, scanner.free_float)) * 100, NULL) AS short_interest_pct,
+            coalesce(si.days_to_cover, scanner.days_to_cover) AS days_to_cover,
+            sv.short_volume AS short_volume,
+            if(coalesce(sv.short_volume_ratio, scanner.short_volume_ratio) IS NULL, NULL,
+               toFloat64(coalesce(sv.short_volume_ratio, scanner.short_volume_ratio)) * 100) AS short_volume_pct,
+            if(empty(ftd.symbol_id), NULL, ftd.fails_quantity) AS fails_to_deliver,
+            if(empty(ftd.symbol_id) OR ftd.fails_quantity IS NULL OR ftd.previous_close_price IS NULL, NULL,
+               toFloat64(ftd.fails_quantity) * ftd.previous_close_price) AS ftd_value,
+            ifNull(notEmpty(reg.symbol_id), false) AS reg_sho_threshold,
+            nullIf(borrow.borrow_status, '') AS borrow_status,
+            borrow.shortable_shares AS borrow_shares,
+            coalesce(borrow.fee_rate, borrow.indicative_borrow_rate) AS borrow_fee,
             if(empty(ipo.symbol_id), NULL, dateDiff('day', cutoff_date, ipo.listing_date)) AS ipo_days_to_event,
             if(empty(split.symbol_id), NULL, dateDiff('day', cutoff_date, split.execution_date)) AS split_days_to_event,
             u.ibkr_conid AS ibkr_conid,
@@ -95,7 +115,14 @@ def scanner_reference_projection(cutoff: datetime, database: str = "q_live") -> 
         ) AS i ON i.issuer_id = u.issuer_id
         LEFT JOIN
         (
-            SELECT symbol_id, listing_id, argMax(logo_asset_id, inserted_at) AS logo_asset_id
+            SELECT symbol_id, listing_id,
+                argMax(logo_asset_id, inserted_at) AS logo_asset_id,
+                argMax(free_float, inserted_at) AS free_float,
+                argMax(market_cap, inserted_at) AS market_cap,
+                argMax(short_interest, inserted_at) AS short_interest,
+                argMax(days_to_cover, inserted_at) AS days_to_cover,
+                argMax(short_volume_ratio, inserted_at) AS short_volume_ratio,
+                argMax(short_pressure_label, inserted_at) AS short_pressure_label
             FROM {db}.feature_scanner_static_v1 FINAL
             WHERE feature_date = latest_scanner_date AND inserted_at <= cutoff
             GROUP BY symbol_id, listing_id
@@ -137,7 +164,8 @@ def scanner_reference_projection(cutoff: datetime, database: str = "q_live") -> 
         (
             SELECT symbol_id,
                 argMax(free_float, tuple(effective_date, inserted_at)) AS free_float,
-                argMax(shares_outstanding, tuple(effective_date, inserted_at)) AS shares_outstanding
+                argMax(shares_outstanding, tuple(effective_date, inserted_at)) AS shares_outstanding,
+                argMax(float_source_tag, tuple(effective_date, inserted_at)) AS float_source_tag
             FROM {db}.market_security_float_v1 FINAL
             WHERE effective_date <= cutoff_date AND inserted_at <= cutoff
             GROUP BY symbol_id
@@ -153,6 +181,43 @@ def scanner_reference_projection(cutoff: datetime, database: str = "q_live") -> 
               AND coalesce(published_at_utc, toDateTime64(publication_date, 3, 'UTC'), toDateTime64(settlement_date, 3, 'UTC')) <= cutoff
             GROUP BY symbol_id
         ) AS si ON si.symbol_id = u.symbol_id
+        LEFT JOIN
+        (
+            SELECT symbol_id,
+                argMax(short_volume, tuple(coalesce(published_at_utc, toDateTime64(trade_date, 3, 'UTC')), inserted_at)) AS short_volume,
+                argMax(short_volume_ratio, tuple(coalesce(published_at_utc, toDateTime64(trade_date, 3, 'UTC')), inserted_at)) AS short_volume_ratio
+            FROM {db}.market_short_volume_v1 FINAL
+            WHERE trade_date <= cutoff_date AND inserted_at <= cutoff
+              AND coalesce(published_at_utc, toDateTime64(trade_date, 3, 'UTC')) <= cutoff
+            GROUP BY symbol_id
+        ) AS sv ON sv.symbol_id = u.symbol_id
+        LEFT JOIN
+        (
+            SELECT symbol_id,
+                argMax(fails_quantity, tuple(settlement_date, inserted_at)) AS fails_quantity,
+                argMax(previous_close_price, tuple(settlement_date, inserted_at)) AS previous_close_price
+            FROM {db}.market_fails_to_deliver_v1 FINAL
+            WHERE settlement_date <= cutoff_date AND inserted_at <= cutoff AND symbol_id IS NOT NULL
+            GROUP BY symbol_id
+        ) AS ftd ON ftd.symbol_id = u.symbol_id
+        LEFT JOIN
+        (
+            SELECT symbol_id, argMax(threshold_status, tuple(threshold_date, inserted_at)) AS threshold_status
+            FROM {db}.market_reg_sho_threshold_v1 FINAL
+            WHERE threshold_date <= cutoff_date AND inserted_at <= cutoff AND symbol_id IS NOT NULL
+            GROUP BY symbol_id
+        ) AS reg ON reg.symbol_id = u.symbol_id
+        LEFT JOIN
+        (
+            SELECT symbol_id,
+                argMax(borrow_status, tuple(observed_at_utc, inserted_at)) AS borrow_status,
+                argMax(shortable_shares, tuple(observed_at_utc, inserted_at)) AS shortable_shares,
+                argMax(indicative_borrow_rate, tuple(observed_at_utc, inserted_at)) AS indicative_borrow_rate,
+                argMax(fee_rate, tuple(observed_at_utc, inserted_at)) AS fee_rate
+            FROM {db}.market_security_borrow_v1 FINAL
+            WHERE observed_at_utc <= cutoff AND inserted_at <= cutoff AND symbol_id IS NOT NULL
+            GROUP BY symbol_id
+        ) AS borrow ON borrow.symbol_id = u.symbol_id
         LEFT JOIN
         (
             SELECT
@@ -177,5 +242,6 @@ def scanner_reference_projection(cutoff: datetime, database: str = "q_live") -> 
             WHERE inserted_at <= cutoff
             GROUP BY symbol_id
         ) AS split ON split.symbol_id = u.symbol_id
+        SETTINGS join_use_nulls = 1
         FORMAT JSONEachRow
     """

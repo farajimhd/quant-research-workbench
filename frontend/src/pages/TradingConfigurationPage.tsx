@@ -843,6 +843,19 @@ function readSessionConfiguration(base: Draft): Draft {
     const session = normalizeDraft(JSON.parse(stored));
     return {
       ...session,
+      market_discovery: {
+        ...session.market_discovery,
+        // Catalogs are backend/QMD authority. Preserve user-authored rules,
+        // Watchlists, and selections, but never freeze an older catalog in a
+        // browser session after the registry gains a field or calculation.
+        classifications: base.market_discovery.classifications,
+        field_catalog: base.market_discovery.field_catalog,
+        column_catalog: base.market_discovery.column_catalog,
+        core_scan: {
+          ...session.market_discovery.core_scan,
+          calculations: base.market_discovery.core_scan.calculations,
+        },
+      },
       strategy: {
         ...session.strategy,
         // Profiles are user draft state. Executor definitions and their input

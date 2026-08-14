@@ -21,6 +21,14 @@ class ReferenceScannerQueryPlanTests(unittest.TestCase):
         self.assertIn("published_at_utc", sql)
         self.assertIn("FROM `q_live`.market_ipo_v1 FINAL", sql)
         self.assertIn("FROM `q_live`.market_stock_split_v1 FINAL", sql)
+        self.assertIn("AS float_quality", sql)
+        self.assertIn("AS short_interest_pct", sql)
+        self.assertIn("FROM `q_live`.market_short_volume_v1 FINAL", sql)
+        self.assertIn("FROM `q_live`.market_fails_to_deliver_v1 FINAL", sql)
+        self.assertIn("FROM `q_live`.market_reg_sho_threshold_v1 FINAL", sql)
+        self.assertIn("FROM `q_live`.market_security_borrow_v1 FINAL", sql)
+        self.assertIn("observed_at_utc <= cutoff AND inserted_at <= cutoff", sql)
+        self.assertIn("SETTINGS join_use_nulls = 1", sql)
         self.assertIn("2026-08-11T15:45:12.123+00:00", sql)
 
     def test_plan_rejects_naive_cutoff(self) -> None:

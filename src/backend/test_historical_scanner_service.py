@@ -110,16 +110,16 @@ class HistoricalScannerServiceTest(unittest.TestCase):
 
     def test_qmd_completion_rejects_empty_and_count_mismatched_artifacts(self) -> None:
         class CompletionClient:
-            def __init__(self, indicator_count: int, stored_count: int) -> None:
-                self.indicator_count = indicator_count
+            def __init__(self, row_count: int, stored_count: int) -> None:
+                self.row_count = row_count
                 self.stored_count = stored_count
 
             def execute(self, sql: str, **_kwargs) -> str:
                 if "FROM q_live.canvas_historical_qmd_snapshot_meta_v1 FINAL" in sql:
                     return (
-                        f'{{"complete":1,"indicator_count":{self.indicator_count}}}\n'
+                        f'{{"complete":1,"market_count":{self.row_count},"indicator_count":{self.row_count},"row_count":{self.row_count}}}\n'
                     )
-                return f'{{"indicator_count":{self.stored_count}}}\n'
+                return f'{{"row_count":{self.stored_count}}}\n'
 
         snapshot_at = datetime(2026, 7, 17, 13, 45, tzinfo=UTC)
         self.assertFalse(
@@ -143,9 +143,13 @@ class HistoricalScannerServiceTest(unittest.TestCase):
                 self.calls.append(sql)
                 if f"FROM q_live.canvas_historical_qmd_snapshot_meta_v1 FINAL" in sql:
                     return '{"complete":0}\n'
-                if "SELECT ticker, indicator_json, active_signals_json" in sql:
+                if "SELECT ticker, market_json, indicator_json, active_signals_json" in sql:
                     return (
-                        '{"ticker":"AAPL","indicator_json":"{\\"sym\\":\\"AAPL\\",'
+                        '{"ticker":"AAPL","market_json":"{\\"ticker\\":\\"AAPL\\",'
+                        '\\"last_price\\":201.0,\\"previous_close\\":200.0,'
+                        '\\"quality_state\\":\\"ready\\",\\"quality_flags\\":[],'
+                        '\\"day_dollar_volume\\":1000000.0,\\"trade_rate_10s\\":2.0}",'
+                        '"indicator_json":"{\\"sym\\":\\"AAPL\\",'
                         '\\"timeframe\\":\\"10s\\",\\"bar_end\\":\\"2026-07-17T13:45:00Z\\",'
                         '\\"flow_structure_composite_score\\":0.7}",'
                         '"active_signals_json":"[{\\"event_id\\":\\"event-1\\",'
@@ -194,8 +198,19 @@ class HistoricalScannerServiceTest(unittest.TestCase):
                     "flow_structure_composite_score": 0.7,
                 }
             ],
+            "market_rows": [
+                {
+                    "ticker": "AAPL",
+                    "last_price": 201.0,
+                    "previous_close": 200.0,
+                    "quality_state": "ready",
+                    "quality_flags": [],
+                    "day_dollar_volume": 1_000_000.0,
+                    "trade_rate_10s": 2.0,
+                }
+            ],
             "recent_signal_events": [],
-            "schema_version": "canvas_historical_qmd_snapshot_v3",
+            "schema_version": "canvas_historical_qmd_snapshot_v4",
             "source_revision": {"token": "7:1200:2026-07-17 14:00:00"},
         }
         with (
@@ -212,11 +227,16 @@ class HistoricalScannerServiceTest(unittest.TestCase):
 
         self.assertEqual(projection["AAPL"]["indicator_type"], "qmd")
         self.assertEqual(projection["AAPL"]["flow_structure_composite_score"], 0.7)
+        self.assertEqual(projection["AAPL"]["market_quality_state"], "ready")
+        self.assertEqual(projection["AAPL"]["previous_close"], 200.0)
+        self.assertAlmostEqual(projection["AAPL"]["change_pct"], 0.5)
+        self.assertEqual(projection["AAPL"]["liquidity_rank"], 201.0)
         self.assertEqual(projection["AAPL"]["signal_type"], "price_volume_expansion")
         self.assertEqual(projection["AAPL"]["signal_rank_score"], 0.91)
         self.assertEqual(projection["AAPL"]["active_signal_count"], 1)
         self.assertEqual(signal_rows[0]["signal_event_id"], "event-1")
         self.assertEqual(meta["qmd_indicator_row_count"], 1)
+        self.assertEqual(meta["qmd_market_row_count"], 1)
         self.assertTrue(
             any(
                 "INSERT INTO q_live.canvas_historical_qmd_snapshot_meta_v1" in sql
@@ -290,7 +310,7 @@ class HistoricalScannerServiceTest(unittest.TestCase):
 
             def execute(self, sql: str, **_kwargs) -> str:
                 self.calls.append(sql)
-                return '{"ticker":"AAPL","company_name":"APPLE INC","country":"US","market_cap":4374000000000,"float_shares":14400000000,"short_interest":144248000,"short_crowding_pct":1.0017,"days_to_cover":2.76,"ipo_days_to_event":12,"split_days_to_event":-3,"logo_relative_path":"branding/logo/aapl.svg"}\n'
+                return '{"ticker":"AAPL","company_name":"APPLE INC","country":"US","sector":"Technology","market_cap":4374000000000,"shares_outstanding":14687000000,"float_shares":14400000000,"float_source":"massive","float_quality":"reported","short_pressure":"moderate","short_interest":144248000,"short_crowding_pct":1.0017,"short_interest_pct":1.0017,"days_to_cover":2.76,"short_volume":12000000,"short_volume_pct":41.2,"fails_to_deliver":120000,"ftd_value":24000000,"reg_sho_threshold":1,"borrow_status":"shortable","borrow_shares":3000000,"borrow_fee":0.25,"ipo_days_to_event":12,"split_days_to_event":-3,"logo_relative_path":"branding/logo/aapl.svg"}\n'
 
         with patch("src.backend.historical_scanner_service.ClickHouseHttpClient", ReferenceClient):
             rows = historical_scanner_reference_projection(datetime(2026, 7, 17, 13, 45, tzinfo=UTC))
@@ -299,6 +319,11 @@ class HistoricalScannerServiceTest(unittest.TestCase):
         self.assertEqual(rows["AAPL"]["country"], "US")
         self.assertEqual(rows["AAPL"]["logo_url"], "/api/real-live-trading/logo?path=branding%2Flogo%2Faapl.svg")
         self.assertAlmostEqual(rows["AAPL"]["short_crowding_pct"], 1.0017)
+        self.assertAlmostEqual(rows["AAPL"]["short_interest_pct"], 1.0017)
+        self.assertEqual(rows["AAPL"]["float_quality"], "reported")
+        self.assertEqual(rows["AAPL"]["short_volume"], 12_000_000)
+        self.assertEqual(rows["AAPL"]["fails_to_deliver"], 120_000)
+        self.assertEqual(rows["AAPL"]["borrow_status"], "shortable")
         self.assertEqual(rows["AAPL"]["ipo_days_to_event"], 12)
         self.assertEqual(rows["AAPL"]["split_days_to_event"], -3)
         self.assertEqual(len(ReferenceClient.calls), 1)

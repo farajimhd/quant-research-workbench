@@ -16,7 +16,7 @@ use qmd_core::indicators::{
 };
 use qmd_core::market_signal::{MarketSignalEngine, MarketSignalEvent};
 use qmd_core::microstructure_interval::MicrostructureIntervalWindow;
-use qmd_core::state::SharedMarketState;
+use qmd_core::state::{SharedMarketState, SymbolSnapshot};
 use serde::Serialize;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -24,7 +24,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::sync::Arc;
 use tokio::sync::{Mutex, OnceCell};
 
-pub const HISTORICAL_SCANNER_DERIVED_SCHEMA_VERSION: &str = "canvas_historical_qmd_snapshot_v3";
+pub const HISTORICAL_SCANNER_DERIVED_SCHEMA_VERSION: &str = "canvas_historical_qmd_snapshot_v4";
 const SIGNAL_EVENT_LIMIT: usize = 20_000;
 const SCANNER_TIMEFRAMES: [&str; 5] = ["100ms", "1s", "10s", "30s", "1m"];
 const SCANNER_INDICATOR_TIMEFRAME: &str = "100ms";
@@ -44,10 +44,18 @@ pub struct HistoricalScannerDerivedSnapshot {
     pub event_count: u64,
     pub indicators: Vec<IndicatorRow>,
     pub indicator_timeframe: &'static str,
+    pub market_rows: Vec<HistoricalScannerMarketRow>,
     pub recent_signal_events: Vec<MarketSignalEvent>,
     pub schema_version: &'static str,
     pub source_revision: SourceRevision,
     pub ticker_count: usize,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct HistoricalScannerMarketRow {
+    #[serde(flatten)]
+    pub market: SymbolSnapshot,
+    pub previous_close: Option<f64>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -177,6 +185,7 @@ struct ScannerWorkerResult {
     active_signals: Vec<MarketSignalEvent>,
     event_count: u64,
     indicators: Vec<IndicatorRow>,
+    market_rows: Vec<HistoricalScannerMarketRow>,
     recent_signal_events: Vec<MarketSignalEvent>,
 }
 
@@ -184,6 +193,7 @@ impl ScannerWorkerResult {
     fn extend(&mut self, snapshot: HistoricalScannerDerivedSnapshot) {
         self.active_signals.extend(snapshot.active_signals);
         self.indicators.extend(snapshot.indicators);
+        self.market_rows.extend(snapshot.market_rows);
         self.recent_signal_events
             .extend(snapshot.recent_signal_events);
         if self.recent_signal_events.len() > SIGNAL_EVENT_LIMIT * 2 {
@@ -505,12 +515,27 @@ impl CrossSectionEngine {
         }
     }
 
-    fn into_snapshot(
+    async fn into_snapshot(
         self,
         as_of: DateTime<Utc>,
         event_count: u64,
         source_revision: SourceRevision,
     ) -> HistoricalScannerDerivedSnapshot {
+        let market_rows = self
+            .market_state
+            .scanner_snapshot_at(as_of, usize::MAX)
+            .await
+            .rows
+            .into_iter()
+            .map(|market| HistoricalScannerMarketRow {
+                previous_close: self
+                    .indicator_references
+                    .get(&market.ticker)
+                    .map(|levels| levels.previous_session_close)
+                    .filter(|value| value.is_finite() && *value > 0.0),
+                market,
+            })
+            .collect::<Vec<_>>();
         let mut indicators = self.latest_indicators.into_values().collect::<Vec<_>>();
         indicators.sort_by(|left, right| left.sym.cmp(&right.sym));
         let ticker_count = indicators.len();
@@ -537,6 +562,7 @@ impl CrossSectionEngine {
             event_count,
             indicators,
             indicator_timeframe: SCANNER_INDICATOR_TIMEFRAME,
+            market_rows,
             recent_signal_events,
             schema_version: HISTORICAL_SCANNER_DERIVED_SCHEMA_VERSION,
             source_revision,
@@ -584,7 +610,11 @@ async fn build_snapshot(
                 }
             }
             engine.finalize(as_of).await?;
-            result.extend(engine.into_snapshot(as_of, 0, empty_source_revision()));
+            result.extend(
+                engine
+                    .into_snapshot(as_of, 0, empty_source_revision())
+                    .await,
+            );
             sort_and_bound_signal_events(&mut result.recent_signal_events);
             Ok::<ScannerWorkerResult, String>(result)
         }));
@@ -1786,14 +1816,17 @@ fn merge_worker_results(
     source_revision: SourceRevision,
 ) -> HistoricalScannerDerivedSnapshot {
     let mut indicators = Vec::new();
+    let mut market_rows = Vec::new();
     let mut active_signals = Vec::new();
     let mut recent_signal_events = Vec::new();
     for result in results {
         indicators.extend(result.indicators);
+        market_rows.extend(result.market_rows);
         active_signals.extend(result.active_signals);
         recent_signal_events.extend(result.recent_signal_events);
     }
     indicators.sort_by(|left, right| left.sym.cmp(&right.sym));
+    market_rows.sort_by(|left, right| left.market.ticker.cmp(&right.market.ticker));
     active_signals.sort_by(|left, right| {
         right
             .rank_score
@@ -1810,6 +1843,7 @@ fn merge_worker_results(
         event_count,
         indicators,
         indicator_timeframe: SCANNER_INDICATOR_TIMEFRAME,
+        market_rows,
         recent_signal_events,
         schema_version: HISTORICAL_SCANNER_DERIVED_SCHEMA_VERSION,
         source_revision,
@@ -1955,12 +1989,22 @@ mod tests {
         assert!((candidate.values["market.change_pct"].as_f64().unwrap() - 0.5).abs() < 1e-9);
         assert!(candidate.values["liquidity-rank"].as_f64().unwrap() > 0.0);
         assert!(candidate.values["indicator.vwap.value"].as_f64().unwrap() > 0.0);
-        let snapshot = engine.into_snapshot(
-            start + chrono::Duration::seconds(1),
-            3,
-            empty_source_revision(),
-        );
+        let snapshot = engine
+            .into_snapshot(
+                start + chrono::Duration::seconds(1),
+                3,
+                empty_source_revision(),
+            )
+            .await;
         assert_eq!(snapshot.ticker_count, 2);
+        assert_eq!(snapshot.market_rows.len(), 2);
+        let aapl_market = snapshot
+            .market_rows
+            .iter()
+            .find(|row| row.market.ticker == "AAPL")
+            .unwrap();
+        assert_eq!(aapl_market.market.last_price, 201.0);
+        assert_eq!(aapl_market.previous_close, Some(200.0));
         assert_eq!(
             snapshot
                 .indicators

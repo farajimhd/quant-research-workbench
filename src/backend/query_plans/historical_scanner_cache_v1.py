@@ -13,7 +13,7 @@ from src.backend.query_plans.historical_scanner_materialization_v1 import (
 
 QUERY_PLAN_ID = "market.historical_scanner_cache.v1"
 QUERY_PLAN_VERSION = 1
-SCANNER_QMD_SCHEMA_VERSION = "canvas_historical_qmd_snapshot_v3"
+SCANNER_QMD_SCHEMA_VERSION = "canvas_historical_qmd_snapshot_v4"
 SCANNER_QMD_TABLE = "q_live.canvas_historical_qmd_scanner_v1"
 SCANNER_QMD_EVENT_TABLE = "q_live.canvas_historical_qmd_signal_event_v1"
 SCANNER_QMD_META_TABLE = "q_live.canvas_historical_qmd_snapshot_meta_v1"
@@ -62,6 +62,7 @@ def qmd_snapshot_table_schemas() -> tuple[str, ...]:
             schema_version LowCardinality(String),
             source_revision String,
             ticker LowCardinality(String),
+            market_json String,
             indicator_json String,
             active_signals_json String,
             materialized_at_utc DateTime64(6, 'UTC') DEFAULT now64(6)
@@ -70,6 +71,7 @@ def qmd_snapshot_table_schemas() -> tuple[str, ...]:
         PARTITION BY toYYYYMM(snapshot_at_utc)
         ORDER BY (snapshot_at_utc, schema_version, source_revision, ticker)
         """,
+        f"ALTER TABLE {SCANNER_QMD_TABLE} ADD COLUMN IF NOT EXISTS market_json String DEFAULT '{{}}' AFTER ticker",
         f"""
         CREATE TABLE IF NOT EXISTS {SCANNER_QMD_EVENT_TABLE}
         (
@@ -92,7 +94,9 @@ def qmd_snapshot_table_schemas() -> tuple[str, ...]:
             source_revision String,
             engine_version String,
             event_count UInt64,
+            market_count UInt32,
             indicator_count UInt32,
+            row_count UInt32,
             active_signal_count UInt32,
             signal_event_count UInt32,
             complete UInt8,
@@ -102,6 +106,8 @@ def qmd_snapshot_table_schemas() -> tuple[str, ...]:
         PARTITION BY toYYYYMM(snapshot_at_utc)
         ORDER BY (snapshot_at_utc, schema_version, source_revision)
         """,
+        f"ALTER TABLE {SCANNER_QMD_META_TABLE} ADD COLUMN IF NOT EXISTS market_count UInt32 DEFAULT 0 AFTER event_count",
+        f"ALTER TABLE {SCANNER_QMD_META_TABLE} ADD COLUMN IF NOT EXISTS row_count UInt32 DEFAULT 0 AFTER indicator_count",
     )
 
 
@@ -143,14 +149,14 @@ def qmd_snapshot_complete_queries(
     where = _qmd_identity(snapshot_at, source_revision)
     return (
         f"""
-        SELECT complete, indicator_count
+        SELECT complete, market_count, indicator_count, row_count
         FROM {SCANNER_QMD_META_TABLE} FINAL
         WHERE {where}
         LIMIT 1
         FORMAT JSONEachRow
         """,
         f"""
-        SELECT count() AS indicator_count
+        SELECT count() AS row_count
         FROM {SCANNER_QMD_TABLE} FINAL
         WHERE {where}
         FORMAT JSONEachRow
@@ -160,7 +166,7 @@ def qmd_snapshot_complete_queries(
 
 def cached_qmd_rows_query(*, snapshot_at: datetime, source_revision: str) -> str:
     return f"""
-    SELECT ticker, indicator_json, active_signals_json
+    SELECT ticker, market_json, indicator_json, active_signals_json
     FROM {SCANNER_QMD_TABLE} FINAL
     WHERE {_qmd_identity(snapshot_at, source_revision)}
     ORDER BY ticker

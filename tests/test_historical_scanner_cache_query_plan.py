@@ -33,14 +33,14 @@ class HistoricalScannerCacheQueryPlanTests(unittest.TestCase):
         self.assertTrue(all("ReplacingMergeTree(materialized_at_utc)" in sql for sql in schemas if "CREATE TABLE" in sql))
         self.assertTrue(all("source_revision" in sql for sql in schemas if "CREATE TABLE" in sql))
 
-    def test_qmd_completion_requires_meta_and_exact_indicator_count(self) -> None:
+    def test_qmd_completion_requires_meta_and_exact_union_row_count(self) -> None:
         meta, count = qmd_snapshot_complete_queries(
             snapshot_at=self.snapshot_at,
             source_revision="revision-7",
         )
-        self.assertIn("SELECT complete, indicator_count", meta)
-        self.assertIn("SELECT count() AS indicator_count", count)
-        self.assertIn("'canvas_historical_qmd_snapshot_v3'", meta)
+        self.assertIn("SELECT complete, market_count, indicator_count, row_count", meta)
+        self.assertIn("SELECT count() AS row_count", count)
+        self.assertIn("'canvas_historical_qmd_snapshot_v4'", meta)
         self.assertIn("'revision-7'", count)
 
     def test_cache_reads_are_bounded_and_revision_exact(self) -> None:
@@ -56,6 +56,7 @@ class HistoricalScannerCacheQueryPlanTests(unittest.TestCase):
         self.assertIn("LIMIT 20000", qmd)
         self.assertIn("LIMIT 20000", scanner)
         self.assertIn("source_revision = 'revision-8'", qmd)
+        self.assertIn("market_json", qmd)
         self.assertIn("source_revision = 'revision-8'", scanner)
 
     def test_insert_builder_rejects_unregistered_tables(self) -> None:

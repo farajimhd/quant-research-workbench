@@ -53,6 +53,16 @@ class WatchlistResolverTest(unittest.TestCase):
                 "short_interest",
                 "short_interest_pct",
                 "days_to_cover",
+                "shares_outstanding",
+                "float_quality",
+                "short_volume",
+                "short_volume_pct",
+                "fails_to_deliver",
+                "ftd_value",
+                "reg_sho_threshold",
+                "borrow_status",
+                "borrow_shares",
+                "borrow_fee",
                 "fundamental_trajectory",
                 "ipo_event",
                 "split_event",
@@ -110,6 +120,40 @@ class WatchlistResolverTest(unittest.TestCase):
                 {"ticker": "AAA", "news_labeled": True, "news_sentiment_score": -0.4},
                 {"ticker": "BBB", "news_labeled": True, "news_sentiment_score": -0.8},
                 {"ticker": "CCC", "news_labeled": False, "news_sentiment_score": -0.9},
+            ],
+        )
+        self.assertEqual([row["ticker"] for row in resolved], ["BBB", "AAA"])
+
+    def test_added_reference_fields_are_executable_rule_and_ranking_sources(self) -> None:
+        watchlist = {
+            **self.watchlists["core-candidates"],
+            "inclusion_rule_sets": ["short-volume-screen"],
+            "ranking_field": "reference.ftd_value",
+            "maximum_size": 2,
+        }
+        rule_sets = [
+            *self.discovery["rule_sets"],
+            {
+                "rule_set_id": "short-volume-screen",
+                "enabled": True,
+                "operator": "all",
+                "conditions": [
+                    {
+                        "enabled": True,
+                        "left_source_id": "reference.short_volume_pct",
+                        "comparator": "greater_or_equal",
+                        "value": 40,
+                    }
+                ],
+            },
+        ]
+        resolved = resolve_watchlist_membership(
+            watchlist,
+            rule_sets,
+            [
+                {"ticker": "AAA", "short_volume_pct": 45, "ftd_value": 10_000},
+                {"ticker": "BBB", "short_volume_pct": 55, "ftd_value": 50_000},
+                {"ticker": "CCC", "short_volume_pct": 20, "ftd_value": 100_000},
             ],
         )
         self.assertEqual([row["ticker"] for row in resolved], ["BBB", "AAA"])
