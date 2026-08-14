@@ -62,7 +62,7 @@ existing API and Rust type names remain compatibility names until migrated.
 
 | Term | Definition | Required references |
 | --- | --- | --- |
-| Column definition | Presentation of one field in a table: heading, format, alignment, visibility, sorting, filtering. | Exactly one `field_id`; no independent data semantics. |
+| Column definition | Presentation recipe for one simple value or a composed cell: heading, renderer, bindings, format, alignment, visibility, sorting, and filtering. | One or more typed bindings to existing FieldDefinitions and/or SignalDefinitions; no independent data semantics. |
 | Condition | Typed comparison over field observations, a field and constant, or an event state. | Stable field/event IDs, timeframe, comparator, parameters. |
 | Rule set | Named Boolean composition of conditions. | References conditions; does not copy source definitions. |
 | Watchlist | Causal membership and ranking definition over Core candidates. | Source scan, rule-set IDs, ranking field, size/expiry/overrides, selected column IDs, focused derivation IDs. |
@@ -108,6 +108,44 @@ event_property_ids (signals only)
 It must never infer `kind` from a name or ID and must never become a second
 source of labels, outputs, or availability.
 
+### Column presentation bindings
+
+A ColumnDefinition does not require every presentable thing to become the same
+kind of abstraction. Instead, it composes existing typed definitions through a
+non-empty `bindings` collection:
+
+```text
+ColumnDefinition
+  column_id, label, renderer
+  bindings[]:
+    FieldBinding(field_id, role)
+    SignalBinding(signal_id, event_view, role)
+  primary_binding
+  sort_binding?       # one scalar FieldBinding when sortable
+  filter_binding?     # one scalar field or registered signal predicate
+  format, alignment, visibility
+```
+
+The allowed binding roles are presentation roles such as `primary`,
+`secondary`, `badge`, `icon`, `trend`, and `detail`; they do not change the
+meaning of the referenced data.
+
+| What is presented | Column binding |
+| --- | --- |
+| Last price | One `FieldBinding(market.last_price, primary)`. |
+| RSI 14 | One FieldBinding to the registered `rsi_14` output field. The `momentum_core` DerivationDefinition remains its producer. |
+| MACD composite | FieldBindings to MACD line, signal, and histogram output fields with a composite renderer. One designated scalar output owns sorting/filtering. |
+| VWAP Transition signal | A SignalBinding to `vwap_transition` for lifecycle/state rendering, or a FieldBinding to an explicitly registered latest score/state projection when a scalar column is required. |
+| Symbol | FieldBindings for symbol and company name, a logo FieldBinding, plus optional News/SEC SignalBindings or event accessors. |
+
+An indicator or other derivation is not itself the cell value: it produces one
+or more typed output fields. Selecting an Indicator in the picker creates or
+references the Derivation instance, then lets the user expose any of its output
+fields individually or through an approved composite ColumnDefinition. A
+SignalDefinition is different because its authority is an event lifecycle; a
+signal column may render that lifecycle directly, while sortable scalar views
+use registered projection fields.
+
 ### Typed cards and rows
 
 Each picker result uses a shared visual shell but a type-specific noun and
@@ -145,7 +183,7 @@ and query-plan IDs appear under **Provenance**, not as the primary label.
 | Market Discovery > Universal Ingest | Read-only **Processing step cards** | Nothing; required steps are inspected | Step name, purpose, inputs/outputs, owner, readiness, coverage. No column action. |
 | Market Discovery > Core Scan | **Core fields** and **Core analytics** sections | Allowed Core fields/derivations | Selected Core row schema and required computations. |
 | Market Discovery > Watchlist > Rules | **Add rule set** picker and condition editor | Rule sets; fields/signals when authoring a rule | Removable Rule-set cards containing human-readable conditions. Presence means included; removal stops use. |
-| Market Discovery > Watchlist > Columns | **Add field** picker | Fields with a ColumnDefinition for Watchlists | Removable/reorderable column chips/cards; table heading comes from the shared ColumnDefinition. |
+| Market Discovery > Watchlist > Columns | **Add data** picker | Fields, Indicator output fields/composites, and Signals with an allowed ColumnDefinition | Removable/reorderable column chips/cards; table heading and renderer come from the shared ColumnDefinition. |
 | Market Discovery > Watchlist > Calculations | **Add indicator** picker | Watchlist/Strategy-scope derivations | Enabled Indicator cards with timeframe, parameters, and selected output fields. |
 | Scanner/Watchlist container | **Columns** button | Fields allowed by the product and current mode | A formatted table column. The user sees the Column label; details link back to the Field. |
 | Scanner/Watchlist row | Symbol cell, values, badges, event icons | No catalog selection | Current observations. Company/logo are part of the Symbol cell; News/SEC recency icons remain event/evidence accessors. |
@@ -161,7 +199,7 @@ and query-plan IDs appear under **Provenance**, not as the primary label.
 | --- | --- | --- | --- |
 | `FieldDefinition` | Defines one fact that consumers can use consistently | **Field row/card** in the picker; value becomes a column, series, fact, or operand | Yes, when its status/mode/product policy allows. |
 | `Observation` | Carries one field value with clocks/provenance | Formatted table cell, fact value, chart point, or condition evidence | No; it is runtime data. |
-| `ColumnDefinition` | Defines how a Field appears in a specific table | Table heading and formatting; column chip in configuration | Selected through its Field, not as a separate catalog concept. |
+| `ColumnDefinition` | Defines how one or more existing Fields and/or a Signal lifecycle appear in a specific table | Table heading, renderer, formatting, and column chip in configuration | Selected through a Field, Indicator output/composite, or Signal; not an independent semantic data item. |
 | `DerivationDefinition` | Produces reusable derived/indicator fields | **Indicator card** with outputs, scope, timeframe, parameters, cost/readiness | Yes, in Analytics/Indicators contexts. |
 | `SignalDefinition` | Emits lifecycle events from evidence | **Signal card**, chart marker, activity row, or event-condition choice | Yes, in Signals/evidence contexts. |
 | `ProcessingStepDefinition` | Protects event integrity or transport | Read-only **Processing step card** in Universal Ingest/Service Health | No for ordinary users; system/admin policy only. |
@@ -240,7 +278,8 @@ The hierarchy is therefore not simply “data field to calculation.” It is:
 1. sources publish raw field observations;
 2. derivations consume fields and publish derived field observations;
 3. signal detectors consume observations and publish lifecycle events;
-4. columns present fields, while conditions consume fields or event state;
+4. columns present one or more field outputs and/or signal lifecycle views,
+   while conditions consume fields or event state;
 5. rule sets compose conditions;
 6. Watchlists compose rule sets, ranking fields, columns, and focused derivations;
 7. Strategies bind the same registered evidence;
@@ -256,7 +295,7 @@ The hierarchy is therefore not simply “data field to calculation.” It is:
 | Formula/indicator/oscillator | `DerivationDefinition` plus output `FieldDefinition` records | The producer is reusable; register each cross-boundary/selectable output. | One fake field representing the whole family. |
 | Signal detector | `SignalDefinition` plus event schema | It has declared lifecycle, evidence, version, scope, and clocks. | Ordinary scalar field. |
 | Latest signal score/state | `FieldDefinition` | A table/rule/Strategy needs a scalar projection of the signal event. | A replacement for the event history. |
-| Table heading | `ColumnDefinition` | A field is allowed in a specific table surface. | New semantic field. |
+| Table heading/cell renderer | `ColumnDefinition` | One or more existing field outputs or a signal lifecycle are allowed in a specific table surface. | New semantic field, derivation, or signal. |
 | Database table | `SourceDefinition`, product storage, or query-plan source | It is an active authority or approved projection. | One application field per physical column. |
 | Staging, backup, scratch, cache | Storage inventory only | It is needed for operations/recovery evidence. | Canonical field/source authority. |
 | Model/training artifact | `ModelArtifactDefinition` or dataset manifest | A promoted consumer contract exists. | Scanner field merely because training data exists. |
@@ -624,7 +663,7 @@ registrations:
 | P1 | Register QMD output fields deliberately. | Every output crossing QMD has a canonical field/event-property ID; private/offline outputs remain private and are not bulk-added. |
 | P1 | Replace `DiscoveryCapability` and `canonicalCapabilityType` heuristics with typed API contracts. | Frontend renders labels/groups/status from registry data and does not determine semantic kind from ID/name. |
 | P1 | Implement the shared Data & Analytics picker and typed card shell. | Market Discovery, table Columns, charts, rule authoring, and Strategy Studio reuse one registry-driven picker with context-specific allowed actions; users never see a generic Capability item. |
-| P1 | Normalize ColumnDefinitions. | Scanner and Watchlist headings, format, sorting, and filtering come only from the shared column registry; each column references exactly one field. |
+| P1 | Normalize ColumnDefinitions. | Scanner and Watchlist headings/renderers come only from the shared column registry; every column has typed Field/Signal bindings, and sortable/filterable composites designate one valid scalar or signal predicate binding. |
 | P2 | Review Reference Gateway candidate values against concrete consumers. | Each accepted candidate has a unique semantic ID and query-plan mapping; rejected candidates remain physical/internal without UI exposure. |
 | P2 | Mark legacy/staging/backup/scratch storage explicitly. | Schema inventory and operational UI cannot select those tables as field authority. |
 
@@ -638,8 +677,10 @@ registrations:
    fields.
 4. A signal is an event lifecycle. Scalar “latest signal” values are explicitly
    registered projections and never replace event history.
-5. A ColumnDefinition contains presentation policy only and references exactly
-   one FieldDefinition.
+5. A ColumnDefinition contains presentation policy only. It references a
+   non-empty set of existing FieldDefinitions and/or SignalDefinitions; it
+   never redefines their semantics. A sortable/filterable composite explicitly
+   identifies the binding that owns that operation.
 6. A physical table/column is not automatically an application authority.
 7. Staging, backup, scratch, cache, build-status, and training tables never
    become field authority by discovery.
