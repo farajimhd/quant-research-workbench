@@ -8,111 +8,204 @@ Scope: application fields, QMD processing and derivations, observations, signals
 columns, rules, Watchlists, Strategy inputs, service products, query plans, and
 physical ClickHouse storage
 
-## Outcome
+## Canonical design
 
-The application should not use one broad object such as `Capability` to mean a
-data value, a calculation, a signal, a table column, and a configured consumer.
-Those are different objects with different lifecycles. The canonical model has
-three independent axes:
-
-| Axis | Objects | Question answered |
-| --- | --- | --- |
-| Information | `FieldDefinition`, `Observation`, `Record`, `Dataset` | What does this value mean, for which entity and clock? |
-| Production | `SourceDefinition`, `ProcessingStepDefinition`, `DerivationDefinition`, `SignalDefinition`, `ProductDefinition` | How is the information acquired, transformed, or emitted? |
-| Use and presentation | `ColumnDefinition`, `ConditionDefinition`, `RuleSetDefinition`, `WatchlistDefinition`, `StrategyInputBinding`, `StrategyProfile`, `RunPlan` | Where and why is the information selected or shown? |
-
-The existing parts compose the larger parts. A Watchlist references registered
-rule sets, fields, columns, and derivations. A Strategy references registered
-evidence bindings and rule sets. Neither copies or recreates those definitions.
-
-This document is the canonical terminology and inventory companion to
-[Enrichment and field registry](05-enrichment-and-field-registry.md) and
-[Market Discovery and computation funnel](06-market-discovery-and-computation.md).
-It supersedes their use of **capability** as an undifferentiated noun; the
-existing API and Rust type names remain compatibility names until migrated.
-
-## Canonical terminology
-
-### Information objects
-
-| Term | Definition | Identity and lifecycle |
-| --- | --- | --- |
-| Field definition | Stable semantic contract for one typed fact, such as `market.last_price` or `reference.float_shares`. | Registered once by `field_id`; versioned when meaning changes. It declares entity grain, unit, clocks, owner, source/query plan, provenance, freshness, mode support, null reasons, and status. |
-| Observation | One value of a field for an entity and causal clock. | `(field_id, entity_id, event_at, available_at, source_revision)`; immutable evidence, even if a current projection later changes. |
-| Record | A schema-bound set of observations with a common entity and clocks, such as one Scanner row. | References field definitions; it does not redefine them. |
-| Dataset or stream | A bounded or continuing collection of records plus coverage and continuation semantics. | Registered as a product/query contract, not as a field. |
-| Event | A time-local occurrence with identity, lifecycle, evidence, and typed properties. | Registered by event definition; event properties may reference field definitions. |
-
-### Production objects
-
-| Term | Definition | What it is not |
-| --- | --- | --- |
-| Source adapter | Acquires or reads authoritative evidence and preserves source identity and clocks. | Not a user-selectable field. |
-| Processing step | Integrity or transport work such as validation, sequencing, freshness checks, or persistence fanout. | Not a calculation result or Scanner column. |
-| Derivation | Versioned deterministic transformation from input fields to output fields. | Not itself a field. Its outputs are fields. |
-| Metric | A scalar or small-vector derivation with declared unit and window. | Not a separate top-level ontology. |
-| Indicator | A market-data derivation, usually windowed or stateful. | The indicator is the producer; RSI/MACD values are output fields. |
-| Oscillator | An indicator subtype with a bounded or centered interpretation. | Not a sibling of fields or calculations. |
-| Classification | A derivation that maps evidence to a categorical field under a versioned taxonomy or threshold set. | Not a duplicate field namespace. |
-| Ranking | A cross-sectional derivation that produces score/rank fields for a declared population and clock. | Not Watchlist membership by itself. |
-| Signal definition | A lifecycle-aware detector that consumes observations and emits signal events (`opened`, `updated`, `resolved`, `expired`). | A signal is not a scalar field. A projected signal property such as latest score may be registered as a field. |
-| Product | A delivered record/dataset/stream contract such as QMD Scanner or progressive chart payload. | Not a physical table or UI container. |
-
-### Use and presentation objects
-
-| Term | Definition | Required references |
-| --- | --- | --- |
-| Column definition | Presentation recipe for one simple value or a composed cell: heading, renderer, bindings, format, alignment, visibility, sorting, and filtering. | One or more typed bindings to existing FieldDefinitions and/or SignalDefinitions; no independent data semantics. |
-| Condition | Typed comparison over field observations, a field and constant, or an event state. | Stable field/event IDs, timeframe, comparator, parameters. |
-| Rule set | Named Boolean composition of conditions. | References conditions; does not copy source definitions. |
-| Watchlist | Causal membership and ranking definition over Core candidates. | Source scan, rule-set IDs, ranking field, size/expiry/overrides, selected column IDs, focused derivation IDs. |
-| Strategy input binding | Maps a registered field or event property to the runtime name used by a Strategy definition. | `source_id`, runtime binding, timeframe/anchor, availability policy. It is an adapter, not a second field. |
-| Strategy Profile | Parameters and evidence bindings for one registered Strategy definition/revision. | Strategy ID/revision plus referenced bindings and rule sets. |
-| Run Plan | Mode-specific executable selection of Strategy Profile, Watchlists, Canvas profile, account/broker policy, and causal data plan. | References existing versioned parts; it does not embed new implementations. |
-
-## Final user-facing access model
-
-The registries above are backend authorities, not the final UI. The user should
-never have to decide whether an item came from `FieldDefinition`, a Rust
-catalog, a query plan, or a database table. The frontend projects those typed
-definitions into one shared interaction pattern while preserving their real
-kinds.
-
-### The final access element
-
-The common access control is the **Data & Analytics picker**. It is a searchable,
-scrollable picker reused by Market Discovery, Scanner/Watchlist columns, chart
-studies, rule construction, and Strategy Studio. It has typed tabs rather than
-one generic “Capability” list:
-
-| Picker tab | What the user selects | Registry authority | Result of selection |
-| --- | --- | --- | --- |
-| **Fields** | A directly usable fact such as Last price, Public float, Sector, or Revenue | `FieldDefinition` | Adds a column, condition operand, chart series, fact, or Strategy binding according to context. |
-| **Indicators** | A derivation such as MACD, RSI, VWAP, or NBBO Liquidity | `DerivationDefinition` | Enables the derivation for the allowed population/timeframe and exposes its selected output fields. |
-| **Signals** | A lifecycle detector such as VWAP Transition or Liquidity Dislocation | `SignalDefinition` | Adds an event condition/annotation or an explicitly registered latest-state projection. |
-| **Rule sets** | A reusable named Boolean rule set | `RuleSetDefinition` | Adds the existing rule-set card to a Watchlist or Strategy stage. |
-| **Watchlists** | A reusable configured universe | `WatchlistDefinition` | Adds a persisted Watchlist tab/container binding or selects it for a Run Plan. |
-
-The picker is a derived UI view, not another semantic registry. Internally it
-may use a `CatalogItemView`, but that view contains only presentation and
-allowed-action data:
+### Type graph
 
 ```text
-kind, canonical_id, label, short_description
-group, owner, provenance, availability/status
-supported_timeframes, allowed_actions
-output_field_ids (derivations only)
-event_property_ids (signals only)
+RegistryDefinition
+├── FieldDefinition
+├── SourceDefinition
+├── ProcessingStepDefinition
+├── DerivationDefinition
+├── SignalDefinition
+├── EventSchemaDefinition
+├── ProductDefinition
+├── QueryPlanDefinition
+├── ColumnDefinition
+├── ConditionDefinition
+├── RuleSetDefinition
+├── WatchlistDefinition
+├── StrategyInputBinding
+├── StrategyDefinition
+├── StrategyProfile
+└── RunPlan
+
+Runtime values (not registry definitions)
+├── Observation
+├── Record
+├── DatasetPage
+└── SignalEvent
 ```
 
-It must never infer `kind` from a name or ID and must never become a second
-source of labels, outputs, or availability.
+### RegistryDefinition
 
-### Column presentation bindings
+| Property | Type / allowed values |
+| --- | --- |
+| `registry_id` | Stable namespaced string |
+| `kind` | `field`, `source`, `processing_step`, `derivation`, `signal`, `event_schema`, `product`, `query_plan`, `column`, `condition`, `rule_set`, `watchlist`, `strategy_binding`, `strategy`, `strategy_profile`, `run_plan` |
+| `label` | User-facing string |
+| `description` | Short semantic definition |
+| `owner` | Registered service/domain ID |
+| `version` | Positive integer or immutable revision |
+| `status` | `implemented`, `integration_pending`, `live_only`, `planned`, `deprecated`, `retired` |
+| `tags` | Registered grouping IDs |
 
-A ColumnDefinition does not require every presentable thing to become the same
-kind of abstraction. Instead, it composes existing typed definitions through a
-non-empty `bindings` collection:
+Common metadata only. No semantic inheritance between sibling definitions.
+
+### FieldDefinition
+
+One typed value contract. No `RawField`, `DerivedField`, or `SignalProjectionField` subclasses.
+
+| Property | Type / allowed values |
+| --- | --- |
+| `field_id` | Stable namespaced ID |
+| `label` | User-facing value name |
+| `value_type` | `number`, `integer`, `string`, `boolean`, `timestamp`, `date`, `category`, `vector`, `json` |
+| `unit` | `currency`, `shares`, `percent`, `basis_points`, `milliseconds`, `score`, `ratio`, `count`, `scalar`, registered unit |
+| `entity_grain` | Security, issuer, listing, document, signal, account, or registered composite grain |
+| `producer` | `SourceFieldRef`, `ProcessingOutputRef`, `DerivationOutputRef`, or `SignalProjectionRef` |
+| `product_ids` | Products that deliver the Field |
+| `event_at` | Event/effective clock expression |
+| `available_at` | Causal availability clock expression |
+| `provenance` | `source`, `derived`, `estimated`, `model` |
+| `freshness_policy` | TTL/publication policy |
+| `null_reasons` | Registered explicit reason IDs |
+| `modes` | Subset of `live`, `paper`, `replay`, `backtest`, `backtest_debug` |
+
+```text
+ProducerRef =
+  SourceFieldRef(source_id, source_field)
+| ProcessingOutputRef(step_id, output_name)
+| DerivationOutputRef(derivation_id, output_name)
+| SignalProjectionRef(signal_id, property)
+```
+
+| Field | Producer reference | Product/status |
+| --- | --- | --- |
+| `market.last_price` | `ProcessingOutputRef(nbbo_trade_state, last_eligible_trade)` | `qmd.scanner`; current Field, target producer link |
+| `reference.float_shares` | `SourceFieldRef(reference.point_in_time, free_float)` | Scanner reference projection; current Field |
+| `qmd.bar.close` | `DerivationOutputRef(core_bars, close)` | `qmd.intraday_bars`; registration required before cross-boundary use |
+| `indicator.macd.histogram` | `DerivationOutputRef(momentum_core, macd_histogram)` | `qmd.indicators`; target Field/alias mapping required |
+| `classification.market_cap` | `DerivationOutputRef(reference_market_cap_classification, category)` | Reference Scanner projection; current Field, target producer link |
+| `signal.liquidity_dislocation.score` | `SignalProjectionRef(liquidity_dislocation, score)` | `qmd.market_signals`; target Field/alias mapping required |
+
+### Runtime value contracts
+
+| Type | Required identity | Payload |
+| --- | --- | --- |
+| `Observation` | `field_id`, entity identity, `event_at`, `available_at`, source/schema revision | Typed value, provenance, freshness, null reason |
+| `Record` | Product schema, entity identity, clocks | Named Field observations |
+| `DatasetPage` | Product/revision, bounds, cursor | Records, coverage, completeness |
+| `SignalEvent` | `signal_id`, `event_id`, entity, lifecycle state, clocks | Score/confidence/direction, evidence, expiry/resolution |
+
+### SourceDefinition
+
+| Property | Value |
+| --- | --- |
+| `source_id` | Stable source ID |
+| `transport` | `websocket`, `clickhouse`, `http`, `snapshot_delta`, `file` |
+| `event_clock` / `availability_clock` | Required clock contracts |
+| `coverage_path` / `watermark_path` | Required operational contracts |
+| `authoritative_for` | Declared evidence domains |
+| `retention_policy` | Source retention |
+
+### ProcessingStepDefinition
+
+| Property | Value |
+| --- | --- |
+| `step_id` | Stable processing ID |
+| `input_schema_ids` / `output_schema_ids` | Artifact/state schemas |
+| `execution_scope` | Normally `universal_ingest` |
+| `implementation` / `version` | Compiled implementation reference |
+| `required` | Boolean |
+
+Current values: validation, identity preservation, sequencing, NBBO/trade state, freshness/quality, persistence/fanout.
+
+### DerivationDefinition
+
+| Property | Type / allowed values |
+| --- | --- |
+| `derivation_id` | Stable namespaced ID |
+| `derivation_type` | `metric`, `indicator`, `oscillator`, `classification`, `ranking`, `aggregation` |
+| `input_field_ids` | Non-empty Field references |
+| `output_field_ids` | Non-empty Field references |
+| `parameters` | Typed parameter definitions/defaults |
+| `supported_timeframes` | Registered timeframes |
+| `execution_scopes` | Subset of `core_scan`, `watchlist`, `strategy_run`, `request`, `offline` |
+| `warmup` | Required history/state |
+| `execution_mode` | `set_based_sql`, `vectorized_batch`, `incremental_state_machine` |
+| `implementation` / `version` | Compiled implementation authority |
+
+```text
+MACD Derivation
+inputs  = [qmd.bar.close]
+outputs = [indicator.macd.line, indicator.macd.signal, indicator.macd.histogram]
+type    = indicator
+mode    = incremental_state_machine
+```
+
+Indicator and oscillator are Derivation types. Their outputs are Fields.
+
+### SignalDefinition
+
+| Property | Type / allowed values |
+| --- | --- |
+| `signal_id` | Stable namespaced ID |
+| `input_field_ids` | Field references |
+| `lifecycle_states` | `opened`, `updated`, `resolved`, `expired` |
+| `event_schema_id` | SignalEvent schema reference |
+| `projection_field_ids` | Optional scalar Field projections |
+| `execution_scopes` | `watchlist`, `strategy_run`, `request`, `offline` |
+| `execution_mode` | `vectorized_batch` or `incremental_state_machine` |
+| `implementation` / `version` | Compiled detector authority |
+
+```text
+Liquidity Dislocation Signal
+inputs      = [market.spread_bps, market.liquidity_score, market.trade_rate_10s]
+events      = liquidity_dislocation_event.v1
+projections = [signal.liquidity_dislocation.state,
+               signal.liquidity_dislocation.score,
+               signal.liquidity_dislocation.confidence]
+```
+
+SignalEvent is authoritative. Projection Fields support scalar columns, rules, and Strategy bindings.
+
+### EventSchemaDefinition
+
+| Property | Value |
+| --- | --- |
+| `event_schema_id` | Stable schema ID |
+| `event_type` | Corporate event, market signal, News, SEC, order, execution, membership |
+| `identity_fields` | Event/entity identity |
+| `clock_fields` | Observed, effective, available, resolved, expired clocks |
+| `property_fields` | Typed event properties |
+| `evidence_schema` | Provenance/evidence contract |
+
+### ProductDefinition and QueryPlanDefinition
+
+| Definition | Role | Required references |
+| --- | --- | --- |
+| `ProductDefinition` | Delivered record, dataset, or stream | Source IDs, dependency products, output schema/Field IDs, scopes, delivery, persistence |
+| `QueryPlanDefinition` | Bounded causal retrieval | Source paths, identity join, event clock, availability clock, coverage, implementation |
+
+```text
+ProductDefinition
+  product_id, product_kind
+  source_ids[], dependency_product_ids[]
+  output_field_ids[], output_event_schema_ids[]
+  delivery_modes[], execution_scopes[], supported_modes[]
+  persistence_policy, implementation, version
+
+QueryPlanDefinition
+  plan_id, source_paths[], implementation
+  identity_join, event_clock, availability_clock
+  coverage_path, bounded, point_in_time, version
+```
+
+### ColumnDefinition
+
+Presentation composition only. No value semantics.
 
 ```text
 ColumnDefinition
@@ -121,217 +214,202 @@ ColumnDefinition
     FieldBinding(field_id, role)
     SignalBinding(signal_id, event_view, role)
   primary_binding
-  sort_binding?       # one scalar FieldBinding when sortable
-  filter_binding?     # one scalar field or registered signal predicate
+  sort_binding?
+  filter_binding?
   format, alignment, visibility
 ```
 
-The allowed binding roles are presentation roles such as `primary`,
-`secondary`, `badge`, `icon`, `trend`, and `detail`; they do not change the
-meaning of the referenced data.
-
-| What is presented | Column binding |
+| Property | Allowed values |
 | --- | --- |
-| Last price | One `FieldBinding(market.last_price, primary)`. |
-| RSI 14 | One FieldBinding to the registered `rsi_14` output field. The `momentum_core` DerivationDefinition remains its producer. |
-| MACD composite | FieldBindings to MACD line, signal, and histogram output fields with a composite renderer. One designated scalar output owns sorting/filtering. |
-| VWAP Transition signal | A SignalBinding to `vwap_transition` for lifecycle/state rendering, or a FieldBinding to an explicitly registered latest score/state projection when a scalar column is required. |
-| Symbol | FieldBindings for symbol and company name, a logo FieldBinding, plus optional News/SEC SignalBindings or event accessors. |
+| Binding role | `primary`, `secondary`, `badge`, `icon`, `trend`, `detail` |
+| Signal event view | `latest_state`, `latest_event`, `active_event`, `event_count`, `recency` |
+| Renderer | `number`, `currency`, `percent`, `category`, `timestamp`, `symbol_composite`, `indicator_composite`, `signal_state`, registered renderer |
 
-An indicator or other derivation is not itself the cell value: it produces one
-or more typed output fields. Selecting an Indicator in the picker creates or
-references the Derivation instance, then lets the user expose any of its output
-fields individually or through an approved composite ColumnDefinition. A
-SignalDefinition is different because its authority is an event lifecycle; a
-signal column may render that lifecycle directly, while sortable scalar views
-use registered projection fields.
+| Column | Bindings |
+| --- | --- |
+| `last_price` | `FieldBinding(market.last_price, primary)` |
+| `macd` | MACD line, signal, histogram FieldBindings; histogram sort binding |
+| `vwap_transition` | `SignalBinding(vwap_transition, active_event, primary)` or projected score FieldBinding |
+| `symbol` | Symbol/company/logo FieldBindings plus News/SEC event accessors |
 
-### Typed cards and rows
+| Current status | Current `column_id` values |
+| --- | --- |
+| Implemented identity/market | `symbol`, `company_name`, `last_price`, `previous_close`, `change_pct`, `volume`, `relative_volume`, `vwap`, `exchange`, `country`, `sector`, `is_tradable` |
+| Implemented market state | `market_event_at`, `market_event_age_ms`, `market_quality_state`, `market_quality_flags`, `market_degradation_reason`, `liquidity_rank`, `spread_bps`, `trade_rate_10s`, `trade_rate_60s`, `liquidity_score` |
+| Implemented reference | `market_cap`, `market_cap_category`, `shares_outstanding`, `float_shares`, `float_category`, `float_source`, `float_quality`, `short_pressure`, `short_interest`, `short_interest_pct`, `days_to_cover`, `short_volume`, `short_volume_pct`, `fails_to_deliver`, `ftd_value`, `reg_sho_threshold` |
+| Live-only reference | `borrow_status`, `borrow_shares`, `borrow_fee` |
+| Implemented fundamental/event | `fundamental_trajectory`, `fundamental_quality`, `ipo_event`, `ipo_days_to_event`, `split_event`, `split_days_to_event` |
+| Integration-pending | `news_sentiment`, `sec_sentiment` |
+| No ColumnDefinition | `signal.news_labeled`, `signal.sec_labeled` |
 
-Each picker result uses a shared visual shell but a type-specific noun and
-action. A user sees **Field**, **Indicator**, **Signal**, **Rule set**, or
-**Watchlist**—never “Capability.”
+### Composition definitions
 
-```text
-┌──────────────────────────────────────────────────────────────────┐
-│ Last price                                      FIELD · MARKET   │
-│ Most recent causally available eligible trade price.             │
-│ QMD · Raw · Event driven · Available                             │
-│ Used by: Scanner, 12 Watchlists, 1 Strategy      [Add column]     │
-└──────────────────────────────────────────────────────────────────┘
-```
-
-```text
-┌──────────────────────────────────────────────────────────────────┐
-│ Core Momentum Oscillators                     INDICATOR · QMD     │
-│ Outputs: RSI 14, MACD line, MACD signal, MACD histogram          │
-│ Watchlist scope · 1m/5m · Implemented                            │
-│ Configure: timeframe, parameters                 [Enable]         │
-└──────────────────────────────────────────────────────────────────┘
-```
-
-A collapsed row shows label, type badge, source/owner, availability, and the
-contextual action. Expansion shows canonical ID, definition, entity grain,
-units/format, timeframe, event and availability clocks, freshness, provenance,
-null reasons, producer/version, consumers, and coverage. Technical source paths
-and query-plan IDs appear under **Provenance**, not as the primary label.
-
-### Context changes the action, not the definition
-
-| Surface | User-facing access element | What is selectable | Final visible result |
-| --- | --- | --- | --- |
-| Market Discovery > Universal Ingest | Read-only **Processing step cards** | Nothing; required steps are inspected | Step name, purpose, inputs/outputs, owner, readiness, coverage. No column action. |
-| Market Discovery > Core Scan | **Core fields** and **Core analytics** sections | Allowed Core fields/derivations | Selected Core row schema and required computations. |
-| Market Discovery > Watchlist > Rules | **Add rule set** picker and condition editor | Rule sets; fields/signals when authoring a rule | Removable Rule-set cards containing human-readable conditions. Presence means included; removal stops use. |
-| Market Discovery > Watchlist > Columns | **Add data** picker | Fields, Indicator output fields/composites, and Signals with an allowed ColumnDefinition | Removable/reorderable column chips/cards; table heading and renderer come from the shared ColumnDefinition. |
-| Market Discovery > Watchlist > Calculations | **Add indicator** picker | Watchlist/Strategy-scope derivations | Enabled Indicator cards with timeframe, parameters, and selected output fields. |
-| Scanner/Watchlist container | **Columns** button | Fields allowed by the product and current mode | A formatted table column. The user sees the Column label; details link back to the Field. |
-| Scanner/Watchlist row | Symbol cell, values, badges, event icons | No catalog selection | Current observations. Company/logo are part of the Symbol cell; News/SEC recency icons remain event/evidence accessors. |
-| Chart | **Indicators** picker | Request-scope derivations and field series | Overlay/pane series named from output FieldDefinitions; settings belong to the selected derivation instance. |
-| Strategy Studio | **Add evidence** picker with Fields, Signals, and Rule sets tabs | Strategy-eligible fields, signal event properties, rule sets | Evidence-binding chip/card showing user label, timeframe, runtime binding, and source status. |
-| Facts/News/SEC/XBRL | Grouped **Field rows** and evidence cards | Usually read-only; optional export/filter selection | Value plus as-of/provenance details; document/event navigation where applicable. |
-| Service Health / administrative catalog | **Sources**, **Products**, **Processing**, and **Coverage** tables | Administrative inspection/configuration only | Operational state and dependency graph; these do not appear as Scanner fields. |
-| Run Plan editor | Reference selectors for Strategy Profile, Watchlists, and Canvas profile | Existing configured larger parts | Stable IDs/revisions summarized as removable selections. |
-
-### What the user ultimately sees for each registry kind
-
-| Registry kind | Role in the new design | Normal user presentation | Directly selectable? |
-| --- | --- | --- | --- |
-| `FieldDefinition` | Defines one fact that consumers can use consistently | **Field row/card** in the picker; value becomes a column, series, fact, or operand | Yes, when its status/mode/product policy allows. |
-| `Observation` | Carries one field value with clocks/provenance | Formatted table cell, fact value, chart point, or condition evidence | No; it is runtime data. |
-| `ColumnDefinition` | Defines how one or more existing Fields and/or a Signal lifecycle appear in a specific table | Table heading, renderer, formatting, and column chip in configuration | Selected through a Field, Indicator output/composite, or Signal; not an independent semantic data item. |
-| `DerivationDefinition` | Produces reusable derived/indicator fields | **Indicator card** with outputs, scope, timeframe, parameters, cost/readiness | Yes, in Analytics/Indicators contexts. |
-| `SignalDefinition` | Emits lifecycle events from evidence | **Signal card**, chart marker, activity row, or event-condition choice | Yes, in Signals/evidence contexts. |
-| `ProcessingStepDefinition` | Protects event integrity or transport | Read-only **Processing step card** in Universal Ingest/Service Health | No for ordinary users; system/admin policy only. |
-| `RuleSetDefinition` | Reusable Boolean decision component | Removable **Rule-set card** with readable clauses | Yes. Adding means used; removing means no longer used. |
-| `WatchlistDefinition` | Produces causal bounded membership | Named **Watchlist tab/card** and persistent Canvas container binding | Yes. It is a larger configured part. |
-| `StrategyInputBinding` | Adapts canonical evidence to a Strategy runtime name | **Evidence binding chip/card** inside Strategy Studio | Created by selecting a Field/Signal; not browsed as an independent data item. |
-| `ProductDefinition` | Delivers records/streams such as Scanner or Chart | Product/source badge and provenance details; container dependency in admin view | Usually no; a container or Run Plan references it. |
-| `SourceDefinition` / `QueryPlanDefinition` | Establishes source and bounded retrieval authority | Provenance drawer and administrative catalog | No in ordinary authoring. |
-| Configuration schemas, Profiles, Run Plans | Compose reusable parts into approved behavior | Named configuration cards/selectors with revision/status | Yes in their owning configuration workflow. |
-
-### Semantic field groups in the user experience
-
-This maps the large field inventory below to its actual role and presentation.
-
-| Field group | Role | Primary user surfaces | Default presentation |
-| --- | --- | --- | --- |
-| Identity, listing, tradability | Establishes which instrument a row/value belongs to and whether it may participate | Scanner/Watchlist Symbol cell, Facts, filters, routing explanations | Symbol/company composite cell, exchange/tradability badges; stable IDs only in details. |
-| Presentation | Supplies logo and asset state without changing identity | Symbol cells, instrument header | Logo/avatar integrated with Symbol; not standalone columns by default. |
-| Country and classification | Provides categorical screening and grouping | Field picker, rules, Watchlists, Facts | Text/category field; optional table column or condition operand. |
-| Market reference and share supply | Provides slower point-in-time context such as market cap, float, short interest, borrow | Scanner/Watchlist columns, rules, Facts | Formatted numeric/category field with source date and coverage/null explanation. |
-| QMD Scanner market fields | Provides current causal market state and rank inputs | Core Scan, Scanner/Watchlist tables, chart, Strategy evidence | Primary numeric table fields; QMD owner/timeframe/freshness in expanded details. |
-| Corporate events | Represents dated IPO, split, dividend, and ticker-change evidence | Event field picker, Watchlists, chart annotations, ticker facts | Event badge/card or date/distance column; opens event evidence. |
-| Fundamentals and XBRL quality | Provides filing-derived facts, ratios, trajectories, and evidence quality | Fundamental Watchlists, Facts/XBRL, Strategy evidence | Grouped financial field rows/cards with period, filing availability, units, and quality. |
-| News and SEC canonical fields | Provides document recency, counts, identity, and navigation | News/SEC containers, Scanner icons, rules | Recency/count field plus persistent News/SEC icons; document cards remain the event authority. |
-| Intelligence and signal projections | Provides validated semantic/event properties for rules and Strategies | Signals picker, Watchlists, Strategy Studio, chart annotations | Signal card/event marker; scalar score only where an explicit projected Field exists. |
-| Model context | Supplies promoted opaque/vector/model artifacts to approved consumers | Strategy/model administration and provenance | Not a raw table column. Show artifact/model card and readiness; expose a scalar only through a registered Field. |
-| Quality, coverage, relationships, schedules | Explains absence, identity resolution, source completeness, and refresh state | Service Health, provenance drawer, eligibility explanation | Status/evidence row; hidden from ordinary column picker unless a diagnostic surface requests it. |
-
-### Complete example: Last price as the user encounters it
-
-1. In the application catalog the user finds **Last price**, type **Field**, group
-   **Market**, source badge **QMD**, status **Available**.
-2. In Scanner or Watchlist configuration, **Add field** creates the `last_price`
-   ColumnDefinition reference. The visible heading is **LAST PRICE** and the
-   value uses the shared currency/precision format.
-3. In a rule editor, selecting **Last price** creates an operand reference to
-   `market.last_price`; the user sees a sentence such as “Last price is greater
-   than 5.00,” not a source column name.
-4. In Strategy Studio, **Add evidence > Fields > Last price** creates a binding
-   card that shows timeframe and the runtime adapter `price` in advanced
-   details.
-5. In a chart, Last price is the base price series supplied by the Chart
-   product; it is not re-added as an indicator.
-6. Expanding **Provenance** shows QMD, raw eligible trade state,
-   `qmd.scanner.snapshot.v1`, event/availability clocks, TTL, coverage, and null
-   reasons. Those details never replace the user-facing name.
-
-## Composition hierarchy
-
-```mermaid
-flowchart LR
-    S["Source adapter"] --> O["Raw field observations"]
-    O --> D["Derivation definition"]
-    D --> F["Derived or indicator field observations"]
-    O --> C["Condition"]
-    F --> C
-    C --> R["Rule set"]
-    R --> W["Watchlist"]
-    F --> W
-    W --> SI["Strategy input binding"]
-    SI --> SP["Strategy Profile"]
-    SP --> RP["Run Plan"]
-```
-
-```mermaid
-flowchart LR
-    F["Field observations"] --> SD["Signal definition"]
-    SD --> SE["Signal events"]
-    SE --> P["Projected event-property fields"]
-    SE --> C["Conditions and chart annotations"]
-    P --> C
-```
-
-The hierarchy is therefore not simply “data field to calculation.” It is:
-
-1. sources publish raw field observations;
-2. derivations consume fields and publish derived field observations;
-3. signal detectors consume observations and publish lifecycle events;
-4. columns present one or more field outputs and/or signal lifecycle views,
-   while conditions consume fields or event state;
-5. rule sets compose conditions;
-6. Watchlists compose rule sets, ranking fields, columns, and focused derivations;
-7. Strategies bind the same registered evidence;
-8. Strategy Profiles and Run Plans select and version those reusable parts.
-
-## Registration rules
-
-| Existing thing | Register as | Register when | Do not register as |
-| --- | --- | --- | --- |
-| Physical source column | `FieldDefinition` | It has stable business meaning and crosses a service/application boundary or is selectable by a consumer. | A column merely because it exists in ClickHouse. |
-| SQL/query code | `QueryPlanDefinition` | It is an approved bounded application read with identity, event, availability, and coverage semantics. | Arbitrary UI-authored SQL. |
-| Validation/sequencing/fanout | `ProcessingStepDefinition` | It is an observable, versioned operational step with declared inputs/outputs. | Field or Scanner column. |
-| Formula/indicator/oscillator | `DerivationDefinition` plus output `FieldDefinition` records | The producer is reusable; register each cross-boundary/selectable output. | One fake field representing the whole family. |
-| Signal detector | `SignalDefinition` plus event schema | It has declared lifecycle, evidence, version, scope, and clocks. | Ordinary scalar field. |
-| Latest signal score/state | `FieldDefinition` | A table/rule/Strategy needs a scalar projection of the signal event. | A replacement for the event history. |
-| Table heading/cell renderer | `ColumnDefinition` | One or more existing field outputs or a signal lifecycle are allowed in a specific table surface. | New semantic field, derivation, or signal. |
-| Database table | `SourceDefinition`, product storage, or query-plan source | It is an active authority or approved projection. | One application field per physical column. |
-| Staging, backup, scratch, cache | Storage inventory only | It is needed for operations/recovery evidence. | Canonical field/source authority. |
-| Model/training artifact | `ModelArtifactDefinition` or dataset manifest | A promoted consumer contract exists. | Scanner field merely because training data exists. |
-
-Private intermediate values may stay inside a service-local schema. They require
-application field registration only when they cross the service boundary,
-become configurable, appear in a product record, or are used by a rule,
-Watchlist, Strategy, export, or user-facing explanation.
-
-## Worked lifecycle: Last price
-
-| Layer | Current/target representation | Meaning |
+| Definition | Required references | User result |
 | --- | --- | --- |
-| Source evidence | Massive eligible trade event, preserved by QMD compact event processing | Raw trade price with SIP/source sequence and QMD availability clock. |
-| Processing | QMD `nbbo_trade_state` processing step | Maintains the last eligible trade; this step is not a field. |
-| Field definition | `market.last_price` | Number, currency unit, `security_at_market_clock` grain, owner `qmd_gateway`, raw provenance, event-driven cadence, 60-second TTL, point-in-time support. |
-| Query plan | `qmd.scanner.snapshot.v1` via `service://qmd/scanner` | Bounded current/historical Scanner projection with QMD coverage evidence. |
-| Observation | `(market.last_price, security, event_at, available_at, value, source_revision)` | One causally available price. |
-| Record/product | `qmd.scanner` candidate row | References the field and carries projection/coverage metadata. |
-| Column | `last_price`, heading **Last price** | Presentation only: formatting, sorting, filtering, visibility. |
-| Rule/Watchlist | Conditions reference `market.last_price`; Watchlists select `last_price` | Reuses the field; no copied “price capability.” |
-| Strategy | `source_id=market.last_price` bound to runtime field `price` | Adapter for a Strategy implementation; `price` is not a new semantic field. |
+| `ConditionDefinition` | Left Field/Signal property, comparator, right Field/value, timeframe | Readable Boolean clause |
+| `RuleSetDefinition` | Condition IDs, `all`/`any`, score policy | Removable Rule-set card |
+| `WatchlistDefinition` | Source scan, Rule-set IDs, ranking Field, limit/expiry/overrides, Column IDs, Derivation IDs | Persistent Watchlist tab/container |
+| `StrategyInputBinding` | Field or Signal property ID, runtime binding, timeframe/anchor, availability policy | Evidence-binding chip |
+| `StrategyDefinition` | Strategy ID/revision, required bindings, stages, decision contract | Executable Strategy implementation |
+| `StrategyProfile` | Strategy ID/revision, parameters, evidence/rule references | Configured Strategy card |
+| `RunPlan` | Strategy Profile, Watchlists, Canvas profile, mode, account/broker/data plans | Versioned executable selection |
 
-The canonical ID is `market.last_price`. The heading may change without changing
-the field. A source/query implementation may change behind a versioned plan
-without changing the field if its meaning, clocks, and provenance contract stay
-equivalent.
+```text
+ConditionDefinition
+  condition_id
+  left_ref       = FieldRef | SignalPropertyRef
+  comparator     = equals | not_equals | greater_than | greater_or_equal |
+                   less_than | less_or_equal | above_by_bps | is_true |
+                   is_false | in | not_in | state_is
+  right_ref      = FieldRef | ConstantValue
+  timeframe, parameters, enabled
+
+RuleSetDefinition
+  rule_set_id, condition_ids[]
+  operator       = all | any
+  required_score, enabled
+
+WatchlistDefinition
+  watchlist_id, source_scan_id
+  rule_set_ids[], ranking_field_id, ranking_direction
+  maximum_size, refresh_interval_ms
+  membership_expiry, membership_ttl_ms
+  manual_inclusions[], manual_exclusions[]
+  column_ids[], derivation_ids[]
+
+StrategyInputBinding
+  binding_id
+  source_ref      = FieldRef | SignalPropertyRef
+  runtime_name, timeframe, anchor
+  availability_policy, required
+
+StrategyDefinition
+  strategy_id, revision, implementation
+  required_binding_ids[], stage_definitions[]
+  intent_schema_id, checkpoint_schema_id
+
+StrategyProfile
+  profile_id, strategy_id, strategy_revision
+  parameter_values, binding_ids[], rule_set_ids[]
+
+RunPlan
+  run_plan_id, mode
+  strategy_profile_id, watchlist_ids[], canvas_profile_id
+  account_binding_id, portfolio_policy_id, oms_policy_id
+  data_plan_id, source_revision_policy
+```
+
+### Relationship map
+
+| From | Relationship | To |
+| --- | --- | --- |
+| Source | produces | Fields / source event schemas |
+| Processing step | transforms | Artifact/state schemas |
+| Derivation | consumes / produces | Fields / Fields |
+| Signal | consumes / emits / projects | Fields / SignalEvents / Fields |
+| Product | delivers | Records, DatasetPages, SignalEvents |
+| Column | presents | Fields and/or Signal event views |
+| Condition | evaluates | Fields or Signal properties |
+| Rule set | composes | Conditions |
+| Watchlist | composes | Rule sets, ranking Field, Columns, Derivations |
+| Strategy binding | adapts | Field or Signal property |
+| Strategy Profile | configures | StrategyDefinition |
+| Run Plan | selects | Profile, Watchlists, Canvas, mode/account/data plans |
+
+### Current-to-target mapping
+
+| Current object | Target object | Action |
+| --- | --- | --- |
+| `FieldDefinition` | `FieldDefinition` | Retain; add typed `producer` reference |
+| `DiscoveryFieldPresentation` | `ColumnDefinition` | Replace single-field assumption with typed bindings |
+| QMD `primitive` capability | `ProcessingStepDefinition` | Rename and type |
+| QMD `indicator_family` capability | `DerivationDefinition` | Register outputs as Fields only when cross-boundary/selectable |
+| QMD `market_observation` capability | `SignalDefinition` + `EventSchemaDefinition` | Preserve lifecycle; register scalar projections separately |
+| Backend `core_scan.calculations` | Split definitions | Remove mixed collection |
+| Frontend `DiscoveryCapability` | `CatalogItemView` | Presentation projection only |
+| Frontend `canonicalCapabilityType` | Remove | Consume explicit `kind` |
+| Strategy `runtime_field` aliases | `StrategyInputBinding` | Explicit canonical source mapping |
+
+### User access mapping
+
+| Surface | Picker/view | Selectable definitions | Result |
+| --- | --- | --- | --- |
+| Universal Ingest | Processing | Processing steps | Read-only step cards |
+| Core Scan | Fields / Indicators | Fields, Core Derivations | Core record schema and computations |
+| Watchlist Rules | Rule sets / Fields / Signals | Rule sets and rule operands | Rule-set cards |
+| Watchlist Columns | Data | Fields, Derivation outputs/composites, Signals | Column chips and table columns |
+| Watchlist Calculations | Indicators | Derivations | Enabled derivation instances |
+| Scanner/Watchlist runtime | Columns | ColumnDefinitions | Formatted cells |
+| Chart | Indicators / Signals | Derivations, Fields, Signals | Series, panes, markers |
+| Strategy Studio | Evidence | Fields, Signal properties, Rule sets | StrategyInputBindings |
+| Facts/News/SEC/XBRL | Grouped values/events | Fields, records, events | Values and evidence cards |
+| Service Health | Sources / Products / Processing / Coverage | Administrative definitions | Operational tables |
+| Run Plan | Profiles / Watchlists / Canvas | Existing configured parts | Versioned references |
+
+Shared control: `Data & Analytics picker`.
+
+```text
+CatalogItemView
+  kind, canonical_id, label, description, group
+  owner, provenance, status, supported_timeframes
+  allowed_actions, output_field_ids?, event_property_ids?
+```
+
+Allowed actions: `add_column`, `add_operand`, `enable_derivation`, `add_signal`, `add_rule_set`, `add_watchlist`, `add_strategy_evidence`, `add_chart_series`.
+
+### Concrete composition: Top Mid Cap Gainers
+
+```text
+WatchlistDefinition(top-mid-cap-gainers)
+  source_scan          = qmd-core-scan
+  rule_set_ids         = [watchlist-mid-caps, watchlist-positive-gainer]
+  ranking_field_id     = market.change_pct
+  ranking_direction    = descending
+  maximum_size         = 250
+  column_ids           = [symbol, last_price, change_pct, volume,
+                          relative_volume, market_cap, market_cap_category,
+                          float_shares, float_category, short_interest_pct]
+  focused_derivations  = declared Watchlist calculation IDs
+  expiry               = end_of_trading_day
+```
+
+### Execution contract
+
+| Work | Required execution mode |
+| --- | --- |
+| Historical/cross-sectional reads | Set-based ClickHouse query |
+| Bulk field transforms | Native Arrow/Polars/vectorized compiled batch |
+| Live indicators/signals | Compiled incremental state machine with bounded batches |
+| Multi-consumer requests | Deduplicated by derivation, parameters, timeframe, anchor, source revision |
+| Python | Configuration, validation, orchestration, bounded metadata assembly |
+
+Prohibited data-plane patterns: per-row Python UDF, `iter_rows`, per-ticker query, per-field service request, duplicate calculation per consumer.
+
+### Registration decision map
+
+| Existing object | Register as | Condition |
+| --- | --- | --- |
+| Cross-boundary typed value | FieldDefinition | Consumer-selectable or delivered by a product |
+| Source acquisition/read | SourceDefinition | Authoritative evidence boundary |
+| Integrity/transport operation | ProcessingStepDefinition | Versioned observable step |
+| Reusable computation | DerivationDefinition | Declared inputs/outputs/version/scope |
+| Lifecycle detector | SignalDefinition + EventSchemaDefinition | Declared evidence, states, clocks, version |
+| Table presentation | ColumnDefinition | Approved typed bindings and renderer |
+| Bounded read | QueryPlanDefinition | Identity/clocks/coverage/implementation declared |
+| Delivered record/stream | ProductDefinition | Output schemas and delivery declared |
+| Staging/backup/scratch/cache | Storage inventory | Never semantic authority |
+| Training/model artifact | Dataset/model manifest | Only promoted product outputs become Fields |
 
 ## Current-state audit summary
 
-The audit used the repository registry and Rust catalogs, backend configuration
-at `127.0.0.1:8000`, QMD History at `127.0.0.1:8801`, and live ClickHouse
-`system.tables`/`system.columns`. QMD Live at its configured `127.0.0.1:8795`
-was unavailable during the audit. The shared QMD catalog was verified through
-QMD History and the shared Rust source; this is source/catalog verification,
-not a claim that the QMD Live process was operational.
+| Audit surface | Endpoint / authority | Verification |
+| --- | --- | --- |
+| Application registry | Repository source | Loaded and validated |
+| Backend configuration | `127.0.0.1:8000` | Queried |
+| QMD History | `127.0.0.1:8801` | Shared catalog queried |
+| ClickHouse | `system.tables`, `system.columns` | Live inventory queried |
+| QMD Live | `127.0.0.1:8795` | Unavailable; no operational claim |
+| Shared QMD catalog | Rust source + QMD History | Source/catalog verified |
 
 | Registry or runtime surface | Current count | Finding |
 | --- | ---: | --- |
@@ -366,14 +444,15 @@ are replaced rather than represented through explicit aliases:
 | `news.score` | `signal.company_news.score` |
 | `sec.score` | `signal.sec_filing.score` |
 
-These must become explicit versioned aliases or be migrated to one canonical
-ID. They must not silently replace FieldDefinitions while building a catalog.
-The backend functions `_qmd_runtime_capabilities`,
-`_market_discovery_field_catalog`, `_bind_discovery_scanner_columns`, and
-`_watchlist_column_catalog` currently perform this mixing. The frontend
-`DiscoveryCapability` type also contains both outputs and `scanner_columns`,
-and `canonicalCapabilityType` infers ontology from naming. The target model
-removes that inference and consumes explicit registry kinds.
+| Drift site | Current behavior | Target |
+| --- | --- | --- |
+| `_qmd_runtime_capabilities` | Adds mixed kinds | Emit typed definitions |
+| `_market_discovery_field_catalog` | Builds mixed catalog | Return FieldDefinitions only |
+| `_bind_discovery_scanner_columns` | Infers bindings | Resolve ColumnDefinition IDs |
+| `_watchlist_column_catalog` | Rebuilds column semantics | Resolve ColumnDefinition IDs |
+| `DiscoveryCapability` | Combines outputs and `scanner_columns` | Typed definition union |
+| `canonicalCapabilityType` | Infers kind from names | Read explicit `definition_kind` |
+| Five replacements above | Silent replacement | Versioned alias or canonical-ID migration |
 
 ## Application field inventory
 
@@ -436,13 +515,9 @@ ordinary application fields.
 
 ### Derivation families and output registration queue
 
-All 26 current `indicator_family` entries should become
-`DerivationDefinition` records with an explicit subtype. Every output below is
-an existing QMD catalog output. **Register** means register the output as a
-FieldDefinition only when it crosses the service boundary or is selectable;
-otherwise retain it as a private typed output. The current direct name match is
-shown, but an absent match is a review queue, not proof that runtime code cannot
-produce the value.
+| Current object | Target object | Output rule | Unmatched output |
+| --- | --- | --- | --- |
+| 26 `indicator_family` entries | `DerivationDefinition` with subtype | Register FieldDefinition when cross-boundary or selectable | Semantic review queue |
 
 | Derivation ID | Scope / status | Existing outputs | Current application-field action |
 | --- | --- | --- | --- |
@@ -475,19 +550,25 @@ produce the value.
 
 ### Signal definitions
 
-The seven current `market_observation` entries should become
-`SignalDefinition` records: `flow_structure_alignment`,
-`directional_flow_acceleration`, `price_volume_expansion`, `vwap_transition`,
-`liquidity_dislocation`, `liquidity_recovery`, and `flow_price_divergence`.
+| Current kind | Target kind | IDs |
+| --- | --- | --- |
+| `market_observation` | `SignalDefinition` | `flow_structure_alignment`, `directional_flow_acceleration`, `price_volume_expansion`, `vwap_transition`, `liquidity_dislocation`, `liquidity_recovery`, `flow_price_divergence` |
 
-They share the event schema: `schema_version`, `signal_version`,
-`engine_version`, `event_id`, `signal_id`, `signal_key`, `producer`, `domain`,
-`ticker`, `working_timeframe`, `clock`, `observed_at`, `effective_at`, `state`,
-`direction`, `score`, `rank_score`, `confidence`, `trigger_reason`,
-`resolution_reason`, `reference_price`, `invalidation_price`, `expires_at`, and
-`evidence`. Register the event schema once. Register a scalar projection such as
-`signal.vwap_transition.score` only when a rule/table/Strategy consumes that
-projection; retain the event as the causal authority.
+```text
+SignalEventSchema =
+  schema_version, signal_version, engine_version,
+  event_id, signal_id, signal_key, producer, domain, ticker,
+  working_timeframe, clock, observed_at, effective_at,
+  state, direction, score, rank_score, confidence,
+  trigger_reason, resolution_reason,
+  reference_price, invalidation_price, expires_at, evidence
+```
+
+| Registration object | Rule |
+| --- | --- |
+| Event schema | Register once |
+| Scalar projection | Register FieldDefinition only for rule/table/Strategy consumption |
+| Causal authority | SignalEvent |
 
 ## Configured composition inventory
 
@@ -510,18 +591,27 @@ should reference registered conditions and fields, not be recast as fields:
 
 ### Watchlists
 
-The 19 configured Watchlists are `core-candidates`, `top-penny-gainers`,
-`top-penny-volume-gainers`, `top-small-cap-gainers`,
-`top-small-cap-volume-gainers`, `top-mid-cap-gainers`,
-`top-mid-cap-volume-gainers`, `top-large-cap-gainers`,
-`top-large-cap-volume-gainers`, `price-or-volume-squeeze`, `vwap-breakout`,
-`news-bullish-sentiment`, `news-bearish-sentiment`,
-`sec-bullish-sentiment`, `sec-bearish-sentiment`, `fundamental-bullish`,
-`fundamental-bearish`, `past-upcoming-ipos`, and `stock-splits`.
+```text
+WatchlistDefinition IDs =
+  core-candidates
+  top-penny-gainers, top-penny-volume-gainers
+  top-small-cap-gainers, top-small-cap-volume-gainers
+  top-mid-cap-gainers, top-mid-cap-volume-gainers
+  top-large-cap-gainers, top-large-cap-volume-gainers
+  price-or-volume-squeeze, vwap-breakout
+  news-bullish-sentiment, news-bearish-sentiment
+  sec-bullish-sentiment, sec-bearish-sentiment
+  fundamental-bullish, fundamental-bearish
+  past-upcoming-ipos, stock-splits
+```
 
-Each remains a WatchlistDefinition referencing rule-set IDs, column IDs,
-ranking field, focused derivations, timing, and overrides. Its visible columns
-do not define new data semantics.
+| Watchlist property | Reference |
+| --- | --- |
+| Membership | `rule_set_ids[]` |
+| Presentation | `column_ids[]` |
+| Order | `ranking_field_id` |
+| Computation | `focused_derivation_ids[]` |
+| Lifecycle | `timing`, `overrides` |
 
 ### Strategy input bindings
 
@@ -538,9 +628,9 @@ canonical field or event-property IDs:
 | `signal.company_news.score`, `signal.flow_price_divergence.score`, `signal.liquidity_dislocation.score`, `signal.price_volume_expansion.score`, `signal.sec_filing.score`, `signal.vwap_transition.score` | `news_score`, `flow_price_divergence_score`, `liquidity_dislocation_score`, `price_volume_expansion_score`, `sec_filing_score`, `vwap_transition_score` |
 | `signal.news_labeled`, `signal.sec_labeled` | `news_labeled`, `sec_labeled` |
 
-Seventeen of these source IDs are currently injected as resolved-catalog rows
-rather than true static FieldDefinitions. They need explicit FieldDefinitions
-or event-property projection definitions before the field registry can be pure.
+| Current state | Count | Target |
+| --- | ---: | --- |
+| Runtime-injected source IDs | 17 | FieldDefinition or SignalEvent property projection |
 
 ## Service and query-plan inventory
 
@@ -555,18 +645,18 @@ or event-property projection definitions before the field registry can be pure.
 
 ### Configuration schemas and compatibility
 
-The 13 registered composition schemas are `trading_configuration`,
-`strategy_profile`, `watchlist`, `historical_watchlist_plan`, `run_plan`,
-`canvas_profile`, `canvas_layout`, `portfolio_policy`, `oms_policy`,
-`strategy_intent`, `execution_policy`, `protection_profile`, and
-`account_binding`. These are correct larger-part contracts: they reference
-fields, products, rules, and policies rather than redefining those smaller
-parts.
+```text
+CompositionSchema IDs =
+  trading_configuration, strategy_profile, watchlist,
+  historical_watchlist_plan, run_plan,
+  canvas_profile, canvas_layout,
+  portfolio_policy, oms_policy, strategy_intent,
+  execution_policy, protection_profile, account_binding
+```
 
-The only registered compatibility alias is the deprecated QMD endpoint
-`qmd.stream.scanner_primitives`, from `/stream/scanner-primitives` to
-`/stream/signals`. It does not cover the five semantic field replacements or
-the Strategy runtime aliases identified above.
+| Compatibility ID | From | To | Coverage gap |
+| --- | --- | --- | --- |
+| `qmd.stream.scanner_primitives` | `/stream/scanner-primitives` | `/stream/signals` | Five field replacements; Strategy runtime aliases |
 
 ### Query plans
 
