@@ -22926,19 +22926,29 @@ button {
 .data-library-workbench {
   display: grid;
   grid-template-columns: minmax(260px, 0.29fr) minmax(0, 1fr);
-  min-height: min(760px, calc(var(--app-zoomed-viewport-height) - 190px));
+  height: 100%;
+  min-height: 0;
   overflow: hidden;
   border: 1px solid var(--border);
   border-radius: 12px;
   background: var(--surface);
 }
 
+.trading-configuration-page[data-configuration-section="data_catalog"],
+.trading-configuration-page[data-configuration-section="rule_sets"] {
+  grid-template-rows: auto minmax(0, 1fr);
+  height: calc(var(--app-zoomed-viewport-height) - 112px);
+  min-height: 0;
+  overflow: hidden;
+}
+
 .data-library-catalog {
   display: flex;
+  min-height: 0;
   min-width: 0;
   flex-direction: column;
   border-right: 1px solid var(--border);
-  background: var(--surface-alt);
+  background: var(--surface);
 }
 
 .data-library-catalog > header { padding: 18px 18px 12px; }
@@ -22950,7 +22960,7 @@ button {
 .data-library-search input { min-width: 0; width: 100%; border: 0; outline: 0; background: transparent; color: var(--foreground); font: inherit; }
 .data-library-create { display: flex; align-items: center; justify-content: center; gap: 6px; margin: 0 14px 10px; padding: 8px; border: 1px dashed var(--primary); border-radius: 8px; background: var(--accent-soft); color: var(--foreground); font-weight: 600; cursor: pointer; }
 
-.data-library-tree { min-height: 0; overflow: auto; padding: 0 10px 14px; }
+.data-library-tree { flex: 1 1 auto; min-height: 0; overflow: auto; padding: 0 10px 14px; }
 .data-library-tree details { border-top: 1px solid var(--border); }
 .data-library-tree summary { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 10px 8px; cursor: pointer; color: var(--foreground); font-size: 0.8rem; font-weight: 600; list-style-position: inside; }
 .data-library-tree summary em { color: var(--muted-foreground); font-size: 0.7rem; font-style: normal; font-weight: 500; }
@@ -22965,8 +22975,8 @@ button {
 .data-library-subgroup button strong { font-size: 0.78rem; font-weight: 550; }
 .data-library-subgroup button small { margin-top: 2px; color: var(--muted-foreground); font-size: 0.66rem; }
 
-.data-library-detail { min-width: 0; overflow: auto; padding: 28px clamp(24px, 4vw, 54px); }
-.data-definition-document, .rule-set-document { max-width: 980px; margin: 0 auto; }
+.data-library-detail { min-height: 0; min-width: 0; overflow: auto; padding: 24px; }
+.data-definition-document, .rule-set-document { max-width: none; margin: 0; }
 .data-definition-document > header, .rule-set-document > header { padding-bottom: 22px; border-bottom: 1px solid var(--border); }
 .data-definition-document > header > span, .rule-set-document > header > span { color: var(--muted-foreground); font-size: 0.72rem; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; }
 .data-definition-document h2 { margin: 7px 0 6px; font-size: 1.7rem; font-weight: 560; letter-spacing: -0.025em; }
