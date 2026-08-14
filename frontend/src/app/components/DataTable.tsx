@@ -193,6 +193,7 @@ const BACKEND_QUERY_OPERATORS: Array<{ label: string; needsSecondValue?: boolean
 let backendQueryConditionSequence = 0;
 
 export function DataTable({ backendQuery, columns, defaultFilterPreset, defaultSort, empty = "No rows.", fitToContent = false, filterPresets = [], isRowSelected, onRowClick, preserveFiltersOnDataChange = false, rowAction, rows, title, transposeHelper = false }: DataTableProps) {
+  const emptyIsLoading = /^(loading|building|rebuilding|resolving|connecting|querying)\b/i.test(empty.trim());
   const baseColumns = useMemo(() => {
     if (columns?.length) return columns;
     return Array.from(new Set(rows.flatMap((row) => Object.keys(row))));
@@ -1239,7 +1240,7 @@ export function DataTable({ backendQuery, columns, defaultFilterPreset, defaultS
             ) : (
               <tr>
                 <td className="data-table-empty" colSpan={Math.max(usableColumns.length, 1)}>
-                  {empty}
+                  <span className={emptyIsLoading ? "data-table-empty-message is-loading" : "data-table-empty-message"}>{emptyIsLoading ? <span className="loading-spinner" aria-hidden="true" /> : null}<span>{empty}</span></span>
                 </td>
               </tr>
             )}

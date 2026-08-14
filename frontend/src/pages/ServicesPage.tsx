@@ -370,7 +370,7 @@ function WorkloadBudgetPanel({ error, payload }: { error: string; payload: Workl
     <section className={`service-workload-budget-panel${error ? " is-unavailable" : rejected ? " has-rejections" : ""}`} aria-label="Backend workload admission budgets">
       <header>
         <div><span className="page-kicker">Application backend</span><h2>Workload admission</h2></div>
-        <span>{payload ? `${payload.wait_timeout_seconds}s admission wait` : error ? "Evidence unavailable" : "Loading limits…"}</span>
+        <span className={!payload && !error ? "inline-loading-message" : undefined}>{!payload && !error ? <span className="loading-spinner" aria-hidden="true" /> : null}{payload ? `${payload.wait_timeout_seconds}s admission wait` : error ? "Evidence unavailable" : "Loading limits…"}</span>
       </header>
       {lanes.length ? <div className="service-workload-budget-grid">
         {lanes.map(([name, lane]) => {
@@ -1216,7 +1216,7 @@ function NewsTodayRowsPanel({ onSortChange, state }: { onSortChange: (sort: News
       </div>
       <div className="news-today-meta">
         <span>{state.windowStartUtc ? `Window ${formatLogTime(state.windowStartUtc)} -> ${formatLogTime(state.windowEndUtc)}` : "Today, market timezone"}</span>
-        {state.error ? <strong>{state.error}</strong> : <strong>{state.loading ? "Loading rows..." : searchLabel}</strong>}
+        {state.error ? <strong>{state.error}</strong> : <strong className={state.loading ? "inline-loading-message" : undefined}>{state.loading ? <span className="loading-spinner" aria-hidden="true" /> : null}{state.loading ? "Loading rows..." : searchLabel}</strong>}
       </div>
       <div className="news-today-table-wrap">
         <table className="news-today-table">
@@ -1278,7 +1278,7 @@ function NewsTodayRowsPanel({ onSortChange, state }: { onSortChange: (sort: News
               <tr key={`empty-${index}`}>
                 <td colSpan={6}>
                   {state.loading
-                    ? "Loading today's inserted news rows..."
+                    ? <span className="inline-loading-message"><span className="loading-spinner" aria-hidden="true" />Loading today's inserted news rows...</span>
                     : searchQuery.trim()
                       ? "No loaded news rows match this search."
                       : "No inserted news rows found for today's market date."}
@@ -1359,7 +1359,7 @@ function SecTodayRowsPanel({ onSortChange, state }: { onSortChange: (sort: NewsT
       </div>
       <div className="news-today-meta">
         <span>{state.windowStartUtc ? `Window ${formatLogTime(state.windowStartUtc)} -> ${formatLogTime(state.windowEndUtc)}` : "Today, market timezone"}</span>
-        {state.error ? <strong>{state.error}</strong> : <strong>{state.loading ? "Loading SEC filing rows..." : searchLabel}</strong>}
+        {state.error ? <strong>{state.error}</strong> : <strong className={state.loading ? "inline-loading-message" : undefined}>{state.loading ? <span className="loading-spinner" aria-hidden="true" /> : null}{state.loading ? "Loading SEC filing rows..." : searchLabel}</strong>}
       </div>
       <div className="news-today-table-wrap sec-today-table-wrap">
         <table className="news-today-table sec-today-table">
@@ -1424,7 +1424,7 @@ function SecTodayRowsPanel({ onSortChange, state }: { onSortChange: (sort: NewsT
               <tr key={`empty-${index}`}>
                 <td colSpan={8}>
                   {state.loading
-                    ? "Loading today's SEC filing rows..."
+                    ? <span className="inline-loading-message"><span className="loading-spinner" aria-hidden="true" />Loading today's SEC filing rows...</span>
                     : searchQuery.trim()
                       ? "No loaded SEC filing rows match this search."
                       : "No SEC filing rows found for today's market date."}
@@ -1594,7 +1594,7 @@ function NewsTodayDetailModal({ detail, error, loading, row }: { detail: NewsDet
           </details>
         </footer>
       </article>
-      {loading ? <div className="news-full-detail-notice">Loading complete row from ClickHouse...</div> : null}
+      {loading ? <div className="news-full-detail-notice inline-loading-message"><span className="loading-spinner" aria-hidden="true" />Loading complete row from ClickHouse...</div> : null}
       {error ? <div className="news-full-detail-notice error">{error}</div> : null}
     </div>
   );
@@ -1786,7 +1786,7 @@ function SecFilingDetailModal({ detail, error, loading, row }: { detail: SecDeta
         </div>
       </article>
       <div className="sec-filing-detail-scroll" ref={detailScrollRef}>
-        {loading ? <div className="news-full-detail-notice">Loading complete SEC filing row from ClickHouse...</div> : null}
+        {loading ? <div className="news-full-detail-notice inline-loading-message"><span className="loading-spinner" aria-hidden="true" />Loading complete SEC filing row from ClickHouse...</div> : null}
         {error ? <div className="news-full-detail-notice error">{error}</div> : null}
         {partialDetailMessage ? <div className="news-full-detail-notice warning">{partialDetailMessage}</div> : null}
         <section className="sec-filing-reader-layout">
@@ -5707,7 +5707,7 @@ function ServiceTablePreviewModal({ error, loading, onClose, payload, service }:
             <h3>{title}</h3>
             <p>{subtitle}</p>
           </div>
-          {loading ? <span className="service-table-preview-loading">Loading...</span> : null}
+          {loading ? <span className="service-table-preview-loading inline-loading-message"><span className="loading-spinner" aria-hidden="true" />Loading...</span> : null}
         </div>
         {error ? <div className="service-table-preview-error">{error}</div> : null}
         <DataTable empty={loading ? "Loading table rows..." : "No preview rows returned."} fitToContent rows={payload?.rows ?? []} title="Last 20 Rows" />

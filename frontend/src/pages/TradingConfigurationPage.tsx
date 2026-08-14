@@ -2265,7 +2265,7 @@ function MarketDiscoveryStudio({ onChange, section }: { onChange: (value: Market
       </div>
       <section className="strategy-authoring-stage discovery-guided-stage">
         {guidedStep === "universal" ? <>
-          <header className="strategy-identity-intro"><span>Locked event path</span><h2>Universal Ingest runs for every accepted market event</h2><p>Only integrity, current-state, freshness, and required persistence primitives belong here. These controls are visible for audit and cannot be broadened, disabled, or moved by a user configuration.</p></header>
+          <header className="strategy-identity-intro"><h2>Universal Ingest runs for every accepted market event</h2><p>Only integrity, current-state, freshness, and required persistence primitives belong here. These controls are visible for audit and cannot be broadened, disabled, or moved by a user configuration.</p></header>
           <div className="discovery-core-summary"><article><span>Population</span><strong>Entire received feed</strong><p>Every accepted quote and trade before Scanner eligibility or Watchlist membership.</p><em>Locked system authority</em></article><article><span>Primitive count</span><strong>{universalCapabilities.length} required</strong><p>Definitions are versioned and validated with the published configuration.</p><em>Minimal hot path</em></article></div>
           <div className="discovery-capability-matrix">
             {universalCapabilities.map((capability, index) => <article data-status="required" key={capability.capability_id}>
@@ -5613,7 +5613,7 @@ function EmptyState({ detail, title }: { detail: string; title: string }) {
 }
 
 function ConfigurationLoading() {
-  return <div className="configuration-empty"><strong>Loading configuration</strong><span>Reading the approved base for this browser session…</span></div>;
+  return <div aria-live="polite" className="configuration-empty configuration-loading" role="status"><span className="loading-spinner" aria-hidden="true" /><span><strong>Loading configuration</strong><small>Reading the approved base for this browser session…</small></span></div>;
 }
 
 function updateCapability(profile: StrategyProfile, id: string, binding: CapabilityBinding): StrategyProfile {

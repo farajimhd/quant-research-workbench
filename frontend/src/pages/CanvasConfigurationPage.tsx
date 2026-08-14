@@ -1558,7 +1558,7 @@ export function ApprovedCanvasRuntimePage({ accountKeys, mode, modeControls }: {
     return () => { cancelled = true; };
   }, []);
   if (error) return <div className="canvas-config-page canvas-focus-page"><div className="canvas-inline-error">{error}</div></div>;
-  if (!approved) return <div className="canvas-config-page canvas-focus-page"><div className="canvas-empty-state"><strong>Loading approved Canvas</strong><span>Resolving the published default for this {mode} workspace.</span></div></div>;
+  if (!approved) return <div className="canvas-config-page canvas-focus-page"><div aria-live="polite" className="canvas-empty-state is-loading" role="status"><span className="loading-spinner" aria-hidden="true" /><span><strong>Loading approved Canvas</strong><small>Resolving the published default for this {mode} workspace.</small></span></div></div>;
   return <CanvasWorkspaceSurface accountKeys={accountKeys} approvedCanvas={approved} canvasId={MAIN_CANVAS_ID} manager={false} modeControls={modeControls} runtimeMode={mode} />;
 }
 
@@ -1591,7 +1591,7 @@ function ApprovedCanvasFocusPage({ canvasId, requestedInstanceId, requestedNewsI
     return () => { cancelled = true; };
   }, []);
   if (error) return <div className="canvas-config-page canvas-focus-page"><div className="canvas-inline-error">{error}</div></div>;
-  if (!approved) return <div className="canvas-config-page canvas-focus-page"><div className="canvas-empty-state"><strong>Loading approved Canvas</strong><span>Resolving the published default and this workspace's saved overlay.</span></div></div>;
+  if (!approved) return <div className="canvas-config-page canvas-focus-page"><div aria-live="polite" className="canvas-empty-state is-loading" role="status"><span className="loading-spinner" aria-hidden="true" /><span><strong>Loading approved Canvas</strong><small>Resolving the published default and this workspace's saved overlay.</small></span></div></div>;
   return <CanvasWorkspaceSurface approvedCanvas={approved} canvasId={canvasId} manager={false} requestedInstanceId={requestedInstanceId} requestedNewsId={requestedNewsId} requestedSecAccession={requestedSecAccession} requestedSecCik={requestedSecCik} />;
 }
 

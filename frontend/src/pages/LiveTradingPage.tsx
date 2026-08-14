@@ -1449,7 +1449,7 @@ function LiveTradingStart({
             <LiveStartProgress label="Bars" progress={preloadProgress.bars} status={preloadProgress.barsStatus} />
             <LiveStartProgress label="News" progress={preloadProgress.news} status={preloadProgress.newsStatus} />
           </div>
-          {message ? <div className="live-start-message">{message}</div> : null}
+          {message ? <div aria-live="polite" className="live-start-message" role="status">{loading ? <span className="loading-spinner" aria-hidden="true" /> : null}<span>{message}</span></div> : null}
           <button className="button primary" disabled={!session.sessionDate || loading} onClick={onStart} type="button">
             {loading ? <span className="loading-spinner" aria-hidden="true" /> : <Play size={15} />} {loading ? "Loading..." : "Load Session"}
           </button>

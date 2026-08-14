@@ -21,7 +21,7 @@ export function ResearchWorkspacePage() {
   }, []);
 
   if (error) return <div className="canvas-config-page canvas-focus-page"><div aria-live="assertive" className="canvas-inline-error replay-runtime-error"><TriangleAlert aria-hidden="true" size={16} /><div><strong>Research unavailable</strong><span>The published Canvas profile could not be resolved: {error}</span></div></div></div>;
-  if (!approved) return <div className="canvas-config-page canvas-focus-page"><div className="canvas-empty-state"><strong>Loading Research workspace</strong><span>Resolving the published Canvas default and your separate Research overlay.</span></div></div>;
+  if (!approved) return <div className="canvas-config-page canvas-focus-page"><div aria-live="polite" className="canvas-empty-state is-loading" role="status"><span className="loading-spinner" aria-hidden="true" /><span><strong>Loading Research workspace</strong><small>Resolving the published Canvas default and your separate Research overlay.</small></span></div></div>;
   return <CanvasWorkspaceSurface
     approvedCanvas={approved}
     canvasId="main"
