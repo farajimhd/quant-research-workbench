@@ -45,6 +45,7 @@ from src.request_context import (
 )
 from src.backend.application_registry import (
     application_registry_payload,
+    information_registry_payload,
     runtime_capability_registry_payload,
 )
 from src.backend.application_authority import AuthorityDenied, AuthorityPolicy
@@ -4420,6 +4421,21 @@ def runtime_capability_registry() -> dict[str, object]:
             status_code=503,
             detail={
                 "code": "qmd_runtime_catalog_unavailable",
+                "message": str(exc),
+                "retryable": True,
+            },
+        ) from exc
+
+
+@app.get("/api/registries/definitions")
+def information_definition_registry() -> dict[str, object]:
+    try:
+        return information_registry_payload(qmd_catalogs(), configuration_base())
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "definition_registry_unavailable",
                 "message": str(exc),
                 "retryable": True,
             },

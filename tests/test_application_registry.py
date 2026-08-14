@@ -4,6 +4,7 @@ import unittest
 
 from services.reference_gateway.table_groups import OWNED_REFERENCE_TABLES
 from src.backend.application_registry import (
+    CONFIGURATION_BINDINGS,
     COMPATIBILITY_ALIASES,
     CONFIGURATION_SCHEMAS,
     CONTAINER_DEFINITIONS,
@@ -13,7 +14,9 @@ from src.backend.application_registry import (
     MARKET_SOURCES,
     PRODUCT_DEFINITIONS,
     QUERY_PLANS,
+    REGISTRY_TYPES,
     application_registry_payload,
+    information_registry_payload,
     runtime_capability_registry_payload,
     validate_application_registry,
 )
@@ -227,6 +230,158 @@ class ApplicationRegistryTests(unittest.TestCase):
                 "authority": "qmd_runtime_catalog",
                 "capability_catalog": [{"key": "opening_range"}],
             })
+
+    def test_information_registry_unifies_qmd_application_and_configuration(self) -> None:
+        qmd = {
+            "definition_catalog": {
+                "schema_version": 1,
+                "authority": "qmd_core_definition_registry",
+                "definitions": [
+                    {
+                        "registry_id": "qmd.derivation.momentum_core",
+                        "kind": "derivation",
+                        "label": "Core momentum",
+                        "description": "Closed-bar momentum fields.",
+                        "owner": "qmd_core",
+                        "version": 1,
+                        "status": "implemented",
+                        "tags": ["qmd"],
+                        "configurable": True,
+                        "configuration_mode": "parameterized_reference",
+                        "input_field_ids": ["qmd.field.close"],
+                        "output_field_ids": ["qmd.field.rsi_14"],
+                        "execution_scopes": ["watchlist"],
+                        "parameters": [],
+                        "producer_id": None,
+                        "presentation": {
+                            "kind_label": "Derivation",
+                            "icon": "sigma",
+                            "accent": "violet",
+                        },
+                    },
+                    {
+                        "registry_id": "qmd.processing_step.event_order_sequence",
+                        "kind": "processing_step",
+                        "label": "Event ordering",
+                        "description": "Canonical sequence state.",
+                        "owner": "qmd_core",
+                        "version": 1,
+                        "status": "implemented",
+                        "tags": ["qmd"],
+                        "configurable": False,
+                        "configuration_mode": "locked",
+                        "input_field_ids": [],
+                        "output_field_ids": [],
+                        "execution_scopes": ["universal_ingest"],
+                        "parameters": [],
+                        "producer_id": None,
+                        "presentation": {
+                            "kind_label": "Processing step",
+                            "icon": "cable",
+                            "accent": "cyan",
+                        },
+                    },
+                    {
+                        "registry_id": "qmd.field.close",
+                        "kind": "field",
+                        "label": "Close",
+                        "description": "Closed price.",
+                        "owner": "qmd_core",
+                        "version": 1,
+                        "status": "implemented",
+                        "tags": ["qmd"],
+                        "configurable": True,
+                        "configuration_mode": "select_reference",
+                        "input_field_ids": [],
+                        "output_field_ids": [],
+                        "execution_scopes": [],
+                        "parameters": [],
+                        "producer_id": None,
+                        "presentation": {
+                            "kind_label": "Field",
+                            "icon": "database",
+                            "accent": "blue",
+                        },
+                    },
+                    {
+                        "registry_id": "qmd.field.rsi_14",
+                        "kind": "field",
+                        "label": "RSI 14",
+                        "description": "Momentum output.",
+                        "owner": "qmd_core",
+                        "version": 1,
+                        "status": "implemented",
+                        "tags": ["qmd"],
+                        "configurable": True,
+                        "configuration_mode": "select_reference",
+                        "input_field_ids": [],
+                        "output_field_ids": [],
+                        "execution_scopes": [],
+                        "parameters": [],
+                        "producer_id": "qmd.derivation.momentum_core",
+                        "presentation": {
+                            "kind_label": "Field",
+                            "icon": "database",
+                            "accent": "blue",
+                        },
+                    },
+                ],
+            }
+        }
+        configuration = {
+            "market_discovery": {
+                "rule_sets": [{"rule_set_id": "gainers", "name": "Gainers", "conditions": [{"condition_id": "change-positive", "left_source_id": "market.change_pct", "comparator": "greater_than", "value": 0}]}],
+                "watchlists": [{
+                    "watchlist_id": "top-gainers",
+                    "name": "Top gainers",
+                    "columns": ["last_price"],
+                    "inclusion_rule_sets": ["gainers"],
+                    "calculations": ["qmd.family.momentum_core"],
+                }],
+            }
+        }
+
+        payload = information_registry_payload(qmd, configuration)
+
+        definitions = {row["registry_id"]: row for row in payload["definitions"]}
+        self.assertEqual(payload["authority"], "application_information_registry")
+        self.assertIn("qmd.derivation.momentum_core", definitions)
+        self.assertEqual(
+            definitions["qmd.derivation.momentum_core"]["configuration_binding_id"],
+            "market_discovery.core_scan",
+        )
+        self.assertEqual(
+            definitions["qmd.derivation.momentum_core"]["relationships"]["output_field_ids"],
+            ["qmd.field.rsi_14"],
+        )
+        self.assertIn("reference.market_cap", definitions)
+        self.assertIn("column.last_price", definitions)
+        self.assertIn("rule_set.gainers", definitions)
+        self.assertIn("condition.gainers.change-positive", definitions)
+        self.assertEqual(
+            definitions["rule_set.gainers"]["relationships"]["condition_ids"],
+            ["condition.gainers.change-positive"],
+        )
+        self.assertIn("watchlist.top-gainers", definitions)
+        self.assertEqual(
+            {row["alias_id"]: row["registry_id"] for row in payload["aliases"]}["qmd.family.momentum_core"],
+            "qmd.derivation.momentum_core",
+        )
+        aliases = {row["alias_id"]: row["registry_id"] for row in payload["aliases"]}
+        self.assertEqual(aliases["qmd.primitive.event-order-sequence"], "qmd.processing_step.event_order_sequence")
+        self.assertEqual(aliases["qmd.primitive.event_order_sequence"], "qmd.processing_step.event_order_sequence")
+        self.assertTrue(payload["content_hash"])
+
+    def test_every_configuration_binding_targets_a_registered_type(self) -> None:
+        kinds = [row.kind for row in REGISTRY_TYPES]
+        binding_ids = [row.binding_id for row in CONFIGURATION_BINDINGS]
+        self.assertEqual(len(kinds), len(set(kinds)))
+        self.assertEqual(len(binding_ids), len(set(binding_ids)))
+        self.assertTrue(all(row.kind in kinds for row in CONFIGURATION_BINDINGS))
+
+    def test_information_registry_fails_closed_without_qmd_definition_authority(self) -> None:
+        with self.assertRaisesRegex(ValueError, "QMD definition registry authority"):
+            information_registry_payload({}, {})
 
 
 if __name__ == "__main__":

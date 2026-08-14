@@ -14,14 +14,24 @@ lists, and ad hoc SQL knowledge.
 
 ## Current implementation
 
-The backend application registry is the current catalog authority. Schema v4
-adds a `market_discovery_fields` presentation contract that points to an
-existing application `field_id` or QMD `capability_id`; it does not redefine
-the underlying value. The configuration service resolves those references into
-one `field_catalog`, then derives Watchlist columns and allowed filter operators
-from that catalog. Every other registered application field and QMD capability
-is also retained in the resolved catalog as non-selectable metadata, so it is
-visible to validation and cannot acquire a handwritten UI path.
+QMD publishes the computation-side schema v1 definition catalog at
+`/definition-catalog`. The backend merges it with application Fields, Sources,
+Products, Query Plans, Columns, and current configurable instances at
+`/api/registries/definitions`. The merged authority is
+`application_information_registry`; it rejects a missing, empty, or wrong QMD
+authority.
+
+The configuration frontend consumes this merged contract through one provider.
+Shared cards obtain the abstraction label, icon, accent, configuration mode,
+and optional instance binding from the registry. There is no frontend semantic
+fallback. Existing domain editors remain the write authority: they configure
+registered references and instances in the versioned trading draft.
+
+The older `market_discovery_fields` presentation contract remains the detailed
+Field/Column projection inventory. It points to an existing application
+`field_id` or QMD `capability_id`; it does not redefine the underlying value.
+The configuration service resolves those references into one `field_catalog`,
+then derives Watchlist columns and allowed filter operators from that catalog.
 
 The resolved record includes stable source and display IDs, semantic type,
 source/query-plan provenance, causal availability, implementation status,

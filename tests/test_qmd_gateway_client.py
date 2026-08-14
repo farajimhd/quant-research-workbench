@@ -475,7 +475,15 @@ class QmdGatewayClientTests(unittest.TestCase):
 
     @patch("src.backend.qmd_gateway_client.qmd_get_json")
     def test_catalog_bundle_includes_canonical_computation_scope(self, get_json) -> None:
-        get_json.side_effect = lambda path, *, timeout: [{"key": path.strip("/")}]
+        get_json.side_effect = lambda path, *, timeout: (
+            {
+                "schema_version": 1,
+                "authority": "qmd_core_definition_registry",
+                "definitions": [{"registry_id": "qmd.field.close"}],
+            }
+            if path == "/definition-catalog"
+            else [{"key": path.strip("/")}]
+        )
 
         payload = qmd_catalogs()
 
@@ -484,8 +492,17 @@ class QmdGatewayClientTests(unittest.TestCase):
         self.assertEqual(len(payload["content_hash"]), 64)
         self.assertEqual(payload["capability_catalog"], [{"key": "capability-catalog"}])
         self.assertEqual(
+            payload["definition_catalog"]["authority"],
+            "qmd_core_definition_registry",
+        )
+        self.assertEqual(
             {call.args[0] for call in get_json.call_args_list},
-            {"/capability-catalog", "/indicator-catalog", "/signal-catalog"},
+            {
+                "/capability-catalog",
+                "/definition-catalog",
+                "/indicator-catalog",
+                "/signal-catalog",
+            },
         )
         self.assertTrue(all(call.kwargs["timeout"] == 3 for call in get_json.call_args_list))
 
@@ -495,7 +512,15 @@ class QmdGatewayClientTests(unittest.TestCase):
 
         def response(path, *, timeout):
             observed.append(current_request_identity())
-            return [{"key": path.strip("/")}]
+            return (
+                {
+                    "schema_version": 1,
+                    "authority": "qmd_core_definition_registry",
+                    "definitions": [],
+                }
+                if path == "/definition-catalog"
+                else [{"key": path.strip("/")}]
+            )
 
         get_json.side_effect = response
         tokens = begin_request_context("web:catalog-9", "view:discovery")
@@ -503,7 +528,7 @@ class QmdGatewayClientTests(unittest.TestCase):
             qmd_catalogs()
         finally:
             end_request_context(tokens[0], tokens[1])
-        self.assertEqual(len(observed), 3)
+        self.assertEqual(len(observed), 4)
         self.assertTrue(
             all(
                 identity == {

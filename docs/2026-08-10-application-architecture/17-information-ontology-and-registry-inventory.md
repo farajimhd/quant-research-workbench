@@ -1,12 +1,41 @@
 # Information ontology and registry inventory
 
-Status: accepted target terminology with a current-state audit and migration register
+Status: schema v1 implemented across QMD, backend, and configuration UI; runtime-value migration remains tracked below
 
 Audit date: 2026-08-14
 
 Scope: fields, QMD processing, derivations, signals, columns, rules, Watchlists,
 Strategies, Run Plans, accounts, Portfolio, OMS, products, query plans, runtime
 trading records, and physical ClickHouse storage
+
+## Implemented authority path
+
+| Layer | Contract | Authority | Consumer |
+| --- | --- | --- | --- |
+| QMD | `GET /definition-catalog`, schema v1 | `qmd_core_definition_registry` | Backend registry merger |
+| Application | `GET /api/registries/definitions`, schema v1 | `application_information_registry` | Configuration frontend |
+| Frontend | `DefinitionRegistryProvider` | Application response only | Shared `AbstractionCard` renderer |
+| Configuration | `configuration_bindings[]` | Versioned trading configuration | Existing Market Discovery, Strategy, Run Plan, Portfolio, OMS, account, and Canvas editors |
+
+### Implemented definition envelope
+
+| Property | Value |
+| --- | --- |
+| Identity | `registry_id`, `kind`, `version` |
+| Semantics | `label`, `description`, `owner`, `status`, `tags` |
+| Composition | `relationships` or QMD input/output Field references |
+| Presentation | `kind_label`, `icon`, `accent` |
+| Configuration | `configurable`, `configuration_mode`, `configuration_binding_id` |
+| Integrity | QMD authority, application authority, schema version, content hash |
+
+### Configuration modes
+
+| Mode | User action | Examples |
+| --- | --- | --- |
+| `locked` | Inspect only | QMD processing steps, Sources, Products, Query Plans, Strategy definitions |
+| `select_reference` | Select a registered definition | Fields, Columns |
+| `parameterized_reference` | Enable and configure a registered reference | Derivations, Signals |
+| `editable_instance` | Create, edit, reference, remove | Rule Sets, Watchlists, Strategy Profiles, Run Plans, accounts, Portfolio, OMS, Canvas |
 
 ## Canonical design
 

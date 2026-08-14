@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import hashlib
+import json
 from dataclasses import asdict, dataclass
 from functools import lru_cache
 from pathlib import Path
-from typing import Iterable
+from typing import Any, Iterable
 
 from services.reference_gateway.table_groups import REFERENCE_TABLE_GROUPS
 
@@ -146,6 +148,75 @@ class CompatibilityAliasDefinition:
     canonical_path: str
     retirement_state: str
     removal_condition: str
+
+
+@dataclass(frozen=True, slots=True)
+class RegistryTypeDefinition:
+    kind: str
+    label: str
+    description: str
+    icon: str
+    accent: str
+    configuration_mode: str
+    user_facing: bool
+
+
+@dataclass(frozen=True, slots=True)
+class ConfigurationBindingDefinition:
+    binding_id: str
+    configuration_path: str
+    kind: str
+    identity_field: str
+    configuration_mode: str
+    editable_fields: tuple[str, ...]
+    reference_fields: tuple[str, ...] = ()
+
+
+REGISTRY_TYPES = (
+    RegistryTypeDefinition("field", "Field", "One typed value contract with causal provenance.", "database", "blue", "select_reference", True),
+    RegistryTypeDefinition("source", "Source", "External or persisted evidence authority.", "server", "slate", "locked", False),
+    RegistryTypeDefinition("processing_step", "Processing step", "Compiled state transition in an owned event path.", "cable", "cyan", "locked", True),
+    RegistryTypeDefinition("derivation", "Derivation", "Vectorized, set-based, or incremental transformation from Fields to Fields.", "sigma", "violet", "parameterized_reference", True),
+    RegistryTypeDefinition("signal", "Signal", "Versioned event lifecycle derived from registered Fields.", "activity", "rose", "parameterized_reference", True),
+    RegistryTypeDefinition("event_schema", "Event schema", "Typed event identity, clocks, properties, and evidence.", "braces", "rose", "locked", False),
+    RegistryTypeDefinition("product", "Product", "Delivered record, dataset, or stream over registered definitions.", "package", "slate", "locked", False),
+    RegistryTypeDefinition("query_plan", "Query plan", "Bounded causal retrieval implementation.", "route", "slate", "locked", False),
+    RegistryTypeDefinition("column", "Column", "Presentation composition over Field or Signal bindings.", "columns", "amber", "select_reference", True),
+    RegistryTypeDefinition("condition", "Condition", "Typed comparison over registered references.", "list_filter", "orange", "editable_instance", True),
+    RegistryTypeDefinition("rule_set", "Rule set", "Reusable Boolean composition of Conditions.", "list_checks", "orange", "editable_instance", True),
+    RegistryTypeDefinition("watchlist", "Watchlist", "Persistent candidate composition over Core Scan, rules, ranking, and columns.", "scan_search", "green", "editable_instance", True),
+    RegistryTypeDefinition("strategy", "Strategy", "Versioned executable decision definition.", "git_branch", "violet", "locked", True),
+    RegistryTypeDefinition("strategy_profile", "Strategy profile", "Configured parameters and bindings for one Strategy revision.", "sliders", "violet", "editable_instance", True),
+    RegistryTypeDefinition("run_plan", "Run Plan", "Executable selection of Strategy, universe, accounts, OMS, and modes.", "network", "violet", "editable_instance", True),
+    RegistryTypeDefinition("account_binding", "Account binding", "Stable application account identity and mode-specific session binding.", "boxes", "cyan", "editable_instance", True),
+    RegistryTypeDefinition("portfolio_policy", "Portfolio policy", "Account-wide capital, risk, capacity, and permission limits.", "briefcase", "green", "editable_instance", True),
+    RegistryTypeDefinition("portfolio_mandate", "Portfolio mandate", "Run Plan-to-account allocation and authority limits.", "network", "green", "editable_instance", True),
+    RegistryTypeDefinition("portfolio_group", "Portfolio group", "Aggregate limits over explicitly selected accounts.", "bar_chart", "green", "editable_instance", True),
+    RegistryTypeDefinition("oms_profile", "OMS profile", "Reusable execution and protection selection.", "send", "orange", "editable_instance", True),
+    RegistryTypeDefinition("execution_policy", "Execution policy", "Bounded quote, price, repricing, and fill behavior.", "radio_tower", "orange", "editable_instance", True),
+    RegistryTypeDefinition("protection_profile", "Protection profile", "Broker-held stop, target, trailing, and repair policy.", "shield_check", "orange", "editable_instance", True),
+    RegistryTypeDefinition("canvas_profile", "Canvas profile", "Persisted workspace composition and container state.", "layout_dashboard", "blue", "editable_instance", True),
+)
+
+
+CONFIGURATION_BINDINGS = (
+    ConfigurationBindingDefinition("market_discovery.core_scan", "market_discovery.core_scan.calculations[]", "derivation", "capability_id", "parameterized_reference", ("enabled", "selected_timeframes"), ("capability_id",)),
+    ConfigurationBindingDefinition("market_discovery.signals", "market_discovery.core_scan.calculations[]", "signal", "capability_id", "parameterized_reference", ("enabled", "selected_timeframes"), ("capability_id",)),
+    ConfigurationBindingDefinition("market_discovery.columns", "market_discovery.watchlists[].columns[]", "column", "column_id", "select_reference", (), ("column_id",)),
+    ConfigurationBindingDefinition("market_discovery.conditions", "market_discovery.rule_sets[].conditions[]", "condition", "condition_id", "editable_instance", ("left_source_id", "left_timeframe", "comparator", "right_source_id", "right_timeframe", "value", "enabled"), ("left_source_id", "right_source_id")),
+    ConfigurationBindingDefinition("market_discovery.rules", "market_discovery.rule_sets[]", "rule_set", "rule_set_id", "editable_instance", ("name", "description", "operator", "conditions", "enabled")),
+    ConfigurationBindingDefinition("market_discovery.watchlists", "market_discovery.watchlists[]", "watchlist", "watchlist_id", "editable_instance", ("name", "description", "inclusion_rule_sets", "ranking_field", "ranking_direction", "maximum_size", "refresh_interval_ms", "membership_expiry", "membership_ttl_ms", "manual_inclusions", "manual_exclusions", "columns", "calculations", "enabled")),
+    ConfigurationBindingDefinition("strategy.profiles", "strategy.profiles[]", "strategy_profile", "profile_id", "editable_instance", ("name", "description", "parameters", "capabilities", "composition"), ("definition_id",)),
+    ConfigurationBindingDefinition("run_plans", "assignments.deployments[]", "run_plan", "run_plan_id", "editable_instance", ("name", "description", "profile_id", "oms_profile_id", "universe_id", "allowed_environments", "action_authority", "campaign_lifecycle", "enabled"), ("profile_id", "oms_profile_id", "universe_id")),
+    ConfigurationBindingDefinition("accounts", "accounts.bindings[]", "account_binding", "account_key", "editable_instance", ("name", "account_class", "base_currency", "session_key", "portfolio_policy_id", "enabled", "modes"), ("portfolio_policy_id",)),
+    ConfigurationBindingDefinition("portfolio.policies", "portfolio.policies[]", "portfolio_policy", "policy_id", "editable_instance", ("*",)),
+    ConfigurationBindingDefinition("portfolio.mandates", "portfolio.mandates[]", "portfolio_mandate", "mandate_id", "editable_instance", ("run_plan_id", "account_key", "maximum_cash_fraction", "maximum_planned_risk_fraction", "maximum_positions", "assignment_mode", "allocation_weight", "maximum_action_authority", "allow_replacement", "minimum_replacement_improvement_pct", "enabled"), ("run_plan_id", "account_key")),
+    ConfigurationBindingDefinition("portfolio.groups", "portfolio.groups[]", "portfolio_group", "group_id", "editable_instance", ("account_keys", "maximum_gross_exposure", "maximum_ticker_exposure"), ("account_keys",)),
+    ConfigurationBindingDefinition("oms.profiles", "oms.profiles[]", "oms_profile", "profile_id", "editable_instance", ("name", "description", "settings"), ("entry_execution_policy_id", "exit_execution_policy_id", "protection_profile_id")),
+    ConfigurationBindingDefinition("oms.execution_policies", "oms.execution_policies[]", "execution_policy", "policy_id", "editable_instance", ("name", "description", "quote_source", "partial_fill_policy", "envelope")),
+    ConfigurationBindingDefinition("oms.protection_profiles", "oms.protection_profiles[]", "protection_profile", "profile_id", "editable_instance", ("name", "add_policy", "profit_pocket_transition", "mandatory_catastrophic_backstop", "emergency_repair_deadline_ms", "slices")),
+    ConfigurationBindingDefinition("canvas.profile", "canvas.profile", "canvas_profile", "revision", "editable_instance", ("workspaceStates", "containerConfigurations", "groups")),
+)
 
 
 ALL_MODES = ("live", "paper", "replay", "backtest", "backtest_debug")
@@ -1355,3 +1426,387 @@ def runtime_capability_registry_payload(qmd_catalog: dict[str, object]) -> dict[
             "signals": len(families["signal_catalog"]),
         },
     }
+
+
+def _registry_presentation(kind: str) -> dict[str, str]:
+    definition = next((row for row in REGISTRY_TYPES if row.kind == kind), None)
+    if definition is None:
+        raise ValueError(f"Unknown registry kind: {kind}")
+    return {
+        "kind_label": definition.label,
+        "icon": definition.icon,
+        "accent": definition.accent,
+    }
+
+
+def _registry_definition(
+    registry_id: str,
+    kind: str,
+    label: str,
+    description: str,
+    owner: str,
+    version: int,
+    status: str,
+    *,
+    configurable: bool | None = None,
+    configuration_mode: str | None = None,
+    configuration_binding_id: str = "",
+    tags: Iterable[str] = (),
+    relationships: dict[str, Iterable[str]] | None = None,
+) -> dict[str, Any]:
+    type_definition = next(row for row in REGISTRY_TYPES if row.kind == kind)
+    return {
+        "registry_id": registry_id,
+        "kind": kind,
+        "label": label,
+        "description": description,
+        "owner": owner,
+        "version": max(1, int(version)),
+        "status": status,
+        "tags": sorted({str(tag) for tag in tags if str(tag).strip()}),
+        "configurable": (
+            type_definition.configuration_mode != "locked"
+            if configurable is None
+            else bool(configurable)
+        ),
+        "configuration_mode": configuration_mode or type_definition.configuration_mode,
+        "configuration_binding_id": configuration_binding_id,
+        "relationships": {
+            key: sorted({str(value) for value in values if str(value).strip()})
+            for key, values in (relationships or {}).items()
+        },
+        "presentation": _registry_presentation(kind),
+    }
+
+
+def _application_information_definitions() -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    rows.extend(
+        _registry_definition(
+            field.field_id,
+            "field",
+            field.label,
+            f"{field.provenance} {field.value_type} at {field.entity_grain} grain.",
+            field.owner,
+            field.schema_version,
+            field.status,
+            configurable=True,
+            configuration_mode="select_reference",
+            tags=(field.group, field.provenance, field.value_type),
+            relationships={
+                "query_plan_ids": (field.query_plan_id,),
+                "coverage_plan_ids": (field.coverage_query_plan,),
+            },
+        )
+        for field in FIELD_DEFINITIONS
+    )
+    rows.extend(
+        _registry_definition(
+            source.source_id,
+            "source",
+            source.label,
+            ", ".join(source.authoritative_for),
+            source.owner,
+            source.schema_version,
+            source.status,
+            configurable=False,
+            tags=(source.transport,),
+        )
+        for source in MARKET_SOURCES
+    )
+    rows.extend(
+        _registry_definition(
+            product.product_id,
+            "product",
+            product.label,
+            f"{product.kind} delivered through {', '.join(product.delivery)}.",
+            product.owner,
+            product.schema_version,
+            product.status,
+            configurable=False,
+            tags=(product.kind, *product.execution_scopes),
+            relationships={
+                "source_ids": product.source_ids,
+                "product_ids": product.dependency_products,
+            },
+        )
+        for product in PRODUCT_DEFINITIONS
+    )
+    rows.extend(
+        _registry_definition(
+            plan.plan_id,
+            "query_plan",
+            plan.plan_id,
+            f"Bounded point-in-time retrieval owned by {plan.owner}.",
+            plan.owner,
+            plan.version,
+            "implemented",
+            configurable=False,
+            relationships={"source_paths": plan.source_paths},
+        )
+        for plan in QUERY_PLANS
+    )
+    rows.extend(
+        _registry_definition(
+            f"column.{presentation.column_id}",
+            "column",
+            presentation.label,
+            presentation.description,
+            "application_registry",
+            1,
+            "implemented",
+            configurable=True,
+            configuration_mode="select_reference",
+            configuration_binding_id="market_discovery.columns",
+            tags=(presentation.semantic_type,),
+            relationships={"field_ids": (presentation.field_id,)},
+        )
+        for presentation in DISCOVERY_FIELD_PRESENTATIONS
+    )
+    return rows
+
+
+def _configuration_information_definitions(
+    configuration: dict[str, Any] | None,
+) -> list[dict[str, Any]]:
+    if not configuration:
+        return []
+    rows: list[dict[str, Any]] = []
+    discovery = dict(configuration.get("market_discovery") or {})
+    for rule_set in discovery.get("rule_sets") or []:
+        rule_id = str(rule_set.get("rule_set_id") or "").strip()
+        if rule_id:
+            condition_ids = []
+            for index, condition in enumerate(rule_set.get("conditions") or []):
+                condition_id = str(condition.get("condition_id") or f"condition-{index + 1}").strip()
+                registry_id = f"condition.{rule_id}.{condition_id}"
+                condition_ids.append(registry_id)
+                rows.append(_registry_definition(
+                    registry_id, "condition", condition_id,
+                    "Typed comparison over registered Field or Signal references.", "application_configuration", 1,
+                    "implemented", configuration_binding_id="market_discovery.conditions",
+                    relationships={
+                        "field_ids": tuple(str(value) for value in (condition.get("left_source_id"), condition.get("right_source_id")) if value),
+                    },
+                ))
+            rows.append(_registry_definition(
+                f"rule_set.{rule_id}", "rule_set", str(rule_set.get("name") or rule_id),
+                str(rule_set.get("description") or "Reusable Watchlist rule composition."), "application_configuration", 1,
+                "implemented", configuration_binding_id="market_discovery.rules",
+                relationships={"condition_ids": tuple(condition_ids)},
+            ))
+    for watchlist in discovery.get("watchlists") or []:
+        watchlist_id = str(watchlist.get("watchlist_id") or "").strip()
+        if watchlist_id:
+            rows.append(_registry_definition(
+                f"watchlist.{watchlist_id}", "watchlist", str(watchlist.get("name") or watchlist_id),
+                str(watchlist.get("description") or "Configured Watchlist."), "application_configuration", int(watchlist.get("revision") or 1),
+                "implemented" if watchlist.get("availability") != "integration_pending" else "integration_pending",
+                configuration_binding_id="market_discovery.watchlists",
+                relationships={
+                    "rule_set_ids": tuple(f"rule_set.{value}" for value in watchlist.get("inclusion_rule_sets") or []),
+                    "column_ids": tuple(f"column.{value}" for value in watchlist.get("columns") or []),
+                    "derivation_ids": tuple(str(value) for value in watchlist.get("calculations") or []),
+                },
+            ))
+    strategy = dict(configuration.get("strategy") or {})
+    for definition in strategy.get("definitions") or []:
+        strategy_id = str(definition.get("strategy_id") or "").strip()
+        revision = int(definition.get("revision") or 1)
+        if strategy_id:
+            rows.append(_registry_definition(
+                f"strategy.{strategy_id}@{revision}", "strategy", str(definition.get("name") or strategy_id),
+                str(definition.get("description") or "Executable Strategy definition."), "strategy_registry", revision,
+                "implemented" if definition.get("executor_installed", True) else "integration_pending", configurable=False,
+            ))
+    for profile in strategy.get("profiles") or []:
+        profile_id = str(profile.get("profile_id") or "").strip()
+        if profile_id:
+            definition_id = str(profile.get("definition_id") or "")
+            definition_revision = int(profile.get("definition_revision") or 1)
+            rows.append(_registry_definition(
+                f"strategy_profile.{profile_id}", "strategy_profile", str(profile.get("name") or profile_id),
+                str(profile.get("description") or "Configured Strategy profile."), "application_configuration", int(profile.get("revision") or 1),
+                "implemented", configuration_binding_id="strategy.profiles",
+                relationships={"strategy_ids": (f"strategy.{definition_id}@{definition_revision}",)},
+            ))
+    assignments = dict(configuration.get("assignments") or {})
+    for run_plan in assignments.get("deployments") or []:
+        run_plan_id = str(run_plan.get("run_plan_id") or "").strip()
+        if run_plan_id:
+            rows.append(_registry_definition(
+                f"run_plan.{run_plan_id}", "run_plan", str(run_plan.get("name") or run_plan_id),
+                str(run_plan.get("description") or "Configured executable Run Plan."), "application_configuration", 1,
+                "implemented", configuration_binding_id="run_plans",
+                relationships={
+                    "strategy_profile_ids": (f"strategy_profile.{run_plan.get('profile_id')}",),
+                    "oms_profile_ids": (f"oms_profile.{run_plan.get('oms_profile_id')}",),
+                    "watchlist_ids": (f"watchlist.{run_plan.get('universe_id')}",),
+                },
+            ))
+    accounts = dict(configuration.get("accounts") or {})
+    for account in accounts.get("bindings") or []:
+        account_key = str(account.get("account_key") or "").strip()
+        if account_key:
+            rows.append(_registry_definition(
+                f"account_binding.{account_key}", "account_binding", str(account.get("name") or account_key),
+                "Stable application account identity; broker identity resolves only at runtime.", "application_configuration", 1,
+                "implemented", configuration_binding_id="accounts",
+                relationships={"portfolio_policy_ids": (f"portfolio_policy.{account.get('portfolio_policy_id')}",)},
+            ))
+    portfolio = dict(configuration.get("portfolio") or {})
+    for policy in portfolio.get("policies") or []:
+        policy_id = str(policy.get("policy_id") or "").strip()
+        if policy_id:
+            rows.append(_registry_definition(
+                f"portfolio_policy.{policy_id}", "portfolio_policy", str(policy.get("name") or policy_id),
+                "Account-wide capital, exposure, risk, capacity, and permission limits.", "portfolio", int(policy.get("revision") or 1),
+                "implemented", configuration_binding_id="portfolio.policies",
+            ))
+    for mandate in portfolio.get("mandates") or []:
+        mandate_id = str(mandate.get("mandate_id") or "").strip()
+        if mandate_id:
+            rows.append(_registry_definition(
+                f"portfolio_mandate.{mandate_id}", "portfolio_mandate", mandate_id,
+                "Explicit Run Plan-to-account allocation and authority limits.", "portfolio", 1, "implemented",
+                configuration_binding_id="portfolio.mandates",
+                relationships={
+                    "run_plan_ids": (f"run_plan.{mandate.get('run_plan_id')}",),
+                    "account_binding_ids": (f"account_binding.{mandate.get('account_key')}",),
+                },
+            ))
+    for group in portfolio.get("groups") or []:
+        group_id = str(group.get("group_id") or "").strip()
+        if group_id:
+            rows.append(_registry_definition(
+                f"portfolio_group.{group_id}", "portfolio_group", group_id,
+                "Aggregate Portfolio limits over explicit account members.", "portfolio", 1, "implemented",
+                configuration_binding_id="portfolio.groups",
+                relationships={"account_binding_ids": tuple(f"account_binding.{value}" for value in group.get("account_keys") or [])},
+            ))
+    oms = dict(configuration.get("oms") or {})
+    for profile in oms.get("profiles") or []:
+        profile_id = str(profile.get("profile_id") or "").strip()
+        if profile_id:
+            settings = dict(profile.get("settings") or {})
+            rows.append(_registry_definition(
+                f"oms_profile.{profile_id}", "oms_profile", str(profile.get("name") or profile_id),
+                str(profile.get("description") or "Reusable execution and protection selection."), "oms", int(profile.get("revision") or 1),
+                "implemented", configuration_binding_id="oms.profiles",
+                relationships={
+                    "execution_policy_ids": tuple(f"execution_policy.{value}" for value in (settings.get("entry_execution_policy_id"), settings.get("exit_execution_policy_id")) if value),
+                    "protection_profile_ids": (f"protection_profile.{settings.get('protection_profile_id')}",),
+                },
+            ))
+    for policy in oms.get("execution_policies") or []:
+        policy_id = str(policy.get("policy_id") or "").strip()
+        if policy_id:
+            rows.append(_registry_definition(
+                f"execution_policy.{policy_id}", "execution_policy", str(policy.get("name") or policy_id),
+                str(policy.get("description") or "Bounded broker-neutral execution policy."), "oms", int(policy.get("revision") or 1),
+                "implemented", configuration_binding_id="oms.execution_policies",
+            ))
+    for profile in oms.get("protection_profiles") or []:
+        profile_id = str(profile.get("profile_id") or "").strip()
+        if profile_id:
+            rows.append(_registry_definition(
+                f"protection_profile.{profile_id}", "protection_profile", str(profile.get("name") or profile_id),
+                "Broker-held stop, target, trailing, and repair policy.", "oms", int(profile.get("revision") or 1),
+                "implemented", configuration_binding_id="oms.protection_profiles",
+            ))
+    canvas = dict(configuration.get("canvas") or {})
+    if canvas:
+        rows.append(_registry_definition(
+            f"canvas_profile.{str(canvas.get('revision') or 'draft')}", "canvas_profile", "Canvas profile",
+            "Persisted workspace composition and container configuration.", "canvas", 1, "implemented",
+            configuration_binding_id="canvas.profile",
+        ))
+    return rows
+
+
+def information_registry_payload(
+    qmd_catalog: dict[str, object],
+    configuration: dict[str, Any] | None = None,
+) -> dict[str, object]:
+    qmd_definitions = dict(qmd_catalog.get("definition_catalog") or {})
+    if str(qmd_definitions.get("authority") or "") != "qmd_core_definition_registry":
+        raise ValueError("QMD definition registry authority is unavailable")
+    if int(qmd_definitions.get("schema_version") or 0) != 1:
+        raise ValueError("Unsupported QMD definition registry schema")
+    qmd_rows = list(qmd_definitions.get("definitions") or [])
+    if not qmd_rows:
+        raise ValueError("QMD definition registry is empty")
+
+    definitions_by_id = {
+        str(row["registry_id"]): row
+        for row in _application_information_definitions()
+    }
+    registered_kinds = {row.kind for row in REGISTRY_TYPES}
+    for qmd_row in qmd_rows:
+        registry_id = str(qmd_row.get("registry_id") or "").strip()
+        if not registry_id:
+            raise ValueError("QMD definition is missing registry_id")
+        kind = str(qmd_row.get("kind") or "").strip()
+        if kind not in registered_kinds:
+            raise ValueError(f"Unknown QMD registry kind for {registry_id}: {kind}")
+        existing = definitions_by_id.get(registry_id)
+        if existing is not None:
+            if existing["kind"] != kind:
+                raise ValueError(f"Conflicting registry kind for {registry_id}")
+            continue
+        normalized_qmd_row = dict(qmd_row)
+        normalized_qmd_row["configuration_binding_id"] = (
+            "market_discovery.core_scan"
+            if kind == "derivation"
+            else "market_discovery.signals"
+            if kind == "signal"
+            else ""
+        )
+        normalized_qmd_row["relationships"] = {
+            "input_field_ids": sorted({str(value) for value in qmd_row.get("input_field_ids") or [] if str(value).strip()}),
+            "output_field_ids": sorted({str(value) for value in qmd_row.get("output_field_ids") or [] if str(value).strip()}),
+            "producer_ids": sorted({str(qmd_row.get("producer_id"))} if qmd_row.get("producer_id") else set()),
+        }
+        definitions_by_id[registry_id] = normalized_qmd_row
+    for row in _configuration_information_definitions(configuration):
+        registry_id = str(row["registry_id"])
+        if registry_id in definitions_by_id:
+            raise ValueError(f"Duplicate configured registry definition: {registry_id}")
+        definitions_by_id[registry_id] = row
+
+    type_rows = [asdict(row) for row in REGISTRY_TYPES]
+    binding_rows = [asdict(row) for row in CONFIGURATION_BINDINGS]
+    aliases = []
+    for row in qmd_rows:
+        registry_id = str(row.get("registry_id") or "")
+        if registry_id.startswith("qmd.derivation."):
+            aliases.append({"alias_id": f"qmd.family.{registry_id.removeprefix('qmd.derivation.')}", "registry_id": registry_id})
+        elif registry_id.startswith("qmd.processing_step."):
+            key = registry_id.removeprefix("qmd.processing_step.")
+            aliases.extend((
+                {"alias_id": f"qmd.universal.{key}", "registry_id": registry_id},
+                {"alias_id": f"qmd.primitive.{key}", "registry_id": registry_id},
+                {"alias_id": f"qmd.primitive.{key.replace('_', '-')}", "registry_id": registry_id},
+            ))
+
+    definitions = sorted(definitions_by_id.values(), key=lambda row: str(row["registry_id"]))
+    payload: dict[str, object] = {
+        "schema_version": 1,
+        "authority": "application_information_registry",
+        "qmd_authority": "qmd_core_definition_registry",
+        "types": type_rows,
+        "definitions": definitions,
+        "configuration_bindings": binding_rows,
+        "aliases": sorted(aliases, key=lambda row: row["alias_id"]),
+        "counts": {
+            "types": len(type_rows),
+            "definitions": len(definitions),
+            "configurable": sum(bool(row.get("configurable")) for row in definitions),
+            "configuration_bindings": len(binding_rows),
+            "aliases": len(aliases),
+        },
+    }
+    payload["content_hash"] = hashlib.sha256(
+        json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
+    ).hexdigest()
+    return payload

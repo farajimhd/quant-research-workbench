@@ -10,6 +10,7 @@ use crate::computation_targets::{
     ComputationTargetSummary, SharedComputationTargets,
 };
 use crate::config::GatewayConfig;
+use crate::definition_catalog::{definition_catalog, QmdDefinitionCatalog};
 use crate::event::MarketEvent;
 use crate::indicator_catalog::{indicator_taxonomy_catalog, IndicatorTaxonomyEntry};
 use crate::indicators::{IndicatorScannerSnapshot, IndicatorSnapshot, SharedIndicatorStore};
@@ -153,6 +154,7 @@ pub fn app(state: AppState) -> Router {
         .route("/snapshot/maintenance", get(maintenance_snapshot))
         .route("/snapshot/coverage", get(coverage_snapshot))
         .route("/capability-catalog", get(capability_catalog_snapshot))
+        .route("/definition-catalog", get(definition_catalog_snapshot))
         .route(
             "/computation-targets",
             get(computation_target_snapshot).put(replace_computation_target),
@@ -843,6 +845,10 @@ async fn indicator_catalog_snapshot() -> Json<Vec<IndicatorTaxonomyEntry<'static
 
 async fn capability_catalog_snapshot() -> Json<Vec<ComputationCapability<'static>>> {
     Json(computation_capability_catalog())
+}
+
+async fn definition_catalog_snapshot() -> Json<QmdDefinitionCatalog> {
+    Json(definition_catalog())
 }
 
 async fn signal_catalog_snapshot() -> Json<Vec<SignalTaxonomyEntry<'static>>> {

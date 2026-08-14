@@ -14,6 +14,7 @@ pub mod clickhouse;
 pub mod compact_event;
 pub mod computation_targets;
 pub mod config;
+pub mod definition_catalog;
 pub mod event;
 pub mod flatfile;
 pub mod gapfill;

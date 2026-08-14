@@ -3,15 +3,20 @@ import {
   BarChart3,
   Boxes,
   BriefcaseBusiness,
+  Braces,
   Cable,
   Columns3,
   Database,
   GitBranch,
   LayoutDashboard,
   ListChecks,
+  ListFilter,
   Network,
+  Package,
   RadioTower,
+  Route,
   ScanSearch,
+  Server,
   Send,
   ShieldCheck,
   Sigma,
@@ -19,13 +24,19 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import type { ReactNode } from "react";
+import { useRegistryPresentation } from "./DefinitionRegistry";
 
 export type AbstractionKind =
   | "field"
+  | "source"
   | "processing_step"
   | "derivation"
   | "signal"
+  | "event_schema"
+  | "product"
+  | "query_plan"
   | "column"
+  | "condition"
   | "rule_set"
   | "watchlist"
   | "strategy"
@@ -40,27 +51,29 @@ export type AbstractionKind =
   | "run_plan"
   | "canvas_profile";
 
-type AbstractionPresentation = { icon: LucideIcon; label: string };
-
-const PRESENTATIONS: Record<AbstractionKind, AbstractionPresentation> = {
-  field: { icon: Database, label: "Field" },
-  processing_step: { icon: Cable, label: "Processing step" },
-  derivation: { icon: Sigma, label: "Derivation" },
-  signal: { icon: Activity, label: "Signal" },
-  column: { icon: Columns3, label: "Column" },
-  rule_set: { icon: ListChecks, label: "Rule set" },
-  watchlist: { icon: ScanSearch, label: "Watchlist" },
-  strategy: { icon: GitBranch, label: "Strategy" },
-  strategy_profile: { icon: SlidersHorizontal, label: "Strategy profile" },
-  account_binding: { icon: Boxes, label: "Account binding" },
-  portfolio_policy: { icon: BriefcaseBusiness, label: "Portfolio policy" },
-  portfolio_mandate: { icon: Network, label: "Portfolio mandate" },
-  portfolio_group: { icon: BarChart3, label: "Portfolio group" },
-  oms_profile: { icon: Send, label: "OMS profile" },
-  execution_policy: { icon: RadioTower, label: "Execution policy" },
-  protection_profile: { icon: ShieldCheck, label: "Protection profile" },
-  run_plan: { icon: Network, label: "Run Plan" },
-  canvas_profile: { icon: LayoutDashboard, label: "Canvas profile" },
+const ICON_RENDERERS: Record<string, LucideIcon> = {
+  activity: Activity,
+  bar_chart: BarChart3,
+  boxes: Boxes,
+  braces: Braces,
+  briefcase: BriefcaseBusiness,
+  cable: Cable,
+  columns: Columns3,
+  database: Database,
+  git_branch: GitBranch,
+  layout_dashboard: LayoutDashboard,
+  list_checks: ListChecks,
+  list_filter: ListFilter,
+  network: Network,
+  package: Package,
+  radio_tower: RadioTower,
+  route: Route,
+  scan_search: ScanSearch,
+  send: Send,
+  server: Server,
+  shield_check: ShieldCheck,
+  sigma: Sigma,
+  sliders: SlidersHorizontal,
 };
 
 export type AbstractionCardMeta = { label: string; value: ReactNode };
@@ -76,6 +89,7 @@ type AbstractionCardProps = {
   kind: AbstractionKind;
   metadata?: AbstractionCardMeta[];
   ordinal?: number;
+  registryId?: string;
   selected?: boolean;
   status?: ReactNode;
   title: ReactNode;
@@ -93,19 +107,21 @@ export function AbstractionCard({
   kind,
   metadata = [],
   ordinal,
+  registryId,
   selected = false,
   status,
   title,
   unavailable = false,
 }: AbstractionCardProps) {
-  const presentation = PRESENTATIONS[kind];
-  const Icon = presentation.icon;
+  const presentation = useRegistryPresentation(kind, registryId);
+  const Icon = ICON_RENDERERS[presentation.icon];
+  if (!Icon) throw new Error(`No icon renderer is registered for ${presentation.icon}`);
   const body = <>
     <span aria-hidden="true" className="abstraction-card-icon"><Icon size={compact ? 14 : 16} /></span>
     <div className="abstraction-card-main">
       <header className="abstraction-card-header">
         <div className="abstraction-card-heading">
-          <span className="abstraction-card-kind">{presentation.label}</span>
+          <span className="abstraction-card-kind">{presentation.kindLabel}</span>
           {status ? <span className="abstraction-card-status">{status}</span> : null}
         </div>
         <strong className="abstraction-card-title">{title}</strong>
@@ -120,6 +136,9 @@ export function AbstractionCard({
   const classes = ["abstraction-card", compact ? "compact" : "", className].filter(Boolean).join(" ");
   const shared = {
     "data-kind": kind,
+    "data-accent": presentation.accent,
+    "data-configurable": presentation.configurable ? "true" : "false",
+    "data-configuration-mode": presentation.configurationMode,
     "data-selected": selected ? "true" : "false",
     "data-unavailable": unavailable ? "true" : "false",
   } as const;

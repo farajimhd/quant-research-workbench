@@ -1351,6 +1351,7 @@ def qmd_indicators(symbol: str, *, timeframe: str = "1m", row_limit: int = 500) 
 def qmd_catalogs() -> dict[str, Any]:
     paths = {
         "capability_catalog": "/capability-catalog",
+        "definition_catalog": "/definition-catalog",
         "indicator_catalog": "/indicator-catalog",
         "signal_catalog": "/signal-catalog",
     }
@@ -1363,7 +1364,12 @@ def qmd_catalogs() -> dict[str, Any]:
     normalized = {
         key: value if isinstance(value, list) else []
         for key, value in catalogs.items()
+        if key != "definition_catalog"
     }
+    definition_catalog = catalogs.get("definition_catalog")
+    normalized["definition_catalog"] = (
+        definition_catalog if isinstance(definition_catalog, dict) else {}
+    )
     content_hash = hashlib.sha256(
         json.dumps(normalized, separators=(",", ":"), sort_keys=True).encode("utf-8")
     ).hexdigest()

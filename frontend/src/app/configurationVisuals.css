@@ -577,23 +577,14 @@
   text-align: left;
   transition: background-color 120ms ease, border-color 120ms ease;
 }
-.abstraction-card[data-kind="processing_step"] { --abstraction-accent: var(--canvas-link-cyan); }
-.abstraction-card[data-kind="derivation"] { --abstraction-accent: var(--canvas-link-violet); }
-.abstraction-card[data-kind="signal"] { --abstraction-accent: var(--canvas-link-rose); }
-.abstraction-card[data-kind="column"] { --abstraction-accent: var(--canvas-link-amber); }
-.abstraction-card[data-kind="rule_set"] { --abstraction-accent: var(--canvas-link-orange); }
-.abstraction-card[data-kind="watchlist"] { --abstraction-accent: var(--canvas-link-green); }
-.abstraction-card[data-kind="strategy"],
-.abstraction-card[data-kind="strategy_profile"] { --abstraction-accent: var(--canvas-link-violet); }
-.abstraction-card[data-kind="account_binding"] { --abstraction-accent: var(--canvas-link-cyan); }
-.abstraction-card[data-kind="portfolio_policy"],
-.abstraction-card[data-kind="portfolio_mandate"],
-.abstraction-card[data-kind="portfolio_group"] { --abstraction-accent: var(--canvas-link-green); }
-.abstraction-card[data-kind="oms_profile"],
-.abstraction-card[data-kind="execution_policy"],
-.abstraction-card[data-kind="protection_profile"] { --abstraction-accent: var(--canvas-link-orange); }
-.abstraction-card[data-kind="run_plan"] { --abstraction-accent: var(--canvas-link-violet); }
-.abstraction-card[data-kind="canvas_profile"] { --abstraction-accent: var(--canvas-link-blue); }
+.abstraction-card[data-accent="blue"] { --abstraction-accent: var(--canvas-link-blue); }
+.abstraction-card[data-accent="cyan"] { --abstraction-accent: var(--canvas-link-cyan); }
+.abstraction-card[data-accent="violet"] { --abstraction-accent: var(--canvas-link-violet); }
+.abstraction-card[data-accent="rose"] { --abstraction-accent: var(--canvas-link-rose); }
+.abstraction-card[data-accent="amber"] { --abstraction-accent: var(--canvas-link-amber); }
+.abstraction-card[data-accent="orange"] { --abstraction-accent: var(--canvas-link-orange); }
+.abstraction-card[data-accent="green"] { --abstraction-accent: var(--canvas-link-green); }
+.abstraction-card[data-accent="slate"] { --abstraction-accent: var(--muted-foreground); }
 .abstraction-card:hover { background: color-mix(in oklab, var(--abstraction-accent) 2.5%, var(--surface)); }
 .abstraction-card[data-selected="true"] {
   background: color-mix(in oklab, var(--abstraction-accent) 5%, var(--surface));
