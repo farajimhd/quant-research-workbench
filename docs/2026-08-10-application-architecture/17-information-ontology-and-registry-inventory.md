@@ -4,9 +4,9 @@ Status: accepted target terminology with a current-state audit and migration reg
 
 Audit date: 2026-08-14
 
-Scope: application fields, QMD processing and derivations, observations, signals,
-columns, rules, Watchlists, Strategy inputs, service products, query plans, and
-physical ClickHouse storage
+Scope: fields, QMD processing, derivations, signals, columns, rules, Watchlists,
+Strategies, Run Plans, accounts, Portfolio, OMS, products, query plans, runtime
+trading records, and physical ClickHouse storage
 
 ## Canonical design
 
@@ -29,13 +29,32 @@ RegistryDefinition
 ├── StrategyInputBinding
 ├── StrategyDefinition
 ├── StrategyProfile
-└── RunPlan
+├── RunPlan
+├── AccountBindingDefinition
+├── PortfolioPolicyDefinition
+├── PortfolioMandateDefinition
+├── PortfolioGroupDefinition
+├── OmsProfileDefinition
+├── ExecutionPolicyDefinition
+└── ProtectionProfileDefinition
 
 Runtime values (not registry definitions)
 ├── Observation
 ├── Record
 ├── DatasetPage
-└── SignalEvent
+├── SignalEvent
+├── BrokerAccount
+├── AccountSnapshot
+├── StrategyIntent
+├── PortfolioDecision
+├── PortfolioReservation
+├── PortfolioAllocationLot
+├── PortfolioReconciliationDifference
+├── OrderIntent
+├── OrderState
+├── OrderGroupSnapshot
+├── Execution
+└── PositionState
 ```
 
 ### RegistryDefinition
@@ -43,7 +62,7 @@ Runtime values (not registry definitions)
 | Property | Type / allowed values |
 | --- | --- |
 | `registry_id` | Stable namespaced string |
-| `kind` | `field`, `source`, `processing_step`, `derivation`, `signal`, `event_schema`, `product`, `query_plan`, `column`, `condition`, `rule_set`, `watchlist`, `strategy_binding`, `strategy`, `strategy_profile`, `run_plan` |
+| `kind` | `field`, `source`, `processing_step`, `derivation`, `signal`, `event_schema`, `product`, `query_plan`, `column`, `condition`, `rule_set`, `watchlist`, `strategy_binding`, `strategy`, `strategy_profile`, `run_plan`, `account_binding`, `portfolio_policy`, `portfolio_mandate`, `portfolio_group`, `oms_profile`, `execution_policy`, `protection_profile` |
 | `label` | User-facing string |
 | `description` | Short semantic definition |
 | `owner` | Registered service/domain ID |
@@ -98,6 +117,18 @@ ProducerRef =
 | `Record` | Product schema, entity identity, clocks | Named Field observations |
 | `DatasetPage` | Product/revision, bounds, cursor | Records, coverage, completeness |
 | `SignalEvent` | `signal_id`, `event_id`, entity, lifecycle state, clocks | Score/confidence/direction, evidence, expiry/resolution |
+| `BrokerAccount` | Provider, private broker account ID, stable application `account_key` | Capabilities, class, currency, session/discovery state |
+| `AccountSnapshot` | `account_key`, snapshot ID, observed/received clocks | Summary, ledger, positions, open orders, freshness/sync state |
+| `StrategyIntent` | Intent ID, Strategy/revision/run, ticker, event clock | Broker-neutral action, CapitalRequest, execution/protection references |
+| `PortfolioDecision` | Decision/request/account/policy/snapshot IDs | Approved quantity/notional/risk, reservation, reasons, before/after metrics |
+| `PortfolioReservation` | Reservation/decision/intent/account IDs | Reserved quantity/notional/risk, fill/status/admission state |
+| `PortfolioAllocationLot` | Allocation/account/Strategy/assignment/ticker IDs | Quantity, average price, planned risk, realized P&L |
+| `PortfolioReconciliationDifference` | Account/ticker/observed clock | Broker, attributed, unattributed quantities |
+| `OrderIntent` | Command/account/instrument/client-order IDs | Broker order semantics and Strategy/run metadata |
+| `OrderState` | Account/order/command/instrument IDs | Lifecycle, quantities, prices, modification/terminal/rejection state |
+| `OrderGroupSnapshot` | Group/intent/account/ticker IDs | OMS lifecycle, fills, warnings, policies, protection coverage |
+| `Execution` | Execution/account/instrument/order IDs | Fill quantity/price/cost/liquidity and Strategy/run attribution |
+| `PositionState` | Snapshot/account/instrument IDs | Quantity, cost, market value, realized/unrealized P&L |
 
 ### SourceDefinition
 
@@ -252,7 +283,14 @@ ColumnDefinition
 | `StrategyInputBinding` | Field or Signal property ID, runtime binding, timeframe/anchor, availability policy | Evidence-binding chip |
 | `StrategyDefinition` | Strategy ID/revision, required bindings, stages, decision contract | Executable Strategy implementation |
 | `StrategyProfile` | Strategy ID/revision, parameters, evidence/rule references | Configured Strategy card |
-| `RunPlan` | Strategy Profile, Watchlists, Canvas profile, mode, account/broker/data plans | Versioned executable selection |
+| `RunPlan` | Strategy Profile, Watchlists, Canvas profile, Portfolio mandate IDs, OMS profile, mode/data plans | Versioned executable selection |
+| `AccountBindingDefinition` | Stable application account, private runtime identity reference, session, Portfolio policy | Account card |
+| `PortfolioPolicyDefinition` | Account-wide capital/risk/permission limits | Portfolio policy card |
+| `PortfolioMandateDefinition` | Run Plan-to-account allocation and authority limits | Mandate card |
+| `PortfolioGroupDefinition` | Account members and aggregate limits | Portfolio group card |
+| `OmsProfileDefinition` | Entry/exit execution and protection selection | OMS profile card |
+| `ExecutionPolicyDefinition` | Quote source, price envelope, reprice/fill policy | Execution policy card |
+| `ProtectionProfileDefinition` | Stop/target/trailing slices and repair limits | Protection profile card |
 
 ```text
 ConditionDefinition
@@ -295,9 +333,126 @@ StrategyProfile
 RunPlan
   run_plan_id, mode
   strategy_profile_id, watchlist_ids[], canvas_profile_id
-  account_binding_id, portfolio_policy_id, oms_policy_id
+  mandate_ids[], oms_profile_id
   data_plan_id, source_revision_policy
 ```
+
+### Account, Portfolio, and OMS definitions
+
+```text
+AccountBindingDefinition
+  account_key, name, account_class, base_currency
+  source_account_env | source_account_id
+  session_key, portfolio_policy_id
+  enabled, system_managed, modes[]
+
+PortfolioMandateDefinition
+  mandate_id, run_plan_id, account_key, enabled
+  maximum_cash_fraction, maximum_planned_risk_fraction
+  maximum_positions, assignment_mode, allocation_weight
+  maximum_action_authority, allow_replacement
+  minimum_replacement_improvement_pct
+
+PortfolioGroupDefinition
+  group_id, account_keys[]
+  maximum_gross_exposure, maximum_ticker_exposure
+
+OmsProfileDefinition
+  profile_id, revision, name, origin, editable
+  entry_execution_policy_id, exit_execution_policy_id
+  protection_profile_id, entry_urgency, exit_urgency
+  limit_offset_bps, tick_size, session_routing
+```
+
+| PortfolioPolicyDefinition property group | Properties |
+| --- | --- |
+| Identity | `policy_id`, `revision` |
+| Capital | `eligible_equity_fraction`, `minimum_cash_reserve`, `maximum_buying_power_utilization` |
+| Exposure | `maximum_gross_exposure`, `maximum_net_long_exposure`, `maximum_net_short_exposure`, `maximum_position_fraction`, `maximum_ticker_fraction`, `maximum_strategy_fraction`, `maximum_sector_fraction`, `maximum_industry_fraction`, `maximum_correlated_group_fraction` |
+| Risk | `maximum_planned_risk_fraction`, `maximum_open_risk_fraction`, `maximum_daily_loss`, `maximum_drawdown`, `daily_loss_warning`, `emergency_loss` |
+| Capacity | `maximum_open_positions`, `maximum_order_quantity`, `maximum_order_notional` |
+| Runtime safety | `maximum_snapshot_age_ms`, `maximum_protection_slices`, `maximum_internal_reaction_ms`, `block_on_unattributed_position` |
+| Permissions | `allow_long`, `allow_short`, `allow_margin`, `allow_unsettled_cash`, `allow_outside_rth`, `allow_overnight`, `allow_stop_limit_protection`, `allow_partial_profit_pocket`, `allow_emergency_auto_liquidation` |
+| Allowlists | `allowed_security_types`, `allowed_currencies`, `restricted_symbols`, `allowed_execution_policies`, `allowed_protection_profiles` |
+
+| Default Portfolio policy | Value |
+| --- | --- |
+| Identity | `default@1` |
+| Equity / buying-power fractions | `1.0 / 1.0` |
+| Gross / net-long / net-short limits | `5,000,000 / 5,000,000 / 0` |
+| Position / ticker / Strategy fractions | `0.25 / 0.25 / 1.0` |
+| Planned / open risk fractions | `0.01 / 0.05` |
+| Open positions / order quantity / order notional | `100 / 100,000 / 1,000,000` |
+| Daily loss / drawdown | `100,000 / 250,000` |
+| Snapshot age / protection slices / reaction | `6,000 ms / 4 / 100 ms` |
+| Direction / leverage | Long enabled; short, margin, unsettled cash disabled |
+| Session | Outside RTH disabled; overnight enabled |
+| Security / currency | `STK`; `USD`, `CAD` |
+| Execution / protection allowlists | `* / *` |
+
+```text
+ExecutionPolicyDefinition
+  policy_id, revision, name
+  quote_source, partial_fill_policy
+  envelope:
+    maximum_buy_price, minimum_sell_price
+    deadline_ms, maximum_reprices, minimum_reprice_interval_ms
+
+ProtectionProfileDefinition
+  profile_id, revision, name
+  add_policy, profit_pocket_transition
+  mandatory_catastrophic_backstop, emergency_repair_deadline_ms
+  slices[]:
+    slice_id, quantity_fraction, profit_target_price
+    stop(rule_type, order_type, price/distance/risk/volatility/structure)
+    trailing(rule_type, amount/percent/volatility/activation/breakeven/structure)
+```
+
+| Current definition set | IDs / values |
+| --- | --- |
+| System account bindings | `paper` → `IBKR_PAPER_ACCOUNT_ID`; `cash` → `IBKR_CASH_ACCOUNT_ID`; both disabled until mandate/discovery |
+| Simulated account binding | Source assignments → stable `account_key`; modes `replay`, `backtest`, `backtest_debug` |
+| Portfolio policy | `default@1` |
+| Default mandate | `balanced-{account_key}` → `balanced-replay`; single assignment; automatic authority; 100% cash ceiling; 1% planned-risk ceiling; 10 positions |
+| OMS profile | `adaptive-regular@1` |
+| Execution policies | `passive`, `midpoint`, `adaptive_patient`, `adaptive_regular`, `adaptive_urgent`, `adaptive_very_urgent`, `immediate_with_limit`, `ibkr_native_adaptive`, `cancel_if_not_filled` |
+| Protection profile | `hybrid-single@1`; independent slice; mandatory catastrophic backstop; 500 ms repair deadline |
+
+| Target registry ID | Kind | Outputs / role | Registration state |
+| --- | --- | --- | --- |
+| `broker.ibkr_accounts` | SourceDefinition | Discovered external accounts, balances, positions, orders, executions | Required |
+| `broker.simulated_accounts` | SourceDefinition | Replay/Backtest account state and broker lifecycle | Required |
+| `trading.account_state` | ProductDefinition | BrokerAccount, AccountSnapshot, PositionState, OrderState, Execution | Required |
+| `trading.portfolio_state` | ProductDefinition | PortfolioDecision, Reservation, AllocationLot, ReconciliationDifference | Required |
+| `trading.oms_state` | ProductDefinition | OrderIntent, OrderGroupSnapshot, order/protection lifecycle | Required |
+| `portfolio.decision.v1` | EventSchemaDefinition | Admission/resize/rejection decision | Required |
+| `portfolio.reservation.v1` | EventSchemaDefinition | Reservation/fill/release lifecycle | Required |
+| `oms.order_group.v1` | EventSchemaDefinition | Planned/submitted/filled/cancelled/rejected/protected lifecycle | Required |
+| `broker.execution.v1` | EventSchemaDefinition | Broker execution with account/order/Strategy attribution | Required |
+
+### Trading authority and lifecycle
+
+```text
+StrategyDefinition + StrategyProfile
+  -> StrategyIntent + CapitalRequest
+  -> PortfolioMandateDefinition(account_key, run_plan_id)
+  -> AccountBindingDefinition(account_key, portfolio_policy_id)
+  -> PortfolioPolicyDefinition
+  -> PortfolioDecision + PortfolioReservation
+  -> OmsProfileDefinition
+  -> ExecutionPolicyDefinition + ProtectionProfileDefinition
+  -> OrderIntent / OrderGroupSnapshot
+  -> Broker OrderState / Execution / PositionState / AccountSnapshot
+  -> PortfolioAllocationLot + PortfolioReconciliationDifference
+```
+
+| Authority | Owns | Must not own |
+| --- | --- | --- |
+| Strategy | Broker-neutral intent, evidence, requested capital/action | Account selection, final sizing, broker order fields |
+| Account binding | Stable application identity, private runtime resolution, session/mode | Capital approval, order planning |
+| Portfolio | Account selection validation, sizing, allocation, reservations, exposure/risk gates, reconciliation | Strategy thesis, broker routing details |
+| OMS | Approved-intent translation, execution tactics, protection, order lifecycle | Capital creation, Strategy intent, account rerouting |
+| Broker/account provider | Account balances, positions, orders, executions | Application policy or Strategy semantics |
 
 ### Relationship map
 
@@ -314,7 +469,15 @@ RunPlan
 | Watchlist | composes | Rule sets, ranking Field, Columns, Derivations |
 | Strategy binding | adapts | Field or Signal property |
 | Strategy Profile | configures | StrategyDefinition |
-| Run Plan | selects | Profile, Watchlists, Canvas, mode/account/data plans |
+| Run Plan | selects | Profile, Watchlists, Canvas, Portfolio mandates, OMS profile, mode/data plans |
+| Portfolio mandate | binds | Run Plan to Account binding |
+| Account binding | resolves / selects | Private runtime account identity / Portfolio policy |
+| Portfolio policy | governs | Account state, decisions, reservations, allocations |
+| Portfolio group | constrains | Multiple Account bindings |
+| OMS profile | selects | Entry/exit Execution policies and Protection profile |
+| Execution policy | plans | Approved Portfolio decision to Order intents |
+| Protection profile | maintains | Stop/target/trailing Order intents |
+| Broker | reports | Account snapshots, Order states, Executions, Positions |
 
 ### Current-to-target mapping
 
@@ -329,6 +492,15 @@ RunPlan
 | Frontend `DiscoveryCapability` | `CatalogItemView` | Presentation projection only |
 | Frontend `canonicalCapabilityType` | Remove | Consume explicit `kind` |
 | Strategy `runtime_field` aliases | `StrategyInputBinding` | Explicit canonical source mapping |
+| `accounts.bindings[]` | `AccountBindingDefinition` | Retain stable `account_key`; keep broker account ID runtime-private |
+| `portfolio.policies[]` | `PortfolioPolicyDefinition` | Retain immutable `policy_id@revision` |
+| `portfolio.mandates[]` | `PortfolioMandateDefinition` | Retain Run Plan/account binding |
+| `portfolio.groups[]` | `PortfolioGroupDefinition` | Retain aggregate account constraints |
+| `oms.profiles[]` | `OmsProfileDefinition` | Retain execution/protection composition |
+| `oms.execution_policies[]` | `ExecutionPolicyDefinition` | Retain typed envelope and fill policy |
+| `oms.protection_profiles[]` | `ProtectionProfileDefinition` | Retain typed slices/stops/trailing rules |
+| `PortfolioManagementEngine` per-runtime state | Shared account-scoped Portfolio authority | Required for cross-run arbitration and durable reservations |
+| `OrderManagementEngine` | OMS runtime | Retain exclusive approved-intent-to-order authority |
 
 ### User access mapping
 
@@ -345,6 +517,10 @@ RunPlan
 | Facts/News/SEC/XBRL | Grouped values/events | Fields, records, events | Values and evidence cards |
 | Service Health | Sources / Products / Processing / Coverage | Administrative definitions | Operational tables |
 | Run Plan | Profiles / Watchlists / Canvas | Existing configured parts | Versioned references |
+| Accounts & Sessions | Account bindings | AccountBindingDefinitions | Persistent account/session cards; private broker ID hidden |
+| Portfolio & Risk | Policies / Mandates / Groups | PortfolioPolicy, PortfolioMandate, PortfolioGroup definitions | Policy, mandate, and group cards |
+| OMS & Protection | OMS / Execution / Protection | OMS profiles, Execution policies, Protection profiles | Composed execution and protection cards |
+| Trading runtime | Account / Portfolio / OMS records | Runtime values only | Accounts, decisions, reservations, orders, fills, positions |
 
 Shared control: `Data & Analytics picker`.
 
@@ -355,7 +531,7 @@ CatalogItemView
   allowed_actions, output_field_ids?, event_property_ids?
 ```
 
-Allowed actions: `add_column`, `add_operand`, `enable_derivation`, `add_signal`, `add_rule_set`, `add_watchlist`, `add_strategy_evidence`, `add_chart_series`.
+Allowed actions: `add_column`, `add_operand`, `enable_derivation`, `add_signal`, `add_rule_set`, `add_watchlist`, `add_strategy_evidence`, `add_chart_series`, `add_account_binding`, `add_portfolio_policy`, `add_mandate`, `add_portfolio_group`, `add_oms_profile`, `add_execution_policy`, `add_protection_profile`.
 
 ### Concrete composition: Top Mid Cap Gainers
 
@@ -397,6 +573,13 @@ Prohibited data-plane patterns: per-row Python UDF, `iter_rows`, per-ticker quer
 | Table presentation | ColumnDefinition | Approved typed bindings and renderer |
 | Bounded read | QueryPlanDefinition | Identity/clocks/coverage/implementation declared |
 | Delivered record/stream | ProductDefinition | Output schemas and delivery declared |
+| Stable application-to-broker account mapping | AccountBindingDefinition | Private identity resolution, session, modes, policy reference declared |
+| Account-wide capital/risk governance | PortfolioPolicyDefinition | Immutable policy ID/revision and limits declared |
+| Run Plan/account allocation authority | PortfolioMandateDefinition | Run Plan, account, allocation, risk, and action limits declared |
+| Cross-account constraint | PortfolioGroupDefinition | Member accounts and aggregate limits declared |
+| Execution/protection composition | OmsProfileDefinition | Entry, exit, and protection references declared |
+| Reusable order tactic | ExecutionPolicyDefinition | Quote, price envelope, repricing, partial-fill behavior declared |
+| Reusable position protection | ProtectionProfileDefinition | Slices, stops, targets, trailing, repair behavior declared |
 | Staging/backup/scratch/cache | Storage inventory | Never semantic authority |
 | Training/model artifact | Dataset/model manifest | Only promoted product outputs become Fields |
 
@@ -428,6 +611,9 @@ Prohibited data-plane patterns: per-row Python UDF, `iter_rows`, per-ticker quer
 | Application query plans | 28 | Bounded point-in-time read contracts. |
 | Market sources / products / links / containers | 6 / 8 / 5 / 22 | Separate registries already exist and should remain separate. |
 | Configuration schemas / compatibility aliases | 13 / 1 | Reusable larger-part contracts and one deprecated endpoint alias; semantic field aliases are not yet registered. |
+| Account bindings | Assignment-derived simulated bindings + `paper` + `cash` | Stable application keys exist; broker IDs remain runtime-private. |
+| Portfolio definitions | 1 default policy; 0 default groups; one mandate per eligible simulated account | Definitions exist; shared cross-run account arbitration/reservations remain a target. |
+| OMS definitions | 1 OMS profile / 9 execution policies / 1 protection profile | Reusable typed policies exist and are runtime-consumed. |
 
 ### Confirmed mixed-registry drift
 
@@ -632,6 +818,42 @@ canonical field or event-property IDs:
 | --- | ---: | --- |
 | Runtime-injected source IDs | 17 | FieldDefinition or SignalEvent property projection |
 
+### Account, Portfolio, and OMS inventory
+
+| Registry collection | Current IDs / key pattern | Source authority | Target definition |
+| --- | --- | --- | --- |
+| `accounts.bindings[]` simulated | Assignment-derived stable `account_key` | Approved configuration + simulated broker | AccountBindingDefinition |
+| `accounts.bindings[]` Paper | `paper`; `IBKR_PAPER_ACCOUNT_ID`; disabled | Approved configuration + runtime environment + IBKR discovery | AccountBindingDefinition |
+| `accounts.bindings[]` Cash | `cash`; `IBKR_CASH_ACCOUNT_ID`; disabled | Approved configuration + runtime environment + IBKR discovery | AccountBindingDefinition |
+| `portfolio.policies[]` | `default@1` | Approved configuration | PortfolioPolicyDefinition |
+| `portfolio.mandates[]` | `balanced-{account_key}` | Approved configuration | PortfolioMandateDefinition |
+| `portfolio.groups[]` | Empty by default; user-defined `group_id` | Approved configuration | PortfolioGroupDefinition |
+| `oms.profiles[]` | `adaptive-regular@1` | Approved configuration | OmsProfileDefinition |
+| `oms.execution_policies[]` | 9 system policies | Approved configuration | ExecutionPolicyDefinition |
+| `oms.protection_profiles[]` | `hybrid-single@1` | Approved configuration | ProtectionProfileDefinition |
+
+| Runtime class / record | Role | Registry references |
+| --- | --- | --- |
+| `PortfolioAccountProfile` | Resolved account + policy + session + allocations/mandates | Account binding, Portfolio policy |
+| `PortfolioAccountState` | Synced summary, ledger, positions, orders, clocks, control state | Account binding, policy revision |
+| `PortfolioManagementEngine` | Admission, sizing, reservation, reconciliation, control | Policy, mandate, group |
+| `PortfolioDecision` | Immutable approval/rejection result | Intent, account, policy, snapshot |
+| `PortfolioReservation` | Approved capital/risk hold | Decision, intent, account |
+| `PortfolioAllocationLot` | Strategy-attributed position lot | Account, Strategy, assignment |
+| `PortfolioReconciliationDifference` | Broker-versus-attributed quantity difference | Account, ticker, snapshot clock |
+| `OrderManagementEngine` | Exclusive approved-intent order lifecycle | OMS, execution, protection definitions |
+| `OrderGroupSnapshot` | OMS lifecycle projection | Strategy intent, account, policy identities |
+| `BrokerAccount`, `AccountValue`, `PositionState`, `OrderState`, `Execution` | Canonical broker records | Account binding + provider clocks |
+
+| Current boundary | Status | Required action |
+| --- | --- | --- |
+| Stable `account_key` | Implemented | Retain across configuration/runtime/journal/broker payload |
+| Environment-backed broker ID | Implemented | Keep out of drafts, releases, browser payloads, logs |
+| Portfolio admission within one runtime | Implemented | Retain |
+| Cross-run/cross-process account arbitration | Not implemented as shared durable authority | Add account-scoped serialization and durable reservations |
+| Automatic account rerouting | Prohibited | Reject when selected account/mandate is unavailable |
+| OMS capital creation / Strategy mutation | Prohibited | Accept Portfolio-approved intent only |
+
 ## Service and query-plan inventory
 
 ### Registered sources and products
@@ -653,6 +875,18 @@ CompositionSchema IDs =
   portfolio_policy, oms_policy, strategy_intent,
   execution_policy, protection_profile, account_binding
 ```
+
+| Composition schema | Canonical definition / aggregate |
+| --- | --- |
+| `account_binding` | AccountBindingDefinition |
+| `portfolio_policy` | PortfolioPolicyDefinition |
+| `oms_policy` | OmsProfileDefinition aggregate |
+| `execution_policy` | ExecutionPolicyDefinition |
+| `protection_profile` | ProtectionProfileDefinition |
+| `strategy_intent` | StrategyIntent runtime contract |
+| `run_plan` | RunPlan + Portfolio mandate IDs + OMS profile ID |
+| `trading_configuration` | Published aggregate of all referenced definitions |
+| Missing dedicated schemas | PortfolioMandateDefinition; PortfolioGroupDefinition |
 
 | Compatibility ID | From | To | Coverage gap |
 | --- | --- | --- | --- |
@@ -749,6 +983,8 @@ registrations:
 | P0 | Split the resolved catalog into explicit `fields`, `processing_steps`, `derivations`, `signals`, `products`, and `columns`. | Every entry has exactly one registry kind; no processing/event/product row appears in the FieldDefinition collection. |
 | P0 | Establish explicit alias/version mappings for current dotted IDs and runtime names. | The five replaced static IDs and all 21 Strategy bindings resolve deterministically to one canonical semantic ID; no frontend name inference. |
 | P0 | Make QMD the authority for QMD processing, derivation, and signal definitions while the application registry owns cross-service field/presentation contracts. | Backend imports typed QMD catalogs; Canvas, Market Discovery, Watchlists, Strategy Studio, Replay, Backtest, and Debug consume the same IDs/versions. |
+| P0 | Register Account, Portfolio, and OMS definitions as typed first-class registry kinds. | Published configuration, UI, runtime snapshots, journals, and broker boundaries resolve the same account binding, mandate, policy, group, OMS, execution, and protection IDs/revisions. |
+| P0 | Move Portfolio admission/reservations to shared account-scoped authority. | Concurrent runs/processes serialize against one durable account state; reservations survive restart/reconciliation; no selected intent is silently rerouted. |
 | P1 | Add `DerivationDefinition` records for current backend and QMD derived outputs. | Each exposed derived FieldDefinition names inputs, algorithm/version, parameters, scope, warm-up, clocks, and null/coverage policy. |
 | P1 | Register QMD output fields deliberately. | Every output crossing QMD has a canonical field/event-property ID; private/offline outputs remain private and are not bulk-added. |
 | P1 | Replace `DiscoveryCapability` and `canonicalCapabilityType` heuristics with typed API contracts. | Frontend renders labels/groups/status from registry data and does not determine semantic kind from ID/name. |
@@ -784,6 +1020,18 @@ registrations:
 11. The shared picker is a presentation projection only. Selecting an item
     creates a reference to its canonical definition; it never copies or mutates
     that definition.
+12. `account_key` is the stable application identity. Broker account IDs are
+    resolved at runtime and never persisted in drafts, releases, or browser payloads.
+13. A Run Plan reaches an account only through an explicit enabled Portfolio
+    mandate; Portfolio never selects an undeclared substitute account.
+14. Portfolio is the sole capital, sizing, allocation, reservation, exposure,
+    risk, and reconciliation authority.
+15. OMS consumes Portfolio-approved intent and owns execution/protection order
+    lifecycle; it cannot create capital or mutate Strategy intent.
+16. Broker snapshots, orders, executions, and positions remain external runtime
+    authority; application projections retain account, provider, and clock identity.
+17. Cross-run account arbitration requires one shared durable account authority;
+    per-runtime locks and reservations do not satisfy this invariant.
 
 ## Navigation
 
