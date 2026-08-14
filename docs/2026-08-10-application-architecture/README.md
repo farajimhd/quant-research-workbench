@@ -39,6 +39,7 @@ Every detailed document uses these labels:
 14. [Complete implementation backlog](14-implementation-backlog.md)
 15. [Implementation decision and delivery log](15-implementation-log.md)
 16. [Release, rollback, and recovery runbook](16-release-rollback-and-recovery.md)
+17. [Information ontology and registry inventory](17-information-ontology-and-registry-inventory.md)
 
 ## Complete application at a glance
 
