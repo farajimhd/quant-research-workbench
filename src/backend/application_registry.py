@@ -979,6 +979,118 @@ FIELD_OPERATOR_DOCUMENTATION: dict[str, dict[str, object]] = {
         "inputs": ("event.split.execution_date",),
         "timeframes": ("event",),
     },
+    "classification.market_cap": {
+        "source": "Point-in-time market capitalization from Reference Gateway.",
+        "calculation": "Assigns the market-cap value to the single configured band whose lower bound is inclusive and upper bound is exclusive.",
+        "inputs": ("reference.market_cap",),
+        "timeframes": ("1d",),
+    },
+    "classification.float": {
+        "source": "Point-in-time public float from Reference Gateway.",
+        "calculation": "Assigns public float shares to the single configured float band whose lower bound is inclusive and upper bound is exclusive.",
+        "inputs": ("reference.float_shares",),
+        "timeframes": ("1d",),
+    },
+    "classification.sector": {
+        "source": "The point-in-time issuer sector stored in q_live.id_issuer_v1.sector.",
+        "calculation": "Selects argMax(sector, inserted_at) for the issuer at or before the evaluation cutoff; no numeric thresholding is applied.",
+        "inputs": (),
+        "timeframes": ("1d",),
+    },
+    "classification.industry": {
+        "source": "The point-in-time issuer industry stored in q_live.id_issuer_v1.industry.",
+        "calculation": "Selects argMax(industry, inserted_at) for the issuer at or before the evaluation cutoff; no numeric thresholding is applied.",
+        "inputs": (),
+        "timeframes": ("1d",),
+    },
+    "classification.short_pressure": {
+        "source": "The point-in-time short-pressure label stored in q_live.feature_scanner_static_v1.short_pressure_label.",
+        "calculation": "Selects argMax(short_pressure_label, inserted_at) for the latest scanner feature date at or before the evaluation cutoff; no application-side classification is applied.",
+        "inputs": (),
+        "timeframes": ("settlement", "1d"),
+    },
+}
+
+
+FIELD_SOURCE_OVERRIDES: dict[str, tuple[str, tuple[str, ...]]] = {
+    "classification.sector": ("q_live.id_issuer_v1", ("sector",)),
+    "classification.industry": ("q_live.id_issuer_v1", ("industry",)),
+    "classification.short_pressure": ("q_live.feature_scanner_static_v1", ("short_pressure_label",)),
+}
+
+
+DERIVED_FIELD_METHODS: dict[str, str] = {
+    "fundamental.free_cash_flow": "Operating cash flow - absolute capital expenditure.",
+    "fundamental.gross_margin_pct": "100 x gross profit / aligned revenue.",
+    "fundamental.operating_margin_pct": "100 x operating income / aligned revenue.",
+    "fundamental.net_margin_pct": "100 x net income / aligned revenue.",
+    "fundamental.free_cash_flow_margin_pct": "100 x free cash flow / aligned revenue.",
+    "fundamental.return_on_assets_pct": "100 x latest comparable net income / latest assets.",
+    "fundamental.return_on_equity_pct": "100 x latest comparable net income / latest positive stockholders' equity.",
+    "fundamental.working_capital": "Aligned current assets - aligned current liabilities.",
+    "fundamental.current_ratio": "Aligned current assets / aligned current liabilities.",
+    "fundamental.debt_to_equity": "Current plus noncurrent borrowings / positive stockholders' equity.",
+    "fundamental.net_debt": "Interest-bearing debt - cash and equivalents.",
+    "fundamental.interest_coverage": "Operating income / absolute interest expense.",
+    "fundamental.revenue_growth_pct": "100 x (latest comparable revenue - prior comparable revenue) / absolute prior comparable revenue.",
+    "fundamental.earnings_growth_pct": "100 x (latest comparable net income - prior comparable net income) / absolute prior comparable net income.",
+    "fundamental.share_growth_pct": "100 x (latest weighted-average basic shares - prior comparable shares) / absolute prior comparable shares.",
+    "fundamental.dilution_pct": "100 x (diluted shares - basic shares) / basic shares for the aligned fiscal period.",
+    "fundamental.cash_conversion": "Operating cash flow / net income for the aligned fiscal period.",
+    "fundamental.research_intensity_pct": "100 x research and development expense / aligned revenue.",
+    "fundamental.sga_intensity_pct": "100 x selling, general, and administrative expense / aligned revenue.",
+    "fundamental.trajectory_score": "Coverage-adjusted weighted mean of profitability (30%), growth (20%), cash quality (20%), balance sheet (20%), and capital discipline (10%) scores.",
+    "fundamental.trajectory_label": "Maps the financial trajectory score and evidence coverage to the registered strength label.",
+    "fundamental.latest_filing_at": "Maximum causally available SEC filing acceptance timestamp used by the current fundamental analysis.",
+    "fundamental.valuation_pe": "Point-in-time market price / causally available diluted earnings per share.",
+    "fundamental.valuation_label": "Maps the point-in-time price-to-earnings value to the registered valuation band.",
+    "fundamental.profitability_score": "Reads the published 0-100 profitability facet from the causal SEC fundamental analysis.",
+    "fundamental.cash_generation_score": "Reads the published 0-100 cash-generation facet from the causal SEC fundamental analysis.",
+    "fundamental.balance_sheet_score": "Reads the published 0-100 balance-sheet facet from the causal SEC fundamental analysis.",
+    "fundamental.quality_score": "Reads the coverage-adjusted 0-100 XBRL evidence quality score for the selected filing revision.",
+    "fundamental.share_base_pressure_pct": "Reads the published share-base pressure percentage from the causal SEC fundamental analysis.",
+    "fundamental.share_base_discipline_score": "Reads the published 0-100 capital-discipline score derived from share growth and dilution spread.",
+    "xbrl.profitability_score": "Weighted 0-100 score from gross margin (20%), operating margin (30%), net margin (30%), and return on equity (20%).",
+    "xbrl.growth_score": "Weighted 0-100 score from comparable revenue growth (55%) and earnings growth (45%).",
+    "xbrl.cash_quality_score": "Weighted 0-100 score from free-cash-flow margin (60%) and cash conversion (40%).",
+    "xbrl.balance_sheet_score": "Weighted 0-100 score from current ratio (40%), inverse debt-to-equity (35%), and interest coverage (25%).",
+    "xbrl.capital_discipline_score": "Weighted inverse 0-100 score from basic-share growth (60%) and dilution spread (40%).",
+    "xbrl.quality_coverage_pct": "100 x available effective component weight / total configured component weight.",
+    "xbrl.quality_score": "Coverage-adjusted weighted mean of the registered XBRL analysis facets; withheld below the minimum evidence coverage.",
+    "xbrl.quality_label": "Maps XBRL quality score and evidence coverage to the registered quality label.",
+    "market.quality_state": "Returns QMD's current scanner-quality state for the latest causal market clock.",
+    "market.quality_flags": "Returns the set of QMD validation or degradation flags active at the latest causal market clock.",
+    "market.degradation_reason": "Returns QMD's explicit reason when scanner data is degraded; otherwise remains unavailable.",
+    "signal.news_labeled": "True when Text Intelligence has published a causal news classification for the company event; false otherwise.",
+    "signal.sec_labeled": "True when Text Intelligence has published a causal SEC classification for the filing event; false otherwise.",
+}
+
+
+DERIVED_FIELD_INPUTS: dict[str, tuple[str, ...]] = {
+    "fundamental.free_cash_flow": ("fundamental.operating_cash_flow", "fundamental.capital_expenditure"),
+    "fundamental.gross_margin_pct": ("fundamental.gross_profit", "fundamental.revenue"),
+    "fundamental.operating_margin_pct": ("fundamental.operating_income", "fundamental.revenue"),
+    "fundamental.net_margin_pct": ("fundamental.net_income", "fundamental.revenue"),
+    "fundamental.free_cash_flow_margin_pct": ("fundamental.free_cash_flow", "fundamental.revenue"),
+    "fundamental.return_on_assets_pct": ("fundamental.net_income", "fundamental.assets"),
+    "fundamental.return_on_equity_pct": ("fundamental.net_income", "fundamental.stockholders_equity"),
+    "fundamental.working_capital": ("fundamental.current_assets", "fundamental.current_liabilities"),
+    "fundamental.current_ratio": ("fundamental.current_assets", "fundamental.current_liabilities"),
+    "fundamental.debt_to_equity": ("fundamental.current_debt", "fundamental.long_term_debt", "fundamental.stockholders_equity"),
+    "fundamental.net_debt": ("fundamental.current_debt", "fundamental.long_term_debt", "fundamental.cash"),
+    "fundamental.interest_coverage": ("fundamental.operating_income", "fundamental.interest_expense"),
+    "fundamental.revenue_growth_pct": ("fundamental.revenue",),
+    "fundamental.earnings_growth_pct": ("fundamental.net_income",),
+    "fundamental.share_growth_pct": ("fundamental.weighted_average_basic_shares",),
+    "fundamental.dilution_pct": ("fundamental.weighted_average_basic_shares", "fundamental.weighted_average_diluted_shares"),
+    "fundamental.cash_conversion": ("fundamental.operating_cash_flow", "fundamental.net_income"),
+    "fundamental.research_intensity_pct": ("fundamental.research_development", "fundamental.revenue"),
+    "fundamental.sga_intensity_pct": ("fundamental.sga_expense", "fundamental.revenue"),
+    "fundamental.trajectory_score": ("xbrl.profitability_score", "xbrl.growth_score", "xbrl.cash_quality_score", "xbrl.balance_sheet_score", "xbrl.capital_discipline_score"),
+    "fundamental.trajectory_label": ("fundamental.trajectory_score", "xbrl.quality_coverage_pct"),
+    "fundamental.valuation_pe": ("market.last_price", "fundamental.diluted_eps"),
+    "fundamental.valuation_label": ("fundamental.valuation_pe",),
+    "xbrl.quality_label": ("xbrl.quality_score", "xbrl.quality_coverage_pct"),
 }
 
 
@@ -1139,12 +1251,15 @@ def _operator_source_summary(owner: str, source_path: str) -> str:
     return f"The latest causally available publication owned by {owner.replace('_', ' ')}."
 
 
-def _operator_calculation_summary(provenance: str, source_columns: tuple[str, ...]) -> str:
+def _operator_calculation_summary(field_id: str, provenance: str, source_columns: tuple[str, ...]) -> str:
+    registered_method = DERIVED_FIELD_METHODS.get(field_id)
+    if registered_method:
+        return registered_method
     readable_columns = ", ".join(column.replace("_", " ") for column in source_columns)
     if provenance in {"raw", "reported"}:
         return f"Uses the published {readable_columns} value without an application-side calculation."
     if provenance == "model":
-        return "Uses the output of the registered model artifact and preserves its versioned model contract."
+        return f"Reads {_field_presentation_label(field_id)} from the registered versioned model artifact; no application-side transformation is applied."
     return "The registered producer derives this value from its declared inputs; an exact method has not yet been published in the operator documentation contract."
 
 
@@ -1215,10 +1330,13 @@ def _field(
         calculation_summary=(
             calculation_summary
             or str(operator_documentation.get("calculation") or "")
-            or _operator_calculation_summary(provenance, columns)
+            or _operator_calculation_summary(field_id, provenance, columns)
         ),
         input_field_ids=tuple(
-            input_field_ids or operator_documentation.get("inputs") or ()
+            input_field_ids
+            or operator_documentation.get("inputs")
+            or DERIVED_FIELD_INPUTS.get(field_id)
+            or ()
         ),
         timeframes=tuple(timeframes or operator_documentation.get("timeframes") or ()),
     )
@@ -1822,6 +1940,15 @@ def _registry_definition(
 
 
 def _field_operator_documentation(field: FieldDefinition) -> dict[str, Any]:
+    source_location, source_fields = FIELD_SOURCE_OVERRIDES.get(
+        field.field_id,
+        (
+            field.source_path,
+            field.input_field_ids
+            if field.provenance == "derived" and field.input_field_ids
+            else field.source_columns,
+        ),
+    )
     stale_after = (
         f"The value is stale after {field.ttl_seconds:,} seconds."
         if field.ttl_seconds is not None
@@ -1834,7 +1961,27 @@ def _field_operator_documentation(field: FieldDefinition) -> dict[str, Any]:
         "artifact available_at": "After the versioned model artifact publishes the value.",
     }.get(field.available_at, field.available_at)
     return {
+        "documentation_status": (
+            "partial"
+            if "not yet published" in field.calculation_summary.lower()
+            or "has not yet been published" in field.calculation_summary.lower()
+            else "complete"
+        ),
+        "source_location": source_location,
+        "source_fields": list(source_fields),
         "source_summary": field.source_summary,
+        "operation_kind": (
+            "model_output"
+            if field.provenance == "model"
+            else "source_read"
+            if field.provenance in {"raw", "reported"}
+            else "classification"
+            if field.field_id.startswith("classification.")
+            else "derivation"
+        ),
+        "operation_steps": [field.calculation_summary],
+        "formula": DERIVED_FIELD_METHODS.get(field.field_id, ""),
+        "classification_bands": [],
         "calculation_summary": field.calculation_summary,
         "input_field_ids": list(field.input_field_ids),
         "timeframes": list(field.timeframes),
@@ -2215,7 +2362,17 @@ def _qmd_operator_documentation(
         if str(parameter.get("parameter_id") or parameter.get("name") or "") == "timeframes"
     ), [])
     kind = str(row.get("kind") or "definition")
-    label = str(row.get("label") or row.get("registry_id") or "QMD definition")
+    registry_id = str(row.get("registry_id") or "")
+    label = (
+        _field_presentation_label(registry_id)
+        if kind == "field"
+        else str(
+            row.get("presentation_label")
+            or row.get("label")
+            or registry_id
+            or "QMD definition"
+        )
+    )
     source_summary = str(
         registered.get("source_summary")
         or producer_documentation.get("source_summary")
@@ -2232,8 +2389,62 @@ def _qmd_operator_documentation(
         or row.get("description")
         or "The QMD producer has not published an operator-facing method description."
     )
+    leaf = registry_id.rsplit(".", 1)[-1]
+    producer_label = str(producer.get("label") or producer_id or "QMD")
+    if registry_id.startswith("signal."):
+        member = _presentation_words(leaf)
+        operation = f"Projects the {member} member from each emitted {producer_label} event; no additional calculation is applied."
+    elif kind == "field":
+        prefix, separator, period = leaf.rpartition("_")
+        period_method = {
+            "rsi": "Wilder Relative Strength Index from closed-bar gains and losses",
+            "ema": "exponential moving average of closed-bar prices",
+            "sma": "simple moving average of closed-bar prices",
+            "atr": "Wilder Average True Range from closed-bar true ranges",
+            "roc": "rate of change from closed-bar prices",
+            "stddev": "standard deviation of closed-bar prices",
+        }.get(prefix)
+        exact_methods = {
+            "open": "First eligible trade price in the completed bar.",
+            "high": "Maximum eligible trade price in the completed bar.",
+            "low": "Minimum eligible trade price in the completed bar.",
+            "close": "Last eligible trade price in the completed bar.",
+            "volume": "Sum of eligible trade size in the completed bar.",
+            "trade_count": "Count of eligible trades in the completed bar.",
+            "dollar_volume": "Sum of eligible trade price multiplied by trade size in the completed bar.",
+            "vwap": "Sum of eligible trade price multiplied by size, divided by eligible share volume.",
+            "macd_line": "12-period EMA minus 26-period EMA of closed-bar prices.",
+            "macd_signal": "9-period EMA of the MACD line.",
+            "macd_histogram": "MACD line minus MACD signal line.",
+        }
+        if period_method and separator and period.isdigit():
+            operation = f"Computes the {period}-period {period_method}."
+        elif leaf.startswith("bollinger_") and leaf.rsplit("_", 1)[-1].isdigit():
+            operation = f"Computes the {label} component from a {leaf.rsplit('_', 1)[-1]}-bar moving mean and standard-deviation envelope."
+        elif leaf in exact_methods:
+            operation = exact_methods[leaf]
+        elif producer_id:
+            input_text = ", ".join(inputs) if inputs else "its registered inputs"
+            operation = f"{producer_label} computes {label} from {input_text}. {calculation_summary}"
+        else:
+            operation = f"Reads {label} from the accepted QMD input {leaf}; no additional calculation is applied."
+    else:
+        operation = calculation_summary
     return {
+        "documentation_status": "complete" if calculation_summary.strip() else "partial",
+        "source_location": (
+            f"qmd://{producer_id}" if producer_id else "qmd://accepted-input"
+        ),
+        "source_fields": sorted(set(inputs)) or [str(row.get("registry_id") or "")],
         "source_summary": source_summary,
+        "operation_kind": (
+            "producer_output" if producer_id else "source_read"
+        ),
+        "operation_steps": [
+            operation
+        ],
+        "formula": "",
+        "classification_bands": [],
         "calculation_summary": calculation_summary,
         "input_field_ids": sorted(set(inputs)),
         "timeframes": [str(value) for value in (registered.get("timeframes") or parameter_timeframes)],
@@ -2245,6 +2456,104 @@ def _qmd_operator_documentation(
         "freshness_summary": str(registered.get("freshness_summary") or "Freshness follows the registered QMD producer revision and market clock."),
         "null_behavior": str(registered.get("null_behavior") or "Unavailable inputs do not produce a substituted value."),
     }
+
+
+def _apply_classification_documentation(
+    definitions_by_id: dict[str, dict[str, Any]],
+    configuration: dict[str, Any],
+) -> None:
+    classifications = list(
+        dict(configuration.get("market_discovery") or {}).get("classifications") or []
+    )
+    families = {
+        "classification.market_cap": [
+            row for row in classifications
+            if str(row.get("classification_id") or "").startswith("market_cap.")
+        ],
+        "classification.float": [
+            row for row in classifications
+            if str(row.get("classification_id") or "").startswith("float.")
+        ],
+    }
+    for registry_id, bands in families.items():
+        definition = definitions_by_id.get(registry_id)
+        if definition is None or not bands:
+            continue
+        documentation = dict(definition.get("documentation") or {})
+        input_ids = [str(value) for value in documentation.get("input_field_ids") or []]
+        input_definition = definitions_by_id.get(input_ids[0], {}) if input_ids else {}
+        input_documentation = dict(input_definition.get("documentation") or {})
+        documentation["source_location"] = str(
+            input_documentation.get("source_location")
+            or documentation.get("source_location")
+            or ""
+        )
+        documentation["source_fields"] = list(
+            input_documentation.get("source_fields") or input_ids
+        )
+        documentation["classification_bands"] = [
+            {
+                "band_id": str(row.get("classification_id") or ""),
+                "label": str(row.get("name") or row.get("classification_id") or "Band"),
+                "minimum": row.get("minimum"),
+                "maximum": row.get("maximum"),
+                "minimum_inclusive": True,
+                "maximum_inclusive": False,
+                "unit": str(row.get("unit") or ""),
+            }
+            for row in bands
+        ]
+        documentation["documentation_status"] = "complete"
+        definition["documentation"] = documentation
+
+
+def _ensure_data_definition_documentation(
+    definitions_by_id: dict[str, dict[str, Any]],
+) -> None:
+    for registry_id, definition in definitions_by_id.items():
+        if str(definition.get("kind") or "") not in {"field", "derivation", "signal"}:
+            continue
+        documentation = dict(definition.get("documentation") or {})
+        producer_id = str(definition.get("producer_id") or "").strip()
+        input_ids = [
+            str(value) for value in (
+                documentation.get("input_field_ids")
+                or definition.get("input_field_ids")
+                or dict(definition.get("relationships") or {}).get("input_field_ids")
+                or []
+            ) if str(value).strip()
+        ]
+        operation = str(
+            (documentation.get("operation_steps") or [""])[0]
+            or documentation.get("calculation_summary")
+            or definition.get("description")
+            or ""
+        ).strip()
+        documentation.setdefault(
+            "source_location",
+            f"qmd://{producer_id}" if producer_id else f"registry://{definition.get('owner') or 'unknown'}",
+        )
+        documentation.setdefault("source_fields", input_ids or [registry_id])
+        documentation.setdefault(
+            "source_summary",
+            f"Registered value published by {definition.get('owner') or 'the declared producer'}.",
+        )
+        documentation.setdefault(
+            "operation_kind",
+            "producer_output" if producer_id else "registered_method",
+        )
+        documentation.setdefault(
+            "operation_steps",
+            [operation or "The exact producer operation is not registered."],
+        )
+        documentation.setdefault("formula", "")
+        documentation.setdefault("classification_bands", [])
+        documentation.setdefault(
+            "documentation_status",
+            "complete" if operation else "partial",
+        )
+        documentation.setdefault("input_field_ids", input_ids)
+        definition["documentation"] = documentation
 
 
 def information_registry_payload(
@@ -2309,6 +2618,9 @@ def information_registry_payload(
             # registered semantic kind or its producer authority.
             continue
         definitions_by_id[registry_id] = row
+
+    _ensure_data_definition_documentation(definitions_by_id)
+    _apply_classification_documentation(definitions_by_id, configuration or {})
 
     type_rows = [asdict(row) for row in REGISTRY_TYPES]
     binding_rows = [asdict(row) for row in CONFIGURATION_BINDINGS]

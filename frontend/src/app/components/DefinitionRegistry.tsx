@@ -24,10 +24,25 @@ export type RegistryDefinition = {
   documentation?: {
     available_when: string;
     calculation_summary: string;
+    classification_bands?: Array<{
+      band_id: string;
+      label: string;
+      maximum: number | null;
+      maximum_inclusive: boolean;
+      minimum: number | null;
+      minimum_inclusive: boolean;
+      unit: string;
+    }>;
+    documentation_status?: "complete" | "partial";
     entity_grain: string;
+    formula?: string;
     freshness_summary: string;
     input_field_ids: string[];
     null_behavior: string;
+    operation_kind?: string;
+    operation_steps?: string[];
+    source_fields?: string[];
+    source_location?: string;
     source_summary: string;
     timeframes: string[];
     unit: string;

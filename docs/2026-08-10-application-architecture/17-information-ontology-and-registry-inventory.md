@@ -44,7 +44,7 @@ trading records, and physical ClickHouse storage
 | --- | --- |
 | Identity | `registry_id`, `kind`, `version` |
 | Semantics | `label`, `presentation_label`, `description`, `owner`, `status`, `tags` |
-| Operator documentation | `source_summary`, `calculation_summary`, input Field IDs, timeframes, value behavior, availability, freshness, null behavior |
+| Operator documentation | `source_location`, `source_fields`, `operation_steps`, optional `formula`, optional `classification_bands`, `documentation_status`, input Field IDs |
 | Composition | `relationships` or QMD input/output Field references |
 | Presentation | `kind_label`, `icon`, `accent` |
 | Configuration | `configurable`, `configuration_mode`, `configuration_binding_id` |

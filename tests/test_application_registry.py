@@ -374,6 +374,10 @@ class ApplicationRegistryTests(unittest.TestCase):
                     ]
                 },
                 "rule_sets": [{"rule_set_id": "gainers", "name": "Gainers", "description": "Positive change rule.", "atomic": True, "conditions": [{"condition_id": "change-positive", "left_source_id": "market.change_pct", "comparator": "greater_than", "value": 0}]}],
+                "classifications": [
+                    {"classification_id": "float.tiny", "name": "Tiny", "minimum": 0, "maximum": 500_000, "unit": "shares", "source_id": "reference.float_shares"},
+                    {"classification_id": "float.broad", "name": "Broad Float", "minimum": 100_000_000, "maximum": None, "unit": "shares", "source_id": "reference.float_shares"},
+                ],
                 "watchlists": [{
                     "watchlist_id": "top-gainers",
                     "name": "Top gainers",
@@ -399,6 +403,12 @@ class ApplicationRegistryTests(unittest.TestCase):
             "status", "payload", "vector", "value", "state", "count", "close",
             "open", "high", "low",
         } & {label.casefold() for label in presentation_labels})
+        for row in data_definitions:
+            documentation = row["documentation"]
+            self.assertTrue(documentation["source_location"], row["registry_id"])
+            self.assertTrue(documentation["source_fields"], row["registry_id"])
+            self.assertTrue(documentation["operation_steps"], row["registry_id"])
+            self.assertIn(documentation["documentation_status"], {"complete", "partial"})
         self.assertEqual(payload["authority"], "application_information_registry")
         self.assertIn("qmd.derivation.momentum_core", definitions)
         self.assertEqual(
@@ -416,6 +426,10 @@ class ApplicationRegistryTests(unittest.TestCase):
             "Split Days to Event",
         )
         self.assertEqual(definitions["qmd.field.rsi_14"]["presentation_label"], "RSI 14")
+        float_documentation = definitions["classification.float"]["documentation"]
+        self.assertEqual(float_documentation["source_location"], "q_live.market_security_float_v1")
+        self.assertEqual(float_documentation["source_fields"], ["float_shares"])
+        self.assertEqual(len(float_documentation["classification_bands"]), 2)
         change_documentation = definitions["market.change_pct"]["documentation"]
         self.assertIn("last price / previous close", change_documentation["calculation_summary"])
         self.assertEqual(

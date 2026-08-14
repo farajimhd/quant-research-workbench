@@ -22995,27 +22995,40 @@ button {
 .data-definition-document dl div { min-width: 0; }
 .data-definition-document dt { margin-bottom: 4px; color: var(--muted-foreground); font-size: 0.7rem; text-transform: uppercase; }
 .data-definition-document dd { margin: 0; font-size: 0.86rem; overflow-wrap: anywhere; }
-.data-definition-document > .data-definition-method { margin-top: 22px; padding: 0 0 22px; }
-.data-definition-method-grid { display: grid; grid-template-columns: minmax(240px, 0.85fr) minmax(320px, 1.35fr); gap: 12px; }
-.data-definition-method-grid article { min-width: 0; padding: 17px 18px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface); }
-.data-definition-method-grid article:first-child { background: color-mix(in oklab, var(--accent) 4%, var(--surface)); }
-.data-definition-method-grid article > span { display: block; margin-bottom: 8px; color: var(--muted-foreground); font-size: 0.68rem; font-weight: 600; letter-spacing: 0.07em; text-transform: uppercase; }
-.data-definition-method-grid article > strong { display: block; margin-bottom: 6px; font-size: 0.96rem; font-weight: 560; }
-.data-definition-method-grid article > p { max-width: none; color: var(--foreground); font-size: 0.9rem; line-height: 1.6; }
-.data-definition-method-grid article > button { margin-top: 13px; border-color: color-mix(in oklab, var(--accent) 28%, var(--border)); color: var(--accent); font-size: 0.75rem; }
-.data-definition-document > .data-definition-contract { margin-top: 22px; padding: 0; overflow: hidden; border: 1px solid var(--border); border-radius: 10px; background: var(--surface); }
-.data-definition-contract h3 { margin: 0; padding: 12px 14px; border-bottom: 1px solid var(--border); background: color-mix(in oklab, var(--surface-alt) 72%, var(--surface)); }
-.data-definition-contract dl { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1px; background: var(--border); }
-.data-definition-contract dl div { min-height: 66px; padding: 12px 14px; background: var(--surface); }
-.data-definition-contract dt { margin-bottom: 7px; font-weight: 550; letter-spacing: 0.035em; }
-.data-definition-contract dd { color: var(--foreground); font-size: 0.88rem; line-height: 1.4; }
-.data-definition-inputs > p { margin: -7px 0 13px; font-size: 0.78rem; }
+.data-definition-document > .data-definition-method { display: grid; grid-template-columns: minmax(210px, 0.8fr) minmax(280px, 1.35fr); gap: 12px; margin-top: 22px; padding: 0 0 22px; }
+.data-definition-method > article { min-width: 0; padding: 18px 20px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface); }
+.data-definition-method > article > span, .data-definition-formula > span, .data-definition-bands > header > span { display: block; margin-bottom: 8px; color: var(--muted-foreground); font-size: 0.68rem; font-weight: 600; letter-spacing: 0.07em; text-transform: uppercase; }
+.data-definition-source h3 { margin-bottom: 12px; overflow: hidden; font-family: var(--font-mono, monospace); font-size: 0.76rem; font-weight: 520; letter-spacing: -0.015em; text-overflow: ellipsis; text-transform: none; white-space: nowrap; }
+.data-definition-source > p { max-width: none; margin-top: 14px; color: var(--foreground); font-size: 0.84rem; line-height: 1.55; }
+.data-definition-source-fields { display: flex; flex-wrap: wrap; gap: 6px; }
+.data-definition-source-fields code { color: var(--foreground); }
+.data-definition-source-fields button, .data-definition-source-links button { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 2px 10px; width: 100%; text-align: left; }
+.data-definition-source-fields button small, .data-definition-source-links button small { grid-column: 1; color: var(--muted-foreground); font-size: 0.64rem; overflow-wrap: anywhere; }
+.data-definition-source-fields button svg, .data-definition-source-links button svg { grid-column: 2; grid-row: 1 / span 2; align-self: center; }
+.data-definition-source-links { display: grid; gap: 6px; margin-top: 8px; }
+.data-definition-operation ol { display: grid; gap: 10px; margin: 0; padding-left: 20px; }
+.data-definition-operation li { padding-left: 4px; color: var(--foreground); font-size: 0.9rem; line-height: 1.6; }
+.data-definition-formula { display: grid; gap: 4px; margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--border); }
+.data-definition-formula > span { margin: 0; }
+.data-definition-formula code { width: fit-content; max-width: 100%; color: var(--foreground); white-space: normal; overflow-wrap: anywhere; }
+.data-definition-method-warning, .data-definition-method-missing { max-width: none !important; font-size: 0.78rem; line-height: 1.5 !important; }
+.data-definition-method-warning { margin-top: 14px !important; padding: 9px 11px; border-left: 2px solid var(--warning, #b7791f); background: color-mix(in oklab, var(--warning, #b7791f) 7%, var(--surface)); color: var(--foreground) !important; }
+.data-definition-document > .data-definition-bands { padding-top: 20px; }
+.data-definition-bands > header { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; margin-bottom: 10px; }
+.data-definition-bands > header > span, .data-definition-bands > header > h3 { margin: 0; }
+.data-definition-bands table { width: 100%; overflow: hidden; border: 1px solid var(--border); border-collapse: separate; border-spacing: 0; border-radius: 9px; }
+.data-definition-bands th, .data-definition-bands td { padding: 10px 13px; border-bottom: 1px solid var(--border); text-align: left; }
+.data-definition-bands th { background: var(--surface-alt); color: var(--muted-foreground); font-size: 0.68rem; font-weight: 600; letter-spacing: 0.055em; text-transform: uppercase; }
+.data-definition-bands td { font-size: 0.84rem; }
+.data-definition-bands tbody tr:last-child td { border-bottom: 0; }
+.data-definition-bands td:first-child { width: 38%; }
+.data-definition-bands td strong, .data-definition-bands td small { display: block; }
+.data-definition-bands td strong { font-weight: 560; }
+.data-definition-bands td small { margin-top: 2px; color: var(--muted-foreground); font-size: 0.66rem; }
 .data-definition-inputs > div { display: flex; flex-wrap: wrap; gap: 8px; }
 .data-definition-inputs > div > button, .data-definition-inputs > div > span { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; min-width: 190px; gap: 2px 12px; padding: 9px 11px; border: 1px solid var(--border); border-radius: 7px; background: var(--surface); color: var(--foreground); font-size: 0.78rem; }
 .data-definition-inputs > div > button small, .data-definition-inputs > div > span small { grid-column: 1; color: var(--muted-foreground); font-size: 0.65rem; overflow-wrap: anywhere; }
 .data-definition-inputs > div > button svg { grid-column: 2; grid-row: 1 / span 2; color: var(--muted-foreground); }
-.data-definition-availability > div { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
-.data-definition-availability p { max-width: none; padding: 12px 14px; border-left: 2px solid color-mix(in oklab, var(--accent) 45%, var(--border)); background: var(--surface-alt); color: var(--foreground); font-size: 0.8rem; line-height: 1.5; }
 .data-definition-parameters { display: grid; gap: 8px; }
 .data-definition-parameters > div { display: grid; grid-template-columns: 0.8fr 1.7fr auto; gap: 12px; padding: 10px 12px; border: 1px solid var(--border); border-radius: 7px; }
 .data-definition-parameters strong { font-size: 0.8rem; font-weight: 550; }
@@ -23047,8 +23060,7 @@ button {
   .rule-condition-row { grid-template-columns: 28px 1fr; }
   .rule-condition-row > select, .rule-condition-row > input { grid-column: 2; }
   .data-definition-document dl { grid-template-columns: 1fr; }
-  .data-definition-contract dl { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .data-definition-method-grid, .data-definition-availability > div { grid-template-columns: 1fr; }
+  .data-definition-document > .data-definition-method { grid-template-columns: 1fr; }
 }
 .configuration-page-header span { font-size: 12.5px; }
 .configuration-page-header h1 { font-size: 27.5px; }
