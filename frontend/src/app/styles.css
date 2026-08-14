@@ -27533,6 +27533,14 @@ button {
 .trading-configuration-page[data-configuration-section="strategy"] .configuration-help > button svg { color: var(--muted-foreground); }
 
 /* Shared Scanner and Watchlist table readability. */
+.market-list-table th {
+  font-size: 9px;
+}
+
+.market-list-table th small {
+  font-size: 6.5px;
+}
+
 .market-list-table td.market-list-numeric-column {
   font-size: 11.5px;
   font-weight: 540;

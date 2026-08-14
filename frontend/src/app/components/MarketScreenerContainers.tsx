@@ -231,12 +231,24 @@ function useDiscoveryPresentation() {
     return () => controller.abort();
   }, []);
   const discovery = configuration?.market_discovery;
-  const catalog = useMemo(() => (discovery?.column_catalog ?? []).map(discoveryField), [discovery?.column_catalog]);
-  const coreColumns = useMemo(() => [...new Set((discovery?.core_scan?.calculations ?? [])
-    .filter((capability) => capability.execution_scope === "core_scan" && Boolean(capability.enabled || capability.system_required))
-    .flatMap((capability) => capability.scanner_columns ?? [])
-    .map((column) => column.column_id)
-    .filter(Boolean))], [discovery?.core_scan?.calculations]);
+  const { catalog, coreColumns } = useMemo(() => {
+    const calculations = discovery?.core_scan?.calculations ?? [];
+    const presentationNames = new Map(calculations
+      .flatMap((capability) => capability.scanner_columns ?? [])
+      .filter((column) => Boolean(column.column_id && column.name))
+      .map((column) => [column.column_id, column.name] as const));
+    return {
+      catalog: (discovery?.column_catalog ?? []).map((column) => discoveryField({
+        ...column,
+        name: presentationNames.get(column.column_id) ?? column.name,
+      })),
+      coreColumns: [...new Set(calculations
+        .filter((capability) => capability.execution_scope === "core_scan" && Boolean(capability.enabled || capability.system_required))
+        .flatMap((capability) => capability.scanner_columns ?? [])
+        .map((column) => column.column_id)
+        .filter(Boolean))],
+    };
+  }, [discovery?.column_catalog, discovery?.core_scan?.calculations]);
   return { catalog, configuration, coreColumns, discovery };
 }
 
@@ -263,13 +275,14 @@ function readableGroup(value: unknown) {
 export function MarketScannerContainer({ asOf, meta, onSettingsChange, onTickerSelect, rows, settings }: { asOf: string; meta?: ScannerSnapshotMeta; onSettingsChange: (patch: Partial<MarketScannerSettings>) => void; onTickerSelect: (ticker: string) => void; rows: ScreenerRow[]; settings: MarketScannerSettings }) {
   const normalizedRows = useMemo(() => normalizeScannerRows(rows), [rows]);
   const { catalog, coreColumns } = useDiscoveryPresentation();
+  const columns = canonicalDiscoveryColumns(settings.columns.length ? settings.columns : (coreColumns.length ? coreColumns : ["symbol", "last_price", "change_pct", "volume"]));
   const subtitle = meta?.complete_universe
     ? `QMD Core Scan · full historical universe · ${meta.lookback_minutes ?? 15}-minute discovery window`
     : "QMD Core Scan universe unavailable or incomplete";
   return <MarketListSurface
     asOf={asOf}
     catalog={catalog}
-    columns={settings.columns.length ? settings.columns : (coreColumns.length ? coreColumns : ["symbol", "last_price", "change_pct", "volume"])}
+    columns={columns}
     customColumns={settings.customColumns}
     empty="No securities are available at this market clock."
     eyebrow="Market snapshot"
@@ -370,7 +383,7 @@ export function WatchUniverseContainer({ asOf, onSettingsChange, onTickerSelect,
         : runtime.status !== "ready" && runtime.status !== "degraded"
           ? `Membership projection is ${String(runtime.status || "unavailable").replaceAll("_", " ")}.`
           : `QMD Watchlist ${watchlist?.watchlist_id || "not selected"} has no membership snapshot.`);
-  const columns = settings.columns.length ? settings.columns : watchlist?.columns ?? ["symbol"];
+  const columns = canonicalDiscoveryColumns(settings.columns.length ? settings.columns : watchlist?.columns ?? ["symbol"]);
   const selectWatchlist = (watchlistId: string) => onSettingsChange((current) => ({ columns: [], watchlistId, watchlistIds: current.watchlistIds }));
   const addWatchlist = (watchlistId: string) => {
     if (!watchlistId || !selectableWatchlists.some((row) => row.watchlist_id === watchlistId)) return;
@@ -864,6 +877,9 @@ function catalogField(key: string, customColumns: ScannerCustomColumn[] = [], ca
   if (definition) return definition;
   const custom = customColumns.find((item) => item.key === key);
   return custom ? customField(custom) : field(key, label(key), "Other", "raw", "text", "Available source field.");
+}
+function canonicalDiscoveryColumns(columns: string[]) {
+  return [...new Set(columns.map((column) => column === "ticker" ? "symbol" : column === "last" ? "last_price" : column))];
 }
 function withLockedColumns(columns: string[], lockedColumns: string[]) {
   const leading: string[] = lockedColumns.filter((column) => column === "logo" || column === "ticker" || column === "symbol");

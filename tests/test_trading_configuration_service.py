@@ -461,6 +461,16 @@ class TradingConfigurationServiceTests(unittest.TestCase):
         self.assertEqual(len(active_core), 9)
         self.assertTrue(all(row["scanner_columns"] for row in active_core))
         self.assertEqual(sum(len(row["scanner_columns"]) for row in active_core), 9)
+        columns_by_id = {
+            row["column_id"]: row for row in discovery["column_catalog"]
+        }
+        self.assertTrue(
+            all(
+                column["name"] == columns_by_id[column["column_id"]]["name"]
+                for capability in active_core
+                for column in capability["scanner_columns"]
+            )
+        )
         self.assertIn(
             "Market quality",
             next(row for row in active_core if row["capability_id"] == "market-quality")["scanner_columns"][0]["name"],
