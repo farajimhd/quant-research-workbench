@@ -22961,15 +22961,18 @@ button {
 .data-library-create { display: flex; align-items: center; justify-content: center; gap: 6px; margin: 0 14px 10px; padding: 8px; border: 1px dashed var(--primary); border-radius: 8px; background: var(--accent-soft); color: var(--foreground); font-weight: 600; cursor: pointer; }
 
 .data-library-tree { flex: 1 1 auto; min-height: 0; overflow: auto; padding: 0 10px 14px; }
-.data-library-tree details { border-top: 1px solid var(--border); }
+.data-library-tree > details { margin-bottom: 7px; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; background: var(--surface); }
 .data-library-tree summary { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 10px 8px; cursor: pointer; color: var(--foreground); font-size: 0.8rem; font-weight: 600; list-style-position: inside; }
+.data-library-tree > details > summary { background: color-mix(in oklab, var(--surface-alt) 78%, var(--surface)); }
+.data-library-tree > details[open] > summary { border-bottom: 1px solid var(--border); }
 .data-library-tree summary em { color: var(--muted-foreground); font-size: 0.7rem; font-style: normal; font-weight: 500; }
-.data-library-tree .data-library-subgroup { margin-left: 8px; border-top-style: dashed; }
-.data-library-tree .data-library-subgroup > summary { color: var(--muted-foreground); font-size: 0.74rem; font-weight: 500; }
-.data-library-subgroup > div { display: grid; gap: 3px; padding: 0 0 8px 8px; }
-.data-library-subgroup button { display: flex; width: 100%; align-items: center; justify-content: space-between; gap: 8px; padding: 8px 9px; border: 1px solid transparent; border-radius: 7px; background: transparent; color: var(--foreground); text-align: left; cursor: pointer; }
-.data-library-subgroup button:hover, .data-library-subgroup button[aria-current="true"] { border-color: var(--surface-border); background: var(--surface); }
-.data-library-subgroup button[aria-current="true"] { box-shadow: inset 3px 0 0 var(--primary); }
+.data-library-tree .data-library-subgroup { margin: 7px; border: 1px solid color-mix(in oklab, var(--border) 78%, transparent); border-radius: 7px; overflow: hidden; background: color-mix(in oklab, var(--surface-alt) 42%, var(--surface)); }
+.data-library-tree .data-library-subgroup > summary { color: var(--muted-foreground); font-size: 0.74rem; font-weight: 550; }
+.data-library-tree .data-library-subgroup[open] > summary { border-bottom: 1px solid color-mix(in oklab, var(--border) 72%, transparent); }
+.data-library-subgroup > div { display: grid; gap: 3px; padding: 5px; }
+.data-library-subgroup button { display: flex; width: 100%; align-items: center; justify-content: space-between; gap: 8px; padding: 8px 9px; border: 1px solid transparent; border-radius: 6px; background: var(--surface); color: var(--foreground); text-align: left; cursor: pointer; }
+.data-library-subgroup button:hover { border-color: var(--border); background: color-mix(in oklab, var(--surface-alt) 58%, var(--surface)); }
+.data-library-subgroup button[aria-current="true"] { border-color: color-mix(in oklab, var(--primary) 34%, var(--border)); background: color-mix(in oklab, var(--primary) 8%, var(--surface)); box-shadow: inset 3px 0 0 var(--primary); }
 .data-library-subgroup button span { min-width: 0; }
 .data-library-subgroup button strong, .data-library-subgroup button small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .data-library-subgroup button strong { font-size: 0.78rem; font-weight: 550; }
@@ -22990,6 +22993,12 @@ button {
 .data-definition-document dl div { min-width: 0; }
 .data-definition-document dt { margin-bottom: 4px; color: var(--muted-foreground); font-size: 0.7rem; text-transform: uppercase; }
 .data-definition-document dd { margin: 0; font-size: 0.86rem; overflow-wrap: anywhere; }
+.data-definition-document > .data-definition-contract { margin-top: 22px; padding: 0; overflow: hidden; border: 1px solid var(--border); border-radius: 10px; background: var(--surface); }
+.data-definition-contract h3 { margin: 0; padding: 12px 14px; border-bottom: 1px solid var(--border); background: color-mix(in oklab, var(--surface-alt) 72%, var(--surface)); }
+.data-definition-contract dl { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1px; background: var(--border); }
+.data-definition-contract dl div { min-height: 66px; padding: 12px 14px; background: var(--surface); }
+.data-definition-contract dt { margin-bottom: 7px; font-weight: 550; letter-spacing: 0.035em; }
+.data-definition-contract dd { color: var(--foreground); font-size: 0.88rem; line-height: 1.4; }
 .data-definition-parameters { display: grid; gap: 8px; }
 .data-definition-parameters > div { display: grid; grid-template-columns: 0.8fr 1.7fr auto; gap: 12px; padding: 10px 12px; border: 1px solid var(--border); border-radius: 7px; }
 .data-definition-parameters strong { font-size: 0.8rem; font-weight: 550; }
@@ -23021,6 +23030,7 @@ button {
   .rule-condition-row { grid-template-columns: 28px 1fr; }
   .rule-condition-row > select, .rule-condition-row > input { grid-column: 2; }
   .data-definition-document dl { grid-template-columns: 1fr; }
+  .data-definition-contract dl { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 .configuration-page-header span { font-size: 12.5px; }
 .configuration-page-header h1 { font-size: 27.5px; }
