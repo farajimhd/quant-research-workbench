@@ -44,6 +44,7 @@ trading records, and physical ClickHouse storage
 | --- | --- |
 | Identity | `registry_id`, `kind`, `version` |
 | Semantics | `label`, `description`, `owner`, `status`, `tags` |
+| Operator documentation | `source_summary`, `calculation_summary`, input Field IDs, timeframes, value behavior, availability, freshness, null behavior |
 | Composition | `relationships` or QMD input/output Field references |
 | Presentation | `kind_label`, `icon`, `accent` |
 | Configuration | `configurable`, `configuration_mode`, `configuration_binding_id` |
@@ -141,6 +142,15 @@ One typed value contract. No `RawField`, `DerivedField`, or `SignalProjectionFie
 | `freshness_policy` | TTL/publication policy |
 | `null_reasons` | Registered explicit reason IDs |
 | `modes` | Subset of `live`, `paper`, `replay`, `backtest`, `backtest_debug` |
+| `source_summary` | User-facing origin of the value; no storage, query-plan, or internal table detail |
+| `calculation_summary` | Exact registered method when known; otherwise an explicit producer-owned-method statement |
+| `input_field_ids` | FieldDefinition IDs used by the method |
+| `timeframes` | Registered event, bar, session, settlement, filing, or request windows |
+
+The Data Catalog projects these properties as `Source`, `Calculation`,
+`Required inputs`, `Value behavior`, and `Availability`. Query-plan IDs,
+coverage-plan IDs, configuration mode, execution scope, and registry version
+remain machine-facing contract metadata and are not primary operator content.
 
 ```text
 ProducerRef =

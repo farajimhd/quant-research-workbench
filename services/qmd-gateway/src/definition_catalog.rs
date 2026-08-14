@@ -23,6 +23,21 @@ pub struct RegistryParameterDefinition {
 }
 
 #[derive(Clone, Debug, Serialize)]
+pub struct RegistryDocumentation {
+    pub source_summary: String,
+    pub calculation_summary: String,
+    pub input_field_ids: Vec<String>,
+    pub timeframes: Vec<String>,
+    pub value_type: String,
+    pub unit: String,
+    pub entity_grain: String,
+    pub update_cadence: String,
+    pub available_when: String,
+    pub freshness_summary: String,
+    pub null_behavior: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
 pub struct QmdRegistryDefinition {
     pub registry_id: String,
     pub kind: &'static str,
@@ -40,6 +55,7 @@ pub struct QmdRegistryDefinition {
     pub parameters: Vec<RegistryParameterDefinition>,
     pub producer_id: Option<String>,
     pub presentation: RegistryPresentation,
+    pub documentation: RegistryDocumentation,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -132,11 +148,65 @@ fn signal_description(entry: &SignalMethodEntry) -> String {
     entry.rationale.to_string()
 }
 
+fn documentation(
+    source_summary: String,
+    calculation_summary: String,
+    input_field_ids: Vec<String>,
+    timeframes: &[&str],
+    value_type: &str,
+    unit: &str,
+    entity_grain: &str,
+    update_cadence: &str,
+    available_when: String,
+) -> RegistryDocumentation {
+    RegistryDocumentation {
+        source_summary,
+        calculation_summary,
+        input_field_ids,
+        timeframes: timeframes
+            .iter()
+            .map(|value| (*value).to_string())
+            .collect(),
+        value_type: value_type.to_string(),
+        unit: unit.to_string(),
+        entity_grain: entity_grain.to_string(),
+        update_cadence: update_cadence.to_string(),
+        available_when,
+        freshness_summary:
+            "Freshness follows the producer's causal market clock and implementation revision."
+                .to_string(),
+        null_behavior: "Unavailable required inputs do not produce a substituted value."
+            .to_string(),
+    }
+}
+
 fn field_definition(
     registry_id: String,
     producer_id: Option<String>,
     status: &'static str,
+    producer_documentation: Option<RegistryDocumentation>,
 ) -> QmdRegistryDefinition {
+    let registered_documentation = producer_documentation
+        .map(|mut producer| {
+            producer.value_type = "producer_defined".to_string();
+            producer.unit = "producer_defined".to_string();
+            producer
+        })
+        .unwrap_or_else(|| {
+            documentation(
+                "A typed input accepted by QMD from its registered market or reference source."
+                    .to_string(),
+                "Uses the causally available source value without an additional field-level calculation."
+                    .to_string(),
+                Vec::new(),
+                &[],
+                "producer_defined",
+                "producer_defined",
+                "security_timeframe",
+                "producer cadence",
+                "After the source value is accepted at the QMD market clock.".to_string(),
+            )
+        });
     QmdRegistryDefinition {
         label: readable_label(registry_id.rsplit('.').next().unwrap_or(&registry_id)),
         description: "Typed QMD value available through its registered producer and causal clock."
@@ -159,6 +229,7 @@ fn field_definition(
             icon: "database",
             accent: "blue",
         },
+        documentation: registered_documentation,
     }
 }
 
@@ -191,6 +262,31 @@ pub fn definition_catalog() -> QmdDefinitionCatalog {
                     "implemented",
                 ));
             }
+            let input_field_ids = capability
+                .inputs
+                .iter()
+                .map(|raw| field_id(raw))
+                .collect::<Vec<_>>();
+            let registered_documentation = documentation(
+                "Canonical quote, trade, identity, sequence, and market-clock inputs accepted by QMD."
+                    .to_string(),
+                format!(
+                    "{} transforms {} into {}.",
+                    capability.label,
+                    capability.inputs.join(", "),
+                    capability.outputs.join(", ")
+                ),
+                input_field_ids.clone(),
+                capability.timeframes,
+                "record",
+                "producer_defined",
+                "market_event",
+                capability.cadence,
+                format!(
+                    "After {} completes for the accepted market event.",
+                    capability.label
+                ),
+            );
             definitions.push(QmdRegistryDefinition {
                 registry_id: format!("qmd.processing_step.{}", capability.key),
                 kind: "processing_step",
@@ -204,7 +300,7 @@ pub fn definition_catalog() -> QmdDefinitionCatalog {
                 tags: vec!["qmd".to_string(), "universal_ingest".to_string()],
                 configurable: false,
                 configuration_mode: "locked",
-                input_field_ids: capability.inputs.iter().map(|raw| field_id(raw)).collect(),
+                input_field_ids,
                 output_field_ids,
                 execution_scopes: capability.allowed_scopes,
                 parameters: Vec::new(),
@@ -214,6 +310,7 @@ pub fn definition_catalog() -> QmdDefinitionCatalog {
                     icon: "cable",
                     accent: "cyan",
                 },
+                documentation: registered_documentation,
             });
             continue;
         }
@@ -240,6 +337,24 @@ pub fn definition_catalog() -> QmdDefinitionCatalog {
                     .entry(field.clone())
                     .or_insert((Some(registry_id.clone()), status));
             }
+            let registered_documentation = documentation(
+                format!(
+                    "QMD {} inputs: {}.",
+                    capability.label,
+                    entry.inputs.join(", ")
+                ),
+                entry.rationale.to_string(),
+                input_field_ids.clone(),
+                capability.timeframes,
+                "number",
+                "producer_defined",
+                "security_timeframe",
+                capability.cadence,
+                format!(
+                    "After the required inputs and warm-up for {} are causally complete.",
+                    capability.label
+                ),
+            );
             definitions.push(QmdRegistryDefinition {
                 registry_id,
                 kind: "derivation",
@@ -273,6 +388,7 @@ pub fn definition_catalog() -> QmdDefinitionCatalog {
                     icon: "sigma",
                     accent: "violet",
                 },
+                documentation: registered_documentation,
             });
             continue;
         }
@@ -300,6 +416,26 @@ pub fn definition_catalog() -> QmdDefinitionCatalog {
                     .entry(field.clone())
                     .or_insert((Some(registry_id.clone()), "implemented"));
             }
+            let calculation_summary = format!(
+                "Triggers when {} Confirmation: {} Rejected when {}",
+                entry.trigger_rules.join("; "),
+                entry.confirmation_rules.join("; "),
+                entry.reject_rules.join("; ")
+            );
+            let registered_documentation = documentation(
+                entry.input_basis.to_string(),
+                calculation_summary,
+                input_field_ids.clone(),
+                entry.working_timeframes,
+                "event",
+                "signal_state",
+                "security_event",
+                entry.publication_cadence,
+                format!(
+                    "When {} and its confirmations are causally satisfied.",
+                    entry.label
+                ),
+            );
             definitions.push(QmdRegistryDefinition {
                 registry_id,
                 kind: "signal",
@@ -329,6 +465,7 @@ pub fn definition_catalog() -> QmdDefinitionCatalog {
                     icon: "activity",
                     accent: "rose",
                 },
+                documentation: registered_documentation,
             });
         }
     }
@@ -340,11 +477,22 @@ pub fn definition_catalog() -> QmdDefinitionCatalog {
     for field in referenced_inputs {
         fields.entry(field).or_insert((None, "implemented"));
     }
-    definitions.extend(
-        fields
-            .into_iter()
-            .map(|(id, (producer, status))| field_definition(id, producer, status)),
-    );
+    let producer_documentation = definitions
+        .iter()
+        .map(|definition| {
+            (
+                definition.registry_id.clone(),
+                definition.documentation.clone(),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    definitions.extend(fields.into_iter().map(|(id, (producer, status))| {
+        let documentation = producer
+            .as_ref()
+            .and_then(|producer_id| producer_documentation.get(producer_id))
+            .cloned();
+        field_definition(id, producer, status, documentation)
+    }));
     definitions.sort_by(|left, right| left.registry_id.cmp(&right.registry_id));
 
     QmdDefinitionCatalog {
@@ -398,5 +546,37 @@ mod tests {
             .definitions
             .iter()
             .any(|definition| { definition.kind == "signal" && definition.configurable }));
+    }
+
+    #[test]
+    fn definitions_publish_operator_source_and_calculation_documentation() {
+        let catalog = definition_catalog();
+        for definition in &catalog.definitions {
+            assert!(
+                !definition.documentation.source_summary.trim().is_empty(),
+                "missing source documentation for {}",
+                definition.registry_id
+            );
+            assert!(
+                !definition
+                    .documentation
+                    .calculation_summary
+                    .trim()
+                    .is_empty(),
+                "missing calculation documentation for {}",
+                definition.registry_id
+            );
+            assert!(
+                !definition.documentation.available_when.trim().is_empty(),
+                "missing availability documentation for {}",
+                definition.registry_id
+            );
+        }
+        let derived_field = catalog
+            .definitions
+            .iter()
+            .find(|definition| definition.kind == "field" && definition.producer_id.is_some())
+            .expect("expected a producer-backed QMD field");
+        assert!(!derived_field.documentation.input_field_ids.is_empty());
     }
 }

@@ -22985,6 +22985,8 @@ button {
 .data-definition-document h2 { margin: 7px 0 6px; font-size: 1.7rem; font-weight: 560; letter-spacing: -0.025em; }
 .data-definition-document p { max-width: 760px; margin: 0; color: var(--muted-foreground); line-height: 1.65; }
 .data-definition-document > header > div, .rule-set-document > header > div { display: flex; align-items: center; gap: 10px; margin-top: 14px; }
+.data-definition-identity { flex-wrap: wrap; }
+.data-definition-identity em { padding: 4px 8px; border-radius: 999px; background: color-mix(in oklab, var(--accent) 7%, var(--surface)); color: var(--muted-foreground); font-size: 0.68rem; font-style: normal; font-weight: 520; }
 .data-definition-document code, .rule-set-document code { padding: 4px 7px; border-radius: 5px; background: var(--surface-alt); color: var(--muted-foreground); }
 .data-definition-document button, .rule-set-document button { display: inline-flex; align-items: center; gap: 5px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface); color: var(--foreground); padding: 6px 9px; cursor: pointer; }
 .data-definition-document > section { padding: 22px 0; border-bottom: 1px solid var(--border); }
@@ -22993,12 +22995,27 @@ button {
 .data-definition-document dl div { min-width: 0; }
 .data-definition-document dt { margin-bottom: 4px; color: var(--muted-foreground); font-size: 0.7rem; text-transform: uppercase; }
 .data-definition-document dd { margin: 0; font-size: 0.86rem; overflow-wrap: anywhere; }
+.data-definition-document > .data-definition-method { margin-top: 22px; padding: 0 0 22px; }
+.data-definition-method-grid { display: grid; grid-template-columns: minmax(240px, 0.85fr) minmax(320px, 1.35fr); gap: 12px; }
+.data-definition-method-grid article { min-width: 0; padding: 17px 18px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface); }
+.data-definition-method-grid article:first-child { background: color-mix(in oklab, var(--accent) 4%, var(--surface)); }
+.data-definition-method-grid article > span { display: block; margin-bottom: 8px; color: var(--muted-foreground); font-size: 0.68rem; font-weight: 600; letter-spacing: 0.07em; text-transform: uppercase; }
+.data-definition-method-grid article > strong { display: block; margin-bottom: 6px; font-size: 0.96rem; font-weight: 560; }
+.data-definition-method-grid article > p { max-width: none; color: var(--foreground); font-size: 0.9rem; line-height: 1.6; }
+.data-definition-method-grid article > button { margin-top: 13px; border-color: color-mix(in oklab, var(--accent) 28%, var(--border)); color: var(--accent); font-size: 0.75rem; }
 .data-definition-document > .data-definition-contract { margin-top: 22px; padding: 0; overflow: hidden; border: 1px solid var(--border); border-radius: 10px; background: var(--surface); }
 .data-definition-contract h3 { margin: 0; padding: 12px 14px; border-bottom: 1px solid var(--border); background: color-mix(in oklab, var(--surface-alt) 72%, var(--surface)); }
 .data-definition-contract dl { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1px; background: var(--border); }
 .data-definition-contract dl div { min-height: 66px; padding: 12px 14px; background: var(--surface); }
 .data-definition-contract dt { margin-bottom: 7px; font-weight: 550; letter-spacing: 0.035em; }
 .data-definition-contract dd { color: var(--foreground); font-size: 0.88rem; line-height: 1.4; }
+.data-definition-inputs > p { margin: -7px 0 13px; font-size: 0.78rem; }
+.data-definition-inputs > div { display: flex; flex-wrap: wrap; gap: 8px; }
+.data-definition-inputs > div > button, .data-definition-inputs > div > span { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; min-width: 190px; gap: 2px 12px; padding: 9px 11px; border: 1px solid var(--border); border-radius: 7px; background: var(--surface); color: var(--foreground); font-size: 0.78rem; }
+.data-definition-inputs > div > button small, .data-definition-inputs > div > span small { grid-column: 1; color: var(--muted-foreground); font-size: 0.65rem; overflow-wrap: anywhere; }
+.data-definition-inputs > div > button svg { grid-column: 2; grid-row: 1 / span 2; color: var(--muted-foreground); }
+.data-definition-availability > div { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.data-definition-availability p { max-width: none; padding: 12px 14px; border-left: 2px solid color-mix(in oklab, var(--accent) 45%, var(--border)); background: var(--surface-alt); color: var(--foreground); font-size: 0.8rem; line-height: 1.5; }
 .data-definition-parameters { display: grid; gap: 8px; }
 .data-definition-parameters > div { display: grid; grid-template-columns: 0.8fr 1.7fr auto; gap: 12px; padding: 10px 12px; border: 1px solid var(--border); border-radius: 7px; }
 .data-definition-parameters strong { font-size: 0.8rem; font-weight: 550; }
@@ -23031,6 +23048,7 @@ button {
   .rule-condition-row > select, .rule-condition-row > input { grid-column: 2; }
   .data-definition-document dl { grid-template-columns: 1fr; }
   .data-definition-contract dl { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .data-definition-method-grid, .data-definition-availability > div { grid-template-columns: 1fr; }
 }
 .configuration-page-header span { font-size: 12.5px; }
 .configuration-page-header h1 { font-size: 27.5px; }

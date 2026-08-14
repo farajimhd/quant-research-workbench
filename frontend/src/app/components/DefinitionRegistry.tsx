@@ -21,6 +21,19 @@ export type RegistryDefinition = {
   configuration_binding_id?: string;
   configuration_mode: string;
   description: string;
+  documentation?: {
+    available_when: string;
+    calculation_summary: string;
+    entity_grain: string;
+    freshness_summary: string;
+    input_field_ids: string[];
+    null_behavior: string;
+    source_summary: string;
+    timeframes: string[];
+    unit: string;
+    update_cadence: string;
+    value_type: string;
+  };
   kind: string;
   label: string;
   owner: string;

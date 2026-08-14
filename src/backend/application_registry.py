@@ -51,6 +51,10 @@ class FieldDefinition:
     security_classification: str = "internal_market_data"
     schema_version: int = 1
     status: str = "implemented"
+    source_summary: str = ""
+    calculation_summary: str = ""
+    input_field_ids: tuple[str, ...] = ()
+    timeframes: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -859,6 +863,146 @@ def _query_plans() -> tuple[QueryPlanDefinition, ...]:
 QUERY_PLANS = _query_plans()
 
 
+FIELD_OPERATOR_DOCUMENTATION: dict[str, dict[str, object]] = {
+    "market.last_price": {
+        "source": "QMD's causally accepted eligible-trade state for the security.",
+        "calculation": "Uses the most recent eligible trade at or before the market clock. No application-side calculation is applied.",
+        "inputs": (),
+        "timeframes": ("event",),
+    },
+    "market.previous_close": {
+        "source": "The completed prior regular-session close resolved by QMD for the security and session.",
+        "calculation": "Selects the final eligible trade price from the preceding completed regular session.",
+        "inputs": (),
+        "timeframes": ("session",),
+    },
+    "market.change_pct": {
+        "source": "QMD last price and the completed previous-session close available at the same market clock.",
+        "calculation": "((last price / previous close) - 1) x 100. The value remains unavailable when the previous close is missing or not positive.",
+        "inputs": ("market.last_price", "market.previous_close"),
+        "timeframes": ("1s", "10s", "30s", "1m"),
+    },
+    "market.volume": {
+        "source": "Eligible trades accepted by QMD for the current regular trading session.",
+        "calculation": "Cumulative sum of eligible trade size from the session boundary through the current market clock.",
+        "inputs": (),
+        "timeframes": ("event", "1s", "10s", "30s", "1m"),
+    },
+    "market.relative_volume": {
+        "source": "QMD current-session volume and a point-in-time 20-session volume baseline aligned to the same elapsed session interval.",
+        "calculation": "Current cumulative session volume divided by the aligned 20-session baseline. A missing or non-positive baseline remains unavailable.",
+        "inputs": ("market.volume",),
+        "timeframes": ("10s", "30s", "1m"),
+    },
+    "market.vwap": {
+        "source": "Eligible QMD trades from the current regular trading session.",
+        "calculation": "Cumulative sum of eligible trade price multiplied by size, divided by cumulative eligible trade size.",
+        "inputs": (),
+        "timeframes": ("event", "1s", "10s", "30s", "1m"),
+    },
+    "market.spread_bps": {
+        "source": "QMD's current valid national best bid and offer.",
+        "calculation": "Ask minus bid, divided by the NBBO midpoint, multiplied by 10,000. Locked or invalid quotes remain unavailable.",
+        "inputs": (),
+        "timeframes": ("event", "1s", "10s", "30s", "1m"),
+    },
+    "market.trade_rate_10s": {
+        "source": "Eligible QMD trade events in the trailing 10-second event-time window.",
+        "calculation": "Eligible trade-event count in the trailing 10 seconds divided by 10.",
+        "inputs": (),
+        "timeframes": ("10s",),
+    },
+    "market.trade_rate_60s": {
+        "source": "Eligible QMD trade events in the trailing 60-second event-time window.",
+        "calculation": "Eligible trade-event count in the trailing 60 seconds divided by 60.",
+        "inputs": (),
+        "timeframes": ("60s",),
+    },
+    "market.event_age_ms": {
+        "source": "QMD event time and the current market-clock evaluation time.",
+        "calculation": "Current market-clock timestamp minus the latest accepted event timestamp, expressed in milliseconds.",
+        "inputs": ("market.event_at",),
+        "timeframes": ("event",),
+    },
+    "market.liquidity_score": {
+        "source": "QMD quote, trade, spread, and dollar-volume state for the active calculation revision.",
+        "calculation": "A QMD-owned liquidity score combining activity, dollar volume, and spread evidence. The exact versioned method belongs to its registered QMD producer.",
+        "inputs": ("market.volume", "market.spread_bps"),
+        "timeframes": ("10s", "30s", "1m"),
+    },
+    "market.liquidity_rank": {
+        "source": "The active QMD scanner population's liquidity scores at the same market clock.",
+        "calculation": "Cross-sectional rank of the registered QMD liquidity score within the eligible scanner population.",
+        "inputs": ("market.liquidity_score",),
+        "timeframes": ("scanner_clock",),
+    },
+    "reference.market_cap": {
+        "source": "The latest point-in-time market-capitalization publication from Reference Gateway available before evaluation.",
+        "calculation": "Uses the provider-published market capitalization without an application-side recomputation.",
+        "inputs": (),
+        "timeframes": ("1d",),
+    },
+    "reference.float_shares": {
+        "source": "Point-in-time public-float reference data, with SEC public-float evidence retained as a provenance-preserving fallback.",
+        "calculation": "Selects the latest valid published float available before evaluation; unavailable sources are not filled by inference.",
+        "inputs": (),
+        "timeframes": ("1d",),
+    },
+    "reference.short_interest": {
+        "source": "The latest exchange settlement report published before evaluation.",
+        "calculation": "Uses the reported open short-position quantity for the applicable settlement date.",
+        "inputs": (),
+        "timeframes": ("settlement",),
+    },
+    "reference.short_interest_pct": {
+        "source": "Point-in-time reported short interest and public float.",
+        "calculation": "Reported short interest divided by point-in-time public float, multiplied by 100. Missing or non-positive float remains unavailable.",
+        "inputs": ("reference.short_interest", "reference.float_shares"),
+        "timeframes": ("settlement",),
+    },
+    "reference.days_to_cover": {
+        "source": "Point-in-time short-interest report and the reporting source's average daily volume.",
+        "calculation": "Reported short interest divided by reported average daily volume.",
+        "inputs": ("reference.short_interest",),
+        "timeframes": ("settlement",),
+    },
+    "event.ipo.days_to_event": {
+        "source": "The latest causally available IPO event publication from Reference Gateway.",
+        "calculation": "IPO event date minus the evaluation date in calendar days; negative values are past events and positive values are upcoming events.",
+        "inputs": ("event.ipo.date",),
+        "timeframes": ("event",),
+    },
+    "event.split.days_to_event": {
+        "source": "The latest causally available stock-split execution date from Reference Gateway.",
+        "calculation": "Split execution date minus the evaluation date in calendar days; negative values are past events and positive values are upcoming events.",
+        "inputs": ("event.split.execution_date",),
+        "timeframes": ("event",),
+    },
+}
+
+
+def _operator_source_summary(owner: str, source_path: str) -> str:
+    if source_path == "service://qmd/scanner":
+        return "QMD scanner state built from causally accepted quotes, eligible trades, and session references."
+    if source_path.startswith("q_live."):
+        return f"A point-in-time Reference Gateway publication from {source_path.removeprefix('q_live.').replace('_', ' ')}."
+    if source_path.startswith("service://"):
+        service = source_path.removeprefix("service://").split("/")[0].replace("-", " ")
+        return f"The causally available {service} service output published before evaluation."
+    if source_path.startswith("derived://"):
+        return f"A registered {owner.replace('_', ' ')} derivation from causally available inputs."
+    return f"The latest causally available publication owned by {owner.replace('_', ' ')}."
+
+
+def _operator_calculation_summary(provenance: str, source_columns: tuple[str, ...]) -> str:
+    readable_columns = ", ".join(column.replace("_", " ") for column in source_columns)
+    if provenance in {"raw", "reported"}:
+        return f"Uses the published {readable_columns} value without an application-side calculation."
+    if provenance == "model":
+        return "Uses the output of the registered model artifact and preserves its versioned model contract."
+    return "The registered producer derives this value from its declared inputs; an exact method has not yet been published in the operator documentation contract."
+
+
 def _field(
     field_id: str,
     group: str,
@@ -886,8 +1030,14 @@ def _field(
         "not_applicable",
     ),
     status: str = "implemented",
+    source_summary: str = "",
+    calculation_summary: str = "",
+    input_field_ids: Iterable[str] = (),
+    timeframes: Iterable[str] = (),
 ) -> FieldDefinition:
     label = field_id.split(".")[-1].replace("_", " ").title()
+    columns = tuple(source_columns) or (field_id.split(".")[-1],)
+    operator_documentation = FIELD_OPERATOR_DOCUMENTATION.get(field_id, {})
     return FieldDefinition(
         field_id=field_id,
         label=label,
@@ -897,7 +1047,7 @@ def _field(
         entity_grain=entity_grain,
         owner=owner,
         source_path=source_path,
-        source_columns=tuple(source_columns) or (field_id.split(".")[-1],),
+        source_columns=columns,
         query_plan_id=query_plan_id,
         identity_join="point-in-time symbol/security/issuer identity",
         event_at=event_at,
@@ -911,6 +1061,20 @@ def _field(
         freshness_policy="ttl" if ttl_seconds is not None else "source_revision",
         null_reasons=null_reasons,
         status=status,
+        source_summary=(
+            source_summary
+            or str(operator_documentation.get("source") or "")
+            or _operator_source_summary(owner, source_path)
+        ),
+        calculation_summary=(
+            calculation_summary
+            or str(operator_documentation.get("calculation") or "")
+            or _operator_calculation_summary(provenance, columns)
+        ),
+        input_field_ids=tuple(
+            input_field_ids or operator_documentation.get("inputs") or ()
+        ),
+        timeframes=tuple(timeframes or operator_documentation.get("timeframes") or ()),
     )
 
 
@@ -1454,9 +1618,38 @@ def _registry_definition(
     configuration_binding_id: str = "",
     tags: Iterable[str] = (),
     relationships: dict[str, Iterable[str]] | None = None,
+    documentation: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     type_definition = next(row for row in REGISTRY_TYPES if row.kind == kind)
-    return {
+    normalized_relationships = {
+        key: sorted({str(value) for value in values if str(value).strip()})
+        for key, values in (relationships or {}).items()
+    }
+    if documentation is None and kind in {"field", "derivation", "signal"}:
+        producer_names = normalized_relationships.get("producer_ids") or [owner]
+        source_fields = (
+            normalized_relationships.get("input_field_ids")
+            or (normalized_relationships.get("field_ids") if kind == "derivation" else None)
+            or []
+        )
+        documentation = {
+            "source_summary": (
+                "Registered output published by "
+                + ", ".join(name.replace("_", " ") for name in producer_names)
+                + "."
+            ),
+            "calculation_summary": description,
+            "input_field_ids": source_fields,
+            "timeframes": [],
+            "value_type": "event" if kind == "signal" else "number",
+            "unit": "producer_defined",
+            "entity_grain": "security_event" if kind == "signal" else "security_timeframe",
+            "update_cadence": "producer cadence",
+            "available_when": "After the registered producer publishes a causally available value.",
+            "freshness_summary": "Freshness follows the registered producer contract.",
+            "null_behavior": "Unavailable source evidence does not produce a substituted value.",
+        }
+    row = {
         "registry_id": registry_id,
         "kind": kind,
         "label": label,
@@ -1472,11 +1665,42 @@ def _registry_definition(
         ),
         "configuration_mode": configuration_mode or type_definition.configuration_mode,
         "configuration_binding_id": configuration_binding_id,
-        "relationships": {
-            key: sorted({str(value) for value in values if str(value).strip()})
-            for key, values in (relationships or {}).items()
-        },
+        "relationships": normalized_relationships,
         "presentation": _registry_presentation(kind),
+    }
+    if documentation:
+        row["documentation"] = documentation
+    return row
+
+
+def _field_operator_documentation(field: FieldDefinition) -> dict[str, Any]:
+    stale_after = (
+        f"The value is stale after {field.ttl_seconds:,} seconds."
+        if field.ttl_seconds is not None
+        else "Freshness follows the producer's published source revision."
+    )
+    available_when = {
+        "source publication timestamp": "After the source publishes the value and before the evaluation clock.",
+        "qmd event/bar clock": "After QMD completes the value at the current causal event or bar clock.",
+        "analysis available_at": "After the producing analysis is complete and published.",
+        "artifact available_at": "After the versioned model artifact publishes the value.",
+    }.get(field.available_at, field.available_at)
+    return {
+        "source_summary": field.source_summary,
+        "calculation_summary": field.calculation_summary,
+        "input_field_ids": list(field.input_field_ids),
+        "timeframes": list(field.timeframes),
+        "value_type": field.value_type,
+        "unit": field.unit,
+        "entity_grain": field.entity_grain,
+        "update_cadence": field.publication_cadence,
+        "available_when": available_when,
+        "freshness_summary": stale_after,
+        "null_behavior": (
+            "Unavailable values remain unavailable. Registered reasons: "
+            + ", ".join(reason.replace("_", " ") for reason in field.null_reasons)
+            + "."
+        ),
     }
 
 
@@ -1487,7 +1711,7 @@ def _application_information_definitions() -> list[dict[str, Any]]:
             field.field_id,
             "field",
             field.label,
-            f"{field.provenance} {field.value_type} at {field.entity_grain} grain.",
+            field.calculation_summary,
             field.owner,
             field.schema_version,
             field.status,
@@ -1497,7 +1721,9 @@ def _application_information_definitions() -> list[dict[str, Any]]:
             relationships={
                 "query_plan_ids": (field.query_plan_id,),
                 "coverage_plan_ids": (field.coverage_query_plan,),
+                "input_field_ids": field.input_field_ids,
             },
+            documentation=_field_operator_documentation(field),
         )
         for field in FIELD_DEFINITIONS
     )
@@ -1815,6 +2041,63 @@ def _configuration_information_definitions(
     return rows
 
 
+def _qmd_operator_documentation(
+    row: dict[str, object],
+    rows_by_id: dict[str, dict[str, object]],
+) -> dict[str, Any]:
+    registered = dict(row.get("documentation") or {})
+    producer_id = str(row.get("producer_id") or "").strip()
+    producer = rows_by_id.get(producer_id, {}) if producer_id else {}
+    producer_documentation = dict(producer.get("documentation") or {})
+    inputs = [
+        str(value)
+        for value in (
+            registered.get("input_field_ids")
+            or row.get("input_field_ids")
+            or producer_documentation.get("input_field_ids")
+            or producer.get("input_field_ids")
+            or []
+        )
+        if str(value).strip()
+    ]
+    parameter_timeframes = next((
+        list(parameter.get("allowed_values") or [])
+        for parameter in (row.get("parameters") or producer.get("parameters") or [])
+        if str(parameter.get("parameter_id") or parameter.get("name") or "") == "timeframes"
+    ), [])
+    kind = str(row.get("kind") or "definition")
+    label = str(row.get("label") or row.get("registry_id") or "QMD definition")
+    source_summary = str(
+        registered.get("source_summary")
+        or producer_documentation.get("source_summary")
+        or (
+            f"Output published by the registered QMD producer {producer.get('label') or producer_id}."
+            if producer_id
+            else "QMD market events, closed bars, or reference inputs declared by this definition."
+        )
+    )
+    calculation_summary = str(
+        registered.get("calculation_summary")
+        or producer_documentation.get("calculation_summary")
+        or producer.get("description")
+        or row.get("description")
+        or "The QMD producer has not published an operator-facing method description."
+    )
+    return {
+        "source_summary": source_summary,
+        "calculation_summary": calculation_summary,
+        "input_field_ids": sorted(set(inputs)),
+        "timeframes": [str(value) for value in (registered.get("timeframes") or parameter_timeframes)],
+        "value_type": str(registered.get("value_type") or ("event" if kind == "signal" else "number" if kind in {"field", "derivation"} else "record")),
+        "unit": str(registered.get("unit") or "producer_defined"),
+        "entity_grain": str(registered.get("entity_grain") or ("security_event" if kind == "signal" else "security_timeframe")),
+        "update_cadence": str(registered.get("update_cadence") or "producer cadence"),
+        "available_when": str(registered.get("available_when") or f"After {label} publishes a causally complete value."),
+        "freshness_summary": str(registered.get("freshness_summary") or "Freshness follows the registered QMD producer revision and market clock."),
+        "null_behavior": str(registered.get("null_behavior") or "Unavailable inputs do not produce a substituted value."),
+    }
+
+
 def information_registry_payload(
     qmd_catalog: dict[str, object],
     configuration: dict[str, Any] | None = None,
@@ -1828,6 +2111,11 @@ def information_registry_payload(
     if not qmd_rows:
         raise ValueError("QMD definition registry is empty")
 
+    qmd_rows_by_id = {
+        str(row.get("registry_id") or ""): row
+        for row in qmd_rows
+        if str(row.get("registry_id") or "").strip()
+    }
     definitions_by_id = {
         str(row["registry_id"]): row
         for row in _application_information_definitions()
@@ -1846,6 +2134,10 @@ def information_registry_payload(
                 raise ValueError(f"Conflicting registry kind for {registry_id}")
             continue
         normalized_qmd_row = dict(qmd_row)
+        normalized_qmd_row["documentation"] = _qmd_operator_documentation(
+            qmd_row,
+            qmd_rows_by_id,
+        )
         normalized_qmd_row["configuration_binding_id"] = (
             "market_discovery.core_scan"
             if kind == "derivation"

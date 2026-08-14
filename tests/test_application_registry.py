@@ -139,6 +139,13 @@ class ApplicationRegistryTests(unittest.TestCase):
             self.assertTrue(fields[field_id].freshness_policy)
             self.assertTrue(fields[field_id].null_reasons)
         self.assertGreaterEqual(len(fields), 180)
+        for field in fields.values():
+            for input_field_id in field.input_field_ids:
+                self.assertIn(
+                    input_field_id,
+                    fields,
+                    f"{field.field_id} documents an unregistered input {input_field_id}",
+                )
 
     def test_deferred_producer_fields_are_registered_without_claiming_readiness(self) -> None:
         fields = {field.field_id: field for field in FIELD_DEFINITIONS}
@@ -379,6 +386,24 @@ class ApplicationRegistryTests(unittest.TestCase):
             ["qmd.field.rsi_14"],
         )
         self.assertIn("reference.market_cap", definitions)
+        change_documentation = definitions["market.change_pct"]["documentation"]
+        self.assertIn("last price / previous close", change_documentation["calculation_summary"])
+        self.assertEqual(
+            change_documentation["input_field_ids"],
+            ["market.last_price", "market.previous_close"],
+        )
+        self.assertEqual(change_documentation["unit"], "percent")
+        self.assertEqual(change_documentation["entity_grain"], "security_at_market_clock")
+        self.assertIn("QMD last price", change_documentation["source_summary"])
+        self.assertTrue(definitions["qmd.derivation.momentum_core"]["documentation"]["source_summary"])
+        self.assertEqual(
+            definitions["qmd.derivation.momentum_core"]["documentation"]["input_field_ids"],
+            ["qmd.field.close"],
+        )
+        self.assertEqual(
+            definitions["qmd.field.rsi_14"]["documentation"]["calculation_summary"],
+            "Closed-bar momentum fields.",
+        )
         self.assertIn("column.last_price", definitions)
         self.assertIn("rule_set.gainers", definitions)
         self.assertFalse(definitions["rule_set.gainers"]["configurable"])
