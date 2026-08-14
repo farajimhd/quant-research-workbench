@@ -366,6 +366,7 @@ class TrainConfig:
     full_chunk_training: bool = False
     chunk_target_origins: int = 30_000_000
     chunk_validation_origins: int = 1_000_000
+    min_chunk_epochs: int = 4
     max_chunk_epochs: int = 20
     chunk_early_stopping_patience: int = 1
     chunk_early_stopping_min_relative_delta: float = 0.001
@@ -397,8 +398,10 @@ class TrainConfig:
             raise ValueError("monitor_evaluation_origins must be positive")
         if self.chunk_target_origins <= 0 or self.chunk_validation_origins <= 0:
             raise ValueError("full-training chunk and validation origin targets must be positive")
-        if self.max_chunk_epochs <= 0:
-            raise ValueError("max_chunk_epochs must be positive")
+        if not 1 <= self.min_chunk_epochs <= self.max_chunk_epochs:
+            raise ValueError(
+                "chunk epochs must satisfy 1 <= min_chunk_epochs <= max_chunk_epochs"
+            )
         if self.chunk_early_stopping_patience <= 0:
             raise ValueError("chunk early-stopping patience must be positive")
         if not 0 <= self.chunk_early_stopping_min_relative_delta < 1:

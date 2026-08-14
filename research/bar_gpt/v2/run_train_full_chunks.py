@@ -34,6 +34,7 @@ from research.bar_gpt.v2.train import main as train_main
 DEFAULT_OUTPUT_ROOT = Path(r"D:\TradingML\runtimes\bar_gpt\v2\full_training")
 DEFAULT_MODEL_SIZE = "medium"
 DEFAULT_EPOCHS = 10
+DEFAULT_MIN_CHUNK_EPOCHS = 4
 DEFAULT_MAX_CHUNK_EPOCHS = 20
 DEFAULT_CHUNK_EARLY_STOPPING_PATIENCE = 1
 DEFAULT_CHUNK_EARLY_STOPPING_MIN_RELATIVE_DELTA = 0.001
@@ -63,6 +64,7 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
         default=FULL_CHUNK_STOPPING_VALIDATION_ORIGINS,
     )
     parser.add_argument("--max-chunk-epochs", type=int, default=DEFAULT_MAX_CHUNK_EPOCHS)
+    parser.add_argument("--min-chunk-epochs", type=int, default=DEFAULT_MIN_CHUNK_EPOCHS)
     parser.add_argument(
         "--chunk-early-stopping-patience",
         type=int,
@@ -183,9 +185,17 @@ def trainer_argv(args: argparse.Namespace, *, resolved_manifest: Path) -> list[s
     model = MODEL_SIZE_PRESETS[str(args.model_size)]
     profile = PRODUCTION_MODEL_TRAINING_PRESETS[str(args.model_size)]
     run_stamp = str(args.run_stamp) or time.strftime("%Y%m%d-%H%M%S")
+    # Keep the new default compatible with the existing production run name;
+    # non-default minimums remain distinct experiments.
+    minimum_tag = (
+        ""
+        if int(args.min_chunk_epochs) == DEFAULT_MIN_CHUNK_EPOCHS
+        else f"chunkmin{int(args.min_chunk_epochs)}-"
+    )
     run_name = (
         f"bar-gpt-v2-full-{args.model_size}-chunks{int(args.chunk_target_origins) // 1_000_000}m-"
         f"epoch{args.epochs}-"
+        f"{minimum_tag}"
         f"chunkepochs{args.max_chunk_epochs}-"
         f"chunkcosine-decay{int(DEFAULT_EPOCH_LR_DECAY * 100)}-"
         f"micro{profile.microbatch}-accum{profile.accumulation}-"
@@ -211,6 +221,7 @@ def trainer_argv(args: argparse.Namespace, *, resolved_manifest: Path) -> list[s
             "--chunk-target-origins": args.chunk_target_origins,
             "--chunk-validation-origins": args.chunk_validation_origins,
             "--max-chunk-epochs": args.max_chunk_epochs,
+            "--min-chunk-epochs": args.min_chunk_epochs,
             "--chunk-early-stopping-patience": args.chunk_early_stopping_patience,
             "--chunk-early-stopping-min-relative-delta": (
                 args.chunk_early_stopping_min_relative_delta
@@ -240,8 +251,12 @@ def main(argv: Iterable[str] | None = None) -> int:
         raise ValueError("epochs must be positive")
     if args.chunk_target_origins <= 0 or args.chunk_validation_origins <= 0:
         raise ValueError("chunk origin targets must be positive")
-    if args.max_chunk_epochs <= 0 or args.chunk_early_stopping_patience <= 0:
-        raise ValueError("chunk epochs and early-stopping patience must be positive")
+    if not 1 <= args.min_chunk_epochs <= args.max_chunk_epochs:
+        raise ValueError(
+            "chunk epochs must satisfy 1 <= min-chunk-epochs <= max-chunk-epochs"
+        )
+    if args.chunk_early_stopping_patience <= 0:
+        raise ValueError("chunk early-stopping patience must be positive")
     if args.manifest_index_workers <= 0:
         raise ValueError("manifest-index-workers must be positive")
     if args.early_stopping_patience < 0:
@@ -260,14 +275,16 @@ def main(argv: Iterable[str] | None = None) -> int:
         flush=True,
     )
     print(
-        f"Chunk adaptation: up to {args.max_chunk_epochs} exact repetitions; fixed "
+        f"Chunk adaptation: {args.min_chunk_epochs} minimum and up to "
+        f"{args.max_chunk_epochs} exact repetitions; fixed "
         f"{args.chunk_validation_origins:,}-origin validation; patience="
         f"{args.chunk_early_stopping_patience}",
         flush=True,
     )
     print(
-        "Schedule: 4M-origin warmup; one cosine cycle spans the chunk's maximum "
-        f"{args.max_chunk_epochs} repetitions; restart only when the chunk changes; "
+        "Schedule: 4M-origin warmup; each cosine cycle spans "
+        f"{args.min_chunk_epochs} repetitions and restarts every "
+        f"{args.min_chunk_epochs} repetitions or when the chunk changes; "
         f"outer-epoch peak decay={DEFAULT_EPOCH_LR_DECAY:.2f}",
         flush=True,
     )

@@ -77,11 +77,13 @@ class TrainingProgressState:
     epoch_lr_decay: float = 1.0
     epoch_peak_lr: float = 0.0
     chunk_cosine_progress: float = 0.0
+    chunk_cosine_cycle: int = 1
     unit_plans: dict[str, tuple[int, int]] = field(default_factory=dict)
     full_chunk_training: bool = False
     chunk_index: int = 0
     chunk_count: int = 0
     chunk_epoch_index: int = 1
+    chunk_epochs_minimum: int = 1
     chunk_epochs_total: int = 1
     chunk_epoch_start_origins: int = 0
     chunk_epoch_start_blocks: int = 0
@@ -212,6 +214,9 @@ class TrainingReporter:
         s.epoch_peak_lr = float(metrics.get("train/epoch_peak_learning_rate", s.epoch_peak_lr))
         s.chunk_cosine_progress = float(
             metrics.get("train/chunk_cosine_progress", s.chunk_cosine_progress)
+        )
+        s.chunk_cosine_cycle = int(
+            metrics.get("train/chunk_cosine_cycle", s.chunk_cosine_cycle)
         )
         if "train/gradient_norm" in metrics:
             s.gradient_norm = float(metrics["train/gradient_norm"])
@@ -492,6 +497,7 @@ class TrainingReporter:
             ("Epoch LR decay", s.epoch_lr_decay, "number"),
             ("Schedule", schedule_phase, "text"),
             ("Schedule progress", schedule_progress / 100.0, "percent"),
+            ("Cosine cycle", s.chunk_cosine_cycle, "integer"),
             ("AMP scale", s.amp_scale, "number"),
             ("Accumulation", s.gradient_accumulation_steps, "integer"),
             ("Optimizer updates", s.optimizer_steps, "integer"),
@@ -509,6 +515,7 @@ class TrainingReporter:
             ("Chunk origins", (s.chunk_origins_seen, s.chunk_origin_budget, ""), "ratio"),
             ("Chunk blocks", (s.chunk_blocks_seen, s.chunk_block_budget, ""), "ratio"),
             ("Chunk repetition", (s.chunk_epoch_index, s.chunk_epochs_total, ""), "ratio"),
+            ("Minimum repetitions", s.chunk_epochs_minimum, "integer"),
             ("Repetition blocks", s.chunk_epoch_blocks_seen, "integer"),
             ("Chunk best val", s.chunk_best_validation_loss, "number"),
             ("Chunk stale", s.chunk_epochs_without_improvement, "integer"),

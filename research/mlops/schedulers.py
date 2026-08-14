@@ -159,7 +159,7 @@ class SampleCosineRestartScheduler:
 
 
 class EpochChunkCosineScheduler:
-    """One sample-clock cosine cycle across all allowed replays of a chunk."""
+    """Restarting sample-clock cosine cycles within each training chunk."""
 
     def __init__(
         self,
@@ -183,39 +183,54 @@ class EpochChunkCosineScheduler:
         self.samples_seen = 0
         self.epoch = 0
         self.chunk_start_samples = 0
-        self.chunk_samples = 1
+        self.cycle_samples = 1
         self.warmup_completed_samples: int | None = None
         self.step(samples_seen=0)
 
     def _epoch_peak(self, base_lr: float) -> float:
         return max(self.minimum_lr, base_lr * self.epoch_decay**self.epoch)
 
-    @property
-    def chunk_progress(self) -> float:
+    def _cycle_position(self) -> tuple[int, float]:
         if self.warmup_samples and self.samples_seen < self.warmup_samples:
-            return 0.0
+            return 0, 0.0
         cosine_start_samples = max(
             self.chunk_start_samples,
             self.warmup_completed_samples or self.chunk_start_samples,
         )
-        cosine_samples = max(
+        elapsed = max(0, self.samples_seen - cosine_start_samples)
+        cycle_samples = max(1, self.cycle_samples)
+        # Global warmup can consume the beginning of the first chunk. Shorten
+        # only that first cosine span so its restart still lands exactly on
+        # the configured repetition-group boundary; later cycles are full.
+        first_cycle_samples = max(
             1,
-            self.chunk_start_samples + self.chunk_samples - cosine_start_samples,
+            self.chunk_start_samples + cycle_samples - cosine_start_samples,
         )
-        return min(
-            1.0,
-            max(0.0, (self.samples_seen - cosine_start_samples) / cosine_samples),
+        if elapsed < first_cycle_samples:
+            return 0, elapsed / first_cycle_samples
+        later_elapsed = elapsed - first_cycle_samples
+        return (
+            1 + later_elapsed // cycle_samples,
+            (later_elapsed % cycle_samples) / cycle_samples,
         )
+
+    @property
+    def chunk_progress(self) -> float:
+        return self._cycle_position()[1]
+
+    @property
+    def chunk_cycle_index(self) -> int:
+        return self._cycle_position()[0]
 
     def start_chunk(
         self,
         *,
         epoch: int,
         start_samples: int,
-        chunk_samples: int,
+        cycle_samples: int,
         samples_seen: int,
     ) -> None:
-        if epoch < 0 or start_samples < 0 or chunk_samples <= 0:
+        if epoch < 0 or start_samples < 0 or cycle_samples <= 0:
             raise ValueError(
                 "chunk scheduler requires non-negative epoch/start and positive samples"
             )
@@ -223,7 +238,7 @@ class EpochChunkCosineScheduler:
             raise ValueError("samples_seen cannot precede the active chunk start")
         self.epoch = int(epoch)
         self.chunk_start_samples = int(start_samples)
-        self.chunk_samples = int(chunk_samples)
+        self.cycle_samples = int(cycle_samples)
         self.step(samples_seen=samples_seen)
 
     def step(self, *, samples_seen: int) -> None:
@@ -248,7 +263,8 @@ class EpochChunkCosineScheduler:
             "samples_seen": self.samples_seen,
             "epoch": self.epoch,
             "chunk_start_samples": self.chunk_start_samples,
-            "chunk_samples": self.chunk_samples,
+            "cycle_samples": self.cycle_samples,
+            "chunk_cycle_contract_version": 2,
             "warmup_completed_samples": self.warmup_completed_samples,
             "base_lrs": self.base_lrs,
             "warmup_samples": self.warmup_samples,
@@ -278,7 +294,13 @@ class EpochChunkCosineScheduler:
             raise RuntimeError("scheduler configuration does not match the resumed run")
         self.epoch = int(state.get("epoch", 0))
         self.chunk_start_samples = int(state.get("chunk_start_samples", 0))
-        self.chunk_samples = int(state.get("chunk_samples", 1))
+        # V1 checkpoints stored the one-cycle whole-chunk span under
+        # ``chunk_samples``. The trainer rebinds the active chunk immediately
+        # after restore, so accepting that value here provides an atomic
+        # migration without changing optimizer/model/data state.
+        self.cycle_samples = int(
+            state.get("cycle_samples", state.get("chunk_samples", 1))
+        )
         warmup_completed_samples = state.get("warmup_completed_samples")
         self.warmup_completed_samples = (
             None

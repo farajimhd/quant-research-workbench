@@ -153,24 +153,29 @@ The manifest binds that complete population by certified catalog hash and a
 stable block index. At each outer epoch, a new deterministic shuffle is
 partitioned into exact, block-aligned chunks averaging 30M origins; blocks are
 never split and each block belongs to exactly one chunk. Each chunk is then
-replayed over precisely the same block membership for at most 20 repetitions.
+replayed over precisely the same block membership for at least four and at
+most 20 repetitions.
 A fixed randomly sampled, stratified 1M-origin held-out panel is assigned to
 that chunk and reused after every repetition. A reduction smaller than 0.1%
-counts as no improvement; the default patience of one moves to the next chunk
-after the first non-improving repetition. The fixed 5M validation panel is
+counts as no improvement; the default patience of one can move to the next
+chunk after the first non-improving repetition only after all four minimum
+repetitions complete. The fixed 5M validation panel is
 evaluated only at the outer-epoch boundary and drives outer early stopping.
 The next epoch's compact index plan is prepared concurrently without reading
 shard tensors. W&B continues to use cumulative `samples_seen` as its step;
 outer epoch, chunk, and chunk repetition are additional fields.
 
-The full trainer uses one sample-clock cosine cycle per chunk, not one cycle
-per repetition. After the initial 4M-origin warmup, its exact horizon is
-`chunk_origins * 20` (approximately 600M origins for a 30M chunk). Early
-stopping may truncate that cycle. Moving to the next chunk restarts cosine at
-the current outer epoch's peak. The peak is unchanged across repetitions and
+The full trainer uses a restarting sample-clock cosine cycle spanning the four
+minimum repetitions. Its exact horizon is `chunk_origins * 4` (approximately
+120M origins for a 30M chunk). A chunk that continues beyond four repetitions
+starts another four-repetition cycle at the same outer-epoch peak; moving to a
+new chunk also starts a fresh cycle. The peak is unchanged across cycles and
 chunks in the same outer epoch, then decays by `0.95` at the next outer epoch;
 the minimum learning rate remains `3e-5`. Rich displays the active repetition,
-cosine progress, epoch peak, and early-stopping state.
+minimum repetition count, cosine cycle/progress, epoch peak, and early-stopping
+state. Legacy full-training checkpoints are rebound to this cycle using their
+restored chunk start and cumulative sample clock, without resetting model,
+optimizer, data cursor, or stopping history.
 
 Run the paired data-diversity/repetition experiment after the baseline
 comparison finishes:

@@ -28,6 +28,7 @@ from research.bar_gpt.v2.run_train_full_chunks import (
     trainer_argv,
 )
 from research.bar_gpt.v2.train import (
+    _chunk_advance_decision,
     _chunk_repetition_complete,
     _outer_early_stopping_update,
     parse_args as parse_train_args,
@@ -232,8 +233,10 @@ class FullChunkPlanTest(unittest.TestCase):
     def test_train_config_rejects_invalid_chunk_controls(self) -> None:
         with self.assertRaisesRegex(ValueError, "chunk and validation"):
             TrainConfig(chunk_target_origins=0).validate()
-        with self.assertRaisesRegex(ValueError, "max_chunk_epochs"):
+        with self.assertRaisesRegex(ValueError, "chunk epochs"):
             TrainConfig(max_chunk_epochs=0).validate()
+        with self.assertRaisesRegex(ValueError, "chunk epochs"):
+            TrainConfig(min_chunk_epochs=5, max_chunk_epochs=4).validate()
         with self.assertRaisesRegex(ValueError, "chunk early-stopping patience"):
             TrainConfig(chunk_early_stopping_patience=0).validate()
         with self.assertRaisesRegex(ValueError, "patience"):
@@ -286,7 +289,36 @@ class FullChunkPlanTest(unittest.TestCase):
         )
         self.assertEqual((stale, stopped), (2, True))
 
-    def test_chunk_cosine_spans_all_repetitions_and_restarts_per_chunk(self) -> None:
+    def test_chunk_early_stopping_cannot_advance_before_minimum(self) -> None:
+        self.assertEqual(
+            _chunk_advance_decision(
+                completed_repetitions=3,
+                minimum_repetitions=4,
+                maximum_repetitions=20,
+                patience_exhausted=True,
+            ),
+            (False, False, False),
+        )
+        self.assertEqual(
+            _chunk_advance_decision(
+                completed_repetitions=4,
+                minimum_repetitions=4,
+                maximum_repetitions=20,
+                patience_exhausted=True,
+            ),
+            (True, True, False),
+        )
+        self.assertEqual(
+            _chunk_advance_decision(
+                completed_repetitions=20,
+                minimum_repetitions=4,
+                maximum_repetitions=20,
+                patience_exhausted=False,
+            ),
+            (True, False, True),
+        )
+
+    def test_chunk_cosine_restarts_every_minimum_repetition_group(self) -> None:
         parameter = torch.nn.Parameter(torch.ones(()))
         optimizer = torch.optim.SGD((parameter,), lr=1e-3)
         scheduler = EpochChunkCosineScheduler(
@@ -297,31 +329,32 @@ class FullChunkPlanTest(unittest.TestCase):
         scheduler.start_chunk(
             epoch=0,
             start_samples=0,
-            chunk_samples=2_000_000,
+            cycle_samples=400_000,
             samples_seen=0,
         )
         self.assertAlmostEqual(optimizer.param_groups[0]["lr"], 1e-3)
-        scheduler.step(samples_seen=100_000)
-        self.assertGreater(optimizer.param_groups[0]["lr"], 9e-4)
-        # Crossing ten nominal 100K-origin repetitions does not restart the
-        # cycle: this is the midpoint of one 20-repetition chunk schedule.
-        scheduler.step(samples_seen=1_000_000)
+        scheduler.step(samples_seen=200_000)
         self.assertAlmostEqual(optimizer.param_groups[0]["lr"], 5.5e-4)
-        scheduler.step(samples_seen=2_000_000)
-        self.assertAlmostEqual(optimizer.param_groups[0]["lr"], 1e-4)
+        scheduler.step(samples_seen=399_999)
+        self.assertLess(optimizer.param_groups[0]["lr"], 1.0001e-4)
+        scheduler.step(samples_seen=400_000)
+        self.assertAlmostEqual(optimizer.param_groups[0]["lr"], 1e-3)
+        self.assertEqual(scheduler.chunk_cycle_index, 1)
+        scheduler.step(samples_seen=600_000)
+        self.assertAlmostEqual(optimizer.param_groups[0]["lr"], 5.5e-4)
         scheduler.start_chunk(
             epoch=0,
-            start_samples=2_000_000,
-            chunk_samples=1_600_000,
-            samples_seen=2_000_000,
+            start_samples=800_000,
+            cycle_samples=400_000,
+            samples_seen=800_000,
         )
         self.assertAlmostEqual(optimizer.param_groups[0]["lr"], 1e-3)
-        scheduler.step(samples_seen=3_600_000)
+        scheduler.step(samples_seen=1_200_000)
         scheduler.start_chunk(
             epoch=1,
-            start_samples=3_600_000,
-            chunk_samples=2_000_000,
-            samples_seen=3_600_000,
+            start_samples=1_200_000,
+            cycle_samples=400_000,
+            samples_seen=1_200_000,
         )
         expected_epoch_one_peak = 1e-3 * 0.95
         self.assertAlmostEqual(
@@ -338,6 +371,55 @@ class FullChunkPlanTest(unittest.TestCase):
         restored.load_state_dict(scheduler.state_dict())
         self.assertEqual(restored.state_dict(), scheduler.state_dict())
 
+    def test_chunk_cosine_accepts_legacy_checkpoint_then_rebinds_cycle(self) -> None:
+        optimizer = torch.optim.SGD(
+            (torch.nn.Parameter(torch.ones(())),), lr=1e-3
+        )
+        scheduler = EpochChunkCosineScheduler(
+            optimizer,
+            minimum_lr=1e-4,
+            epoch_decay=0.95,
+        )
+        legacy_state = scheduler.state_dict()
+        legacy_state.pop("cycle_samples")
+        legacy_state.pop("chunk_cycle_contract_version")
+        legacy_state["chunk_samples"] = 2_000_000
+        legacy_state["chunk_start_samples"] = 1_000_000
+        legacy_state["samples_seen"] = 1_100_000
+        scheduler.load_state_dict(legacy_state)
+        scheduler.start_chunk(
+            epoch=0,
+            start_samples=1_000_000,
+            cycle_samples=400_000,
+            samples_seen=1_100_000,
+        )
+        self.assertEqual(scheduler.cycle_samples, 400_000)
+        self.assertAlmostEqual(scheduler.chunk_progress, 0.25)
+
+    def test_chunk_cosine_warmup_preserves_first_group_boundary(self) -> None:
+        optimizer = torch.optim.SGD(
+            (torch.nn.Parameter(torch.ones(())),), lr=1e-3
+        )
+        scheduler = EpochChunkCosineScheduler(
+            optimizer,
+            minimum_lr=1e-4,
+            epoch_decay=0.95,
+            warmup_samples=100_000,
+        )
+        scheduler.start_chunk(
+            epoch=0,
+            start_samples=0,
+            cycle_samples=400_000,
+            samples_seen=0,
+        )
+        scheduler.step(samples_seen=100_000)
+        self.assertAlmostEqual(optimizer.param_groups[0]["lr"], 1e-3)
+        scheduler.step(samples_seen=399_999)
+        self.assertLess(optimizer.param_groups[0]["lr"], 1.0001e-4)
+        scheduler.step(samples_seen=400_000)
+        self.assertEqual(scheduler.chunk_cycle_index, 1)
+        self.assertAlmostEqual(optimizer.param_groups[0]["lr"], 1e-3)
+
 
 class FullChunkLauncherTest(unittest.TestCase):
     def test_defaults_to_medium_and_preserves_samples_seen_as_training_clock(self) -> None:
@@ -347,6 +429,11 @@ class FullChunkLauncherTest(unittest.TestCase):
         argv = trainer_argv(
             args,
             resolved_manifest=Path(r"D:\runtime\full_catalog_chunks_v2.json"),
+        )
+        self.assertEqual(
+            argv[argv.index("--run-name") + 1],
+            "bar-gpt-v2-full-medium-chunks30m-epoch10-chunkepochs20-"
+            "chunkcosine-decay95-micro10-accum4-bucket16-production",
         )
         self.assertEqual(argv.count("--batch-size"), 1)
         self.assertEqual(argv.count("--wandb-project"), 1)
@@ -361,6 +448,7 @@ class FullChunkLauncherTest(unittest.TestCase):
         self.assertEqual(parsed.epochs, 10)
         self.assertEqual(parsed.chunk_target_origins, 30_000_000)
         self.assertEqual(parsed.chunk_validation_origins, 1_000_000)
+        self.assertEqual(parsed.min_chunk_epochs, 4)
         self.assertEqual(parsed.max_chunk_epochs, 20)
         self.assertEqual(parsed.chunk_early_stopping_patience, 1)
         self.assertEqual(parsed.scheduler_mode, "epoch-chunk-cosine")
