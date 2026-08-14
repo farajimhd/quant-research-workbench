@@ -104,10 +104,90 @@ export function RuleSetLibraryPage({ fields, onChange, ruleSets }: { fields: Reg
 
 function RuleSetDetail({ fields, onChange, onDelete, onDuplicate, ruleSet }: { fields: RegistryDefinition[]; onChange: (value: DataRuleSet) => void; onDelete: () => void; onDuplicate: () => void; ruleSet: DataRuleSet }) {
   const locked = Boolean(ruleSet.atomic || ruleSet.editable === false);
-  const valueFields = fields.filter((row) => row.kind === "field");
-  function addCondition() { const source = valueFields[0]?.registry_id ?? ""; onChange({ ...ruleSet, conditions: [...ruleSet.conditions, { comparator: "greater_than", condition_id: `${ruleSet.rule_set_id}-condition-${ruleSet.conditions.length + 1}`, enabled: true, left_source_id: source, left_timeframe: "1d", right_source_id: "", right_timeframe: "", value: 0 }] }); }
-  return <article className="rule-set-document"><header><span>{locked ? "Atomic rule set" : "Editable rule set"} · revision {ruleSet.revision ?? 1}</span><input aria-label="Rule set name" disabled={locked} onChange={(event) => onChange({ ...ruleSet, name: event.target.value })} value={ruleSet.name} /><textarea aria-label="Rule set description" disabled={locked} onChange={(event) => onChange({ ...ruleSet, description: event.target.value })} value={ruleSet.description} /><div><code>{ruleSet.rule_set_id}</code>{locked ? <button onClick={onDuplicate} type="button"><Copy size={13} /> Duplicate as custom</button> : <button className="danger" onClick={onDelete} type="button"><Trash2 size={13} /> Remove rule set</button>}</div></header><section className="rule-set-logic"><label><span>Condition logic</span><select disabled={locked} onChange={(event) => onChange({ ...ruleSet, operator: event.target.value as DataRuleSet["operator"] })} value={ruleSet.operator}><option value="all">All conditions</option><option value="any">Any condition</option><option value="score">Required score</option></select></label><span>{ruleSet.conditions.length} conditions</span></section><section className="rule-condition-list">{ruleSet.conditions.map((condition, index) => { const registered = valueFields.some((field) => field.registry_id === condition.left_source_id); return <div className="rule-condition-row" key={condition.condition_id}><span>{index + 1}</span><select aria-label={`Condition ${index + 1} field`} disabled={locked} onChange={(event) => onChange({ ...ruleSet, conditions: ruleSet.conditions.map((row) => row.condition_id === condition.condition_id ? { ...row, left_source_id: event.target.value } : row) })} value={condition.left_source_id}>{!registered && condition.left_source_id ? <option value={condition.left_source_id}>{condition.left_source_id}</option> : null}{valueFields.map((field) => <option key={field.registry_id} value={field.registry_id}>{field.label}</option>)}</select><select aria-label={`Condition ${index + 1} comparator`} disabled={locked} onChange={(event) => onChange({ ...ruleSet, conditions: ruleSet.conditions.map((row) => row.condition_id === condition.condition_id ? { ...row, comparator: event.target.value } : row) })} value={condition.comparator}><option value="greater_than">is greater than</option><option value="greater_than_or_equal">is at least</option><option value="less_than">is less than</option><option value="less_than_or_equal">is at most</option><option value="equal">equals</option><option value="not_equal">does not equal</option></select><input aria-label={`Condition ${index + 1} value`} disabled={locked} onChange={(event) => { const parsed = Number(event.target.value); onChange({ ...ruleSet, conditions: ruleSet.conditions.map((row) => row.condition_id === condition.condition_id ? { ...row, value: Number.isNaN(parsed) ? event.target.value : parsed } : row) }); }} value={String(condition.value ?? "")} />{!locked ? <button aria-label={`Remove condition ${index + 1}`} onClick={() => onChange({ ...ruleSet, conditions: ruleSet.conditions.filter((row) => row.condition_id !== condition.condition_id) })} type="button"><Trash2 size={13} /></button> : null}</div>; })}</section>{!locked ? <button className="data-library-add-condition" onClick={addCondition} type="button"><Plus size={14} /> Add condition</button> : <footer><LockKeyhole size={14} /><span>Built-in rule sets are atomic and cannot be edited. Duplicate this definition to create an editable custom rule set.</span></footer>}</article>;
+  const definitions = fields.filter((row) => DATA_KINDS.has(row.kind));
+  const definitionById = new Map(definitions.map((row) => [row.registry_id, row]));
+  function replaceCondition(conditionId: string, next: DataRuleCondition) {
+    onChange({ ...ruleSet, conditions: ruleSet.conditions.map((row) => row.condition_id === conditionId ? next : row) });
+  }
+  function addCondition() {
+    const source = definitions[0];
+    if (!source) return;
+    const comparator = defaultRuleComparator(source);
+    onChange({ ...ruleSet, conditions: [...ruleSet.conditions, { comparator, condition_id: `${ruleSet.rule_set_id}-condition-${ruleSet.conditions.length + 1}`, enabled: true, left_source_id: source.registry_id, left_timeframe: source.documentation?.timeframes?.[0] ?? "", right_source_id: "", right_timeframe: "", value: comparator === "is_true" ? null : 0 }] });
+  }
+  return <article className="rule-set-document">
+    <header><span>{locked ? "Atomic rule set" : "Editable rule set"} · revision {ruleSet.revision ?? 1}</span><input aria-label="Rule set name" disabled={locked} onChange={(event) => onChange({ ...ruleSet, name: event.target.value })} value={ruleSet.name} /><textarea aria-label="Rule set description" disabled={locked} onChange={(event) => onChange({ ...ruleSet, description: event.target.value })} value={ruleSet.description} /><div><code>{ruleSet.rule_set_id}</code>{locked ? <button onClick={onDuplicate} type="button"><Copy size={13} /> Duplicate as custom</button> : <button className="danger" onClick={onDelete} type="button"><Trash2 size={13} /> Remove rule set</button>}</div></header>
+    <section className="rule-set-logic"><label><span>Condition logic</span><select disabled={locked} onChange={(event) => onChange({ ...ruleSet, operator: event.target.value as DataRuleSet["operator"] })} value={ruleSet.operator}><option value="all">All conditions</option><option value="any">Any condition</option><option value="score">Required score</option></select></label><span>{ruleSet.conditions.length} condition{ruleSet.conditions.length === 1 ? "" : "s"}</span></section>
+    <section className="rule-condition-list">{ruleSet.conditions.map((condition, index) => {
+      const source = definitionById.get(condition.left_source_id);
+      const target = condition.right_source_id ? definitionById.get(condition.right_source_id) : undefined;
+      if (locked) return <RuleConditionStatement condition={condition} index={index} key={condition.condition_id} source={source} target={target} />;
+      const comparators = ruleComparators(source, condition.comparator);
+      return <div className="rule-condition-row rule-condition-editable" key={condition.condition_id}>
+        <span>{index + 1}</span>
+        <label><small>Data definition</small><select aria-label={`Condition ${index + 1} field`} onChange={(event) => {
+          const nextSource = definitionById.get(event.target.value);
+          if (!nextSource) return;
+          const allowed = ruleComparators(nextSource, "");
+          const comparator = allowed.some((row) => row.value === condition.comparator) ? condition.comparator : defaultRuleComparator(nextSource);
+          replaceCondition(condition.condition_id, { ...condition, comparator, left_source_id: nextSource.registry_id, left_timeframe: nextSource.documentation?.timeframes?.[0] ?? "", right_source_id: comparator === "is_true" ? "" : condition.right_source_id, right_timeframe: comparator === "is_true" ? "" : condition.right_timeframe, value: comparator === "is_true" ? null : condition.value ?? 0 });
+        }} value={condition.left_source_id}>{!source && condition.left_source_id ? <option value={condition.left_source_id}>{condition.left_source_id}</option> : null}{definitions.map((field) => <option key={field.registry_id} value={field.registry_id}>{displayLabel(field)}</option>)}</select><em>{condition.left_source_id}{condition.left_timeframe ? ` · ${condition.left_timeframe}` : ""}</em></label>
+        <label><small>Comparison</small><select aria-label={`Condition ${index + 1} comparator`} onChange={(event) => { const comparator = event.target.value; replaceCondition(condition.condition_id, { ...condition, comparator, right_source_id: comparator === "is_true" ? "" : condition.right_source_id, right_timeframe: comparator === "is_true" ? "" : condition.right_timeframe, value: comparator === "is_true" ? null : condition.value ?? 0 }); }} value={condition.comparator}>{comparators.map((row) => <option key={row.value} value={row.value}>{row.label}</option>)}</select></label>
+        {condition.comparator === "is_true" ? <div className="rule-condition-boolean"><small>Required state</small><strong>True</strong></div> : condition.right_source_id ? <label><small>Target definition</small><select aria-label={`Condition ${index + 1} target field`} onChange={(event) => replaceCondition(condition.condition_id, { ...condition, right_source_id: event.target.value })} value={condition.right_source_id}>{!target ? <option value={condition.right_source_id}>{condition.right_source_id}</option> : null}{definitions.map((field) => <option key={field.registry_id} value={field.registry_id}>{displayLabel(field)}</option>)}</select>{condition.comparator === "above_by_bps" ? <input aria-label={`Condition ${index + 1} basis point buffer`} onChange={(event) => replaceCondition(condition.condition_id, { ...condition, value: Number(event.target.value) })} step="any" type="number" value={Number(condition.value ?? 0)} /> : null}</label> : <label><small>Threshold</small><input aria-label={`Condition ${index + 1} value`} onChange={(event) => { const parsed = Number(event.target.value); replaceCondition(condition.condition_id, { ...condition, value: Number.isNaN(parsed) ? event.target.value : parsed }); }} step="any" type={isNumericRuleDefinition(source) ? "number" : "text"} value={String(condition.value ?? "")} /></label>}
+        <button aria-label={`Remove condition ${index + 1}`} onClick={() => onChange({ ...ruleSet, conditions: ruleSet.conditions.filter((row) => row.condition_id !== condition.condition_id) })} type="button"><Trash2 size={13} /></button>
+      </div>;
+    })}</section>
+    {!locked ? <button className="data-library-add-condition" onClick={addCondition} type="button"><Plus size={14} /> Add condition</button> : <footer><LockKeyhole size={14} /><span>Built-in rule sets are atomic and cannot be edited. Duplicate this definition to create an editable custom rule set.</span></footer>}
+  </article>;
 }
+
+const RULE_LIBRARY_COMPARATORS = [
+  { label: "is at least", value: "greater_or_equal" },
+  { label: "is greater than", value: "greater_than" },
+  { label: "is at most", value: "less_or_equal" },
+  { label: "is less than", value: "less_than" },
+  { label: "equals", value: "equals" },
+  { label: "is true", value: "is_true" },
+  { label: "is above by", value: "above_by_bps" },
+];
+
+function RuleConditionStatement({ condition, index, source, target }: { condition: DataRuleCondition; index: number; source?: RegistryDefinition; target?: RegistryDefinition }) {
+  const relation = ruleComparatorLabel(condition.comparator, condition.value);
+  const showTarget = condition.comparator !== "is_true";
+  return <div className="rule-condition-row rule-condition-readonly">
+    <span>{index + 1}</span>
+    <div className="rule-condition-operand"><strong>{source ? displayLabel(source) : condition.left_source_id}</strong><small>{condition.left_source_id}{condition.left_timeframe ? ` · ${condition.left_timeframe}` : ""}</small></div>
+    <em>{relation}</em>
+    {showTarget ? <div className="rule-condition-operand rule-condition-target"><strong>{target ? displayLabel(target) : formatRuleConstant(condition.value, source)}</strong><small>{target ? `${condition.right_source_id}${condition.right_timeframe ? ` · ${condition.right_timeframe}` : ""}` : ruleValueContext(source)}</small></div> : <div className="rule-condition-boolean"><strong>True</strong><small>Boolean event state</small></div>}
+  </div>;
+}
+
+function ruleComparators(source: RegistryDefinition | undefined, current: string) {
+  const values = isBooleanRuleDefinition(source)
+    ? ["is_true"]
+    : isNumericRuleDefinition(source)
+      ? ["greater_or_equal", "greater_than", "less_or_equal", "less_than", "equals"]
+      : ["equals"];
+  if (current && !values.includes(current)) values.push(current);
+  return RULE_LIBRARY_COMPARATORS.filter((row) => values.includes(row.value));
+}
+
+function defaultRuleComparator(source?: RegistryDefinition) { return isBooleanRuleDefinition(source) ? "is_true" : isNumericRuleDefinition(source) ? "greater_or_equal" : "equals"; }
+function isBooleanRuleDefinition(source?: RegistryDefinition) { const valueType = source?.documentation?.value_type?.toLowerCase(); return valueType === "boolean" || (source?.kind === "signal" && valueType === "event"); }
+function isNumericRuleDefinition(source?: RegistryDefinition) { return /number|integer|float|score|decimal|currency|percent|ratio|basis/.test(source?.documentation?.value_type?.toLowerCase() ?? ""); }
+function ruleComparatorLabel(comparator: string, value: DataRuleCondition["value"]) { if (comparator === "above_by_bps") return `is ${formatCompactNumber(Number(value ?? 0))} bps above`; return RULE_LIBRARY_COMPARATORS.find((row) => row.value === comparator)?.label ?? readable(comparator).toLowerCase(); }
+function ruleValueContext(source?: RegistryDefinition) { const unit = source?.documentation?.unit; return unit && unit !== "scalar" && unit !== "producer_defined" ? readable(unit) : "Fixed value"; }
+function formatRuleConstant(value: DataRuleCondition["value"], source?: RegistryDefinition) {
+  if (value === null || value === undefined || value === "") return "Missing value";
+  if (typeof value === "boolean") return value ? "True" : "False";
+  if (typeof value !== "number") return String(value);
+  const unit = source?.documentation?.unit?.toLowerCase() ?? "";
+  if (unit === "currency" || unit === "usd") return `$${formatCompactNumber(value)}`;
+  if (unit.includes("percent")) return `${formatCompactNumber(value)}%`;
+  if (unit.includes("share")) return `${formatCompactNumber(value)} shares`;
+  return formatCompactNumber(value);
+}
+function formatCompactNumber(value: number) { return new Intl.NumberFormat("en-US", { maximumFractionDigits: 4, notation: Math.abs(value) >= 1_000 ? "compact" : "standard" }).format(value); }
 
 function groupDefinitions(definitions: RegistryDefinition[]) {
   const groups = new Map<string, Map<string, RegistryDefinition[]>>();

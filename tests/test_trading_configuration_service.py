@@ -11,11 +11,13 @@ from src.backend.trading_configuration_service import (
     _default_draft,
     _compiled_observation_dependencies,
     _migrate_draft,
+    _normalize_rule_set_conditions,
     _qmd_family_capabilities,
     _qmd_runtime_capabilities,
     _resolved_source_account_id,
     _validate_draft,
     _validate_market_discovery,
+    _validate_rule_set_definition,
     approved_canvas_profile,
     approved_configuration,
     approved_runtime_configuration_snapshot,
@@ -35,6 +37,72 @@ from src.trading_runtime.strategy_engine import long_momentum_strategy_definitio
 
 
 class TradingConfigurationServiceTests(unittest.TestCase):
+    def test_atomic_rule_catalog_has_complete_executable_conditions(self) -> None:
+        with patch(
+            "src.backend.trading_configuration_service.get_strategy_definition",
+            return_value=long_momentum_strategy_definition(),
+        ), patch(
+            "src.backend.trading_configuration_service.list_strategy_assignments",
+            return_value=[],
+        ):
+            draft = _default_draft()
+
+        rule_sets = draft["market_discovery"]["rule_sets"]
+        self.assertGreater(len(rule_sets), 30)
+        _validate_draft(draft, require_runtime_ready=False)
+        for rule_set in rule_sets:
+            with self.subTest(rule_set=rule_set["rule_set_id"]):
+                _validate_rule_set_definition(rule_set, rule_set["name"])
+                self.assertNotIn("registered condition(s)", rule_set["description"])
+
+        bullish_choch = next(
+            row
+            for row in rule_sets
+            if row["rule_set_id"] == "initial-entry-opportunity-bullish-choch"
+        )
+        self.assertEqual(bullish_choch["conditions"][0]["comparator"], "is_true")
+        self.assertIsNone(bullish_choch["conditions"][0]["value"])
+
+    def test_rule_definition_rejects_incomplete_operands(self) -> None:
+        base = {
+            "name": "Malformed",
+            "description": "Malformed test rule.",
+            "enabled": True,
+            "operator": "all",
+            "required_score": 1,
+            "conditions": [{
+                "condition_id": "condition-1",
+                "enabled": True,
+                "left_source_id": "market.last_price",
+                "left_timeframe": "1s",
+                "comparator": "greater_than",
+                "right_source_id": "",
+                "right_timeframe": "",
+                "value": None,
+            }],
+        }
+        with self.assertRaisesRegex(ValueError, "requires a comparison value or target source"):
+            _validate_rule_set_definition(base, "Malformed")
+
+        basis_points = deepcopy(base)
+        basis_points["conditions"][0].update({"comparator": "above_by_bps", "value": 5})
+        with self.assertRaisesRegex(ValueError, "requires a target source"):
+            _validate_rule_set_definition(basis_points, "Malformed")
+
+    def test_legacy_rule_comparator_aliases_migrate_to_runtime_contract(self) -> None:
+        rule_set = {
+            "conditions": [
+                {"comparator": "equal"},
+                {"comparator": "greater_than_or_equal"},
+                {"comparator": "less_than_or_equal"},
+            ]
+        }
+        _normalize_rule_set_conditions(rule_set)
+        self.assertEqual(
+            [row["comparator"] for row in rule_set["conditions"]],
+            ["equals", "greater_or_equal", "less_or_equal"],
+        )
+
     def test_historical_snapshot_selects_one_exact_run_plan_and_strategy(self) -> None:
         approved = {
             "revision_id": "release-1",

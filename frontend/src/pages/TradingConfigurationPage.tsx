@@ -794,6 +794,17 @@ function normalizeDraft(payload: any): Draft {
   const runPlans = payload?.run_plans ?? payload?.assignments ?? { plans: [], universes: [] };
   const strategy = payload?.strategy ?? {};
   const marketDiscovery = payload?.market_discovery ?? { security_universe: {}, core_scan: { calculations: [] }, classifications: [], field_catalog: [], column_catalog: [], rule_sets: [], watchlists: [] };
+  const normalizeRuleSet = (ruleSet: any) => ({
+    ...ruleSet,
+    conditions: (ruleSet.conditions ?? []).map((condition: any) => ({
+      ...condition,
+      comparator: ({
+        equal: "equals",
+        greater_than_or_equal: "greater_or_equal",
+        less_than_or_equal: "less_or_equal",
+      } as Record<string, string>)[condition.comparator] ?? condition.comparator,
+    })),
+  });
   const normalizeProfile = (profile: any) => {
     const phaseModes = {
       initial_entry: "automatic",
@@ -806,6 +817,7 @@ function normalizeDraft(payload: any): Draft {
     delete profileWithoutComposition.composition;
     return {
       ...profileWithoutComposition,
+      rule_set_catalog: (profile.rule_set_catalog ?? []).map(normalizeRuleSet),
       publication_status: profile.publication_status ?? (profile.origin === "system" ? "template" : "draft"),
       derived_from_profile_id: profile.derived_from_profile_id ?? "",
       lifecycle: {
@@ -823,6 +835,7 @@ function normalizeDraft(payload: any): Draft {
     ...payload,
     market_discovery: {
       ...marketDiscovery,
+      rule_sets: (marketDiscovery.rule_sets ?? []).map(normalizeRuleSet),
       watchlists: (marketDiscovery.watchlists ?? []).map((watchlist: WatchlistConfig) => ({ ...watchlist, exclusion_rule_sets: [] })),
     },
     strategy: {
@@ -860,6 +873,10 @@ function readSessionConfiguration(base: Draft): Draft {
     const stored = window.sessionStorage.getItem(CONFIGURATION_SESSION_KEY);
     if (!stored) return base;
     const session = normalizeDraft(JSON.parse(stored));
+    const reconciledRuleSets = [
+      ...base.market_discovery.rule_sets.filter((row) => row.atomic),
+      ...session.market_discovery.rule_sets.filter((row) => !row.atomic),
+    ];
     return {
       ...session,
       market_discovery: {
@@ -874,6 +891,7 @@ function readSessionConfiguration(base: Draft): Draft {
           ...session.market_discovery.core_scan,
           calculations: base.market_discovery.core_scan.calculations,
         },
+        rule_sets: reconciledRuleSets,
       },
       strategy: {
         ...session.strategy,
@@ -883,6 +901,10 @@ function readSessionConfiguration(base: Draft): Draft {
         capability_catalog: base.strategy.capability_catalog,
         definitions: base.strategy.definitions,
         input_catalog: base.strategy.input_catalog,
+        profiles: session.strategy.profiles.map((profile) => ({
+          ...profile,
+          rule_set_catalog: reconciledRuleSets,
+        })),
       },
     };
   } catch {

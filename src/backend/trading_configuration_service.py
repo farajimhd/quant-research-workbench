@@ -905,15 +905,21 @@ def _catalog_stage_rules(
     children: list[dict[str, Any]] = []
     for index, raw_group in enumerate(stage.get("groups") or []):
         group = deepcopy(dict(raw_group))
+        group_id = str(group.pop("group_id", "") or f"rule-{index + 1}")
         rule_set_id = _rule_set_identifier(
             context,
-            str(group.pop("group_id", "") or f"rule-{index + 1}"),
+            group_id,
             existing,
         )
+        label = str(group.pop("label", "") or f"Rule set {index + 1}")
+        condition_count = len(group.get("conditions") or [])
+        context_label = context.replace("-", " ")
         catalog.append({
             "rule_set_id": rule_set_id,
-            "name": str(group.pop("label", "") or f"Rule set {index + 1}"),
-            "description": f"Reusable {context.replace('-', ' ')} evidence with {len(group.get('conditions') or [])} registered condition(s).",
+            "name": label,
+            "description": _strategy_rule_set_description(
+                group_id, label, context_label, condition_count
+            ),
             **group,
         })
         children.append({"kind": "rule_set", "rule_set_id": rule_set_id})
@@ -924,6 +930,40 @@ def _catalog_stage_rules(
             "children": children,
         }
     }
+
+
+def _strategy_rule_set_description(
+    group_id: str,
+    label: str,
+    context_label: str,
+    condition_count: int,
+) -> str:
+    descriptions = {
+        "break-structure": "Requires last price to clear the confirmed structural high by the configured breakout buffer.",
+        "break-vwap": "Requires last price to clear current VWAP by the configured breakout buffer.",
+        "bullish-choch": "Requires QMD to publish a true bullish change-of-character event on the configured breakout timeframe.",
+        "price-volume-expansion": "Requires the QMD price-and-volume expansion score to meet the configured entry minimum.",
+        "vwap-transition": "Requires the QMD VWAP-transition score to meet the configured entry minimum.",
+        "company-news": "Requires the causal company-news score to meet the configured entry minimum.",
+        "qmd-alignment": "Requires both QMD flow-and-structure score and confidence to meet their configured confirmation minimums.",
+        "vwap-confirmation": "Requires last price at or above VWAP while the VWAP slope meets its configured minimum.",
+        "macd-confirmation": "Requires the MACD line at or above its signal line and a positive MACD histogram.",
+        "flow-price-divergence": "Blocks entry when the QMD flow-price divergence score reaches the configured veto threshold.",
+        "liquidity-dislocation": "Blocks entry when the QMD liquidity-dislocation score reaches the configured veto threshold.",
+        "bullish-structure-add": "Allows a position add only after QMD publishes a new true bullish change-of-character event.",
+        "lose-entry-structure": "Passes when last price falls below the confirmed structural high used by the entry thesis.",
+        "adverse-qmd-score": "Passes when the QMD flow-and-structure score falls to or below the configured adverse threshold.",
+        "qmd-confidence": "Requires QMD flow-and-structure confidence to meet the configured exit-evidence minimum.",
+        "adverse-macd-line": "Passes when the MACD line falls below its signal line.",
+        "adverse-macd-histogram": "Passes when the MACD histogram is negative.",
+    }
+    if group_id in descriptions:
+        return descriptions[group_id]
+    return (
+        f"{label} is reusable {context_label} evidence. It passes only when the "
+        f"{condition_count} condition{'s' if condition_count != 1 else ''} below "
+        f"{'evaluate' if condition_count != 1 else 'evaluates'} true."
+    )
 
 
 def _migrate_profile_rule_catalog(profile: dict[str, Any]) -> None:
@@ -1014,6 +1054,7 @@ def _migrate_profile_rule_catalog(profile: dict[str, Any]) -> None:
             rule_set.get("publication_status")
             or ("published" if rule_set["atomic"] else "draft")
         )
+        _normalize_rule_set_conditions(rule_set)
 
     def remap_expression(expression: dict[str, Any]) -> dict[str, Any]:
         result = deepcopy(expression)
@@ -1977,6 +2018,30 @@ def _normalize_data_rule_set_metadata(rule_set: dict[str, Any], *, atomic: bool)
     rule_set["publication_status"] = str(
         rule_set.get("publication_status") or ("published" if atomic else "draft")
     )
+
+
+RULE_COMPARATOR_ALIASES = {
+    "equal": "equals",
+    "greater_than_or_equal": "greater_or_equal",
+    "less_than_or_equal": "less_or_equal",
+}
+RULE_SET_COMPARATORS = {
+    "above_by_bps",
+    "equals",
+    "greater_or_equal",
+    "greater_than",
+    "is_true",
+    "less_or_equal",
+    "less_than",
+}
+
+
+def _normalize_rule_set_conditions(rule_set: dict[str, Any]) -> None:
+    for condition in rule_set.get("conditions") or []:
+        comparator = str(condition.get("comparator") or "")
+        condition["comparator"] = RULE_COMPARATOR_ALIASES.get(
+            comparator, comparator
+        )
 
 
 def _default_watchlist_rule_sets() -> list[dict[str, Any]]:
@@ -3274,6 +3339,7 @@ def _migrate_draft(raw: dict[str, Any]) -> dict[str, Any]:
                 rule_set,
                 atomic=str(rule_set.get("rule_set_id") or "") in default_rule_set_ids,
             )
+            _normalize_rule_set_conditions(rule_set)
         default_calculations = list(defaults["market_discovery"]["core_scan"]["calculations"])
         current_calculations = {
             str(row.get("capability_id") or ""): deepcopy(row)
@@ -4055,8 +4121,37 @@ def _validate_rule_set_definition(rule_set: dict[str, Any], label: str) -> None:
         raise ValueError(f"{label} has unsupported condition logic")
     if operator == "score" and not 0 < float(rule_set.get("required_score") or 0) <= 1:
         raise ValueError(f"{label} required score must be between zero and one")
-    if not list(rule_set.get("conditions") or []):
+    conditions = list(rule_set.get("conditions") or [])
+    if not conditions:
         raise ValueError(f"{label} requires at least one condition")
+    condition_ids = [str(condition.get("condition_id") or "") for condition in conditions]
+    if any(not condition_id for condition_id in condition_ids) or len(set(condition_ids)) != len(condition_ids):
+        raise ValueError(f"{label} condition ids must be present and unique")
+    if bool(rule_set.get("enabled", True)) and not any(
+        bool(condition.get("enabled", True)) for condition in conditions
+    ):
+        raise ValueError(f"{label} requires an enabled condition")
+    for condition in conditions:
+        condition_label = f"{label} condition {condition.get('condition_id')}"
+        comparator = str(condition.get("comparator") or "")
+        if comparator not in RULE_SET_COMPARATORS:
+            raise ValueError(f"{condition_label} comparator is unsupported")
+        if not str(condition.get("left_source_id") or ""):
+            raise ValueError(f"{condition_label} requires a left source")
+        right_source_id = str(condition.get("right_source_id") or "")
+        value = condition.get("value")
+        if comparator == "is_true":
+            if right_source_id:
+                raise ValueError(f"{condition_label} is_true cannot use a target source")
+            continue
+        if comparator == "above_by_bps":
+            if not right_source_id:
+                raise ValueError(f"{condition_label} requires a target source")
+            if not isinstance(value, (int, float)) or isinstance(value, bool):
+                raise ValueError(f"{condition_label} requires a numeric basis-point buffer")
+            continue
+        if not right_source_id and value is None:
+            raise ValueError(f"{condition_label} requires a comparison value or target source")
 
 
 def _validate_rule_expression(

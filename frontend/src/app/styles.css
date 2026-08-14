@@ -22979,6 +22979,7 @@ button {
 .data-library-subgroup button small { margin-top: 2px; color: var(--muted-foreground); font-size: 0.66rem; }
 
 .data-library-detail { min-height: 0; min-width: 0; overflow: auto; padding: 24px; }
+.rule-set-library > .data-library-detail { overflow-x: clip; overflow-y: auto; }
 .data-definition-document, .rule-set-document { max-width: none; margin: 0; }
 .data-definition-document > header, .rule-set-document > header { padding-bottom: 22px; border-bottom: 1px solid var(--border); }
 .data-definition-document > header > span, .rule-set-document > header > span { color: var(--muted-foreground); font-size: 0.72rem; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; }
@@ -23041,6 +23042,8 @@ button {
 .data-library-empty { display: grid; min-height: 320px; place-content: center; justify-items: center; gap: 8px; color: var(--muted-foreground); }
 
 .rule-set-document > header > input, .rule-set-document > header > textarea { display: block; width: 100%; border: 0; outline: 0; background: transparent; color: var(--foreground); }
+.rule-set-document > header > div { flex-wrap: wrap; min-width: 0; }
+.rule-set-document > header > div > code { overflow: hidden; max-width: 100%; text-overflow: ellipsis; white-space: nowrap; }
 .rule-set-document > header > input { margin-top: 7px; font-size: 1.7rem; font-weight: 560; letter-spacing: -0.025em; }
 .rule-set-document > header > textarea { min-height: 64px; margin-top: 5px; resize: vertical; color: var(--muted-foreground); font: inherit; line-height: 1.55; }
 .rule-set-document > header input:disabled, .rule-set-document > header textarea:disabled { opacity: 1; }
@@ -23050,15 +23053,25 @@ button {
 .rule-set-logic select, .rule-condition-row select, .rule-condition-row input { min-width: 0; padding: 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface); color: var(--foreground); }
 .rule-set-logic > span { color: var(--muted-foreground); font-size: 0.75rem; }
 .rule-condition-list { display: grid; gap: 7px; }
-.rule-condition-row { display: grid; grid-template-columns: 28px minmax(180px, 1.5fr) minmax(150px, 1fr) minmax(100px, 0.8fr) 34px; gap: 8px; align-items: center; padding: 9px; border: 1px solid var(--border); border-radius: 8px; }
+.rule-condition-row { display: grid; grid-template-columns: 28px minmax(0, 1.5fr) minmax(110px, 1fr) minmax(0, 0.8fr) 34px; gap: 8px; align-items: center; padding: 9px; border: 1px solid var(--border); border-radius: 8px; }
 .rule-condition-row > span { display: grid; width: 24px; height: 24px; place-items: center; border-radius: 50%; background: var(--surface-alt); color: var(--muted-foreground); font-size: 0.7rem; }
+.rule-condition-readonly { grid-template-columns: 28px minmax(0, 1.4fr) minmax(95px, 0.7fr) minmax(0, 1fr); padding: 13px 14px; background: var(--surface); }
+.rule-condition-readonly > em { color: var(--muted-foreground); font-size: 0.82rem; font-style: normal; }
+.rule-condition-operand, .rule-condition-boolean { display: grid; gap: 3px; min-width: 0; }
+.rule-condition-operand strong, .rule-condition-boolean strong { overflow: hidden; font-size: 0.88rem; font-weight: 560; text-overflow: ellipsis; white-space: nowrap; }
+.rule-condition-operand small, .rule-condition-boolean small { overflow: hidden; color: var(--muted-foreground); font: 0.68rem/1.3 var(--font-mono); text-overflow: ellipsis; white-space: nowrap; }
+.rule-condition-target { padding-left: 12px; border-left: 1px solid var(--border); }
+.rule-condition-editable > label, .rule-condition-editable > .rule-condition-boolean { display: grid; gap: 5px; min-width: 0; }
+.rule-condition-editable label > small, .rule-condition-editable .rule-condition-boolean > small { color: var(--muted-foreground); font-size: 0.65rem; letter-spacing: 0.04em; text-transform: uppercase; }
+.rule-condition-editable label > em { overflow: hidden; color: var(--muted-foreground); font: 0.64rem/1.2 var(--font-mono); text-overflow: ellipsis; white-space: nowrap; }
 .data-library-add-condition { margin-top: 12px; }
 
 @media (max-width: 900px) {
   .data-library-workbench { grid-template-columns: 220px minmax(0, 1fr); }
   .data-library-detail { padding: 22px 18px; }
   .rule-condition-row { grid-template-columns: 28px 1fr; }
-  .rule-condition-row > select, .rule-condition-row > input { grid-column: 2; }
+  .rule-condition-row > :not(:first-child) { grid-column: 2; }
+  .rule-condition-target { padding-left: 0; border-left: 0; }
   .data-definition-document dl { grid-template-columns: 1fr; }
   .data-definition-document > .data-definition-method { grid-template-columns: 1fr; }
 }
