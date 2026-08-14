@@ -43,7 +43,7 @@ trading records, and physical ClickHouse storage
 | Property | Value |
 | --- | --- |
 | Identity | `registry_id`, `kind`, `version` |
-| Semantics | `label`, `description`, `owner`, `status`, `tags` |
+| Semantics | `label`, `presentation_label`, `description`, `owner`, `status`, `tags` |
 | Operator documentation | `source_summary`, `calculation_summary`, input Field IDs, timeframes, value behavior, availability, freshness, null behavior |
 | Composition | `relationships` or QMD input/output Field references |
 | Presentation | `kind_label`, `icon`, `accent` |
@@ -115,6 +115,7 @@ Runtime values (not registry definitions)
 | `registry_id` | Stable namespaced string |
 | `kind` | `field`, `source`, `processing_step`, `derivation`, `signal`, `event_schema`, `product`, `query_plan`, `column`, `condition`, `rule_set`, `watchlist`, `strategy_binding`, `strategy`, `strategy_profile`, `run_plan`, `account_binding`, `portfolio_policy`, `portfolio_mandate`, `portfolio_group`, `oms_profile`, `execution_policy`, `protection_profile` |
 | `label` | User-facing string |
+| `presentation_label` | Context-complete display name; unique within the user-facing data catalog |
 | `description` | Short semantic definition |
 | `owner` | Registered service/domain ID |
 | `version` | Positive integer or immutable revision |
@@ -131,6 +132,7 @@ One typed value contract. No `RawField`, `DerivedField`, or `SignalProjectionFie
 | --- | --- |
 | `field_id` | Stable namespaced ID |
 | `label` | User-facing value name |
+| `presentation_label` | Context-bearing catalog name such as `IPO Date`, `Split Days to Event`, or `Liquidity Dislocation Score` |
 | `value_type` | `number`, `integer`, `string`, `boolean`, `timestamp`, `date`, `category`, `vector`, `json` |
 | `unit` | `currency`, `shares`, `percent`, `basis_points`, `milliseconds`, `score`, `ratio`, `count`, `scalar`, registered unit |
 | `entity_grain` | Security, issuer, listing, document, signal, account, or registered composite grain |

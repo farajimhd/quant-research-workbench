@@ -19,10 +19,22 @@ from src.backend.application_registry import (
     information_registry_payload,
     runtime_capability_registry_payload,
     validate_application_registry,
+    _field_presentation_label,
 )
 
 
 class ApplicationRegistryTests(unittest.TestCase):
+    def test_presentation_labels_preserve_semantic_context_and_market_acronyms(self) -> None:
+        self.assertEqual(_field_presentation_label("event.ipo.date"), "IPO Date")
+        self.assertEqual(_field_presentation_label("event.split.days_to_event"), "Split Days to Event")
+        self.assertEqual(_field_presentation_label("qmd.field.SIP timestamp"), "SIP Timestamp")
+        self.assertEqual(_field_presentation_label("qmd.field.ht_dcperiod"), "Hilbert Transform Dominant Cycle Period")
+        self.assertEqual(_field_presentation_label("qmd.field.price_vs_vwap_pct"), "Price vs VWAP %")
+        self.assertEqual(
+            _field_presentation_label("signal.liquidity_dislocation.score"),
+            "Liquidity Dislocation Score",
+        )
+
     def test_registry_is_unique_and_every_reference_table_has_a_known_path(self) -> None:
         validate_application_registry()
         field_ids = [field.field_id for field in FIELD_DEFINITIONS]
@@ -375,6 +387,18 @@ class ApplicationRegistryTests(unittest.TestCase):
         payload = information_registry_payload(qmd, configuration)
 
         definitions = {row["registry_id"]: row for row in payload["definitions"]}
+        data_definitions = [
+            row for row in payload["definitions"]
+            if row["kind"] in {"field", "derivation", "signal"}
+        ]
+        presentation_labels = [row["presentation_label"] for row in data_definitions]
+        self.assertTrue(all(label.strip() for label in presentation_labels))
+        self.assertEqual(len(presentation_labels), len({label.casefold() for label in presentation_labels}))
+        self.assertFalse({
+            "date", "days to event", "score", "confidence", "direction", "clock",
+            "status", "payload", "vector", "value", "state", "count", "close",
+            "open", "high", "low",
+        } & {label.casefold() for label in presentation_labels})
         self.assertEqual(payload["authority"], "application_information_registry")
         self.assertIn("qmd.derivation.momentum_core", definitions)
         self.assertEqual(
@@ -386,6 +410,12 @@ class ApplicationRegistryTests(unittest.TestCase):
             ["qmd.field.rsi_14"],
         )
         self.assertIn("reference.market_cap", definitions)
+        self.assertEqual(definitions["event.ipo.date"]["presentation_label"], "IPO Date")
+        self.assertEqual(
+            definitions["event.split.days_to_event"]["presentation_label"],
+            "Split Days to Event",
+        )
+        self.assertEqual(definitions["qmd.field.rsi_14"]["presentation_label"], "RSI 14")
         change_documentation = definitions["market.change_pct"]["documentation"]
         self.assertIn("last price / previous close", change_documentation["calculation_summary"])
         self.assertEqual(

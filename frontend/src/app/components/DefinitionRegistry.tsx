@@ -37,6 +37,7 @@ export type RegistryDefinition = {
   kind: string;
   label: string;
   owner: string;
+  presentation_label?: string;
   execution_scopes?: string[];
   input_field_ids?: string[];
   output_field_ids?: string[];

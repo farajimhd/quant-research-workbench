@@ -42,6 +42,7 @@ pub struct QmdRegistryDefinition {
     pub registry_id: String,
     pub kind: &'static str,
     pub label: String,
+    pub presentation_label: String,
     pub description: String,
     pub owner: &'static str,
     pub version: u16,
@@ -70,7 +71,77 @@ fn readable_label(value: &str) -> String {
     value
         .split(['_', '.', '-'])
         .filter(|part| !part.is_empty())
-        .map(|part| {
+        .enumerate()
+        .map(|(index, part)| {
+            if index > 0
+                && matches!(
+                    part,
+                    "and" | "at" | "by" | "for" | "from" | "of" | "per" | "to"
+                )
+            {
+                return part.to_string();
+            }
+            match part.to_ascii_lowercase().as_str() {
+                "ad" => return "AD".to_string(),
+                "adx" => return "ADX".to_string(),
+                "alma" => return "ALMA".to_string(),
+                "apo" => return "APO".to_string(),
+                "atr" => return "ATR".to_string(),
+                "avg" => return "Average".to_string(),
+                "bps" => return "BPS".to_string(),
+                "cci" => return "CCI".to_string(),
+                "cdl" => return "CDL".to_string(),
+                "clickhouse" => return "ClickHouse".to_string(),
+                "cmf" => return "CMF".to_string(),
+                "cmo" => return "CMO".to_string(),
+                "conid" => return "CONID".to_string(),
+                "dema" => return "DEMA".to_string(),
+                "di" => return "DI".to_string(),
+                "dm" => return "DM".to_string(),
+                "ema" => return "EMA".to_string(),
+                "eom" => return "EOM".to_string(),
+                "hma" => return "HMA".to_string(),
+                "ht" => return "HT".to_string(),
+                "id" => return "ID".to_string(),
+                "ibkr" => return "IBKR".to_string(),
+                "ipo" => return "IPO".to_string(),
+                "kama" => return "KAMA".to_string(),
+                "kst" => return "KST".to_string(),
+                "kvo" => return "KVO".to_string(),
+                "level1" => return "Level 1".to_string(),
+                "luld" => return "LULD".to_string(),
+                "ma" => return "MA".to_string(),
+                "macd" => return "MACD".to_string(),
+                "mfi" => return "MFI".to_string(),
+                "mom" => return "Momentum".to_string(),
+                "ms" => return "ms".to_string(),
+                "natr" => return "NATR".to_string(),
+                "nbbo" => return "NBBO".to_string(),
+                "nvi" => return "NVI".to_string(),
+                "obv" => return "OBV".to_string(),
+                "ofi" => return "OFI".to_string(),
+                "pct" => return "%".to_string(),
+                "ppo" => return "PPO".to_string(),
+                "psar" => return "PSAR".to_string(),
+                "pvi" => return "PVI".to_string(),
+                "pvt" => return "PVT".to_string(),
+                "qmd" => return "QMD".to_string(),
+                "rest" => return "REST".to_string(),
+                "roc" => return "ROC".to_string(),
+                "rsi" => return "RSI".to_string(),
+                "sec" => return "SEC".to_string(),
+                "sip" => return "SIP".to_string(),
+                "sma" => return "SMA".to_string(),
+                "std" => return "Standard Deviation".to_string(),
+                "talib" => return "TA-Lib".to_string(),
+                "tf" => return "Timeframe".to_string(),
+                "utc" => return "UTC".to_string(),
+                "vs" => return "vs".to_string(),
+                "vwap" => return "VWAP".to_string(),
+                "xbrl" => return "XBRL".to_string(),
+                "zscore" => return "Z-Score".to_string(),
+                _ => {}
+            }
             let mut chars = part.chars();
             match chars.next() {
                 Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
@@ -79,6 +150,29 @@ fn readable_label(value: &str) -> String {
         })
         .collect::<Vec<_>>()
         .join(" ")
+}
+
+fn field_presentation_label(registry_id: &str) -> String {
+    if let Some(signal_path) = registry_id.strip_prefix("signal.") {
+        return readable_label(signal_path);
+    }
+    let leaf = registry_id.rsplit('.').next().unwrap_or(registry_id);
+    match leaf {
+        "ad" => "Accumulation/Distribution".to_string(),
+        "adosc" => "Chaikin A/D Oscillator".to_string(),
+        "open" => "Bar Open".to_string(),
+        "high" => "Bar High".to_string(),
+        "low" => "Bar Low".to_string(),
+        "close" => "Bar Close".to_string(),
+        "volume" => "Bar Volume".to_string(),
+        "ht_dcperiod" => "Hilbert Transform Dominant Cycle Period".to_string(),
+        "ht_dcphase" => "Hilbert Transform Dominant Cycle Phase".to_string(),
+        "ht_phasor" => "Hilbert Transform Phasor".to_string(),
+        "ht_sine" => "Hilbert Transform Sine".to_string(),
+        "ht_trendline" => "Hilbert Transform Trendline".to_string(),
+        "ht_trendmode" => "Hilbert Transform Trend Mode".to_string(),
+        _ => readable_label(leaf),
+    }
 }
 
 fn field_id(raw: &str) -> String {
@@ -209,6 +303,7 @@ fn field_definition(
         });
     QmdRegistryDefinition {
         label: readable_label(registry_id.rsplit('.').next().unwrap_or(&registry_id)),
+        presentation_label: field_presentation_label(&registry_id),
         description: "Typed QMD value available through its registered producer and causal clock."
             .to_string(),
         registry_id,
@@ -291,6 +386,7 @@ pub fn definition_catalog() -> QmdDefinitionCatalog {
                 registry_id: format!("qmd.processing_step.{}", capability.key),
                 kind: "processing_step",
                 label: capability.label.to_string(),
+                presentation_label: capability.label.to_string(),
                 description:
                     "Required QMD event-path processing with compiled implementation authority."
                         .to_string(),
@@ -359,6 +455,7 @@ pub fn definition_catalog() -> QmdDefinitionCatalog {
                 registry_id,
                 kind: "derivation",
                 label: capability.label.to_string(),
+                presentation_label: capability.label.to_string(),
                 description: indicator_description(entry),
                 owner: "qmd_core",
                 version: capability.implementation_version,
@@ -440,6 +537,7 @@ pub fn definition_catalog() -> QmdDefinitionCatalog {
                 registry_id,
                 kind: "signal",
                 label: capability.label.to_string(),
+                presentation_label: capability.label.to_string(),
                 description: signal_description(entry),
                 owner: "qmd_core",
                 version: entry.signal_version,
@@ -517,6 +615,11 @@ mod tests {
             .collect::<BTreeSet<_>>();
         assert_eq!(ids.len(), catalog.definitions.len());
         for definition in &catalog.definitions {
+            assert!(
+                !definition.presentation_label.trim().is_empty(),
+                "missing presentation label for {}",
+                definition.registry_id
+            );
             assert!(definition.version > 0);
             assert!(!definition.label.is_empty());
             for field_id in definition
@@ -526,6 +629,42 @@ mod tests {
             {
                 assert!(ids.contains(field_id), "missing FieldDefinition {field_id}");
             }
+        }
+        let data_definitions = catalog
+            .definitions
+            .iter()
+            .filter(|definition| matches!(definition.kind, "field" | "derivation" | "signal"))
+            .collect::<Vec<_>>();
+        let presentation_labels = data_definitions
+            .iter()
+            .map(|definition| definition.presentation_label.as_str())
+            .collect::<BTreeSet<_>>();
+        assert_eq!(presentation_labels.len(), data_definitions.len());
+        let ambiguous = BTreeSet::from([
+            "Date",
+            "Days to Event",
+            "Score",
+            "Confidence",
+            "Direction",
+            "Clock",
+            "Status",
+            "Payload",
+            "Vector",
+            "Value",
+            "State",
+            "Count",
+            "Close",
+            "Open",
+            "High",
+            "Low",
+        ]);
+        for definition in data_definitions {
+            assert!(
+                !ambiguous.contains(definition.presentation_label.as_str()),
+                "context-free presentation label {} for {}",
+                definition.presentation_label,
+                definition.registry_id
+            );
         }
     }
 
@@ -578,5 +717,22 @@ mod tests {
             .find(|definition| definition.kind == "field" && definition.producer_id.is_some())
             .expect("expected a producer-backed QMD field");
         assert!(!derived_field.documentation.input_field_ids.is_empty());
+        assert_eq!(
+            catalog
+                .definitions
+                .iter()
+                .find(|definition| definition.registry_id == "qmd.field.close")
+                .expect("close field")
+                .presentation_label,
+            "Bar Close"
+        );
+        assert!(catalog
+            .definitions
+            .iter()
+            .filter(|definition| {
+                definition.registry_id.starts_with("signal.")
+                    && definition.registry_id.ends_with(".score")
+            })
+            .all(|definition| definition.presentation_label != "Score"));
     }
 }

@@ -29,6 +29,7 @@ class QueryPlanDefinition:
 class FieldDefinition:
     field_id: str
     label: str
+    presentation_label: str
     group: str
     value_type: str
     unit: str
@@ -981,6 +982,150 @@ FIELD_OPERATOR_DOCUMENTATION: dict[str, dict[str, object]] = {
 }
 
 
+PRESENTATION_ACRONYMS = {
+    "ad": "AD",
+    "adx": "ADX",
+    "alma": "ALMA",
+    "apo": "APO",
+    "ai": "AI",
+    "api": "API",
+    "atr": "ATR",
+    "avg": "Average",
+    "bps": "BPS",
+    "cci": "CCI",
+    "cdl": "CDL",
+    "cik": "CIK",
+    "clickhouse": "ClickHouse",
+    "cmf": "CMF",
+    "cmo": "CMO",
+    "conid": "CONID",
+    "cusip": "CUSIP",
+    "dema": "DEMA",
+    "di": "DI",
+    "dm": "DM",
+    "ema": "EMA",
+    "eom": "EOM",
+    "etf": "ETF",
+    "figi": "FIGI",
+    "hma": "HMA",
+    "ht": "HT",
+    "id": "ID",
+    "ibkr": "IBKR",
+    "ipo": "IPO",
+    "isin": "ISIN",
+    "kama": "KAMA",
+    "kst": "KST",
+    "kvo": "KVO",
+    "level1": "Level 1",
+    "luld": "LULD",
+    "ma": "MA",
+    "macd": "MACD",
+    "mfi": "MFI",
+    "mom": "Momentum",
+    "ms": "ms",
+    "natr": "NATR",
+    "nbbo": "NBBO",
+    "nvi": "NVI",
+    "obv": "OBV",
+    "ofi": "OFI",
+    "pct": "%",
+    "ppo": "PPO",
+    "psar": "PSAR",
+    "pvi": "PVI",
+    "pvt": "PVT",
+    "qmd": "QMD",
+    "rest": "REST",
+    "roc": "ROC",
+    "rsi": "RSI",
+    "sec": "SEC",
+    "sip": "SIP",
+    "sma": "SMA",
+    "std": "Standard Deviation",
+    "talib": "TA-Lib",
+    "tf": "Timeframe",
+    "utc": "UTC",
+    "vs": "vs",
+    "vwap": "VWAP",
+    "xbrl": "XBRL",
+    "zscore": "Z-Score",
+}
+
+
+def _presentation_words(value: str) -> str:
+    tokens = [token for token in value.replace("-", "_").replace(" ", "_").split("_") if token]
+    return " ".join(
+        (
+            token.lower()
+            if index > 0 and token.lower() in {"and", "at", "by", "for", "from", "of", "per", "to"}
+            else PRESENTATION_ACRONYMS.get(token.lower(), token.capitalize())
+        )
+        for index, token in enumerate(tokens)
+    )
+
+
+def _field_presentation_label(field_id: str) -> str:
+    parts = [part for part in field_id.split(".") if part]
+    if not parts:
+        return "Unnamed Field"
+    if parts[:2] == ["qmd", "field"]:
+        leaf = parts[-1]
+        qmd_overrides = {
+            "ad": "Accumulation/Distribution",
+            "adosc": "Chaikin A/D Oscillator",
+            "open": "Bar Open",
+            "high": "Bar High",
+            "low": "Bar Low",
+            "close": "Bar Close",
+            "volume": "Bar Volume",
+            "ht_dcperiod": "Hilbert Transform Dominant Cycle Period",
+            "ht_dcphase": "Hilbert Transform Dominant Cycle Phase",
+            "ht_phasor": "Hilbert Transform Phasor",
+            "ht_sine": "Hilbert Transform Sine",
+            "ht_trendline": "Hilbert Transform Trendline",
+            "ht_trendmode": "Hilbert Transform Trend Mode",
+        }
+        return qmd_overrides.get(leaf, _presentation_words(leaf))
+    namespace = parts[0]
+    semantic_path = parts[1:]
+    if namespace == "classification":
+        return f"{_presentation_words('_'.join(semantic_path))} Classification"
+    if namespace == "embedding" and len(semantic_path) >= 2:
+        return f"{_presentation_words(semantic_path[0])} Embedding {_presentation_words('_'.join(semantic_path[1:]))}"
+    if namespace in {"event", "signal", "indicator", "model"}:
+        return _presentation_words("_".join(semantic_path))
+    if namespace in {"news", "sec", "coverage", "schedule", "identity", "listing", "relationship", "fundamental", "xbrl"}:
+        return f"{_presentation_words(namespace)} {_presentation_words('_'.join(semantic_path))}"
+    return _presentation_words(parts[-1])
+
+
+def _definition_presentation_label(row: dict[str, Any]) -> str:
+    registry_id = str(row.get("registry_id") or "")
+    if str(row.get("kind") or "") == "field" or registry_id.startswith((
+        "classification.", "embedding.", "event.", "indicator.", "model.", "news.", "sec.", "signal.",
+    )):
+        return _field_presentation_label(registry_id)
+    return str(row.get("presentation_label") or row.get("label") or _presentation_words(registry_id))
+
+
+def _qualify_duplicate_presentation_labels(rows: list[dict[str, Any]]) -> None:
+    by_label: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        label = _definition_presentation_label(row)
+        row["presentation_label"] = label
+        if str(row.get("kind") or "") in {"field", "derivation", "signal"}:
+            by_label.setdefault(label.casefold(), []).append(row)
+    for duplicates in by_label.values():
+        if len(duplicates) < 2:
+            continue
+        for row in duplicates:
+            registry_id = str(row.get("registry_id") or "")
+            namespace = registry_id.split(".", 1)[0]
+            qualifier = "QMD" if namespace == "qmd" else _presentation_words(namespace)
+            current = str(row["presentation_label"])
+            if not current.casefold().startswith(f"{qualifier} ".casefold()):
+                row["presentation_label"] = f"{qualifier} {current}"
+
+
 def _operator_source_summary(owner: str, source_path: str) -> str:
     if source_path == "service://qmd/scanner":
         return "QMD scanner state built from causally accepted quotes, eligible trades, and session references."
@@ -1041,6 +1186,7 @@ def _field(
     return FieldDefinition(
         field_id=field_id,
         label=label,
+        presentation_label=_field_presentation_label(field_id),
         group=group,
         value_type=value_type,
         unit=unit,
@@ -1619,6 +1765,7 @@ def _registry_definition(
     tags: Iterable[str] = (),
     relationships: dict[str, Iterable[str]] | None = None,
     documentation: dict[str, Any] | None = None,
+    presentation_label: str = "",
 ) -> dict[str, Any]:
     type_definition = next(row for row in REGISTRY_TYPES if row.kind == kind)
     normalized_relationships = {
@@ -1653,6 +1800,7 @@ def _registry_definition(
         "registry_id": registry_id,
         "kind": kind,
         "label": label,
+        "presentation_label": presentation_label or label,
         "description": description,
         "owner": owner,
         "version": max(1, int(version)),
@@ -1724,6 +1872,7 @@ def _application_information_definitions() -> list[dict[str, Any]]:
                 "input_field_ids": field.input_field_ids,
             },
             documentation=_field_operator_documentation(field),
+            presentation_label=field.presentation_label,
         )
         for field in FIELD_DEFINITIONS
     )
@@ -2177,6 +2326,7 @@ def information_registry_payload(
             ))
 
     definitions = sorted(definitions_by_id.values(), key=lambda row: str(row["registry_id"]))
+    _qualify_duplicate_presentation_labels(definitions)
     payload: dict[str, object] = {
         "schema_version": 1,
         "authority": "application_information_registry",

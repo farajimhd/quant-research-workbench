@@ -39,7 +39,7 @@ export function DataCatalogPage({ registry }: { registry: InformationRegistry })
   const [selectedId, setSelectedId] = useState(() => definitions[0]?.registry_id ?? "");
   const visible = useMemo(() => {
     const needle = query.trim().toLowerCase();
-    return definitions.filter((row) => !needle || [row.label, row.description, row.registry_id, row.owner, row.kind, ...row.tags].some((value) => value.toLowerCase().includes(needle)));
+    return definitions.filter((row) => !needle || [displayLabel(row), row.label, row.description, row.registry_id, row.owner, row.kind, ...row.tags].some((value) => value.toLowerCase().includes(needle)));
   }, [definitions, query]);
   const groups = useMemo(() => groupDefinitions(visible), [visible]);
   const selected = definitions.find((row) => row.registry_id === selectedId) ?? visible[0] ?? definitions[0];
@@ -53,7 +53,7 @@ export function DataCatalogPage({ registry }: { registry: InformationRegistry })
           <summary><span>{groupName}</span><em>{[...subgroups.values()].reduce((sum, rows) => sum + rows.length, 0)}</em></summary>
           {[...subgroups.entries()].map(([subgroupName, rows]) => <details className="data-library-subgroup" key={subgroupName} open>
             <summary><span>{subgroupName}</span><em>{rows.length}</em></summary>
-            <div>{rows.map((row) => <button aria-current={selected?.registry_id === row.registry_id ? "true" : undefined} key={row.registry_id} onClick={() => setSelectedId(row.registry_id)} type="button"><span><strong>{row.label}</strong><small>{row.registry_id}</small></span><ChevronRight size={13} /></button>)}</div>
+            <div>{rows.map((row) => <button aria-current={selected?.registry_id === row.registry_id ? "true" : undefined} key={row.registry_id} onClick={() => setSelectedId(row.registry_id)} type="button"><span><strong>{displayLabel(row)}</strong><small>{row.registry_id}</small></span><ChevronRight size={13} /></button>)}</div>
           </details>)}
         </details>)}
       </div>
@@ -69,9 +69,9 @@ function DataDefinitionDetail({ definition, onNavigate, registry }: { definition
   const sourceSummary = documentation?.source_summary || "The registered producer has not published an operator-facing source description.";
   const calculationSummary = documentation?.calculation_summary || definition.description || "The registered producer has not published an operator-facing calculation description.";
   return <article className="data-definition-document">
-    <header><span>{definition.presentation.kind_label} · {readable(definition.status)}</span><h2>{definition.label}</h2><div className="data-definition-identity"><code>{definition.registry_id}</code><button aria-label="Copy definition ID" onClick={() => void navigator.clipboard.writeText(definition.registry_id)} type="button"><Copy size={13} /> Copy ID</button>{definition.tags.slice(0, 4).map((tag) => <em key={tag}>{readable(tag)}</em>)}</div></header>
+    <header><span>{definition.presentation.kind_label} · {readable(definition.status)}</span><h2>{displayLabel(definition)}</h2><div className="data-definition-identity"><code>{definition.registry_id}</code><button aria-label="Copy definition ID" onClick={() => void navigator.clipboard.writeText(definition.registry_id)} type="button"><Copy size={13} /> Copy ID</button>{definition.tags.slice(0, 4).map((tag) => <em key={tag}>{readable(tag)}</em>)}</div></header>
     <section className="data-definition-method"><h3>Source and calculation</h3><div className="data-definition-method-grid"><article><span>Source</span><strong>{producer?.label || readable(definition.owner)}</strong><p>{sourceSummary}</p>{producer ? <button onClick={() => onNavigate(producer.registry_id)} type="button">View producer <ChevronRight size={13} /></button> : null}</article><article><span>Calculation</span><p>{calculationSummary}</p></article></div></section>
-    {inputIds.length ? <section className="data-definition-inputs"><h3>Required inputs</h3><p>The calculation uses these registered values. Select an input to inspect its own source and method.</p><div>{inputIds.map((id) => registry.definitions.some((row) => row.registry_id === id) ? <button key={id} onClick={() => onNavigate(id)} type="button">{registry.definitions.find((row) => row.registry_id === id)?.label || id}<small>{id}</small><ChevronRight size={13} /></button> : <span key={id}>{readable(id)}<small>{id}</small></span>)}</div></section> : null}
+    {inputIds.length ? <section className="data-definition-inputs"><h3>Required inputs</h3><p>The calculation uses these registered values. Select an input to inspect its own source and method.</p><div>{inputIds.map((id) => { const input = registry.definitions.find((row) => row.registry_id === id); return input ? <button key={id} onClick={() => onNavigate(id)} type="button">{displayLabel(input)}<small>{id}</small><ChevronRight size={13} /></button> : <span key={id}>{readable(id)}<small>{id}</small></span>; })}</div></section> : null}
     <section className="data-definition-contract"><h3>Value behavior</h3><dl><div><dt>Data type</dt><dd>{readable(documentation?.value_type || definition.presentation.kind_label)}</dd></div><div><dt>Unit</dt><dd>{readable(documentation?.unit || "Producer defined")}</dd></div><div><dt>One value per</dt><dd>{readable(documentation?.entity_grain || "Producer defined")}</dd></div><div><dt>Timeframes</dt><dd>{documentation?.timeframes?.join(", ") || "Source event"}</dd></div><div><dt>Updates</dt><dd>{readable(documentation?.update_cadence || "Producer cadence")}</dd></div><div><dt>Available when</dt><dd>{documentation?.available_when || "After the producer publishes a causally complete value."}</dd></div></dl></section>
     {documentation?.freshness_summary || documentation?.null_behavior ? <section className="data-definition-availability"><h3>Availability</h3><div><p>{documentation?.freshness_summary}</p><p>{documentation?.null_behavior}</p></div></section> : null}
     {definition.parameters?.length ? <section><h3>Registered parameters</h3><div className="data-definition-parameters">{definition.parameters.map((parameter) => <div key={parameter.name}><strong>{parameter.label || parameter.name}</strong><span>{parameter.description || parameter.type || "Parameter"}</span><code>{parameter.default === undefined ? "No default" : String(parameter.default)}{parameter.unit ? ` ${parameter.unit}` : ""}</code></div>)}</div></section> : null}
@@ -112,7 +112,7 @@ function groupDefinitions(definitions: RegistryDefinition[]) {
     const group = semanticGroup(row);
     const subgroup = row.kind === "field" ? readable(row.owner) : row.kind === "derivation" ? "Derived fields" : "Event signals";
     const subgroups = groups.get(group) ?? new Map<string, RegistryDefinition[]>();
-    subgroups.set(subgroup, [...(subgroups.get(subgroup) ?? []), row].sort((a, b) => a.label.localeCompare(b.label)));
+    subgroups.set(subgroup, [...(subgroups.get(subgroup) ?? []), row].sort((a, b) => displayLabel(a).localeCompare(displayLabel(b))));
     groups.set(group, subgroups);
   });
   return groups;
@@ -130,4 +130,5 @@ function semanticGroup(row: RegistryDefinition) {
 }
 
 function readable(value: string) { return value.replaceAll("_", " ").replace(/\b\w/g, (letter) => letter.toUpperCase()); }
+function displayLabel(definition: RegistryDefinition) { return definition.presentation_label?.trim() || definition.label; }
 function uniqueRuleSetId(base: string, rows: DataRuleSet[]) { let value = base; let index = 2; const ids = new Set(rows.map((row) => row.rule_set_id)); while (ids.has(value)) value = `${base}-${index++}`; return value; }
