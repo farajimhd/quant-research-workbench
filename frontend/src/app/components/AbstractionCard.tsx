@@ -135,7 +135,7 @@ export function AbstractionCard({
   </>;
   const classes = ["abstraction-card", compact ? "compact" : "", className].filter(Boolean).join(" ");
   const shared = {
-    "data-kind": kind,
+    "data-kind": presentation.kind,
     "data-accent": presentation.accent,
     "data-configurable": presentation.configurable ? "true" : "false",
     "data-configuration-mode": presentation.configurationMode,

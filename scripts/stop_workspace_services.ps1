@@ -1,6 +1,8 @@
 [CmdletBinding()]
 param(
     [ValidateRange(1, 65535)]
+    [int]$QmdLivePort = 8795,
+    [ValidateRange(1, 65535)]
     [int]$QmdHistoryPort = 8801,
     [ValidateRange(1, 65535)]
     [int]$BackendPort = 8000,
@@ -23,7 +25,7 @@ $repoRoot = Split-Path -Parent $PSScriptRoot
 $serviceTabHost = [IO.Path]::GetFullPath(
     (Join-Path $PSScriptRoot "run_windows_terminal_service_tab.ps1")
 )
-$serviceRoles = @("qmd_history", "backend", "frontend")
+$serviceRoles = @("qmd_live", "qmd_history", "backend", "frontend")
 
 function Resolve-PythonExecutable {
     param([string]$Requested)
@@ -285,7 +287,7 @@ foreach ($registrationPath in $registrationPaths) {
 }
 $ownedIds = Get-OwnedProcessIds -Registrations $registrations -Snapshot $snapshot
 $registeredPorts = @($registrations | ForEach-Object { [int]$_.Record.service_port } | Where-Object { $_ -gt 0 })
-$ports = @(@($QmdHistoryPort, $BackendPort, $FrontendPort) + $registeredPorts) |
+$ports = @(@($QmdLivePort, $QmdHistoryPort, $BackendPort, $FrontendPort) + $registeredPorts) |
     Select-Object -Unique
 $portOwners = @(Get-PortOwners -Ports $ports)
 

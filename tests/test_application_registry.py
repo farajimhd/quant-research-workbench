@@ -330,6 +330,30 @@ class ApplicationRegistryTests(unittest.TestCase):
         }
         configuration = {
             "market_discovery": {
+                "core_scan": {
+                    "calculations": [
+                        {
+                            "capability_id": "instrument-identity",
+                            "name": "Instrument eligibility and identity",
+                            "description": "Reference-backed identity eligibility.",
+                            "capability_type": "system",
+                            "fields": ["identity.symbol"],
+                            "configurable": False,
+                            "system_required": True,
+                            "implementation_status": "implemented",
+                        },
+                        {
+                            "capability_id": "news-events",
+                            "name": "News observations",
+                            "description": "Point-in-time company-news events.",
+                            "capability_type": "event",
+                            "fields": ["signal.news_labeled"],
+                            "configurable": True,
+                            "system_required": False,
+                            "implementation_status": "implemented",
+                        },
+                    ]
+                },
                 "rule_sets": [{"rule_set_id": "gainers", "name": "Gainers", "conditions": [{"condition_id": "change-positive", "left_source_id": "market.change_pct", "comparator": "greater_than", "value": 0}]}],
                 "watchlists": [{
                     "watchlist_id": "top-gainers",
@@ -358,6 +382,10 @@ class ApplicationRegistryTests(unittest.TestCase):
         self.assertIn("column.last_price", definitions)
         self.assertIn("rule_set.gainers", definitions)
         self.assertIn("condition.gainers.change-positive", definitions)
+        self.assertEqual(definitions["instrument-identity"]["kind"], "processing_step")
+        self.assertFalse(definitions["instrument-identity"]["configurable"])
+        self.assertEqual(definitions["news-events"]["kind"], "product")
+        self.assertEqual(definitions["news-events"]["configuration_binding_id"], "market_discovery.products")
         self.assertEqual(
             definitions["rule_set.gainers"]["relationships"]["condition_ids"],
             ["condition.gainers.change-positive"],

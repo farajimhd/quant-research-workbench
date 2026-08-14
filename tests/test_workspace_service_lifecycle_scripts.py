@@ -28,8 +28,10 @@ def test_workspace_stop_uses_registered_ownership_not_global_command_matches() -
 def test_workspace_start_registers_each_role_and_rejects_foreign_port_adoption() -> None:
     source = _source("start_workspace_services.ps1")
 
-    for role in ("qmd_history", "backend", "frontend"):
+    for role in ("qmd_live", "qmd_history", "backend", "frontend"):
         assert f'role = "{role}"' in source
+    assert "qmdliveport = 8795" in source
+    assert 'join-path $psscriptroot "run_qmd_gateway.ps1"' in source
     for argument in (
         '"-registrypath"',
         '"-servicerole"',

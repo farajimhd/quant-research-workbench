@@ -202,6 +202,7 @@ REGISTRY_TYPES = (
 CONFIGURATION_BINDINGS = (
     ConfigurationBindingDefinition("market_discovery.core_scan", "market_discovery.core_scan.calculations[]", "derivation", "capability_id", "parameterized_reference", ("enabled", "selected_timeframes"), ("capability_id",)),
     ConfigurationBindingDefinition("market_discovery.signals", "market_discovery.core_scan.calculations[]", "signal", "capability_id", "parameterized_reference", ("enabled", "selected_timeframes"), ("capability_id",)),
+    ConfigurationBindingDefinition("market_discovery.products", "market_discovery.core_scan.calculations[]", "product", "capability_id", "select_reference", ("enabled",), ("capability_id",)),
     ConfigurationBindingDefinition("market_discovery.columns", "market_discovery.watchlists[].columns[]", "column", "column_id", "select_reference", (), ("column_id",)),
     ConfigurationBindingDefinition("market_discovery.conditions", "market_discovery.rule_sets[].conditions[]", "condition", "condition_id", "editable_instance", ("left_source_id", "left_timeframe", "comparator", "right_source_id", "right_timeframe", "value", "enabled"), ("left_source_id", "right_source_id")),
     ConfigurationBindingDefinition("market_discovery.rules", "market_discovery.rule_sets[]", "rule_set", "rule_set_id", "editable_instance", ("name", "description", "operator", "conditions", "enabled")),
@@ -1573,6 +1574,49 @@ def _configuration_information_definitions(
         return []
     rows: list[dict[str, Any]] = []
     discovery = dict(configuration.get("market_discovery") or {})
+    operational_kinds = {
+        "instrument-identity": "processing_step",
+        "market-quality": "processing_step",
+        "liquidity-rank": "derivation",
+        "news-events": "product",
+        "sec-events": "product",
+        "membership-history": "product",
+    }
+    for capability in dict(discovery.get("core_scan") or {}).get("calculations") or []:
+        capability_id = str(capability.get("capability_id") or "").strip()
+        if not capability_id or capability_id.startswith("qmd."):
+            continue
+        capability_type = str(capability.get("capability_type") or "").strip()
+        kind = operational_kinds.get(capability_id) or (
+            "signal" if capability_type == "signal"
+            else "derivation" if capability_type == "indicator"
+            else "product" if capability_type == "event"
+            else "field"
+        )
+        configurable = bool(capability.get("configurable")) and not bool(capability.get("system_required"))
+        configuration_mode = (
+            "parameterized_reference" if kind in {"derivation", "signal"} and configurable
+            else "select_reference" if configurable
+            else "locked"
+        )
+        binding_id = (
+            "market_discovery.core_scan" if kind == "derivation"
+            else "market_discovery.signals" if kind == "signal"
+            else "market_discovery.products" if kind == "product" and configurable
+            else ""
+        )
+        rows.append(_registry_definition(
+            capability_id, kind, str(capability.get("name") or capability_id),
+            str(capability.get("description") or capability.get("calculation") or "Registered Market Discovery reference."),
+            str(capability.get("owner") or capability.get("provider") or "application_configuration"),
+            int(capability.get("implementation_version") or 1),
+            str(capability.get("implementation_status") or capability.get("availability") or "implemented"),
+            configurable=configurable,
+            configuration_mode=configuration_mode,
+            configuration_binding_id=binding_id,
+            tags=(str(capability.get("category") or "market_discovery"), str(capability.get("tier") or "")),
+            relationships={"field_ids": tuple(str(value) for value in capability.get("fields") or [])},
+        ))
     for rule_set in discovery.get("rule_sets") or []:
         rule_id = str(rule_set.get("rule_set_id") or "").strip()
         if rule_id:
@@ -1770,8 +1814,12 @@ def information_registry_payload(
         definitions_by_id[registry_id] = normalized_qmd_row
     for row in _configuration_information_definitions(configuration):
         registry_id = str(row["registry_id"])
-        if registry_id in definitions_by_id:
-            raise ValueError(f"Duplicate configured registry definition: {registry_id}")
+        existing = definitions_by_id.get(registry_id)
+        if existing is not None:
+            # The configuration may expose a selectable projection whose ID is
+            # already a canonical Field. Configuration never redefines that
+            # registered semantic kind or its producer authority.
+            continue
         definitions_by_id[registry_id] = row
 
     type_rows = [asdict(row) for row in REGISTRY_TYPES]

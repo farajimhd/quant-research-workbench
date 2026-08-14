@@ -236,7 +236,7 @@ Run the backend API and React development server in separate terminals:
 python scripts/run_frontend.py dev
 ```
 
-To start QMD History, the backend, and the frontend together as three
+To start QMD Live, QMD History, the backend, and the frontend together as four
 independent PowerShell tabs:
 
 ```powershell

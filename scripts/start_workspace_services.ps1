@@ -2,6 +2,8 @@
 param(
     [string]$HostName = "127.0.0.1",
     [ValidateRange(1, 65535)]
+    [int]$QmdLivePort = 8795,
+    [ValidateRange(1, 65535)]
     [int]$QmdHistoryPort = 8801,
     [ValidateRange(1, 65535)]
     [int]$BackendPort = 8000,
@@ -23,7 +25,8 @@ Set-StrictMode -Version Latest
 $env:PYTHONDONTWRITEBYTECODE = "1"
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
-$qmdLauncher = Join-Path $PSScriptRoot "run_qmd_history_gateway.ps1"
+$qmdLiveLauncher = Join-Path $PSScriptRoot "run_qmd_gateway.ps1"
+$qmdHistoryLauncher = Join-Path $PSScriptRoot "run_qmd_history_gateway.ps1"
 $backendLauncher = Join-Path $PSScriptRoot "run_backend.ps1"
 $frontendLauncher = Join-Path $PSScriptRoot "run_frontend.py"
 $serviceTabHost = Join-Path $PSScriptRoot "run_windows_terminal_service_tab.ps1"
@@ -180,7 +183,8 @@ function Assert-RepositoryGitSize {
     }
 }
 
-Assert-Launcher -Path $qmdLauncher
+Assert-Launcher -Path $qmdLiveLauncher
+Assert-Launcher -Path $qmdHistoryLauncher
 Assert-Launcher -Path $backendLauncher
 Assert-Launcher -Path $frontendLauncher
 Assert-Launcher -Path $serviceTabHost
@@ -212,10 +216,16 @@ $pathTerms = @($toolDirectories | ForEach-Object { ConvertTo-PowerShellLiteral -
 $pathTerms += '$env:PATH'
 $pathAssignment = '$env:PYTHONDONTWRITEBYTECODE = ''1''' + [Environment]::NewLine +
     '$env:PATH = ' + ($pathTerms -join ' + [IO.Path]::PathSeparator + ') + [Environment]::NewLine
-$qmdBind = "$HostName`:$QmdHistoryPort"
-$qmdCommand = $pathAssignment +
-    '$env:QMD_HISTORY_BIND = ' + (ConvertTo-PowerShellLiteral -Value $qmdBind) + [Environment]::NewLine +
-    "& " + (ConvertTo-PowerShellLiteral -Value $qmdLauncher)
+$qmdLiveBind = "$HostName`:$QmdLivePort"
+$qmdLiveCommand = $pathAssignment +
+    "& " + (ConvertTo-PowerShellLiteral -Value $qmdLiveLauncher) +
+    " -Bind " + (ConvertTo-PowerShellLiteral -Value $qmdLiveBind) +
+    " -PythonExe " + (ConvertTo-PowerShellLiteral -Value $resolvedPython) +
+    " -TerminalNoScreen"
+$qmdHistoryBind = "$HostName`:$QmdHistoryPort"
+$qmdHistoryCommand = $pathAssignment +
+    '$env:QMD_HISTORY_BIND = ' + (ConvertTo-PowerShellLiteral -Value $qmdHistoryBind) + [Environment]::NewLine +
+    "& " + (ConvertTo-PowerShellLiteral -Value $qmdHistoryLauncher)
 $backendCommand = $pathAssignment +
     "& " + (ConvertTo-PowerShellLiteral -Value $backendLauncher) +
     " -HostName " + (ConvertTo-PowerShellLiteral -Value $HostName) +
@@ -281,10 +291,16 @@ function Open-ServiceTabs {
 
 $serviceTabs = @(
     [pscustomobject]@{
+        Title = "QMD Live"
+        Role = "qmd_live"
+        Port = $QmdLivePort
+        Command = $qmdLiveCommand
+    },
+    [pscustomobject]@{
         Title = "QMD History"
         Role = "qmd_history"
         Port = $QmdHistoryPort
-        Command = $qmdCommand
+        Command = $qmdHistoryCommand
     },
     [pscustomobject]@{
         Title = "Backend"
@@ -323,9 +339,10 @@ if ($WhatIfPreference) {
 }
 
 Write-Host ""
-Write-Host "Opened independent QMD History, Backend, and Frontend PowerShell tabs in $($usedTerminalWindowTarget.Description)."
-Write-Host "This starter now exits instead of supervising the three launcher processes."
+Write-Host "Opened independent QMD Live, QMD History, Backend, and Frontend PowerShell tabs in $($usedTerminalWindowTarget.Description)."
+Write-Host "This starter now exits instead of supervising the four launcher processes."
 Write-Host "A successful graceful stop exits each tab host cleanly so Windows Terminal closes the service tabs."
+Write-Host "QMD Live:    http://$HostName`:$QmdLivePort"
 Write-Host "QMD History: http://$HostName`:$QmdHistoryPort"
 Write-Host "Backend:    http://$HostName`:$BackendPort"
 Write-Host "Frontend:   http://$HostName`:$FrontendPort"

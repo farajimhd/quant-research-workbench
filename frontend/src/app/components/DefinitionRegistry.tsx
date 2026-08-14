@@ -115,8 +115,8 @@ export function useRegistryPresentation(kind: string, registryId?: string) {
   if (!registry) throw new Error("DefinitionRegistryProvider is required for registry-backed presentation.");
   const definition = registryId ? registry.resolve(registryId) : undefined;
   if (registryId && !definition) throw new Error(`Unknown registry definition: ${registryId}`);
-  if (definition && definition.kind !== kind) throw new Error(`Registry kind mismatch for ${registryId}: expected ${definition.kind}, received ${kind}`);
-  const type = registry.types.get(definition?.kind ?? kind);
+  const resolvedKind = definition?.kind ?? kind;
+  const type = registry.types.get(resolvedKind);
   if (!type) throw new Error(`Unknown registry presentation kind: ${kind}`);
   const binding = definition?.configuration_binding_id ? registry.bindings.get(definition.configuration_binding_id) : undefined;
   return {
@@ -126,6 +126,7 @@ export function useRegistryPresentation(kind: string, registryId?: string) {
     configurationMode: definition?.configuration_mode ?? type.configuration_mode,
     definition,
     icon: definition?.presentation.icon ?? type.icon,
+    kind: resolvedKind,
     kindLabel: definition?.presentation.kind_label ?? type.label,
   };
 }
