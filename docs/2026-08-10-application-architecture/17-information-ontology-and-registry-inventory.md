@@ -70,6 +70,145 @@ existing API and Rust type names remain compatibility names until migrated.
 | Strategy Profile | Parameters and evidence bindings for one registered Strategy definition/revision. | Strategy ID/revision plus referenced bindings and rule sets. |
 | Run Plan | Mode-specific executable selection of Strategy Profile, Watchlists, Canvas profile, account/broker policy, and causal data plan. | References existing versioned parts; it does not embed new implementations. |
 
+## Final user-facing access model
+
+The registries above are backend authorities, not the final UI. The user should
+never have to decide whether an item came from `FieldDefinition`, a Rust
+catalog, a query plan, or a database table. The frontend projects those typed
+definitions into one shared interaction pattern while preserving their real
+kinds.
+
+### The final access element
+
+The common access control is the **Data & Analytics picker**. It is a searchable,
+scrollable picker reused by Market Discovery, Scanner/Watchlist columns, chart
+studies, rule construction, and Strategy Studio. It has typed tabs rather than
+one generic “Capability” list:
+
+| Picker tab | What the user selects | Registry authority | Result of selection |
+| --- | --- | --- | --- |
+| **Fields** | A directly usable fact such as Last price, Public float, Sector, or Revenue | `FieldDefinition` | Adds a column, condition operand, chart series, fact, or Strategy binding according to context. |
+| **Indicators** | A derivation such as MACD, RSI, VWAP, or NBBO Liquidity | `DerivationDefinition` | Enables the derivation for the allowed population/timeframe and exposes its selected output fields. |
+| **Signals** | A lifecycle detector such as VWAP Transition or Liquidity Dislocation | `SignalDefinition` | Adds an event condition/annotation or an explicitly registered latest-state projection. |
+| **Rule sets** | A reusable named Boolean rule set | `RuleSetDefinition` | Adds the existing rule-set card to a Watchlist or Strategy stage. |
+| **Watchlists** | A reusable configured universe | `WatchlistDefinition` | Adds a persisted Watchlist tab/container binding or selects it for a Run Plan. |
+
+The picker is a derived UI view, not another semantic registry. Internally it
+may use a `CatalogItemView`, but that view contains only presentation and
+allowed-action data:
+
+```text
+kind, canonical_id, label, short_description
+group, owner, provenance, availability/status
+supported_timeframes, allowed_actions
+output_field_ids (derivations only)
+event_property_ids (signals only)
+```
+
+It must never infer `kind` from a name or ID and must never become a second
+source of labels, outputs, or availability.
+
+### Typed cards and rows
+
+Each picker result uses a shared visual shell but a type-specific noun and
+action. A user sees **Field**, **Indicator**, **Signal**, **Rule set**, or
+**Watchlist**—never “Capability.”
+
+```text
+┌──────────────────────────────────────────────────────────────────┐
+│ Last price                                      FIELD · MARKET   │
+│ Most recent causally available eligible trade price.             │
+│ QMD · Raw · Event driven · Available                             │
+│ Used by: Scanner, 12 Watchlists, 1 Strategy      [Add column]     │
+└──────────────────────────────────────────────────────────────────┘
+```
+
+```text
+┌──────────────────────────────────────────────────────────────────┐
+│ Core Momentum Oscillators                     INDICATOR · QMD     │
+│ Outputs: RSI 14, MACD line, MACD signal, MACD histogram          │
+│ Watchlist scope · 1m/5m · Implemented                            │
+│ Configure: timeframe, parameters                 [Enable]         │
+└──────────────────────────────────────────────────────────────────┘
+```
+
+A collapsed row shows label, type badge, source/owner, availability, and the
+contextual action. Expansion shows canonical ID, definition, entity grain,
+units/format, timeframe, event and availability clocks, freshness, provenance,
+null reasons, producer/version, consumers, and coverage. Technical source paths
+and query-plan IDs appear under **Provenance**, not as the primary label.
+
+### Context changes the action, not the definition
+
+| Surface | User-facing access element | What is selectable | Final visible result |
+| --- | --- | --- | --- |
+| Market Discovery > Universal Ingest | Read-only **Processing step cards** | Nothing; required steps are inspected | Step name, purpose, inputs/outputs, owner, readiness, coverage. No column action. |
+| Market Discovery > Core Scan | **Core fields** and **Core analytics** sections | Allowed Core fields/derivations | Selected Core row schema and required computations. |
+| Market Discovery > Watchlist > Rules | **Add rule set** picker and condition editor | Rule sets; fields/signals when authoring a rule | Removable Rule-set cards containing human-readable conditions. Presence means included; removal stops use. |
+| Market Discovery > Watchlist > Columns | **Add field** picker | Fields with a ColumnDefinition for Watchlists | Removable/reorderable column chips/cards; table heading comes from the shared ColumnDefinition. |
+| Market Discovery > Watchlist > Calculations | **Add indicator** picker | Watchlist/Strategy-scope derivations | Enabled Indicator cards with timeframe, parameters, and selected output fields. |
+| Scanner/Watchlist container | **Columns** button | Fields allowed by the product and current mode | A formatted table column. The user sees the Column label; details link back to the Field. |
+| Scanner/Watchlist row | Symbol cell, values, badges, event icons | No catalog selection | Current observations. Company/logo are part of the Symbol cell; News/SEC recency icons remain event/evidence accessors. |
+| Chart | **Indicators** picker | Request-scope derivations and field series | Overlay/pane series named from output FieldDefinitions; settings belong to the selected derivation instance. |
+| Strategy Studio | **Add evidence** picker with Fields, Signals, and Rule sets tabs | Strategy-eligible fields, signal event properties, rule sets | Evidence-binding chip/card showing user label, timeframe, runtime binding, and source status. |
+| Facts/News/SEC/XBRL | Grouped **Field rows** and evidence cards | Usually read-only; optional export/filter selection | Value plus as-of/provenance details; document/event navigation where applicable. |
+| Service Health / administrative catalog | **Sources**, **Products**, **Processing**, and **Coverage** tables | Administrative inspection/configuration only | Operational state and dependency graph; these do not appear as Scanner fields. |
+| Run Plan editor | Reference selectors for Strategy Profile, Watchlists, and Canvas profile | Existing configured larger parts | Stable IDs/revisions summarized as removable selections. |
+
+### What the user ultimately sees for each registry kind
+
+| Registry kind | Role in the new design | Normal user presentation | Directly selectable? |
+| --- | --- | --- | --- |
+| `FieldDefinition` | Defines one fact that consumers can use consistently | **Field row/card** in the picker; value becomes a column, series, fact, or operand | Yes, when its status/mode/product policy allows. |
+| `Observation` | Carries one field value with clocks/provenance | Formatted table cell, fact value, chart point, or condition evidence | No; it is runtime data. |
+| `ColumnDefinition` | Defines how a Field appears in a specific table | Table heading and formatting; column chip in configuration | Selected through its Field, not as a separate catalog concept. |
+| `DerivationDefinition` | Produces reusable derived/indicator fields | **Indicator card** with outputs, scope, timeframe, parameters, cost/readiness | Yes, in Analytics/Indicators contexts. |
+| `SignalDefinition` | Emits lifecycle events from evidence | **Signal card**, chart marker, activity row, or event-condition choice | Yes, in Signals/evidence contexts. |
+| `ProcessingStepDefinition` | Protects event integrity or transport | Read-only **Processing step card** in Universal Ingest/Service Health | No for ordinary users; system/admin policy only. |
+| `RuleSetDefinition` | Reusable Boolean decision component | Removable **Rule-set card** with readable clauses | Yes. Adding means used; removing means no longer used. |
+| `WatchlistDefinition` | Produces causal bounded membership | Named **Watchlist tab/card** and persistent Canvas container binding | Yes. It is a larger configured part. |
+| `StrategyInputBinding` | Adapts canonical evidence to a Strategy runtime name | **Evidence binding chip/card** inside Strategy Studio | Created by selecting a Field/Signal; not browsed as an independent data item. |
+| `ProductDefinition` | Delivers records/streams such as Scanner or Chart | Product/source badge and provenance details; container dependency in admin view | Usually no; a container or Run Plan references it. |
+| `SourceDefinition` / `QueryPlanDefinition` | Establishes source and bounded retrieval authority | Provenance drawer and administrative catalog | No in ordinary authoring. |
+| Configuration schemas, Profiles, Run Plans | Compose reusable parts into approved behavior | Named configuration cards/selectors with revision/status | Yes in their owning configuration workflow. |
+
+### Semantic field groups in the user experience
+
+This maps the large field inventory below to its actual role and presentation.
+
+| Field group | Role | Primary user surfaces | Default presentation |
+| --- | --- | --- | --- |
+| Identity, listing, tradability | Establishes which instrument a row/value belongs to and whether it may participate | Scanner/Watchlist Symbol cell, Facts, filters, routing explanations | Symbol/company composite cell, exchange/tradability badges; stable IDs only in details. |
+| Presentation | Supplies logo and asset state without changing identity | Symbol cells, instrument header | Logo/avatar integrated with Symbol; not standalone columns by default. |
+| Country and classification | Provides categorical screening and grouping | Field picker, rules, Watchlists, Facts | Text/category field; optional table column or condition operand. |
+| Market reference and share supply | Provides slower point-in-time context such as market cap, float, short interest, borrow | Scanner/Watchlist columns, rules, Facts | Formatted numeric/category field with source date and coverage/null explanation. |
+| QMD Scanner market fields | Provides current causal market state and rank inputs | Core Scan, Scanner/Watchlist tables, chart, Strategy evidence | Primary numeric table fields; QMD owner/timeframe/freshness in expanded details. |
+| Corporate events | Represents dated IPO, split, dividend, and ticker-change evidence | Event field picker, Watchlists, chart annotations, ticker facts | Event badge/card or date/distance column; opens event evidence. |
+| Fundamentals and XBRL quality | Provides filing-derived facts, ratios, trajectories, and evidence quality | Fundamental Watchlists, Facts/XBRL, Strategy evidence | Grouped financial field rows/cards with period, filing availability, units, and quality. |
+| News and SEC canonical fields | Provides document recency, counts, identity, and navigation | News/SEC containers, Scanner icons, rules | Recency/count field plus persistent News/SEC icons; document cards remain the event authority. |
+| Intelligence and signal projections | Provides validated semantic/event properties for rules and Strategies | Signals picker, Watchlists, Strategy Studio, chart annotations | Signal card/event marker; scalar score only where an explicit projected Field exists. |
+| Model context | Supplies promoted opaque/vector/model artifacts to approved consumers | Strategy/model administration and provenance | Not a raw table column. Show artifact/model card and readiness; expose a scalar only through a registered Field. |
+| Quality, coverage, relationships, schedules | Explains absence, identity resolution, source completeness, and refresh state | Service Health, provenance drawer, eligibility explanation | Status/evidence row; hidden from ordinary column picker unless a diagnostic surface requests it. |
+
+### Complete example: Last price as the user encounters it
+
+1. In the application catalog the user finds **Last price**, type **Field**, group
+   **Market**, source badge **QMD**, status **Available**.
+2. In Scanner or Watchlist configuration, **Add field** creates the `last_price`
+   ColumnDefinition reference. The visible heading is **LAST PRICE** and the
+   value uses the shared currency/precision format.
+3. In a rule editor, selecting **Last price** creates an operand reference to
+   `market.last_price`; the user sees a sentence such as “Last price is greater
+   than 5.00,” not a source column name.
+4. In Strategy Studio, **Add evidence > Fields > Last price** creates a binding
+   card that shows timeframe and the runtime adapter `price` in advanced
+   details.
+5. In a chart, Last price is the base price series supplied by the Chart
+   product; it is not re-added as an indicator.
+6. Expanding **Provenance** shows QMD, raw eligible trade state,
+   `qmd.scanner.snapshot.v1`, event/availability clocks, TTL, coverage, and null
+   reasons. Those details never replace the user-facing name.
+
 ## Composition hierarchy
 
 ```mermaid
@@ -484,6 +623,7 @@ registrations:
 | P1 | Add `DerivationDefinition` records for current backend and QMD derived outputs. | Each exposed derived FieldDefinition names inputs, algorithm/version, parameters, scope, warm-up, clocks, and null/coverage policy. |
 | P1 | Register QMD output fields deliberately. | Every output crossing QMD has a canonical field/event-property ID; private/offline outputs remain private and are not bulk-added. |
 | P1 | Replace `DiscoveryCapability` and `canonicalCapabilityType` heuristics with typed API contracts. | Frontend renders labels/groups/status from registry data and does not determine semantic kind from ID/name. |
+| P1 | Implement the shared Data & Analytics picker and typed card shell. | Market Discovery, table Columns, charts, rule authoring, and Strategy Studio reuse one registry-driven picker with context-specific allowed actions; users never see a generic Capability item. |
 | P1 | Normalize ColumnDefinitions. | Scanner and Watchlist headings, format, sorting, and filtering come only from the shared column registry; each column references exactly one field. |
 | P2 | Review Reference Gateway candidate values against concrete consumers. | Each accepted candidate has a unique semantic ID and query-plan mapping; rejected candidates remain physical/internal without UI exposure. |
 | P2 | Mark legacy/staging/backup/scratch storage explicitly. | Schema inventory and operational UI cannot select those tables as field authority. |
@@ -510,6 +650,9 @@ registrations:
    changes the source/clock plan, not semantic meaning.
 10. Larger configured parts reference existing smaller parts by stable ID and
     version. They never recreate those parts in UI-local constants.
+11. The shared picker is a presentation projection only. Selecting an item
+    creates a reference to its canonical definition; it never copies or mutates
+    that definition.
 
 ## Navigation
 
