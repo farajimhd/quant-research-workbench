@@ -29,7 +29,9 @@ from research.bar_gpt.v2.run_train_full_chunks import (
 )
 from research.bar_gpt.v2.train import (
     _chunk_advance_decision,
+    _chunk_early_stopping_update,
     _chunk_repetition_complete,
+    _chunk_stopping_evaluation_due,
     _outer_early_stopping_update,
     parse_args as parse_train_args,
 )
@@ -237,6 +239,11 @@ class FullChunkPlanTest(unittest.TestCase):
             TrainConfig(max_chunk_epochs=0).validate()
         with self.assertRaisesRegex(ValueError, "chunk epochs"):
             TrainConfig(min_chunk_epochs=5, max_chunk_epochs=4).validate()
+        with self.assertRaisesRegex(ValueError, "positive multiples"):
+            TrainConfig(
+                full_chunk_training=True,
+                chunk_cosine_cycle_repetitions=3,
+            ).validate()
         with self.assertRaisesRegex(ValueError, "chunk early-stopping patience"):
             TrainConfig(chunk_early_stopping_patience=0).validate()
         with self.assertRaisesRegex(ValueError, "patience"):
@@ -296,6 +303,7 @@ class FullChunkPlanTest(unittest.TestCase):
                 minimum_repetitions=4,
                 maximum_repetitions=20,
                 patience_exhausted=True,
+                stopping_evaluation_due=False,
             ),
             (False, False, False),
         )
@@ -305,6 +313,7 @@ class FullChunkPlanTest(unittest.TestCase):
                 minimum_repetitions=4,
                 maximum_repetitions=20,
                 patience_exhausted=True,
+                stopping_evaluation_due=True,
             ),
             (True, True, False),
         )
@@ -314,9 +323,72 @@ class FullChunkPlanTest(unittest.TestCase):
                 minimum_repetitions=4,
                 maximum_repetitions=20,
                 patience_exhausted=False,
+                stopping_evaluation_due=True,
             ),
             (True, False, True),
         )
+
+    def test_chunk_early_stopping_updates_only_at_two_repetition_cycle_ends(self) -> None:
+        self.assertFalse(
+            _chunk_stopping_evaluation_due(
+                completed_repetitions=1, cycle_repetitions=2
+            )
+        )
+        self.assertTrue(
+            _chunk_stopping_evaluation_due(
+                completed_repetitions=2, cycle_repetitions=2
+            )
+        )
+        best, reference, stale, exhausted, checked = _chunk_early_stopping_update(
+            completed_repetitions=1,
+            cycle_repetitions=2,
+            observed_loss=9.0,
+            best_loss=float("inf"),
+            reference_loss=float("inf"),
+            epochs_without_improvement=0,
+            patience=1,
+            minimum_relative_delta=0.001,
+        )
+        self.assertEqual((best, reference, stale, exhausted, checked), (
+            float("inf"), float("inf"), 0, False, False,
+        ))
+        best, reference, stale, exhausted, checked = _chunk_early_stopping_update(
+            completed_repetitions=2,
+            cycle_repetitions=2,
+            observed_loss=10.0,
+            best_loss=best,
+            reference_loss=reference,
+            epochs_without_improvement=stale,
+            patience=1,
+            minimum_relative_delta=0.001,
+        )
+        self.assertEqual((best, reference, stale, exhausted, checked), (
+            10.0, 10.0, 0, False, True,
+        ))
+        unchanged = _chunk_early_stopping_update(
+            completed_repetitions=3,
+            cycle_repetitions=2,
+            observed_loss=8.0,
+            best_loss=best,
+            reference_loss=reference,
+            epochs_without_improvement=stale,
+            patience=1,
+            minimum_relative_delta=0.001,
+        )
+        self.assertEqual(unchanged, (10.0, 10.0, 0, False, False))
+        best, reference, stale, exhausted, checked = _chunk_early_stopping_update(
+            completed_repetitions=4,
+            cycle_repetitions=2,
+            observed_loss=10.1,
+            best_loss=best,
+            reference_loss=reference,
+            epochs_without_improvement=stale,
+            patience=1,
+            minimum_relative_delta=0.001,
+        )
+        self.assertEqual((best, reference, stale, exhausted, checked), (
+            10.0, 10.0, 1, True, True,
+        ))
 
     def test_chunk_cosine_restarts_every_minimum_repetition_group(self) -> None:
         parameter = torch.nn.Parameter(torch.ones(()))
@@ -474,6 +546,32 @@ class FullChunkPlanTest(unittest.TestCase):
         self.assertEqual(scheduler.chunk_cycle_index, 1)
         self.assertAlmostEqual(optimizer.param_groups[0]["lr"], 1e-3)
 
+    def test_chunk_cosine_can_hold_floor_during_boundary_validation(self) -> None:
+        optimizer = torch.optim.SGD(
+            (torch.nn.Parameter(torch.ones(())),), lr=1e-3
+        )
+        scheduler = EpochChunkCosineScheduler(
+            optimizer,
+            minimum_lr=1e-5,
+            epoch_decay=0.95,
+        )
+        scheduler.start_chunk(
+            epoch=0,
+            start_samples=0,
+            cycle_samples=200_000,
+            samples_seen=0,
+        )
+        scheduler.step(samples_seen=200_000)
+        self.assertAlmostEqual(optimizer.param_groups[0]["lr"], 1e-3)
+        scheduler.hold_cycle_endpoint()
+        self.assertAlmostEqual(optimizer.param_groups[0]["lr"], 1e-5)
+        self.assertAlmostEqual(scheduler.chunk_progress, 1.0)
+        self.assertEqual(scheduler.chunk_cycle_index, 0)
+        scheduler.step(samples_seen=200_000)
+        self.assertAlmostEqual(optimizer.param_groups[0]["lr"], 1e-3)
+        self.assertAlmostEqual(scheduler.chunk_progress, 0.0)
+        self.assertEqual(scheduler.chunk_cycle_index, 1)
+
 
 class FullChunkLauncherTest(unittest.TestCase):
     def test_defaults_to_medium_and_preserves_samples_seen_as_training_clock(self) -> None:
@@ -504,6 +602,7 @@ class FullChunkLauncherTest(unittest.TestCase):
         self.assertEqual(parsed.chunk_validation_origins, 1_000_000)
         self.assertEqual(parsed.min_chunk_epochs, 4)
         self.assertEqual(parsed.max_chunk_epochs, 20)
+        self.assertEqual(parsed.chunk_cosine_cycle_repetitions, 2)
         self.assertEqual(parsed.chunk_early_stopping_patience, 1)
         self.assertEqual(parsed.scheduler_mode, "epoch-chunk-cosine")
         self.assertEqual(parsed.cosine_restart_decay, 0.95)

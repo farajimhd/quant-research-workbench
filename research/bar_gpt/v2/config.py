@@ -368,6 +368,10 @@ class TrainConfig:
     chunk_validation_origins: int = 1_000_000
     min_chunk_epochs: int = 4
     max_chunk_epochs: int = 20
+    # Chunk early stopping is authoritative only after complete cosine cycles.
+    # Two complete shard replays give every restart time to anneal back to the
+    # minimum LR before its validation result can advance the chunk.
+    chunk_cosine_cycle_repetitions: int = 2
     chunk_early_stopping_patience: int = 1
     chunk_early_stopping_min_relative_delta: float = 0.001
     outer_early_stopping_patience: int = 0
@@ -405,6 +409,15 @@ class TrainConfig:
         if not 1 <= self.min_chunk_epochs <= self.max_chunk_epochs:
             raise ValueError(
                 "chunk epochs must satisfy 1 <= min_chunk_epochs <= max_chunk_epochs"
+            )
+        if self.full_chunk_training and (
+            self.chunk_cosine_cycle_repetitions <= 0
+            or self.min_chunk_epochs % self.chunk_cosine_cycle_repetitions != 0
+            or self.max_chunk_epochs % self.chunk_cosine_cycle_repetitions != 0
+        ):
+            raise ValueError(
+                "full-training chunk minimum and maximum repetitions must be "
+                "positive multiples of chunk_cosine_cycle_repetitions"
             )
         if self.chunk_early_stopping_patience <= 0:
             raise ValueError("chunk early-stopping patience must be positive")

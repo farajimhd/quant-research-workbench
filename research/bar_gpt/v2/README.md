@@ -157,26 +157,32 @@ replayed over precisely the same block membership for at least four and at
 most 20 repetitions.
 A fixed randomly sampled, stratified 1M-origin held-out panel is assigned to
 that chunk and reused after every repetition. A reduction smaller than 0.1%
-counts as no improvement; the default patience of one can move to the next
-chunk after the first non-improving repetition only after all four minimum
-repetitions complete. The fixed 5M validation panel is
+counts as no improvement. Validation remains visible after every repetition,
+but only the ends of complete two-repetition cosine cycles update patience or
+authorize an early stop: repetitions 2, 4, 6, and so on. Repetition 2 records
+the first authoritative comparison but cannot advance the chunk; repetition 4
+is the first possible early stop because every chunk has four minimum
+repetitions. The default patience remains one. The fixed 5M validation panel is
 evaluated only at the outer-epoch boundary and drives outer early stopping.
 The next epoch's compact index plan is prepared concurrently without reading
 shard tensors. W&B continues to use cumulative `samples_seen` as its step;
 outer epoch, chunk, and chunk repetition are additional fields.
 
-The full trainer uses a restarting sample-clock cosine cycle spanning the four
-minimum repetitions. Its exact horizon is `chunk_origins * 4` (approximately
-120M origins for a 30M chunk). A chunk that continues beyond four repetitions
-starts another four-repetition cycle at the same outer-epoch peak; moving to a
-new chunk also starts a fresh cycle. The peak is unchanged across cycles and
+The full trainer uses a restarting sample-clock cosine cycle spanning two
+repetitions. Its exact horizon is `chunk_origins * 2` (approximately 60M
+origins for a 30M chunk). A chunk that continues beyond two repetitions starts
+another two-repetition cycle at the same outer-epoch peak; moving to a new
+chunk also starts a fresh cycle. At each cycle boundary, validation observes
+the minimum LR before the scheduler exposes the next cycle's peak. The peak is
+unchanged across cycles and
 chunks in the same outer epoch, then decays by `0.95` at the next outer epoch;
 the minimum learning rate is `1e-5`. Resuming the original production run uses
 an explicit floor-decrease migration that preserves model, optimizer, data
 cursor, and stopping state while rejecting LR-floor increases or any other
 scheduler-contract change. Rich displays the active repetition,
 minimum repetition count, cosine cycle/progress, epoch peak, and early-stopping
-state. Legacy full-training checkpoints are rebound to this cycle using their
+state. Legacy full-training checkpoints are rebound to the two-repetition
+cycle using their
 restored chunk start and cumulative sample clock, without resetting model,
 optimizer, data cursor, or stopping history.
 

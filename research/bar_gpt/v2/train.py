@@ -266,6 +266,11 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--max-chunk-epochs", type=int, default=train.max_chunk_epochs)
     parser.add_argument("--min-chunk-epochs", type=int, default=train.min_chunk_epochs)
     parser.add_argument(
+        "--chunk-cosine-cycle-repetitions",
+        type=int,
+        default=train.chunk_cosine_cycle_repetitions,
+    )
+    parser.add_argument(
         "--chunk-early-stopping-patience",
         type=int,
         default=train.chunk_early_stopping_patience,
@@ -433,6 +438,9 @@ def build_config(args: argparse.Namespace) -> ExperimentConfig:
         chunk_validation_origins=int(args.chunk_validation_origins),
         min_chunk_epochs=int(args.min_chunk_epochs),
         max_chunk_epochs=int(args.max_chunk_epochs),
+        chunk_cosine_cycle_repetitions=int(
+            args.chunk_cosine_cycle_repetitions
+        ),
         chunk_early_stopping_patience=int(args.chunk_early_stopping_patience),
         chunk_early_stopping_min_relative_delta=float(
             args.chunk_early_stopping_min_relative_delta
@@ -753,12 +761,56 @@ def _outer_early_stopping_update(
     return best_loss, reference_loss, epochs_without_improvement, stopped
 
 
+def _chunk_stopping_evaluation_due(
+    *, completed_repetitions: int, cycle_repetitions: int
+) -> bool:
+    if completed_repetitions <= 0 or cycle_repetitions <= 0:
+        raise ValueError("chunk repetition and cosine-cycle counts must be positive")
+    return completed_repetitions % cycle_repetitions == 0
+
+
+def _chunk_early_stopping_update(
+    *,
+    completed_repetitions: int,
+    cycle_repetitions: int,
+    observed_loss: float,
+    best_loss: float,
+    reference_loss: float,
+    epochs_without_improvement: int,
+    patience: int,
+    minimum_relative_delta: float,
+) -> tuple[float, float, int, bool, bool]:
+    """Update patience only for validation at a complete cosine-cycle end."""
+    evaluation_due = _chunk_stopping_evaluation_due(
+        completed_repetitions=completed_repetitions,
+        cycle_repetitions=cycle_repetitions,
+    )
+    if not evaluation_due:
+        return (
+            best_loss,
+            reference_loss,
+            epochs_without_improvement,
+            False,
+            False,
+        )
+    updated = _outer_early_stopping_update(
+        observed_loss=observed_loss,
+        best_loss=best_loss,
+        reference_loss=reference_loss,
+        epochs_without_improvement=epochs_without_improvement,
+        patience=patience,
+        minimum_relative_delta=minimum_relative_delta,
+    )
+    return (*updated, True)
+
+
 def _chunk_advance_decision(
     *,
     completed_repetitions: int,
     minimum_repetitions: int,
     maximum_repetitions: int,
     patience_exhausted: bool,
+    stopping_evaluation_due: bool,
 ) -> tuple[bool, bool, bool]:
     """Return advance, early-stop, and maximum-stop decisions for a chunk."""
     if not 1 <= minimum_repetitions <= maximum_repetitions:
@@ -767,7 +819,9 @@ def _chunk_advance_decision(
         raise ValueError("completed_repetitions must be positive")
     reached_maximum = completed_repetitions >= maximum_repetitions
     early_stopped = bool(
-        completed_repetitions >= minimum_repetitions and patience_exhausted
+        completed_repetitions >= minimum_repetitions
+        and stopping_evaluation_due
+        and patience_exhausted
     )
     return early_stopped or reached_maximum, early_stopped, reached_maximum
 
@@ -2550,6 +2604,9 @@ def main(argv: Iterable[str] | None = None) -> int:
         next_epoch_plan_ready=False,
         chunk_epoch_index=chunk_epoch + 1,
         chunk_epochs_minimum=config.train.min_chunk_epochs,
+        chunk_cosine_cycle_repetitions=(
+            config.train.chunk_cosine_cycle_repetitions
+        ),
         chunk_epochs_total=config.train.max_chunk_epochs,
         chunk_epoch_start_origins=chunk_epoch_start_samples,
         chunk_epoch_start_blocks=chunk_epoch_start_blocks,
@@ -2646,6 +2703,9 @@ def main(argv: Iterable[str] | None = None) -> int:
             ),
             "chunk_ready_to_advance": bool(chunk_ready_to_advance),
             "chunk_epoch_validated": bool(chunk_epoch_validated),
+            "chunk_cosine_cycle_repetitions": int(
+                config.train.chunk_cosine_cycle_repetitions
+            ),
             "chunks_completed": int(chunks_completed),
             "epoch_plan_hash": (
                 current_epoch_chunk_plan.plan_hash
@@ -2771,6 +2831,30 @@ def main(argv: Iterable[str] | None = None) -> int:
                     blocks_seen - chunk_epoch_start_blocks
                 ),
                 "chunk/validation_origins": float(active_chunk.validation_origins),
+                "chunk/cosine_cycle_repetitions": float(
+                    config.train.chunk_cosine_cycle_repetitions
+                ),
+                "chunk/early_stopping_evaluation": float(
+                    _chunk_stopping_evaluation_due(
+                        completed_repetitions=chunk_epoch + 1,
+                        cycle_repetitions=(
+                            config.train.chunk_cosine_cycle_repetitions
+                        ),
+                    )
+                ),
+                "chunk/scheduler_evaluation_learning_rate": float(
+                    optimizer.param_groups[0]["lr"]
+                ),
+                "chunk/scheduler_evaluation_cosine_progress": float(
+                    scheduler.chunk_progress
+                    if isinstance(scheduler, EpochChunkCosineScheduler)
+                    else 0.0
+                ),
+                "chunk/scheduler_evaluation_cosine_cycle": float(
+                    scheduler.chunk_cycle_index + 1
+                    if isinstance(scheduler, EpochChunkCosineScheduler)
+                    else 0
+                ),
             }
         )
         last_val = chunk_metrics
@@ -2789,14 +2873,32 @@ def main(argv: Iterable[str] | None = None) -> int:
         nonlocal chunk_epochs_without_improvement, chunk_ready_to_advance
         nonlocal chunk_epoch_validated
         nonlocal chunks_completed
-        chunk_metrics = run_chunk_validation(active_chunk)
+        completed_repetitions = chunk_epoch + 1
+        stopping_evaluation_due = _chunk_stopping_evaluation_due(
+            completed_repetitions=completed_repetitions,
+            cycle_repetitions=config.train.chunk_cosine_cycle_repetitions,
+        )
+        scheduler_endpoint_held = bool(
+            stopping_evaluation_due
+            and isinstance(scheduler, EpochChunkCosineScheduler)
+        )
+        if scheduler_endpoint_held:
+            scheduler.hold_cycle_endpoint()
+        try:
+            chunk_metrics = run_chunk_validation(active_chunk)
+        finally:
+            if scheduler_endpoint_held:
+                scheduler.step(samples_seen=samples_seen)
         observed_loss = float(chunk_metrics["chunk_validation_loss/total"])
         (
             chunk_best_validation_loss,
             chunk_validation_reference_loss,
             chunk_epochs_without_improvement,
             patience_exhausted,
-        ) = _outer_early_stopping_update(
+            stopping_evaluation_checked,
+        ) = _chunk_early_stopping_update(
+            completed_repetitions=completed_repetitions,
+            cycle_repetitions=config.train.chunk_cosine_cycle_repetitions,
             observed_loss=observed_loss,
             best_loss=chunk_best_validation_loss,
             reference_loss=chunk_validation_reference_loss,
@@ -2806,7 +2908,6 @@ def main(argv: Iterable[str] | None = None) -> int:
                 config.train.chunk_early_stopping_min_relative_delta
             ),
         )
-        completed_repetitions = chunk_epoch + 1
         (
             chunk_ready_to_advance,
             early_stopped_chunk,
@@ -2816,6 +2917,7 @@ def main(argv: Iterable[str] | None = None) -> int:
             minimum_repetitions=config.train.min_chunk_epochs,
             maximum_repetitions=config.train.max_chunk_epochs,
             patience_exhausted=patience_exhausted,
+            stopping_evaluation_due=stopping_evaluation_checked,
         )
         chunk_epoch_validated = True
         if chunk_ready_to_advance:
@@ -2837,6 +2939,12 @@ def main(argv: Iterable[str] | None = None) -> int:
             ),
             "chunk_control/early_stopped": float(early_stopped_chunk),
             "chunk_control/reached_maximum": float(reached_maximum),
+            "chunk_control/cycle_boundary": float(
+                stopping_evaluation_checked
+            ),
+            "chunk_control/cycle_repetitions": float(
+                config.train.chunk_cosine_cycle_repetitions
+            ),
         }
         metrics_logger.log(control_metrics, samples_seen)
         reporter.chunk_epoch(
@@ -2851,7 +2959,15 @@ def main(argv: Iterable[str] | None = None) -> int:
             (
                 f"Chunk {chunk_index + 1} stops after {completed_repetitions} repetitions"
                 if chunk_ready_to_advance
-                else f"Chunk {chunk_index + 1} continues to repetition {completed_repetitions + 1}"
+                else (
+                    f"Chunk {chunk_index + 1} continues to repetition "
+                    f"{completed_repetitions + 1}; early stopping "
+                    + (
+                        "checked at cosine-cycle end"
+                        if stopping_evaluation_checked
+                        else "deferred to the next cosine-cycle end"
+                    )
+                )
             )
         )
         return chunk_ready_to_advance
@@ -3050,7 +3166,7 @@ def main(argv: Iterable[str] | None = None) -> int:
                             start_samples=chunk_start_samples,
                             cycle_samples=(
                                 active_chunk.approximate_target_origins
-                                * config.train.min_chunk_epochs
+                                * config.train.chunk_cosine_cycle_repetitions
                             ),
                             samples_seen=samples_seen,
                         )
@@ -3512,7 +3628,7 @@ def main(argv: Iterable[str] | None = None) -> int:
                                             start_samples=chunk_start_samples,
                                             cycle_samples=(
                                                 next_chunk.approximate_target_origins
-                                                * config.train.min_chunk_epochs
+                                                * config.train.chunk_cosine_cycle_repetitions
                                             ),
                                             samples_seen=samples_seen,
                                         )

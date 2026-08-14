@@ -189,6 +189,7 @@ class EpochChunkCosineScheduler:
         self.chunk_start_samples = 0
         self.cycle_samples = 1
         self.warmup_completed_samples: int | None = None
+        self._cycle_endpoint_held = False
         self.step(samples_seen=0)
 
     def _epoch_peak(self, base_lr: float) -> float:
@@ -220,11 +221,14 @@ class EpochChunkCosineScheduler:
 
     @property
     def chunk_progress(self) -> float:
+        if self._cycle_endpoint_held:
+            return 1.0
         return self._cycle_position()[1]
 
     @property
     def chunk_cycle_index(self) -> int:
-        return self._cycle_position()[0]
+        cycle_index = self._cycle_position()[0]
+        return max(0, cycle_index - 1) if self._cycle_endpoint_held else cycle_index
 
     def start_chunk(
         self,
@@ -246,6 +250,7 @@ class EpochChunkCosineScheduler:
         self.step(samples_seen=samples_seen)
 
     def step(self, *, samples_seen: int) -> None:
+        self._cycle_endpoint_held = False
         self.samples_seen = max(0, int(samples_seen))
         if self.warmup_samples and self.samples_seen < self.warmup_samples:
             progress = self.samples_seen / self.warmup_samples
@@ -260,6 +265,19 @@ class EpochChunkCosineScheduler:
         for group, base_lr in zip(self.optimizer.param_groups, self.base_lrs, strict=True):
             peak = self._epoch_peak(base_lr)
             group["lr"] = self.minimum_lr + (peak - self.minimum_lr) * cosine
+
+    def hold_cycle_endpoint(self) -> None:
+        """Expose the LR that completed a cycle until its validation finishes.
+
+        The sample-clock calculation naturally maps an exact cycle boundary to
+        the next cycle's peak. No optimizer update occurs during validation, so
+        temporarily holding the floor makes boundary telemetry truthful without
+        changing either cycle's training trajectory. Calling ``step`` with the
+        current sample count releases the next-cycle peak afterward.
+        """
+        for group in self.optimizer.param_groups:
+            group["lr"] = self.minimum_lr
+        self._cycle_endpoint_held = True
 
     def state_dict(self) -> dict[str, Any]:
         return {

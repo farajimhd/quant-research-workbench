@@ -36,6 +36,7 @@ DEFAULT_MODEL_SIZE = "medium"
 DEFAULT_EPOCHS = 10
 DEFAULT_MIN_CHUNK_EPOCHS = 4
 DEFAULT_MAX_CHUNK_EPOCHS = 20
+DEFAULT_CHUNK_COSINE_CYCLE_REPETITIONS = 2
 DEFAULT_CHUNK_EARLY_STOPPING_PATIENCE = 1
 DEFAULT_CHUNK_EARLY_STOPPING_MIN_RELATIVE_DELTA = 0.001
 DEFAULT_EARLY_STOPPING_PATIENCE = 2
@@ -66,6 +67,11 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--max-chunk-epochs", type=int, default=DEFAULT_MAX_CHUNK_EPOCHS)
     parser.add_argument("--min-chunk-epochs", type=int, default=DEFAULT_MIN_CHUNK_EPOCHS)
+    parser.add_argument(
+        "--chunk-cosine-cycle-repetitions",
+        type=int,
+        default=DEFAULT_CHUNK_COSINE_CYCLE_REPETITIONS,
+    )
     parser.add_argument(
         "--chunk-early-stopping-patience",
         type=int,
@@ -223,6 +229,9 @@ def trainer_argv(args: argparse.Namespace, *, resolved_manifest: Path) -> list[s
             "--chunk-validation-origins": args.chunk_validation_origins,
             "--max-chunk-epochs": args.max_chunk_epochs,
             "--min-chunk-epochs": args.min_chunk_epochs,
+            "--chunk-cosine-cycle-repetitions": (
+                args.chunk_cosine_cycle_repetitions
+            ),
             "--chunk-early-stopping-patience": args.chunk_early_stopping_patience,
             "--chunk-early-stopping-min-relative-delta": (
                 args.chunk_early_stopping_min_relative_delta
@@ -263,6 +272,15 @@ def main(argv: Iterable[str] | None = None) -> int:
         raise ValueError(
             "chunk epochs must satisfy 1 <= min-chunk-epochs <= max-chunk-epochs"
         )
+    if (
+        args.chunk_cosine_cycle_repetitions <= 0
+        or args.min_chunk_epochs % args.chunk_cosine_cycle_repetitions != 0
+        or args.max_chunk_epochs % args.chunk_cosine_cycle_repetitions != 0
+    ):
+        raise ValueError(
+            "chunk minimum and maximum repetitions must be positive multiples "
+            "of chunk-cosine-cycle-repetitions"
+        )
     if args.chunk_early_stopping_patience <= 0:
         raise ValueError("chunk early-stopping patience must be positive")
     if args.manifest_index_workers <= 0:
@@ -291,8 +309,9 @@ def main(argv: Iterable[str] | None = None) -> int:
     )
     print(
         "Schedule: 4M-origin warmup; each cosine cycle spans "
-        f"{args.min_chunk_epochs} repetitions and restarts every "
-        f"{args.min_chunk_epochs} repetitions or when the chunk changes; "
+        f"{args.chunk_cosine_cycle_repetitions} repetitions and restarts every "
+        f"{args.chunk_cosine_cycle_repetitions} repetitions or when the chunk changes; "
+        "early stopping is authoritative only at cycle ends; "
         f"outer-epoch peak decay={DEFAULT_EPOCH_LR_DECAY:.2f}; "
         f"minimum learning rate={DEFAULT_MINIMUM_LEARNING_RATE:g}",
         flush=True,

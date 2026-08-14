@@ -84,6 +84,7 @@ class TrainingProgressState:
     chunk_count: int = 0
     chunk_epoch_index: int = 1
     chunk_epochs_minimum: int = 1
+    chunk_cosine_cycle_repetitions: int = 1
     chunk_epochs_total: int = 1
     chunk_epoch_start_origins: int = 0
     chunk_epoch_start_blocks: int = 0
@@ -516,6 +517,11 @@ class TrainingReporter:
             ("Chunk blocks", (s.chunk_blocks_seen, s.chunk_block_budget, ""), "ratio"),
             ("Chunk repetition", (s.chunk_epoch_index, s.chunk_epochs_total, ""), "ratio"),
             ("Minimum repetitions", s.chunk_epochs_minimum, "integer"),
+            (
+                "Cosine repetitions",
+                s.chunk_cosine_cycle_repetitions,
+                "integer",
+            ),
             ("Repetition blocks", s.chunk_epoch_blocks_seen, "integer"),
             ("Chunk best val", s.chunk_best_validation_loss, "number"),
             ("Chunk stale", s.chunk_epochs_without_improvement, "integer"),
