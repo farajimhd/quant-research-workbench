@@ -168,6 +168,7 @@ class EpochChunkCosineScheduler:
         minimum_lr: float,
         epoch_decay: float,
         warmup_samples: int = 0,
+        allow_minimum_lr_decrease_on_resume: bool = False,
     ) -> None:
         if warmup_samples < 0 or not 0.0 < epoch_decay <= 1.0:
             raise ValueError(
@@ -177,6 +178,9 @@ class EpochChunkCosineScheduler:
         self.minimum_lr = float(minimum_lr)
         self.epoch_decay = float(epoch_decay)
         self.warmup_samples = int(warmup_samples)
+        self.allow_minimum_lr_decrease_on_resume = bool(
+            allow_minimum_lr_decrease_on_resume
+        )
         self.base_lrs = [float(group["lr"]) for group in optimizer.param_groups]
         if any(self.minimum_lr < 0 or self.minimum_lr > base for base in self.base_lrs):
             raise ValueError("minimum_lr must be between zero and every base learning rate")
@@ -282,15 +286,19 @@ class EpochChunkCosineScheduler:
             raise RuntimeError("scheduler base learning rates do not match the resumed optimizer")
         saved_contract = {
             "warmup_samples": int(state.get("warmup_samples", -1)),
-            "minimum_lr": float(state.get("minimum_lr", -1)),
             "epoch_decay": float(state.get("epoch_decay", -1)),
         }
         current_contract = {
             "warmup_samples": self.warmup_samples,
-            "minimum_lr": self.minimum_lr,
             "epoch_decay": self.epoch_decay,
         }
         if saved_contract != current_contract:
+            raise RuntimeError("scheduler configuration does not match the resumed run")
+        saved_minimum_lr = float(state.get("minimum_lr", -1))
+        if saved_minimum_lr != self.minimum_lr and not (
+            self.allow_minimum_lr_decrease_on_resume
+            and 0.0 <= self.minimum_lr < saved_minimum_lr
+        ):
             raise RuntimeError("scheduler configuration does not match the resumed run")
         self.epoch = int(state.get("epoch", 0))
         self.chunk_start_samples = int(state.get("chunk_start_samples", 0))

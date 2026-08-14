@@ -396,6 +396,60 @@ class FullChunkPlanTest(unittest.TestCase):
         self.assertEqual(scheduler.cycle_samples, 400_000)
         self.assertAlmostEqual(scheduler.chunk_progress, 0.25)
 
+    def test_chunk_cosine_floor_decrease_requires_explicit_resume_migration(self) -> None:
+        source_optimizer = torch.optim.SGD(
+            (torch.nn.Parameter(torch.ones(())),), lr=1e-3
+        )
+        source = EpochChunkCosineScheduler(
+            source_optimizer,
+            minimum_lr=3e-5,
+            epoch_decay=0.95,
+        )
+        source.start_chunk(
+            epoch=1,
+            start_samples=1_000_000,
+            cycle_samples=400_000,
+            samples_seen=1_100_000,
+        )
+        state = source.state_dict()
+
+        strict_optimizer = torch.optim.SGD(
+            (torch.nn.Parameter(torch.ones(())),), lr=1e-3
+        )
+        strict = EpochChunkCosineScheduler(
+            strict_optimizer,
+            minimum_lr=1e-5,
+            epoch_decay=0.95,
+        )
+        with self.assertRaisesRegex(RuntimeError, "configuration does not match"):
+            strict.load_state_dict(state)
+
+        migrated_optimizer = torch.optim.SGD(
+            (torch.nn.Parameter(torch.ones(())),), lr=1e-3
+        )
+        migrated = EpochChunkCosineScheduler(
+            migrated_optimizer,
+            minimum_lr=1e-5,
+            epoch_decay=0.95,
+            allow_minimum_lr_decrease_on_resume=True,
+        )
+        migrated.load_state_dict(state)
+        self.assertEqual(migrated.minimum_lr, 1e-5)
+        self.assertEqual(migrated.epoch, 1)
+        self.assertEqual(migrated.samples_seen, 1_100_000)
+
+        raised_optimizer = torch.optim.SGD(
+            (torch.nn.Parameter(torch.ones(())),), lr=1e-3
+        )
+        raised = EpochChunkCosineScheduler(
+            raised_optimizer,
+            minimum_lr=5e-5,
+            epoch_decay=0.95,
+            allow_minimum_lr_decrease_on_resume=True,
+        )
+        with self.assertRaisesRegex(RuntimeError, "configuration does not match"):
+            raised.load_state_dict(state)
+
     def test_chunk_cosine_warmup_preserves_first_group_boundary(self) -> None:
         optimizer = torch.optim.SGD(
             (torch.nn.Parameter(torch.ones(())),), lr=1e-3
@@ -453,6 +507,8 @@ class FullChunkLauncherTest(unittest.TestCase):
         self.assertEqual(parsed.chunk_early_stopping_patience, 1)
         self.assertEqual(parsed.scheduler_mode, "epoch-chunk-cosine")
         self.assertEqual(parsed.cosine_restart_decay, 0.95)
+        self.assertEqual(parsed.minimum_learning_rate, 1e-5)
+        self.assertTrue(parsed.allow_scheduler_minimum_lr_decrease_on_resume)
 
     def test_text_reporter_prints_epoch_chunk_and_sample_progress(self) -> None:
         state = TrainingProgressState(

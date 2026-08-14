@@ -171,7 +171,10 @@ minimum repetitions. Its exact horizon is `chunk_origins * 4` (approximately
 starts another four-repetition cycle at the same outer-epoch peak; moving to a
 new chunk also starts a fresh cycle. The peak is unchanged across cycles and
 chunks in the same outer epoch, then decays by `0.95` at the next outer epoch;
-the minimum learning rate remains `3e-5`. Rich displays the active repetition,
+the minimum learning rate is `1e-5`. Resuming the original production run uses
+an explicit floor-decrease migration that preserves model, optimizer, data
+cursor, and stopping state while rejecting LR-floor increases or any other
+scheduler-contract change. Rich displays the active repetition,
 minimum repetition count, cosine cycle/progress, epoch peak, and early-stopping
 state. Legacy full-training checkpoints are rebound to this cycle using their
 restored chunk start and cumulative sample clock, without resetting model,

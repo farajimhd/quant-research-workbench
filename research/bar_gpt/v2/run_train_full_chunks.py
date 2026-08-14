@@ -41,6 +41,7 @@ DEFAULT_CHUNK_EARLY_STOPPING_MIN_RELATIVE_DELTA = 0.001
 DEFAULT_EARLY_STOPPING_PATIENCE = 2
 DEFAULT_EARLY_STOPPING_MIN_RELATIVE_DELTA = 0.001
 DEFAULT_EPOCH_LR_DECAY = 0.95
+DEFAULT_MINIMUM_LEARNING_RATE = 1e-5
 DEFAULT_MANIFEST_INDEX_WORKERS = 4
 
 
@@ -232,13 +233,20 @@ def trainer_argv(args: argparse.Namespace, *, resolved_manifest: Path) -> list[s
             ),
             "--monitor-evaluation-origins": args.chunk_validation_origins,
             "--warmup-samples": 4_000_000,
+            "--minimum-learning-rate": DEFAULT_MINIMUM_LEARNING_RATE,
             "--scheduler-mode": "epoch-chunk-cosine",
             "--cosine-restart-decay": DEFAULT_EPOCH_LR_DECAY,
             "--wandb-project": args.wandb_project,
             "--wandb-mode": args.wandb_mode,
         },
     )
-    argv.extend(("--full-chunk-training", "--no-full-validation-final-epoch-only"))
+    argv.extend(
+        (
+            "--allow-scheduler-minimum-lr-decrease-on-resume",
+            "--full-chunk-training",
+            "--no-full-validation-final-epoch-only",
+        )
+    )
     checkpoint = Path(args.output_root) / run_name / "checkpoints" / "checkpoint_latest.pt"
     if checkpoint.is_file():
         argv.extend(("--resume-checkpoint", str(checkpoint)))
@@ -285,7 +293,8 @@ def main(argv: Iterable[str] | None = None) -> int:
         "Schedule: 4M-origin warmup; each cosine cycle spans "
         f"{args.min_chunk_epochs} repetitions and restarts every "
         f"{args.min_chunk_epochs} repetitions or when the chunk changes; "
-        f"outer-epoch peak decay={DEFAULT_EPOCH_LR_DECAY:.2f}",
+        f"outer-epoch peak decay={DEFAULT_EPOCH_LR_DECAY:.2f}; "
+        f"minimum learning rate={DEFAULT_MINIMUM_LEARNING_RATE:g}",
         flush=True,
     )
     preview_args = trainer_argv(args, resolved_manifest=planned_manifest)

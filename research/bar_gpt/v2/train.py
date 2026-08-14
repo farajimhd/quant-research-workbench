@@ -298,6 +298,15 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--warmup-samples", type=int, default=train.warmup_samples)
     parser.add_argument("--warmup-fraction", type=float, default=train.warmup_fraction)
     parser.add_argument("--minimum-learning-rate", type=float, default=train.minimum_learning_rate)
+    parser.add_argument(
+        "--allow-scheduler-minimum-lr-decrease-on-resume",
+        action=argparse.BooleanOptionalAction,
+        default=train.allow_scheduler_minimum_lr_decrease_on_resume,
+        help=(
+            "explicitly permit only a lower epoch-chunk cosine floor when "
+            "resuming an existing checkpoint"
+        ),
+    )
     parser.add_argument("--cosine-cycle-samples", type=int, default=train.cosine_cycle_samples)
     parser.add_argument("--cosine-restart-decay", type=float, default=train.cosine_restart_decay)
     parser.add_argument(
@@ -440,6 +449,9 @@ def build_config(args: argparse.Namespace) -> ExperimentConfig:
         warmup_samples=int(args.warmup_samples),
         warmup_fraction=float(args.warmup_fraction),
         minimum_learning_rate=float(args.minimum_learning_rate),
+        allow_scheduler_minimum_lr_decrease_on_resume=bool(
+            args.allow_scheduler_minimum_lr_decrease_on_resume
+        ),
         cosine_cycle_samples=int(args.cosine_cycle_samples),
         cosine_restart_decay=float(args.cosine_restart_decay),
         scheduler_mode=str(args.scheduler_mode),
@@ -2204,6 +2216,9 @@ def main(argv: Iterable[str] | None = None) -> int:
             warmup_samples=resolved_warmup_samples,
             minimum_lr=config.train.minimum_learning_rate,
             epoch_decay=config.train.cosine_restart_decay,
+            allow_minimum_lr_decrease_on_resume=(
+                config.train.allow_scheduler_minimum_lr_decrease_on_resume
+            ),
         )
     else:
         scheduler = SampleCosineRestartScheduler(

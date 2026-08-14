@@ -375,6 +375,10 @@ class TrainConfig:
     warmup_samples: int = 0
     warmup_fraction: float = 0.01
     minimum_learning_rate: float = 3e-5
+    # An operator-authorized full-training migration may lower the cosine
+    # floor while retaining model, optimizer, cursor, and stopping state.
+    # Other scheduler contract changes remain fail-closed.
+    allow_scheduler_minimum_lr_decrease_on_resume: bool = False
     cosine_cycle_samples: int = 100_000_000
     cosine_restart_decay: float = 0.98
     scheduler_mode: str = "cosine-restarts"
