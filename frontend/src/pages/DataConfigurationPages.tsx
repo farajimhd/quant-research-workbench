@@ -2,6 +2,7 @@ import { ChevronRight, Copy, Database, LockKeyhole, Plus, Search, Trash2 } from 
 import { useMemo, useState } from "react";
 
 import type { InformationRegistry, RegistryDefinition } from "../app/components/DefinitionRegistry";
+import { InventoryFilterSelect, type InventoryFilterOption } from "../app/components/InventoryFilterSelect";
 
 export type DataRuleCondition = {
   comparator: string;
@@ -106,6 +107,7 @@ function RuleSetDetail({ fields, onChange, onDelete, onDuplicate, ruleSet }: { f
   const locked = Boolean(ruleSet.atomic || ruleSet.editable === false);
   const definitions = fields.filter((row) => DATA_KINDS.has(row.kind));
   const definitionById = new Map(definitions.map((row) => [row.registry_id, row]));
+  const definitionOptions = dataDefinitionLookupOptions(definitions);
   function replaceCondition(conditionId: string, next: DataRuleCondition) {
     onChange({ ...ruleSet, conditions: ruleSet.conditions.map((row) => row.condition_id === conditionId ? next : row) });
   }
@@ -125,15 +127,15 @@ function RuleSetDetail({ fields, onChange, onDelete, onDuplicate, ruleSet }: { f
       const comparators = ruleComparators(source, condition.comparator);
       return <div className="rule-condition-row rule-condition-editable" key={condition.condition_id}>
         <span>{index + 1}</span>
-        <label><small>Data definition</small><select aria-label={`Condition ${index + 1} field`} onChange={(event) => {
-          const nextSource = definitionById.get(event.target.value);
+        <div className="rule-condition-definition"><small>Data definition</small><InventoryFilterSelect ariaLabel={`Condition ${index + 1} data definition`} className="rule-condition-definition-lookup" onChange={(value) => {
+          const nextSource = definitionById.get(value);
           if (!nextSource) return;
           const allowed = ruleComparators(nextSource, "");
           const comparator = allowed.some((row) => row.value === condition.comparator) ? condition.comparator : defaultRuleComparator(nextSource);
           replaceCondition(condition.condition_id, { ...condition, comparator, left_source_id: nextSource.registry_id, left_timeframe: nextSource.documentation?.timeframes?.[0] ?? "", right_source_id: comparator === "is_true" ? "" : condition.right_source_id, right_timeframe: comparator === "is_true" ? "" : condition.right_timeframe, value: comparator === "is_true" ? null : condition.value ?? 0 });
-        }} value={condition.left_source_id}>{!source && condition.left_source_id ? <option value={condition.left_source_id}>{condition.left_source_id}</option> : null}{definitions.map((field) => <option key={field.registry_id} value={field.registry_id}>{displayLabel(field)}</option>)}</select><em>{condition.left_source_id}{condition.left_timeframe ? ` · ${condition.left_timeframe}` : ""}</em></label>
+        }} optionLimit={0} options={!source && condition.left_source_id ? [{ description: "Unregistered definition referenced by this draft.", label: condition.left_source_id, value: condition.left_source_id }, ...definitionOptions] : definitionOptions} searchable searchPlaceholder="Search data definitions…" showAllOnOpen value={condition.left_source_id} /><em>{condition.left_source_id}{condition.left_timeframe ? ` · ${condition.left_timeframe}` : ""}</em></div>
         <label><small>Comparison</small><select aria-label={`Condition ${index + 1} comparator`} onChange={(event) => { const comparator = event.target.value; replaceCondition(condition.condition_id, { ...condition, comparator, right_source_id: comparator === "is_true" ? "" : condition.right_source_id, right_timeframe: comparator === "is_true" ? "" : condition.right_timeframe, value: comparator === "is_true" ? null : condition.value ?? 0 }); }} value={condition.comparator}>{comparators.map((row) => <option key={row.value} value={row.value}>{row.label}</option>)}</select></label>
-        {condition.comparator === "is_true" ? <div className="rule-condition-boolean"><small>Required state</small><strong>True</strong></div> : condition.right_source_id ? <label><small>Target definition</small><select aria-label={`Condition ${index + 1} target field`} onChange={(event) => replaceCondition(condition.condition_id, { ...condition, right_source_id: event.target.value })} value={condition.right_source_id}>{!target ? <option value={condition.right_source_id}>{condition.right_source_id}</option> : null}{definitions.map((field) => <option key={field.registry_id} value={field.registry_id}>{displayLabel(field)}</option>)}</select>{condition.comparator === "above_by_bps" ? <input aria-label={`Condition ${index + 1} basis point buffer`} onChange={(event) => replaceCondition(condition.condition_id, { ...condition, value: Number(event.target.value) })} step="any" type="number" value={Number(condition.value ?? 0)} /> : null}</label> : <label><small>Threshold</small><input aria-label={`Condition ${index + 1} value`} onChange={(event) => { const parsed = Number(event.target.value); replaceCondition(condition.condition_id, { ...condition, value: Number.isNaN(parsed) ? event.target.value : parsed }); }} step="any" type={isNumericRuleDefinition(source) ? "number" : "text"} value={String(condition.value ?? "")} /></label>}
+        {condition.comparator === "is_true" ? <div className="rule-condition-boolean"><small>Required state</small><strong>True</strong></div> : condition.right_source_id ? <div className="rule-condition-definition"><small>Target definition</small><InventoryFilterSelect ariaLabel={`Condition ${index + 1} target definition`} className="rule-condition-definition-lookup" onChange={(right_source_id) => replaceCondition(condition.condition_id, { ...condition, right_source_id })} optionLimit={0} options={!target ? [{ description: "Unregistered definition referenced by this draft.", label: condition.right_source_id, value: condition.right_source_id }, ...definitionOptions] : definitionOptions} searchable searchPlaceholder="Search target definitions…" showAllOnOpen value={condition.right_source_id} />{condition.comparator === "above_by_bps" ? <input aria-label={`Condition ${index + 1} basis point buffer`} onChange={(event) => replaceCondition(condition.condition_id, { ...condition, value: Number(event.target.value) })} step="any" type="number" value={Number(condition.value ?? 0)} /> : null}</div> : <label><small>Threshold</small><input aria-label={`Condition ${index + 1} value`} onChange={(event) => { const parsed = Number(event.target.value); replaceCondition(condition.condition_id, { ...condition, value: Number.isNaN(parsed) ? event.target.value : parsed }); }} step="any" type={isNumericRuleDefinition(source) ? "number" : "text"} value={String(condition.value ?? "")} /></label>}
         <button aria-label={`Remove condition ${index + 1}`} onClick={() => onChange({ ...ruleSet, conditions: ruleSet.conditions.filter((row) => row.condition_id !== condition.condition_id) })} type="button"><Trash2 size={13} /></button>
       </div>;
     })}</section>
@@ -316,6 +318,16 @@ function technicalSubgroup(text: string) {
   if (/trend|moving_average|sma|ema|dema|tema|wma|hma|alma|kama|zlema|vwap|macd|adx|directional|ichimoku|psar|supertrend|ma_ribbon/.test(text)) return "Trend & Moving Averages";
   if (/qmd\.derivation\./.test(text)) return "Technical Collections";
   return "Technical Collections";
+}
+
+function dataDefinitionLookupOptions(definitions: RegistryDefinition[]): InventoryFilterOption[] {
+  return [...groupDefinitions(definitions).entries()].flatMap(([group, subgroups]) => [...subgroups.entries()].flatMap(([subgroup, rows]) => rows.map((row) => ({
+    description: `${row.registry_id} · ${row.presentation.kind_label}${row.documentation?.value_type ? ` · ${readable(row.documentation.value_type)}` : ""}`,
+    group,
+    label: displayLabel(row),
+    subgroup,
+    value: row.registry_id,
+  }))));
 }
 
 function readable(value: string) { return value.replaceAll("_", " ").replace(/\b\w/g, (letter) => letter.toUpperCase()); }

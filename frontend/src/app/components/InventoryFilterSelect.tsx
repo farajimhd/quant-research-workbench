@@ -2,7 +2,7 @@ import { ChevronDown } from "lucide-react";
 import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent } from "react";
 import { createPortal } from "react-dom";
 
-export type InventoryFilterOption = { description?: string; disabled?: boolean; label: string; value: string };
+export type InventoryFilterOption = { description?: string; disabled?: boolean; group?: string; label: string; subgroup?: string; value: string };
 
 export function inventoryEligibilityOptions(label: string): InventoryFilterOption[] {
   return [{ value: "", label: `Any ${label.toLowerCase()}` }, { value: "eligible", label: "Eligible" }, { value: "ineligible", label: "Not eligible" }];
@@ -10,7 +10,7 @@ export function inventoryEligibilityOptions(label: string): InventoryFilterOptio
 
 type MenuPlacement = CSSProperties & { maxHeight: number; width: number };
 
-export function InventoryFilterSelect({ ariaLabel, className, defaultValue, onChange, options, searchable = false, searchPlaceholder = "Search…", showAllOnOpen = false, value }: { ariaLabel: string; className?: string; defaultValue?: string | number; onChange: (value: string) => void; options: InventoryFilterOption[]; searchable?: boolean; searchPlaceholder?: string; showAllOnOpen?: boolean; value: string | number }) {
+export function InventoryFilterSelect({ ariaLabel, className, defaultValue, onChange, optionLimit = 100, options, searchable = false, searchPlaceholder = "Search…", showAllOnOpen = false, value }: { ariaLabel: string; className?: string; defaultValue?: string | number; onChange: (value: string) => void; optionLimit?: number; options: InventoryFilterOption[]; searchable?: boolean; searchPlaceholder?: string; showAllOnOpen?: boolean; value: string | number }) {
   const normalizedValue = String(value);
   const normalizedDefaultValue = String(defaultValue ?? options[0]?.value ?? "");
   const selectedIndex = Math.max(0, options.findIndex((option) => option.value === normalizedValue));
@@ -29,7 +29,19 @@ export function InventoryFilterSelect({ ariaLabel, className, defaultValue, onCh
     if (!term) return showAllOnOpen ? options : options.filter((option) => !option.value || option.value === normalizedValue);
     return options.filter((option) => option.label.toLocaleUpperCase().includes(term) || option.value.toLocaleUpperCase().includes(term) || option.description?.toLocaleUpperCase().includes(term));
   }, [normalizedValue, options, searchText, searchable, showAllOnOpen]);
-  const visibleOptions = searchable ? matchingOptions.slice(0, 100) : matchingOptions;
+  const visibleOptions = searchable && optionLimit > 0 ? matchingOptions.slice(0, optionLimit) : matchingOptions;
+  const groupedOptions = useMemo(() => {
+    if (!visibleOptions.some((option) => option.group)) return null;
+    const groups = new Map<string, Map<string, Array<{ index: number; option: InventoryFilterOption }>>>();
+    visibleOptions.forEach((option, index) => {
+      const group = option.group || "Other";
+      const subgroup = option.subgroup || "Definitions";
+      const subgroups = groups.get(group) ?? new Map<string, Array<{ index: number; option: InventoryFilterOption }>>();
+      subgroups.set(subgroup, [...(subgroups.get(subgroup) ?? []), { index, option }]);
+      groups.set(group, subgroups);
+    });
+    return groups;
+  }, [visibleOptions]);
   const hasDescriptions = options.some((option) => Boolean(option.description));
 
   const placeMenu = useCallback(() => {
@@ -144,10 +156,14 @@ export function InventoryFilterSelect({ ariaLabel, className, defaultValue, onCh
     </button>
     {open ? createPortal(<div className="inventory-filter-menu" ref={menuRef} style={placement}>
       {searchable ? <label className="inventory-filter-search"><span className="sr-only">Search {ariaLabel}</span><input aria-label={`Search ${ariaLabel}`} onChange={(event) => { setSearchText(event.target.value); setActiveIndex(0); }} onKeyDown={onSearchKeyDown} placeholder={searchPlaceholder} ref={searchRef} type="search" value={searchText} /></label> : null}
-      <div aria-label={ariaLabel} className="inventory-filter-options" id={menuId} role="listbox">{visibleOptions.map((option, index) => <button aria-selected={option.value === normalizedValue} className="inventory-filter-option" data-detailed={option.description ? "true" : undefined} data-option-index={index} disabled={option.disabled} key={option.value} onClick={() => select(index)} onFocus={() => setActiveIndex(index)} onKeyDown={(event) => onOptionKeyDown(event, index)} role="option" tabIndex={!option.disabled && activeIndex === index ? 0 : -1} type="button">{option.description ? <span><strong>{option.label}</strong><small>{option.description}</small></span> : option.label}</button>)}</div>
+      <div aria-label={ariaLabel} className="inventory-filter-options" data-grouped={groupedOptions ? "true" : undefined} id={menuId} role="listbox">{groupedOptions ? [...groupedOptions.entries()].map(([group, subgroups]) => <section aria-label={group} className="inventory-filter-group" key={group} role="group"><header><strong>{group}</strong><span>{[...subgroups.values()].reduce((sum, rows) => sum + rows.length, 0)}</span></header>{[...subgroups.entries()].map(([subgroup, rows]) => <div aria-label={subgroup} className="inventory-filter-subgroup" key={subgroup} role="group"><div className="inventory-filter-subgroup-label"><span>{subgroup}</span><em>{rows.length}</em></div>{rows.map(({ index, option }) => <InventoryOptionButton activeIndex={activeIndex} index={index} key={option.value} normalizedValue={normalizedValue} onFocus={setActiveIndex} onKeyDown={onOptionKeyDown} onSelect={select} option={option} />)}</div>)}</section>) : visibleOptions.map((option, index) => <InventoryOptionButton activeIndex={activeIndex} index={index} key={option.value} normalizedValue={normalizedValue} onFocus={setActiveIndex} onKeyDown={onOptionKeyDown} onSelect={select} option={option} />)}</div>
       {searchable && !searchText.trim() && options.length > visibleOptions.length ? <span className="inventory-filter-hint">Type to search {options.length - 1} values</span> : null}
       {searchable && searchText.trim() && matchingOptions.length > visibleOptions.length ? <span className="inventory-filter-hint">Refine to narrow {matchingOptions.length} matches</span> : null}
-      {searchable && !visibleOptions.length ? <span className="inventory-filter-empty">No matching ticker</span> : null}
+      {searchable && !visibleOptions.length ? <span className="inventory-filter-empty">No matching {ariaLabel.toLowerCase()}</span> : null}
     </div>, document.body) : null}
   </>;
+}
+
+function InventoryOptionButton({ activeIndex, index, normalizedValue, onFocus, onKeyDown, onSelect, option }: { activeIndex: number; index: number; normalizedValue: string; onFocus: (index: number) => void; onKeyDown: (event: KeyboardEvent<HTMLButtonElement>, index: number) => void; onSelect: (index: number) => void; option: InventoryFilterOption }) {
+  return <button aria-selected={option.value === normalizedValue} className="inventory-filter-option" data-detailed={option.description ? "true" : undefined} data-option-index={index} disabled={option.disabled} onClick={() => onSelect(index)} onFocus={() => onFocus(index)} onKeyDown={(event) => onKeyDown(event, index)} role="option" tabIndex={!option.disabled && activeIndex === index ? 0 : -1} type="button">{option.description ? <span><strong>{option.label}</strong><small>{option.description}</small></span> : option.label}</button>;
 }
