@@ -1,4 +1,4 @@
-import { ChevronDown } from "lucide-react";
+import { ChevronDown, Search } from "lucide-react";
 import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent } from "react";
 import { createPortal } from "react-dom";
 
@@ -10,7 +10,7 @@ export function inventoryEligibilityOptions(label: string): InventoryFilterOptio
 
 type MenuPlacement = CSSProperties & { maxHeight: number; width: number };
 
-export function InventoryFilterSelect({ ariaLabel, className, defaultValue, onChange, optionLimit = 100, options, searchable = false, searchPlaceholder = "Search…", showAllOnOpen = false, value }: { ariaLabel: string; className?: string; defaultValue?: string | number; onChange: (value: string) => void; optionLimit?: number; options: InventoryFilterOption[]; searchable?: boolean; searchPlaceholder?: string; showAllOnOpen?: boolean; value: string | number }) {
+export function InventoryFilterSelect({ ariaLabel, className, defaultValue, onChange, optionLimit = 100, options, presentation = "compact", searchable = false, searchPlaceholder = "Search…", showAllOnOpen = false, value }: { ariaLabel: string; className?: string; defaultValue?: string | number; onChange: (value: string) => void; optionLimit?: number; options: InventoryFilterOption[]; presentation?: "catalog" | "compact"; searchable?: boolean; searchPlaceholder?: string; showAllOnOpen?: boolean; value: string | number }) {
   const normalizedValue = String(value);
   const normalizedDefaultValue = String(defaultValue ?? options[0]?.value ?? "");
   const selectedIndex = Math.max(0, options.findIndex((option) => option.value === normalizedValue));
@@ -55,7 +55,7 @@ export function InventoryFilterSelect({ ariaLabel, className, defaultValue, onCh
     const menu = menuRef.current;
     const availableBelow = window.innerHeight - rect.bottom - 8;
     const availableAbove = rect.top - 8;
-    const heightCap = 420 * overlayScale;
+    const heightCap = (presentation === "catalog" ? 460 : 420) * overlayScale;
     const contentHeight = menu?.scrollHeight || heightCap;
     const desiredHeight = Math.min(contentHeight, heightCap);
     const openAbove = availableBelow < desiredHeight && availableAbove > availableBelow;
@@ -72,14 +72,14 @@ export function InventoryFilterSelect({ ariaLabel, className, defaultValue, onCh
     const menuChrome = menuStyle ? Number.parseFloat(menuStyle.paddingLeft) + Number.parseFloat(menuStyle.paddingRight) + Number.parseFloat(menuStyle.borderLeftWidth) + Number.parseFloat(menuStyle.borderRightWidth) : 10 * overlayScale;
     const scrollbarAllowance = contentHeight > maxHeight ? 18 : 0;
     const textSafety = 28 * overlayScale;
-    const width = Math.min(window.innerWidth - 16, Math.max(rect.width, 170 * overlayScale, hasDescriptions ? 380 * overlayScale : 210 * overlayScale, labelWidth + optionPadding + menuChrome + scrollbarAllowance + textSafety));
+    const width = Math.min(window.innerWidth - 16, Math.max(rect.width, 170 * overlayScale, presentation === "catalog" ? 430 * overlayScale : hasDescriptions ? 380 * overlayScale : 210 * overlayScale, labelWidth + optionPadding + menuChrome + scrollbarAllowance + textSafety));
     setPlacement({
       left: Math.max(8, Math.min(rect.left, window.innerWidth - width - 8)),
       maxHeight,
       top: openAbove ? Math.max(8, rect.top - renderedHeight - 4) : rect.bottom + 4,
       width,
     });
-  }, [hasDescriptions, options]);
+  }, [hasDescriptions, options, presentation]);
 
   useLayoutEffect(() => {
     if (!open) return;
@@ -154,8 +154,8 @@ export function InventoryFilterSelect({ ariaLabel, className, defaultValue, onCh
     <button aria-controls={open ? menuId : undefined} aria-expanded={open} aria-haspopup="listbox" aria-label={ariaLabel} className={`inventory-filter-button${className ? ` ${className}` : ""}`} data-filter-active={normalizedValue !== normalizedDefaultValue ? "true" : undefined} onClick={() => setOpen((current) => !current)} onKeyDown={onButtonKeyDown} ref={buttonRef} type="button">
       <span>{selected?.label ?? "Select"}</span><ChevronDown aria-hidden="true" size={12} />
     </button>
-    {open ? createPortal(<div className="inventory-filter-menu" ref={menuRef} style={placement}>
-      {searchable ? <label className="inventory-filter-search"><span className="sr-only">Search {ariaLabel}</span><input aria-label={`Search ${ariaLabel}`} onChange={(event) => { setSearchText(event.target.value); setActiveIndex(0); }} onKeyDown={onSearchKeyDown} placeholder={searchPlaceholder} ref={searchRef} type="search" value={searchText} /></label> : null}
+    {open ? createPortal(<div className="inventory-filter-menu" data-presentation={presentation} data-searchable={searchable ? "true" : undefined} ref={menuRef} style={placement}>
+      {searchable ? <label className="inventory-filter-search"><span className="sr-only">Search {ariaLabel}</span>{presentation === "catalog" ? <Search aria-hidden="true" size={14} /> : null}<input aria-label={`Search ${ariaLabel}`} onChange={(event) => { setSearchText(event.target.value); setActiveIndex(0); }} onKeyDown={onSearchKeyDown} placeholder={searchPlaceholder} ref={searchRef} type="search" value={searchText} /></label> : null}
       <div aria-label={ariaLabel} className="inventory-filter-options" data-grouped={groupedOptions ? "true" : undefined} id={menuId} role="listbox">{groupedOptions ? [...groupedOptions.entries()].map(([group, subgroups]) => <section aria-label={group} className="inventory-filter-group" key={group} role="group"><header><strong>{group}</strong><span>{[...subgroups.values()].reduce((sum, rows) => sum + rows.length, 0)}</span></header>{[...subgroups.entries()].map(([subgroup, rows]) => <div aria-label={subgroup} className="inventory-filter-subgroup" key={subgroup} role="group"><div className="inventory-filter-subgroup-label"><span>{subgroup}</span><em>{rows.length}</em></div>{rows.map(({ index, option }) => <InventoryOptionButton activeIndex={activeIndex} index={index} key={option.value} normalizedValue={normalizedValue} onFocus={setActiveIndex} onKeyDown={onOptionKeyDown} onSelect={select} option={option} />)}</div>)}</section>) : visibleOptions.map((option, index) => <InventoryOptionButton activeIndex={activeIndex} index={index} key={option.value} normalizedValue={normalizedValue} onFocus={setActiveIndex} onKeyDown={onOptionKeyDown} onSelect={select} option={option} />)}</div>
       {searchable && !searchText.trim() && options.length > visibleOptions.length ? <span className="inventory-filter-hint">Type to search {options.length - 1} values</span> : null}
       {searchable && searchText.trim() && matchingOptions.length > visibleOptions.length ? <span className="inventory-filter-hint">Refine to narrow {matchingOptions.length} matches</span> : null}
