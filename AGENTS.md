@@ -27,6 +27,17 @@
 - Never claim a test, runtime check, synchronization, commit, or completion that did not occur.
 - Stop servers, workers, browser sessions, and child processes started for the task when finished.
 
+## Subagent lifecycle and bounded fan-out
+
+- Do not spawn subagents unless the user explicitly requests delegation or the task has independent work lanes whose benefit justifies the additional task history and coordination cost.
+- Default to at most 3 concurrently running subagents and at most 8 newly created subagents per root task. Before exceeding 8, report the estimated agent and packet counts, context and token volume, runtime-artifact volume, and local Codex-history growth, then obtain explicit user approval for that bounded plan.
+- Never create one fresh subagent per record, article, mismatch, or small packet by default. Prefer a fixed reusable worker pool, bounded packets, and follow-up tasks. If strict fresh-context isolation is a correctness requirement, process an explicitly approved bounded tranche and preserve a restart-safe manifest before starting another tranche.
+- Give each subagent the smallest complete context needed for its assignment. Do not pass the full conversation, repository history, task history, memory, unrelated artifacts, or other workers' outputs when a bounded packet is sufficient.
+- Child agents must not spawn further agents unless nested delegation was explicitly included in the approved plan. The root controller owns the worker ledger, packet assignment, retries, output validation, and final reconciliation.
+- Store bulk worker output only under the applicable runtime root. Child responses should return bounded structured results, counts, hashes, and artifact paths rather than embedding large datasets or logs in conversation history.
+- Before the root task finishes, stop spawning, wait for every child to reach a terminal state, collect its result, interrupt only genuinely stuck children, and verify that no child remains live. Report spawned, completed, failed, retried, and interrupted counts.
+- Agent completion does not delete retained Codex task history. After a large campaign, preserve a compact durable handoff and ask whether its completed root task should be archived; do not claim that archiving removes the underlying local rollout files.
+
 ## Continuity and task history
 
 - For work that changes a durable architecture, service, data authority, or active task area, read `TASK_HISTORY.md` Current Focus plus only the relevant `TASK_HISTORY.csv` row and linked `CHAT_SUMMARIES.md` narrative. Skip continuity reads for bounded fixes unless continuity is plausibly material; never load the complete archive.
