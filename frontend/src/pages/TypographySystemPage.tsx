@@ -57,6 +57,36 @@ export function TypographyPublicSansPage() {
           </div>
         </section>
 
+        <section className="typography-mix-options" aria-labelledby="type-mix-heading">
+          <header>
+            <div><Type size={17} /><span><strong id="type-mix-heading">Purposeful font mixes</strong><small>Public Sans remains the interface and numeric authority in every option.</small></span></div>
+            <em>Compare the role changes, not isolated alphabets</em>
+          </header>
+          <div>
+            <TypeMix
+              className="unified"
+              description="The quietest and most consistent system. Best when operational density should dominate brand character."
+              display="Public Sans"
+              reading="Public Sans"
+              title="Unified interface"
+            />
+            <TypeMix
+              className="analytical"
+              description="Adds a restrained geometric voice to page titles while preserving Public Sans everywhere users scan or act."
+              display="Sora"
+              reading="Public Sans"
+              title="Analytical hierarchy"
+            />
+            <TypeMix
+              className="editorial"
+              description="Uses a serif only for long filings, research notes, and narrative evidence; operational UI remains unchanged."
+              display="Public Sans"
+              reading="Source Serif 4"
+              title="Research reading"
+            />
+          </div>
+        </section>
+
         <section className="typography-specimen-grid" aria-label="Typography role specimens">
           <Specimen icon={<LayoutPanelLeft size={17} />} title="Navigation" note="13 px · regular and medium">
             <div className="type-sidebar-sample">
@@ -142,6 +172,28 @@ function Specimen({ children, icon, note, technical = false, title, wide = false
     <article className={`typography-specimen${wide ? " wide" : ""}${technical ? " technical" : ""}`}>
       <header><span>{icon}<strong>{title}</strong></span><small>{note}</small></header>
       <div>{children}</div>
+    </article>
+  );
+}
+
+function TypeMix({ className, description, display, reading, title }: { className: string; description: string; display: string; reading: string; title: string }) {
+  return (
+    <article className={`typography-mix-card ${className}`}>
+      <header><span>{title}</span><em>{className === "unified" ? "Baseline" : "Mixed"}</em></header>
+      <div className="typography-mix-sample">
+        <small>QMD MARKET DISCOVERY</small>
+        <h3>Intraday market structure</h3>
+        <p>Price remains above the session VWAP while relative volume expands through the current discovery window.</p>
+        <strong>+$12,438.42 <span>· 09:45:12 ET</span></strong>
+        <code>qmd.structure.signal.v3</code>
+      </div>
+      <dl>
+        <div><dt>Display</dt><dd>{display}</dd></div>
+        <div><dt>Interface + numbers</dt><dd>Public Sans</dd></div>
+        <div><dt>Long reading</dt><dd>{reading}</dd></div>
+        <div><dt>Technical</dt><dd>JetBrains Mono</dd></div>
+      </dl>
+      <p>{description}</p>
     </article>
   );
 }

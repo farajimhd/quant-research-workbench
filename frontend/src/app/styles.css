@@ -22961,6 +22961,34 @@ button {
 .typography-role-map article > strong { font-size: 14px; font-weight: 600; }
 .typography-role-map article > p { color: var(--muted-foreground); font-size: 12px; line-height: 1.4; margin: 0; }
 .typography-role-map article.technical > strong { font-family: var(--typography-technical); font-size: 12px; font-weight: 600; }
+.typography-mix-options { border: 1px solid var(--border); border-radius: 12px; margin-top: 14px; overflow: hidden; }
+.typography-mix-options > header { align-items: center; background: var(--surface-alt); border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; padding: 12px 14px; }
+.typography-mix-options > header > div { align-items: center; display: flex; gap: 9px; }
+.typography-mix-options > header > div > span { display: grid; gap: 1px; }
+.typography-mix-options > header strong { font-size: 14px; font-weight: 600; }
+.typography-mix-options > header small { color: var(--muted-foreground); font-size: 12px; font-weight: 400; }
+.typography-mix-options > header em { color: var(--muted-foreground); font-size: 11px; font-style: normal; }
+.typography-mix-options > div { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.typography-mix-card { border-right: 1px solid var(--border); min-width: 0; padding: 14px; }
+.typography-mix-card:last-child { border-right: 0; }
+.typography-mix-card > header { align-items: center; display: flex; justify-content: space-between; }
+.typography-mix-card > header > span { font-size: 13px; font-weight: 600; }
+.typography-mix-card > header > em { border: 1px solid var(--border); border-radius: 999px; color: var(--muted-foreground); font-size: 10px; font-style: normal; font-weight: 500; padding: 2px 7px; }
+.typography-mix-sample { border-bottom: 1px solid var(--border); display: grid; gap: 5px; margin-top: 14px; min-height: 176px; padding-bottom: 14px; }
+.typography-mix-sample > small { color: var(--muted-foreground); font-family: var(--typography-interface); font-size: 10px; font-weight: 550; letter-spacing: 0.06em; }
+.typography-mix-sample > h3 { font-size: 21px; font-weight: 560; letter-spacing: -0.025em; line-height: 1.15; margin: 4px 0 2px; }
+.typography-mix-sample > p { font-size: 14px; line-height: 1.55; margin: 0; }
+.typography-mix-sample > strong { font-family: var(--typography-interface); font-size: 16px; font-variant-numeric: tabular-nums lining-nums; font-weight: 620; margin-top: 4px; }
+.typography-mix-sample > strong > span { color: var(--muted-foreground); font-size: 12px; font-weight: 450; }
+.typography-mix-sample > code { color: var(--muted-foreground); font-family: var(--typography-technical); font-size: 11px; }
+.typography-mix-card.analytical .typography-mix-sample > h3 { font-family: "Sora", var(--typography-interface); font-weight: 500; }
+.typography-mix-card.editorial .typography-mix-sample > p { font-family: "Source Serif 4", Georgia, serif; font-size: 15px; line-height: 1.6; }
+.typography-mix-card > dl { display: grid; gap: 0; margin: 10px 0 0; }
+.typography-mix-card > dl > div { align-items: baseline; border-bottom: 1px solid color-mix(in oklab, var(--border) 64%, transparent); display: flex; justify-content: space-between; padding: 6px 0; }
+.typography-mix-card > dl > div:last-child { border-bottom: 0; }
+.typography-mix-card dt { color: var(--muted-foreground); font-size: 11px; }
+.typography-mix-card dd { font-size: 11px; font-weight: 550; margin: 0; }
+.typography-mix-card > p { color: var(--muted-foreground); font-size: 12px; line-height: 1.45; margin: 10px 0 0; }
 .typography-specimen-grid { display: grid; gap: 12px; grid-template-columns: repeat(2, minmax(0, 1fr)); margin-top: 14px; }
 .typography-specimen { border: 1px solid var(--border); border-radius: 12px; min-width: 0; overflow: hidden; }
 .typography-specimen.wide { grid-column: 1 / -1; }
@@ -23026,6 +23054,9 @@ button {
   .typography-role-map article:nth-child(2n) { border-right: 0; }
   .typography-role-map article:nth-last-child(-n + 3) { border-bottom: 1px solid var(--border); }
   .typography-role-map article:last-child { border-bottom: 0; }
+  .typography-mix-options > div { grid-template-columns: 1fr; }
+  .typography-mix-card { border-bottom: 1px solid var(--border); border-right: 0; }
+  .typography-mix-card:last-child { border-bottom: 0; }
   .typography-specimen-grid { grid-template-columns: 1fr; }
   .typography-specimen.wide { grid-column: auto; }
   .type-table-sample { overflow-x: auto; }
