@@ -12,6 +12,7 @@ from src.backend.trading_configuration_service import (
     _compiled_observation_dependencies,
     _migrate_draft,
     _normalize_rule_set_conditions,
+    _profile_rule_set_ids,
     _qmd_family_capabilities,
     _qmd_runtime_capabilities,
     _resolved_source_account_id,
@@ -376,7 +377,7 @@ class TradingConfigurationServiceTests(unittest.TestCase):
 
         migrated = _migrate_draft(legacy)
 
-        self.assertEqual(migrated["schema_version"], 22)
+        self.assertEqual(migrated["schema_version"], 23)
         migrated_paper = next(
             row
             for row in migrated["accounts"]["bindings"]
@@ -659,7 +660,7 @@ class TradingConfigurationServiceTests(unittest.TestCase):
         ):
             draft = _default_draft()
 
-        self.assertEqual(draft["schema_version"], 22)
+        self.assertEqual(draft["schema_version"], 23)
         self.assertTrue(all(rule_set["name"] for rule_set in draft["market_discovery"]["rule_sets"]))
         self.assertTrue(all(rule_set["description"] for rule_set in draft["market_discovery"]["rule_sets"]))
         self.assertTrue(all(rule_set["atomic"] for rule_set in draft["market_discovery"]["rule_sets"]))
@@ -674,8 +675,9 @@ class TradingConfigurationServiceTests(unittest.TestCase):
             for rule_set in draft["market_discovery"]["rule_sets"]
         }
         self.assertTrue(all(
-            {rule_set["rule_set_id"] for rule_set in profile["rule_set_catalog"]}
-            == canonical_rule_set_ids
+            "rule_set_catalog" not in profile
+            and set(profile["rule_set_ids"]) <= canonical_rule_set_ids
+            and profile["rule_set_ids"] == _profile_rule_set_ids(profile["lifecycle"])
             for profile in draft["strategy"]["profiles"]
         ))
         self.assertEqual(len(draft["strategy"]["profiles"]), 1)
@@ -708,7 +710,7 @@ class TradingConfigurationServiceTests(unittest.TestCase):
             all(profile["capabilities"] for profile in draft["strategy"]["profiles"])
         )
         self.assertTrue(draft["strategy"]["input_catalog"])
-        self.assertTrue(all(profile["rule_set_catalog"] for profile in draft["strategy"]["profiles"]))
+        self.assertTrue(all(profile["rule_set_ids"] for profile in draft["strategy"]["profiles"]))
         self.assertTrue(all(
             profile["lifecycle"]["initial_entry"]["opportunity"]["expression"]["children"]
             for profile in draft["strategy"]["profiles"]
@@ -758,7 +760,8 @@ class TradingConfigurationServiceTests(unittest.TestCase):
             any(
                 condition["left_source_id"]
                 == "indicator.flow_structure.score"
-                for rule_set in default_profile["rule_set_catalog"]
+                for rule_set in draft["market_discovery"]["rule_sets"]
+                if rule_set["rule_set_id"] in default_profile["rule_set_ids"]
                 for condition in rule_set["conditions"]
             )
         )
@@ -1162,7 +1165,7 @@ class TradingConfigurationServiceTests(unittest.TestCase):
         draft = self._draft()
         profile = draft["strategy"]["profiles"][0]
         opportunity_id = profile["lifecycle"]["initial_entry"]["opportunity"]["expression"]["children"][0]["rule_set_id"]
-        condition = next(row for row in profile["rule_set_catalog"] if row["rule_set_id"] == opportunity_id)["conditions"][0]
+        condition = next(row for row in draft["market_discovery"]["rule_sets"] if row["rule_set_id"] == opportunity_id)["conditions"][0]
         condition["left_source_id"] = "indicator.unregistered.value"
 
         with patch(
@@ -1307,6 +1310,58 @@ class TradingConfigurationServiceTests(unittest.TestCase):
         self.assertNotIn("selection_priority", migrated["run_plans"]["plans"][0])
         self.assertNotIn("priority", migrated["portfolio"]["mandates"][0])
         self.assertNotIn("priority", migrated["strategy"]["profiles"][0]["lifecycle"]["initial_entry"]["capital_request"])
+
+    def test_schema_v22_migrates_embedded_rule_catalog_to_references(self) -> None:
+        legacy = self._draft()
+        legacy["schema_version"] = 22
+        canonical_rules = deepcopy(legacy["market_discovery"]["rule_sets"])
+        for profile in legacy["strategy"]["profiles"]:
+            profile["rule_set_catalog"] = deepcopy(canonical_rules)
+            profile.pop("rule_set_ids", None)
+
+        migrated = _migrate_draft(legacy)
+
+        self.assertEqual(migrated["schema_version"], 23)
+        canonical_ids = {
+            rule_set["rule_set_id"]
+            for rule_set in migrated["market_discovery"]["rule_sets"]
+        }
+        for profile in migrated["strategy"]["profiles"]:
+            self.assertNotIn("rule_set_catalog", profile)
+            self.assertEqual(
+                profile["rule_set_ids"],
+                _profile_rule_set_ids(profile["lifecycle"]),
+            )
+            self.assertLessEqual(set(profile["rule_set_ids"]), canonical_ids)
+
+    def test_strategy_profile_rule_references_are_exact_and_unique(self) -> None:
+        draft = self._draft()
+        profile = draft["strategy"]["profiles"][0]
+
+        duplicate = deepcopy(draft)
+        duplicate_profile = duplicate["strategy"]["profiles"][0]
+        duplicate_profile["rule_set_ids"].append(duplicate_profile["rule_set_ids"][0])
+        with patch(
+            "src.backend.trading_configuration_service.get_strategy_definition",
+            return_value=long_momentum_strategy_definition(),
+        ), self.assertRaisesRegex(ValueError, "duplicate rule-set references"):
+            _validate_draft(duplicate, require_runtime_ready=False)
+
+        unknown = deepcopy(draft)
+        unknown["strategy"]["profiles"][0]["rule_set_ids"].append("missing-rule")
+        with patch(
+            "src.backend.trading_configuration_service.get_strategy_definition",
+            return_value=long_momentum_strategy_definition(),
+        ), self.assertRaisesRegex(ValueError, "references unknown rule sets"):
+            _validate_draft(unknown, require_runtime_ready=False)
+
+        incomplete = deepcopy(draft)
+        incomplete["strategy"]["profiles"][0]["rule_set_ids"] = profile["rule_set_ids"][1:]
+        with patch(
+            "src.backend.trading_configuration_service.get_strategy_definition",
+            return_value=long_momentum_strategy_definition(),
+        ), self.assertRaisesRegex(ValueError, "must exactly match its lifecycle references"):
+            _validate_draft(incomplete, require_runtime_ready=False)
 
     def _draft(self) -> dict:
         with patch(

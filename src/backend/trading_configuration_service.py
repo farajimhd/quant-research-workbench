@@ -47,7 +47,7 @@ from src.trading_runtime.strategy_campaign import validate_campaign_policy
 from src.trading_runtime.taxonomy import StrategyTaxonomy
 
 
-CONFIGURATION_SCHEMA_VERSION = 22
+CONFIGURATION_SCHEMA_VERSION = 23
 CONFIGURATION_SECTIONS = {
     "strategy",
     "market_discovery",
@@ -558,6 +558,9 @@ def resolve_runtime_configuration(
     profile = profiles.get(str(run_plan.get("profile_id") or ""))
     if profile is None:
         raise ValueError(f"Run Plan {run_plan.get('run_plan_id')} references an unknown Strategy Profile")
+    profile_rule_sets = _profile_rule_sets(
+        profile, dict(model["market_discovery"])
+    )
     oms_profiles = {
         str(row["profile_id"]): row
         for row in dict(model["oms"]).get("profiles") or []
@@ -666,7 +669,7 @@ def resolve_runtime_configuration(
         assignment["campaign_policy"] = deepcopy(policy)
         assignment["resolved_parameters"] = merged_assignment_parameters(
             {
-                "strategy": {"parameters": _parameters_with_capabilities(profile)},
+                "strategy": {"parameters": _parameters_with_capabilities(profile, profile_rule_sets)},
                 "oms": {
                     "settings": deepcopy(dict(oms.get("settings") or {})),
                     "execution_policies": deepcopy(
@@ -707,7 +710,7 @@ def resolve_runtime_configuration(
             "name": profile["name"],
             "profile_id": profile["profile_id"],
             "profile_revision": int(profile.get("revision") or 1),
-            "parameters": _parameters_with_capabilities(profile),
+            "parameters": _parameters_with_capabilities(profile, profile_rule_sets),
             "capabilities": deepcopy(profile.get("capabilities") or []),
         },
         "assignments": runtime_assignments,
@@ -1087,6 +1090,36 @@ def _expression_rule_set_ids(expression: dict[str, Any]) -> set[str]:
     for child in expression.get("children") or []:
         result.update(_expression_rule_set_ids(dict(child)))
     return result
+
+
+def _profile_rule_set_ids(lifecycle: dict[str, Any]) -> list[str]:
+    initial = dict(lifecycle.get("initial_entry") or {})
+    reentry_rules = dict(dict(lifecycle.get("reentry") or {}).get("rules") or {})
+    exit_section = dict(lifecycle.get("exit") or {})
+    stages = [
+        *(dict(initial.get(name) or {}) for name in ("opportunity", "confirmation", "blockers")),
+        *(dict(step.get("rules") or {}) for step in initial.get("add_steps") or []),
+        *(dict(reentry_rules.get(name) or {}) for name in ("opportunity", "confirmation", "blockers")),
+        *(dict(route.get("rules") or {}) for route in exit_section.get("rule_sets") or []),
+    ]
+    referenced: set[str] = set()
+    for stage in stages:
+        referenced.update(
+            _expression_rule_set_ids(dict(stage.get("expression") or {}))
+        )
+    return sorted(referenced)
+
+
+def _profile_rule_sets(
+    profile: dict[str, Any], market_discovery: dict[str, Any]
+) -> list[dict[str, Any]]:
+    catalog = {
+        str(rule_set.get("rule_set_id") or ""): rule_set
+        for rule_set in market_discovery.get("rule_sets") or []
+        if str(rule_set.get("rule_set_id") or "")
+    }
+    references = [str(value) for value in profile.get("rule_set_ids") or []]
+    return [deepcopy(catalog[rule_set_id]) for rule_set_id in references if rule_set_id in catalog]
 
 
 def _materialize_rule_stage(
@@ -2498,8 +2531,11 @@ def _default_draft() -> dict[str, Any]:
         runtime_assignments,
         list(system_profiles[0].get("rule_set_catalog") or []),
     )
-    system_profiles[0]["rule_set_catalog"] = deepcopy(discovery["rule_sets"])
-    profile_templates[0]["rule_set_catalog"] = deepcopy(discovery["rule_sets"])
+    for profile in [*system_profiles, *profile_templates]:
+        profile.pop("rule_set_catalog", None)
+        profile["rule_set_ids"] = _profile_rule_set_ids(
+            dict(profile.get("lifecycle") or {})
+        )
     policy = asdict(PortfolioPolicy())
     bindings = [
         {
@@ -2944,6 +2980,10 @@ def _validate_draft(draft: dict[str, Any], *, require_runtime_ready: bool = True
     default_profile_id = str(strategy.get("default_profile_id") or "")
     if default_profile_id not in profile_ids:
         raise ValueError("The protected default Strategy Profile is required")
+    discovery_rule_sets = list(dict(draft["market_discovery"]).get("rule_sets") or [])
+    discovery_rule_set_ids = {
+        str(row.get("rule_set_id") or "") for row in discovery_rule_sets
+    }
     for profile in profiles:
         definition = get_strategy_definition(
             str(profile.get("definition_id") or ""),
@@ -2960,7 +3000,25 @@ def _validate_draft(draft: dict[str, Any], *, require_runtime_ready: bool = True
         ):
             raise ValueError("The default Strategy Profile must remain protected")
         lifecycle = dict(profile.get("lifecycle") or {})
-        rule_set_catalog = list(profile.get("rule_set_catalog") or [])
+        rule_set_references = [str(value) for value in profile.get("rule_set_ids") or []]
+        if len(rule_set_references) != len(set(rule_set_references)):
+            raise ValueError(
+                f"Strategy Profile {profile.get('name')} contains duplicate rule-set references"
+            )
+        unknown_rule_sets = set(rule_set_references) - discovery_rule_set_ids
+        if unknown_rule_sets:
+            raise ValueError(
+                f"Strategy Profile {profile.get('name')} references unknown rule sets: "
+                f"{', '.join(sorted(unknown_rule_sets))}"
+            )
+        lifecycle_rule_set_ids = set(_profile_rule_set_ids(lifecycle))
+        if lifecycle_rule_set_ids != set(rule_set_references):
+            raise ValueError(
+                f"Strategy Profile {profile.get('name')} rule_set_ids must exactly match its lifecycle references"
+            )
+        rule_set_catalog = _profile_rule_sets(
+            profile, dict(draft["market_discovery"])
+        )
         _validate_strategy_lifecycle(
             lifecycle,
             rule_set_catalog,
@@ -2975,7 +3033,7 @@ def _validate_draft(draft: dict[str, Any], *, require_runtime_ready: bool = True
             raise ValueError(
                 f"Strategy Profile {profile.get('name')} does not support the {configured_side} side"
             )
-        _parameters_with_capabilities(profile)
+        _parameters_with_capabilities(profile, rule_set_catalog)
         for binding in profile.get("capabilities") or []:
             capability_id = str(binding.get("capability_id") or "")
             if capability_id not in catalog:
@@ -3616,6 +3674,24 @@ def _migrate_draft(raw: dict[str, Any]) -> dict[str, Any]:
                 )
             profile["lifecycle"] = lifecycle
             _migrate_profile_rule_catalog(profile)
+            legacy_rule_sets = list(profile.pop("rule_set_catalog", []) or [])
+            global_rule_set_ids = {
+                str(row.get("rule_set_id") or "")
+                for row in result["market_discovery"].get("rule_sets") or []
+            }
+            for rule_set in legacy_rule_sets:
+                rule_set_id = str(rule_set.get("rule_set_id") or "")
+                if not rule_set_id or rule_set_id in global_rule_set_ids:
+                    continue
+                migrated_rule_set = deepcopy(rule_set)
+                _normalize_data_rule_set_metadata(
+                    migrated_rule_set,
+                    atomic=bool(migrated_rule_set.get("atomic")),
+                )
+                _normalize_rule_set_conditions(migrated_rule_set)
+                result["market_discovery"]["rule_sets"].append(migrated_rule_set)
+                global_rule_set_ids.add(rule_set_id)
+            profile["rule_set_ids"] = _profile_rule_set_ids(lifecycle)
             profile["parameters"] = _parameters_without_lifecycle(parameters)
             profile["protected"] = (
                 str(profile.get("profile_id"))
@@ -3658,6 +3734,10 @@ def _migrate_draft(raw: dict[str, Any]) -> dict[str, Any]:
             template["editable"] = False
             template.setdefault("derived_from_profile_id", "")
             template.pop("composition", None)
+            template.pop("rule_set_catalog", None)
+            template["rule_set_ids"] = _profile_rule_set_ids(
+                dict(template.get("lifecycle") or {})
+            )
         existing_capabilities = {
             str(row.get("capability_id"))
             for row in dict(result.get("strategy") or {}).get("capability_catalog") or []
@@ -4349,12 +4429,14 @@ def _default_protection_profiles() -> list[dict[str, Any]]:
     }]
 
 
-def _parameters_with_capabilities(profile: dict[str, Any]) -> dict[str, Any]:
+def _parameters_with_capabilities(
+    profile: dict[str, Any], rule_sets: list[dict[str, Any]]
+) -> dict[str, Any]:
     parameters = deepcopy(dict(profile.get("parameters") or {}))
     lifecycle = dict(profile.get("lifecycle") or {})
     rule_set_catalog = {
         str(rule_set.get("rule_set_id") or ""): dict(rule_set)
-        for rule_set in profile.get("rule_set_catalog") or []
+        for rule_set in rule_sets
     }
     initial_entry = dict(lifecycle.get("initial_entry") or {})
     parameters["entry_rules"] = {
