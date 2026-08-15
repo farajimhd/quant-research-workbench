@@ -22921,6 +22921,66 @@ button {
 .configuration-safety-note > svg { color: var(--success); flex: 0 0 auto; }
 .configuration-safety-note strong { color: var(--foreground); }
 
+/* Isolated typography comparison routes. Only the family changes between variants. */
+.typography-comparison-page {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: 14px;
+  height: calc(var(--app-zoomed-viewport-height) - 74px);
+  min-height: 0;
+  overflow: hidden;
+  font-family: var(--comparison-font);
+}
+.typography-comparison-page :where(button, input, select, textarea) { font-family: var(--comparison-font); }
+.typography-comparison-page :where(.rule-condition-operand small, .rule-set-document code, .rule-condition-definition > em) { font-family: var(--comparison-font); }
+.typography-comparison-header { align-items: end; display: flex; justify-content: space-between; gap: 24px; padding: 14px 4px 0; }
+.typography-comparison-header > div { min-width: 0; }
+.typography-comparison-header span { color: var(--muted-foreground); font-size: 0.7rem; letter-spacing: 0.075em; text-transform: uppercase; }
+.typography-comparison-header h1 { font-size: 1.55rem; font-weight: 560; letter-spacing: -0.025em; margin: 4px 0 2px; }
+.typography-comparison-header p { color: var(--muted-foreground); font-size: 0.82rem; line-height: 1.45; margin: 0; }
+.typography-comparison-header nav { align-items: center; display: flex; flex-wrap: wrap; gap: 5px; justify-content: flex-end; }
+.typography-comparison-header nav a { border: 1px solid var(--border); border-radius: 8px; color: var(--muted-foreground); font-size: 0.75rem; padding: 7px 10px; text-decoration: none; }
+.typography-comparison-header nav a:hover { border-color: var(--border-strong); color: var(--foreground); }
+.typography-comparison-header nav a[aria-current="page"] { background: var(--foreground); border-color: var(--foreground); color: var(--background); }
+.typography-rule-set-preview { height: auto; }
+.typography-rule-set-preview .data-library-tree { scrollbar-gutter: stable; }
+.typography-rule-set-preview .rule-set-document > header > input { cursor: default; }
+.typography-rule-set-preview .rule-set-document > header > textarea { min-height: 52px; resize: none; }
+.typography-condition-with-lookup { position: relative; z-index: 3; }
+.typography-lookup-trigger { align-items: center; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; color: var(--foreground); display: flex; font-size: 0.82rem; font-weight: 500; justify-content: space-between; min-height: 36px; padding: 0 11px; width: 100%; }
+.typography-lookup-trigger[aria-expanded="true"] { border-color: var(--focus); }
+.typography-lookup-menu { background: var(--menu-bg, var(--surface)); border: 1px solid var(--border); border-radius: 10px; box-shadow: var(--menu-shadow); display: flex; flex-direction: column; left: 37px; max-height: min(440px, 58vh); overflow: hidden; position: absolute; top: calc(100% - 2px); width: min(420px, calc(100vw - 360px)); z-index: 40; }
+.typography-lookup-menu > label { align-items: center; background: var(--menu-bg, var(--surface)); border-bottom: 1px solid var(--border); color: var(--muted-foreground); display: flex; flex: 0 0 auto; gap: 8px; padding: 10px 11px; }
+.typography-lookup-menu > label input { background: transparent; border: 0; color: var(--foreground); font-size: 0.8rem; min-width: 0; outline: 0; padding: 0; width: 100%; }
+.typography-lookup-menu > div { display: grid; gap: 8px; min-height: 0; overflow: auto; padding: 6px; scrollbar-gutter: stable; }
+.typography-lookup-menu section { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+.typography-lookup-menu section > header { align-items: center; background: color-mix(in oklab, var(--surface-alt) 86%, var(--surface)); border-bottom: 1px solid var(--border); color: color-mix(in oklab, var(--foreground) 78%, var(--muted-foreground)); display: flex; font-size: 0.72rem; font-weight: 520; justify-content: space-between; padding: 8px 10px; }
+.typography-lookup-menu section > header em { background: var(--surface); border: 1px solid var(--border); border-radius: 999px; color: var(--muted-foreground); font-size: 0.66rem; font-style: normal; font-weight: 450; padding: 1px 6px; }
+.typography-lookup-menu section > button { background: transparent; border: 1px solid transparent; border-radius: 6px; color: var(--muted-foreground); display: grid; margin: 4px; padding: 8px 10px; text-align: left; width: calc(100% - 8px); }
+.typography-lookup-menu section > button:hover { background: var(--surface-alt); }
+.typography-lookup-menu section > button[aria-selected="true"] { background: color-mix(in oklab, var(--foreground) 6%, var(--surface)); border-color: color-mix(in oklab, var(--foreground) 18%, var(--border)); color: var(--foreground); }
+.typography-lookup-menu section > button strong { color: var(--foreground); font-size: 0.8rem; font-weight: 520; }
+.typography-lookup-menu section > button small { color: var(--muted-foreground); font-size: 0.7rem; font-weight: 400; line-height: 1.4; margin-top: 3px; }
+.typography-number-specimen { border-top: 1px solid var(--border); margin-top: 24px; padding-top: 18px; }
+.typography-number-specimen > header { align-items: baseline; display: flex; justify-content: space-between; }
+.typography-number-specimen > header span { font-size: 0.74rem; font-weight: 560; text-transform: uppercase; }
+.typography-number-specimen > header small { color: var(--muted-foreground); font-size: 0.68rem; }
+.typography-number-specimen > div { display: grid; grid-template-columns: repeat(6, minmax(100px, 1fr)); margin-top: 10px; }
+.typography-number-specimen > div > div { border: 1px solid var(--border); border-right: 0; display: grid; gap: 5px; padding: 12px; }
+.typography-number-specimen > div > div:first-child { border-radius: 8px 0 0 8px; }
+.typography-number-specimen > div > div:last-child { border-radius: 0 8px 8px 0; border-right: 1px solid var(--border); }
+.typography-number-specimen span { color: var(--muted-foreground); font-size: 0.68rem; }
+.typography-number-specimen strong { font-size: 0.92rem; font-weight: 560; }
+.typography-number-specimen strong[data-tone="positive"] { color: var(--success); }
+.typography-number { font-variant-numeric: tabular-nums lining-nums; }
+@media (max-width: 1100px) {
+  .typography-comparison-header { align-items: stretch; display: grid; }
+  .typography-comparison-header nav { justify-content: flex-start; }
+  .typography-number-specimen > div { grid-template-columns: repeat(3, minmax(100px, 1fr)); }
+  .typography-number-specimen > div > div:nth-child(3) { border-right: 1px solid var(--border); border-radius: 0 8px 8px 0; }
+  .typography-number-specimen > div > div:nth-child(4) { border-radius: 8px 0 0 8px; }
+}
+
 /* Configuration typography is intentionally 25% larger than the prior guided UI. */
 
 .data-library-workbench {

@@ -1,11 +1,11 @@
 import type { ReactNode } from "react";
-import { Activity, BadgeCheck, BookOpenCheck, BriefcaseBusiness, Bug, Check, ChevronLeft, ChevronRight, Database, FlaskConical, GitBranch, History, Microscope, PanelsTopLeft, Palette, ScanSearch, ServerCog, ShieldCheck, UsersRound, Wifi } from "lucide-react";
+import { Activity, BadgeCheck, BookOpenCheck, BriefcaseBusiness, Bug, Check, ChevronLeft, ChevronRight, Database, FlaskConical, GitBranch, History, Microscope, PanelsTopLeft, Palette, ScanSearch, ServerCog, ShieldCheck, Type, UsersRound, Wifi } from "lucide-react";
 import { useEffect, useState } from "react";
 
 import { buildMenuItemButtonClassName, buildThemeMenuItemButtonClassName } from "../selectionStyles";
 import { APP_THEMES, DEFAULT_THEME_ID, applyThemeDefinition, isAppThemeId, type AppThemeDefinition, type AppThemeId } from "../theme";
 
-export type PageKey = "real-live-trading" | "replay-trading" | "backtest-trading" | "backtest-debug" | "research-workspace" | "canvas-configuration" | "data-catalog-configuration" | "rule-set-configuration" | "market-discovery-configuration" | "strategy-configuration" | "assignment-configuration" | "portfolio-configuration" | "oms-configuration" | "account-configuration" | "revision-configuration" | "canvas-focus" | "services-dashboard" | "service-qmd" | "service-qmd-history" | "service-news" | "service-sec" | "service-text-embed" | "service-reference" | "service-ibkr";
+export type PageKey = "real-live-trading" | "replay-trading" | "backtest-trading" | "backtest-debug" | "research-workspace" | "canvas-configuration" | "data-catalog-configuration" | "rule-set-configuration" | "market-discovery-configuration" | "typography-source-sans-3" | "typography-ibm-plex-sans" | "typography-atkinson-hyperlegible-next" | "typography-public-sans" | "strategy-configuration" | "assignment-configuration" | "portfolio-configuration" | "oms-configuration" | "account-configuration" | "revision-configuration" | "canvas-focus" | "services-dashboard" | "service-qmd" | "service-qmd-history" | "service-news" | "service-sec" | "service-text-embed" | "service-reference" | "service-ibkr";
 export type UiScale = 0.8 | 0.9 | 1 | 1.1 | 1.25;
 
 type LayoutProps = {
@@ -41,6 +41,15 @@ const navGroups = [
       { key: "data-catalog-configuration" as PageKey, label: "Data Catalog", icon: Database },
       { key: "rule-set-configuration" as PageKey, label: "Rule Sets", icon: BookOpenCheck },
       { key: "market-discovery-configuration" as PageKey, label: "Market Discovery", icon: ScanSearch },
+    ]
+  },
+  {
+    label: "Typography Comparison",
+    items: [
+      { key: "typography-source-sans-3" as PageKey, label: "Source Sans 3", icon: Type },
+      { key: "typography-ibm-plex-sans" as PageKey, label: "IBM Plex Sans", icon: Type },
+      { key: "typography-atkinson-hyperlegible-next" as PageKey, label: "Atkinson Next", icon: Type },
+      { key: "typography-public-sans" as PageKey, label: "Public Sans", icon: Type }
     ]
   },
   {
@@ -218,6 +227,7 @@ function configurationToneForPage(page: PageKey) {
   if (page === "canvas-configuration") return "canvas";
   if (page === "data-catalog-configuration" || page === "rule-set-configuration") return "discovery";
   if (page === "market-discovery-configuration") return "discovery";
+  if (page.startsWith("typography-")) return "discovery";
   if (page === "strategy-configuration") return "strategy";
   if (page === "assignment-configuration") return "assignments";
   if (page === "portfolio-configuration") return "portfolio";
