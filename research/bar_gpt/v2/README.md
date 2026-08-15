@@ -156,7 +156,7 @@ never split and each block belongs to exactly one chunk. Each chunk is then
 replayed over precisely the same block membership for at least four and at
 most 20 repetitions.
 A fixed randomly sampled, stratified 1M-origin held-out panel is assigned to
-that chunk and reused after every repetition. A reduction smaller than 0.1%
+that chunk and reused after every repetition. A reduction smaller than 0.02%
 counts as no improvement. Validation remains visible after every repetition,
 but only the ends of complete two-repetition cosine cycles update patience or
 authorize an early stop: repetitions 2, 4, 6, and so on. Repetition 2 records

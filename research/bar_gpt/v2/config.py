@@ -373,7 +373,7 @@ class TrainConfig:
     # minimum LR before its validation result can advance the chunk.
     chunk_cosine_cycle_repetitions: int = 2
     chunk_early_stopping_patience: int = 1
-    chunk_early_stopping_min_relative_delta: float = 0.001
+    chunk_early_stopping_min_relative_delta: float = 0.0002
     outer_early_stopping_patience: int = 0
     outer_early_stopping_min_relative_delta: float = 0.001
     warmup_samples: int = 0

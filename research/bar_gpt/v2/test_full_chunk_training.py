@@ -604,6 +604,7 @@ class FullChunkLauncherTest(unittest.TestCase):
         self.assertEqual(parsed.max_chunk_epochs, 20)
         self.assertEqual(parsed.chunk_cosine_cycle_repetitions, 2)
         self.assertEqual(parsed.chunk_early_stopping_patience, 1)
+        self.assertEqual(parsed.chunk_early_stopping_min_relative_delta, 0.0002)
         self.assertEqual(parsed.scheduler_mode, "epoch-chunk-cosine")
         self.assertEqual(parsed.cosine_restart_decay, 0.95)
         self.assertEqual(parsed.minimum_learning_rate, 1e-5)

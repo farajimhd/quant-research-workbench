@@ -38,7 +38,7 @@ DEFAULT_MIN_CHUNK_EPOCHS = 4
 DEFAULT_MAX_CHUNK_EPOCHS = 20
 DEFAULT_CHUNK_COSINE_CYCLE_REPETITIONS = 2
 DEFAULT_CHUNK_EARLY_STOPPING_PATIENCE = 1
-DEFAULT_CHUNK_EARLY_STOPPING_MIN_RELATIVE_DELTA = 0.001
+DEFAULT_CHUNK_EARLY_STOPPING_MIN_RELATIVE_DELTA = 0.0002
 DEFAULT_EARLY_STOPPING_PATIENCE = 2
 DEFAULT_EARLY_STOPPING_MIN_RELATIVE_DELTA = 0.001
 DEFAULT_EPOCH_LR_DECAY = 0.95
@@ -304,7 +304,8 @@ def main(argv: Iterable[str] | None = None) -> int:
         f"Chunk adaptation: {args.min_chunk_epochs} minimum and up to "
         f"{args.max_chunk_epochs} exact repetitions; fixed "
         f"{args.chunk_validation_origins:,}-origin validation; patience="
-        f"{args.chunk_early_stopping_patience}",
+        f"{args.chunk_early_stopping_patience}; minimum relative improvement="
+        f"{100.0 * args.chunk_early_stopping_min_relative_delta:.4f}%",
         flush=True,
     )
     print(
