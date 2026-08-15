@@ -91,9 +91,21 @@ export type AppThemeDefinition = {
   tokens: AppThemeTokenMap;
 };
 
-const BODY_FONT_STACK = "\"Inter\", \"Segoe UI Variable Text\", \"Segoe UI\", sans-serif";
-const DISPLAY_FONT_STACK = "\"Inter\", \"Segoe UI Variable Display\", \"Segoe UI\", sans-serif";
-const MONO_FONT_STACK = "\"JetBrains Mono\", \"Cascadia Mono\", \"SFMono-Regular\", Consolas, monospace";
+/**
+ * Product typography authority.
+ *
+ * Public Sans owns every human-facing surface: navigation, headings, prose,
+ * controls, tables, chart labels, tickers, timestamps, status copy, and
+ * financial numbers. Use tabular lining numerals for aligned market values;
+ * do not switch those values to monospace.
+ *
+ * JetBrains Mono is reserved for machine-facing syntax: canonical IDs, raw
+ * source paths, payload keys, contracts, and code. Components must consume
+ * --font-body, --font-display, or --font-mono instead of naming a font family.
+ */
+const BODY_FONT_STACK = "\"Public Sans\", sans-serif";
+const DISPLAY_FONT_STACK = BODY_FONT_STACK;
+const MONO_FONT_STACK = "\"JetBrains Mono\", monospace";
 
 const paletteDefinitions: Array<{
   description: string;

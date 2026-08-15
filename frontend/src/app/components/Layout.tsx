@@ -44,12 +44,6 @@ const navGroups = [
     ]
   },
   {
-    label: "Typography System",
-    items: [
-      { key: "typography-public-sans" as PageKey, label: "Public Sans Roles", icon: Type }
-    ]
-  },
-  {
     label: "System Configuration",
     items: [
       { key: "strategy-configuration" as PageKey, label: "Strategy Studio", icon: GitBranch },
@@ -63,6 +57,12 @@ const navGroups = [
     label: "System",
     items: [
       { key: "services-dashboard" as PageKey, label: "Service Health", icon: ServerCog }
+    ]
+  },
+  {
+    label: "Typography System",
+    items: [
+      { key: "typography-public-sans" as PageKey, label: "Public Sans Roles", icon: Type }
     ]
   }
 ];

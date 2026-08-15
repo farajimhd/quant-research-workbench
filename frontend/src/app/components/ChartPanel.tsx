@@ -5071,6 +5071,10 @@ function drawPriceZonePrimitiveLabels(
   });
 }
 
+function canvasInterfaceFont() {
+  return getComputedStyle(document.documentElement).getPropertyValue("--font-body").trim() || "sans-serif";
+}
+
 function drawCurrentLevelConfidenceLabel(
   context: CanvasRenderingContext2D,
   text: string,
@@ -5086,7 +5090,7 @@ function drawCurrentLevelConfidenceLabel(
 ) {
   const fontSize = 10;
   context.save();
-  context.font = `700 ${fontSize}px ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif`;
+  context.font = `700 ${fontSize}px ${canvasInterfaceFont()}`;
   const labelWidth = Math.ceil(context.measureText(text).width) + 8;
   const labelHeight = fontSize + 5;
   const candidates = [span.right - labelWidth - 6, span.left + 6, span.left + span.width / 2 - labelWidth / 2];
@@ -5241,7 +5245,7 @@ function drawPriceZoneLineLabel(
   if (lineY < 2 || lineY > plotBottom - 2 || span.width < 8) return false;
   const fontSize = Math.max(9, settings.labelFontSize);
   context.save();
-  context.font = `600 ${fontSize}px ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif`;
+  context.font = `600 ${fontSize}px ${canvasInterfaceFont()}`;
   const textWidth = Math.ceil(context.measureText(text).width);
   const labelWidth = textWidth + 8;
   const labelHeight = fontSize + 5;
@@ -5295,7 +5299,7 @@ function drawAnchoredSwingLabel(
   if (!Number.isFinite(pivotX) || lineY < 2 || lineY > plotBottom - 2) return false;
   const fontSize = Math.max(9, settings.labelFontSize);
   context.save();
-  context.font = `600 ${fontSize}px ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif`;
+  context.font = `600 ${fontSize}px ${canvasInterfaceFont()}`;
   const labelWidth = Math.ceil(context.measureText(text).width) + 8;
   const labelHeight = fontSize + 5;
   const leftCandidates = [
@@ -5365,7 +5369,7 @@ function drawAnchoredStructureBreakLabel(
   const zoomScale = Math.max(0.62, Math.min(1, barWidth / 8));
   const fontSize = Math.max(7, Math.round(configuredFontSize * zoomScale * 2) / 2);
   context.save();
-  context.font = `600 ${fontSize}px ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif`;
+  context.font = `600 ${fontSize}px ${canvasInterfaceFont()}`;
   const labelWidth = Math.ceil(context.measureText(text).width) + 12;
   const labelHeight = fontSize + 5;
   const anchorX = (pivotX + eventX) / 2;
