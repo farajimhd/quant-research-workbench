@@ -10,14 +10,16 @@ export function inventoryEligibilityOptions(label: string): InventoryFilterOptio
 
 type MenuPlacement = CSSProperties & { maxHeight: number; width: number };
 
-export function InventoryFilterSelect({ ariaLabel, className, defaultValue, onChange, optionLimit = 100, options, presentation = "compact", searchable = false, searchPlaceholder = "Search…", showAllOnOpen = false, value }: { ariaLabel: string; className?: string; defaultValue?: string | number; onChange: (value: string) => void; optionLimit?: number; options: InventoryFilterOption[]; presentation?: "catalog" | "compact"; searchable?: boolean; searchPlaceholder?: string; showAllOnOpen?: boolean; value: string | number }) {
+export function InventoryFilterSelect({ ariaLabel, className, defaultValue, onChange, optionLimit = 100, options, placeholder, presentation = "compact", searchable = false, searchPlaceholder = "Search…", showAllOnOpen = false, value }: { ariaLabel: string; className?: string; defaultValue?: string | number; onChange: (value: string) => void; optionLimit?: number; options: InventoryFilterOption[]; placeholder?: string; presentation?: "catalog" | "compact"; searchable?: boolean; searchPlaceholder?: string; showAllOnOpen?: boolean; value: string | number }) {
   const normalizedValue = String(value);
   const normalizedDefaultValue = String(defaultValue ?? options[0]?.value ?? "");
-  const selectedIndex = Math.max(0, options.findIndex((option) => option.value === normalizedValue));
-  const selected = options[selectedIndex] ?? options[0];
+  const matchingIndex = options.findIndex((option) => option.value === normalizedValue);
+  const selectedIndex = matchingIndex >= 0 ? matchingIndex : placeholder ? -1 : 0;
+  const selected = selectedIndex >= 0 ? options[selectedIndex] : undefined;
+  const hasSelection = Boolean(normalizedValue && selected);
   const [open, setOpen] = useState(false);
   const [searchText, setSearchText] = useState("");
-  const [activeIndex, setActiveIndex] = useState(selectedIndex);
+  const [activeIndex, setActiveIndex] = useState(Math.max(0, selectedIndex));
   const [placement, setPlacement] = useState<MenuPlacement>({ left: 0, maxHeight: 240, top: 0, width: 170 });
   const buttonRef = useRef<HTMLButtonElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
@@ -96,8 +98,8 @@ export function InventoryFilterSelect({ ariaLabel, className, defaultValue, onCh
   useEffect(() => {
     if (!open) return;
     setSearchText("");
-    setActiveIndex(selectedIndex);
-    const frame = window.requestAnimationFrame(() => searchable ? searchRef.current?.focus() : menuRef.current?.querySelector<HTMLButtonElement>(`[data-option-index="${selectedIndex}"]`)?.focus());
+    setActiveIndex(Math.max(0, selectedIndex));
+    const frame = window.requestAnimationFrame(() => searchable ? searchRef.current?.focus() : menuRef.current?.querySelector<HTMLButtonElement>(`[data-option-index="${Math.max(0, selectedIndex)}"]`)?.focus());
     const onPointerDown = (event: PointerEvent) => {
       const target = event.target as Node;
       if (!buttonRef.current?.contains(target) && !menuRef.current?.contains(target)) setOpen(false);
@@ -151,8 +153,8 @@ export function InventoryFilterSelect({ ariaLabel, className, defaultValue, onCh
   }
 
   return <>
-    <button aria-controls={open ? menuId : undefined} aria-expanded={open} aria-haspopup="listbox" aria-label={ariaLabel} className={`inventory-filter-button${className ? ` ${className}` : ""}`} data-filter-active={normalizedValue !== normalizedDefaultValue ? "true" : undefined} onClick={() => setOpen((current) => !current)} onKeyDown={onButtonKeyDown} ref={buttonRef} type="button">
-      <span>{selected?.label ?? "Select"}</span><ChevronDown aria-hidden="true" size={12} />
+    <button aria-controls={open ? menuId : undefined} aria-expanded={open} aria-haspopup="listbox" aria-label={ariaLabel} className={`inventory-filter-button${className ? ` ${className}` : ""}`} data-filter-active={normalizedValue !== normalizedDefaultValue ? "true" : undefined} data-has-selection={hasSelection ? "true" : "false"} onClick={() => setOpen((current) => !current)} onKeyDown={onButtonKeyDown} ref={buttonRef} type="button">
+      <span>{selected?.label ?? placeholder ?? "Select"}</span><ChevronDown aria-hidden="true" size={12} />
     </button>
     {open ? createPortal(<div className="inventory-filter-menu" data-presentation={presentation} data-searchable={searchable ? "true" : undefined} ref={menuRef} style={placement}>
       {searchable ? <label className="inventory-filter-search"><span className="sr-only">Search {ariaLabel}</span>{presentation === "catalog" ? <Search aria-hidden="true" size={14} /> : null}<input aria-label={`Search ${ariaLabel}`} onChange={(event) => { setSearchText(event.target.value); setActiveIndex(0); }} onKeyDown={onSearchKeyDown} placeholder={searchPlaceholder} ref={searchRef} type="search" value={searchText} /></label> : null}
