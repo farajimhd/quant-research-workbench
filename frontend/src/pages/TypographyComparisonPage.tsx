@@ -1,19 +1,19 @@
 import { ChevronDown, Copy, LockKeyhole, Plus, Search, Trash2 } from "lucide-react";
 import { useMemo, useState, type CSSProperties } from "react";
 
-export type TypographyComparisonFont = "source-sans-3" | "ibm-plex-sans" | "atkinson-hyperlegible-next" | "public-sans";
+export type TypographyComparisonFont = "noto-sans" | "open-sans" | "lato" | "public-sans";
 
 const FONT_OPTIONS: Record<TypographyComparisonFont, { family: string; label: string; note: string }> = {
-  "source-sans-3": { family: '"Source Sans 3", sans-serif', label: "Source Sans 3", note: "Open, calm proportions with strong small-size readability." },
-  "ibm-plex-sans": { family: '"IBM Plex Sans", sans-serif', label: "IBM Plex Sans", note: "Technical character with clear numeric and control typography." },
-  "atkinson-hyperlegible-next": { family: '"Atkinson Hyperlegible Next", sans-serif', label: "Atkinson Hyperlegible Next", note: "Maximum character distinction and legibility at compact sizes." },
+  "noto-sans": { family: '"Noto Sans", sans-serif', label: "Noto Sans", note: "Balanced multilingual text forms with steady readability across interface sizes." },
+  "open-sans": { family: '"Open Sans", sans-serif', label: "Open Sans", note: "Humanist proportions and open counters designed for dense screen text." },
+  lato: { family: '"Lato", sans-serif', label: "Lato", note: "Warm, distinctive text shapes with restrained medium and semibold weights." },
   "public-sans": { family: '"Public Sans", sans-serif', label: "Public Sans", note: "Neutral interface typography with generous, readable forms." },
 };
 
 const FONT_NAV_LABELS: Record<TypographyComparisonFont, string> = {
-  "source-sans-3": "Source Sans 3",
-  "ibm-plex-sans": "IBM Plex Sans",
-  "atkinson-hyperlegible-next": "Atkinson Next",
+  "noto-sans": "Noto Sans",
+  "open-sans": "Open Sans",
+  lato: "Lato",
   "public-sans": "Public Sans",
 };
 

@@ -12,7 +12,7 @@ import { ServicesPage, type ServicePageMode } from "./pages/ServicesPage";
 import { TradingConfigurationPage, type TradingConfigurationSection } from "./pages/TradingConfigurationPage";
 import { TypographyComparisonPage, type TypographyComparisonFont } from "./pages/TypographyComparisonPage";
 
-const validPages: PageKey[] = ["real-live-trading", "replay-trading", "backtest-trading", "backtest-debug", "research-workspace", "canvas-configuration", "data-catalog-configuration", "rule-set-configuration", "market-discovery-configuration", "typography-source-sans-3", "typography-ibm-plex-sans", "typography-atkinson-hyperlegible-next", "typography-public-sans", "strategy-configuration", "assignment-configuration", "portfolio-configuration", "oms-configuration", "account-configuration", "revision-configuration", "canvas-focus", "services-dashboard", "service-qmd", "service-qmd-history", "service-news", "service-sec", "service-text-embed", "service-reference", "service-ibkr"];
+const validPages: PageKey[] = ["real-live-trading", "replay-trading", "backtest-trading", "backtest-debug", "research-workspace", "canvas-configuration", "data-catalog-configuration", "rule-set-configuration", "market-discovery-configuration", "typography-noto-sans", "typography-open-sans", "typography-lato", "typography-public-sans", "strategy-configuration", "assignment-configuration", "portfolio-configuration", "oms-configuration", "account-configuration", "revision-configuration", "canvas-focus", "services-dashboard", "service-qmd", "service-qmd-history", "service-news", "service-sec", "service-text-embed", "service-reference", "service-ibkr"];
 
 export function App() {
   const [page, setPage] = useState<PageKey>(() => {
@@ -87,9 +87,9 @@ export function App() {
 }
 
 function typographyComparisonFont(page: PageKey): TypographyComparisonFont | null {
-  if (page === "typography-source-sans-3") return "source-sans-3";
-  if (page === "typography-ibm-plex-sans") return "ibm-plex-sans";
-  if (page === "typography-atkinson-hyperlegible-next") return "atkinson-hyperlegible-next";
+  if (page === "typography-noto-sans") return "noto-sans";
+  if (page === "typography-open-sans") return "open-sans";
+  if (page === "typography-lato") return "lato";
   if (page === "typography-public-sans") return "public-sans";
   return null;
 }

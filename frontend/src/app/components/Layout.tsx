@@ -5,7 +5,7 @@ import { useEffect, useState } from "react";
 import { buildMenuItemButtonClassName, buildThemeMenuItemButtonClassName } from "../selectionStyles";
 import { APP_THEMES, DEFAULT_THEME_ID, applyThemeDefinition, isAppThemeId, type AppThemeDefinition, type AppThemeId } from "../theme";
 
-export type PageKey = "real-live-trading" | "replay-trading" | "backtest-trading" | "backtest-debug" | "research-workspace" | "canvas-configuration" | "data-catalog-configuration" | "rule-set-configuration" | "market-discovery-configuration" | "typography-source-sans-3" | "typography-ibm-plex-sans" | "typography-atkinson-hyperlegible-next" | "typography-public-sans" | "strategy-configuration" | "assignment-configuration" | "portfolio-configuration" | "oms-configuration" | "account-configuration" | "revision-configuration" | "canvas-focus" | "services-dashboard" | "service-qmd" | "service-qmd-history" | "service-news" | "service-sec" | "service-text-embed" | "service-reference" | "service-ibkr";
+export type PageKey = "real-live-trading" | "replay-trading" | "backtest-trading" | "backtest-debug" | "research-workspace" | "canvas-configuration" | "data-catalog-configuration" | "rule-set-configuration" | "market-discovery-configuration" | "typography-noto-sans" | "typography-open-sans" | "typography-lato" | "typography-public-sans" | "strategy-configuration" | "assignment-configuration" | "portfolio-configuration" | "oms-configuration" | "account-configuration" | "revision-configuration" | "canvas-focus" | "services-dashboard" | "service-qmd" | "service-qmd-history" | "service-news" | "service-sec" | "service-text-embed" | "service-reference" | "service-ibkr";
 export type UiScale = 0.8 | 0.9 | 1 | 1.1 | 1.25;
 
 type LayoutProps = {
@@ -46,9 +46,9 @@ const navGroups = [
   {
     label: "Typography Comparison",
     items: [
-      { key: "typography-source-sans-3" as PageKey, label: "Source Sans 3", icon: Type },
-      { key: "typography-ibm-plex-sans" as PageKey, label: "IBM Plex Sans", icon: Type },
-      { key: "typography-atkinson-hyperlegible-next" as PageKey, label: "Atkinson Next", icon: Type },
+      { key: "typography-noto-sans" as PageKey, label: "Noto Sans", icon: Type },
+      { key: "typography-open-sans" as PageKey, label: "Open Sans", icon: Type },
+      { key: "typography-lato" as PageKey, label: "Lato", icon: Type },
       { key: "typography-public-sans" as PageKey, label: "Public Sans", icon: Type }
     ]
   },
