@@ -1,12 +1,16 @@
 import { ChevronDown, Copy, LockKeyhole, Plus, Search, Trash2 } from "lucide-react";
 import { useMemo, useState, type CSSProperties } from "react";
 
-export type TypographyComparisonFont = "noto-sans" | "open-sans" | "lato" | "public-sans";
+export type TypographyComparisonFont = "noto-sans" | "open-sans" | "lato" | "figtree" | "work-sans" | "roboto" | "lexend" | "public-sans";
 
 const FONT_OPTIONS: Record<TypographyComparisonFont, { family: string; label: string; note: string }> = {
   "noto-sans": { family: '"Noto Sans", sans-serif', label: "Noto Sans", note: "Balanced multilingual text forms with steady readability across interface sizes." },
   "open-sans": { family: '"Open Sans", sans-serif', label: "Open Sans", note: "Humanist proportions and open counters designed for dense screen text." },
   lato: { family: '"Lato", sans-serif', label: "Lato", note: "Warm, distinctive text shapes with restrained medium and semibold weights." },
+  figtree: { family: '"Figtree", sans-serif', label: "Figtree", note: "Contemporary, compact forms with friendly text rhythm and clear figures." },
+  "work-sans": { family: '"Work Sans", sans-serif', label: "Work Sans", note: "Screen-oriented proportions with restrained headings and efficient dense text." },
+  roboto: { family: '"Roboto", sans-serif', label: "Roboto", note: "Familiar interface forms with strong control text and predictable numeric widths." },
+  lexend: { family: '"Lexend", sans-serif', label: "Lexend", note: "Wide, highly differentiated letterforms intended to reduce visual crowding." },
   "public-sans": { family: '"Public Sans", sans-serif', label: "Public Sans", note: "Neutral interface typography with generous, readable forms." },
 };
 
@@ -14,6 +18,10 @@ const FONT_NAV_LABELS: Record<TypographyComparisonFont, string> = {
   "noto-sans": "Noto Sans",
   "open-sans": "Open Sans",
   lato: "Lato",
+  figtree: "Figtree",
+  "work-sans": "Work Sans",
+  roboto: "Roboto",
+  lexend: "Lexend",
   "public-sans": "Public Sans",
 };
 
