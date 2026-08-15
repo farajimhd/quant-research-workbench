@@ -1,14 +1,22 @@
 import {
   Activity,
+  AlertTriangle,
+  Apple,
   BarChart3,
   Bell,
   BookOpenText,
   CheckCircle2,
   ChevronDown,
+  Clock3,
   Code2,
   Database,
+  Filter,
   LayoutPanelLeft,
+  LoaderCircle,
+  Newspaper,
+  Plus,
   Search,
+  Star,
   Table2,
   ToggleRight,
   Type,
@@ -57,33 +65,63 @@ export function TypographyPublicSansPage() {
           </div>
         </section>
 
-        <section className="typography-mix-options" aria-labelledby="type-mix-heading">
+        <section className="typography-component-gallery" aria-labelledby="component-gallery-heading">
           <header>
-            <div><Type size={17} /><span><strong id="type-mix-heading">Purposeful font mixes</strong><small>Public Sans remains the interface and numeric authority in every option.</small></span></div>
-            <em>Compare the role changes, not isolated alphabets</em>
+            <div><Type size={17} /><span><strong id="component-gallery-heading">Two-font component gallery</strong><small>Reusable product patterns rendered with the approved typography roles.</small></span></div>
+            <em>Public Sans interface · JetBrains Mono identifiers</em>
           </header>
-          <div>
-            <TypeMix
-              className="unified"
-              description="The quietest and most consistent system. Best when operational density should dominate brand character."
-              display="Public Sans"
-              reading="Public Sans"
-              title="Unified interface"
-            />
-            <TypeMix
-              className="analytical"
-              description="Adds a restrained geometric voice to page titles while preserving Public Sans everywhere users scan or act."
-              display="Sora"
-              reading="Public Sans"
-              title="Analytical hierarchy"
-            />
-            <TypeMix
-              className="editorial"
-              description="Uses a serif only for long filings, research notes, and narrative evidence; operational UI remains unchanged."
-              display="Public Sans"
-              reading="Source Serif 4"
-              title="Research reading"
-            />
+          <div className="typography-gallery-grid">
+            <div className="typography-gallery-column">
+              <article className="typography-gallery-card symbol-card-pattern">
+                <header><span>Security identity card</span><Star size={15} /></header>
+                <div className="type-symbol-card">
+                  <div className="type-symbol-logo"><Apple size={25} strokeWidth={2.2} /></div>
+                  <div className="type-symbol-identity"><strong>AAPL</strong><span>Apple Inc.</span><small>NASDAQ · Common stock</small></div>
+                  <div className="type-symbol-quote"><strong>$231.42</strong><span className="positive">+1.84%</span><small>09:45:12 ET</small></div>
+                </div>
+                <footer><span>News <strong>4</strong></span><span>SEC <strong>2</strong></span><code>security.us.aapl</code></footer>
+              </article>
+
+              <article className="typography-gallery-card filter-pattern">
+                <header><span>Compact toolbar</span><Filter size={15} /></header>
+                <div className="type-filter-toolbar">
+                  <button type="button"><span>All rows</span><ChevronDown size={14} /></button>
+                  <button className="active" type="button"><span>Session gainers</span><ChevronDown size={14} /></button>
+                  <label><Search size={14} /><input aria-label="Example symbol search" placeholder="Search symbols" /></label>
+                  <button className="icon" aria-label="Add filter" type="button"><Plus size={15} /></button>
+                </div>
+                <div className="type-condition-row"><span><small>DATA DEFINITION</small><strong>Relative volume</strong><code>market.relative_volume</code></span><span><small>COMPARISON</small><strong>is at least</strong></span><span><small>THRESHOLD</small><strong>3.00×</strong></span></div>
+              </article>
+
+              <article className="typography-gallery-card state-pattern">
+                <header><span>Loading and exception states</span><Activity size={15} /></header>
+                <div className="type-state-list"><span><LoaderCircle className="spin" size={15} /><strong>Resolving Watchlist membership</strong><small>Waiting for the first complete causal snapshot.</small></span><span className="warning"><AlertTriangle size={15} /><strong>Reference data unavailable</strong><small>Market cap remains empty until causal coverage is restored.</small></span></div>
+              </article>
+            </div>
+
+            <div className="typography-gallery-column">
+              <article className="typography-gallery-card lookup-pattern">
+                <header><span>Searchable grouped lookup</span><small>Large inventory</small></header>
+                <button aria-expanded="true" type="button"><span><small>DATA DEFINITION</small><strong>Last price</strong></span><ChevronDown size={15} /></button>
+                <div className="type-lookup-popover">
+                  <label><Search size={14} /><input aria-label="Example lookup search" placeholder="Search data definitions" /></label>
+                  <div>
+                    <section><header><span>Market data</span><em>3</em></header><button className="selected" type="button"><strong>Last price</strong><small>Most recent eligible trade · USD</small></button><button type="button"><strong>Change %</strong><small>Return from previous close · percent</small></button></section>
+                    <section><header><span>Company and security</span><em>2</em></header><button type="button"><strong>Market cap</strong><small>Point-in-time equity value · USD</small></button></section>
+                  </div>
+                </div>
+              </article>
+
+              <article className="typography-gallery-card evidence-pattern">
+                <header><span>Evidence and event card</span><Newspaper size={15} /></header>
+                <div className="type-evidence-card">
+                  <div><span>Validated market event</span><time><Clock3 size={12} /> 09:42:08 ET</time></div>
+                  <h3>Apple supplier guidance supports near-term production outlook</h3>
+                  <p>Positive operating evidence with issuer identity resolved at publication time.</p>
+                  <footer><span className="positive">Positive · 0.78</span><span>Corporate update</span><code>news.event.8f31c2</code></footer>
+                </div>
+              </article>
+            </div>
           </div>
         </section>
 
@@ -172,28 +210,6 @@ function Specimen({ children, icon, note, technical = false, title, wide = false
     <article className={`typography-specimen${wide ? " wide" : ""}${technical ? " technical" : ""}`}>
       <header><span>{icon}<strong>{title}</strong></span><small>{note}</small></header>
       <div>{children}</div>
-    </article>
-  );
-}
-
-function TypeMix({ className, description, display, reading, title }: { className: string; description: string; display: string; reading: string; title: string }) {
-  return (
-    <article className={`typography-mix-card ${className}`}>
-      <header><span>{title}</span><em>{className === "unified" ? "Baseline" : "Mixed"}</em></header>
-      <div className="typography-mix-sample">
-        <small>QMD MARKET DISCOVERY</small>
-        <h3>Intraday market structure</h3>
-        <p>Price remains above the session VWAP while relative volume expands through the current discovery window.</p>
-        <strong>+$12,438.42 <span>· 09:45:12 ET</span></strong>
-        <code>qmd.structure.signal.v3</code>
-      </div>
-      <dl>
-        <div><dt>Display</dt><dd>{display}</dd></div>
-        <div><dt>Interface + numbers</dt><dd>Public Sans</dd></div>
-        <div><dt>Long reading</dt><dd>{reading}</dd></div>
-        <div><dt>Technical</dt><dd>JetBrains Mono</dd></div>
-      </dl>
-      <p>{description}</p>
     </article>
   );
 }
