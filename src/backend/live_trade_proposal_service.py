@@ -14,6 +14,7 @@ from src.backend.real_live_trading_service import (
 )
 from src.backend.trading_configuration_service import approved_configuration
 from src.backend.trading_runtime_service import trading_journal
+from src.backend.trading_action_registry import resolve_trading_action
 from src.trading_runtime.domain import InstrumentContract
 from src.trading_runtime.portfolio import PortfolioDecisionStatus, PortfolioManagementEngine
 from src.trading_runtime.portfolio_config import configured_portfolio_profiles
@@ -74,6 +75,11 @@ async def stage_live_trade_proposal(
     action = str(payload.get("action") or "enter_long").strip().lower()
     if action not in SUPPORTED_ACTIONS:
         raise ValueError("Trade proposal action is unsupported")
+    action_definition = resolve_trading_action(
+        action_id=str(payload.get("action_id") or ""),
+        runtime_action=action,
+    )
+    action_id = str(action_definition["action_id"])
     quantity = float(payload.get("quantity") or 0)
     if quantity <= 0:
         raise ValueError("Trade proposal quantity must be positive")
@@ -178,6 +184,7 @@ async def stage_live_trade_proposal(
             "origin": "trade_proposal",
             "proposal_id": proposal_id,
             "proposal_authority": authority,
+            "action_id": action_id,
             "identity_revision": identity_revision,
             "market_snapshot": market_snapshot,
             "bid": market_snapshot["bid"],
@@ -204,6 +211,7 @@ async def stage_live_trade_proposal(
         "ticker": ticker,
         "conid": conid,
         "action": action,
+        "action_id": action_id,
         "quantity": quantity,
         "identity_revision": identity_revision,
         "market_snapshot": market_snapshot,

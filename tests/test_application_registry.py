@@ -171,7 +171,7 @@ class ApplicationRegistryTests(unittest.TestCase):
 
     def test_payload_includes_versions_and_counts(self) -> None:
         payload = application_registry_payload()
-        self.assertEqual(payload["schema_version"], 4)
+        self.assertEqual(payload["schema_version"], 5)
         self.assertEqual(payload["counts"]["fields"], len(FIELD_DEFINITIONS))
         self.assertEqual(payload["counts"]["query_plans"], len(QUERY_PLANS))
         self.assertEqual(payload["counts"]["market_sources"], len(MARKET_SOURCES))
@@ -181,7 +181,9 @@ class ApplicationRegistryTests(unittest.TestCase):
         self.assertEqual(payload["counts"]["configuration_schemas"], len(CONFIGURATION_SCHEMAS))
         self.assertEqual(payload["counts"]["compatibility_aliases"], len(COMPATIBILITY_ALIASES))
         schemas = {row["schema_id"]: row for row in payload["configuration_schemas"]}
-        self.assertEqual(schemas["trading_configuration"]["version"], 20)
+        self.assertEqual(schemas["trading_configuration"]["version"], 25)
+        registry_types = {row.kind for row in REGISTRY_TYPES}
+        self.assertTrue({"trading_action", "action_policy"} <= registry_types)
         self.assertEqual(
             payload["counts"]["market_discovery_fields"],
             len(DISCOVERY_FIELD_PRESENTATIONS),

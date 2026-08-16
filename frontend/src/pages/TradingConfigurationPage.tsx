@@ -43,10 +43,12 @@ import { InventoryFilterSelect } from "../app/components/InventoryFilterSelect";
 import { formatSemanticNumber } from "../app/format";
 import { DataCatalogPage, RuleSetLibraryPage, type DataRuleSet } from "./DataConfigurationPages";
 import { MarketDiscoveryComposer, type MarketDiscoveryConfiguration } from "./MarketDiscoveryComposer";
+import { TradingActionsPage, type ActionPolicyDefinition, type TradingActionDefinition, type TradingActionsConfiguration } from "./TradingActionsPage";
 
 export type TradingConfigurationSection =
   | "data_catalog"
   | "rule_sets"
+  | "actions"
   | "strategy"
   | "discovery"
   | "assignments"
@@ -97,6 +99,7 @@ type CapabilityBinding = {
 };
 
 type StrategyProfile = {
+  action_policy_ids: string[];
   capabilities: CapabilityBinding[];
   definition_id: string;
   definition_revision: number;
@@ -224,10 +227,10 @@ const ENTRY_AUTHORING_PAGES: Array<{ description: string; id: EntryAuthoringPage
 
 type ManageAuthoringPage =
   | "mode" | "add_actions" | "add_evidence" | "add_capital" | "add_replacement" | "add_execution" | "add_partial_fill" | "add_protection"
-  | "trailing" | "capabilities";
+  | "trailing" | "action_policies";
 
 const MANAGE_AUTHORING_PAGES: Array<{ description: string; id: ManageAuthoringPage; label: string; title: string }> = [
-  { description: "Choose whether Strategy manages an open position through adds, trailing behavior, and optional capabilities.", id: "mode", label: "Mode", title: "Should Strategy automate position management?" },
+  { description: "Choose whether Strategy manages an open position through registered add routes, trailing behavior, and Action Policies.", id: "mode", label: "Mode", title: "Should Strategy automate position management?" },
   { description: "Create, name, enable, and limit the add actions that may increase an already-open position.", id: "add_actions", label: "Add actions", title: "Which position-add actions are available?" },
   { description: "Combine predefined rule sets to decide when the selected add action may request more exposure.", id: "add_evidence", label: "Add evidence", title: "What permits the selected add action?" },
   { description: "Express the selected add action's desired exposure before Portfolio applies current account and risk limits.", id: "add_capital", label: "Add capital", title: "How much exposure should the add request?" },
@@ -236,7 +239,7 @@ const MANAGE_AUTHORING_PAGES: Array<{ description: string; id: ManageAuthoringPa
   { description: "Choose how OMS handles the unfilled remainder of the selected add without exceeding approved quantity.", id: "add_partial_fill", label: "Add partial fill", title: "What should happen after a partial add fill?" },
   { description: "Select the independently versioned protection contract attached to confirmed fills from the selected add.", id: "add_protection", label: "Add protection", title: "Which protection follows the add fill?" },
   { description: "Configure definition-specific trailing behavior that may activate while the position remains open.", id: "trailing", label: "Trailing", title: "How may protection trail the open position?" },
-  { description: "Enable optional code-defined position behavior without changing entry, exit, Portfolio, OMS, or safety authority.", id: "capabilities", label: "Capabilities", title: "Which optional management capability is enabled?" },
+  { description: "Reference reusable Action Policies without copying their Trading Action or Rule Set definitions.", id: "action_policies", label: "Action policies", title: "Which reusable Action Policies may this Strategy use?" },
 ];
 
 type ReentryAuthoringPage =
@@ -285,6 +288,7 @@ type OrderIntentConfig = {
 };
 
 type AddStep = {
+  action_id: string;
   capital_request: CapitalRequestConfig;
   enabled: boolean;
   maximum_uses: number;
@@ -296,6 +300,7 @@ type AddStep = {
 
 type ExitRuleSet = {
   action: "close" | "reduce";
+  action_id: string;
   enabled: boolean;
   name: string;
   position_fraction: number;
@@ -318,11 +323,13 @@ type StrategyLifecycle = {
     side: "long" | "short";
   };
   initial_entry: EntryRules & {
+    action_id: string;
     add_steps: AddStep[];
     capital_request: CapitalRequestConfig;
     order_intent: OrderIntentConfig;
   };
   reentry: {
+    action_id: string;
     capital_request: CapitalRequestConfig;
     cooldown_ms: number;
     enabled: boolean;
@@ -775,6 +782,7 @@ type Draft = {
   portfolio: PortfolioSection;
   schema_version: number;
   strategy: StrategySection;
+  trading_actions: TradingActionsConfiguration;
   updated_at?: string;
 };
 
@@ -804,15 +812,27 @@ function normalizeDraft(payload: any): Draft {
     const profileWithoutComposition = { ...profile };
     delete profileWithoutComposition.composition;
     delete profileWithoutComposition.rule_set_catalog;
+    const side = profile.lifecycle?.trading_behavior?.side === "short" ? "short" : "long";
+    const initialEntry = profile.lifecycle?.initial_entry ?? {};
+    const reentry = profile.lifecycle?.reentry ?? {};
+    const exit = profile.lifecycle?.exit ?? { rule_sets: [] };
     return {
       ...profileWithoutComposition,
+      action_policy_ids: profile.action_policy_ids ?? [],
+      capabilities: profile.capabilities ?? [],
       rule_set_ids: Array.from(new Set((profile.rule_set_ids?.length ? profile.rule_set_ids : collectLifecycleRuleSetIds(profile.lifecycle)).map(String))),
       publication_status: profile.publication_status ?? (profile.origin === "system" ? "template" : "draft"),
       derived_from_profile_id: profile.derived_from_profile_id ?? "",
       lifecycle: {
         ...profile.lifecycle,
         phase_modes: phaseModes,
-        reentry: { ...profile.lifecycle?.reentry, enabled: phaseModes.reentry === "automatic" },
+        initial_entry: {
+          ...initialEntry,
+          action_id: initialEntry.action_id ?? `position.enter_${side}`,
+          add_steps: (initialEntry.add_steps ?? []).map((step: any) => ({ ...step, action_id: step.action_id ?? `position.add_${side}` })),
+        },
+        reentry: { ...reentry, action_id: reentry.action_id ?? `position.enter_${side}`, enabled: phaseModes.reentry === "automatic" },
+        exit: { ...exit, rule_sets: (exit.rule_sets ?? []).map((route: any) => ({ ...route, action_id: route.action_id ?? `position.${route.action === "reduce" ? "reduce" : "exit"}_${side}` })) },
         trading_behavior: {
           eligible_sessions: profile.lifecycle?.trading_behavior?.eligible_sessions ?? ["regular"],
           side: profile.lifecycle?.trading_behavior?.side ?? "long",
@@ -841,9 +861,11 @@ function normalizeDraft(payload: any): Draft {
     },
     strategy: {
       ...strategy,
+      capability_catalog: [],
       profile_templates: (strategy.profile_templates ?? []).map(normalizeProfile),
       profiles: (strategy.profiles ?? []).map(normalizeProfile),
     },
+    trading_actions: payload?.trading_actions ?? { definitions: [], policies: [] },
     assignments: {
       deployments: (runPlans.plans ?? runPlans.deployments ?? []).map((runPlan: any) => {
         const legacy = (strategy.profiles ?? []).find((profile: any) => profile.profile_id === runPlan.profile_id)?.composition ?? {};
@@ -865,21 +887,19 @@ function normalizeDraft(payload: any): Draft {
 function serializeDraft(draft: Draft) {
   const { assignments, ...rest } = draft;
   const profiles = rest.strategy.profiles.map((profile) => {
-    const referenceOnlyProfile = { ...profile } as StrategyProfile & { rule_set_catalog?: RuleSetDefinition[] };
-    delete referenceOnlyProfile.rule_set_catalog;
-    return normalizeStrategyProfileReferences(referenceOnlyProfile);
+    const { capabilities: _legacyCapabilities, rule_set_ids: _legacyRuleSetIds, ...referenceOnlyProfile } = profile;
+    return referenceOnlyProfile;
   });
   const profileTemplates = rest.strategy.profile_templates.map((profile) => {
-    const referenceOnlyProfile = { ...profile } as StrategyProfile & { rule_set_catalog?: RuleSetDefinition[] };
-    delete referenceOnlyProfile.rule_set_catalog;
-    return normalizeStrategyProfileReferences(referenceOnlyProfile);
+    const { capabilities: _legacyCapabilities, rule_set_ids: _legacyRuleSetIds, ...referenceOnlyProfile } = profile;
+    return referenceOnlyProfile;
   });
   return { ...rest, strategy: { ...rest.strategy, profile_templates: profileTemplates, profiles }, run_plans: { plans: assignments.deployments, universes: assignments.universes } };
 }
 
 const CONFIGURATION_SESSION_KEY = "trading-configuration-session-v2";
 const LEGACY_CONFIGURATION_SESSION_KEY = "trading-configuration-session-v1";
-const CONFIGURATION_SESSION_PAYLOAD_VERSION = 4;
+const CONFIGURATION_SESSION_PAYLOAD_VERSION = 5;
 
 function deduplicateRuleSets(ruleSets: RuleSetDefinition[]): RuleSetDefinition[] {
   const byId = new Map<string, RuleSetDefinition>();
@@ -915,6 +935,28 @@ function collectLifecycleRuleSetIds(lifecycle?: StrategyLifecycle): string[] {
 
 function normalizeStrategyProfileReferences(profile: StrategyProfile): StrategyProfile {
   return { ...profile, rule_set_ids: collectLifecycleRuleSetIds(profile.lifecycle) };
+}
+
+function reconcileStrategyProfiles(baseProfiles: StrategyProfile[], sessionProfiles: StrategyProfile[]): StrategyProfile[] {
+  const sessionById = new Map(sessionProfiles.map((profile) => [profile.profile_id, profile]));
+  const protectedProfiles = baseProfiles.map((profile) => profile.protected || profile.origin === "system"
+    ? profile
+    : sessionById.get(profile.profile_id) ?? profile);
+  return [
+    ...protectedProfiles,
+    ...sessionProfiles.filter((profile) => profile.origin === "user" && !baseProfiles.some((base) => base.profile_id === profile.profile_id)),
+  ].map(normalizeStrategyProfileReferences);
+}
+
+function reconcileTradingActions(base: TradingActionsConfiguration, session: TradingActionsConfiguration): TradingActionsConfiguration {
+  const atomicPolicyIds = new Set(base.policies.filter((policy) => policy.atomic).map((policy) => policy.policy_id));
+  return {
+    definitions: base.definitions,
+    policies: [
+      ...base.policies,
+      ...(session?.policies ?? []).filter((policy) => policy.origin === "user" && !policy.atomic && !atomicPolicyIds.has(policy.policy_id)),
+    ].filter((policy, index, rows) => rows.findIndex((candidate) => candidate.policy_id === policy.policy_id) === index),
+  };
 }
 
 function readSessionConfiguration(base: Draft): Draft {
@@ -968,11 +1010,12 @@ function readSessionConfiguration(base: Draft): Draft {
         // Profiles are user draft state. Executor definitions and their input
         // contracts are backend authority and must not be frozen by an older
         // browser session when a new strategy implementation is installed.
-        capability_catalog: base.strategy.capability_catalog,
+        capability_catalog: [],
         definitions: base.strategy.definitions,
         input_catalog: base.strategy.input_catalog,
-        profiles: session.strategy.profiles.map(normalizeStrategyProfileReferences),
+        profiles: reconcileStrategyProfiles(base.strategy.profiles, session.strategy.profiles),
       },
+      trading_actions: reconcileTradingActions(base.trading_actions, session.trading_actions),
     };
     writeSessionConfiguration(reconciled);
     window.sessionStorage.removeItem(LEGACY_CONFIGURATION_SESSION_KEY);
@@ -1020,11 +1063,17 @@ const SECTION_META = {
     title: "Market Discovery",
     description: "Compose the Core Scan and reusable Watchlists from registered Data Definitions and Rule Sets.",
   },
+  actions: {
+    eyebrow: "System configuration · executable behavior",
+    icon: Send,
+    title: "Trading Actions",
+    description: "Inspect atomic trading intents and compose reusable Action Policies from registered Rule Sets.",
+  },
   strategy: {
     eyebrow: "Step 1 · Define behavior",
     icon: GitBranch,
     title: "Strategy Studio",
-    description: "Configure reusable strategy behavior, lifecycle rules, and capabilities.",
+    description: "Compose a strategy lifecycle from registered Rule Sets, Trading Actions, and Action Policies.",
   },
   assignments: {
     eyebrow: "Step 5 · Assemble runtime",
@@ -1282,6 +1331,10 @@ export function TradingConfigurationPage({ section }: { section: TradingConfigur
           ...draft,
           market_discovery: { ...draft.market_discovery, rule_sets: ruleSets as RuleSetDefinition[] },
         })}
+      /> : section === "actions" && draft ? <TradingActionsPage
+        onChange={(value) => updateDraft("trading_actions", value)}
+        ruleSets={draft.market_discovery.rule_sets.map((ruleSet) => ({ description: ruleSet.description, name: ruleSet.name, rule_set_id: ruleSet.rule_set_id }))}
+        section={draft.trading_actions}
       /> : (["assignments", "portfolio", "oms", "accounts"] as TradingConfigurationSection[]).includes(section) && draft ? (
         <ConfigurationSectionStudio
           draft={draft}
@@ -1369,7 +1422,8 @@ const EXPERT_GUIDANCE: Record<Exclude<TradingConfigurationSection, "revisions">,
   data_catalog: { authority: "Producer registries own data semantics; this page is read-only documentation.", outcome: "One complete searchable catalog of registered fields, derivations, and signals.", subjects: ["Semantic contracts", "Producer provenance", "Dependencies and parameters"] },
   rule_sets: { authority: "Rule sets reference registered data definitions without copying their semantics.", outcome: "Named, described reusable decisions with locked atomic defaults and editable custom definitions.", subjects: ["Atomic defaults", "Custom rule sets", "Registered operands"] },
   discovery: { authority: "QMD owns the broad universe, observations, candidate ranking, and point-in-time Watchlist membership.", outcome: "One visible Core Scan and reusable Watchlists selected by Strategies.", subjects: ["QMD capabilities", "Core Scan", "Watchlists and membership history"] },
-  strategy: { authority: "Strategy owns trading decisions. Portfolio sizes approved intent; OMS executes it.", outcome: "A reusable Strategy Profile with explicit lifecycle rules and optional capabilities.", subjects: ["Behavior and evaluation", "Entry, add, and reentry", "Exit and capabilities"] },
+  actions: { authority: "The Trading Action registry owns broker-neutral intent names; Action Policies reference Rule Sets and actions without copying either definition.", outcome: "One shared action vocabulary for Strategy, Canvas, Portfolio, OMS, and runtime.", subjects: ["Atomic actions", "Rule Set triggers", "Reusable Action Policies"] },
+  strategy: { authority: "Strategy owns trading decisions. Portfolio sizes approved intent; OMS executes it.", outcome: "A reusable Strategy Profile with a Rule Set-driven lifecycle and explicit Trading Action routes.", subjects: ["Behavior and evaluation", "Entry, add, and reentry", "Strategic exits and Action Policies"] },
   assignments: { authority: "Run Plan binds reusable objects to environments and authority.", outcome: "A runnable plan with explicit strategy, accounts, OMS, and safety.", subjects: ["Watch universe", "Profile and OMS", "Action authority"] },
   portfolio: { authority: "Portfolio is the sole authority for account allocation, capital approval, and continuous risk.", outcome: "Per-account mandates and risk limits that can approve, reduce, or reject requests.", subjects: ["Capital policy", "Account mandates", "Risk groups"] },
   oms: { authority: "OMS may use current market data to execute approved intent; it never creates trading intent or capital.", outcome: "Versioned execution and protection policies selected by Strategy or Run Plan defaults.", subjects: ["OMS defaults", "Execution policies", "Protection profiles"] },
@@ -1701,6 +1755,7 @@ function GuidedStrategyConfiguration({ draft, onChange, onContinue, onProfileCha
     if (!source) return;
     const stepId = uniqueId("position-add", initial.add_steps.map((row) => row.step_id));
     replaceInitial({ ...initial, add_steps: [{
+      action_id: `position.add_${profile.lifecycle.trading_behavior.side}`,
       capital_request: { allow_replacement: false, mode: "mandate_fraction", value: 0.1 },
       enabled: true,
       maximum_uses: 1,
@@ -1718,7 +1773,7 @@ function GuidedStrategyConfiguration({ draft, onChange, onContinue, onProfileCha
     if (!source) return;
     const ruleSetId = uniqueId("new-exit-rule", profile.lifecycle.exit.rule_sets.map((row) => row.rule_set_id));
     const next: ExitRuleSet = {
-      action: "close", enabled: true, name: "New strategic exit", position_fraction: 1,
+      action: "close", action_id: `position.exit_${profile.lifecycle.trading_behavior.side}`, enabled: true, name: "New strategic exit", position_fraction: 1,
       order_intent: { deadline_ms: 750, execution_policy: "adaptive_urgent", partial_fill_policy: "complete_remainder", protection_profile: draft.oms.protection_profiles[0]?.profile_id ?? "" },
       rules: { groups: [{ conditions: [{ comparator: source.value_type === "boolean" ? "is_true" : "greater_or_equal", condition_id: `${ruleSetId}-condition`, enabled: true, left_source_id: source.source_id, left_timeframe: source.timeframes[0], right_source_id: "", right_timeframe: "", value: source.value_type === "boolean" ? null : 0 }], enabled: true, group_id: `${ruleSetId}-group`, label: "Exit evidence", operator: "all", required_score: 1 }], operator: "all" },
       rule_set_id: ruleSetId, summary: "Describe when this exit becomes valid.", timing: { active_after_ms: 0, expires_after_ms: 0 },
@@ -1963,7 +2018,7 @@ function StrategyStartWorkflow({ cloneSourceId, definitionId, mode, name, onClon
           <nav aria-label="Strategies available to clone">{profiles.map((row, index) => { const summary = strategySourceSummary(row); return <button aria-current={row.profile_id === source?.profile_id ? "true" : undefined} data-next-action-control={!source && index === 0 ? "true" : undefined} key={row.profile_id} onClick={() => onCloneSourceChange(row.profile_id)} type="button"><span><strong>{row.name}</strong><small>{row.protected ? "Protected system strategy" : "Editable strategy"}</small><em>{summary}</em></span><ChevronRight size={15} /></button>; })}</nav>
         </NextActionArea>
         <div className="strategy-clone-review">{source ? <>
-          <StrategyProfileFeaturePreview profile={source} section={section} />
+          <StrategyProfileFeaturePreview profile={source} />
           <NextActionArea active description="Use a distinct name for the independent copy." focusKey={`clone-name-${source.profile_id}`} title="Name the cloned strategy">
             <div className="strategy-start-name"><TextField help={nameConflict ? "Choose a name not already used by another Strategy Profile." : "The source keeps its current name and configuration."} label="Clone name" nextAction onChange={onNameChange} value={name} />{nameConflict ? <span role="alert">A strategy with this name already exists.</span> : null}</div>
             <footer><span><LockKeyhole size={14} /> Source remains unchanged</span><button className="button primary" disabled={invalidName} onClick={onClone} type="button">Clone and configure <ArrowRight size={15} /></button></footer>
@@ -1995,13 +2050,13 @@ function NextActionArea({ active, children, className = "", description, focusKe
 }
 
 function strategySourceSummary(profile: StrategyProfile) {
-  const capabilities = profile.capabilities.filter((row) => row.enabled).length;
+  const actionPolicies = profile.action_policy_ids.length;
   const adds = profile.lifecycle.initial_entry.add_steps.filter((row) => row.enabled).length;
   const exits = profile.lifecycle.exit.rule_sets.filter((row) => row.enabled).length;
-  return `${readableLabel(profile.lifecycle.trading_behavior.side)} · ${capabilities} capabilities · ${adds} adds · ${exits} exits`;
+  return `${readableLabel(profile.lifecycle.trading_behavior.side)} · ${actionPolicies} action policies · ${adds} adds · ${exits} exits`;
 }
 
-function StrategyProfileFeaturePreview({ profile, section }: { profile: StrategyProfile; section: StrategySection }) {
+function StrategyProfileFeaturePreview({ profile }: { profile: StrategyProfile }) {
   const behavior = profile.lifecycle.trading_behavior;
   const initial = profile.lifecycle.initial_entry;
   const opportunityCount = countRuleReferences(initial.opportunity.expression);
@@ -2009,7 +2064,7 @@ function StrategyProfileFeaturePreview({ profile, section }: { profile: Strategy
   const blockerCount = countRuleReferences(initial.blockers.expression);
   const addCount = initial.add_steps.filter((row) => row.enabled).length;
   const exitCount = profile.lifecycle.exit.rule_sets.filter((row) => row.enabled).length;
-  const capabilities = profile.capabilities.filter((row) => row.enabled).map((row) => section.capability_catalog.find((item) => item.capability_id === row.capability_id)?.name ?? readableLabel(row.capability_id));
+  const actionPolicies = profile.action_policy_ids.map(readableLabel);
   const executionPolicies = new Set([initial.order_intent.execution_policy, profile.lifecycle.reentry.order_intent.execution_policy, ...initial.add_steps.map((row) => row.order_intent.execution_policy), ...profile.lifecycle.exit.rule_sets.map((row) => row.order_intent.execution_policy)].filter(Boolean));
   return <div className="strategy-feature-preview">
     <header><span>{profile.protected ? "Protected source" : "Editable source"}</span><strong>{profile.name}</strong><p>{profile.description || "No strategy description has been provided."}</p></header>
@@ -2019,7 +2074,7 @@ function StrategyProfileFeaturePreview({ profile, section }: { profile: Strategy
       <div><dt>Position lifecycle</dt><dd><strong>{addCount} add action{addCount === 1 ? "" : "s"} · {exitCount} strategic exit{exitCount === 1 ? "" : "s"}</strong><span>{profile.lifecycle.phase_modes.reentry === "automatic" ? `Reentry up to ${profile.lifecycle.reentry.maximum_attempts} times` : "Reentry manual"}</span></dd></div>
       <div><dt>Order behavior</dt><dd><strong>{executionPolicies.size} execution polic{executionPolicies.size === 1 ? "y" : "ies"}</strong><span>{readableLabel(initial.order_intent.partial_fill_policy)} · OMS applies tested terminal timing</span></dd></div>
     </dl>
-    <section><span>Enabled capabilities · {capabilities.length}</span>{capabilities.length ? <div>{capabilities.map((capability) => <strong key={capability}><CheckCircle2 size={13} />{capability}</strong>)}</div> : <p>No optional capabilities are enabled.</p>}</section>
+    <section><span>Referenced action policies · {actionPolicies.length}</span>{actionPolicies.length ? <div>{actionPolicies.map((policy) => <strong key={policy}><CheckCircle2 size={13} />{policy}</strong>)}</div> : <p>No optional action policies are referenced.</p>}</section>
   </div>;
 }
 
@@ -2085,8 +2140,9 @@ function GuidedExitTimingFields({ onChange, value }: { onChange: (value: ExitRul
   return <div className="guided-form-grid"><NumberField help="Set the delay after the confirmed entry before this strategic exit route may act." label="Active after" minimum={0} onChange={(active_after_ms) => onChange({ ...value, timing: { ...value.timing, active_after_ms } })} step={1000} unit="ms" value={value.timing.active_after_ms} /><NumberField help="Set how long the route remains eligible. Zero keeps it eligible while the position is open." label="Expires after" minimum={0} onChange={(expires_after_ms) => onChange({ ...value, timing: { ...value.timing, expires_after_ms } })} step={1000} unit="ms" value={value.timing.expires_after_ms} /></div>;
 }
 
-function GuidedExitActionFields({ onChange, value }: { onChange: (value: ExitRuleSet) => void; value: ExitRuleSet }) {
-  return <div className="guided-form-grid"><SelectField help="Choose whether this route requests the full current position or only a configured fraction." label="Position action" onChange={(action) => onChange({ ...value, action: action as ExitRuleSet["action"] })} options={[{ label: "Close the position", value: "close" }, { label: "Reduce the position", value: "reduce" }]} value={value.action} />{value.action === "reduce" ? <NumberField help="Set the fraction of the reconciled current position that Strategy requests to release." label="Reduction fraction" maximum={1} minimum={.01} onChange={(position_fraction) => onChange({ ...value, position_fraction })} step={.05} unit="fraction" value={value.position_fraction} /> : <div className="guided-readonly-value"><span>Requested quantity</span><strong>Entire reconciled position</strong><small>Portfolio and OMS still verify the broker-authoritative current quantity.</small></div>}</div>;
+function GuidedExitActionFields({ actions = [], onChange, value }: { actions?: TradingActionDefinition[]; onChange: (value: ExitRuleSet) => void; value: ExitRuleSet }) {
+  const supported = actions.filter((action) => ["exit", "reduce"].includes(action.category));
+  return <div className="guided-form-grid">{supported.length ? <SelectField help="Registered broker-neutral intent emitted when this route passes." label="Trading Action" onChange={(action_id) => { const definition = supported.find((action) => action.action_id === action_id); onChange({ ...value, action: definition?.category === "reduce" ? "reduce" : "close", action_id }); }} options={supported.map((action) => ({ label: action.name, value: action.action_id }))} value={value.action_id} /> : <SelectField help="Choose whether this route requests the full current position or only a configured fraction." label="Position action" onChange={(action) => onChange({ ...value, action: action as ExitRuleSet["action"] })} options={[{ label: "Close the position", value: "close" }, { label: "Reduce the position", value: "reduce" }]} value={value.action} />}{value.action === "reduce" ? <NumberField help="Set the fraction of the reconciled current position that Strategy requests to release." label="Reduction fraction" maximum={1} minimum={.01} onChange={(position_fraction) => onChange({ ...value, position_fraction })} step={.05} unit="fraction" value={value.position_fraction} /> : <div className="guided-readonly-value"><span>Requested quantity</span><strong>Entire reconciled position</strong><small>Portfolio and OMS still verify the broker-authoritative current quantity.</small></div>}</div>;
 }
 
 function GuidedCapabilityFields({ binding, definition, onChange }: { binding: CapabilityBinding; definition: CapabilityDefinition; onChange: (value: CapabilityBinding) => void }) {
@@ -2101,7 +2157,7 @@ function strategySetupRows(profile: StrategyProfile) {
     { label: "Position adds", value: `${profile.lifecycle.initial_entry.add_steps.filter((row) => row.enabled).length} enabled` },
     { label: "Reentry", value: profile.lifecycle.phase_modes.reentry === "automatic" ? `${profile.lifecycle.reentry.maximum_attempts} attempts · ${profile.lifecycle.reentry.cooldown_ms} ms` : "Manual" },
     { label: "Strategic exits", value: `${profile.lifecycle.exit.rule_sets.filter((row) => row.enabled).length} enabled` },
-    { label: "Capabilities", value: `${profile.capabilities.filter((row) => row.enabled).length} enabled` },
+    { label: "Action policies", value: `${profile.action_policy_ids.length} referenced` },
   ];
 }
 
@@ -2119,6 +2175,7 @@ function blankStrategyProfile(source: StrategyProfile, draft: Draft, definition?
   const orderIntent: OrderIntentConfig = { deadline_ms: 750, execution_policy: executionPolicy, partial_fill_policy: "complete_remainder", protection_profile: protectionProfile };
   return {
     ...deepClone(source),
+    action_policy_ids: [],
     capabilities: source.capabilities.map((row) => ({ ...deepClone(row), enabled: false })),
     description: "",
     definition_id: definition?.strategy_id ?? source.definition_id,
@@ -2129,9 +2186,9 @@ function blankStrategyProfile(source: StrategyProfile, draft: Draft, definition?
     lifecycle: {
       phase_modes: { initial_entry: "automatic", manage: "automatic", reentry: "automatic", exit: "automatic" },
       trading_behavior: { eligible_sessions: ["regular"], side: source.lifecycle.trading_behavior.side },
-      initial_entry: { add_steps: [], blockers: emptyStage(), capital_request: deepClone(capitalRequest), confirmation: emptyStage(), opportunity: emptyStage(), order_intent: deepClone(orderIntent) },
-      reentry: { capital_request: deepClone(capitalRequest), cooldown_ms: 0, enabled: true, maximum_attempts: 0, order_intent: deepClone(orderIntent), require_new_confirmation: true, rules: { blockers: emptyStage(), confirmation: emptyStage(), opportunity: emptyStage() } },
-      exit: { rule_sets: [{ action: "close", enabled: false, name: "Strategic exit", order_intent: deepClone(orderIntent), position_fraction: 1, rule_set_id: "strategic-exit", rules: emptyStage(), summary: "Define the evidence that should close the position.", timing: { active_after_ms: 0, expires_after_ms: 0 } }] },
+      initial_entry: { action_id: `position.enter_${source.lifecycle.trading_behavior.side}`, add_steps: [], blockers: emptyStage(), capital_request: deepClone(capitalRequest), confirmation: emptyStage(), opportunity: emptyStage(), order_intent: deepClone(orderIntent) },
+      reentry: { action_id: `position.enter_${source.lifecycle.trading_behavior.side}`, capital_request: deepClone(capitalRequest), cooldown_ms: 0, enabled: true, maximum_attempts: 0, order_intent: deepClone(orderIntent), require_new_confirmation: true, rules: { blockers: emptyStage(), confirmation: emptyStage(), opportunity: emptyStage() } },
+      exit: { rule_sets: [{ action: "close", action_id: `position.exit_${source.lifecycle.trading_behavior.side}`, enabled: false, name: "Strategic exit", order_intent: deepClone(orderIntent), position_fraction: 1, rule_set_id: "strategic-exit", rules: emptyStage(), summary: "Define the evidence that should close the position.", timing: { active_after_ms: 0, expires_after_ms: 0 } }] },
     },
     name: "Untitled Strategy",
     origin: "user",
@@ -2920,13 +2977,13 @@ function StrategyStudio({ approved, draft, label, onChange, onDeleteProfile, onD
             </BookConfigurationSurface>
           </StoryChapter>
 
-          <StoryChapter marker="04" eyebrow="Position lifecycle" title="Configure adds, reentry, capabilities, and strategic exits">
+          <StoryChapter marker="04" eyebrow="Position lifecycle" title="Configure adds, reentry, Action Policies, and strategic exits">
             <div className="strategy-book-prose">
-              <p>Add steps request more exposure while a position is open. Reentry creates a new position after the campaign becomes flat. Capabilities enable optional code-defined behavior. Strategic exits reduce or close exposure when strategy evidence passes. All exposure-increasing actions repeat the authority and Portfolio checks; protective and emergency exits remain independent and automatic.</p>
+              <p>Add steps request more exposure while a position is open. Reentry creates a new position after the campaign becomes flat. Action Policies reference registered Trading Actions and Rule Set triggers. Strategic exits reduce or close exposure when strategy evidence passes. All exposure-increasing actions repeat the authority and Portfolio checks; protective and emergency exits remain independent and automatic.</p>
             </div>
             <BookConfigurationSurface label="Configure position management, reentry, and exit">
               <AddStepsEditor catalog={section.input_catalog} eligibleSessions={selected.lifecycle.trading_behavior.eligible_sessions} executionPolicies={draft.oms.execution_policies} protectionProfiles={draft.oms.protection_profiles} steps={selected.lifecycle.initial_entry.add_steps} onChange={(add_steps) => replaceProfile({ ...selected, lifecycle: { ...selected.lifecycle, initial_entry: { ...selected.lifecycle.initial_entry, add_steps } } })} />
-              <CapabilitiesEditor catalog={section.capability_catalog} profile={selected} onChange={replaceProfile} />
+              <ActionPolicyBindingsEditor onChange={(action_policy_ids) => replaceProfile({ ...selected, action_policy_ids })} policies={draft.trading_actions.policies} selected={selected.action_policy_ids} />
               <ReentryEditor catalog={section.input_catalog} draft={draft} profile={selected} ruleSets={ruleSets} onChange={replaceProfile} onRuleSetsChange={replaceRuleSets} />
               <ExitRuleSetsEditor catalog={section.input_catalog} draft={draft} profile={selected} ruleSets={ruleSets} onChange={replaceProfile} />
             </BookConfigurationSurface>
@@ -3123,7 +3180,7 @@ function StrategyAuthoringFlow({ activeStage, advanced, approved, draft, entryRu
   advanced: Array<{ path: string; value: Primitive }>;
   approved: Revision | null;
   draft: Draft;
-  entryRules: EntryRules & { add_steps: AddStep[]; capital_request: CapitalRequestConfig; order_intent: OrderIntentConfig };
+  entryRules: StrategyLifecycle["initial_entry"];
   label: string;
   onLabelChange: (value: string) => void;
   onProfileChange: (value: StrategyProfile) => void;
@@ -3143,7 +3200,6 @@ function StrategyAuthoringFlow({ activeStage, advanced, approved, draft, entryRu
   const [activeExitPage, setActiveExitPage] = useState<ExitAuthoringPage>("mode");
   const [selectedAddStepId, setSelectedAddStepId] = useState(profile.lifecycle.initial_entry.add_steps[0]?.step_id ?? "");
   const [selectedExitRouteId, setSelectedExitRouteId] = useState(profile.lifecycle.exit.rule_sets[0]?.rule_set_id ?? "");
-  const [selectedCapabilityId, setSelectedCapabilityId] = useState(profile.capabilities[0]?.capability_id ?? "");
   const enabledAdds = profile.lifecycle.initial_entry.add_steps.filter((step) => step.enabled).length;
   const definition = section.definitions.find((row) => row.strategy_id === profile.definition_id);
   const entryStopParameters = advanced.filter((item) => item.path.startsWith("protection.stop."));
@@ -3156,7 +3212,7 @@ function StrategyAuthoringFlow({ activeStage, advanced, approved, draft, entryRu
     ["identity", "1", "Identity", "Name and description"],
     ["overview", "2", "Observe", "Market context"],
     ["entry", "3", "Enter", "Evidence and request"],
-    ["position", "4", "Manage", "Adds and capabilities"],
+    ["position", "4", "Manage", "Adds and action policies"],
     ["reentry", "5", "Reentry", "Flat-to-open rules"],
     ["exit", "6", "Exit", "Reduction conditions"],
     ["handoff", "7", "Review", "Behavior readiness"],
@@ -3173,8 +3229,6 @@ function StrategyAuthoringFlow({ activeStage, advanced, approved, draft, entryRu
   const activeExit = EXIT_AUTHORING_PAGES[activeExitIndex];
   const activeAddStep = entryRules.add_steps.find((step) => step.step_id === selectedAddStepId) ?? entryRules.add_steps[0];
   const activeExitRoute = profile.lifecycle.exit.rule_sets.find((route) => route.rule_set_id === selectedExitRouteId) ?? profile.lifecycle.exit.rule_sets[0];
-  const activeCapabilityDefinition = section.capability_catalog.find((definition) => definition.capability_id === selectedCapabilityId) ?? section.capability_catalog[0];
-  const activeCapabilityBinding = profile.capabilities.find((binding) => binding.capability_id === activeCapabilityDefinition?.capability_id);
   const isFinalQuestion = activeIndex === stages.length - 1;
   const phaseModes = profile.lifecycle.phase_modes;
 
@@ -3190,6 +3244,7 @@ function StrategyAuthoringFlow({ activeStage, advanced, approved, draft, entryRu
     const stepId = uniqueId("position-add", entryRules.add_steps.map((step) => step.step_id));
     const evidenceRuleSet = ruleSets[0];
     const next: AddStep = {
+      action_id: `position.add_${profile.lifecycle.trading_behavior.side}`,
       capital_request: { allow_replacement: false, mode: "mandate_fraction", value: 0.1 }, enabled: true, maximum_uses: 1,
       name: "New position add", order_intent: { deadline_ms: 750, execution_policy: "adaptive_urgent", partial_fill_policy: "complete_remainder", protection_profile: "hybrid-single" },
       rules: { expression: { children: evidenceRuleSet ? [{ kind: "rule_set", rule_set_id: evidenceRuleSet.rule_set_id }] : [], kind: "operator", operator: "and" } }, step_id: stepId,
@@ -3229,7 +3284,7 @@ function StrategyAuthoringFlow({ activeStage, advanced, approved, draft, entryRu
     const ruleSetId = uniqueId("new-exit-rule", profile.lifecycle.exit.rule_sets.map((route) => route.rule_set_id));
     const evidenceRuleSet = ruleSets[0];
     const next: ExitRuleSet = {
-      action: "close", enabled: true, name: "New strategic exit",
+      action: "close", action_id: `position.exit_${profile.lifecycle.trading_behavior.side}`, enabled: true, name: "New strategic exit",
       order_intent: { deadline_ms: 750, execution_policy: "adaptive_urgent", partial_fill_policy: "complete_remainder", protection_profile: "hybrid-single" },
       position_fraction: 1, rule_set_id: ruleSetId,
       rules: { expression: { children: evidenceRuleSet ? [{ kind: "rule_set", rule_set_id: evidenceRuleSet.rule_set_id }] : [], kind: "operator", operator: "and" } },
@@ -3324,7 +3379,7 @@ function StrategyAuthoringFlow({ activeStage, advanced, approved, draft, entryRu
         <header className="strategy-identity-intro strategy-entry-intro"><h2>{activeEntry.title}</h2><p>{activeEntry.description}</p></header>
         <div className="strategy-entry-layout">
           <div className="strategy-entry-question-surface">
-            {activeEntryPage === "mode" ? <StrategyPhaseModeEditor mode={phaseModes.initial_entry} onChange={(mode) => replacePhaseMode("initial_entry", mode)} phase="Initial entry" /> : null}
+            {activeEntryPage === "mode" ? <div className="strategy-entry-fields"><StrategyPhaseModeEditor mode={phaseModes.initial_entry} onChange={(mode) => replacePhaseMode("initial_entry", mode)} phase="Initial entry" /><SelectField help="Registered broker-neutral intent emitted after entry evidence passes." label="Trading Action" onChange={(action_id) => replaceInitialEntry({ action_id })} options={draft.trading_actions.definitions.filter((action) => action.category === "enter").map((action) => ({ label: action.name, value: action.action_id }))} value={entryRules.action_id} /></div> : null}
             {activeEntryRuleStage ? <DecisionRulesEditor catalog={section.input_catalog} onChange={(value) => replaceInitialEntry(value)} onRuleSetEdit={onRuleSetEdit} onRuleSetsChange={(nextRuleSets, nextRules) => onRuleSetsChange(nextRuleSets, { ...profile, lifecycle: { ...profile.lifecycle, initial_entry: { ...profile.lifecycle.initial_entry, ...nextRules } } })} ruleSetCatalog={ruleSets} rules={entryRules} stageName={activeEntryRuleStage} title="Initial-entry evidence" summary="" /> : null}
             {activeEntryPage === "capital" ? <div className="strategy-entry-fields"><GuidedCapitalRequestFields onChange={(capital_request) => replaceInitialEntry({ capital_request })} segment="amount" value={entryRules.capital_request} /></div> : null}
             {activeEntryPage === "priority" ? <div className="strategy-entry-fields"><GuidedCapitalRequestFields onChange={(capital_request) => replaceInitialEntry({ capital_request })} segment="priority" value={entryRules.capital_request} /></div> : null}
@@ -3341,7 +3396,7 @@ function StrategyAuthoringFlow({ activeStage, advanced, approved, draft, entryRu
 
       {activeStage === "position" ? <>
         <header className="strategy-identity-intro strategy-entry-intro"><h2>{activeManage.title}</h2><p>{activeManage.description}</p></header>
-        <ManageAuthoringSurface activeAddStep={activeAddStep} activeCapabilityBinding={activeCapabilityBinding} activeCapabilityDefinition={activeCapabilityDefinition} activePage={activeManagePage} draft={draft} enabledAdds={enabledAdds} entryRules={entryRules} mode={phaseModes.manage} onAddStep={addAddStep} onModeChange={(mode) => replacePhaseMode("manage", mode)} onPageChange={setActiveManagePage} onProfileChange={onProfileChange} onReplaceAddStep={replaceAddStep} onReplaceInitialEntry={replaceInitialEntry} onRuleSetEdit={onRuleSetEdit} onSelectedAddStepChange={setSelectedAddStepId} onSelectedCapabilityChange={setSelectedCapabilityId} profile={profile} ruleSets={ruleSets} section={section} trailingParameters={trailingParameters} />
+        <ManageAuthoringSurface activeAddStep={activeAddStep} activePage={activeManagePage} draft={draft} enabledAdds={enabledAdds} entryRules={entryRules} mode={phaseModes.manage} onAddStep={addAddStep} onModeChange={(mode) => replacePhaseMode("manage", mode)} onPageChange={setActiveManagePage} onProfileChange={onProfileChange} onReplaceAddStep={replaceAddStep} onReplaceInitialEntry={replaceInitialEntry} onRuleSetEdit={onRuleSetEdit} onSelectedAddStepChange={setSelectedAddStepId} profile={profile} ruleSets={ruleSets} section={section} trailingParameters={trailingParameters} />
       </> : null}
 
       {activeStage === "reentry" ? <>
@@ -3358,8 +3413,8 @@ function StrategyAuthoringFlow({ activeStage, advanced, approved, draft, entryRu
         <StrategyStageIntro title="Review reusable strategy behavior">The Strategy Profile contains decision behavior only. Watchlists, accounts, Portfolio mandates, OMS, Canvas, data plans, environments, and action authority are selected later by a Run Plan.</StrategyStageIntro>
         <div className="strategy-publication-review">
           <article><span>Definition</span><strong>{profile.definition_id}@{profile.definition_revision}</strong></article>
-          <article><span>Rule sets</span><strong>{profile.rule_set_ids.length}</strong></article>
-          <article><span>Capabilities</span><strong>{profile.capabilities.filter((row) => row.enabled).length} enabled</strong></article>
+          <article><span>Rule sets</span><strong>{collectLifecycleRuleSetIds(profile.lifecycle).length}</strong></article>
+          <article><span>Action policies</span><strong>{profile.action_policy_ids.length} referenced</strong></article>
           <article><span>Entry mode</span><strong>{readableLabel(profile.lifecycle.phase_modes.initial_entry)}</strong></article>
           <article><span>Reentry mode</span><strong>{readableLabel(profile.lifecycle.phase_modes.reentry)}</strong></article>
           <article><span>Exit mode</span><strong>{readableLabel(profile.lifecycle.phase_modes.exit)}</strong></article>
@@ -3371,10 +3426,8 @@ function StrategyAuthoringFlow({ activeStage, advanced, approved, draft, entryRu
   </article>;
 }
 
-function ManageAuthoringSurface({ activeAddStep, activeCapabilityBinding, activeCapabilityDefinition, activePage, draft, enabledAdds, entryRules, mode, onAddStep, onModeChange, onPageChange, onProfileChange, onReplaceAddStep, onReplaceInitialEntry, onRuleSetEdit, onSelectedAddStepChange, onSelectedCapabilityChange, profile, ruleSets, section, trailingParameters }: {
+function ManageAuthoringSurface({ activeAddStep, activePage, draft, enabledAdds, entryRules, mode, onAddStep, onModeChange, onPageChange, onProfileChange, onReplaceAddStep, onReplaceInitialEntry, onRuleSetEdit, onSelectedAddStepChange, profile, ruleSets, section, trailingParameters }: {
   activeAddStep?: AddStep;
-  activeCapabilityBinding?: CapabilityBinding;
-  activeCapabilityDefinition?: CapabilityDefinition;
   activePage: ManageAuthoringPage;
   draft: Draft;
   enabledAdds: number;
@@ -3388,7 +3441,6 @@ function ManageAuthoringSurface({ activeAddStep, activeCapabilityBinding, active
   onReplaceInitialEntry: (value: Partial<StrategyLifecycle["initial_entry"]>) => void;
   onRuleSetEdit: (ruleSetId: string, created?: RuleSetDefinition) => void;
   onSelectedAddStepChange: (stepId: string) => void;
-  onSelectedCapabilityChange: (capabilityId: string) => void;
   profile: StrategyProfile;
   ruleSets: RuleSetDefinition[];
   section: StrategySection;
@@ -3401,7 +3453,7 @@ function ManageAuthoringSurface({ activeAddStep, activeCapabilityBinding, active
       {activePage === "add_actions" ? <div className="strategy-guided-entity-list">
         <header><span>{enabledAdds} enabled</span><button className="button compact" onClick={onAddStep} type="button"><Plus size={14} /> Add action</button></header>
         {entryRules.add_steps.map((step) => <article data-selected={activeAddStep?.step_id === step.step_id ? "true" : "false"} key={step.step_id}>
-          <div className="guided-form-grid"><TextField help="Operator-facing name for this position-building action." label="Action name" onChange={(name) => onReplaceAddStep(step.step_id, { ...step, name })} value={step.name} /><NumberField help="Maximum confirmed fills from this action during one campaign." label="Maximum uses" minimum={1} onChange={(maximum_uses) => onReplaceAddStep(step.step_id, { ...step, maximum_uses })} step={1} unit="fills" value={step.maximum_uses} /></div>
+          <div className="guided-form-grid"><TextField help="Operator-facing name for this position-building action." label="Action name" onChange={(name) => onReplaceAddStep(step.step_id, { ...step, name })} value={step.name} /><SelectField help="Registered broker-neutral intent emitted when this route passes." label="Trading Action" onChange={(action_id) => onReplaceAddStep(step.step_id, { ...step, action_id })} options={draft.trading_actions.definitions.filter((action) => action.category === "add").map((action) => ({ label: action.name, value: action.action_id }))} value={step.action_id} /><NumberField help="Maximum confirmed fills from this action during one campaign." label="Maximum uses" minimum={1} onChange={(maximum_uses) => onReplaceAddStep(step.step_id, { ...step, maximum_uses })} step={1} unit="fills" value={step.maximum_uses} /></div>
           <BooleanField help="Disabled actions remain saved but cannot emit an add request." label="Enabled" onChange={(enabled) => onReplaceAddStep(step.step_id, { ...step, enabled })} value={step.enabled} />
           <div className="strategy-guided-entity-actions"><button className="button compact" onClick={() => { onSelectedAddStepChange(step.step_id); onPageChange("add_evidence"); }} type="button">Configure</button><button className="button compact danger" onClick={() => onReplaceInitialEntry({ add_steps: entryRules.add_steps.filter((row) => row.step_id !== step.step_id) })} type="button"><Trash2 size={14} /> Remove</button></div>
         </article>)}
@@ -3415,9 +3467,25 @@ function ManageAuthoringSurface({ activeAddStep, activeCapabilityBinding, active
       {activePage === "add_protection" && activeAddStep ? <div className="strategy-entry-fields"><GuidedOrderIntentFields draft={draft} eligibleSessions={profile.lifecycle.trading_behavior.eligible_sessions} onChange={(order_intent) => onReplaceAddStep(activeAddStep.step_id, { ...activeAddStep, order_intent })} segment="protection" value={activeAddStep.order_intent} /></div> : null}
       {addPageWithoutAction ? <EmptyState detail="Return to Add actions and create an action first." title="No add action selected" /> : null}
       {activePage === "trailing" ? <div className="configuration-field-grid strategy-entry-engine-fields">{trailingParameters.map((item) => <ParameterField definition={field(item.path, readableLabel(item.path.split(".").at(-1) ?? item.path), helpForPath(item.path), controlFor(item.value), choicesFor(item.path), unitFor(item.path), stepFor(item.value))} key={item.path} onChange={(value) => onProfileChange({ ...profile, parameters: setPath(profile.parameters, item.path, value) })} value={item.value} />)}{!trailingParameters.length ? <EmptyState detail="This strategy definition does not expose trailing parameters." title="No trailing parameters" /> : null}</div> : null}
-      {activePage === "capabilities" ? <div className="strategy-entry-fields strategy-capability-focus"><SelectField help="Choose one optional code-defined behavior to review." label="Capability" onChange={onSelectedCapabilityChange} options={section.capability_catalog.map((definition) => ({ label: definition.name, value: definition.capability_id }))} value={activeCapabilityDefinition?.capability_id ?? ""} />{activeCapabilityDefinition && activeCapabilityBinding ? <GuidedCapabilityFields binding={activeCapabilityBinding} definition={activeCapabilityDefinition} onChange={(binding) => onProfileChange(updateCapability(profile, binding.capability_id, binding))} /> : <EmptyState detail="This profile has no configurable capability binding." title="Capability unavailable" />}</div> : null}
+      {activePage === "action_policies" ? <ActionPolicyBindingsEditor onChange={(action_policy_ids) => onProfileChange({ ...profile, action_policy_ids })} policies={draft.trading_actions.policies} selected={profile.action_policy_ids} /> : null}
     </div>
     <nav aria-label="Position management questions" className="strategy-entry-navigation strategy-lifecycle-navigation">{MANAGE_AUTHORING_PAGES.map((page, index) => <button aria-current={page.id === activePage ? "step" : undefined} aria-label={page.label} disabled={mode === "manual" && page.id !== "mode"} key={page.id} onClick={() => onPageChange(page.id)} title={page.label} type="button"><span>{index + 1}</span><strong>{page.label}</strong></button>)}</nav>
+  </div>;
+}
+
+function ActionPolicyBindingsEditor({ onChange, policies, selected }: {
+  onChange: (policyIds: string[]) => void;
+  policies: ActionPolicyDefinition[];
+  selected: string[];
+}) {
+  const [policyToAdd, setPolicyToAdd] = useState("");
+  const selectedPolicies = selected.map((policyId) => policies.find((policy) => policy.policy_id === policyId)).filter((policy): policy is ActionPolicyDefinition => Boolean(policy));
+  const available = policies.filter((policy) => policy.enabled && !selected.includes(policy.policy_id));
+  return <div className="strategy-action-policy-bindings">
+    <header><div><span>Reusable behavior</span><strong>{selectedPolicies.length} Action Policies</strong><p>References only. The policy retains its registered Trading Action, Rule Set trigger, quantity, and authority.</p></div><a className="button compact" href="#trading-action-configuration">Open Trading Actions</a></header>
+    <div className="strategy-action-policy-add"><InventoryFilterSelect ariaLabel="Action Policy to add" onChange={setPolicyToAdd} options={available.map((policy) => ({ description: policy.description, group: readableLabel(policy.category), label: policy.name, subgroup: readableLabel(policy.authority), value: policy.policy_id }))} placeholder="Choose an Action Policy" presentation="catalog" searchable searchPlaceholder="Search Action Policies" showAllOnOpen value={policyToAdd} /><button className="button compact" disabled={!policyToAdd} onClick={() => { onChange([...selected, policyToAdd]); setPolicyToAdd(""); }} type="button"><Plus size={13} /> Add</button></div>
+    <div className="strategy-action-policy-list">{selectedPolicies.map((policy) => <article key={policy.policy_id}><div><span>{readableLabel(policy.authority)} · {readableLabel(policy.category)}</span><strong>{policy.name}</strong><p>{policy.description}</p><code>{policy.action_id}</code></div><button aria-label={`Remove ${policy.name}`} className="button compact danger" onClick={() => onChange(selected.filter((policyId) => policyId !== policy.policy_id))} type="button"><Trash2 size={13} /> Remove</button></article>)}</div>
+    {!selectedPolicies.length ? <EmptyState detail="Add a registered Action Policy. Lifecycle entry, add, reentry, and exit routes remain configured separately from Rule Sets." title="No Action Policies referenced" /> : null}
   </div>;
 }
 
@@ -3472,7 +3540,7 @@ function ReentryAuthoringSurface({ activePage, draft, mode, onModeChange, onPage
   const reentry = profile.lifecycle.reentry;
   return <div className="strategy-entry-layout strategy-lifecycle-layout">
     <div className="strategy-entry-question-surface">
-      {activePage === "mode" ? <StrategyPhaseModeEditor mode={mode} onChange={onModeChange} phase="Reentry" /> : null}
+      {activePage === "mode" ? <div className="strategy-entry-fields"><StrategyPhaseModeEditor mode={mode} onChange={onModeChange} phase="Reentry" /><SelectField help="Registered broker-neutral intent emitted after reentry evidence passes." label="Trading Action" onChange={(action_id) => onReplaceReentry({ ...reentry, action_id })} options={draft.trading_actions.definitions.filter((action) => action.category === "enter").map((action) => ({ label: action.name, value: action.action_id }))} value={reentry.action_id} /></div> : null}
       {activePage === "reentry_policy" ? <div className="strategy-entry-fields"><div className="guided-form-grid"><BooleanField help="Require confirmation evidence newer than the evidence used by the previous confirmed entry." label="Require new confirmation" onChange={(require_new_confirmation) => onReplaceReentry({ ...reentry, require_new_confirmation })} value={reentry.require_new_confirmation} /><NumberField help="Minimum time after a confirmed full exit before reentry may become eligible." label="Cooldown" minimum={0} onChange={(cooldown_ms) => onReplaceReentry({ ...reentry, cooldown_ms })} step={100} unit="ms" value={reentry.cooldown_ms} /><NumberField help="Maximum confirmed reentry fills during one ticker campaign." label="Maximum attempts" minimum={0} onChange={(maximum_attempts) => onReplaceReentry({ ...reentry, maximum_attempts })} step={1} unit="entries" value={reentry.maximum_attempts} /></div></div> : null}
       {activePage === "reentry_opportunity" ? <DecisionRulesEditor catalog={section.input_catalog} onChange={(rules) => onReplaceReentry({ ...reentry, rules })} onRuleSetEdit={onRuleSetEdit} onRuleSetsChange={(nextRuleSets, rules) => onRuleSetsChange(nextRuleSets, { ...profile, lifecycle: { ...profile.lifecycle, reentry: { ...reentry, rules } } })} ruleSetCatalog={ruleSets} rules={reentry.rules} stageName="opportunity" summary="" title="Reentry evidence" /> : null}
       {activePage === "reentry_confirmation" ? <DecisionRulesEditor catalog={section.input_catalog} onChange={(rules) => onReplaceReentry({ ...reentry, rules })} onRuleSetEdit={onRuleSetEdit} onRuleSetsChange={(nextRuleSets, rules) => onRuleSetsChange(nextRuleSets, { ...profile, lifecycle: { ...profile.lifecycle, reentry: { ...reentry, rules } } })} ruleSetCatalog={ruleSets} rules={reentry.rules} stageName="confirmation" summary="" title="Reentry evidence" /> : null}
@@ -3514,7 +3582,7 @@ function ExitAuthoringSurface({ activePage, activeRoute, catalog, draft, luldTar
       {activePage === "routes" ? <div className="strategy-guided-entity-list"><header><span>{profile.lifecycle.exit.rule_sets.filter((route) => route.enabled).length} enabled</span><button className="button compact" onClick={onAddRoute} type="button"><Plus size={14} /> Add route</button></header>{profile.lifecycle.exit.rule_sets.map((route) => <article data-selected={activeRoute?.rule_set_id === route.rule_set_id ? "true" : "false"} key={route.rule_set_id}><div className="guided-form-grid"><TextField help="Operator-facing name for this strategic exit route." label="Route name" onChange={(name) => onReplaceRoute(route.rule_set_id, { ...route, name })} value={route.name} /><TextField help="State the market condition and purpose handled by this route." label="Purpose" onChange={(summary) => onReplaceRoute(route.rule_set_id, { ...route, summary })} value={route.summary} /></div><BooleanField help="Disabled routes remain saved but cannot emit an exit request." label="Enabled" onChange={(enabled) => onReplaceRoute(route.rule_set_id, { ...route, enabled })} value={route.enabled} /><div className="strategy-guided-entity-actions"><button className="button compact" onClick={() => { onSelectedRouteChange(route.rule_set_id); onPageChange("evidence"); }} type="button">Configure</button><button className="button compact danger" disabled={profile.lifecycle.exit.rule_sets.length <= 1} onClick={() => onProfileChange({ ...profile, lifecycle: { ...profile.lifecycle, exit: { rule_sets: profile.lifecycle.exit.rule_sets.filter((row) => row.rule_set_id !== route.rule_set_id) } } })} type="button"><Trash2 size={14} /> Remove</button></div></article>)}</div> : null}
       {activePage === "evidence" && activeRoute ? <RuleStageComposition catalog={catalog} label={`${activeRoute.name} evidence`} onChange={(rules) => onReplaceRoute(activeRoute.rule_set_id, { ...activeRoute, rules })} onEditRuleSet={onRuleSetEdit} ruleSets={ruleSets} stage={activeRoute.rules} /> : null}
       {activePage === "timing" && activeRoute ? <div className="strategy-entry-fields"><GuidedExitTimingFields onChange={(route) => onReplaceRoute(activeRoute.rule_set_id, route)} value={activeRoute} /></div> : null}
-      {activePage === "action" && activeRoute ? <div className="strategy-entry-fields"><GuidedExitActionFields onChange={(route) => onReplaceRoute(activeRoute.rule_set_id, route)} value={activeRoute} /></div> : null}
+      {activePage === "action" && activeRoute ? <div className="strategy-entry-fields"><GuidedExitActionFields actions={draft.trading_actions.definitions} onChange={(route) => onReplaceRoute(activeRoute.rule_set_id, route)} value={activeRoute} /></div> : null}
       {activePage === "execution" && activeRoute ? <div className="strategy-entry-fields"><GuidedOrderIntentFields draft={draft} eligibleSessions={profile.lifecycle.trading_behavior.eligible_sessions} onChange={(order_intent) => onReplaceRoute(activeRoute.rule_set_id, { ...activeRoute, order_intent })} segment="execution" value={activeRoute.order_intent} /></div> : null}
       {activePage === "partial_fill" && activeRoute ? <div className="strategy-entry-fields"><GuidedOrderIntentFields draft={draft} eligibleSessions={profile.lifecycle.trading_behavior.eligible_sessions} onChange={(order_intent) => onReplaceRoute(activeRoute.rule_set_id, { ...activeRoute, order_intent })} segment="partial-fill" value={activeRoute.order_intent} /></div> : null}
       {activePage === "protection" && activeRoute ? <div className="strategy-entry-fields"><GuidedOrderIntentFields draft={draft} eligibleSessions={profile.lifecycle.trading_behavior.eligible_sessions} onChange={(order_intent) => onReplaceRoute(activeRoute.rule_set_id, { ...activeRoute, order_intent })} segment="protection" value={activeRoute.order_intent} /></div> : null}
@@ -3612,6 +3680,20 @@ function TradingBehaviorEditor({ definition, onChange, profile }: {
     ...profile,
     lifecycle: { ...profile.lifecycle, trading_behavior: next },
   });
+  const updateSide = (side: StrategyLifecycle["trading_behavior"]["side"]) => onChange({
+    ...profile,
+    lifecycle: {
+      ...profile.lifecycle,
+      trading_behavior: { ...behavior, side },
+      initial_entry: {
+        ...profile.lifecycle.initial_entry,
+        action_id: `position.enter_${side}`,
+        add_steps: profile.lifecycle.initial_entry.add_steps.map((step) => ({ ...step, action_id: `position.add_${side}` })),
+      },
+      reentry: { ...profile.lifecycle.reentry, action_id: `position.enter_${side}` },
+      exit: { rule_sets: profile.lifecycle.exit.rule_sets.map((route) => ({ ...route, action_id: `position.${route.action === "reduce" ? "reduce" : "exit"}_${side}` })) },
+    },
+  });
   const sessions = ["premarket", "regular", "after_hours"];
   return (
     <>
@@ -3626,7 +3708,7 @@ function TradingBehaviorEditor({ definition, onChange, profile }: {
             note: "A ticker may have one long and one short campaign in the same portfolio book, but a single brokerage account cannot hold both because positions are netted.",
           }}
           label="Side"
-          onChange={(side) => update({ ...behavior, side: side as StrategyLifecycle["trading_behavior"]["side"] })}
+          onChange={(side) => updateSide(side as StrategyLifecycle["trading_behavior"]["side"])}
           options={supportedSides.map((value) => ({ label: readableLabel(value), value }))}
           value={behavior.side}
         />
@@ -3740,6 +3822,7 @@ function ExitRuleSetsEditor({ catalog, draft, onChange, onRuleSetEdit = () => un
         exit: {
           rule_sets: [{
             action: "close",
+            action_id: `position.exit_${profile.lifecycle.trading_behavior.side}`,
             enabled: true,
             name: "New strategic exit",
             order_intent: { deadline_ms: 750, execution_policy: "adaptive_urgent", partial_fill_policy: "complete_remainder", protection_profile: "hybrid-single" },
@@ -4625,6 +4708,7 @@ function AddStepsEditor({ catalog, eligibleSessions, executionPolicies, onChange
     const stepId = uniqueId("position-add", steps.map((row) => row.step_id));
     const evidenceRuleSet = ruleSets[0];
     onChange([{
+      action_id: "position.add_long",
       capital_request: { allow_replacement: false, mode: "mandate_fraction", value: 0.1 },
       enabled: true,
       maximum_uses: 1,
@@ -6208,6 +6292,7 @@ function cloneApprovedDraft(approved: Revision, current: Draft): Draft {
     portfolio: deepClone(approved.payload.portfolio),
     schema_version: approved.payload.schema_version,
     strategy: deepClone(approved.payload.strategy),
+    trading_actions: deepClone(approved.payload.trading_actions),
     updated_at: current.updated_at,
   };
 }

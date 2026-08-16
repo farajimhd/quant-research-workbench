@@ -17,6 +17,12 @@ from src.backend.application_registry import (
     FIELD_DEFINITIONS,
 )
 from src.backend.qmd_gateway_client import qmd_catalogs
+from src.backend.trading_action_registry import (
+    action_policy_rule_set_ids,
+    default_action_policies,
+    trading_action_definitions,
+    validate_trading_actions,
+)
 from src.backend.trading_runtime_service import (
     get_strategy_definition,
     list_strategy_definitions,
@@ -47,9 +53,10 @@ from src.trading_runtime.strategy_campaign import validate_campaign_policy
 from src.trading_runtime.taxonomy import StrategyTaxonomy
 
 
-CONFIGURATION_SCHEMA_VERSION = 24
+CONFIGURATION_SCHEMA_VERSION = 25
 CONFIGURATION_SECTIONS = {
     "strategy",
+    "trading_actions",
     "market_discovery",
     "run_plans",
     "portfolio",
@@ -133,82 +140,6 @@ def public_configuration_revision(revision: dict[str, Any]) -> dict[str, Any]:
     if isinstance(configuration_model, dict):
         scrub(configuration_model)
     return public
-
-
-def capability_catalog() -> list[dict[str, Any]]:
-    """Code-owned capability definitions with system defaults and UI metadata."""
-
-    return [
-        {
-            "capability_id": "profit-pocket",
-            "revision": 1,
-            "name": "Profit pocket",
-            "category": "position_management",
-            "summary": "Reduce a winning position when momentum slows or a configured gain is reached.",
-            "order_entry_action": True,
-            "autonomy": ["manual", "confirm", "automatic"],
-            "defaults": {
-                "mode": "automatic",
-                "trigger": "acceleration_slowdown",
-                "minimum_gain_pct": 0.75,
-                "quantity_fraction": 0.5,
-                "minimum_remaining_quantity": 1.0,
-            },
-            "parameters": [
-                _choice("mode", "Authority", "Who may trigger the reduction.", ["manual", "confirm", "automatic"]),
-                _choice(
-                    "trigger",
-                    "Trigger",
-                    "Evidence that makes a profit pocket eligible.",
-                    ["acceleration_slowdown", "favorable_move_pct", "volatility_multiple"],
-                ),
-                _number("minimum_gain_pct", "Minimum gain", "Gain required before reducing.", "%", 0, 100, 0.05),
-                _number("quantity_fraction", "Position to sell", "Fraction of the open position to reduce.", "%", 0.01, 1, 0.05, display="fraction"),
-                _number("minimum_remaining_quantity", "Minimum remainder", "Do not leave a smaller residual position.", "shares", 0, 1_000_000, 1),
-            ],
-        },
-        {
-            "capability_id": "confirmed-pullback-add",
-            "revision": 1,
-            "name": "Confirmed pullback add",
-            "category": "position_management",
-            "summary": "Add only after a configured pullback and renewed bullish structure.",
-            "order_entry_action": True,
-            "autonomy": ["manual", "confirm", "automatic"],
-            "defaults": {
-                "mode": "confirm",
-                "maximum_adds": 2,
-                "add_fraction": 0.5,
-                "require_bullish_choch": True,
-            },
-            "parameters": [
-                _choice("mode", "Authority", "Who may authorize an add.", ["manual", "confirm", "automatic"]),
-                _number("maximum_adds", "Maximum adds", "Maximum additions during one position lifecycle.", "adds", 0, 10, 1),
-                _number("add_fraction", "Add size", "Fraction of the initial approved allocation requested for each add.", "%", 0.01, 2, 0.05, display="fraction"),
-                _boolean("require_bullish_choch", "Require bullish change of character", "Requires renewed causal structure after the pullback."),
-            ],
-        },
-        {
-            "capability_id": "adaptive-protection",
-            "revision": 1,
-            "name": "Adaptive protection",
-            "category": "protection",
-            "summary": "Attach shared OMS protection and tighten it as the position becomes profitable.",
-            "order_entry_action": False,
-            "autonomy": ["automatic"],
-            "defaults": {
-                "mode": "automatic",
-                "stop_method": "hybrid",
-                "trailing_enabled": True,
-                "move_to_break_even_gain_pct": 0.5,
-            },
-            "parameters": [
-                _choice("stop_method", "Stop method", "How the initial invalidation is constructed.", ["structure", "volatility", "hybrid"]),
-                _boolean("trailing_enabled", "Enable trailing", "Allow the shared OMS to tighten protection."),
-                _number("move_to_break_even_gain_pct", "Break-even activation", "Gain required before break-even protection becomes eligible.", "%", 0, 100, 0.05),
-            ],
-        },
-    ]
 
 
 def configuration_base() -> dict[str, Any]:
@@ -561,6 +492,9 @@ def resolve_runtime_configuration(
     profile_rule_sets = _profile_rule_sets(
         profile, dict(model["market_discovery"])
     )
+    profile_action_policies = _profile_action_policies(
+        profile, dict(model["trading_actions"])
+    )
     oms_profiles = {
         str(row["profile_id"]): row
         for row in dict(model["oms"]).get("profiles") or []
@@ -669,7 +603,7 @@ def resolve_runtime_configuration(
         assignment["campaign_policy"] = deepcopy(policy)
         assignment["resolved_parameters"] = merged_assignment_parameters(
             {
-                "strategy": {"parameters": _parameters_with_capabilities(profile, profile_rule_sets)},
+                "strategy": {"parameters": _parameters_with_action_policies(profile, profile_rule_sets, profile_action_policies)},
                 "oms": {
                     "settings": deepcopy(dict(oms.get("settings") or {})),
                     "execution_policies": deepcopy(
@@ -710,8 +644,9 @@ def resolve_runtime_configuration(
             "name": profile["name"],
             "profile_id": profile["profile_id"],
             "profile_revision": int(profile.get("revision") or 1),
-            "parameters": _parameters_with_capabilities(profile, profile_rule_sets),
-            "capabilities": deepcopy(profile.get("capabilities") or []),
+            "parameters": _parameters_with_action_policies(profile, profile_rule_sets, profile_action_policies),
+            "action_definitions": deepcopy(dict(model["trading_actions"]).get("definitions") or []),
+            "action_policies": deepcopy(profile_action_policies),
         },
         "assignments": runtime_assignments,
         "portfolio": {
@@ -795,11 +730,13 @@ def _default_strategy_lifecycle(parameters: dict[str, Any]) -> dict[str, Any]:
         },
         "initial_entry": {
             **deepcopy(initial_rules),
+            "action_id": "position.enter_long",
             "capital_request": _default_capital_request("mandate_fraction", 0.20),
             "order_intent": _default_order_intent("adaptive_urgent"),
             "add_steps": [
                 {
                     "step_id": "confirmed-position-add",
+                    "action_id": "position.add_long",
                     "name": "Confirmed position add",
                     "enabled": True,
                     "rules": _single_rule_stage(
@@ -818,6 +755,7 @@ def _default_strategy_lifecycle(parameters: dict[str, Any]) -> dict[str, Any]:
             ],
         },
         "reentry": {
+            "action_id": "position.enter_long",
             "enabled": bool(reentry.get("enabled", True)),
             "cooldown_ms": int(reentry.get("cooldown_ms") or 0),
             "maximum_attempts": int(reentry.get("maximum_attempts") or 0),
@@ -1118,8 +1056,22 @@ def _profile_rule_sets(
         for rule_set in market_discovery.get("rule_sets") or []
         if str(rule_set.get("rule_set_id") or "")
     }
-    references = [str(value) for value in profile.get("rule_set_ids") or []]
+    references = _profile_rule_set_ids(dict(profile.get("lifecycle") or {}))
     return [deepcopy(catalog[rule_set_id]) for rule_set_id in references if rule_set_id in catalog]
+
+
+def _profile_action_policies(
+    profile: dict[str, Any], trading_actions: dict[str, Any]
+) -> list[dict[str, Any]]:
+    catalog = {
+        str(policy.get("policy_id") or ""): policy
+        for policy in trading_actions.get("policies") or []
+    }
+    return [
+        deepcopy(catalog[policy_id])
+        for policy_id in profile.get("action_policy_ids") or []
+        if str(policy_id) in catalog
+    ]
 
 
 def _materialize_rule_stage(
@@ -1171,6 +1123,7 @@ def _default_exit_rule_sets(final_exit: dict[str, Any]) -> list[dict[str, Any]]:
         "rules": _default_exit_rule_stage("failed_breakout"),
         "timing": {"active_after_ms": 0, "expires_after_ms": 60_000},
         "action": "close",
+        "action_id": "position.exit_long",
         "position_fraction": 1.0,
         "order_intent": _default_order_intent("adaptive_urgent"),
     }
@@ -1217,6 +1170,7 @@ def _default_exit_rule_sets(final_exit: dict[str, Any]) -> list[dict[str, Any]]:
         },
         "timing": {"active_after_ms": 0, "expires_after_ms": 0},
         "action": "close",
+        "action_id": "position.exit_long",
         "position_fraction": 1.0,
         "order_intent": _default_order_intent("adaptive_urgent"),
     }
@@ -1275,7 +1229,27 @@ def _migrate_lifecycle_v5(
     exit_config = result.setdefault("exit", {})
     if "routes" not in exit_config and "rule_sets" not in exit_config:
         exit_config["rule_sets"] = deepcopy(defaults["exit"]["rule_sets"])
+    _normalize_lifecycle_action_ids(result)
     return result
+
+
+def _normalize_lifecycle_action_ids(lifecycle: dict[str, Any]) -> None:
+    """Attach the registered broker-neutral action used by each lifecycle route."""
+
+    side = str(dict(lifecycle.get("trading_behavior") or {}).get("side") or "long")
+    suffix = "short" if side == "short" else "long"
+    initial = lifecycle.setdefault("initial_entry", {})
+    initial.setdefault("action_id", f"position.enter_{suffix}")
+    for step in initial.get("add_steps") or []:
+        step.setdefault("action_id", f"position.add_{suffix}")
+    reentry = lifecycle.setdefault("reentry", {})
+    reentry.setdefault("action_id", f"position.enter_{suffix}")
+    for route in dict(lifecycle.setdefault("exit", {})).get("rule_sets") or []:
+        action = str(route.get("action") or "close")
+        route.setdefault(
+            "action_id",
+            f"position.{'reduce' if action == 'reduce' else 'exit'}_{suffix}",
+        )
 
 
 def _migrate_rule_stage_v6(stage: dict[str, Any]) -> dict[str, Any]:
@@ -2583,9 +2557,6 @@ def _default_draft() -> dict[str, Any]:
     )
     for profile in [*system_profiles, *profile_templates]:
         profile.pop("rule_set_catalog", None)
-        profile["rule_set_ids"] = _profile_rule_set_ids(
-            dict(profile.get("lifecycle") or {})
-        )
     policy = asdict(PortfolioPolicy())
     bindings = [
         {
@@ -2625,10 +2596,13 @@ def _default_draft() -> dict[str, Any]:
         "strategy": {
             "default_profile_id": "long-momentum-balanced",
             "definitions": [_strategy_definition_summary(row) for row in list_strategy_definitions()],
-            "capability_catalog": capability_catalog(),
             "input_catalog": installed_strategy_input_catalog(),
             "profile_templates": profile_templates,
             "profiles": system_profiles,
+        },
+        "trading_actions": {
+            "definitions": trading_action_definitions(),
+            "policies": default_action_policies(),
         },
         "market_discovery": discovery,
         "run_plans": {
@@ -2899,6 +2873,15 @@ def _compile_run_plans(candidate: dict[str, Any], *, canvas_profile_id: str) -> 
     }
     mandates = list(dict(candidate.get("portfolio") or {}).get("mandates") or [])
     calculations = list(discovery.get("calculation_catalog") or [])
+    action_policies = {
+        str(row.get("policy_id") or ""): row
+        for row in dict(candidate.get("trading_actions") or {}).get("policies") or []
+    }
+    rule_sets = {
+        str(row.get("rule_set_id") or ""): row
+        for row in discovery.get("rule_sets") or []
+        if str(row.get("rule_set_id") or "")
+    }
     plans = list(dict(candidate.get("run_plans") or {}).get("plans") or [])
     compiled_universes: list[dict[str, Any]] = []
 
@@ -2947,9 +2930,22 @@ def _compile_run_plans(candidate: dict[str, Any], *, canvas_profile_id: str) -> 
             if str(row.get("run_plan_id") or "") == run_plan_id
             and bool(row.get("enabled", True))
         ]
+        policy_rule_set_ids = sorted({
+            rule_set_id
+            for policy_id in profile.get("action_policy_ids") or []
+            for rule_set_id in action_policy_rule_set_ids(
+                dict(action_policies.get(str(policy_id)) or {})
+            )
+        })
+        run_plan["action_policy_rule_set_ids"] = policy_rule_set_ids
+        referenced_rule_set_ids = sorted({
+            *_profile_rule_set_ids(dict(profile.get("lifecycle") or {})),
+            *policy_rule_set_ids,
+        })
         run_plan["observation_dependencies"] = _compiled_observation_dependencies(
             profile,
             calculations,
+            [rule_sets[rule_set_id] for rule_set_id in referenced_rule_set_ids if rule_set_id in rule_sets],
         )
         run_plan["compiled"] = True
 
@@ -2959,6 +2955,7 @@ def _compile_run_plans(candidate: dict[str, Any], *, canvas_profile_id: str) -> 
 def _compiled_observation_dependencies(
     profile: dict[str, Any],
     capability_catalog_rows: list[dict[str, Any]] | None = None,
+    rule_sets: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     definition = get_strategy_definition(
         str(profile.get("definition_id") or ""),
@@ -2986,6 +2983,49 @@ def _compiled_observation_dependencies(
             if ref.timeframe:
                 row["timeframes"].add(ref.timeframe.lower())
             row["required"] = bool(row["required"] or ref.required)
+    capability_by_field: dict[str, dict[str, Any]] = {}
+    for capability in capability_catalog_rows or []:
+        for field_id in capability.get("fields") or []:
+            capability_by_field[str(field_id)] = capability
+        capability_id = str(
+            capability.get("capability_key")
+            or capability.get("capability_id")
+            or ""
+        )
+        if capability_id:
+            capability_by_field.setdefault(capability_id, capability)
+    for rule_set in rule_sets or []:
+        for condition in rule_set.get("conditions") or []:
+            for side in ("left", "right"):
+                source_id = str(condition.get(f"{side}_source_id") or "")
+                if not source_id:
+                    continue
+                capability = capability_by_field.get(source_id, {})
+                capability_key = str(
+                    capability.get("capability_key")
+                    or capability.get("capability_id")
+                    or source_id
+                )
+                producer = str(
+                    capability.get("owner")
+                    or capability.get("provider")
+                    or "qmd"
+                ).lower()
+                key = (producer, capability_key)
+                row = grouped.setdefault(key, {
+                    "producer": producer,
+                    "capability_key": capability_key,
+                    "input_kinds": set(),
+                    "input_keys": set(),
+                    "timeframes": set(),
+                    "required": False,
+                })
+                row["input_kinds"].add("rule_set")
+                row["input_keys"].add(source_id)
+                timeframe = str(condition.get(f"{side}_timeframe") or "").lower()
+                if timeframe:
+                    row["timeframes"].add(timeframe)
+                row["required"] = True
     compiled: list[dict[str, Any]] = []
     for _, row in sorted(grouped.items()):
         compiled.append({
@@ -3002,9 +3042,9 @@ def _with_qmd_dependency_metadata(
     capability_catalog_rows: list[dict[str, Any]] | None,
 ) -> list[dict[str, Any]]:
     capability_metadata = {
-        str(row.get("capability_key") or ""): row
+        str(row.get("capability_key") or row.get("capability_id") or ""): row
         for row in capability_catalog_rows or []
-        if str(row.get("capability_key") or "")
+        if str(row.get("capability_key") or row.get("capability_id") or "")
     }
     result: list[dict[str, Any]] = []
     for dependency in dependencies:
@@ -3037,7 +3077,6 @@ def _validate_draft(draft: dict[str, Any], *, require_runtime_ready: bool = True
         raise ValueError(f"Trading configuration is missing sections: {', '.join(sorted(missing))}")
     _validate_market_discovery(dict(draft["market_discovery"]))
     strategy = dict(draft["strategy"])
-    catalog = {str(row["capability_id"]): row for row in strategy.get("capability_catalog") or capability_catalog()}
     profiles = list(strategy.get("profiles") or [])
     if not profiles:
         raise ValueError("At least one Strategy Profile is required")
@@ -3048,6 +3087,12 @@ def _validate_draft(draft: dict[str, Any], *, require_runtime_ready: bool = True
     discovery_rule_sets = list(dict(draft["market_discovery"]).get("rule_sets") or [])
     discovery_rule_set_ids = {
         str(row.get("rule_set_id") or "") for row in discovery_rule_sets
+    }
+    trading_actions = dict(draft["trading_actions"])
+    validate_trading_actions(trading_actions, discovery_rule_set_ids)
+    action_policy_ids = {
+        str(row.get("policy_id") or "")
+        for row in trading_actions.get("policies") or []
     }
     for profile in profiles:
         definition = get_strategy_definition(
@@ -3065,21 +3110,23 @@ def _validate_draft(draft: dict[str, Any], *, require_runtime_ready: bool = True
         ):
             raise ValueError("The default Strategy Profile must remain protected")
         lifecycle = dict(profile.get("lifecycle") or {})
-        rule_set_references = [str(value) for value in profile.get("rule_set_ids") or []]
-        if len(rule_set_references) != len(set(rule_set_references)):
-            raise ValueError(
-                f"Strategy Profile {profile.get('name')} contains duplicate rule-set references"
-            )
-        unknown_rule_sets = set(rule_set_references) - discovery_rule_set_ids
+        lifecycle_rule_set_ids = set(_profile_rule_set_ids(lifecycle))
+        unknown_rule_sets = lifecycle_rule_set_ids - discovery_rule_set_ids
         if unknown_rule_sets:
             raise ValueError(
                 f"Strategy Profile {profile.get('name')} references unknown rule sets: "
                 f"{', '.join(sorted(unknown_rule_sets))}"
             )
-        lifecycle_rule_set_ids = set(_profile_rule_set_ids(lifecycle))
-        if lifecycle_rule_set_ids != set(rule_set_references):
+        references = [str(value) for value in profile.get("action_policy_ids") or []]
+        if len(references) != len(set(references)):
             raise ValueError(
-                f"Strategy Profile {profile.get('name')} rule_set_ids must exactly match its lifecycle references"
+                f"Strategy Profile {profile.get('name')} contains duplicate Action Policy references"
+            )
+        unknown_policies = set(references) - action_policy_ids
+        if unknown_policies:
+            raise ValueError(
+                f"Strategy Profile {profile.get('name')} references unknown Action Policies: "
+                f"{', '.join(sorted(unknown_policies))}"
             )
         rule_set_catalog = _profile_rule_sets(
             profile, dict(draft["market_discovery"])
@@ -3089,6 +3136,10 @@ def _validate_draft(draft: dict[str, Any], *, require_runtime_ready: bool = True
             rule_set_catalog,
             registration.parameter_resolver,
             dict(profile.get("parameters") or {}),
+            {
+                str(row.get("action_id") or ""): str(row.get("category") or "")
+                for row in trading_actions.get("definitions") or []
+            },
         )
         definition_config = dict(definition.get("config") or {})
         direction = str(definition_config.get("direction") or "")
@@ -3098,12 +3149,11 @@ def _validate_draft(draft: dict[str, Any], *, require_runtime_ready: bool = True
             raise ValueError(
                 f"Strategy Profile {profile.get('name')} does not support the {configured_side} side"
             )
-        _parameters_with_capabilities(profile, rule_set_catalog)
-        for binding in profile.get("capabilities") or []:
-            capability_id = str(binding.get("capability_id") or "")
-            if capability_id not in catalog:
-                raise ValueError(f"Strategy Profile {profile.get('name')} references unknown capability {capability_id}")
-            _validate_capability_settings(catalog[capability_id], dict(binding.get("settings") or {}))
+        _parameters_with_action_policies(
+            profile,
+            rule_set_catalog,
+            _profile_action_policies(profile, trading_actions),
+        )
 
     accounts = list(dict(draft["accounts"]).get("bindings") or [])
     if not accounts:
@@ -3433,6 +3483,21 @@ def _migrate_draft(raw: dict[str, Any]) -> dict[str, Any]:
         result = deepcopy(raw)
         defaults = _default_draft()
         result["schema_version"] = CONFIGURATION_SCHEMA_VERSION
+        result["trading_actions"] = deepcopy(
+            result.get("trading_actions") or defaults["trading_actions"]
+        )
+        result["trading_actions"]["definitions"] = deepcopy(
+            defaults["trading_actions"]["definitions"]
+        )
+        default_policies = {
+            str(row.get("policy_id") or ""): deepcopy(row)
+            for row in defaults["trading_actions"]["policies"]
+        }
+        for row in result["trading_actions"].get("policies") or []:
+            policy_id = str(row.get("policy_id") or "")
+            if policy_id:
+                default_policies[policy_id] = deepcopy(row)
+        result["trading_actions"]["policies"] = list(default_policies.values())
         result["market_discovery"] = deepcopy(
             result.get("market_discovery") or defaults["market_discovery"]
         )
@@ -3652,7 +3717,7 @@ def _migrate_draft(raw: dict[str, Any]) -> dict[str, Any]:
             mandate.pop("autonomy", None)
             mandate.pop("priority", None)
         result["strategy"].setdefault("profiles", [])
-        result["strategy"].setdefault("capability_catalog", [])
+        result["strategy"].pop("capability_catalog", None)
         result["strategy"]["default_profile_id"] = str(
             result["strategy"].get("default_profile_id")
             or "long-momentum-balanced"
@@ -3723,6 +3788,7 @@ def _migrate_draft(raw: dict[str, Any]) -> dict[str, Any]:
                     legacy_reentry.get("enabled", True)
                 )
             lifecycle = _migrate_lifecycle_v14(lifecycle, parameters)
+            _normalize_lifecycle_action_ids(lifecycle)
             lifecycle.pop("re_evaluation", None)
             initial_entry = dict(lifecycle.get("initial_entry") or {})
             initial_capital = dict(initial_entry.get("capital_request") or {})
@@ -3777,17 +3843,25 @@ def _migrate_draft(raw: dict[str, Any]) -> dict[str, Any]:
                 _normalize_rule_set_conditions(migrated_rule_set)
                 result["market_discovery"]["rule_sets"].append(migrated_rule_set)
                 global_rule_set_ids.add(rule_set_id)
-            profile["rule_set_ids"] = _profile_rule_set_ids(lifecycle)
+            profile.pop("rule_set_ids", None)
             profile["parameters"] = _parameters_without_lifecycle(parameters)
             profile["protected"] = (
                 str(profile.get("profile_id"))
                 == result["strategy"]["default_profile_id"]
             )
-            profile["capabilities"] = [
-                row
-                for row in profile.get("capabilities") or []
-                if str(row.get("capability_id")) != "exit-watch-reenter"
-            ]
+            legacy_capability_ids = {
+                str(row.get("capability_id") or "")
+                for row in profile.pop("capabilities", []) or []
+                if bool(row.get("enabled", True))
+            }
+            profile["action_policy_ids"] = list(dict.fromkeys([
+                *[str(value) for value in profile.get("action_policy_ids") or []],
+                *[
+                    policy_id
+                    for policy_id in ("profit-pocket", "confirmed-pullback-add")
+                    if policy_id in legacy_capability_ids
+                ],
+            ]))
         template_ids = {
             str(row.get("profile_id"))
             for row in result["strategy"]["profile_templates"]
@@ -3821,23 +3895,12 @@ def _migrate_draft(raw: dict[str, Any]) -> dict[str, Any]:
             template.setdefault("derived_from_profile_id", "")
             template.pop("composition", None)
             template.pop("rule_set_catalog", None)
-            template["rule_set_ids"] = _profile_rule_set_ids(
-                dict(template.get("lifecycle") or {})
+            template.pop("rule_set_ids", None)
+            template.pop("capabilities", None)
+            template.setdefault(
+                "action_policy_ids",
+                ["profit-pocket", "confirmed-pullback-add"],
             )
-        existing_capabilities = {
-            str(row.get("capability_id"))
-            for row in dict(result.get("strategy") or {}).get("capability_catalog") or []
-        }
-        result["strategy"]["capability_catalog"].extend(
-            deepcopy(row)
-            for row in capability_catalog()
-            if str(row["capability_id"]) not in existing_capabilities
-        )
-        result["strategy"]["capability_catalog"] = [
-            row
-            for row in result["strategy"]["capability_catalog"]
-            if str(row.get("capability_id")) != "exit-watch-reenter"
-        ]
         result["run_plans"].setdefault(
             "universes",
             deepcopy(defaults["run_plans"]["universes"]),
@@ -4073,17 +4136,7 @@ def _strategy_profile(
     protected: bool = False,
 ) -> dict[str, Any]:
     modes = capability_modes or {}
-    capabilities = []
-    for definition in capability_catalog():
-        settings = deepcopy(definition["defaults"])
-        if definition["capability_id"] in modes:
-            settings["mode"] = modes[definition["capability_id"]]
-        capabilities.append({
-            "capability_id": definition["capability_id"],
-            "revision": definition["revision"],
-            "enabled": True,
-            "settings": settings,
-        })
+    action_policy_ids = ["profit-pocket", "confirmed-pullback-add"]
     profile = {
         "profile_id": profile_id,
         "revision": 1,
@@ -4099,7 +4152,7 @@ def _strategy_profile(
         "derived_from_profile_id": "",
         "lifecycle": _default_strategy_lifecycle(parameters),
         "parameters": _parameters_without_lifecycle(parameters),
-        "capabilities": capabilities,
+        "action_policy_ids": action_policy_ids,
     }
     _migrate_profile_rule_catalog(profile)
     return profile
@@ -4178,6 +4231,7 @@ def _validate_strategy_lifecycle(
     raw_rule_set_catalog: list[dict[str, Any]],
     parameter_resolver: Callable[[dict[str, Any] | None], dict[str, Any]],
     engine_parameters: dict[str, Any],
+    action_categories: dict[str, str],
 ) -> None:
     required = {"phase_modes", "trading_behavior", "initial_entry", "reentry", "exit"}
     missing = required - set(lifecycle)
@@ -4212,6 +4266,7 @@ def _validate_strategy_lifecycle(
     for rule_set in raw_rule_set_catalog:
         _validate_rule_set_definition(dict(rule_set), f"Rule set {rule_set.get('name')}")
     initial_entry = dict(lifecycle["initial_entry"])
+    _validate_lifecycle_action(initial_entry, "Initial entry", action_categories, {"enter"})
     runtime_rules = {
         "trigger": _materialize_rule_stage(dict(initial_entry.get("opportunity") or {}), rule_set_catalog),
         "confirmation": _materialize_rule_stage(dict(initial_entry.get("confirmation") or {}), rule_set_catalog),
@@ -4231,12 +4286,14 @@ def _validate_strategy_lifecycle(
     add_steps = list(initial_entry.get("add_steps") or [])
     _unique_ids(add_steps, "step_id", "Initial-entry add step")
     for step in add_steps:
+        _validate_lifecycle_action(step, f"Add step {step.get('name')}", action_categories, {"add"})
         _validate_rule_stage(dict(step.get("rules") or {}), f"Add step {step.get('name')}", rule_set_ids)
         _validate_capital_request(dict(step.get("capital_request") or {}), f"Add step {step.get('name')}")
         _validate_order_intent(dict(step.get("order_intent") or {}), f"Add step {step.get('name')}")
         if int(step.get("maximum_uses") or 0) < 1:
             raise ValueError(f"Add step {step.get('name')} maximum uses must be positive")
     reentry = dict(lifecycle["reentry"])
+    _validate_lifecycle_action(reentry, "Reentry", action_categories, {"enter"})
     if int(reentry.get("cooldown_ms") or 0) < 0:
         raise ValueError("Strategy reentry cooldown cannot be negative")
     if int(reentry.get("maximum_attempts") or 0) < 0:
@@ -4265,6 +4322,12 @@ def _validate_strategy_lifecycle(
     for route in routes:
         if str(route.get("action") or "") not in {"close", "reduce"}:
             raise ValueError(f"Exit rule set {route.get('name')} has an unsupported action")
+        _validate_lifecycle_action(
+            route,
+            f"Exit rule set {route.get('name')}",
+            action_categories,
+            {"exit", "reduce"},
+        )
         timing = dict(route.get("timing") or {})
         if int(timing.get("active_after_ms") or 0) < 0 or int(
             timing.get("expires_after_ms") or 0
@@ -4275,6 +4338,20 @@ def _validate_strategy_lifecycle(
         position_fraction = float(route.get("position_fraction") or 0)
         if not 0 < position_fraction <= 1:
             raise ValueError(f"Exit rule set {route.get('name')} position fraction must be between zero and one")
+
+
+def _validate_lifecycle_action(
+    route: dict[str, Any],
+    label: str,
+    action_categories: dict[str, str],
+    categories: set[str],
+) -> None:
+    action_id = str(route.get("action_id") or "")
+    if action_id not in action_categories:
+        raise ValueError(f"{label} references an unknown Trading Action: {action_id or 'missing'}")
+    category = action_categories[action_id]
+    if category not in categories:
+        raise ValueError(f"{label} references an incompatible Trading Action: {action_id}")
 
 
 def _validate_rule_set_definition(rule_set: dict[str, Any], label: str) -> None:
@@ -4515,8 +4592,10 @@ def _default_protection_profiles() -> list[dict[str, Any]]:
     }]
 
 
-def _parameters_with_capabilities(
-    profile: dict[str, Any], rule_sets: list[dict[str, Any]]
+def _parameters_with_action_policies(
+    profile: dict[str, Any],
+    rule_sets: list[dict[str, Any]],
+    action_policies: list[dict[str, Any]],
 ) -> dict[str, Any]:
     parameters = deepcopy(dict(profile.get("parameters") or {}))
     lifecycle = dict(profile.get("lifecycle") or {})
@@ -4575,14 +4654,33 @@ def _parameters_with_capabilities(
         }
         for step in initial_entry.get("add_steps") or []
     ]
-    bindings = {str(row["capability_id"]): row for row in profile.get("capabilities") or [] if row.get("enabled", True)}
-    pocket = bindings.get("profit-pocket")
+    policies = {
+        str(row.get("policy_id") or ""): row
+        for row in action_policies
+        if bool(row.get("enabled", True))
+    }
+    pocket = policies.get("profit-pocket")
     if pocket:
-        _deep_merge(parameters.setdefault("profit_pocket", {}), dict(pocket.get("settings") or {}))
+        _deep_merge(
+            parameters.setdefault("profit_pocket", {}),
+            {
+                **dict(pocket.get("settings") or {}),
+                "quantity_fraction": float(
+                    dict(pocket.get("quantity") or {}).get("value") or 0.5
+                ),
+                "minimum_remaining_quantity": float(
+                    dict(pocket.get("quantity") or {}).get(
+                        "minimum_remaining_quantity"
+                    )
+                    or 0
+                ),
+            },
+        )
         parameters["profit_pocket"]["enabled"] = True
-    add = bindings.get("confirmed-pullback-add")
+    else:
+        parameters.setdefault("profit_pocket", {})["enabled"] = False
+    add = policies.get("confirmed-pullback-add")
     if add:
-        settings = dict(add.get("settings") or {})
         add_steps = list(
             parameters.setdefault("phase_policy", {})
             .setdefault("initial_entry", {})
@@ -4590,7 +4688,7 @@ def _parameters_with_capabilities(
         )
         if add_steps:
             add_steps[0]["maximum_uses"] = int(
-                settings.get("maximum_adds") or add_steps[0].get("maximum_uses") or 1
+                add.get("maximum_uses") or add_steps[0].get("maximum_uses") or 1
             )
             parameters["phase_policy"]["initial_entry"]["add_steps"] = add_steps
     return strategy_executor(
@@ -4651,20 +4749,6 @@ def _validate_protection_profile_config(payload: dict[str, Any]):
         ) from exc
 
 
-def _validate_capability_settings(definition: dict[str, Any], settings: dict[str, Any]) -> None:
-    for parameter in definition.get("parameters") or []:
-        key = str(parameter["key"])
-        if key not in settings:
-            raise ValueError(f"Capability {definition['name']} is missing {key}")
-        value = settings[key]
-        if parameter["type"] == "number":
-            number = float(value)
-            if number < float(parameter.get("minimum", number)) or number > float(parameter.get("maximum", number)):
-                raise ValueError(f"Capability {definition['name']} {key} is outside its allowed range")
-        if parameter["type"] == "choice" and value not in parameter.get("options", []):
-            raise ValueError(f"Capability {definition['name']} {key} is unsupported")
-
-
 def _unique_ids(rows: list[dict[str, Any]], key: str, label: str) -> set[str]:
     values = [str(row.get(key) or "").strip() for row in rows]
     if any(not value for value in values) or len(set(values)) != len(values):
@@ -4687,35 +4771,3 @@ def _deep_merge(target: dict[str, Any], updates: dict[str, Any]) -> None:
 def _account_key(account_id: str, index: int) -> str:
     normalized = "".join(character.lower() if character.isalnum() else "-" for character in account_id)
     return normalized.strip("-") or f"account-{index + 1}"
-
-
-def _choice(key: str, label: str, help_text: str, options: list[str]) -> dict[str, Any]:
-    return {"key": key, "label": label, "help": help_text, "type": "choice", "options": options}
-
-
-def _number(
-    key: str,
-    label: str,
-    help_text: str,
-    unit: str,
-    minimum: float,
-    maximum: float,
-    step: float,
-    *,
-    display: str = "number",
-) -> dict[str, Any]:
-    return {
-        "key": key,
-        "label": label,
-        "help": help_text,
-        "type": "number",
-        "unit": unit,
-        "minimum": minimum,
-        "maximum": maximum,
-        "step": step,
-        "display": display,
-    }
-
-
-def _boolean(key: str, label: str, help_text: str) -> dict[str, Any]:
-    return {"key": key, "label": label, "help": help_text, "type": "boolean"}

@@ -12,7 +12,7 @@ import { ServicesPage, type ServicePageMode } from "./pages/ServicesPage";
 import { TradingConfigurationPage, type TradingConfigurationSection } from "./pages/TradingConfigurationPage";
 import { TypographyPublicSansPage } from "./pages/TypographySystemPage";
 
-const validPages: PageKey[] = ["real-live-trading", "replay-trading", "backtest-trading", "backtest-debug", "research-workspace", "canvas-configuration", "data-catalog-configuration", "rule-set-configuration", "market-discovery-configuration", "typography-public-sans", "strategy-configuration", "assignment-configuration", "portfolio-configuration", "oms-configuration", "account-configuration", "revision-configuration", "canvas-focus", "services-dashboard", "service-qmd", "service-qmd-history", "service-news", "service-sec", "service-text-embed", "service-reference", "service-ibkr"];
+const validPages: PageKey[] = ["real-live-trading", "replay-trading", "backtest-trading", "backtest-debug", "research-workspace", "canvas-configuration", "data-catalog-configuration", "rule-set-configuration", "market-discovery-configuration", "typography-public-sans", "trading-action-configuration", "strategy-configuration", "assignment-configuration", "portfolio-configuration", "oms-configuration", "account-configuration", "revision-configuration", "canvas-focus", "services-dashboard", "service-qmd", "service-qmd-history", "service-news", "service-sec", "service-text-embed", "service-reference", "service-ibkr"];
 
 export function App() {
   const [page, setPage] = useState<PageKey>(() => {
@@ -90,6 +90,7 @@ function configurationSection(page: PageKey): TradingConfigurationSection | null
   if (page === "data-catalog-configuration") return "data_catalog";
   if (page === "rule-set-configuration") return "rule_sets";
   if (page === "market-discovery-configuration") return "discovery";
+  if (page === "trading-action-configuration") return "actions";
   if (page === "strategy-configuration") return "strategy";
   if (page === "assignment-configuration") return "assignments";
   if (page === "portfolio-configuration") return "portfolio";

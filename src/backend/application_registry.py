@@ -190,6 +190,8 @@ REGISTRY_TYPES = (
     RegistryTypeDefinition("condition", "Condition", "Typed comparison over registered references.", "list_filter", "orange", "editable_instance", True),
     RegistryTypeDefinition("rule_set", "Rule set", "Reusable Boolean composition of Conditions.", "list_checks", "orange", "editable_instance", True),
     RegistryTypeDefinition("watchlist", "Watchlist", "Persistent candidate composition over Core Scan, rules, ranking, and columns.", "scan_search", "green", "editable_instance", True),
+    RegistryTypeDefinition("trading_action", "Trading action", "Atomic broker-neutral intent or campaign command shared by Strategy and Canvas.", "mouse_pointer_click", "violet", "locked", True),
+    RegistryTypeDefinition("action_policy", "Action policy", "Reusable trigger, action, sizing, timing, and authority composition.", "workflow", "violet", "editable_instance", True),
     RegistryTypeDefinition("strategy", "Strategy", "Versioned executable decision definition.", "git_branch", "violet", "locked", True),
     RegistryTypeDefinition("strategy_profile", "Strategy profile", "Configured parameters and bindings for one Strategy revision.", "sliders", "violet", "editable_instance", True),
     RegistryTypeDefinition("run_plan", "Run Plan", "Executable selection of Strategy, universe, accounts, OMS, and modes.", "network", "violet", "editable_instance", True),
@@ -210,7 +212,9 @@ CONFIGURATION_BINDINGS = (
     ConfigurationBindingDefinition("market_discovery.conditions", "market_discovery.rule_sets[].conditions[]", "condition", "condition_id", "editable_instance", ("left_source_id", "left_timeframe", "comparator", "right_source_id", "right_timeframe", "value", "enabled"), ("left_source_id", "right_source_id")),
     ConfigurationBindingDefinition("market_discovery.rules", "market_discovery.rule_sets[]", "rule_set", "rule_set_id", "editable_instance", ("name", "description", "operator", "conditions", "enabled")),
     ConfigurationBindingDefinition("market_discovery.watchlists", "market_discovery.watchlists[]", "watchlist", "watchlist_id", "editable_instance", ("name", "description", "inclusion_rule_sets", "ranking_field", "ranking_direction", "maximum_size", "refresh_interval_ms", "membership_expiry", "membership_ttl_ms", "manual_inclusions", "manual_exclusions", "columns", "enabled"), ("source_scan_id", "inclusion_rule_sets", "ranking_field", "columns")),
-    ConfigurationBindingDefinition("strategy.profiles", "strategy.profiles[]", "strategy_profile", "profile_id", "editable_instance", ("name", "description", "parameters", "capabilities", "lifecycle", "rule_set_ids"), ("definition_id",)),
+    ConfigurationBindingDefinition("trading_actions.definitions", "trading_actions.definitions[]", "trading_action", "action_id", "locked", (), ()),
+    ConfigurationBindingDefinition("trading_actions.policies", "trading_actions.policies[]", "action_policy", "policy_id", "editable_instance", ("name", "description", "action_id", "trigger", "quantity", "authority", "maximum_uses", "enabled"), ("action_id", "trigger.rule_set_ids")),
+    ConfigurationBindingDefinition("strategy.profiles", "strategy.profiles[]", "strategy_profile", "profile_id", "editable_instance", ("name", "description", "parameters", "lifecycle", "action_policy_ids"), ("definition_id", "action_policy_ids")),
     ConfigurationBindingDefinition("run_plans", "assignments.deployments[]", "run_plan", "run_plan_id", "editable_instance", ("name", "description", "profile_id", "watchlist_ids", "mandate_ids", "oms_profile_id", "canvas_profile_id", "allowed_environments", "data_plan_ids", "source_revision_policy", "action_authority", "campaign_lifecycle", "enabled"), ("profile_id", "watchlist_ids", "mandate_ids", "oms_profile_id", "canvas_profile_id", "data_plan_ids")),
     ConfigurationBindingDefinition("accounts", "accounts.bindings[]", "account_binding", "account_key", "editable_instance", ("name", "account_class", "base_currency", "session_key", "portfolio_policy_id", "enabled", "modes"), ("portfolio_policy_id",)),
     ConfigurationBindingDefinition("portfolio.policies", "portfolio.policies[]", "portfolio_policy", "policy_id", "editable_instance", ("*",)),
@@ -435,7 +439,7 @@ CONTAINER_DEFINITIONS = (
 
 
 CONFIGURATION_SCHEMAS = (
-    ConfigurationSchemaDefinition("trading_configuration", "backend", "src/backend/trading_configuration_service.py", 20, ALL_MODES, True),
+    ConfigurationSchemaDefinition("trading_configuration", "backend", "src/backend/trading_configuration_service.py", 25, ALL_MODES, True),
     ConfigurationSchemaDefinition("strategy_profile", "strategy_runtime", "src/trading_runtime/strategy_engine.py", 3, ALL_MODES, True),
     ConfigurationSchemaDefinition("watchlist", "backend", "src/backend/watchlist_runtime_service.py", 1, ALL_MODES, True),
     ConfigurationSchemaDefinition("historical_watchlist_plan", "backend", "src/backend/historical_watchlist_plan.py", 2, ("replay", "backtest"), False),
@@ -1802,7 +1806,7 @@ def _validate_acyclic_dependencies(graph: dict[str, tuple[str, ...]]) -> None:
 def application_registry_payload() -> dict[str, object]:
     validate_application_registry()
     return {
-        "schema_version": 4,
+        "schema_version": 5,
         "market_sources": [asdict(source) for source in MARKET_SOURCES],
         "products": [asdict(product) for product in PRODUCT_DEFINITIONS],
         "link_contracts": [asdict(link) for link in LINK_CONTRACTS],

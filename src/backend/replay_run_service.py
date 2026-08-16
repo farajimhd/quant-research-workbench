@@ -36,6 +36,7 @@ from src.backend.trading_configuration_service import (
     merged_assignment_parameters,
     replay_configuration_snapshot,
 )
+from src.backend.trading_action_registry import resolve_trading_action
 from src.market_engine.events import MarketEvent, QuoteEvent, TradeEvent
 from src.market_engine.historical_source import QmdHistoricalEventSource
 from src.trading_runtime.domain import InstrumentContract, TradingMode
@@ -473,6 +474,11 @@ class ReplayRunController:
             "enter_short", "add_short", "reduce_short", "cover",
         }:
             raise ValueError("Trade proposal action is unsupported")
+        action_definition = resolve_trading_action(
+            action_id=str(payload.get("action_id") or ""),
+            runtime_action=action,
+        )
+        action_id = str(action_definition["action_id"])
         authority = str(payload.get("authority") or "manual")
         proposal_id = str(payload.get("proposal_id") or uuid4())
         self._planner.upsert_instrument(
@@ -501,6 +507,7 @@ class ReplayRunController:
                 "origin": "canvas_trade_proposal",
                 "proposal_id": proposal_id,
                 "proposal_authority": authority,
+                "action_id": action_id,
                 "market_snapshot": market,
                 "identity_revision": str(payload.get("identity_revision") or ""),
                 "bid": float(market.get("bid") or 0),
@@ -528,6 +535,7 @@ class ReplayRunController:
                 "ticker": ticker,
                 "conid": conid,
                 "action": action,
+                "action_id": action_id,
                 "quantity": quantity,
                 "event_time": event_time.isoformat(),
                 "market_snapshot": market,
@@ -815,7 +823,8 @@ class ReplayRunController:
             "profile_id": strategy_configuration.get("profile_id"),
             "profile_revision": strategy_configuration.get("profile_revision"),
             "deployment": deepcopy(configuration.get("deployment") or {}),
-            "capabilities": deepcopy(strategy_configuration.get("capabilities") or []),
+            "action_definitions": deepcopy(strategy_configuration.get("action_definitions") or []),
+            "action_policies": deepcopy(strategy_configuration.get("action_policies") or []),
             "automatic": True,
             "state": ticker_assignments[0]["status"] if ticker_assignments else "not_assigned",
             "definition": definition,

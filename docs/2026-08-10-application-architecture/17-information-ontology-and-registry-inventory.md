@@ -77,6 +77,8 @@ RegistryDefinition
 ├── ConditionDefinition
 ├── RuleSetDefinition
 ├── WatchlistDefinition
+├── TradingActionDefinition
+├── ActionPolicyDefinition
 ├── StrategyInputBinding
 ├── StrategyDefinition
 ├── StrategyProfile
@@ -113,7 +115,7 @@ Runtime values (not registry definitions)
 | Property | Type / allowed values |
 | --- | --- |
 | `registry_id` | Stable namespaced string |
-| `kind` | `field`, `source`, `processing_step`, `derivation`, `signal`, `event_schema`, `product`, `query_plan`, `column`, `condition`, `rule_set`, `watchlist`, `strategy_binding`, `strategy`, `strategy_profile`, `run_plan`, `account_binding`, `portfolio_policy`, `portfolio_mandate`, `portfolio_group`, `oms_profile`, `execution_policy`, `protection_profile` |
+| `kind` | `field`, `source`, `processing_step`, `derivation`, `signal`, `event_schema`, `product`, `query_plan`, `column`, `condition`, `rule_set`, `watchlist`, `trading_action`, `action_policy`, `strategy_binding`, `strategy`, `strategy_profile`, `run_plan`, `account_binding`, `portfolio_policy`, `portfolio_mandate`, `portfolio_group`, `oms_profile`, `execution_policy`, `protection_profile` |
 | `label` | User-facing string |
 | `presentation_label` | Context-complete display name; unique within the user-facing data catalog |
 | `description` | Short semantic definition |
@@ -342,9 +344,11 @@ ColumnDefinition
 | `ConditionDefinition` | Left Field/Signal property, comparator, right Field/value, timeframe | Readable Boolean clause |
 | `RuleSetDefinition` | Condition IDs, `all`/`any`, score policy | Removable Rule-set card |
 | `WatchlistDefinition` | Source scan, Rule-set IDs, ranking Field, limit/expiry/overrides, Column IDs, Derivation IDs | Persistent Watchlist tab/container |
+| `TradingActionDefinition` | Atomic broker-neutral intent/control, allowed lifecycle routes, runtime action | Action button and lifecycle action picker |
+| `ActionPolicyDefinition` | Trigger type, Rule-set IDs, Trading Action ID, parameters | Reusable automatic or semi-manual behavior card |
 | `StrategyInputBinding` | Field or Signal property ID, runtime binding, timeframe/anchor, availability policy | Evidence-binding chip |
 | `StrategyDefinition` | Strategy ID/revision, required bindings, stages, decision contract | Executable Strategy implementation |
-| `StrategyProfile` | Strategy ID/revision, parameters, evidence/rule references | Configured Strategy card |
+| `StrategyProfile` | Strategy ID/revision, parameters, lifecycle Rule-set expressions, Trading Action routes, Action Policy IDs | Configured Strategy card |
 | `RunPlan` | Strategy Profile, Watchlists, Canvas profile, Portfolio mandate IDs, OMS profile, mode/data plans | Versioned executable selection |
 | `AccountBindingDefinition` | Stable application account, private runtime identity reference, session, Portfolio policy | Account card |
 | `PortfolioPolicyDefinition` | Account-wide capital/risk/permission limits | Portfolio policy card |
@@ -377,6 +381,14 @@ WatchlistDefinition
   manual_inclusions[], manual_exclusions[]
   column_ids[], derivation_ids[]
 
+TradingActionDefinition
+  action_id, category, runtime_action
+  allowed_lifecycle_routes[], manual_available, atomic
+
+ActionPolicyDefinition
+  policy_id, revision, trigger_type
+  trigger_rule_set_ids[], action_id, parameters
+
 StrategyInputBinding
   binding_id
   source_ref      = FieldRef | SignalPropertyRef
@@ -390,7 +402,9 @@ StrategyDefinition
 
 StrategyProfile
   profile_id, strategy_id, strategy_revision
-  parameter_values, binding_ids[], rule_set_ids[]
+  parameter_values, binding_ids[]
+  lifecycle_rule_expressions[], lifecycle_action_ids[]
+  action_policy_ids[]
 
 RunPlan
   run_plan_id, mode
@@ -496,6 +510,8 @@ ProtectionProfileDefinition
 
 ```text
 StrategyDefinition + StrategyProfile
+  -> lifecycle Rule Sets + Trading Action routes + Action Policy references
+  -> QMD observation demand from every referenced Rule Set
   -> StrategyIntent + CapitalRequest
   -> PortfolioMandateDefinition(account_key, run_plan_id)
   -> AccountBindingDefinition(account_key, portfolio_policy_id)
@@ -511,6 +527,9 @@ StrategyDefinition + StrategyProfile
 | Authority | Owns | Must not own |
 | --- | --- | --- |
 | Strategy | Broker-neutral intent, evidence, requested capital/action | Account selection, final sizing, broker order fields |
+| Trading Action registry | Atomic intent/control vocabulary and route compatibility | Evidence evaluation, sizing, broker order fields |
+| Action Policy | Rule-set/manual trigger plus Trading Action reference | QMD computation, account sizing, execution tactics |
+| QMD | Fields, derivations, signals, and Rule-set evaluation demanded by the Run Plan | Trading action semantics, Portfolio authority, OMS execution |
 | Account binding | Stable application identity, private runtime resolution, session/mode | Capital approval, order planning |
 | Portfolio | Account selection validation, sizing, allocation, reservations, exposure/risk gates, reconciliation | Strategy thesis, broker routing details |
 | OMS | Approved-intent translation, execution tactics, protection, order lifecycle | Capital creation, Strategy intent, account rerouting |
@@ -529,8 +548,10 @@ StrategyDefinition + StrategyProfile
 | Condition | evaluates | Fields or Signal properties |
 | Rule set | composes | Conditions |
 | Watchlist | composes | Rule sets, ranking Field, Columns, Derivations |
+| Trading Action | declares | Atomic broker-neutral intent or campaign control |
+| Action Policy | composes | Rule sets or manual trigger plus one Trading Action |
 | Strategy binding | adapts | Field or Signal property |
-| Strategy Profile | configures | StrategyDefinition |
+| Strategy Profile | configures | StrategyDefinition, lifecycle Rule sets/Actions, Action Policies |
 | Run Plan | selects | Profile, Watchlists, Canvas, Portfolio mandates, OMS profile, mode/data plans |
 | Portfolio mandate | binds | Run Plan to Account binding |
 | Account binding | resolves / selects | Private runtime account identity / Portfolio policy |
@@ -554,6 +575,8 @@ StrategyDefinition + StrategyProfile
 | Frontend `DiscoveryCapability` | `CatalogItemView` | Presentation projection only |
 | Frontend `canonicalCapabilityType` | Remove | Consume explicit `kind` |
 | Strategy `runtime_field` aliases | `StrategyInputBinding` | Explicit canonical source mapping |
+| Strategy `capabilities[]` | `ActionPolicyDefinition` references | Remove embedded behavior settings; retain policy IDs only |
+| Strategy lifecycle implicit verbs | `TradingActionDefinition` references | Store explicit atomic action IDs per lifecycle route |
 | `accounts.bindings[]` | `AccountBindingDefinition` | Retain stable `account_key`; keep broker account ID runtime-private |
 | `portfolio.policies[]` | `PortfolioPolicyDefinition` | Retain immutable `policy_id@revision` |
 | `portfolio.mandates[]` | `PortfolioMandateDefinition` | Retain Run Plan/account binding |

@@ -884,6 +884,7 @@ class ReplayTradeProposalSubmit(BaseModel):
     ticker: str = Field(min_length=1, max_length=32)
     conid: int = Field(gt=0)
     action: str = Field(default="enter_long", max_length=32)
+    action_id: str = Field(default="", max_length=128)
     quantity: float = Field(gt=0)
     market_snapshot: dict[str, Any]
     invalidation_price: float | None = Field(default=None, gt=0)

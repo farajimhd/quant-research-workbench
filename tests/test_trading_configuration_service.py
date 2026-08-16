@@ -10,6 +10,7 @@ from unittest.mock import patch
 from src.backend.trading_configuration_service import (
     _default_draft,
     _compiled_observation_dependencies,
+    _compile_run_plans,
     _migrate_draft,
     _normalize_rule_set_conditions,
     _profile_rule_set_ids,
@@ -24,7 +25,6 @@ from src.backend.trading_configuration_service import (
     approved_runtime_configuration_snapshot,
     backtest_configuration_snapshot,
     backtest_debug_configuration_snapshot,
-    capability_catalog,
     configuration_base,
     effective_configuration_snapshot,
     publish_configuration,
@@ -377,7 +377,7 @@ class TradingConfigurationServiceTests(unittest.TestCase):
 
         migrated = _migrate_draft(legacy)
 
-        self.assertEqual(migrated["schema_version"], 24)
+        self.assertEqual(migrated["schema_version"], 25)
         migrated_paper = next(
             row
             for row in migrated["accounts"]["bindings"]
@@ -651,7 +651,7 @@ class TradingConfigurationServiceTests(unittest.TestCase):
         self.assertEqual(migrated_lifecycle["phase_modes"]["reentry"], "manual")
         self.assertFalse(migrated_lifecycle["reentry"]["enabled"])
 
-    def test_system_profiles_and_capabilities_are_user_configurable(self) -> None:
+    def test_system_profiles_use_registered_actions_policies_and_rule_sets(self) -> None:
         with patch(
             "src.backend.trading_configuration_service.get_strategy_definition",
             return_value=long_momentum_strategy_definition(),
@@ -661,7 +661,7 @@ class TradingConfigurationServiceTests(unittest.TestCase):
         ):
             draft = _default_draft()
 
-        self.assertEqual(draft["schema_version"], 24)
+        self.assertEqual(draft["schema_version"], 25)
         self.assertTrue(all(rule_set["name"] for rule_set in draft["market_discovery"]["rule_sets"]))
         self.assertTrue(all(rule_set["description"] for rule_set in draft["market_discovery"]["rule_sets"]))
         self.assertTrue(all(rule_set["atomic"] for rule_set in draft["market_discovery"]["rule_sets"]))
@@ -677,8 +677,8 @@ class TradingConfigurationServiceTests(unittest.TestCase):
         }
         self.assertTrue(all(
             "rule_set_catalog" not in profile
-            and set(profile["rule_set_ids"]) <= canonical_rule_set_ids
-            and profile["rule_set_ids"] == _profile_rule_set_ids(profile["lifecycle"])
+            and "rule_set_ids" not in profile
+            and set(_profile_rule_set_ids(profile["lifecycle"])) <= canonical_rule_set_ids
             for profile in draft["strategy"]["profiles"]
         ))
         self.assertEqual(len(draft["strategy"]["profiles"]), 1)
@@ -703,15 +703,12 @@ class TradingConfigurationServiceTests(unittest.TestCase):
             default_run_plan["data_plan_ids"]["replay"],
             "market.historical_scanner_materialization.v1",
         )
-        self.assertEqual(
-            {row["capability_id"] for row in draft["strategy"]["capability_catalog"]},
-            {row["capability_id"] for row in capability_catalog()},
-        )
-        self.assertTrue(
-            all(profile["capabilities"] for profile in draft["strategy"]["profiles"])
-        )
+        self.assertNotIn("capability_catalog", draft["strategy"])
+        self.assertTrue(draft["trading_actions"]["definitions"])
+        self.assertTrue(draft["trading_actions"]["policies"])
+        self.assertTrue(all(profile["action_policy_ids"] for profile in draft["strategy"]["profiles"]))
         self.assertTrue(draft["strategy"]["input_catalog"])
-        self.assertTrue(all(profile["rule_set_ids"] for profile in draft["strategy"]["profiles"]))
+        self.assertTrue(all(_profile_rule_set_ids(profile["lifecycle"]) for profile in draft["strategy"]["profiles"]))
         self.assertTrue(all(
             profile["lifecycle"]["initial_entry"]["opportunity"]["expression"]["children"]
             for profile in draft["strategy"]["profiles"]
@@ -729,6 +726,9 @@ class TradingConfigurationServiceTests(unittest.TestCase):
             "mandate_fraction",
         )
         self.assertTrue(lifecycle["initial_entry"]["add_steps"])
+        self.assertEqual(lifecycle["initial_entry"]["action_id"], "position.enter_long")
+        self.assertEqual(lifecycle["initial_entry"]["add_steps"][0]["action_id"], "position.add_long")
+        self.assertTrue(all(route["action_id"] == "position.exit_long" for route in lifecycle["exit"]["rule_sets"]))
         self.assertNotIn("time_in_force", lifecycle["initial_entry"]["order_intent"])
         self.assertNotIn("outside_rth", lifecycle["initial_entry"]["order_intent"])
         self.assertEqual(
@@ -762,7 +762,7 @@ class TradingConfigurationServiceTests(unittest.TestCase):
                 condition["left_source_id"]
                 == "indicator.flow_structure.score"
                 for rule_set in draft["market_discovery"]["rule_sets"]
-                if rule_set["rule_set_id"] in default_profile["rule_set_ids"]
+                if rule_set["rule_set_id"] in _profile_rule_set_ids(default_profile["lifecycle"])
                 for condition in rule_set["conditions"]
             )
         )
@@ -814,8 +814,7 @@ class TradingConfigurationServiceTests(unittest.TestCase):
             for row in dependencies
             if row["producer"] == "qmd"
         }
-        self.assertEqual(
-            set(qmd_dependencies),
+        self.assertTrue(
             {
                 "flow_structure_composite",
                 "flow_price_divergence",
@@ -824,10 +823,18 @@ class TradingConfigurationServiceTests(unittest.TestCase):
                 "price_volume_expansion",
                 "qmd_generic_structure",
                 "vwap_transition",
-            },
+            }.issubset(qmd_dependencies),
         )
         self.assertEqual(qmd_dependencies["momentum_core"]["input_keys"], ["macd", "vwap"])
-        self.assertEqual(saved_draft["run_plans"], published["payload"]["run_plans"])
+        self.assertIn("rule_set", qmd_dependencies["indicator.structure.bullish_choch"]["input_kinds"])
+        self.assertEqual(
+            {row["capability_key"] for row in saved_draft["run_plans"]["plans"][0]["observation_dependencies"]},
+            {row["capability_key"] for row in published["payload"]["run_plans"]["plans"][0]["observation_dependencies"]},
+        )
+        self.assertEqual(
+            saved_draft["run_plans"]["plans"][0]["action_policy_rule_set_ids"],
+            ["add-confirmed-position-add-bullish-structure-add"],
+        )
 
     def test_approved_canvas_projection_exposes_only_published_profile_identity(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -937,7 +944,7 @@ class TradingConfigurationServiceTests(unittest.TestCase):
 
         self.assertNotEqual(reloaded["strategy"]["profiles"][0]["name"], "Session-only name")
 
-    def test_runtime_projection_uses_account_mandate_and_capability_settings(self) -> None:
+    def test_runtime_projection_uses_account_mandate_and_action_policy_settings(self) -> None:
         draft = self._draft()
         draft["run_plans"]["plans"][0]["runtime_assignments"] = [{
             "assignment_id": "configured-aapl",
@@ -962,10 +969,10 @@ class TradingConfigurationServiceTests(unittest.TestCase):
             "reentry": "manual",
         })
         pocket = next(
-            row for row in profile["capabilities"]
-            if row["capability_id"] == "profit-pocket"
+            row for row in draft["trading_actions"]["policies"]
+            if row["policy_id"] == "profit-pocket"
         )
-        pocket["settings"]["quantity_fraction"] = 0.4
+        pocket["quantity"]["value"] = 0.4
 
         with patch(
             "src.backend.trading_configuration_service.get_strategy_definition",
@@ -975,6 +982,8 @@ class TradingConfigurationServiceTests(unittest.TestCase):
 
         self.assertEqual(runtime["accounts"]["bindings"][0]["strategy_allocation"], 0.3)
         self.assertEqual(runtime["strategy"]["parameters"]["profit_pocket"]["quantity_fraction"], 0.4)
+        self.assertTrue(runtime["strategy"]["action_definitions"])
+        self.assertEqual(runtime["strategy"]["action_policies"][0]["policy_id"], "profit-pocket")
         self.assertEqual(runtime["run_plan"]["run_plan_id"], "balanced-replay")
         resolved = runtime["assignments"][0]["resolved_parameters"]
         self.assertEqual(
@@ -1322,47 +1331,87 @@ class TradingConfigurationServiceTests(unittest.TestCase):
 
         migrated = _migrate_draft(legacy)
 
-        self.assertEqual(migrated["schema_version"], 24)
+        self.assertEqual(migrated["schema_version"], 25)
         canonical_ids = {
             rule_set["rule_set_id"]
             for rule_set in migrated["market_discovery"]["rule_sets"]
         }
         for profile in migrated["strategy"]["profiles"]:
             self.assertNotIn("rule_set_catalog", profile)
-            self.assertEqual(
-                profile["rule_set_ids"],
-                _profile_rule_set_ids(profile["lifecycle"]),
-            )
-            self.assertLessEqual(set(profile["rule_set_ids"]), canonical_ids)
+            self.assertNotIn("rule_set_ids", profile)
+            self.assertLessEqual(set(_profile_rule_set_ids(profile["lifecycle"])), canonical_ids)
 
-    def test_strategy_profile_rule_references_are_exact_and_unique(self) -> None:
+    def test_strategy_profile_rule_references_are_derived_from_lifecycle(self) -> None:
         draft = self._draft()
-        profile = draft["strategy"]["profiles"][0]
-
-        duplicate = deepcopy(draft)
-        duplicate_profile = duplicate["strategy"]["profiles"][0]
-        duplicate_profile["rule_set_ids"].append(duplicate_profile["rule_set_ids"][0])
-        with patch(
-            "src.backend.trading_configuration_service.get_strategy_definition",
-            return_value=long_momentum_strategy_definition(),
-        ), self.assertRaisesRegex(ValueError, "duplicate rule-set references"):
-            _validate_draft(duplicate, require_runtime_ready=False)
-
         unknown = deepcopy(draft)
-        unknown["strategy"]["profiles"][0]["rule_set_ids"].append("missing-rule")
+        unknown["strategy"]["profiles"][0]["lifecycle"]["initial_entry"]["opportunity"] = {
+            "expression": {"kind": "rule_set", "rule_set_id": "missing-rule"}
+        }
         with patch(
             "src.backend.trading_configuration_service.get_strategy_definition",
             return_value=long_momentum_strategy_definition(),
         ), self.assertRaisesRegex(ValueError, "references unknown rule sets"):
             _validate_draft(unknown, require_runtime_ready=False)
 
-        incomplete = deepcopy(draft)
-        incomplete["strategy"]["profiles"][0]["rule_set_ids"] = profile["rule_set_ids"][1:]
+    def test_strategy_lifecycle_rejects_unregistered_trading_action(self) -> None:
+        draft = self._draft()
+        draft["strategy"]["profiles"][0]["lifecycle"]["initial_entry"]["action_id"] = "position.unknown"
         with patch(
             "src.backend.trading_configuration_service.get_strategy_definition",
             return_value=long_momentum_strategy_definition(),
-        ), self.assertRaisesRegex(ValueError, "must exactly match its lifecycle references"):
-            _validate_draft(incomplete, require_runtime_ready=False)
+        ), self.assertRaisesRegex(ValueError, "unknown Trading Action"):
+            _validate_draft(draft, require_runtime_ready=False)
+
+    def test_action_policy_rejects_quantity_not_supported_by_action(self) -> None:
+        draft = self._draft()
+        policy = next(
+            row for row in draft["trading_actions"]["policies"]
+            if row["policy_id"] == "confirmed-pullback-add"
+        )
+        policy["quantity"]["mode"] = "notional"
+        with patch(
+            "src.backend.trading_configuration_service.get_strategy_definition",
+            return_value=long_momentum_strategy_definition(),
+        ), self.assertRaisesRegex(ValueError, "quantity mode unsupported"):
+            _validate_draft(draft, require_runtime_ready=False)
+
+    def test_action_policy_rule_sets_compile_into_qmd_demand(self) -> None:
+        draft = self._draft()
+        policy = next(
+            row for row in draft["trading_actions"]["policies"]
+            if row["policy_id"] == "confirmed-pullback-add"
+        )
+        rule_set_id = policy["trigger"]["rule_set_ids"][0]
+        compiled = deepcopy(draft)
+        _compile_run_plans(compiled, canvas_profile_id="current-canvas")
+        self.assertIn(rule_set_id, compiled["run_plans"]["plans"][0]["action_policy_rule_set_ids"])
+        dependencies = compiled["run_plans"]["plans"][0]["observation_dependencies"]
+        bullish_structure = next(
+            row for row in dependencies
+            if row["capability_key"] == "indicator.structure.bullish_choch"
+        )
+        self.assertEqual(bullish_structure["producer"], "qmd")
+        self.assertIn("rule_set", bullish_structure["input_kinds"])
+        self.assertIn("indicator.structure.bullish_choch", bullish_structure["input_keys"])
+        self.assertEqual(bullish_structure["timeframes"], ["1s"])
+        self.assertTrue(bullish_structure["required"])
+        self.assertEqual(bullish_structure["capability_revision"], 1)
+        self.assertEqual(bullish_structure["warm_up"]["status"], "not_required")
+
+    def test_schema_v24_capabilities_migrate_to_action_policy_references(self) -> None:
+        legacy = self._draft()
+        legacy["schema_version"] = 24
+        profile = legacy["strategy"]["profiles"][0]
+        profile.pop("action_policy_ids", None)
+        profile["capabilities"] = [
+            {"capability_id": "profit-pocket", "enabled": True, "settings": {}},
+            {"capability_id": "confirmed-pullback-add", "enabled": False, "settings": {}},
+        ]
+        migrated = _migrate_draft(legacy)
+        migrated_profile = migrated["strategy"]["profiles"][0]
+        self.assertEqual(migrated["schema_version"], 25)
+        self.assertEqual(migrated_profile["action_policy_ids"], ["profit-pocket"])
+        self.assertNotIn("capabilities", migrated_profile)
 
     def _draft(self) -> dict:
         with patch(

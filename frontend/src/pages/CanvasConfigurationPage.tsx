@@ -258,7 +258,8 @@ type CanvasPreview = {
     profile_id?: string;
     profile_revision?: number;
     deployment?: PreviewRow;
-    capabilities?: Array<{ capability_id: string; enabled?: boolean; settings?: PreviewRow }>;
+    action_definitions?: Array<{ action_id: string; category: string; description: string; kind: "intent" | "campaign_command"; name: string; runtime_action: string }>;
+    action_policies?: Array<{ action_id: string; authority: string; description: string; name: string; policy_id: string }>;
     assignment?: PreviewRow | null;
     assignments?: PreviewRow[];
     definition?: { config?: { direction?: string; parameters?: Record<string, unknown>; parameter_space?: Record<string, unknown> }; name?: string };
@@ -4178,9 +4179,13 @@ function StrategyOrderEntry({ marketSnapshot, runtimeMode, strategy, symbol, tra
   const [message, setMessage] = useState("");
   const [proposalAuthority, setProposalAuthority] = useState<"manual" | "semi_automatic">("manual");
   const [proposalQuantity, setProposalQuantity] = useState(1);
+  const [proposalAction, setProposalAction] = useState("position.enter_long");
   const [proposalStop, setProposalStop] = useState("");
   const [proposalTarget, setProposalTarget] = useState("");
-  const configuredCapabilities = (strategy?.capabilities ?? []).filter((capability) => capability.enabled !== false);
+  const actionDefinitions = strategy?.action_definitions ?? [];
+  const configuredPolicies = strategy?.action_policies ?? [];
+  const intentActions = actionDefinitions.filter((action) => action.kind === "intent");
+  const campaignActions = actionDefinitions.filter((action) => action.kind === "campaign_command");
   const readOnlyBacktest = strategy?.runtime_mode === "backtest" || strategy?.runtime_mode === "backtest_debug";
   const runId = strategy?.run_id || "";
   const interactiveReplay = Boolean(runId && !readOnlyBacktest);
@@ -4189,6 +4194,11 @@ function StrategyOrderEntry({ marketSnapshot, runtimeMode, strategy, symbol, tra
   useEffect(() => {
     setAssignment(strategy?.assignment ?? null);
   }, [strategy?.assignment]);
+
+  useEffect(() => {
+    if (intentActions.some((action) => action.action_id === proposalAction)) return;
+    setProposalAction(intentActions.find((action) => action.category === "enter")?.action_id ?? intentActions[0]?.action_id ?? "position.enter_long");
+  }, [intentActions, proposalAction]);
 
   async function createAssignment() {
     if (readOnlyBacktest) {
@@ -4277,7 +4287,8 @@ function StrategyOrderEntry({ marketSnapshot, runtimeMode, strategy, symbol, tra
       const result = await api<{ decision?: { status: string }; proposal_id: string; status?: string }>(proposalEndpoint, {
         body: JSON.stringify({
           account_id: accountId.trim(),
-          action: "enter_long",
+          action: actionDefinitions.find((action) => action.action_id === proposalAction)?.runtime_action ?? proposalAction.replace("position.", ""),
+          action_id: proposalAction,
           authority: proposalAuthority,
           conid: Number(conid),
           invalidation_price: proposalStop ? Number(proposalStop) : null,
@@ -4302,9 +4313,9 @@ function StrategyOrderEntry({ marketSnapshot, runtimeMode, strategy, symbol, tra
   const status = String(assignment?.status || "not assigned");
   return <section className="strategy-order-entry">
     <header><span><strong>Order entry</strong><small>{strategy?.name || "Long Momentum Campaign"}</small></span><em data-state={status}>{status.replaceAll("_", " ")}</em></header>
-    {configuredCapabilities.length ? <div className="strategy-order-capabilities">
-      <span>Included management</span>
-      {configuredCapabilities.map((capability) => <div key={capability.capability_id}><strong>{labelFor(capability.capability_id)}</strong><small>{String(capability.settings?.mode || "automatic").replaceAll("_", " ")}</small></div>)}
+    {configuredPolicies.length ? <div className="strategy-order-capabilities">
+      <span>Action policies</span>
+      {configuredPolicies.map((policy) => <div key={policy.policy_id}><strong>{policy.name}</strong><small>{policy.authority.replaceAll("_", " ")} · {actionDefinitions.find((action) => action.action_id === policy.action_id)?.name ?? policy.action_id}</small></div>)}
     </div> : null}
     {!assignment ? <>
       <label><span>Account</span><input onChange={(event) => setAccountId(event.target.value)} placeholder="IBKR account" value={accountId} /></label>
@@ -4315,13 +4326,11 @@ function StrategyOrderEntry({ marketSnapshot, runtimeMode, strategy, symbol, tra
     </> : <>
       <div className="strategy-order-summary"><span><small>Symbol</small><strong>{symbol}</strong></span><span><small>Account</small><strong>{String(assignment.account_id)}</strong></span></div>
       <div className="strategy-order-actions">
-        <button disabled={busy || readOnlyBacktest || status === "paused"} onClick={() => command("request_entry")} type="button">Request entry</button>
-        <button disabled={busy || readOnlyBacktest || status === "paused"} onClick={() => command("force_entry")} type="button">Force + attach</button>
-        <button disabled={busy || readOnlyBacktest} onClick={() => command(status === "paused" ? "resume" : "pause")} type="button">{status === "paused" ? "Resume" : "Pause"}</button>
-        <button className="danger" disabled={busy || readOnlyBacktest} onClick={() => command("disable_after_exit")} type="button">Disable after exit</button>
+        {campaignActions.filter((action) => action.runtime_action !== "resume" || status === "paused").map((action) => <button className={action.runtime_action === "disable_after_exit" ? "danger" : undefined} disabled={busy || readOnlyBacktest || (status === "paused" && !["resume", "disable_after_exit"].includes(action.runtime_action))} key={action.action_id} onClick={() => command(action.runtime_action)} title={action.description} type="button">{action.name}</button>)}
       </div>
       <div className="strategy-order-proposal">
         <span><strong>Chart trade proposal</strong><small>Snapshot is revalidated by the run, then Portfolio and OMS retain exclusive authority.</small></span>
+        <label><span>Trading Action</span><select onChange={(event) => setProposalAction(event.target.value)} value={proposalAction}>{intentActions.map((action) => <option key={action.action_id} value={action.action_id}>{action.name}</option>)}</select></label>
         <label><span>Authority</span><select onChange={(event) => setProposalAuthority(event.target.value as typeof proposalAuthority)} value={proposalAuthority}><option value="manual">Manual confirm</option><option value="semi_automatic">Semi-automatic</option></select></label>
         <label><span>Quantity</span><input min={1} onChange={(event) => setProposalQuantity(Math.max(1, Number(event.target.value) || 1))} type="number" value={proposalQuantity} /></label>
         <label><span>Stop price</span><input min={0.01} onChange={(event) => setProposalStop(event.target.value)} placeholder="Optional" step="0.01" type="number" value={proposalStop} /></label>

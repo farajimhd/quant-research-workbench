@@ -970,6 +970,20 @@
   .discovery-rule-catalog > header > label { grid-column: 1 / -1; grid-row: 2; }
 }
 
+.strategy-action-policy-bindings > header { display: flex; align-items: flex-start; justify-content: space-between; gap: 1rem; padding-bottom: 0.75rem; border-bottom: 1px solid var(--border); }
+.strategy-action-policy-bindings > header span { color: var(--muted-foreground); font-size: 0.68rem; font-weight: 500; letter-spacing: 0.06em; text-transform: uppercase; }
+.strategy-action-policy-bindings > header strong { display: block; margin-top: 0.2rem; font-size: 1rem; font-weight: 540; }
+.strategy-action-policy-bindings > header p { margin: 0.3rem 0 0; color: var(--muted-foreground); font-size: 0.76rem; }
+.strategy-action-policy-add { display: grid; grid-template-columns: minmax(16rem, 1fr) auto; gap: 0.45rem; margin-top: 0.75rem; }
+.strategy-action-policy-add .inventory-filter-button { width: 100%; }
+.strategy-action-policy-list { display: grid; gap: 0.55rem; margin-top: 0.65rem; }
+.strategy-action-policy-list article { display: flex; align-items: center; justify-content: space-between; gap: 1rem; padding: 0.72rem; border: 1px solid var(--border); border-radius: 0.6rem; background: var(--surface); }
+.strategy-action-policy-list article > div { display: grid; gap: 0.15rem; }
+.strategy-action-policy-list span { color: var(--muted-foreground); font-size: 0.65rem; text-transform: uppercase; letter-spacing: 0.05em; }
+.strategy-action-policy-list strong { font-size: 0.84rem; font-weight: 530; }
+.strategy-action-policy-list p { margin: 0; color: var(--muted-foreground); font-size: 0.74rem; }
+.strategy-action-policy-list code { color: var(--muted-foreground); font-family: var(--font-mono); font-size: 0.68rem; }
+
 @media (max-width: 760px) {
   .discovery-capability-workbench,
   .discovery-watchlist-layout { grid-template-columns: 1fr; }
@@ -5155,4 +5169,100 @@
   .trading-configuration-page .strategy-authoring-step-navigation > .strategy-step-direction {
     font-size: 0;
   }
+}
+/* Trading Actions follows the catalog/detail configuration pattern: Public Sans
+   for interface copy, JetBrains Mono only for canonical IDs and runtime values. */
+.trading-actions-workbench {
+  display: grid;
+  grid-template-columns: 22rem minmax(0, 1fr);
+  height: calc(var(--app-zoomed-viewport-height) - 8.2rem);
+  min-height: 34rem;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 0.8rem;
+  background: var(--surface);
+}
+
+.trading-actions-catalog {
+  display: flex;
+  min-height: 0;
+  flex-direction: column;
+  border-right: 1px solid var(--border);
+  background: var(--surface);
+}
+
+.trading-actions-catalog > header { padding: 1rem 1rem 0.75rem; }
+.trading-actions-catalog > header span,
+.trading-action-document-header span,
+.action-policy-trigger > header span {
+  display: block;
+  color: var(--muted-foreground);
+  font-size: 0.68rem;
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.trading-actions-catalog > header strong { display: block; margin-top: 0.2rem; font-size: 1rem; font-weight: 550; }
+.trading-actions-catalog > header p { margin: 0.35rem 0 0; color: var(--muted-foreground); font-size: 0.78rem; line-height: 1.45; }
+.trading-actions-search { display: flex; align-items: center; gap: 0.45rem; margin: 0 0.75rem 0.7rem; padding: 0.55rem 0.65rem; border: 1px solid var(--border); border-radius: 0.55rem; background: var(--surface); color: var(--muted-foreground); }
+.trading-actions-search input { width: 100%; border: 0; outline: 0; background: transparent; color: var(--foreground); font: inherit; font-size: 0.8rem; }
+.trading-actions-groups { min-height: 0; overflow: auto; padding: 0 0.65rem 1rem; }
+.trading-actions-groups > section { margin-bottom: 0.65rem; border: 1px solid var(--border); border-radius: 0.6rem; overflow: hidden; }
+.trading-actions-groups > section > header { display: flex; justify-content: space-between; padding: 0.52rem 0.65rem; border-bottom: 1px solid var(--border); background: var(--surface-alt); }
+.trading-actions-groups > section > header strong { font-size: 0.72rem; font-weight: 550; }
+.trading-actions-groups > section > header span { color: var(--muted-foreground); font-size: 0.7rem; }
+.trading-actions-groups button { display: flex; width: 100%; border: 0; border-bottom: 1px solid var(--border); padding: 0.62rem 0.68rem; background: transparent; text-align: left; }
+.trading-actions-groups button:last-child { border-bottom: 0; }
+.trading-actions-groups button[aria-current="true"] { background: color-mix(in oklab, var(--surface-alt) 78%, var(--foreground) 4%); box-shadow: inset 2px 0 0 var(--foreground); }
+.trading-actions-groups button span { display: grid; gap: 0.18rem; }
+.trading-actions-groups button strong { color: var(--foreground); font-size: 0.8rem; font-weight: 520; }
+.trading-actions-groups button small { color: var(--muted-foreground); font-size: 0.7rem; font-weight: 400; }
+
+.trading-actions-detail { min-width: 0; overflow: auto; background: var(--surface); }
+.trading-action-document { padding: 1.15rem 1.35rem 2rem; }
+.trading-action-document-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 1rem; padding-bottom: 1rem; border-bottom: 1px solid var(--border); }
+.trading-action-document-header h2 { margin: 0.2rem 0 0.35rem; font-size: 1.42rem; font-weight: 540; }
+.trading-action-document-header p { max-width: 56rem; margin: 0; color: var(--muted-foreground); font-size: 0.86rem; line-height: 1.5; }
+.trading-action-document-header code,
+.action-policy-mechanism code { display: inline-block; margin-top: 0.55rem; color: var(--muted-foreground); font-family: var(--font-mono); font-size: 0.72rem; }
+.trading-action-document-header > div:last-child { display: flex; gap: 0.45rem; }
+.action-contract-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.8rem; margin-top: 1rem; }
+.action-contract-grid > section { border: 1px solid var(--border); border-radius: 0.65rem; overflow: hidden; }
+.action-contract-grid > section > header { padding: 0.58rem 0.7rem; border-bottom: 1px solid var(--border); background: var(--surface-alt); font-size: 0.72rem; font-weight: 550; text-transform: uppercase; letter-spacing: 0.05em; }
+.action-contract-grid > section > div { display: flex; justify-content: space-between; gap: 1rem; padding: 0.62rem 0.7rem; border-bottom: 1px solid var(--border); font-size: 0.78rem; }
+.action-contract-grid > section > div:last-child { border-bottom: 0; }
+.action-contract-grid span { color: var(--muted-foreground); }
+.action-contract-grid strong { font-weight: 500; text-align: right; }
+.atomic-definition-notice { display: flex; align-items: center; gap: 0.5rem; margin-top: 1rem; padding: 0.7rem 0.8rem; border-radius: 0.55rem; background: var(--surface-alt); color: var(--muted-foreground); font-size: 0.76rem; }
+.action-policy-fields { margin: 1rem 0 0; padding: 0; border: 0; }
+.action-policy-fields > label { display: grid; gap: 0.3rem; margin-bottom: 0.7rem; }
+.action-policy-fields label > span { color: var(--muted-foreground); font-size: 0.7rem; font-weight: 500; text-transform: uppercase; letter-spacing: 0.05em; }
+.action-policy-fields input,
+.action-policy-fields textarea,
+.action-policy-fields select { width: 100%; border: 1px solid var(--border); border-radius: 0.48rem; padding: 0.55rem 0.62rem; background: var(--surface); color: var(--foreground); font: inherit; font-size: 0.82rem; }
+.action-policy-fields:disabled input,
+.action-policy-fields:disabled textarea,
+.action-policy-fields:disabled select { opacity: 0.8; background: var(--surface-alt); }
+.action-policy-field-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 0.7rem; }
+.action-policy-field-grid label { display: grid; gap: 0.3rem; }
+.action-policy-trigger { margin-top: 1rem; border-top: 1px solid var(--border); padding-top: 1rem; }
+.action-policy-trigger > header strong { display: block; margin-top: 0.22rem; font-size: 0.9rem; font-weight: 530; }
+.action-policy-rule-add { display: grid; grid-template-columns: minmax(18rem, 1fr) auto; gap: 0.45rem; margin-top: 0.7rem; }
+.action-policy-rule-add .inventory-filter-button { width: 100%; }
+.action-policy-rule-list { display: grid; gap: 0.45rem; margin-top: 0.65rem; }
+.action-policy-rule-list > div { display: flex; align-items: center; justify-content: space-between; gap: 1rem; padding: 0.62rem 0.72rem; border: 1px solid var(--border); border-radius: 0.55rem; }
+.action-policy-rule-list > div > span { display: grid; gap: 0.15rem; }
+.action-policy-rule-list strong { font-size: 0.8rem; font-weight: 520; }
+.action-policy-rule-list small { color: var(--muted-foreground); font-size: 0.72rem; }
+.action-policy-rule-list button { border: 0; background: transparent; color: var(--muted-foreground); }
+.action-policy-mechanism { display: grid; gap: 0.35rem; margin-top: 0.65rem; padding: 0.7rem; border: 1px solid var(--border); border-radius: 0.55rem; }
+.action-policy-mechanism code { margin: 0; color: var(--foreground); }
+.action-policy-mechanism span { color: var(--muted-foreground); font-size: 0.76rem; }
+.trading-actions-empty { display: grid; place-items: center; gap: 0.45rem; min-height: 24rem; color: var(--muted-foreground); }
+.trading-actions-empty strong { color: var(--foreground); font-weight: 520; }
+.trading-actions-empty span { font-size: 0.78rem; }
+
+@media (max-width: 1100px) {
+  .trading-actions-workbench { grid-template-columns: 18rem minmax(0, 1fr); }
+  .action-policy-field-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
