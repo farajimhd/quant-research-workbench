@@ -62,7 +62,7 @@ from src.trading_runtime.strategy_campaign import validate_campaign_policy
 from src.trading_runtime.taxonomy import StrategyTaxonomy
 
 
-CONFIGURATION_SCHEMA_VERSION = 27
+CONFIGURATION_SCHEMA_VERSION = 28
 CONFIGURATION_SECTIONS = {
     "strategy",
     "trading_actions",
@@ -1659,11 +1659,10 @@ def _qmd_runtime_capabilities() -> list[dict[str, Any]]:
             "priority": priority,
             "availability": status,
             "inputs": list(row.get("inputs") or []),
-            "fields": list(
-                QMD_CORE_SCANNER_FIELDS.get(key)
-                or row.get("outputs")
-                or []
-            ),
+            # QMD owns the concrete family outputs. Scanner projections such
+            # as current last price and session volume are registered
+            # separately below and must not replace interval-bar outputs.
+            "fields": list(row.get("outputs") or []),
             "timeframes": timeframes,
             "selected_timeframes": timeframes,
             "enabled": enabled,
@@ -2183,7 +2182,7 @@ def _market_discovery_field_catalog(
             "filterable": False,
             "sortable": False,
             "filter_operators": [],
-            "timeframes": [],
+            "timeframes": list(field.timeframes),
             "implementation_status": field.status,
             "registry_authority": "application_registry",
         })
@@ -2304,6 +2303,12 @@ def _bind_discovery_scanner_columns(
             if str(value)
         ]
         capability_id = str(capability.get("capability_id") or "")
+        capability_key = str(capability.get("capability_key") or "")
+        # A QMD family keeps its producer-owned outputs (for example interval
+        # OHLCV) while separately declaring which stable scanner projections
+        # it supports.  Do not replace the family outputs with these columns:
+        # that was the source of fake last-price-per-interval Data Fields.
+        sources.extend(QMD_CORE_SCANNER_FIELDS.get(capability_key, []))
         primary_source = QMD_CORE_PRIMARY_SCANNER_FIELD.get(capability_id)
         if primary_source:
             sources = [primary_source]
@@ -3151,11 +3156,15 @@ def _compiled_observation_dependencies(
                 row["input_kinds"].add("rule_set")
                 row["input_keys"].add(source_id)
                 data_field = data_field_by_ref.get(field_ref, {})
-                row["timeframes"].update(
-                    str(value).lower()
-                    for value in dict(data_field.get("context") or {}).get("timeframes") or []
-                    if str(value)
-                )
+                interval = str(dict(data_field.get("context") or {}).get("interval") or "")
+                if interval:
+                    row["timeframes"].add(interval.lower())
+                else:
+                    row["timeframes"].update(
+                        str(value).lower()
+                        for value in dict(data_field.get("execution") or {}).get("producer_intervals") or []
+                        if str(value)
+                    )
                 row["required"] = True
     compiled: list[dict[str, Any]] = []
     for _, row in sorted(grouped.items()):
@@ -3724,6 +3733,7 @@ def _migrate_draft(raw: dict[str, Any]) -> dict[str, Any]:
             calculation["selected_timeframes"] = selected_timeframes or supported_timeframes
             merged_calculations.append(calculation)
         result["market_discovery"]["calculation_catalog"] = merged_calculations
+        legacy_data_fields = list(result["market_discovery"].get("data_fields") or [])
         generated_data_fields = build_data_field_catalog(
             merged_calculations,
             list(result["market_discovery"].get("field_catalog") or []),
@@ -3742,7 +3752,8 @@ def _migrate_draft(raw: dict[str, Any]) -> dict[str, Any]:
             merged = {**generated, **current}
             merged["outputs"] = list(current.get("outputs") or generated.get("outputs") or [])
             merged_data_fields.append(merged)
-        merged_data_fields.extend(current_data_fields.values())
+        if source_schema_version >= CONFIGURATION_SCHEMA_VERSION:
+            merged_data_fields.extend(current_data_fields.values())
         validate_data_field_catalog(merged_data_fields)
         result["market_discovery"]["data_fields"] = merged_data_fields
         result["market_discovery"]["atomic_fields"] = atomic_field_catalog(
@@ -3752,7 +3763,9 @@ def _migrate_draft(raw: dict[str, Any]) -> dict[str, Any]:
             if str(value)
         )
         migrate_rule_set_field_refs(
-            result["market_discovery"]["rule_sets"], merged_data_fields
+            result["market_discovery"]["rule_sets"],
+            merged_data_fields,
+            legacy_data_fields=legacy_data_fields,
         )
         result["market_discovery"]["column_catalog"] = build_column_catalog(
             merged_data_fields, result["market_discovery"]["rule_sets"]

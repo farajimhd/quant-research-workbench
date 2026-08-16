@@ -798,6 +798,37 @@ function normalizeDraft(payload: any): Draft {
       } as Record<string, string>)[condition.comparator] ?? condition.comparator,
     })),
   });
+  const normalizeDataField = (dataField: any): DataFieldDefinition => {
+    const sourceId = String(dataField.outputs?.[0]?.source_id ?? "");
+    const legacyInterval = String(dataField.context?.timeframes?.[0] ?? "");
+    const fixedWindow = /(?:^|[_.])(\d+)(ms|s|m|h|d)$/.exec(sourceId.toLowerCase());
+    const currentSources = new Set(["market.last_price", "market.spread_bps", "market.event_at", "market.event_age_ms", "market.quality_state", "market.quality_flags", "market.degradation_reason", "market.liquidity_rank", "market.liquidity_score"]);
+    const anchoredSources = new Set(["market.previous_close", "market.change_pct", "market.volume", "market.relative_volume", "indicator.vwap.value"]);
+    const dimension = dataField.context?.dimension_kind
+      ? dataField.context
+      : fixedWindow
+        ? { dimension_kind: "rolling_window", window: `${fixedWindow[1]}${fixedWindow[2]}`, window_configurable: false }
+        : anchoredSources.has(sourceId)
+          ? { anchor: "market_session", dimension_kind: "anchored" }
+          : currentSources.has(sourceId) || legacyInterval === "event"
+            ? { as_of: "evaluation_clock", dimension_kind: "as_of" }
+            : legacyInterval && !["session", "filing", "settlement", "1d"].includes(legacyInterval)
+              ? { dimension_kind: "interval", interval: legacyInterval }
+              : { as_of: legacyInterval === "filing" ? "latest_available_filing" : legacyInterval === "settlement" ? "latest_available_settlement" : "latest_available_publication", dimension_kind: "as_of" };
+    return {
+      ...dataField,
+      context: {
+        ...dimension,
+        allowed_scopes: dataField.context?.allowed_scopes ?? [],
+        available_intervals: dataField.context?.available_intervals ?? (dimension.interval ? [dimension.interval] : []),
+        execution_scope: dataField.context?.execution_scope ?? "focused",
+        update_cadence: dataField.context?.update_cadence ?? "producer cadence",
+      },
+      outputs: (dataField.outputs ?? []).map((output: any) => ({ ...output, context_interval: output.context_interval ?? dimension.interval ?? "" })),
+    };
+  };
+  const normalizedDataFields: DataFieldDefinition[] = (marketDiscovery.data_fields ?? []).map(normalizeDataField);
+  const dataFieldContextByRef = new Map<string, DataFieldDefinition["context"]>(normalizedDataFields.flatMap((dataField: DataFieldDefinition) => dataField.outputs.map((output) => [output.field_ref, dataField.context] as const)));
   const normalizeProfile = (profile: any) => {
     const phaseModes = {
       initial_entry: "automatic",
@@ -841,6 +872,11 @@ function normalizeDraft(payload: any): Draft {
     ...payload,
     market_discovery: {
       ...marketDiscovery,
+      data_fields: normalizedDataFields,
+      column_catalog: (marketDiscovery.column_catalog ?? []).map((column: any) => ({
+        ...column,
+        interval: column.interval ?? dataFieldContextByRef.get(column.field_ref)?.interval ?? "",
+      })),
       core_scan: {
         ...marketDiscovery.core_scan,
         inclusion_rule_sets: marketDiscovery.core_scan?.inclusion_rule_sets ?? [],

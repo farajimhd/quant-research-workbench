@@ -2,7 +2,7 @@ import { ChevronDown, Search } from "lucide-react";
 import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent } from "react";
 import { createPortal } from "react-dom";
 
-export type InventoryFilterOption = { description?: string; disabled?: boolean; group?: string; label: string; reference?: string; subgroup?: string; value: string };
+export type InventoryFilterOption = { description?: string; disabled?: boolean; family?: string; group?: string; interval?: string; label: string; reference?: string; subgroup?: string; value: string };
 
 export function inventoryEligibilityOptions(label: string): InventoryFilterOption[] {
   return [{ value: "", label: `Any ${label.toLowerCase()}` }, { value: "eligible", label: "Eligible" }, { value: "ineligible", label: "Not eligible" }];

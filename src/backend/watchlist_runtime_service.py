@@ -875,11 +875,15 @@ def focused_target_contract(
                 and str(data_field.get("owner") or "").lower() in {"qmd", "qmd_gateway"}
             ):
                 capabilities.add(recipe_id)
-            timeframes.update(
-                str(value)
-                for value in dict(data_field.get("context") or {}).get("timeframes") or []
-                if str(value)
-            )
+            interval = str(dict(data_field.get("context") or {}).get("interval") or "")
+            if interval:
+                timeframes.add(interval)
+            else:
+                timeframes.update(
+                    str(value)
+                    for value in dict(data_field.get("execution") or {}).get("producer_intervals") or []
+                    if str(value)
+                )
         if capabilities:
             return sorted(capabilities), sorted(value for value in timeframes if value not in {"session", "1d", "settlement", "event", "filing", "evaluation"})
     for capability_id, capability in calculations.items():

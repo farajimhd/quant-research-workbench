@@ -46,12 +46,42 @@ class DataFieldContractTests(unittest.TestCase):
 
     def test_contextual_outputs_have_distinct_identities(self) -> None:
         refs = {
-            data_field["context"]["timeframes"][0]: data_field["outputs"][0]["field_ref"]
+            data_field["context"]["interval"]: data_field["outputs"][0]["field_ref"]
             for data_field in self.discovery["data_fields"]
-            if data_field["outputs"][0]["source_id"] == "indicator.vwap.value"
-            and data_field["context"]["timeframes"]
+            if data_field["outputs"][0]["source_id"] == "rsi_14"
+            and data_field["context"].get("interval")
         }
-        self.assertNotEqual(refs["1s"], refs["5m"])
+        self.assertNotEqual(refs["10s"], refs["5m"])
+
+    def test_dimensions_follow_field_semantics(self) -> None:
+        by_source: dict[str, list[dict]] = {}
+        for data_field in self.discovery["data_fields"]:
+            by_source.setdefault(data_field["outputs"][0]["source_id"], []).append(data_field)
+
+        self.assertEqual(len(by_source["market.last_price"]), 1)
+        self.assertEqual(
+            by_source["market.last_price"][0]["context"],
+            {
+                "dimension_kind": "as_of",
+                "as_of": "evaluation_clock",
+                "available_intervals": [],
+                "update_cadence": "service_owned",
+                "execution_scope": "core_scan",
+                "allowed_scopes": ["core_scan", "watchlist", "strategy_run", "request", "offline"],
+            },
+        )
+        self.assertEqual(
+            by_source["market.volume"][0]["context"]["anchor"],
+            "market_session",
+        )
+        self.assertEqual(
+            by_source["market.trade_rate_10s"][0]["context"]["window"],
+            "10s",
+        )
+        price_change = by_source["price_change_pct"]
+        self.assertTrue({"1m", "5m"}.issubset({row["context"]["interval"] for row in price_change}))
+        self.assertTrue(all(row["outputs"][0]["name"] == "Price change" for row in price_change))
+        self.assertTrue(all(row["context"]["dimension_kind"] == "interval" for row in price_change))
 
     def test_projection_populates_rule_and_canvas_identities(self) -> None:
         data_field = next(
@@ -72,12 +102,12 @@ class DataFieldContractTests(unittest.TestCase):
     def test_compiler_derives_signal_stream_dependencies(self) -> None:
         discovery = {**self.discovery, "signal_streams": [{
             "signal_stream_id": "test-stream",
-            "inclusion_rule_sets": ["watchlist-vwap-breakout"],
-            "columns": ["vwap__1s"],
+            "inclusion_rule_sets": ["initial-entry-confirmation-macd-confirmation"],
+            "columns": [],
         }]}
         plan = compile_data_field_plan(discovery, composition_ids=["test-stream"])
-        self.assertIn("1s", plan["technical_timeframes"])
-        self.assertIn("watchlist-vwap-breakout", plan["rule_set_ids"])
+        self.assertIn("5s", plan["technical_timeframes"])
+        self.assertIn("initial-entry-confirmation-macd-confirmation", plan["rule_set_ids"])
 
     def test_price_volume_expansion_uses_session_semantics(self) -> None:
         rule_set = next(
@@ -86,9 +116,15 @@ class DataFieldContractTests(unittest.TestCase):
             if row["rule_set_id"] == "watchlist-price-or-volume-squeeze"
         )
         self.assertEqual(rule_set["name"], "Session Price or Volume Expansion")
-        self.assertTrue(
-            all(".session@" in condition["left_field_ref"] for condition in rule_set["conditions"])
-        )
+        by_ref = {
+            output["field_ref"]: data_field
+            for data_field in self.discovery["data_fields"]
+            for output in data_field["outputs"]
+        }
+        self.assertTrue(all(
+            by_ref[condition["left_field_ref"]]["context"]["anchor"] == "market_session"
+            for condition in rule_set["conditions"]
+        ))
 
 
 if __name__ == "__main__":

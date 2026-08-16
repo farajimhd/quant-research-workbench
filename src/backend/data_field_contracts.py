@@ -9,7 +9,24 @@ from typing import Any, Iterable
 from src.backend.application_registry import DISCOVERY_RUNTIME_FIELDS, FIELD_DEFINITIONS
 
 
-DATA_FIELD_CONTRACT_VERSION = 1
+DATA_FIELD_CONTRACT_VERSION = 2
+
+_NON_INTERVAL_CONTEXTS = {
+    "event",
+    "session",
+    "filing",
+    "settlement",
+    "scanner_clock",
+    "evaluation",
+}
+_REFERENCE_SEMANTICS = {"clock", "event", "reference", "system"}
+_FIXED_WINDOWS = {
+    "market.trade_rate_10s": "10s",
+    "market.trade_rate_60s": "60s",
+}
+_EXECUTION_INTERVAL_DEFAULTS = {
+    "indicator.vwap.value": ["1s"],
+}
 
 
 def field_output_ref(data_field_id: str, revision: int, output_id: str) -> str:
@@ -85,6 +102,116 @@ def atomic_field_catalog(extra_inputs: Iterable[str] = ()) -> list[dict[str, Any
     return [rows[key] for key in sorted(rows)]
 
 
+def _field_dimension_instances(
+    source_id: str,
+    field: dict[str, Any],
+    calculation: dict[str, Any],
+    supported_intervals: list[str],
+) -> list[dict[str, Any]]:
+    """Return only dimensions that change the meaning of this exact field.
+
+    Producer scheduling is intentionally excluded. A capability may publish at
+    several cadences without making a current price, session total, reference
+    value, or event observation interval-dependent.
+    """
+
+    declared = [str(value) for value in field.get("timeframes") or [] if str(value)]
+    semantic_type = str(field.get("semantic_type") or calculation.get("capability_type") or "").lower()
+    dimensions: dict[str, Any] = {"dimension_kind": "point_in_time"}
+    encoded_window = _FIXED_WINDOWS.get(source_id)
+    if not encoded_window:
+        match = re.search(r"(?:^|[_.])(\d+)(ms|s|m|h|d)$", source_id.lower())
+        encoded_window = "".join(match.groups()) if match else ""
+    if encoded_window:
+        dimensions.update({
+            "dimension_kind": "rolling_window",
+            "window": encoded_window,
+            "window_configurable": False,
+        })
+        return [dimensions]
+    if "session" in declared:
+        dimensions.update({"dimension_kind": "anchored", "anchor": "market_session"})
+        return [dimensions]
+    if "filing" in declared:
+        dimensions.update({"dimension_kind": "as_of", "as_of": "latest_available_filing"})
+        return [dimensions]
+    if "settlement" in declared:
+        dimensions.update({"dimension_kind": "as_of", "as_of": "latest_available_settlement"})
+        return [dimensions]
+    if "event" in declared or semantic_type in {"clock", "event"}:
+        dimensions.update({"dimension_kind": "as_of", "as_of": "evaluation_clock"})
+        return [dimensions]
+    if semantic_type in _REFERENCE_SEMANTICS:
+        dimensions.update({"dimension_kind": "as_of", "as_of": "latest_available_publication"})
+        return [dimensions]
+    intervals = list(dict.fromkeys(supported_intervals or [
+        value for value in declared if value not in _NON_INTERVAL_CONTEXTS
+    ]))
+    if intervals:
+        return [
+            {"dimension_kind": "interval", "interval": interval}
+            for interval in intervals
+        ]
+    return [dimensions]
+
+
+def _preferred_producer_intervals(values: list[str]) -> list[str]:
+    """Select one execution interval without turning it into field meaning."""
+
+    unique = list(dict.fromkeys(value for value in values if value))
+    for preferred in ("1s", "100ms", "10s", "1m"):
+        if preferred in unique:
+            return [preferred]
+    return unique[:1]
+
+
+def _enrich_field_metadata(source_id: str, raw: dict[str, Any]) -> dict[str, Any]:
+    """Fill mechanical QMD output metadata without overriding registered fields."""
+
+    field = dict(raw)
+    normalized = source_id.lower()
+    names = {
+        "open": "Open price",
+        "high": "High price",
+        "low": "Low price",
+        "close": "Close price",
+        "vwap": "Interval VWAP",
+        "volume": "Interval volume",
+        "dollar_volume": "Dollar volume",
+        "trade_count": "Trade count",
+        "price_change_pct": "Price change",
+        "high_low_range_pct": "High-low range",
+    }
+    descriptions = {
+        "price_change_pct": "Percentage change from the previous close of the selected interval.",
+        "high_low_range_pct": "High-to-low price range within the selected interval, expressed as a percentage.",
+        "volume": "Eligible share volume accumulated inside the selected interval.",
+        "close": "Last eligible trade price in the selected completed or developing interval.",
+    }
+    if source_id in names:
+        field.setdefault("name", names[source_id])
+    if source_id in descriptions:
+        field.setdefault("description", descriptions[source_id])
+    if normalized.endswith("_pct") or normalized.endswith(".pct"):
+        field.setdefault("unit", "percent")
+        field.setdefault("value_type", "number")
+    elif "spread_bps" in normalized or normalized.endswith("_bps"):
+        field.setdefault("unit", "basis_points")
+        field.setdefault("value_type", "number")
+    elif source_id in {"open", "high", "low", "close", "vwap"} or re.search(
+        r"(?:^|_)(?:bid|ask|mid)_(?:open|high|low|close)$", normalized
+    ):
+        field.setdefault("unit", "currency")
+        field.setdefault("value_type", "number")
+    elif normalized.endswith("volume") or "volume_" in normalized:
+        field.setdefault("unit", "shares")
+        field.setdefault("value_type", "number")
+    elif normalized.endswith("count") or "_count_" in normalized:
+        field.setdefault("unit", "count")
+        field.setdefault("value_type", "integer")
+    return field
+
+
 def build_data_field_catalog(
     calculation_rows: list[dict[str, Any]],
     field_catalog: list[dict[str, Any]],
@@ -97,6 +224,7 @@ def build_data_field_catalog(
         if str(row.get("source_id") or row.get("field_id") or "")
     }
     covered: set[str] = set()
+    emitted: set[tuple[str, str]] = set()
     result: list[dict[str, Any]] = []
     for calculation in calculation_rows:
         capability_id = str(calculation.get("capability_id") or "").strip()
@@ -106,102 +234,135 @@ def build_data_field_catalog(
         if not sources:
             sources = [capability_id]
         revision = int(calculation.get("implementation_version") or 1)
-        covered.update(sources)
-        timeframes = [
+        supported_intervals = [
             str(value)
             for value in calculation.get("selected_timeframes") or calculation.get("timeframes") or []
-            if str(value)
+            if str(value) and str(value) not in _NON_INTERVAL_CONTEXTS
         ]
-        contexts: list[str | None] = list(dict.fromkeys(timeframes)) or [None]
-        preferred_context = next(
-            (value for value in ("1s", "session", "event", "1d", "settlement", "filing") if value in contexts),
-            contexts[0],
-        )
-        contexts = [preferred_context, *(value for value in contexts if value != preferred_context)]
-        for context_index, timeframe in enumerate(contexts):
-            data_field_id = f"data.{capability_id}" + (f".{_slug(timeframe)}" if timeframe else "")
-            context_timeframes = [timeframe] if timeframe else []
-            outputs = [
-                _data_field_output(
+        for source_id in dict.fromkeys(sources):
+            field = _enrich_field_metadata(source_id, fields_by_source.get(source_id, {}))
+            dimensions = _field_dimension_instances(
+                source_id, field, calculation, supported_intervals
+            )
+            for dimension in dimensions:
+                interval = str(dimension.get("interval") or "")
+                identity = (source_id, interval)
+                if identity in emitted:
+                    continue
+                emitted.add(identity)
+                covered.add(source_id)
+                data_field_id = f"data.{source_id}"
+                if interval:
+                    data_field_id += f".interval.{_slug(interval)}"
+                output = _data_field_output(
                     data_field_id,
                     revision,
                     source_id,
-                    fields_by_source.get(source_id, {}),
-                    timeframe=timeframe,
-                    qualified_presentation=len(contexts) > 1 and context_index > 0,
+                    field,
+                    interval=interval or None,
+                    qualified_presentation=bool(interval),
+                    output_id="value",
                 )
-                for source_id in dict.fromkeys(sources)
-            ]
-            result.append({
-            "data_field_id": data_field_id,
-            "revision": revision,
-            "name": f"{str(calculation.get('name') or _readable(capability_id))}{f' · {timeframe}' if timeframe else ''}",
-            "description": str(calculation.get("calculation") or calculation.get("description") or "Registered calculation."),
-            "category": str(calculation.get("category") or calculation.get("capability_type") or "Data Field"),
-            "recipe_id": str(calculation.get("capability_key") or capability_id),
-            "recipe_version": revision,
-            "owner": str(calculation.get("owner") or calculation.get("provider") or "qmd_gateway"),
-            "inputs": [str(value) for value in calculation.get("inputs") or [] if str(value)],
-            "context": {
-                "timeframes": context_timeframes,
-                "update_cadence": str(calculation.get("cadence") or "producer cadence"),
-                "execution_scope": str(calculation.get("execution_scope") or calculation.get("tier") or "focused"),
-                "allowed_scopes": [str(value) for value in calculation.get("allowed_scopes") or [] if str(value)],
-            },
-            "parameters": {"timeframe": timeframe} if timeframe else {},
-            "policies": {
-                "warm_up_bars": calculation.get("warm_up_bars"),
-                "missing": "unavailable",
-                "gaps": "preserve",
-                "late_events": "producer_watermark",
-            },
-            "outputs": outputs,
-            "enabled": bool(calculation.get("enabled", True)),
-            "configurable": bool(calculation.get("configurable")),
-            "system_required": bool(calculation.get("system_required")),
-            "implementation_status": str(calculation.get("implementation_status") or calculation.get("availability") or "unknown"),
-            "live_support": str(calculation.get("implementation_status") or calculation.get("availability") or "unknown") not in {"offline_only", "planned"},
-            "historical_support": True,
-            "cost_class": str(calculation.get("cost_class") or "unknown"),
-            "stateful": bool(calculation.get("stateful")),
-            "contract_version": DATA_FIELD_CONTRACT_VERSION,
-            })
+                field_name = str(field.get("name") or _readable(source_id))
+                result.append({
+                    "data_field_id": data_field_id,
+                    "revision": revision,
+                    "name": f"{field_name}{f' · {interval}' if interval else ''}",
+                    "description": str(
+                        field.get("description")
+                        or calculation.get("calculation")
+                        or calculation.get("description")
+                        or "Registered calculation."
+                    ),
+                    "category": str(field.get("semantic_type") or calculation.get("category") or calculation.get("capability_type") or "Data Field"),
+                    "recipe_id": str(calculation.get("capability_key") or capability_id),
+                    "recipe_version": revision,
+                    "owner": str(calculation.get("owner") or calculation.get("provider") or "qmd_gateway"),
+                    "inputs": [str(value) for value in calculation.get("inputs") or [] if str(value)],
+                    "context": {
+                        **dimension,
+                        "available_intervals": list(dict.fromkeys(supported_intervals)) if interval else [],
+                        "update_cadence": str(calculation.get("cadence") or "producer cadence"),
+                        "execution_scope": str(calculation.get("execution_scope") or calculation.get("tier") or "focused"),
+                        "allowed_scopes": [str(value) for value in calculation.get("allowed_scopes") or [] if str(value)],
+                    },
+                    "execution": {
+                        "producer_intervals": [interval] if interval else _preferred_producer_intervals(supported_intervals or _EXECUTION_INTERVAL_DEFAULTS.get(source_id, [])),
+                    },
+                    "parameters": {"interval": interval} if interval else {},
+                    "policies": {
+                        "warm_up_bars": calculation.get("warm_up_bars"),
+                        "missing": "unavailable",
+                        "gaps": "preserve",
+                        "late_events": "producer_watermark",
+                    },
+                    "outputs": [output],
+                    "enabled": bool(calculation.get("enabled", True)),
+                    "configurable": bool(calculation.get("configurable")),
+                    "system_required": bool(calculation.get("system_required")),
+                    "implementation_status": str(calculation.get("implementation_status") or calculation.get("availability") or "unknown"),
+                    "live_support": str(calculation.get("implementation_status") or calculation.get("availability") or "unknown") not in {"offline_only", "planned"},
+                    "historical_support": True,
+                    "cost_class": str(calculation.get("cost_class") or "unknown"),
+                    "stateful": bool(calculation.get("stateful")),
+                    "contract_version": DATA_FIELD_CONTRACT_VERSION,
+                })
 
     # Every registered field remains usable even when it is a direct source
     # projection rather than an output of a multi-output QMD capability.
     for source_id, field in sorted(fields_by_source.items()):
         if source_id in covered:
             continue
-        data_field_id = f"data.projection.{source_id}"
-        result.append({
-            "data_field_id": data_field_id,
-            "revision": 1,
-            "name": str(field.get("name") or _readable(source_id)),
-            "description": str(field.get("description") or f"Direct projection of {source_id}."),
-            "category": str(field.get("semantic_type") or "Projection"),
-            "recipe_id": "registered_projection",
-            "recipe_version": 1,
-            "owner": str(field.get("source") or "application_registry"),
-            "inputs": [str(field.get("field_id") or source_id)],
-            "context": {
-                "timeframes": [str(value) for value in field.get("timeframes") or [] if str(value)],
-                "update_cadence": "source cadence",
-                "execution_scope": "consumer_selected",
-                "allowed_scopes": ["core_scan", "watchlist", "strategy_run", "request", "offline"],
-            },
-            "parameters": {},
-            "policies": {"missing": "unavailable", "gaps": "preserve", "late_events": "source_policy"},
-            "outputs": [_data_field_output(data_field_id, 1, source_id, field)],
-            "enabled": str(field.get("implementation_status") or "implemented") in {"implemented", "live_only"},
-            "configurable": False,
-            "system_required": False,
-            "implementation_status": str(field.get("implementation_status") or "implemented"),
-            "live_support": str(field.get("implementation_status") or "implemented") != "offline_only",
-            "historical_support": str(field.get("implementation_status") or "implemented") != "live_only",
-            "cost_class": "projection",
-            "stateful": False,
-            "contract_version": DATA_FIELD_CONTRACT_VERSION,
-        })
+        field = _enrich_field_metadata(source_id, field)
+        dimensions = _field_dimension_instances(source_id, field, {}, [])
+        available_intervals = [
+            str(row.get("interval") or "") for row in dimensions if row.get("interval")
+        ]
+        for dimension in dimensions:
+            interval = str(dimension.get("interval") or "")
+            data_field_id = f"data.{source_id}"
+            if interval:
+                data_field_id += f".interval.{_slug(interval)}"
+            field_name = str(field.get("name") or _readable(source_id))
+            result.append({
+                "data_field_id": data_field_id,
+                "revision": 1,
+                "name": f"{field_name}{f' · {interval}' if interval else ''}",
+                "description": str(field.get("description") or f"Direct projection of {source_id}."),
+                "category": str(field.get("semantic_type") or "Projection"),
+                "recipe_id": "registered_projection",
+                "recipe_version": 1,
+                "owner": str(field.get("source") or "application_registry"),
+                "inputs": [str(field.get("field_id") or source_id)],
+                "context": {
+                    **dimension,
+                    "available_intervals": available_intervals,
+                    "update_cadence": "source cadence",
+                    "execution_scope": "consumer_selected",
+                    "allowed_scopes": ["core_scan", "watchlist", "strategy_run", "request", "offline"],
+                },
+                "execution": {"producer_intervals": [interval] if interval else []},
+                "parameters": {"interval": interval} if interval else {},
+                "policies": {"missing": "unavailable", "gaps": "preserve", "late_events": "source_policy"},
+                "outputs": [_data_field_output(
+                    data_field_id,
+                    1,
+                    source_id,
+                    field,
+                    interval=interval or None,
+                    qualified_presentation=bool(interval),
+                    output_id="value",
+                )],
+                "enabled": str(field.get("implementation_status") or "implemented") in {"implemented", "live_only"},
+                "configurable": False,
+                "system_required": False,
+                "implementation_status": str(field.get("implementation_status") or "implemented"),
+                "live_support": str(field.get("implementation_status") or "implemented") != "offline_only",
+                "historical_support": str(field.get("implementation_status") or "implemented") != "live_only",
+                "cost_class": "projection",
+                "stateful": False,
+                "contract_version": DATA_FIELD_CONTRACT_VERSION,
+            })
     validate_data_field_catalog(result)
     return sorted(result, key=lambda row: str(row["data_field_id"]))
 
@@ -216,9 +377,13 @@ def data_field_output_index(data_fields: Iterable[dict[str, Any]]) -> dict[str, 
                 index[field_ref] = output
             if source_id:
                 index.setdefault(source_id, output)
-                timeframe = str(output.get("context_timeframe") or "")
-                if timeframe:
-                    index[f"{source_id}@@{timeframe}"] = output
+                interval = str(
+                    output.get("context_interval")
+                    or output.get("context_timeframe")
+                    or ""
+                )
+                if interval:
+                    index[f"{source_id}@@{interval}"] = output
     return index
 
 
@@ -246,9 +411,9 @@ def project_data_field_outputs(
             source_id = str(output.get("source_id") or "")
             value_found = runtime_field in row or source_id in row
             value = row.get(runtime_field) if runtime_field in row else row.get(source_id)
-            context_timeframe = str(output.get("context_timeframe") or "")
-            observed_timeframe = str(row.get("indicator_timeframe") or row.get("working_timeframe") or "")
-            if context_timeframe and observed_timeframe and context_timeframe != observed_timeframe:
+            context_interval = str(output.get("context_interval") or "")
+            observed_interval = str(row.get("indicator_interval") or row.get("indicator_timeframe") or row.get("working_timeframe") or "")
+            if context_interval and observed_interval and context_interval != observed_interval:
                 value_found = False
                 value = None
             result[field_ref] = value
@@ -271,9 +436,13 @@ def project_data_field_outputs(
 
 
 def migrate_rule_set_field_refs(
-    rule_sets: list[dict[str, Any]], data_fields: list[dict[str, Any]]
+    rule_sets: list[dict[str, Any]],
+    data_fields: list[dict[str, Any]],
+    *,
+    legacy_data_fields: list[dict[str, Any]] | None = None,
 ) -> None:
     index = data_field_output_index(data_fields)
+    legacy_index = data_field_output_index(legacy_data_fields or [])
     for rule_set in rule_sets:
         rule_set.pop("atomic", None)
         rule_set.setdefault("origin", "system")
@@ -284,6 +453,13 @@ def migrate_rule_set_field_refs(
                 legacy_id = str(condition.get(f"{side}_source_id") or "")
                 existing_ref = str(condition.get(f"{side}_field_ref") or "")
                 legacy_timeframe = str(condition.get(f"{side}_timeframe") or "")
+                if not legacy_timeframe and existing_ref:
+                    legacy_output = legacy_index.get(existing_ref, {})
+                    legacy_timeframe = str(
+                        legacy_output.get("context_interval")
+                        or legacy_output.get("context_timeframe")
+                        or ""
+                    )
                 existing_output = index.get(existing_ref)
                 if existing_output is not None and legacy_id and str(existing_output.get("source_id") or "") != legacy_id:
                     existing_output = None
@@ -330,7 +506,8 @@ def build_column_catalog(
                     "implementation_status": str(data_field.get("implementation_status") or "unknown"),
                     "registry_authority": "data_field_registry",
                     "semantic_type": str(data_field.get("category") or "data_field"),
-                    "timeframes": list(dict(data_field.get("context") or {}).get("timeframes") or []),
+                    "interval": str(dict(data_field.get("context") or {}).get("interval") or ""),
+                    "dimensions": deepcopy(dict(data_field.get("context") or {})),
                     "presentation": deepcopy(presentation),
                 })
     for rule_set in rule_sets:
@@ -427,7 +604,15 @@ def compile_data_field_plan(
             "stateful": bool(data_field.get("stateful")),
         })
         atomic_inputs.update(str(value) for value in data_field.get("inputs") or [] if str(value))
-        timeframes.update(str(value) for value in dict(data_field.get("context") or {}).get("timeframes") or [] if str(value))
+        interval = str(dict(data_field.get("context") or {}).get("interval") or "")
+        if interval:
+            timeframes.add(interval)
+        producer_intervals = [
+            str(value)
+            for value in dict(data_field.get("execution") or {}).get("producer_intervals") or []
+            if str(value)
+        ]
+        timeframes.update(producer_intervals)
         matched_outputs = [
             output
             for output in data_field.get("outputs") or []
@@ -438,11 +623,10 @@ def compile_data_field_plan(
             or str(output.get("source_id") or "") == "market.relative_volume"
             for output in matched_outputs
         ):
-            technical_timeframes.update(
-                str(value)
-                for value in dict(data_field.get("context") or {}).get("timeframes") or []
-                if str(value)
-            )
+            if interval:
+                technical_timeframes.add(interval)
+            else:
+                technical_timeframes.update(producer_intervals)
     payload = {
         "schema_version": 1,
         "authority": "data_field_compiler",
@@ -467,6 +651,19 @@ def validate_data_field_catalog(data_fields: list[dict[str, Any]]) -> None:
         if not data_field_id or data_field_id in ids:
             raise ValueError(f"Invalid or duplicate Data Field id: {data_field_id or '<empty>'}")
         ids.add(data_field_id)
+        context = dict(row.get("context") or {})
+        if "timeframes" in context:
+            raise ValueError(
+                f"Data Field {data_field_id} uses the retired generic timeframe dimension"
+            )
+        dimension_kind = str(context.get("dimension_kind") or "")
+        interval = str(context.get("interval") or "")
+        if dimension_kind == "interval" and not interval:
+            raise ValueError(f"Data Field {data_field_id} requires an interval")
+        if dimension_kind != "interval" and interval:
+            raise ValueError(
+                f"Data Field {data_field_id} exposes an irrelevant interval"
+            )
         outputs = list(row.get("outputs") or [])
         if not outputs:
             raise ValueError(f"Data Field {data_field_id} has no outputs")
@@ -475,6 +672,10 @@ def validate_data_field_catalog(data_fields: list[dict[str, Any]]) -> None:
             if not field_ref or field_ref in refs:
                 raise ValueError(f"Invalid or duplicate Data Field output: {field_ref or '<empty>'}")
             refs.add(field_ref)
+            if str(output.get("context_interval") or "") != interval:
+                raise ValueError(
+                    f"Data Field output {field_ref} interval does not match its definition"
+                )
             if not list(output.get("column_presentations") or []):
                 raise ValueError(f"Data Field output {field_ref} has no column presentation")
 
@@ -485,14 +686,15 @@ def _data_field_output(
     source_id: str,
     field: dict[str, Any],
     *,
-    timeframe: str | None = None,
+    interval: str | None = None,
     qualified_presentation: bool = False,
+    output_id: str | None = None,
 ) -> dict[str, Any]:
-    output_id = source_id
+    output_id = output_id or source_id
     value_type = str(field.get("value_type") or "number")
     unit = str(field.get("unit") or "scalar")
     base_column_id = str(field.get("column_id") or _generated_column_id(source_id))
-    column_id = f"{base_column_id}__{_slug(timeframe)}" if timeframe and qualified_presentation else base_column_id
+    column_id = f"{base_column_id}__{_slug(interval)}" if interval and qualified_presentation else base_column_id
     field_ref = field_output_ref(data_field_id, revision, output_id)
     numeric = value_type in {
         "number", "integer", "float", "score", "ratio", "percent", "price", "bps_per_second"
@@ -518,7 +720,7 @@ def _data_field_output(
         "source_id": source_id,
         "field_id": str(field.get("field_id") or source_id),
         "runtime_field": DISCOVERY_RUNTIME_FIELDS.get(source_id, column_id or source_id),
-        "context_timeframe": timeframe or "",
+        "context_interval": interval or "",
         "name": str(field.get("name") or _readable(source_id)),
         "description": str(field.get("description") or f"Output {source_id}."),
         "value_type": value_type,

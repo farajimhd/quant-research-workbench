@@ -334,6 +334,48 @@ class TradingConfigurationServiceTests(unittest.TestCase):
         self.assertEqual(migrated_squeeze["name"], "Session Price or Volume Expansion")
         self.assertIn("20-session relative volume", migrated_squeeze["description"])
 
+    def test_schema_v27_migrates_generic_timeframes_to_field_dimensions(self) -> None:
+        legacy = self._draft()
+        legacy["schema_version"] = 27
+        old_ref = "data.qmd.family.core_bars.10s@1:market.last_price"
+        legacy["market_discovery"]["data_fields"].append({
+            "data_field_id": "data.qmd.family.core_bars.10s",
+            "revision": 1,
+            "context": {"timeframes": ["10s"]},
+            "outputs": [{
+                "field_ref": old_ref,
+                "source_id": "market.last_price",
+                "context_timeframe": "10s",
+            }],
+        })
+        vwap_rule = next(
+            row
+            for row in legacy["market_discovery"]["rule_sets"]
+            if row["rule_set_id"] == "watchlist-vwap-breakout"
+        )
+        vwap_rule["conditions"][0]["left_field_ref"] = old_ref
+
+        migrated = _migrate_draft(legacy)
+
+        self.assertEqual(migrated["schema_version"], 28)
+        last_price = [
+            row
+            for row in migrated["market_discovery"]["data_fields"]
+            if row["outputs"][0]["source_id"] == "market.last_price"
+        ]
+        self.assertEqual(len(last_price), 1)
+        self.assertEqual(last_price[0]["context"]["as_of"], "evaluation_clock")
+        self.assertNotIn("timeframes", last_price[0]["context"])
+        migrated_vwap_rule = next(
+            row
+            for row in migrated["market_discovery"]["rule_sets"]
+            if row["rule_set_id"] == "watchlist-vwap-breakout"
+        )
+        self.assertEqual(
+            migrated_vwap_rule["conditions"][0]["left_field_ref"],
+            "data.market.last_price@1:value",
+        )
+
     def test_legacy_server_draft_table_is_removed(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             journal = TradingJournal(Path(directory) / "journal.sqlite3")
@@ -404,7 +446,7 @@ class TradingConfigurationServiceTests(unittest.TestCase):
 
         migrated = _migrate_draft(legacy)
 
-        self.assertEqual(migrated["schema_version"], 27)
+        self.assertEqual(migrated["schema_version"], 28)
         migrated_paper = next(
             row
             for row in migrated["accounts"]["bindings"]
@@ -698,7 +740,7 @@ class TradingConfigurationServiceTests(unittest.TestCase):
         ):
             draft = _default_draft()
 
-        self.assertEqual(draft["schema_version"], 27)
+        self.assertEqual(draft["schema_version"], 28)
         self.assertTrue(all(rule_set["name"] for rule_set in draft["market_discovery"]["rule_sets"]))
         self.assertTrue(all(rule_set["description"] for rule_set in draft["market_discovery"]["rule_sets"]))
         self.assertTrue(all(rule_set["origin"] == "system" and rule_set["protected"] for rule_set in draft["market_discovery"]["rule_sets"]))
@@ -1368,7 +1410,7 @@ class TradingConfigurationServiceTests(unittest.TestCase):
 
         migrated = _migrate_draft(legacy)
 
-        self.assertEqual(migrated["schema_version"], 27)
+        self.assertEqual(migrated["schema_version"], 28)
         canonical_ids = {
             rule_set["rule_set_id"]
             for rule_set in migrated["market_discovery"]["rule_sets"]
@@ -1446,7 +1488,7 @@ class TradingConfigurationServiceTests(unittest.TestCase):
         ]
         migrated = _migrate_draft(legacy)
         migrated_profile = migrated["strategy"]["profiles"][0]
-        self.assertEqual(migrated["schema_version"], 27)
+        self.assertEqual(migrated["schema_version"], 28)
         self.assertEqual(migrated_profile["action_policy_ids"], ["profit-pocket"])
         self.assertNotIn("capabilities", migrated_profile)
 
