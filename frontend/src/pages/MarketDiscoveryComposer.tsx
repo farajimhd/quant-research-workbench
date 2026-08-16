@@ -91,7 +91,30 @@ function ReferenceSection({ description, empty, kind, onChange, options, selecte
   const [candidate, setCandidate] = useState("");
   const available = options.filter((row) => !selected.includes(row.value));
   const byId = new Map(options.map((row) => [row.value, row]));
-  return <section className="market-discovery-references"><header><div><span>{title}</span><p>{description}</p></div><div><InventoryFilterSelect ariaLabel={`${kind} to add`} onChange={setCandidate} optionLimit={0} options={available.length ? available : [{ description: `Every available ${kind.toLowerCase()} is already selected.`, label: `No available ${kind.toLowerCase()}s`, value: "" }]} placeholder={`Choose ${kind.toLowerCase()}`} presentation="catalog" searchable searchPlaceholder={`Search ${kind.toLowerCase()}s…`} showAllOnOpen value={candidate} /><button disabled={!candidate} onClick={() => { if (!candidate || selected.includes(candidate)) return; onChange([...selected, candidate]); setCandidate(""); }} type="button"><Plus size={14} /> Add</button></div></header>{selected.length ? <div className="market-discovery-reference-list">{selected.map((id) => { const option = byId.get(id); return <article key={id}><span><strong>{option?.label ?? id}</strong><small>{option?.description || id}</small><code>{id}</code></span><button aria-label={`Remove ${option?.label ?? id}`} onClick={() => onChange(selected.filter((value) => value !== id))} type="button"><Trash2 size={14} /></button></article>; })}</div> : <p className="market-discovery-empty-reference">{empty}</p>}</section>;
+  const addLabel = kind === "Rule Set" ? "Add rule set" : "Add column";
+  return <section className="market-discovery-references">
+    <header>
+      <div><span>{title}</span><p>{description}</p></div>
+      <small>{selected.length} selected</small>
+    </header>
+    <div className="market-discovery-reference-toolbar">
+      <InventoryFilterSelect
+        ariaLabel={`${kind} to add`}
+        className="configuration-lookup-button market-discovery-reference-picker"
+        onChange={setCandidate}
+        optionLimit={0}
+        options={available.length ? available : [{ description: `Every available ${kind.toLowerCase()} is already selected.`, label: `No available ${kind.toLowerCase()}s`, value: "" }]}
+        placeholder={`Choose ${kind.toLowerCase()}`}
+        presentation="catalog"
+        searchable
+        searchPlaceholder={`Search ${kind.toLowerCase()}s…`}
+        showAllOnOpen
+        value={candidate}
+      />
+      <button className="button compact market-discovery-reference-add" disabled={!candidate} onClick={() => { if (!candidate || selected.includes(candidate)) return; onChange([...selected, candidate]); setCandidate(""); }} type="button"><Plus size={14} /> {addLabel}</button>
+    </div>
+    {selected.length ? <div className="market-discovery-reference-list">{selected.map((id) => { const option = byId.get(id); return <article key={id}><span><strong>{option?.label ?? id}</strong><small>{option?.description || id}</small><code>{id}</code></span><button aria-label={`Remove ${option?.label ?? id}`} onClick={() => onChange(selected.filter((value) => value !== id))} type="button"><Trash2 size={14} /></button></article>; })}</div> : <p className="market-discovery-empty-reference">{empty}</p>}
+  </section>;
 }
 
 function ruleSetOptions(ruleSets: RuleSet[], selected: string[]): InventoryFilterOption[] { return ruleSets.map((row) => ({ description: row.description, group: row.atomic ? "Built-in Rule Sets" : "Custom Rule Sets", label: row.name, subgroup: row.atomic ? "Atomic definitions" : "User definitions", value: row.rule_set_id })).sort((a, b) => Number(selected.includes(b.value)) - Number(selected.includes(a.value)) || a.label.localeCompare(b.label)); }

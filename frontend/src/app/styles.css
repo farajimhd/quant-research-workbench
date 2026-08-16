@@ -23340,13 +23340,14 @@ button {
 .market-discovery-source strong { display: block; margin-top: 4px; font-size: .92rem; font-weight: 560; }
 .market-discovery-source p { margin: 4px 0 0; color: var(--muted-foreground); font-size: .75rem; }
 .market-discovery-references, .market-discovery-settings { margin-top: 20px; padding-top: 18px; border-top: 1px solid var(--border); }
-.market-discovery-references > header { display: flex; align-items: end; justify-content: space-between; gap: 18px; }
+.market-discovery-references > header { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; }
 .market-discovery-references > header > div:first-child { max-width: 64ch; }
 .market-discovery-references > header p, .market-discovery-settings > header p { margin: 4px 0 0; color: var(--muted-foreground); font-size: .74rem; line-height: 1.45; }
-.market-discovery-references > header > div:last-child { display: flex; flex: 1 1 360px; align-items: center; gap: 7px; min-width: min(100%, 360px); }
-.market-discovery-references .inventory-filter-button { flex: 1; min-width: 0; }
-.market-discovery-references > header button:not(.inventory-filter-button) { display: flex; align-items: center; gap: 5px; min-height: 36px; padding: 0 12px; border: 1px solid var(--foreground); border-radius: 8px; color: var(--surface); background: var(--foreground); cursor: pointer; }
-.market-discovery-references > header button:disabled { cursor: not-allowed; opacity: .35; }
+.market-discovery-references > header > small { flex: 0 0 auto; color: var(--muted-foreground); font-size: .7rem; }
+.market-discovery-reference-toolbar { display: grid; grid-template-columns: minmax(240px, 560px) max-content; align-items: stretch; justify-content: start; gap: 8px; margin-top: 12px; }
+.market-discovery-reference-picker { width: 100%; min-width: 0; }
+.market-discovery-reference-add { display: inline-flex; width: auto; height: 100%; align-items: center; justify-content: center; gap: 5px; min-height: 34px; white-space: nowrap; }
+.market-discovery-reference-add:disabled { cursor: not-allowed; opacity: .4; }
 .market-discovery-reference-list { display: grid; gap: 6px; margin-top: 12px; }
 .market-discovery-reference-list article { display: flex; align-items: center; justify-content: space-between; gap: 16px; min-height: 62px; padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); }
 .market-discovery-reference-list article > span { min-width: 0; }
@@ -23376,14 +23377,15 @@ button {
   .market-discovery-composer { grid-template-columns: 240px minmax(0, 1fr); }
   .market-discovery-definition { padding: 20px; }
   .market-discovery-settings > div { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .market-discovery-references > header { align-items: stretch; flex-direction: column; }
-  .market-discovery-references > header > div:last-child { min-width: 0; }
+  .market-discovery-reference-toolbar { grid-template-columns: minmax(0, 1fr) auto; }
 }
 @media (max-width: 720px) {
   .market-discovery-composer { grid-template-columns: 1fr; height: auto; overflow: visible; }
   .market-discovery-library { max-height: 320px; border-right: 0; border-bottom: 1px solid var(--border); }
   .market-discovery-definition { overflow: visible; }
   .market-discovery-settings > div { grid-template-columns: 1fr; }
+  .market-discovery-reference-toolbar { grid-template-columns: 1fr; }
+  .market-discovery-reference-add { width: 100%; }
 }
 
 @media (max-width: 900px) {
