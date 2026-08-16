@@ -3033,10 +3033,10 @@ function StrategySelectionPage({ creationMode, definitionId, definitions, name, 
     <header className="strategy-selection-heading"><span>Available strategies</span><h2>Choose a strategy to configure</h2><p>The protected template and every strategy you create appear here.</p></header>
     <section className="strategy-selection-list abstraction-card-grid" aria-label="Available strategies">
       {profiles.map((profile) => <AbstractionCard actions={<span className="strategy-selection-actions">
-          {profile.publication_status === "draft" && profile.origin === "user" && profile.editable ? <button onClick={() => onModify(profile.profile_id)} type="button"><PencilLine size={14} /> Modify</button> : null}
-          <button onClick={() => onClone(profile.profile_id)} type="button"><Clipboard size={14} /> Clone</button>
-          {profile.publication_status === "draft" && profile.origin === "user" && !profile.protected ? <button aria-label={`Delete ${profile.name}`} className="danger" onClick={() => onDelete(profile.profile_id)} title="Delete permanently" type="button"><Trash2 size={14} /> Delete</button> : null}
-        </span>} description={profile.description || "No description"} identity={profile.profile_id} key={profile.profile_id} kind="strategy_profile" metadata={[{ label: "Strategy", value: profile.definition_id }, { label: "Revision", value: profile.revision }, { label: "Origin", value: readableLabel(profile.origin) }]} status={profile.publication_status === "published" ? "Published" : profile.publication_status === "template" ? "Template" : "Draft"} title={profile.name} />)}
+          {profile.publication_status === "draft" && profile.origin === "user" && profile.editable ? <button className="strategy-profile-action primary" onClick={() => onModify(profile.profile_id)} type="button"><PencilLine size={14} /> Configure</button> : null}
+          <button className="strategy-profile-action" onClick={() => onClone(profile.profile_id)} type="button"><Clipboard size={14} /> Duplicate</button>
+          {profile.publication_status === "draft" && profile.origin === "user" && !profile.protected ? <button aria-label={`Delete ${profile.name}`} className="strategy-profile-action danger" onClick={() => onDelete(profile.profile_id)} title="Delete permanently" type="button"><Trash2 size={14} /> Delete</button> : null}
+        </span>} className="strategy-profile-card" description={profile.description || "No description"} identity={profile.profile_id} key={profile.profile_id} kind="strategy_profile" metadata={[{ label: "Definition", value: profile.definition_id }, { label: "Revision", value: profile.revision }, { label: "Ownership", value: readableLabel(profile.origin) }]} status={profile.publication_status === "published" ? "Published" : profile.publication_status === "template" ? "Protected template" : "Draft"} title={profile.name} />)}
     </section>
   </main>;
 }
