@@ -47,6 +47,13 @@ export function MarketDiscoveryComposer({ onChange, section }: { onChange: (valu
     setSelectedId(watchlist_id);
   }
 
+  function removeWatchlist() {
+    if (!selectedWatchlist || selectedWatchlist.template || selectedWatchlist.origin !== "user") return;
+    if (!window.confirm(`Remove “${selectedWatchlist.name}” from this Market Discovery configuration?`)) return;
+    onChange({ ...section, watchlists: section.watchlists.filter((row) => row.watchlist_id !== selectedWatchlist.watchlist_id) });
+    setSelectedId("core");
+  }
+
   return <div className="market-discovery-composer">
     <aside className="market-discovery-library">
       <header><span>Discovery definitions</span><strong>Scanner and Watchlists</strong><p>Compose higher-level discovery from registered Data Definitions and Rule Sets.</p></header>
@@ -59,7 +66,7 @@ export function MarketDiscoveryComposer({ onChange, section }: { onChange: (valu
     </aside>
 
     <main className="market-discovery-definition">
-      <header className="market-discovery-definition-header"><div className="market-discovery-editable-copy"><span>{selectedWatchlist ? selectedWatchlist.template ? "Built-in Watchlist" : "Custom Watchlist" : "QMD Core Scanner"}</span><em className="market-discovery-edit-hint"><Pencil size={12} /> Editable</em><input aria-label="Discovery definition name" onChange={(event) => replace({ ...selected, name: event.target.value })} value={selected.name} /><textarea aria-label="Discovery definition description" onChange={(event) => replace({ ...selected, description: event.target.value })} rows={2} value={selected.description} /></div><div className="market-discovery-identity"><code>{selectedWatchlist?.watchlist_id ?? section.core_scan.scan_id}</code><span><Check size={13} /> Reference composition</span></div></header>
+      <header className="market-discovery-definition-header"><div className="market-discovery-editable-copy"><span>{selectedWatchlist ? selectedWatchlist.template ? "Built-in Watchlist" : "Custom Watchlist" : "QMD Core Scanner"}</span><em className="market-discovery-edit-hint"><Pencil size={12} /> Editable</em><input aria-label="Discovery definition name" onChange={(event) => replace({ ...selected, name: event.target.value })} value={selected.name} /><textarea aria-label="Discovery definition description" onChange={(event) => replace({ ...selected, description: event.target.value })} rows={2} value={selected.description} /></div><div className="market-discovery-identity"><code>{selectedWatchlist?.watchlist_id ?? section.core_scan.scan_id}</code><span><Check size={13} /> Reference composition</span>{selectedWatchlist?.origin === "user" && !selectedWatchlist.template ? <button aria-label={`Remove ${selectedWatchlist.name}`} className="button compact danger" onClick={removeWatchlist} type="button"><Trash2 size={13} /> Remove Watchlist</button> : null}</div></header>
 
       {!selectedWatchlist ? <section className="market-discovery-source"><span>Population</span><strong>{section.security_universe.name}</strong><p>{section.security_universe.description}</p></section> : <section className="market-discovery-source"><span>Source scanner</span><strong>{section.core_scan.name}</strong><p>Membership is resolved from this scanner's candidate population.</p></section>}
 
