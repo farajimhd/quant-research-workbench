@@ -62,8 +62,6 @@ type StrategyAuthoringStage = "identity" | "overview" | "entry" | "position" | "
 type RuntimeMode = "replay" | "backtest" | "backtest_debug" | "paper" | "live";
 type ActionAuthority = "disabled" | "manual" | "confirm" | "automatic" | "inherit";
 type Primitive = boolean | number | string;
-type CatalogParameterValue = Primitive | null;
-type SectionCatalogValue = CatalogParameterValue | string[];
 type ParameterMap = Record<string, unknown>;
 type StrategyPhaseMode = "automatic" | "manual";
 
@@ -130,31 +128,6 @@ type StrategyInput = {
   value_type: string;
   filter_operators?: string[];
   unit?: string;
-};
-
-type StrategyCatalogItem = {
-  category: string;
-  detail: string;
-  group: string;
-  groupOrder: number;
-  id: string;
-  importance: number;
-  kind: string;
-  label: string;
-  metadata: Array<{ label: string; value: string }>;
-  parameter: string;
-  ruleSetId?: string;
-  usage: string;
-};
-
-type SectionCatalogItem = {
-  detail: string;
-  group: string;
-  groupOrder: number;
-  id: string;
-  label: string;
-  path: string;
-  value: SectionCatalogValue;
 };
 
 type RuleCondition = {
@@ -2779,9 +2752,7 @@ function StrategyStudio({ approved, draft, label, onChange, onDeleteProfile, onD
 }) {
   const [selectedId, setSelectedId] = useState(section.profiles[0]?.profile_id ?? "");
   const [studioView, setStudioView] = useState<"select" | "configure">("select");
-  const [editorMode, setEditorMode] = useState<"catalog" | "guided">("guided");
   const [activeStage, setActiveStage] = useState<StrategyAuthoringStage>("identity");
-  const [catalogItem, setCatalogItem] = useState<StrategyCatalogItem | null>(null);
   const [creationMode, setCreationMode] = useState<"blank" | null>(null);
   const [creationName, setCreationName] = useState("");
   const [creationDefinitionId, setCreationDefinitionId] = useState("");
@@ -2813,9 +2784,7 @@ function StrategyStudio({ approved, draft, label, onChange, onDeleteProfile, onD
     const next = cloneStrategyProfile(source, section.profiles, uniqueProfileName(`${source.name} copy`, section.profiles));
     onChange({ ...section, profiles: [...section.profiles, next] });
     setSelectedId(next.profile_id);
-    setCatalogItem(null);
     setActiveStage("identity");
-    setEditorMode("guided");
     setStudioView("configure");
   }
 
@@ -2834,7 +2803,6 @@ function StrategyStudio({ approved, draft, label, onChange, onDeleteProfile, onD
     onChange({ ...section, profiles: [...section.profiles, next] });
     setSelectedId(next.profile_id);
     setActiveStage("identity");
-    setEditorMode("guided");
     setStudioView("configure");
     setCreationMode(null);
     setCreationName("");
@@ -2856,7 +2824,6 @@ function StrategyStudio({ approved, draft, label, onChange, onDeleteProfile, onD
     try {
       const saved = await onDeleteProfile(profileId);
       setSelectedId(saved.strategy.default_profile_id);
-      setCatalogItem(null);
       setStudioView("select");
     } catch {
       // The parent displays the backend error and preserves the current profile.
@@ -2866,7 +2833,6 @@ function StrategyStudio({ approved, draft, label, onChange, onDeleteProfile, onD
   const advanced = flattenPrimitives(selected.parameters).filter((row) => (
     !LEGACY_ENTRY_LOGIC_PATHS.has(row.path) && isDirectlyEditableStrategyParameter(row.path, row.value)
   ));
-  const catalogParameters = strategyEditableParameters(selected);
   const entryRules = selected.lifecycle.initial_entry;
   const creationNameConflict = Boolean(creationName.trim()) && section.profiles.some((row) => row.name.trim().toLocaleLowerCase() === creationName.trim().toLocaleLowerCase());
 
@@ -2883,26 +2849,18 @@ function StrategyStudio({ approved, draft, label, onChange, onDeleteProfile, onD
     onDelete={(profileId) => void removeProfile(profileId)}
     onClone={cloneProfileFromSelection}
     onNameChange={setCreationName}
-    onModify={(profileId) => { setSelectedId(profileId); setCatalogItem(null); setActiveStage("identity"); setEditorMode("guided"); setStudioView("configure"); }}
+    onModify={(profileId) => { setSelectedId(profileId); setActiveStage("identity"); setStudioView("configure"); }}
     profiles={section.profiles}
   />;
 
   return (
     <div className="strategy-studio-workspace">
       <nav className="strategy-editor-toolbar" aria-label="Strategy editor navigation">
-        <button className="button compact" onClick={() => { setCatalogItem(null); setStudioView("select"); }} type="button"><ArrowLeft size={14} /> All strategies</button>
-        <span><strong>{selected.name}</strong><small>{editorMode === "catalog" ? "Parameter Catalog" : "Guided Configuration"}</small></span>
-        <div className="strategy-editor-modes" role="tablist" aria-label="Strategy editor views">
-          <button aria-selected={editorMode === "catalog"} onClick={() => setEditorMode("catalog")} role="tab" type="button"><Search size={14} /> Parameter Catalog</button>
-          <button aria-selected={editorMode === "guided"} onClick={() => { setActiveStage("identity"); setEditorMode("guided"); }} role="tab" type="button"><BookOpenCheck size={14} /> Guided Configuration</button>
-        </div>
+        <button className="button compact" onClick={() => setStudioView("select")} type="button"><ArrowLeft size={14} /> All strategies</button>
+        <span><strong>{selected.name}</strong><small>Guided Configuration</small></span>
       </nav>
-      <div className={`configuration-workbench strategy-editor-${editorMode}`}>
-      {editorMode === "catalog" ? <>
-      <StrategyParameterCatalog catalog={section.input_catalog} parameters={catalogParameters} ruleSets={ruleSets} onSelect={setCatalogItem} selectedId={catalogItem?.id ?? null} />
-
-      {catalogItem?.ruleSetId ? <StrategyRuleSetDetail catalog={section.input_catalog} onChange={(ruleSet) => replaceRuleSets(ruleSets.map((row) => row.rule_set_id === ruleSet.rule_set_id ? ruleSet : row))} ruleSet={ruleSets.find((row) => row.rule_set_id === catalogItem.ruleSetId)} /> : catalogItem ? <StrategyParameterDetail item={catalogItem} onChange={(value) => replaceProfile(setStrategyProfilePath(selected, catalogItem.parameter, value))} value={catalogParameters.find((row) => row.path === catalogItem.parameter)?.value} /> : <main className="strategy-parameter-empty-detail"><Search size={24} /><h2>Select a parameter or rule set</h2><p>Choose an item from the catalog to review and edit it.</p></main>}
-      </> : <main className="configuration-detail">
+      <div className="configuration-workbench strategy-editor-guided">
+      <main className="configuration-detail">
         <StrategyAuthoringFlow
           activeStage={activeStage}
           advanced={advanced}
@@ -2913,7 +2871,7 @@ function StrategyStudio({ approved, draft, label, onChange, onDeleteProfile, onD
           onLabelChange={onLabelChange}
           onProfileChange={replaceProfile}
           onPublish={() => void publishSelected()}
-          onRuleSetEdit={(ruleSetId, created) => { const ruleSet = created ?? ruleSets.find((row) => row.rule_set_id === ruleSetId); if (ruleSet) { setCatalogItem(strategyRuleSetCatalogItem(ruleSet, section.input_catalog)); setEditorMode("catalog"); } }}
+          onRuleSetEdit={() => { window.location.hash = "rule-set-configuration"; }}
           onRuleSetsChange={replaceRuleSets}
           onStageChange={setActiveStage}
           profile={selected}
@@ -3046,7 +3004,7 @@ function StrategyStudio({ approved, draft, label, onChange, onDeleteProfile, onD
           </StoryChapter>
         </article>
         </details>
-      </main>}
+      </main>
     </div>
     </div>
   );
@@ -3093,86 +3051,6 @@ function StrategySelectionPage({ creationMode, definitionId, definitions, name, 
         </span>} description={profile.description || "No description"} identity={profile.profile_id} key={profile.profile_id} kind="strategy_profile" metadata={[{ label: "Strategy", value: profile.definition_id }, { label: "Revision", value: profile.revision }, { label: "Origin", value: readableLabel(profile.origin) }]} status={profile.publication_status === "published" ? "Published" : profile.publication_status === "template" ? "Template" : "Draft"} title={profile.name} />)}
     </section>
   </main>;
-}
-
-function strategyRuleSetCatalogItem(ruleSet: RuleSetDefinition, catalog: StrategyInput[]): StrategyCatalogItem {
-  return { category: "Rule sets", detail: ruleSetMeaning(ruleSet, catalog), group: "Rule sets", groupOrder: -1, id: `rule-set:${ruleSet.rule_set_id}`, importance: 0, kind: "Rule set", label: ruleSet.name, metadata: [{ label: "Conditions", value: String(ruleSet.conditions.length) }, { label: "Condition logic", value: readableLabel(ruleSet.operator) }], parameter: "", ruleSetId: ruleSet.rule_set_id, usage: "Lifecycle expressions reference this definition by stable id. Editing it updates every stage that uses it." };
-}
-
-function StrategyParameterCatalog({ catalog, parameters, ruleSets, onSelect, selectedId }: { catalog: StrategyInput[]; parameters: Array<{ group: string; groupOrder: number; importance: number; path: string; value: CatalogParameterValue }>; ruleSets: RuleSetDefinition[]; onSelect: (item: StrategyCatalogItem) => void; selectedId: string | null }) {
-  const [search, setSearch] = useState("");
-  const items = useMemo(() => [...ruleSets.map((ruleSet) => strategyRuleSetCatalogItem(ruleSet, catalog)), ...parameters.map((parameter) => ({
-      category: parameter.group,
-      detail: helpForPath(parameter.path),
-      group: parameter.group,
-      groupOrder: parameter.groupOrder,
-      id: `strategy:${parameter.path}`,
-      importance: parameter.importance,
-      kind: "Strategy parameter",
-      label: strategyParameterLabel(parameter.path),
-      metadata: [{ label: "Value type", value: parameter.value === null ? "unset" : typeof parameter.value }, { label: "Current value", value: parameter.value === null ? "Unset" : String(parameter.value) }],
-      parameter: parameter.path,
-      usage: "This value is part of the Strategy Profile and is read when the corresponding stage of the strategy lifecycle runs.",
-    }))].sort((left, right) => left.groupOrder - right.groupOrder || left.importance - right.importance), [catalog, parameters, ruleSets]);
-  const normalizedSearch = search.trim().toLocaleLowerCase();
-  const filtered = items.filter((item) => !normalizedSearch || [item.label, item.parameter, item.category, item.kind, item.detail, ...item.metadata.flatMap((row) => [row.label, row.value])].join(" ").toLocaleLowerCase().includes(normalizedSearch));
-  const groups = filtered.reduce<Array<{ label: string; items: StrategyCatalogItem[] }>>((result, item) => {
-    const existing = result.find((group) => group.label === item.group);
-    if (existing) existing.items.push(item);
-    else result.push({ label: item.group, items: [item] });
-    return result;
-  }, []);
-
-  return <aside className="strategy-parameter-catalog">
-    <header><div><span>Parameter catalog</span><strong>{filtered.length} of {items.length}</strong></div><small>Search every editable parameter in this Strategy Profile.</small></header>
-    <label className="strategy-parameter-search"><Search size={14} /><input aria-label="Search strategy parameters" onChange={(event) => setSearch(event.target.value)} placeholder="Search parameters" type="search" value={search} /></label>
-    <div className="strategy-parameter-list">
-      {groups.map((group) => <section className="strategy-parameter-group" key={group.label}><header><strong>{group.label}</strong><span>{group.items.length}</span></header>{group.items.map((item) => <button aria-current={selectedId === item.id ? "true" : undefined} key={item.id} onClick={() => onSelect(item)} type="button"><span><strong>{item.label}</strong><small>{item.ruleSetId ? item.detail : `${item.kind} · ${readableLabel(item.category)}`}</small></span><ChevronRight size={13} /></button>)}</section>)}
-      {!filtered.length ? <div className="strategy-parameter-empty"><Search size={16} /><span>No matching parameters</span></div> : null}
-    </div>
-  </aside>;
-}
-
-function StrategyRuleSetDetail({ catalog, onChange, ruleSet }: { catalog: StrategyInput[]; onChange: (value: RuleSetDefinition) => void; ruleSet?: RuleSetDefinition }) {
-  if (!ruleSet) return <main className="strategy-parameter-empty-detail"><TriangleAlert size={24} /><h2>Rule set unavailable</h2><p>The selected lifecycle reference does not resolve to a catalog definition.</p></main>;
-  const group: RuleGroup = { conditions: ruleSet.conditions, enabled: ruleSet.enabled, group_id: ruleSet.rule_set_id, label: ruleSet.name, operator: ruleSet.operator, required_score: ruleSet.required_score };
-  return <main className="strategy-parameter-detail-page strategy-rule-set-detail">
-    <section className="strategy-rule-set-authoring">
-      <header className="strategy-identity-intro"><h2>{ruleSet.name}</h2>{ruleSet.description ? <p>{ruleSet.description}</p> : null}</header>
-      <RuleSetMeaning catalog={catalog} ruleSet={ruleSet} />
-      <div className="strategy-rule-set-editor"><RuleGroupEditor catalog={catalog} defaultOpen group={group} hideName onChange={(next) => onChange({ ...ruleSet, conditions: next.conditions, enabled: next.enabled, operator: next.operator, required_score: next.required_score })} onRemove={() => undefined} removable={false} /></div>
-    </section>
-  </main>;
-}
-
-function StrategyParameterDetail({ item, onChange, value }: { item: StrategyCatalogItem; onChange: (value: Primitive) => void; value: CatalogParameterValue | undefined }) {
-  const fieldHelp: HelpContent = item.parameter.startsWith("lifecycle.phase_modes.") ? {
-    role: "Choose whether Strategy owns this lifecycle decision.",
-    values: {
-      Automatic: "Strategy evaluates the saved phase configuration and may emit intent when it passes.",
-      Manual: "Strategy skips this phase and emits no intent; the saved configuration remains available.",
-    },
-  } : item.detail;
-  return <main className="strategy-parameter-detail-page">
-    <header><span>{item.group}</span><h2>{item.label}</h2><p>{item.detail}</p></header>
-    <section className="strategy-parameter-editor"><ParameterField definition={field(item.parameter, item.label, fieldHelp, controlFor(value ?? ""), choicesFor(item.parameter), unitFor(item.parameter), stepFor(value ?? ""))} onChange={onChange} value={value ?? ""} /></section>
-    <ParameterDocumentation group={item.group} path={item.parameter} value={value} />
-    <section className="strategy-parameter-reference"><div><span>Runtime parameter</span><strong>{item.parameter}</strong></div>{item.metadata.filter((row) => row.label !== "Current value").map((row) => <div key={`${item.id}-${row.label}`}><span>{row.label}</span><strong>{row.value}</strong></div>)}</section>
-    <footer><Target size={18} /><div><strong>Runtime effect</strong><p>{item.usage}</p></div></footer>
-  </main>;
-}
-
-function ParameterDocumentation({ documentation: suppliedDocumentation, group, path, value }: { documentation?: StrategyParameterDocumentation; group: string; path: string; value: CatalogParameterValue | undefined }) {
-  const documentation = suppliedDocumentation ?? strategyParameterDocumentation(path, group, value);
-  return <section aria-label="Parameter documentation" className="strategy-parameter-documentation">
-    <header><BookOpenCheck size={18} /><div><span>Parameter guidance</span><h3>Understand this setting before changing it</h3></div></header>
-    <div className="strategy-parameter-documentation-copy">
-      <article data-tone="information"><CircleHelp size={18} /><div><strong>What it controls</strong>{documentation.role.map((paragraph) => <p key={paragraph}>{paragraph}</p>)}</div></article>
-      <article data-tone="behavior"><GitBranch size={18} /><div><strong>When it applies</strong>{documentation.timing.map((paragraph) => <p key={paragraph}>{paragraph}</p>)}</div></article>
-      <article data-tone="impact"><Target size={18} /><div><strong>What changes</strong>{documentation.impact.map((paragraph) => <p key={paragraph}>{paragraph}</p>)}</div></article>
-      <article data-tone={documentation.cautionTone}><TriangleAlert size={18} /><div><strong>Check before changing</strong>{documentation.caution.map((paragraph) => <p key={paragraph}>{paragraph}</p>)}</div></article>
-    </div>
-  </section>;
 }
 
 function StrategyAuthoringFlow({ activeStage, advanced, approved, draft, entryRules, label, onLabelChange, onProfileChange, onPublish, onRuleSetEdit, onRuleSetsChange, onStageChange, profile, publishing, revisions, ruleSets, section }: {
@@ -4032,7 +3910,7 @@ function DecisionRulesEditor({ catalog = [], onChange, onRuleSetEdit = () => und
   </div>;
 }
 
-function RuleSetCreationDialog({ catalog, description = "The saved rule set becomes available in the Parameter Catalog and every lifecycle rule selector.", eyebrow = "New reusable rule set", onCancel, onChange, onSave, ruleSet, title = "Define the evidence and save it" }: {
+function RuleSetCreationDialog({ catalog, description = "The saved rule set becomes available in the Rule Set Library and every lifecycle rule selector.", eyebrow = "New reusable rule set", onCancel, onChange, onSave, ruleSet, title = "Define the evidence and save it" }: {
   catalog: StrategyInput[];
   description?: string;
   eyebrow?: string;
@@ -4765,7 +4643,7 @@ function AddStepsEditor({ catalog, eligibleSessions, executionPolicies, onChange
 }
 
 type ConfigurableSection = Extract<TradingConfigurationSection, "assignments" | "portfolio" | "oms" | "accounts">;
-type SectionStudioView = "guided" | "catalog" | "structure";
+type SectionStudioView = "guided" | "structure";
 
 const SECTION_STUDIO_COPY: Record<ConfigurableSection, { managed: string; title: string }> = {
   accounts: { managed: "Manage accounts", title: "ACCOUNTS & SESSIONS" },
@@ -4786,12 +4664,6 @@ function ConfigurationSectionStudio({ draft, guided, onChange, onDraftChange, se
   section: ConfigurableSection;
 }) {
   const [view, setView] = useState<SectionStudioView>("structure");
-  const items = useMemo(() => sectionCatalogItems(section, draft), [draft, section]);
-  const [selectedPath, setSelectedPath] = useState(items[0]?.path ?? "");
-  const selected = items.find((item) => item.path === selectedPath) ?? items[0];
-  useEffect(() => {
-    if (!selectedPath || !items.some((item) => item.path === selectedPath)) setSelectedPath(items[0]?.path ?? "");
-  }, [items, selectedPath]);
   const copy = SECTION_STUDIO_COPY[section];
   const hasSeparateStructureView = true;
   const structure = section === "assignments"
@@ -4802,196 +4674,16 @@ function ConfigurationSectionStudio({ draft, guided, onChange, onDraftChange, se
         ? <OmsEditor section={draft.oms} onChange={onChange as (value: OmsSection) => void} />
         : <AccountsEditor draft={draft} onChange={onChange as (value: AccountSection) => void} />;
 
-  function replacePath(path: string, value: SectionCatalogValue) {
-    onChange(setSectionValue(draft[section], path, value) as Draft[ConfigurableSection]);
-  }
-
   return <div className="strategy-studio-workspace configuration-section-studio">
     <nav className="strategy-editor-toolbar">
-      <span><strong>{copy.title}</strong><small>{view === "guided" ? "Guided Configuration" : view === "catalog" ? "Parameter Catalog" : copy.managed}</small></span>
+      <span><strong>{copy.title}</strong><small>{view === "guided" ? "Guided Configuration" : copy.managed}</small></span>
       <div className="configuration-section-toolbar-actions">
-        <div aria-label="Configuration view" className="strategy-editor-mode-tabs" role="tablist">
-          <button aria-selected={view === "catalog"} onClick={() => setView("catalog")} role="tab" type="button"><Search size={13} /> Parameter Catalog</button>
-          <button aria-selected={view === "guided"} onClick={() => setView("guided")} role="tab" type="button"><BookOpenCheck size={13} /> Guided Configuration</button>
-        </div>
         {hasSeparateStructureView ? <button className="button compact configuration-structure-button" onClick={() => setView(view === "structure" ? "guided" : "structure")} type="button"><Settings2 size={14} /> {view === "structure" ? "Done" : copy.managed}</button> : null}
       </div>
     </nav>
     {view === "guided" ? <div className="configuration-guided-workspace configuration-section-guided">{guided}</div> : null}
-    {view === "catalog" ? <div className="configuration-workbench strategy-editor-catalog configuration-section-catalog">
-      <SectionParameterCatalog items={items} onSelect={setSelectedPath} selectedPath={selected?.path ?? ""} />
-      {selected ? <SectionParameterDetail draft={draft} item={selected} onChange={(value) => replacePath(selected.path, value)} section={section} /> : <EmptyState detail="No user-adjustable parameters are available in this section." title="No parameters" />}
-    </div> : null}
     {view === "structure" && hasSeparateStructureView ? <div className="configuration-section-structure">{structure}</div> : null}
   </div>;
-}
-
-function SectionParameterCatalog({ items, onSelect, selectedPath }: { items: SectionCatalogItem[]; onSelect: (path: string) => void; selectedPath: string }) {
-  const [query, setQuery] = useState("");
-  const filtered = items.filter((item) => `${item.label} ${item.group} ${item.detail} ${item.path}`.toLowerCase().includes(query.trim().toLowerCase()));
-  const groups = [...new Set(filtered.map((item) => item.group))];
-  return <aside className="strategy-parameter-catalog">
-    <header><div><span>Parameter catalog</span><strong>{filtered.length} of {items.length}</strong></div><p>Search every editable setting in this configuration.</p></header>
-    <label className="strategy-parameter-search"><Search size={14} /><input aria-label="Search parameters" onChange={(event) => setQuery(event.target.value)} placeholder="Search parameters" value={query} /></label>
-    <div className="strategy-parameter-list">{groups.map((group) => <section className="strategy-parameter-group" key={group}><header><span>{group}</span><strong>{filtered.filter((item) => item.group === group).length}</strong></header>{filtered.filter((item) => item.group === group).map((item) => <button aria-current={selectedPath === item.path ? "page" : undefined} key={item.id} onClick={() => onSelect(item.path)} type="button"><span><strong>{item.label}</strong><small>{item.detail}</small></span><ChevronRight size={14} /></button>)}</section>)}</div>
-  </aside>;
-}
-
-function SectionParameterDetail({ draft, item, onChange, section }: { draft: Draft; item: SectionCatalogItem; onChange: (value: SectionCatalogValue) => void; section: ConfigurableSection }) {
-  const documentation = sectionParameterDocumentation(section, item);
-  return <main className="strategy-parameter-detail-page">
-    <header><span>{item.group}</span><h2>{item.label}</h2><p>{item.detail}</p></header>
-    <section className="strategy-parameter-editor"><SectionParameterField draft={draft} item={item} onChange={onChange} section={section} /></section>
-    <ParameterDocumentation documentation={documentation} group={item.group} path={item.path} value={Array.isArray(item.value) ? item.value.join(", ") : item.value} />
-    <section className="strategy-parameter-reference"><div><span>Configuration path</span><strong>{item.path}</strong></div><div><span>Value type</span><strong>{Array.isArray(item.value) ? "list" : item.value === null ? "optional number" : typeof item.value}</strong></div></section>
-    <footer><Target size={18} /><div><strong>Authority</strong><p>{sectionAuthority(section)}</p></div></footer>
-  </main>;
-}
-
-function SectionParameterField({ draft, item, onChange, section }: { draft: Draft; item: SectionCatalogItem; onChange: (value: SectionCatalogValue) => void; section: ConfigurableSection }) {
-  const help = item.detail;
-  const options = sectionParameterOptions(section, item.path, draft);
-  if (Array.isArray(item.value)) {
-    if (item.path.endsWith("allowed_environments") || item.path.endsWith(".modes")) return <div className="configuration-field configuration-list-field" data-editable="true"><span>{item.label}</span><ModeSelector modes={item.value as RuntimeMode[]} onChange={onChange} /><small>{help}</small></div>;
-    return <TextField help={help} label={item.label} onChange={(value) => onChange(value.split(",").map((part) => part.trim()).filter(Boolean))} value={item.value.join(", ")} />;
-  }
-  if (options) return <SelectField help={help} label={item.label} onChange={onChange} options={options} value={String(item.value ?? "")} />;
-  if (typeof item.value === "boolean") return <BooleanField help={help} label={item.label} onChange={onChange} value={item.value} />;
-  if (typeof item.value === "number") return <NumberField help={help} label={item.label} onChange={onChange} step={stepFor(item.value)} unit={unitFor(item.path)} value={item.value} />;
-  if (item.value === null) return <OptionalNumberField help={help} label={item.label} onChange={onChange} step={0.01} unit={unitFor(item.path)} value={null} />;
-  if (item.path.endsWith("description")) return <label className="configuration-field configuration-textarea-field" data-editable="true"><span>{item.label}</span><small>{help}</small><textarea onChange={(event) => onChange(event.target.value)} value={String(item.value)} /></label>;
-  return <TextField help={help} label={item.label} onChange={onChange} value={String(item.value)} />;
-}
-
-function sectionCatalogItems(section: ConfigurableSection, draft: Draft): SectionCatalogItem[] {
-  const source = draft[section];
-  return flattenSectionValues(source).filter(({ path }) => isSectionEditablePath(path)).map(({ path, value }) => {
-    const group = sectionCatalogGroup(section, path, source);
-    return { detail: sectionParameterHelp(section, path), group: group.group, groupOrder: group.order, id: `${section}:${path}`, label: sectionParameterLabel(path), path, value };
-  }).sort((left, right) => left.groupOrder - right.groupOrder || left.label.localeCompare(right.label));
-}
-
-function flattenSectionValues(value: unknown, prefix = "", result: Array<{ path: string; value: SectionCatalogValue }> = []) {
-  if (value === null && prefix) result.push({ path: prefix, value: null });
-  else if (["boolean", "number", "string"].includes(typeof value) && prefix) result.push({ path: prefix, value: value as Primitive });
-  else if (Array.isArray(value)) {
-    if (value.every((item) => typeof item === "string")) result.push({ path: prefix, value: value as string[] });
-    else value.forEach((item, index) => flattenSectionValues(item, `${prefix}.${index}`, result));
-  } else if (value && typeof value === "object") Object.entries(value).forEach(([key, item]) => flattenSectionValues(item, prefix ? `${prefix}.${key}` : key, result));
-  return result;
-}
-
-function isSectionEditablePath(path: string) {
-  const parts = path.split(".");
-  const leaf = parts.at(-1) ?? path;
-  if (parts.some((part) => SECTION_SYSTEM_KEYS.has(part))) return false;
-  if (["system_managed", "source_account_id", "scanner_view_id", "anchor_source"].includes(leaf)) return false;
-  if (["emergency_exit", "protective_exit", "protective_exit_authority"].includes(leaf)) return false;
-  if (/^deployments\.\d+\.run_plan_id$|^universes\.\d+\.universe_id$|^mandates\.\d+\.mandate_id$|^policies\.\d+\.policy_id$|^groups\.\d+\.group_id$|^profiles\.\d+\.profile_id$|^execution_policies\.\d+\.policy_id$|^protection_profiles\.\d+\.profile_id$|^bindings\.\d+\.account_key$/.test(path)) return false;
-  if (/^protection_profiles\.\d+\.slices\.\d+\.slice_id$/.test(path)) return false;
-  if (path.includes("runtime_assignments") || path.includes("safety_supervisor.enabled_by_environment.live")) return false;
-  return true;
-}
-
-function sectionCatalogGroup(section: ConfigurableSection, path: string, source: Draft[ConfigurableSection]) {
-  const [collection, rawIndex, subgroup] = path.split(".");
-  const index = Number(rawIndex);
-  const entity = Array.isArray((source as unknown as ParameterMap)[collection]) ? ((source as unknown as ParameterMap)[collection] as ParameterMap[])[index] : undefined;
-  const name = typeof entity?.name === "string" ? entity.name : `${readableLabel(collection)} ${Number.isFinite(index) ? index + 1 : ""}`.trim();
-  const orderMap: Record<ConfigurableSection, Record<string, number>> = {
-    accounts: { bindings: 0 }, assignments: { deployments: 0, universes: 1 }, oms: { profiles: 0, execution_policies: 1, protection_profiles: 2 }, portfolio: { mandates: 0, policies: 1, groups: 2 },
-  };
-  return { group: subgroup === "slices" ? `${name} · Protection slices` : name, order: (orderMap[section][collection] ?? 9) * 100 + (Number.isFinite(index) ? index : 0) };
-}
-
-function sectionParameterLabel(path: string) {
-  const parts = path.split(".");
-  const rawLeaf = parts.at(-1) ?? path;
-  const aliases: Record<string, string> = {
-    book_id: "Portfolio book", oms_profile_id: "OMS profile", policy_id: "Policy", portfolio_policy_id: "Portfolio policy",
-    profile_id: path.startsWith("deployments.") ? "Strategy Profile" : "Profile", protection_profile_id: "Protection profile",
-    run_plan_id: "Run Plan", session_key: "Gateway session", source_account_env: "Broker account environment key", universe_id: "Watch Universe",
-  };
-  const leaf = aliases[rawLeaf] ?? readableLabel(rawLeaf);
-  const parent = parts.at(-2) ?? "";
-  if (/^\d+$/.test(parent)) return leaf;
-  if (["settings", "envelope", "protection", "stop", "trailing"].includes(parent)) return `${readableLabel(parent)} · ${leaf}`;
-  return leaf;
-}
-
-function sectionParameterHelp(section: ConfigurableSection, path: string) {
-  const leaf = path.split(".").at(-1) ?? path;
-  const specific: Record<string, string> = {
-    account_class: "Sets the account capability class used by Portfolio and broker preflight.",
-    allowed_environments: "Limits the runtime environments in which this Run Plan may be selected.",
-    allocation_weight: "Sets this mandate's relative allocation when capital is distributed across eligible mandates.",
-    enabled: "Includes or excludes this configured object from new runs after publication.",
-    maximum_cash_fraction: "Caps the share of otherwise available account cash this mandate may use.",
-    maximum_planned_risk_fraction: "Caps combined planned loss after broker state, reservations, and protective stops are reconciled.",
-    maximum_positions: "Caps simultaneous open and reserved positions attributable to this mandate.",
-    modes: "Limits which runtime modes may bind this account.",
-    partial_fill_policy: "Controls what OMS does with the broker-confirmed unfilled remainder.",
-    quote_source: "Selects the authoritative quote feed used by this execution policy.",
-    source_account_env: "Names the local environment key that resolves the broker account without storing its value in configuration.",
-  };
-  return specific[leaf] ?? `Changes ${readableLabel(leaf).toLowerCase()} for this ${section === "assignments" ? "Run Plan configuration" : readableLabel(section)}.`;
-}
-
-function sectionParameterOptions(section: ConfigurableSection, path: string, draft: Draft) {
-  const leaf = path.split(".").at(-1) ?? path;
-  const values: Record<string, string[]> = {
-    account_class: ["simulated", "paper", "cash", "margin", "registered"], add: ["inherit", "disabled", "manual", "confirm", "automatic"], add_policy: ["inherit", "replace", "append"], assignment_mode: ["single", "replicated", "weighted", "partitioned"],
-    base_currency: ["USD", "CAD", "EUR", "GBP", "JPY"], maximum_action_authority: ["manual", "confirm", "automatic"],
-    default: ["manual", "confirm", "automatic"], entry_urgency: ["patient", "regular", "urgent", "very_urgent"], exit_authority: ["manual", "confirm", "automatic"], exit_urgency: ["urgent", "very_urgent"],
-    initial_entry: ["inherit", "disabled", "manual", "confirm", "automatic"], initial_entry_authority: ["manual", "confirm", "automatic"], order_type: ["STP", "STOP_LIMIT"],
-    partial_fill_policy: ["complete_remainder", "accept_partial", "cancel_remainder"], profit_pocket_transition: ["move_to_breakeven", "start_swing_trail", "keep_existing"], quote_source: ["qmd", "ibkr", "simulated"],
-    reentry: ["inherit", "disabled", "manual", "confirm", "automatic"], reentry_authority: ["manual", "confirm", "automatic"], session_end_behavior: ["keep_watching", "stop_when_flat", "exit_and_stop"], session_routing: ["smart"],
-    source: ["configured_symbols", "scanner_view", "watchlist"], stop_method: ["structure", "volatility", "hybrid"], strategic_exit: ["inherit", "disabled", "manual", "confirm", "automatic"], structural_timeframe: ["100ms", "1s", "5s", "10s", "1m"],
-  };
-  if (path.endsWith(".stop.rule_type")) return ["fixed_price", "fixed_percent", "fixed_bps", "fixed_cash_risk", "swing_anchored", "volatility", "hybrid", "catastrophic"].map((value) => ({ label: readableLabel(value), value }));
-  if (path.endsWith(".trailing.rule_type")) return ["none", "broker_amount", "broker_percent", "volatility_trail", "swing_trail", "chandelier", "breakeven_then_trail", "profit_lock_r", "time_tightening"].map((value) => ({ label: readableLabel(value), value }));
-  if (path.endsWith("anchor_ordinal")) return ["most_recent", "second_recent", "third_recent", "fourth_recent"].map((value) => ({ label: readableLabel(value), value }));
-  let options: Array<{ description?: string; label: string; value: string }> | undefined;
-  if (leaf === "profile_id" && section === "assignments") options = draft.strategy.profiles.map((row) => ({ description: row.description, label: row.name, value: row.profile_id }));
-  else if (leaf === "oms_profile_id") options = draft.oms.profiles.map((row) => ({ description: row.description, label: row.name, value: row.profile_id }));
-  else if (leaf === "universe_id") options = draft.assignments.universes.map((row) => ({ description: row.description, label: row.name, value: row.universe_id }));
-  else if (leaf === "account_key") options = draft.accounts.bindings.map((row) => ({ description: `${readableLabel(row.account_class)} account`, label: row.name, value: row.account_key }));
-  else if (leaf === "run_plan_id") options = draft.assignments.deployments.map((row) => ({ description: row.description, label: row.name, value: row.run_plan_id }));
-  else if (leaf === "portfolio_policy_id") options = draft.portfolio.policies.map((row) => ({ label: String(row.name ?? row.policy_id), value: String(row.policy_id) }));
-  else if (leaf.endsWith("execution_policy_id")) options = draft.oms.execution_policies.map((row) => ({ description: row.description, label: row.name, value: row.policy_id }));
-  else if (leaf === "protection_profile_id") options = draft.oms.protection_profiles.map((row) => ({ description: row.description, label: row.name, value: row.profile_id }));
-  else if (leaf === "book_id") options = [{ description: "Use the default portfolio ownership and arbitration book.", label: "Default book", value: "default" }];
-  else if (values[leaf]) options = values[leaf].map((value) => ({ label: readableLabel(value), value }));
-  return options;
-}
-
-function setSectionValue<T>(source: T, path: string, value: SectionCatalogValue): T {
-  const result = deepClone(source) as unknown;
-  const parts = path.split(".");
-  let cursor = result as ParameterMap | unknown[];
-  parts.slice(0, -1).forEach((part) => { cursor = Array.isArray(cursor) ? cursor[Number(part)] as ParameterMap : cursor[part] as ParameterMap; });
-  const leaf = parts.at(-1) ?? path;
-  if (Array.isArray(cursor)) cursor[Number(leaf)] = value;
-  else cursor[leaf] = value;
-  return result as T;
-}
-
-function sectionAuthority(section: ConfigurableSection) {
-  if (section === "assignments") return "Run Plans bind reusable behavior, universe, OMS, and permitted environments. They do not allocate account capital.";
-  if (section === "portfolio") return "Portfolio approves account-specific quantity and arbitrates shared capital after synchronized broker state and risk checks.";
-  if (section === "oms") return "OMS executes approved intent and maintains protection. It cannot increase Portfolio-approved quantity or invent Strategy intent.";
-  return "Account bindings establish exact runtime identity and eligible modes. Broker identifiers remain local when an environment key is configured.";
-}
-
-function sectionParameterDocumentation(section: ConfigurableSection, item: SectionCatalogItem): StrategyParameterDocumentation {
-  const value = Array.isArray(item.value) ? item.value.join(", ") : String(item.value ?? "Automatic");
-  return {
-    role: [item.detail, sectionAuthority(section)],
-    timing: [`The session value is ${value}. It applies only to new runs after the configuration is validated and published.`],
-    impact: [`Changing ${item.label.toLowerCase()} updates the ${readableLabel(section)} configuration used by every guided and catalog view in this session.`],
-    caution: [section === "accounts" ? "Verify broker identity and session ownership before enabling Paper or Live. Secret account values are never stored through this catalog." : "Review dependent references and safety limits before publication; active pinned runs remain unchanged."],
-    cautionTone: section === "accounts" || section === "portfolio" || section === "oms" ? "safety" : "warning",
-  };
 }
 
 function RunPlanCompositionEditor({ draft, onChange, onDraftChange }: {
@@ -6038,135 +5730,6 @@ function flattenPrimitives(value: ParameterMap, prefix = ""): Array<{ path: stri
   });
 }
 
-const STRATEGY_CATALOG_GROUPS = [
-  "Profile",
-  "Observe",
-  "Initial entry · Opportunity",
-  "Initial entry · Confirmation",
-  "Initial entry · Blockers",
-  "Initial entry · Request",
-  "Position adds",
-  "Reentry",
-  "Strategic exits",
-  "Capabilities",
-  "Engine parameters",
-] as const;
-
-const STRATEGY_CATALOG_OMITTED_KEYS = new Set([
-  "profile_id", "definition_id", "definition_revision", "origin", "protected", "editable", "revision",
-  "condition_id", "group_id", "step_id", "rule_set_id", "capability_id",
-]);
-
-const STRATEGY_CATALOG_GUIDED_OMITTED_LEAVES = new Set([
-  "deadline_ms",
-  "description",
-  "name",
-  "summary",
-]);
-
-function flattenStrategyPrimitives(value: unknown, prefix = "", result: Array<{ path: string; value: CatalogParameterValue }> = []): Array<{ path: string; value: CatalogParameterValue }> {
-  if (value === null && prefix) {
-    result.push({ path: prefix, value: null });
-    return result;
-  }
-  if (["boolean", "number", "string"].includes(typeof value)) {
-    result.push({ path: prefix, value: value as Primitive });
-    return result;
-  }
-  if (!value || typeof value !== "object") return result;
-  Object.entries(value).forEach(([key, item]) => {
-    if (STRATEGY_CATALOG_OMITTED_KEYS.has(key)) return;
-    flattenStrategyPrimitives(item, prefix ? `${prefix}.${key}` : key, result);
-  });
-  return result;
-}
-
-function strategyCatalogGroupForPath(path: string): { group: string; groupOrder: number } {
-  let groupOrder = 0;
-  if (path === "lifecycle.phase_modes.initial_entry") return { group: "Initial entry · Mode", groupOrder: 2 };
-  if (path === "lifecycle.phase_modes.manage") return { group: "Position management", groupOrder: 6 };
-  if (path === "lifecycle.phase_modes.reentry") return { group: "Reentry", groupOrder: 7 };
-  if (path === "lifecycle.phase_modes.exit") return { group: "Strategic exits", groupOrder: 8 };
-  if (path.startsWith("lifecycle.trading_behavior")) groupOrder = 1;
-  else if (path.startsWith("lifecycle.initial_entry.opportunity")) groupOrder = 2;
-  else if (path.startsWith("lifecycle.initial_entry.confirmation")) groupOrder = 3;
-  else if (path.startsWith("lifecycle.initial_entry.blockers")) groupOrder = 4;
-  else if (path.startsWith("lifecycle.initial_entry.capital_request") || path.startsWith("lifecycle.initial_entry.order_intent")) groupOrder = 5;
-  else if (path.startsWith("lifecycle.initial_entry.add_steps")) groupOrder = 6;
-  else if (path.startsWith("lifecycle.reentry")) groupOrder = 7;
-  else if (path.startsWith("lifecycle.exit")) groupOrder = 8;
-  else if (path.startsWith("capabilities")) groupOrder = 9;
-  else if (path.startsWith("parameters.protection.stop.")) return { group: "Initial stop", groupOrder: 5 };
-  else if (path.startsWith("parameters.protection.trailing.")) return { group: "Position management", groupOrder: 7 };
-  else if (path.startsWith("parameters.protection.luld_profit_target.") || path.startsWith("parameters.profit_pocket.")) return { group: "Strategic exits", groupOrder: 8 };
-  else if (path.startsWith("parameters")) return { group: "Strategy tuning", groupOrder: 10 };
-  return { group: STRATEGY_CATALOG_GROUPS[groupOrder], groupOrder };
-}
-
-function strategyEditableParameters(profile: StrategyProfile) {
-  const editableProfile = {
-    lifecycle: profile.lifecycle,
-    capabilities: profile.capabilities,
-    parameters: profile.parameters,
-  };
-  return flattenStrategyPrimitives(editableProfile).filter(({ path }) => {
-    if (path === "lifecycle.reentry.enabled") return false;
-    const leaf = path.split(".").at(-1) ?? path;
-    if (STRATEGY_CATALOG_GUIDED_OMITTED_LEAVES.has(leaf)) return false;
-    if (path.includes(".expression.")) return false;
-    if (leaf === "operator" && !path.startsWith("parameters.")) return false;
-    return true;
-  }).filter(({ path, value }) => {
-    if (typeof value !== "string") return true;
-    return Boolean(choicesFor(path));
-  }).map((parameter, importance) => ({
-    ...parameter,
-    ...strategyCatalogGroupForPath(parameter.path),
-    importance,
-  }));
-}
-
-function strategyParameterLabel(path: string) {
-  const parts = path.split(".");
-  const leaf = readableLabel(parts.at(-1) ?? path);
-  if (path.startsWith("lifecycle.phase_modes.")) return `${leaf} mode`;
-  const indexedParent = parts.findIndex((part) => /^\d+$/.test(part));
-  if (indexedParent < 1) return leaf;
-  const index = Number(parts[indexedParent]) + 1;
-  const parent = parts[indexedParent - 1];
-  if (parent === "conditions") return `Condition ${index} · ${leaf}`;
-  if (parent === "groups") return `Evidence group ${index} · ${leaf}`;
-  if (parent === "add_steps") return `Add ${index} · ${leaf}`;
-  if (parent === "rule_sets") return `Exit route ${index} · ${leaf}`;
-  if (parent === "capabilities") return `Capability ${index} · ${leaf}`;
-  if (parent === "eligible_sessions") return `Eligible session ${index}`;
-  return `${readableLabel(parent)} ${index} · ${leaf}`;
-}
-
-function setStrategyProfilePath(profile: StrategyProfile, path: string, value: Primitive): StrategyProfile {
-  const result = deepClone(profile) as unknown as ParameterMap;
-  const parts = path.split(".");
-  let cursor: unknown = result;
-  parts.slice(0, -1).forEach((part, index) => {
-    const nextPart = parts[index + 1];
-    if (Array.isArray(cursor)) {
-      cursor = cursor[Number(part)];
-      return;
-    }
-    const record = cursor as ParameterMap;
-    if (!record[part] || typeof record[part] !== "object") record[part] = /^\d+$/.test(nextPart) ? [] : {};
-    cursor = record[part];
-  });
-  const finalPart = parts.at(-1) ?? path;
-  if (Array.isArray(cursor)) cursor[Number(finalPart)] = value;
-  else (cursor as ParameterMap)[finalPart] = value;
-  return result as unknown as StrategyProfile;
-}
-
-function getPath(source: ParameterMap, path: string): unknown {
-  return path.split(".").reduce<unknown>((current, key) => current && typeof current === "object" ? (current as ParameterMap)[key] : undefined, source);
-}
-
 function setPath(source: ParameterMap, path: string, value: Primitive): ParameterMap {
   const result = deepClone(source);
   const parts = path.split(".");
@@ -6214,58 +5777,6 @@ function unitFor(path: string) {
 }
 
 function stepFor(value: Primitive) { return typeof value === "number" && Number.isInteger(value) ? 1 : 0.01; }
-
-type StrategyParameterDocumentation = {
-  caution: string[];
-  cautionTone: "information" | "warning" | "safety";
-  impact: string[];
-  role: string[];
-  timing: string[];
-};
-
-function strategyParameterDocumentation(path: string, group: string, value: CatalogParameterValue | undefined): StrategyParameterDocumentation {
-  const leaf = path.split(".").at(-1) ?? path;
-  const current = value === null || value === undefined || value === "" ? "unset" : typeof value === "boolean" ? (value ? "enabled" : "disabled") : `set to ${String(value)}`;
-  const base: StrategyParameterDocumentation = {
-    role: [`This parameter belongs to ${group} and is stored in the Strategy Profile. Its current value is ${current}.`],
-    timing: ["The strategy reads this value only when execution reaches the lifecycle stage shown by this catalog group. Editing this session does not affect a running campaign until the configuration is validated and published in a release."],
-    impact: [`Changing ${readableLabel(leaf)} changes the configured decision at this stage. The Strategy Engine emits intent from the resulting behavior; Portfolio, safety, and OMS authorities still decide whether that intent may proceed and how it is executed.`],
-    caution: ["Review the resulting behavior in Replay or Backtest before publication. Live runs remain subject to mandatory account guardrails, but guardrails do not make an incorrect strategy rule correct."],
-    cautionTone: "information",
-  };
-
-  if (path === "name") return { ...base, role: ["The name is the human-readable identity of this Strategy Profile. It appears in selection lists, Run Plans, releases, and runtime evidence."], timing: ["The name is descriptive metadata and is not consulted by trading logic."], impact: ["Renaming improves operator recognition without changing entries, position sizing, exits, or order behavior."], caution: ["Use a unique, stable name that describes the strategy rather than a temporary test label. Renaming does not create a new strategy revision by itself."], cautionTone: "information" };
-  if (path === "description") return { ...base, role: ["The description records the strategy's intended setup, market context, and operating purpose for reviewers and operators."], timing: ["It is shown during configuration and review but is not evaluated by the Strategy Engine."], impact: ["A precise description makes later changes auditable and helps users distinguish expected behavior from a defect. It has no direct trading effect."], caution: ["Describe intent and boundaries, not implementation guesses. Keep behavior-changing facts in typed parameters where the runtime can enforce them."], cautionTone: "information" };
-  if (path === "enabled") return { ...base, role: ["This switch controls whether a Run Plan may select the Strategy Profile for a new run."], timing: ["It is checked before a new Strategy Run is admitted. It does not start, stop, or mutate an already running campaign."], impact: [value ? "The profile is currently available to eligible Run Plans." : "The profile is currently unavailable for new Strategy Runs."], caution: ["Disabling availability is not an emergency stop. Use the shared safety authority to halt active trading or block new account risk."], cautionTone: "warning" };
-  if (path.startsWith("lifecycle.phase_modes.")) {
-    const phase = readableLabel(path.split(".").at(-1) ?? "phase");
-    return { ...base, role: [`This mode decides whether Strategy owns the ${phase.toLowerCase()} decision.`], timing: ["The mode is checked before Strategy evaluates any rules or emits intent for this lifecycle phase."], impact: [value === "manual" ? `The ${phase.toLowerCase()} configuration is preserved, but Strategy skips its evaluation and emits no intent for it.` : `Strategy evaluates the configured ${phase.toLowerCase()} pages and may emit intent when their rules pass.`], caution: [path.endsWith(".exit") ? "Manual strategic exit never disables broker-held protection, emergency exits, or account safety." : "Run Plan authority remains separate and still decides whether emitted intent executes automatically or requires confirmation."], cautionTone: path.endsWith(".exit") ? "safety" : "information" };
-  }
-
-  if (path.includes("eligible_sessions")) return { ...base, role: ["This session is one of the time windows in which the strategy may create exposure-increasing actions."], timing: ["The session gate is checked before initial entry, position adds, and reentry. Existing-position protection and emergency action remain active outside eligible sessions."], impact: ["Adding a session expands when the strategy may take risk; removing it narrows opportunity and can prevent otherwise valid evidence from producing an entry request."], caution: ["Session eligibility is not a protection schedule. Broker-held stops and account safety supervision must remain active regardless of this value."], cautionTone: "safety" };
-  if (path.endsWith(".side")) return { ...base, role: ["Side reserves the campaign's trade direction and determines whether entry intent seeks long or short exposure."], timing: ["It is applied when the campaign is created and is carried into entry, add, reentry, and exit interpretation."], impact: ["Changing side reverses the economic meaning of price movement, evidence comparisons, and closing orders. It is a fundamental strategy change, not a display preference."], caution: ["Review every directional evidence source and exit rule after changing side. A rule written for long behavior may be logically wrong for short behavior even if the schema accepts it."], cautionTone: "warning" };
-
-  if (path.includes(".groups.") && leaf === "operator") return { ...base, role: ["The group operator determines how the enabled conditions inside one evidence path are combined."], timing: ["It is evaluated after each enabled condition has produced a pass, fail, or score result for the current event."], impact: ["All requires every enabled condition; Any requires at least one; Score compares accumulated evidence with Required Score. The choice directly changes how selective the strategy is."], caution: ["A permissive operator can increase trade frequency substantially. Disabled conditions do not contribute, so review the effective enabled set together with this operator."], cautionTone: "warning" };
-  if (leaf === "comparator") return { ...base, role: ["The comparator defines the relationship that must hold between the left evidence source and either the right source or configured literal value."], timing: ["It runs whenever its parent evidence stage is evaluated and the condition is enabled."], impact: ["Changing the comparator can invert or materially widen the condition. The same inputs can move from passing to failing without either source changing."], caution: ["Confirm units, direction, and timeframe on both operands. Comparing a percentage to a price, or a current value to a differently timed value, can produce valid-looking but meaningless evidence."], cautionTone: "warning" };
-  if (leaf === "left_source_id" || leaf === "right_source_id") return { ...base, role: [`This selects the ${leaf.startsWith("left") ? "primary" : "comparison"} evidence source used by the condition.`], timing: ["The source is resolved at evaluation time using causal data available to the strategy at that moment."], impact: ["Changing the source changes the information the condition measures, even when the comparator and threshold remain unchanged."], caution: ["Use only sources with compatible value types and causal availability. Missing, stale, or unavailable evidence must fail according to the registered strategy contract rather than being silently substituted."], cautionTone: "safety" };
-  if (leaf === "left_timeframe" || leaf === "right_timeframe") return { ...base, role: ["The timeframe selects the aggregation horizon for this side of the evidence comparison."], timing: ["It is applied when the selected source is resolved for each evaluation event."], impact: ["Shorter horizons react faster and usually contain more noise; longer horizons respond more slowly and represent broader structure."], caution: ["Timeframes must be supported by the selected source. Mixing horizons is valid only when the rule intentionally compares different temporal contexts."], cautionTone: "warning" };
-  if (leaf === "value") return { ...base, role: ["This literal supplies the condition's comparison threshold when the rule does not use a second evidence source."], timing: ["It is read when the enabled condition evaluates against its left source."], impact: ["Moving the threshold changes the boundary between pass and fail and therefore changes entry, add, reentry, or exit frequency according to the parent stage."], caution: ["An unset value is valid only when the comparator uses another source. Match the threshold's unit and scale to the selected evidence source."], cautionTone: "warning" };
-  if (leaf === "required_score") return { ...base, role: ["Required Score is the minimum accumulated evidence score needed for a score-based group to pass."], timing: ["It is consulted only when the parent group operator is Score."], impact: ["A higher score makes the path more selective; a lower score permits weaker combinations of evidence."], caution: ["This value has no effect under All or Any. Review individual condition weights and the maximum attainable score before changing it."], cautionTone: "information" };
-
-  if (path.includes("capital_request.mode")) return { ...base, role: ["Capital request mode describes how the strategy expresses desired exposure to Portfolio Management."], timing: ["It is used only after the associated evidence passes. Portfolio converts the request into an approved, reduced, or rejected account quantity."], impact: ["Fixed quantity requests shares; mandate or risk fractions scale against portfolio authority; all available asks for the maximum permitted allocation."], caution: ["This is a request, not sizing authority. Account limits, reservations, competing runs, and safety guardrails remain authoritative."], cautionTone: "safety" };
-  if (path.includes("capital_request.value")) return { ...base, role: ["This is the magnitude interpreted by the selected capital request mode."], timing: ["It is sent with entry, add, or reentry intent after strategy evidence passes."], impact: ["Increasing it asks Portfolio for more exposure; decreasing it asks for less. Final approved quantity can still be smaller or zero."], caution: ["Interpret the number together with request mode. The same numeric value can mean shares, a mandate fraction, or a risk fraction."], cautionTone: "safety" };
-  if (leaf === "execution_policy") return { ...base, role: ["The execution policy identifies the OMS algorithm allowed to turn approved quantity into broker orders."], timing: ["OMS resolves it only after Portfolio has approved the request and the Run Plan has permitted the action."], impact: ["It changes order style, pacing, price constraints, and amendment behavior without changing the strategy's evidence decision."], caution: ["The referenced policy must exist in the same approved release and be compatible with the runtime account and mode."], cautionTone: "safety" };
-  if (leaf === "protection_profile") return { ...base, role: ["The protection profile selects the OMS rules that establish and maintain broker-visible protection for the resulting position."], timing: ["It is attached during order planning and remains relevant after fills while the position is open."], impact: ["It changes stop placement and protection maintenance independently of strategic exit evidence."], caution: ["Protection is safety-critical. Live orders must fail closed if the referenced protection profile cannot be resolved or established as required."], cautionTone: "safety" };
-  if (leaf === "partial_fill_policy") return { ...base, role: ["This policy tells OMS what to do when only part of the requested quantity fills."], timing: ["It is applied after a partial execution and before the order deadline or cancellation workflow completes."], impact: ["The choice determines whether OMS continues seeking the remainder, accepts the partial position, or cancels what is left."], caution: ["Partial fills can leave a smaller position than strategy assumptions expect. Ensure protection and minimum-size rules remain valid for the accepted remainder."], cautionTone: "warning" };
-  if (leaf === "deadline_ms") return { ...base, role: ["The deadline limits how long OMS may pursue this execution intent before applying its timeout behavior."], timing: ["The timer begins when the associated order intent becomes active in OMS."], impact: ["A shorter deadline reduces stale execution risk but can lower fill probability; a longer deadline increases opportunity to fill while exposing the order to more market change."], caution: ["The deadline does not override emergency cancellation, market-hours rules, broker state, or account safety."], cautionTone: "warning" };
-
-  if (group === "Position adds") return { ...base, role: ["This parameter controls an ordered add step that may increase an already open campaign position."], timing: ["The add step is evaluated only after the initial position exists, its step is enabled, its usage limit is not exhausted, and its evidence passes."], impact: [base.impact[0], "Because an add increases exposure, Portfolio must independently reserve and approve additional account quantity."], caution: ["Adds compound risk in an existing campaign. They remain subject to cross-run account limits, shared reservations, and mandatory Live safety guardrails."], cautionTone: "safety" };
-  if (group === "Reentry") return { ...base, role: ["This parameter controls whether and how a flat campaign may open a new position after a completed exit."], timing: ["Reentry is evaluated only after the prior position is fully closed and the configured cooldown, attempt limit, session gate, and evidence requirements allow it."], impact: [base.impact[0], "A more permissive value can increase repeated exposure to the same market thesis after an exit."], caution: ["Reentry is a new exposure request, not continuation of the old position. Portfolio approval and all account safety checks run again."], cautionTone: "safety" };
-  if (group === "Strategic exits") return { ...base, role: ["This parameter belongs to a strategic exit route that may reduce or close an open campaign position when its evidence passes."], timing: ["The route is evaluated while a position is open and only within its configured activation and expiry window."], impact: [base.impact[0], "Strategic exits express trading intent; broker-held protection and emergency liquidation remain separate and can act first."], caution: ["Do not rely on a strategic exit as the only loss protection. Live safety and broker-held protection must remain effective even if strategy evaluation or market data fails."], cautionTone: "safety" };
-  if (group === "Capabilities") return { ...base, role: ["This parameter configures optional behavior implemented by a registered strategy capability."], timing: ["It is read only when the capability binding is enabled and the registered implementation reaches the corresponding position-management behavior."], impact: [base.impact[0], "Capabilities can add code-defined actions beyond the base lifecycle, so their effect depends on the pinned capability revision."], caution: ["Confirm the registered capability revision and parameter contract before publication. Unknown settings must not be silently ignored in Live mode."], cautionTone: "warning" };
-  if (group === "Engine parameters") return { ...base, role: ["This is an implementation-specific parameter read by the registered Strategy Engine definition."], timing: ["Its exact read point is defined by the pinned strategy definition revision; the surrounding path indicates the behavior it configures."], impact: [`The current value is ${current}. Changing it can alter calculations or thresholds inside the engine even when the visible lifecycle rules remain unchanged.`], caution: ["Treat engine parameters as advanced controls. Validate the exact definition revision in Replay or Backtest and do not infer semantics from the label alone."], cautionTone: "warning" };
-  return base;
-}
 
 function helpForPath(path: string) { return `Advanced ${readableLabel(path)} setting. Changes are validated by the registered strategy implementation before publication.`; }
 function readableLabel(value: string) { return value.replaceAll(".", " · ").replaceAll("_", " ").replace(/\b\w/g, (letter) => letter.toUpperCase()); }
