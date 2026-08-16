@@ -16,8 +16,7 @@ const validPages: PageKey[] = ["real-live-trading", "replay-trading", "backtest-
 
 export function App() {
   const [page, setPage] = useState<PageKey>(() => {
-    const hash = window.location.hash.replace("#", "") as PageKey;
-    return validPages.includes(hash) ? hash : "real-live-trading";
+    return pageFromHash(window.location.hash) ?? "real-live-trading";
   });
   const [visitedPages, setVisitedPages] = useState<Set<PageKey>>(() => new Set([page]));
   const [topbarCenter, setTopbarCenter] = useState<ReactNode>(null);
@@ -25,15 +24,15 @@ export function App() {
 
   useEffect(() => {
     const syncPageFromHash = () => {
-      const hashPage = window.location.hash.replace("#", "") as PageKey;
-      if (validPages.includes(hashPage)) setPage(hashPage);
+      const hashPage = pageFromHash(window.location.hash);
+      if (hashPage) setPage(hashPage);
     };
     window.addEventListener("hashchange", syncPageFromHash);
     return () => window.removeEventListener("hashchange", syncPageFromHash);
   }, []);
 
   useEffect(() => {
-    if (window.location.hash !== `#${page}`) window.location.hash = page;
+    if (pageFromHash(window.location.hash) !== page) window.location.hash = page;
     if (page !== "real-live-trading") {
       setTopbarCenter(null);
     }
@@ -84,6 +83,11 @@ export function App() {
       ) : null}
     </Layout>
   );
+}
+
+function pageFromHash(hash: string): PageKey | null {
+  const hashPage = hash.replace(/^#/, "").split("?", 1)[0] as PageKey;
+  return validPages.includes(hashPage) ? hashPage : null;
 }
 
 function configurationSection(page: PageKey): TradingConfigurationSection | null {

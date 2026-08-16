@@ -84,22 +84,26 @@ function DataDefinitionDetail({ definition, onNavigate, registry }: { definition
 
 export function RuleSetLibraryPage({ fields, onChange, ruleSets }: { fields: RegistryDefinition[]; onChange: (value: DataRuleSet[]) => void; ruleSets: DataRuleSet[] }) {
   const [query, setQuery] = useState("");
-  const [selectedId, setSelectedId] = useState(() => ruleSets[0]?.rule_set_id ?? "");
+  const [selectedId, setSelectedId] = useState(() => {
+    const requestedId = ruleSetIdFromHash();
+    return ruleSets.some((row) => row.rule_set_id === requestedId) ? requestedId : ruleSets[0]?.rule_set_id ?? "";
+  });
   const selected = ruleSets.find((row) => row.rule_set_id === selectedId) ?? ruleSets[0];
   const visible = ruleSets.filter((row) => !query.trim() || [row.name, row.description, row.rule_set_id].some((value) => value.toLowerCase().includes(query.trim().toLowerCase())));
   const grouped = new Map<string, DataRuleSet[]>();
   visible.forEach((row) => { const group = row.atomic ? "Built-in defaults" : row.publication_status === "published" ? "Published custom" : "Custom drafts"; grouped.set(group, [...(grouped.get(group) ?? []), row]); });
 
+  function select(ruleSetId: string) { setSelectedId(ruleSetId); replaceRuleSetHash(ruleSetId); }
   function replace(next: DataRuleSet) { onChange(ruleSets.map((row) => row.rule_set_id === next.rule_set_id ? next : row)); }
   function create(source?: DataRuleSet) {
     const rule_set_id = uniqueRuleSetId(source ? `${source.rule_set_id}-copy` : "rule-set", ruleSets);
     const next: DataRuleSet = { atomic: false, conditions: source?.conditions.map((row, index) => ({ ...row, condition_id: `${rule_set_id}-condition-${index + 1}` })) ?? [], description: source ? `Custom copy of ${source.name}.` : "Describe the reusable decision represented by this rule set.", editable: true, enabled: true, name: source ? `${source.name} Copy` : "Untitled Rule Set", operator: source?.operator ?? "all", origin: "user", protected: false, publication_status: "draft", required_score: source?.required_score ?? 1, revision: 1, rule_set_id, scope: source?.scope ?? "shared" };
-    onChange([...ruleSets, next]); setSelectedId(rule_set_id);
+    onChange([...ruleSets, next]); select(rule_set_id);
   }
 
   return <div className="data-library-workbench rule-set-library">
-    <aside className="data-library-catalog"><header><span>Registered rule sets</span><strong>{visible.length} of {ruleSets.length}</strong><p>Atomic defaults are documentation-only. Custom rule sets can be composed from registered data definitions.</p></header><label className="data-library-search"><Search size={15} /><input aria-label="Search rule sets" onChange={(event) => setQuery(event.target.value)} placeholder="Search rule sets" type="search" value={query} /></label><button className="data-library-create" onClick={() => create()} type="button"><Plus size={14} /> Create rule set</button><div className="data-library-tree">{[...grouped.entries()].map(([group, rows]) => <details key={group} open><summary><span>{group}</span><em>{rows.length}</em></summary><details className="data-library-subgroup" open><summary><span>{group === "Built-in defaults" ? "Atomic definitions" : "User definitions"}</span><em>{rows.length}</em></summary><div>{rows.map((row) => <button aria-current={selected?.rule_set_id === row.rule_set_id ? "true" : undefined} key={row.rule_set_id} onClick={() => setSelectedId(row.rule_set_id)} type="button"><span><strong>{row.name}</strong><small>{row.description}</small></span>{row.atomic ? <LockKeyhole size={12} /> : <ChevronRight size={13} />}</button>)}</div></details></details>)}</div></aside>
-    <main className="data-library-detail">{selected ? <RuleSetDetail fields={fields} onDelete={() => { onChange(ruleSets.filter((row) => row.rule_set_id !== selected.rule_set_id)); setSelectedId(ruleSets.find((row) => row.rule_set_id !== selected.rule_set_id)?.rule_set_id ?? ""); }} onDuplicate={() => create(selected)} onChange={replace} ruleSet={selected} /> : <div className="data-library-empty"><span>Create a rule set to begin.</span></div>}</main>
+    <aside className="data-library-catalog"><header><span>Registered rule sets</span><strong>{visible.length} of {ruleSets.length}</strong><p>Atomic defaults are documentation-only. Custom rule sets can be composed from registered data definitions.</p></header><label className="data-library-search"><Search size={15} /><input aria-label="Search rule sets" onChange={(event) => setQuery(event.target.value)} placeholder="Search rule sets" type="search" value={query} /></label><button className="data-library-create" onClick={() => create()} type="button"><Plus size={14} /> Create rule set</button><div className="data-library-tree">{[...grouped.entries()].map(([group, rows]) => <details key={group} open><summary><span>{group}</span><em>{rows.length}</em></summary><details className="data-library-subgroup" open><summary><span>{group === "Built-in defaults" ? "Atomic definitions" : "User definitions"}</span><em>{rows.length}</em></summary><div>{rows.map((row) => <button aria-current={selected?.rule_set_id === row.rule_set_id ? "true" : undefined} key={row.rule_set_id} onClick={() => select(row.rule_set_id)} type="button"><span><strong>{row.name}</strong><small>{row.description}</small></span>{row.atomic ? <LockKeyhole size={12} /> : <ChevronRight size={13} />}</button>)}</div></details></details>)}</div></aside>
+    <main className="data-library-detail">{selected ? <RuleSetDetail fields={fields} onDelete={() => { const remaining = ruleSets.filter((row) => row.rule_set_id !== selected.rule_set_id); onChange(remaining); select(remaining[0]?.rule_set_id ?? ""); }} onDuplicate={() => create(selected)} onChange={replace} ruleSet={selected} /> : <div className="data-library-empty"><span>Create a rule set to begin.</span></div>}</main>
   </div>;
 }
 
@@ -341,3 +345,5 @@ function formatBand(band: { maximum: number | null; maximum_inclusive: boolean; 
 }
 function compactNumber(value: number) { return new Intl.NumberFormat("en-US", { maximumFractionDigits: 2, notation: Math.abs(value) >= 1_000 ? "compact" : "standard" }).format(value); }
 function uniqueRuleSetId(base: string, rows: DataRuleSet[]) { let value = base; let index = 2; const ids = new Set(rows.map((row) => row.rule_set_id)); while (ids.has(value)) value = `${base}-${index++}`; return value; }
+function ruleSetIdFromHash() { const query = window.location.hash.split("?", 2)[1] ?? ""; return new URLSearchParams(query).get("rule_set_id") ?? ""; }
+function replaceRuleSetHash(ruleSetId: string) { window.history.replaceState(null, "", ruleSetId ? `#rule-set-configuration?rule_set_id=${encodeURIComponent(ruleSetId)}` : "#rule-set-configuration"); }

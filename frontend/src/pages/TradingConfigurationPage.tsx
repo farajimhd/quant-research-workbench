@@ -2871,7 +2871,7 @@ function StrategyStudio({ approved, draft, label, onChange, onDeleteProfile, onD
           onLabelChange={onLabelChange}
           onProfileChange={replaceProfile}
           onPublish={() => void publishSelected()}
-          onRuleSetEdit={() => { window.location.hash = "rule-set-configuration"; }}
+          onRuleSetEdit={(ruleSetId) => { window.location.hash = `rule-set-configuration?rule_set_id=${encodeURIComponent(ruleSetId)}`; }}
           onRuleSetsChange={replaceRuleSets}
           onStageChange={setActiveStage}
           profile={selected}
@@ -3855,6 +3855,10 @@ function ruleSetLookupOptions(ruleSets: RuleSetDefinition[]) {
   });
 }
 
+function isEditableCustomRuleSet(ruleSet: RuleSetDefinition | undefined) {
+  return Boolean(ruleSet?.atomic === false && ruleSet.origin === "user" && ruleSet.editable !== false);
+}
+
 const COMPARATOR_OPTIONS = [
   { label: "Is above by", value: "above_by_bps" },
   { label: "Is at least", value: "greater_or_equal" },
@@ -4052,7 +4056,7 @@ function RuleSetMeaning({ catalog, ruleSet }: { catalog: StrategyInput[]; ruleSe
 function RuleExpressionEditor({ catalog, expression, onChange, onEditRuleSet, ruleSets }: { catalog: StrategyInput[]; expression: RuleExpression; onChange: (value: RuleExpression) => void; onEditRuleSet: (ruleSetId: string) => void; ruleSets: RuleSetDefinition[] }) {
   if (expression.kind === "rule_set") {
     const ruleSet = ruleSets.find((row) => row.rule_set_id === expression.rule_set_id);
-    return <article className="strategy-rule-expression-leaf"><GitBranch size={16} /><div className="strategy-rule-expression-copy"><strong>{ruleSet?.name ?? "Missing rule set"}</strong><small>{ruleSet ? `${ruleSet.conditions.filter((condition) => condition.enabled).length} active condition${ruleSet.conditions.filter((condition) => condition.enabled).length === 1 ? "" : "s"} · ${readableLabel(ruleSet.operator)}` : "The referenced catalog definition is unavailable."}</small>{ruleSet ? <RuleSetMeaning catalog={catalog} ruleSet={ruleSet} /> : null}</div><button className="button compact" onClick={() => onEditRuleSet(expression.rule_set_id)} type="button"><PencilLine size={13} /> Modify</button></article>;
+    return <article className="strategy-rule-expression-leaf"><GitBranch size={16} /><div className="strategy-rule-expression-copy"><strong>{ruleSet?.name ?? "Missing rule set"}</strong><small>{ruleSet ? `${ruleSet.conditions.filter((condition) => condition.enabled).length} active condition${ruleSet.conditions.filter((condition) => condition.enabled).length === 1 ? "" : "s"} · ${readableLabel(ruleSet.operator)}` : "The referenced catalog definition is unavailable."}</small>{ruleSet ? <RuleSetMeaning catalog={catalog} ruleSet={ruleSet} /> : null}</div>{isEditableCustomRuleSet(ruleSet) ? <button className="button compact" onClick={() => onEditRuleSet(expression.rule_set_id)} type="button"><PencilLine size={13} /> Modify</button> : null}</article>;
   }
   const fallbackRuleSet = ruleSets[0];
   return <section className="strategy-rule-expression-group"><header><span className="strategy-rule-parenthesis">(</span><div role="group" aria-label="Expression operator"><button aria-pressed={expression.operator === "and"} onClick={() => onChange({ ...expression, operator: "and" })} type="button">AND</button><button aria-pressed={expression.operator === "or"} onClick={() => onChange({ ...expression, operator: "or" })} type="button">OR</button></div><button className="button compact secondary" disabled={!fallbackRuleSet} onClick={() => fallbackRuleSet && onChange({ ...expression, children: [...expression.children, { children: [{ kind: "rule_set", rule_set_id: fallbackRuleSet.rule_set_id }], kind: "operator", operator: expression.operator === "and" ? "or" : "and" }] })} type="button">( ) Add group</button></header><div>{expression.children.map((child, index) => <div className="strategy-rule-expression-child" key={`${child.kind}-${index}`}><RuleExpressionEditor catalog={catalog} expression={child} onChange={(next) => onChange({ ...expression, children: expression.children.map((row, childIndex) => childIndex === index ? next : row) })} onEditRuleSet={onEditRuleSet} ruleSets={ruleSets} /><button aria-label="Remove from expression" className="button compact danger" disabled={expression.children.length === 1} onClick={() => onChange({ ...expression, children: expression.children.filter((_, childIndex) => childIndex !== index) })} type="button"><Trash2 size={13} /></button>{index < expression.children.length - 1 ? <span className="strategy-rule-expression-operator">{expression.operator.toUpperCase()}</span> : null}</div>)}</div><span className="strategy-rule-parenthesis">)</span></section>;
