@@ -62,7 +62,7 @@ from src.trading_runtime.strategy_campaign import validate_campaign_policy
 from src.trading_runtime.taxonomy import StrategyTaxonomy
 
 
-CONFIGURATION_SCHEMA_VERSION = 28
+CONFIGURATION_SCHEMA_VERSION = 29
 CONFIGURATION_SECTIONS = {
     "strategy",
     "trading_actions",
@@ -2793,6 +2793,16 @@ def _validate_market_discovery(section: dict[str, Any]) -> None:
                 raise ValueError(
                     f"Watchlist rule set {rule_set.get('name')} cannot use {comparator} on {source_id}"
                 )
+            left_interval = str(condition.get("left_interval") or "")
+            left_available = {str(value) for value in output.get("available_intervals") or []}
+            if left_available and left_interval not in left_available:
+                raise ValueError(
+                    f"Rule Set {rule_set.get('name')} requires a supported interval for {source_id}"
+                )
+            if not left_available and left_interval:
+                raise ValueError(
+                    f"Rule Set {rule_set.get('name')} assigns an interval to non-interval field {source_id}"
+                )
             right_source_id = str(condition.get("right_source_id") or "")
             right_ref = str(condition.get("right_field_ref") or "")
             if right_source_id and (not right_ref or right_ref not in output_refs):
@@ -2803,6 +2813,18 @@ def _validate_market_discovery(section: dict[str, Any]) -> None:
                 raise ValueError(
                     f"Watchlist rule set {rule_set.get('name')} references unknown comparison field {right_source_id}"
                 )
+            if right_source_id:
+                right_output = output_index.get(right_ref, {})
+                right_interval = str(condition.get("right_interval") or "")
+                right_available = {str(value) for value in right_output.get("available_intervals") or []}
+                if right_available and right_interval not in right_available:
+                    raise ValueError(
+                        f"Rule Set {rule_set.get('name')} requires a supported comparison interval for {right_source_id}"
+                    )
+                if not right_available and right_interval:
+                    raise ValueError(
+                        f"Rule Set {rule_set.get('name')} assigns an interval to non-interval comparison field {right_source_id}"
+                    )
     for calculation in calculations:
         execution_scope = str(calculation.get("execution_scope") or "")
         if execution_scope not in DISCOVERY_EXECUTION_SCOPES:
@@ -2868,6 +2890,9 @@ def _validate_market_discovery(section: dict[str, Any]) -> None:
         raise ValueError("Market Discovery requires at least one Watchlist")
     _unique_ids(watchlists, "watchlist_id", "Watchlist")
     column_catalog = list(section.get("column_catalog") or [])
+    columns_by_id = {
+        str(row.get("column_id") or ""): row for row in column_catalog
+    }
     column_ids = _unique_ids(column_catalog, "column_id", "Watchlist column")
     if not column_ids:
         raise ValueError("Market Discovery requires a Watchlist column catalog")
@@ -2970,6 +2995,40 @@ def _validate_market_discovery(section: dict[str, Any]) -> None:
                 raise ValueError(f"Signal Stream {stream_name} has an unknown admission expiry policy")
             if expiry == "time_to_live" and int(route.get("membership_ttl_ms") or 0) <= 0:
                 raise ValueError(f"Signal Stream {stream_name} admission TTL must be positive")
+    for composition in [core_scan, *watchlists, *signal_streams]:
+        composition_name = str(
+            composition.get("name")
+            or composition.get("scan_id")
+            or composition.get("watchlist_id")
+            or composition.get("signal_stream_id")
+            or "Market Discovery composition"
+        )
+        selected_columns = {str(value) for value in composition.get("columns") or []}
+        bindings = {
+            str(key): str(value)
+            for key, value in dict(composition.get("column_intervals") or {}).items()
+            if str(key) and str(value)
+        }
+        if set(bindings) - selected_columns:
+            raise ValueError(f"{composition_name} has interval bindings for unselected columns")
+        for column_id in selected_columns:
+            available = {
+                str(value)
+                for value in columns_by_id.get(column_id, {}).get("available_intervals") or []
+            }
+            selected_interval = bindings.get(column_id, "")
+            if available and selected_interval not in available:
+                raise ValueError(f"{composition_name} requires an interval for column {column_id}")
+            if not available and selected_interval:
+                raise ValueError(f"{composition_name} assigns an interval to non-interval column {column_id}")
+        if "ranking_field_ref" in composition:
+            ranking_output = output_index.get(str(composition.get("ranking_field_ref") or ""), {})
+            available = {str(value) for value in ranking_output.get("available_intervals") or []}
+            ranking_interval = str(composition.get("ranking_interval") or "")
+            if available and ranking_interval not in available:
+                raise ValueError(f"{composition_name} requires a ranking interval")
+            if not available and ranking_interval:
+                raise ValueError(f"{composition_name} assigns an interval to a non-interval ranking field")
     compiled_plan = compile_data_field_plan(section)
     stored_plan = dict(section.get("data_field_plan") or {})
     if stored_plan and str(stored_plan.get("content_hash") or "") != str(compiled_plan.get("content_hash") or ""):
@@ -3156,7 +3215,7 @@ def _compiled_observation_dependencies(
                 row["input_kinds"].add("rule_set")
                 row["input_keys"].add(source_id)
                 data_field = data_field_by_ref.get(field_ref, {})
-                interval = str(dict(data_field.get("context") or {}).get("interval") or "")
+                interval = str(condition.get(f"{side}_interval") or "")
                 if interval:
                     row["timeframes"].add(interval.lower())
                 else:
@@ -3614,8 +3673,82 @@ def _policy_catalog_payload(
     return result
 
 
+def _migrate_market_discovery_instances(
+    discovery: dict[str, Any],
+    *,
+    legacy_column_catalog: list[dict[str, Any]],
+    legacy_data_fields: list[dict[str, Any]],
+) -> None:
+    """Move v28 interval variants into Rule Set and composition instances."""
+
+    columns = list(discovery.get("column_catalog") or [])
+    columns_by_id = {str(row.get("column_id") or ""): row for row in columns}
+    columns_by_source = {
+        str(row.get("source_id") or ""): row
+        for row in columns
+        if str(row.get("source_kind") or "data_field") == "data_field"
+    }
+    legacy_outputs = {
+        str(output.get("field_ref") or ""): {
+            **dict(output),
+            "interval": str(dict(data_field.get("context") or {}).get("interval") or output.get("context_interval") or ""),
+        }
+        for data_field in legacy_data_fields
+        for output in data_field.get("outputs") or []
+    }
+    legacy_columns = {
+        str(row.get("column_id") or ""): row for row in legacy_column_catalog
+    }
+
+    def preferred(values: list[str]) -> str:
+        for value in ("1m", "5m", "1s", "10s", "30s", "1h", "100ms"):
+            if value in values:
+                return value
+        return values[0] if values else ""
+
+    compositions = [
+        discovery.setdefault("core_scan", {}),
+        *list(discovery.get("watchlists") or []),
+        *list(discovery.get("signal_streams") or []),
+    ]
+    for composition in compositions:
+        migrated_columns: list[str] = []
+        bindings = {
+            str(key): str(value)
+            for key, value in dict(composition.get("column_intervals") or {}).items()
+            if str(key) and str(value)
+        }
+        for legacy_column_id in composition.get("columns") or []:
+            old_id = str(legacy_column_id)
+            old_column = legacy_columns.get(old_id, {})
+            legacy_output = legacy_outputs.get(str(old_column.get("field_ref") or ""), {})
+            source_id = str(old_column.get("source_id") or legacy_output.get("source_id") or "")
+            new_column = columns_by_id.get(old_id) or columns_by_source.get(source_id)
+            if new_column is None:
+                continue
+            new_id = str(new_column.get("column_id") or "")
+            if new_id and new_id not in migrated_columns:
+                migrated_columns.append(new_id)
+            available = [str(value) for value in new_column.get("available_intervals") or []]
+            interval = str(old_column.get("interval") or legacy_output.get("interval") or "")
+            if available:
+                bindings[new_id] = interval if interval in available else preferred(available)
+        composition["columns"] = migrated_columns
+        composition["column_intervals"] = {
+            key: value for key, value in bindings.items() if key in migrated_columns
+        }
+        ranking_ref = str(composition.get("ranking_field_ref") or "")
+        legacy_ranking = legacy_outputs.get(ranking_ref, {})
+        if legacy_ranking.get("interval"):
+            composition["ranking_interval"] = str(legacy_ranking["interval"])
+        else:
+            composition.pop("ranking_interval", None)
+
+
 def _migrate_draft(raw: dict[str, Any]) -> dict[str, Any]:
     source_schema_version = int(raw.get("schema_version") or 0)
+    legacy_discovery = deepcopy(raw.get("market_discovery") or {})
+    legacy_column_catalog = list(legacy_discovery.get("column_catalog") or [])
     if (
         isinstance(raw.get("run_plans"), dict)
         or isinstance(raw.get("assignments"), dict)
@@ -3770,6 +3903,12 @@ def _migrate_draft(raw: dict[str, Any]) -> dict[str, Any]:
         result["market_discovery"]["column_catalog"] = build_column_catalog(
             merged_data_fields, result["market_discovery"]["rule_sets"]
         )
+        if source_schema_version < CONFIGURATION_SCHEMA_VERSION:
+            _migrate_market_discovery_instances(
+                result["market_discovery"],
+                legacy_column_catalog=legacy_column_catalog,
+                legacy_data_fields=legacy_data_fields,
+            )
         core_scan = result["market_discovery"]["core_scan"]
         default_core_scan = defaults["market_discovery"]["core_scan"]
         # Core Scan is a protected system surface. Keep its descriptive

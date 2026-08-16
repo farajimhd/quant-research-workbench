@@ -4,10 +4,10 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { InventoryFilterSelect, type InventoryFilterOption } from "../app/components/InventoryFilterSelect";
 
 type RuleSet = { atomic?: boolean; description: string; name: string; origin?: string; protected?: boolean; rule_set_id: string; scope?: "shared" | "strategy" | "watchlist" };
-type ColumnDefinition = { column_id: string; description: string; field_ref?: string; interval?: string; name: string; sortable?: boolean; source_id: string; source_kind?: "data_field" | "rule_set" | string; semantic_type: string; value_type: string };
+type ColumnDefinition = { available_intervals?: string[]; column_id: string; description: string; field_ref?: string; name: string; sortable?: boolean; source_id: string; source_kind?: "data_field" | "rule_set" | string; semantic_type: string; value_type: string };
 type DataDefinition = { description: string; name: string; sortable: boolean; source_id: string; source_kind?: string; semantic_type: string };
-type BaseComposition = { columns: string[]; description: string; inclusion_operator: "all" | "any"; inclusion_rule_sets: string[]; name: string; refresh_interval_ms: number };
-type Composition = BaseComposition & { maximum_size: number; ranking_direction: "ascending" | "descending"; ranking_field: string; ranking_field_ref?: string };
+type BaseComposition = { column_intervals?: Record<string, string>; columns: string[]; description: string; inclusion_operator: "all" | "any"; inclusion_rule_sets: string[]; name: string; refresh_interval_ms: number };
+type Composition = BaseComposition & { maximum_size: number; ranking_direction: "ascending" | "descending"; ranking_field: string; ranking_field_ref?: string; ranking_interval?: string };
 type CoreScan = Composition & { published: boolean; scan_id: string };
 type Watchlist = Composition & { availability?: string; availability_detail?: string; enabled: boolean; manual_exclusions: string[]; manual_inclusions: string[]; membership_expiry: "end_of_trading_day" | "time_to_live" | "never"; membership_ttl_ms: number; origin?: string; source_scan_id: string; template?: boolean; watchlist_id: string };
 type SignalRoute = { membership_expiry: "end_of_trading_day" | "time_to_live" | "never"; membership_ttl_ms: number; watchlist_id: string };
@@ -27,9 +27,7 @@ export function MarketDiscoveryComposer({ onChange, section }: { onChange: (valu
   const fieldById = useMemo(() => new Map(section.column_catalog.filter((row) => row.field_ref).map((row) => [row.field_ref!, row])), [section.column_catalog]);
   const selectedRankingRef = !selectedSignalStream ? (selected as Composition).ranking_field_ref || section.column_catalog.find((row) => row.source_id === (selected as Composition).ranking_field)?.field_ref || "" : "";
   const selectedRankingColumn = section.column_catalog.find((row) => row.field_ref === selectedRankingRef);
-  const selectedRankingVariants = selectedRankingColumn?.interval
-    ? section.column_catalog.filter((row) => row.source_kind === "data_field" && row.source_id === selectedRankingColumn.source_id && row.interval)
-    : [];
+  const selectedRankingIntervals = selectedRankingColumn?.available_intervals ?? [];
 
   useEffect(() => {
     if (!scrollToNewDefinitionRef.current) return;
@@ -51,7 +49,7 @@ export function MarketDiscoveryComposer({ onChange, section }: { onChange: (valu
     let suffix = 1;
     while (section.watchlists.some((row) => row.watchlist_id === `${base}-${suffix}`)) suffix += 1;
     const watchlist_id = `${base}-${suffix}`;
-    const next: Watchlist = { availability: "available", columns: [...section.core_scan.columns], description: "Compose candidate membership from registered Rule Sets and Data Field outputs.", enabled: true, inclusion_operator: "all", inclusion_rule_sets: [], manual_exclusions: [], manual_inclusions: [], maximum_size: 10, membership_expiry: "end_of_trading_day", membership_ttl_ms: 300000, name: "Untitled Watchlist", origin: "user", ranking_direction: section.core_scan.ranking_direction, ranking_field: section.core_scan.ranking_field, ranking_field_ref: section.core_scan.ranking_field_ref, refresh_interval_ms: section.core_scan.refresh_interval_ms, source_scan_id: section.core_scan.scan_id, template: false, watchlist_id };
+    const next: Watchlist = { availability: "available", column_intervals: { ...(section.core_scan.column_intervals ?? {}) }, columns: [...section.core_scan.columns], description: "Compose candidate membership from registered Rule Sets and Data Field outputs.", enabled: true, inclusion_operator: "all", inclusion_rule_sets: [], manual_exclusions: [], manual_inclusions: [], maximum_size: 10, membership_expiry: "end_of_trading_day", membership_ttl_ms: 300000, name: "Untitled Watchlist", origin: "user", ranking_direction: section.core_scan.ranking_direction, ranking_field: section.core_scan.ranking_field, ranking_field_ref: section.core_scan.ranking_field_ref, ranking_interval: section.core_scan.ranking_interval, refresh_interval_ms: section.core_scan.refresh_interval_ms, source_scan_id: section.core_scan.scan_id, template: false, watchlist_id };
     scrollToNewDefinitionRef.current = true;
     setQuery("");
     onChange({ ...section, watchlists: [...section.watchlists, next] });
@@ -63,7 +61,7 @@ export function MarketDiscoveryComposer({ onChange, section }: { onChange: (valu
     let suffix = 1;
     while (section.signal_streams.some((row) => row.signal_stream_id === `${base}-${suffix}`)) suffix += 1;
     const signal_stream_id = `${base}-${suffix}`;
-    const next: SignalStream = { columns: [...section.core_scan.columns], cooldown_ms: 0, description: "Capture immutable occurrences when the selected Rule Sets transition from not matching to matching.", enabled: true, inclusion_operator: "all", inclusion_rule_sets: [], maximum_events: 5000, name: "Untitled Signal Stream", origin: "user", rearm_policy: "after_false", refresh_interval_ms: section.core_scan.refresh_interval_ms, revision: 1, signal_stream_id, source_scan_id: section.core_scan.scan_id, trigger_policy: "false_to_true", watchlist_routes: [] };
+    const next: SignalStream = { column_intervals: { ...(section.core_scan.column_intervals ?? {}) }, columns: [...section.core_scan.columns], cooldown_ms: 0, description: "Capture immutable occurrences when the selected Rule Sets transition from not matching to matching.", enabled: true, inclusion_operator: "all", inclusion_rule_sets: [], maximum_events: 5000, name: "Untitled Signal Stream", origin: "user", rearm_policy: "after_false", refresh_interval_ms: section.core_scan.refresh_interval_ms, revision: 1, signal_stream_id, source_scan_id: section.core_scan.scan_id, trigger_policy: "false_to_true", watchlist_routes: [] };
     scrollToNewDefinitionRef.current = true;
     setQuery("");
     onChange({ ...section, signal_streams: [...section.signal_streams, next] });
@@ -87,6 +85,16 @@ export function MarketDiscoveryComposer({ onChange, section }: { onChange: (valu
   function replaceSignalStream(patch: Partial<SignalStream>) {
     if (!selectedSignalStream) return;
     onChange({ ...section, signal_streams: section.signal_streams.map((row) => row.signal_stream_id === selectedSignalStream.signal_stream_id ? { ...row, ...patch } : row) });
+  }
+
+  function replaceColumns(columns: string[]) {
+    const existing = selected.column_intervals ?? {};
+    const column_intervals: Record<string, string> = {};
+    columns.forEach((columnId) => {
+      const available = section.column_catalog.find((row) => row.column_id === columnId)?.available_intervals ?? [];
+      if (available.length) column_intervals[columnId] = available.includes(existing[columnId]) ? existing[columnId] : preferredInterval(available);
+    });
+    replace({ ...selected, columns, column_intervals });
   }
 
   return <div className="market-discovery-composer">
@@ -119,7 +127,7 @@ export function MarketDiscoveryComposer({ onChange, section }: { onChange: (valu
       {!selectedSignalStream ? <section className="market-discovery-settings">
         <header><span>Ranking and limits</span><p>Sort passing candidates with one exact Data Field output, then apply the row limit.</p></header>
         <div>
-          <label><span>Ranking Data Field</span><InventoryFilterSelect ariaLabel="Ranking Data Field" onChange={(ranking_field_ref) => { const column = section.column_catalog.find((row) => row.field_ref === ranking_field_ref); replace({ ...(selected as Composition), ranking_field_ref, ranking_field: column?.source_id ?? "" }); }} optionLimit={0} options={rankingOptions(section.column_catalog, selectedRankingRef)} presentation="catalog" searchable searchPlaceholder="Search Data Fields…" showAllOnOpen value={selectedRankingRef} />{selectedRankingVariants.length > 1 ? <div className="market-discovery-column-interval"><span>Interval</span><select aria-label="Ranking interval" onChange={(event) => { const column = section.column_catalog.find((row) => row.field_ref === event.target.value); replace({ ...(selected as Composition), ranking_field_ref: event.target.value, ranking_field: column?.source_id ?? "" }); }} value={selectedRankingRef}>{selectedRankingVariants.map((row) => <option key={row.field_ref} value={row.field_ref}>{intervalLabel(row.interval || "")}</option>)}</select></div> : selectedRankingColumn ? <small className="market-discovery-field-context">No interval · current or anchored value</small> : null}</label>
+          <label><span>Ranking Data Field</span><InventoryFilterSelect ariaLabel="Ranking Data Field" onChange={(ranking_field_ref) => { const column = section.column_catalog.find((row) => row.field_ref === ranking_field_ref); const intervals = column?.available_intervals ?? []; replace({ ...(selected as Composition), ranking_field_ref, ranking_field: column?.source_id ?? "", ranking_interval: intervals.length ? preferredInterval(intervals) : "" }); }} optionLimit={0} options={rankingOptions(section.column_catalog)} presentation="catalog" searchable searchPlaceholder="Search Data Fields…" showAllOnOpen value={selectedRankingRef} />{selectedRankingIntervals.length ? <div className="market-discovery-column-interval"><span>Interval</span><select aria-label="Ranking interval" onChange={(event) => replace({ ...(selected as Composition), ranking_interval: event.target.value })} value={(selected as Composition).ranking_interval || preferredInterval(selectedRankingIntervals)}>{selectedRankingIntervals.map((interval) => <option key={interval} value={interval}>{intervalLabel(interval)}</option>)}</select></div> : selectedRankingColumn ? <small className="market-discovery-field-context">No interval · current or anchored value</small> : null}</label>
           <label><span>Direction</span><select onChange={(event) => replace({ ...(selected as Composition), ranking_direction: event.target.value as Composition["ranking_direction"] })} value={(selected as Composition).ranking_direction}><option value="descending">Highest first</option><option value="ascending">Lowest first</option></select></label>
           <label><span>Maximum rows</span><input min="1" onChange={(event) => replace({ ...(selected as Composition), maximum_size: Math.max(1, Number(event.target.value)) })} type="number" value={(selected as Composition).maximum_size} /></label>
           <label><span>Refresh interval</span><div className="market-discovery-unit-input"><input min="1" onChange={(event) => replace({ ...selected, refresh_interval_ms: Math.max(1, Number(event.target.value)) })} type="number" value={selected.refresh_interval_ms} /><em>ms</em></div></label>
@@ -130,7 +138,9 @@ export function MarketDiscoveryComposer({ onChange, section }: { onChange: (valu
         description={selectedSignalStream ? "These values are frozen into each occurrence at trigger time and become the configured Canvas columns." : "A column can present a registered Data Field output or the boolean result of a registered Rule Set. Computation is resolved from these references."}
         empty={selectedSignalStream ? "Add event columns to preserve the relevant trigger-time evidence." : "Add at least one column to make this definition presentable in Canvas."}
         kind="Column"
-        onChange={(columns) => replace({ ...selected, columns })}
+        columnIntervals={selected.column_intervals ?? {}}
+        onChange={replaceColumns}
+        onIntervalChange={(columnId, interval) => replace({ ...selected, column_intervals: { ...(selected.column_intervals ?? {}), [columnId]: interval } })}
         options={columnOptions(section.column_catalog, selected.columns)}
         selected={selected.columns}
         title="Table columns"
@@ -148,12 +158,11 @@ export function MarketDiscoveryComposer({ onChange, section }: { onChange: (valu
   </div>;
 }
 
-function ReferenceSection({ description, empty, kind, onChange, options, selected, title }: { description: string; empty: string; kind: string; onChange: (ids: string[]) => void; options: InventoryFilterOption[]; selected: string[]; title: string }) {
+function ReferenceSection({ columnIntervals = {}, description, empty, kind, onChange, onIntervalChange, options, selected, title }: { columnIntervals?: Record<string, string>; description: string; empty: string; kind: string; onChange: (ids: string[]) => void; onIntervalChange?: (columnId: string, interval: string) => void; options: InventoryFilterOption[]; selected: string[]; title: string }) {
   const [candidate, setCandidate] = useState("");
   const byId = new Map(options.map((row) => [row.value, row]));
   const selectedFamilies = new Set(selected.map((value) => byId.get(value)?.family).filter((value): value is string => Boolean(value)));
-  const pickerOptions = kind === "Column" ? collapseIntervalOptions(options) : options;
-  const available = pickerOptions.filter((row) => !selected.includes(row.value) && !(row.family && selectedFamilies.has(row.family)));
+  const available = options.filter((row) => !selected.includes(row.value) && !(row.family && selectedFamilies.has(row.family)));
   const addLabel = kind === "Rule Set" ? "Add rule set" : kind === "Watchlist" ? "Add Watchlist" : "Add column";
   return <section className="market-discovery-references">
     <header>
@@ -176,30 +185,14 @@ function ReferenceSection({ description, empty, kind, onChange, options, selecte
       />
       <button className="button compact market-discovery-reference-add" disabled={!candidate} onClick={() => { if (!candidate || selected.includes(candidate)) return; onChange([...selected, candidate]); setCandidate(""); }} type="button"><Plus size={14} /> {addLabel}</button>
     </div>
-    {selected.length ? <div className="market-discovery-reference-list">{selected.map((id) => { const option = byId.get(id); const reference = option?.reference || id; const variants = option?.family ? options.filter((row) => row.family === option.family && row.interval) : []; const displayName = kind === "Column" && option?.interval ? option.label.split(" · ")[0] : option?.label ?? id; return <article key={id}><span><strong>{displayName}</strong><small>{option?.description || id}</small>{kind === "Column" && variants.length > 1 ? <label className="market-discovery-column-interval"><span>Interval</span><select aria-label={`${displayName} interval`} onChange={(event) => onChange([...new Set(selected.map((value) => value === id ? event.target.value : value))])} value={id}>{variants.map((variant) => <option key={variant.value} value={variant.value}>{intervalLabel(variant.interval || "")}</option>)}</select></label> : option?.interval ? <em>Interval · {intervalLabel(option.interval)}</em> : null}<details className="market-discovery-technical-identity"><summary>Technical identity</summary><code title={reference}>{reference}</code>{reference !== id ? <em>{kind === "Column" ? `Canvas column · ${id}` : id}</em> : null}</details></span><button aria-label={`Remove ${displayName}`} onClick={() => onChange(selected.filter((value) => value !== id))} type="button"><Trash2 size={14} /></button></article>; })}</div> : <p className="market-discovery-empty-reference">{empty}</p>}
+    {selected.length ? <div className="market-discovery-reference-list">{selected.map((id) => { const option = byId.get(id); const reference = option?.reference || id; const intervals = option?.intervals ?? []; const displayName = option?.label ?? id; return <article key={id}><span><strong>{displayName}</strong><small>{option?.description || id}</small>{kind === "Column" && intervals.length ? <label className="market-discovery-column-interval"><span>Interval</span><select aria-label={`${displayName} interval`} onChange={(event) => onIntervalChange?.(id, event.target.value)} value={columnIntervals[id] || preferredInterval(intervals)}>{intervals.map((interval) => <option key={interval} value={interval}>{intervalLabel(interval)}</option>)}</select></label> : null}<details className="market-discovery-technical-identity"><summary>Technical identity</summary><code title={reference}>{reference}</code>{reference !== id ? <em>{kind === "Column" ? `Canvas column · ${id}` : id}</em> : null}</details></span><button aria-label={`Remove ${displayName}`} onClick={() => onChange(selected.filter((value) => value !== id))} type="button"><Trash2 size={14} /></button></article>; })}</div> : <p className="market-discovery-empty-reference">{empty}</p>}
   </section>;
 }
 
 function ruleSetOptions(ruleSets: RuleSet[], selected: string[]): InventoryFilterOption[] { return ruleSets.filter((row) => row.scope !== "strategy" || selected.includes(row.rule_set_id)).map((row) => { const builtIn = Boolean(row.protected || row.origin === "system" || row.atomic); const legacyStrategyReference = row.scope === "strategy"; return { description: legacyStrategyReference ? `Strategy-scoped legacy reference. Remove it from Market Discovery. ${row.description}` : row.description, group: legacyStrategyReference ? "Out-of-scope references" : builtIn ? "Built-in Rule Sets" : "Custom Rule Sets", label: row.name, subgroup: legacyStrategyReference ? "Strategy decisions" : builtIn ? "Market Discovery filters" : "Shared user definitions", value: row.rule_set_id }; }).sort((a, b) => Number(selected.includes(b.value)) - Number(selected.includes(a.value)) || a.label.localeCompare(b.label)); }
 function watchlistOptions(watchlists: Watchlist[], selected: string[]): InventoryFilterOption[] { return watchlists.map((row) => ({ description: row.description, group: "Watchlists", label: row.name, subgroup: row.availability === "integration_pending" ? "Integration pending" : "Signal admission", value: row.watchlist_id })).sort((a, b) => Number(selected.includes(b.value)) - Number(selected.includes(a.value)) || a.label.localeCompare(b.label)); }
-function columnOptions(columns: ColumnDefinition[], selected: string[]): InventoryFilterOption[] { return columns.map((row) => ({ description: row.description, family: row.source_id, group: row.source_kind === "rule_set" ? "Rule Set Results" : "Data Field Outputs", interval: row.interval, label: row.name, reference: row.source_kind === "rule_set" ? `rule-set://${row.source_id}` : row.field_ref || row.source_id, subgroup: row.source_kind === "rule_set" ? "Boolean results" : readable(row.semantic_type), value: row.column_id })).sort((a, b) => Number(selected.includes(b.value)) - Number(selected.includes(a.value)) || a.label.localeCompare(b.label)); }
-function rankingOptions(columns: ColumnDefinition[], selectedRef: string): InventoryFilterOption[] {
-  const raw = columns.filter((row) => row.sortable && row.source_kind === "data_field" && row.field_ref).map((row) => ({ description: row.description, family: row.source_id, group: "Data Field Outputs", interval: row.interval, label: row.name, reference: row.field_ref, subgroup: readable(row.semantic_type), value: row.field_ref! }));
-  const selected = raw.find((row) => row.value === selectedRef);
-  return collapseIntervalOptions(raw, selected?.family ? new Map([[selected.family, selected]]) : undefined).sort((a, b) => a.label.localeCompare(b.label));
-}
-function collapseIntervalOptions(options: InventoryFilterOption[], preferred = new Map<string, InventoryFilterOption>()): InventoryFilterOption[] {
-  const result: InventoryFilterOption[] = [];
-  const grouped = new Map<string, InventoryFilterOption[]>();
-  for (const option of options) {
-    if (!option.family || !option.interval) result.push(option);
-    else grouped.set(option.family, [...(grouped.get(option.family) ?? []), option]);
-  }
-  for (const [family, variants] of grouped) {
-    const chosen = preferred.get(family) ?? variants.find((row) => row.interval === "1m") ?? variants.find((row) => row.interval === "1s") ?? variants[0];
-    result.push({ ...chosen, label: chosen.label.split(" · ")[0], reference: `${variants.length} available intervals` });
-  }
-  return result;
-}
+function columnOptions(columns: ColumnDefinition[], selected: string[]): InventoryFilterOption[] { return columns.map((row) => ({ description: row.description, family: row.source_id, group: row.source_kind === "rule_set" ? "Rule Set Results" : "Data Field Outputs", intervals: row.available_intervals, label: row.name, reference: row.source_kind === "rule_set" ? `rule-set://${row.source_id}` : row.field_ref || row.source_id, subgroup: row.source_kind === "rule_set" ? "Boolean results" : readable(row.semantic_type), value: row.column_id })).sort((a, b) => Number(selected.includes(b.value)) - Number(selected.includes(a.value)) || a.label.localeCompare(b.label)); }
+function rankingOptions(columns: ColumnDefinition[]): InventoryFilterOption[] { return columns.filter((row) => row.sortable && row.source_kind === "data_field" && row.field_ref).map((row) => ({ description: row.description, family: row.source_id, group: "Data Field Outputs", intervals: row.available_intervals, label: row.name, reference: row.field_ref, subgroup: readable(row.semantic_type), value: row.field_ref! })).sort((a, b) => a.label.localeCompare(b.label)); }
+function preferredInterval(intervals: string[]) { return intervals.includes("1m") ? "1m" : intervals.includes("1s") ? "1s" : intervals[0] ?? ""; }
 function readable(value: string) { return value.replaceAll("_", " ").replace(/\b\w/g, (letter) => letter.toUpperCase()); }
 function intervalLabel(value: string) { const match = /^(\d+)(ms|s|m|h|d|w|mo)$/.exec(value); if (!match) return readable(value); const count = Number(match[1]); const unit = ({ ms: "millisecond", s: "second", m: "minute", h: "hour", d: "day", w: "week", mo: "month" } as Record<string, string>)[match[2]]; return `${count} ${unit}${count === 1 ? "" : "s"}`; }

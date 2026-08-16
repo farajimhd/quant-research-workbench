@@ -145,6 +145,25 @@ class SignalStreamRuntimeTests(unittest.TestCase):
             signal["occurrences"][0]["event_id"],
         )
 
+    def test_occurrence_freezes_the_configured_interval_column_value(self) -> None:
+        discovery = self.configuration["market_discovery"]
+        column = next(row for row in discovery["column_catalog"] if row.get("source_id") == "price_change_pct")
+        stream = discovery["signal_streams"][0]
+        stream["columns"] = ["symbol", column["column_id"]]
+        stream["column_intervals"] = {column["column_id"]: "5m"}
+
+        result = SignalStreamRuntime().resolve(
+            self.configuration,
+            [{"ticker": "AAA", "change_pct": 4.5, "technical__price_change_pct__5m": 7.25}],
+            as_of=datetime(2026, 8, 16, 15, 0, tzinfo=UTC),
+            journal=self.journal,
+        )
+
+        self.assertEqual(result["occurrences"][0][column["column_id"]], 7.25)
+        instance_ref = f"{column['field_ref']}@@5m"
+        self.assertEqual(result["occurrences"][0]["field_evidence"][instance_ref]["value"], 7.25)
+        self.assertEqual(result["occurrences"][0]["field_evidence"][instance_ref]["interval"], "5m")
+
 
 if __name__ == "__main__":
     unittest.main()

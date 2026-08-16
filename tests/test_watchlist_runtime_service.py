@@ -144,6 +144,23 @@ class WatchlistRuntimeServiceTests(unittest.TestCase):
             projection["watchlists"][0]["candidate_population_count"], 3
         )
 
+    def test_canvas_watchlist_member_keeps_the_configured_interval_column_value(self) -> None:
+        discovery = self.configuration["market_discovery"]
+        column = next(row for row in discovery["column_catalog"] if row.get("source_id") == "price_change_pct")
+        watchlist = discovery["watchlists"][0]
+        watchlist["columns"] = [column["column_id"]]
+        watchlist["column_intervals"] = {column["column_id"]: "5m"}
+
+        projection = project_watchlists_from_candidates(
+            self.configuration,
+            [{"ticker": "AAA", "market_cap": 1_000_000_000, "change_pct": 4.0, "technical__price_change_pct__5m": 6.5}],
+            as_of=datetime(2026, 8, 10, 16, tzinfo=UTC),
+            source_complete=True,
+            source_status="ready",
+        )
+
+        self.assertEqual(projection["watchlists"][0]["members"][0][column["column_id"]], 6.5)
+
     def test_progressive_projection_keeps_dependency_incomplete_watchlist_partial(self) -> None:
         candidates = [
             {"ticker": "AAA", "market_cap": 1_000_000_000, "change_pct": 4.0},

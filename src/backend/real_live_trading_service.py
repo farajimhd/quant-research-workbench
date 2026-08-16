@@ -289,11 +289,17 @@ def _compose_real_live_scanner_snapshot() -> dict[str, Any]:
                     enrich_core_scanner_rows,
                     live_market_reference_projection,
                 )
-                from src.backend.discovery_projection import project_discovery_columns
+                from src.backend.discovery_projection import (
+                    configured_discovery_technical_windows,
+                    project_discovery_columns,
+                )
                 from src.backend.signal_stream_runtime_service import SIGNAL_STREAM_RUNTIME
                 from src.backend.qmd_gateway_client import qmd_scanner_indicators
                 from src.backend.trading_configuration_service import configuration_base
-                from src.backend.data_field_contracts import project_data_field_outputs
+                from src.backend.data_field_contracts import (
+                    project_composition_data_field_columns,
+                    project_data_field_outputs,
+                )
                 from src.backend.trading_runtime_service import trading_journal
 
                 rows = enrich_core_scanner_rows(rows, live_market_reference_projection())
@@ -301,10 +307,21 @@ def _compose_real_live_scanner_snapshot() -> dict[str, Any]:
                 focused_seeds = WATCHLIST_RUNTIME.seed_focused_targets(
                     configuration, rows
                 )
-                indicator_rows = {
-                    str(row.get("ticker") or "").upper(): row
-                    for row in qmd_scanner_indicators(timeframe="1s", row_limit=5_000)
-                }
+                discovery = dict(configuration.get("market_discovery") or {})
+                data_fields = list(discovery.get("data_fields") or [])
+                indicator_rows: dict[str, dict[str, Any]] = {}
+                for interval in configured_discovery_technical_windows(configuration):
+                    interval_projection = project_data_field_outputs(
+                        [
+                            {**row, "indicator_interval": str(row.get("indicator_interval") or interval)}
+                            for row in qmd_scanner_indicators(timeframe=interval, row_limit=5_000)
+                        ],
+                        data_fields,
+                    )
+                    for indicator_row in interval_projection:
+                        ticker = str(indicator_row.get("ticker") or "").upper()
+                        if ticker:
+                            indicator_rows[ticker] = {**indicator_rows.get(ticker, {}), **indicator_row}
                 rows = [
                     {**row, **indicator_rows.get(str(row.get("ticker") or "").upper(), {})}
                     for row in rows
@@ -312,7 +329,12 @@ def _compose_real_live_scanner_snapshot() -> dict[str, Any]:
                 rows = project_discovery_columns(rows)
                 rows = project_data_field_outputs(
                     rows,
-                    list(dict(configuration.get("market_discovery") or {}).get("data_fields") or []),
+                    data_fields,
+                )
+                rows = project_composition_data_field_columns(
+                    rows,
+                    dict(discovery.get("core_scan") or {}),
+                    discovery.get("column_catalog") or [],
                 )
                 try:
                     signal_stream_runtime = SIGNAL_STREAM_RUNTIME.resolve(

@@ -12,7 +12,11 @@ from src.backend.discovery_projection import (
     discovery_runtime_field,
     project_discovery_columns,
 )
-from src.backend.data_field_contracts import project_data_field_outputs
+from src.backend.data_field_contracts import (
+    field_instance_ref,
+    project_composition_data_field_columns,
+    project_data_field_outputs,
+)
 from src.backend.watchlist_runtime_service import normalize_watchlist_candidate
 from src.trading_runtime.journal import TradingJournal
 from src.trading_runtime.watchlist_resolver import evaluate_rule_set_result
@@ -75,13 +79,16 @@ class SignalStreamRuntime:
                 selected_rule_ids = [
                     str(value) for value in stream.get("inclusion_rule_sets") or [] if str(value)
                 ]
-                revision_hash = _definition_revision(stream)
+                revision_hash = _definition_revision(stream, rule_sets)
                 stream_state = self._states.setdefault(stream_id, {})
                 emitted = 0
                 matching = 0
                 for ticker, row in rows_by_ticker.items():
+                    stream_row = project_composition_data_field_columns(
+                        [row], stream, discovery.get("column_catalog") or []
+                    )[0]
                     matches = enabled and bool(selected_rule_ids) and _matches_stream(
-                        stream, selected_rule_ids, rule_sets, row
+                        stream, selected_rule_ids, rule_sets, stream_row
                     )
                     matching += int(matches)
                     previous = stream_state.get(ticker, {})
@@ -102,7 +109,7 @@ class SignalStreamRuntime:
                     if should_emit:
                         occurrence = _occurrence(
                             stream,
-                            row,
+                            stream_row,
                             columns,
                             as_of=as_of,
                             definition_revision=revision_hash,
@@ -236,14 +243,20 @@ def _matches_stream(
     return any(results) if str(stream.get("inclusion_operator") or "all") == "any" else all(results)
 
 
-def _definition_revision(stream: dict[str, Any]) -> str:
+def _definition_revision(
+    stream: dict[str, Any], rule_sets: dict[str, dict[str, Any]]
+) -> str:
+    selected_rule_ids = [
+        str(value) for value in stream.get("inclusion_rule_sets") or [] if str(value)
+    ]
     payload = {
         key: stream.get(key)
         for key in (
             "signal_stream_id", "revision", "inclusion_rule_sets", "inclusion_operator",
-            "columns", "trigger_policy", "rearm_policy", "cooldown_ms", "watchlist_routes",
+            "columns", "column_intervals", "trigger_policy", "rearm_policy", "cooldown_ms", "watchlist_routes",
         )
     }
+    payload["rule_sets"] = [rule_sets.get(rule_id, {}) for rule_id in selected_rule_ids]
     return hashlib.sha256(
         json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
     ).hexdigest()
@@ -272,10 +285,14 @@ def _occurrence(
         evidence[column_id] = value
         field_ref = str(column.get("field_ref") or "")
         if field_ref:
-            field_evidence[field_ref] = {
-                "value": row.get(field_ref, value),
-                "available_at": row.get(f"{field_ref}__available_at"),
-                "null_reason": row.get(f"{field_ref}__null_reason"),
+            interval = str(dict(stream.get("column_intervals") or {}).get(column_id) or "")
+            instance_ref = field_instance_ref(field_ref, interval)
+            field_evidence[instance_ref] = {
+                "field_ref": field_ref,
+                "interval": interval,
+                "value": row.get(instance_ref) if row.get(instance_ref) is not None else value,
+                "available_at": row.get(f"{instance_ref}__available_at"),
+                "null_reason": row.get(f"{instance_ref}__null_reason"),
             }
         if value in (None, ""):
             null_reasons[column_id] = str(

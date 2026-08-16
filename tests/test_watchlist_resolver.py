@@ -158,6 +158,34 @@ class WatchlistResolverTest(unittest.TestCase):
         )
         self.assertEqual([row["ticker"] for row in resolved], ["BBB", "AAA"])
 
+    def test_interval_rule_uses_only_the_configured_field_instance(self) -> None:
+        watchlist = {
+            **self.watchlists["core-candidates"],
+            "inclusion_rule_sets": ["five-minute-change"],
+        }
+        rule = {
+            "rule_set_id": "five-minute-change",
+            "enabled": True,
+            "operator": "all",
+            "conditions": [{
+                "enabled": True,
+                "left_field_ref": "data.price_change_pct@1:value",
+                "left_source_id": "price_change_pct",
+                "left_interval": "5m",
+                "comparator": "greater_or_equal",
+                "value": 5,
+            }],
+        }
+        resolved = resolve_watchlist_membership(
+            watchlist,
+            [rule],
+            [
+                {"ticker": "RIGHT", "price_change_pct": -2, "data.price_change_pct@1:value@@5m": 6},
+                {"ticker": "WRONG", "price_change_pct": 9, "data.price_change_pct@1:value@@1m": 9},
+            ],
+        )
+        self.assertEqual([row["ticker"] for row in resolved], ["RIGHT"])
+
     def test_pending_integration_templates_are_disabled_and_fail_closed(self) -> None:
         for watchlist_id in {
             "news-bullish-sentiment",

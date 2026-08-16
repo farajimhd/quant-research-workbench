@@ -143,7 +143,10 @@ def scanner_snapshot_payload(
         project_discovery_columns,
     )
     from src.backend.trading_configuration_service import configuration_base
-    from src.backend.data_field_contracts import project_data_field_outputs
+    from src.backend.data_field_contracts import (
+        project_composition_data_field_columns,
+        project_data_field_outputs,
+    )
 
     configuration = configuration_base()
     technical_windows = tuple(sorted({
@@ -227,6 +230,12 @@ def scanner_snapshot_payload(
     rows = project_data_field_outputs(
         rows,
         list(dict(configuration.get("market_discovery") or {}).get("data_fields") or []),
+    )
+    discovery = dict(configuration.get("market_discovery") or {})
+    rows = project_composition_data_field_columns(
+        rows,
+        dict(discovery.get("core_scan") or {}),
+        discovery.get("column_catalog") or [],
     )
     rows.sort(key=lambda row: (-abs(float(row.get("change_5m_pct") or 0)), str(row.get("symbol") or "")))
     for rank, row in enumerate(rows, start=1):

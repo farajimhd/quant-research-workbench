@@ -9,7 +9,7 @@ from typing import Any, Iterable
 from src.backend.application_registry import DISCOVERY_RUNTIME_FIELDS, FIELD_DEFINITIONS
 
 
-DATA_FIELD_CONTRACT_VERSION = 2
+DATA_FIELD_CONTRACT_VERSION = 3
 
 _NON_INTERVAL_CONTEXTS = {
     "event",
@@ -31,6 +31,12 @@ _EXECUTION_INTERVAL_DEFAULTS = {
 
 def field_output_ref(data_field_id: str, revision: int, output_id: str) -> str:
     return f"{data_field_id}@{max(1, int(revision))}:{output_id}"
+
+
+def field_instance_ref(field_ref: str, interval: str = "") -> str:
+    """Identify a configured use of a Data Field without redefining the field."""
+
+    return f"{field_ref}@@{interval}" if interval else field_ref
 
 
 def atomic_field_catalog(extra_inputs: Iterable[str] = ()) -> list[dict[str, Any]]:
@@ -148,10 +154,11 @@ def _field_dimension_instances(
         value for value in declared if value not in _NON_INTERVAL_CONTEXTS
     ]))
     if intervals:
-        return [
-            {"dimension_kind": "interval", "interval": interval}
-            for interval in intervals
-        ]
+        return [{
+            "dimension_kind": "interval",
+            "available_intervals": intervals,
+            "interval_required_when_used": True,
+        }]
     return [dimensions]
 
 
@@ -224,7 +231,7 @@ def build_data_field_catalog(
         if str(row.get("source_id") or row.get("field_id") or "")
     }
     covered: set[str] = set()
-    emitted: set[tuple[str, str]] = set()
+    emitted: set[str] = set()
     result: list[dict[str, Any]] = []
     for calculation in calculation_rows:
         capability_id = str(calculation.get("capability_id") or "").strip()
@@ -245,29 +252,23 @@ def build_data_field_catalog(
                 source_id, field, calculation, supported_intervals
             )
             for dimension in dimensions:
-                interval = str(dimension.get("interval") or "")
-                identity = (source_id, interval)
-                if identity in emitted:
+                if source_id in emitted:
                     continue
-                emitted.add(identity)
+                emitted.add(source_id)
                 covered.add(source_id)
                 data_field_id = f"data.{source_id}"
-                if interval:
-                    data_field_id += f".interval.{_slug(interval)}"
                 output = _data_field_output(
                     data_field_id,
                     revision,
                     source_id,
                     field,
-                    interval=interval or None,
-                    qualified_presentation=bool(interval),
                     output_id="value",
                 )
                 field_name = str(field.get("name") or _readable(source_id))
                 result.append({
                     "data_field_id": data_field_id,
                     "revision": revision,
-                    "name": f"{field_name}{f' · {interval}' if interval else ''}",
+                    "name": field_name,
                     "description": str(
                         field.get("description")
                         or calculation.get("calculation")
@@ -281,15 +282,15 @@ def build_data_field_catalog(
                     "inputs": [str(value) for value in calculation.get("inputs") or [] if str(value)],
                     "context": {
                         **dimension,
-                        "available_intervals": list(dict.fromkeys(supported_intervals)) if interval else [],
+                        "available_intervals": list(dimension.get("available_intervals") or []),
                         "update_cadence": str(calculation.get("cadence") or "producer cadence"),
                         "execution_scope": str(calculation.get("execution_scope") or calculation.get("tier") or "focused"),
                         "allowed_scopes": [str(value) for value in calculation.get("allowed_scopes") or [] if str(value)],
                     },
                     "execution": {
-                        "producer_intervals": [interval] if interval else _preferred_producer_intervals(supported_intervals or _EXECUTION_INTERVAL_DEFAULTS.get(source_id, [])),
+                        "producer_intervals": [] if dimension.get("dimension_kind") == "interval" else _preferred_producer_intervals(supported_intervals or _EXECUTION_INTERVAL_DEFAULTS.get(source_id, [])),
                     },
-                    "parameters": {"interval": interval} if interval else {},
+                    "parameters": ({"interval": {"required": True, "allowed": list(dimension.get("available_intervals") or [])}} if dimension.get("dimension_kind") == "interval" else {}),
                     "policies": {
                         "warm_up_bars": calculation.get("warm_up_bars"),
                         "missing": "unavailable",
@@ -315,19 +316,13 @@ def build_data_field_catalog(
             continue
         field = _enrich_field_metadata(source_id, field)
         dimensions = _field_dimension_instances(source_id, field, {}, [])
-        available_intervals = [
-            str(row.get("interval") or "") for row in dimensions if row.get("interval")
-        ]
         for dimension in dimensions:
-            interval = str(dimension.get("interval") or "")
             data_field_id = f"data.{source_id}"
-            if interval:
-                data_field_id += f".interval.{_slug(interval)}"
             field_name = str(field.get("name") or _readable(source_id))
             result.append({
                 "data_field_id": data_field_id,
                 "revision": 1,
-                "name": f"{field_name}{f' · {interval}' if interval else ''}",
+                "name": field_name,
                 "description": str(field.get("description") or f"Direct projection of {source_id}."),
                 "category": str(field.get("semantic_type") or "Projection"),
                 "recipe_id": "registered_projection",
@@ -336,21 +331,19 @@ def build_data_field_catalog(
                 "inputs": [str(field.get("field_id") or source_id)],
                 "context": {
                     **dimension,
-                    "available_intervals": available_intervals,
+                    "available_intervals": list(dimension.get("available_intervals") or []),
                     "update_cadence": "source cadence",
                     "execution_scope": "consumer_selected",
                     "allowed_scopes": ["core_scan", "watchlist", "strategy_run", "request", "offline"],
                 },
-                "execution": {"producer_intervals": [interval] if interval else []},
-                "parameters": {"interval": interval} if interval else {},
+                "execution": {"producer_intervals": []},
+                "parameters": ({"interval": {"required": True, "allowed": list(dimension.get("available_intervals") or [])}} if dimension.get("dimension_kind") == "interval" else {}),
                 "policies": {"missing": "unavailable", "gaps": "preserve", "late_events": "source_policy"},
                 "outputs": [_data_field_output(
                     data_field_id,
                     1,
                     source_id,
                     field,
-                    interval=interval or None,
-                    qualified_presentation=bool(interval),
                     output_id="value",
                 )],
                 "enabled": str(field.get("implementation_status") or "implemented") in {"implemented", "live_only"},
@@ -370,20 +363,19 @@ def build_data_field_catalog(
 def data_field_output_index(data_fields: Iterable[dict[str, Any]]) -> dict[str, dict[str, Any]]:
     index: dict[str, dict[str, Any]] = {}
     for data_field in data_fields:
+        context = dict(data_field.get("context") or {})
         for output in data_field.get("outputs") or []:
+            indexed = {
+                **dict(output),
+                "dimension_kind": str(context.get("dimension_kind") or "point_in_time"),
+                "available_intervals": list(context.get("available_intervals") or []),
+            }
             field_ref = str(output.get("field_ref") or "")
             source_id = str(output.get("source_id") or "")
             if field_ref:
-                index[field_ref] = output
+                index[field_ref] = indexed
             if source_id:
-                index.setdefault(source_id, output)
-                interval = str(
-                    output.get("context_interval")
-                    or output.get("context_timeframe")
-                    or ""
-                )
-                if interval:
-                    index[f"{source_id}@@{interval}"] = output
+                index.setdefault(source_id, indexed)
     return index
 
 
@@ -397,7 +389,7 @@ def project_data_field_outputs(
     """
 
     outputs = [
-        dict(output)
+        (dict(output), dict(data_field.get("context") or {}))
         for data_field in data_fields
         for output in data_field.get("outputs") or []
         if str(output.get("field_ref") or "")
@@ -405,25 +397,46 @@ def project_data_field_outputs(
     projected: list[dict[str, Any]] = []
     for row in rows:
         result = dict(row)
-        for output in outputs:
+        for output, context in outputs:
             field_ref = str(output["field_ref"])
             runtime_field = str(output.get("runtime_field") or output.get("source_id") or "")
             source_id = str(output.get("source_id") or "")
-            value_found = runtime_field in row or source_id in row
-            value = row.get(runtime_field) if runtime_field in row else row.get(source_id)
-            context_interval = str(output.get("context_interval") or "")
             observed_interval = str(row.get("indicator_interval") or row.get("indicator_timeframe") or row.get("working_timeframe") or "")
-            if context_interval and observed_interval and context_interval != observed_interval:
-                value_found = False
-                value = None
-            result[field_ref] = value
+            intervals = [str(value) for value in context.get("available_intervals") or [] if str(value)]
+            if intervals:
+                found_any = False
+                for interval in intervals:
+                    value_found, value = _projected_value(
+                        row,
+                        runtime_field,
+                        source_id,
+                        interval,
+                        allow_generic=bool(observed_interval),
+                    )
+                    if observed_interval and observed_interval != interval:
+                        value_found, value = False, None
+                    instance_ref = field_instance_ref(field_ref, interval)
+                    if value_found or instance_ref not in result:
+                        result[instance_ref] = value
+                    if not value_found and result.get(instance_ref) is None:
+                        result[f"{instance_ref}__null_reason"] = "producer_output_missing"
+                    found_any = found_any or value_found or result.get(instance_ref) is not None
+                if observed_interval in intervals:
+                    result[field_ref] = result.get(field_instance_ref(field_ref, observed_interval))
+                elif field_ref not in result:
+                    result[field_ref] = None
+                value_found = found_any
+                value = result.get(field_ref)
+            else:
+                value_found, value = _projected_value(row, runtime_field, source_id)
+                result[field_ref] = value
             # Canvas tables address configured presentations by column id while
             # rules address the immutable Data Field output reference. Publish
             # both names from the same resolved value so presentation never has
             # to reconstruct a producer-specific runtime key.
             for presentation in output.get("column_presentations") or []:
                 presentation_id = str(presentation.get("presentation_id") or "")
-                if presentation_id:
+                if presentation_id and not intervals:
                     result[presentation_id] = value
             if not value_found:
                 result[f"{field_ref}__null_reason"] = "producer_output_missing"
@@ -431,6 +444,41 @@ def project_data_field_outputs(
                 key = f"{runtime_field}{suffix}"
                 if key in row:
                     result[f"{field_ref}__{suffix.removeprefix('_')}"] = row.get(key)
+        projected.append(result)
+    return projected
+
+
+def project_composition_data_field_columns(
+    rows: Iterable[dict[str, Any]],
+    composition: dict[str, Any],
+    column_catalog: Iterable[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Materialize a composition's instantiated fields into stable Canvas columns."""
+
+    columns = {
+        str(row.get("column_id") or ""): row
+        for row in column_catalog
+        if str(row.get("column_id") or "")
+    }
+    bindings = {
+        str(key): str(value)
+        for key, value in dict(composition.get("column_intervals") or {}).items()
+        if str(key) and str(value)
+    }
+    projected: list[dict[str, Any]] = []
+    for row in rows:
+        result = dict(row)
+        for column_id in composition.get("columns") or []:
+            column = columns.get(str(column_id), {})
+            field_ref = str(column.get("field_ref") or "")
+            if not field_ref:
+                continue
+            interval = bindings.get(str(column_id), "")
+            value_ref = field_instance_ref(field_ref, interval)
+            result[str(column_id)] = row.get(value_ref)
+            null_reason = row.get(f"{value_ref}__null_reason")
+            if null_reason:
+                result[f"{column_id}__null_reason"] = null_reason
         projected.append(result)
     return projected
 
@@ -467,6 +515,13 @@ def migrate_rule_set_field_refs(
                 if output is not None:
                     condition[f"{side}_field_ref"] = str(output["field_ref"])
                     condition[f"{side}_source_id"] = str(output.get("source_id") or legacy_id)
+                    allowed = [str(value) for value in output.get("available_intervals") or []]
+                    if legacy_timeframe in allowed:
+                        condition[f"{side}_interval"] = legacy_timeframe
+                    elif allowed and not str(condition.get(f"{side}_interval") or ""):
+                        condition[f"{side}_interval"] = _preferred_instance_interval(allowed)
+                    elif not allowed:
+                        condition.pop(f"{side}_interval", None)
                 elif legacy_id:
                     condition[f"{side}_field_ref"] = legacy_id
                 condition.pop(f"{side}_timeframe", None)
@@ -506,7 +561,7 @@ def build_column_catalog(
                     "implementation_status": str(data_field.get("implementation_status") or "unknown"),
                     "registry_authority": "data_field_registry",
                     "semantic_type": str(data_field.get("category") or "data_field"),
-                    "interval": str(dict(data_field.get("context") or {}).get("interval") or ""),
+                    "available_intervals": list(dict(data_field.get("context") or {}).get("available_intervals") or []),
                     "dimensions": deepcopy(dict(data_field.get("context") or {})),
                     "presentation": deepcopy(presentation),
                 })
@@ -556,8 +611,17 @@ def compile_data_field_plan(
         str(row.get("rule_set_id") or ""): row for row in discovery.get("rule_sets") or []
     }
     compositions = [dict(discovery.get("core_scan") or {})]
-    compositions.extend(dict(row) for row in discovery.get("watchlists") or [])
-    compositions.extend(dict(row) for row in discovery.get("signal_streams") or [])
+    compositions.extend(
+        dict(row)
+        for row in discovery.get("watchlists") or []
+        if bool(row.get("enabled", True))
+        and str(row.get("availability") or "available") == "available"
+    )
+    compositions.extend(
+        dict(row)
+        for row in discovery.get("signal_streams") or []
+        if bool(row.get("enabled", True))
+    )
     requested_ids = {str(value) for value in composition_ids if str(value)}
     if requested_ids:
         compositions = [
@@ -566,6 +630,7 @@ def compile_data_field_plan(
             if str(row.get("scan_id") or row.get("watchlist_id") or row.get("signal_stream_id") or "") in requested_ids
         ]
     field_refs: set[str] = set()
+    field_instances: set[tuple[str, str]] = set()
     rule_ids: set[str] = set()
     for composition in compositions:
         for key in ("inclusion_rule_sets", "exclusion_rule_sets"):
@@ -573,11 +638,16 @@ def compile_data_field_plan(
         ranking = str(composition.get("ranking_field_ref") or composition.get("ranking_field") or "")
         if ranking:
             output = output_index.get(ranking)
-            field_refs.add(str((output or {}).get("field_ref") or ranking))
+            resolved = str((output or {}).get("field_ref") or ranking)
+            field_refs.add(resolved)
+            field_instances.add((resolved, str(composition.get("ranking_interval") or "")))
+        column_intervals = dict(composition.get("column_intervals") or {})
         for column_id in composition.get("columns") or []:
             column = columns.get(str(column_id), {})
             if str(column.get("field_ref") or ""):
-                field_refs.add(str(column["field_ref"]))
+                resolved = str(column["field_ref"])
+                field_refs.add(resolved)
+                field_instances.add((resolved, str(column_intervals.get(str(column_id)) or "")))
     for rule_id in rule_ids:
         for condition in rules.get(rule_id, {}).get("conditions") or []:
             if not bool(condition.get("enabled", True)):
@@ -586,7 +656,9 @@ def compile_data_field_plan(
                 field_ref = str(condition.get(f"{side}_field_ref") or condition.get(f"{side}_source_id") or "")
                 if field_ref:
                     output = output_index.get(field_ref)
-                    field_refs.add(str((output or {}).get("field_ref") or field_ref))
+                    resolved = str((output or {}).get("field_ref") or field_ref)
+                    field_refs.add(resolved)
+                    field_instances.add((resolved, str(condition.get(f"{side}_interval") or "")))
     selected_fields = []
     atomic_inputs: set[str] = set()
     timeframes: set[str] = set()
@@ -604,9 +676,12 @@ def compile_data_field_plan(
             "stateful": bool(data_field.get("stateful")),
         })
         atomic_inputs.update(str(value) for value in data_field.get("inputs") or [] if str(value))
-        interval = str(dict(data_field.get("context") or {}).get("interval") or "")
-        if interval:
-            timeframes.add(interval)
+        definition_intervals = {
+            interval
+            for field_ref, interval in field_instances
+            if field_ref in outputs and interval
+        }
+        timeframes.update(definition_intervals)
         producer_intervals = [
             str(value)
             for value in dict(data_field.get("execution") or {}).get("producer_intervals") or []
@@ -618,19 +693,30 @@ def compile_data_field_plan(
             for output in data_field.get("outputs") or []
             if str(output.get("field_ref") or "") in field_refs
         ]
-        if any(
+        qmd_owned = (
+            str(data_field.get("recipe_id") or "").startswith("qmd.family.")
+            or str(data_field.get("owner") or "").lower() in {"qmd", "qmd_gateway"}
+        )
+        if definition_intervals and qmd_owned:
+            technical_timeframes.update(definition_intervals)
+        elif any(
             str(output.get("source_id") or "").startswith("indicator.")
             or str(output.get("source_id") or "") == "market.relative_volume"
             for output in matched_outputs
         ):
-            if interval:
-                technical_timeframes.add(interval)
-            else:
-                technical_timeframes.update(producer_intervals)
+            technical_timeframes.update(producer_intervals)
     payload = {
         "schema_version": 1,
         "authority": "data_field_compiler",
         "field_refs": sorted(field_refs),
+        "field_instances": [
+            {
+                "field_ref": field_ref,
+                "interval": interval,
+                "instance_ref": field_instance_ref(field_ref, interval),
+            }
+            for field_ref, interval in sorted(field_instances)
+        ],
         "data_fields": sorted(selected_fields, key=lambda row: row["data_field_id"]),
         "atomic_inputs": sorted(atomic_inputs),
         "rule_set_ids": sorted(rule_ids),
@@ -658,11 +744,12 @@ def validate_data_field_catalog(data_fields: list[dict[str, Any]]) -> None:
             )
         dimension_kind = str(context.get("dimension_kind") or "")
         interval = str(context.get("interval") or "")
-        if dimension_kind == "interval" and not interval:
-            raise ValueError(f"Data Field {data_field_id} requires an interval")
-        if dimension_kind != "interval" and interval:
+        available_intervals = [str(value) for value in context.get("available_intervals") or []]
+        if dimension_kind == "interval" and not available_intervals:
+            raise ValueError(f"Data Field {data_field_id} requires available intervals")
+        if interval:
             raise ValueError(
-                f"Data Field {data_field_id} exposes an irrelevant interval"
+                f"Data Field {data_field_id} stores an interval before it is instantiated"
             )
         outputs = list(row.get("outputs") or [])
         if not outputs:
@@ -672,9 +759,9 @@ def validate_data_field_catalog(data_fields: list[dict[str, Any]]) -> None:
             if not field_ref or field_ref in refs:
                 raise ValueError(f"Invalid or duplicate Data Field output: {field_ref or '<empty>'}")
             refs.add(field_ref)
-            if str(output.get("context_interval") or "") != interval:
+            if str(output.get("context_interval") or ""):
                 raise ValueError(
-                    f"Data Field output {field_ref} interval does not match its definition"
+                    f"Data Field output {field_ref} stores an interval before it is instantiated"
                 )
             if not list(output.get("column_presentations") or []):
                 raise ValueError(f"Data Field output {field_ref} has no column presentation")
@@ -752,6 +839,45 @@ def _data_field_output(
 
 def _generated_column_id(source_id: str) -> str:
     return f"field__{_slug(source_id)}"
+
+
+def _preferred_instance_interval(values: Iterable[str]) -> str:
+    available = [str(value) for value in values if str(value)]
+    for preferred in ("1m", "5m", "1s", "10s", "30s", "1h", "100ms"):
+        if preferred in available:
+            return preferred
+    return available[0] if available else ""
+
+
+def _projected_value(
+    row: dict[str, Any],
+    runtime_field: str,
+    source_id: str,
+    interval: str = "",
+    *,
+    allow_generic: bool = True,
+) -> tuple[bool, Any]:
+    candidates = [runtime_field, source_id] if allow_generic else []
+    if interval:
+        metric_names = list(dict.fromkeys([
+            source_id,
+            source_id.replace(".", "_"),
+            source_id.rsplit(".", 1)[-1],
+            runtime_field,
+        ]))
+        candidates = [
+            *(f"technical__{metric}__{interval}" for metric in metric_names),
+            *(
+                key
+                for key in row
+                if any(key.startswith(f"technical__{metric}__{interval}__") for metric in metric_names)
+            ),
+            *candidates,
+        ]
+    for key in candidates:
+        if key in row:
+            return True, row.get(key)
+    return False, None
 
 
 def _slug(value: str) -> str:

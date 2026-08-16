@@ -60,6 +60,10 @@ def configured_discovery_column_ids(configuration: dict[str, Any]) -> set[str]:
     }
     for key in ("watchlists", "signal_streams"):
         for composition in discovery.get(key) or []:
+            if not bool(composition.get("enabled", True)):
+                continue
+            if key == "watchlists" and str(composition.get("availability") or "available") != "available":
+                continue
             selected.update(str(value) for value in composition.get("columns") or [] if str(value))
     return selected
 
@@ -77,26 +81,36 @@ def configured_discovery_technical_windows(configuration: dict[str, Any]) -> tup
     if compiled_windows:
         return tuple(sorted(compiled_windows))
     selected_rule_ids: set[str] = set()
+    windows: set[str] = set()
     selected_columns = configured_discovery_column_ids(configuration)
     for composition in [
         dict(discovery.get("core_scan") or {}),
         *list(discovery.get("watchlists") or []),
         *list(discovery.get("signal_streams") or []),
     ]:
+        if composition.get("enabled") is False:
+            continue
         selected_rule_ids.update(
             str(value)
             for key in ("inclusion_rule_sets", "exclusion_rule_sets")
             for value in composition.get(key) or []
             if str(value)
         )
-    windows: set[str] = set()
+        windows.update(
+            str(value)
+            for value in dict(composition.get("column_intervals") or {}).values()
+            if str(value) in {"1s", "5s", "10s", "30s", "1m", "5m", "15m", "30m", "1h"}
+        )
+        ranking_interval = str(composition.get("ranking_interval") or "")
+        if ranking_interval in {"1s", "5s", "10s", "30s", "1m", "5m", "15m", "30m", "1h"}:
+            windows.add(ranking_interval)
     for rule_set in discovery.get("rule_sets") or []:
         if str(rule_set.get("rule_set_id") or "") not in selected_rule_ids:
             continue
         for condition in rule_set.get("conditions") or []:
             if not bool(condition.get("enabled", True)):
                 continue
-            for key in ("left_timeframe", "right_timeframe"):
+            for key in ("left_interval", "right_interval"):
                 value = str(condition.get(key) or "")
                 if value in {"1s", "5s", "10s", "30s", "1m", "5m", "15m", "30m", "1h"}:
                     windows.add(value)

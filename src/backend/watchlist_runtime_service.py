@@ -20,7 +20,13 @@ from src.backend.query_plans.market_daily_bars_v1 import (
 )
 from src.backend.bounded_cache import BoundedTtlCache
 from src.backend.qmd_gateway_client import qmd_delete_json, qmd_put_json
-from src.backend.data_field_contracts import compile_data_field_plan, data_field_output_index, project_data_field_outputs
+from src.backend.data_field_contracts import (
+    compile_data_field_plan,
+    data_field_output_index,
+    field_instance_ref,
+    project_composition_data_field_columns,
+    project_data_field_outputs,
+)
 from src.request_context import causal_identity
 from src.trading_runtime.watchlist_resolver import (
     SOURCE_FIELDS,
@@ -141,6 +147,11 @@ class WatchlistRuntime:
                     self._eligible.pop(watchlist_id, None)
                     self._candidate_fingerprints.pop(watchlist_id, None)
                     self._watchlist_revisions.pop(watchlist_id, None)
+                resolved = project_composition_data_field_columns(
+                    resolved,
+                    watchlist,
+                    discovery.get("column_catalog") or [],
+                )
                 current = {
                     str(row.get("ticker") or "").upper(): {
                         **row,
@@ -154,8 +165,11 @@ class WatchlistRuntime:
                 }
                 previous = self._members.get(watchlist_id, {})
                 member_fields = watchlist_dependency_fields(watchlist, rule_sets)
+                presentation_fields = tuple(
+                    sorted(set(member_fields) | {str(value) for value in watchlist.get("columns") or []})
+                )
                 current = {
-                    ticker: compact_watchlist_member(row, member_fields)
+                    ticker: compact_watchlist_member(row, presentation_fields)
                     for ticker, row in current.items()
                 }
                 current = retain_unconfirmed_members(
@@ -518,6 +532,11 @@ def project_watchlists_from_candidates(
             if enabled and watchlist_ready
             else []
         )
+        resolved = project_composition_data_field_columns(
+            resolved,
+            watchlist,
+            discovery.get("column_catalog") or [],
+        )
         members = [
             compact_watchlist_member(
                 {
@@ -526,7 +545,7 @@ def project_watchlists_from_candidates(
                     "confirmed_at": as_of.isoformat(),
                     "rank": row.get("rank", rank),
                 },
-                member_fields,
+                tuple(sorted(set(member_fields) | {str(value) for value in watchlist.get("columns") or []})),
             )
             for rank, row in enumerate(resolved, start=1)
         ]
@@ -602,7 +621,13 @@ def watchlist_dependency_fields(
         for key in ("inclusion_rule_sets", "exclusion_rule_sets")
         for value in watchlist.get(key) or []
     }
-    source_ids = {str(watchlist.get("ranking_field") or "")}
+    ranking_ref = str(watchlist.get("ranking_field_ref") or "")
+    ranking_interval = str(watchlist.get("ranking_interval") or "")
+    source_ids = {
+        str(watchlist.get("ranking_field") or ""),
+        field_instance_ref(ranking_ref, ranking_interval)
+        if ranking_ref and ranking_interval else "",
+    }
     rule_rows = rule_sets.values() if isinstance(rule_sets, dict) else rule_sets
     for rule_set in rule_rows:
         if str(rule_set.get("rule_set_id") or "") not in selected_ids:
@@ -612,6 +637,12 @@ def watchlist_dependency_fields(
                 continue
             source_ids.add(str(condition.get("left_source_id") or ""))
             source_ids.add(str(condition.get("right_source_id") or ""))
+            left_ref = str(condition.get("left_field_ref") or "")
+            right_ref = str(condition.get("right_field_ref") or "")
+            if left_ref and condition.get("left_interval"):
+                source_ids.add(field_instance_ref(left_ref, str(condition.get("left_interval") or "")))
+            if right_ref and condition.get("right_interval"):
+                source_ids.add(field_instance_ref(right_ref, str(condition.get("right_interval") or "")))
     fields = {
         SOURCE_FIELDS.get(source_id, source_id)
         for source_id in source_ids
@@ -831,6 +862,9 @@ def focused_target_contract(
         str(watchlist.get("ranking_field") or ""),
         str(watchlist.get("ranking_field_ref") or ""),
     }
+    ranking_interval = str(watchlist.get("ranking_interval") or "")
+    if ranking_interval:
+        timeframes.add(ranking_interval)
     rule_rows = rule_sets.values() if isinstance(rule_sets, dict) else rule_sets
     for rule_set in rule_rows:
         if str(rule_set.get("rule_set_id") or "") not in selected_rule_ids:
@@ -844,13 +878,18 @@ def focused_target_contract(
             referenced_sources.add(str(condition.get("right_field_ref") or ""))
             timeframes.update(
                 str(condition.get(key) or "")
-                for key in ("left_timeframe", "right_timeframe")
+                for key in ("left_interval", "right_interval")
                 if str(condition.get(key) or "")
             )
     column_sources = column_sources or {}
     referenced_sources.update(
         column_sources.get(str(value), str(value))
         for value in watchlist.get("columns") or []
+    )
+    timeframes.update(
+        str(value)
+        for value in dict(watchlist.get("column_intervals") or {}).values()
+        if str(value)
     )
     if data_fields:
         output_index = data_field_output_index(data_fields)
@@ -875,10 +914,7 @@ def focused_target_contract(
                 and str(data_field.get("owner") or "").lower() in {"qmd", "qmd_gateway"}
             ):
                 capabilities.add(recipe_id)
-            interval = str(dict(data_field.get("context") or {}).get("interval") or "")
-            if interval:
-                timeframes.add(interval)
-            else:
+            if str(dict(data_field.get("context") or {}).get("dimension_kind") or "") != "interval":
                 timeframes.update(
                     str(value)
                     for value in dict(data_field.get("execution") or {}).get("producer_intervals") or []

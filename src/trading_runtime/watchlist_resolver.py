@@ -4,6 +4,7 @@ from math import isfinite
 from typing import Any, Iterable
 
 from src.backend.application_registry import DISCOVERY_RUNTIME_FIELDS
+from src.backend.data_field_contracts import field_instance_ref
 
 SOURCE_FIELDS = {
     **DISCOVERY_RUNTIME_FIELDS,
@@ -163,10 +164,28 @@ def rank_watchlist_membership(
                 "membership_reason": "manual inclusion; scanner evidence unavailable",
             }
         )
-    ranking_field = SOURCE_FIELDS.get(str(watchlist.get("ranking_field") or ""), str(watchlist.get("ranking_field") or ""))
+    ranking_ref = str(watchlist.get("ranking_field_ref") or "")
+    ranking_interval = str(watchlist.get("ranking_interval") or "")
+    ranking_field = (
+        field_instance_ref(ranking_ref, ranking_interval)
+        if ranking_ref
+        else SOURCE_FIELDS.get(
+            str(watchlist.get("ranking_field") or ""),
+            str(watchlist.get("ranking_field") or ""),
+        )
+    )
+    legacy_ranking_field = SOURCE_FIELDS.get(
+        str(watchlist.get("ranking_field") or ""),
+        str(watchlist.get("ranking_field") or ""),
+    )
     descending = str(watchlist.get("ranking_direction") or "descending") == "descending"
     rows.sort(
-        key=lambda row: _rank_key(row.get(ranking_field), descending),
+        key=lambda row: _rank_key(
+            row.get(ranking_field)
+            if row.get(ranking_field) is not None
+            else row.get(legacy_ranking_field) if not ranking_interval else None,
+            descending,
+        ),
         reverse=descending,
     )
     return rows[: max(1, int(watchlist.get("maximum_size") or 1))]
@@ -188,16 +207,18 @@ def _rule_matches(rule_set: dict[str, Any] | None, row: dict[str, Any]) -> bool:
 
 def _condition_matches(condition: dict[str, Any], row: dict[str, Any]) -> bool:
     left_ref = str(condition.get("left_field_ref") or "")
-    left = _source_value(row, left_ref) if left_ref else None
-    if left is None:
+    left_interval = str(condition.get("left_interval") or "")
+    left = _source_value(row, field_instance_ref(left_ref, left_interval)) if left_ref else None
+    if left is None and (not left_ref or not left_interval):
         left = _source_value(row, str(condition.get("left_source_id") or ""))
     comparator = str(condition.get("comparator") or "")
     if comparator == "is_true":
         return left is True
     right_ref = str(condition.get("right_field_ref") or "")
+    right_interval = str(condition.get("right_interval") or "")
     right_source = str(condition.get("right_source_id") or "")
-    right = _source_value(row, right_ref) if right_ref else None
-    if right is None:
+    right = _source_value(row, field_instance_ref(right_ref, right_interval)) if right_ref else None
+    if right is None and (not right_ref or not right_interval):
         right = _source_value(row, right_source) if right_source else condition.get("value")
     left_number, right_number = _number(left), _number(right)
     if left_number is None or right_number is None:
