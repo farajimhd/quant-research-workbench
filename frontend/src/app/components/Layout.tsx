@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { Activity, BadgeCheck, BookOpenCheck, BriefcaseBusiness, Bug, Check, ChevronLeft, ChevronRight, Database, FlaskConical, GitBranch, History, Microscope, PanelsTopLeft, Palette, ScanSearch, Send, ServerCog, ShieldCheck, Type, UsersRound, Wifi } from "lucide-react";
+import { Activity, BadgeCheck, BookOpenCheck, BriefcaseBusiness, Bug, Check, ChevronLeft, ChevronRight, Database, FlaskConical, GitBranch, History, Microscope, Network, PanelsTopLeft, Palette, ScanSearch, Send, ServerCog, ShieldCheck, Type, UsersRound, Wifi } from "lucide-react";
 import { useEffect, useState } from "react";
 
 import { buildMenuItemButtonClassName, buildThemeMenuItemButtonClassName } from "../selectionStyles";
@@ -48,6 +48,7 @@ const navGroups = [
     items: [
       { key: "trading-action-configuration" as PageKey, label: "Trading Actions", icon: Send },
       { key: "strategy-configuration" as PageKey, label: "Strategy Studio", icon: GitBranch },
+      { key: "assignment-configuration" as PageKey, label: "Run Plans", icon: Network },
       { key: "portfolio-configuration" as PageKey, label: "Portfolio & Risk", icon: BriefcaseBusiness },
       { key: "oms-configuration" as PageKey, label: "OMS & Protection", icon: ShieldCheck },
       { key: "account-configuration" as PageKey, label: "Accounts & Sessions", icon: UsersRound },

@@ -1499,12 +1499,13 @@ function GuidedConfiguration({ approved, draft, label, omsStage, onChange, onCon
 }) {
   const step: GuidedStep = section === "oms" ? omsStage : section;
   const [activeStrategyProfileId, setActiveStrategyProfileId] = useState(() => window.sessionStorage.getItem("guided-strategy-profile-id") || draft.strategy.default_profile_id);
+  const [activeRunPlanId, setActiveRunPlanId] = useState(() => window.sessionStorage.getItem("guided-run-plan-id") || draft.assignments.deployments.find((row) => row.enabled)?.run_plan_id || draft.assignments.deployments[0]?.run_plan_id || "");
   const [activeMandateId, setActiveMandateId] = useState(() => window.sessionStorage.getItem("guided-portfolio-mandate-id") || draft.portfolio.mandates[0]?.mandate_id || "");
   const [activeOmsProfileId, setActiveOmsProfileId] = useState(() => window.sessionStorage.getItem("guided-oms-profile-id") || draft.oms.profiles[0]?.profile_id || "");
   const [activeExecutionPolicyId, setActiveExecutionPolicyId] = useState(() => window.sessionStorage.getItem("guided-execution-policy-id") || draft.oms.profiles[0]?.settings.entry_execution_policy_id || "");
   const [activeAccountKey, setActiveAccountKey] = useState(() => window.sessionStorage.getItem("guided-account-key") || draft.accounts.bindings[0]?.account_key || "");
   const profile = draft.strategy.profiles.find((row) => row.profile_id === activeStrategyProfileId) ?? draft.strategy.profiles.find((row) => row.profile_id === draft.strategy.default_profile_id) ?? draft.strategy.profiles[0];
-  const deployment = draft.assignments.deployments.find((row) => row.enabled) ?? draft.assignments.deployments[0];
+  const deployment = draft.assignments.deployments.find((row) => row.run_plan_id === activeRunPlanId) ?? draft.assignments.deployments.find((row) => row.enabled) ?? draft.assignments.deployments[0];
   const mandate = draft.portfolio.mandates.find((row) => row.mandate_id === activeMandateId) ?? draft.portfolio.mandates.find((row) => row.run_plan_id === deployment?.run_plan_id) ?? draft.portfolio.mandates[0];
   const omsProfile = draft.oms.profiles.find((row) => row.profile_id === activeOmsProfileId) ?? draft.oms.profiles.find((row) => row.profile_id === deployment?.oms_profile_id) ?? draft.oms.profiles[0];
   const executionPolicy = draft.oms.execution_policies.find((row) => row.policy_id === activeExecutionPolicyId) ?? draft.oms.execution_policies.find((row) => row.policy_id === omsProfile?.settings.entry_execution_policy_id) ?? draft.oms.execution_policies[0];
@@ -1525,6 +1526,11 @@ function GuidedConfiguration({ approved, draft, label, omsStage, onChange, onCon
   function selectStrategyProfile(profileId: string) {
     setActiveStrategyProfileId(profileId);
     window.sessionStorage.setItem("guided-strategy-profile-id", profileId);
+  }
+
+  function selectRunPlan(runPlanId: string) {
+    setActiveRunPlanId(runPlanId);
+    window.sessionStorage.setItem("guided-run-plan-id", runPlanId);
   }
 
   function selectMandate(mandateId: string) {
@@ -1568,6 +1574,50 @@ function GuidedConfiguration({ approved, draft, label, omsStage, onChange, onCon
   }
   function replaceAccount(nextAccount: AccountBinding) {
     onChange("accounts", { bindings: draft.accounts.bindings.map((row) => row.account_key === account.account_key ? nextAccount : row) });
+  }
+
+  function addGuidedRunPlan() {
+    const run_plan_id = uniqueId("new-run-plan", draft.assignments.deployments.map((row) => row.run_plan_id));
+    const next: StrategyRunPlan = {
+      run_plan_id,
+      name: "New Run Plan",
+      description: "",
+      profile_id: draft.strategy.profiles[0]?.profile_id ?? "",
+      oms_profile_id: draft.oms.profiles[0]?.profile_id ?? "",
+      universe_id: "",
+      watchlist_ids: draft.market_discovery.watchlists.filter((row) => row.enabled && row.availability !== "integration_pending").slice(0, 1).map((row) => row.watchlist_id),
+      canvas_profile_id: "current-canvas",
+      data_plan_ids: { replay: "market.historical_scanner_materialization.v1" },
+      source_revision_policy: "require_complete",
+      book_id: "default",
+      campaign_lifecycle: { initial_entry_authority: "confirm", reentry_authority: "confirm", exit_authority: "automatic", protective_exit_authority: "automatic", maximum_reentries: 3, reentry_cooldown_ms: 1000, maximum_initial_watch_ms: 0, session_end_behavior: "keep_watching", retain_ticker_while_paused: true },
+      mandate_ids: [],
+      enabled: false,
+      allowed_environments: ["replay"],
+      action_authority: { default: "confirm", initial_entry: "inherit", add: "inherit", reentry: "inherit", strategic_exit: "inherit", protective_exit: "automatic", emergency_exit: "automatic" },
+      safety_supervisor: { enabled_by_environment: { replay: true, backtest: true, backtest_debug: true, paper: true, live: true } },
+      runtime_assignments: [],
+    };
+    onChange("assignments", { ...draft.assignments, deployments: [...draft.assignments.deployments, next] });
+    selectRunPlan(run_plan_id);
+  }
+
+  function cloneGuidedRunPlan() {
+    const run_plan_id = uniqueId(`${deployment.run_plan_id}-copy`, draft.assignments.deployments.map((row) => row.run_plan_id));
+    const linkedMandates = draft.portfolio.mandates.filter((row) => row.run_plan_id === deployment.run_plan_id);
+    const clonedMandates = linkedMandates.map((row) => ({ ...deepClone(row), mandate_id: uniqueId(`${run_plan_id}-${row.account_key}`, [...draft.portfolio.mandates, ...linkedMandates].map((item) => item.mandate_id)), run_plan_id }));
+    const next = { ...deepClone(deployment), run_plan_id, name: `${deployment.name} copy`, enabled: false, mandate_ids: clonedMandates.map((row) => row.mandate_id), runtime_assignments: [] };
+    onChange("assignments", { ...draft.assignments, deployments: [...draft.assignments.deployments, next] });
+    if (clonedMandates.length) onChange("portfolio", { ...draft.portfolio, mandates: [...draft.portfolio.mandates, ...clonedMandates] });
+    selectRunPlan(run_plan_id);
+  }
+
+  function removeGuidedRunPlan() {
+    if (deployment.enabled || draft.assignments.deployments.length <= 1) return;
+    const deployments = draft.assignments.deployments.filter((row) => row.run_plan_id !== deployment.run_plan_id);
+    onChange("assignments", { ...draft.assignments, deployments });
+    onChange("portfolio", { ...draft.portfolio, mandates: draft.portfolio.mandates.filter((row) => row.run_plan_id !== deployment.run_plan_id) });
+    selectRunPlan(deployments[0]?.run_plan_id ?? "");
   }
 
   function addGuidedAccount() {
@@ -1639,6 +1689,16 @@ function GuidedConfiguration({ approved, draft, label, omsStage, onChange, onCon
 
   const questions: Array<ReactElement<{ label: string }>> = [];
   if (step === "assignments") questions.push(
+    <GuidedQuestion description="A Run Plan is the publishable composition that connects reusable trading behavior, candidate membership, execution, governed accounts, data coverage, and the workspace used at runtime." key="run-plan-identity" label="Which Run Plan are you configuring?" status={deployment.enabled ? "Enabled" : "Draft"}>
+      <div className="guided-form-grid">
+        <SelectField help="Choose the runnable composition edited by the following questions." label="Run Plan" onChange={selectRunPlan} options={draft.assignments.deployments.map((row) => ({ description: `${row.enabled ? "Enabled" : "Draft"} · ${row.allowed_environments.map(readableLabel).join(", ") || "No modes"}`, label: row.name, value: row.run_plan_id }))} value={deployment.run_plan_id} />
+        <div className="guided-inline-actions"><button className="button compact" onClick={addGuidedRunPlan} type="button"><Plus size={14} /> Add Run Plan</button><button className="button compact" onClick={cloneGuidedRunPlan} type="button"><Clipboard size={14} /> Clone</button><button className="button compact danger" disabled={deployment.enabled || draft.assignments.deployments.length <= 1} onClick={removeGuidedRunPlan} type="button"><Trash2 size={14} /> Remove</button></div>
+        <TextField help="Operator-facing name shown in release review and runtime selection." label="Run Plan name" onChange={(name) => replaceDeployment({ ...deployment, name })} value={deployment.name} />
+        <TextField help="Explain the complete trading purpose of this composition and where it is intended to run." label="Description" onChange={(description) => replaceDeployment({ ...deployment, description })} value={deployment.description} />
+        <BooleanField help="Enabled plans may be selected by an approved runtime. Disable a plan before removing it." label="Run Plan enabled" onChange={(enabled) => replaceDeployment({ ...deployment, enabled })} value={deployment.enabled} />
+        <div className="configuration-fixed-value"><span>Stable Run Plan ID</span><strong>{deployment.run_plan_id}</strong><small>Published releases retain this identity and its frozen references.</small></div>
+      </div>
+    </GuidedQuestion>,
     <GuidedQuestion description="The Strategy Profile owns trading behavior and lifecycle decisions. Choosing it does not select symbols, capital, or broker behavior." key="deployment-strategy" label="Which Strategy Profile should this Run Plan execute?" status={deployment.enabled ? "Configured" : "Needs review"}>
       <SelectField help="Select the reusable trading behavior evaluated by this Run Plan. Its entries, adds, reentries, and strategic exits remain unchanged." label="Strategy Profile" onChange={(profile_id) => replaceDeployment({ ...deployment, profile_id })} options={draft.strategy.profiles.map((row) => ({ label: row.name, value: row.profile_id }))} value={deployment.profile_id} />
     </GuidedQuestion>,
@@ -1648,9 +1708,21 @@ function GuidedConfiguration({ approved, draft, label, omsStage, onChange, onCon
     <GuidedQuestion description="The OMS profile supplies reusable execution and protection defaults after Portfolio approves quantity. It cannot change Strategy intent or Portfolio limits." key="deployment-oms" label="Which execution profile should the Run Plan use?" status="Configured">
       <SelectField help="Select the reusable OMS profile that resolves execution policy and protection defaults for this Run Plan." label="OMS profile" onChange={(oms_profile_id) => replaceDeployment({ ...deployment, oms_profile_id })} options={draft.oms.profiles.map((row) => ({ label: row.name, value: row.profile_id }))} value={deployment.oms_profile_id} />
     </GuidedQuestion>,
-    <GuidedQuestion description="Select environments whose bindings will be validated before publication." key="deployment-modes" label="Where may this Run Plan run?" status={deployment.allowed_environments.length ? "Configured" : "Needs decision"}>
+    <GuidedQuestion description="The Run Plan sets the maximum authority for each Strategy action. Portfolio may narrow exposure-increasing authority, while protective and emergency exits remain automatic and cannot be weakened." key="deployment-authority" label="How much action authority may this Run Plan grant?" status="Configured">
+      <CampaignPolicyEditor deployment={deployment} onChange={replaceDeployment} />
+    </GuidedQuestion>,
+    <GuidedQuestion description="Each runtime mode resolves through an explicit registered data plan. Historical modes should fail before the first event when required source coverage is incomplete." key="deployment-modes" label="Where may this Run Plan run, and with which data?" status={deployment.allowed_environments.length ? "Configured" : "Needs decision"}>
       <ModeSelector modes={deployment.allowed_environments} onChange={(allowed_environments) => replaceDeployment({ ...deployment, allowed_environments, data_plan_ids: { ...deployment.data_plan_ids, ...Object.fromEntries(allowed_environments.map((mode) => [mode, deployment.data_plan_ids[mode] ?? (mode === "paper" || mode === "live" ? "qmd.scanner.snapshot.v1" : "market.historical_scanner_materialization.v1")])) } })} />
       <div className="configuration-data-plan-grid">{deployment.allowed_environments.map((mode) => <div className="configuration-fixed-value" key={mode}><span>{readableLabel(mode)}</span><strong>{deployment.data_plan_ids[mode]}</strong><small>Registered query plan</small></div>)}</div>
+      <div className="guided-form-grid"><SelectField help="Require complete is the fail-closed default. Allow partial is limited to explicitly reviewed research use." label="Source revision policy" onChange={(source_revision_policy) => replaceDeployment({ ...deployment, source_revision_policy: source_revision_policy as StrategyRunPlan["source_revision_policy"] })} options={[{ label: "Require complete", value: "require_complete" }, { label: "Allow partial (research only)", value: "allow_partial" }]} value={deployment.source_revision_policy} /><div className="configuration-fixed-value"><span>Portfolio book</span><strong>Default book</strong><small>The currently registered account book used by Portfolio mandates.</small></div></div>
+    </GuidedQuestion>,
+    <GuidedQuestion description="The safety supervisor is mandatory in Paper and Live. Historical modes may be configured explicitly so acceptance tests can verify both supervised and unsupervised behavior." key="deployment-safety" label="Which modes require the safety supervisor?" status="Fail closed">
+      <div className="guided-form-grid">{(["replay", "backtest", "backtest_debug", "paper", "live"] as RuntimeMode[]).map((mode) => <BooleanField disabled={mode === "paper" || mode === "live"} help={mode === "paper" || mode === "live" ? "Mandatory for broker-connected operation." : "Controls the supervisor for this historical runtime mode."} key={mode} label={`${readableLabel(mode)} safety`} onChange={(enabled) => replaceDeployment({ ...deployment, safety_supervisor: { enabled_by_environment: { ...deployment.safety_supervisor.enabled_by_environment, [mode]: enabled } } })} value={deployment.safety_supervisor.enabled_by_environment[mode]} />)}</div>
+    </GuidedQuestion>,
+    <GuidedQuestion description="Portfolio mandates are the account-specific capital and risk authority for this Run Plan. They are configured on Portfolio & Risk and referenced here; the Run Plan cannot duplicate or override their limits." key="deployment-mandates" label="Which governed accounts are attached?" status={draft.portfolio.mandates.some((row) => row.run_plan_id === deployment.run_plan_id && row.enabled) ? "Configured" : "Needs mandate"}>
+      <div className="configuration-reference-grid">{draft.portfolio.mandates.filter((row) => row.run_plan_id === deployment.run_plan_id).map((row) => <AbstractionCard compact description={`${accountName(draft.accounts, row.account_key)} · ${readableLabel(row.assignment_mode)} assignment`} identity={row.mandate_id} key={row.mandate_id} kind="portfolio_mandate" metadata={[{ label: "Maximum positions", value: row.maximum_positions }, { label: "Action authority", value: readableLabel(row.maximum_action_authority) }]} selected={row.enabled} status={row.enabled ? "Enabled" : "Disabled"} title={accountName(draft.accounts, row.account_key)} />)}</div>
+      {!draft.portfolio.mandates.some((row) => row.run_plan_id === deployment.run_plan_id) ? <div className="configuration-empty-state"><strong>No Portfolio mandate is attached.</strong><span>Configure an account allocation before this Run Plan can approve capital.</span></div> : null}
+      <div className="guided-inline-actions"><button className="button compact" onClick={() => { window.location.hash = "portfolio-configuration"; }} type="button"><ArrowRight size={14} /> Configure Portfolio mandates</button></div>
     </GuidedQuestion>,
     <GuidedQuestion description="The current Canvas layout is a reusable workspace dependency and is frozen with the release." key="deployment-canvas" label="Which workspace will this Run Plan open?" status={canvasApprovalSnapshot().ready ? "Configured" : "Needs Canvas"}>
       <div className="configuration-fixed-value"><span>Canvas profile</span><strong>{canvasApprovalSnapshot().revision}</strong><small>{canvasApprovalSnapshot().containerCount} configured containers</small></div>
@@ -1703,11 +1775,11 @@ function GuidedConfiguration({ approved, draft, label, omsStage, onChange, onCon
   const movePrevious = () => atFirstQuestion ? previous && navigateGuidedStep(previous, onOmsStageChange) : setQuestionIndex(safeQuestionIndex - 1);
   const moveNext = () => atLastQuestion ? next && onContinue(next) : setQuestionIndex(safeQuestionIndex + 1);
 
-  const usesRightRail = step === "portfolio" || step === "execution" || step === "protection";
+  const usesRightRail = step === "assignments" || step === "portfolio" || step === "execution" || step === "protection";
   return <div className={`guided-configuration-shell${usesRightRail ? " configuration-guided-drilldown" : ""}`} data-guided-step={step}>
     <div className="configuration-guided-step-navigation">
       <button aria-label="Previous configuration question" className="button compact configuration-guided-direction configuration-guided-direction-previous" disabled={atFirstQuestion && !previous} onClick={movePrevious} type="button"><ArrowLeft aria-hidden="true" size={15} /><span>Previous</span></button>
-      {usesRightRail ? <div className="configuration-guided-flow-title"><span>{step === "portfolio" ? "Portfolio and risk" : step === "execution" ? "OMS execution" : "OMS protection"}</span><strong>{questions[safeQuestionIndex]?.props.label}</strong></div> : <nav aria-label={`${readableLabel(step)} questions`} className="configuration-guided-question-tabs" style={{ gridTemplateColumns: `repeat(${questionCount}, minmax(0, 1fr))` }}>
+      {usesRightRail ? <div className="configuration-guided-flow-title"><span>{step === "assignments" ? "Strategy Run Plan" : step === "portfolio" ? "Portfolio and risk" : step === "execution" ? "OMS execution" : "OMS protection"}</span><strong>{questions[safeQuestionIndex]?.props.label}</strong></div> : <nav aria-label={`${readableLabel(step)} questions`} className="configuration-guided-question-tabs" style={{ gridTemplateColumns: `repeat(${questionCount}, minmax(0, 1fr))` }}>
         {questions.map((question, index) => <button aria-current={index === safeQuestionIndex ? "step" : undefined} key={question.key ?? index} onClick={() => setQuestionIndex(index)} title={question.props.label} type="button"><span>{index + 1}</span><strong>{question.props.label}</strong></button>)}
       </nav>}
       <button aria-label="Next configuration question" className="button compact primary configuration-guided-direction configuration-guided-direction-next" disabled={atLastQuestion && !next} onClick={moveNext} type="button"><span>Next</span><ArrowRight aria-hidden="true" size={15} /></button>
@@ -1720,6 +1792,7 @@ function GuidedConfiguration({ approved, draft, label, omsStage, onChange, onCon
 
 function guidedQuestionRailLabel(key: string, fallback: string) {
   const labels: Record<string, string> = {
+    "run-plan-identity": "Plan", "deployment-strategy": "Strategy", "deployment-watchlists": "Watchlists", "deployment-oms": "OMS", "deployment-authority": "Authority", "deployment-modes": "Modes & data", "deployment-safety": "Safety", "deployment-mandates": "Mandates", "deployment-canvas": "Canvas",
     "portfolio-account": "Account & policy", "portfolio-policy-identity": "Policy", "portfolio-mandate-limits": "Mandate limits", "portfolio-assignment": "Assignment", "portfolio-replacement": "Replacement", "portfolio-authority": "Authority", "portfolio-capital-policy": "Capital", "portfolio-exposure-policy": "Exposure", "portfolio-risk-policy": "Risk & loss", "portfolio-permissions": "Permissions", "portfolio-allowlists": "Allowlists", "portfolio-operational": "Operations", "portfolio-groups": "Account groups",
     "oms-profile-identity": "OMS profile", "execution-profile": "Defaults", "execution-urgency": "Urgency", "execution-protection-guardrails": "Guardrails", "execution-behavior": "Behavior", "execution-price-envelope": "Price bounds", "execution-timing": "Timing",
     "protection-profile": "Profile", "protection-transitions": "Transitions", "protection-slices": "Slices", "protection-recovery": "Recovery",
@@ -4657,43 +4730,32 @@ function AddStepsEditor({ catalog, eligibleSessions, executionPolicies, onChange
 }
 
 type ConfigurableSection = Extract<TradingConfigurationSection, "assignments" | "portfolio" | "oms" | "accounts">;
-type SectionStudioView = "guided" | "structure";
 
-const SECTION_STUDIO_COPY: Record<ConfigurableSection, { guided: string; managed: string; title: string }> = {
-  accounts: { guided: "Configure one account binding at a time", managed: "Advanced account structure", title: "Accounts & Sessions" },
-  assignments: { guided: "Assemble one runnable plan at a time", managed: "Advanced Run Plan structure", title: "Strategy Run Plans" },
-  oms: { guided: "Configure execution and protection step by step", managed: "Advanced OMS structure", title: "OMS & Protection" },
-  portfolio: { guided: "Configure mandates and account policy step by step", managed: "Advanced Portfolio structure", title: "Portfolio & Risk" },
+const SECTION_STUDIO_COPY: Record<ConfigurableSection, { guided: string; title: string }> = {
+  accounts: { guided: "Configure one account binding at a time", title: "Accounts & Sessions" },
+  assignments: { guided: "Assemble one runnable plan at a time", title: "Strategy Run Plans" },
+  oms: { guided: "Configure execution and protection step by step", title: "OMS & Protection" },
+  portfolio: { guided: "Configure mandates and account policy step by step", title: "Portfolio & Risk" },
 };
 
 const SECTION_SYSTEM_KEYS = new Set([
   "assignment_id", "condition_id", "group_id", "revision", "slice_id", "origin", "editable", "runtime_assignments", "mandate_ids",
 ]);
 
-function ConfigurationSectionStudio({ draft, guided, onChange, onDraftChange, section }: {
+function ConfigurationSectionStudio({ guided, section }: {
   draft: Draft;
   guided: ReactNode;
   onChange: (value: Draft[ConfigurableSection]) => void;
   onDraftChange: (value: Draft) => void;
   section: ConfigurableSection;
 }) {
-  const [view, setView] = useState<SectionStudioView>("guided");
   const copy = SECTION_STUDIO_COPY[section];
-  const hasSeparateStructureView = section === "assignments";
-  const activeView: SectionStudioView = hasSeparateStructureView ? view : "guided";
-  const structure = hasSeparateStructureView
-    ? <RunPlanCompositionEditor draft={draft} onChange={onChange as (value: AssignmentSection) => void} onDraftChange={onDraftChange} />
-    : null;
 
   return <div className="strategy-studio-workspace configuration-section-studio">
     <nav className="strategy-editor-toolbar">
-      <span><strong>{copy.title}</strong><small>{activeView === "guided" ? copy.guided : copy.managed}</small></span>
-      <div className="configuration-section-toolbar-actions">
-        {hasSeparateStructureView ? <button className="button compact configuration-structure-button" onClick={() => setView(activeView === "structure" ? "guided" : "structure")} type="button"><Settings2 size={14} /> {activeView === "structure" ? "Back to guided setup" : "Advanced structure"}</button> : null}
-      </div>
+      <span><strong>{copy.title}</strong><small>{copy.guided}</small></span>
     </nav>
-    {activeView === "guided" ? <div className="configuration-guided-workspace configuration-section-guided">{guided}</div> : null}
-    {activeView === "structure" ? <div className="configuration-section-structure">{structure}</div> : null}
+    <div className="configuration-guided-workspace configuration-section-guided">{guided}</div>
   </div>;
 }
 
