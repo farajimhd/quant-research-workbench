@@ -205,13 +205,11 @@ REGISTRY_TYPES = (
 
 
 CONFIGURATION_BINDINGS = (
-    ConfigurationBindingDefinition("market_discovery.core_scan", "market_discovery.core_scan.calculations[]", "derivation", "capability_id", "parameterized_reference", ("enabled", "selected_timeframes"), ("capability_id",)),
-    ConfigurationBindingDefinition("market_discovery.signals", "market_discovery.core_scan.calculations[]", "signal", "capability_id", "parameterized_reference", ("enabled", "selected_timeframes"), ("capability_id",)),
-    ConfigurationBindingDefinition("market_discovery.products", "market_discovery.core_scan.calculations[]", "product", "capability_id", "select_reference", ("enabled",), ("capability_id",)),
+    ConfigurationBindingDefinition("market_discovery.core_scan", "market_discovery.core_scan", "product", "scan_id", "editable_instance", ("name", "description", "inclusion_rule_sets", "ranking_field", "ranking_direction", "maximum_size", "refresh_interval_ms", "columns"), ("inclusion_rule_sets", "ranking_field", "columns")),
     ConfigurationBindingDefinition("market_discovery.columns", "market_discovery.watchlists[].columns[]", "column", "column_id", "select_reference", (), ("column_id",)),
     ConfigurationBindingDefinition("market_discovery.conditions", "market_discovery.rule_sets[].conditions[]", "condition", "condition_id", "editable_instance", ("left_source_id", "left_timeframe", "comparator", "right_source_id", "right_timeframe", "value", "enabled"), ("left_source_id", "right_source_id")),
     ConfigurationBindingDefinition("market_discovery.rules", "market_discovery.rule_sets[]", "rule_set", "rule_set_id", "editable_instance", ("name", "description", "operator", "conditions", "enabled")),
-    ConfigurationBindingDefinition("market_discovery.watchlists", "market_discovery.watchlists[]", "watchlist", "watchlist_id", "editable_instance", ("name", "description", "inclusion_rule_sets", "ranking_field", "ranking_direction", "maximum_size", "refresh_interval_ms", "membership_expiry", "membership_ttl_ms", "manual_inclusions", "manual_exclusions", "columns", "calculations", "enabled")),
+    ConfigurationBindingDefinition("market_discovery.watchlists", "market_discovery.watchlists[]", "watchlist", "watchlist_id", "editable_instance", ("name", "description", "inclusion_rule_sets", "ranking_field", "ranking_direction", "maximum_size", "refresh_interval_ms", "membership_expiry", "membership_ttl_ms", "manual_inclusions", "manual_exclusions", "columns", "enabled"), ("source_scan_id", "inclusion_rule_sets", "ranking_field", "columns")),
     ConfigurationBindingDefinition("strategy.profiles", "strategy.profiles[]", "strategy_profile", "profile_id", "editable_instance", ("name", "description", "parameters", "capabilities", "lifecycle", "rule_set_ids"), ("definition_id",)),
     ConfigurationBindingDefinition("run_plans", "assignments.deployments[]", "run_plan", "run_plan_id", "editable_instance", ("name", "description", "profile_id", "watchlist_ids", "mandate_ids", "oms_profile_id", "canvas_profile_id", "allowed_environments", "data_plan_ids", "source_revision_policy", "action_authority", "campaign_lifecycle", "enabled"), ("profile_id", "watchlist_ids", "mandate_ids", "oms_profile_id", "canvas_profile_id", "data_plan_ids")),
     ConfigurationBindingDefinition("accounts", "accounts.bindings[]", "account_binding", "account_key", "editable_instance", ("name", "account_class", "base_currency", "session_key", "portfolio_policy_id", "enabled", "modes"), ("portfolio_policy_id",)),
@@ -2138,7 +2136,7 @@ def _configuration_information_definitions(
         "sec-events": "product",
         "membership-history": "product",
     }
-    for capability in dict(discovery.get("core_scan") or {}).get("calculations") or []:
+    for capability in discovery.get("calculation_catalog") or []:
         capability_id = str(capability.get("capability_id") or "").strip()
         if not capability_id or capability_id.startswith("qmd."):
             continue

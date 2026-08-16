@@ -15,6 +15,7 @@ from src.backend.watchlist_runtime_service import (
     focused_target_contract,
     live_market_reference_projection,
     normalize_watchlist_candidate,
+    project_configured_rule_set_columns,
     project_watchlists_from_candidates,
     publish_watchlist_target,
     publish_computation_target,
@@ -49,22 +50,25 @@ class WatchlistRuntimeServiceTests(unittest.TestCase):
                     if row["watchlist_id"] == "top-small-cap-gainers"
                 ),
                 "maximum_size": 2,
-                "calculations": [
-                    "qmd.family.momentum_core",
-                    "qmd.family.trend_moving_averages",
-                ],
+                "columns": ["test_momentum", "test_trend"],
             }
         ]
-        discovery["core_scan"]["calculations"].extend(
+        discovery["column_catalog"].extend([
+            {"column_id": "test_momentum", "source_id": "test.momentum", "source_kind": "data_definition"},
+            {"column_id": "test_trend", "source_id": "test.trend", "source_kind": "data_definition"},
+        ])
+        discovery["calculation_catalog"].extend(
             [
                 {
                     "capability_id": "qmd.family.momentum_core",
                     "availability": "implemented",
+                    "fields": ["test.momentum"],
                     "selected_timeframes": ["1m"],
                 },
                 {
                     "capability_id": "qmd.family.trend_moving_averages",
                     "availability": "implemented",
+                    "fields": ["test.trend"],
                     "selected_timeframes": ["1m"],
                 },
             ]
@@ -84,6 +88,37 @@ class WatchlistRuntimeServiceTests(unittest.TestCase):
         self.assertAlmostEqual(row["change_pct"], 10)
         self.assertEqual(row["volume"], 50_000)
         self.assertEqual(row["liquidity_rank"], 9)
+
+    def test_projects_selected_rule_set_results_as_boolean_columns(self) -> None:
+        discovery = self.configuration["market_discovery"]
+        discovery["rule_sets"].append({
+            "rule_set_id": "test-positive-change",
+            "name": "Positive change",
+            "description": "Passes when session change is positive.",
+            "enabled": True,
+            "operator": "all",
+            "conditions": [{
+                "condition_id": "positive-change",
+                "enabled": True,
+                "left_source_id": "market.change_pct",
+                "comparator": "greater_than",
+                "value": 0,
+            }],
+        })
+        discovery["column_catalog"].append({
+            "column_id": "rule_set:test-positive-change",
+            "source_id": "test-positive-change",
+            "source_kind": "rule_set",
+        })
+        discovery["core_scan"]["columns"].append("rule_set:test-positive-change")
+
+        rows = project_configured_rule_set_columns(
+            self.configuration,
+            [{"ticker": "AAA", "change_pct": 2.5}, {"ticker": "BBB", "change_pct": -1.0}],
+        )
+
+        self.assertIs(rows[0]["rule_set:test-positive-change"], True)
+        self.assertIs(rows[1]["rule_set:test-positive-change"], False)
 
     def test_projects_canvas_watchlists_from_the_same_causal_candidates(self) -> None:
         projection = project_watchlists_from_candidates(
@@ -245,10 +280,13 @@ class WatchlistRuntimeServiceTests(unittest.TestCase):
         discovery = self.configuration["market_discovery"]
         calculations = {
             row["capability_id"]: row
-            for row in discovery["core_scan"]["calculations"]
+            for row in discovery["calculation_catalog"]
         }
         capabilities, timeframes = focused_target_contract(
-            discovery["watchlists"][0], calculations
+            discovery["watchlists"][0],
+            discovery["rule_sets"],
+            calculations,
+            {row["column_id"]: row["source_id"] for row in discovery["column_catalog"]},
         )
         self.assertEqual(
             capabilities, ["momentum_core", "trend_moving_averages"]

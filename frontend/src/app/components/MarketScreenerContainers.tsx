@@ -41,7 +41,7 @@ export type SignalStreamSettings = TechnicalListSettings & { limit: number; pres
 export type WatchUniverseSettings = TechnicalListSettings & { limit: number; watchlistId: string; watchlistIds: string[]; universeId?: string };
 type DiscoveryScannerColumn = { column_id: string; name: string; source_id: string };
 type DiscoveryCapability = { enabled?: boolean; execution_scope?: string; scanner_columns?: DiscoveryScannerColumn[]; system_required?: boolean };
-type DiscoveryColumn = { column_id: string; description?: string; name: string; provenance?: string; semantic_type?: string; source_id?: string; unit?: string; value_type?: string };
+type DiscoveryColumn = { column_id: string; description?: string; name: string; provenance?: string; semantic_type?: string; source_id?: string; source_kind?: "data_definition" | "rule_set" | string; unit?: string; value_type?: string };
 type DiscoveryWatchlist = { availability?: string; columns?: string[]; description?: string; enabled?: boolean; name: string; watchlist_id: string };
 export type WatchUniverseDefinition = {
   description?: string;
@@ -55,7 +55,7 @@ export type WatchUniverseDefinition = {
 export type StrategyActivitySettings = { eventType: string; limit: number; runId: string; strategyId: string; ticker: string };
 type StrategyActivityResponse = { as_of: string; complete: boolean; rows: ScreenerRow[]; source: string };
 type WatchUniverseCatalogResponse = {
-  market_discovery?: { column_catalog?: DiscoveryColumn[]; core_scan?: { calculations?: DiscoveryCapability[] }; watchlists?: DiscoveryWatchlist[] };
+  market_discovery?: { column_catalog?: DiscoveryColumn[]; core_scan?: { calculations?: DiscoveryCapability[]; columns?: string[] }; watchlists?: DiscoveryWatchlist[] };
   run_plans?: { plans?: Array<{ name?: string; run_plan_id: string; universe_id: string }>; universes?: WatchUniverseDefinition[] };
 };
 export type WatchlistRuntimeResponse = {
@@ -242,13 +242,15 @@ function useDiscoveryPresentation() {
         ...column,
         name: presentationNames.get(column.column_id) ?? column.name,
       })),
-      coreColumns: [...new Set(calculations
-        .filter((capability) => capability.execution_scope === "core_scan" && Boolean(capability.enabled || capability.system_required))
-        .flatMap((capability) => capability.scanner_columns ?? [])
-        .map((column) => column.column_id)
-        .filter(Boolean))],
+      coreColumns: discovery?.core_scan?.columns?.length
+        ? [...new Set(discovery.core_scan.columns)]
+        : [...new Set(calculations
+          .filter((capability) => capability.execution_scope === "core_scan" && Boolean(capability.enabled || capability.system_required))
+          .flatMap((capability) => capability.scanner_columns ?? [])
+          .map((column) => column.column_id)
+          .filter(Boolean))],
     };
-  }, [discovery?.column_catalog, discovery?.core_scan?.calculations]);
+  }, [discovery?.column_catalog, discovery?.core_scan?.calculations, discovery?.core_scan?.columns]);
   return { catalog, configuration, coreColumns, discovery };
 }
 

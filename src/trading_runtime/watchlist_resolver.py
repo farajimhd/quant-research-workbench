@@ -162,6 +162,12 @@ def evaluate_watchlist_candidate(
     }
 
 
+def evaluate_rule_set_result(rule_set: dict[str, Any] | None, raw: dict[str, Any]) -> bool:
+    """Evaluate one registered Rule Set for presentation or composition reuse."""
+
+    return _rule_matches(rule_set, classify_watchlist_row(dict(raw)))
+
+
 def rank_watchlist_membership(
     watchlist: dict[str, Any],
     accepted: Iterable[dict[str, Any]],

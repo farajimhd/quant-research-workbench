@@ -256,10 +256,15 @@ def scanner_snapshot_payload(
     }
     try:
         from src.backend.trading_configuration_service import configuration_base
-        from src.backend.watchlist_runtime_service import project_watchlists_from_candidates
+        from src.backend.watchlist_runtime_service import (
+            project_configured_rule_set_columns,
+            project_watchlists_from_candidates,
+        )
 
+        configuration = configuration_base()
+        rows = project_configured_rule_set_columns(configuration, rows)
         watchlist_runtime = project_watchlists_from_candidates(
-            configuration_base(),
+            configuration,
             rows,
             as_of=effective_as_of,
             available_fields=(

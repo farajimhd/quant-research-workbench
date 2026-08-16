@@ -42,6 +42,7 @@ import { DefinitionRegistryProvider, validateInformationRegistry, type Informati
 import { InventoryFilterSelect } from "../app/components/InventoryFilterSelect";
 import { formatSemanticNumber } from "../app/format";
 import { DataCatalogPage, RuleSetLibraryPage, type DataRuleSet } from "./DataConfigurationPages";
+import { MarketDiscoveryComposer, type MarketDiscoveryConfiguration } from "./MarketDiscoveryComposer";
 
 export type TradingConfigurationSection =
   | "data_catalog"
@@ -469,7 +470,6 @@ type WatchlistConfig = {
   manual_inclusions: string[];
   manual_exclusions: string[];
   columns: string[];
-  calculations: string[];
   membership_history: Array<Record<string, unknown>>;
   origin?: "system" | "user";
   template?: boolean;
@@ -542,7 +542,8 @@ type DiscoveryField = {
   provenance: string;
   query_plan_id: string;
   registry_authority: string;
-  semantic_type: DiscoveryCapability["capability_type"] | "system";
+  semantic_type: DiscoveryCapability["capability_type"] | "rule_set" | "system";
+  source_kind?: "data_definition" | "rule_set";
   sortable: boolean;
   source: string;
   source_id: string;
@@ -553,31 +554,18 @@ type DiscoveryField = {
 };
 type WatchlistColumn = DiscoveryField & { column_id: string };
 type MarketClassification = { classification_id: string; group: string; name: string; description: string; minimum: number; maximum: number | null; unit: string; source_id: string };
-const WATCHLIST_GUIDED_STEPS = ["identity", "rules", "ranking", "columns", "timing", "overrides", "calculations", "review"] as const;
+const WATCHLIST_GUIDED_STEPS = ["identity", "rules", "ranking", "columns", "timing", "overrides", "review"] as const;
 type WatchlistGuidedStep = typeof WATCHLIST_GUIDED_STEPS[number];
 type MarketDiscoverySection = {
   security_universe: { universe_id: string; name: string; description: string; enabled: boolean; configurable: boolean };
-  core_scan: { scan_id: string; name: string; description: string; refresh_interval_ms: number; published: boolean; calculations: DiscoveryCapability[] };
+  core_scan: { scan_id: string; name: string; description: string; refresh_interval_ms: number; published: boolean; inclusion_rule_sets: string[]; inclusion_operator: "all" | "any"; ranking_field: string; ranking_direction: "ascending" | "descending"; maximum_size: number; columns: string[] };
+  calculation_catalog: DiscoveryCapability[];
   classifications: MarketClassification[];
   field_catalog: DiscoveryField[];
   column_catalog: WatchlistColumn[];
   rule_sets: RuleSetDefinition[];
   watchlists: WatchlistConfig[];
 };
-
-function canonicalCapabilityType(capability: Partial<DiscoveryCapability>): DiscoveryCapability["capability_type"] {
-  const id = capability.capability_id ?? "";
-  if (["market.last_price", "market.change_pct", "market.volume"].includes(id)) return "market_data";
-  if (id === "market.relative_volume") return "indicator";
-  if (id.startsWith("market.")) return "reference";
-  if (id === "indicator.structure.bullish_choch" || id.startsWith("signal.")) return "signal";
-  if (id.startsWith("indicator.")) return "indicator";
-  if (["news-events", "sec-events"].includes(id)) return "event";
-  if (capability.capability_type) return capability.capability_type;
-  if (capability.output_type === "system") return "system";
-  if (["news", "sec"].includes(capability.provider?.toLocaleLowerCase() ?? "")) return "event";
-  return "indicator";
-}
 
 function capabilityTypeLabel(type: DiscoveryCapability["capability_type"]): string {
   return {
@@ -634,7 +622,7 @@ function normalizedDiscoveryCapability(capability: DiscoveryCapability): Discove
     ...capability,
     availability: value.availability ?? "implemented",
     calculation: value.calculation ?? value.description ?? "QMD publishes this causally available observation.",
-    capability_type: canonicalCapabilityType(value),
+    capability_type: value.capability_type,
     fields: value.fields ?? [value.capability_id],
     scanner_columns: value.scanner_columns ?? [],
     inputs: value.inputs ?? [value.provider || "QMD"],
@@ -793,7 +781,7 @@ type Draft = {
 function normalizeDraft(payload: any): Draft {
   const runPlans = payload?.run_plans ?? payload?.assignments ?? { plans: [], universes: [] };
   const strategy = payload?.strategy ?? {};
-  const marketDiscovery = payload?.market_discovery ?? { security_universe: {}, core_scan: { calculations: [] }, classifications: [], field_catalog: [], column_catalog: [], rule_sets: [], watchlists: [] };
+  const marketDiscovery = payload?.market_discovery ?? { security_universe: {}, core_scan: { inclusion_rule_sets: [], inclusion_operator: "all", ranking_field: "market.liquidity_rank", ranking_direction: "descending", maximum_size: 250, columns: [] }, calculation_catalog: [], classifications: [], field_catalog: [], column_catalog: [], rule_sets: [], watchlists: [] };
   const normalizeRuleSet = (ruleSet: any) => ({
     ...ruleSet,
     conditions: (ruleSet.conditions ?? []).map((condition: any) => ({
@@ -836,8 +824,20 @@ function normalizeDraft(payload: any): Draft {
     ...payload,
     market_discovery: {
       ...marketDiscovery,
+      core_scan: {
+        ...marketDiscovery.core_scan,
+        inclusion_rule_sets: marketDiscovery.core_scan?.inclusion_rule_sets ?? [],
+        inclusion_operator: marketDiscovery.core_scan?.inclusion_operator ?? "all",
+        ranking_field: marketDiscovery.core_scan?.ranking_field === "liquidity-rank" ? "market.liquidity_rank" : marketDiscovery.core_scan?.ranking_field ?? "market.liquidity_rank",
+        ranking_direction: marketDiscovery.core_scan?.ranking_direction ?? "descending",
+        maximum_size: marketDiscovery.core_scan?.maximum_size ?? 250,
+        columns: marketDiscovery.core_scan?.columns ?? [],
+      },
       rule_sets: (marketDiscovery.rule_sets ?? []).map(normalizeRuleSet),
-      watchlists: (marketDiscovery.watchlists ?? []).map((watchlist: WatchlistConfig) => ({ ...watchlist, exclusion_rule_sets: [] })),
+      watchlists: (marketDiscovery.watchlists ?? []).map((watchlist: WatchlistConfig & { calculations?: string[] }) => {
+        const { calculations: _legacyCalculations, ...referenceWatchlist } = watchlist;
+        return { ...referenceWatchlist, exclusion_rule_sets: [], ranking_field: watchlist.ranking_field === "liquidity-rank" ? "market.liquidity_rank" : watchlist.ranking_field };
+      }),
     },
     strategy: {
       ...strategy,
@@ -879,7 +879,7 @@ function serializeDraft(draft: Draft) {
 
 const CONFIGURATION_SESSION_KEY = "trading-configuration-session-v2";
 const LEGACY_CONFIGURATION_SESSION_KEY = "trading-configuration-session-v1";
-const CONFIGURATION_SESSION_PAYLOAD_VERSION = 2;
+const CONFIGURATION_SESSION_PAYLOAD_VERSION = 4;
 
 function deduplicateRuleSets(ruleSets: RuleSetDefinition[]): RuleSetDefinition[] {
   const byId = new Map<string, RuleSetDefinition>();
@@ -932,9 +932,17 @@ function readSessionConfiguration(base: Draft): Draft {
       ...base.market_discovery.rule_sets,
       ...storedCustomRuleSets,
     ]);
+    const sessionWatchlists = new Map(session.market_discovery.watchlists.map((row) => [row.watchlist_id, row]));
+    const reconciledWatchlists = [
+      ...base.market_discovery.watchlists.map((row) => ({ ...row, ...(sessionWatchlists.get(row.watchlist_id) ?? {}) })),
+      ...session.market_discovery.watchlists.filter((row) => row.origin === "user" && !base.market_discovery.watchlists.some((baseRow) => baseRow.watchlist_id === row.watchlist_id)),
+    ];
     const reconciled = {
+      ...base,
       ...session,
+      schema_version: base.schema_version,
       market_discovery: {
+        ...base.market_discovery,
         ...session.market_discovery,
         // Catalogs are backend/QMD authority. Preserve user-authored rules,
         // Watchlists, and selections, but never freeze an older catalog in a
@@ -942,11 +950,18 @@ function readSessionConfiguration(base: Draft): Draft {
         classifications: base.market_discovery.classifications,
         field_catalog: base.market_discovery.field_catalog,
         column_catalog: base.market_discovery.column_catalog,
+        calculation_catalog: base.market_discovery.calculation_catalog,
+        security_universe: base.market_discovery.security_universe,
         core_scan: {
+          ...base.market_discovery.core_scan,
           ...session.market_discovery.core_scan,
-          calculations: base.market_discovery.core_scan.calculations,
+          scan_id: session.market_discovery.core_scan.scan_id || base.market_discovery.core_scan.scan_id,
+          name: session.market_discovery.core_scan.name || base.market_discovery.core_scan.name,
+          description: session.market_discovery.core_scan.description || base.market_discovery.core_scan.description,
+          columns: session.market_discovery.core_scan.columns.length ? session.market_discovery.core_scan.columns : base.market_discovery.core_scan.columns,
         },
         rule_sets: reconciledRuleSets,
+        watchlists: reconciledWatchlists,
       },
       strategy: {
         ...session.strategy,
@@ -1003,7 +1018,7 @@ const SECTION_META = {
     eyebrow: "QMD discovery authority",
     icon: ScanSearch,
     title: "Market Discovery",
-    description: "Review QMD's complete capability inventory and configure reusable Watchlists.",
+    description: "Compose the Core Scan and reusable Watchlists from registered Data Definitions and Rule Sets.",
   },
   strategy: {
     eyebrow: "Step 1 · Define behavior",
@@ -1319,7 +1334,7 @@ export function TradingConfigurationPage({ section }: { section: TradingConfigur
         <div className="configuration-expert-workspace">
           <div className="configuration-expert-editor">
             {section === "strategy" ? <StrategyStudio approved={approved} draft={draft} label={label} onChange={(value) => updateDraft("strategy", value)} onDeleteProfile={deleteStrategyProfile} onDraftChange={updateConfigurationBook} onLabelChange={setLabel} onPublish={publish} publishing={status === "saving"} revisions={revisions} section={draft.strategy} /> : null}
-            {section === "discovery" ? <MarketDiscoveryStudio onChange={(value) => updateDraft("market_discovery", value)} section={draft.market_discovery} /> : null}
+            {section === "discovery" ? <MarketDiscoveryComposer onChange={(value) => updateDraft("market_discovery", value as MarketDiscoverySection)} section={draft.market_discovery as MarketDiscoveryConfiguration} /> : null}
             {section === "assignments" ? <RunPlanCompositionEditor draft={draft} onChange={(value) => updateDraft("assignments", value)} onDraftChange={updateConfigurationBook} /> : null}
             {section === "portfolio" ? <PortfolioEditor draft={draft} onChange={(value) => updateDraft("portfolio", value)} /> : null}
             {section === "oms" ? <OmsEditor section={draft.oms} onChange={(value) => updateDraft("oms", value)} /> : null}
@@ -2187,6 +2202,9 @@ function GuidedEmpty({ onSwitchToExpert }: { onSwitchToExpert: () => void }) {
   return <div className="guided-empty"><TriangleAlert size={20} /><h2>This step needs a base object</h2><p>Create the missing profile, Run Plan, mandate, OMS profile, policy, protection profile, or account in Expert mode. Guided setup does not create a Live-critical object implicitly.</p><button className="button primary" onClick={onSwitchToExpert} type="button"><Settings2 size={15} /> Open Expert editor</button></div>;
 }
 
+/* Removed from the runtime UI in schema 24. Market Discovery now composes only
+   registered Data Definitions and Rule Sets through MarketDiscoveryComposer.
+
 function MarketDiscoveryStudio({ onChange, section }: { onChange: (value: MarketDiscoverySection) => void; section: MarketDiscoverySection }) {
   const [mode, setMode] = useState<"catalog" | "enrichments" | "guided">("guided");
   const [guidedStep, setGuidedStep] = useState<"universal" | "core" | "watchlists" | "history">("universal");
@@ -2688,6 +2706,7 @@ function WatchlistRuleChoices({ fields, onChange, ruleSets, watchlist }: { field
   </div>;
 }
 
+*/
 function StrategyStudio({ approved, draft, label, onChange, onDeleteProfile, onDraftChange, onLabelChange, onPublish, publishing, revisions, section }: {
   approved: Revision | null;
   draft: Draft;

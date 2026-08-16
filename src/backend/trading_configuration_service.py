@@ -47,7 +47,7 @@ from src.trading_runtime.strategy_campaign import validate_campaign_policy
 from src.trading_runtime.taxonomy import StrategyTaxonomy
 
 
-CONFIGURATION_SCHEMA_VERSION = 23
+CONFIGURATION_SCHEMA_VERSION = 24
 CONFIGURATION_SECTIONS = {
     "strategy",
     "market_discovery",
@@ -2248,8 +2248,47 @@ def _market_discovery_field_catalog(
 
 def _watchlist_column_catalog(
     field_catalog: list[dict[str, Any]],
+    rule_sets: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
-    return [deepcopy(row) for row in field_catalog if str(row.get("column_id") or "")]
+    """Build presentation-only columns from canonical data and rule definitions."""
+
+    columns = [
+        {
+            **deepcopy(row),
+            "source_kind": "data_definition",
+            "source_id": str(row.get("source_id") or row.get("field_id") or ""),
+        }
+        for row in field_catalog
+        if str(row.get("column_id") or "")
+    ]
+    for rule_set in rule_sets:
+        rule_set_id = str(rule_set.get("rule_set_id") or "")
+        if not rule_set_id:
+            continue
+        columns.append({
+            "column_id": f"rule_set:{rule_set_id}",
+            "field_id": "",
+            "source_kind": "rule_set",
+            "source_id": rule_set_id,
+            "name": str(rule_set.get("name") or rule_set_id),
+            "description": str(rule_set.get("description") or "Boolean rule-set result."),
+            "value_type": "boolean",
+            "unit": "boolean",
+            "default_visible": False,
+            "filterable": True,
+            "filter_operators": ["equals", "is_true"],
+            "sortable": True,
+            "source": "rule_set_registry",
+            "source_path": f"rule_set.{rule_set_id}",
+            "query_plan_id": "qmd.scanner.rule_projection.v1",
+            "provenance": "derived",
+            "available_at": "candidate evaluation clock",
+            "implementation_status": "implemented",
+            "registry_authority": "application_information_registry",
+            "semantic_type": "rule_set",
+            "timeframes": ["evaluation"],
+        })
+    return columns
 
 
 def _bind_discovery_scanner_columns(
@@ -2303,16 +2342,15 @@ def _bind_discovery_scanner_columns(
 
 
 def _default_watchlist_templates(symbols: list[str], calculation_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    focused = [row["capability_id"] for row in calculation_rows if row["tier"] == "watchlist" and row["enabled"]]
     common_columns = ["symbol", "company_name", "last_price", "change_pct", "volume", "relative_volume", "market_cap", "market_cap_category", "float_shares", "float_category", "short_interest_pct"]
     def template(identifier: str, name: str, description: str, rules: list[str], ranking: str, *, direction: str = "descending", refresh: int = 1000, enabled: bool = True, columns: list[str] | None = None, availability: str = "available", availability_detail: str = "") -> dict[str, Any]:
-        return {"watchlist_id": identifier, "name": name, "description": description, "enabled": enabled, "origin": "system", "template": True, "availability": availability, "availability_detail": availability_detail, "source_scan_id": "qmd-core-scan", "inclusion_rule_sets": rules, "inclusion_operator": "all", "exclusion_rule_sets": [], "ranking_field": ranking, "ranking_direction": direction, "maximum_size": 10, "refresh_interval_ms": refresh, "membership_expiry": "end_of_trading_day", "membership_ttl_ms": 300000, "manual_inclusions": [], "manual_exclusions": [], "columns": columns or common_columns, "calculations": focused, "membership_history": []}
+        return {"watchlist_id": identifier, "name": name, "description": description, "enabled": enabled, "origin": "system", "template": True, "availability": availability, "availability_detail": availability_detail, "source_scan_id": "qmd-core-scan", "inclusion_rule_sets": rules, "inclusion_operator": "all", "exclusion_rule_sets": [], "ranking_field": ranking, "ranking_direction": direction, "maximum_size": 10, "refresh_interval_ms": refresh, "membership_expiry": "end_of_trading_day", "membership_ttl_ms": 300000, "manual_inclusions": [], "manual_exclusions": [], "columns": columns or common_columns, "membership_history": []}
     gainers = []
     for slug, label, category_rule in [("penny", "Penny Stock", "watchlist-penny-stocks"), ("small-cap", "Small Cap", "watchlist-small-caps"), ("mid-cap", "Mid Cap", "watchlist-mid-caps"), ("large-cap", "Large Cap", "watchlist-large-caps")]:
         gainers.append(template(f"top-{slug}-gainers", f"Top {label} Gainers", f"Top positive session performers in the {label.lower()} category, ranked by percentage change.", [category_rule, "watchlist-positive-gainer"], "market.change_pct"))
         gainers.append(template(f"top-{slug}-volume-gainers", f"Top {label} Volume Gainers", f"Most unusually active {label.lower()} instruments, ranked by aligned relative volume.", [category_rule, "watchlist-relative-volume-gainer"], "market.relative_volume"))
     return [
-        {"watchlist_id": "core-candidates", "name": "Core candidates", "description": "Candidate instruments produced from the Core Scan for strategy evaluation.", "enabled": True, "origin": "system", "template": False, "availability": "available", "availability_detail": "", "source_scan_id": "qmd-core-scan", "inclusion_rule_sets": [], "inclusion_operator": "all", "exclusion_rule_sets": [], "ranking_field": "liquidity-rank", "ranking_direction": "descending", "maximum_size": 250, "refresh_interval_ms": 1000, "membership_expiry": "end_of_trading_day", "membership_ttl_ms": 300000, "manual_inclusions": symbols, "manual_exclusions": [], "columns": common_columns, "calculations": focused, "membership_history": []},
+        {"watchlist_id": "core-candidates", "name": "Core candidates", "description": "Candidate instruments produced from the Core Scan for strategy evaluation.", "enabled": True, "origin": "system", "template": False, "availability": "available", "availability_detail": "", "source_scan_id": "qmd-core-scan", "inclusion_rule_sets": [], "inclusion_operator": "all", "exclusion_rule_sets": [], "ranking_field": "market.liquidity_rank", "ranking_direction": "descending", "maximum_size": 250, "refresh_interval_ms": 1000, "membership_expiry": "end_of_trading_day", "membership_ttl_ms": 300000, "manual_inclusions": symbols, "manual_exclusions": [], "columns": common_columns, "membership_history": []},
         *gainers,
         template("price-or-volume-squeeze", "Price or Volume Squeeze", "Symbols with at least 5% price expansion or 3x aligned relative volume.", ["watchlist-price-or-volume-squeeze"], "market.relative_volume"),
         template("vwap-breakout", "VWAP Breakout", "Symbols trading at least 5 basis points above causal session VWAP.", ["watchlist-vwap-breakout"], "market.change_pct"),
@@ -2434,6 +2472,12 @@ def _default_market_discovery(
         merged_rule_sets.append(deepcopy(rule_set))
     field_catalog = _market_discovery_field_catalog(calculation_rows)
     _bind_discovery_scanner_columns(calculation_rows, field_catalog)
+    column_catalog = _watchlist_column_catalog(field_catalog, merged_rule_sets)
+    default_columns = [
+        str(row.get("column_id") or "")
+        for row in column_catalog
+        if bool(row.get("default_visible"))
+    ]
     return {
         "security_universe": {
             "universe_id": "qmd-security-universe",
@@ -2445,14 +2489,20 @@ def _default_market_discovery(
         "core_scan": {
             "scan_id": "qmd-core-scan",
             "name": "Core Scan",
-            "description": "Required low-cost calculations evaluated across the complete QMD Security Universe.",
+            "description": "Compose the full-universe scanner from registered Data Definitions and Rule Sets.",
             "refresh_interval_ms": 1000,
             "published": True,
-            "calculations": calculation_rows,
+            "inclusion_rule_sets": [],
+            "inclusion_operator": "all",
+            "ranking_field": "market.liquidity_rank",
+            "ranking_direction": "descending",
+            "maximum_size": 250,
+            "columns": default_columns,
         },
+        "calculation_catalog": calculation_rows,
         "classifications": _market_discovery_classifications(),
         "field_catalog": field_catalog,
-        "column_catalog": _watchlist_column_catalog(field_catalog),
+        "column_catalog": column_catalog,
         "rule_sets": merged_rule_sets,
         "watchlists": _default_watchlist_templates(symbols, calculation_rows),
     }
@@ -2649,11 +2699,11 @@ def _validate_market_discovery(section: dict[str, Any]) -> None:
     core_scan = dict(section.get("core_scan") or {})
     if not str(core_scan.get("scan_id") or ""):
         raise ValueError("Market Discovery requires one Core Scan")
-    calculations = list(core_scan.get("calculations") or [])
+    calculations = list(section.get("calculation_catalog") or [])
     calculation_ids = _unique_ids(calculations, "capability_id", "QMD capability")
     required_calculation_ids = {
         str(row.get("capability_id") or "")
-        for row in _default_market_discovery([], []).get("core_scan", {}).get("calculations", [])
+        for row in _default_market_discovery([], []).get("calculation_catalog", [])
         if bool(row.get("system_required"))
     }
     missing_required = required_calculation_ids - calculation_ids
@@ -2773,13 +2823,31 @@ def _validate_market_discovery(section: dict[str, Any]) -> None:
         raise ValueError("Market Discovery requires a Watchlist column catalog")
     for column in column_catalog:
         source_id = str(column.get("source_id") or "")
+        source_kind = str(column.get("source_kind") or "data_definition")
         field = field_by_source.get(source_id)
-        if field is None or str(field.get("column_id") or "") != str(
-            column.get("column_id") or ""
+        if source_kind == "data_definition" and (
+            field is None or str(field.get("column_id") or "") != str(column.get("column_id") or "")
         ):
             raise ValueError(
                 f"Watchlist column {column.get('column_id')} is not generated from the field registry"
             )
+        if source_kind == "rule_set" and source_id not in rule_set_ids:
+            raise ValueError(
+                f"Rule-set column {column.get('column_id')} references unknown rule set {source_id}"
+            )
+        if source_kind not in {"data_definition", "rule_set"}:
+            raise ValueError(f"Column {column.get('column_id')} has unknown source kind {source_kind}")
+    core_rules = set(core_scan.get("inclusion_rule_sets") or [])
+    if core_rules - rule_set_ids:
+        raise ValueError("Core Scan references unknown rule sets")
+    if str(core_scan.get("ranking_field") or "") not in field_source_ids:
+        raise ValueError("Core Scan references an unknown ranking data definition")
+    if str(core_scan.get("ranking_direction") or "descending") not in {"ascending", "descending"}:
+        raise ValueError("Core Scan has an unknown ranking direction")
+    if int(core_scan.get("maximum_size") or 0) <= 0:
+        raise ValueError("Core Scan maximum rows must be positive")
+    if set(core_scan.get("columns") or []) - column_ids:
+        raise ValueError("Core Scan references unknown display columns")
     _unique_ids(list(section.get("classifications") or []), "classification_id", "Market classification")
     for watchlist in watchlists:
         availability = str(watchlist.get("availability") or "available")
@@ -2800,11 +2868,8 @@ def _validate_market_discovery(section: dict[str, Any]) -> None:
             raise ValueError(f"Watchlist {watchlist.get('name')} membership TTL cannot be negative")
         if expiry == "time_to_live" and int(watchlist.get("membership_ttl_ms") or 0) <= 0:
             raise ValueError(f"Watchlist {watchlist.get('name')} membership TTL must be positive")
-        unknown = set(watchlist.get("calculations") or []) - calculation_ids
-        if unknown:
-            raise ValueError(f"Watchlist {watchlist.get('name')} references unknown QMD capabilities")
-        if str(watchlist.get("ranking_field") or "") not in calculation_ids:
-            raise ValueError(f"Watchlist {watchlist.get('name')} references an unknown ranking field")
+        if str(watchlist.get("ranking_field") or "") not in field_source_ids:
+            raise ValueError(f"Watchlist {watchlist.get('name')} references an unknown ranking data definition")
         if str(watchlist.get("ranking_direction") or "descending") not in {"ascending", "descending"}:
             raise ValueError(f"Watchlist {watchlist.get('name')} has an unknown ranking direction")
         if str(watchlist.get("inclusion_operator") or "all") not in {"all", "any"}:
@@ -2833,7 +2898,7 @@ def _compile_run_plans(candidate: dict[str, Any], *, canvas_profile_id: str) -> 
         for row in dict(candidate.get("strategy") or {}).get("profiles") or []
     }
     mandates = list(dict(candidate.get("portfolio") or {}).get("mandates") or [])
-    calculations = list(dict(discovery.get("core_scan") or {}).get("calculations") or [])
+    calculations = list(discovery.get("calculation_catalog") or [])
     plans = list(dict(candidate.get("run_plans") or {}).get("plans") or [])
     compiled_universes: list[dict[str, Any]] = []
 
@@ -3398,10 +3463,17 @@ def _migrate_draft(raw: dict[str, Any]) -> dict[str, Any]:
                 atomic=str(rule_set.get("rule_set_id") or "") in default_rule_set_ids,
             )
             _normalize_rule_set_conditions(rule_set)
-        default_calculations = list(defaults["market_discovery"]["core_scan"]["calculations"])
+        result["market_discovery"]["column_catalog"] = _watchlist_column_catalog(
+            list(result["market_discovery"].get("field_catalog") or []),
+            list(result["market_discovery"].get("rule_sets") or []),
+        )
+        default_calculations = list(defaults["market_discovery"].get("calculation_catalog") or [])
         current_calculations = {
             str(row.get("capability_id") or ""): deepcopy(row)
-            for row in dict(result["market_discovery"].get("core_scan") or {}).get("calculations") or []
+            for row in [
+                *list(result["market_discovery"].get("calculation_catalog") or []),
+                *list(dict(result["market_discovery"].get("core_scan") or {}).pop("calculations", []) or []),
+            ]
         }
         merged_calculations: list[dict[str, Any]] = []
         for default_calculation in default_calculations:
@@ -3455,11 +3527,15 @@ def _migrate_draft(raw: dict[str, Any]) -> dict[str, Any]:
             ]
             calculation["selected_timeframes"] = selected_timeframes or supported_timeframes
             merged_calculations.append(calculation)
-        result["market_discovery"]["core_scan"]["calculations"] = merged_calculations
-        discovery_calculation_ids = {
-            str(row.get("capability_id") or "")
-            for row in dict(result["market_discovery"].get("core_scan") or {}).get("calculations") or []
-        }
+        result["market_discovery"]["calculation_catalog"] = merged_calculations
+        core_scan = result["market_discovery"]["core_scan"]
+        default_core_scan = defaults["market_discovery"]["core_scan"]
+        core_scan.setdefault("inclusion_rule_sets", list(default_core_scan.get("inclusion_rule_sets") or []))
+        core_scan.setdefault("inclusion_operator", "all")
+        core_scan.setdefault("ranking_field", str(default_core_scan.get("ranking_field") or "market.liquidity_rank"))
+        core_scan.setdefault("ranking_direction", "descending")
+        core_scan.setdefault("maximum_size", int(default_core_scan.get("maximum_size") or 250))
+        core_scan.setdefault("columns", list(default_core_scan.get("columns") or []))
         default_watchlists = list(defaults["market_discovery"].get("watchlists") or [])
         current_watchlists = {
             str(row.get("watchlist_id") or ""): deepcopy(row)
@@ -3491,6 +3567,7 @@ def _migrate_draft(raw: dict[str, Any]) -> dict[str, Any]:
             watchlist.setdefault("template", False)
             watchlist.setdefault("availability", "available")
             watchlist.setdefault("availability_detail", "")
+            watchlist.pop("calculations", None)
             watchlist["columns"] = [
                 str(column_id)
                 for column_id in watchlist.get("columns") or []
@@ -3500,8 +3577,17 @@ def _migrate_draft(raw: dict[str, Any]) -> dict[str, Any]:
                 for row in result["market_discovery"].get("column_catalog") or []
                 if bool(row.get("default_visible"))
             ]
-            if str(watchlist.get("ranking_field") or "") not in discovery_calculation_ids:
-                watchlist["ranking_field"] = "liquidity-rank"
+            ranking_aliases = {"liquidity-rank": "market.liquidity_rank"}
+            watchlist["ranking_field"] = ranking_aliases.get(
+                str(watchlist.get("ranking_field") or ""),
+                str(watchlist.get("ranking_field") or ""),
+            )
+            field_source_ids = {
+                str(row.get("source_id") or "")
+                for row in result["market_discovery"].get("field_catalog") or []
+            }
+            if str(watchlist.get("ranking_field") or "") not in field_source_ids:
+                watchlist["ranking_field"] = "market.liquidity_rank"
         legacy_run_plans = dict(
             result.get("run_plans") or result.pop("assignments", {}) or {}
         )

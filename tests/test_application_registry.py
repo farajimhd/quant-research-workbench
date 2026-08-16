@@ -349,8 +349,8 @@ class ApplicationRegistryTests(unittest.TestCase):
         }
         configuration = {
             "market_discovery": {
-                "core_scan": {
-                    "calculations": [
+                "core_scan": {},
+                "calculation_catalog": [
                         {
                             "capability_id": "instrument-identity",
                             "name": "Instrument eligibility and identity",
@@ -371,8 +371,7 @@ class ApplicationRegistryTests(unittest.TestCase):
                             "system_required": False,
                             "implementation_status": "implemented",
                         },
-                    ]
-                },
+                    ],
                 "rule_sets": [{"rule_set_id": "gainers", "name": "Gainers", "description": "Positive change rule.", "atomic": True, "conditions": [{"condition_id": "change-positive", "left_source_id": "market.change_pct", "comparator": "greater_than", "value": 0}]}],
                 "classifications": [
                     {"classification_id": "float.tiny", "name": "Tiny", "minimum": 0, "maximum": 500_000, "unit": "shares", "source_id": "reference.float_shares"},

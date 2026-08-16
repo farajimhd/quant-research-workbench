@@ -24,6 +24,7 @@ from src.request_context import causal_identity
 from src.trading_runtime.watchlist_resolver import (
     SOURCE_FIELDS,
     classify_watchlist_row,
+    evaluate_rule_set_result,
     evaluate_watchlist_candidate,
     rank_watchlist_membership,
     resolve_watchlist_membership,
@@ -78,9 +79,16 @@ class WatchlistRuntime:
         rule_sets = list(discovery.get("rule_sets") or [])
         calculations = {
             str(row.get("capability_id") or ""): row
-            for row in dict(discovery.get("core_scan") or {}).get("calculations") or []
+            for row in discovery.get("calculation_catalog") or []
         }
-        normalized_candidates = [normalize_watchlist_candidate(row) for row in candidates]
+        column_sources = {
+            str(row.get("column_id") or ""): str(row.get("source_id") or "")
+            for row in discovery.get("column_catalog") or []
+        }
+        normalized_candidates = project_configured_rule_set_columns(
+            configuration,
+            [normalize_watchlist_candidate(row) for row in candidates],
+        )
         candidates_by_ticker = {
             str(row.get("ticker") or "").upper(): row
             for row in normalized_candidates
@@ -153,7 +161,9 @@ class WatchlistRuntime:
                             event_time=as_of,
                             payload=event,
                         )
-                capabilities, timeframes = focused_target_contract(watchlist, calculations)
+                capabilities, timeframes = focused_target_contract(
+                    watchlist, rule_sets, calculations, column_sources
+                )
                 if publish_targets:
                     try:
                         if current and capabilities:
@@ -342,9 +352,16 @@ class WatchlistRuntime:
         }
         calculations = {
             str(row.get("capability_id") or ""): row
-            for row in dict(discovery.get("core_scan") or {}).get("calculations") or []
+            for row in discovery.get("calculation_catalog") or []
         }
-        normalized = [normalize_watchlist_candidate(row) for row in candidates]
+        column_sources = {
+            str(row.get("column_id") or ""): str(row.get("source_id") or "")
+            for row in discovery.get("column_catalog") or []
+        }
+        normalized = project_configured_rule_set_columns(
+            configuration,
+            [normalize_watchlist_candidate(row) for row in candidates],
+        )
         normalized.sort(
             key=lambda row: numeric_value(row, "liquidity_rank") or float("-inf"),
             reverse=True,
@@ -360,7 +377,9 @@ class WatchlistRuntime:
                     or not watchlist_requires_focused_evidence(watchlist, rule_sets)
                 ):
                     continue
-                capabilities, timeframes = focused_target_contract(watchlist, calculations)
+                capabilities, timeframes = focused_target_contract(
+                    watchlist, rule_sets, calculations, column_sources
+                )
                 if not capabilities:
                     continue
                 seed_limit = max(1, int(watchlist.get("maximum_size") or 1)) * 5
@@ -443,7 +462,10 @@ def project_watchlists_from_candidates(
     as_of = as_of.astimezone(UTC)
     discovery = dict(configuration.get("market_discovery") or {})
     rule_sets = list(discovery.get("rule_sets") or [])
-    normalized_candidates = [normalize_watchlist_candidate(row) for row in candidates]
+    normalized_candidates = project_configured_rule_set_columns(
+        configuration,
+        [normalize_watchlist_candidate(row) for row in candidates],
+    )
     effective_available_fields = None if available_fields is None else set(available_fields)
     snapshots: list[dict[str, Any]] = []
     projection_ready = source_complete and source_status == "ready"
@@ -517,7 +539,7 @@ def project_watchlists_from_candidates(
 
 def watchlist_resolution_revision(
     watchlist: dict[str, Any],
-    rule_sets: list[dict[str, Any]],
+    rule_sets: list[dict[str, Any]] | dict[str, dict[str, Any]],
 ) -> str:
     selected_ids = {
         str(value)
@@ -553,7 +575,8 @@ def watchlist_dependency_fields(
         for value in watchlist.get(key) or []
     }
     source_ids = {str(watchlist.get("ranking_field") or "")}
-    for rule_set in rule_sets:
+    rule_rows = rule_sets.values() if isinstance(rule_sets, dict) else rule_sets
+    for rule_set in rule_rows:
         if str(rule_set.get("rule_set_id") or "") not in selected_ids:
             continue
         for condition in rule_set.get("conditions") or []:
@@ -598,6 +621,43 @@ def compact_watchlist_member(
         "rank",
     }
     return {field: row.get(field) for field in fields if row.get(field) is not None}
+
+
+def project_configured_rule_set_columns(
+    configuration: dict[str, Any],
+    rows: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Project selected registered Rule Sets as reusable boolean table columns."""
+
+    discovery = dict(configuration.get("market_discovery") or {})
+    selected_column_ids = {
+        str(value)
+        for value in dict(discovery.get("core_scan") or {}).get("columns") or []
+    }
+    for watchlist in discovery.get("watchlists") or []:
+        selected_column_ids.update(str(value) for value in watchlist.get("columns") or [])
+    columns = {
+        str(column.get("column_id") or ""): column
+        for column in discovery.get("column_catalog") or []
+        if str(column.get("column_id") or "") in selected_column_ids
+        and str(column.get("source_kind") or "") == "rule_set"
+    }
+    if not columns:
+        return rows
+    rule_sets = {
+        str(rule_set.get("rule_set_id") or ""): rule_set
+        for rule_set in discovery.get("rule_sets") or []
+    }
+    projected: list[dict[str, Any]] = []
+    for row in rows:
+        result = dict(row)
+        for column_id, column in columns.items():
+            result[column_id] = evaluate_rule_set_result(
+                rule_sets.get(str(column.get("source_id") or "")),
+                row,
+            )
+        projected.append(result)
+    return projected
 
 
 def normalize_watchlist_candidate(row: dict[str, Any]) -> dict[str, Any]:
@@ -721,15 +781,49 @@ def parse_datetime(value: Any) -> datetime | None:
 
 def focused_target_contract(
     watchlist: dict[str, Any],
+    rule_sets: list[dict[str, Any]] | dict[str, dict[str, Any]],
     calculations: dict[str, dict[str, Any]],
+    column_sources: dict[str, str] | None = None,
 ) -> tuple[list[str], list[str]]:
+    """Resolve QMD demand from the Watchlist's registered references."""
+
     capabilities: set[str] = set()
     timeframes: set[str] = set()
-    for capability_id in watchlist.get("calculations") or []:
+    selected_rule_ids = {
+        str(value)
+        for key in ("inclusion_rule_sets", "exclusion_rule_sets")
+        for value in watchlist.get(key) or []
+    }
+    referenced_sources = {str(watchlist.get("ranking_field") or "")}
+    rule_rows = rule_sets.values() if isinstance(rule_sets, dict) else rule_sets
+    for rule_set in rule_rows:
+        if str(rule_set.get("rule_set_id") or "") not in selected_rule_ids:
+            continue
+        for condition in rule_set.get("conditions") or []:
+            if not bool(condition.get("enabled", True)):
+                continue
+            referenced_sources.add(str(condition.get("left_source_id") or ""))
+            referenced_sources.add(str(condition.get("right_source_id") or ""))
+            timeframes.update(
+                str(condition.get(key) or "")
+                for key in ("left_timeframe", "right_timeframe")
+                if str(condition.get(key) or "")
+            )
+    column_sources = column_sources or {}
+    referenced_sources.update(
+        column_sources.get(str(value), str(value))
+        for value in watchlist.get("columns") or []
+    )
+    for capability_id, capability in calculations.items():
+        outputs = {
+            str(value) for value in capability.get("fields") or [] if str(value)
+        }
+        outputs.add(capability_id)
+        if not outputs.intersection(referenced_sources):
+            continue
         capability_id = str(capability_id)
         if not capability_id.startswith("qmd.family."):
             continue
-        capability = calculations.get(capability_id, {})
         if str(capability.get("availability") or "") not in {
             "implemented",
             "strategy_specific",
@@ -741,7 +835,7 @@ def focused_target_contract(
             for value in capability.get("selected_timeframes") or []
             if str(value) not in {"", "session", "1d", "settlement", "event", "filing"}
         )
-    return sorted(capabilities), sorted(timeframes)
+    return sorted(capabilities), sorted(value for value in timeframes if value not in {"session", "1d", "settlement", "event", "filing", "evaluation"})
 
 
 def watchlist_requires_focused_evidence(

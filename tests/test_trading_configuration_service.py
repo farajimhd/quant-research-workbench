@@ -265,7 +265,7 @@ class TradingConfigurationServiceTests(unittest.TestCase):
             "timeframes": ["1m"],
             "selected_timeframes": ["1m"],
         }
-        draft["market_discovery"]["core_scan"]["calculations"].append(saved)
+        draft["market_discovery"]["calculation_catalog"].append(saved)
         with patch(
             "src.backend.trading_configuration_service.qmd_catalogs",
             side_effect=RuntimeError("QMD unavailable"),
@@ -277,7 +277,7 @@ class TradingConfigurationServiceTests(unittest.TestCase):
 
         rows = {
             row["capability_id"]: row
-            for row in migrated["market_discovery"]["core_scan"]["calculations"]
+            for row in migrated["market_discovery"]["calculation_catalog"]
         }
         self.assertIn("qmd.family.saved_only", rows)
         self.assertTrue(rows["qmd.family.saved_only"]["enabled"])
@@ -359,7 +359,7 @@ class TradingConfigurationServiceTests(unittest.TestCase):
         )
         paper_binding["source_account_env"] = ""
         paper_binding["source_account_id"] = "DU-LEGACY"
-        for capability in legacy["market_discovery"]["core_scan"]["calculations"]:
+        for capability in legacy["market_discovery"]["calculation_catalog"]:
             if capability["name"] == "Last price":
                 capability["description"] = "Legacy repeated provider copy."
         legacy["strategy"]["profiles"][0]["lifecycle"]["trading_behavior"][
@@ -377,7 +377,7 @@ class TradingConfigurationServiceTests(unittest.TestCase):
 
         migrated = _migrate_draft(legacy)
 
-        self.assertEqual(migrated["schema_version"], 23)
+        self.assertEqual(migrated["schema_version"], 24)
         migrated_paper = next(
             row
             for row in migrated["accounts"]["bindings"]
@@ -385,11 +385,11 @@ class TradingConfigurationServiceTests(unittest.TestCase):
         )
         self.assertEqual(migrated_paper["source_account_env"], "IBKR_PAPER_ACCOUNT_ID")
         self.assertEqual(migrated_paper["source_account_id"], "")
-        self.assertTrue(migrated["market_discovery"]["core_scan"]["calculations"])
+        self.assertTrue(migrated["market_discovery"]["calculation_catalog"])
         self.assertTrue(migrated["market_discovery"]["watchlists"])
         capabilities = {
             row["name"]: row
-            for row in migrated["market_discovery"]["core_scan"]["calculations"]
+            for row in migrated["market_discovery"]["calculation_catalog"]
         }
         self.assertTrue(capabilities["Last price"]["system_required"])
         self.assertFalse(capabilities["Last price"]["configurable"])
@@ -418,7 +418,7 @@ class TradingConfigurationServiceTests(unittest.TestCase):
         self.assertEqual(capabilities["IPO event distance"]["availability"], "implemented")
         universal = [
             row
-            for row in migrated["market_discovery"]["core_scan"]["calculations"]
+            for row in migrated["market_discovery"]["calculation_catalog"]
             if row["execution_scope"] == "universal_ingest"
         ]
         self.assertEqual(len(universal), 6)
@@ -465,9 +465,9 @@ class TradingConfigurationServiceTests(unittest.TestCase):
         ):
             discovery = deepcopy(_default_draft()["market_discovery"])
 
-        discovery["core_scan"]["calculations"] = [
+        discovery["calculation_catalog"] = [
             row
-            for row in discovery["core_scan"]["calculations"]
+            for row in discovery["calculation_catalog"]
             if row["capability_id"] != "market.last_price"
         ]
 
@@ -514,8 +514,9 @@ class TradingConfigurationServiceTests(unittest.TestCase):
         )
         self.assertTrue(
             all(
-                row["source_id"] in fields
+                (row.get("source_kind") == "rule_set" or row["source_id"] in fields)
                 and row["registry_authority"] in {
+                    "application_information_registry",
                     "application_registry",
                     "qmd_runtime_catalog",
                 }
@@ -524,7 +525,7 @@ class TradingConfigurationServiceTests(unittest.TestCase):
         )
 
         active_core = [
-            row for row in discovery["core_scan"]["calculations"]
+            row for row in discovery["calculation_catalog"]
             if row["execution_scope"] == "core_scan"
             and (row["enabled"] or row["system_required"])
         ]
@@ -551,7 +552,7 @@ class TradingConfigurationServiceTests(unittest.TestCase):
 
         invalid = deepcopy(discovery)
         next(
-            row for row in invalid["core_scan"]["calculations"]
+            row for row in invalid["calculation_catalog"]
             if row["capability_id"] == active_core[0]["capability_id"]
         )["scanner_columns"] = []
         with self.assertRaisesRegex(ValueError, "has no registered scanner column"):
@@ -617,7 +618,7 @@ class TradingConfigurationServiceTests(unittest.TestCase):
 
         capability = next(
             row
-            for row in discovery["core_scan"]["calculations"]
+            for row in discovery["calculation_catalog"]
             if row["configurable"] and row["enabled"] and row["timeframes"]
         )
         self.assertEqual(capability["selected_timeframes"], capability["timeframes"])
@@ -660,7 +661,7 @@ class TradingConfigurationServiceTests(unittest.TestCase):
         ):
             draft = _default_draft()
 
-        self.assertEqual(draft["schema_version"], 23)
+        self.assertEqual(draft["schema_version"], 24)
         self.assertTrue(all(rule_set["name"] for rule_set in draft["market_discovery"]["rule_sets"]))
         self.assertTrue(all(rule_set["description"] for rule_set in draft["market_discovery"]["rule_sets"]))
         self.assertTrue(all(rule_set["atomic"] for rule_set in draft["market_discovery"]["rule_sets"]))
@@ -1321,7 +1322,7 @@ class TradingConfigurationServiceTests(unittest.TestCase):
 
         migrated = _migrate_draft(legacy)
 
-        self.assertEqual(migrated["schema_version"], 23)
+        self.assertEqual(migrated["schema_version"], 24)
         canonical_ids = {
             rule_set["rule_set_id"]
             for rule_set in migrated["market_discovery"]["rule_sets"]

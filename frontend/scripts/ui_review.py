@@ -649,29 +649,25 @@ def validate_canvas_interactions(
         ):
             return issues
         try:
-            page.get_by_role("button", name=re.compile(r"^3\s+Watchlists$")).click()
-            available = page.get_by_label("Available Watchlists")
-            available.get_by_role("button", name="Configure").first.click()
-            page.get_by_label("Watchlist configuration steps").get_by_role(
-                "button", name=re.compile(r"^2\s+Rules$")
-            ).click()
-            rule_lookup = page.get_by_role("button", name="Rule set to add", exact=True)
-            include_rule = page.get_by_role("button", name="Add rule set", exact=True)
-            initial_cards = page.locator(".discovery-rule-card-list > article").count()
-            if rule_lookup.count() != 1 or rule_lookup.is_disabled() or include_rule.count() != 1:
-                issues.append("Watchlist rules do not expose the QMD registry inclusion lookup")
+            page.get_by_role("button", name=re.compile(r"^Top Penny Stock Gainers")).click()
+            rule_lookup = page.get_by_role("button", name="Rule Set to add", exact=True)
+            column_lookup = page.get_by_role("button", name="Column to add", exact=True)
+            if rule_lookup.count() != 1 or rule_lookup.is_disabled():
+                issues.append("Watchlist rules do not expose the registered Rule Set lookup")
             else:
                 rule_lookup.click()
-                page.get_by_role("option").nth(1).click()
-                if include_rule.is_disabled():
-                    issues.append("Watchlist rule inclusion stays disabled after selecting a QMD rule")
-                else:
-                    include_rule.click()
-                    assigned_cards = page.locator(".discovery-rule-card-list > article")
-                    if assigned_cards.count() != initial_cards + 1:
-                        issues.append("selected QMD rule was not added to the Watchlist")
-                    if page.locator('.discovery-rule-card-list > article[data-assignment="unused"]').count():
-                        issues.append("Watchlist rule list exposes unassigned registry cards")
+                if page.get_by_role("searchbox", name="Search Rule Set to add").count() != 1:
+                    issues.append("Rule Set lookup does not expose its fixed search control")
+                page.keyboard.press("Escape")
+            if column_lookup.count() != 1 or column_lookup.is_disabled():
+                issues.append("Watchlist columns do not expose the registered column lookup")
+            else:
+                column_lookup.click()
+                if page.get_by_role("group", name="Rule Set Results").count() != 1:
+                    issues.append("Column lookup does not expose Rule Set results as columns")
+                if page.get_by_role("group", name="Data Definitions").count() != 1:
+                    issues.append("Column lookup does not expose Data Definitions as columns")
+                page.keyboard.press("Escape")
             if page.evaluate("document.documentElement.scrollWidth > document.documentElement.clientWidth"):
                 issues.append("Market Discovery page leaks horizontal scrolling to the document")
         except Exception as exc:
