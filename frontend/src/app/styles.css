@@ -23306,7 +23306,7 @@ button {
    Catalog and Rule Set Library typography: Public Sans for interface copy and
    JetBrains Mono only for stable identifiers. Semantic computation remains in
    the registries/QMD; this surface only creates references. */
-.market-discovery-composer { display: grid; grid-template-columns: 300px minmax(0, 1fr); height: calc(var(--app-zoomed-viewport-height, 100vh) - 176px); min-height: 560px; overflow: hidden; border: 1px solid var(--border); border-radius: 10px; background: var(--surface); }
+.market-discovery-composer { display: grid; grid-template-columns: 450px minmax(0, 1fr); height: calc(var(--app-zoomed-viewport-height, 100vh) - 176px); min-height: 560px; overflow: hidden; border: 1px solid var(--border); border-radius: 10px; background: var(--surface); }
 .market-discovery-library { display: flex; min-height: 0; flex-direction: column; border-right: 1px solid var(--border); background: var(--surface); }
 .market-discovery-library > header { padding: 18px 18px 12px; }
 .market-discovery-library > header > span, .market-discovery-tree section > header span, .market-discovery-definition-header > div > span, .market-discovery-source > span, .market-discovery-references > header span, .market-discovery-settings > header span { color: var(--muted-foreground); font-size: .7rem; font-weight: 520; letter-spacing: .075em; text-transform: uppercase; }
@@ -23373,8 +23373,8 @@ button {
 .market-discovery-resolution span, .market-discovery-resolution strong, .market-discovery-resolution small { display: block; }
 .market-discovery-resolution strong { color: var(--foreground); font-size: .78rem; font-weight: 560; }
 .market-discovery-resolution small { margin-top: 3px; font-size: .7rem; line-height: 1.45; }
-@media (max-width: 1000px) {
-  .market-discovery-composer { grid-template-columns: 240px minmax(0, 1fr); }
+@media (max-width: 1400px) {
+  .market-discovery-composer { grid-template-columns: 360px minmax(0, 1fr); }
   .market-discovery-definition { padding: 20px; }
   .market-discovery-settings > div { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .market-discovery-reference-toolbar { grid-template-columns: minmax(0, 1fr) auto; }
