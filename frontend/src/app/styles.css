@@ -23192,6 +23192,12 @@ button {
 .data-library-search input { min-width: 0; width: 100%; border: 0; outline: 0; background: transparent; color: var(--foreground); font: inherit; }
 .data-library-create { display: flex; align-items: center; justify-content: center; gap: 6px; margin: 0 14px 10px; padding: 8px; border: 1px dashed var(--primary); border-radius: 8px; background: var(--accent-soft); color: var(--foreground); font-weight: 600; cursor: pointer; }
 
+.data-catalog-kind-switch { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px; margin: 0 14px 10px; padding: 4px; border: 1px solid var(--border); border-radius: 9px; background: var(--surface-alt); }
+.data-catalog-kind-switch button { display: flex; min-width: 0; align-items: center; justify-content: space-between; gap: 6px; padding: 7px 8px; border: 1px solid transparent; border-radius: 6px; background: transparent; color: var(--muted-foreground); cursor: pointer; font: inherit; }
+.data-catalog-kind-switch button[aria-selected="true"] { border-color: var(--border); background: var(--surface); color: var(--foreground); box-shadow: 0 1px 2px color-mix(in oklab, var(--foreground) 8%, transparent); }
+.data-catalog-kind-switch button span { overflow: hidden; font-size: 0.74rem; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.data-catalog-kind-switch button em { min-width: 24px; padding: 2px 5px; border-radius: 999px; background: color-mix(in oklab, var(--primary) 8%, var(--surface-alt)); font-size: 0.64rem; font-style: normal; text-align: center; }
+
 .data-library-tree { flex: 1 1 auto; min-height: 0; overflow: auto; padding: 0 10px 14px; }
 .data-library-tree > details { margin-bottom: 7px; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; background: var(--surface); }
 .data-library-tree summary { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 10px 8px; cursor: pointer; color: var(--foreground); font-size: 0.8rem; font-weight: 600; list-style-position: inside; }
@@ -23209,6 +23215,17 @@ button {
 .data-library-subgroup button strong, .data-library-subgroup button small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .data-library-subgroup button strong { font-size: 0.78rem; font-weight: 550; }
 .data-library-subgroup button small { margin-top: 2px; color: var(--muted-foreground); font-size: 0.66rem; }
+
+.data-library-entry-list { display: grid; gap: 3px; padding: 5px; }
+.data-library-entry-list > button { display: flex; width: 100%; min-width: 0; align-items: center; justify-content: space-between; gap: 8px; padding: 9px 9px 8px; border: 1px solid transparent; border-radius: 6px; background: var(--surface); color: var(--foreground); text-align: left; cursor: pointer; }
+.data-library-entry-list > button:hover { border-color: var(--border); background: color-mix(in oklab, var(--surface-alt) 58%, var(--surface)); }
+.data-library-entry-list > button[aria-current="true"] { border-color: color-mix(in oklab, var(--primary) 34%, var(--border)); background: color-mix(in oklab, var(--primary) 8%, var(--surface)); box-shadow: inset 3px 0 0 var(--primary); }
+.data-library-entry-list > button > span { display: grid; min-width: 0; gap: 2px; }
+.data-library-entry-list > button strong, .data-library-entry-list > button small, .data-library-entry-list > button code { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.data-library-entry-list > button strong { font-size: 0.78rem; font-weight: 570; }
+.data-library-entry-list > button small { color: var(--muted-foreground); font-size: 0.66rem; }
+.data-library-entry-list > button code { padding: 0; background: transparent; color: color-mix(in oklab, var(--muted-foreground) 84%, transparent); font-size: 0.61rem; }
+.data-library-entry-list > button > svg { flex: 0 0 auto; color: var(--muted-foreground); }
 
 .data-library-detail { min-height: 0; min-width: 0; overflow: auto; padding: 24px; }
 .rule-set-library > .data-library-detail { overflow-x: clip; overflow-y: auto; }
@@ -23266,12 +23283,40 @@ button {
 .data-definition-parameters > div { display: grid; grid-template-columns: 0.8fr 1.7fr auto; gap: 12px; padding: 10px 12px; border: 1px solid var(--border); border-radius: 7px; }
 .data-definition-parameters strong { font-size: 0.8rem; font-weight: 550; }
 .data-definition-parameters span { color: var(--muted-foreground); font-size: 0.75rem; }
+.data-field-document > header { padding-right: clamp(0px, 4vw, 52px); }
+.data-field-document > header > p { max-width: 900px; }
+.data-field-contract-grid .data-field-contract-wide { grid-column: 1 / -1; }
+.data-field-contract-grid code { display: inline-block; max-width: 100%; overflow-wrap: anywhere; }
+.data-field-context-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+.data-field-context-grid > article { min-width: 0; padding: 15px 16px; border: 1px solid var(--border); border-radius: 9px; background: color-mix(in oklab, var(--surface-alt) 42%, var(--surface)); }
+.data-field-context-grid > article > span { display: block; color: var(--muted-foreground); font-size: 0.66rem; font-weight: 600; letter-spacing: 0.065em; text-transform: uppercase; }
+.data-field-context-grid > article > strong { display: block; margin-top: 8px; overflow-wrap: anywhere; font-size: 0.95rem; font-weight: 600; }
+.data-field-context-grid > article > p { margin-top: 7px; overflow-wrap: anywhere; font-size: 0.7rem; line-height: 1.45; }
+.data-field-section-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin-bottom: 12px; }
+.data-field-section-heading h3 { margin-bottom: 4px; }
+.data-field-section-heading p { font-size: 0.75rem; line-height: 1.45; }
+.data-field-section-heading > em { flex: 0 0 auto; padding: 4px 8px; border-radius: 999px; background: var(--surface-alt); color: var(--muted-foreground); font-size: 0.66rem; font-style: normal; }
+.data-field-output-list { display: grid; gap: 8px; }
+.data-field-output-list > article { min-width: 0; padding: 12px 14px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); }
+.data-field-output-list > article > header { display: flex; align-items: center; justify-content: space-between; gap: 14px; }
+.data-field-output-list > article > header > div:first-child { min-width: 0; }
+.data-field-output-list > article strong, .data-field-output-list > article span { display: block; }
+.data-field-output-list > article strong { font-size: 0.84rem; font-weight: 580; }
+.data-field-output-list > article span { margin-top: 2px; color: var(--muted-foreground); font-size: 0.68rem; }
+.data-field-output-list > article > header > div:last-child { display: flex; flex: 0 0 auto; gap: 5px; }
+.data-field-output-list > article em { padding: 3px 6px; border-radius: 999px; background: color-mix(in oklab, var(--primary) 7%, var(--surface-alt)); color: var(--muted-foreground); font-size: 0.62rem; font-style: normal; }
+.data-field-output-list > article > code { display: block; max-width: 100%; margin-top: 10px; overflow-wrap: anywhere; font-size: 0.68rem; line-height: 1.45; }
 .data-definition-relations { display: grid; grid-template-columns: 160px minmax(0, 1fr); gap: 12px; margin-top: 10px; }
 .data-definition-relations > strong { font-size: 0.76rem; font-weight: 550; }
 .data-definition-relations > div { display: flex; flex-wrap: wrap; gap: 6px; }
 .data-definition-relations span, .data-definition-relations button { padding: 5px 7px; border-radius: 5px; background: var(--surface-alt); font-size: 0.7rem; }
 .data-definition-document footer, .rule-set-document footer { display: flex; align-items: flex-start; gap: 8px; margin-top: 22px; padding: 12px 14px; border-radius: 8px; background: var(--surface-alt); color: var(--muted-foreground); font-size: 0.76rem; line-height: 1.45; }
 .data-library-empty { display: grid; min-height: 320px; place-content: center; justify-items: center; gap: 8px; color: var(--muted-foreground); }
+
+@media (max-width: 1200px) {
+  .data-catalog-kind-switch button { justify-content: center; }
+  .data-catalog-kind-switch button em { display: none; }
+}
 
 .rule-set-document > header > input, .rule-set-document > header > textarea { display: block; width: 100%; border: 0; outline: 0; background: transparent; color: var(--foreground); }
 .rule-set-document > header > div { flex-wrap: wrap; min-width: 0; }
@@ -23395,11 +23440,18 @@ button {
 @media (max-width: 900px) {
   .data-library-workbench { grid-template-columns: 220px minmax(0, 1fr); }
   .data-library-detail { padding: 22px 18px; }
+  .data-field-context-grid { grid-template-columns: 1fr; }
   .rule-condition-row { grid-template-columns: 28px 1fr; }
   .rule-condition-row > :not(:first-child) { grid-column: 2; }
   .rule-condition-target { padding-left: 0; border-left: 0; }
   .data-definition-document dl { grid-template-columns: 1fr; }
   .data-definition-document > .data-definition-method { grid-template-columns: 1fr; }
+}
+@media (max-width: 640px) {
+  .data-library-workbench { display: flex; height: auto; min-height: 0; flex-direction: column; overflow: visible; }
+  .data-library-catalog { max-height: 420px; border-right: 0; border-bottom: 1px solid var(--border); }
+  .data-library-detail { overflow: visible; }
+  .data-field-section-heading, .data-field-output-list > article > header { align-items: flex-start; flex-direction: column; }
 }
 .configuration-page-header span { font-size: 12.5px; }
 .configuration-page-header h1 { font-size: 27.5px; }

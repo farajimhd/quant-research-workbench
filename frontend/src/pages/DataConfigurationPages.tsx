@@ -107,26 +107,50 @@ function LegacyDataCatalog({ registry }: { registry: InformationRegistry }) {
   </div>;
 }
 
-function DataFieldCatalog({ atomicFields, dataFields, onChange }: { atomicFields: AtomicField[]; dataFields: DataFieldDefinition[]; onChange?: (value: DataFieldDefinition[]) => void }) {
+function DataFieldCatalog({ atomicFields, dataFields }: { atomicFields: AtomicField[]; dataFields: DataFieldDefinition[] }) {
   const [kind, setKind] = useState<"atomic" | "data">("data");
   const [query, setQuery] = useState("");
   const rows = kind === "atomic" ? atomicFields : dataFields;
   const visible = rows.filter((row) => !query.trim() || JSON.stringify(row).toLowerCase().includes(query.trim().toLowerCase()));
   const [selectedId, setSelectedId] = useState("");
   const selected = visible.find((row) => ("atomic_field_id" in row ? row.atomic_field_id : row.data_field_id) === selectedId) ?? visible[0];
-  const dataField = selected && "data_field_id" in selected ? selected : undefined;
-  function replace(patch: Partial<DataFieldDefinition>) {
-    if (!dataField || !onChange) return;
-    onChange(dataFields.map((row) => row.data_field_id === dataField.data_field_id ? { ...row, ...patch } : row));
-  }
-  return <div className="data-library-workbench">
+
+  return <div className="data-library-workbench data-field-catalog">
     <aside className="data-library-catalog">
-      <header><span>Data Catalog</span><strong>{visible.length} of {rows.length}</strong><p>Atomic Fields are source-owned observations. Data Fields are configurable calculations with exact, reusable outputs.</p></header>
-      <div className="configuration-experience-switch" role="tablist"><button aria-selected={kind === "atomic"} onClick={() => { setKind("atomic"); setSelectedId(""); }} role="tab" type="button">Atomic Fields ({atomicFields.length})</button><button aria-selected={kind === "data"} onClick={() => { setKind("data"); setSelectedId(""); }} role="tab" type="button">Data Fields ({dataFields.length})</button></div>
+      <header>
+        <span>Data Catalog</span>
+        <strong>{visible.length} of {rows.length}</strong>
+        <p>Atomic Fields are source-owned observations. Data Fields are registered calculations with exact contextual outputs.</p>
+      </header>
+      <div className="data-catalog-kind-switch" role="tablist">
+        <button aria-selected={kind === "atomic"} onClick={() => { setKind("atomic"); setSelectedId(""); }} role="tab" type="button"><span>Atomic Fields</span><em>{atomicFields.length}</em></button>
+        <button aria-selected={kind === "data"} onClick={() => { setKind("data"); setSelectedId(""); }} role="tab" type="button"><span>Data Fields</span><em>{dataFields.length}</em></button>
+      </div>
       <label className="data-library-search"><Search size={15} /><input aria-label="Search Data Catalog" onChange={(event) => setQuery(event.target.value)} placeholder="Search names, IDs, owners, recipes" type="search" value={query} /></label>
-      <div className="data-library-tree"><details open><summary><span>{kind === "atomic" ? "Registered source observations" : "Registered calculations"}</span><em>{visible.length}</em></summary><div>{visible.map((row) => { const id = "atomic_field_id" in row ? row.atomic_field_id : row.data_field_id; return <button aria-current={selected === row ? "true" : undefined} key={id} onClick={() => setSelectedId(id)} type="button"><span><strong>{row.name}</strong><small>{id}</small></span><ChevronRight size={13} /></button>; })}</div></details></div>
+      <div className="data-library-tree">
+        <details open>
+          <summary><span>{kind === "atomic" ? "Source observations" : "Contextual calculations"}</span><em>{visible.length}</em></summary>
+          <div className="data-library-entry-list">{visible.map((row) => {
+            const id = "atomic_field_id" in row ? row.atomic_field_id : row.data_field_id;
+            const context = "data_field_id" in row ? row.context.timeframes.join(" · ") : row.owner;
+            return <button aria-current={selected === row ? "true" : undefined} key={id} onClick={() => setSelectedId(id)} type="button">
+              <span><strong>{row.name}</strong><small>{context}</small><code>{id}</code></span><ChevronRight size={13} />
+            </button>;
+          })}</div>
+        </details>
+      </div>
     </aside>
-    <main className="data-library-detail">{selected ? "atomic_field_id" in selected ? <article className="data-definition-document"><header><span>Atomic Field · read only</span><h2>{selected.name}</h2><div className="data-definition-identity"><code>{selected.atomic_field_id}</code><em>{selected.value_type} · {selected.unit}</em></div></header><section><h3>Source authority</h3><p>{selected.description}</p><dl><dt>Owner</dt><dd>{selected.owner}</dd><dt>Source path</dt><dd><code>{selected.source_path}</code></dd><dt>Group</dt><dd>{selected.group}</dd></dl></section></article> : <article className="data-definition-document"><header><span>Data Field · revision {selected.revision}</span><input aria-label="Data Field name" disabled={!selected.configurable} onChange={(event) => replace({ name: event.target.value })} value={selected.name} /><textarea aria-label="Data Field description" disabled={!selected.configurable} onChange={(event) => replace({ description: event.target.value })} value={selected.description} /><div className="data-definition-identity"><code>{selected.data_field_id}</code><em>{selected.recipe_id}</em></div></header><section><h3>Computation context</h3><div className="data-definition-parameters"><div><strong>Atomic inputs</strong><span>{selected.inputs.join(", ") || "Producer-defined"}</span></div><div><strong>Execution scope</strong><span>{selected.context.execution_scope}</span></div><label><strong>Timeframes</strong><input aria-label="Data Field timeframes" disabled={!selected.configurable} onChange={(event) => replace({ context: { ...selected.context, timeframes: event.target.value.split(",").map((value) => value.trim()).filter(Boolean) }, parameters: { ...selected.parameters, timeframes: event.target.value.split(",").map((value) => value.trim()).filter(Boolean) } })} value={selected.context.timeframes.join(", ")} /></label></div></section><section><h3>Typed outputs and presentations</h3><div className="data-definition-parameters">{selected.outputs.map((output) => <div key={output.field_ref}><strong>{output.name}</strong><span><code>{output.field_ref}</code></span><small>{output.value_type} · {output.unit} · {output.column_presentations.length} column · {output.chart_presentations.length} chart presentation{output.chart_presentations.length === 1 ? "" : "s"}</small></div>)}</div></section></article> : <div className="data-library-empty"><Database size={22} /><span>No catalog entry matches this search.</span></div>}</main>
+    <main className="data-library-detail">{selected ? "atomic_field_id" in selected
+      ? <article className="data-definition-document data-field-document">
+        <header><span>Atomic Field · source authority</span><h2>{selected.name}</h2><p>{selected.description}</p><div className="data-definition-identity"><code>{selected.atomic_field_id}</code><em>{selected.value_type} · {selected.unit}</em></div></header>
+        <section><h3>Source contract</h3><dl className="data-field-contract-grid"><div><dt>Owner</dt><dd>{selected.owner}</dd></div><div><dt>Group</dt><dd>{selected.group}</dd></div><div className="data-field-contract-wide"><dt>Source path</dt><dd><code>{selected.source_path}</code></dd></div></dl></section>
+      </article>
+      : <article className="data-definition-document data-field-document">
+        <header><span>Data Field · revision {selected.revision}</span><h2>{selected.name}</h2><p>{selected.description}</p><div className="data-definition-identity"><code>{selected.data_field_id}</code><em>{selected.recipe_id}</em></div></header>
+        <section><h3>Computation context</h3><div className="data-field-context-grid"><article><span>Atomic inputs</span><strong>{selected.inputs.length}</strong><p>{selected.inputs.join(", ") || "Producer-defined"}</p></article><article><span>Execution scope</span><strong>{selected.context.execution_scope}</strong><p>{selected.context.allowed_scopes?.join(", ") || "Exact registered scope"}</p></article><article><span>Timeframe</span><strong>{selected.context.timeframes.join(", ") || "Service clock"}</strong><p>{selected.context.update_cadence || "Published when its source context advances"}</p></article></div></section>
+        <section><div className="data-field-section-heading"><div><h3>Typed outputs and presentations</h3><p>Each output has one exact computation identity and independent Canvas presentations.</p></div><em>{selected.outputs.length} output{selected.outputs.length === 1 ? "" : "s"}</em></div><div className="data-field-output-list">{selected.outputs.map((output) => <article key={output.field_ref}><header><div><strong>{output.name}</strong><span>{output.value_type} · {output.unit}</span></div><div><em>{output.column_presentations.length} column</em><em>{output.chart_presentations.length} chart</em></div></header><code>{output.field_ref}</code></article>)}</div></section>
+      </article>
+      : <div className="data-library-empty"><Database size={22} /><span>No catalog entry matches this search.</span></div>}</main>
   </div>;
 }
 
