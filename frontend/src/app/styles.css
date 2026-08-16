@@ -23321,7 +23321,7 @@ button {
 .market-discovery-tree section > div { display: grid; gap: 3px; padding: 5px; }
 .market-discovery-tree button { display: grid; width: 100%; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 9px; padding: 9px; border: 1px solid transparent; border-radius: 6px; color: var(--muted-foreground); background: transparent; text-align: left; cursor: pointer; }
 .market-discovery-tree button:hover { border-color: var(--border); background: var(--surface-alt); color: var(--foreground); }
-.market-discovery-tree button[aria-current="true"] { border-color: var(--border-strong, var(--border)); color: var(--foreground); background: var(--surface); box-shadow: none; }
+.market-discovery-tree button[aria-current="true"] { border-color: color-mix(in oklab, var(--foreground) 32%, var(--border)); color: var(--foreground); background: var(--surface); box-shadow: none; }
 .market-discovery-tree button span { min-width: 0; }
 .market-discovery-tree button strong, .market-discovery-tree button small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .market-discovery-tree button strong { color: inherit; font-size: .8rem; font-weight: 560; }
