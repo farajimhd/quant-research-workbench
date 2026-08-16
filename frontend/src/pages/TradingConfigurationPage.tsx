@@ -195,7 +195,7 @@ const ENTRY_AUTHORING_PAGES: Array<{ description: string; id: EntryAuthoringPage
   { description: "Choose the broker-neutral execution behavior OMS applies after Portfolio approves quantity.", id: "execution", label: "Execution", title: "How should OMS seek the entry fill?" },
   { description: "Choose how OMS handles an incomplete fill without exceeding Portfolio's approved quantity.", id: "partial_fill", label: "Partial fill", title: "What should happen after a partial fill?" },
   { description: "Select the independently versioned protection contract attached to confirmed entry fills.", id: "protection", label: "Protection", title: "Which protection follows the entry fill?" },
-  { description: "Set the definition-specific invalidation values used by the strategy's initial risk boundary.", id: "initial_stop", label: "Initial stop", title: "What defines the initial invalidation boundary?" },
+  { description: "Define the price that invalidates a new position. Strategy compares a causal market-structure boundary with a volatility-based boundary, applies the selected method, and caps the final distance from the current price. Portfolio still controls position size and OMS maintains the approved broker-held protection.", id: "initial_stop", label: "Initial stop", title: "How is the initial stop price calculated?" },
 ];
 
 type ManageAuthoringPage =
@@ -3264,7 +3264,7 @@ function StrategyAuthoringFlow({ activeStage, advanced, approved, draft, entryRu
             {activeEntryPage === "execution" ? <div className="strategy-entry-fields"><GuidedOrderIntentFields draft={draft} eligibleSessions={profile.lifecycle.trading_behavior.eligible_sessions} onChange={(order_intent) => replaceInitialEntry({ order_intent })} segment="execution" value={entryRules.order_intent} /></div> : null}
             {activeEntryPage === "partial_fill" ? <div className="strategy-entry-fields"><GuidedOrderIntentFields draft={draft} eligibleSessions={profile.lifecycle.trading_behavior.eligible_sessions} onChange={(order_intent) => replaceInitialEntry({ order_intent })} segment="partial-fill" value={entryRules.order_intent} /></div> : null}
             {activeEntryPage === "protection" ? <div className="strategy-entry-fields"><GuidedOrderIntentFields draft={draft} eligibleSessions={profile.lifecycle.trading_behavior.eligible_sessions} onChange={(order_intent) => replaceInitialEntry({ order_intent })} segment="protection" value={entryRules.order_intent} /></div> : null}
-            {activeEntryPage === "initial_stop" ? <div className="configuration-field-grid strategy-entry-engine-fields">{entryStopParameters.map((item) => <ParameterField definition={field(item.path, readableLabel(item.path.split(".").at(-1) ?? item.path), helpForPath(item.path), controlFor(item.value), choicesFor(item.path), unitFor(item.path), stepFor(item.value))} key={item.path} onChange={(value) => onProfileChange({ ...profile, parameters: setPath(profile.parameters, item.path, value) })} value={item.value} />)}{!entryStopParameters.length ? <EmptyState detail="This strategy definition does not expose initial-stop engine parameters." title="No initial-stop parameters" /> : null}</div> : null}
+            {activeEntryPage === "initial_stop" ? <div className="configuration-field-grid strategy-entry-engine-fields">{entryStopParameters.map((item) => <ParameterField definition={field(item.path, labelForStrategyParameter(item.path), helpForPath(item.path), controlFor(item.value), choicesFor(item.path), unitFor(item.path), stepFor(item.value))} key={item.path} onChange={(value) => onProfileChange({ ...profile, parameters: setPath(profile.parameters, item.path, value) })} value={item.value} />)}{!entryStopParameters.length ? <EmptyState detail="This strategy definition does not expose initial-stop engine parameters." title="No initial-stop parameters" /> : null}</div> : null}
           </div>
           <nav aria-label="Initial entry questions" className="strategy-entry-navigation">
             {ENTRY_AUTHORING_PAGES.map((page, index) => <button aria-current={page.id === activeEntryPage ? "step" : undefined} aria-label={page.label} disabled={phaseModes.initial_entry === "manual" && page.id !== "mode"} key={page.id} onClick={() => setActiveEntryPage(page.id)} title={page.label} type="button"><span>{index + 1}</span><strong>{page.label}</strong></button>)}
@@ -5782,7 +5782,32 @@ function unitFor(path: string) {
 
 function stepFor(value: Primitive) { return typeof value === "number" && Number.isInteger(value) ? 1 : 0.01; }
 
-function helpForPath(path: string) { return `Advanced ${readableLabel(path)} setting. Changes are validated by the registered strategy implementation before publication.`; }
+const STRATEGY_PARAMETER_PRESENTATION: Record<string, { help: string; label: string }> = {
+  "protection.stop.maximum_risk_pct": {
+    help: "Maximum permitted distance between the current price and the initial stop. A value of 1.5 limits initial price risk to 1.5%; if the selected structure or volatility boundary is farther away, Strategy moves the stop inward to this cap.",
+    label: "Maximum risk",
+  },
+  "protection.stop.method": {
+    help: "Selects the boundary used for the initial stop: Structure uses the latest causal swing, Volatility uses the configured volatility distance, and Hybrid uses whichever boundary allows more room while remaining inside Maximum risk.",
+    label: "Stop method",
+  },
+  "protection.stop.structure_buffer_bps": {
+    help: "Additional distance placed beyond the latest causal swing low for a long position or swing high for a short position. One basis point is 0.01%; 8 bps adds a 0.08% buffer beyond that structure.",
+    label: "Structure buffer",
+  },
+  "protection.stop.volatility_multiple": {
+    help: "Distance from the current price expressed in units of the registered volatility value. A value of 1.25 places the volatility boundary 1.25 times that value below a long entry or above a short entry.",
+    label: "Volatility distance",
+  },
+};
+
+function labelForStrategyParameter(path: string) {
+  return STRATEGY_PARAMETER_PRESENTATION[path]?.label ?? readableLabel(path.split(".").at(-1) ?? path);
+}
+
+function helpForPath(path: string) {
+  return STRATEGY_PARAMETER_PRESENTATION[path]?.help ?? `${readableLabel(path)} is interpreted by the pinned strategy definition. Its accepted range and runtime use are validated before publication.`;
+}
 function readableLabel(value: string) { return value.replaceAll(".", " · ").replaceAll("_", " ").replace(/\b\w/g, (letter) => letter.toUpperCase()); }
 function registryGroupLabel(value: string) {
   return readableLabel(value).replace(/\bQmd\b/g, "QMD").replace(/\bSec\b/g, "SEC");
