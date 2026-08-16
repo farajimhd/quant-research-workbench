@@ -32,6 +32,7 @@ from src.backend.qmd_gateway_client import (
     qmd_product_request,
     qmd_put_json,
     qmd_scanner_snapshot,
+    qmd_scanner_payload,
     qmd_scanner_indicators,
     qmd_websocket_url,
 )
@@ -39,6 +40,27 @@ from src.request_context import begin_request_context, current_request_identity,
 
 
 class QmdGatewayClientTests(unittest.TestCase):
+    def test_scanner_payload_projects_authoritative_market_clock_into_rows(self) -> None:
+        clock = {
+            "observed_at": "2026-08-14T14:00:00Z",
+            "exchange_time": "10:00:00",
+            "trading_date": "2026-08-14",
+            "session_phase": "regular",
+            "market_status": "active",
+            "market_is_open": True,
+        }
+        payload = qmd_scanner_payload(
+            [{"ticker": "AAPL", "last_price": 100.0}],
+            {"market_clock": clock},
+            10,
+            source="scanner",
+        )
+        self.assertEqual(payload["market_clock"], clock)
+        self.assertEqual(payload["rows"][0]["trading_date"], "2026-08-14")
+        self.assertEqual(payload["rows"][0]["market_time"], "10:00:00")
+        self.assertEqual(payload["rows"][0]["session_phase"], "regular")
+        self.assertTrue(payload["rows"][0]["market_is_open"])
+
     @patch("src.backend.qmd_gateway_client.urllib.request.urlopen")
     @patch("src.backend.qmd_gateway_client.qmd_history_base_url", return_value="http://127.0.0.1:8801")
     def test_historical_source_revision_requires_complete_stable_identity(

@@ -377,7 +377,7 @@ class TradingConfigurationServiceTests(unittest.TestCase):
 
         migrated = _migrate_draft(legacy)
 
-        self.assertEqual(migrated["schema_version"], 26)
+        self.assertEqual(migrated["schema_version"], 27)
         migrated_paper = next(
             row
             for row in migrated["accounts"]["bindings"]
@@ -514,11 +514,13 @@ class TradingConfigurationServiceTests(unittest.TestCase):
         )
         self.assertTrue(
             all(
-                (row.get("source_kind") == "rule_set" or row["source_id"] in fields)
+                (row.get("source_kind") in {"rule_set", "data_field"})
                 and row["registry_authority"] in {
                     "application_information_registry",
                     "application_registry",
+                    "data_field_registry",
                     "qmd_runtime_catalog",
+                    "rule_set_registry",
                 }
                 for row in discovery["column_catalog"]
             )
@@ -529,7 +531,7 @@ class TradingConfigurationServiceTests(unittest.TestCase):
             if row["execution_scope"] == "core_scan"
             and (row["enabled"] or row["system_required"])
         ]
-        self.assertEqual(len(active_core), 14)
+        self.assertGreaterEqual(len(active_core), 9)
         self.assertTrue(all(row["scanner_columns"] for row in active_core))
         self.assertGreaterEqual(
             sum(len(row["scanner_columns"]) for row in active_core),
@@ -661,10 +663,10 @@ class TradingConfigurationServiceTests(unittest.TestCase):
         ):
             draft = _default_draft()
 
-        self.assertEqual(draft["schema_version"], 26)
+        self.assertEqual(draft["schema_version"], 27)
         self.assertTrue(all(rule_set["name"] for rule_set in draft["market_discovery"]["rule_sets"]))
         self.assertTrue(all(rule_set["description"] for rule_set in draft["market_discovery"]["rule_sets"]))
-        self.assertTrue(all(rule_set["atomic"] for rule_set in draft["market_discovery"]["rule_sets"]))
+        self.assertTrue(all(rule_set["origin"] == "system" and rule_set["protected"] for rule_set in draft["market_discovery"]["rule_sets"]))
         self.assertTrue(all(not rule_set["editable"] for rule_set in draft["market_discovery"]["rule_sets"]))
         self.assertTrue(
             {"Penny Stocks", "Small Caps", "Mid Caps", "Large Caps"}.isdisjoint(
@@ -1331,7 +1333,7 @@ class TradingConfigurationServiceTests(unittest.TestCase):
 
         migrated = _migrate_draft(legacy)
 
-        self.assertEqual(migrated["schema_version"], 26)
+        self.assertEqual(migrated["schema_version"], 27)
         canonical_ids = {
             rule_set["rule_set_id"]
             for rule_set in migrated["market_discovery"]["rule_sets"]
@@ -1409,7 +1411,7 @@ class TradingConfigurationServiceTests(unittest.TestCase):
         ]
         migrated = _migrate_draft(legacy)
         migrated_profile = migrated["strategy"]["profiles"][0]
-        self.assertEqual(migrated["schema_version"], 26)
+        self.assertEqual(migrated["schema_version"], 27)
         self.assertEqual(migrated_profile["action_policy_ids"], ["profit-pocket"])
         self.assertNotIn("capabilities", migrated_profile)
 

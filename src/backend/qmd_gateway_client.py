@@ -1384,11 +1384,35 @@ def qmd_catalogs() -> dict[str, Any]:
 def qmd_scanner_payload(rows: list[dict[str, Any]], raw_payload: dict[str, Any], row_limit: int, *, source: str) -> dict[str, Any]:
     now = datetime.now(timezone.utc)
     rows = rows[: max(1, min(int(row_limit or 250), 5000))]
+    clock = dict(raw_payload.get("market_clock") or {})
+    clock_projection = {
+        "clock_observed_at": clock.get("observed_at"),
+        "utc_date": clock.get("utc_date"),
+        "utc_time": clock.get("utc_time"),
+        "exchange_date": clock.get("exchange_date"),
+        "market_time": clock.get("exchange_time"),
+        "trading_date": clock.get("trading_date"),
+        "market_timezone": clock.get("timezone"),
+        "market_weekday": clock.get("weekday"),
+        "session_id": clock.get("session_id"),
+        "session_phase": clock.get("session_phase"),
+        "session_open_at": clock.get("session_open_at"),
+        "session_close_at": clock.get("session_close_at"),
+        "minutes_since_open": clock.get("minutes_since_open"),
+        "minutes_until_close": clock.get("minutes_until_close"),
+        "is_trading_day": clock.get("is_trading_day"),
+        "is_early_close": clock.get("is_early_close"),
+        "market_status": clock.get("market_status"),
+        "market_is_open": clock.get("market_is_open"),
+        "market_feed_status": clock.get("market_feed_status"),
+    }
+    rows = [{**row, **clock_projection} for row in rows]
     return {
         "provider": "qmd-gateway",
         "source": source,
-        "session_date": now.date().isoformat(),
-        "market_time": now.strftime("%H:%M"),
+        "session_date": str(clock.get("trading_date") or now.date().isoformat()),
+        "market_time": str(clock.get("exchange_time") or now.strftime("%H:%M")),
+        "market_clock": clock,
         "rows": rows,
         "row_count": len(rows),
         "market_rows": rows,

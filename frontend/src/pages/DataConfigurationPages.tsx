@@ -9,10 +9,48 @@ export type DataRuleCondition = {
   condition_id: string;
   enabled: boolean;
   left_source_id: string;
-  left_timeframe: string;
+  left_field_ref?: string;
+  left_timeframe?: string;
   right_source_id: string;
-  right_timeframe: string;
+  right_field_ref?: string;
+  right_timeframe?: string;
   value: boolean | number | string | null;
+};
+
+export type AtomicField = {
+  atomic_field_id: string;
+  description: string;
+  group: string;
+  name: string;
+  owner: string;
+  source_path: string;
+  value_type: string;
+  unit: string;
+};
+
+export type DataFieldOutput = {
+  column_presentations: Array<{ default_visible?: boolean; label: string; presentation_id: string }>;
+  chart_presentations: Array<{ default_visible?: boolean; label: string; presentation_id: string; render_type: string }>;
+  field_ref: string;
+  name: string;
+  output_id: string;
+  source_id: string;
+  value_type: string;
+  unit: string;
+};
+
+export type DataFieldDefinition = {
+  configurable: boolean;
+  context: { allowed_scopes?: string[]; execution_scope: string; timeframes: string[]; update_cadence?: string };
+  data_field_id: string;
+  description: string;
+  enabled: boolean;
+  inputs: string[];
+  name: string;
+  outputs: DataFieldOutput[];
+  parameters: Record<string, unknown>;
+  recipe_id: string;
+  revision: number;
 };
 
 export type DataRuleSet = {
@@ -33,8 +71,14 @@ export type DataRuleSet = {
 };
 
 const DATA_KINDS = new Set(["field", "derivation", "signal"]);
+export type RuleFieldDefinition = RegistryDefinition & { field_ref?: string; source_id?: string };
 
-export function DataCatalogPage({ registry }: { registry: InformationRegistry }) {
+export function DataCatalogPage({ atomicFields = [], dataFields = [], onDataFieldsChange, registry }: { atomicFields?: AtomicField[]; dataFields?: DataFieldDefinition[]; onDataFieldsChange?: (value: DataFieldDefinition[]) => void; registry: InformationRegistry }) {
+  if (atomicFields.length || dataFields.length) return <DataFieldCatalog atomicFields={atomicFields} dataFields={dataFields.map((field) => ({ ...field, configurable: false }))} />;
+  return <LegacyDataCatalog registry={registry} />;
+}
+
+function LegacyDataCatalog({ registry }: { registry: InformationRegistry }) {
   const definitions = useMemo(() => registry.definitions.filter((row) => DATA_KINDS.has(row.kind)), [registry.definitions]);
   const [query, setQuery] = useState("");
   const [selectedId, setSelectedId] = useState(() => definitions[0]?.registry_id ?? "");
@@ -63,6 +107,29 @@ export function DataCatalogPage({ registry }: { registry: InformationRegistry })
   </div>;
 }
 
+function DataFieldCatalog({ atomicFields, dataFields, onChange }: { atomicFields: AtomicField[]; dataFields: DataFieldDefinition[]; onChange?: (value: DataFieldDefinition[]) => void }) {
+  const [kind, setKind] = useState<"atomic" | "data">("data");
+  const [query, setQuery] = useState("");
+  const rows = kind === "atomic" ? atomicFields : dataFields;
+  const visible = rows.filter((row) => !query.trim() || JSON.stringify(row).toLowerCase().includes(query.trim().toLowerCase()));
+  const [selectedId, setSelectedId] = useState("");
+  const selected = visible.find((row) => ("atomic_field_id" in row ? row.atomic_field_id : row.data_field_id) === selectedId) ?? visible[0];
+  const dataField = selected && "data_field_id" in selected ? selected : undefined;
+  function replace(patch: Partial<DataFieldDefinition>) {
+    if (!dataField || !onChange) return;
+    onChange(dataFields.map((row) => row.data_field_id === dataField.data_field_id ? { ...row, ...patch } : row));
+  }
+  return <div className="data-library-workbench">
+    <aside className="data-library-catalog">
+      <header><span>Data Catalog</span><strong>{visible.length} of {rows.length}</strong><p>Atomic Fields are source-owned observations. Data Fields are configurable calculations with exact, reusable outputs.</p></header>
+      <div className="configuration-experience-switch" role="tablist"><button aria-selected={kind === "atomic"} onClick={() => { setKind("atomic"); setSelectedId(""); }} role="tab" type="button">Atomic Fields ({atomicFields.length})</button><button aria-selected={kind === "data"} onClick={() => { setKind("data"); setSelectedId(""); }} role="tab" type="button">Data Fields ({dataFields.length})</button></div>
+      <label className="data-library-search"><Search size={15} /><input aria-label="Search Data Catalog" onChange={(event) => setQuery(event.target.value)} placeholder="Search names, IDs, owners, recipes" type="search" value={query} /></label>
+      <div className="data-library-tree"><details open><summary><span>{kind === "atomic" ? "Registered source observations" : "Registered calculations"}</span><em>{visible.length}</em></summary><div>{visible.map((row) => { const id = "atomic_field_id" in row ? row.atomic_field_id : row.data_field_id; return <button aria-current={selected === row ? "true" : undefined} key={id} onClick={() => setSelectedId(id)} type="button"><span><strong>{row.name}</strong><small>{id}</small></span><ChevronRight size={13} /></button>; })}</div></details></div>
+    </aside>
+    <main className="data-library-detail">{selected ? "atomic_field_id" in selected ? <article className="data-definition-document"><header><span>Atomic Field · read only</span><h2>{selected.name}</h2><div className="data-definition-identity"><code>{selected.atomic_field_id}</code><em>{selected.value_type} · {selected.unit}</em></div></header><section><h3>Source authority</h3><p>{selected.description}</p><dl><dt>Owner</dt><dd>{selected.owner}</dd><dt>Source path</dt><dd><code>{selected.source_path}</code></dd><dt>Group</dt><dd>{selected.group}</dd></dl></section></article> : <article className="data-definition-document"><header><span>Data Field · revision {selected.revision}</span><input aria-label="Data Field name" disabled={!selected.configurable} onChange={(event) => replace({ name: event.target.value })} value={selected.name} /><textarea aria-label="Data Field description" disabled={!selected.configurable} onChange={(event) => replace({ description: event.target.value })} value={selected.description} /><div className="data-definition-identity"><code>{selected.data_field_id}</code><em>{selected.recipe_id}</em></div></header><section><h3>Computation context</h3><div className="data-definition-parameters"><div><strong>Atomic inputs</strong><span>{selected.inputs.join(", ") || "Producer-defined"}</span></div><div><strong>Execution scope</strong><span>{selected.context.execution_scope}</span></div><label><strong>Timeframes</strong><input aria-label="Data Field timeframes" disabled={!selected.configurable} onChange={(event) => replace({ context: { ...selected.context, timeframes: event.target.value.split(",").map((value) => value.trim()).filter(Boolean) }, parameters: { ...selected.parameters, timeframes: event.target.value.split(",").map((value) => value.trim()).filter(Boolean) } })} value={selected.context.timeframes.join(", ")} /></label></div></section><section><h3>Typed outputs and presentations</h3><div className="data-definition-parameters">{selected.outputs.map((output) => <div key={output.field_ref}><strong>{output.name}</strong><span><code>{output.field_ref}</code></span><small>{output.value_type} · {output.unit} · {output.column_presentations.length} column · {output.chart_presentations.length} chart presentation{output.chart_presentations.length === 1 ? "" : "s"}</small></div>)}</div></section></article> : <div className="data-library-empty"><Database size={22} /><span>No catalog entry matches this search.</span></div>}</main>
+  </div>;
+}
+
 function DataDefinitionDetail({ definition, onNavigate, registry }: { definition: RegistryDefinition; onNavigate: (id: string) => void; registry: InformationRegistry }) {
   const documentation = definition.documentation;
   const inputIds = documentation?.input_field_ids?.length ? documentation.input_field_ids : definition.input_field_ids ?? [];
@@ -82,7 +149,7 @@ function DataDefinitionDetail({ definition, onNavigate, registry }: { definition
   </article>;
 }
 
-export function RuleSetLibraryPage({ fields, onChange, ruleSets }: { fields: RegistryDefinition[]; onChange: (value: DataRuleSet[]) => void; ruleSets: DataRuleSet[] }) {
+export function RuleSetLibraryPage({ fields, onChange, ruleSets }: { fields: RuleFieldDefinition[]; onChange: (value: DataRuleSet[]) => void; ruleSets: DataRuleSet[] }) {
   const [query, setQuery] = useState("");
   const [selectedId, setSelectedId] = useState(() => {
     const requestedId = ruleSetIdFromHash();
@@ -91,7 +158,7 @@ export function RuleSetLibraryPage({ fields, onChange, ruleSets }: { fields: Reg
   const selected = ruleSets.find((row) => row.rule_set_id === selectedId) ?? ruleSets[0];
   const visible = ruleSets.filter((row) => !query.trim() || [row.name, row.description, row.rule_set_id].some((value) => value.toLowerCase().includes(query.trim().toLowerCase())));
   const grouped = new Map<string, DataRuleSet[]>();
-  visible.forEach((row) => { const group = row.atomic ? "Built-in defaults" : row.publication_status === "published" ? "Published custom" : "Custom drafts"; grouped.set(group, [...(grouped.get(group) ?? []), row]); });
+  visible.forEach((row) => { const group = row.protected || row.origin === "system" ? "Built-in defaults" : row.publication_status === "published" ? "Published custom" : "Custom drafts"; grouped.set(group, [...(grouped.get(group) ?? []), row]); });
 
   function select(ruleSetId: string) { setSelectedId(ruleSetId); replaceRuleSetHash(ruleSetId); }
   function replace(next: DataRuleSet) { onChange(ruleSets.map((row) => row.rule_set_id === next.rule_set_id ? next : row)); }
@@ -102,13 +169,13 @@ export function RuleSetLibraryPage({ fields, onChange, ruleSets }: { fields: Reg
   }
 
   return <div className="data-library-workbench rule-set-library">
-    <aside className="data-library-catalog"><header><span>Registered rule sets</span><strong>{visible.length} of {ruleSets.length}</strong><p>Atomic defaults are documentation-only. Custom rule sets can be composed from registered data definitions.</p></header><label className="data-library-search"><Search size={15} /><input aria-label="Search rule sets" onChange={(event) => setQuery(event.target.value)} placeholder="Search rule sets" type="search" value={query} /></label><button className="data-library-create" onClick={() => create()} type="button"><Plus size={14} /> Create rule set</button><div className="data-library-tree">{[...grouped.entries()].map(([group, rows]) => <details key={group} open><summary><span>{group}</span><em>{rows.length}</em></summary><details className="data-library-subgroup" open><summary><span>{group === "Built-in defaults" ? "Atomic definitions" : "User definitions"}</span><em>{rows.length}</em></summary><div>{rows.map((row) => <button aria-current={selected?.rule_set_id === row.rule_set_id ? "true" : undefined} key={row.rule_set_id} onClick={() => select(row.rule_set_id)} type="button"><span><strong>{row.name}</strong><small>{row.description}</small></span>{row.atomic ? <LockKeyhole size={12} /> : <ChevronRight size={13} />}</button>)}</div></details></details>)}</div></aside>
+    <aside className="data-library-catalog"><header><span>Registered rule sets</span><strong>{visible.length} of {ruleSets.length}</strong><p>Built-in defaults are read-only. Custom rule sets compare exact registered Data Field outputs.</p></header><label className="data-library-search"><Search size={15} /><input aria-label="Search rule sets" onChange={(event) => setQuery(event.target.value)} placeholder="Search rule sets" type="search" value={query} /></label><button className="data-library-create" onClick={() => create()} type="button"><Plus size={14} /> Create rule set</button><div className="data-library-tree">{[...grouped.entries()].map(([group, rows]) => <details key={group} open><summary><span>{group}</span><em>{rows.length}</em></summary><details className="data-library-subgroup" open><summary><span>{group === "Built-in defaults" ? "Built-in definitions" : "User definitions"}</span><em>{rows.length}</em></summary><div>{rows.map((row) => <button aria-current={selected?.rule_set_id === row.rule_set_id ? "true" : undefined} key={row.rule_set_id} onClick={() => select(row.rule_set_id)} type="button"><span><strong>{row.name}</strong><small>{row.description}</small></span>{row.atomic ? <LockKeyhole size={12} /> : <ChevronRight size={13} />}</button>)}</div></details></details>)}</div></aside>
     <main className="data-library-detail">{selected ? <RuleSetDetail fields={fields} onDelete={() => { const remaining = ruleSets.filter((row) => row.rule_set_id !== selected.rule_set_id); onChange(remaining); select(remaining[0]?.rule_set_id ?? ""); }} onDuplicate={() => create(selected)} onChange={replace} ruleSet={selected} /> : <div className="data-library-empty"><span>Create a rule set to begin.</span></div>}</main>
   </div>;
 }
 
-function RuleSetDetail({ fields, onChange, onDelete, onDuplicate, ruleSet }: { fields: RegistryDefinition[]; onChange: (value: DataRuleSet) => void; onDelete: () => void; onDuplicate: () => void; ruleSet: DataRuleSet }) {
-  const locked = Boolean(ruleSet.atomic || ruleSet.editable === false);
+function RuleSetDetail({ fields, onChange, onDelete, onDuplicate, ruleSet }: { fields: RuleFieldDefinition[]; onChange: (value: DataRuleSet) => void; onDelete: () => void; onDuplicate: () => void; ruleSet: DataRuleSet }) {
+  const locked = Boolean(ruleSet.protected || ruleSet.origin === "system" || ruleSet.editable === false);
   const definitions = fields.filter((row) => DATA_KINDS.has(row.kind));
   const definitionById = new Map(definitions.map((row) => [row.registry_id, row]));
   const definitionOptions = dataDefinitionLookupOptions(definitions);
@@ -120,11 +187,11 @@ function RuleSetDetail({ fields, onChange, onDelete, onDuplicate, ruleSet }: { f
     onChange({ ...ruleSet, conditions: [...ruleSet.conditions, { comparator: "equals", condition_id: `${ruleSet.rule_set_id}-condition-${ruleSet.conditions.length + 1}`, enabled: true, left_source_id: "", left_timeframe: "", right_source_id: "", right_timeframe: "", value: 0 }] });
   }
   return <article className="rule-set-document">
-    <header><span>{locked ? "Atomic rule set" : "Editable rule set"} · revision {ruleSet.revision ?? 1}</span><input aria-label="Rule set name" disabled={locked} onChange={(event) => onChange({ ...ruleSet, name: event.target.value })} value={ruleSet.name} /><textarea aria-label="Rule set description" disabled={locked} onChange={(event) => onChange({ ...ruleSet, description: event.target.value })} value={ruleSet.description} /><div><code>{ruleSet.rule_set_id}</code>{locked ? <button onClick={onDuplicate} type="button"><Copy size={13} /> Duplicate as custom</button> : <button className="danger" onClick={onDelete} type="button"><Trash2 size={13} /> Remove rule set</button>}</div></header>
+    <header><span>{locked ? "Built-in rule set" : "Editable rule set"} · revision {ruleSet.revision ?? 1}</span><input aria-label="Rule set name" disabled={locked} onChange={(event) => onChange({ ...ruleSet, name: event.target.value })} value={ruleSet.name} /><textarea aria-label="Rule set description" disabled={locked} onChange={(event) => onChange({ ...ruleSet, description: event.target.value })} value={ruleSet.description} /><div><code>{ruleSet.rule_set_id}</code>{locked ? <button onClick={onDuplicate} type="button"><Copy size={13} /> Duplicate as custom</button> : <button className="danger" onClick={onDelete} type="button"><Trash2 size={13} /> Remove rule set</button>}</div></header>
     <section className="rule-set-logic"><label><span>Condition logic</span><select disabled={locked} onChange={(event) => onChange({ ...ruleSet, operator: event.target.value as DataRuleSet["operator"] })} value={ruleSet.operator}><option value="all">All conditions</option><option value="any">Any condition</option><option value="score">Required score</option></select></label><span>{ruleSet.conditions.length} condition{ruleSet.conditions.length === 1 ? "" : "s"}</span></section>
     <section className="rule-condition-list">{ruleSet.conditions.map((condition, index) => {
-      const source = definitionById.get(condition.left_source_id);
-      const target = condition.right_source_id ? definitionById.get(condition.right_source_id) : undefined;
+      const source = definitionById.get(condition.left_field_ref || condition.left_source_id);
+      const target = condition.right_field_ref ? definitionById.get(condition.right_field_ref) : condition.right_source_id ? definitionById.get(condition.right_source_id) : undefined;
       if (locked) return <RuleConditionStatement condition={condition} index={index} key={condition.condition_id} source={source} target={target} />;
       const comparators = ruleComparators(source, condition.comparator);
       return <div className="rule-condition-row rule-condition-editable" key={condition.condition_id}>
@@ -134,10 +201,10 @@ function RuleSetDetail({ fields, onChange, onDelete, onDuplicate, ruleSet }: { f
           if (!nextSource) return;
           const allowed = ruleComparators(nextSource, "");
           const comparator = allowed.some((row) => row.value === condition.comparator) ? condition.comparator : defaultRuleComparator(nextSource);
-          replaceCondition(condition.condition_id, { ...condition, comparator, left_source_id: nextSource.registry_id, left_timeframe: nextSource.documentation?.timeframes?.[0] ?? "", right_source_id: comparator === "is_true" ? "" : condition.right_source_id, right_timeframe: comparator === "is_true" ? "" : condition.right_timeframe, value: comparator === "is_true" ? null : condition.value ?? 0 });
-        }} optionLimit={0} options={!source && condition.left_source_id ? [{ description: "Unregistered definition referenced by this draft.", label: condition.left_source_id, value: condition.left_source_id }, ...definitionOptions] : definitionOptions} placeholder="Choose data definition" presentation="catalog" searchable searchPlaceholder="Search data definitions…" showAllOnOpen value={condition.left_source_id} />{condition.left_source_id ? <em>{condition.left_source_id}{condition.left_timeframe ? ` · ${condition.left_timeframe}` : ""}</em> : null}</div>
+          replaceCondition(condition.condition_id, { ...condition, comparator, left_field_ref: nextSource.field_ref || nextSource.registry_id, left_source_id: nextSource.source_id || nextSource.registry_id, right_field_ref: comparator === "is_true" ? "" : condition.right_field_ref, right_source_id: comparator === "is_true" ? "" : condition.right_source_id, value: comparator === "is_true" ? null : condition.value ?? 0 });
+        }} optionLimit={0} options={!source && (condition.left_field_ref || condition.left_source_id) ? [{ description: "Unregistered Data Field output referenced by this draft.", label: condition.left_field_ref || condition.left_source_id, value: condition.left_field_ref || condition.left_source_id }, ...definitionOptions] : definitionOptions} placeholder="Choose Data Field output" presentation="catalog" searchable searchPlaceholder="Search Data Field outputs…" showAllOnOpen value={condition.left_field_ref || condition.left_source_id} />{condition.left_field_ref ? <em>{condition.left_field_ref}</em> : null}</div>
         <label><small>Comparison</small><select aria-label={`Condition ${index + 1} comparator`} disabled={!source} onChange={(event) => { const comparator = event.target.value; replaceCondition(condition.condition_id, { ...condition, comparator, right_source_id: comparator === "is_true" ? "" : condition.right_source_id, right_timeframe: comparator === "is_true" ? "" : condition.right_timeframe, value: comparator === "is_true" ? null : condition.value ?? 0 }); }} value={condition.comparator}>{comparators.map((row) => <option key={row.value} value={row.value}>{row.label}</option>)}</select></label>
-        {condition.comparator === "is_true" ? <div className="rule-condition-boolean"><small>Required state</small><strong>True</strong></div> : condition.right_source_id ? <div className="rule-condition-definition"><small>Target definition</small><InventoryFilterSelect ariaLabel={`Condition ${index + 1} target definition`} className="rule-condition-definition-lookup" onChange={(right_source_id) => replaceCondition(condition.condition_id, { ...condition, right_source_id })} optionLimit={0} options={!target ? [{ description: "Unregistered definition referenced by this draft.", label: condition.right_source_id, value: condition.right_source_id }, ...definitionOptions] : definitionOptions} presentation="catalog" searchable searchPlaceholder="Search target definitions…" showAllOnOpen value={condition.right_source_id} />{condition.comparator === "above_by_bps" ? <input aria-label={`Condition ${index + 1} basis point buffer`} onChange={(event) => replaceCondition(condition.condition_id, { ...condition, value: Number(event.target.value) })} step="any" type="number" value={Number(condition.value ?? 0)} /> : null}</div> : <label><small>Threshold</small><input aria-label={`Condition ${index + 1} value`} disabled={!source} onChange={(event) => { const parsed = Number(event.target.value); replaceCondition(condition.condition_id, { ...condition, value: Number.isNaN(parsed) ? event.target.value : parsed }); }} step="any" type={isNumericRuleDefinition(source) ? "number" : "text"} value={String(condition.value ?? "")} /></label>}
+        {condition.comparator === "is_true" ? <div className="rule-condition-boolean"><small>Required state</small><strong>True</strong></div> : condition.right_field_ref || condition.right_source_id ? <div className="rule-condition-definition"><small>Target Data Field output</small><InventoryFilterSelect ariaLabel={`Condition ${index + 1} target Data Field output`} className="rule-condition-definition-lookup" onChange={(value) => { const nextTarget = definitionById.get(value); replaceCondition(condition.condition_id, { ...condition, right_field_ref: nextTarget?.field_ref || value, right_source_id: nextTarget?.source_id || value }); }} optionLimit={0} options={!target ? [{ description: "Unregistered Data Field output referenced by this draft.", label: condition.right_field_ref || condition.right_source_id, value: condition.right_field_ref || condition.right_source_id }, ...definitionOptions] : definitionOptions} presentation="catalog" searchable searchPlaceholder="Search target Data Field outputs…" showAllOnOpen value={condition.right_field_ref || condition.right_source_id} />{condition.comparator === "above_by_bps" ? <input aria-label={`Condition ${index + 1} basis point buffer`} onChange={(event) => replaceCondition(condition.condition_id, { ...condition, value: Number(event.target.value) })} step="any" type="number" value={Number(condition.value ?? 0)} /> : null}</div> : <label><small>Threshold</small><input aria-label={`Condition ${index + 1} value`} disabled={!source} onChange={(event) => { const parsed = Number(event.target.value); replaceCondition(condition.condition_id, { ...condition, value: Number.isNaN(parsed) ? event.target.value : parsed }); }} step="any" type={isNumericRuleDefinition(source) ? "number" : "text"} value={String(condition.value ?? "")} /></label>}
         <button aria-label={`Remove condition ${index + 1}`} onClick={() => onChange({ ...ruleSet, conditions: ruleSet.conditions.filter((row) => row.condition_id !== condition.condition_id) })} type="button"><Trash2 size={13} /></button>
       </div>;
     })}</section>

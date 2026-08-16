@@ -12,6 +12,7 @@ from src.backend.discovery_projection import (
     discovery_runtime_field,
     project_discovery_columns,
 )
+from src.backend.data_field_contracts import project_data_field_outputs
 from src.backend.watchlist_runtime_service import normalize_watchlist_candidate
 from src.trading_runtime.journal import TradingJournal
 from src.trading_runtime.watchlist_resolver import evaluate_rule_set_result
@@ -53,10 +54,10 @@ class SignalStreamRuntime:
             for row in discovery.get("column_catalog") or []
         }
         selected_columns = configured_discovery_column_ids(configuration)
-        normalized = project_discovery_columns(
+        normalized = project_data_field_outputs(project_discovery_columns(
             (normalize_watchlist_candidate(row) for row in candidates),
             column_ids=selected_columns,
-        )
+        ), discovery.get("data_fields") or [])
         rows_by_ticker = {
             str(row.get("ticker") or row.get("symbol") or "").strip().upper(): row
             for row in normalized
@@ -261,6 +262,7 @@ def _occurrence(
         f"{stream.get('signal_stream_id')}|{definition_revision}|{ticker}|{as_of.isoformat()}".encode("utf-8")
     ).hexdigest()
     evidence: dict[str, Any] = {}
+    field_evidence: dict[str, Any] = {}
     null_reasons: dict[str, str] = {}
     for column_id in stream.get("columns") or []:
         column_id = str(column_id)
@@ -268,6 +270,13 @@ def _occurrence(
         runtime_field = discovery_runtime_field(str(column.get("source_id") or column_id))
         value = row.get(column_id, row.get(runtime_field))
         evidence[column_id] = value
+        field_ref = str(column.get("field_ref") or "")
+        if field_ref:
+            field_evidence[field_ref] = {
+                "value": row.get(field_ref, value),
+                "available_at": row.get(f"{field_ref}__available_at"),
+                "null_reason": row.get(f"{field_ref}__null_reason"),
+            }
         if value in (None, ""):
             null_reasons[column_id] = str(
                 row.get(f"{column_id}_null_reason")
@@ -285,11 +294,12 @@ def _occurrence(
         "ticker": ticker,
         "event_time": as_of.isoformat(),
         "effective_at": as_of.isoformat(),
-        "available_at": datetime.now(UTC).isoformat(),
+        "available_at": as_of.isoformat(),
         "signal_state": "triggered",
-        "trigger_policy": "false_to_true",
+        "trigger_policy": str(stream.get("trigger_policy") or "false_to_true"),
         "matched_rule_set_ids": [str(value) for value in stream.get("inclusion_rule_sets") or []],
         "evidence": evidence,
+        "field_evidence": field_evidence,
         "evidence_null_reasons": null_reasons,
         **evidence,
     }

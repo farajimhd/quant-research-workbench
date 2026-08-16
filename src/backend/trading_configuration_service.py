@@ -17,6 +17,15 @@ from src.backend.application_registry import (
     FIELD_DEFINITIONS,
 )
 from src.backend.qmd_gateway_client import qmd_catalogs
+from src.backend.data_field_contracts import (
+    atomic_field_catalog,
+    build_column_catalog,
+    build_data_field_catalog,
+    compile_data_field_plan,
+    data_field_output_index,
+    migrate_rule_set_field_refs,
+    validate_data_field_catalog,
+)
 from src.backend.trading_action_registry import (
     action_policy_rule_set_ids,
     default_action_policies,
@@ -53,7 +62,7 @@ from src.trading_runtime.strategy_campaign import validate_campaign_policy
 from src.trading_runtime.taxonomy import StrategyTaxonomy
 
 
-CONFIGURATION_SCHEMA_VERSION = 26
+CONFIGURATION_SCHEMA_VERSION = 27
 CONFIGURATION_SECTIONS = {
     "strategy",
     "trading_actions",
@@ -177,7 +186,7 @@ def approved_canvas_profile() -> dict[str, Any]:
         }
     canvas = dict(dict(approved.get("payload") or {}).get("canvas") or {})
     profile = deepcopy(dict(canvas.get("profile") or {}))
-    return {
+    result = {
         "schema_version": 1,
         "available": bool(profile),
         "revision_id": str(approved.get("revision_id") or ""),
@@ -186,6 +195,7 @@ def approved_canvas_profile() -> dict[str, Any]:
         "canvas_revision": str(canvas.get("revision") or ""),
         "profile": profile,
     }
+    return result
 
 
 def publish_configuration(
@@ -1904,9 +1914,9 @@ def _discovery_reference_capabilities() -> list[dict[str, Any]]:
     """Point-in-time scanner fields used by reusable Watchlist templates."""
 
     rows = [
-        ("market.change_pct", "Session change", "market_data", "percent", "market.change_pct", "Last price divided by the completed previous-session close, minus one, expressed as a percentage.", "QMD bars + previous-session reference", ["1s", "10s", "30s", "1m"]),
-        ("market.volume", "Session volume", "market_data", "shares", "market.volume", "Cumulative eligible trade size for the current session.", "QMD eligible trades", ["1s", "10s", "30s", "1m"]),
-        ("market.relative_volume", "Relative volume", "indicator", "multiple", "market.relative_volume", "Current cumulative session volume divided by the point-in-time 20-session baseline for the same elapsed session interval.", "QMD volume + 20-session baseline", ["10s", "30s", "1m"]),
+        ("market.change_pct", "Session change", "market_data", "percent", "market.change_pct", "Last price divided by the completed previous-session close, minus one, expressed as a percentage.", "QMD bars + previous-session reference", ["session"]),
+        ("market.volume", "Session volume", "market_data", "shares", "market.volume", "Cumulative eligible trade size for the current session.", "QMD eligible trades", ["session"]),
+        ("market.relative_volume", "Relative volume", "indicator", "multiple", "market.relative_volume", "Current cumulative session volume divided by the point-in-time 20-session baseline for the same elapsed session interval.", "QMD volume + 20-session baseline", ["session"]),
         ("reference.market_cap", "Market capitalization", "reference", "currency", "reference.market_cap", "Latest point-in-time provider market capitalization available before evaluation.", "DB-managed market snapshot", ["1d"]),
         ("reference.float_shares", "Public float", "reference", "shares", "reference.float_shares", "Tradable share supply from DB-managed reference data, with the SEC public-float estimate available as a provenance-preserving fallback.", "DB reference + SEC facts", ["1d"]),
         ("reference.short_interest", "Short interest", "reference", "shares", "reference.short_interest", "Open short positions from the latest exchange settlement report published before evaluation.", "DB-managed short-interest history", ["settlement"]),
@@ -2074,7 +2084,7 @@ def _default_watchlist_rule_sets() -> list[dict[str, Any]]:
         *float_rules,
         _watchlist_rule("watchlist-positive-gainer", "Positive session gainer", "Requires a positive percentage change from the completed previous-session close.", [_watchlist_condition("positive-session-change", "market.change_pct", "greater_than", 0, "1s")]),
         _watchlist_rule("watchlist-relative-volume-gainer", "Elevated relative volume", "Requires current volume to exceed the aligned 20-session baseline.", [_watchlist_condition("relative-volume-over-baseline", "market.relative_volume", "greater_than", 1, "10s")]),
-        _watchlist_rule("watchlist-price-or-volume-squeeze", "Price or Volume Squeeze", "Passes when price expands at least 5% or aligned relative volume reaches 3x.", [_watchlist_condition("squeeze-price", "market.change_pct", "greater_or_equal", 5, "1s"), _watchlist_condition("squeeze-volume", "market.relative_volume", "greater_or_equal", 3, "10s")], operator="any"),
+        _watchlist_rule("watchlist-price-or-volume-squeeze", "Session Price or Volume Expansion", "Passes when session return from previous close reaches 5% or aligned 20-session relative volume reaches 3x.", [_watchlist_condition("squeeze-session-price", "market.change_pct", "greater_or_equal", 5, "session"), _watchlist_condition("squeeze-volume", "market.relative_volume", "greater_or_equal", 3, "session")], operator="any"),
         _watchlist_rule("watchlist-vwap-breakout", "VWAP breakout", "Requires last price to trade at least 5 basis points above current VWAP.", [{**_watchlist_condition("vwap-breakout-price", "market.last_price", "above_by_bps", 5, "1s"), "right_source_id": "indicator.vwap.value", "right_timeframe": "1s"}]),
         _watchlist_rule("watchlist-news-bullish", "Bullish news sentiment", "Requires a validated news label and a positive sentiment score of at least 0.35.", [_watchlist_condition("news-labeled-positive", "signal.news_labeled", "is_true", True, "event"), _watchlist_condition("news-positive-score", "signal.company_news.score", "greater_or_equal", 0.35, "event")]),
         _watchlist_rule("watchlist-news-bearish", "Bearish news sentiment", "Requires a validated news label and a negative sentiment score of -0.35 or lower.", [_watchlist_condition("news-labeled-negative", "signal.news_labeled", "is_true", True, "event"), _watchlist_condition("news-negative-score", "signal.company_news.score", "less_or_equal", -0.35, "event")]),
@@ -2380,6 +2390,14 @@ def _default_market_discovery(
         )
         calculation_rows.append({
             "capability_id": capability_id,
+            "capability_key": next(
+                (
+                    key
+                    for key, outputs in QMD_CORE_SCANNER_FIELDS.items()
+                    if capability_id in outputs or str(source.get("field") or "") in outputs
+                ),
+                capability_id,
+            ),
             "name": str(source.get("label") or capability_id),
             "description": str(source.get("summary") or "Published QMD observation."),
             "category": str(source.get("category") or source.get("provider") or "Market observations"),
@@ -2452,13 +2470,16 @@ def _default_market_discovery(
         merged_rule_sets.append(deepcopy(rule_set))
     field_catalog = _market_discovery_field_catalog(calculation_rows)
     _bind_discovery_scanner_columns(calculation_rows, field_catalog)
-    column_catalog = _watchlist_column_catalog(field_catalog, merged_rule_sets)
+    data_fields = build_data_field_catalog(calculation_rows, field_catalog)
+    migrate_rule_set_field_refs(merged_rule_sets, data_fields)
+    column_catalog = build_column_catalog(data_fields, merged_rule_sets)
+    output_index = data_field_output_index(data_fields)
     default_columns = [
         str(row.get("column_id") or "")
         for row in column_catalog
         if bool(row.get("default_visible"))
     ]
-    return {
+    result = {
         "security_universe": {
             "universe_id": "qmd-security-universe",
             "name": "QMD Security Universe",
@@ -2475,11 +2496,22 @@ def _default_market_discovery(
             "inclusion_rule_sets": [],
             "inclusion_operator": "all",
             "ranking_field": "market.liquidity_rank",
+            "ranking_field_ref": str(
+                output_index.get("market.liquidity_rank", {}).get("field_ref") or ""
+            ),
             "ranking_direction": "descending",
             "maximum_size": 250,
             "columns": default_columns,
         },
         "calculation_catalog": calculation_rows,
+        "atomic_fields": atomic_field_catalog(
+            value
+            for row in calculation_rows
+            for value in row.get("inputs") or []
+            if str(value)
+        ),
+        "data_fields": data_fields,
+        "data_field_plan": {},
         "classifications": _market_discovery_classifications(),
         "field_catalog": field_catalog,
         "column_catalog": column_catalog,
@@ -2487,6 +2519,12 @@ def _default_market_discovery(
         "watchlists": _default_watchlist_templates(symbols, calculation_rows),
         "signal_streams": _default_signal_streams(),
     }
+    for watchlist in result["watchlists"]:
+        watchlist["ranking_field_ref"] = str(
+            output_index.get(str(watchlist.get("ranking_field") or ""), {}).get("field_ref") or ""
+        )
+    result["data_field_plan"] = compile_data_field_plan(result)
+    return result
 
 
 def _default_data_plan_ids() -> dict[str, str]:
@@ -2712,24 +2750,50 @@ def _validate_market_discovery(section: dict[str, Any]) -> None:
     field_by_source = {
         str(row.get("source_id") or ""): row for row in field_catalog
     }
+    atomic_fields = list(section.get("atomic_fields") or [])
+    atomic_field_ids = _unique_ids(
+        atomic_fields, "atomic_field_id", "Atomic Field"
+    )
+    if not atomic_field_ids:
+        raise ValueError("Market Discovery requires an exhaustive Atomic Field catalog")
+    data_fields = list(section.get("data_fields") or [])
+    if not data_fields:
+        raise ValueError("Market Discovery requires at least one registered Data Field")
+    validate_data_field_catalog(data_fields)
+    output_index = data_field_output_index(data_fields)
+    output_refs = {
+        str(output.get("field_ref") or "")
+        for data_field in data_fields
+        for output in data_field.get("outputs") or []
+        if str(output.get("field_ref") or "")
+    }
     for rule_set in rule_sets:
-        if str(rule_set.get("scope") or "strategy") != "watchlist":
-            continue
         for condition in rule_set.get("conditions") or []:
             source_id = str(condition.get("left_source_id") or "")
+            left_ref = str(condition.get("left_field_ref") or "")
+            if not left_ref or left_ref not in output_refs:
+                raise ValueError(
+                    f"Rule Set {rule_set.get('name')} references unknown Data Field output {left_ref or '<empty>'}"
+                )
             field = field_by_source.get(source_id)
-            if field is None:
+            output = output_index.get(left_ref)
+            if field is None or output is None:
                 raise ValueError(
                     f"Watchlist rule set {rule_set.get('name')} references unknown field {source_id}"
                 )
             comparator = str(condition.get("comparator") or "")
-            if not bool(field.get("filterable")) or comparator not in set(
-                field.get("filter_operators") or []
+            if not bool(output.get("filterable")) or comparator not in set(
+                output.get("filter_operators") or []
             ):
                 raise ValueError(
                     f"Watchlist rule set {rule_set.get('name')} cannot use {comparator} on {source_id}"
                 )
             right_source_id = str(condition.get("right_source_id") or "")
+            right_ref = str(condition.get("right_field_ref") or "")
+            if right_source_id and (not right_ref or right_ref not in output_refs):
+                raise ValueError(
+                    f"Rule Set {rule_set.get('name')} references unknown comparison Data Field output {right_ref or '<empty>'}"
+                )
             if right_source_id and right_source_id not in field_by_source:
                 raise ValueError(
                     f"Watchlist rule set {rule_set.get('name')} references unknown comparison field {right_source_id}"
@@ -2804,25 +2868,26 @@ def _validate_market_discovery(section: dict[str, Any]) -> None:
         raise ValueError("Market Discovery requires a Watchlist column catalog")
     for column in column_catalog:
         source_id = str(column.get("source_id") or "")
-        source_kind = str(column.get("source_kind") or "data_definition")
+        source_kind = str(column.get("source_kind") or "data_field")
         field = field_by_source.get(source_id)
-        if source_kind == "data_definition" and (
-            field is None or str(field.get("column_id") or "") != str(column.get("column_id") or "")
-        ):
+        field_ref = str(column.get("field_ref") or "")
+        if source_kind == "data_field" and field_ref not in output_refs:
             raise ValueError(
-                f"Watchlist column {column.get('column_id')} is not generated from the field registry"
+                f"Watchlist column {column.get('column_id')} is not generated from a Data Field output"
             )
         if source_kind == "rule_set" and source_id not in rule_set_ids:
             raise ValueError(
                 f"Rule-set column {column.get('column_id')} references unknown rule set {source_id}"
             )
-        if source_kind not in {"data_definition", "rule_set"}:
+        if source_kind not in {"data_field", "rule_set"}:
             raise ValueError(f"Column {column.get('column_id')} has unknown source kind {source_kind}")
     core_rules = set(core_scan.get("inclusion_rule_sets") or [])
     if core_rules - rule_set_ids:
         raise ValueError("Core Scan references unknown rule sets")
     if str(core_scan.get("ranking_field") or "") not in field_source_ids:
         raise ValueError("Core Scan references an unknown ranking data definition")
+    if str(core_scan.get("ranking_field_ref") or "") not in output_refs:
+        raise ValueError("Core Scan references an unknown ranking Data Field output")
     if str(core_scan.get("ranking_direction") or "descending") not in {"ascending", "descending"}:
         raise ValueError("Core Scan has an unknown ranking direction")
     if int(core_scan.get("maximum_size") or 0) <= 0:
@@ -2900,6 +2965,10 @@ def _validate_market_discovery(section: dict[str, Any]) -> None:
                 raise ValueError(f"Signal Stream {stream_name} has an unknown admission expiry policy")
             if expiry == "time_to_live" and int(route.get("membership_ttl_ms") or 0) <= 0:
                 raise ValueError(f"Signal Stream {stream_name} admission TTL must be positive")
+    compiled_plan = compile_data_field_plan(section)
+    stored_plan = dict(section.get("data_field_plan") or {})
+    if stored_plan and str(stored_plan.get("content_hash") or "") != str(compiled_plan.get("content_hash") or ""):
+        raise ValueError("Market Discovery Data Field plan is stale; save the configuration again")
 
 
 def _compile_run_plans(candidate: dict[str, Any], *, canvas_profile_id: str) -> None:
@@ -2916,6 +2985,7 @@ def _compile_run_plans(candidate: dict[str, Any], *, canvas_profile_id: str) -> 
     }
     mandates = list(dict(candidate.get("portfolio") or {}).get("mandates") or [])
     calculations = list(discovery.get("calculation_catalog") or [])
+    data_fields = list(discovery.get("data_fields") or [])
     action_policies = {
         str(row.get("policy_id") or ""): row
         for row in dict(candidate.get("trading_actions") or {}).get("policies") or []
@@ -2989,6 +3059,7 @@ def _compile_run_plans(candidate: dict[str, Any], *, canvas_profile_id: str) -> 
             profile,
             calculations,
             [rule_sets[rule_set_id] for rule_set_id in referenced_rule_set_ids if rule_set_id in rule_sets],
+            data_fields,
         )
         run_plan["compiled"] = True
 
@@ -2999,6 +3070,7 @@ def _compiled_observation_dependencies(
     profile: dict[str, Any],
     capability_catalog_rows: list[dict[str, Any]] | None = None,
     rule_sets: list[dict[str, Any]] | None = None,
+    data_fields: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     definition = get_strategy_definition(
         str(profile.get("definition_id") or ""),
@@ -3037,10 +3109,23 @@ def _compiled_observation_dependencies(
         )
         if capability_id:
             capability_by_field.setdefault(capability_id, capability)
+    output_index = data_field_output_index(data_fields or [])
+    data_field_by_ref = {
+        str(output.get("field_ref") or ""): data_field
+        for data_field in data_fields or []
+        for output in data_field.get("outputs") or []
+        if str(output.get("field_ref") or "")
+    }
     for rule_set in rule_sets or []:
         for condition in rule_set.get("conditions") or []:
             for side in ("left", "right"):
-                source_id = str(condition.get(f"{side}_source_id") or "")
+                field_ref = str(condition.get(f"{side}_field_ref") or "")
+                output = output_index.get(field_ref, {})
+                source_id = str(
+                    output.get("source_id")
+                    or condition.get(f"{side}_source_id")
+                    or ""
+                )
                 if not source_id:
                     continue
                 capability = capability_by_field.get(source_id, {})
@@ -3065,9 +3150,12 @@ def _compiled_observation_dependencies(
                 })
                 row["input_kinds"].add("rule_set")
                 row["input_keys"].add(source_id)
-                timeframe = str(condition.get(f"{side}_timeframe") or "").lower()
-                if timeframe:
-                    row["timeframes"].add(timeframe)
+                data_field = data_field_by_ref.get(field_ref, {})
+                row["timeframes"].update(
+                    str(value).lower()
+                    for value in dict(data_field.get("context") or {}).get("timeframes") or []
+                    if str(value)
+                )
                 row["required"] = True
     compiled: list[dict[str, Any]] = []
     for _, row in sorted(grouped.items()):
@@ -3636,6 +3724,39 @@ def _migrate_draft(raw: dict[str, Any]) -> dict[str, Any]:
             calculation["selected_timeframes"] = selected_timeframes or supported_timeframes
             merged_calculations.append(calculation)
         result["market_discovery"]["calculation_catalog"] = merged_calculations
+        generated_data_fields = build_data_field_catalog(
+            merged_calculations,
+            list(result["market_discovery"].get("field_catalog") or []),
+        )
+        current_data_fields = {
+            str(row.get("data_field_id") or ""): deepcopy(row)
+            for row in result["market_discovery"].get("data_fields") or []
+            if str(row.get("data_field_id") or "")
+        }
+        merged_data_fields = []
+        for generated in generated_data_fields:
+            data_field_id = str(generated.get("data_field_id") or "")
+            current = current_data_fields.pop(data_field_id, {})
+            # Producer semantics and output identities are regenerated; only
+            # user-configurable instance values and presentations are retained.
+            merged = {**generated, **current}
+            merged["outputs"] = list(current.get("outputs") or generated.get("outputs") or [])
+            merged_data_fields.append(merged)
+        merged_data_fields.extend(current_data_fields.values())
+        validate_data_field_catalog(merged_data_fields)
+        result["market_discovery"]["data_fields"] = merged_data_fields
+        result["market_discovery"]["atomic_fields"] = atomic_field_catalog(
+            value
+            for row in merged_calculations
+            for value in row.get("inputs") or []
+            if str(value)
+        )
+        migrate_rule_set_field_refs(
+            result["market_discovery"]["rule_sets"], merged_data_fields
+        )
+        result["market_discovery"]["column_catalog"] = build_column_catalog(
+            merged_data_fields, result["market_discovery"]["rule_sets"]
+        )
         core_scan = result["market_discovery"]["core_scan"]
         default_core_scan = defaults["market_discovery"]["core_scan"]
         core_scan.setdefault("inclusion_rule_sets", list(default_core_scan.get("inclusion_rule_sets") or []))
@@ -3719,6 +3840,24 @@ def _migrate_draft(raw: dict[str, Any]) -> dict[str, Any]:
                 for column_id in stream.get("columns") or []
                 if str(column_id) in column_ids
             ]
+        output_index = data_field_output_index(merged_data_fields)
+        ranking_source = str(core_scan.get("ranking_field") or "")
+        core_scan["ranking_field_ref"] = str(
+            output_index.get(str(core_scan.get("ranking_field_ref") or ""), {}).get("field_ref")
+            or output_index.get(ranking_source, {}).get("field_ref")
+            or core_scan.get("ranking_field_ref")
+            or ""
+        )
+        for watchlist in result["market_discovery"].get("watchlists") or []:
+            ranking_source = str(watchlist.get("ranking_field") or "")
+            watchlist["ranking_field_ref"] = str(
+                output_index.get(str(watchlist.get("ranking_field_ref") or ""), {}).get("field_ref")
+                or output_index.get(ranking_source, {}).get("field_ref")
+                or ""
+            )
+        result["market_discovery"]["data_field_plan"] = compile_data_field_plan(
+            result["market_discovery"]
+        )
         legacy_run_plans = dict(
             result.get("run_plans") or result.pop("assignments", {}) or {}
         )

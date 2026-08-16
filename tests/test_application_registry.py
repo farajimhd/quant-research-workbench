@@ -181,7 +181,7 @@ class ApplicationRegistryTests(unittest.TestCase):
         self.assertEqual(payload["counts"]["configuration_schemas"], len(CONFIGURATION_SCHEMAS))
         self.assertEqual(payload["counts"]["compatibility_aliases"], len(COMPATIBILITY_ALIASES))
         schemas = {row["schema_id"]: row for row in payload["configuration_schemas"]}
-        self.assertEqual(schemas["trading_configuration"]["version"], 25)
+        self.assertEqual(schemas["trading_configuration"]["version"], 27)
         registry_types = {row.kind for row in REGISTRY_TYPES}
         self.assertTrue({"trading_action", "action_policy"} <= registry_types)
         self.assertEqual(

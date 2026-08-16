@@ -187,12 +187,18 @@ def _rule_matches(rule_set: dict[str, Any] | None, row: dict[str, Any]) -> bool:
 
 
 def _condition_matches(condition: dict[str, Any], row: dict[str, Any]) -> bool:
-    left = _source_value(row, str(condition.get("left_source_id") or ""))
+    left_ref = str(condition.get("left_field_ref") or "")
+    left = _source_value(row, left_ref) if left_ref else None
+    if left is None:
+        left = _source_value(row, str(condition.get("left_source_id") or ""))
     comparator = str(condition.get("comparator") or "")
     if comparator == "is_true":
         return left is True
+    right_ref = str(condition.get("right_field_ref") or "")
     right_source = str(condition.get("right_source_id") or "")
-    right = _source_value(row, right_source) if right_source else condition.get("value")
+    right = _source_value(row, right_ref) if right_ref else None
+    if right is None:
+        right = _source_value(row, right_source) if right_source else condition.get("value")
     left_number, right_number = _number(left), _number(right)
     if left_number is None or right_number is None:
         return False

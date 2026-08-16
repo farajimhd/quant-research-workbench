@@ -2278,6 +2278,10 @@ def _validate_rule_timeframe(
     source: dict[str, Any],
 ) -> None:
     timeframe = str(condition.get(key) or "")
+    # Schema-v27 Rule Sets reference an exact Data Field output whose context
+    # owns the timeframe. Legacy embedded rules may still carry this field.
+    if not timeframe:
+        return
     if timeframe not in set(source["timeframes"]):
         raise ValueError(
             f"Entry rule source {source['source_id']} does not support timeframe {timeframe}"

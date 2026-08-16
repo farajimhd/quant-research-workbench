@@ -68,6 +68,14 @@ def configured_discovery_technical_windows(configuration: dict[str, Any]) -> tup
     """Compile technical demand from every configured discovery composition."""
 
     discovery = dict(configuration.get("market_discovery") or {})
+    compiled = dict(discovery.get("data_field_plan") or {})
+    compiled_windows = {
+        str(value)
+        for value in compiled.get("technical_timeframes") or []
+        if str(value) in {"1s", "5s", "10s", "30s", "1m", "5m", "15m", "30m", "1h"}
+    }
+    if compiled_windows:
+        return tuple(sorted(compiled_windows))
     selected_rule_ids: set[str] = set()
     selected_columns = configured_discovery_column_ids(configuration)
     for composition in [

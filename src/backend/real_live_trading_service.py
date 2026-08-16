@@ -293,6 +293,7 @@ def _compose_real_live_scanner_snapshot() -> dict[str, Any]:
                 from src.backend.signal_stream_runtime_service import SIGNAL_STREAM_RUNTIME
                 from src.backend.qmd_gateway_client import qmd_scanner_indicators
                 from src.backend.trading_configuration_service import configuration_base
+                from src.backend.data_field_contracts import project_data_field_outputs
                 from src.backend.trading_runtime_service import trading_journal
 
                 rows = enrich_core_scanner_rows(rows, live_market_reference_projection())
@@ -309,6 +310,10 @@ def _compose_real_live_scanner_snapshot() -> dict[str, Any]:
                     for row in rows
                 ]
                 rows = project_discovery_columns(rows)
+                rows = project_data_field_outputs(
+                    rows,
+                    list(dict(configuration.get("market_discovery") or {}).get("data_fields") or []),
+                )
                 try:
                     signal_stream_runtime = SIGNAL_STREAM_RUNTIME.resolve(
                         configuration,

@@ -32,7 +32,7 @@ use crate::scanner::{
 use crate::session::session_phase;
 use crate::signal_catalog::{signal_taxonomy_catalog, SignalTaxonomyEntry};
 use crate::state::{
-    ScannerRowDelta, ScannerSnapshot, SharedMarketState, StatusMetrics, SymbolSnapshot,
+    ScannerRowDelta, SharedMarketState, StatusMetrics, SymbolSnapshot,
     TickerStateSnapshot,
 };
 use crate::structure_focus::StructureFocusCoordinator;
@@ -43,6 +43,8 @@ use axum::middleware;
 use axum::response::IntoResponse;
 use axum::routing::{delete, get, post};
 use axum::{Json, Router};
+use chrono::{Datelike, TimeZone, Timelike, Utc};
+use chrono_tz::America::New_York;
 use futures_util::SinkExt;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -890,13 +892,53 @@ async fn clickhouse_query(
 async fn scanner_snapshot(
     State(state): State<Arc<AppState>>,
     Query(query): Query<LimitQuery>,
-) -> Json<ScannerSnapshot> {
-    Json(
-        state
-            .market
-            .scanner_snapshot(query.limit.unwrap_or(250).min(5_000))
-            .await,
-    )
+) -> Json<Value> {
+    let now = Utc::now();
+    let snapshot = state
+        .market
+        .scanner_snapshot_at(now, query.limit.unwrap_or(250).min(5_000))
+        .await;
+    let calendar = state.market_calendar.snapshot(now);
+    let local = now.with_timezone(&New_York);
+    let local_minutes = local.hour() * 60 + local.minute();
+    let regular_open = 9 * 60 + 30;
+    let regular_close_at = New_York
+        .from_local_datetime(
+            &local
+                .date_naive()
+                .and_hms_opt(16, 0, 0)
+                .expect("valid market close"),
+        )
+        .single()
+        .map(|value| value.with_timezone(&Utc));
+    let session_close_at = calendar.session_close_at.or(regular_close_at);
+    let trading_day = !matches!(local.weekday(), chrono::Weekday::Sat | chrono::Weekday::Sun)
+        && !calendar.reason.starts_with("holiday_closed:");
+    let mut payload = serde_json::to_value(snapshot).unwrap_or_else(|_| json!({}));
+    payload["market_clock"] = json!({
+        "observed_at": now.to_rfc3339(),
+        "utc_date": now.format("%Y-%m-%d").to_string(),
+        "utc_time": now.format("%H:%M:%S%.3f").to_string(),
+        "exchange_date": local.format("%Y-%m-%d").to_string(),
+        "exchange_time": local.format("%H:%M:%S").to_string(),
+        "trading_date": local.format("%Y-%m-%d").to_string(),
+        "timezone": "America/New_York",
+        "weekday": local.format("%A").to_string(),
+        "session_id": local.format("%Y-%m-%d").to_string(),
+        "session_phase": format!("{:?}", session_phase(now)).to_ascii_lowercase(),
+        "session_open_at": format!("{}T09:30:00", local.format("%Y-%m-%d")),
+        "session_close_at": session_close_at.map(|value| value.to_rfc3339()),
+        "minutes_since_open": if trading_day && local_minutes >= regular_open { Some(local_minutes - regular_open) } else { None },
+        "minutes_until_close": if trading_day { session_close_at.and_then(|close| (close > now).then_some((close - now).num_minutes())) } else { None },
+        "is_trading_day": trading_day,
+        "is_early_close": calendar.is_early_close,
+        "market_status": if calendar.active_collection_window { "active" } else { "closed" },
+        "market_is_open": calendar.active_collection_window,
+        "market_feed_status": if calendar.stale { "stale" } else { "ready" },
+        "market_calendar_source": calendar.source,
+        "market_calendar_reason": calendar.reason,
+    });
+    Json(payload)
 }
 
 async fn scanner_primitive_snapshot(

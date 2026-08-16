@@ -441,7 +441,7 @@ CONTAINER_DEFINITIONS = (
 
 
 CONFIGURATION_SCHEMAS = (
-    ConfigurationSchemaDefinition("trading_configuration", "backend", "src/backend/trading_configuration_service.py", 25, ALL_MODES, True),
+    ConfigurationSchemaDefinition("trading_configuration", "backend", "src/backend/trading_configuration_service.py", 27, ALL_MODES, True),
     ConfigurationSchemaDefinition("strategy_profile", "strategy_runtime", "src/trading_runtime/strategy_engine.py", 3, ALL_MODES, True),
     ConfigurationSchemaDefinition("watchlist", "backend", "src/backend/watchlist_runtime_service.py", 1, ALL_MODES, True),
     ConfigurationSchemaDefinition("historical_watchlist_plan", "backend", "src/backend/historical_watchlist_plan.py", 2, ("replay", "backtest"), False),
@@ -1203,6 +1203,17 @@ def _field_presentation_label(field_id: str) -> str:
         return qmd_overrides.get(leaf, _presentation_words(leaf))
     namespace = parts[0]
     semantic_path = parts[1:]
+    clock_labels = {
+        "market.status": "Market Status",
+        "market.is_open": "Market Is Open",
+        "market.is_halted": "Market Is Halted",
+        "market.luld_state": "Market LULD State",
+        "market.feed_status": "Market Feed Status",
+    }
+    if field_id in clock_labels:
+        return clock_labels[field_id]
+    if namespace == "clock":
+        return f"Market Clock {_presentation_words('_'.join(semantic_path))}"
     if namespace == "classification":
         return f"{_presentation_words('_'.join(semantic_path))} Classification"
     if namespace == "embedding" and len(semantic_path) >= 2:
@@ -1366,10 +1377,31 @@ def _fields() -> tuple[FieldDefinition, ...]:
         ("market.quality_flags", "json", "flags"),
         ("market.degradation_reason", "string", "text"),
         ("market.liquidity_rank", "number", "score"),
+        ("clock.observed_at", "string", "timestamp"),
+        ("clock.utc_date", "string", "date"),
+        ("clock.utc_time", "string", "time"),
+        ("clock.exchange_date", "string", "date"),
+        ("clock.exchange_time", "string", "time"),
+        ("clock.trading_date", "string", "date"),
+        ("clock.timezone", "string", "timezone"),
+        ("clock.weekday", "string", "category"),
+        ("clock.session_id", "string", "identity"),
+        ("clock.session_phase", "string", "state"),
+        ("clock.session_open_at", "string", "timestamp"),
+        ("clock.session_close_at", "string", "timestamp"),
+        ("clock.minutes_since_open", "number", "minutes"),
+        ("clock.minutes_until_close", "number", "minutes"),
+        ("clock.is_trading_day", "boolean", "boolean"),
+        ("clock.is_early_close", "boolean", "boolean"),
+        ("market.status", "string", "state"),
+        ("market.is_open", "boolean", "boolean"),
+        ("market.is_halted", "boolean", "boolean"),
+        ("market.luld_state", "string", "state"),
+        ("market.feed_status", "string", "state"),
     ):
         rows.append(_field(
             field_id,
-            "qmd_scanner",
+            "market_clock" if field_id.startswith("clock.") else "qmd_scanner",
             "qmd_gateway",
             "service://qmd/scanner",
             "qmd.scanner.snapshot.v1",
@@ -1378,8 +1410,15 @@ def _fields() -> tuple[FieldDefinition, ...]:
             entity_grain="security_at_market_clock",
             ttl_seconds=60,
             publication_cadence="event_driven",
-            provenance="derived" if field_id not in {"market.last_price", "market.volume", "market.event_at"} else "raw",
+            provenance=(
+                "raw"
+                if field_id in {"market.last_price", "market.volume", "market.event_at"}
+                or field_id.startswith("clock.")
+                or field_id in {"market.status", "market.is_open", "market.is_halted", "market.feed_status"}
+                else "derived"
+            ),
             coverage_query_plan="qmd.scanner.snapshot.v1",
+            status="integration_pending" if field_id == "market.is_halted" else "implemented",
         ))
 
     reference_specs = {
@@ -1525,12 +1564,12 @@ FIELD_DEFINITIONS = _fields()
 DISCOVERY_FIELD_PRESENTATIONS = (
     DiscoveryFieldPresentation("identity.symbol", "identity.symbol", "symbol", "Symbol", "Point-in-time ticker identity for the eligible listing.", "reference", True, False, True, (), ("event",)),
     DiscoveryFieldPresentation("identity.company_name", "identity.company_name", "company_name", "Company", "Issuer or security name available for the listing at evaluation time.", "reference", True, False, True, (), ("event",)),
-    DiscoveryFieldPresentation("market.last_price", "market.last_price", "last_price", "Last price", "Most recent causally available eligible trade price.", "market_data", True, True, True, ("greater_or_equal", "greater_than", "less_or_equal", "less_than", "equals", "above_by_bps"), ("1s", "10s", "30s", "1m")),
+    DiscoveryFieldPresentation("market.last_price", "market.last_price", "last_price", "Last price", "Most recent causally available eligible trade price.", "market_data", True, True, True, ("greater_or_equal", "greater_than", "less_or_equal", "less_than", "equals", "above_by_bps"), ("event",)),
     DiscoveryFieldPresentation("market.previous_close", "market.previous_close", "previous_close", "Previous close", "Completed prior regular-session close available at the scanner clock.", "reference", True, True, True, ("greater_or_equal", "greater_than", "less_or_equal", "less_than", "equals"), ("session",)),
-    DiscoveryFieldPresentation("market.change_pct", "market.change_pct", "change_pct", "Change %", "Percentage change from the completed previous-session close.", "market_data", True, True, True, ("greater_or_equal", "greater_than", "less_or_equal", "less_than", "equals"), ("1s", "10s", "30s", "1m")),
-    DiscoveryFieldPresentation("market.volume", "market.volume", "volume", "Volume", "Cumulative eligible share volume for the current session.", "market_data", True, True, True, ("greater_or_equal", "greater_than", "less_or_equal", "less_than", "equals"), ("1s", "10s", "30s", "1m")),
-    DiscoveryFieldPresentation("market.relative_volume", "market.relative_volume", "relative_volume", "Relative volume", "Cumulative volume versus the aligned 20-session baseline.", "indicator", True, True, True, ("greater_or_equal", "greater_than", "less_or_equal", "less_than", "equals"), ("10s", "30s", "1m")),
-    DiscoveryFieldPresentation("indicator.vwap.value", "market.vwap", "vwap", "VWAP", "Causal session volume-weighted average eligible trade price.", "indicator", True, True, True, ("greater_or_equal", "greater_than", "less_or_equal", "less_than", "equals", "above_by_bps"), ("1s", "10s", "30s", "1m")),
+    DiscoveryFieldPresentation("market.change_pct", "market.change_pct", "change_pct", "Session change %", "Percentage change from the completed previous-session close.", "market_data", True, True, True, ("greater_or_equal", "greater_than", "less_or_equal", "less_than", "equals"), ("session",)),
+    DiscoveryFieldPresentation("market.volume", "market.volume", "volume", "Session volume", "Cumulative eligible share volume for the current session.", "market_data", True, True, True, ("greater_or_equal", "greater_than", "less_or_equal", "less_than", "equals"), ("session",)),
+    DiscoveryFieldPresentation("market.relative_volume", "market.relative_volume", "relative_volume", "Relative volume", "Cumulative volume versus the aligned 20-session baseline.", "indicator", True, True, True, ("greater_or_equal", "greater_than", "less_or_equal", "less_than", "equals"), ("session",)),
+    DiscoveryFieldPresentation("indicator.vwap.value", "market.vwap", "vwap", "Session VWAP", "Causal session volume-weighted average eligible trade price.", "indicator", True, True, True, ("greater_or_equal", "greater_than", "less_or_equal", "less_than", "equals", "above_by_bps"), ("session",)),
     DiscoveryFieldPresentation("identity.exchange", "listing.exchange", "exchange", "Exchange", "Point-in-time listing venue for the eligible security.", "reference", False, False, True, (), ("event",)),
     DiscoveryFieldPresentation("country.effective", "country.effective", "country", "Country", "Best point-in-time country assertion selected by the Reference Gateway.", "reference", False, False, True, (), ("1d",)),
     DiscoveryFieldPresentation("classification.sector", "classification.sector", "sector", "Sector", "Published issuer sector or the best available SIC description.", "reference", False, False, True, (), ("1d",)),
@@ -1545,6 +1584,14 @@ DISCOVERY_FIELD_PRESENTATIONS = (
     DiscoveryFieldPresentation("market.trade_rate_10s", "market.trade_rate_10s", "trade_rate_10s", "Trades / sec (10s)", "Eligible trade-event rate over the latest ten seconds.", "market_data", False, True, True, ("greater_or_equal", "greater_than", "less_or_equal", "less_than", "equals"), ("10s",)),
     DiscoveryFieldPresentation("market.trade_rate_60s", "market.trade_rate_60s", "trade_rate_60s", "Trades / sec (60s)", "Eligible trade-event rate over the latest sixty seconds.", "market_data", False, True, True, ("greater_or_equal", "greater_than", "less_or_equal", "less_than", "equals"), ("1m",)),
     DiscoveryFieldPresentation("market.liquidity_score", "market.liquidity_score", "liquidity_score", "Liquidity score", "QMD liquidity evidence score used in the base candidate ranking.", "indicator", False, True, True, ("greater_or_equal", "greater_than", "less_or_equal", "less_than", "equals"), ("event",)),
+    DiscoveryFieldPresentation("clock.trading_date", "clock.trading_date", "trading_date", "Trading date", "QMD market-clock trading date in America/New_York.", "clock", False, False, True, (), ("event",)),
+    DiscoveryFieldPresentation("clock.exchange_time", "clock.exchange_time", "market_time", "Market time", "QMD market-clock time in America/New_York.", "clock", False, False, True, (), ("event",)),
+    DiscoveryFieldPresentation("clock.session_phase", "clock.session_phase", "session_phase", "Session phase", "Canonical QMD premarket, regular, after-hours, or closed session phase.", "clock", True, True, True, ("equals",), ("event",)),
+    DiscoveryFieldPresentation("market.status", "market.status", "market_status", "Market status", "Canonical QMD active or closed market-calendar status.", "clock", True, True, True, ("equals",), ("event",)),
+    DiscoveryFieldPresentation("market.is_open", "market.is_open", "market_is_open", "Market open", "Whether the QMD market calendar admits active collection at the evaluation clock.", "clock", False, True, True, ("is_true", "equals"), ("event",)),
+    DiscoveryFieldPresentation("clock.is_trading_day", "clock.is_trading_day", "is_trading_day", "Trading day", "Whether the evaluation date is a QMD-authorized trading session.", "clock", False, True, True, ("is_true", "equals"), ("event",)),
+    DiscoveryFieldPresentation("clock.minutes_since_open", "clock.minutes_since_open", "minutes_since_open", "Minutes since open", "Elapsed minutes since the canonical regular-session open; unavailable outside an applicable session.", "clock", False, True, True, ("greater_or_equal", "greater_than", "less_or_equal", "less_than", "equals"), ("event",)),
+    DiscoveryFieldPresentation("clock.minutes_until_close", "clock.minutes_until_close", "minutes_until_close", "Minutes until close", "Remaining minutes until the canonical regular-session close; unavailable after close.", "clock", False, True, True, ("greater_or_equal", "greater_than", "less_or_equal", "less_than", "equals"), ("event",)),
     DiscoveryFieldPresentation("reference.market_cap", "reference.market_cap", "market_cap", "Market cap", "Latest point-in-time market capitalization.", "reference", True, True, True, ("greater_or_equal", "greater_than", "less_or_equal", "less_than", "equals"), ("1d",)),
     DiscoveryFieldPresentation("classification.market_cap", "classification.market_cap", "market_cap_category", "Cap category", "Small, Mid, or Large classification from the published configuration.", "reference", True, False, True, (), ("1d",)),
     DiscoveryFieldPresentation("reference.shares_outstanding", "reference.shares_outstanding", "shares_outstanding", "Shares outstanding", "Latest point-in-time reported share-class or provider outstanding shares.", "reference", False, True, True, ("greater_or_equal", "greater_than", "less_or_equal", "less_than", "equals"), ("1d",)),
@@ -1594,6 +1641,16 @@ DISCOVERY_RUNTIME_FIELDS.update({
     "fundamental.quality_score": "xbrl_quality_score",
     "event.ipo.date": "ipo_date",
     "event.split.execution_date": "split_execution_date",
+    "clock.trading_date": "trading_date",
+    "clock.exchange_time": "market_time",
+    "clock.session_phase": "session_phase",
+    "market.status": "market_status",
+    "market.is_open": "market_is_open",
+    "market.luld_state": "estimated_luld_state",
+    "market.feed_status": "market_feed_status",
+    "clock.is_trading_day": "is_trading_day",
+    "clock.minutes_since_open": "minutes_since_open",
+    "clock.minutes_until_close": "minutes_until_close",
 })
 
 

@@ -3,11 +3,11 @@ import { useEffect, useMemo, useRef, useState } from "react";
 
 import { InventoryFilterSelect, type InventoryFilterOption } from "../app/components/InventoryFilterSelect";
 
-type RuleSet = { atomic?: boolean; description: string; name: string; rule_set_id: string };
-type ColumnDefinition = { column_id: string; description: string; name: string; source_id: string; source_kind?: "data_definition" | "rule_set"; semantic_type: string; value_type: string };
+type RuleSet = { atomic?: boolean; description: string; name: string; origin?: string; protected?: boolean; rule_set_id: string };
+type ColumnDefinition = { column_id: string; description: string; field_ref?: string; name: string; sortable?: boolean; source_id: string; source_kind?: "data_field" | "rule_set" | string; semantic_type: string; value_type: string };
 type DataDefinition = { description: string; name: string; sortable: boolean; source_id: string; source_kind?: string; semantic_type: string };
 type BaseComposition = { columns: string[]; description: string; inclusion_operator: "all" | "any"; inclusion_rule_sets: string[]; name: string; refresh_interval_ms: number };
-type Composition = BaseComposition & { maximum_size: number; ranking_direction: "ascending" | "descending"; ranking_field: string };
+type Composition = BaseComposition & { maximum_size: number; ranking_direction: "ascending" | "descending"; ranking_field: string; ranking_field_ref?: string };
 type CoreScan = Composition & { published: boolean; scan_id: string };
 type Watchlist = Composition & { availability?: string; availability_detail?: string; enabled: boolean; manual_exclusions: string[]; manual_inclusions: string[]; membership_expiry: "end_of_trading_day" | "time_to_live" | "never"; membership_ttl_ms: number; origin?: string; source_scan_id: string; template?: boolean; watchlist_id: string };
 type SignalRoute = { membership_expiry: "end_of_trading_day" | "time_to_live" | "never"; membership_ttl_ms: number; watchlist_id: string };
@@ -24,7 +24,7 @@ export function MarketDiscoveryComposer({ onChange, section }: { onChange: (valu
   const selected: BaseComposition = selectedSignalStream ?? selectedWatchlist ?? section.core_scan;
   const visibleWatchlists = section.watchlists.filter((row) => !query.trim() || [row.name, row.description, row.watchlist_id].some((value) => value.toLowerCase().includes(query.trim().toLowerCase())));
   const visibleSignalStreams = section.signal_streams.filter((row) => !query.trim() || [row.name, row.description, row.signal_stream_id].some((value) => value.toLowerCase().includes(query.trim().toLowerCase())));
-  const fieldById = useMemo(() => new Map(section.field_catalog.map((row) => [row.source_id, row])), [section.field_catalog]);
+  const fieldById = useMemo(() => new Map(section.column_catalog.filter((row) => row.field_ref).map((row) => [row.field_ref!, row])), [section.column_catalog]);
 
   useEffect(() => {
     if (!scrollToNewDefinitionRef.current) return;
@@ -46,7 +46,7 @@ export function MarketDiscoveryComposer({ onChange, section }: { onChange: (valu
     let suffix = 1;
     while (section.watchlists.some((row) => row.watchlist_id === `${base}-${suffix}`)) suffix += 1;
     const watchlist_id = `${base}-${suffix}`;
-    const next: Watchlist = { availability: "available", columns: [...section.core_scan.columns], description: "Compose candidate membership from registered Rule Sets and Data Definitions.", enabled: true, inclusion_operator: "all", inclusion_rule_sets: [], manual_exclusions: [], manual_inclusions: [], maximum_size: 10, membership_expiry: "end_of_trading_day", membership_ttl_ms: 300000, name: "Untitled Watchlist", origin: "user", ranking_direction: section.core_scan.ranking_direction, ranking_field: section.core_scan.ranking_field, refresh_interval_ms: section.core_scan.refresh_interval_ms, source_scan_id: section.core_scan.scan_id, template: false, watchlist_id };
+    const next: Watchlist = { availability: "available", columns: [...section.core_scan.columns], description: "Compose candidate membership from registered Rule Sets and Data Field outputs.", enabled: true, inclusion_operator: "all", inclusion_rule_sets: [], manual_exclusions: [], manual_inclusions: [], maximum_size: 10, membership_expiry: "end_of_trading_day", membership_ttl_ms: 300000, name: "Untitled Watchlist", origin: "user", ranking_direction: section.core_scan.ranking_direction, ranking_field: section.core_scan.ranking_field, ranking_field_ref: section.core_scan.ranking_field_ref, refresh_interval_ms: section.core_scan.refresh_interval_ms, source_scan_id: section.core_scan.scan_id, template: false, watchlist_id };
     scrollToNewDefinitionRef.current = true;
     setQuery("");
     onChange({ ...section, watchlists: [...section.watchlists, next] });
@@ -112,9 +112,9 @@ export function MarketDiscoveryComposer({ onChange, section }: { onChange: (valu
       />
 
       {!selectedSignalStream ? <section className="market-discovery-settings">
-        <header><span>Ranking and limits</span><p>Sort passing candidates with one registered Data Definition, then apply the row limit.</p></header>
+        <header><span>Ranking and limits</span><p>Sort passing candidates with one exact Data Field output, then apply the row limit.</p></header>
         <div>
-          <label><span>Ranking data definition</span><InventoryFilterSelect ariaLabel="Ranking data definition" onChange={(ranking_field) => replace({ ...(selected as Composition), ranking_field })} optionLimit={0} options={rankingOptions(section.field_catalog)} presentation="catalog" searchable searchPlaceholder="Search data definitions…" showAllOnOpen value={(selected as Composition).ranking_field} /></label>
+          <label><span>Ranking Data Field output</span><InventoryFilterSelect ariaLabel="Ranking Data Field output" onChange={(ranking_field_ref) => { const column = section.column_catalog.find((row) => row.field_ref === ranking_field_ref); replace({ ...(selected as Composition), ranking_field_ref, ranking_field: column?.source_id ?? "" }); }} optionLimit={0} options={rankingOptions(section.column_catalog)} presentation="catalog" searchable searchPlaceholder="Search Data Field outputs…" showAllOnOpen value={(selected as Composition).ranking_field_ref || section.column_catalog.find((row) => row.source_id === (selected as Composition).ranking_field)?.field_ref || ""} /></label>
           <label><span>Direction</span><select onChange={(event) => replace({ ...(selected as Composition), ranking_direction: event.target.value as Composition["ranking_direction"] })} value={(selected as Composition).ranking_direction}><option value="descending">Highest first</option><option value="ascending">Lowest first</option></select></label>
           <label><span>Maximum rows</span><input min="1" onChange={(event) => replace({ ...(selected as Composition), maximum_size: Math.max(1, Number(event.target.value)) })} type="number" value={(selected as Composition).maximum_size} /></label>
           <label><span>Refresh interval</span><div className="market-discovery-unit-input"><input min="1" onChange={(event) => replace({ ...selected, refresh_interval_ms: Math.max(1, Number(event.target.value)) })} type="number" value={selected.refresh_interval_ms} /><em>ms</em></div></label>
@@ -122,7 +122,7 @@ export function MarketDiscoveryComposer({ onChange, section }: { onChange: (valu
       </section> : null}
 
       <ReferenceSection
-        description={selectedSignalStream ? "These values are frozen into each occurrence at trigger time and become the configured Canvas columns." : "A column can present a registered Data Definition or the boolean result of a registered Rule Set. Computation is resolved from these references."}
+        description={selectedSignalStream ? "These values are frozen into each occurrence at trigger time and become the configured Canvas columns." : "A column can present a registered Data Field output or the boolean result of a registered Rule Set. Computation is resolved from these references."}
         empty={selectedSignalStream ? "Add event columns to preserve the relevant trigger-time evidence." : "Add at least one column to make this definition presentable in Canvas."}
         kind="Column"
         onChange={(columns) => replace({ ...selected, columns })}
@@ -138,7 +138,7 @@ export function MarketDiscoveryComposer({ onChange, section }: { onChange: (valu
         <ReferenceSection description="Each occurrence may admit its symbol into selected Watchlists. Membership remains mutable; the occurrence remains immutable." empty="No Watchlist routing configured." kind="Watchlist" onChange={(ids) => replaceSignalStream({ watchlist_routes: ids.map((watchlist_id) => selectedSignalStream.watchlist_routes.find((route) => route.watchlist_id === watchlist_id) ?? { membership_expiry: "end_of_trading_day", membership_ttl_ms: 300000, watchlist_id }) })} options={watchlistOptions(section.watchlists, selectedSignalStream.watchlist_routes.map((route) => route.watchlist_id))} selected={selectedSignalStream.watchlist_routes.map((route) => route.watchlist_id)} title="Watchlist routing" />
       </> : null}
 
-      <aside className="market-discovery-resolution"><Columns3 size={17} /><span><strong>Resolved automatically</strong><small>{selected.inclusion_rule_sets.length} Rule Set reference{selected.inclusion_rule_sets.length === 1 ? "" : "s"}, {selected.columns.length} Column reference{selected.columns.length === 1 ? "" : "s"}{selectedSignalStream ? ", append-only trigger-time evidence" : `, ranking by ${fieldById.get((selected as Composition).ranking_field)?.name ?? (selected as Composition).ranking_field}`}. QMD-derived fields and clocks remain the observation authority.</small></span></aside>
+      <aside className="market-discovery-resolution"><Columns3 size={17} /><span><strong>Resolved automatically</strong><small>{selected.inclusion_rule_sets.length} Rule Set reference{selected.inclusion_rule_sets.length === 1 ? "" : "s"}, {selected.columns.length} Column reference{selected.columns.length === 1 ? "" : "s"}{selectedSignalStream ? ", append-only trigger-time evidence" : `, ranking by ${fieldById.get((selected as Composition).ranking_field_ref || "")?.name ?? (selected as Composition).ranking_field}`}. Atomic inputs, Data Field contexts, and producer clocks are compiled from these exact references.</small></span></aside>
     </main>
   </div>;
 }
@@ -173,8 +173,8 @@ function ReferenceSection({ description, empty, kind, onChange, options, selecte
   </section>;
 }
 
-function ruleSetOptions(ruleSets: RuleSet[], selected: string[]): InventoryFilterOption[] { return ruleSets.map((row) => ({ description: row.description, group: row.atomic ? "Built-in Rule Sets" : "Custom Rule Sets", label: row.name, subgroup: row.atomic ? "Atomic definitions" : "User definitions", value: row.rule_set_id })).sort((a, b) => Number(selected.includes(b.value)) - Number(selected.includes(a.value)) || a.label.localeCompare(b.label)); }
+function ruleSetOptions(ruleSets: RuleSet[], selected: string[]): InventoryFilterOption[] { return ruleSets.map((row) => { const builtIn = Boolean(row.protected || row.origin === "system" || row.atomic); return { description: row.description, group: builtIn ? "Built-in Rule Sets" : "Custom Rule Sets", label: row.name, subgroup: builtIn ? "Protected defaults" : "User definitions", value: row.rule_set_id }; }).sort((a, b) => Number(selected.includes(b.value)) - Number(selected.includes(a.value)) || a.label.localeCompare(b.label)); }
 function watchlistOptions(watchlists: Watchlist[], selected: string[]): InventoryFilterOption[] { return watchlists.map((row) => ({ description: row.description, group: "Watchlists", label: row.name, subgroup: row.availability === "integration_pending" ? "Integration pending" : "Signal admission", value: row.watchlist_id })).sort((a, b) => Number(selected.includes(b.value)) - Number(selected.includes(a.value)) || a.label.localeCompare(b.label)); }
-function columnOptions(columns: ColumnDefinition[], selected: string[]): InventoryFilterOption[] { return columns.map((row) => ({ description: row.description, group: row.source_kind === "rule_set" ? "Rule Set Results" : "Data Definitions", label: row.name, subgroup: row.source_kind === "rule_set" ? "Boolean results" : readable(row.semantic_type), value: row.column_id })).sort((a, b) => Number(selected.includes(b.value)) - Number(selected.includes(a.value)) || a.label.localeCompare(b.label)); }
-function rankingOptions(fields: DataDefinition[]): InventoryFilterOption[] { return fields.filter((row) => row.sortable && row.source_kind !== "rule_set").map((row) => ({ description: row.description, group: "Data Definitions", label: row.name, subgroup: readable(row.semantic_type), value: row.source_id })).sort((a, b) => a.label.localeCompare(b.label)); }
+function columnOptions(columns: ColumnDefinition[], selected: string[]): InventoryFilterOption[] { return columns.map((row) => ({ description: row.description, group: row.source_kind === "rule_set" ? "Rule Set Results" : "Data Field Outputs", label: row.name, subgroup: row.source_kind === "rule_set" ? "Boolean results" : readable(row.semantic_type), value: row.column_id })).sort((a, b) => Number(selected.includes(b.value)) - Number(selected.includes(a.value)) || a.label.localeCompare(b.label)); }
+function rankingOptions(columns: ColumnDefinition[]): InventoryFilterOption[] { return columns.filter((row) => row.sortable && row.source_kind === "data_field" && row.field_ref).map((row) => ({ description: row.description, group: "Data Field Outputs", label: row.name, subgroup: readable(row.semantic_type), value: row.field_ref! })).sort((a, b) => a.label.localeCompare(b.label)); }
 function readable(value: string) { return value.replaceAll("_", " ").replace(/\b\w/g, (letter) => letter.toUpperCase()); }

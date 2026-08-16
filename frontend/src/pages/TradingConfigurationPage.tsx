@@ -41,7 +41,7 @@ import { AbstractionCard, type AbstractionKind } from "../app/components/Abstrac
 import { DefinitionRegistryProvider, validateInformationRegistry, type InformationRegistry } from "../app/components/DefinitionRegistry";
 import { InventoryFilterSelect } from "../app/components/InventoryFilterSelect";
 import { formatSemanticNumber } from "../app/format";
-import { DataCatalogPage, RuleSetLibraryPage, type DataRuleSet } from "./DataConfigurationPages";
+import { DataCatalogPage, RuleSetLibraryPage, type AtomicField, type DataFieldDefinition, type DataRuleSet, type RuleFieldDefinition } from "./DataConfigurationPages";
 import { MarketDiscoveryComposer, type MarketDiscoveryConfiguration } from "./MarketDiscoveryComposer";
 import { TradingActionsPage, type ActionPolicyDefinition, type TradingActionDefinition, type TradingActionsConfiguration } from "./TradingActionsPage";
 
@@ -558,6 +558,9 @@ type MarketDiscoverySection = {
   security_universe: { universe_id: string; name: string; description: string; enabled: boolean; configurable: boolean };
   core_scan: { scan_id: string; name: string; description: string; refresh_interval_ms: number; published: boolean; inclusion_rule_sets: string[]; inclusion_operator: "all" | "any"; ranking_field: string; ranking_direction: "ascending" | "descending"; maximum_size: number; columns: string[] };
   calculation_catalog: DiscoveryCapability[];
+  atomic_fields: AtomicField[];
+  data_fields: DataFieldDefinition[];
+  data_field_plan?: { field_refs?: string[]; timeframes?: string[] };
   classifications: MarketClassification[];
   field_catalog: DiscoveryField[];
   column_catalog: WatchlistColumn[];
@@ -565,6 +568,38 @@ type MarketDiscoverySection = {
   watchlists: WatchlistConfig[];
   signal_streams: SignalStreamConfig[];
 };
+
+function dataFieldRuleDefinitions(dataFields: DataFieldDefinition[]): RuleFieldDefinition[] {
+  return dataFields.filter((dataField) => dataField.enabled).flatMap((dataField) => dataField.outputs.map((output) => ({
+    configurable: dataField.configurable,
+    configuration_mode: dataField.configurable ? "editable" : "reference",
+    description: `${dataField.description} Output: ${output.name}.`,
+    documentation: {
+      available_when: "When the configured Data Field context is satisfied.",
+      calculation_summary: dataField.description,
+      documentation_status: "complete" as const,
+      entity_grain: "security_at_market_clock",
+      freshness_summary: dataField.context.update_cadence || "Producer cadence",
+      input_field_ids: dataField.inputs,
+      null_behavior: "Unavailable values remain explicit.",
+      source_summary: dataField.recipe_id,
+      timeframes: dataField.context.timeframes,
+      unit: output.unit,
+      update_cadence: dataField.context.update_cadence || "Producer cadence",
+      value_type: output.value_type,
+    },
+    field_ref: output.field_ref,
+    kind: output.value_type === "boolean" ? "signal" : "derivation",
+    label: `${output.name}${dataField.context.timeframes.length ? ` · ${dataField.context.timeframes.join(", ")}` : ""}`,
+    owner: "data_field_registry",
+    presentation: { accent: "teal", icon: "database", kind_label: "Data Field output" },
+    registry_id: output.field_ref,
+    source_id: output.source_id,
+    status: dataField.enabled ? "implemented" : "disabled",
+    tags: [dataField.recipe_id, ...dataField.context.timeframes],
+    version: dataField.revision,
+  })));
+}
 
 function capabilityTypeLabel(type: DiscoveryCapability["capability_type"]): string {
   return {
@@ -979,8 +1014,8 @@ function readSessionConfiguration(base: Draft): Draft {
     const parsed = JSON.parse(stored);
     const storedDraft = parsed?.payload_version === CONFIGURATION_SESSION_PAYLOAD_VERSION ? parsed.configuration : parsed;
     const session = normalizeDraft(storedDraft);
-    const atomicIds = new Set(base.market_discovery.rule_sets.filter((row) => row.atomic === true).map((row) => row.rule_set_id));
-    const storedCustomRuleSets = session.market_discovery.rule_sets.filter((row) => row.atomic === false && row.origin === "user" && !atomicIds.has(row.rule_set_id));
+    const protectedIds = new Set(base.market_discovery.rule_sets.filter((row) => row.protected || row.origin === "system").map((row) => row.rule_set_id));
+    const storedCustomRuleSets = session.market_discovery.rule_sets.filter((row) => row.origin === "user" && !row.protected && !protectedIds.has(row.rule_set_id));
     const reconciledRuleSets = deduplicateRuleSets([
       ...base.market_discovery.rule_sets,
       ...storedCustomRuleSets,
@@ -1067,13 +1102,13 @@ const SECTION_META = {
     eyebrow: "Data configuration · reusable decisions",
     icon: BookOpenCheck,
     title: "Rule Set Library",
-    description: "Inspect atomic defaults and compose editable rule sets from registered data definitions.",
+    description: "Inspect built-in defaults and compose editable rule sets from exact registered Data Field outputs.",
   },
   discovery: {
     eyebrow: "QMD discovery authority",
     icon: ScanSearch,
     title: "Market Discovery",
-    description: "Compose the Core Scan, mutable Watchlists, and append-only Signal Stream from registered Data Definitions and Rule Sets.",
+    description: "Compose the Core Scan, mutable Watchlists, and append-only Signal Stream from registered Data Fields and Rule Sets.",
   },
   actions: {
     eyebrow: "System configuration · executable behavior",
@@ -1336,8 +1371,8 @@ export function TradingConfigurationPage({ section }: { section: TradingConfigur
         </div>
       ) : null}
 
-      {section === "data_catalog" ? <DataCatalogPage registry={definitionRegistry} /> : section === "rule_sets" && draft ? <RuleSetLibraryPage
-        fields={definitionRegistry.definitions}
+      {section === "data_catalog" ? <DataCatalogPage atomicFields={draft?.market_discovery.atomic_fields} dataFields={draft?.market_discovery.data_fields} onDataFieldsChange={draft ? (dataFields) => updateConfigurationBook({ ...draft, market_discovery: { ...draft.market_discovery, data_fields: dataFields } }) : undefined} registry={definitionRegistry} /> : section === "rule_sets" && draft ? <RuleSetLibraryPage
+        fields={dataFieldRuleDefinitions(draft.market_discovery.data_fields)}
         ruleSets={draft.market_discovery.rule_sets as DataRuleSet[]}
         onChange={(ruleSets) => updateConfigurationBook({
           ...draft,
@@ -1428,7 +1463,7 @@ function ConfigurationExperienceBar({ experience, onExperienceChange, onOpenHome
 
 const EXPERT_GUIDANCE: Record<Exclude<TradingConfigurationSection, "revisions">, { authority: string; outcome: string; subjects: string[] }> = {
   data_catalog: { authority: "Producer registries own data semantics; this page is read-only documentation.", outcome: "One complete searchable catalog of registered fields, derivations, and signals.", subjects: ["Semantic contracts", "Producer provenance", "Dependencies and parameters"] },
-  rule_sets: { authority: "Rule sets reference registered data definitions without copying their semantics.", outcome: "Named, described reusable decisions with locked atomic defaults and editable custom definitions.", subjects: ["Atomic defaults", "Custom rule sets", "Registered operands"] },
+  rule_sets: { authority: "Rule sets reference exact registered Data Field outputs without copying their semantics.", outcome: "Named, described reusable decisions with locked built-in defaults and editable custom definitions.", subjects: ["Built-in defaults", "Custom rule sets", "Registered Data Field outputs"] },
   discovery: { authority: "QMD owns the broad universe, observations, candidate ranking, and point-in-time Watchlist membership.", outcome: "One visible Core Scan and reusable Watchlists selected by Strategies.", subjects: ["QMD capabilities", "Core Scan", "Watchlists and membership history"] },
   actions: { authority: "The Trading Action registry owns broker-neutral intent names; Action Policies reference Rule Sets and actions without copying either definition.", outcome: "One shared action vocabulary for Strategy, Canvas, Portfolio, OMS, and runtime.", subjects: ["Atomic actions", "Rule Set triggers", "Reusable Action Policies"] },
   strategy: { authority: "Strategy owns trading decisions. Portfolio sizes approved intent; OMS executes it.", outcome: "A reusable Strategy Profile with a Rule Set-driven lifecycle and explicit Trading Action routes.", subjects: ["Behavior and evaluation", "Entry, add, and reentry", "Strategic exits and Action Policies"] },
@@ -4036,7 +4071,7 @@ function ruleSetLookupOptions(ruleSets: RuleSetDefinition[]) {
       label: ruleSet.name,
       subgroup: custom
         ? ruleSet.publication_status === "published" ? "Published" : "Drafts"
-        : "Atomic definitions",
+        : "Built-in definitions",
       value: ruleSet.rule_set_id,
     };
   });

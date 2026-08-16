@@ -22,6 +22,8 @@ pub struct MarketSnapshot {
     pub stale: bool,
     pub source: String,
     pub reason: String,
+    pub session_close_at: Option<DateTime<Utc>>,
+    pub is_early_close: bool,
 }
 
 pub async fn run_market_calendar_refresh(client: MarketCalendarClient) {
@@ -238,6 +240,10 @@ impl MarketCalendarClient {
         let minute = local.hour() * 60 + local.minute();
         let cache = self.cache.read().ok();
         let holiday = cache.as_ref().and_then(|value| value.holidays.get(&date));
+        let is_early_close = holiday
+            .map(|value| value.status == "early-close")
+            .unwrap_or(false);
+        let session_close_at = holiday.and_then(|value| value.close_utc);
         if let Some(holiday) = holiday {
             if holiday.status == "closed" {
                 return MarketSnapshot {
@@ -251,6 +257,8 @@ impl MarketCalendarClient {
                     stale: false,
                     source: "massive_market_calendar".into(),
                     reason: format!("holiday_closed:{}", holiday.name),
+                    session_close_at,
+                    is_early_close,
                 };
             }
             if holiday.status == "early-close"
@@ -267,6 +275,8 @@ impl MarketCalendarClient {
                     stale: false,
                     source: "massive_market_calendar".into(),
                     reason: format!("early_close_elapsed:{}", holiday.name),
+                    session_close_at,
+                    is_early_close,
                 };
             }
         }
@@ -282,6 +292,8 @@ impl MarketCalendarClient {
                 stale: false,
                 source: "local_schedule".into(),
                 reason: "weekend".into(),
+                session_close_at,
+                is_early_close,
             };
         }
         if let Some(cache) = cache.as_ref() {
@@ -315,6 +327,8 @@ impl MarketCalendarClient {
                     } else {
                         "massive_status_closed".into()
                     },
+                    session_close_at,
+                    is_early_close,
                 };
             }
         }
@@ -341,6 +355,8 @@ impl MarketCalendarClient {
             } else {
                 "massive_status_unavailable".into()
             },
+            session_close_at,
+            is_early_close,
         }
     }
 

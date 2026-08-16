@@ -20,6 +20,7 @@ from src.backend.query_plans.market_daily_bars_v1 import (
 )
 from src.backend.bounded_cache import BoundedTtlCache
 from src.backend.qmd_gateway_client import qmd_delete_json, qmd_put_json
+from src.backend.data_field_contracts import compile_data_field_plan, data_field_output_index, project_data_field_outputs
 from src.request_context import causal_identity
 from src.trading_runtime.watchlist_resolver import (
     SOURCE_FIELDS,
@@ -83,12 +84,15 @@ class WatchlistRuntime:
             for row in discovery.get("calculation_catalog") or []
         }
         column_sources = {
-            str(row.get("column_id") or ""): str(row.get("source_id") or "")
+            str(row.get("column_id") or ""): str(row.get("field_ref") or row.get("source_id") or "")
             for row in discovery.get("column_catalog") or []
         }
         normalized_candidates = project_configured_rule_set_columns(
             configuration,
-            [normalize_watchlist_candidate(row) for row in candidates],
+            project_data_field_outputs(
+                [normalize_watchlist_candidate(row) for row in candidates],
+                discovery.get("data_fields") or [],
+            ),
         )
         candidates_by_ticker = {
             str(row.get("ticker") or "").upper(): row
@@ -180,7 +184,7 @@ class WatchlistRuntime:
                             payload=event,
                         )
                 capabilities, timeframes = focused_target_contract(
-                    watchlist, rule_sets, calculations, column_sources
+                    watchlist, rule_sets, calculations, column_sources, discovery.get("data_fields") or []
                 )
                 if publish_targets:
                     try:
@@ -373,12 +377,15 @@ class WatchlistRuntime:
             for row in discovery.get("calculation_catalog") or []
         }
         column_sources = {
-            str(row.get("column_id") or ""): str(row.get("source_id") or "")
+            str(row.get("column_id") or ""): str(row.get("field_ref") or row.get("source_id") or "")
             for row in discovery.get("column_catalog") or []
         }
         normalized = project_configured_rule_set_columns(
             configuration,
-            [normalize_watchlist_candidate(row) for row in candidates],
+            project_data_field_outputs(
+                [normalize_watchlist_candidate(row) for row in candidates],
+                discovery.get("data_fields") or [],
+            ),
         )
         normalized.sort(
             key=lambda row: numeric_value(row, "liquidity_rank") or float("-inf"),
@@ -396,7 +403,7 @@ class WatchlistRuntime:
                 ):
                     continue
                 capabilities, timeframes = focused_target_contract(
-                    watchlist, rule_sets, calculations, column_sources
+                    watchlist, rule_sets, calculations, column_sources, discovery.get("data_fields") or []
                 )
                 if not capabilities:
                     continue
@@ -482,7 +489,10 @@ def project_watchlists_from_candidates(
     rule_sets = list(discovery.get("rule_sets") or [])
     normalized_candidates = project_configured_rule_set_columns(
         configuration,
-        [normalize_watchlist_candidate(row) for row in candidates],
+        project_data_field_outputs(
+            [normalize_watchlist_candidate(row) for row in candidates],
+            discovery.get("data_fields") or [],
+        ),
     )
     effective_available_fields = None if available_fields is None else set(available_fields)
     snapshots: list[dict[str, Any]] = []
@@ -656,6 +666,8 @@ def project_configured_rule_set_columns(
     }
     for watchlist in discovery.get("watchlists") or []:
         selected_column_ids.update(str(value) for value in watchlist.get("columns") or [])
+    for stream in discovery.get("signal_streams") or []:
+        selected_column_ids.update(str(value) for value in stream.get("columns") or [])
     columns = {
         str(column.get("column_id") or ""): column
         for column in discovery.get("column_catalog") or []
@@ -804,6 +816,7 @@ def focused_target_contract(
     rule_sets: list[dict[str, Any]] | dict[str, dict[str, Any]],
     calculations: dict[str, dict[str, Any]],
     column_sources: dict[str, str] | None = None,
+    data_fields: list[dict[str, Any]] | None = None,
 ) -> tuple[list[str], list[str]]:
     """Resolve QMD demand from the Watchlist's registered references."""
 
@@ -814,7 +827,10 @@ def focused_target_contract(
         for key in ("inclusion_rule_sets", "exclusion_rule_sets")
         for value in watchlist.get(key) or []
     }
-    referenced_sources = {str(watchlist.get("ranking_field") or "")}
+    referenced_sources = {
+        str(watchlist.get("ranking_field") or ""),
+        str(watchlist.get("ranking_field_ref") or ""),
+    }
     rule_rows = rule_sets.values() if isinstance(rule_sets, dict) else rule_sets
     for rule_set in rule_rows:
         if str(rule_set.get("rule_set_id") or "") not in selected_rule_ids:
@@ -824,6 +840,8 @@ def focused_target_contract(
                 continue
             referenced_sources.add(str(condition.get("left_source_id") or ""))
             referenced_sources.add(str(condition.get("right_source_id") or ""))
+            referenced_sources.add(str(condition.get("left_field_ref") or ""))
+            referenced_sources.add(str(condition.get("right_field_ref") or ""))
             timeframes.update(
                 str(condition.get(key) or "")
                 for key in ("left_timeframe", "right_timeframe")
@@ -834,6 +852,36 @@ def focused_target_contract(
         column_sources.get(str(value), str(value))
         for value in watchlist.get("columns") or []
     )
+    if data_fields:
+        output_index = data_field_output_index(data_fields)
+        exact_refs = {
+            str((output_index.get(value) or {}).get("field_ref") or value)
+            for value in referenced_sources
+            if value
+        }
+        for data_field in data_fields:
+            outputs = {
+                str(output.get("field_ref") or "")
+                for output in data_field.get("outputs") or []
+            }
+            if not outputs.intersection(exact_refs):
+                continue
+            recipe_id = str(data_field.get("recipe_id") or "")
+            if recipe_id.startswith("qmd.family."):
+                capabilities.add(recipe_id.removeprefix("qmd.family."))
+            elif (
+                recipe_id
+                and recipe_id != "registered_projection"
+                and str(data_field.get("owner") or "").lower() in {"qmd", "qmd_gateway"}
+            ):
+                capabilities.add(recipe_id)
+            timeframes.update(
+                str(value)
+                for value in dict(data_field.get("context") or {}).get("timeframes") or []
+                if str(value)
+            )
+        if capabilities:
+            return sorted(capabilities), sorted(value for value in timeframes if value not in {"session", "1d", "settlement", "event", "filing", "evaluation"})
     for capability_id, capability in calculations.items():
         outputs = {
             str(value) for value in capability.get("fields") or [] if str(value)
@@ -1170,16 +1218,11 @@ def resolve_historical_watchlist(
     }
     sources = watchlist_rule_sources(watchlist, rule_by_id)
     calculation_windows = sorted(
-        {
-            str(condition.get("left_timeframe") or "")
-            for rule_id in [
-                *list(watchlist.get("inclusion_rule_sets") or []),
-                *list(watchlist.get("exclusion_rule_sets") or []),
-            ]
-            for condition in rule_by_id.get(str(rule_id), {}).get("conditions") or []
-            if str(condition.get("left_timeframe") or "")
-            in {"100ms", "1s", "5s", "10s", "30s", "1m", "5m", "15m", "30m", "1h", "extended_session", "regular_session"}
-        }
+        value
+        for value in compile_data_field_plan(
+            discovery, composition_ids=[watchlist_id]
+        ).get("technical_timeframes") or []
+        if str(value) in {"100ms", "1s", "5s", "10s", "30s", "1m", "5m", "15m", "30m", "1h", "extended_session", "regular_session"}
     )
     reference = historical_scanner_reference_projection(as_of)
     technical, technical_meta = historical_scanner_technical_projection(
@@ -1212,6 +1255,9 @@ def resolve_historical_watchlist(
                     f"technical__vwap__{window}__hlc3"
                 ) or merged.get(f"technical__vwap__{window}__trade_price")
         candidates.append(normalize_watchlist_candidate(merged))
+    candidates = project_data_field_outputs(
+        candidates, discovery.get("data_fields") or []
+    )
     members = resolve_watchlist_membership(
         watchlist, discovery.get("rule_sets") or [], candidates
     )

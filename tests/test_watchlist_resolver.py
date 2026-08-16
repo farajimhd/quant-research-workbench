@@ -73,7 +73,7 @@ class WatchlistResolverTest(unittest.TestCase):
         }
         self.assertTrue(
             all(
-                row.get("source_kind") == "rule_set" or row["source_id"] in field_sources
+                row.get("source_kind") in {"rule_set", "data_field"}
                 for row in self.discovery["column_catalog"]
             )
         )
