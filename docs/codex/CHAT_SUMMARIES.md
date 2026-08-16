@@ -33,11 +33,11 @@ applying them, and defining the correction-grade audit of all 35,995 mismatches.
 - Summary written: 2026-08-10 16:19 PDT
 - Scope: complete the four-chunk 20,000-article blind gold expansion, consolidate eight certified authorities into 18,144 articles and 28,037 issuer units, freeze audit/development/final partitions, and implement a lineage-bound evaluator for systematic non-hardcoded News Synthesis repair.
 
-### [2026-08-07 (UNKNOWN time) - Complete the 945-news review and repair News Synthesis identity and polarity gaps](docs/codex/chat-summaries/2026/CHAT-20260807-UNKNOWN-news-synthesis-945-review-repair.md)
+### [2026-08-07 (UNKNOWN time) - Build the 2,000-news authority and iteratively repair News Synthesis through V44](docs/codex/chat-summaries/2026/CHAT-20260807-UNKNOWN-news-synthesis-945-review-repair.md)
 - Chat/task ID: `019fd8c9-0491-7d52-addb-34dbd167adee`
 - Related task: `TASK-0182`
-- Summary written: 2026-08-07 14:05 PDT
-- Scope: complete and correct the 2,000-news authority, repair generic identity/polarity defects, remove stale certification/version/semantic abstractions, publish an integrity-bound full audit, and preserve only the policy-uncertain and live-cutover work.
+- Summary written: 2026-08-15 17:22 PDT
+- Scope: complete the original 2,000-news authority, convert 9,997 Sol labels, iteratively repair generic identity, source, event, numeric, role, lifecycle, and aggregation defects through engine V44, distinguish the V55 audit from the code version, measure the V44 forecast-trigger baseline, and hand off 170 missed plus 653 extra triggers for a bounded audit; later V48 work is recorded in the 2026-08-08 continuation summary.
 
 ### [2026-08-06 16:03 - Rebuild BarGPT around a sparse-event v12 authority and align training, profiling, and evaluation](docs/codex/chat-summaries/2026/CHAT-20260806-1603-bargpt-sparse-event-v12-build-training.md)
 - Chat/task ID: `019fd950-f414-78d1-8c38-6bbc255d938a`

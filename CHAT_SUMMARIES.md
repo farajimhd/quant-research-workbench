@@ -7,6 +7,91 @@ each year.
 
 ## 2026
 
+### [2026-08-15 time unavailable - Consolidate forecast labels and establish metadata/model mismatch audits](docs/codex/chat-summaries/2026/CHAT-20260815-UNKNOWN-forecast-labeling-metadata-audits.md)
+
+- Chat/task ID: unavailable
+- Related task: `TASK-0191`
+- Summary written: 2026-08-15 17:09:52 PDT
+
+Consolidated standalone forecast-eligibility labeling across the certified,
+2025, and January-August 2026 populations; audited metadata exceptions without
+silently changing model labels; and established a bounded, restart-safe review
+program for model/gold mismatches. Runtime packets and authorities remain
+outside the repository, with unresolved cases and exact lineage preserved.
+
+### [2026-08-10 16:18 PDT - Audit News Synthesis and establish standalone LLM issuer labeling](docs/codex/chat-summaries/2026/CHAT-20260810-1618-news-synthesis-features-llm-labeling.md)
+
+- Chat/task ID: `019fedf8-0541-72f1-ac5c-795d21248aa3`
+- Related tasks: `TASK-0182`, `TASK-0189`, `TASK-0190`, `TASK-0191`
+- Summary written: 2026-08-13 05:16:39 PDT
+
+Consolidated the frozen deterministic audit into invariant defect families,
+developed and compared sparse TF-IDF authorities through V10, retained V9 for
+eligibility-oriented work, and created an independent issuer-level LLM schema
+with fixed event tags and compact evidence references. It also specifies a
+restart-safe isolated labeling pipeline for non-gold 2026 news.
+
+### [2026-08-10 05:29 PDT - Define and implement the unified QMD and trading application architecture](docs/codex/chat-summaries/2026/CHAT-20260810-0529-qmd-application-architecture-canvas-recovery.md)
+
+- Chat/task ID: `019feba6-725b-70e0-8df7-c3d174d4d890`
+- Related task: `TASK-0188`
+- Summary written: 2026-08-12 09:14 PDT
+
+Evolved a Market Discovery review into the complete computational-funnel and
+three-tier QMD architecture, implemented the approved QMD/backend/frontend and
+trading backlog, restored Canvas containers, externalized runtime output, and
+preserved explicit storage, coverage, compatibility, archive-projection, and
+broker-deployment dependencies.
+
+### [2026-08-08 time unavailable - Expand and operationalize the consolidated News Synthesis gold authority](docs/codex/chat-summaries/2026/CHAT-20260808-UNKNOWN-consolidated-news-gold-evaluator.md)
+
+- Chat/task ID: `019fe37e-4165-7d82-acbd-54a08fccf81e`
+- Related tasks: `TASK-0182`, `TASK-0187`
+- Summary written: 2026-08-10 16:19 PDT
+
+Completed four prediction-blind 5,000-article review chunks, consolidated eight
+certified authorities into 18,144 articles and 28,037 issuer units, preserved
+the sealed final-only population, froze article-grouped audit and development
+partitions, and implemented a source-lineage-bound evaluator for systematic,
+non-hardcoded News Synthesis repair.
+
+### [2026-08-07 time unavailable - Build the 2,000-news authority and repair News Synthesis through V44](docs/codex/chat-summaries/2026/CHAT-20260807-UNKNOWN-news-synthesis-945-review-repair.md)
+
+- Chat/task ID: `019fd8c9-0491-7d52-addb-34dbd167adee`
+- Related task: `TASK-0182`
+- Summary written: 2026-08-15 17:22 PDT
+
+Completed the original 2,000-news authority, converted 9,997 Sol labels,
+iteratively repaired generic identity, source, event, numeric, role, lifecycle,
+and aggregation defects through engine V44, and distinguished the V55 audit
+from the code version. The chat ended with a measured V44 forecast-trigger
+baseline and a bounded handoff for auditing 170 missed and 653 extra triggers;
+later V48 work is recorded in the 2026-08-08 continuation summary.
+
+### [2026-08-06 16:03 PDT - Rebuild BarGPT around a sparse-event V12 authority](docs/codex/chat-summaries/2026/CHAT-20260806-1603-bargpt-sparse-event-v12-build-training.md)
+
+- Chat/task ID: `019fd950-f414-78d1-8c38-6bbc255d938a`
+- Related task: `TASK-0170`
+- Summary written: 2026-08-11 10:04:52 PDT
+
+Replaced dense empty-second shards with a sparse eligible-event authority,
+revised causal contexts and OHLC/direction targets, aligned builder, loader,
+training, profiling, discovery, and validation contracts, and launched the
+2019-2026 V12 build. Remaining work is governed by audit, lock, and production
+readiness gates rather than ad hoc shard repair.
+
+### [2026-08-06 time unavailable - Establish News Synthesis V1 as the sole News authority](docs/codex/chat-summaries/2026/CHAT-20260806-UNKNOWN-news-synthesis-v1-authority-audit.md)
+
+- Chat/task ID: `019fd7f5-f8b8-7f53-9853-28b3486e410b`
+- Related task: `TASK-0182`
+- Summary written: 2026-08-15 17:17:37 PDT
+
+Froze and iterated the original 700-audit/345-test population, produced readable
+component mismatch audits, diagnosed mixed-to-missing authority defects, and
+made News Synthesis V1 the sole active News semantic authority. The post-cutover
+1,045-record evaluation had zero failures but retained material performance
+gaps that the later 2,000-news and consolidated-gold programs superseded.
+
 ### [2026-07-28 - Issuer-scoped News and SEC intelligence](docs/codex/chat-summaries/2026/CHAT-20260728-issuer-scoped-news-sec-intelligence.md)
 
 - Related task: `TASK-0153`
