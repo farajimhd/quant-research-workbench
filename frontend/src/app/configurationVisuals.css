@@ -3827,6 +3827,19 @@
 .configuration-section-structure .configuration-group { border-color: var(--configuration-rule); box-shadow: none; }
 .configuration-section-structure .configuration-library { background: var(--surface); border-radius: 8px; }
 .configuration-section-structure .configuration-detail { min-width: 0; }
+.guided-inline-actions { align-items: center; display: flex; flex-wrap: wrap; gap: 8px; min-height: 34px; }
+.guided-entity-stack { display: grid; gap: 12px; }
+.guided-entity-card { background: var(--surface); border: 1px solid var(--configuration-rule); border-radius: 9px; display: grid; gap: 14px; padding: 14px; }
+.guided-entity-card > header { align-items: center; display: flex; gap: 12px; justify-content: space-between; }
+.guided-entity-card > header > div { display: grid; gap: 3px; min-width: 0; }
+.guided-entity-card > header span { color: var(--muted-foreground); font-size: 10px; font-weight: 620; letter-spacing: .055em; text-transform: uppercase; }
+.guided-entity-card > header strong { color: var(--foreground); font-size: 14px; font-weight: 620; overflow-wrap: anywhere; }
+.guided-check-grid { display: grid; gap: 8px; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.guided-check-grid label { align-items: center; background: color-mix(in oklab, var(--surface) 92%, var(--foreground) 8%); border: 1px solid var(--configuration-rule); border-radius: 8px; cursor: pointer; display: flex; gap: 10px; min-width: 0; padding: 10px 12px; }
+.guided-check-grid label:has(input:checked) { background: var(--surface); border-color: color-mix(in oklab, var(--foreground) 34%, var(--configuration-rule)); }
+.guided-check-grid label > span { display: grid; gap: 2px; min-width: 0; }
+.guided-check-grid label strong { color: var(--foreground); font-size: 12px; font-weight: 620; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.guided-check-grid label small { color: var(--muted-foreground); font-family: var(--font-mono); font-size: 10px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 @media (max-width: 1100px) {
   .configuration-section-toolbar-actions { flex-wrap: wrap; justify-content: flex-end; }
@@ -3840,6 +3853,7 @@
   .strategy-editor-mode-tabs button { flex: 1; justify-content: center; }
   .configuration-section-toolbar-actions > .button { flex: 1; justify-content: center; }
   .configuration-list-field .configuration-mode-selector { grid-template-columns: 1fr; }
+  .guided-check-grid { grid-template-columns: 1fr; }
   .configuration-guided-drilldown-layout { grid-template-columns: 1fr; }
   .configuration-guided-drilldown-navigation {
     display: grid;
