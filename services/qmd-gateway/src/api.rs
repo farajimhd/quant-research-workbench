@@ -196,6 +196,10 @@ pub fn app(state: AppState) -> Router {
         )
         .route("/snapshot/macro-bars/{ticker}", get(macro_bar_snapshot))
         .route(
+            "/snapshot/scanner-macro-bars",
+            get(macro_bar_scanner_snapshot),
+        )
+        .route(
             "/snapshot/compact-events/{ticker}",
             get(compact_event_snapshot),
         )
@@ -1118,6 +1122,22 @@ async fn macro_bar_snapshot(
                 &ticker,
                 query.timeframe.as_deref().unwrap_or("1d"),
                 query.limit.unwrap_or(500).min(10_000),
+                chrono::Utc::now(),
+            )
+            .await,
+    )
+}
+
+async fn macro_bar_scanner_snapshot(
+    State(state): State<Arc<AppState>>,
+    Query(query): Query<ProductQuery>,
+) -> Json<crate::market_products::MacroBarScannerSnapshot> {
+    Json(
+        state
+            .products
+            .macro_scanner_snapshot(
+                query.timeframe.as_deref().unwrap_or("1d"),
+                query.limit.unwrap_or(5_000).min(5_000),
                 chrono::Utc::now(),
             )
             .await,

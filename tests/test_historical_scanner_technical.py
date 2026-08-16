@@ -40,6 +40,15 @@ class ScannerTechnicalWindowTests(unittest.TestCase):
         self.assertEqual(start.astimezone(NEW_YORK).strftime("%H:%M:%S"), "04:00:00")
         self.assertEqual(end.astimezone(NEW_YORK).strftime("%H:%M:%S"), "09:45:00")
 
+    def test_week_and_month_buckets_start_at_their_calendar_boundaries(self) -> None:
+        as_of = datetime(2026, 7, 17, 9, 45, tzinfo=NEW_YORK)
+        week_start, week_end = scanner_technical_window(as_of, "1w")
+        month_start, month_end = scanner_technical_window(as_of, "1mo")
+
+        self.assertEqual(week_start.astimezone(NEW_YORK).isoformat(), "2026-07-13T04:00:00-04:00")
+        self.assertEqual(month_start.astimezone(NEW_YORK).isoformat(), "2026-07-01T04:00:00-04:00")
+        self.assertEqual(week_end, month_end)
+
     def test_extended_session_anchor_is_not_an_interval_bucket(self) -> None:
         start, end = scanner_technical_window(
             datetime(2026, 7, 17, 9, 47, 31, tzinfo=NEW_YORK),

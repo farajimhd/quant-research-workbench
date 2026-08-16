@@ -78,6 +78,8 @@ SCANNER_TECHNICAL_WINDOWS: dict[str, int | None] = {
     "30m": 30 * 60_000_000,
     "1h": 60 * 60_000_000,
     "1d": None,
+    "1w": None,
+    "1mo": None,
     "extended_session": None,
     "regular_session": None,
 }
@@ -376,7 +378,7 @@ def scanner_technical_window(as_of: datetime, calculation_window: str) -> tuple[
     if as_of.tzinfo is None:
         raise ValueError("Historical scanner clock must be timezone-aware.")
     local = as_of.astimezone(NEW_YORK)
-    anchored = calculation_window in {"1d", "extended_session", "regular_session"}
+    anchored = calculation_window in {"1d", "1w", "1mo", "extended_session", "regular_session"}
     session_start_minute = 9 * 60 + 30 if calculation_window == "regular_session" else EXTENDED_SESSION_START_MINUTE
     session_end_minute = 16 * 60 if calculation_window == "regular_session" else EXTENDED_SESSION_END_MINUTE
     minute_of_day = local.hour * 60 + local.minute
@@ -394,7 +396,17 @@ def scanner_technical_window(as_of: datetime, calculation_window: str) -> tuple[
         )
         local_end = min(local, session_close)
     session_open = datetime.combine(session_date, datetime.min.time(), NEW_YORK) + timedelta(minutes=session_start_minute)
-    if anchored:
+    if calculation_window == "1w":
+        period_date = session_date - timedelta(days=session_date.weekday())
+        local_start = datetime.combine(period_date, datetime.min.time(), NEW_YORK) + timedelta(
+            minutes=EXTENDED_SESSION_START_MINUTE
+        )
+    elif calculation_window == "1mo":
+        period_date = session_date.replace(day=1)
+        local_start = datetime.combine(period_date, datetime.min.time(), NEW_YORK) + timedelta(
+            minutes=EXTENDED_SESSION_START_MINUTE
+        )
+    elif anchored:
         local_start = session_open
     else:
         resolution_us = int(SCANNER_TECHNICAL_WINDOWS[calculation_window] or 0)

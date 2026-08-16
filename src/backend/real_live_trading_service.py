@@ -294,7 +294,7 @@ def _compose_real_live_scanner_snapshot() -> dict[str, Any]:
                     project_discovery_columns,
                 )
                 from src.backend.signal_stream_runtime_service import SIGNAL_STREAM_RUNTIME
-                from src.backend.qmd_gateway_client import qmd_scanner_indicators
+                from src.backend.qmd_gateway_client import qmd_scanner_indicators, qmd_scanner_macro_bars
                 from src.backend.trading_configuration_service import configuration_base
                 from src.backend.data_field_contracts import (
                     project_composition_data_field_columns,
@@ -311,10 +311,15 @@ def _compose_real_live_scanner_snapshot() -> dict[str, Any]:
                 data_fields = list(discovery.get("data_fields") or [])
                 indicator_rows: dict[str, dict[str, Any]] = {}
                 for interval in configured_discovery_technical_windows(configuration):
+                    source_rows = (
+                        qmd_scanner_macro_bars(timeframe=interval, row_limit=5_000)
+                        if interval in {"1d", "1w", "1mo"}
+                        else qmd_scanner_indicators(timeframe=interval, row_limit=5_000)
+                    )
                     interval_projection = project_data_field_outputs(
                         [
                             {**row, "indicator_interval": str(row.get("indicator_interval") or interval)}
-                            for row in qmd_scanner_indicators(timeframe=interval, row_limit=5_000)
+                            for row in source_rows
                         ],
                         data_fields,
                     )

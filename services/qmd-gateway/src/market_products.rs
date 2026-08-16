@@ -149,6 +149,13 @@ pub struct MacroBarSnapshot {
 }
 
 #[derive(Clone, Debug, Serialize)]
+pub struct MacroBarScannerSnapshot {
+    pub as_of: DateTime<Utc>,
+    pub rows: Vec<MacroFamilyBarRow>,
+    pub timeframe: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
 pub struct ProductCacheMetrics {
     pub estimated_bytes: usize,
     pub evictions: u64,
@@ -466,6 +473,33 @@ impl SharedMarketProductStore {
             .macro_snapshot(ticker, timeframe, limit, as_of)
     }
 
+    pub async fn macro_scanner_snapshot(
+        &self,
+        timeframe: &str,
+        limit: usize,
+        as_of: DateTime<Utc>,
+    ) -> MacroBarScannerSnapshot {
+        let timeframe = canonical_macro_timeframe(timeframe);
+        let mut rows = Vec::new();
+        for shard in self.shards.iter() {
+            rows.extend(shard.lock().await.macro_scanner_rows(&timeframe, as_of));
+        }
+        rows.sort_by_key(|row| (row.ticker.clone(), row.bar_end));
+        let selected = rows
+            .iter()
+            .map(|row| row.ticker.clone())
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .take(limit)
+            .collect::<std::collections::BTreeSet<_>>();
+        rows.retain(|row| selected.contains(&row.ticker));
+        MacroBarScannerSnapshot {
+            as_of,
+            rows,
+            timeframe,
+        }
+    }
+
     pub async fn metrics(&self) -> ProductCacheMetrics {
         let mut total = ProductCacheMetrics {
             estimated_bytes: 0,
@@ -770,6 +804,32 @@ impl MarketProductEngine {
             ticker,
             timeframe,
         }
+    }
+
+    fn macro_scanner_rows(
+        &mut self,
+        timeframe: &str,
+        as_of: DateTime<Utc>,
+    ) -> Vec<MacroFamilyBarRow> {
+        let tickers = self
+            .partitions
+            .keys()
+            .map(|key| key.ticker.clone())
+            .collect::<std::collections::BTreeSet<_>>();
+        tickers
+            .into_iter()
+            .flat_map(|ticker| {
+                let mut rows = self
+                    .macro_snapshot(&ticker, timeframe, usize::MAX, as_of)
+                    .rows
+                    .into_iter()
+                    .filter(|row| row.bar_family == "trade")
+                    .collect::<Vec<_>>();
+                rows.sort_by_key(|row| row.bar_end);
+                let keep_from = rows.len().saturating_sub(2);
+                rows.into_iter().skip(keep_from)
+            })
+            .collect()
     }
 
     pub fn metrics(&self) -> ProductCacheMetrics {

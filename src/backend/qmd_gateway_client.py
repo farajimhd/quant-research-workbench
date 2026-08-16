@@ -1145,6 +1145,53 @@ def qmd_scanner_indicators(
     ]
 
 
+def qmd_scanner_macro_bars(
+    *, timeframe: str, row_limit: int = 5_000
+) -> list[dict[str, Any]]:
+    if timeframe not in {"1d", "1w", "1mo"}:
+        raise ValueError(f"Unsupported QMD scanner macro interval: {timeframe}")
+    payload = qmd_get_json(
+        "/snapshot/scanner-macro-bars",
+        {"limit": max(1, min(int(row_limit), 5_000)), "timeframe": timeframe},
+        timeout=3,
+    )
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for row in payload.get("rows") or [] if isinstance(payload, dict) else []:
+        if not isinstance(row, dict):
+            continue
+        ticker = str(row.get("ticker") or "").strip().upper()
+        if ticker:
+            grouped.setdefault(ticker, []).append(row)
+    projected: list[dict[str, Any]] = []
+    for ticker, rows in grouped.items():
+        rows.sort(key=lambda row: str(row.get("bar_end") or ""))
+        current = rows[-1]
+        previous_close = float_value(rows[-2].get("close")) if len(rows) > 1 else 0.0
+        close = float_value(current.get("close"))
+        high = float_value(current.get("high"))
+        low = float_value(current.get("low"))
+        projected.append({
+            **current,
+            "ticker": ticker,
+            "sym": ticker,
+            "volume": float_value(current.get("size_sum")),
+            "trade_count": int(current.get("event_count") or 0),
+            "price_change_pct": ((close / previous_close) - 1.0) * 100.0 if previous_close > 0 else None,
+            "high_low_range_pct": ((high / low) - 1.0) * 100.0 if low > 0 else None,
+            "indicator_interval": timeframe,
+            "indicator_timeframe": timeframe,
+            "indicator_as_of": str(current.get("bar_end") or ""),
+            "indicator_type": "qmd",
+            "indicator_producer": "qmd",
+            "indicator_input_basis": "bar_derived",
+            "indicator_calculation_window": timeframe,
+            "indicator_evaluation_mode": "developing",
+            "indicator_update_trigger": "market_event",
+            "indicator_publication_cadence": "on_change",
+        })
+    return projected
+
+
 def qmd_bars(symbol: str, *, timeframe: str = "1m", row_limit: int = 500) -> dict[str, Any]:
     if not symbol.strip():
         raise ValueError("symbol is required for QMD bars.")

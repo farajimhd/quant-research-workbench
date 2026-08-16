@@ -34,6 +34,7 @@ from src.backend.qmd_gateway_client import (
     qmd_scanner_snapshot,
     qmd_scanner_payload,
     qmd_scanner_indicators,
+    qmd_scanner_macro_bars,
     qmd_websocket_url,
 )
 from src.request_context import begin_request_context, current_request_identity, end_request_context
@@ -776,6 +777,29 @@ class QmdGatewayClientTests(unittest.TestCase):
         get_json.assert_called_once_with(
             "/snapshot/scanner-indicators",
             {"limit": 5_000, "timeframe": "1s"},
+            timeout=3,
+        )
+
+    @patch("src.backend.qmd_gateway_client.qmd_get_json")
+    def test_scanner_macro_bars_project_current_and_previous_period(self, get_json) -> None:
+        get_json.return_value = {
+            "rows": [
+                {"ticker": "AAPL", "timeframe": "1w", "bar_end": "2026-08-07T20:00:00Z", "open": 95, "high": 102, "low": 94, "close": 100, "size_sum": 900, "event_count": 9},
+                {"ticker": "AAPL", "timeframe": "1w", "bar_end": "2026-08-14T20:00:00Z", "open": 101, "high": 112, "low": 100, "close": 110, "size_sum": 1200, "event_count": 12},
+            ]
+        }
+
+        rows = qmd_scanner_macro_bars(timeframe="1w", row_limit=99_999)
+
+        self.assertEqual(rows[0]["ticker"], "AAPL")
+        self.assertEqual(rows[0]["volume"], 1200)
+        self.assertEqual(rows[0]["trade_count"], 12)
+        self.assertAlmostEqual(rows[0]["price_change_pct"], 10.0)
+        self.assertAlmostEqual(rows[0]["high_low_range_pct"], 12.0)
+        self.assertEqual(rows[0]["indicator_interval"], "1w")
+        get_json.assert_called_once_with(
+            "/snapshot/scanner-macro-bars",
+            {"limit": 5_000, "timeframe": "1w"},
             timeout=3,
         )
 

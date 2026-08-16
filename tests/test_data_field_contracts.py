@@ -56,6 +56,22 @@ class DataFieldContractTests(unittest.TestCase):
         self.assertTrue({"10s", "5m"}.issubset(rsi[0]["context"]["available_intervals"]))
         self.assertEqual(rsi[0]["outputs"][0]["field_ref"], "data.rsi_14@1:value")
 
+    def test_macro_intervals_are_exposed_only_for_supported_core_bar_outputs(self) -> None:
+        by_source = {
+            row["outputs"][0]["source_id"]: row
+            for row in self.discovery["data_fields"]
+        }
+        self.assertTrue(
+            {"1d", "1w", "1mo"}.issubset(
+                by_source["close"]["context"]["available_intervals"]
+            )
+        )
+        self.assertFalse(
+            {"1d", "1w", "1mo"}.intersection(
+                by_source["vwap"]["context"]["available_intervals"]
+            )
+        )
+
     def test_dimensions_follow_field_semantics(self) -> None:
         by_source: dict[str, list[dict]] = {}
         for data_field in self.discovery["data_fields"]:

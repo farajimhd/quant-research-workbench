@@ -921,7 +921,7 @@ def focused_target_contract(
                     if str(value)
                 )
         if capabilities:
-            return sorted(capabilities), sorted(value for value in timeframes if value not in {"session", "1d", "settlement", "event", "filing", "evaluation"})
+            return sorted(capabilities), sorted(value for value in timeframes if value not in {"session", "settlement", "event", "filing", "evaluation"})
     for capability_id, capability in calculations.items():
         outputs = {
             str(value) for value in capability.get("fields") or [] if str(value)
@@ -1262,7 +1262,7 @@ def resolve_historical_watchlist(
         for value in compile_data_field_plan(
             discovery, composition_ids=[watchlist_id]
         ).get("technical_timeframes") or []
-        if str(value) in {"100ms", "1s", "5s", "10s", "30s", "1m", "5m", "15m", "30m", "1h", "extended_session", "regular_session"}
+        if str(value) in {"100ms", "1s", "5s", "10s", "30s", "1m", "5m", "15m", "30m", "1h", "1d", "1w", "1mo", "extended_session", "regular_session"}
     )
     reference = historical_scanner_reference_projection(as_of)
     technical, technical_meta = historical_scanner_technical_projection(

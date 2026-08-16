@@ -2805,6 +2805,10 @@ def _validate_market_discovery(section: dict[str, Any]) -> None:
                 )
             right_source_id = str(condition.get("right_source_id") or "")
             right_ref = str(condition.get("right_field_ref") or "")
+            if comparator == "above_by_bps" and not right_source_id:
+                raise ValueError(
+                    f"Rule Set {rule_set.get('name')} requires a comparison Data Field for above_by_bps"
+                )
             if right_source_id and (not right_ref or right_ref not in output_refs):
                 raise ValueError(
                     f"Rule Set {rule_set.get('name')} references unknown comparison Data Field output {right_ref or '<empty>'}"
@@ -2815,6 +2819,22 @@ def _validate_market_discovery(section: dict[str, Any]) -> None:
                 )
             if right_source_id:
                 right_output = output_index.get(right_ref, {})
+                left_type = str(output.get("value_type") or "").lower()
+                right_type = str(right_output.get("value_type") or "").lower()
+                left_unit = str(output.get("unit") or "").lower()
+                right_unit = str(right_output.get("unit") or "").lower()
+                unit_family = {
+                    "price": "price",
+                    "currency": "price",
+                    "usd": "price",
+                }
+                comparable_units = unit_family.get(left_unit, left_unit) == unit_family.get(right_unit, right_unit)
+                if (left_unit and right_unit and not comparable_units) or (
+                    not left_unit and not right_unit and left_type != right_type
+                ):
+                    raise ValueError(
+                        f"Rule Set {rule_set.get('name')} compares incompatible Data Fields {source_id} and {right_source_id}"
+                    )
                 right_interval = str(condition.get("right_interval") or "")
                 right_available = {str(value) for value in right_output.get("available_intervals") or []}
                 if right_available and right_interval not in right_available:

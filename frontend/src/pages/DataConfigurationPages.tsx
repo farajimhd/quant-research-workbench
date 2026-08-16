@@ -3,6 +3,7 @@ import { useMemo, useState } from "react";
 
 import type { InformationRegistry, RegistryDefinition } from "../app/components/DefinitionRegistry";
 import { InventoryFilterSelect, type InventoryFilterOption } from "../app/components/InventoryFilterSelect";
+import { IntervalSelect, intervalLabel, preferredInterval } from "../app/components/IntervalSelect";
 
 export type DataRuleCondition = {
   comparator: string;
@@ -266,14 +267,6 @@ function intervalOrder(value?: string) {
   return index < 0 ? Number.MAX_SAFE_INTEGER : index;
 }
 
-function intervalLabel(value: string) {
-  const match = /^(\d+)(ms|s|m|h|d|w|mo)$/.exec(value);
-  if (!match) return readable(value || "Producer defined");
-  const count = Number(match[1]);
-  const unit = { ms: "millisecond", s: "second", m: "minute", h: "hour", d: "day", w: "week", mo: "month" }[match[2]];
-  return `${count} ${unit}${count === 1 ? "" : "s"}`;
-}
-
 function groupCatalogFields(rows: Array<AtomicField | DataFieldDefinition>, definitionByRef: Map<string, RuleFieldDefinition>) {
   const grouped = new Map<string, Array<AtomicField | DataFieldDefinition>>();
   rows.forEach((row) => {
@@ -355,7 +348,10 @@ export function RuleSetLibraryPage({ fields, onChange, ruleSets }: { fields: Rul
 function RuleSetDetail({ fields, onChange, onDelete, onDuplicate, ruleSet }: { fields: RuleFieldDefinition[]; onChange: (value: DataRuleSet) => void; onDelete: () => void; onDuplicate: () => void; ruleSet: DataRuleSet }) {
   const locked = Boolean(ruleSet.protected || ruleSet.origin === "system" || ruleSet.editable === false);
   const definitions = fields.filter((row) => DATA_KINDS.has(row.kind));
-  const definitionById = new Map(definitions.map((row) => [row.registry_id, row]));
+  const definitionById = new Map<string, RuleFieldDefinition>();
+  definitions.forEach((row) => {
+    [row.registry_id, row.field_ref, row.source_id].filter(Boolean).forEach((key) => definitionById.set(String(key), row));
+  });
   const definitionFamilies = ruleDefinitionFamilies(definitions);
   const definitionChoices = [...definitionFamilies.values()].map(preferredRuleVariant);
   const definitionOptions = dataDefinitionLookupOptions(definitionChoices).map((option) => ({ ...option, value: definitionById.get(option.value)?.source_id || option.value }));
@@ -373,18 +369,22 @@ function RuleSetDetail({ fields, onChange, onDelete, onDuplicate, ruleSet }: { f
       const source = definitionById.get(condition.left_field_ref || condition.left_source_id);
       const target = condition.right_field_ref ? definitionById.get(condition.right_field_ref) : condition.right_source_id ? definitionById.get(condition.right_source_id) : undefined;
       if (locked) return <RuleConditionStatement condition={condition} index={index} key={condition.condition_id} source={source} target={target} />;
-      const comparators = ruleComparators(source, condition.comparator);
+      const comparesToField = Boolean(condition.right_field_ref || condition.right_source_id);
+      const compatibleTargets = compatibleRuleTargets(source, definitionChoices);
+      const compatibleTargetOptions = dataDefinitionLookupOptions(compatibleTargets).map((option) => ({ ...option, value: definitionById.get(option.value)?.source_id || option.value }));
+      const comparators = ruleComparators(source, condition.comparator, comparesToField);
       return <div className="rule-condition-row rule-condition-editable" key={condition.condition_id}>
         <span>{index + 1}</span>
         <div className="rule-condition-definition"><small>Data Field</small><InventoryFilterSelect ariaLabel={`Condition ${index + 1} Data Field`} className="rule-condition-definition-lookup" onChange={(value) => {
           const nextSource = preferredRuleVariant(definitionFamilies.get(value) ?? []);
           if (!nextSource) return;
-          const allowed = ruleComparators(nextSource, "");
+          const targetStillCompatible = !comparesToField || compatibleRuleTargets(nextSource, target ? [target] : []).length > 0;
+          const allowed = ruleComparators(nextSource, "", comparesToField && targetStillCompatible);
           const comparator = allowed.some((row) => row.value === condition.comparator) ? condition.comparator : defaultRuleComparator(nextSource);
-          replaceCondition(condition.condition_id, { ...condition, comparator, left_field_ref: nextSource.field_ref || nextSource.registry_id, left_source_id: nextSource.source_id || nextSource.registry_id, left_interval: preferredRuleInterval(nextSource), right_field_ref: comparator === "is_true" ? "" : condition.right_field_ref, right_source_id: comparator === "is_true" ? "" : condition.right_source_id, right_interval: comparator === "is_true" ? "" : condition.right_interval, value: comparator === "is_true" ? null : condition.value ?? 0 });
+          replaceCondition(condition.condition_id, { ...condition, comparator, left_field_ref: nextSource.field_ref || nextSource.registry_id, left_source_id: nextSource.source_id || nextSource.registry_id, left_interval: preferredRuleInterval(nextSource), right_field_ref: comparator === "is_true" || !targetStillCompatible ? "" : condition.right_field_ref, right_source_id: comparator === "is_true" || !targetStillCompatible ? "" : condition.right_source_id, right_interval: comparator === "is_true" || !targetStillCompatible ? "" : condition.right_interval, value: comparator === "is_true" ? null : condition.value ?? 0 });
         }} optionLimit={0} options={!source && condition.left_source_id ? [{ description: "Unregistered Data Field referenced by this draft.", label: condition.left_source_id, value: condition.left_source_id }, ...definitionOptions] : definitionOptions} placeholder="Choose Data Field" presentation="catalog" searchable searchPlaceholder="Search Data Fields…" showAllOnOpen value={source?.source_id || condition.left_source_id} />{source ? <RuleDimensionControl definition={source} label={`Condition ${index + 1}`} onChange={(left_interval) => replaceCondition(condition.condition_id, { ...condition, left_interval })} value={condition.left_interval || ""} /> : null}</div>
-        <label><small>Comparison</small><select aria-label={`Condition ${index + 1} comparator`} disabled={!source} onChange={(event) => { const comparator = event.target.value; replaceCondition(condition.condition_id, { ...condition, comparator, right_source_id: comparator === "is_true" ? "" : condition.right_source_id, right_interval: comparator === "is_true" ? "" : condition.right_interval, value: comparator === "is_true" ? null : condition.value ?? 0 }); }} value={condition.comparator}>{comparators.map((row) => <option key={row.value} value={row.value}>{row.label}</option>)}</select></label>
-        {condition.comparator === "is_true" ? <div className="rule-condition-boolean"><small>Required state</small><strong>True</strong></div> : condition.right_field_ref || condition.right_source_id ? <div className="rule-condition-definition"><small>Target Data Field</small><InventoryFilterSelect ariaLabel={`Condition ${index + 1} target Data Field`} className="rule-condition-definition-lookup" onChange={(value) => { const nextTarget = preferredRuleVariant(definitionFamilies.get(value) ?? []); replaceCondition(condition.condition_id, { ...condition, right_field_ref: nextTarget?.field_ref || value, right_source_id: nextTarget?.source_id || value, right_interval: preferredRuleInterval(nextTarget) }); }} optionLimit={0} options={!target && condition.right_source_id ? [{ description: "Unregistered Data Field referenced by this draft.", label: condition.right_source_id, value: condition.right_source_id }, ...definitionOptions] : definitionOptions} presentation="catalog" searchable searchPlaceholder="Search target Data Fields…" showAllOnOpen value={target?.source_id || condition.right_source_id} />{target ? <RuleDimensionControl definition={target} label={`Condition ${index + 1} target`} onChange={(right_interval) => replaceCondition(condition.condition_id, { ...condition, right_interval })} value={condition.right_interval || ""} /> : null}{condition.comparator === "above_by_bps" ? <input aria-label={`Condition ${index + 1} basis point buffer`} onChange={(event) => replaceCondition(condition.condition_id, { ...condition, value: Number(event.target.value) })} step="any" type="number" value={Number(condition.value ?? 0)} /> : null}</div> : <label><small>Threshold</small><input aria-label={`Condition ${index + 1} value`} disabled={!source} onChange={(event) => { const parsed = Number(event.target.value); replaceCondition(condition.condition_id, { ...condition, value: Number.isNaN(parsed) ? event.target.value : parsed }); }} step="any" type={isNumericRuleDefinition(source) ? "number" : "text"} value={String(condition.value ?? "")} /></label>}
+        <label><small>Comparison</small><select aria-label={`Condition ${index + 1} comparator`} disabled={!source} onChange={(event) => { const comparator = event.target.value; replaceCondition(condition.condition_id, { ...condition, comparator, right_field_ref: comparator === "is_true" ? "" : condition.right_field_ref, right_source_id: comparator === "is_true" ? "" : condition.right_source_id, right_interval: comparator === "is_true" ? "" : condition.right_interval, value: comparator === "is_true" ? null : condition.value ?? 0 }); }} value={condition.comparator}>{comparators.map((row) => <option key={row.value} value={row.value}>{row.label}</option>)}</select></label>
+        {condition.comparator === "is_true" ? <div className="rule-condition-boolean"><small>Required state</small><strong>True</strong></div> : <div className="rule-condition-target-editor"><div aria-label={`Condition ${index + 1} comparison target`} className="rule-operand-mode" role="group"><button aria-pressed={!comparesToField} onClick={() => replaceCondition(condition.condition_id, { ...condition, comparator: condition.comparator === "above_by_bps" ? defaultRuleComparator(source) : condition.comparator, right_field_ref: "", right_source_id: "", right_interval: "" })} type="button">Value</button><button aria-pressed={comparesToField} disabled={!compatibleTargets.length} onClick={() => { const nextTarget = target && compatibleRuleTargets(source, [target]).length ? target : compatibleTargets[0]; if (!nextTarget) return; replaceCondition(condition.condition_id, { ...condition, right_field_ref: nextTarget.field_ref || nextTarget.registry_id, right_source_id: nextTarget.source_id || nextTarget.registry_id, right_interval: preferredRuleInterval(nextTarget) }); }} type="button">Data Field</button></div>{comparesToField ? <div className="rule-condition-definition"><InventoryFilterSelect ariaLabel={`Condition ${index + 1} target Data Field`} className="rule-condition-definition-lookup" onChange={(value) => { const nextTarget = preferredRuleVariant(definitionFamilies.get(value) ?? []); replaceCondition(condition.condition_id, { ...condition, right_field_ref: nextTarget?.field_ref || value, right_source_id: nextTarget?.source_id || value, right_interval: preferredRuleInterval(nextTarget) }); }} optionLimit={0} options={!target && condition.right_source_id ? [{ description: "Unregistered Data Field referenced by this draft.", label: condition.right_source_id, value: condition.right_source_id }, ...compatibleTargetOptions] : compatibleTargetOptions} presentation="catalog" searchable searchPlaceholder="Search compatible Data Fields…" showAllOnOpen value={target?.source_id || condition.right_source_id} />{target ? <RuleDimensionControl definition={target} label={`Condition ${index + 1} target`} onChange={(right_interval) => replaceCondition(condition.condition_id, { ...condition, right_interval })} value={condition.right_interval || ""} /> : null}{condition.comparator === "above_by_bps" ? <label className="rule-bps-buffer"><small>Buffer (bps)</small><input aria-label={`Condition ${index + 1} basis point buffer`} onChange={(event) => replaceCondition(condition.condition_id, { ...condition, value: Number(event.target.value) })} step="any" type="number" value={Number(condition.value ?? 0)} /></label> : null}</div> : <label><small>Threshold</small><input aria-label={`Condition ${index + 1} value`} disabled={!source} onChange={(event) => { const parsed = Number(event.target.value); replaceCondition(condition.condition_id, { ...condition, value: Number.isNaN(parsed) ? event.target.value : parsed }); }} step="any" type={isNumericRuleDefinition(source) ? "number" : "text"} value={String(condition.value ?? "")} /></label>}</div>}
         <button aria-label={`Remove condition ${index + 1}`} onClick={() => onChange({ ...ruleSet, conditions: ruleSet.conditions.filter((row) => row.condition_id !== condition.condition_id) })} type="button"><Trash2 size={13} /></button>
       </div>;
     })}</section>
@@ -444,7 +444,7 @@ function preferredRuleVariant(variants: RuleFieldDefinition[]) {
 
 function RuleDimensionControl({ definition, label, onChange, value }: { definition: RuleFieldDefinition; label: string; onChange: (interval: string) => void; value: string }) {
   const intervals = definition.data_field_context?.available_intervals ?? [];
-  if (definition.data_field_context?.dimension_kind === "interval" && intervals.length) return <label className="rule-field-dimension"><span>Interval</span><select aria-label={`${label} interval`} onChange={(event) => onChange(event.target.value)} value={value || preferredInterval(intervals)}>{intervals.map((interval) => <option key={interval} value={interval}>{intervalLabel(interval)}</option>)}</select></label>;
+  if (definition.data_field_context?.dimension_kind === "interval" && intervals.length) return <IntervalSelect ariaLabel={`${label} interval`} className="rule-field-dimension" intervals={intervals} onChange={onChange} value={value} />;
   return <em className="rule-field-dimension-summary">{ruleFieldContext(definition)}</em>;
 }
 
@@ -455,21 +455,33 @@ function ruleFieldContext(definition?: RuleFieldDefinition, interval = "") {
 }
 
 function preferredRuleInterval(definition?: RuleFieldDefinition) { return preferredInterval(definition?.data_field_context?.available_intervals ?? []); }
-function preferredInterval(intervals: string[]) { return intervals.includes("1m") ? "1m" : intervals.includes("1s") ? "1s" : intervals[0] ?? ""; }
-
-function ruleComparators(source: RegistryDefinition | undefined, current: string) {
+function ruleComparators(source: RegistryDefinition | undefined, current: string, comparesToField = false) {
   const values = isBooleanRuleDefinition(source)
     ? ["is_true"]
     : isNumericRuleDefinition(source)
-      ? ["greater_or_equal", "greater_than", "less_or_equal", "less_than", "equals"]
+      ? ["greater_or_equal", "greater_than", "less_or_equal", "less_than", "equals", ...(comparesToField ? ["above_by_bps"] : [])]
       : ["equals"];
   if (current && !values.includes(current)) values.push(current);
   return RULE_LIBRARY_COMPARATORS.filter((row) => values.includes(row.value));
 }
 
+function compatibleRuleTargets(source: RegistryDefinition | undefined, definitions: RuleFieldDefinition[]) {
+  if (!source) return [];
+  const sourceType = source.documentation?.value_type?.toLowerCase() ?? "";
+  const sourceUnit = source.documentation?.unit?.toLowerCase() ?? "";
+  return definitions.filter((target) => {
+    const targetType = target.documentation?.value_type?.toLowerCase() ?? "";
+    const targetUnit = target.documentation?.unit?.toLowerCase() ?? "";
+    if (isNumericRuleDefinition(source) !== isNumericRuleDefinition(target)) return false;
+    if (isBooleanRuleDefinition(source) !== isBooleanRuleDefinition(target)) return false;
+    const unitFamily = (unit: string) => ({ price: "price", currency: "price", usd: "price" } as Record<string, string>)[unit] || unit;
+    return sourceUnit && targetUnit ? unitFamily(sourceUnit) === unitFamily(targetUnit) : sourceType === targetType;
+  });
+}
+
 function defaultRuleComparator(source?: RegistryDefinition) { return isBooleanRuleDefinition(source) ? "is_true" : isNumericRuleDefinition(source) ? "greater_or_equal" : "equals"; }
 function isBooleanRuleDefinition(source?: RegistryDefinition) { const valueType = source?.documentation?.value_type?.toLowerCase(); return valueType === "boolean" || (source?.kind === "signal" && valueType === "event"); }
-function isNumericRuleDefinition(source?: RegistryDefinition) { return /number|integer|float|score|decimal|currency|percent|ratio|basis/.test(source?.documentation?.value_type?.toLowerCase() ?? ""); }
+function isNumericRuleDefinition(source?: RegistryDefinition) { return /number|integer|float|score|decimal|currency|price|percent|ratio|basis/.test(source?.documentation?.value_type?.toLowerCase() ?? ""); }
 function ruleComparatorLabel(comparator: string, value: DataRuleCondition["value"]) { if (comparator === "above_by_bps") return `is ${formatCompactNumber(Number(value ?? 0))} bps above`; return RULE_LIBRARY_COMPARATORS.find((row) => row.value === comparator)?.label ?? readable(comparator).toLowerCase(); }
 function ruleValueContext(source?: RegistryDefinition) { const unit = source?.documentation?.unit; return unit && unit !== "scalar" && unit !== "producer_defined" ? readable(unit) : "Fixed value"; }
 function formatRuleConstant(value: DataRuleCondition["value"], source?: RegistryDefinition) {

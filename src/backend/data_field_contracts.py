@@ -153,6 +153,8 @@ def _field_dimension_instances(
     intervals = list(dict.fromkeys(supported_intervals or [
         value for value in declared if value not in _NON_INTERVAL_CONTEXTS
     ]))
+    if source_id in {"vwap", "dollar_volume"}:
+        intervals = [value for value in intervals if value not in {"1d", "1w", "1mo", "1y"}]
     if intervals:
         return [{
             "dimension_kind": "interval",

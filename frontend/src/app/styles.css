@@ -23335,7 +23335,7 @@ button {
 .rule-set-logic select, .rule-condition-row select, .rule-condition-row input { min-width: 0; padding: 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface); color: var(--foreground); }
 .rule-set-logic > span { color: var(--muted-foreground); font-size: 0.75rem; }
 .rule-condition-list { display: grid; gap: 7px; }
-.rule-condition-row { display: grid; grid-template-columns: 28px minmax(0, 1.5fr) minmax(110px, 1fr) minmax(0, 0.8fr) 34px; gap: 8px; align-items: center; padding: 9px; border: 1px solid var(--border); border-radius: 8px; }
+.rule-condition-row { display: grid; grid-template-columns: 28px minmax(220px, 1.35fr) minmax(130px, .72fr) minmax(260px, 1.15fr) 34px; gap: 10px; align-items: center; padding: 11px; border: 1px solid var(--border); border-radius: 8px; }
 .rule-condition-row > span { display: grid; width: 24px; height: 24px; place-items: center; border-radius: 50%; background: var(--surface-alt); color: var(--muted-foreground); font-size: 0.7rem; }
 .rule-condition-readonly { grid-template-columns: 28px minmax(0, 1.4fr) minmax(95px, 0.7fr) minmax(0, 1fr); padding: 13px 14px; background: var(--surface); }
 .rule-condition-readonly > em { color: var(--muted-foreground); font-size: 0.82rem; font-style: normal; }
@@ -23348,11 +23348,21 @@ button {
 .rule-condition-definition { display: grid; gap: 5px; min-width: 0; }
 .rule-condition-definition > small { color: var(--muted-foreground); font-size: 0.65rem; letter-spacing: 0.04em; text-transform: uppercase; }
 .rule-condition-definition > em { overflow: hidden; color: var(--muted-foreground); font: 0.64rem/1.2 var(--font-mono); text-overflow: ellipsis; white-space: nowrap; }
-.rule-field-dimension { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 8px; }
-.rule-field-dimension > span { color: var(--muted-foreground); font-size: .64rem; }
-.rule-field-dimension select { min-height: 31px; padding: 0 28px 0 9px; border: 1px solid var(--border); border-radius: 7px; color: var(--foreground); background: var(--surface); font: inherit; font-size: .72rem; }
+.interval-select { display: grid; min-width: 0; gap: 5px; }
+.interval-select > span { color: var(--muted-foreground); font-size: .62rem; font-weight: 650; letter-spacing: .055em; text-transform: uppercase; }
+.interval-select select { width: 100%; min-height: 34px; padding: 0 30px 0 10px; border: 1px solid var(--border); border-radius: 8px; color: var(--foreground); background: color-mix(in oklab, var(--surface-alt) 34%, var(--surface)); font: inherit; font-size: .74rem; }
+.interval-select select:hover { border-color: color-mix(in oklab, var(--foreground) 32%, var(--border)); }
+.interval-select select:focus { border-color: var(--focus); outline: 2px solid color-mix(in oklab, var(--focus) 18%, transparent); outline-offset: 1px; }
+.rule-field-dimension { grid-template-columns: 74px minmax(0, 1fr); align-items: center; gap: 8px; }
+.rule-field-dimension > span { text-transform: none; letter-spacing: 0; font-weight: 520; }
 .rule-field-dimension-summary { overflow: hidden; color: var(--muted-foreground); font-size: .66rem; font-style: normal; text-overflow: ellipsis; white-space: nowrap; }
 .rule-condition-definition-lookup { min-width: 0; width: 100%; }
+.rule-condition-target-editor { display: grid; min-width: 0; gap: 7px; }
+.rule-operand-mode { display: grid; grid-template-columns: 1fr 1fr; gap: 2px; padding: 2px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface-alt); }
+.rule-operand-mode button { min-height: 28px; padding: 0 8px; border: 0; border-radius: 6px; color: var(--muted-foreground); background: transparent; font: inherit; font-size: .68rem; font-weight: 580; cursor: pointer; }
+.rule-operand-mode button[aria-pressed="true"] { color: var(--foreground); background: var(--surface); box-shadow: 0 1px 2px color-mix(in oklab, var(--foreground) 10%, transparent); }
+.rule-operand-mode button:disabled { cursor: not-allowed; opacity: .45; }
+.rule-bps-buffer { display: grid; gap: 4px; }
 .rule-condition-editable label > small, .rule-condition-editable .rule-condition-boolean > small { color: var(--muted-foreground); font-size: 0.65rem; letter-spacing: 0.04em; text-transform: uppercase; }
 .rule-condition-editable label > em { overflow: hidden; color: var(--muted-foreground); font: 0.64rem/1.2 var(--font-mono); text-overflow: ellipsis; white-space: nowrap; }
 .data-library-add-condition { margin-top: 12px; }
@@ -23424,9 +23434,7 @@ button {
 .market-discovery-settings label > span { color: var(--muted-foreground); font-size: .68rem; }
 .market-discovery-exact-reference { display: block; overflow: hidden; max-width: 100%; padding: 0 2px; background: transparent; color: var(--muted-foreground); font-size: .62rem; text-overflow: ellipsis; white-space: nowrap; }
 .market-discovery-field-context { display: block; padding: 1px 2px 0; color: var(--muted-foreground); font-size: .66rem; }
-.market-discovery-column-interval { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
-.market-discovery-column-interval > span { color: var(--muted-foreground); font-size: .66rem; }
-.market-discovery-column-interval select { min-height: 30px; padding: 0 28px 0 9px; border: 1px solid var(--border); border-radius: 7px; color: var(--foreground); background: var(--surface); font: inherit; font-size: .72rem; }
+.market-discovery-column-interval { grid-template-columns: 92px minmax(0, 180px); align-items: center; gap: 8px; margin-top: 8px; }
 .market-discovery-technical-identity { margin-top: 7px; color: var(--muted-foreground); font-size: .64rem; }
 .market-discovery-technical-identity summary { width: max-content; cursor: pointer; }
 .market-discovery-technical-identity code { display: block; overflow: hidden; max-width: 100%; margin-top: 4px; text-overflow: ellipsis; white-space: nowrap; }

@@ -202,6 +202,7 @@ mod taxonomy_tests {
 }
 
 const ALL_LIVE_TFS: &[&str] = &["1s", "10s", "30s", "1m", "5m", "1h"];
+const CORE_BAR_TFS: &[&str] = &["1s", "10s", "30s", "1m", "5m", "1h", "1d", "1w", "1mo"];
 const ENRICHED_QMD_TFS: &[&str] = &["100ms", "1s", "5s", "10s", "30s", "1m", "5m", "1h"];
 const BAR_TFS: &[&str] = &["10s", "30s", "1m", "5m", "1h"];
 const SHORT_TFS: &[&str] = &["1s", "10s", "30s", "1m"];
@@ -231,7 +232,7 @@ const INDICATOR_CATALOG: &[IndicatorCatalogEntry] = &[
             "price_change_pct",
             "high_low_range_pct",
         ],
-        typical_timeframes: ALL_LIVE_TFS,
+        typical_timeframes: CORE_BAR_TFS,
         storage_target: "memory_enriched_bars",
         rationale: "Base replay and chart state; every other bar-level feature depends on it.",
     },
