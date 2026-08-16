@@ -2336,7 +2336,7 @@ def _default_watchlist_templates(symbols: list[str], calculation_rows: list[dict
     return [
         {"watchlist_id": "core-candidates", "name": "Core candidates", "description": "Candidate instruments produced from the Core Scan for strategy evaluation.", "enabled": True, "origin": "system", "template": False, "availability": "available", "availability_detail": "", "source_scan_id": "qmd-core-scan", "inclusion_rule_sets": [], "inclusion_operator": "all", "exclusion_rule_sets": [], "ranking_field": "market.liquidity_rank", "ranking_direction": "descending", "maximum_size": 250, "refresh_interval_ms": 1000, "membership_expiry": "end_of_trading_day", "membership_ttl_ms": 300000, "manual_inclusions": symbols, "manual_exclusions": [], "columns": common_columns, "membership_history": []},
         *gainers,
-        template("price-or-volume-squeeze", "Price or Volume Squeeze", "Symbols with at least 5% price expansion or 3x aligned relative volume.", ["watchlist-price-or-volume-squeeze"], "market.relative_volume"),
+        template("price-or-volume-squeeze", "Session Price or Volume Expansion", "Symbols with at least 5% session price expansion or 3x aligned 20-session relative volume.", ["watchlist-price-or-volume-squeeze"], "market.relative_volume"),
         template("vwap-breakout", "VWAP Breakout", "Symbols trading at least 5 basis points above causal session VWAP.", ["watchlist-vwap-breakout"], "market.change_pct"),
         template("news-bullish-sentiment", "News Bullish Sentiment", "New company-news events with a validated positive Text Intelligence label.", ["watchlist-news-bullish"], "signal.company_news.score", refresh=5000, enabled=False, columns=[*common_columns, "news_sentiment"], availability="integration_pending", availability_detail="Requires validated Text Intelligence news-label events."),
         template("news-bearish-sentiment", "News Bearish Sentiment", "New company-news events with a validated negative Text Intelligence label.", ["watchlist-news-bearish"], "signal.company_news.score", direction="ascending", refresh=5000, enabled=False, columns=[*common_columns, "news_sentiment"], availability="integration_pending", availability_detail="Requires validated Text Intelligence news-label events."),
@@ -2490,7 +2490,7 @@ def _default_market_discovery(
         "core_scan": {
             "scan_id": "qmd-core-scan",
             "name": "Core Scan",
-            "description": "Compose the full-universe scanner from registered Data Definitions and Rule Sets.",
+            "description": "Compose the full-universe scanner from registered Data Fields and Rule Sets.",
             "refresh_interval_ms": 1000,
             "published": True,
             "inclusion_rule_sets": [],
@@ -3759,6 +3759,11 @@ def _migrate_draft(raw: dict[str, Any]) -> dict[str, Any]:
         )
         core_scan = result["market_discovery"]["core_scan"]
         default_core_scan = defaults["market_discovery"]["core_scan"]
+        # Core Scan is a protected system surface. Keep its descriptive
+        # metadata aligned with the current registry contract while retaining
+        # user-configurable selection, ranking, and presentation state.
+        core_scan["name"] = str(default_core_scan.get("name") or "Core Scan")
+        core_scan["description"] = str(default_core_scan.get("description") or "")
         core_scan.setdefault("inclusion_rule_sets", list(default_core_scan.get("inclusion_rule_sets") or []))
         core_scan.setdefault("inclusion_operator", "all")
         core_scan.setdefault("ranking_field", str(default_core_scan.get("ranking_field") or "market.liquidity_rank"))
@@ -3776,6 +3781,10 @@ def _migrate_draft(raw: dict[str, Any]) -> dict[str, Any]:
             current_watchlist = current_watchlists.pop(watchlist_id, {})
             merged = {**default_watchlist, **current_watchlist}
             if bool(default_watchlist.get("template")) and str(default_watchlist.get("origin")) == "system":
+                # System template names and descriptions document the current
+                # rule semantics; a persisted draft must not pin stale copy.
+                merged["name"] = str(default_watchlist.get("name") or watchlist_id)
+                merged["description"] = str(default_watchlist.get("description") or "")
                 previous_availability = str(current_watchlist.get("availability") or "")
                 merged["availability"] = default_watchlist.get("availability", "available")
                 merged["availability_detail"] = default_watchlist.get("availability_detail", "")

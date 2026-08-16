@@ -40,6 +40,7 @@ export type DataFieldOutput = {
 };
 
 export type DataFieldDefinition = {
+  category?: string;
   configurable: boolean;
   context: { allowed_scopes?: string[]; execution_scope: string; timeframes: string[]; update_cadence?: string };
   data_field_id: string;
@@ -47,6 +48,7 @@ export type DataFieldDefinition = {
   enabled: boolean;
   inputs: string[];
   name: string;
+  owner?: string;
   outputs: DataFieldOutput[];
   parameters: Record<string, unknown>;
   recipe_id: string;
@@ -72,6 +74,38 @@ export type DataRuleSet = {
 
 const DATA_KINDS = new Set(["field", "derivation", "signal"]);
 export type RuleFieldDefinition = RegistryDefinition & { field_ref?: string; source_id?: string };
+
+export function dataFieldRuleDefinitions(dataFields: DataFieldDefinition[], enabledOnly = true): RuleFieldDefinition[] {
+  return dataFields.filter((dataField) => !enabledOnly || dataField.enabled).flatMap((dataField) => dataField.outputs.map((output) => ({
+    configurable: dataField.configurable,
+    configuration_mode: dataField.configurable ? "editable" : "reference",
+    description: `${dataField.description} Output: ${output.name}.`,
+    documentation: {
+      available_when: "When the registered Data Field context is satisfied.",
+      calculation_summary: dataField.description,
+      documentation_status: "complete" as const,
+      entity_grain: "security_at_market_clock",
+      freshness_summary: dataField.context.update_cadence || "Producer cadence",
+      input_field_ids: dataField.inputs,
+      null_behavior: "Unavailable values remain explicit.",
+      source_summary: dataField.recipe_id,
+      timeframes: dataField.context.timeframes,
+      unit: output.unit,
+      update_cadence: dataField.context.update_cadence || "Producer cadence",
+      value_type: output.value_type,
+    },
+    field_ref: output.field_ref,
+    kind: output.value_type === "boolean" ? "signal" : "field",
+    label: `${output.name}${dataField.context.timeframes.length ? ` · ${dataField.context.timeframes.join(", ")}` : ""}`,
+    owner: "data_field_registry",
+    presentation: { accent: "teal", icon: "database", kind_label: "Data Field output" },
+    registry_id: output.field_ref,
+    source_id: output.source_id,
+    status: dataField.enabled ? "implemented" : "disabled",
+    tags: [dataField.category || "Data Field", dataField.recipe_id, ...dataField.context.timeframes],
+    version: dataField.revision,
+  })));
+}
 
 export function DataCatalogPage({ atomicFields = [], dataFields = [], onDataFieldsChange, registry }: { atomicFields?: AtomicField[]; dataFields?: DataFieldDefinition[]; onDataFieldsChange?: (value: DataFieldDefinition[]) => void; registry: InformationRegistry }) {
   if (atomicFields.length || dataFields.length) return <DataFieldCatalog atomicFields={atomicFields} dataFields={dataFields.map((field) => ({ ...field, configurable: false }))} />;
@@ -110,10 +144,12 @@ function LegacyDataCatalog({ registry }: { registry: InformationRegistry }) {
 function DataFieldCatalog({ atomicFields, dataFields }: { atomicFields: AtomicField[]; dataFields: DataFieldDefinition[] }) {
   const [kind, setKind] = useState<"atomic" | "data">("data");
   const [query, setQuery] = useState("");
-  const rows = kind === "atomic" ? atomicFields : dataFields;
+  const rows: Array<AtomicField | DataFieldDefinition> = kind === "atomic" ? atomicFields : dataFields;
   const visible = rows.filter((row) => !query.trim() || JSON.stringify(row).toLowerCase().includes(query.trim().toLowerCase()));
   const [selectedId, setSelectedId] = useState("");
-  const selected = visible.find((row) => ("atomic_field_id" in row ? row.atomic_field_id : row.data_field_id) === selectedId) ?? visible[0];
+  const definitionByRef = new Map(dataFieldRuleDefinitions(dataFields, false).map((definition) => [definition.registry_id, definition]));
+  const groups = groupCatalogFields(visible, definitionByRef);
+  const selected = visible.find((row) => ("atomic_field_id" in row ? row.atomic_field_id : row.data_field_id) === selectedId) ?? [...groups.values()][0]?.[0];
 
   return <div className="data-library-workbench data-field-catalog">
     <aside className="data-library-catalog">
@@ -128,16 +164,18 @@ function DataFieldCatalog({ atomicFields, dataFields }: { atomicFields: AtomicFi
       </div>
       <label className="data-library-search"><Search size={15} /><input aria-label="Search Data Catalog" onChange={(event) => setQuery(event.target.value)} placeholder="Search names, IDs, owners, recipes" type="search" value={query} /></label>
       <div className="data-library-tree">
-        <details open>
-          <summary><span>{kind === "atomic" ? "Source observations" : "Contextual calculations"}</span><em>{visible.length}</em></summary>
-          <div className="data-library-entry-list">{visible.map((row) => {
+        {[...groups.entries()].map(([group, groupRows]) => <details key={group} open>
+          <summary><span>{group}</span><em>{groupRows.length}</em></summary>
+          <div className="data-library-entry-list">{groupRows.map((row) => {
             const id = "atomic_field_id" in row ? row.atomic_field_id : row.data_field_id;
-            const context = "data_field_id" in row ? row.context.timeframes.join(" · ") : row.owner;
+            const context = "data_field_id" in row
+              ? [row.category, ...row.context.timeframes].filter(Boolean).join(" · ")
+              : `${readable(row.group)} · ${readable(row.owner)}`;
             return <button aria-current={selected === row ? "true" : undefined} key={id} onClick={() => setSelectedId(id)} type="button">
               <span><strong>{row.name}</strong><small>{context}</small><code>{id}</code></span><ChevronRight size={13} />
             </button>;
           })}</div>
-        </details>
+        </details>)}
       </div>
     </aside>
     <main className="data-library-detail">{selected ? "atomic_field_id" in selected
@@ -152,6 +190,35 @@ function DataFieldCatalog({ atomicFields, dataFields }: { atomicFields: AtomicFi
       </article>
       : <div className="data-library-empty"><Database size={22} /><span>No catalog entry matches this search.</span></div>}</main>
   </div>;
+}
+
+function groupCatalogFields(rows: Array<AtomicField | DataFieldDefinition>, definitionByRef: Map<string, RuleFieldDefinition>) {
+  const grouped = new Map<string, Array<AtomicField | DataFieldDefinition>>();
+  rows.forEach((row) => {
+    const group = catalogFieldGroup(row, definitionByRef);
+    grouped.set(group, [...(grouped.get(group) ?? []), row]);
+  });
+  const ordered = new Map<string, Array<AtomicField | DataFieldDefinition>>();
+  DATA_CATALOG_GROUPS.forEach((group) => {
+    const groupRows = grouped.get(group);
+    if (groupRows) ordered.set(group, groupRows.sort((left, right) => left.name.localeCompare(right.name)));
+  });
+  [...grouped.entries()].filter(([group]) => !ordered.has(group)).sort(([left], [right]) => left.localeCompare(right)).forEach(([group, groupRows]) => ordered.set(group, groupRows.sort((left, right) => left.name.localeCompare(right.name))));
+  return ordered;
+}
+
+function catalogFieldGroup(row: AtomicField | DataFieldDefinition, definitionByRef: Map<string, RuleFieldDefinition>) {
+  if ("data_field_id" in row) {
+    if (row.data_field_id.toLowerCase().includes("qmd.signal.")) return "Signals";
+    const definition = definitionByRef.get(row.outputs[0]?.field_ref ?? "");
+    return definition ? dataCatalogLocation(definition).group : "Other Registered Data";
+  }
+  if (["market_clock", "market_reference", "qmd_scanner", "tradability"].includes(row.group)) return "Market Data";
+  if (["identity", "listing", "country", "corporate_event", "presentation"].includes(row.group)) return "Company & Security";
+  if (["fundamental", "sec"].includes(row.group)) return "Fundamentals & Filings";
+  if (row.group === "news") return "News & Intelligence";
+  if (row.group === "quality_and_coverage") return "Data Quality & Operations";
+  return "Other Registered Data";
 }
 
 function DataDefinitionDetail({ definition, onNavigate, registry }: { definition: RegistryDefinition; onNavigate: (id: string) => void; registry: InformationRegistry }) {
@@ -181,8 +248,13 @@ export function RuleSetLibraryPage({ fields, onChange, ruleSets }: { fields: Rul
   });
   const selected = ruleSets.find((row) => row.rule_set_id === selectedId) ?? ruleSets[0];
   const visible = ruleSets.filter((row) => !query.trim() || [row.name, row.description, row.rule_set_id].some((value) => value.toLowerCase().includes(query.trim().toLowerCase())));
-  const grouped = new Map<string, DataRuleSet[]>();
-  visible.forEach((row) => { const group = row.protected || row.origin === "system" ? "Built-in defaults" : row.publication_status === "published" ? "Published custom" : "Custom drafts"; grouped.set(group, [...(grouped.get(group) ?? []), row]); });
+  const grouped = new Map<string, Map<string, DataRuleSet[]>>();
+  visible.forEach((row) => {
+    const { group, subgroup } = ruleSetLibraryLocation(row);
+    const subgroups = grouped.get(group) ?? new Map<string, DataRuleSet[]>();
+    subgroups.set(subgroup, [...(subgroups.get(subgroup) ?? []), row]);
+    grouped.set(group, subgroups);
+  });
 
   function select(ruleSetId: string) { setSelectedId(ruleSetId); replaceRuleSetHash(ruleSetId); }
   function replace(next: DataRuleSet) { onChange(ruleSets.map((row) => row.rule_set_id === next.rule_set_id ? next : row)); }
@@ -193,7 +265,7 @@ export function RuleSetLibraryPage({ fields, onChange, ruleSets }: { fields: Rul
   }
 
   return <div className="data-library-workbench rule-set-library">
-    <aside className="data-library-catalog"><header><span>Registered rule sets</span><strong>{visible.length} of {ruleSets.length}</strong><p>Built-in defaults are read-only. Custom rule sets compare exact registered Data Field outputs.</p></header><label className="data-library-search"><Search size={15} /><input aria-label="Search rule sets" onChange={(event) => setQuery(event.target.value)} placeholder="Search rule sets" type="search" value={query} /></label><button className="data-library-create" onClick={() => create()} type="button"><Plus size={14} /> Create rule set</button><div className="data-library-tree">{[...grouped.entries()].map(([group, rows]) => <details key={group} open><summary><span>{group}</span><em>{rows.length}</em></summary><details className="data-library-subgroup" open><summary><span>{group === "Built-in defaults" ? "Built-in definitions" : "User definitions"}</span><em>{rows.length}</em></summary><div>{rows.map((row) => <button aria-current={selected?.rule_set_id === row.rule_set_id ? "true" : undefined} key={row.rule_set_id} onClick={() => select(row.rule_set_id)} type="button"><span><strong>{row.name}</strong><small>{row.description}</small></span>{row.atomic ? <LockKeyhole size={12} /> : <ChevronRight size={13} />}</button>)}</div></details></details>)}</div></aside>
+    <aside className="data-library-catalog"><header><span>Registered rule sets</span><strong>{visible.length} of {ruleSets.length}</strong><p>Built-in defaults are read-only. Custom rule sets compare exact registered Data Field outputs.</p></header><label className="data-library-search"><Search size={15} /><input aria-label="Search rule sets" onChange={(event) => setQuery(event.target.value)} placeholder="Search rule sets" type="search" value={query} /></label><button className="data-library-create" onClick={() => create()} type="button"><Plus size={14} /> Create rule set</button><div className="data-library-tree">{[...grouped.entries()].map(([group, subgroups]) => <details key={group} open><summary><span>{group}</span><em>{[...subgroups.values()].reduce((sum, rows) => sum + rows.length, 0)}</em></summary>{[...subgroups.entries()].map(([subgroup, rows]) => <details className="data-library-subgroup" key={subgroup} open><summary><span>{subgroup}</span><em>{rows.length}</em></summary><div>{rows.map((row) => <button aria-current={selected?.rule_set_id === row.rule_set_id ? "true" : undefined} key={row.rule_set_id} onClick={() => select(row.rule_set_id)} type="button"><span><strong>{row.name}</strong><small>{row.description}</small></span>{row.protected || row.origin === "system" ? <LockKeyhole size={12} /> : <ChevronRight size={13} />}</button>)}</div></details>)}</details>)}</div></aside>
     <main className="data-library-detail">{selected ? <RuleSetDetail fields={fields} onDelete={() => { const remaining = ruleSets.filter((row) => row.rule_set_id !== selected.rule_set_id); onChange(remaining); select(remaining[0]?.rule_set_id ?? ""); }} onDuplicate={() => create(selected)} onChange={replace} ruleSet={selected} /> : <div className="data-library-empty"><span>Create a rule set to begin.</span></div>}</main>
   </div>;
 }
@@ -232,8 +304,23 @@ function RuleSetDetail({ fields, onChange, onDelete, onDuplicate, ruleSet }: { f
         <button aria-label={`Remove condition ${index + 1}`} onClick={() => onChange({ ...ruleSet, conditions: ruleSet.conditions.filter((row) => row.condition_id !== condition.condition_id) })} type="button"><Trash2 size={13} /></button>
       </div>;
     })}</section>
-    {!locked ? <button className="data-library-add-condition" onClick={addCondition} type="button"><Plus size={14} /> Add condition</button> : <footer><LockKeyhole size={14} /><span>Built-in rule sets are atomic and cannot be edited. Duplicate this definition to create an editable custom rule set.</span></footer>}
+    {!locked ? <button className="data-library-add-condition" onClick={addCondition} type="button"><Plus size={14} /> Add condition</button> : <footer><LockKeyhole size={14} /><span>Built-in rule sets are protected and cannot be edited. Duplicate this definition to create an editable custom rule set.</span></footer>}
   </article>;
+}
+
+function ruleSetLibraryLocation(ruleSet: DataRuleSet) {
+  if (!(ruleSet.protected || ruleSet.origin === "system")) return { group: "Custom rule sets", subgroup: ruleSet.publication_status === "published" ? "Published definitions" : "Draft definitions" };
+  const id = ruleSet.rule_set_id;
+  if (id.startsWith("initial-entry-opportunity")) return { group: "Strategy decisions", subgroup: "Entry opportunities" };
+  if (id.startsWith("initial-entry-confirmation")) return { group: "Strategy decisions", subgroup: "Entry confirmations" };
+  if (id.startsWith("initial-entry-blockers")) return { group: "Strategy decisions", subgroup: "Entry blockers" };
+  if (id.startsWith("add-")) return { group: "Strategy decisions", subgroup: "Position additions" };
+  if (id.startsWith("exit-")) return { group: "Strategy decisions", subgroup: "Exit decisions" };
+  if (/watchlist-float-/.test(id)) return { group: "Market Discovery filters", subgroup: "Float classifications" };
+  if (/watchlist-(penny|small-caps|mid-caps|large-caps)/.test(id)) return { group: "Market Discovery filters", subgroup: "Price and market-cap classifications" };
+  if (/watchlist-(news|sec|fundamental)/.test(id)) return { group: "Market Discovery filters", subgroup: "Intelligence filters" };
+  if (/watchlist-(ipo|split)/.test(id)) return { group: "Market Discovery filters", subgroup: "Corporate-event windows" };
+  return { group: "Market Discovery filters", subgroup: "Market activity filters" };
 }
 
 const RULE_LIBRARY_COMPARATORS = [
@@ -251,9 +338,9 @@ function RuleConditionStatement({ condition, index, source, target }: { conditio
   const showTarget = condition.comparator !== "is_true";
   return <div className="rule-condition-row rule-condition-readonly">
     <span>{index + 1}</span>
-    <div className="rule-condition-operand"><strong>{source ? displayLabel(source) : condition.left_source_id}</strong><small>{condition.left_source_id}{condition.left_timeframe ? ` · ${condition.left_timeframe}` : ""}</small></div>
+    <div className="rule-condition-operand"><strong>{source ? displayLabel(source) : condition.left_source_id}</strong><code title={condition.left_field_ref || condition.left_source_id}>{condition.left_field_ref || condition.left_source_id}</code></div>
     <em>{relation}</em>
-    {showTarget ? <div className="rule-condition-operand rule-condition-target"><strong>{target ? displayLabel(target) : formatRuleConstant(condition.value, source)}</strong><small>{target ? `${condition.right_source_id}${condition.right_timeframe ? ` · ${condition.right_timeframe}` : ""}` : ruleValueContext(source)}</small></div> : <div className="rule-condition-boolean"><strong>True</strong><small>Boolean event state</small></div>}
+    {showTarget ? <div className="rule-condition-operand rule-condition-target"><strong>{target ? displayLabel(target) : formatRuleConstant(condition.value, source)}</strong>{target ? <code title={condition.right_field_ref || condition.right_source_id}>{condition.right_field_ref || condition.right_source_id}</code> : <small>{ruleValueContext(source)}</small>}</div> : <div className="rule-condition-boolean"><strong>True</strong><small>Boolean event state</small></div>}
   </div>;
 }
 
@@ -322,12 +409,12 @@ function catalogSubgroupOrder(group: string, subgroup: string) {
 }
 
 function dataCatalogLocation(row: RegistryDefinition): { group: string; subgroup: string } {
-  const id = row.registry_id.toLowerCase();
+  const id = ((row as RuleFieldDefinition).source_id || row.registry_id).toLowerCase();
   const tags = row.tags.join(" ").toLowerCase();
   const documentation = row.documentation;
   const text = `${id} ${displayLabel(row)} ${row.label} ${row.description} ${tags} ${documentation?.entity_grain ?? ""} ${documentation?.operation_kind ?? ""}`.toLowerCase();
 
-  if (row.kind === "signal" || /^qmd\.signal\.|^signal\./.test(id)) {
+  if (row.kind === "signal" || id.includes("qmd.signal.") || /^signal\./.test(id) || /\bqmd\.signal\.|\bsignal\./.test(text)) {
     if (row.kind === "signal") return { group: "Signals", subgroup: /^(signal\.(company_news|sec_filing)|.*\b(news|sec)_signal\b)/.test(text) ? "External Intelligence Signals" : "Signal Definitions" };
     if (/\.(signal_id|signal_key|signal_version|schema_version|engine_version|event_id|producer|domain|ticker|working_timeframe)$/.test(id)) return { group: "Signals", subgroup: "Signal Identity" };
     if (/\.(clock|effective_at|observed_at|expires_at|state|resolution_reason)$/.test(id)) return { group: "Signals", subgroup: "Signal Timing & State" };
@@ -345,8 +432,8 @@ function dataCatalogLocation(row: RegistryDefinition): { group: string; subgroup
     return { group: "News & Intelligence", subgroup: "News Content" };
   }
 
-  if (/^fundamental\.|^sec\.|^xbrl\./.test(id) || /\bfundamental\b|\bxbrl\b/.test(tags)) {
-    if (/^sec\./.test(id)) return { group: "Fundamentals & Filings", subgroup: "SEC Filing Data" };
+  if (/^fundamental\.|^sec\.|^sec-events$|^xbrl\./.test(id) || /\bfundamental\b|\bxbrl\b/.test(tags)) {
+    if (/^sec\.|^sec-events$/.test(id)) return { group: "Fundamentals & Filings", subgroup: "SEC Filing Data" };
     if (/^xbrl\.|quality_score|quality_label|quality_coverage/.test(id)) return { group: "Fundamentals & Filings", subgroup: "XBRL Quality" };
     if (/margin|return_on|current_ratio|debt_to_equity|interest_coverage|cash_conversion|research_intensity|tax_rate/.test(id)) return { group: "Fundamentals & Filings", subgroup: "Profitability & Margins" };
     if (/growth|valuation|trajectory|earnings|dilution/.test(id)) return { group: "Fundamentals & Filings", subgroup: "Growth & Valuation" };
@@ -357,7 +444,7 @@ function dataCatalogLocation(row: RegistryDefinition): { group: string; subgroup
 
   if (/^event\./.test(id)) return { group: "Company & Security", subgroup: "Corporate Events" };
   if (/^relationship\./.test(id)) return { group: "Company & Security", subgroup: "Security Identity" };
-  if (/^identity\./.test(id)) return { group: "Company & Security", subgroup: "Security Identity" };
+  if (/^identity\.|^instrument-identity$/.test(id)) return { group: "Company & Security", subgroup: "Security Identity" };
   if (/^listing\.|^presentation\./.test(id)) return { group: "Company & Security", subgroup: "Listing & Venue" };
   if (/^country\.|classification\.(industry|sector)/.test(id)) return { group: "Company & Security", subgroup: "Industry & Geography" };
   if (/^reference\.(borrow|days_to_cover|fails_to_deliver|ftd|reg_sho|short)|classification\.short_pressure/.test(id)) return { group: "Company & Security", subgroup: "Short Interest & Borrow" };
@@ -365,13 +452,14 @@ function dataCatalogLocation(row: RegistryDefinition): { group: string; subgroup
   if (/qmd\.field\.(float_bucket|market_cap_bucket)/.test(id)) return { group: "Company & Security", subgroup: "Market Cap & Float" };
   if (/qmd\.field\.(industry|sector)/.test(id)) return { group: "Company & Security", subgroup: "Industry & Geography" };
   if (/qmd\.field\.(short_pressure_label|short_squeeze_likelihood)/.test(id)) return { group: "Company & Security", subgroup: "Short Interest & Borrow" };
-  if (/^reference\.|^classification\./.test(id)) return { group: "Company & Security", subgroup: "Reference Classifications" };
+  if (/^reference\.|^classification\.|reference_context/.test(id)) return { group: "Company & Security", subgroup: "Reference Classifications" };
 
-  if (/^quality\./.test(id)) return { group: "Data Quality & Operations", subgroup: "Quality & Mapping" };
+  if (/^quality\.|^market-quality$/.test(id)) return { group: "Data Quality & Operations", subgroup: "Quality & Mapping" };
   if (/^coverage\./.test(id)) return { group: "Data Quality & Operations", subgroup: "Coverage & Availability" };
+  if (/membership-history/.test(id)) return { group: "Data Quality & Operations", subgroup: "Audit and History" };
   if (/^schedule\./.test(id)) return { group: "Data Quality & Operations", subgroup: "Schedules" };
   if (/fresh|degradation|quality.state|quality.flags|event_age/.test(id)) return { group: "Data Quality & Operations", subgroup: "Freshness & Degradation" };
-  if (/accepted compact|aggregation rules|arrival timestamp|canonical compact|canonical quotes|canonical trades|completed_daily_bars|condition and exchange references|continuation cursor|coverage checkpoint|coverage update|eligible_trades|event timestamp|live event notification|ordered canonical|ordered event|q_live event row|rejection reason|sequence gap|sip timestamp|trade_aggregation_rules/.test(id)) return { group: "Data Quality & Operations", subgroup: "Ingest & Processing" };
+  if (/^qmd\.primitive\.|accepted compact|aggregation rules|arrival timestamp|canonical compact|canonical quotes|canonical trades|completed_daily_bars|condition and exchange references|continuation cursor|coverage checkpoint|coverage update|eligible_trades|event timestamp|live event notification|ordered canonical|ordered event|q_live event row|rejection reason|sequence gap|sip timestamp|trade_aggregation_rules/.test(id)) return { group: "Data Quality & Operations", subgroup: "Ingest & Processing" };
   if (/source quote|source sequence|source ticker|stable source identity|identity intervals|identity validity evidence|broker_reference|clickhouse_reference|massive_rest/.test(id)) return { group: "Data Quality & Operations", subgroup: "Provenance & Lineage" };
 
   if (/\borders\b|\bfills\b/.test(id)) return { group: "Trading & Portfolio", subgroup: "Orders & Fills" };
@@ -382,12 +470,12 @@ function dataCatalogLocation(row: RegistryDefinition): { group: string; subgroup
   if (isTechnicalDefinition(row, text)) return { group: "Technical Analysis", subgroup: technicalSubgroup(text) };
 
   if (/tradability|halt_flag|ssr_flag|estimated_luld/.test(id)) return { group: "Market Data", subgroup: "Tradability" };
-  if (/session|market clock|market state|market\.event_at|minute_of_day|previous_day_context|daily_context/.test(id)) return { group: "Market Data", subgroup: "Session & Market State" };
+  if (/^clock\.|session|market clock|market state|market\.status|market\.is_|market\.luld|market\.feed|market\.event_at|minute_of_day|previous_day_context|daily_context/.test(id)) return { group: "Market Data", subgroup: "Session & Market State" };
   if (/microstructure|pressure|imbalance|aggress|signed_volume|cumulative_delta|large_trade|tape_/.test(id)) return { group: "Market Data", subgroup: "Order Flow & Microstructure" };
   if (/liquidity|dry_up|slippage/.test(id)) return { group: "Market Data", subgroup: "Liquidity" };
   if (/quote|spread|nbbo|bid_|ask_|mid_/.test(id)) return { group: "Market Data", subgroup: "Quotes & Spreads" };
-  if (/volume|trade_count|trade_rate|trade_accel|avg_trade|max_trade|median_trade|dollar_volume|qmd\.field\.(trades|tick_indicators)/.test(id)) return { group: "Market Data", subgroup: "Volume & Activity" };
-  if (/price|open|high|low|close|vwap|return|gap_from|market\.change_pct|last eligible trade/.test(id)) return { group: "Market Data", subgroup: "Price & Returns" };
+  if (/volume|trade_count|trade_rate|trade_accel|avg_trade|max_trade|median_trade|dollar_volume|qmd\.field\.(trades|tick_indicators)/.test(text)) return { group: "Market Data", subgroup: "Volume & Activity" };
+  if (/^qmd\.family\.core_bars|price|open|high|low|close|vwap|return|gap_from|market\.change_pct|last eligible trade/.test(id)) return { group: "Market Data", subgroup: "Price & Returns" };
   if (/qmd\.field\.bars/.test(id)) return { group: "Market Data", subgroup: "Session & Market State" };
 
   const valueType = documentation?.value_type?.toLowerCase() ?? "";
@@ -399,7 +487,7 @@ function dataCatalogLocation(row: RegistryDefinition): { group: string; subgroup
 }
 
 function isTechnicalDefinition(row: RegistryDefinition, text: string) {
-  return row.kind === "derivation" || /\bindicator\b|qmd\.field\.(ad|adosc|adx|alma|apo|atr|autocorrelation|awesome_oscillator|beta|body_|bollinger|cci|cdl_|chop|cmf|cmo|correlation|covariance|dema|doji|donchian|drawdown|ema_|engulfing|entropy|eom|evening_star|force_index|gap_shock|garman|hammer|harami|higher_high|historical_volatility|hma|ht_|hurst|ichimoku|indicators|inside_bar|kama|keltner|kst|kvo|linear_regression|log_return|lower_low|ma_ribbon|macd|mfi|minus_|mom|morning_star|multi_tf_|natr|nvi|obv|opening_range|outside_bar|parkinson|plus_|ppo|psar|pvi|pvt|qmd_generic_structure|qmd_structure_|range_|realized_volatility|roc|rolling_|rsi|rvi|rvol_|sharpe|shooting_star|sma|sortino|stoch|supertrend|t3|tema|three_|trend_alignment|trix|true_range|tsi|ultimate_oscillator|upper_wick|volatility|volume_ema|volume_sma|vwma|williams|wma|yang_zhang|zlema|zscore)/.test(text);
+  return (row.kind === "derivation" && row.owner !== "data_field_registry") || /\bindicator\b|\bcandles\b|\bmomentum\b|\bvolatility\b|\bmarket structure\b|\bprice action\b|\bcross timeframe\b|\bcycles\b|\bstatistics\b|\btrend overlap\b|qmd\.field\.(ad|adosc|adx|alma|apo|atr|autocorrelation|awesome_oscillator|beta|body_|bollinger|cci|cdl_|chop|cmf|cmo|correlation|covariance|dema|doji|donchian|drawdown|ema_|engulfing|entropy|eom|evening_star|force_index|gap_shock|garman|hammer|harami|higher_high|historical_volatility|hma|ht_|hurst|ichimoku|indicators|inside_bar|kama|keltner|kst|kvo|linear_regression|log_return|lower_low|ma_ribbon|macd|mfi|minus_|mom|morning_star|multi_tf_|natr|nvi|obv|opening_range|outside_bar|parkinson|plus_|ppo|psar|pvi|pvt|qmd_generic_structure|qmd_structure_|range_|realized_volatility|roc|rolling_|rsi|rvi|rvol_|sharpe|shooting_star|sma|sortino|stoch|supertrend|t3|tema|three_|trend_alignment|trix|true_range|tsi|ultimate_oscillator|upper_wick|volatility|volume_ema|volume_sma|vwma|williams|wma|yang_zhang|zlema|zscore)/.test(text);
 }
 
 function technicalSubgroup(text: string) {

@@ -41,7 +41,7 @@ import { AbstractionCard, type AbstractionKind } from "../app/components/Abstrac
 import { DefinitionRegistryProvider, validateInformationRegistry, type InformationRegistry } from "../app/components/DefinitionRegistry";
 import { InventoryFilterSelect } from "../app/components/InventoryFilterSelect";
 import { formatSemanticNumber } from "../app/format";
-import { DataCatalogPage, RuleSetLibraryPage, type AtomicField, type DataFieldDefinition, type DataRuleSet, type RuleFieldDefinition } from "./DataConfigurationPages";
+import { DataCatalogPage, RuleSetLibraryPage, dataFieldRuleDefinitions, type AtomicField, type DataFieldDefinition, type DataRuleSet } from "./DataConfigurationPages";
 import { MarketDiscoveryComposer, type MarketDiscoveryConfiguration } from "./MarketDiscoveryComposer";
 import { TradingActionsPage, type ActionPolicyDefinition, type TradingActionDefinition, type TradingActionsConfiguration } from "./TradingActionsPage";
 
@@ -532,6 +532,7 @@ type DiscoveryField = {
   column_id: string;
   default_visible: boolean;
   description: string;
+  field_ref?: string;
   field_id: string;
   filter_operators: string[];
   filterable: boolean;
@@ -541,7 +542,7 @@ type DiscoveryField = {
   query_plan_id: string;
   registry_authority: string;
   semantic_type: DiscoveryCapability["capability_type"] | "rule_set" | "system";
-  source_kind?: "data_definition" | "rule_set";
+  source_kind?: "data_field" | "rule_set";
   sortable: boolean;
   source: string;
   source_id: string;
@@ -568,38 +569,6 @@ type MarketDiscoverySection = {
   watchlists: WatchlistConfig[];
   signal_streams: SignalStreamConfig[];
 };
-
-function dataFieldRuleDefinitions(dataFields: DataFieldDefinition[]): RuleFieldDefinition[] {
-  return dataFields.filter((dataField) => dataField.enabled).flatMap((dataField) => dataField.outputs.map((output) => ({
-    configurable: dataField.configurable,
-    configuration_mode: dataField.configurable ? "editable" : "reference",
-    description: `${dataField.description} Output: ${output.name}.`,
-    documentation: {
-      available_when: "When the configured Data Field context is satisfied.",
-      calculation_summary: dataField.description,
-      documentation_status: "complete" as const,
-      entity_grain: "security_at_market_clock",
-      freshness_summary: dataField.context.update_cadence || "Producer cadence",
-      input_field_ids: dataField.inputs,
-      null_behavior: "Unavailable values remain explicit.",
-      source_summary: dataField.recipe_id,
-      timeframes: dataField.context.timeframes,
-      unit: output.unit,
-      update_cadence: dataField.context.update_cadence || "Producer cadence",
-      value_type: output.value_type,
-    },
-    field_ref: output.field_ref,
-    kind: output.value_type === "boolean" ? "signal" : "derivation",
-    label: `${output.name}${dataField.context.timeframes.length ? ` · ${dataField.context.timeframes.join(", ")}` : ""}`,
-    owner: "data_field_registry",
-    presentation: { accent: "teal", icon: "database", kind_label: "Data Field output" },
-    registry_id: output.field_ref,
-    source_id: output.source_id,
-    status: dataField.enabled ? "implemented" : "disabled",
-    tags: [dataField.recipe_id, ...dataField.context.timeframes],
-    version: dataField.revision,
-  })));
-}
 
 function capabilityTypeLabel(type: DiscoveryCapability["capability_type"]): string {
   return {
@@ -2471,7 +2440,7 @@ function GuidedEmpty({ onSwitchToExpert }: { onSwitchToExpert: () => void }) {
 }
 
 /* Removed from the runtime UI in schema 24. Market Discovery now composes only
-   registered Data Definitions and Rule Sets through MarketDiscoveryComposer.
+   registered Data Fields and Rule Sets through MarketDiscoveryComposer.
 
 function MarketDiscoveryStudio({ onChange, section }: { onChange: (value: MarketDiscoverySection) => void; section: MarketDiscoverySection }) {
   const [mode, setMode] = useState<"catalog" | "enrichments" | "guided">("guided");

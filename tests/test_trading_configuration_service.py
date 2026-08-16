@@ -307,6 +307,33 @@ class TradingConfigurationServiceTests(unittest.TestCase):
         self.assertEqual(migrated_ipo["availability"], "available")
         self.assertTrue(migrated_ipo["enabled"])
 
+    def test_system_discovery_presentation_migrates_to_current_contract(self) -> None:
+        draft = self._draft()
+        draft["market_discovery"]["core_scan"]["description"] = (
+            "Legacy Data Definitions description."
+        )
+        squeeze = next(
+            row
+            for row in draft["market_discovery"]["watchlists"]
+            if row["watchlist_id"] == "price-or-volume-squeeze"
+        )
+        squeeze["name"] = "Price or Volume Squeeze"
+        squeeze["description"] = "Legacy one-second squeeze description."
+
+        migrated = _migrate_draft(draft)
+
+        self.assertIn(
+            "registered Data Fields",
+            migrated["market_discovery"]["core_scan"]["description"],
+        )
+        migrated_squeeze = next(
+            row
+            for row in migrated["market_discovery"]["watchlists"]
+            if row["watchlist_id"] == "price-or-volume-squeeze"
+        )
+        self.assertEqual(migrated_squeeze["name"], "Session Price or Volume Expansion")
+        self.assertIn("20-session relative volume", migrated_squeeze["description"])
+
     def test_legacy_server_draft_table_is_removed(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             journal = TradingJournal(Path(directory) / "journal.sqlite3")
@@ -502,6 +529,14 @@ class TradingConfigurationServiceTests(unittest.TestCase):
             discovery = deepcopy(_default_draft()["market_discovery"])
 
         fields = {row["source_id"]: row for row in discovery["field_catalog"]}
+        self.assertIn("registered Data Fields", discovery["core_scan"]["description"])
+        self.assertEqual(
+            next(
+                row for row in discovery["watchlists"]
+                if row["watchlist_id"] == "price-or-volume-squeeze"
+            )["name"],
+            "Session Price or Volume Expansion",
+        )
         self.assertGreaterEqual(len(fields), 180)
         self.assertEqual(fields["market.last_price"]["column_id"], "last_price")
         self.assertTrue(fields["market.last_price"]["filterable"])

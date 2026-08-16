@@ -23336,7 +23336,8 @@ button {
 .rule-condition-readonly > em { color: var(--muted-foreground); font-size: 0.82rem; font-style: normal; }
 .rule-condition-operand, .rule-condition-boolean { display: grid; gap: 3px; min-width: 0; }
 .rule-condition-operand strong, .rule-condition-boolean strong { overflow: hidden; font-size: 0.88rem; font-weight: 560; text-overflow: ellipsis; white-space: nowrap; }
-.rule-condition-operand small, .rule-condition-boolean small { overflow: hidden; color: var(--muted-foreground); font: 0.68rem/1.3 var(--font-mono); text-overflow: ellipsis; white-space: nowrap; }
+.rule-condition-operand small, .rule-condition-operand code, .rule-condition-boolean small { overflow: hidden; color: var(--muted-foreground); font: 0.68rem/1.3 var(--font-mono); text-overflow: ellipsis; white-space: nowrap; }
+.rule-condition-operand code { padding: 0; background: transparent; }
 .rule-condition-target { padding-left: 12px; border-left: 1px solid var(--border); }
 .rule-condition-editable > label, .rule-condition-editable > .rule-condition-boolean { display: grid; gap: 5px; min-width: 0; }
 .rule-condition-definition { display: grid; gap: 5px; min-width: 0; }
@@ -23404,12 +23405,15 @@ button {
 .market-discovery-reference-list strong { font-size: .82rem; font-weight: 560; }
 .market-discovery-reference-list small { margin-top: 2px; color: var(--muted-foreground); font-size: .71rem; line-height: 1.35; }
 .market-discovery-reference-list code { margin-top: 4px; color: var(--muted-foreground); }
+.market-discovery-reference-list code { overflow: hidden; max-width: 100%; text-overflow: ellipsis; white-space: nowrap; }
+.market-discovery-reference-list article > span > em { display: block; margin-top: 3px; color: color-mix(in oklab, var(--muted-foreground) 82%, transparent); font-size: .63rem; font-style: normal; }
 .market-discovery-reference-list article > button { display: grid; flex: 0 0 auto; width: 30px; height: 30px; place-items: center; border: 1px solid var(--border); border-radius: 7px; color: var(--muted-foreground); background: var(--surface); cursor: pointer; }
 .market-discovery-reference-list article > button:hover { border-color: var(--danger); color: var(--danger); }
 .market-discovery-empty-reference { margin: 12px 0 0; padding: 16px; border: 1px dashed var(--border); border-radius: 8px; color: var(--muted-foreground); font-size: .75rem; text-align: center; }
 .market-discovery-settings > div { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 180px), 1fr)); gap: 10px; margin-top: 12px; }
 .market-discovery-settings label { display: grid; gap: 6px; }
 .market-discovery-settings label > span { color: var(--muted-foreground); font-size: .68rem; }
+.market-discovery-exact-reference { display: block; overflow: hidden; max-width: 100%; padding: 0 2px; background: transparent; color: var(--muted-foreground); font-size: .62rem; text-overflow: ellipsis; white-space: nowrap; }
 .market-discovery-settings select, .market-discovery-settings input, .market-discovery-settings .inventory-filter-button { width: 100%; min-height: 36px; border: 1px solid var(--border); border-radius: 8px; color: var(--foreground); background: var(--surface); font: inherit; }
 .market-discovery-settings select, .market-discovery-settings input { padding: 0 10px; }
 .market-discovery-unit-input { display: grid; grid-template-columns: minmax(0, 1fr) auto; }
