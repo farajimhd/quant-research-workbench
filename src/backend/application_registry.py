@@ -190,6 +190,7 @@ REGISTRY_TYPES = (
     RegistryTypeDefinition("condition", "Condition", "Typed comparison over registered references.", "list_filter", "orange", "editable_instance", True),
     RegistryTypeDefinition("rule_set", "Rule set", "Reusable Boolean composition of Conditions.", "list_checks", "orange", "editable_instance", True),
     RegistryTypeDefinition("watchlist", "Watchlist", "Persistent candidate composition over Core Scan, rules, ranking, and columns.", "scan_search", "slate", "editable_instance", True),
+    RegistryTypeDefinition("signal_stream", "Signal Stream", "Append-only occurrences emitted when configured Rule Sets transition into a matching state.", "radio_tower", "rose", "editable_instance", True),
     RegistryTypeDefinition("trading_action", "Trading action", "Atomic broker-neutral intent or campaign command shared by Strategy and Canvas.", "mouse_pointer_click", "violet", "locked", True),
     RegistryTypeDefinition("action_policy", "Action policy", "Reusable trigger, action, sizing, timing, and authority composition.", "workflow", "violet", "editable_instance", True),
     RegistryTypeDefinition("strategy", "Strategy", "Versioned executable decision definition.", "git_branch", "violet", "locked", True),
@@ -212,6 +213,7 @@ CONFIGURATION_BINDINGS = (
     ConfigurationBindingDefinition("market_discovery.conditions", "market_discovery.rule_sets[].conditions[]", "condition", "condition_id", "editable_instance", ("left_source_id", "left_timeframe", "comparator", "right_source_id", "right_timeframe", "value", "enabled"), ("left_source_id", "right_source_id")),
     ConfigurationBindingDefinition("market_discovery.rules", "market_discovery.rule_sets[]", "rule_set", "rule_set_id", "editable_instance", ("name", "description", "operator", "conditions", "enabled")),
     ConfigurationBindingDefinition("market_discovery.watchlists", "market_discovery.watchlists[]", "watchlist", "watchlist_id", "editable_instance", ("name", "description", "inclusion_rule_sets", "ranking_field", "ranking_direction", "maximum_size", "refresh_interval_ms", "membership_expiry", "membership_ttl_ms", "manual_inclusions", "manual_exclusions", "columns", "enabled"), ("source_scan_id", "inclusion_rule_sets", "ranking_field", "columns")),
+    ConfigurationBindingDefinition("market_discovery.signal_streams", "market_discovery.signal_streams[]", "signal_stream", "signal_stream_id", "editable_instance", ("name", "description", "inclusion_rule_sets", "inclusion_operator", "columns", "refresh_interval_ms", "trigger_policy", "rearm_policy", "cooldown_ms", "maximum_events", "watchlist_routes", "enabled"), ("source_scan_id", "inclusion_rule_sets", "columns", "watchlist_routes")),
     ConfigurationBindingDefinition("trading_actions.definitions", "trading_actions.definitions[]", "trading_action", "action_id", "locked", (), ()),
     ConfigurationBindingDefinition("trading_actions.policies", "trading_actions.policies[]", "action_policy", "policy_id", "editable_instance", ("name", "description", "action_id", "trigger", "quantity", "authority", "maximum_uses", "enabled"), ("action_id", "trigger.rule_set_ids")),
     ConfigurationBindingDefinition("strategy.profiles", "strategy.profiles[]", "strategy_profile", "profile_id", "editable_instance", ("name", "description", "parameters", "lifecycle", "action_policy_ids"), ("definition_id", "action_policy_ids")),
@@ -1573,6 +1575,26 @@ DISCOVERY_FIELD_PRESENTATIONS = (
     DiscoveryFieldPresentation("event.split.execution_date", "event.split.execution_date", "split_event", "Split date", "Latest published stock-split execution date and ratio.", "event", False, False, True, (), ("event",)),
     DiscoveryFieldPresentation("event.split.days_to_event", "event.split.days_to_event", "split_days_to_event", "Split event distance", "Signed calendar days from evaluation to the latest published split execution date.", "event", False, True, True, ("greater_or_equal", "greater_than", "less_or_equal", "less_than", "equals"), ("event",)),
 )
+
+# One authoritative translation from semantic discovery fields to the flat row
+# keys published by the Scanner products.  Presentation column IDs are stable
+# user configuration identities and are deliberately allowed to differ from
+# producer-owned runtime keys.
+DISCOVERY_RUNTIME_FIELDS: dict[str, str] = {
+    presentation.source_id: presentation.column_id or presentation.source_id
+    for presentation in DISCOVERY_FIELD_PRESENTATIONS
+}
+DISCOVERY_RUNTIME_FIELDS.update({
+    "identity.symbol": "ticker",
+    "signal.news_labeled": "news_labeled",
+    "signal.company_news.score": "news_sentiment_score",
+    "signal.sec_labeled": "sec_labeled",
+    "signal.sec_filing.score": "sec_sentiment_score",
+    "fundamental.trajectory_score": "financial_trajectory_score",
+    "fundamental.quality_score": "xbrl_quality_score",
+    "event.ipo.date": "ipo_date",
+    "event.split.execution_date": "split_execution_date",
+})
 
 
 def validate_application_registry() -> None:

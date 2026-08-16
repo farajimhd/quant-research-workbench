@@ -23326,7 +23326,8 @@ button {
 .market-discovery-tree button strong, .market-discovery-tree button small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .market-discovery-tree button strong { color: inherit; font-size: .8rem; font-weight: 560; }
 .market-discovery-tree button small { margin-top: 2px; color: var(--muted-foreground); font-size: .67rem; }
-.market-discovery-create { display: flex; align-items: center; justify-content: center; gap: 6px; margin: 0 14px 14px; padding: 9px; border: 1px dashed var(--foreground); border-radius: 8px; color: var(--foreground); background: var(--surface); font-weight: 560; cursor: pointer; }
+.market-discovery-create-stack { display: grid; gap: 7px; padding: 0 14px 14px; }
+.market-discovery-create { display: flex; align-items: center; justify-content: center; gap: 6px; margin: 0; padding: 9px; border: 1px dashed var(--foreground); border-radius: 8px; color: var(--foreground); background: var(--surface); font-weight: 560; cursor: pointer; }
 .market-discovery-definition { min-width: 0; overflow: auto; padding: 24px 28px 36px; }
 .market-discovery-definition-header { display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: 20px; padding-bottom: 18px; border-bottom: 1px solid var(--border); }
 .market-discovery-definition-header > div:first-child { flex: 1; min-width: 0; }

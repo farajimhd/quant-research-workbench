@@ -73,6 +73,7 @@ class WatchlistRuntime:
         as_of: datetime | None = None,
         publish_targets: bool = True,
         journal: Any | None = None,
+        admissions_by_watchlist: dict[str, list[dict[str, Any]]] | None = None,
     ) -> dict[str, Any]:
         as_of = (as_of or datetime.now(UTC)).astimezone(UTC)
         discovery = dict(configuration.get("market_discovery") or {})
@@ -114,6 +115,23 @@ class WatchlistRuntime:
                         rule_sets,
                         candidates_by_ticker,
                     )
+                    admitted = [
+                        dict(row)
+                        for row in (admissions_by_watchlist or {}).get(watchlist_id, [])
+                        if str(row.get("ticker") or "").upper()
+                        not in {str(value).upper() for value in watchlist.get("manual_exclusions") or []}
+                    ]
+                    if admitted:
+                        by_ticker = {
+                            str(row.get("ticker") or "").upper(): row for row in resolved
+                        }
+                        for row in admitted:
+                            by_ticker.setdefault(str(row.get("ticker") or "").upper(), row)
+                        resolved = rank_watchlist_membership(
+                            watchlist,
+                            by_ticker.values(),
+                            observed_symbols=by_ticker,
+                        )
                 else:
                     resolved = []
                     self._eligible.pop(watchlist_id, None)
@@ -619,6 +637,8 @@ def compact_watchlist_member(
         "confirmed_at",
         "expires_at",
         "rank",
+        "causation_signal_event_id",
+        "causation_signal_stream_id",
     }
     return {field: row.get(field) for field in fields if row.get(field) is not None}
 

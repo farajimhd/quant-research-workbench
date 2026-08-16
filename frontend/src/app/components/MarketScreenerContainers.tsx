@@ -37,12 +37,13 @@ export type ScannerCustomColumn = {
 };
 type TechnicalListSettings = { columns: string[]; customColumns: ScannerCustomColumn[] };
 export type MarketScannerSettings = TechnicalListSettings & { limit: number; preset: string };
-export type SignalStreamSettings = TechnicalListSettings & { limit: number; preset: string };
+export type SignalStreamSettings = TechnicalListSettings & { limit: number; signalStreamId: string; signalStreamIds: string[] };
 export type WatchUniverseSettings = TechnicalListSettings & { limit: number; watchlistId: string; watchlistIds: string[]; universeId?: string };
 type DiscoveryScannerColumn = { column_id: string; name: string; source_id: string };
 type DiscoveryCapability = { enabled?: boolean; execution_scope?: string; scanner_columns?: DiscoveryScannerColumn[]; system_required?: boolean };
 type DiscoveryColumn = { column_id: string; description?: string; name: string; provenance?: string; semantic_type?: string; source_id?: string; source_kind?: "data_definition" | "rule_set" | string; unit?: string; value_type?: string };
 type DiscoveryWatchlist = { availability?: string; columns?: string[]; description?: string; enabled?: boolean; name: string; watchlist_id: string };
+type DiscoverySignalStream = { columns?: string[]; description?: string; enabled?: boolean; maximum_events?: number; name: string; signal_stream_id: string };
 export type WatchUniverseDefinition = {
   description?: string;
   enabled?: boolean;
@@ -55,7 +56,7 @@ export type WatchUniverseDefinition = {
 export type StrategyActivitySettings = { eventType: string; limit: number; runId: string; strategyId: string; ticker: string };
 type StrategyActivityResponse = { as_of: string; complete: boolean; rows: ScreenerRow[]; source: string };
 type WatchUniverseCatalogResponse = {
-  market_discovery?: { column_catalog?: DiscoveryColumn[]; core_scan?: { calculations?: DiscoveryCapability[]; columns?: string[] }; watchlists?: DiscoveryWatchlist[] };
+  market_discovery?: { column_catalog?: DiscoveryColumn[]; core_scan?: { calculations?: DiscoveryCapability[]; columns?: string[] }; signal_streams?: DiscoverySignalStream[]; watchlists?: DiscoveryWatchlist[] };
   run_plans?: { plans?: Array<{ name?: string; run_plan_id: string; universe_id: string }>; universes?: WatchUniverseDefinition[] };
 };
 export type WatchlistRuntimeResponse = {
@@ -65,7 +66,6 @@ export type WatchlistRuntimeResponse = {
   target_errors?: Array<{ error?: string; watchlist_id?: string }>;
   watchlists?: Array<{ member_count?: number; members?: ScreenerRow[]; status?: string; watchlist_id: string }>;
 };
-type SignalMethod = { key: string; label: string; signal_version: number; status: string; compute_mode: string; working_timeframes: string[]; confirmation_timeframes: string[]; trigger_rules: string[]; rationale: string; domain?: string; producer?: string; input_basis?: string; evaluation_mode?: string; update_trigger?: string; publication_cadence?: string; publication_interval_ms?: number | null; score_required?: boolean; rank_score_required?: boolean };
 
 type FieldKind = "derived" | "estimated" | "raw";
 type FieldDefinition = {
@@ -212,14 +212,6 @@ const FIELD_CATALOG: FieldDefinition[] = [
 ];
 
 const QMD_SCANNER_PRESET = "Core Scan";
-const LOCKED_MARKET_LIST_COLUMNS = ["logo", "ticker", "news_labels", "sec_labels"];
-const SIGNAL_PRESETS: Record<string, string[]> = {
-  All: ["ticker", "event_time", "signal_domain", "signal_type", "signal_state", "direction", "working_timeframe", "signal_score", "signal_rank_score", "signal_confidence_pct", "last", "source", "evidence", "news_labels", "sec_labels"],
-  Market: ["ticker", "event_time", "signal_type", "signal_state", "direction", "working_timeframe", "signal_score", "signal_rank_score", "signal_confidence_pct", "last", "source", "evidence"],
-  News: ["ticker", "event_time", "signal_type", "direction", "signal_score", "signal_confidence_pct", "source", "evidence", "news_labels"],
-  SEC: ["ticker", "event_time", "signal_type", "direction", "signal_score", "signal_confidence_pct", "source", "evidence", "sec_labels"],
-  Strategy: ["ticker", "event_time", "signal_type", "action", "direction", "working_timeframe", "signal_score", "signal_confidence_pct", "last", "source", "evidence"],
-};
 
 function useDiscoveryPresentation() {
   const [configuration, setConfiguration] = useState<WatchUniverseCatalogResponse | null>(null);
@@ -277,7 +269,7 @@ function readableGroup(value: unknown) {
 export function MarketScannerContainer({ asOf, meta, onSettingsChange, onTickerSelect, rows, settings }: { asOf: string; meta?: ScannerSnapshotMeta; onSettingsChange: (patch: Partial<MarketScannerSettings>) => void; onTickerSelect: (ticker: string) => void; rows: ScreenerRow[]; settings: MarketScannerSettings }) {
   const normalizedRows = useMemo(() => normalizeScannerRows(rows), [rows]);
   const { catalog, coreColumns } = useDiscoveryPresentation();
-  const columns = canonicalDiscoveryColumns(settings.columns.length ? settings.columns : (coreColumns.length ? coreColumns : ["symbol", "last_price", "change_pct", "volume"]));
+  const columns = canonicalDiscoveryColumns([...(coreColumns.length ? coreColumns : ["symbol", "last_price", "change_pct", "volume"]), ...settings.columns]);
   const subtitle = meta?.complete_universe
     ? `QMD Core Scan · full historical universe · ${meta.lookback_minutes ?? 15}-minute discovery window`
     : "QMD Core Scan universe unavailable or incomplete";
@@ -290,7 +282,7 @@ export function MarketScannerContainer({ asOf, meta, onSettingsChange, onTickerS
     eyebrow="Market snapshot"
     fieldCoverage={meta?.field_coverage}
     limit={settings.limit}
-    lockedColumns={["symbol"]}
+    lockedColumns={canonicalDiscoveryColumns(coreColumns.length ? coreColumns : ["symbol"])}
     onColumnsChange={(columns) => onSettingsChange({ columns })}
     onCustomColumnsChange={(customColumns) => onSettingsChange({ customColumns })}
     onPresetChange={() => undefined}
@@ -316,36 +308,39 @@ export function normalizeMarketScannerPreset(value: unknown): string {
   return QMD_SCANNER_PRESET;
 }
 
-export function SignalStreamContainer({ asOf, onSettingsChange, onTickerSelect, scannerRows, settings, strategySignals }: { asOf: string; onSettingsChange: (patch: Partial<SignalStreamSettings>) => void; onTickerSelect: (ticker: string) => void; scannerRows: ScreenerRow[]; settings: SignalStreamSettings; strategySignals: ScreenerRow[] }) {
-  const events = useMemo(() => buildSignalEvents(normalizeScannerRows(scannerRows), strategySignals, asOf), [asOf, scannerRows, strategySignals]);
-  const filtered = useMemo(() => filterSignalPreset(events, settings.preset), [events, settings.preset]);
-  const [signalMethods, setSignalMethods] = useState<SignalMethod[]>([]);
-  useEffect(() => {
-    const controller = new AbortController();
-    api<{ signal_catalog?: SignalMethod[] }>("/api/real-live-trading/qmd-gateway/catalogs", { signal: controller.signal, timeoutMs: 10000 })
-      .then((payload) => setSignalMethods((payload.signal_catalog ?? []).filter((method) => method.status === "implemented")))
-      .catch(() => undefined);
-    return () => controller.abort();
-  }, []);
-  return <MarketListSurface
-    asOf={asOf}
-    columns={withLockedColumns(settings.columns.length ? settings.columns : SIGNAL_PRESETS[settings.preset] ?? SIGNAL_PRESETS.All, LOCKED_MARKET_LIST_COLUMNS)}
-    customColumns={settings.customColumns}
-    empty="No market or strategy events match this stream."
-    eyebrow="Newest first"
-    guide={signalMethods.length ? <details className="market-signal-methods"><summary>Review {signalMethods.length} implemented market signals</summary><div>{signalMethods.map((method) => <article key={method.key}><strong>{method.label} · v{method.signal_version}</strong><span>{method.domain ?? "market"} · producer: {method.producer ?? "qmd"} · {method.input_basis?.replaceAll("_", " ") ?? method.compute_mode.replaceAll("_", " ")} · {method.working_timeframes.join(", ")} · {method.publication_cadence?.replaceAll("_", " ") ?? "on update"}</span><p>{method.rationale}</p><small>{method.trigger_rules[0] ?? "See the signal catalog for trigger rules."}</small></article>)}</div></details> : null}
-    limit={settings.limit}
-    lockedColumns={LOCKED_MARKET_LIST_COLUMNS}
-    onColumnsChange={(columns) => onSettingsChange({ columns })}
-    onCustomColumnsChange={(customColumns) => onSettingsChange({ customColumns })}
-    onPresetChange={(preset) => onSettingsChange({ columns: SIGNAL_PRESETS[preset] ?? settings.columns, preset })}
-    onTickerSelect={onTickerSelect}
-    presets={Object.keys(SIGNAL_PRESETS)}
-    preset={settings.preset}
-    rows={filtered}
-    subtitle="Market, news, SEC, and model signals remain separate from durable strategy decisions"
-    title="Signal stream"
-  />;
+export function SignalStreamContainer({ asOf, onSettingsChange, onTickerSelect, rows: sourceRows, settings }: { asOf: string; onSettingsChange: (patch: Partial<SignalStreamSettings>) => void; onTickerSelect: (ticker: string) => void; rows: ScreenerRow[]; settings: SignalStreamSettings }) {
+  const { catalog, discovery } = useDiscoveryPresentation();
+  const [addingStream, setAddingStream] = useState(false);
+  const streams = (discovery?.signal_streams ?? []).filter((row) => row.enabled !== false);
+  const configuredIds = Array.from(new Set(settings.signalStreamIds)).filter((id) => streams.some((row) => row.signal_stream_id === id));
+  const visibleStreams = (configuredIds.length ? configuredIds : streams.slice(0, 1).map((row) => row.signal_stream_id)).map((id) => streams.find((row) => row.signal_stream_id === id)).filter((row): row is DiscoverySignalStream => Boolean(row));
+  const stream = visibleStreams.find((row) => row.signal_stream_id === settings.signalStreamId) ?? visibleStreams[0];
+  const availableStreams = streams.filter((row) => !visibleStreams.some((visible) => visible.signal_stream_id === row.signal_stream_id));
+  const rows = useMemo(() => {
+    const normalized: ScreenerRow[] = normalizeScannerRows(sourceRows);
+    return normalized.filter((row) => String(row["signal_stream_id"] ?? "") === String(stream?.signal_stream_id ?? "")).sort((left, right) => String(right["event_time"] ?? "").localeCompare(String(left["event_time"] ?? "")));
+  }, [sourceRows, stream?.signal_stream_id]);
+  const columns = canonicalDiscoveryColumns(["event_time", "symbol", ...(stream?.columns ?? []), ...settings.columns]);
+  const selectStream = (signalStreamId: string) => onSettingsChange({ columns: [], signalStreamId });
+  const addStream = (signalStreamId: string) => {
+    if (!signalStreamId) return;
+    onSettingsChange({ columns: [], signalStreamId, signalStreamIds: Array.from(new Set([...settings.signalStreamIds, signalStreamId])) });
+    setAddingStream(false);
+  };
+  const removeStream = (signalStreamId: string) => {
+    const nextIds = settings.signalStreamIds.filter((id) => id !== signalStreamId);
+    onSettingsChange({ columns: [], signalStreamId: signalStreamId === settings.signalStreamId ? nextIds[0] ?? "" : settings.signalStreamId, signalStreamIds: nextIds });
+  };
+  return <section className="market-list-surface watchlist-surface signal-stream-surface" aria-label={`${stream?.name ?? "Signal Stream"} signal stream`}>
+    <header className="market-list-heading"><div><span className="market-list-eyebrow"><Flame size={12} /> Immutable occurrences</span><h3>{stream?.name ?? "No Signal Stream open"}</h3><p>{stream ? `${rows.length} captured occurrences · newest first · through ` : "Create or add a configured Signal Stream"}{stream ? <MarketTime value={asOf} /> : null}</p></div><span className="market-list-owner strategy">Market Discovery</span></header>
+    <nav aria-label="Signal Streams" className="watchlist-tabs" role="tablist">
+      {visibleStreams.map((row) => { const selected = row.signal_stream_id === stream?.signal_stream_id; return <span className={selected ? "active" : undefined} key={row.signal_stream_id}><button aria-selected={selected} onClick={() => selectStream(row.signal_stream_id)} role="tab" title={row.description || row.name} type="button">{row.name}</button><button aria-label={`Remove ${row.name} tab`} className="watchlist-tab-remove" onClick={() => removeStream(row.signal_stream_id)} type="button"><X size={10} /></button></span>; })}
+      <button aria-expanded={addingStream} aria-label="Add Signal Stream tab" className="watchlist-tab-add" disabled={!availableStreams.length} onClick={() => setAddingStream((open) => !open)} role="tab" type="button"><Plus size={12} /><span>Add</span></button>
+    </nav>
+    {addingStream ? <div className="watchlist-tab-lookup"><InventoryFilterSelect ariaLabel="Signal Stream to add" className="watchlist-add-lookup" onChange={addStream} options={availableStreams.map((row) => ({ description: row.description, label: row.name, value: row.signal_stream_id }))} searchable showAllOnOpen value="" /><button onClick={() => { window.location.hash = "market-discovery-configuration"; }} type="button">Configure Signal Stream <ArrowRight size={13} /></button></div> : null}
+    <div className="watch-universe-context"><div><span>Behavior</span><strong>Trigger-time values are frozen; later market updates do not rewrite prior rows.</strong></div><button onClick={() => { window.location.hash = "market-discovery-configuration"; }} type="button">Configure in Market Discovery <ArrowRight size={13} /></button></div>
+    <MarketListTable catalog={catalog} columns={columns} customColumns={settings.customColumns} empty={stream ? "This configured Signal Stream has not captured an occurrence yet." : "No configured Signal Stream is available."} limit={Math.min(settings.limit, stream?.maximum_events ?? settings.limit)} lockedColumns={canonicalDiscoveryColumns(["event_time", "symbol", ...(stream?.columns ?? [])])} onColumnsChange={(columns) => onSettingsChange({ columns })} onCustomColumnsChange={(customColumns) => onSettingsChange({ customColumns })} onTickerSelect={onTickerSelect} rows={rows} title={stream?.name ?? "Signal Stream"} />
+  </section>;
 }
 
 export function WatchUniverseContainer({ asOf, onSettingsChange, onTickerSelect, runtime, scannerRows, settings }: { asOf: string; onSettingsChange: (update: Partial<WatchUniverseSettings> | ((current: WatchUniverseSettings) => Partial<WatchUniverseSettings>)) => void; onTickerSelect: (ticker: string) => void; runtime: WatchlistRuntimeResponse | null; scannerRows: ScreenerRow[]; settings: WatchUniverseSettings }) {
@@ -385,7 +380,7 @@ export function WatchUniverseContainer({ asOf, onSettingsChange, onTickerSelect,
         : runtime.status !== "ready" && runtime.status !== "degraded"
           ? `Membership projection is ${String(runtime.status || "unavailable").replaceAll("_", " ")}.`
           : `QMD Watchlist ${watchlist?.watchlist_id || "not selected"} has no membership snapshot.`);
-  const columns = canonicalDiscoveryColumns(settings.columns.length ? settings.columns : watchlist?.columns ?? ["symbol"]);
+  const columns = canonicalDiscoveryColumns([...(watchlist?.columns ?? ["symbol"]), ...settings.columns]);
   const selectWatchlist = (watchlistId: string) => onSettingsChange((current) => ({ columns: [], watchlistId, watchlistIds: current.watchlistIds }));
   const addWatchlist = (watchlistId: string) => {
     if (!watchlistId || !selectableWatchlists.some((row) => row.watchlist_id === watchlistId)) return;
@@ -425,7 +420,7 @@ export function WatchUniverseContainer({ asOf, onSettingsChange, onTickerSelect,
       customColumns={settings.customColumns}
       empty={!watchlist ? "No Watchlist tabs are open. Use Add to choose one." : resolved ? "This QMD Watchlist currently has no members." : "No resolved membership is available."}
       limit={settings.limit}
-      lockedColumns={["symbol"]}
+      lockedColumns={canonicalDiscoveryColumns(watchlist?.columns ?? ["symbol"])}
       mergeCompanyWithIdentity
       onColumnsChange={(columns) => onSettingsChange({ columns })}
       onCustomColumnsChange={(customColumns) => onSettingsChange({ customColumns })}
@@ -742,48 +737,6 @@ function ColumnPicker({
       <section className={deferredQuery ? "search-results" : undefined}><button className="market-column-back" onClick={() => { setQuery(""); setGroup(groups[0]); }} type="button"><ChevronLeft size={14} /> {deferredQuery ? "All groups" : group}</button>{matches.map((item) => { const template = item.key.startsWith("template:"); const templateColumn = template && item.metric ? defaultTechnicalColumn(item.metric) : null; const selectedKey = templateColumn?.key ?? item.key; const locked = lockedColumns.includes(selectedKey); const coverage = fieldCoverage?.[selectedKey]; const selected = columns.includes(selectedKey); return <button aria-disabled={locked} className={`${selected ? "selected" : ""}${locked ? " locked" : ""}`.trim()} key={item.key} onClick={() => template && item.metric ? selected ? toggle(selectedKey) : onAddTechnical(item.metric) : toggle(item.key)} type="button"><i>{selected ? <Check size={12} /> : null}</i><span><strong>{item.label}{!template && technicalScopeLabel(item) ? <small className="market-column-inline-timeframe">{technicalScopeLabel(item)}</small> : null}</strong><small>{item.description}</small></span><em data-kind={item.kind}>{locked ? "pinned" : coverage !== undefined ? `${coverage}%` : item.kind}</em></button>; })}</section>
     </div>
   </aside>;
-}
-
-function buildSignalEvents(rows: ScreenerRow[], strategySignals: ScreenerRow[], asOf: string) {
-  const derived: ScreenerRow[] = rows
-    .filter((row) => Boolean(row.signal_id) && Boolean(row.signal_type))
-    .map((row) => ({
-      ...row,
-      direction: String(row.direction ?? row.market_state ?? "neutral").toLowerCase(),
-      event_time: row.event_time ?? row.bar_time_market ?? asOf,
-      evidence: row.evidence ?? row.live_reasons ?? "QMD emitted this causal market signal.",
-      magnitude: row.signal_score ?? row.scanner_score ?? 0,
-      signal_domain: row.signal_domain ?? "market",
-      signal_producer: row.signal_producer ?? "qmd",
-      signal_confidence_pct: numberValue(row.signal_confidence) * 100,
-      source: row.source ?? "QMD market signal",
-      ticker: String(row.ticker ?? row.symbol ?? "").toUpperCase(),
-    }));
-  const strategy: ScreenerRow[] = strategySignals.map((row) => ({
-    ...row,
-    action: row.action ?? "wait",
-    direction: String(row.direction ?? "neutral").toLowerCase(),
-    event_time: row.time ?? row.event_time ?? asOf,
-    evidence: row.detail ?? row.reason ?? "Strategy runtime emitted this durable signal.",
-    last: row.value,
-    magnitude: row.magnitude ?? 0,
-    signal_confidence_pct: numberValue(row.confidence ?? row.signal_confidence) * 100,
-    signal_score: row.score ?? row.signal_score ?? row.magnitude ?? 0,
-    signal_state: row.signal_state ?? "triggered",
-    signal_type: row.signal ?? row.signal_type ?? "Strategy signal",
-    source: "Strategy runtime",
-    signal_domain: "",
-    signal_producer: "strategy_runtime",
-    ticker: String(row.symbol ?? row.ticker ?? "").toUpperCase(),
-  }));
-  const combined: ScreenerRow[] = [...derived, ...strategy];
-  return combined.sort((left, right) => String(right.event_time).localeCompare(String(left.event_time)));
-}
-
-function filterSignalPreset(rows: ScreenerRow[], preset: string) {
-  if (preset === "All") return rows;
-  if (preset === "Strategy") return rows.filter((row) => row.source === "Strategy runtime");
-  return rows.filter((row) => String(row.signal_domain || "").toLowerCase() === preset.toLowerCase());
 }
 
 function normalizeScannerRows(rows: ScreenerRow[]) {

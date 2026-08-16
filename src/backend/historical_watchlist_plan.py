@@ -27,6 +27,7 @@ SUPPORTED_COMPARATORS = {
 QMD_SOURCE_IDS = {
     "indicator.vwap.value",
     "liquidity-rank",
+    "market.liquidity_rank",
     "market.change_pct",
     "market.last_price",
     "market.relative_volume",

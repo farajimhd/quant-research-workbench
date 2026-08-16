@@ -138,6 +138,17 @@ def scanner_snapshot_payload(
     """Return the causal cross-sectional scanner independently of other Canvas sources."""
     if enrichment_scope not in {"core", "full"}:
         raise ValueError("enrichment_scope must be core or full")
+    from src.backend.discovery_projection import (
+        configured_discovery_technical_windows,
+        project_discovery_columns,
+    )
+    from src.backend.trading_configuration_service import configuration_base
+
+    configuration = configuration_base()
+    technical_windows = tuple(sorted({
+        *technical_windows,
+        *configured_discovery_technical_windows(configuration),
+    }))
     rows, meta = historical_scanner_snapshot(as_of, lookback_minutes=lookback_minutes)
     effective_as_of = datetime.fromisoformat(
         str(meta.get("snapshot_at_utc") or as_of.isoformat()).replace("Z", "+00:00")
@@ -209,8 +220,9 @@ def scanner_snapshot_payload(
                 errors[name] = str(exc)
     if enrichment_scope == "full":
         _merge_scanner_intelligence(rows, news, sec, effective_as_of)
-    for index, row in enumerate(rows):
-        rows[index] = classify_watchlist_row(row)
+    rows = project_discovery_columns(
+        (classify_watchlist_row(row) for row in rows),
+    )
     rows.sort(key=lambda row: (-abs(float(row.get("change_5m_pct") or 0)), str(row.get("symbol") or "")))
     for rank, row in enumerate(rows, start=1):
         row["rank"] = rank
@@ -255,23 +267,17 @@ def scanner_snapshot_payload(
         },
     }
     try:
-        from src.backend.trading_configuration_service import configuration_base
         from src.backend.watchlist_runtime_service import (
             project_configured_rule_set_columns,
             project_watchlists_from_candidates,
         )
 
-        configuration = configuration_base()
         rows = project_configured_rule_set_columns(configuration, rows)
         watchlist_runtime = project_watchlists_from_candidates(
             configuration,
             rows,
             as_of=effective_as_of,
-            available_fields=(
-                None
-                if enrichment_scope == "full"
-                else set().union(*(set(row) for row in rows))
-            ),
+            available_fields=set().union(*(set(row) for row in rows)) if rows else set(),
             source_complete=bool(meta.get("complete_universe")),
             source_status=str(meta.get("status") or "partial"),
         )
@@ -283,6 +289,25 @@ def scanner_snapshot_payload(
             "status": "error",
             "watchlists": [],
         }
+    try:
+        from src.backend.signal_stream_runtime_service import SIGNAL_STREAM_RUNTIME
+        from src.backend.trading_runtime_service import trading_journal
+
+        signal_stream_runtime = SIGNAL_STREAM_RUNTIME.snapshot(
+            trading_journal(),
+            as_of=effective_as_of,
+            limit=10_000,
+        )
+        signal_rows = signal_stream_runtime.get("occurrences") or []
+    except Exception as exc:
+        errors["signal_stream"] = str(exc)
+        signal_stream_runtime = {
+            "as_of": effective_as_of.isoformat(),
+            "error": str(exc),
+            "status": "error",
+            "occurrences": [],
+        }
+        signal_rows = []
     return {
         "as_of": effective_as_of.isoformat(),
         "errors": errors,
@@ -295,6 +320,7 @@ def scanner_snapshot_payload(
         "meta": meta,
         "rows": rows,
         "signal_rows": signal_rows,
+        "signal_stream_runtime": signal_stream_runtime,
         "watchlist_runtime": watchlist_runtime,
     }
 

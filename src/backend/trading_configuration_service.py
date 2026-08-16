@@ -53,7 +53,7 @@ from src.trading_runtime.strategy_campaign import validate_campaign_policy
 from src.trading_runtime.taxonomy import StrategyTaxonomy
 
 
-CONFIGURATION_SCHEMA_VERSION = 25
+CONFIGURATION_SCHEMA_VERSION = 26
 CONFIGURATION_SECTIONS = {
     "strategy",
     "trading_actions",
@@ -2339,6 +2339,12 @@ def _default_watchlist_templates(symbols: list[str], calculation_rows: list[dict
     ]
 
 
+def _default_signal_streams() -> list[dict[str, Any]]:
+    """Signal Streams are user compositions; QMD signal methods remain a separate catalog."""
+
+    return []
+
+
 def _default_market_discovery(
     runtime_assignments: list[dict[str, Any]],
     rule_sets: list[dict[str, Any]] | None = None,
@@ -2479,6 +2485,7 @@ def _default_market_discovery(
         "column_catalog": column_catalog,
         "rule_sets": merged_rule_sets,
         "watchlists": _default_watchlist_templates(symbols, calculation_rows),
+        "signal_streams": _default_signal_streams(),
     }
 
 
@@ -2857,6 +2864,42 @@ def _validate_market_discovery(section: dict[str, Any]) -> None:
         ) - rule_set_ids
         if unknown_rules:
             raise ValueError(f"Watchlist {watchlist.get('name')} references unknown rule sets")
+    signal_streams = list(section.get("signal_streams") or [])
+    _unique_ids(signal_streams, "signal_stream_id", "Signal Stream")
+    watchlist_ids = {
+        str(watchlist.get("watchlist_id") or "") for watchlist in watchlists
+    }
+    for stream in signal_streams:
+        stream_name = str(stream.get("name") or stream.get("signal_stream_id") or "Signal Stream")
+        if str(stream.get("source_scan_id") or "") != str(core_scan.get("scan_id") or ""):
+            raise ValueError(f"Signal Stream {stream_name} references an unknown Core Scan")
+        if str(stream.get("inclusion_operator") or "all") not in {"all", "any"}:
+            raise ValueError(f"Signal Stream {stream_name} has unsupported inclusion logic")
+        if str(stream.get("trigger_policy") or "false_to_true") != "false_to_true":
+            raise ValueError(f"Signal Stream {stream_name} has an unknown trigger policy")
+        if str(stream.get("rearm_policy") or "after_false") not in {"after_false", "after_cooldown"}:
+            raise ValueError(f"Signal Stream {stream_name} has an unknown rearm policy")
+        if int(stream.get("refresh_interval_ms") or 0) <= 0:
+            raise ValueError(f"Signal Stream {stream_name} refresh interval must be positive")
+        if int(stream.get("cooldown_ms") or 0) < 0:
+            raise ValueError(f"Signal Stream {stream_name} cooldown cannot be negative")
+        if int(stream.get("maximum_events") or 0) <= 0:
+            raise ValueError(f"Signal Stream {stream_name} maximum events must be positive")
+        unknown_rules = set(stream.get("inclusion_rule_sets") or []) - rule_set_ids
+        if unknown_rules:
+            raise ValueError(f"Signal Stream {stream_name} references unknown rule sets")
+        unknown_columns = set(stream.get("columns") or []) - column_ids
+        if unknown_columns:
+            raise ValueError(f"Signal Stream {stream_name} references unknown display columns")
+        for route in stream.get("watchlist_routes") or []:
+            watchlist_id = str(route.get("watchlist_id") or "")
+            if watchlist_id not in watchlist_ids:
+                raise ValueError(f"Signal Stream {stream_name} routes to unknown Watchlist {watchlist_id}")
+            expiry = str(route.get("membership_expiry") or "end_of_trading_day")
+            if expiry not in {"end_of_trading_day", "time_to_live", "never"}:
+                raise ValueError(f"Signal Stream {stream_name} has an unknown admission expiry policy")
+            if expiry == "time_to_live" and int(route.get("membership_ttl_ms") or 0) <= 0:
+                raise ValueError(f"Signal Stream {stream_name} admission TTL must be positive")
 
 
 def _compile_run_plans(candidate: dict[str, Any], *, canvas_profile_id: str) -> None:
@@ -3620,6 +3663,10 @@ def _migrate_draft(raw: dict[str, Any]) -> dict[str, Any]:
             merged_watchlists.append(merged)
         merged_watchlists.extend(current_watchlists.values())
         result["market_discovery"]["watchlists"] = merged_watchlists
+        result["market_discovery"].setdefault(
+            "signal_streams",
+            deepcopy(defaults["market_discovery"].get("signal_streams") or []),
+        )
         column_ids = {
             str(row.get("column_id") or "")
             for row in result["market_discovery"].get("column_catalog") or []
@@ -3653,6 +3700,25 @@ def _migrate_draft(raw: dict[str, Any]) -> dict[str, Any]:
             }
             if str(watchlist.get("ranking_field") or "") not in field_source_ids:
                 watchlist["ranking_field"] = "market.liquidity_rank"
+        for stream in result["market_discovery"].get("signal_streams") or []:
+            stream.setdefault("revision", 1)
+            stream.setdefault("enabled", True)
+            stream.setdefault("origin", "user")
+            stream.setdefault("source_scan_id", str(core_scan.get("scan_id") or "qmd-core-scan"))
+            stream.setdefault("inclusion_rule_sets", [])
+            stream.setdefault("inclusion_operator", "all")
+            stream.setdefault("columns", list(default_core_scan.get("columns") or []))
+            stream.setdefault("refresh_interval_ms", int(core_scan.get("refresh_interval_ms") or 1000))
+            stream.setdefault("trigger_policy", "false_to_true")
+            stream.setdefault("rearm_policy", "after_false")
+            stream.setdefault("cooldown_ms", 0)
+            stream.setdefault("maximum_events", 5000)
+            stream.setdefault("watchlist_routes", [])
+            stream["columns"] = [
+                str(column_id)
+                for column_id in stream.get("columns") or []
+                if str(column_id) in column_ids
+            ]
         legacy_run_plans = dict(
             result.get("run_plans") or result.pop("assignments", {}) or {}
         )

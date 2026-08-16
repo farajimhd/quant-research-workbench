@@ -3,38 +3,10 @@ from __future__ import annotations
 from math import isfinite
 from typing import Any, Iterable
 
+from src.backend.application_registry import DISCOVERY_RUNTIME_FIELDS
 
 SOURCE_FIELDS = {
-    "market.last_price": "last_price",
-    "market.change_pct": "change_pct",
-    "market.volume": "volume",
-    "market.relative_volume": "relative_volume",
-    "market.event_age_ms": "market_event_age_ms",
-    "market.spread_bps": "spread_bps",
-    "market.trade_rate_10s": "trade_rate_10s",
-    "market.trade_rate_60s": "trade_rate_60s",
-    "market.liquidity_score": "liquidity_score",
-    "indicator.vwap.value": "vwap",
-    "signal.company_news.score": "news_sentiment_score",
-    "signal.sec_filing.score": "sec_sentiment_score",
-    "signal.news_labeled": "news_labeled",
-    "signal.sec_labeled": "sec_labeled",
-    "reference.market_cap": "market_cap",
-    "reference.shares_outstanding": "shares_outstanding",
-    "reference.float_shares": "float_shares",
-    "reference.short_interest": "short_interest",
-    "reference.short_interest_pct": "short_interest_pct",
-    "reference.days_to_cover": "days_to_cover",
-    "reference.short_volume": "short_volume",
-    "reference.short_volume_pct": "short_volume_pct",
-    "reference.fails_to_deliver": "fails_to_deliver",
-    "reference.ftd_value": "ftd_value",
-    "reference.borrow_shares": "borrow_shares",
-    "reference.borrow_fee": "borrow_fee",
-    "fundamental.trajectory_score": "financial_trajectory_score",
-    "fundamental.quality_score": "xbrl_quality_score",
-    "event.ipo.days_to_event": "ipo_days_to_event",
-    "event.split.days_to_event": "split_days_to_event",
+    **DISCOVERY_RUNTIME_FIELDS,
     "liquidity-rank": "liquidity_rank",
 }
 

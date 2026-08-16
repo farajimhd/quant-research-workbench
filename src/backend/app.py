@@ -3972,6 +3972,21 @@ def market_discovery_watchlist_runtime() -> dict[str, Any]:
     return payload
 
 
+@app.get("/api/market-discovery/signal-stream/runtime")
+def market_discovery_signal_stream_runtime(
+    signal_stream_id: str = "",
+    limit: int = Query(default=5000, ge=1, le=50_000),
+) -> dict[str, Any]:
+    from src.backend.signal_stream_runtime_service import SIGNAL_STREAM_RUNTIME
+    from src.backend.trading_runtime_service import trading_journal
+
+    return SIGNAL_STREAM_RUNTIME.snapshot(
+        trading_journal(),
+        signal_stream_id=signal_stream_id,
+        limit=limit,
+    )
+
+
 def bounded_computation_planner_summary(
     planner: dict[str, Any],
 ) -> tuple[dict[str, Any], dict[str, Any]]:

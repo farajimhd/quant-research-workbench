@@ -106,6 +106,48 @@ class TradingJournal:
             )
         return JournalRecord(record_id, run_id, sequence, event_time, recorded_at, category, entity_type, entity_id, account_id, payload)
 
+    def append_once(
+        self,
+        *,
+        run_id: str,
+        category: str,
+        entity_type: str,
+        entity_id: str,
+        payload: dict[str, Any],
+        account_id: str = "",
+        event_time: datetime | None = None,
+    ) -> tuple[JournalRecord, bool]:
+        """Append an event exactly once for its category/type/identity tuple."""
+
+        with self._lock:
+            existing = self._connection.execute(
+                "SELECT * FROM journal WHERE category = ? AND entity_type = ? AND entity_id = ? LIMIT 1",
+                (category, entity_type, entity_id),
+            ).fetchone()
+            if existing is not None:
+                return _record(existing), False
+            try:
+                return (
+                    self.append(
+                        run_id=run_id,
+                        category=category,
+                        entity_type=entity_type,
+                        entity_id=entity_id,
+                        payload=payload,
+                        account_id=account_id,
+                        event_time=event_time,
+                    ),
+                    True,
+                )
+            except sqlite3.IntegrityError:
+                existing = self._connection.execute(
+                    "SELECT * FROM journal WHERE category = ? AND entity_type = ? AND entity_id = ? LIMIT 1",
+                    (category, entity_type, entity_id),
+                ).fetchone()
+                if existing is None:
+                    raise
+                return _record(existing), False
+
     def save_checkpoint(self, run_id: str, cursor: str, state: dict[str, Any], event_time: datetime) -> None:
         with self._lock, self._connection:
             self._connection.execute(
@@ -648,6 +690,29 @@ class TradingJournal:
         rows = self._connection.execute(
             f"SELECT * FROM journal WHERE {' AND '.join(clauses)} "
             "ORDER BY event_time ASC, recorded_at ASC, sequence ASC LIMIT ?",
+            values,
+        ).fetchall()
+        return [_record(row) for row in rows]
+
+    def signal_stream_records(
+        self,
+        *,
+        signal_stream_id: str = "",
+        as_of: datetime | None = None,
+        limit: int = 10_000,
+    ) -> list[JournalRecord]:
+        clauses = ["category = 'market_discovery_signal'", "entity_type = 'signal_occurrence'"]
+        values: list[Any] = []
+        if signal_stream_id:
+            clauses.append("json_extract(payload_json, '$.signal_stream_id') = ?")
+            values.append(signal_stream_id)
+        if as_of is not None:
+            clauses.append("event_time <= ?")
+            values.append(as_of.astimezone(timezone.utc).isoformat())
+        values.append(max(1, min(int(limit), 50_000)))
+        rows = self._connection.execute(
+            f"SELECT * FROM journal WHERE {' AND '.join(clauses)} "
+            "ORDER BY event_time DESC, recorded_at DESC, sequence DESC LIMIT ?",
             values,
         ).fetchall()
         return [_record(row) for row in rows]

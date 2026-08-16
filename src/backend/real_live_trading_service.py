@@ -278,12 +278,19 @@ def _compose_real_live_scanner_snapshot() -> dict[str, Any]:
             filtered = apply_tradable_filter_to_scanner_payload(payload)
             rows = list(filtered.get("rows") or [])
             reference_error = ""
+            signal_stream_runtime = {
+                "status": "unavailable",
+                "occurrences": [],
+                "admissions_by_watchlist": {},
+            }
             try:
                 from src.backend.watchlist_runtime_service import (
                     WATCHLIST_RUNTIME,
                     enrich_core_scanner_rows,
                     live_market_reference_projection,
                 )
+                from src.backend.discovery_projection import project_discovery_columns
+                from src.backend.signal_stream_runtime_service import SIGNAL_STREAM_RUNTIME
                 from src.backend.qmd_gateway_client import qmd_scanner_indicators
                 from src.backend.trading_configuration_service import configuration_base
                 from src.backend.trading_runtime_service import trading_journal
@@ -301,10 +308,26 @@ def _compose_real_live_scanner_snapshot() -> dict[str, Any]:
                     {**row, **indicator_rows.get(str(row.get("ticker") or "").upper(), {})}
                     for row in rows
                 ]
+                rows = project_discovery_columns(rows)
+                try:
+                    signal_stream_runtime = SIGNAL_STREAM_RUNTIME.resolve(
+                        configuration,
+                        rows,
+                        as_of=datetime.now(UTC),
+                        journal=trading_journal(),
+                    )
+                except Exception as exc:
+                    signal_stream_runtime = {
+                        "status": "degraded",
+                        "error": str(exc),
+                        "occurrences": [],
+                        "admissions_by_watchlist": {},
+                    }
                 watchlist_runtime = WATCHLIST_RUNTIME.resolve(
                     configuration,
                     rows,
                     journal=trading_journal(),
+                    admissions_by_watchlist=signal_stream_runtime.get("admissions_by_watchlist") or {},
                 )
                 watchlist_runtime["focused_seeds"] = focused_seeds
             except Exception as exc:
@@ -320,6 +343,8 @@ def _compose_real_live_scanner_snapshot() -> dict[str, Any]:
                     "row_count": len(rows),
                     "core_population_count": len(rows),
                     "watchlist_runtime": watchlist_runtime,
+                    "signal_stream_runtime": signal_stream_runtime,
+                    "signal_rows": signal_stream_runtime.get("occurrences") or [],
                 }
             )
             # The Live UI derives its market-state view from the same compact

@@ -388,7 +388,7 @@ type CanvasLiveChartState = {
 
 type CanvasChartSettings = { showVolume: boolean; symbol: string; timeframe: CanvasChartTimeframe; visibleIndicators: string[] };
 type ContainerSettings = {
-  version: 27;
+  version: 28;
   chart: CanvasChartSettings;
   charts_quotes: {
     daily: CanvasChartSettings;
@@ -426,7 +426,7 @@ const ALL_CONTAINER_IDS = TRADING_WORKSPACE_CONTAINERS.map((definition) => defin
 const MANAGER_DEFAULT_CONTAINER_IDS: WorkspaceContainerId[] = ["scanner", "chart", "portfolio", "positions", "orders"];
 const DEFAULT_WATCHLIST_TAB_IDS = ["top-large-cap-gainers", "top-mid-cap-gainers", "top-small-cap-gainers", "top-penny-gainers"];
 const DEFAULT_SETTINGS: ContainerSettings = {
-  version: 27,
+  version: 28,
   chart: { showVolume: true, symbol: "AAPL", timeframe: "1m", visibleIndicators: ["indicator.vwap", "indicator.macd", "indicator.flow_structure_composite", "strategy.presentation"] },
   charts_quotes: {
     main: { showVolume: true, symbol: "AAPL", timeframe: "10s", visibleIndicators: ["indicator.macd", "strategy.presentation"] },
@@ -446,7 +446,7 @@ const DEFAULT_SETTINGS: ContainerSettings = {
   orders: { limit: 6, showOrderIds: true },
   portfolio: { showExposure: true, showPnl: true },
   scanner: { columns: [], customColumns: [], limit: 250, preset: "Core Scan" },
-  signal_stream: { columns: [], customColumns: [], limit: 250, preset: "All" },
+  signal_stream: { columns: [], customColumns: [], limit: 250, signalStreamId: "", signalStreamIds: [] },
   watchlist: { columns: [], customColumns: [], limit: 50, watchlistId: DEFAULT_WATCHLIST_TAB_IDS[0], watchlistIds: DEFAULT_WATCHLIST_TAB_IDS },
   strategy_activity: { eventType: "", limit: 250, runId: "", strategyId: "", ticker: "" },
   sec: { content: "all", endDate: "", label: "", limit: 100, lookbackHours: 168, rangeMode: "preset", startDate: "", ticker: "" },
@@ -2440,7 +2440,7 @@ function ContainerPreview({ canvasId, chartCutoffMs, definition, instanceId, lin
           ? <div className="canvas-preview-loading">Loading the historical signal cross-section…</div>
           : scannerError && !scannerSnapshot
             ? <div className="canvas-inline-error">Historical signals unavailable: {scannerError}</div>
-            : <SignalStreamContainer asOf={new Date(chartCutoffMs).toISOString()} onSettingsChange={(patch) => updateSettings((state) => ({ ...state, signal_stream: { ...state.signal_stream, ...patch } }))} onTickerSelect={onTickerWorkspaceOpen} scannerRows={scannerSnapshot?.signal_rows ?? []} settings={settings.signal_stream} strategySignals={preview?.strategy.signals ?? []} />
+            : <SignalStreamContainer asOf={new Date(chartCutoffMs).toISOString()} onSettingsChange={(patch) => updateSettings((state) => ({ ...state, signal_stream: { ...state.signal_stream, ...patch } }))} onTickerSelect={onTickerWorkspaceOpen} rows={scannerSnapshot?.signal_rows ?? []} settings={settings.signal_stream} />
       : definition.id === "watchlist"
         ? (scannerLoading || scannerSnapshot?.meta.status === "building") && !scannerSnapshot?.rows.length
           ? <div className="canvas-preview-loading">Loading the historical watchlist snapshot…</div>
@@ -4376,7 +4376,7 @@ function containerFields(id: WorkspaceContainerId, settings: ContainerSettings, 
   if (id === "strategy") return <CheckField checked={Boolean(current.showSignals)} label="Show recent signals" onChange={(value) => patch({ showSignals: value })} />;
   if (id === "charts_quotes") return <div className="canvas-settings-note">The main chart starts at 10 seconds with MACD. Its timeframe, indicators, pane layout, and appearance persist from controls inside the chart. The lower charts remain fixed to monthly and daily horizons. Drag the dividers between rows and columns to persist the workspace proportions.</div>;
   if (id === "scanner") return <><NumberField label="Maximum rows" max={5000} onChange={(value) => patch({ limit: value })} value={Number(current.limit)} /><div className="canvas-settings-note">Columns, sorting, and filters are managed inside Scanner and persist with this container instance.</div></>;
-  if (id === "signal_stream") return <><NumberField label="Maximum events" max={5000} onChange={(value) => patch({ limit: value })} value={Number(current.limit)} /><div className="canvas-settings-note">Market rules are reconstructed from canonical data. Strategy events remain durable records owned by the strategy runtime.</div></>;
+  if (id === "signal_stream") return <><NumberField label="Maximum events" max={5000} onChange={(value) => patch({ limit: value })} value={Number(current.limit)} /><div className="canvas-settings-note">Configured Market Discovery occurrences are append-only and preserve their trigger-time values. Strategy Activity remains a separate durable runtime surface.</div></>;
   if (id === "watchlist") return <><NumberField label="Maximum rows" max={500} onChange={(value) => patch({ limit: value })} value={Number(current.limit)} /><div className="canvas-settings-note">QMD Market Discovery owns Watchlist membership and its causal history. Canvas only chooses which published Watchlist to present.</div></>;
   if (id === "strategy_activity") return <><NumberField label="Maximum events" max={5000} onChange={(value) => patch({ limit: value })} value={Number(current.limit)} /><div className="canvas-settings-note">Filters remain local to this container. Events come from the durable Trading Journal and are never reconstructed in the browser.</div></>;
   if (id === "orders") return <><NumberField label="Rows" onChange={(value) => patch({ limit: value })} value={Number(current.limit)} /><CheckField checked={Boolean(current.showOrderIds)} label="Show order IDs" onChange={(value) => patch({ showOrderIds: value })} /></>;
@@ -4472,7 +4472,8 @@ function normalizeSettings(stored: Partial<ContainerSettings>): ContainerSetting
     ),
     signal_stream: {
       ...normalizeTechnicalListSettings(DEFAULT_SETTINGS.signal_stream, stored.signal_stream),
-      preset: normalizeSignalStreamPreset(stored.signal_stream?.preset),
+      signalStreamId: String(stored.signal_stream?.signalStreamId ?? ""),
+      signalStreamIds: Array.isArray(stored.signal_stream?.signalStreamIds) ? stored.signal_stream.signalStreamIds.map(String) : [],
     },
     watchlist: {
       ...DEFAULT_SETTINGS.watchlist,
@@ -4492,12 +4493,6 @@ function normalizeSettings(stored: Partial<ContainerSettings>): ContainerSetting
       showRawTags: Boolean((stored.xbrl as { showRawTags?: boolean; showPeriod?: boolean } | undefined)?.showRawTags ?? (stored.xbrl as { showPeriod?: boolean } | undefined)?.showPeriod ?? DEFAULT_SETTINGS.xbrl.showRawTags),
     },
   };
-}
-
-function normalizeSignalStreamPreset(value: unknown) {
-  const preset = String(value || "");
-  if (["All", "Market", "News", "SEC", "Strategy"].includes(preset)) return preset;
-  return DEFAULT_SETTINGS.signal_stream.preset;
 }
 
 function normalizeChartSlot(stored: Partial<CanvasChartSettings> | undefined, defaults: CanvasChartSettings): CanvasChartSettings {
@@ -4744,7 +4739,7 @@ function useCanvasLiveScannerSnapshot(enabled: boolean) {
       const request = new AbortController();
       controller = request;
       try {
-        const payload = await api<{ market_time?: string; provider?: string; rows?: Record<string, unknown>[]; session_date?: string; watchlist_runtime?: WatchlistRuntimeResponse }>("/api/real-live-trading/scanner?row_limit=500", { signal: request.signal, timeoutMs: 45_000 });
+        const payload = await api<{ market_time?: string; provider?: string; rows?: Record<string, unknown>[]; session_date?: string; signal_rows?: Record<string, unknown>[]; watchlist_runtime?: WatchlistRuntimeResponse }>("/api/real-live-trading/scanner?row_limit=500", { signal: request.signal, timeoutMs: 45_000 });
         if (cancelled || request.signal.aborted) return;
         const rows = payload.rows ?? [];
         const asOfContext = payload.session_date && payload.market_time
@@ -4755,7 +4750,7 @@ function useCanvasLiveScannerSnapshot(enabled: boolean) {
           errors: {},
           meta: { complete_universe: true, row_count: rows.length, source: payload.provider || "qmd-gateway", status: "ready" } as ScannerSnapshotMeta,
           rows,
-          signal_rows: [],
+          signal_rows: payload.signal_rows ?? [],
           watchlist_runtime: payload.watchlist_runtime,
         });
         setError("");

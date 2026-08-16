@@ -71,7 +71,9 @@ def scanner_reference_projection(cutoff: datetime, database: str = "q_live") -> 
             nullIf(borrow.borrow_status, '') AS borrow_status,
             borrow.shortable_shares AS borrow_shares,
             coalesce(borrow.fee_rate, borrow.indicative_borrow_rate) AS borrow_fee,
+            if(empty(ipo.symbol_id), NULL, ipo.listing_date) AS ipo_date,
             if(empty(ipo.symbol_id), NULL, dateDiff('day', cutoff_date, ipo.listing_date)) AS ipo_days_to_event,
+            if(empty(split.symbol_id), NULL, split.execution_date) AS split_execution_date,
             if(empty(split.symbol_id), NULL, dateDiff('day', cutoff_date, split.execution_date)) AS split_days_to_event,
             u.ibkr_conid AS ibkr_conid,
             ifNull(a.relative_path, '') AS logo_relative_path

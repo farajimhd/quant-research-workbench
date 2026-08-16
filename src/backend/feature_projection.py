@@ -8,6 +8,7 @@ from src.backend.application_registry import (
     DISCOVERY_FIELD_PRESENTATIONS,
     FIELD_DEFINITIONS,
 )
+from src.backend.discovery_projection import discovery_runtime_field
 
 
 FEATURE_PROJECTION_SCHEMA_VERSION = 1
@@ -89,7 +90,12 @@ def _latest_available_at(rows: list[dict[str, Any]], column: str) -> str | None:
 
 
 def _column_value(row: dict[str, Any], column: str) -> Any:
-    for key in _COLUMN_ALIASES.get(column, (column,)):
+    presentation = next(
+        (item for item in DISCOVERY_FIELD_PRESENTATIONS if item.column_id == column),
+        None,
+    )
+    runtime_field = discovery_runtime_field(presentation.source_id) if presentation else column
+    for key in _COLUMN_ALIASES.get(column, (column, runtime_field)):
         value = row.get(key)
         if value not in (None, ""):
             return value

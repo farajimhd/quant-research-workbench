@@ -125,7 +125,9 @@ SCANNER_REFERENCE_FIELDS = (
     "borrow_status",
     "borrow_shares",
     "borrow_fee",
+    "ipo_date",
     "ipo_days_to_event",
+    "split_execution_date",
     "split_days_to_event",
     "ibkr_conid",
 )

@@ -456,6 +456,24 @@ type WatchlistConfig = {
   availability?: "available" | "integration_pending";
   availability_detail?: string;
 };
+type SignalStreamConfig = {
+  signal_stream_id: string;
+  revision: number;
+  name: string;
+  description: string;
+  enabled: boolean;
+  origin?: "system" | "user";
+  source_scan_id: string;
+  inclusion_rule_sets: string[];
+  inclusion_operator: "all" | "any";
+  columns: string[];
+  refresh_interval_ms: number;
+  trigger_policy: "false_to_true";
+  rearm_policy: "after_false" | "after_cooldown";
+  cooldown_ms: number;
+  maximum_events: number;
+  watchlist_routes: Array<{ watchlist_id: string; membership_expiry: "end_of_trading_day" | "time_to_live" | "never"; membership_ttl_ms: number }>;
+};
 type WatchlistRuntimeSnapshot = {
   as_of: string;
   history: Array<Record<string, unknown>>;
@@ -545,6 +563,7 @@ type MarketDiscoverySection = {
   column_catalog: WatchlistColumn[];
   rule_sets: RuleSetDefinition[];
   watchlists: WatchlistConfig[];
+  signal_streams: SignalStreamConfig[];
 };
 
 function capabilityTypeLabel(type: DiscoveryCapability["capability_type"]): string {
@@ -763,7 +782,7 @@ type Draft = {
 function normalizeDraft(payload: any): Draft {
   const runPlans = payload?.run_plans ?? payload?.assignments ?? { plans: [], universes: [] };
   const strategy = payload?.strategy ?? {};
-  const marketDiscovery = payload?.market_discovery ?? { security_universe: {}, core_scan: { inclusion_rule_sets: [], inclusion_operator: "all", ranking_field: "market.liquidity_rank", ranking_direction: "descending", maximum_size: 250, columns: [] }, calculation_catalog: [], classifications: [], field_catalog: [], column_catalog: [], rule_sets: [], watchlists: [] };
+  const marketDiscovery = payload?.market_discovery ?? { security_universe: {}, core_scan: { inclusion_rule_sets: [], inclusion_operator: "all", ranking_field: "market.liquidity_rank", ranking_direction: "descending", maximum_size: 250, columns: [] }, calculation_catalog: [], classifications: [], field_catalog: [], column_catalog: [], rule_sets: [], watchlists: [], signal_streams: [] };
   const normalizeRuleSet = (ruleSet: any) => ({
     ...ruleSet,
     conditions: (ruleSet.conditions ?? []).map((condition: any) => ({
@@ -832,6 +851,24 @@ function normalizeDraft(payload: any): Draft {
         const { calculations: _legacyCalculations, ...referenceWatchlist } = watchlist;
         return { ...referenceWatchlist, exclusion_rule_sets: [], ranking_field: watchlist.ranking_field === "liquidity-rank" ? "market.liquidity_rank" : watchlist.ranking_field };
       }),
+      signal_streams: (marketDiscovery.signal_streams ?? []).map((stream: Partial<SignalStreamConfig>) => ({
+        ...stream,
+        signal_stream_id: String(stream.signal_stream_id ?? ""),
+        revision: Number(stream.revision ?? 1),
+        name: String(stream.name ?? "Signal Stream"),
+        description: String(stream.description ?? "Immutable occurrences emitted from configured Rule Sets."),
+        enabled: stream.enabled !== false,
+        source_scan_id: String(stream.source_scan_id ?? marketDiscovery.core_scan?.scan_id ?? "qmd-core-scan"),
+        inclusion_rule_sets: stream.inclusion_rule_sets ?? [],
+        inclusion_operator: stream.inclusion_operator ?? "all",
+        columns: stream.columns ?? [],
+        refresh_interval_ms: Number(stream.refresh_interval_ms ?? marketDiscovery.core_scan?.refresh_interval_ms ?? 1000),
+        trigger_policy: "false_to_true",
+        rearm_policy: stream.rearm_policy ?? "after_false",
+        cooldown_ms: Number(stream.cooldown_ms ?? 0),
+        maximum_events: Number(stream.maximum_events ?? 5000),
+        watchlist_routes: stream.watchlist_routes ?? [],
+      })),
     },
     strategy: {
       ...strategy,
@@ -978,6 +1015,7 @@ function readSessionConfiguration(base: Draft): Draft {
         },
         rule_sets: reconciledRuleSets,
         watchlists: reconciledWatchlists,
+        signal_streams: session.market_discovery.signal_streams,
       },
       strategy: {
         ...session.strategy,
@@ -1035,7 +1073,7 @@ const SECTION_META = {
     eyebrow: "QMD discovery authority",
     icon: ScanSearch,
     title: "Market Discovery",
-    description: "Compose the Core Scan and reusable Watchlists from registered Data Definitions and Rule Sets.",
+    description: "Compose the Core Scan, mutable Watchlists, and append-only Signal Stream from registered Data Definitions and Rule Sets.",
   },
   actions: {
     eyebrow: "System configuration · executable behavior",
