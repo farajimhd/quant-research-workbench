@@ -28,10 +28,11 @@ def test_workspace_stop_uses_registered_ownership_not_global_command_matches() -
 def test_workspace_start_registers_each_role_and_rejects_foreign_port_adoption() -> None:
     source = _source("start_workspace_services.ps1")
 
-    for role in ("qmd_live", "qmd_history", "backend", "frontend"):
+    for role in ("qmd_history", "backend", "frontend"):
         assert f'role = "{role}"' in source
-    assert "qmdliveport = 8795" in source
-    assert 'join-path $psscriptroot "run_qmd_gateway.ps1"' in source
+    assert 'role = "qmd_live"' not in source
+    assert "qmdliveport" not in source
+    assert 'join-path $psscriptroot "run_qmd_gateway.ps1"' not in source
     for argument in (
         '"-registrypath"',
         '"-servicerole"',
@@ -45,6 +46,30 @@ def test_workspace_start_registers_each_role_and_rejects_foreign_port_adoption()
     assert "maintain_repository_git.ps1 -compact" in source
     assert "maxgitdirectorygb = 2.0" in source
     assert "pythondontwritebytecode" in source
+
+
+def test_workspace_stop_has_no_qmd_live_shutdown_authority() -> None:
+    source = _source("stop_workspace_services.ps1")
+
+    assert '$serviceroles = @("qmd_history", "backend", "frontend")' in source
+    assert "qmdliveport" not in source
+    assert "leaving independently managed service ownership record untouched" in source
+
+
+def test_qmd_live_has_separate_managed_start_and_stop_scripts() -> None:
+    start_source = _source("start_qmd_live_gateway.ps1")
+    stop_source = _source("stop_qmd_live_gateway.ps1")
+
+    assert 'join-path $psscriptroot "run_qmd_gateway.ps1"' in start_source
+    assert 'role = "qmd_live"' in start_source
+    assert '"-servicerole"' in start_source
+    assert "startup refuses to adopt an existing port owner" in start_source
+    assert '"qmd_live"' in stop_source
+    assert "read-validregistration" in stop_source
+    assert "test-processstartidentity" in stop_source
+    assert "legacyworkspaceruntimeroot" in stop_source
+    assert r"d:\tradingml\runtimes\workspace_services" in stop_source
+    assert "foreign processes and ports were left untouched" in stop_source
 
 
 def test_tab_host_owns_children_with_manifest_and_kill_on_close_job() -> None:

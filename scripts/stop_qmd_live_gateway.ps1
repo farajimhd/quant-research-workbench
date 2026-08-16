@@ -1,15 +1,12 @@
 [CmdletBinding()]
 param(
     [ValidateRange(1, 65535)]
-    [int]$QmdHistoryPort = 8801,
-    [ValidateRange(1, 65535)]
-    [int]$BackendPort = 8000,
-    [ValidateRange(1, 65535)]
-    [int]$FrontendPort = 5173,
+    [int]$QmdLivePort = 8795,
     [ValidateRange(1, 60)]
     [int]$GracefulTimeoutSeconds = 8,
     [string]$PythonExe = "",
-    [string]$WorkspaceRuntimeRoot = "",
+    [string]$QmdLiveServiceRuntimeRoot = "",
+    [string]$LegacyWorkspaceRuntimeRoot = "",
     [switch]$ListOnly
 )
 
@@ -23,7 +20,7 @@ $repoRoot = Split-Path -Parent $PSScriptRoot
 $serviceTabHost = [IO.Path]::GetFullPath(
     (Join-Path $PSScriptRoot "run_windows_terminal_service_tab.ps1")
 )
-$serviceRoles = @("qmd_history", "backend", "frontend")
+$serviceRoles = @("qmd_live")
 
 function Resolve-PythonExecutable {
     param([string]$Requested)
@@ -63,7 +60,28 @@ function Resolve-PythonExecutable {
     return ""
 }
 
-function Resolve-WorkspaceRuntimeRoot {
+function Resolve-QmdLiveServiceRuntimeRoot {
+    param([string]$Requested)
+
+    $candidate = if ($Requested.Trim()) {
+        $Requested.Trim()
+    }
+    elseif ($env:QMD_LIVE_SERVICE_RUNTIME_ROOT) {
+        $env:QMD_LIVE_SERVICE_RUNTIME_ROOT.Trim()
+    }
+    else {
+        "D:\TradingML\runtimes\qmd_live_service"
+    }
+    $resolved = [IO.Path]::GetFullPath($candidate).TrimEnd('\')
+    $resolvedRepo = [IO.Path]::GetFullPath($repoRoot).TrimEnd('\')
+    if ($resolved.Equals($resolvedRepo, [StringComparison]::OrdinalIgnoreCase) -or
+        $resolved.StartsWith($resolvedRepo + '\', [StringComparison]::OrdinalIgnoreCase)) {
+        throw "QMD Live service runtime state must be outside the repository: $resolved"
+    }
+    return $resolved
+}
+
+function Resolve-LegacyWorkspaceRuntimeRoot {
     param([string]$Requested)
 
     $candidate = if ($Requested.Trim()) {
@@ -79,7 +97,7 @@ function Resolve-WorkspaceRuntimeRoot {
     $resolvedRepo = [IO.Path]::GetFullPath($repoRoot).TrimEnd('\')
     if ($resolved.Equals($resolvedRepo, [StringComparison]::OrdinalIgnoreCase) -or
         $resolved.StartsWith($resolvedRepo + '\', [StringComparison]::OrdinalIgnoreCase)) {
-        throw "Workspace service runtime state must be outside the repository: $resolved"
+        throw "Legacy workspace runtime state must be outside the repository: $resolved"
     }
     return $resolved
 }
@@ -116,7 +134,7 @@ function Read-ValidRegistration {
         $record = Get-Content -Raw -LiteralPath $Path | ConvertFrom-Json
     }
     catch {
-        Write-Warning "Ignoring unreadable workspace ownership record '$Path': $($_.Exception.Message)"
+        Write-Warning "Ignoring unreadable QMD Live ownership record '$Path': $($_.Exception.Message)"
         return $null
     }
 
@@ -132,7 +150,7 @@ function Read-ValidRegistration {
         $hostPid = [int]$record.host_pid
     }
     catch {
-        Write-Warning "Ignoring invalid workspace ownership record '$Path': $($_.Exception.Message)"
+        Write-Warning "Ignoring invalid QMD Live ownership record '$Path': $($_.Exception.Message)"
         return $null
     }
     $expectedRepo = [IO.Path]::GetFullPath($repoRoot).TrimEnd('\')
@@ -156,7 +174,7 @@ function Read-ValidRegistration {
         $hostCommand.IndexOf($recordPath, [StringComparison]::OrdinalIgnoreCase) -lt 0 -or
         $hostCommand.IndexOf([string]$record.instance_id, [StringComparison]::OrdinalIgnoreCase) -lt 0 -or
         -not (Test-ProcessStartIdentity -Process $hostProcess -ExpectedUtc ([string]$record.host_started_at_utc))) {
-        Write-Warning "Ignoring stale or mismatched workspace ownership record: $Path"
+        Write-Warning "Ignoring stale or mismatched QMD Live ownership record: $Path"
         return $null
     }
 
@@ -261,14 +279,20 @@ function Wait-ForHostsToExit {
     return @($HostIds | Where-Object { Test-ProcessAlive -ProcessId $_ })
 }
 
-$runtimeRoot = Resolve-WorkspaceRuntimeRoot -Requested $WorkspaceRuntimeRoot
-$instanceRoot = Join-Path $runtimeRoot "instances"
-$registrationPaths = if (Test-Path -LiteralPath $instanceRoot -PathType Container) {
-    @(Get-ChildItem -LiteralPath $instanceRoot -Recurse -File -Filter "*.json" -ErrorAction SilentlyContinue |
-        Select-Object -ExpandProperty FullName)
-}
-else {
-    @()
+$runtimeRoot = Resolve-QmdLiveServiceRuntimeRoot -Requested $QmdLiveServiceRuntimeRoot
+$legacyRuntimeRoot = Resolve-LegacyWorkspaceRuntimeRoot -Requested $LegacyWorkspaceRuntimeRoot
+$qmdLiveInstanceRoot = Join-Path $runtimeRoot "instances"
+$legacyInstanceRoot = Join-Path $legacyRuntimeRoot "instances"
+$instanceRoots = @(
+    $qmdLiveInstanceRoot,
+    $legacyInstanceRoot
+) | Select-Object -Unique
+$registrationPaths = @()
+foreach ($instanceRoot in $instanceRoots) {
+    if (Test-Path -LiteralPath $instanceRoot -PathType Container) {
+        $registrationPaths += @(Get-ChildItem -LiteralPath $instanceRoot -Recurse -File -Filter "*.json" -ErrorAction SilentlyContinue |
+            Select-Object -ExpandProperty FullName)
+    }
 }
 
 $snapshot = Get-ProcessSnapshot
@@ -281,8 +305,15 @@ foreach ($registrationPath in $registrationPaths) {
     catch {
         $recordedRole = ""
     }
-    if ($recordedRole -eq "qmd_live") {
-        Write-Host "Leaving independently managed service ownership record untouched: role=$recordedRole path=$registrationPath"
+    $resolvedRegistrationPath = [IO.Path]::GetFullPath($registrationPath)
+    $isLegacyWorkspaceRecord = $resolvedRegistrationPath.StartsWith(
+        [IO.Path]::GetFullPath($legacyInstanceRoot).TrimEnd('\') + '\',
+        [StringComparison]::OrdinalIgnoreCase
+    )
+    if ($isLegacyWorkspaceRecord -and $recordedRole -ne "qmd_live") {
+        continue
+    }
+    if ($recordedRole -and $recordedRole -notin $serviceRoles) {
         continue
     }
     $registration = Read-ValidRegistration -Path $registrationPath -Snapshot $snapshot
@@ -295,15 +326,15 @@ foreach ($registrationPath in $registrationPaths) {
 }
 $ownedIds = Get-OwnedProcessIds -Registrations $registrations -Snapshot $snapshot
 $registeredPorts = @($registrations | ForEach-Object { [int]$_.Record.service_port } | Where-Object { $_ -gt 0 })
-$ports = @(@($QmdHistoryPort, $BackendPort, $FrontendPort) + $registeredPorts) |
+$ports = @(@($QmdLivePort) + $registeredPorts) |
     Select-Object -Unique
 $portOwners = @(Get-PortOwners -Ports $ports)
 
 if ($registrations.Count -eq 0) {
-    Write-Host "No launcher-owned workspace service instances are running."
+    Write-Host "No launcher-owned QMD Live service instances are running."
 }
 else {
-    Write-Host "Registered workspace service instances:"
+    Write-Host "Registered QMD Live service instances:"
     foreach ($registration in ($registrations | Sort-Object { $_.Record.service_role })) {
         Write-Host (
             "  {0,-12} host PID {1,-7} child PID {2,-7} instance {3}" -f
@@ -364,7 +395,7 @@ if ($remainingHosts.Count -gt 0) {
 # that validated host is the bounded fallback for its complete child tree.
 $remainingOwned = @($ownedIds | Where-Object { Test-ProcessAlive -ProcessId $_ })
 if ($remainingOwned.Count -gt 0) {
-    throw "Registered workspace process cleanup failed; remaining PIDs: $($remainingOwned -join ', ')."
+    throw "Registered QMD Live process cleanup failed; remaining PIDs: $($remainingOwned -join ', ')."
 }
 foreach ($registration in $registrations) {
     Remove-Item -LiteralPath $registration.Path -Force -ErrorAction SilentlyContinue
@@ -374,9 +405,9 @@ $remainingPortOwners = @(Get-PortOwners -Ports $ports)
 $remainingOwnedPortOwners = @($remainingPortOwners | Where-Object { $ownedIds.Contains([int]$_.ProcessId) })
 if ($remainingOwnedPortOwners.Count -gt 0) {
     throw (
-        "Owned workspace listeners remain after shutdown: " +
+        "Owned QMD Live listeners remain after shutdown: " +
         (($remainingOwnedPortOwners | ForEach-Object { "port=$($_.Port) pid=$($_.ProcessId)" }) -join "; ")
     )
 }
 
-Write-Host "Stopped all registered workspace service instances. Foreign processes and ports were left untouched."
+Write-Host "Stopped all registered QMD Live service instances. Foreign processes and ports were left untouched."

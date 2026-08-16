@@ -236,7 +236,7 @@ Run the backend API and React development server in separate terminals:
 python scripts/run_frontend.py dev
 ```
 
-To start QMD Live, QMD History, the backend, and the frontend together as four
+To start QMD History, the backend, and the frontend together as three
 independent PowerShell tabs:
 
 ```powershell
@@ -268,6 +268,15 @@ shutdown authority. Stop only instances registered by this launcher with:
 
 ```powershell
 .\scripts\stop_workspace_services.ps1
+```
+
+QMD Live is deliberately outside the workspace lifecycle because stopping its
+vendor websocket during routine frontend/backend development can create a live
+data gap. Start and stop it independently with:
+
+```powershell
+.\scripts\start_qmd_live_gateway.ps1
+.\scripts\stop_qmd_live_gateway.ps1
 ```
 
 Shutdown validates the registered host PID, creation time, repository, and

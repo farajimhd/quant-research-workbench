@@ -2,20 +2,15 @@
 param(
     [string]$HostName = "127.0.0.1",
     [ValidateRange(1, 65535)]
-    [int]$QmdHistoryPort = 8801,
-    [ValidateRange(1, 65535)]
-    [int]$BackendPort = 8000,
-    [ValidateRange(1, 65535)]
-    [int]$FrontendPort = 5173,
+    [int]$QmdLivePort = 8795,
     [string]$PythonExe = "",
     [string]$WindowsTerminalExe = "",
     [ValidateSet("Auto", "Caller", "Named")]
     [string]$TerminalTarget = "Auto",
-    [string]$TerminalWindowName = "quant-research-workbench-workspace",
-    [string]$WorkspaceRuntimeRoot = "",
+    [string]$TerminalWindowName = "quant-research-workbench-qmd-live",
+    [string]$QmdLiveServiceRuntimeRoot = "",
     [ValidateRange(0.01, 100.0)]
-    [double]$MaxGitDirectoryGB = 2.0,
-    [switch]$NoBackendReload
+    [double]$MaxGitDirectoryGB = 2.0
 )
 
 $ErrorActionPreference = "Stop"
@@ -23,9 +18,7 @@ Set-StrictMode -Version Latest
 $env:PYTHONDONTWRITEBYTECODE = "1"
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
-$qmdHistoryLauncher = Join-Path $PSScriptRoot "run_qmd_history_gateway.ps1"
-$backendLauncher = Join-Path $PSScriptRoot "run_backend.ps1"
-$frontendLauncher = Join-Path $PSScriptRoot "run_frontend.py"
+$qmdLiveLauncher = Join-Path $PSScriptRoot "run_qmd_gateway.ps1"
 $serviceTabHost = Join-Path $PSScriptRoot "run_windows_terminal_service_tab.ps1"
 $terminalWindowTargetHelper = Join-Path $PSScriptRoot "windows_terminal_window_target.ps1"
 
@@ -120,23 +113,23 @@ function ConvertTo-PowerShellEncodedCommand {
     return [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($Command))
 }
 
-function Resolve-WorkspaceRuntimeRoot {
+function Resolve-QmdLiveServiceRuntimeRoot {
     param([string]$Requested)
 
     $candidate = if ($Requested.Trim()) {
         $Requested.Trim()
     }
-    elseif ($env:QW_WORKSPACE_SERVICES_RUNTIME_ROOT) {
-        $env:QW_WORKSPACE_SERVICES_RUNTIME_ROOT.Trim()
+    elseif ($env:QMD_LIVE_SERVICE_RUNTIME_ROOT) {
+        $env:QMD_LIVE_SERVICE_RUNTIME_ROOT.Trim()
     }
     else {
-        "D:\TradingML\runtimes\workspace_services"
+        "D:\TradingML\runtimes\qmd_live_service"
     }
     $resolved = [IO.Path]::GetFullPath($candidate)
     $resolvedRepo = [IO.Path]::GetFullPath($repoRoot).TrimEnd('\')
     if ($resolved.TrimEnd('\').Equals($resolvedRepo, [StringComparison]::OrdinalIgnoreCase) -or
         $resolved.StartsWith($resolvedRepo + '\', [StringComparison]::OrdinalIgnoreCase)) {
-        throw "Workspace service runtime state must be outside the repository: $resolved"
+        throw "QMD Live service runtime state must be outside the repository: $resolved"
     }
     return $resolved
 }
@@ -152,7 +145,7 @@ function Assert-ServicePortsAvailable {
     }
     if ($conflicts.Count -gt 0) {
         throw (
-            "Workspace startup refuses to adopt existing port owners because they were not created by this launcher. " +
+            "QMD Live startup refuses to adopt an existing port owner because it was not created by this launcher. " +
             "Stop or relocate them explicitly. Conflicts: " + ($conflicts -join "; ")
         )
     }
@@ -170,7 +163,7 @@ function Assert-RepositoryGitSize {
     $sizeGB = [double]$measure.Sum / 1GB
     if ($sizeGB -gt $MaximumGB) {
         throw (
-            "Workspace startup stopped because .git is {0:N2} GiB, above the {1:N2} GiB safety limit. " -f
+            "QMD Live startup stopped because .git is {0:N2} GiB, above the {1:N2} GiB safety limit. " -f
             $sizeGB, $MaximumGB
         ) + (
             "An oversized Git database makes Codex status and diff snapshots slow even though services are separate. " +
@@ -180,9 +173,7 @@ function Assert-RepositoryGitSize {
     }
 }
 
-Assert-Launcher -Path $qmdHistoryLauncher
-Assert-Launcher -Path $backendLauncher
-Assert-Launcher -Path $frontendLauncher
+Assert-Launcher -Path $qmdLiveLauncher
 Assert-Launcher -Path $serviceTabHost
 Assert-RepositoryGitSize -MaximumGB $MaxGitDirectoryGB
 
@@ -191,9 +182,9 @@ $callerTerminalWindow = Get-WindowsTerminalCallerWindow `
     -PythonExecutable $resolvedPython
 $powerShellExe = (Get-Command powershell.exe -ErrorAction Stop).Source
 $resolvedWindowsTerminal = Resolve-WindowsTerminalExecutable -Requested $WindowsTerminalExe
-$resolvedWorkspaceRuntimeRoot = Resolve-WorkspaceRuntimeRoot -Requested $WorkspaceRuntimeRoot
-$workspaceInstanceId = [Guid]::NewGuid().ToString("N")
-$workspaceInstanceRoot = Join-Path (Join-Path $resolvedWorkspaceRuntimeRoot "instances") $workspaceInstanceId
+$resolvedQmdLiveServiceRuntimeRoot = Resolve-QmdLiveServiceRuntimeRoot -Requested $QmdLiveServiceRuntimeRoot
+$qmdLiveInstanceId = [Guid]::NewGuid().ToString("N")
+$qmdLiveInstanceRoot = Join-Path (Join-Path $resolvedQmdLiveServiceRuntimeRoot "instances") $qmdLiveInstanceId
 $terminalWindowTarget = Resolve-WindowsTerminalTarget `
     -Mode $TerminalTarget `
     -FallbackWindowName $TerminalWindowName `
@@ -212,23 +203,12 @@ $pathTerms = @($toolDirectories | ForEach-Object { ConvertTo-PowerShellLiteral -
 $pathTerms += '$env:PATH'
 $pathAssignment = '$env:PYTHONDONTWRITEBYTECODE = ''1''' + [Environment]::NewLine +
     '$env:PATH = ' + ($pathTerms -join ' + [IO.Path]::PathSeparator + ') + [Environment]::NewLine
-$qmdHistoryBind = "$HostName`:$QmdHistoryPort"
-$qmdHistoryCommand = $pathAssignment +
-    '$env:QMD_HISTORY_BIND = ' + (ConvertTo-PowerShellLiteral -Value $qmdHistoryBind) + [Environment]::NewLine +
-    "& " + (ConvertTo-PowerShellLiteral -Value $qmdHistoryLauncher)
-$backendCommand = $pathAssignment +
-    "& " + (ConvertTo-PowerShellLiteral -Value $backendLauncher) +
-    " -HostName " + (ConvertTo-PowerShellLiteral -Value $HostName) +
-    " -Port $BackendPort" +
-    " -PythonExe " + (ConvertTo-PowerShellLiteral -Value $resolvedPython)
-if ($NoBackendReload) {
-    $backendCommand += " -NoReload"
-}
-$frontendCommand = $pathAssignment +
-    "& " + (ConvertTo-PowerShellLiteral -Value $resolvedPython) +
-    " " + (ConvertTo-PowerShellLiteral -Value $frontendLauncher) +
-    " dev -- --host " + (ConvertTo-PowerShellLiteral -Value $HostName) +
-    " --port $FrontendPort"
+$qmdLiveBind = "$HostName`:$QmdLivePort"
+$qmdLiveCommand = $pathAssignment +
+    "& " + (ConvertTo-PowerShellLiteral -Value $qmdLiveLauncher) +
+    " -Bind " + (ConvertTo-PowerShellLiteral -Value $qmdLiveBind) +
+    " -PythonExe " + (ConvertTo-PowerShellLiteral -Value $resolvedPython) +
+    " -TerminalNoScreen"
 
 function Open-ServiceTabs {
     param([object[]]$Tabs)
@@ -264,10 +244,10 @@ function Open-ServiceTabs {
             "-File", $serviceTabHost,
             "-EncodedCommand", (ConvertTo-PowerShellEncodedCommand -Command $Tabs[$index].Command),
             "-PowerShellExe", $powerShellExe,
-            "-RegistryPath", (Join-Path $workspaceInstanceRoot "$($Tabs[$index].Role).json"),
+            "-RegistryPath", (Join-Path $qmdLiveInstanceRoot "$($Tabs[$index].Role).json"),
             "-ServiceRole", $Tabs[$index].Role,
             "-ServicePort", $Tabs[$index].Port,
-            "-InstanceId", $workspaceInstanceId,
+            "-InstanceId", $qmdLiveInstanceId,
             "-RepositoryRoot", $repoRoot
         )
     }
@@ -281,22 +261,10 @@ function Open-ServiceTabs {
 
 $serviceTabs = @(
     [pscustomobject]@{
-        Title = "QMD History"
-        Role = "qmd_history"
-        Port = $QmdHistoryPort
-        Command = $qmdHistoryCommand
-    },
-    [pscustomobject]@{
-        Title = "Backend"
-        Role = "backend"
-        Port = $BackendPort
-        Command = $backendCommand
-    },
-    [pscustomobject]@{
-        Title = "Frontend"
-        Role = "frontend"
-        Port = $FrontendPort
-        Command = $frontendCommand
+        Title = "QMD Live"
+        Role = "qmd_live"
+        Port = $QmdLivePort
+        Command = $qmdLiveCommand
     }
 )
 
@@ -323,12 +291,9 @@ if ($WhatIfPreference) {
 }
 
 Write-Host ""
-Write-Host "Opened independent QMD History, Backend, and Frontend PowerShell tabs in $($usedTerminalWindowTarget.Description)."
-Write-Host "This starter now exits instead of supervising the three launcher processes."
-Write-Host "A successful graceful stop exits each tab host cleanly so Windows Terminal closes the service tabs."
-Write-Host "QMD History: http://$HostName`:$QmdHistoryPort"
-Write-Host "Backend:    http://$HostName`:$BackendPort"
-Write-Host "Frontend:   http://$HostName`:$FrontendPort"
-Write-Host "Ownership:  $workspaceInstanceRoot"
-Write-Host "Stop only launcher-owned instances with scripts\stop_workspace_services.ps1."
-Write-Host "QMD Live has an independent lifecycle: scripts\start_qmd_live_gateway.ps1 and scripts\stop_qmd_live_gateway.ps1."
+Write-Host "Opened an independent QMD Live PowerShell tab in $($usedTerminalWindowTarget.Description)."
+Write-Host "This starter exits after handing the service to its registered tab host."
+Write-Host "A successful graceful stop exits the tab host cleanly so Windows Terminal closes the service tab."
+Write-Host "QMD Live:   http://$HostName`:$QmdLivePort"
+Write-Host "Ownership:  $qmdLiveInstanceRoot"
+Write-Host "Stop only launcher-owned QMD Live instances with scripts\stop_qmd_live_gateway.ps1."
