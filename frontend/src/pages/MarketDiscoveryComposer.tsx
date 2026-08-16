@@ -1,5 +1,5 @@
-import { ArrowRight, Check, Columns3, ListFilter, Plus, ScanSearch, Search, Trash2 } from "lucide-react";
-import { useMemo, useState } from "react";
+import { ArrowRight, Check, Columns3, ListFilter, Pencil, Plus, ScanSearch, Search, Trash2 } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import { InventoryFilterSelect, type InventoryFilterOption } from "../app/components/InventoryFilterSelect";
 
@@ -14,10 +14,21 @@ export type MarketDiscoveryConfiguration = { calculation_catalog?: unknown[]; cl
 export function MarketDiscoveryComposer({ onChange, section }: { onChange: (value: MarketDiscoveryConfiguration) => void; section: MarketDiscoveryConfiguration }) {
   const [selectedId, setSelectedId] = useState("core");
   const [query, setQuery] = useState("");
+  const treeRef = useRef<HTMLDivElement>(null);
+  const scrollToNewWatchlistRef = useRef(false);
   const selectedWatchlist = section.watchlists.find((row) => row.watchlist_id === selectedId);
   const selected: Composition = selectedWatchlist ?? section.core_scan;
   const visibleWatchlists = section.watchlists.filter((row) => !query.trim() || [row.name, row.description, row.watchlist_id].some((value) => value.toLowerCase().includes(query.trim().toLowerCase())));
   const fieldById = useMemo(() => new Map(section.field_catalog.map((row) => [row.source_id, row])), [section.field_catalog]);
+
+  useEffect(() => {
+    if (!scrollToNewWatchlistRef.current) return;
+    const frame = window.requestAnimationFrame(() => {
+      treeRef.current?.scrollTo({ behavior: "smooth", top: treeRef.current.scrollHeight });
+      scrollToNewWatchlistRef.current = false;
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [section.watchlists.length, selectedId]);
 
   function replace(next: Composition) {
     if (selectedWatchlist) onChange({ ...section, watchlists: section.watchlists.map((row) => row.watchlist_id === selectedWatchlist.watchlist_id ? { ...row, ...next } : row) });
@@ -30,6 +41,8 @@ export function MarketDiscoveryComposer({ onChange, section }: { onChange: (valu
     while (section.watchlists.some((row) => row.watchlist_id === `${base}-${suffix}`)) suffix += 1;
     const watchlist_id = `${base}-${suffix}`;
     const next: Watchlist = { availability: "available", columns: [...section.core_scan.columns], description: "Compose candidate membership from registered Rule Sets and Data Definitions.", enabled: true, inclusion_operator: "all", inclusion_rule_sets: [], manual_exclusions: [], manual_inclusions: [], maximum_size: 10, membership_expiry: "end_of_trading_day", membership_ttl_ms: 300000, name: "Untitled Watchlist", origin: "user", ranking_direction: section.core_scan.ranking_direction, ranking_field: section.core_scan.ranking_field, refresh_interval_ms: section.core_scan.refresh_interval_ms, source_scan_id: section.core_scan.scan_id, template: false, watchlist_id };
+    scrollToNewWatchlistRef.current = true;
+    setQuery("");
     onChange({ ...section, watchlists: [...section.watchlists, next] });
     setSelectedId(watchlist_id);
   }
@@ -38,15 +51,15 @@ export function MarketDiscoveryComposer({ onChange, section }: { onChange: (valu
     <aside className="market-discovery-library">
       <header><span>Discovery definitions</span><strong>Scanner and Watchlists</strong><p>Compose higher-level discovery from registered Data Definitions and Rule Sets.</p></header>
       <label className="market-discovery-search"><Search size={15} /><input aria-label="Search Market Discovery definitions" onChange={(event) => setQuery(event.target.value)} placeholder="Search scanner and Watchlists" type="search" value={query} /></label>
-      <div className="market-discovery-tree">
-        <section><header><span>Core Scan</span><em>1</em></header><button aria-current={selectedId === "core"} onClick={() => setSelectedId("core")} type="button"><ScanSearch size={15} /><span><strong>{section.core_scan.name}</strong><small>{section.core_scan.columns.length} columns · {section.core_scan.inclusion_rule_sets.length} rule sets</small></span><ArrowRight size={13} /></button></section>
-        <section><header><span>Watchlists</span><em>{visibleWatchlists.length}</em></header><div>{visibleWatchlists.map((row) => <button aria-current={selectedId === row.watchlist_id} key={row.watchlist_id} onClick={() => setSelectedId(row.watchlist_id)} type="button"><ListFilter size={15} /><span><strong>{row.name}</strong><small>{row.columns.length} columns · {row.inclusion_rule_sets.length} rule sets</small></span><ArrowRight size={13} /></button>)}</div></section>
+      <div className="market-discovery-tree" ref={treeRef}>
+        <section><header><span>Core Scan</span><em>1</em></header><button aria-current={selectedId === "core"} data-discovery-id="core" onClick={() => setSelectedId("core")} type="button"><ScanSearch size={15} /><span><strong>{section.core_scan.name}</strong><small>{section.core_scan.columns.length} columns · {section.core_scan.inclusion_rule_sets.length} rule sets</small></span><ArrowRight size={13} /></button></section>
+        <section><header><span>Watchlists</span><em>{visibleWatchlists.length}</em></header><div>{visibleWatchlists.map((row) => <button aria-current={selectedId === row.watchlist_id} data-discovery-id={row.watchlist_id} key={row.watchlist_id} onClick={() => setSelectedId(row.watchlist_id)} type="button"><ListFilter size={15} /><span><strong>{row.name}</strong><small>{row.columns.length} columns · {row.inclusion_rule_sets.length} rule sets</small></span><ArrowRight size={13} /></button>)}</div></section>
       </div>
       <button className="market-discovery-create" onClick={createWatchlist} type="button"><Plus size={14} /> Create Watchlist</button>
     </aside>
 
     <main className="market-discovery-definition">
-      <header className="market-discovery-definition-header"><div><span>{selectedWatchlist ? selectedWatchlist.template ? "Built-in Watchlist" : "Custom Watchlist" : "QMD Core Scanner"}</span><input aria-label="Discovery definition name" onChange={(event) => replace({ ...selected, name: event.target.value })} value={selected.name} /><textarea aria-label="Discovery definition description" onChange={(event) => replace({ ...selected, description: event.target.value })} rows={2} value={selected.description} /></div><div className="market-discovery-identity"><code>{selectedWatchlist?.watchlist_id ?? section.core_scan.scan_id}</code><span><Check size={13} /> Reference composition</span></div></header>
+      <header className="market-discovery-definition-header"><div className="market-discovery-editable-copy"><span>{selectedWatchlist ? selectedWatchlist.template ? "Built-in Watchlist" : "Custom Watchlist" : "QMD Core Scanner"}</span><em className="market-discovery-edit-hint"><Pencil size={12} /> Editable</em><input aria-label="Discovery definition name" onChange={(event) => replace({ ...selected, name: event.target.value })} value={selected.name} /><textarea aria-label="Discovery definition description" onChange={(event) => replace({ ...selected, description: event.target.value })} rows={2} value={selected.description} /></div><div className="market-discovery-identity"><code>{selectedWatchlist?.watchlist_id ?? section.core_scan.scan_id}</code><span><Check size={13} /> Reference composition</span></div></header>
 
       {!selectedWatchlist ? <section className="market-discovery-source"><span>Population</span><strong>{section.security_universe.name}</strong><p>{section.security_universe.description}</p></section> : <section className="market-discovery-source"><span>Source scanner</span><strong>{section.core_scan.name}</strong><p>Membership is resolved from this scanner's candidate population.</p></section>}
 

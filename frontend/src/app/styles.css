@@ -23330,7 +23330,10 @@ button {
 .market-discovery-definition { min-width: 0; overflow: auto; padding: 24px 28px 36px; }
 .market-discovery-definition-header { display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: 20px; padding-bottom: 18px; border-bottom: 1px solid var(--border); }
 .market-discovery-definition-header > div:first-child { flex: 1; min-width: 0; }
-.market-discovery-definition-header input, .market-discovery-definition-header textarea { display: block; width: 100%; border: 0; outline: 0; color: var(--foreground); background: transparent; font-family: var(--font-body); }
+.market-discovery-edit-hint { display: inline-flex; align-items: center; gap: 4px; margin-left: 8px; color: var(--muted-foreground); font-size: .68rem; font-style: normal; font-weight: 520; vertical-align: middle; }
+.market-discovery-definition-header input, .market-discovery-definition-header textarea { display: block; width: calc(100% + 12px); margin-left: -6px; padding: 4px 6px; border: 1px solid transparent; border-radius: 6px; outline: 0; color: var(--foreground); background: color-mix(in oklab, var(--surface-alt) 28%, transparent); font-family: var(--font-body); transition: background-color 120ms ease, border-color 120ms ease; }
+.market-discovery-definition-header input:hover, .market-discovery-definition-header textarea:hover { border-color: var(--border); background: var(--surface-alt); }
+.market-discovery-definition-header input:focus, .market-discovery-definition-header textarea:focus { border-color: var(--focus); background: var(--surface); outline: 1px solid color-mix(in oklab, var(--focus) 24%, transparent); }
 .market-discovery-definition-header input { margin-top: 5px; font-size: 1.55rem; font-weight: 560; letter-spacing: -.025em; }
 .market-discovery-definition-header textarea { margin-top: 6px; resize: vertical; color: var(--muted-foreground); font-size: .84rem; line-height: 1.5; }
 .market-discovery-identity { display: grid; justify-items: end; gap: 8px; }
