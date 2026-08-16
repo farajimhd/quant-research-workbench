@@ -7,18 +7,24 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
+import torch
+
 from research.bar_gpt.v2.config import DataConfig
 from research.bar_gpt.v2.grouped_checkpoint_evaluation import (
+    ReturnDiagnosticAccumulator,
+    classification_diagnostics,
     group_labels,
     load_portable_manifest,
     parse_units,
     select_panel_refs,
 )
 from research.bar_gpt.v2.inference import _install_pathlib_pickle_compat
+from research.bar_gpt.v2.metrics import ValidationAccumulator
 from research.bar_gpt.v2.model_discovery import (
     DISCOVERY_CONTRACT_VERSION,
     discovery_shard_compatibility_hash,
 )
+from research.bar_gpt.v2.targets import CONTINUOUS_TARGET_COUNT, RETURN_TARGET_COUNT
 
 
 class GroupedCheckpointEvaluationTest(unittest.TestCase):
@@ -89,6 +95,46 @@ class GroupedCheckpointEvaluationTest(unittest.TestCase):
         self.assertIn("activity/active", labels)
         self.assertIn("metadata_instrument/ETF", labels)
         self.assertIn("metadata_price_bucket/high", labels)
+
+    def test_return_diagnostics_report_scale_and_zero_baseline(self) -> None:
+        def transformed(percent: float) -> float:
+            return float(torch.asinh(torch.log1p(torch.tensor(percent / 100.0)) * 100.0))
+
+        targets = torch.zeros(1, 2, 1, CONTINUOUS_TARGET_COUNT)
+        targets[0, 0, 0, 0] = transformed(1.0)
+        targets[0, 1, 0, 0] = transformed(2.0)
+        quantiles = torch.zeros(1, 2, 1, RETURN_TARGET_COUNT, 3)
+        quantiles[..., 1] = targets[..., :RETURN_TARGET_COUNT]
+        output = SimpleNamespace(horizon_quantiles=quantiles)
+        batch = SimpleNamespace(
+            horizon_targets=targets,
+            horizon_mask=torch.ones_like(targets, dtype=torch.bool),
+            origin_mask=torch.ones(1, 2, dtype=torch.bool),
+        )
+        accumulator = ReturnDiagnosticAccumulator((5_000_000,), (0.1, 0.5, 0.9))
+        accumulator.update(output, batch)
+        diagnostic = accumulator.finalize()["trade_open_return/5s"]
+        self.assertAlmostEqual(diagnostic["mae_bps"], 0.0, places=6)
+        self.assertAlmostEqual(diagnostic["zero_baseline_mae_bps"], 150.0, places=4)
+        self.assertAlmostEqual(diagnostic["mean_target_bps"], 150.0, places=4)
+        self.assertAlmostEqual(diagnostic["correlation"], 1.0, places=6)
+        weighted = accumulator.finalize()["support_weighted"]
+        self.assertAlmostEqual(weighted["mae_bps"], 0.0, places=6)
+        self.assertAlmostEqual(weighted["mae_improvement_vs_zero"], 1.0, places=6)
+
+    def test_classification_diagnostics_include_raw_accuracy_and_support(self) -> None:
+        accumulator = ValidationAccumulator((5_000_000,), (0.1, 0.5, 0.9))
+        perfect = torch.diag(torch.tensor([3.0, 4.0, 5.0]))
+        accumulator.horizon_return_confusion = perfect.repeat(1, 3, 1, 1)
+        accumulator.autoregressive_return_confusion = {"5s": perfect.repeat(3, 1, 1)}
+        result = classification_diagnostics(accumulator)
+        self.assertEqual(result["physical_close_macro"]["accuracy"], 1.0)
+        self.assertEqual(result["physical_close_macro"]["macro_f1"], 1.0)
+        self.assertEqual(result["physical_close_support_weighted"]["accuracy"], 1.0)
+        self.assertEqual(
+            result["physical_close"]["trade_close_return/5s"]["class_support"],
+            {"negative": 3, "neutral": 4, "positive": 5},
+        )
 
 
 if __name__ == "__main__":

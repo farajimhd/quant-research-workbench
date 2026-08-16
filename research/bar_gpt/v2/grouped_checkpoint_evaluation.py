@@ -6,6 +6,7 @@ import json
 import math
 import os
 from collections import defaultdict
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
@@ -14,7 +15,11 @@ import torch
 from research.bar_gpt.v2 import LEARNING_CONTRACT, assert_checkpoint_version
 from research.bar_gpt.v2.config import BarGPTConfig, DataConfig, ExperimentConfig, TrainConfig
 from research.bar_gpt.v2.inference import _install_pathlib_pickle_compat
-from research.bar_gpt.v2.metrics import ValidationAccumulator
+from research.bar_gpt.v2.metrics import (
+    CLOSE_RETURN_TARGET_INDICES,
+    ValidationAccumulator,
+    multiclass_scores,
+)
 from research.bar_gpt.v2.model import BarGPTV2
 from research.bar_gpt.v2.model_discovery import (
     DISCOVERY_CONTRACT_VERSION,
@@ -28,10 +33,229 @@ from research.bar_gpt.v2.offline_shards import (
     materialize_block,
 )
 from research.bar_gpt.v2.train import _amp_dtype, _forward
+from research.bar_gpt.v2.targets import (
+    CONTINUOUS_TARGET_COUNT,
+    RETURN_CLASS_NAMES,
+    RETURN_TARGET_COUNT,
+    RETURN_TARGET_NAMES,
+    transformed_return_to_percent,
+)
 
 
 GROUPED_EVALUATION_CONTRACT = "bar_gpt_v2_grouped_shard_evaluation_v1"
 ACTIVITY_LABELS = {0: "sparse", 1: "moderate", 2: "active"}
+
+
+@dataclass(slots=True)
+class ReturnDiagnosticAccumulator:
+    horizons_us: tuple[int, ...]
+    quantiles: tuple[float, ...]
+    count: torch.Tensor | None = None
+    prediction_sum: torch.Tensor | None = None
+    target_sum: torch.Tensor | None = None
+    prediction_square_sum: torch.Tensor | None = None
+    target_square_sum: torch.Tensor | None = None
+    cross_sum: torch.Tensor | None = None
+    absolute_error_sum: torch.Tensor | None = None
+    squared_error_sum: torch.Tensor | None = None
+    absolute_target_sum: torch.Tensor | None = None
+
+    def _add(self, name: str, value: torch.Tensor) -> None:
+        value = value.double().cpu()
+        current = getattr(self, name)
+        setattr(self, name, value if current is None else current + value)
+
+    def update(self, output: Any, batch: Any) -> None:
+        if output.horizon_quantiles is None:
+            return
+        if batch.horizon_targets is None or batch.horizon_mask is None:
+            raise RuntimeError("return diagnostics require physical-horizon targets")
+        target = batch.horizon_targets[..., :CONTINUOUS_TARGET_COUNT][..., :RETURN_TARGET_COUNT]
+        mask = (
+            batch.horizon_mask[..., :CONTINUOUS_TARGET_COUNT][..., :RETURN_TARGET_COUNT]
+            & batch.origin_mask[:, :, None, None]
+        )
+        median_index = min(
+            range(len(self.quantiles)),
+            key=lambda index: abs(self.quantiles[index] - 0.5),
+        )
+        prediction = output.horizon_quantiles[..., :RETURN_TARGET_COUNT, median_index]
+        prediction = transformed_return_to_percent(prediction.detach())
+        target = transformed_return_to_percent(target)
+        prediction = torch.where(mask, prediction, torch.zeros_like(prediction))
+        target = torch.where(mask, target, torch.zeros_like(target))
+        dimensions = (0, 1)
+        error = prediction - target
+        self._add("count", mask.sum(dimensions))
+        self._add("prediction_sum", prediction.sum(dimensions))
+        self._add("target_sum", target.sum(dimensions))
+        self._add("prediction_square_sum", prediction.square().sum(dimensions))
+        self._add("target_square_sum", target.square().sum(dimensions))
+        self._add("cross_sum", (prediction * target).sum(dimensions))
+        self._add("absolute_error_sum", error.abs().sum(dimensions))
+        self._add("squared_error_sum", error.square().sum(dimensions))
+        self._add("absolute_target_sum", target.abs().sum(dimensions))
+
+    def finalize(self) -> dict[str, Any]:
+        if self.count is None:
+            return {}
+        assert self.prediction_sum is not None and self.target_sum is not None
+        assert self.prediction_square_sum is not None and self.target_square_sum is not None
+        assert self.cross_sum is not None and self.absolute_error_sum is not None
+        assert self.squared_error_sum is not None and self.absolute_target_sum is not None
+        result: dict[str, Any] = {}
+        macro: dict[str, list[float]] = defaultdict(list)
+        for horizon_index, horizon_us in enumerate(self.horizons_us):
+            horizon = f"{horizon_us // 1_000_000}s"
+            for target_index, target_name in enumerate(RETURN_TARGET_NAMES):
+                count = float(self.count[horizon_index, target_index])
+                if count <= 0:
+                    continue
+                prediction_sum = float(self.prediction_sum[horizon_index, target_index])
+                target_sum = float(self.target_sum[horizon_index, target_index])
+                prediction_square_sum = float(
+                    self.prediction_square_sum[horizon_index, target_index]
+                )
+                target_square_sum = float(self.target_square_sum[horizon_index, target_index])
+                cross_sum = float(self.cross_sum[horizon_index, target_index])
+                mae_bps = float(self.absolute_error_sum[horizon_index, target_index]) / count * 100.0
+                rmse_bps = math.sqrt(
+                    float(self.squared_error_sum[horizon_index, target_index]) / count
+                ) * 100.0
+                zero_mae_bps = (
+                    float(self.absolute_target_sum[horizon_index, target_index]) / count * 100.0
+                )
+                covariance = count * cross_sum - prediction_sum * target_sum
+                prediction_variance = max(
+                    0.0, count * prediction_square_sum - prediction_sum * prediction_sum
+                )
+                target_variance = max(
+                    0.0, count * target_square_sum - target_sum * target_sum
+                )
+                correlation_denominator = math.sqrt(prediction_variance * target_variance)
+                correlation = (
+                    covariance / correlation_denominator
+                    if correlation_denominator > 0
+                    else float("nan")
+                )
+                diagnostic = {
+                    "support": int(count),
+                    "mae_bps": mae_bps,
+                    "rmse_bps": rmse_bps,
+                    "zero_baseline_mae_bps": zero_mae_bps,
+                    "mae_improvement_vs_zero": (
+                        1.0 - mae_bps / zero_mae_bps
+                        if zero_mae_bps > 0
+                        else float("nan")
+                    ),
+                    "mean_prediction_bps": prediction_sum / count * 100.0,
+                    "mean_target_bps": target_sum / count * 100.0,
+                    "mean_bias_bps": (prediction_sum - target_sum) / count * 100.0,
+                    "correlation": correlation,
+                }
+                result[f"{target_name}/{horizon}"] = diagnostic
+                for name, value in diagnostic.items():
+                    if name != "support" and math.isfinite(float(value)):
+                        macro[name].append(float(value))
+        result["macro"] = {
+            name: float(sum(values) / len(values))
+            for name, values in sorted(macro.items())
+            if values
+        }
+        total_count = float(self.count.sum())
+        total_prediction = float(self.prediction_sum.sum())
+        total_target = float(self.target_sum.sum())
+        total_absolute_error = float(self.absolute_error_sum.sum())
+        total_squared_error = float(self.squared_error_sum.sum())
+        total_absolute_target = float(self.absolute_target_sum.sum())
+        if total_count > 0:
+            weighted_mae = total_absolute_error / total_count * 100.0
+            weighted_zero_mae = total_absolute_target / total_count * 100.0
+            result["support_weighted"] = {
+                "support": int(total_count),
+                "mae_bps": weighted_mae,
+                "rmse_bps": math.sqrt(total_squared_error / total_count) * 100.0,
+                "zero_baseline_mae_bps": weighted_zero_mae,
+                "mae_improvement_vs_zero": (
+                    1.0 - weighted_mae / weighted_zero_mae
+                    if weighted_zero_mae > 0
+                    else float("nan")
+                ),
+                "mean_prediction_bps": total_prediction / total_count * 100.0,
+                "mean_target_bps": total_target / total_count * 100.0,
+                "mean_bias_bps": (total_prediction - total_target) / total_count * 100.0,
+            }
+        return result
+
+
+def classification_diagnostics(accumulator: ValidationAccumulator) -> dict[str, Any]:
+    def scores(matrix: torch.Tensor) -> dict[str, Any]:
+        accuracy, balanced, macro_f1, mcc, ordinal_error = multiclass_scores(matrix)
+        return {
+            "accuracy": accuracy,
+            "balanced_accuracy": balanced,
+            "macro_f1": macro_f1,
+            "mcc": mcc,
+            "ordinal_class_error": ordinal_error,
+            "support": int(matrix.sum()),
+            "class_support": {
+                name: int(matrix[index].sum())
+                for index, name in enumerate(RETURN_CLASS_NAMES)
+            },
+        }
+
+    physical: dict[str, Any] = {}
+    physical_macro: dict[str, list[float]] = defaultdict(list)
+    physical_total: torch.Tensor | None = None
+    if accumulator.horizon_return_confusion is not None:
+        for horizon_index, horizon_us in enumerate(accumulator.horizons_us):
+            horizon = f"{horizon_us // 1_000_000}s"
+            for close_index, target_index in enumerate(CLOSE_RETURN_TARGET_INDICES):
+                name = RETURN_TARGET_NAMES[target_index]
+                matrix = accumulator.horizon_return_confusion[horizon_index, close_index]
+                value = scores(matrix)
+                physical_total = matrix.clone() if physical_total is None else physical_total + matrix
+                physical[f"{name}/{horizon}"] = value
+                for metric in ("accuracy", "balanced_accuracy", "macro_f1", "mcc", "ordinal_class_error"):
+                    if math.isfinite(float(value[metric])):
+                        physical_macro[metric].append(float(value[metric]))
+    autoregressive: dict[str, Any] = {}
+    autoregressive_macro: dict[str, list[float]] = defaultdict(list)
+    autoregressive_total: torch.Tensor | None = None
+    for view, matrices in sorted(accumulator.autoregressive_return_confusion.items()):
+        for close_index, target_index in enumerate(CLOSE_RETURN_TARGET_INDICES):
+            name = RETURN_TARGET_NAMES[target_index]
+            matrix = matrices[close_index]
+            value = scores(matrix)
+            autoregressive_total = (
+                matrix.clone()
+                if autoregressive_total is None
+                else autoregressive_total + matrix
+            )
+            autoregressive[f"{name}/{view}"] = value
+            for metric in ("accuracy", "balanced_accuracy", "macro_f1", "mcc", "ordinal_class_error"):
+                if math.isfinite(float(value[metric])):
+                    autoregressive_macro[metric].append(float(value[metric]))
+    return {
+        "physical_close": physical,
+        "physical_close_macro": {
+            name: float(sum(values) / len(values))
+            for name, values in sorted(physical_macro.items())
+            if values
+        },
+        "physical_close_support_weighted": (
+            scores(physical_total) if physical_total is not None else {}
+        ),
+        "autoregressive_close": autoregressive,
+        "autoregressive_close_macro": {
+            name: float(sum(values) / len(values))
+            for name, values in sorted(autoregressive_macro.items())
+            if values
+        },
+        "autoregressive_close_support_weighted": (
+            scores(autoregressive_total) if autoregressive_total is not None else {}
+        ),
+    }
 
 
 def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
@@ -230,6 +454,7 @@ def evaluate(args: argparse.Namespace) -> dict[str, Any]:
     model.eval()
     horizon_ids = torch.arange(len(config.data.horizons_us), device=device)
     accumulators: dict[str, ValidationAccumulator] = {}
+    return_diagnostics: dict[str, ReturnDiagnosticAccumulator] = {}
     coverage: dict[str, dict[str, Any]] = defaultdict(
         lambda: {"blocks": 0, "origins": 0, "tickers": set(), "ticker_dates": set()}
     )
@@ -274,6 +499,14 @@ def evaluate(args: argparse.Namespace) -> dict[str, Any]:
                     ),
                 )
                 accumulator.update(output, batch, result)
+                return_accumulator = return_diagnostics.setdefault(
+                    label,
+                    ReturnDiagnosticAccumulator(
+                        tuple(config.data.horizons_us),
+                        tuple(config.model.quantiles),
+                    ),
+                )
+                return_accumulator.update(output, batch)
                 item = coverage[label]
                 item["blocks"] += 1
                 item["origins"] += int(batch.origin_count)
@@ -304,6 +537,8 @@ def evaluate(args: argparse.Namespace) -> dict[str, Any]:
                 "ticker_dates": len(item["ticker_dates"]),
             },
             "metrics": accumulator.finalize(),
+            "classification": classification_diagnostics(accumulator),
+            "returns": return_diagnostics[label].finalize(),
         }
     ticker_metric_rows = [
         value["metrics"] for label, value in grouped.items() if label.startswith("ticker/")
