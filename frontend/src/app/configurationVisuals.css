@@ -4463,6 +4463,7 @@
 
 .configuration-section-guided .guided-answer-content { padding: 0; }
 .configuration-section-guided .guided-answer-content > .configuration-field { max-width: none; }
+.configuration-section-guided .guided-form-grid { gap: 28px 24px; }
 
 .configuration-section-guided .configuration-field {
   align-content: start;
@@ -4491,29 +4492,25 @@
   min-height: 48px;
 }
 
-/* OMS follows Strategy Studio's compact field rhythm: labels align directly
-   with controls and supporting copy stays visually attached to its field. */
-.trading-configuration-page[data-configuration-section="oms"]
-  .configuration-section-guided
-  .configuration-field:not(.configuration-boolean) {
+/* Guided Run Plans, Portfolio, OMS, and Accounts share Strategy Studio's field
+   rhythm: labels align with controls, help stays attached to its own field,
+   and the next field begins only after a clearly separated row boundary. */
+.configuration-section-guided .configuration-field:not(.configuration-boolean) {
   gap: 0;
 }
 
-.trading-configuration-page[data-configuration-section="oms"]
-  .configuration-section-guided
+.configuration-section-guided
   .configuration-field[data-editable="true"] > span:first-child::before {
   display: none;
 }
 
-.trading-configuration-page[data-configuration-section="oms"]
-  .configuration-section-guided
+.configuration-section-guided
   :is(.configuration-field > span, .configuration-choice-set > legend) {
   margin: 0 0 5px;
   padding-inline: 0;
 }
 
-.trading-configuration-page[data-configuration-section="oms"]
-  .configuration-section-guided
+.configuration-section-guided
   .configuration-field:not(.configuration-boolean) > small {
   margin: 4px 0 0;
   padding: 0;
