@@ -2,6 +2,19 @@
 
 ## 2026
 
+### [2026-08-15 time unavailable - Consolidate forecast labels and establish blind mismatch auditing](docs/codex/chat-summaries/2026/CHAT-20260815-UNKNOWN-forecast-labeling-metadata-audits.md)
+
+- Related task: `TASK-0191`
+- Summary written: 2026-08-15 17:09:52 PDT
+
+Completed the 2025 and January-August 2026 forecast-label populations,
+consolidated them with gold-only sentiment, corrected 3,137 metadata exceptions,
+and compared metadata, TF-IDF, and combined Random Forests. Prediction-blind
+audits found 59.0% current-label errors among model mismatches versus 7.4% among
+matches. The chat ended by freezing a validated 361,695-article runtime
+authority, preserving single-reader audits as evidence rather than silently
+applying them, and defining the correction-grade audit of all 35,995 mismatches.
+
 ### [2026-08-10 16:18 PDT - Audit News Synthesis, develop invariant sparse features, and establish standalone LLM issuer labeling](docs/codex/chat-summaries/2026/CHAT-20260810-1618-news-synthesis-features-llm-labeling.md)
 - Chat/task ID: `019fedf8-0541-72f1-ac5c-795d21248aa3`
 - Related tasks: `TASK-0182`, `TASK-0189`, `TASK-0190`, `TASK-0191`
