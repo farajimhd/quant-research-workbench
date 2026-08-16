@@ -160,7 +160,10 @@ function PolicyDocument({ actions, onDuplicate, onRemove, onReplace, policy, rul
 }
 
 function DocumentHeader({ actions, eyebrow, id, name, summary }: { actions?: ReactNode; eyebrow: string; id: string; name: string; summary: string }) {
-  return <header className="trading-action-document-header"><div><span>{eyebrow}</span><h2>{name}</h2><p>{summary}</p><code>{id}</code></div>{actions ? <div>{actions}</div> : null}</header>;
+  return <header className="trading-action-document-header">
+    <div className="trading-action-document-copy"><span>{eyebrow}</span><h2>{name}</h2><p>{summary}</p><code>{id}</code></div>
+    {actions ? <div className="trading-action-document-actions">{actions}</div> : null}
+  </header>;
 }
 
 function ContractCard({ label, rows }: { label: string; rows: string[][] }) {
