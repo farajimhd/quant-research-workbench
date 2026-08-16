@@ -92,6 +92,18 @@ made News Synthesis V1 the sole active News semantic authority. The post-cutover
 1,045-record evaluation had zero failures but retained material performance
 gaps that the later 2,000-news and consolidated-gold programs superseded.
 
+### [2026-08-01 02:39 PDT - Foundational BarGPT model, causal data flow, and training](docs/codex/chat-summaries/2026/CHAT-20260801-0239-bargpt-foundation-data-training.md)
+
+- Chat/task ID: `019fbe31-a005-79d3-a330-a65e3daef3c0`
+- Related task: `TASK-0170`
+- Summary written: 2026-08-15 17:34 PDT
+
+Established BarGPT's decoder-only multiscale architecture, embeddings, causal
+targets, point-in-time ticker/split semantics, ticker-month origin streaming,
+validation meaning, scheduler, and MLOps expectations. The summary explicitly
+separates enduring requirements from the early dense one-second workflow later
+superseded by the sparse direct-event v12 authority.
+
 ### [2026-07-28 - Issuer-scoped News and SEC intelligence](docs/codex/chat-summaries/2026/CHAT-20260728-issuer-scoped-news-sec-intelligence.md)
 
 - Related task: `TASK-0153`

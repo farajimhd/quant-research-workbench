@@ -59,6 +59,12 @@ Froze and iterated the original 700-audit/345-test V1 population, produced reada
 - Summary written: 2026-08-04 (America/Vancouver)
 - Scope: repository-level task-history + chat continuity architecture and News Synthesis lineage state tracking.
 
+### [2026-08-01 02:39 PDT - Design and implement the foundational BarGPT model, causal data flow, and training system](docs/codex/chat-summaries/2026/CHAT-20260801-0239-bargpt-foundation-data-training.md)
+- Chat/task ID: `019fbe31-a005-79d3-a330-a65e3daef3c0`
+- Related task: `TASK-0170`
+- Summary written: 2026-08-15 17:34 PDT
+- Scope: establish the decoder-only multiscale BarGPT architecture, causal targets, point-in-time identity and split semantics, ticker-month streaming lifecycle, validation meaning, training/MLOps controls, and notebook tooling; record which early dense one-second decisions were superseded by the later sparse v12 authority.
+
 ### [2026-07-28 - 2026-07-28 - Issuer-scoped News and SEC intelligence](docs/codex/chat-summaries/2026/CHAT-20260728-issuer-scoped-news-sec-intelligence.md)
 - Chat/task ID: `019f...` (see file header)
 - Related tasks: `TASK-0153`
