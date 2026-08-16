@@ -11,6 +11,17 @@ from src.backend.application_registry import DISCOVERY_RUNTIME_FIELDS, FIELD_DEF
 
 DATA_FIELD_CONTRACT_VERSION = 3
 
+INTERVAL_UNIT_SUFFIXES = {
+    "milliseconds": "ms",
+    "seconds": "s",
+    "minutes": "m",
+    "hours": "h",
+    "days": "d",
+    "weeks": "w",
+    "months": "mo",
+}
+_INTERVAL_SUFFIX_UNITS = {suffix: unit for unit, suffix in INTERVAL_UNIT_SUFFIXES.items()}
+
 _NON_INTERVAL_CONTEXTS = {
     "event",
     "session",
@@ -33,10 +44,42 @@ def field_output_ref(data_field_id: str, revision: int, output_id: str) -> str:
     return f"{data_field_id}@{max(1, int(revision))}:{output_id}"
 
 
-def field_instance_ref(field_ref: str, interval: str = "") -> str:
+def normalize_interval_spec(value: Any) -> dict[str, Any] | None:
+    """Normalize a saved interval to the user-facing value/unit contract.
+
+    Legacy compact strings remain readable, but persisted configuration uses
+    this structured form. The compact value is an execution expression only.
+    """
+
+    if value in (None, ""):
+        return None
+    if isinstance(value, dict):
+        unit = str(value.get("unit") or "").strip().lower()
+        try:
+            count = int(value.get("value"))
+        except (TypeError, ValueError):
+            return None
+        if unit in INTERVAL_UNIT_SUFFIXES and count > 0:
+            return {"value": count, "unit": unit}
+        return None
+    match = re.fullmatch(r"([1-9]\d*)(ms|s|m|h|d|w|mo)", str(value).strip().lower())
+    if not match:
+        return None
+    return {"value": int(match.group(1)), "unit": _INTERVAL_SUFFIX_UNITS[match.group(2)]}
+
+
+def interval_expression(value: Any) -> str:
+    interval = normalize_interval_spec(value)
+    if interval is None:
+        return ""
+    return f"{interval['value']}{INTERVAL_UNIT_SUFFIXES[interval['unit']]}"
+
+
+def field_instance_ref(field_ref: str, interval: Any = "") -> str:
     """Identify a configured use of a Data Field without redefining the field."""
 
-    return f"{field_ref}@@{interval}" if interval else field_ref
+    expression = interval_expression(interval)
+    return f"{field_ref}@@{expression}" if expression else field_ref
 
 
 def atomic_field_catalog(extra_inputs: Iterable[str] = ()) -> list[dict[str, Any]]:
@@ -463,7 +506,7 @@ def project_composition_data_field_columns(
         if str(row.get("column_id") or "")
     }
     bindings = {
-        str(key): str(value)
+        str(key): interval_expression(value)
         for key, value in dict(composition.get("column_intervals") or {}).items()
         if str(key) and str(value)
     }
@@ -519,9 +562,9 @@ def migrate_rule_set_field_refs(
                     condition[f"{side}_source_id"] = str(output.get("source_id") or legacy_id)
                     allowed = [str(value) for value in output.get("available_intervals") or []]
                     if legacy_timeframe in allowed:
-                        condition[f"{side}_interval"] = legacy_timeframe
-                    elif allowed and not str(condition.get(f"{side}_interval") or ""):
-                        condition[f"{side}_interval"] = _preferred_instance_interval(allowed)
+                        condition[f"{side}_interval"] = normalize_interval_spec(legacy_timeframe)
+                    elif allowed and normalize_interval_spec(condition.get(f"{side}_interval")) is None:
+                        condition[f"{side}_interval"] = normalize_interval_spec(_preferred_instance_interval(allowed))
                     elif not allowed:
                         condition.pop(f"{side}_interval", None)
                 elif legacy_id:
@@ -642,14 +685,14 @@ def compile_data_field_plan(
             output = output_index.get(ranking)
             resolved = str((output or {}).get("field_ref") or ranking)
             field_refs.add(resolved)
-            field_instances.add((resolved, str(composition.get("ranking_interval") or "")))
+            field_instances.add((resolved, interval_expression(composition.get("ranking_interval"))))
         column_intervals = dict(composition.get("column_intervals") or {})
         for column_id in composition.get("columns") or []:
             column = columns.get(str(column_id), {})
             if str(column.get("field_ref") or ""):
                 resolved = str(column["field_ref"])
                 field_refs.add(resolved)
-                field_instances.add((resolved, str(column_intervals.get(str(column_id)) or "")))
+                field_instances.add((resolved, interval_expression(column_intervals.get(str(column_id)))))
     for rule_id in rule_ids:
         for condition in rules.get(rule_id, {}).get("conditions") or []:
             if not bool(condition.get("enabled", True)):
@@ -660,7 +703,7 @@ def compile_data_field_plan(
                     output = output_index.get(field_ref)
                     resolved = str((output or {}).get("field_ref") or field_ref)
                     field_refs.add(resolved)
-                    field_instances.add((resolved, str(condition.get(f"{side}_interval") or "")))
+                    field_instances.add((resolved, interval_expression(condition.get(f"{side}_interval"))))
     selected_fields = []
     atomic_inputs: set[str] = set()
     timeframes: set[str] = set()

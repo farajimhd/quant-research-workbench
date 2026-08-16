@@ -14,6 +14,7 @@ from src.backend.discovery_projection import (
 )
 from src.backend.data_field_contracts import (
     field_instance_ref,
+    interval_expression,
     project_composition_data_field_columns,
     project_data_field_outputs,
 )
@@ -285,7 +286,7 @@ def _occurrence(
         evidence[column_id] = value
         field_ref = str(column.get("field_ref") or "")
         if field_ref:
-            interval = str(dict(stream.get("column_intervals") or {}).get(column_id) or "")
+            interval = interval_expression(dict(stream.get("column_intervals") or {}).get(column_id))
             instance_ref = field_instance_ref(field_ref, interval)
             field_evidence[instance_ref] = {
                 "field_ref": field_ref,

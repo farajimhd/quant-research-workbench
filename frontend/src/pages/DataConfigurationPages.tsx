@@ -3,7 +3,7 @@ import { useMemo, useState } from "react";
 
 import type { InformationRegistry, RegistryDefinition } from "../app/components/DefinitionRegistry";
 import { InventoryFilterSelect, type InventoryFilterOption } from "../app/components/InventoryFilterSelect";
-import { IntervalSelect, intervalLabel, preferredInterval } from "../app/components/IntervalSelect";
+import { IntervalSelect, intervalLabel, preferredInterval, type IntervalSpec, type IntervalValue } from "../app/components/IntervalSelect";
 
 export type DataRuleCondition = {
   comparator: string;
@@ -11,10 +11,10 @@ export type DataRuleCondition = {
   enabled: boolean;
   left_source_id: string;
   left_field_ref?: string;
-  left_interval?: string;
+  left_interval?: IntervalValue;
   right_source_id: string;
   right_field_ref?: string;
-  right_interval?: string;
+  right_interval?: IntervalValue;
   value: boolean | number | string | null;
 };
 
@@ -253,7 +253,7 @@ function fieldDimensionSummary(context: DataFieldDefinition["context"], variantC
 
 function fieldContextCards(context: DataFieldDefinition["context"]) {
   const cards: Array<{ detail: string; label: string; value: string }> = [];
-  if (context.dimension_kind === "interval") cards.push({ label: "Use parameter", value: "Interval", detail: `Assigned in a Rule Set or Market Discovery use. Available: ${(context.available_intervals ?? []).map(intervalLabel).join(", ")}.` });
+  if (context.dimension_kind === "interval") cards.push({ label: "Use parameter", value: "Value + unit", detail: "Assigned only when this Data Field is used in a Rule Set or Market Discovery definition; the compact execution expression is compiled automatically." });
   if (context.window) cards.push({ label: "Rolling window", value: intervalLabel(context.window), detail: context.window_configurable ? "Configurable lookback window." : "Fixed by this field definition." });
   if (context.anchor) cards.push({ label: "Anchor", value: readable(context.anchor), detail: "The value accumulates or resets at this boundary." });
   if (context.as_of) cards.push({ label: "As of", value: context.as_of === "evaluation_clock" ? "Current at evaluation" : readable(context.as_of), detail: "Latest causally available value at this clock." });
@@ -442,13 +442,13 @@ function preferredRuleVariant(variants: RuleFieldDefinition[]) {
   return variants[0];
 }
 
-function RuleDimensionControl({ definition, label, onChange, value }: { definition: RuleFieldDefinition; label: string; onChange: (interval: string) => void; value: string }) {
+function RuleDimensionControl({ definition, label, onChange, value }: { definition: RuleFieldDefinition; label: string; onChange: (interval: IntervalSpec) => void; value: IntervalValue }) {
   const intervals = definition.data_field_context?.available_intervals ?? [];
   if (definition.data_field_context?.dimension_kind === "interval" && intervals.length) return <IntervalSelect ariaLabel={`${label} interval`} className="rule-field-dimension" intervals={intervals} onChange={onChange} value={value} />;
   return <em className="rule-field-dimension-summary">{ruleFieldContext(definition)}</em>;
 }
 
-function ruleFieldContext(definition?: RuleFieldDefinition, interval = "") {
+function ruleFieldContext(definition?: RuleFieldDefinition, interval: IntervalValue = "") {
   if (!definition?.data_field_context) return "Registered Data Field";
   if (definition.data_field_context.dimension_kind === "interval") return interval ? `Interval ${intervalLabel(interval)}` : "Interval required";
   return fieldDimensionSummary(definition.data_field_context);

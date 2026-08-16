@@ -5,6 +5,8 @@ import unittest
 from src.backend.data_field_contracts import (
     compile_data_field_plan,
     field_instance_ref,
+    interval_expression,
+    normalize_interval_spec,
     project_composition_data_field_columns,
     project_data_field_outputs,
 )
@@ -30,6 +32,12 @@ class DataFieldContractTests(unittest.TestCase):
                 "market.is_open",
             }.issubset(atomic_ids)
         )
+
+    def test_structured_interval_compiles_without_becoming_field_identity(self) -> None:
+        interval = {"value": 3, "unit": "minutes"}
+        self.assertEqual(normalize_interval_spec("3m"), interval)
+        self.assertEqual(interval_expression(interval), "3m")
+        self.assertEqual(field_instance_ref("data.test@1:value", interval), "data.test@1:value@@3m")
 
     def test_every_rule_condition_uses_an_exact_data_field_output(self) -> None:
         output_refs = {

@@ -6,6 +6,7 @@ from src.backend.application_registry import (
     DISCOVERY_FIELD_PRESENTATIONS,
     DISCOVERY_RUNTIME_FIELDS,
 )
+from src.backend.data_field_contracts import interval_expression
 
 
 _PRESENTATION_BY_COLUMN = {
@@ -73,11 +74,7 @@ def configured_discovery_technical_windows(configuration: dict[str, Any]) -> tup
 
     discovery = dict(configuration.get("market_discovery") or {})
     compiled = dict(discovery.get("data_field_plan") or {})
-    compiled_windows = {
-        str(value)
-        for value in compiled.get("technical_timeframes") or []
-        if str(value) in {"1s", "5s", "10s", "30s", "1m", "5m", "15m", "30m", "1h", "1d", "1w", "1mo"}
-    }
+    compiled_windows = {str(value) for value in compiled.get("technical_timeframes") or [] if str(value)}
     if compiled_windows:
         return tuple(sorted(compiled_windows))
     selected_rule_ids: set[str] = set()
@@ -97,12 +94,12 @@ def configured_discovery_technical_windows(configuration: dict[str, Any]) -> tup
             if str(value)
         )
         windows.update(
-            str(value)
+            interval_expression(value)
             for value in dict(composition.get("column_intervals") or {}).values()
-            if str(value) in {"1s", "5s", "10s", "30s", "1m", "5m", "15m", "30m", "1h", "1d", "1w", "1mo"}
+            if interval_expression(value)
         )
-        ranking_interval = str(composition.get("ranking_interval") or "")
-        if ranking_interval in {"1s", "5s", "10s", "30s", "1m", "5m", "15m", "30m", "1h", "1d", "1w", "1mo"}:
+        ranking_interval = interval_expression(composition.get("ranking_interval"))
+        if ranking_interval:
             windows.add(ranking_interval)
     for rule_set in discovery.get("rule_sets") or []:
         if str(rule_set.get("rule_set_id") or "") not in selected_rule_ids:
@@ -111,8 +108,8 @@ def configured_discovery_technical_windows(configuration: dict[str, Any]) -> tup
             if not bool(condition.get("enabled", True)):
                 continue
             for key in ("left_interval", "right_interval"):
-                value = str(condition.get(key) or "")
-                if value in {"1s", "5s", "10s", "30s", "1m", "5m", "15m", "30m", "1h", "1d", "1w", "1mo"}:
+                value = interval_expression(condition.get(key))
+                if value:
                     windows.add(value)
     for column_id in selected_columns:
         presentation = _PRESENTATION_BY_COLUMN.get(column_id)

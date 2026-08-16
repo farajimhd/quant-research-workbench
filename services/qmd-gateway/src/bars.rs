@@ -1024,9 +1024,17 @@ impl BarStore {
             .as_ref()
             .map(|targets| targets.requires_focused_computation(&sym))
             .unwrap_or(true);
-        for frame in self
-            .frames
-            .clone()
+        let mut frames = self.frames.clone();
+        if let Some(targets) = self.computation_targets.as_ref() {
+            for timeframe in targets.required_bar_timeframes(&sym) {
+                if let Some(frame) = parse_timeframe(&timeframe) {
+                    if !frames.iter().any(|existing| existing.label == frame.label) {
+                        frames.push(frame);
+                    }
+                }
+            }
+        }
+        for frame in frames
             .into_iter()
             .filter(|frame| focused || frame.label == "1s")
         {
@@ -1749,17 +1757,22 @@ async fn send_finalized_bars(
 }
 fn parse_timeframe(label: &str) -> Option<BarFrame> {
     let label = canonical_timeframe(label);
-    let duration_millis = match label.as_str() {
-        "100ms" => 100,
-        "1s" => 1_000,
-        "5s" => 5_000,
-        "10s" => 10_000,
-        "30s" => 30_000,
-        "1m" => 60_000,
-        "5m" => 300_000,
-        "1h" => 3_600_000,
+    let split_at = label.find(|character: char| !character.is_ascii_digit())?;
+    let count = label[..split_at].parse::<i64>().ok()?;
+    if count <= 0 {
+        return None;
+    }
+    let unit_millis = match &label[split_at..] {
+        "ms" => 1_i64,
+        "s" => 1_000,
+        "m" => 60_000,
+        "h" => 3_600_000,
+        "d" => 86_400_000,
+        "w" => 604_800_000,
+        "mo" => 2_592_000_000,
         _ => return None,
     };
+    let duration_millis = count.checked_mul(unit_millis)?;
     Some(BarFrame {
         label,
         duration_millis,
@@ -2137,9 +2150,15 @@ mod tests {
     }
 
     #[test]
-    fn supports_fixed_subsecond_and_five_second_boundaries() {
+    fn supports_configurable_fixed_interval_boundaries() {
         assert!(is_supported_timeframe("100ms"));
         assert!(is_supported_timeframe("5s"));
+        assert_eq!(parse_timeframe("3m").unwrap().duration_millis, 180_000);
+        assert_eq!(
+            parse_timeframe("2w").unwrap().duration_millis,
+            1_209_600_000
+        );
+        assert!(!is_supported_timeframe("0m"));
         let second = Utc.with_ymd_and_hms(2026, 7, 10, 13, 30, 7).unwrap();
         let timestamp = second + chrono::Duration::milliseconds(987);
         assert_eq!(

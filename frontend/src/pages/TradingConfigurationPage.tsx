@@ -450,9 +450,9 @@ type WatchlistConfig = {
   manual_inclusions: string[];
   manual_exclusions: string[];
   columns: string[];
-  column_intervals?: Record<string, string>;
+  column_intervals?: Record<string, import("../app/components/IntervalSelect").IntervalValue>;
   ranking_field_ref?: string;
-  ranking_interval?: string;
+  ranking_interval?: import("../app/components/IntervalSelect").IntervalValue;
   membership_history: Array<Record<string, unknown>>;
   origin?: "system" | "user";
   template?: boolean;
@@ -470,7 +470,7 @@ type SignalStreamConfig = {
   inclusion_rule_sets: string[];
   inclusion_operator: "all" | "any";
   columns: string[];
-  column_intervals?: Record<string, string>;
+  column_intervals?: Record<string, import("../app/components/IntervalSelect").IntervalValue>;
   refresh_interval_ms: number;
   trigger_policy: "false_to_true";
   rearm_policy: "after_false" | "after_cooldown";

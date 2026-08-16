@@ -287,6 +287,24 @@ impl SharedComputationTargets {
         })
     }
 
+    pub fn required_bar_timeframes(&self, ticker: &str) -> Vec<String> {
+        let now = Utc::now();
+        let normalized_ticker = ticker.trim().to_ascii_uppercase();
+        let state = self.inner.read().expect("computation target lock poisoned");
+        let mut values = state
+            .targets
+            .values()
+            .filter(|target| {
+                target.expires_at.map(|expiry| expiry > now).unwrap_or(true)
+                    && target.tickers.binary_search(&normalized_ticker).is_ok()
+            })
+            .flat_map(|target| target.timeframes.iter().cloned())
+            .collect::<Vec<_>>();
+        values.sort();
+        values.dedup();
+        values
+    }
+
     pub fn snapshot(&self) -> ComputationTargetSnapshot {
         let now = Utc::now();
         let mut state = self
@@ -784,13 +802,14 @@ mod tests {
         let targets = SharedComputationTargets::default();
         let mut focused = request("chart", ExecutionScope::Request);
         focused.tickers = vec!["aapl".to_string()];
-        focused.timeframes = vec!["1M".to_string()];
+        focused.timeframes = vec!["3M".to_string()];
         targets.replace(focused).unwrap();
 
-        assert!(targets.requires_bar_computation("AAPL", "1m"));
+        assert!(targets.requires_bar_computation("AAPL", "3m"));
         assert!(targets.requires_bar_computation("aapl", "100ms"));
         assert!(!targets.requires_bar_computation("AAPL", "5m"));
-        assert!(!targets.requires_bar_computation("MSFT", "1m"));
+        assert!(!targets.requires_bar_computation("MSFT", "3m"));
+        assert_eq!(targets.required_bar_timeframes("AAPL"), vec!["3m"]);
     }
 
     #[test]

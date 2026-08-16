@@ -6,8 +6,10 @@ from unittest.mock import patch
 from zoneinfo import ZoneInfo
 
 from src.backend.historical_scanner_service import (
+    _TECHNICAL_MATERIALIZATIONS,
     _materialize_technical_snapshot,
     historical_scanner_technical_projection,
+    historical_scanner_technical_projection_or_schedule,
     scanner_technical_window,
 )
 
@@ -16,6 +18,9 @@ NEW_YORK = ZoneInfo("America/New_York")
 
 
 class ScannerTechnicalWindowTests(unittest.TestCase):
+    def tearDown(self) -> None:
+        _TECHNICAL_MATERIALIZATIONS.clear()
+
     def test_five_minute_boundary_uses_the_completed_bucket(self) -> None:
         start, end = scanner_technical_window(
             datetime(2026, 7, 17, 9, 45, tzinfo=NEW_YORK),
@@ -31,6 +36,31 @@ class ScannerTechnicalWindowTests(unittest.TestCase):
         )
         self.assertEqual(start.astimezone(NEW_YORK).strftime("%H:%M:%S"), "09:00:00")
         self.assertEqual(end.astimezone(NEW_YORK).strftime("%H:%M:%S"), "09:45:00")
+
+    def test_arbitrary_three_minute_interval_is_aligned_and_supported(self) -> None:
+        start, end = scanner_technical_window(
+            datetime(2026, 7, 17, 9, 47, tzinfo=NEW_YORK),
+            "3m",
+        )
+        self.assertEqual(start.astimezone(NEW_YORK).strftime("%H:%M:%S"), "09:45:00")
+        self.assertEqual(end.astimezone(NEW_YORK).strftime("%H:%M:%S"), "09:47:00")
+
+    @patch("src.backend.historical_scanner_service.Thread")
+    @patch("src.backend.historical_scanner_service._source_revision", return_value="revision")
+    @patch("src.backend.historical_scanner_service.ClickHouseHttpClient")
+    def test_cache_miss_schedules_technical_build_without_blocking_request(
+        self,
+        _client,
+        _source_revision,
+        thread,
+    ) -> None:
+        projection, meta = historical_scanner_technical_projection_or_schedule(
+            datetime(2026, 7, 17, 9, 47, tzinfo=NEW_YORK),
+            calculation_windows=["3m"],
+        )
+        self.assertEqual(projection, {})
+        self.assertEqual(meta["technical_status"], "building")
+        thread.return_value.start.assert_called_once()
 
     def test_daily_bucket_starts_at_extended_session_open(self) -> None:
         start, end = scanner_technical_window(
@@ -99,7 +129,7 @@ class ScannerTechnicalWindowTests(unittest.TestCase):
 
     def test_projection_exposes_source_specific_vwap_keys(self) -> None:
         class ProjectionClient:
-            def __init__(self, *_args) -> None:
+            def __init__(self, *_args, **_kwargs) -> None:
                 pass
 
             def execute(self, sql: str, **_kwargs) -> str:

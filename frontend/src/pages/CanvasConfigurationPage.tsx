@@ -4627,7 +4627,7 @@ function useCanvasScannerSnapshot({ cutoffMs, enabled, technicalWindows }: { cut
               enrichment_scope: "core",
               lookback_minutes: 15,
               technical_windows: target.technicalWindows,
-            })}`, { signal: requestController.signal, timeoutMs: 20_000 });
+            })}`, { signal: requestController.signal, timeoutMs: 120_000 });
             if (!mountedRef.current) return;
             if (!targetRef.current.enabled) return;
             setSnapshot(corePayload);
@@ -4644,7 +4644,7 @@ function useCanvasScannerSnapshot({ cutoffMs, enabled, technicalWindows }: { cut
                 enrichment_scope: "full",
                 lookback_minutes: 15,
                 technical_windows: target.technicalWindows,
-              })}`, { signal: requestController.signal, timeoutMs: 90_000 });
+              })}`, { signal: requestController.signal, timeoutMs: 180_000 });
               if (!mountedRef.current || !targetRef.current.enabled || targetRef.current.key !== target.key) return;
               setSnapshot(fullPayload);
               refreshStatus = fullPayload.meta?.status === "building" || fullPayload.meta?.status === "error"

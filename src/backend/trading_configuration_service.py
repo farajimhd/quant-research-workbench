@@ -23,7 +23,9 @@ from src.backend.data_field_contracts import (
     build_data_field_catalog,
     compile_data_field_plan,
     data_field_output_index,
+    interval_expression,
     migrate_rule_set_field_refs,
+    normalize_interval_spec,
     validate_data_field_catalog,
 )
 from src.backend.trading_action_registry import (
@@ -62,7 +64,7 @@ from src.trading_runtime.strategy_campaign import validate_campaign_policy
 from src.trading_runtime.taxonomy import StrategyTaxonomy
 
 
-CONFIGURATION_SCHEMA_VERSION = 29
+CONFIGURATION_SCHEMA_VERSION = 30
 CONFIGURATION_SECTIONS = {
     "strategy",
     "trading_actions",
@@ -2793,13 +2795,17 @@ def _validate_market_discovery(section: dict[str, Any]) -> None:
                 raise ValueError(
                     f"Watchlist rule set {rule_set.get('name')} cannot use {comparator} on {source_id}"
                 )
-            left_interval = str(condition.get("left_interval") or "")
-            left_available = {str(value) for value in output.get("available_intervals") or []}
-            if left_available and left_interval not in left_available:
+            left_interval = normalize_interval_spec(condition.get("left_interval"))
+            left_available = {
+                str(spec["unit"])
+                for value in output.get("available_intervals") or []
+                if (spec := normalize_interval_spec(value)) is not None
+            }
+            if left_available and (left_interval is None or left_interval["unit"] not in left_available):
                 raise ValueError(
                     f"Rule Set {rule_set.get('name')} requires a supported interval for {source_id}"
                 )
-            if not left_available and left_interval:
+            if not left_available and left_interval is not None:
                 raise ValueError(
                     f"Rule Set {rule_set.get('name')} assigns an interval to non-interval field {source_id}"
                 )
@@ -2835,13 +2841,17 @@ def _validate_market_discovery(section: dict[str, Any]) -> None:
                     raise ValueError(
                         f"Rule Set {rule_set.get('name')} compares incompatible Data Fields {source_id} and {right_source_id}"
                     )
-                right_interval = str(condition.get("right_interval") or "")
-                right_available = {str(value) for value in right_output.get("available_intervals") or []}
-                if right_available and right_interval not in right_available:
+                right_interval = normalize_interval_spec(condition.get("right_interval"))
+                right_available = {
+                    str(spec["unit"])
+                    for value in right_output.get("available_intervals") or []
+                    if (spec := normalize_interval_spec(value)) is not None
+                }
+                if right_available and (right_interval is None or right_interval["unit"] not in right_available):
                     raise ValueError(
                         f"Rule Set {rule_set.get('name')} requires a supported comparison interval for {right_source_id}"
                     )
-                if not right_available and right_interval:
+                if not right_available and right_interval is not None:
                     raise ValueError(
                         f"Rule Set {rule_set.get('name')} assigns an interval to non-interval comparison field {right_source_id}"
                     )
@@ -3025,7 +3035,7 @@ def _validate_market_discovery(section: dict[str, Any]) -> None:
         )
         selected_columns = {str(value) for value in composition.get("columns") or []}
         bindings = {
-            str(key): str(value)
+            str(key): normalize_interval_spec(value)
             for key, value in dict(composition.get("column_intervals") or {}).items()
             if str(key) and str(value)
         }
@@ -3033,21 +3043,26 @@ def _validate_market_discovery(section: dict[str, Any]) -> None:
             raise ValueError(f"{composition_name} has interval bindings for unselected columns")
         for column_id in selected_columns:
             available = {
-                str(value)
+                str(spec["unit"])
                 for value in columns_by_id.get(column_id, {}).get("available_intervals") or []
+                if (spec := normalize_interval_spec(value)) is not None
             }
-            selected_interval = bindings.get(column_id, "")
-            if available and selected_interval not in available:
+            selected_interval = bindings.get(column_id)
+            if available and (selected_interval is None or selected_interval["unit"] not in available):
                 raise ValueError(f"{composition_name} requires an interval for column {column_id}")
-            if not available and selected_interval:
+            if not available and selected_interval is not None:
                 raise ValueError(f"{composition_name} assigns an interval to non-interval column {column_id}")
         if "ranking_field_ref" in composition:
             ranking_output = output_index.get(str(composition.get("ranking_field_ref") or ""), {})
-            available = {str(value) for value in ranking_output.get("available_intervals") or []}
-            ranking_interval = str(composition.get("ranking_interval") or "")
-            if available and ranking_interval not in available:
+            available = {
+                str(spec["unit"])
+                for value in ranking_output.get("available_intervals") or []
+                if (spec := normalize_interval_spec(value)) is not None
+            }
+            ranking_interval = normalize_interval_spec(composition.get("ranking_interval"))
+            if available and (ranking_interval is None or ranking_interval["unit"] not in available):
                 raise ValueError(f"{composition_name} requires a ranking interval")
-            if not available and ranking_interval:
+            if not available and ranking_interval is not None:
                 raise ValueError(f"{composition_name} assigns an interval to a non-interval ranking field")
     compiled_plan = compile_data_field_plan(section)
     stored_plan = dict(section.get("data_field_plan") or {})
@@ -3235,7 +3250,7 @@ def _compiled_observation_dependencies(
                 row["input_kinds"].add("rule_set")
                 row["input_keys"].add(source_id)
                 data_field = data_field_by_ref.get(field_ref, {})
-                interval = str(condition.get(f"{side}_interval") or "")
+                interval = interval_expression(condition.get(f"{side}_interval"))
                 if interval:
                     row["timeframes"].add(interval.lower())
                 else:
@@ -3765,6 +3780,34 @@ def _migrate_market_discovery_instances(
             composition.pop("ranking_interval", None)
 
 
+def _normalize_market_discovery_interval_specs(discovery: dict[str, Any]) -> None:
+    """Persist intervals as value/unit data and leave compact strings to compilation."""
+
+    for rule_set in discovery.get("rule_sets") or []:
+        for condition in rule_set.get("conditions") or []:
+            for key in ("left_interval", "right_interval"):
+                normalized = normalize_interval_spec(condition.get(key))
+                if normalized is None:
+                    condition.pop(key, None)
+                else:
+                    condition[key] = normalized
+    for composition in [
+        discovery.get("core_scan") or {},
+        *list(discovery.get("watchlists") or []),
+        *list(discovery.get("signal_streams") or []),
+    ]:
+        composition["column_intervals"] = {
+            str(key): normalized
+            for key, value in dict(composition.get("column_intervals") or {}).items()
+            if str(key) and (normalized := normalize_interval_spec(value)) is not None
+        }
+        ranking = normalize_interval_spec(composition.get("ranking_interval"))
+        if ranking is None:
+            composition.pop("ranking_interval", None)
+        else:
+            composition["ranking_interval"] = ranking
+
+
 def _migrate_draft(raw: dict[str, Any]) -> dict[str, Any]:
     source_schema_version = int(raw.get("schema_version") or 0)
     legacy_discovery = deepcopy(raw.get("market_discovery") or {})
@@ -3929,6 +3972,7 @@ def _migrate_draft(raw: dict[str, Any]) -> dict[str, Any]:
                 legacy_column_catalog=legacy_column_catalog,
                 legacy_data_fields=legacy_data_fields,
             )
+        _normalize_market_discovery_interval_specs(result["market_discovery"])
         core_scan = result["market_discovery"]["core_scan"]
         default_core_scan = defaults["market_discovery"]["core_scan"]
         # Core Scan is a protected system surface. Keep its descriptive

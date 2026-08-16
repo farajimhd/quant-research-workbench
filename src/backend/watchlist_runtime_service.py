@@ -24,6 +24,7 @@ from src.backend.data_field_contracts import (
     compile_data_field_plan,
     data_field_output_index,
     field_instance_ref,
+    interval_expression,
     project_composition_data_field_columns,
     project_data_field_outputs,
 )
@@ -622,7 +623,7 @@ def watchlist_dependency_fields(
         for value in watchlist.get(key) or []
     }
     ranking_ref = str(watchlist.get("ranking_field_ref") or "")
-    ranking_interval = str(watchlist.get("ranking_interval") or "")
+    ranking_interval = interval_expression(watchlist.get("ranking_interval"))
     source_ids = {
         str(watchlist.get("ranking_field") or ""),
         field_instance_ref(ranking_ref, ranking_interval)
@@ -640,9 +641,9 @@ def watchlist_dependency_fields(
             left_ref = str(condition.get("left_field_ref") or "")
             right_ref = str(condition.get("right_field_ref") or "")
             if left_ref and condition.get("left_interval"):
-                source_ids.add(field_instance_ref(left_ref, str(condition.get("left_interval") or "")))
+                source_ids.add(field_instance_ref(left_ref, condition.get("left_interval")))
             if right_ref and condition.get("right_interval"):
-                source_ids.add(field_instance_ref(right_ref, str(condition.get("right_interval") or "")))
+                source_ids.add(field_instance_ref(right_ref, condition.get("right_interval")))
     fields = {
         SOURCE_FIELDS.get(source_id, source_id)
         for source_id in source_ids
@@ -862,7 +863,7 @@ def focused_target_contract(
         str(watchlist.get("ranking_field") or ""),
         str(watchlist.get("ranking_field_ref") or ""),
     }
-    ranking_interval = str(watchlist.get("ranking_interval") or "")
+    ranking_interval = interval_expression(watchlist.get("ranking_interval"))
     if ranking_interval:
         timeframes.add(ranking_interval)
     rule_rows = rule_sets.values() if isinstance(rule_sets, dict) else rule_sets
@@ -877,7 +878,7 @@ def focused_target_contract(
             referenced_sources.add(str(condition.get("left_field_ref") or ""))
             referenced_sources.add(str(condition.get("right_field_ref") or ""))
             timeframes.update(
-                str(condition.get(key) or "")
+                interval_expression(condition.get(key))
                 for key in ("left_interval", "right_interval")
                 if str(condition.get(key) or "")
             )
@@ -887,7 +888,7 @@ def focused_target_contract(
         for value in watchlist.get("columns") or []
     )
     timeframes.update(
-        str(value)
+        interval_expression(value)
         for value in dict(watchlist.get("column_intervals") or {}).values()
         if str(value)
     )

@@ -13,7 +13,10 @@ export async function api<T>(path: string, init?: ApiRequestInit): Promise<T> {
   const abortFromCaller = () => controller.abort(requestInit.signal?.reason);
   if (requestInit.signal?.aborted) abortFromCaller();
   else requestInit.signal?.addEventListener("abort", abortFromCaller, { once: true });
-  const timeout = timeoutMs ? window.setTimeout(() => controller.abort(), timeoutMs) : null;
+  const timeout = timeoutMs ? window.setTimeout(
+    () => controller.abort(new Error(`Request timed out after ${Math.ceil(timeoutMs / 1000)} seconds.`)),
+    timeoutMs,
+  ) : null;
   try {
     const headers = new Headers(requestInit.headers ?? {});
     if (!headers.has("Content-Type")) headers.set("Content-Type", "application/json");

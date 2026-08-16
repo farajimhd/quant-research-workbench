@@ -357,7 +357,7 @@ class TradingConfigurationServiceTests(unittest.TestCase):
 
         migrated = _migrate_draft(legacy)
 
-        self.assertEqual(migrated["schema_version"], 29)
+        self.assertEqual(migrated["schema_version"], 30)
         last_price = [
             row
             for row in migrated["market_discovery"]["data_fields"]
@@ -414,10 +414,10 @@ class TradingConfigurationServiceTests(unittest.TestCase):
 
         core = migrated["market_discovery"]["core_scan"]
         self.assertIn("field__price__change__pct", core["columns"])
-        self.assertEqual(core["column_intervals"]["field__price__change__pct"], "5m")
+        self.assertEqual(core["column_intervals"]["field__price__change__pct"], {"value": 5, "unit": "minutes"})
         rule = next(row for row in migrated["market_discovery"]["rule_sets"] if row["rule_set_id"] == "legacy-five-minute-change")
         self.assertEqual(rule["conditions"][0]["left_field_ref"], "data.price_change_pct@1:value")
-        self.assertEqual(rule["conditions"][0]["left_interval"], "5m")
+        self.assertEqual(rule["conditions"][0]["left_interval"], {"value": 5, "unit": "minutes"})
 
     def test_legacy_server_draft_table_is_removed(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -489,7 +489,7 @@ class TradingConfigurationServiceTests(unittest.TestCase):
 
         migrated = _migrate_draft(legacy)
 
-        self.assertEqual(migrated["schema_version"], 29)
+        self.assertEqual(migrated["schema_version"], 30)
         migrated_paper = next(
             row
             for row in migrated["accounts"]["bindings"]
@@ -783,7 +783,7 @@ class TradingConfigurationServiceTests(unittest.TestCase):
         ):
             draft = _default_draft()
 
-        self.assertEqual(draft["schema_version"], 29)
+        self.assertEqual(draft["schema_version"], 30)
         self.assertTrue(all(rule_set["name"] for rule_set in draft["market_discovery"]["rule_sets"]))
         self.assertTrue(all(rule_set["description"] for rule_set in draft["market_discovery"]["rule_sets"]))
         self.assertTrue(all(rule_set["origin"] == "system" and rule_set["protected"] for rule_set in draft["market_discovery"]["rule_sets"]))
@@ -1453,7 +1453,7 @@ class TradingConfigurationServiceTests(unittest.TestCase):
 
         migrated = _migrate_draft(legacy)
 
-        self.assertEqual(migrated["schema_version"], 29)
+        self.assertEqual(migrated["schema_version"], 30)
         canonical_ids = {
             rule_set["rule_set_id"]
             for rule_set in migrated["market_discovery"]["rule_sets"]
@@ -1531,7 +1531,7 @@ class TradingConfigurationServiceTests(unittest.TestCase):
         ]
         migrated = _migrate_draft(legacy)
         migrated_profile = migrated["strategy"]["profiles"][0]
-        self.assertEqual(migrated["schema_version"], 29)
+        self.assertEqual(migrated["schema_version"], 30)
         self.assertEqual(migrated_profile["action_policy_ids"], ["profit-pocket"])
         self.assertNotIn("capabilities", migrated_profile)
 

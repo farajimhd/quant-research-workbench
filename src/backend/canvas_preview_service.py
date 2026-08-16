@@ -28,7 +28,7 @@ from src.backend.historical_scanner_service import (
     historical_scanner_fundamental_projection,
     historical_scanner_reference_projection,
     historical_scanner_snapshot,
-    historical_scanner_technical_projection,
+    historical_scanner_technical_projection_or_schedule,
     historical_scanner_qmd_projection_or_schedule,
 )
 from src.backend.feature_projection import compact_feature_projection
@@ -171,13 +171,15 @@ def scanner_snapshot_payload(
         if row.get("symbol") or row.get("ticker")
     }
     if technical_windows:
-        technical_projection, technical_meta = historical_scanner_technical_projection(
+        technical_projection, technical_meta = historical_scanner_technical_projection_or_schedule(
             effective_as_of,
             calculation_windows=technical_windows,
         )
         for row in rows:
             row.update(technical_projection.get(str(row.get("symbol") or "").upper(), {}))
         meta = {**meta, **technical_meta}
+        if technical_meta.get("technical_status") in {"building", "capacity_limited", "error"}:
+            meta["refresh_status"] = technical_meta["technical_status"]
     enrichment_names: list[str] = []
     if rows:
         enrichment_names = ["reference"] if enrichment_scope == "core" else ["fundamentals", "news", "qmd", "reference", "sec"]

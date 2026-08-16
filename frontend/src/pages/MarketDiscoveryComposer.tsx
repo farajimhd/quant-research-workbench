@@ -2,13 +2,13 @@ import { Activity, ArrowRight, Check, Columns3, ListFilter, Pencil, Plus, ScanSe
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import { InventoryFilterSelect, type InventoryFilterOption } from "../app/components/InventoryFilterSelect";
-import { IntervalSelect, preferredInterval } from "../app/components/IntervalSelect";
+import { IntervalSelect, preferredInterval, type IntervalSpec, type IntervalValue } from "../app/components/IntervalSelect";
 
 type RuleSet = { atomic?: boolean; description: string; name: string; origin?: string; protected?: boolean; rule_set_id: string; scope?: "shared" | "strategy" | "watchlist" };
 type ColumnDefinition = { available_intervals?: string[]; column_id: string; description: string; field_ref?: string; name: string; sortable?: boolean; source_id: string; source_kind?: "data_field" | "rule_set" | string; semantic_type: string; value_type: string };
 type DataDefinition = { description: string; name: string; sortable: boolean; source_id: string; source_kind?: string; semantic_type: string };
-type BaseComposition = { column_intervals?: Record<string, string>; columns: string[]; description: string; inclusion_operator: "all" | "any"; inclusion_rule_sets: string[]; name: string; refresh_interval_ms: number };
-type Composition = BaseComposition & { maximum_size: number; ranking_direction: "ascending" | "descending"; ranking_field: string; ranking_field_ref?: string; ranking_interval?: string };
+type BaseComposition = { column_intervals?: Record<string, IntervalValue>; columns: string[]; description: string; inclusion_operator: "all" | "any"; inclusion_rule_sets: string[]; name: string; refresh_interval_ms: number };
+type Composition = BaseComposition & { maximum_size: number; ranking_direction: "ascending" | "descending"; ranking_field: string; ranking_field_ref?: string; ranking_interval?: IntervalValue };
 type CoreScan = Composition & { published: boolean; scan_id: string };
 type Watchlist = Composition & { availability?: string; availability_detail?: string; enabled: boolean; manual_exclusions: string[]; manual_inclusions: string[]; membership_expiry: "end_of_trading_day" | "time_to_live" | "never"; membership_ttl_ms: number; origin?: string; source_scan_id: string; template?: boolean; watchlist_id: string };
 type SignalRoute = { membership_expiry: "end_of_trading_day" | "time_to_live" | "never"; membership_ttl_ms: number; watchlist_id: string };
@@ -90,10 +90,10 @@ export function MarketDiscoveryComposer({ onChange, section }: { onChange: (valu
 
   function replaceColumns(columns: string[]) {
     const existing = selected.column_intervals ?? {};
-    const column_intervals: Record<string, string> = {};
+    const column_intervals: Record<string, IntervalValue> = {};
     columns.forEach((columnId) => {
       const available = section.column_catalog.find((row) => row.column_id === columnId)?.available_intervals ?? [];
-      if (available.length) column_intervals[columnId] = available.includes(existing[columnId]) ? existing[columnId] : preferredInterval(available);
+      if (available.length) column_intervals[columnId] = existing[columnId] || preferredInterval(available);
     });
     replace({ ...selected, columns, column_intervals });
   }
@@ -159,7 +159,7 @@ export function MarketDiscoveryComposer({ onChange, section }: { onChange: (valu
   </div>;
 }
 
-function ReferenceSection({ columnIntervals = {}, description, empty, kind, onChange, onIntervalChange, options, selected, title }: { columnIntervals?: Record<string, string>; description: string; empty: string; kind: string; onChange: (ids: string[]) => void; onIntervalChange?: (columnId: string, interval: string) => void; options: InventoryFilterOption[]; selected: string[]; title: string }) {
+function ReferenceSection({ columnIntervals = {}, description, empty, kind, onChange, onIntervalChange, options, selected, title }: { columnIntervals?: Record<string, IntervalValue>; description: string; empty: string; kind: string; onChange: (ids: string[]) => void; onIntervalChange?: (columnId: string, interval: IntervalSpec) => void; options: InventoryFilterOption[]; selected: string[]; title: string }) {
   const [candidate, setCandidate] = useState("");
   const byId = new Map(options.map((row) => [row.value, row]));
   const selectedFamilies = new Set(selected.map((value) => byId.get(value)?.family).filter((value): value is string => Boolean(value)));

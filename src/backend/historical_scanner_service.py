@@ -83,6 +83,20 @@ SCANNER_TECHNICAL_WINDOWS: dict[str, int | None] = {
     "extended_session": None,
     "regular_session": None,
 }
+_INTERVAL_DURATION_US = {
+    "ms": 1_000,
+    "s": 1_000_000,
+    "m": 60_000_000,
+    "h": 60 * 60_000_000,
+    "d": 24 * 60 * 60_000_000,
+    "w": 7 * 24 * 60 * 60_000_000,
+    "mo": 30 * 24 * 60 * 60_000_000,
+}
+
+
+def scanner_interval_duration_us(value: str) -> int | None:
+    match = re.fullmatch(r"([1-9]\d*)(ms|s|m|h|d|w|mo)", value.strip().lower())
+    return int(match.group(1)) * _INTERVAL_DURATION_US[match.group(2)] if match else None
 SCANNER_TECHNICAL_METRICS = (
     "open",
     "high",
@@ -201,6 +215,8 @@ _DERIVED_FUNDAMENTAL_KEYS = {
 
 _QMD_MATERIALIZATION_LOCK = Lock()
 _QMD_MATERIALIZATIONS: dict[str, dict[str, Any]] = {}
+_TECHNICAL_MATERIALIZATION_LOCK = Lock()
+_TECHNICAL_MATERIALIZATIONS: dict[str, dict[str, Any]] = {}
 _SCANNER_MATERIALIZATION_LOCK = Lock()
 _SCANNER_MATERIALIZATIONS: dict[str, dict[str, Any]] = {}
 MAX_ACTIVE_MATERIALIZATIONS = 4
@@ -244,7 +260,12 @@ def historical_scanner_snapshot(as_of: datetime, *, lookback_minutes: int = 15) 
     lookback_minutes = max(5, min(int(lookback_minutes), 120))
     snapshot_at = as_of.astimezone(UTC).replace(second=0, microsecond=0)
     window_start = snapshot_at - timedelta(minutes=lookback_minutes)
-    client = ClickHouseHttpClient(default_clickhouse_url(), default_clickhouse_user(), default_clickhouse_password())
+    client = ClickHouseHttpClient(
+        default_clickhouse_url(),
+        default_clickhouse_user(),
+        default_clickhouse_password(),
+        timeout_seconds=15,
+    )
     source_database = os.environ.get("QMD_HISTORY_CLICKHOUSE_DATABASE", "market_sip_compact")
     table_prefix = os.environ.get("QMD_HISTORY_TABLE_PREFIX", "events_")
     if not IDENTIFIER.fullmatch(source_database) or not IDENTIFIER.fullmatch(table_prefix):
@@ -301,16 +322,25 @@ def historical_scanner_technical_projection(
     if as_of.tzinfo is None:
         raise ValueError("Historical scanner clock must be timezone-aware.")
     requested = list(dict.fromkeys(str(value).strip() for value in calculation_windows if str(value).strip()))
-    invalid = [value for value in requested if value not in SCANNER_TECHNICAL_WINDOWS]
+    invalid = [
+        value for value in requested
+        if value not in {"extended_session", "regular_session"}
+        and scanner_interval_duration_us(value) is None
+    ]
     if invalid:
         raise ValueError(
             "Unsupported scanner technical calculation window(s): "
-            f"{', '.join(invalid)}. Expected one of {', '.join(SCANNER_TECHNICAL_WINDOWS)}."
+            f"{', '.join(invalid)}. Use a positive value with ms, s, m, h, d, w, or mo."
         )
     if not requested:
         return {}, {"technical_calculation_windows": [], "technical_materialized": []}
     cutoff = as_of.astimezone(UTC)
-    client = ClickHouseHttpClient(default_clickhouse_url(), default_clickhouse_user(), default_clickhouse_password())
+    client = ClickHouseHttpClient(
+        default_clickhouse_url(),
+        default_clickhouse_user(),
+        default_clickhouse_password(),
+        timeout_seconds=600,
+    )
     source_database = os.environ.get("QMD_HISTORY_CLICKHOUSE_DATABASE", "market_sip_compact")
     table_prefix = os.environ.get("QMD_HISTORY_TABLE_PREFIX", "events_")
     if not IDENTIFIER.fullmatch(source_database) or not IDENTIFIER.fullmatch(table_prefix):
@@ -366,6 +396,91 @@ def historical_scanner_technical_projection(
     }
 
 
+def historical_scanner_technical_projection_or_schedule(
+    as_of: datetime,
+    *,
+    calculation_windows: list[str] | tuple[str, ...],
+) -> tuple[dict[str, dict[str, Any]], dict[str, Any]]:
+    """Return cached technical fields or start one bounded background build.
+
+    A disconnected HTTP client cannot cancel a synchronous ClickHouse query.
+    Keeping cache misses out of the request thread prevents timed-out Canvas
+    requests from exhausting the backend worker pool.
+    """
+
+    requested = tuple(dict.fromkeys(str(value).strip() for value in calculation_windows if str(value).strip()))
+    invalid = [
+        value for value in requested
+        if value not in {"extended_session", "regular_session"}
+        and scanner_interval_duration_us(value) is None
+    ]
+    if invalid:
+        raise ValueError(
+            "Unsupported scanner technical calculation window(s): "
+            f"{', '.join(invalid)}. Use a positive value with ms, s, m, h, d, w, or mo."
+        )
+    if not requested:
+        return {}, {"technical_calculation_windows": [], "technical_materialized": [], "technical_status": "ready"}
+    cutoff = as_of.astimezone(UTC)
+    client = ClickHouseHttpClient(
+        default_clickhouse_url(),
+        default_clickhouse_user(),
+        default_clickhouse_password(),
+        timeout_seconds=15,
+    )
+    source_revision = _source_revision(
+        client,
+        os.environ.get("QMD_HISTORY_CLICKHOUSE_DATABASE", "market_sip_compact"),
+        cutoff,
+    )
+    key = f"{_clock(cutoff)}|{source_revision}|{','.join(requested)}|{SCANNER_TECHNICAL_SCHEMA_VERSION}"
+    now = monotonic()
+    with _TECHNICAL_MATERIALIZATION_LOCK:
+        _prune_materialization_states(_TECHNICAL_MATERIALIZATIONS, now=now)
+        state = _TECHNICAL_MATERIALIZATIONS.get(key)
+        if state and state.get("status") == "ready":
+            pass
+        else:
+            retryable = state is None or (
+                state.get("status") == "error"
+                and now - float(state.get("finished_monotonic") or 0) >= 60
+            )
+            if retryable:
+                active = sum(row.get("status") == "building" for row in _TECHNICAL_MATERIALIZATIONS.values())
+                if active >= MAX_ACTIVE_MATERIALIZATIONS:
+                    state = {"error": "Historical technical materialization capacity is in use; retry shortly.", "status": "capacity_limited"}
+                else:
+                    state = {"error": "", "started_monotonic": now, "status": "building"}
+                    _TECHNICAL_MATERIALIZATIONS[key] = state
+                    Thread(
+                        target=_run_technical_materialization,
+                        args=(key, cutoff, requested),
+                        daemon=True,
+                        name=f"canvas-technical-{cutoff:%Y%m%d-%H%M}",
+                    ).start()
+            return {}, {
+                "source_revision": source_revision,
+                "technical_calculation_windows": list(requested),
+                "technical_error": str((state or {}).get("error") or ""),
+                "technical_materialized": [],
+                "technical_schema_version": SCANNER_TECHNICAL_SCHEMA_VERSION,
+                "technical_status": str((state or {}).get("status") or "building"),
+            }
+    projection, meta = historical_scanner_technical_projection(cutoff, calculation_windows=requested)
+    return projection, {**meta, "technical_status": "ready"}
+
+
+def _run_technical_materialization(key: str, as_of: datetime, calculation_windows: tuple[str, ...]) -> None:
+    try:
+        historical_scanner_technical_projection(as_of, calculation_windows=calculation_windows)
+    except Exception as exc:
+        state = {"error": str(exc), "finished_monotonic": monotonic(), "status": "error"}
+    else:
+        state = {"error": "", "finished_monotonic": monotonic(), "status": "ready"}
+    with _TECHNICAL_MATERIALIZATION_LOCK:
+        _TECHNICAL_MATERIALIZATIONS[key] = state
+
+
 def scanner_technical_window(as_of: datetime, calculation_window: str) -> tuple[datetime, datetime]:
     """Return the causal calculation window ending no later than ``as_of``.
 
@@ -373,7 +488,7 @@ def scanner_technical_window(as_of: datetime, calculation_window: str) -> tuple[
     grid. Anchored calculations use either the complete extended session or
     regular trading session to date; an anchor is not a bar timeframe.
     """
-    if calculation_window not in SCANNER_TECHNICAL_WINDOWS:
+    if calculation_window not in {"extended_session", "regular_session"} and scanner_interval_duration_us(calculation_window) is None:
         raise ValueError(f"Unsupported scanner technical calculation window: {calculation_window}")
     if as_of.tzinfo is None:
         raise ValueError("Historical scanner clock must be timezone-aware.")
@@ -409,7 +524,7 @@ def scanner_technical_window(as_of: datetime, calculation_window: str) -> tuple[
     elif anchored:
         local_start = session_open
     else:
-        resolution_us = int(SCANNER_TECHNICAL_WINDOWS[calculation_window] or 0)
+        resolution_us = int(scanner_interval_duration_us(calculation_window) or 0)
         elapsed_us = max(1, int((local_end - session_open).total_seconds() * 1_000_000))
         bucket_index = max(0, (elapsed_us - 1) // resolution_us)
         local_start = session_open + timedelta(microseconds=bucket_index * resolution_us)
@@ -426,7 +541,7 @@ def historical_scanner_reference_projection(
         raise ValueError("Historical scanner clock must be timezone-aware.")
     cutoff = as_of.astimezone(UTC)
     active_client = client or ClickHouseHttpClient(
-        default_clickhouse_url(), default_clickhouse_user(), default_clickhouse_password()
+        default_clickhouse_url(), default_clickhouse_user(), default_clickhouse_password(), timeout_seconds=15
     )
     rows = _json_rows(
         active_client.execute(scanner_reference_projection(cutoff, "q_live"))
@@ -460,7 +575,7 @@ def historical_scanner_fundamental_projection(
     cutoff = as_of.astimezone(UTC)
     tags = sorted({tag for _, alternatives in FUNDAMENTAL_TAGS for tag in alternatives})
     active_client = client or ClickHouseHttpClient(
-        default_clickhouse_url(), default_clickhouse_user(), default_clickhouse_password()
+        default_clickhouse_url(), default_clickhouse_user(), default_clickhouse_password(), timeout_seconds=15
     )
     rows = _json_rows(
         active_client.execute(scanner_fundamentals(tags, cutoff, "q_live"))
