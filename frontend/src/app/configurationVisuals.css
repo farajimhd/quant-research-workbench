@@ -3485,6 +3485,7 @@
 .strategy-rule-composition-toolbar > div:first-child > small { color: var(--muted-foreground); font-size: 12px; line-height: 1.45; }
 .strategy-rule-composition-toolbar > div:last-child { align-items: center; display: grid; gap: 8px; grid-template-columns: minmax(0, 1fr) auto auto; }
 .strategy-rule-composition-toolbar select { background: var(--surface); border: 1px solid var(--border); border-radius: 7px; color: var(--foreground); min-height: 38px; min-width: 0; padding: 0 10px; width: 100%; }
+.strategy-rule-composition-toolbar .strategy-rule-set-lookup { min-width: 0; width: 100%; }
 .strategy-rule-expression-group { border-left: 2px solid color-mix(in oklab, var(--configuration-accent) 50%, var(--border)); display: grid; gap: 10px; padding: 4px 0 4px 18px; }
 .strategy-rule-expression-group > header { align-items: center; display: flex; gap: 10px; }
 .strategy-rule-expression-group > header > div { background: var(--surface-alt); border: 1px solid var(--border); border-radius: 7px; display: flex; padding: 2px; }

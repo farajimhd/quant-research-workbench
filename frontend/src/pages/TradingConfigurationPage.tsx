@@ -3961,6 +3961,22 @@ const RULE_STAGE_STORY: Record<keyof EntryRules, string[]> = {
   ],
 };
 
+function ruleSetLookupOptions(ruleSets: RuleSetDefinition[]) {
+  return ruleSets.map((ruleSet) => {
+    const activeConditions = ruleSet.conditions.filter((condition) => condition.enabled).length;
+    const custom = ruleSet.atomic !== true;
+    return {
+      description: ruleSet.description.trim() || `${activeConditions} active condition${activeConditions === 1 ? "" : "s"} · ${readableLabel(ruleSet.operator)} logic`,
+      group: custom ? "Custom Rule Sets" : "Built-in Rule Sets",
+      label: ruleSet.name,
+      subgroup: custom
+        ? ruleSet.publication_status === "published" ? "Published" : "Drafts"
+        : "Atomic definitions",
+      value: ruleSet.rule_set_id,
+    };
+  });
+}
+
 const COMPARATOR_OPTIONS = [
   { label: "Is above by", value: "above_by_bps" },
   { label: "Is at least", value: "greater_or_equal" },
@@ -3983,7 +3999,7 @@ function DecisionRulesEditor({ catalog = [], onChange, onRuleSetEdit = () => und
   summary: string;
   title: string;
 }) {
-  const [selectedRuleSetId, setSelectedRuleSetId] = useState(ruleSetCatalog[0]?.rule_set_id ?? "");
+  const [selectedRuleSetId, setSelectedRuleSetId] = useState("");
   const [newRuleSet, setNewRuleSet] = useState<RuleSetDefinition | null>(null);
   const stageNames = stageName ? [stageName] : (Object.keys(RULE_STAGE_META) as Array<keyof EntryRules>);
   function replaceStage(name: keyof EntryRules, stage: RuleStage) { onChange({ ...rules, [name]: stage }); }
@@ -4007,7 +4023,7 @@ function DecisionRulesEditor({ catalog = [], onChange, onRuleSetEdit = () => und
     {stageNames.map((name) => {
       const stage = rules[name];
       return <section className="strategy-entry-rule-page strategy-rule-composition-page" key={name}>
-        <header className="strategy-rule-composition-toolbar"><div><span>Predefined rule sets</span><strong>{RULE_STAGE_META[name].label}</strong><small>Choose existing definitions or create a reusable rule set without leaving this page.</small></div><div><select aria-label="Rule set to add" onChange={(event) => setSelectedRuleSetId(event.target.value)} value={selectedRuleSetId}><option value="">Choose a rule set</option>{ruleSetCatalog.map((ruleSet) => <option key={ruleSet.rule_set_id} value={ruleSet.rule_set_id}>{ruleSet.name}</option>)}</select><button className="button compact" disabled={!selectedRuleSetId} onClick={() => replaceStage(name, { expression: appendRuleExpression(stage.expression, { kind: "rule_set", rule_set_id: selectedRuleSetId }) })} type="button"><Plus size={14} /> Add</button>{onRuleSetsChange ? <button className="button compact secondary" onClick={() => createRuleSet(name)} type="button"><Plus size={14} /> New</button> : null}</div></header>
+        <header className="strategy-rule-composition-toolbar"><div><span>Predefined rule sets</span><strong>{RULE_STAGE_META[name].label}</strong><small>Choose existing definitions or create a reusable rule set without leaving this page.</small></div><div><InventoryFilterSelect ariaLabel="Rule set to add" className="configuration-lookup-button strategy-rule-set-lookup" onChange={setSelectedRuleSetId} optionLimit={0} options={ruleSetLookupOptions(ruleSetCatalog)} placeholder="Choose a rule set" presentation="catalog" searchable searchPlaceholder="Search Rule Sets" showAllOnOpen value={selectedRuleSetId} /><button className="button compact" disabled={!selectedRuleSetId} onClick={() => replaceStage(name, { expression: appendRuleExpression(stage.expression, { kind: "rule_set", rule_set_id: selectedRuleSetId }) })} type="button"><Plus size={14} /> Add</button>{onRuleSetsChange ? <button className="button compact secondary" onClick={() => createRuleSet(name)} type="button"><Plus size={14} /> New</button> : null}</div></header>
         {stage.expression ? <RuleExpressionEditor catalog={catalog} expression={stage.expression} onChange={(expression) => replaceStage(name, { expression })} onEditRuleSet={onRuleSetEdit} ruleSets={ruleSetCatalog} /> : <EmptyState detail="Add a predefined rule set to compose this decision." title="No rule-set expression" />}
         {stage.expression ? <div className="strategy-rule-expression-summary"><span>Final logic</span><strong>{formatRuleExpression(stage.expression, ruleSetCatalog)}</strong></div> : null}
         {newRuleSet ? <RuleSetCreationDialog catalog={catalog} onCancel={() => setNewRuleSet(null)} onChange={setNewRuleSet} onSave={() => saveRuleSet(name)} ruleSet={newRuleSet} /> : null}
@@ -4165,8 +4181,8 @@ function RuleExpressionEditor({ catalog, expression, onChange, onEditRuleSet, ru
 }
 
 function RuleStageComposition({ catalog, label, onChange, onEditRuleSet, ruleSets, stage }: { catalog: StrategyInput[]; label: string; onChange: (value: RuleStage) => void; onEditRuleSet: (ruleSetId: string) => void; ruleSets: RuleSetDefinition[]; stage: RuleStage }) {
-  const [selectedRuleSetId, setSelectedRuleSetId] = useState(ruleSets[0]?.rule_set_id ?? "");
-  return <section className="strategy-rule-composition-page"><header className="strategy-rule-composition-toolbar"><div><span>Predefined rule sets</span><strong>{label}</strong><small>Choose catalog definitions, then combine them with nested AND and OR groups.</small></div><div><select onChange={(event) => setSelectedRuleSetId(event.target.value)} value={selectedRuleSetId}><option value="">Choose a rule set</option>{ruleSets.map((ruleSet) => <option key={ruleSet.rule_set_id} value={ruleSet.rule_set_id}>{ruleSet.name}</option>)}</select><button className="button compact" disabled={!selectedRuleSetId} onClick={() => onChange({ expression: appendRuleExpression(stage.expression, { kind: "rule_set", rule_set_id: selectedRuleSetId }) })} type="button"><Plus size={14} /> Add</button></div></header>{stage.expression ? <RuleExpressionEditor catalog={catalog} expression={stage.expression} onChange={(expression) => onChange({ expression })} onEditRuleSet={onEditRuleSet} ruleSets={ruleSets} /> : <EmptyState detail="Add a catalog rule set to define this lifecycle decision." title="No rule sets selected" />}{stage.expression ? <div className="strategy-rule-expression-summary"><span>Final logic</span><strong>{formatRuleExpression(stage.expression, ruleSets)}</strong></div> : null}</section>;
+  const [selectedRuleSetId, setSelectedRuleSetId] = useState("");
+  return <section className="strategy-rule-composition-page"><header className="strategy-rule-composition-toolbar"><div><span>Predefined rule sets</span><strong>{label}</strong><small>Choose catalog definitions, then combine them with nested AND and OR groups.</small></div><div><InventoryFilterSelect ariaLabel={`${label} Rule Set to add`} className="configuration-lookup-button strategy-rule-set-lookup" onChange={setSelectedRuleSetId} optionLimit={0} options={ruleSetLookupOptions(ruleSets)} placeholder="Choose a rule set" presentation="catalog" searchable searchPlaceholder="Search Rule Sets" showAllOnOpen value={selectedRuleSetId} /><button className="button compact" disabled={!selectedRuleSetId} onClick={() => onChange({ expression: appendRuleExpression(stage.expression, { kind: "rule_set", rule_set_id: selectedRuleSetId }) })} type="button"><Plus size={14} /> Add</button></div></header>{stage.expression ? <RuleExpressionEditor catalog={catalog} expression={stage.expression} onChange={(expression) => onChange({ expression })} onEditRuleSet={onEditRuleSet} ruleSets={ruleSets} /> : <EmptyState detail="Add a catalog rule set to define this lifecycle decision." title="No rule sets selected" />}{stage.expression ? <div className="strategy-rule-expression-summary"><span>Final logic</span><strong>{formatRuleExpression(stage.expression, ruleSets)}</strong></div> : null}</section>;
 }
 
 type LegacyEntryRules = Record<keyof EntryRules, RuleStage & { groups: RuleGroup[]; operator: "all" | "any" }>;
