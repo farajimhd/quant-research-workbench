@@ -189,7 +189,7 @@ REGISTRY_TYPES = (
     RegistryTypeDefinition("column", "Column", "Presentation composition over Field or Signal bindings.", "columns", "amber", "select_reference", True),
     RegistryTypeDefinition("condition", "Condition", "Typed comparison over registered references.", "list_filter", "orange", "editable_instance", True),
     RegistryTypeDefinition("rule_set", "Rule set", "Reusable Boolean composition of Conditions.", "list_checks", "orange", "editable_instance", True),
-    RegistryTypeDefinition("watchlist", "Watchlist", "Persistent candidate composition over Core Scan, rules, ranking, and columns.", "scan_search", "green", "editable_instance", True),
+    RegistryTypeDefinition("watchlist", "Watchlist", "Persistent candidate composition over Core Scan, rules, ranking, and columns.", "scan_search", "slate", "editable_instance", True),
     RegistryTypeDefinition("trading_action", "Trading action", "Atomic broker-neutral intent or campaign command shared by Strategy and Canvas.", "mouse_pointer_click", "violet", "locked", True),
     RegistryTypeDefinition("action_policy", "Action policy", "Reusable trigger, action, sizing, timing, and authority composition.", "workflow", "violet", "editable_instance", True),
     RegistryTypeDefinition("strategy", "Strategy", "Versioned executable decision definition.", "git_branch", "violet", "locked", True),

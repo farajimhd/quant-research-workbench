@@ -656,6 +656,50 @@
 .abstraction-card.compact .abstraction-card-icon { height: 24px; width: 24px; }
 .abstraction-card.compact .abstraction-card-description { font-size: 10.5px; }
 .abstraction-card.compact .abstraction-card-title { font-size: 13px; }
+
+/* Watchlists are neutral reusable definitions. Selection, not availability, carries emphasis. */
+.abstraction-card[data-kind="watchlist"][data-selectable="true"] {
+  --abstraction-accent: var(--foreground);
+  background: var(--surface);
+  border: 1px solid var(--configuration-rule, var(--border));
+  cursor: pointer;
+  padding: 12px 13px;
+}
+.abstraction-card[data-kind="watchlist"][data-selectable="true"]:hover {
+  background: color-mix(in oklab, var(--surface-alt) 38%, var(--surface));
+  border-color: color-mix(in oklab, var(--foreground) 24%, var(--configuration-rule, var(--border)));
+}
+.abstraction-card[data-kind="watchlist"][data-selectable="true"][data-selected="true"] {
+  background: color-mix(in oklab, var(--surface-alt) 58%, var(--surface));
+  border-color: color-mix(in oklab, var(--foreground) 58%, var(--configuration-rule, var(--border)));
+  box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--foreground) 12%, transparent);
+}
+.abstraction-card[data-kind="watchlist"][data-selectable="true"] .abstraction-card-icon {
+  background: var(--surface-alt);
+  border-color: var(--configuration-rule, var(--border));
+  color: var(--muted-foreground);
+}
+.abstraction-card[data-kind="watchlist"][data-selectable="true"] .abstraction-card-kind,
+.abstraction-card[data-kind="watchlist"][data-selectable="true"] .abstraction-card-status {
+  color: var(--muted-foreground);
+}
+.abstraction-card[data-kind="watchlist"][data-selectable="true"][data-selected="true"] .abstraction-card-icon,
+.abstraction-card[data-kind="watchlist"][data-selectable="true"][data-selected="true"] .abstraction-card-kind,
+.abstraction-card[data-kind="watchlist"][data-selectable="true"][data-selected="true"] .abstraction-card-status {
+  color: var(--foreground);
+}
+.abstraction-card[data-kind="watchlist"][data-selectable="true"] .abstraction-card-actions > input {
+  accent-color: var(--foreground);
+  cursor: pointer;
+  height: 15px;
+  width: 15px;
+}
+.abstraction-card[data-kind="watchlist"][data-selectable="true"][data-unavailable="true"] {
+  background: color-mix(in oklab, var(--surface-alt) 30%, var(--surface));
+  border-style: dashed;
+  cursor: not-allowed;
+  opacity: .62;
+}
 .abstraction-card-grid { display: grid; gap: 10px; grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .abstraction-card-grid.single { grid-template-columns: minmax(0, 1fr); }
 

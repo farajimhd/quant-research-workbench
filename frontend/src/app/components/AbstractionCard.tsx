@@ -140,6 +140,7 @@ export function AbstractionCard({
     "data-configurable": presentation.configurable ? "true" : "false",
     "data-configuration-mode": presentation.configurationMode,
     "data-selected": selected ? "true" : "false",
+    "data-selectable": control ? "true" : "false",
     "data-unavailable": unavailable ? "true" : "false",
   } as const;
   return control
