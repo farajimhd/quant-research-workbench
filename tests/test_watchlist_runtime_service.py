@@ -311,6 +311,43 @@ class WatchlistRuntimeServiceTests(unittest.TestCase):
         )
         self.assertIn("1m", timeframes)
 
+    def test_focused_contract_does_not_publish_legacy_projection_ids(self) -> None:
+        watchlist = {
+            "ranking_field": "market.change_pct",
+            "ranking_field_ref": "data.market.change_pct@1:value",
+            "columns": [],
+            "inclusion_rule_sets": [],
+        }
+        calculations = {
+            "qmd.family.core_bars": {
+                "capability_id": "qmd.family.core_bars",
+                "availability": "implemented",
+                "fields": ["price_change_pct"],
+            },
+            "market.change_pct": {
+                "capability_id": "market.change_pct",
+                "availability": "implemented",
+                "fields": ["market.change_pct"],
+            },
+        }
+        data_fields = [{
+            "recipe_id": "market.change_pct",
+            "owner": "qmd",
+            "context": {"dimension_kind": "point_in_time"},
+            "execution": {"producer_intervals": ["1d"]},
+            "outputs": [{
+                "field_ref": "data.market.change_pct@1:value",
+                "source_id": "market.change_pct",
+            }],
+        }]
+
+        capabilities, timeframes = focused_target_contract(
+            watchlist, [], calculations, {}, data_fields
+        )
+
+        self.assertEqual(capabilities, [])
+        self.assertEqual(timeframes, [])
+
     def test_live_strategy_target_contract_comes_from_compiled_run_plan_dependencies(self) -> None:
         watchlist_id = self.configuration["market_discovery"]["watchlists"][0]["watchlist_id"]
         self.configuration["run_plans"] = {

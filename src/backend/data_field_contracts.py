@@ -602,6 +602,7 @@ def project_data_field_outputs(
     data_fields: Iterable[dict[str, Any]],
     *,
     field_refs: Iterable[str] | None = None,
+    field_instances: Iterable[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     """Attach exact Data Field output identities to producer rows.
 
@@ -614,6 +615,19 @@ def project_data_field_outputs(
         if field_refs is not None
         else None
     )
+    selected_instances: dict[str, set[tuple[str, str]]] | None = None
+    if field_instances is not None:
+        selected_instances = {}
+        for instance in field_instances:
+            field_ref = str(instance.get("field_ref") or "")
+            if not field_ref:
+                continue
+            selected_instances.setdefault(field_ref, set()).add(
+                (
+                    interval_expression(instance.get("interval")),
+                    normalize_aggregation_function(instance.get("aggregation")),
+                )
+            )
     outputs = [
         (dict(output), dict(data_field.get("context") or {}), dict(data_field.get("execution") or {}))
         for data_field in data_fields
@@ -628,6 +642,13 @@ def project_data_field_outputs(
     projected: list[dict[str, Any]] = []
     for row in rows:
         result = dict(row)
+        technical_keys: dict[tuple[str, str], str] = {}
+        for key in row:
+            if not key.startswith("technical__"):
+                continue
+            parts = key.split("__", 3)
+            if len(parts) >= 3:
+                technical_keys.setdefault((parts[1], parts[2]), key)
         for output, context, execution in outputs:
             field_ref = str(output["field_ref"])
             runtime_field = str(output.get("runtime_field") or output.get("source_id") or "")
@@ -637,26 +658,38 @@ def project_data_field_outputs(
             if intervals:
                 found_any = False
                 aggregation = dict(context.get("aggregation") or {})
-                functions = list(aggregation.get("allowed") or []) if aggregation.get("mode") == "required" else [""]
                 runtime_fields = dict(execution.get("aggregation_runtime_fields") or {})
-                for interval in intervals:
-                    for function in functions:
-                        selected_runtime_field = str(runtime_fields.get(function) or runtime_field)
-                        value_found, value = _projected_value(
-                            row,
-                            selected_runtime_field,
-                            selected_runtime_field if function else source_id,
-                            interval,
-                            allow_generic=bool(observed_interval),
-                        )
-                        if observed_interval and observed_interval != interval:
-                            value_found, value = False, None
-                        instance_ref = field_instance_ref(field_ref, interval, function)
-                        if value_found or instance_ref not in result:
-                            result[instance_ref] = value
-                        if not value_found and result.get(instance_ref) is None:
-                            result[f"{instance_ref}__null_reason"] = "producer_output_missing"
-                        found_any = found_any or value_found or result.get(instance_ref) is not None
+                if selected_instances is None:
+                    functions = list(aggregation.get("allowed") or []) if aggregation.get("mode") == "required" else [""]
+                    requested_instances = [
+                        (interval, function)
+                        for interval in intervals
+                        for function in functions
+                    ]
+                else:
+                    requested_instances = sorted(
+                        (interval, function)
+                        for interval, function in selected_instances.get(field_ref, set())
+                        if interval in intervals
+                    )
+                for interval, function in requested_instances:
+                    selected_runtime_field = str(runtime_fields.get(function) or runtime_field)
+                    value_found, value = _projected_value(
+                        row,
+                        selected_runtime_field,
+                        selected_runtime_field if function else source_id,
+                        interval,
+                        allow_generic=bool(observed_interval),
+                        technical_keys=technical_keys,
+                    )
+                    if observed_interval and observed_interval != interval:
+                        value_found, value = False, None
+                    instance_ref = field_instance_ref(field_ref, interval, function)
+                    if value_found or instance_ref not in result:
+                        result[instance_ref] = value
+                    if not value_found and result.get(instance_ref) is None:
+                        result[f"{instance_ref}__null_reason"] = "producer_output_missing"
+                    found_any = found_any or value_found or result.get(instance_ref) is not None
                 if observed_interval in intervals:
                     default_function = str(aggregation.get("default") or "")
                     result[field_ref] = result.get(field_instance_ref(field_ref, observed_interval, default_function))
@@ -1139,6 +1172,7 @@ def _projected_value(
     interval: str = "",
     *,
     allow_generic: bool = True,
+    technical_keys: dict[tuple[str, str], str] | None = None,
 ) -> tuple[bool, Any]:
     candidates = [runtime_field, source_id] if allow_generic else []
     if interval:
@@ -1152,8 +1186,8 @@ def _projected_value(
             *(f"technical__{metric}__{interval}" for metric in metric_names),
             *(
                 key
-                for key in row
-                if any(key.startswith(f"technical__{metric}__{interval}__") for metric in metric_names)
+                for metric in metric_names
+                if (key := (technical_keys or {}).get((metric, interval)))
             ),
             *candidates,
         ]

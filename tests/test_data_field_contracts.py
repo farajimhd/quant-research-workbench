@@ -372,6 +372,30 @@ class DataFieldContractTests(unittest.TestCase):
         }
         self.assertIn("5m", compile_data_field_plan(discovery)["technical_timeframes"])
 
+    def test_projection_materializes_only_compiled_interval_instances(self) -> None:
+        data_field = next(
+            row for row in self.discovery["data_fields"]
+            if row["outputs"][0]["source_id"] == "price_change_pct"
+        )
+        output = data_field["outputs"][0]
+        projected = project_data_field_outputs(
+            [{
+                "technical__price_change_pct__1m": 1.5,
+                "technical__price_change_pct__5m": 3.25,
+            }],
+            [data_field],
+            field_refs=[output["field_ref"]],
+            field_instances=[{
+                "field_ref": output["field_ref"],
+                "interval": "5m",
+                "aggregation": "",
+            }],
+        )[0]
+        self.assertEqual(
+            projected[field_instance_ref(output["field_ref"], "5m")], 3.25
+        )
+        self.assertNotIn(field_instance_ref(output["field_ref"], "1m"), projected)
+
     def test_projection_populates_rule_and_canvas_identities(self) -> None:
         data_field = next(
             row

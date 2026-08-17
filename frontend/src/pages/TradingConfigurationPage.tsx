@@ -1201,16 +1201,20 @@ export function TradingConfigurationPage({ section }: { section: TradingConfigur
   const [experience, setExperienceState] = useState<ConfigurationExperience>("expert");
   const [showStudioHome, setShowStudioHome] = useState(false);
   const [omsGuidedStage, setOmsGuidedStageState] = useState<OmsGuidedStage>(() => readStoredOmsStage());
+  const materializedDiscoveryBodyRef = useRef("");
   const meta = SECTION_META[section];
   const Icon = meta.icon;
 
   useEffect(() => {
     let cancelled = false;
     setStatus("loading");
+    const revisionsRequest = ["strategy", "revisions"].includes(section)
+      ? api<{ rows: Revision[] }>("/api/trading/configuration/revisions")
+      : Promise.resolve({ rows: [] as Revision[] });
     Promise.all([
       api<Draft>("/api/trading/configuration/base"),
       api<{ approved: Revision | null }>("/api/trading/configuration/approved"),
-      api<{ rows: Revision[] }>("/api/trading/configuration/revisions"),
+      revisionsRequest,
       api<InformationRegistry>("/api/registries/definitions"),
     ])
       .then(([nextDraft, approvedPayload, revisionPayload, registryPayload]) => {
@@ -1232,22 +1236,37 @@ export function TradingConfigurationPage({ section }: { section: TradingConfigur
 
   useEffect(() => {
     if (section !== "discovery" || !draft) return undefined;
+    const body = JSON.stringify({ market_discovery: draft.market_discovery });
+    if (body === materializedDiscoveryBodyRef.current) {
+      setDiscoveryRuntimeStatus("ready");
+      setDiscoveryRuntimeError("");
+      return undefined;
+    }
+    const controller = new AbortController();
     setDiscoveryRuntimeStatus("materializing");
     setDiscoveryRuntimeError("");
     const timer = window.setTimeout(() => {
       api("/api/market-discovery/configuration/materialize", {
-        body: JSON.stringify({ market_discovery: draft.market_discovery }),
+        body,
         method: "POST",
+        signal: controller.signal,
+        timeoutMs: 15000,
       })
-        .then(() => setDiscoveryRuntimeStatus("ready"))
+        .then(() => {
+          materializedDiscoveryBodyRef.current = body;
+          setDiscoveryRuntimeStatus("ready");
+        })
         .catch((reason) => {
+          if (controller.signal.aborted) return;
           const detail = reason instanceof Error ? reason.message : String(reason);
-          console.error("Market Discovery materialization rejected", detail || reason);
           setDiscoveryRuntimeStatus("error");
           setDiscoveryRuntimeError(detail || "The backend rejected this draft without a diagnostic.");
         });
-    }, 350);
-    return () => window.clearTimeout(timer);
+    }, 750);
+    return () => {
+      window.clearTimeout(timer);
+      controller.abort();
+    };
   }, [draft, section]);
 
   function updateDraft<K extends keyof Draft>(key: K, value: Draft[K]) {

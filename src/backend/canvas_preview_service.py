@@ -232,11 +232,13 @@ def scanner_snapshot_payload(
         (classify_watchlist_row(row) for row in rows),
     )
     discovery = dict(configuration.get("market_discovery") or {})
-    active_field_refs = compile_data_field_plan(discovery).get("field_refs") or []
+    data_field_plan = compile_data_field_plan(discovery)
+    active_field_refs = data_field_plan.get("field_refs") or []
     rows = project_data_field_outputs(
         rows,
         list(discovery.get("data_fields") or []),
         field_refs=list(active_field_refs),
+        field_instances=list(data_field_plan.get("field_instances") or []),
     )
     rows = project_composition_data_field_columns(
         rows,

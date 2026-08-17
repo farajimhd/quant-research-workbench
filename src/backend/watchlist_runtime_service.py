@@ -83,6 +83,7 @@ class WatchlistRuntime:
         publish_targets: bool = True,
         journal: Any | None = None,
         admissions_by_watchlist: dict[str, list[dict[str, Any]]] | None = None,
+        data_fields_projected: bool = False,
     ) -> dict[str, Any]:
         as_of = (as_of or datetime.now(UTC)).astimezone(UTC)
         discovery = dict(configuration.get("market_discovery") or {})
@@ -95,15 +96,18 @@ class WatchlistRuntime:
             str(row.get("column_id") or ""): str(row.get("field_ref") or row.get("source_id") or "")
             for row in discovery.get("column_catalog") or []
         }
+        data_field_plan = compile_data_field_plan(discovery)
+        candidate_rows = [normalize_watchlist_candidate(row) for row in candidates]
+        if not data_fields_projected:
+            candidate_rows = project_data_field_outputs(
+                candidate_rows,
+                discovery.get("data_fields") or [],
+                field_refs=list(data_field_plan.get("field_refs") or []),
+                field_instances=list(data_field_plan.get("field_instances") or []),
+            )
         normalized_candidates = project_configured_rule_set_columns(
             configuration,
-            project_data_field_outputs(
-                [normalize_watchlist_candidate(row) for row in candidates],
-                discovery.get("data_fields") or [],
-                field_refs=list(
-                    compile_data_field_plan(discovery).get("field_refs") or []
-                ),
-            ),
+            candidate_rows,
         )
         candidates_by_ticker = {
             str(row.get("ticker") or "").upper(): row
@@ -401,10 +405,7 @@ class WatchlistRuntime:
         }
         normalized = project_configured_rule_set_columns(
             configuration,
-            project_data_field_outputs(
-                [normalize_watchlist_candidate(row) for row in candidates],
-                discovery.get("data_fields") or [],
-            ),
+            [normalize_watchlist_candidate(row) for row in candidates],
         )
         normalized.sort(
             key=lambda row: numeric_value(row, "liquidity_rank") or float("-inf"),
@@ -506,13 +507,15 @@ def project_watchlists_from_candidates(
     as_of = as_of.astimezone(UTC)
     discovery = dict(configuration.get("market_discovery") or {})
     rule_sets = list(discovery.get("rule_sets") or [])
-    active_field_refs = compile_data_field_plan(discovery).get("field_refs") or []
+    data_field_plan = compile_data_field_plan(discovery)
+    active_field_refs = data_field_plan.get("field_refs") or []
     normalized_candidates = project_configured_rule_set_columns(
         configuration,
         project_data_field_outputs(
             [normalize_watchlist_candidate(row) for row in candidates],
             discovery.get("data_fields") or [],
             field_refs=list(active_field_refs),
+            field_instances=list(data_field_plan.get("field_instances") or []),
         ),
     )
     effective_available_fields = None if available_fields is None else set(available_fields)
@@ -903,6 +906,13 @@ def focused_target_contract(
     )
     if data_fields:
         output_index = data_field_output_index(data_fields)
+        runnable_capabilities = {
+            str(capability_id).removeprefix("qmd.family.")
+            for capability_id, capability in calculations.items()
+            if str(capability_id).startswith("qmd.family.")
+            and str(capability.get("availability") or "")
+            in {"implemented", "strategy_specific"}
+        }
         exact_refs = {
             str((output_index.get(value) or {}).get("field_ref") or value)
             for value in referenced_sources
@@ -916,14 +926,10 @@ def focused_target_contract(
             if not outputs.intersection(exact_refs):
                 continue
             recipe_id = str(data_field.get("recipe_id") or "")
-            if recipe_id.startswith("qmd.family."):
-                capabilities.add(recipe_id.removeprefix("qmd.family."))
-            elif (
-                recipe_id
-                and recipe_id != "registered_projection"
-                and str(data_field.get("owner") or "").lower() in {"qmd", "qmd_gateway"}
-            ):
-                capabilities.add(recipe_id)
+            capability_id = recipe_id.removeprefix("qmd.family.")
+            if capability_id not in runnable_capabilities:
+                continue
+            capabilities.add(capability_id)
             if str(dict(data_field.get("context") or {}).get("dimension_kind") or "") != "interval":
                 timeframes.update(
                     str(value)

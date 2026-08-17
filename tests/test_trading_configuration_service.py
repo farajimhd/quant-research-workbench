@@ -724,10 +724,50 @@ class TradingConfigurationServiceTests(unittest.TestCase):
             runtime["market_discovery"]["signal_streams"][0]["name"],
             "Materialized stream",
         )
-        self.assertEqual(runtime["strategy"], _migrate_draft(base)["strategy"])
+        self.assertEqual(runtime["strategy"], base["strategy"])
         self.assertEqual(
             first_materialization["materialized_at"],
             repeated_materialization["materialized_at"],
+        )
+
+    def test_materialization_ignores_incomplete_unreferenced_rule_sets(self) -> None:
+        discovery = deepcopy(_default_draft()["market_discovery"])
+        discovery["rule_sets"].append({
+            "rule_set_id": "unfinished-draft",
+            "name": "Untitled Rule Set",
+            "description": "Configuration-only work in progress.",
+            "enabled": True,
+            "operator": "all",
+            "required_score": 1,
+            "conditions": [{
+                "condition_id": "unfinished-condition",
+                "enabled": True,
+                "left_source_id": "",
+                "left_field_ref": "",
+                "comparator": "equals",
+                "right_source_id": "",
+                "value": 0,
+            }],
+        })
+        with tempfile.TemporaryDirectory() as directory:
+            journal = TradingJournal(Path(directory) / "journal.sqlite3")
+            try:
+                with patch(
+                    "src.backend.trading_configuration_service.trading_journal",
+                    return_value=journal,
+                ):
+                    materialized = materialize_market_discovery(discovery)
+                    discovery["core_scan"]["inclusion_rule_sets"] = [
+                        "unfinished-draft"
+                    ]
+                    with self.assertRaisesRegex(ValueError, "requires a left source"):
+                        materialize_market_discovery(discovery)
+            finally:
+                journal.close()
+
+        self.assertEqual(
+            materialized["market_discovery"]["rule_sets"][-1]["rule_set_id"],
+            "unfinished-draft",
         )
 
     def test_market_discovery_fields_columns_and_filters_share_registry_authority(self) -> None:

@@ -51,6 +51,8 @@ def classify_workload(method: str, path: str) -> str:
     normalized_path = "/" + path.strip().lower().lstrip("/")
     if any(token in normalized_path for token in ("/replay/", "/backtest/", "/simulation/")):
         return "simulation"
+    if normalized_path.endswith("/market-discovery/configuration/materialize"):
+        return "commands"
     if any(token in normalized_path for token in ("chart", "/canvas")):
         return "charts"
     if any(token in normalized_path for token in ("scanner", "market-discovery", "watchlist")):

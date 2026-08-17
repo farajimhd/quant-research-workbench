@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import threading
 import time
 from copy import deepcopy
 from dataclasses import asdict
@@ -69,6 +70,8 @@ from src.trading_runtime.taxonomy import StrategyTaxonomy
 
 CONFIGURATION_SCHEMA_VERSION = 34
 MARKET_DISCOVERY_MATERIALIZATION_RUN_ID = "market-discovery:materialized-configuration"
+_CONFIGURATION_BASE_CACHE_LOCK = threading.RLock()
+_CONFIGURATION_BASE_CACHE: tuple[str, float, dict[str, Any] | None] = ("", 0.0, None)
 CONFIGURATION_SECTIONS = {
     "strategy",
     "trading_actions",
@@ -159,11 +162,35 @@ def public_configuration_revision(revision: dict[str, Any]) -> dict[str, Any]:
 
 
 def configuration_base() -> dict[str, Any]:
+    global _CONFIGURATION_BASE_CACHE
     journal = trading_journal()
     approved = journal.approved_trading_configuration()
-    if approved is not None:
-        return _migrate_draft(deepcopy(dict(approved.get("payload") or {})))
-    return _default_draft()
+    cache_key = (
+        f"approved:{approved.get('content_hash') or approved.get('revision_id') or ''}"
+        if approved is not None
+        else "default"
+    )
+    now = time.monotonic()
+    cached_key, cached_until, cached = _CONFIGURATION_BASE_CACHE
+    if cached is not None and cached_key == cache_key and now < cached_until:
+        return deepcopy(cached)
+    with _CONFIGURATION_BASE_CACHE_LOCK:
+        cached_key, cached_until, cached = _CONFIGURATION_BASE_CACHE
+        if cached is not None and cached_key == cache_key and now < cached_until:
+            return deepcopy(cached)
+        resolved = (
+            _migrate_draft(deepcopy(dict(approved.get("payload") or {})))
+            if approved is not None
+            else _default_draft()
+        )
+        # Default authority may change with QMD catalog or assignment state, so
+        # keep only a short shared snapshot. Published content is immutable.
+        _CONFIGURATION_BASE_CACHE = (
+            cache_key,
+            now + (3600.0 if approved is not None else 5.0),
+            deepcopy(resolved),
+        )
+        return resolved
 
 
 def materialize_market_discovery(section: dict[str, Any]) -> dict[str, Any]:
@@ -175,11 +202,17 @@ def materialize_market_discovery(section: dict[str, Any]) -> dict[str, Any]:
 
     if not isinstance(section, dict):
         raise TypeError("Market Discovery materialization requires an object")
-    candidate = configuration_base()
-    candidate["market_discovery"] = deepcopy(section)
-    normalized = _migrate_draft(candidate)
-    discovery = deepcopy(dict(normalized["market_discovery"]))
-    _validate_market_discovery(discovery)
+    discovery = deepcopy(section)
+    core_scan_id = str(dict(discovery.get("core_scan") or {}).get("scan_id") or "qmd-core-scan")
+    for stream in discovery.get("signal_streams") or []:
+        stream.setdefault("source_type", "core_scan")
+        stream.setdefault("source_id", str(stream.get("source_scan_id") or core_scan_id))
+        if str(stream.get("source_type") or "core_scan") == "core_scan":
+            stream["source_id"] = core_scan_id
+            stream["source_scan_id"] = core_scan_id
+    _normalize_market_discovery_interval_specs(discovery)
+    discovery["data_field_plan"] = compile_data_field_plan(discovery)
+    _validate_market_discovery(discovery, runtime_only=True)
     encoded = json.dumps(
         discovery, separators=(",", ":"), sort_keys=True, default=str
     ).encode("utf-8")
@@ -222,9 +255,8 @@ def market_discovery_runtime_configuration() -> dict[str, Any]:
     )
     if not isinstance(section, dict):
         return base
-    candidate = deepcopy(base)
-    candidate["market_discovery"] = deepcopy(section)
-    return _migrate_draft(candidate)
+    base["market_discovery"] = deepcopy(section)
+    return base
 
 
 def market_discovery_materialization_status() -> dict[str, Any]:
@@ -2978,7 +3010,47 @@ def _validate_rule_constant(output: dict[str, Any], value: Any, label: str) -> N
         raise ValueError(f"{label} requires a valid ISO {kind}") from exc
 
 
-def _validate_market_discovery(section: dict[str, Any]) -> None:
+def _runtime_rule_set_ids(section: dict[str, Any]) -> set[str]:
+    """Return only Rule Sets reachable by an enabled runtime composition."""
+
+    core_scan = dict(section.get("core_scan") or {})
+    compositions = [core_scan]
+    compositions.extend(
+        row
+        for row in section.get("watchlists") or []
+        if bool(row.get("enabled", True))
+        and str(row.get("availability") or "available") == "available"
+    )
+    compositions.extend(
+        row
+        for row in section.get("signal_streams") or []
+        if bool(row.get("enabled", True))
+    )
+    selected = {
+        str(rule_set_id)
+        for composition in compositions
+        for key in ("inclusion_rule_sets", "exclusion_rule_sets")
+        for rule_set_id in composition.get(key) or []
+        if str(rule_set_id)
+    }
+    columns = {
+        str(row.get("column_id") or ""): row
+        for row in section.get("column_catalog") or []
+    }
+    selected.update(
+        str(column.get("source_id") or "")
+        for composition in compositions
+        for column_id in composition.get("columns") or []
+        if str((column := columns.get(str(column_id), {})).get("source_kind") or "")
+        == "rule_set"
+        and str(column.get("source_id") or "")
+    )
+    return selected
+
+
+def _validate_market_discovery(
+    section: dict[str, Any], *, runtime_only: bool = False
+) -> None:
     universe = dict(section.get("security_universe") or {})
     if not str(universe.get("universe_id") or ""):
         raise ValueError("Market Discovery requires one QMD Security Universe")
@@ -3004,7 +3076,13 @@ def _validate_market_discovery(section: dict[str, Any]) -> None:
         "rule_set_id",
         "Watchlist rule set",
     )
-    for rule_set in rule_sets:
+    runtime_rule_set_ids = _runtime_rule_set_ids(section) if runtime_only else rule_set_ids
+    validated_rule_sets = [
+        rule_set
+        for rule_set in rule_sets
+        if str(rule_set.get("rule_set_id") or "") in runtime_rule_set_ids
+    ]
+    for rule_set in validated_rule_sets:
         _validate_rule_set_definition(rule_set, f"Watchlist rule set {rule_set.get('name')}")
     field_catalog = list(section.get("field_catalog") or [])
     field_source_ids = _unique_ids(
@@ -3048,7 +3126,7 @@ def _validate_market_discovery(section: dict[str, Any]) -> None:
         for output in data_field.get("outputs") or []
         if str(output.get("field_ref") or "")
     }
-    for rule_set in rule_sets:
+    for rule_set in validated_rule_sets:
         for condition in rule_set.get("conditions") or []:
             source_id = str(condition.get("left_source_id") or "")
             left_ref = str(condition.get("left_field_ref") or "")

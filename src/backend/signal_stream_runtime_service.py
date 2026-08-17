@@ -157,6 +157,7 @@ class SignalStreamRuntime:
         journal: TradingJournal,
         watchlist_runtime: dict[str, Any] | None = None,
         include_occurrences: bool = True,
+        data_fields_projected: bool = False,
     ) -> dict[str, Any]:
         if as_of.tzinfo is None:
             raise ValueError("Signal Stream as_of must be timezone-aware")
@@ -172,11 +173,19 @@ class SignalStreamRuntime:
             for row in discovery.get("column_catalog") or []
         }
         selected_columns = configured_discovery_column_ids(configuration)
-        active_field_refs = list(compile_data_field_plan(discovery).get("field_refs") or [])
-        normalized = project_data_field_outputs(project_discovery_columns(
+        data_field_plan = compile_data_field_plan(discovery)
+        active_field_refs = list(data_field_plan.get("field_refs") or [])
+        normalized = project_discovery_columns(
             (normalize_watchlist_candidate(row) for row in candidates),
             column_ids=selected_columns,
-        ), discovery.get("data_fields") or [], field_refs=active_field_refs)
+        )
+        if not data_fields_projected:
+            normalized = project_data_field_outputs(
+                normalized,
+                discovery.get("data_fields") or [],
+                field_refs=active_field_refs,
+                field_instances=list(data_field_plan.get("field_instances") or []),
+            )
         rows_by_ticker = {
             str(row.get("ticker") or row.get("symbol") or "").strip().upper(): row
             for row in normalized
