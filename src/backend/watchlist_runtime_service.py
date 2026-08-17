@@ -747,6 +747,10 @@ def normalize_watchlist_candidate(row: dict[str, Any]) -> dict[str, Any]:
         result["change_pct"] = numeric_value(row, "change_pct")
     elif last_price and previous_close and previous_close > 0:
         result["change_pct"] = (last_price / previous_close - 1) * 100
+    if row.get("change_actual") is not None:
+        result["change_actual"] = numeric_value(row, "change_actual")
+    elif last_price is not None and previous_close is not None:
+        result["change_actual"] = last_price - previous_close
     return classify_watchlist_row(result)
 
 

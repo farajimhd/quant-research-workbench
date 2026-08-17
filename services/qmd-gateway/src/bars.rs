@@ -15,7 +15,7 @@ use std::sync::Arc;
 use tokio::sync::{mpsc, Mutex};
 use tokio::time::{interval, Duration};
 
-pub const BAR_SCHEMA_VERSION: u16 = 2;
+pub const BAR_SCHEMA_VERSION: u16 = 3;
 const ESTIMATED_LULD_WINDOW_SECONDS: i64 = 300;
 const ESTIMATED_LULD_NEAR_BAND_PCT: f64 = 1.0;
 const FORM_T_EXTENDED_HOURS_CONDITION: u16 = 12;
@@ -320,6 +320,98 @@ pub struct BarRow {
     pub quote_rate_accel: f64,
     /// Current tape imbalance minus previous closed bar tape imbalance.
     pub tape_imbalance_accel: f64,
+    /// Close minus the previous closed bar close.
+    pub price_change_1_bar: Option<f64>,
+    /// Close minus the third previous closed bar close.
+    pub price_change_3_bar: Option<f64>,
+    /// Close minus the fifth previous closed bar close.
+    pub price_change_5_bar: Option<f64>,
+    /// Close change versus the previous closed bar, as a percentage of its absolute close.
+    pub price_change_1_bar_pct: Option<f64>,
+    /// Close change versus the third previous closed bar, as a percentage of its absolute close.
+    pub price_change_3_bar_pct: Option<f64>,
+    /// Close change versus the fifth previous closed bar, as a percentage of its absolute close.
+    pub price_change_5_bar_pct: Option<f64>,
+    /// Close divided by the previous closed bar close.
+    pub price_ratio_1_bar: Option<f64>,
+    /// Close divided by the third previous closed bar close.
+    pub price_ratio_3_bar: Option<f64>,
+    /// Close divided by the fifth previous closed bar close.
+    pub price_ratio_5_bar: Option<f64>,
+    /// Current volume minus previous-bar volume; canonical alias of `volume_accel`.
+    pub volume_change: Option<f64>,
+    /// Previous-bar volume change as a percentage of the absolute previous value.
+    pub volume_change_pct: Option<f64>,
+    /// Current volume divided by previous-bar volume.
+    pub volume_ratio: Option<f64>,
+    /// Current dollar volume minus previous-bar dollar volume.
+    pub dollar_volume_change: Option<f64>,
+    /// Previous-bar dollar-volume change percentage.
+    pub dollar_volume_change_pct: Option<f64>,
+    /// Current dollar volume divided by previous-bar dollar volume.
+    pub dollar_volume_ratio: Option<f64>,
+    /// Current trade count minus previous-bar trade count.
+    pub trade_count_change: Option<f64>,
+    /// Previous-bar trade-count change percentage.
+    pub trade_count_change_pct: Option<f64>,
+    /// Current trade count divided by previous-bar trade count.
+    pub trade_count_ratio: Option<f64>,
+    /// Current quote count minus previous-bar quote count.
+    pub quote_count_change: Option<f64>,
+    /// Previous-bar quote-count change percentage.
+    pub quote_count_change_pct: Option<f64>,
+    /// Current quote count divided by previous-bar quote count.
+    pub quote_count_ratio: Option<f64>,
+    /// Current trades-per-second minus the previous-bar rate.
+    pub trade_rate_change: Option<f64>,
+    /// Previous-bar trade-rate change percentage.
+    pub trade_rate_change_pct: Option<f64>,
+    /// Current trade rate divided by the previous-bar rate.
+    pub trade_rate_ratio: Option<f64>,
+    /// Current shares-per-second minus the previous-bar rate.
+    pub volume_rate_change: Option<f64>,
+    /// Previous-bar volume-rate change percentage.
+    pub volume_rate_change_pct: Option<f64>,
+    /// Current volume rate divided by the previous-bar rate.
+    pub volume_rate_ratio: Option<f64>,
+    /// Current notional-per-second minus the previous-bar rate.
+    pub dollar_volume_rate_change: Option<f64>,
+    /// Previous-bar dollar-volume-rate change percentage.
+    pub dollar_volume_rate_change_pct: Option<f64>,
+    /// Current dollar-volume rate divided by the previous-bar rate.
+    pub dollar_volume_rate_ratio: Option<f64>,
+    /// Current quote rate minus the previous-bar quote rate.
+    pub quote_rate_change: Option<f64>,
+    /// Previous-bar quote-rate change percentage.
+    pub quote_rate_change_pct: Option<f64>,
+    /// Current quote rate divided by the previous-bar quote rate.
+    pub quote_rate_ratio: Option<f64>,
+    /// Current average trade size minus the previous-bar value.
+    pub avg_trade_size_change: Option<f64>,
+    /// Previous-bar average-trade-size change percentage.
+    pub avg_trade_size_change_pct: Option<f64>,
+    /// Current average trade size divided by the previous-bar value.
+    pub avg_trade_size_ratio: Option<f64>,
+    /// Current VWAP minus previous-bar VWAP.
+    pub vwap_change: Option<f64>,
+    /// Previous-bar VWAP change percentage.
+    pub vwap_change_pct: Option<f64>,
+    /// Current VWAP divided by previous-bar VWAP.
+    pub vwap_ratio: Option<f64>,
+    /// Closing quoted spread minus the previous-bar closing spread.
+    pub spread_close_change: Option<f64>,
+    /// Previous-bar closing-spread change percentage.
+    pub spread_close_change_pct: Option<f64>,
+    /// Current closing spread divided by the previous-bar closing spread.
+    pub spread_close_ratio: Option<f64>,
+    /// Closing spread-bps minus the previous-bar closing spread-bps.
+    pub spread_bps_change: Option<f64>,
+    /// Previous-bar spread-bps change percentage.
+    pub spread_bps_change_pct: Option<f64>,
+    /// Current closing spread-bps divided by the previous-bar value.
+    pub spread_bps_ratio: Option<f64>,
+    /// Signed buy/sell volume delta minus the previous-bar signed delta.
+    pub buy_sell_volume_delta_change: Option<f64>,
     /// Percent distance from trade close to VWAP, `(close - vwap) / vwap * 100`.
     pub vwap_distance_pct: f64,
     /// Percent distance from quote mid close to VWAP, `(mid_close - vwap) / vwap * 100`.
@@ -1153,6 +1245,107 @@ impl BarStore {
             row.tape_imbalance_accel = previous
                 .map(|item| row.tape_imbalance - item.tape_imbalance)
                 .unwrap_or_default();
+            if let Some(item) = previous {
+                row.price_change_1_bar = absolute_change(row.close, item.close);
+                row.price_change_1_bar_pct = percent_change(row.close, item.close);
+                row.price_ratio_1_bar = ratio_change(row.close, item.close);
+                populate_change_triplet(
+                    row.volume,
+                    item.volume,
+                    &mut row.volume_change,
+                    &mut row.volume_change_pct,
+                    &mut row.volume_ratio,
+                );
+                populate_change_triplet(
+                    row.dollar_volume,
+                    item.dollar_volume,
+                    &mut row.dollar_volume_change,
+                    &mut row.dollar_volume_change_pct,
+                    &mut row.dollar_volume_ratio,
+                );
+                populate_change_triplet(
+                    row.trade_count as f64,
+                    item.trade_count as f64,
+                    &mut row.trade_count_change,
+                    &mut row.trade_count_change_pct,
+                    &mut row.trade_count_ratio,
+                );
+                populate_change_triplet(
+                    row.quote_count as f64,
+                    item.quote_count as f64,
+                    &mut row.quote_count_change,
+                    &mut row.quote_count_change_pct,
+                    &mut row.quote_count_ratio,
+                );
+                populate_change_triplet(
+                    row.trade_rate,
+                    item.trade_rate,
+                    &mut row.trade_rate_change,
+                    &mut row.trade_rate_change_pct,
+                    &mut row.trade_rate_ratio,
+                );
+                populate_change_triplet(
+                    row.volume_rate,
+                    item.volume_rate,
+                    &mut row.volume_rate_change,
+                    &mut row.volume_rate_change_pct,
+                    &mut row.volume_rate_ratio,
+                );
+                populate_change_triplet(
+                    row.dollar_volume_rate,
+                    item.dollar_volume_rate,
+                    &mut row.dollar_volume_rate_change,
+                    &mut row.dollar_volume_rate_change_pct,
+                    &mut row.dollar_volume_rate_ratio,
+                );
+                populate_change_triplet(
+                    row.quote_rate,
+                    item.quote_rate,
+                    &mut row.quote_rate_change,
+                    &mut row.quote_rate_change_pct,
+                    &mut row.quote_rate_ratio,
+                );
+                populate_change_triplet(
+                    row.avg_trade_size,
+                    item.avg_trade_size,
+                    &mut row.avg_trade_size_change,
+                    &mut row.avg_trade_size_change_pct,
+                    &mut row.avg_trade_size_ratio,
+                );
+                populate_change_triplet(
+                    row.vwap,
+                    item.vwap,
+                    &mut row.vwap_change,
+                    &mut row.vwap_change_pct,
+                    &mut row.vwap_ratio,
+                );
+                populate_change_triplet(
+                    row.spread_close,
+                    item.spread_close,
+                    &mut row.spread_close_change,
+                    &mut row.spread_close_change_pct,
+                    &mut row.spread_close_ratio,
+                );
+                populate_change_triplet(
+                    row.spread_bps_close,
+                    item.spread_bps_close,
+                    &mut row.spread_bps_change,
+                    &mut row.spread_bps_change_pct,
+                    &mut row.spread_bps_ratio,
+                );
+                row.buy_sell_volume_delta_change =
+                    absolute_change(row.buy_sell_volume_delta, item.buy_sell_volume_delta);
+            }
+            if let Some(item) = history.iter().rev().nth(2) {
+                row.price_change_3_bar = absolute_change(row.close, item.close);
+                row.price_change_3_bar_pct = percent_change(row.close, item.close);
+                row.price_ratio_3_bar = ratio_change(row.close, item.close);
+            }
+            if let Some(item) = history.iter().rev().nth(4) {
+                row.price_change_5_bar = absolute_change(row.close, item.close);
+                row.price_change_5_bar_pct = percent_change(row.close, item.close);
+                row.price_ratio_5_bar = ratio_change(row.close, item.close);
+            }
         }
         row
     }
@@ -1284,6 +1477,52 @@ impl BarStore {
             dollar_volume_accel: 0.0,
             quote_rate_accel: 0.0,
             tape_imbalance_accel: 0.0,
+            price_change_1_bar: None,
+            price_change_3_bar: None,
+            price_change_5_bar: None,
+            price_change_1_bar_pct: None,
+            price_change_3_bar_pct: None,
+            price_change_5_bar_pct: None,
+            price_ratio_1_bar: None,
+            price_ratio_3_bar: None,
+            price_ratio_5_bar: None,
+            volume_change: None,
+            volume_change_pct: None,
+            volume_ratio: None,
+            dollar_volume_change: None,
+            dollar_volume_change_pct: None,
+            dollar_volume_ratio: None,
+            trade_count_change: None,
+            trade_count_change_pct: None,
+            trade_count_ratio: None,
+            quote_count_change: None,
+            quote_count_change_pct: None,
+            quote_count_ratio: None,
+            trade_rate_change: None,
+            trade_rate_change_pct: None,
+            trade_rate_ratio: None,
+            volume_rate_change: None,
+            volume_rate_change_pct: None,
+            volume_rate_ratio: None,
+            dollar_volume_rate_change: None,
+            dollar_volume_rate_change_pct: None,
+            dollar_volume_rate_ratio: None,
+            quote_rate_change: None,
+            quote_rate_change_pct: None,
+            quote_rate_ratio: None,
+            avg_trade_size_change: None,
+            avg_trade_size_change_pct: None,
+            avg_trade_size_ratio: None,
+            vwap_change: None,
+            vwap_change_pct: None,
+            vwap_ratio: None,
+            spread_close_change: None,
+            spread_close_change_pct: None,
+            spread_close_ratio: None,
+            spread_bps_change: None,
+            spread_bps_change_pct: None,
+            spread_bps_ratio: None,
+            buy_sell_volume_delta_change: None,
             vwap_distance_pct,
             mid_vwap_distance_pct,
             realized_volatility,
@@ -1852,6 +2091,32 @@ fn trailing_return(row: &BarRow, history: &VecDeque<BarRow>, bars_back: usize) -
         .unwrap_or_default()
 }
 
+fn absolute_change(current: f64, previous: f64) -> Option<f64> {
+    (current.is_finite() && previous.is_finite()).then_some(current - previous)
+}
+
+fn percent_change(current: f64, previous: f64) -> Option<f64> {
+    (current.is_finite() && previous.is_finite() && previous.abs() > f64::EPSILON)
+        .then_some((current - previous) / previous.abs() * 100.0)
+}
+
+fn ratio_change(current: f64, previous: f64) -> Option<f64> {
+    (current.is_finite() && previous.is_finite() && previous.abs() > f64::EPSILON)
+        .then_some(current / previous)
+}
+
+fn populate_change_triplet(
+    current: f64,
+    previous: f64,
+    absolute: &mut Option<f64>,
+    percent: &mut Option<f64>,
+    ratio: &mut Option<f64>,
+) {
+    *absolute = absolute_change(current, previous);
+    *percent = percent_change(current, previous);
+    *ratio = ratio_change(current, previous);
+}
+
 fn estimated_luld_parameter_pct(reference_price: f64, ts: DateTime<Utc>) -> f64 {
     let mut parameter_pct = if reference_price > 3.0 {
         10.0
@@ -1954,6 +2219,39 @@ mod tests {
             .is_empty());
         assert!(snapshot.history[0].qmd_structure.active_levels.is_empty());
         assert_eq!(bars.structure_engine_count().await, 0);
+    }
+
+    #[tokio::test]
+    async fn finalized_bars_publish_actual_percent_and_ratio_changes() {
+        let rules = TradeAggregationRules::new([(0, TradeUpdateRule::regular())]).unwrap();
+        let bars = SharedBarStore::new_without_structure(vec!["1s".into()], 4, 1, rules);
+        let start = Utc.with_ymd_and_hms(2026, 8, 17, 13, 30, 0).unwrap();
+        bars.apply_event(&MarketEvent::Quote(quote(start, 99.0, 101.0, 1)))
+            .await;
+        bars.apply_event(&MarketEvent::Trade(trade(start, 100.0, 10.0, vec![])))
+            .await;
+        let next = start + chrono::Duration::seconds(1);
+        bars.apply_event(&MarketEvent::Quote(quote(next, 109.0, 111.0, 2)))
+            .await;
+        bars.apply_event(&MarketEvent::Trade(trade(next, 110.0, 20.0, vec![])))
+            .await;
+        bars.finalize_due(start + chrono::Duration::seconds(3))
+            .await;
+
+        let snapshot = bars.snapshot("AAPL", "1s", 4).await;
+        let current = snapshot.history.last().unwrap();
+        assert_eq!(current.price_change_1_bar, Some(10.0));
+        assert_eq!(current.price_change_1_bar_pct, Some(10.0));
+        assert_eq!(current.return_1_bar, 10.0);
+        assert_eq!(current.price_ratio_1_bar, Some(1.1));
+        assert_eq!(current.volume_change, Some(10.0));
+        assert_eq!(current.volume_change_pct, Some(100.0));
+        assert_eq!(current.volume_ratio, Some(2.0));
+        assert_eq!(current.trade_count_change, Some(0.0));
+        assert_eq!(current.trade_count_change_pct, Some(0.0));
+        assert_eq!(current.trade_count_ratio, Some(1.0));
+        assert_eq!(current.quote_count_change, Some(0.0));
+        assert_eq!(current.quote_count_ratio, Some(1.0));
     }
 
     #[tokio::test]
@@ -2169,6 +2467,16 @@ mod tests {
             aligned_start(timestamp, 5_000),
             Utc.with_ymd_and_hms(2026, 7, 10, 13, 30, 5).unwrap()
         );
+    }
+
+    #[test]
+    fn typed_change_helpers_preserve_missing_and_zero_baselines() {
+        assert_eq!(absolute_change(120.0, 100.0), Some(20.0));
+        assert_eq!(percent_change(120.0, 100.0), Some(20.0));
+        assert_eq!(ratio_change(120.0, 100.0), Some(1.2));
+        assert_eq!(percent_change(5.0, 0.0), None);
+        assert_eq!(ratio_change(5.0, 0.0), None);
+        assert_eq!(absolute_change(f64::NAN, 1.0), None);
     }
 
     #[test]

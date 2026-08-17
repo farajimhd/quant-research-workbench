@@ -8,6 +8,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from src.backend.trading_configuration_service import (
+    CONFIGURATION_SCHEMA_VERSION,
     _default_draft,
     _compiled_observation_dependencies,
     _compile_run_plans,
@@ -357,7 +358,7 @@ class TradingConfigurationServiceTests(unittest.TestCase):
 
         migrated = _migrate_draft(legacy)
 
-        self.assertEqual(migrated["schema_version"], 32)
+        self.assertEqual(migrated["schema_version"], CONFIGURATION_SCHEMA_VERSION)
         last_price = [
             row
             for row in migrated["market_discovery"]["data_fields"]
@@ -489,7 +490,7 @@ class TradingConfigurationServiceTests(unittest.TestCase):
 
         migrated = _migrate_draft(legacy)
 
-        self.assertEqual(migrated["schema_version"], 32)
+        self.assertEqual(migrated["schema_version"], CONFIGURATION_SCHEMA_VERSION)
         migrated_paper = next(
             row
             for row in migrated["accounts"]["bindings"]
@@ -814,7 +815,7 @@ class TradingConfigurationServiceTests(unittest.TestCase):
         ):
             draft = _default_draft()
 
-        self.assertEqual(draft["schema_version"], 32)
+        self.assertEqual(draft["schema_version"], CONFIGURATION_SCHEMA_VERSION)
         self.assertTrue(all(rule_set["name"] for rule_set in draft["market_discovery"]["rule_sets"]))
         self.assertTrue(all(rule_set["description"] for rule_set in draft["market_discovery"]["rule_sets"]))
         self.assertTrue(all(rule_set["origin"] == "system" and rule_set["protected"] for rule_set in draft["market_discovery"]["rule_sets"]))
@@ -1484,7 +1485,7 @@ class TradingConfigurationServiceTests(unittest.TestCase):
 
         migrated = _migrate_draft(legacy)
 
-        self.assertEqual(migrated["schema_version"], 32)
+        self.assertEqual(migrated["schema_version"], CONFIGURATION_SCHEMA_VERSION)
         canonical_ids = {
             rule_set["rule_set_id"]
             for rule_set in migrated["market_discovery"]["rule_sets"]
@@ -1562,7 +1563,7 @@ class TradingConfigurationServiceTests(unittest.TestCase):
         ]
         migrated = _migrate_draft(legacy)
         migrated_profile = migrated["strategy"]["profiles"][0]
-        self.assertEqual(migrated["schema_version"], 32)
+        self.assertEqual(migrated["schema_version"], CONFIGURATION_SCHEMA_VERSION)
         self.assertEqual(migrated_profile["action_policy_ids"], ["profit-pocket"])
         self.assertNotIn("capabilities", migrated_profile)
 

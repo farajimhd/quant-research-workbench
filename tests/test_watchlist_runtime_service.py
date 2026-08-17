@@ -85,6 +85,7 @@ class WatchlistRuntimeServiceTests(unittest.TestCase):
             }
         )
         self.assertEqual(row["ticker"], "AAPL")
+        self.assertEqual(row["change_actual"], 10)
         self.assertAlmostEqual(row["change_pct"], 10)
         self.assertEqual(row["volume"], 50_000)
         self.assertEqual(row["liquidity_rank"], 9)

@@ -289,11 +289,13 @@ def _enrich_field_metadata(source_id: str, raw: dict[str, Any]) -> dict[str, Any
         "volume": "Interval volume",
         "dollar_volume": "Dollar volume",
         "trade_count": "Trade count",
-        "price_change_pct": "Price change",
+        "price_change": "Bar price change",
+        "price_change_pct": "Bar price change %",
         "high_low_range_pct": "High-low range",
     }
     descriptions = {
-        "price_change_pct": "Percentage change from the previous close of the selected interval.",
+        "price_change": "Close minus open inside the selected bar timeframe.",
+        "price_change_pct": "Close minus open inside the selected bar timeframe, divided by the absolute open and expressed as a percentage.",
         "high_low_range_pct": "High-to-low price range within the selected interval, expressed as a percentage.",
         "volume": "Eligible share volume accumulated inside the selected interval.",
         "close": "Last eligible trade price in the selected completed or developing interval.",
@@ -302,18 +304,62 @@ def _enrich_field_metadata(source_id: str, raw: dict[str, Any]) -> dict[str, Any
         field.setdefault("name", names[source_id])
     if source_id in descriptions:
         field.setdefault("description", descriptions[source_id])
-    if normalized.endswith("_pct") or normalized.endswith(".pct"):
+    if source_id.startswith("return_"):
+        bars = source_id.removeprefix("return_").removesuffix("_bar")
+        field.setdefault("name", f"Price change % vs {bars} bar")
+        field.setdefault("description", f"Close versus the close {bars} completed bar(s) earlier, expressed as a percentage of the absolute comparison close.")
+        field.setdefault("formula", "100 * (current_close - comparison_close) / abs(comparison_close); null when the comparison close is missing or zero")
+    elif source_id.startswith("price_change_") and source_id.endswith("_bar_pct"):
+        bars = source_id.removeprefix("price_change_").removesuffix("_bar_pct")
+        field.setdefault("name", f"Price change % vs {bars} bar")
+        field.setdefault("description", f"Close versus the close {bars} completed bar(s) earlier, expressed as a percentage of the absolute comparison close.")
+        field.setdefault("formula", "100 * (current_close - comparison_close) / abs(comparison_close); null when the comparison close is missing or zero")
+    elif source_id.startswith("price_change_") and source_id.endswith("_bar"):
+        bars = source_id.removeprefix("price_change_").removesuffix("_bar")
+        field.setdefault("name", f"Price change vs {bars} bar")
+        field.setdefault("description", f"Close minus the close {bars} completed bar(s) earlier.")
+        field.setdefault("formula", "current_close - comparison_close; null until the comparison bar exists")
+    elif source_id.startswith("price_ratio_"):
+        bars = source_id.removeprefix("price_ratio_").removesuffix("_bar")
+        field.setdefault("name", f"Price ratio vs {bars} bar")
+        field.setdefault("description", f"Close divided by the close {bars} completed bar(s) earlier.")
+        field.setdefault("formula", "current_close / comparison_close; null when the comparison close is missing or zero")
+    elif source_id.endswith("_change_pct"):
+        subject = source_id.removesuffix("_change_pct").replace("_", " ")
+        field.setdefault("name", f"{subject.title()} change %")
+        field.setdefault("description", f"Current {subject} minus its previous completed-bar value, divided by the absolute previous value and expressed as a percentage.")
+        field.setdefault("formula", "100 * (current - previous_bar) / abs(previous_bar); null when the previous value is missing or zero")
+    elif source_id.endswith("_change"):
+        subject = source_id.removesuffix("_change").replace("_", " ")
+        field.setdefault("name", f"{subject.title()} change")
+        field.setdefault("description", f"Current {subject} minus its previous completed-bar value.")
+        field.setdefault("formula", "current - previous_bar; null until the previous bar exists")
+    elif source_id.endswith("_ratio"):
+        subject = source_id.removesuffix("_ratio").replace("_", " ")
+        field.setdefault("name", f"{subject.title()} ratio")
+        field.setdefault("description", f"Current {subject} divided by its previous completed-bar value.")
+        field.setdefault("formula", "current / previous_bar; null when the previous value is missing or zero")
+    if normalized.endswith("_pct") or normalized.endswith(".pct") or source_id.startswith("return_"):
         field.setdefault("unit", "percent")
+        field.setdefault("value_type", "number")
+    elif normalized.endswith("_ratio") or normalized.startswith("price_ratio_"):
+        field.setdefault("unit", "multiple")
         field.setdefault("value_type", "number")
     elif "spread_bps" in normalized or normalized.endswith("_bps"):
         field.setdefault("unit", "basis_points")
         field.setdefault("value_type", "number")
-    elif source_id in {"open", "high", "low", "close", "vwap"} or re.search(
+    elif source_id in {"open", "high", "low", "close", "vwap", "price_change", "vwap_change", "spread_close_change"} or normalized.startswith("price_change_") or re.search(
         r"(?:^|_)(?:bid|ask|mid)_(?:open|high|low|close)$", normalized
     ):
         field.setdefault("unit", "currency")
         field.setdefault("value_type", "number")
-    elif normalized.endswith("volume") or "volume_" in normalized:
+    elif normalized.startswith("dollar_volume") or normalized.endswith("_notional"):
+        field.setdefault("unit", "currency")
+        field.setdefault("value_type", "number")
+    elif normalized.startswith(("trade_count", "quote_count", "trade_rate", "quote_rate")):
+        field.setdefault("unit", "count")
+        field.setdefault("value_type", "number")
+    elif normalized.endswith("volume") or "volume_" in normalized or normalized.startswith("avg_trade_size"):
         field.setdefault("unit", "shares")
         field.setdefault("value_type", "number")
     elif normalized.endswith("count") or "_count_" in normalized:

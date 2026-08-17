@@ -29,6 +29,7 @@ QMD_SOURCE_IDS = {
     "liquidity-rank",
     "market.liquidity_rank",
     "market.change_pct",
+    "market.change_actual",
     "market.last_price",
     "market.relative_volume",
     "market.volume",

@@ -4,6 +4,7 @@ import unittest
 from copy import deepcopy
 
 from src.backend.data_field_contracts import (
+    _enrich_field_metadata,
     compile_data_field_plan,
     field_instance_ref,
     interval_expression,
@@ -303,8 +304,42 @@ class DataFieldContractTests(unittest.TestCase):
         price_change = by_source["price_change_pct"]
         self.assertEqual(len(price_change), 1)
         self.assertTrue({"1m", "5m"}.issubset(price_change[0]["context"]["available_intervals"]))
-        self.assertTrue(all(row["outputs"][0]["name"] == "Price change" for row in price_change))
+        self.assertTrue(all(row["outputs"][0]["name"] == "Bar price change %" for row in price_change))
         self.assertTrue(all(row["context"]["dimension_kind"] == "interval" for row in price_change))
+
+    def test_change_outputs_have_typed_units_and_explicit_baselines(self) -> None:
+        expected = {
+            "price_change_1_bar": ("currency", "current_close - comparison_close"),
+            "return_1_bar": ("percent", "abs(comparison_close)"),
+            "volume_change": ("shares", "current - previous_bar"),
+            "volume_change_pct": ("percent", "abs(previous_bar)"),
+            "volume_ratio": ("multiple", "current / previous_bar"),
+            "dollar_volume_change": ("currency", "current - previous_bar"),
+            "trade_count_change_pct": ("percent", "abs(previous_bar)"),
+            "quote_count_ratio": ("multiple", "current / previous_bar"),
+        }
+        for source_id, (unit, formula_fragment) in expected.items():
+            field = _enrich_field_metadata(source_id, {})
+            self.assertEqual(field["unit"], unit, source_id)
+            self.assertIn(formula_fragment, field["formula"], source_id)
+
+        by_source = {
+            output["source_id"]: (data_field, output)
+            for data_field in self.discovery["data_fields"]
+            for output in data_field["outputs"]
+        }
+        for source_id, unit in {
+            "market.change_actual": "currency",
+            "fundamental.revenue_change": "currency",
+            "fundamental.revenue_growth_pct": "percent",
+            "fundamental.earnings_change": "currency",
+            "fundamental.earnings_growth_pct": "percent",
+            "fundamental.share_change": "shares",
+            "fundamental.share_growth_pct": "percent",
+        }.items():
+            data_field, output = by_source[source_id]
+            self.assertTrue(data_field["enabled"], source_id)
+            self.assertEqual(output["unit"], unit, source_id)
 
     def test_interval_instance_projects_to_a_stable_canvas_column(self) -> None:
         data_field = next(

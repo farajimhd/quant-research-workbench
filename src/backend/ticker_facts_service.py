@@ -1137,7 +1137,17 @@ def share_base_card(
             evidence("Current shares", current, "shares", observations[0].get("period_end_date") if observations else None, "reported", "Latest available SEC or provider shares outstanding."),
             evidence("Comparison shares", numeric_value(prior.get("value")) if prior else None, "shares", prior.get("period_end_date") if prior else None, "reported", "Nearest observation at least 300 days earlier."),
         ],
-        {"change_percent": change, "current_shares": current, "prior_shares": numeric_value(prior.get("value")) if prior else None, "score": score},
+        {
+            "change": (
+                current - numeric_value(prior.get("value"))
+                if current is not None and prior and numeric_value(prior.get("value")) is not None
+                else None
+            ),
+            "change_percent": change,
+            "current_shares": current,
+            "prior_shares": numeric_value(prior.get("value")) if prior else None,
+            "score": score,
+        },
     ), score
 
 
@@ -1152,6 +1162,8 @@ def financial_card_and_scores(fundamental_rows: list[dict[str, Any]]) -> tuple[d
     debt = latest_total_debt(fact_observations(fundamental_rows, ("LongTermDebtCurrent", "LongTermDebtNoncurrent", "CurrentPortionOfLongTermDebt", "ShorttermBorrowings", "LongtermBorrowings", "Borrowings")))
     revenue_growth = comparable_growth(revenue)
     income_growth = comparable_growth(net_income)
+    revenue_change = comparable_change(revenue)
+    income_change = comparable_change(net_income)
     latest_income = row_value(first(net_income))
     latest_operating = row_value(first(operating_income))
     latest_ocf = row_value(first(operating_cash))
@@ -1189,7 +1201,14 @@ def financial_card_and_scores(fundamental_rows: list[dict[str, Any]]) -> tuple[d
             evidence("Cash", cash, "USD", None, "reported", "Latest SEC-reported cash and equivalents."),
             evidence("Debt", debt, "USD", None, "derived", "Current plus noncurrent long-term debt when available."),
         ],
-        {"coverage_percent": coverage, "revenue_growth_percent": revenue_growth, "income_growth_percent": income_growth, "score": overall},
+        {
+            "coverage_percent": coverage,
+            "revenue_change": revenue_change,
+            "revenue_growth_percent": revenue_growth,
+            "income_change": income_change,
+            "income_growth_percent": income_growth,
+            "score": overall,
+        },
     )
     return card, {
         "profitability": profitability if profitability_coverage else None,
@@ -1382,6 +1401,13 @@ def comparable_growth(rows: list[dict[str, Any]]) -> float | None:
         return None
     current, previous = row_value(rows[0]), row_value(rows[1])
     return ratio_percent(current - previous, abs(previous)) if current is not None and previous not in {None, 0} else None
+
+
+def comparable_change(rows: list[dict[str, Any]]) -> float | None:
+    if len(rows) < 2:
+        return None
+    current, previous = row_value(rows[0]), row_value(rows[1])
+    return current - previous if current is not None and previous is not None else None
 
 
 def latest_fact_value(rows: list[dict[str, Any]], tags: tuple[str, ...]) -> float | None:

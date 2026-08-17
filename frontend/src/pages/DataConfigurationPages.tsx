@@ -705,7 +705,7 @@ function dataCatalogLocation(row: RegistryDefinition): { group: string; subgroup
     if (/^sec\.|^sec-events$/.test(id)) return { group: "Fundamentals & Filings", subgroup: "SEC Filing Data" };
     if (/^xbrl\.|quality_score|quality_label|quality_coverage/.test(id)) return { group: "Fundamentals & Filings", subgroup: "XBRL Quality" };
     if (/margin|return_on|current_ratio|debt_to_equity|interest_coverage|cash_conversion|research_intensity|tax_rate/.test(id)) return { group: "Fundamentals & Filings", subgroup: "Profitability & Margins" };
-    if (/growth|valuation|trajectory|earnings|dilution/.test(id)) return { group: "Fundamentals & Filings", subgroup: "Growth & Valuation" };
+    if (/growth|valuation|trajectory|earnings|revenue.*change|dilution/.test(id)) return { group: "Fundamentals & Filings", subgroup: "Growth & Valuation" };
     if (/share|stock|equity|debt|dividend/.test(id)) return { group: "Fundamentals & Filings", subgroup: "Capital & Shares" };
     if (/score|label/.test(id)) return { group: "Fundamentals & Filings", subgroup: "Fundamental Scores" };
     return { group: "Fundamentals & Filings", subgroup: "Financial Statements" };
@@ -741,6 +741,7 @@ function dataCatalogLocation(row: RegistryDefinition): { group: string; subgroup
   if (/^trade\./.test(id)) return { group: "Market Data", subgroup: "Trade Events" };
   if (/^quote\./.test(id)) return { group: "Market Data", subgroup: "Quote Events" };
   if (/tradability|halt_flag|ssr_flag|estimated_luld/.test(id)) return { group: "Market Data", subgroup: "Tradability" };
+  if (/^market\.change_(actual|pct)$/.test(id)) return { group: "Market Data", subgroup: "Price & Returns" };
   if (/^clock\.|session|market clock|market state|market\.status|market\.is_|market\.luld|market\.feed|market\.event_at|minute_of_day|previous_day_context|daily_context/.test(id)) return { group: "Market Data", subgroup: "Session & Market State" };
   if (/microstructure|pressure|imbalance|aggress|signed_volume|cumulative_delta|large_trade|tape_/.test(id)) return { group: "Market Data", subgroup: "Order Flow & Microstructure" };
   if (/liquidity|dry_up|slippage/.test(id)) return { group: "Market Data", subgroup: "Liquidity" };

@@ -7,10 +7,11 @@ use std::collections::{BTreeMap, BTreeSet};
 pub const WATCHLIST_TIMELINE_PLAN_SCHEMA_VERSION: u16 = 3;
 pub const MAX_EVALUATIONS_PER_CHUNK: u64 = 1_800;
 pub const MAX_MEMBERSHIP_SLOTS_PER_CHUNK: u64 = 2_000_000;
-const QMD_SOURCES: [&str; 6] = [
+const QMD_SOURCES: [&str; 7] = [
     "indicator.vwap.value",
     "liquidity-rank",
     "market.change_pct",
+    "market.change_actual",
     "market.last_price",
     "market.relative_volume",
     "market.volume",

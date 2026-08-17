@@ -13,6 +13,7 @@ from src.backend.ticker_facts_service import (
     company_country_code,
     daily_volume_history_points,
     freshness_status,
+    financial_card_and_scores,
     fundamentals_sql,
     identity_anchor_sql,
     latest_total_debt,
@@ -21,6 +22,7 @@ from src.backend.ticker_facts_service import (
     parse_as_of,
     ratio_percent,
     rows_available_by,
+    share_base_card,
     select_fundamentals,
     short_interest_sql,
     short_volume_sql,
@@ -73,6 +75,24 @@ class TickerFactsServiceTest(unittest.TestCase):
         self.assertIn("balance sheet", selected[1]["description"])
         self.assertEqual(ratio_percent(10.0, 200.0), 5.0)
         self.assertIsNone(ratio_percent(10.0, None))
+
+    def test_comparable_fundamentals_publish_absolute_and_percent_changes(self) -> None:
+        rows = [
+            {"tag": "Revenues", "value": 120.0, "period_end_date": "2025-12-31", "fiscal_period": "FY", "form_type": "10-K"},
+            {"tag": "Revenues", "value": 100.0, "period_end_date": "2024-12-31", "fiscal_period": "FY", "form_type": "10-K"},
+            {"tag": "NetIncomeLoss", "value": 12.0, "period_end_date": "2025-12-31", "fiscal_period": "FY", "form_type": "10-K"},
+            {"tag": "NetIncomeLoss", "value": 10.0, "period_end_date": "2024-12-31", "fiscal_period": "FY", "form_type": "10-K"},
+            {"tag": "EntityCommonStockSharesOutstanding", "value": 110.0, "period_end_date": "2025-12-31"},
+            {"tag": "EntityCommonStockSharesOutstanding", "value": 100.0, "period_end_date": "2024-12-31"},
+        ]
+        financial, _scores = financial_card_and_scores(rows)
+        shares, _score = share_base_card(rows, [], [])
+        self.assertEqual(financial["revenue_change"], 20.0)
+        self.assertEqual(financial["revenue_growth_percent"], 20.0)
+        self.assertEqual(financial["income_change"], 2.0)
+        self.assertEqual(financial["income_growth_percent"], 20.0)
+        self.assertEqual(shares["change"], 10.0)
+        self.assertEqual(shares["change_percent"], 10.0)
 
     def test_daily_and_short_volume_snapshots_preserve_prior_comparisons(self) -> None:
         daily = [

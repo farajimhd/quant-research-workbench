@@ -905,6 +905,12 @@ FIELD_OPERATOR_DOCUMENTATION: dict[str, dict[str, object]] = {
         "inputs": ("market.last_price", "market.previous_close"),
         "timeframes": ("1s", "10s", "30s", "1m"),
     },
+    "market.change_actual": {
+        "source": "QMD last price and the completed previous-session close available at the same market clock.",
+        "calculation": "Last price minus previous-session close. The value remains unavailable when either price is missing.",
+        "inputs": ("market.last_price", "market.previous_close"),
+        "timeframes": ("1s", "10s", "30s", "1m"),
+    },
     "market.volume": {
         "source": "Eligible trades accepted by QMD for the current regular trading session.",
         "calculation": "Cumulative sum of eligible trade size from the session boundary through the current market clock.",
@@ -1159,8 +1165,11 @@ DERIVED_FIELD_METHODS: dict[str, str] = {
     "fundamental.debt_to_equity": "Current plus noncurrent borrowings / positive stockholders' equity.",
     "fundamental.net_debt": "Interest-bearing debt - cash and equivalents.",
     "fundamental.interest_coverage": "Operating income / absolute interest expense.",
+    "fundamental.revenue_change": "Latest comparable revenue - prior comparable revenue.",
     "fundamental.revenue_growth_pct": "100 x (latest comparable revenue - prior comparable revenue) / absolute prior comparable revenue.",
+    "fundamental.earnings_change": "Latest comparable net income - prior comparable net income.",
     "fundamental.earnings_growth_pct": "100 x (latest comparable net income - prior comparable net income) / absolute prior comparable net income.",
+    "fundamental.share_change": "Latest comparable weighted-average basic shares - prior comparable shares.",
     "fundamental.share_growth_pct": "100 x (latest weighted-average basic shares - prior comparable shares) / absolute prior comparable shares.",
     "fundamental.dilution_pct": "100 x (diluted shares - basic shares) / basic shares for the aligned fiscal period.",
     "fundamental.cash_conversion": "Operating cash flow / net income for the aligned fiscal period.",
@@ -1206,8 +1215,11 @@ DERIVED_FIELD_INPUTS: dict[str, tuple[str, ...]] = {
     "fundamental.debt_to_equity": ("fundamental.current_debt", "fundamental.long_term_debt", "fundamental.stockholders_equity"),
     "fundamental.net_debt": ("fundamental.current_debt", "fundamental.long_term_debt", "fundamental.cash"),
     "fundamental.interest_coverage": ("fundamental.operating_income", "fundamental.interest_expense"),
+    "fundamental.revenue_change": ("fundamental.revenue",),
     "fundamental.revenue_growth_pct": ("fundamental.revenue",),
+    "fundamental.earnings_change": ("fundamental.net_income",),
     "fundamental.earnings_growth_pct": ("fundamental.net_income",),
+    "fundamental.share_change": ("fundamental.weighted_average_basic_shares",),
     "fundamental.share_growth_pct": ("fundamental.weighted_average_basic_shares",),
     "fundamental.dilution_pct": ("fundamental.weighted_average_basic_shares", "fundamental.weighted_average_diluted_shares"),
     "fundamental.cash_conversion": ("fundamental.operating_cash_flow", "fundamental.net_income"),
@@ -1513,6 +1525,7 @@ def _fields() -> tuple[FieldDefinition, ...]:
     for field_id, value_type, unit in (
         ("market.last_price", "number", "currency"),
         ("market.previous_close", "number", "currency"),
+        ("market.change_actual", "number", "currency"),
         ("market.change_pct", "number", "percent"),
         ("market.volume", "number", "shares"),
         ("market.relative_volume", "number", "multiple"),
@@ -1767,13 +1780,22 @@ def _fields() -> tuple[FieldDefinition, ...]:
         "revenue", "gross_profit", "operating_income", "net_income", "diluted_eps", "operating_cash_flow", "capital_expenditure", "cash", "current_assets", "current_liabilities", "accounts_receivable", "accounts_payable", "inventory", "assets", "liabilities", "stockholders_equity", "long_term_debt", "current_debt", "research_development", "sga_expense", "stock_based_compensation", "interest_expense", "income_tax_expense", "effective_tax_rate_pct", "goodwill", "intangible_assets", "deferred_revenue", "debt_issued", "debt_repaid", "common_stock_issuance", "common_shares_outstanding", "weighted_average_basic_shares", "weighted_average_diluted_shares", "sec_public_float_value", "dividends_per_share", "share_repurchases", "repurchased_shares",
     )
     derived_fundamentals = (
-        "free_cash_flow", "gross_margin_pct", "operating_margin_pct", "net_margin_pct", "free_cash_flow_margin_pct", "return_on_assets_pct", "return_on_equity_pct", "working_capital", "current_ratio", "debt_to_equity", "net_debt", "interest_coverage", "revenue_growth_pct", "earnings_growth_pct", "share_growth_pct", "dilution_pct", "cash_conversion", "research_intensity_pct", "sga_intensity_pct", "latest_filing_at", "trajectory_score", "trajectory_label", "profitability_score", "cash_generation_score", "balance_sheet_score", "share_base_pressure_pct", "share_base_discipline_score", "valuation_pe", "valuation_label",
+        "free_cash_flow", "gross_margin_pct", "operating_margin_pct", "net_margin_pct", "free_cash_flow_margin_pct", "return_on_assets_pct", "return_on_equity_pct", "working_capital", "current_ratio", "debt_to_equity", "net_debt", "interest_coverage", "revenue_change", "revenue_growth_pct", "earnings_change", "earnings_growth_pct", "share_change", "share_growth_pct", "dilution_pct", "cash_conversion", "research_intensity_pct", "sga_intensity_pct", "latest_filing_at", "trajectory_score", "trajectory_label", "profitability_score", "cash_generation_score", "balance_sheet_score", "share_base_pressure_pct", "share_base_discipline_score", "valuation_pe", "valuation_label",
     )
     xbrl_fields = ("quality_score", "quality_label", "quality_coverage_pct", "profitability_score", "growth_score", "cash_quality_score", "balance_sheet_score", "capital_discipline_score")
     for name in reported_fundamentals:
         rows.append(_field(f"fundamental.{name}", "fundamental", "sec_gateway", "q_live.sec_xbrl_company_fact_v3", "sec.fundamentals_asof.v1", unit="percent" if name.endswith("_pct") else "currency_or_shares", entity_grain="issuer_fiscal_period", ttl_seconds=None, publication_cadence="filing_driven", provenance="reported", coverage_query_plan="sec.fundamentals_asof.v1"))
     for name in derived_fundamentals:
-        rows.append(_field(f"fundamental.{name}", "fundamental", "backend", "derived://sec-xbrl-company-facts", "sec.fundamentals_asof.v1", value_type="string" if name.endswith("_label") or name.endswith("_at") else "number", unit="percent" if name.endswith("_pct") else "scalar", entity_grain="issuer_fiscal_period", ttl_seconds=None, publication_cadence="filing_driven", provenance="derived", coverage_query_plan="sec.fundamentals_asof.v1"))
+        unit = (
+            "percent"
+            if name.endswith("_pct")
+            else "currency"
+            if name in {"revenue_change", "earnings_change"}
+            else "shares"
+            if name == "share_change"
+            else "scalar"
+        )
+        rows.append(_field(f"fundamental.{name}", "fundamental", "backend", "derived://sec-xbrl-company-facts", "sec.fundamentals_asof.v1", value_type="string" if name.endswith("_label") or name.endswith("_at") else "number", unit=unit, entity_grain="issuer_fiscal_period", ttl_seconds=None, publication_cadence="filing_driven", provenance="derived", coverage_query_plan="sec.fundamentals_asof.v1"))
     for name in xbrl_fields:
         rows.append(_field(f"xbrl.{name}", "xbrl_quality", "backend", "derived://sec-xbrl-company-facts", "sec.fundamentals_asof.v1", value_type="string" if name.endswith("_label") else "number", unit="percent" if name.endswith("_pct") else "score", entity_grain="issuer_filing", ttl_seconds=None, publication_cadence="filing_driven", provenance="derived", coverage_query_plan="sec.fundamentals_asof.v1"))
     rows.append(_field("fundamental.quality_score", "fundamental", "backend", "derived://sec-xbrl-company-facts/xbrl-quality", "sec.fundamentals_asof.v1", unit="score", entity_grain="issuer_filing", ttl_seconds=None, publication_cadence="filing_driven", provenance="derived", coverage_query_plan="sec.fundamentals_asof.v1"))
@@ -1803,6 +1825,7 @@ DISCOVERY_FIELD_PRESENTATIONS = (
     DiscoveryFieldPresentation("identity.company_name", "identity.company_name", "company_name", "Company", "Issuer or security name available for the listing at evaluation time.", "reference", True, False, True, (), ("event",)),
     DiscoveryFieldPresentation("market.last_price", "market.last_price", "last_price", "Last price", "Most recent causally available eligible trade price.", "market_data", True, True, True, ("greater_or_equal", "greater_than", "less_or_equal", "less_than", "equals", "above_by_bps"), ("event",)),
     DiscoveryFieldPresentation("market.previous_close", "market.previous_close", "previous_close", "Previous close", "Completed prior regular-session close available at the scanner clock.", "reference", True, True, True, ("greater_or_equal", "greater_than", "less_or_equal", "less_than", "equals"), ("session",)),
+    DiscoveryFieldPresentation("market.change_actual", "market.change_actual", "change_actual", "Session price change", "Last price minus the completed previous-session close.", "market_data", True, True, True, ("greater_or_equal", "greater_than", "less_or_equal", "less_than", "equals"), ("session",)),
     DiscoveryFieldPresentation("market.change_pct", "market.change_pct", "change_pct", "Session change %", "Percentage change from the completed previous-session close.", "market_data", True, True, True, ("greater_or_equal", "greater_than", "less_or_equal", "less_than", "equals"), ("session",)),
     DiscoveryFieldPresentation("market.volume", "market.volume", "volume", "Session volume", "Cumulative eligible share volume for the current session.", "market_data", True, True, True, ("greater_or_equal", "greater_than", "less_or_equal", "less_than", "equals"), ("session",)),
     DiscoveryFieldPresentation("market.relative_volume", "market.relative_volume", "relative_volume", "Relative volume", "Cumulative volume versus the aligned 20-session baseline.", "indicator", True, True, True, ("greater_or_equal", "greater_than", "less_or_equal", "less_than", "equals"), ("session",)),
@@ -1850,6 +1873,12 @@ DISCOVERY_FIELD_PRESENTATIONS = (
     DiscoveryFieldPresentation("reference.borrow_fee", "reference.borrow_fee", "borrow_fee", "Borrow fee", "Latest persisted broker fee or indicative borrow rate.", "reference", False, True, True, ("greater_or_equal", "greater_than", "less_or_equal", "less_than", "equals"), ("event",)),
     DiscoveryFieldPresentation("fundamental.trajectory_score", "fundamental.trajectory_score", "fundamental_trajectory", "Fundamental trajectory", "SEC-derived 0-100 financial trajectory score.", "reference", False, True, True, ("greater_or_equal", "greater_than", "less_or_equal", "less_than", "equals"), ("filing",)),
     DiscoveryFieldPresentation("fundamental.quality_score", "fundamental.quality_score", "fundamental_quality", "Fundamental quality", "Coverage and comparability of the supporting SEC facts.", "reference", False, True, True, ("greater_or_equal", "greater_than", "less_or_equal", "less_than", "equals"), ("filing",)),
+    DiscoveryFieldPresentation("fundamental.revenue_change", "fundamental.revenue_change", "fundamental_revenue_change", "Comparable revenue change", "Latest comparable revenue minus prior comparable revenue.", "reference", False, True, True, ("greater_or_equal", "greater_than", "less_or_equal", "less_than", "equals"), ("filing",)),
+    DiscoveryFieldPresentation("fundamental.revenue_growth_pct", "fundamental.revenue_growth_pct", "fundamental_revenue_growth_pct", "Comparable revenue change %", "Comparable revenue change divided by the absolute prior-period revenue.", "reference", False, True, True, ("greater_or_equal", "greater_than", "less_or_equal", "less_than", "equals"), ("filing",)),
+    DiscoveryFieldPresentation("fundamental.earnings_change", "fundamental.earnings_change", "fundamental_earnings_change", "Comparable earnings change", "Latest comparable net income minus prior comparable net income.", "reference", False, True, True, ("greater_or_equal", "greater_than", "less_or_equal", "less_than", "equals"), ("filing",)),
+    DiscoveryFieldPresentation("fundamental.earnings_growth_pct", "fundamental.earnings_growth_pct", "fundamental_earnings_growth_pct", "Comparable earnings change %", "Comparable net-income change divided by the absolute prior-period net income.", "reference", False, True, True, ("greater_or_equal", "greater_than", "less_or_equal", "less_than", "equals"), ("filing",)),
+    DiscoveryFieldPresentation("fundamental.share_change", "fundamental.share_change", "fundamental_share_change", "Comparable share-count change", "Latest comparable weighted-average basic shares minus the prior comparable share count.", "reference", False, True, True, ("greater_or_equal", "greater_than", "less_or_equal", "less_than", "equals"), ("filing",)),
+    DiscoveryFieldPresentation("fundamental.share_growth_pct", "fundamental.share_growth_pct", "fundamental_share_growth_pct", "Comparable share-count change %", "Comparable basic-share change divided by the absolute prior-period share count.", "reference", False, True, True, ("greater_or_equal", "greater_than", "less_or_equal", "less_than", "equals"), ("filing",)),
     DiscoveryFieldPresentation("signal.news_labeled", "signal.news_labeled", "", "News labeled", "Validated point-in-time Text Intelligence news-label availability.", "signal", False, True, False, ("is_true",), ("event",)),
     DiscoveryFieldPresentation("signal.company_news.score", "news.score", "news_sentiment", "News sentiment", "Latest validated point-in-time company-news score and label.", "signal", False, True, True, ("greater_or_equal", "greater_than", "less_or_equal", "less_than", "equals"), ("event",)),
     DiscoveryFieldPresentation("signal.sec_labeled", "signal.sec_labeled", "", "SEC labeled", "Validated point-in-time Text Intelligence SEC-label availability.", "signal", False, True, False, ("is_true",), ("event",)),

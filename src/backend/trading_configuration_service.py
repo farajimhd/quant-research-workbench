@@ -67,7 +67,7 @@ from src.trading_runtime.strategy_campaign import validate_campaign_policy
 from src.trading_runtime.taxonomy import StrategyTaxonomy
 
 
-CONFIGURATION_SCHEMA_VERSION = 32
+CONFIGURATION_SCHEMA_VERSION = 33
 CONFIGURATION_SECTIONS = {
     "strategy",
     "trading_actions",
@@ -1918,6 +1918,7 @@ def _discovery_reference_capabilities() -> list[dict[str, Any]]:
     """Point-in-time scanner fields used by reusable Watchlist templates."""
 
     rows = [
+        ("market.change_actual", "Session price change", "market_data", "currency", "market.change_actual", "Last price minus the completed previous-session close.", "QMD bars + previous-session reference", ["session"]),
         ("market.change_pct", "Session change", "market_data", "percent", "market.change_pct", "Last price divided by the completed previous-session close, minus one, expressed as a percentage.", "QMD bars + previous-session reference", ["session"]),
         ("market.volume", "Session volume", "market_data", "shares", "market.volume", "Cumulative eligible trade size for the current session.", "QMD eligible trades", ["session"]),
         ("market.relative_volume", "Relative volume", "indicator", "multiple", "market.relative_volume", "Current cumulative session volume divided by the point-in-time 20-session baseline for the same elapsed session interval.", "QMD volume + 20-session baseline", ["session"]),
@@ -1928,16 +1929,23 @@ def _discovery_reference_capabilities() -> list[dict[str, Any]]:
         ("reference.days_to_cover", "Days to cover", "reference", "days", "reference.days_to_cover", "Reported short interest divided by the reporting source's average daily volume.", "DB-managed short-interest history", ["settlement"]),
         ("fundamental.trajectory_score", "Fundamental trajectory", "reference", "score", "fundamental.trajectory_score", "Composite 0-100 trajectory score derived from causally available SEC profitability, cash generation, balance-sheet, growth, and share-base evidence.", "SEC XBRL fact service", ["filing"]),
         ("fundamental.quality_score", "Fundamental data quality", "reference", "score", "fundamental.quality_score", "0-100 coverage and comparability score for the SEC facts supporting the fundamental trajectory.", "SEC XBRL fact service", ["filing"]),
+        ("fundamental.revenue_change", "Comparable revenue change", "reference", "currency", "fundamental.revenue_change", "Latest comparable revenue minus prior comparable revenue.", "SEC XBRL fact service", ["filing"]),
+        ("fundamental.revenue_growth_pct", "Comparable revenue change %", "reference", "percent", "fundamental.revenue_growth_pct", "Comparable revenue change divided by the absolute prior-period revenue.", "SEC XBRL fact service", ["filing"]),
+        ("fundamental.earnings_change", "Comparable earnings change", "reference", "currency", "fundamental.earnings_change", "Latest comparable net income minus prior comparable net income.", "SEC XBRL fact service", ["filing"]),
+        ("fundamental.earnings_growth_pct", "Comparable earnings change %", "reference", "percent", "fundamental.earnings_growth_pct", "Comparable net-income change divided by the absolute prior-period net income.", "SEC XBRL fact service", ["filing"]),
+        ("fundamental.share_change", "Comparable share-count change", "reference", "shares", "fundamental.share_change", "Latest comparable weighted-average basic shares minus prior comparable shares.", "SEC XBRL fact service", ["filing"]),
+        ("fundamental.share_growth_pct", "Comparable share-count change %", "reference", "percent", "fundamental.share_growth_pct", "Comparable basic-share change divided by the absolute prior-period share count.", "SEC XBRL fact service", ["filing"]),
         ("event.ipo.days_to_event", "IPO event distance", "event", "days", "event.ipo.days_to_event", "Signed calendar days from evaluation to a point-in-time IPO event; negative values are recent IPOs and positive values are upcoming IPOs.", "DB-managed corporate-event calendar", ["event"]),
         ("event.split.days_to_event", "Split event distance", "event", "days", "event.split.days_to_event", "Signed calendar days from evaluation to the latest published stock-split execution date.", "DB-managed stock-split history", ["event"]),
     ]
     core_ids = {
+        "market.change_actual",
         "market.change_pct",
         "market.volume",
         "reference.market_cap",
         "reference.float_shares",
     }
-    required_ids = {"market.change_pct", "market.volume"}
+    required_ids = {"market.change_actual", "market.change_pct", "market.volume"}
     registered = {field.field_id: field for field in FIELD_DEFINITIONS}
     capabilities = []
     for capability_id, name, capability_type, output_type, field_id, calculation, provider, timeframes in rows:

@@ -218,6 +218,42 @@ mod taxonomy_tests {
             );
         }
     }
+
+    #[test]
+    fn implemented_bar_catalog_exposes_typed_change_families() {
+        let fields = indicator_catalog()
+            .iter()
+            .filter(|entry| matches!(entry.key, "core_bars" | "quote_mid_spread_bars"))
+            .flat_map(|entry| entry.fields.iter().copied())
+            .collect::<std::collections::BTreeSet<_>>();
+        for field in [
+            "price_change_1_bar",
+            "return_1_bar",
+            "price_ratio_1_bar",
+            "volume_change",
+            "volume_change_pct",
+            "volume_ratio",
+            "dollar_volume_change",
+            "dollar_volume_change_pct",
+            "trade_count_change",
+            "trade_count_change_pct",
+            "quote_count_change",
+            "quote_count_change_pct",
+            "trade_rate_change",
+            "volume_rate_change",
+            "dollar_volume_rate_change",
+            "quote_rate_change",
+            "avg_trade_size_change",
+            "vwap_change",
+            "spread_close_change",
+            "spread_bps_change",
+        ] {
+            assert!(
+                fields.contains(field),
+                "missing implemented change field {field}"
+            );
+        }
+    }
 }
 
 const ALL_LIVE_TFS: &[&str] = &["100ms", "1s", "10s", "30s", "1m", "5m", "1h"];
@@ -250,8 +286,49 @@ const INDICATOR_CATALOG: &[IndicatorCatalogEntry] = &[
             "dollar_volume",
             "trade_count",
             "vwap",
+            "avg_trade_size",
+            "trade_rate",
+            "volume_rate",
+            "dollar_volume_rate",
+            "price_change",
             "price_change_pct",
             "high_low_range_pct",
+            "return_1_bar",
+            "return_3_bar",
+            "return_5_bar",
+            "price_change_1_bar",
+            "price_change_3_bar",
+            "price_change_5_bar",
+            "price_change_1_bar_pct",
+            "price_change_3_bar_pct",
+            "price_change_5_bar_pct",
+            "price_ratio_1_bar",
+            "price_ratio_3_bar",
+            "price_ratio_5_bar",
+            "volume_change",
+            "volume_change_pct",
+            "volume_ratio",
+            "dollar_volume_change",
+            "dollar_volume_change_pct",
+            "dollar_volume_ratio",
+            "trade_count_change",
+            "trade_count_change_pct",
+            "trade_count_ratio",
+            "trade_rate_change",
+            "trade_rate_change_pct",
+            "trade_rate_ratio",
+            "volume_rate_change",
+            "volume_rate_change_pct",
+            "volume_rate_ratio",
+            "dollar_volume_rate_change",
+            "dollar_volume_rate_change_pct",
+            "dollar_volume_rate_ratio",
+            "avg_trade_size_change",
+            "avg_trade_size_change_pct",
+            "avg_trade_size_ratio",
+            "vwap_change",
+            "vwap_change_pct",
+            "vwap_ratio",
         ],
         typical_timeframes: CORE_BAR_TFS,
         storage_target: "memory_enriched_bars",
@@ -282,6 +359,20 @@ const INDICATOR_CATALOG: &[IndicatorCatalogEntry] = &[
             "spread_mean",
             "spread_bps_mean",
             "spread_bps_close",
+            "quote_count",
+            "quote_rate",
+            "quote_count_change",
+            "quote_count_change_pct",
+            "quote_count_ratio",
+            "quote_rate_change",
+            "quote_rate_change_pct",
+            "quote_rate_ratio",
+            "spread_close_change",
+            "spread_close_change_pct",
+            "spread_close_ratio",
+            "spread_bps_change",
+            "spread_bps_change_pct",
+            "spread_bps_ratio",
         ],
         typical_timeframes: ALL_LIVE_TFS,
         storage_target: "memory_enriched_bars",
@@ -518,7 +609,7 @@ const INDICATOR_CATALOG: &[IndicatorCatalogEntry] = &[
         persist_policy: PersistPolicy::IfSignalUses,
         status: ImplementationStatus::Implemented,
         inputs: &["bars"],
-        fields: &["rsi_14", "macd_line", "macd_signal", "macd_histogram", "return_1_bar", "price_vs_vwap_pct"],
+        fields: &["rsi_14", "macd_line", "macd_signal", "macd_histogram", "price_vs_vwap_pct"],
         typical_timeframes: BAR_TFS,
         storage_target: "live_market_indicators",
         rationale: "Small set of high-signal indicators used by existing momentum-style strategies.",

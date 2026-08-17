@@ -35,7 +35,7 @@ from pipelines.market_sip.validation.clickhouse_delete_compact_audit_rows import
 from pipelines.market_sip.events.clickhouse_build_unified_events import events_table_for_year, events_table_uses_year_suffix  # noqa: E402
 
 
-BAR_SCHEMA_VERSION = 2
+BAR_SCHEMA_VERSION = 3
 DEFAULT_DATABASE = "market_sip_compact"
 DEFAULT_EVENTS_TABLE = "events"
 DEFAULT_BARS_TABLE = "live_market_bars"
@@ -45,6 +45,24 @@ DEFAULT_MACRO_BARS_TABLE = "macro_bars_by_time_symbol"
 DEFAULT_STAGING_BARS_TABLE = "_staging_trade_bars"
 DEFAULT_TIMEFRAMES = ("1d", "1w", "1y")
 DEFAULT_OUTPUT_ROOT = DEFAULT_OUTPUT_ROOT_WIN / "trade_bars"
+BAR_CHANGE_COLUMNS = (
+    "price_change_1_bar", "price_change_3_bar", "price_change_5_bar",
+    "price_change_1_bar_pct", "price_change_3_bar_pct", "price_change_5_bar_pct",
+    "price_ratio_1_bar", "price_ratio_3_bar", "price_ratio_5_bar",
+    "volume_change", "volume_change_pct", "volume_ratio",
+    "dollar_volume_change", "dollar_volume_change_pct", "dollar_volume_ratio",
+    "trade_count_change", "trade_count_change_pct", "trade_count_ratio",
+    "quote_count_change", "quote_count_change_pct", "quote_count_ratio",
+    "trade_rate_change", "trade_rate_change_pct", "trade_rate_ratio",
+    "volume_rate_change", "volume_rate_change_pct", "volume_rate_ratio",
+    "dollar_volume_rate_change", "dollar_volume_rate_change_pct", "dollar_volume_rate_ratio",
+    "quote_rate_change", "quote_rate_change_pct", "quote_rate_ratio",
+    "avg_trade_size_change", "avg_trade_size_change_pct", "avg_trade_size_ratio",
+    "vwap_change", "vwap_change_pct", "vwap_ratio",
+    "spread_close_change", "spread_close_change_pct", "spread_close_ratio",
+    "spread_bps_change", "spread_bps_change_pct", "spread_bps_ratio",
+    "buy_sell_volume_delta_change",
+)
 
 
 def event_source_table(args: argparse.Namespace) -> str:
@@ -618,6 +636,8 @@ def build_live_market_bars(
         if reporter is not None:
             reporter.set_stage(f"create/verify {table_spec.layout} bar table")
         client.execute(create_bar_table_sql(args.database, table_spec.table, args.storage_policy, layout=table_spec))
+        for query in upgrade_bar_table_schema_sql(args.database, table_spec.table):
+            client.execute(query)
         if reporter is not None:
             reporter.finish_stage(f"ensured {args.database}.{table_spec.table}")
 
@@ -629,6 +649,8 @@ def build_live_market_bars(
         reporter.finish_stage(f"dropped staging table {args.database}.{args.staging_table}")
         reporter.set_stage(f"create staging table {args.staging_table}")
     client.execute(create_bar_table_sql(args.database, args.staging_table, args.storage_policy, layout=staging_layout))
+    for query in upgrade_bar_table_schema_sql(args.database, args.staging_table):
+        client.execute(query)
     if reporter is not None:
         reporter.finish_stage(f"created staging table {args.database}.{args.staging_table}")
 
@@ -1279,6 +1301,52 @@ CREATE TABLE IF NOT EXISTS {quote_ident(database)}.{quote_ident(table)}
     dollar_volume_accel Float64,
     quote_rate_accel Float64,
     tape_imbalance_accel Float64,
+    price_change_1_bar Nullable(Float64),
+    price_change_3_bar Nullable(Float64),
+    price_change_5_bar Nullable(Float64),
+    price_change_1_bar_pct Nullable(Float64),
+    price_change_3_bar_pct Nullable(Float64),
+    price_change_5_bar_pct Nullable(Float64),
+    price_ratio_1_bar Nullable(Float64),
+    price_ratio_3_bar Nullable(Float64),
+    price_ratio_5_bar Nullable(Float64),
+    volume_change Nullable(Float64),
+    volume_change_pct Nullable(Float64),
+    volume_ratio Nullable(Float64),
+    dollar_volume_change Nullable(Float64),
+    dollar_volume_change_pct Nullable(Float64),
+    dollar_volume_ratio Nullable(Float64),
+    trade_count_change Nullable(Float64),
+    trade_count_change_pct Nullable(Float64),
+    trade_count_ratio Nullable(Float64),
+    quote_count_change Nullable(Float64),
+    quote_count_change_pct Nullable(Float64),
+    quote_count_ratio Nullable(Float64),
+    trade_rate_change Nullable(Float64),
+    trade_rate_change_pct Nullable(Float64),
+    trade_rate_ratio Nullable(Float64),
+    volume_rate_change Nullable(Float64),
+    volume_rate_change_pct Nullable(Float64),
+    volume_rate_ratio Nullable(Float64),
+    dollar_volume_rate_change Nullable(Float64),
+    dollar_volume_rate_change_pct Nullable(Float64),
+    dollar_volume_rate_ratio Nullable(Float64),
+    quote_rate_change Nullable(Float64),
+    quote_rate_change_pct Nullable(Float64),
+    quote_rate_ratio Nullable(Float64),
+    avg_trade_size_change Nullable(Float64),
+    avg_trade_size_change_pct Nullable(Float64),
+    avg_trade_size_ratio Nullable(Float64),
+    vwap_change Nullable(Float64),
+    vwap_change_pct Nullable(Float64),
+    vwap_ratio Nullable(Float64),
+    spread_close_change Nullable(Float64),
+    spread_close_change_pct Nullable(Float64),
+    spread_close_ratio Nullable(Float64),
+    spread_bps_change Nullable(Float64),
+    spread_bps_change_pct Nullable(Float64),
+    spread_bps_ratio Nullable(Float64),
+    buy_sell_volume_delta_change Nullable(Float64),
     vwap_distance_pct Float64,
     mid_vwap_distance_pct Float64,
     realized_volatility Float64,
@@ -1305,6 +1373,24 @@ ENGINE = ReplacingMergeTree
 
 def drop_table_sql(database: str, table: str) -> str:
     return f"DROP TABLE IF EXISTS {quote_ident(database)}.{quote_ident(table)}"
+
+
+def upgrade_bar_table_schema_sql(database: str, table: str) -> list[str]:
+    """Append v3 fields in stable order to an existing v2 table.
+
+    One ordered ALTER keeps the physical order identical to a newly created v3
+    table and remains safe for the legacy `INSERT ... SELECT *` copy path.
+    """
+
+    target = f"{quote_ident(database)}.{quote_ident(table)}"
+    additions = []
+    anchor = "tape_imbalance_accel"
+    for column in BAR_CHANGE_COLUMNS:
+        additions.append(
+            f"ADD COLUMN IF NOT EXISTS {quote_ident(column)} Nullable(Float64) AFTER {quote_ident(anchor)}"
+        )
+        anchor = column
+    return [f"ALTER TABLE {target} " + ",\n".join(additions)]
 
 
 def truncate_table_sql(database: str, table: str) -> str:
@@ -1632,7 +1718,16 @@ history AS
         lagInFrame(volume, 1, 0.0) OVER bar_window AS prev_volume,
         lagInFrame(toFloat64(trade_count), 1, 0.0) OVER bar_window AS prev_trade_count,
         lagInFrame(dollar_volume, 1, 0.0) OVER bar_window AS prev_dollar_volume,
+        lagInFrame(quote_count, 1, toUInt64(0)) OVER bar_window AS prev_quote_count,
+        lagInFrame(trade_rate, 1, 0.0) OVER bar_window AS prev_trade_rate,
+        lagInFrame(volume_rate, 1, 0.0) OVER bar_window AS prev_volume_rate,
+        lagInFrame(dollar_volume_rate, 1, 0.0) OVER bar_window AS prev_dollar_volume_rate,
         lagInFrame(quote_rate, 1, 0.0) OVER bar_window AS prev_quote_rate,
+        lagInFrame(avg_trade_size, 1, 0.0) OVER bar_window AS prev_avg_trade_size,
+        lagInFrame(vwap, 1, 0.0) OVER bar_window AS prev_vwap,
+        lagInFrame(spread_close, 1, 0.0) OVER bar_window AS prev_spread_close,
+        lagInFrame(spread_bps_close, 1, 0.0) OVER bar_window AS prev_spread_bps_close,
+        row_number() OVER bar_window AS bar_number,
         lagInFrame(0.0, 1, 0.0) OVER bar_window AS prev_tape_imbalance
     FROM metrics
     WINDOW bar_window AS (PARTITION BY sym, timeframe ORDER BY bar_start ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)
@@ -1720,6 +1815,52 @@ SELECT
     dollar_volume - prev_dollar_volume AS dollar_volume_accel,
     quote_rate - prev_quote_rate AS quote_rate_accel,
     0.0 - prev_tape_imbalance AS tape_imbalance_accel,
+    if(bar_number > 1, toNullable(close - prev_close_1), NULL) AS price_change_1_bar,
+    if(bar_number > 3, toNullable(close - prev_close_3), NULL) AS price_change_3_bar,
+    if(bar_number > 5, toNullable(close - prev_close_5), NULL) AS price_change_5_bar,
+    if(bar_number > 1 AND prev_close_1 != 0, toNullable((close - prev_close_1) / abs(prev_close_1) * 100.0), NULL) AS price_change_1_bar_pct,
+    if(bar_number > 3 AND prev_close_3 != 0, toNullable((close - prev_close_3) / abs(prev_close_3) * 100.0), NULL) AS price_change_3_bar_pct,
+    if(bar_number > 5 AND prev_close_5 != 0, toNullable((close - prev_close_5) / abs(prev_close_5) * 100.0), NULL) AS price_change_5_bar_pct,
+    if(bar_number > 1 AND prev_close_1 != 0, toNullable(close / prev_close_1), NULL) AS price_ratio_1_bar,
+    if(bar_number > 3 AND prev_close_3 != 0, toNullable(close / prev_close_3), NULL) AS price_ratio_3_bar,
+    if(bar_number > 5 AND prev_close_5 != 0, toNullable(close / prev_close_5), NULL) AS price_ratio_5_bar,
+    if(bar_number > 1, toNullable(volume - prev_volume), NULL) AS volume_change,
+    if(bar_number > 1 AND prev_volume != 0, toNullable((volume - prev_volume) / abs(prev_volume) * 100.0), NULL) AS volume_change_pct,
+    if(bar_number > 1 AND prev_volume != 0, toNullable(volume / prev_volume), NULL) AS volume_ratio,
+    if(bar_number > 1, toNullable(dollar_volume - prev_dollar_volume), NULL) AS dollar_volume_change,
+    if(bar_number > 1 AND prev_dollar_volume != 0, toNullable((dollar_volume - prev_dollar_volume) / abs(prev_dollar_volume) * 100.0), NULL) AS dollar_volume_change_pct,
+    if(bar_number > 1 AND prev_dollar_volume != 0, toNullable(dollar_volume / prev_dollar_volume), NULL) AS dollar_volume_ratio,
+    if(bar_number > 1, toNullable(toFloat64(trade_count) - prev_trade_count), NULL) AS trade_count_change,
+    if(bar_number > 1 AND prev_trade_count != 0, toNullable((toFloat64(trade_count) - prev_trade_count) / abs(prev_trade_count) * 100.0), NULL) AS trade_count_change_pct,
+    if(bar_number > 1 AND prev_trade_count != 0, toNullable(toFloat64(trade_count) / prev_trade_count), NULL) AS trade_count_ratio,
+    if(bar_number > 1, toNullable(toFloat64(quote_count) - toFloat64(prev_quote_count)), NULL) AS quote_count_change,
+    if(bar_number > 1 AND prev_quote_count != 0, toNullable((toFloat64(quote_count) - toFloat64(prev_quote_count)) / toFloat64(prev_quote_count) * 100.0), NULL) AS quote_count_change_pct,
+    if(bar_number > 1 AND prev_quote_count != 0, toNullable(toFloat64(quote_count) / toFloat64(prev_quote_count)), NULL) AS quote_count_ratio,
+    if(bar_number > 1, toNullable(trade_rate - prev_trade_rate), NULL) AS trade_rate_change,
+    if(bar_number > 1 AND prev_trade_rate != 0, toNullable((trade_rate - prev_trade_rate) / abs(prev_trade_rate) * 100.0), NULL) AS trade_rate_change_pct,
+    if(bar_number > 1 AND prev_trade_rate != 0, toNullable(trade_rate / prev_trade_rate), NULL) AS trade_rate_ratio,
+    if(bar_number > 1, toNullable(volume_rate - prev_volume_rate), NULL) AS volume_rate_change,
+    if(bar_number > 1 AND prev_volume_rate != 0, toNullable((volume_rate - prev_volume_rate) / abs(prev_volume_rate) * 100.0), NULL) AS volume_rate_change_pct,
+    if(bar_number > 1 AND prev_volume_rate != 0, toNullable(volume_rate / prev_volume_rate), NULL) AS volume_rate_ratio,
+    if(bar_number > 1, toNullable(dollar_volume_rate - prev_dollar_volume_rate), NULL) AS dollar_volume_rate_change,
+    if(bar_number > 1 AND prev_dollar_volume_rate != 0, toNullable((dollar_volume_rate - prev_dollar_volume_rate) / abs(prev_dollar_volume_rate) * 100.0), NULL) AS dollar_volume_rate_change_pct,
+    if(bar_number > 1 AND prev_dollar_volume_rate != 0, toNullable(dollar_volume_rate / prev_dollar_volume_rate), NULL) AS dollar_volume_rate_ratio,
+    if(bar_number > 1, toNullable(quote_rate - prev_quote_rate), NULL) AS quote_rate_change,
+    if(bar_number > 1 AND prev_quote_rate != 0, toNullable((quote_rate - prev_quote_rate) / abs(prev_quote_rate) * 100.0), NULL) AS quote_rate_change_pct,
+    if(bar_number > 1 AND prev_quote_rate != 0, toNullable(quote_rate / prev_quote_rate), NULL) AS quote_rate_ratio,
+    if(bar_number > 1, toNullable(avg_trade_size - prev_avg_trade_size), NULL) AS avg_trade_size_change,
+    if(bar_number > 1 AND prev_avg_trade_size != 0, toNullable((avg_trade_size - prev_avg_trade_size) / abs(prev_avg_trade_size) * 100.0), NULL) AS avg_trade_size_change_pct,
+    if(bar_number > 1 AND prev_avg_trade_size != 0, toNullable(avg_trade_size / prev_avg_trade_size), NULL) AS avg_trade_size_ratio,
+    if(bar_number > 1, toNullable(vwap - prev_vwap), NULL) AS vwap_change,
+    if(bar_number > 1 AND prev_vwap != 0, toNullable((vwap - prev_vwap) / abs(prev_vwap) * 100.0), NULL) AS vwap_change_pct,
+    if(bar_number > 1 AND prev_vwap != 0, toNullable(vwap / prev_vwap), NULL) AS vwap_ratio,
+    if(bar_number > 1, toNullable(spread_close - prev_spread_close), NULL) AS spread_close_change,
+    if(bar_number > 1 AND prev_spread_close != 0, toNullable((spread_close - prev_spread_close) / abs(prev_spread_close) * 100.0), NULL) AS spread_close_change_pct,
+    if(bar_number > 1 AND prev_spread_close != 0, toNullable(spread_close / prev_spread_close), NULL) AS spread_close_ratio,
+    if(bar_number > 1, toNullable(spread_bps_close - prev_spread_bps_close), NULL) AS spread_bps_change,
+    if(bar_number > 1 AND prev_spread_bps_close != 0, toNullable((spread_bps_close - prev_spread_bps_close) / abs(prev_spread_bps_close) * 100.0), NULL) AS spread_bps_change_pct,
+    if(bar_number > 1 AND prev_spread_bps_close != 0, toNullable(spread_bps_close / prev_spread_bps_close), NULL) AS spread_bps_ratio,
+    CAST(NULL AS Nullable(Float64)) AS buy_sell_volume_delta_change,
     vwap_distance_pct,
     mid_vwap_distance_pct,
     realized_volatility,

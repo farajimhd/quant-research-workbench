@@ -321,6 +321,14 @@ impl CrossSectionEngine {
                 {
                     Some((market.last_price / references.previous_session_close - 1.0) * 100.0)
                 }
+                "market.change_actual"
+                    if market.last_price.is_finite()
+                        && market.last_price > 0.0
+                        && references.previous_session_close.is_finite()
+                        && references.previous_session_close > 0.0 =>
+                {
+                    Some(market.last_price - references.previous_session_close)
+                }
                 "market.relative_volume" => {
                     let session = session_date(as_of);
                     let bucket = aligned_volume_bucket(as_of);
@@ -1974,6 +1982,7 @@ mod tests {
                 &BTreeSet::from([
                     "indicator.vwap.value".to_string(),
                     "liquidity-rank".to_string(),
+                    "market.change_actual".to_string(),
                     "market.change_pct".to_string(),
                     "market.last_price".to_string(),
                     "market.relative_volume".to_string(),
@@ -1986,6 +1995,7 @@ mod tests {
         assert_eq!(candidate.values["market.last_price"], json!(201.0));
         assert_eq!(candidate.values["market.volume"], json!(200.0));
         assert_eq!(candidate.values["market.relative_volume"], json!(2.0));
+        assert_eq!(candidate.values["market.change_actual"], json!(1.0));
         assert!((candidate.values["market.change_pct"].as_f64().unwrap() - 0.5).abs() < 1e-9);
         assert!(candidate.values["liquidity-rank"].as_f64().unwrap() > 0.0);
         assert!(candidate.values["indicator.vwap.value"].as_f64().unwrap() > 0.0);
