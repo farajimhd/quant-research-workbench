@@ -47,8 +47,16 @@ DEFAULT_CHUNK_EARLY_STOPPING_PATIENCE = 1
 DEFAULT_CHUNK_EARLY_STOPPING_MIN_RELATIVE_DELTA = 0.0002
 DEFAULT_EARLY_STOPPING_PATIENCE = 2
 DEFAULT_EARLY_STOPPING_MIN_RELATIVE_DELTA = 0.001
+DEFAULT_LEARNING_RATE = 3e-4
+DEFAULT_WEIGHT_DECAY = 0.1
+DEFAULT_GRAD_CLIP_NORM = 1.0
+DEFAULT_AMP_DTYPE = "bf16"
+DEFAULT_WARMUP_SAMPLES = 4_000_000
+DEFAULT_WARMUP_FRACTION = 0.01
+DEFAULT_COSINE_CYCLE_SAMPLES = 100_000_000
 DEFAULT_EPOCH_LR_DECAY = 0.95
 DEFAULT_MINIMUM_LEARNING_RATE = 1e-5
+DEFAULT_SCHEDULER_MODE = "epoch-chunk-cosine"
 DEFAULT_MANIFEST_INDEX_WORKERS = 4
 
 
@@ -261,9 +269,15 @@ def trainer_argv(args: argparse.Namespace, *, resolved_manifest: Path) -> list[s
                 args.early_stopping_min_relative_delta
             ),
             "--monitor-evaluation-origins": args.chunk_validation_origins,
-            "--warmup-samples": 4_000_000,
+            "--learning-rate": DEFAULT_LEARNING_RATE,
+            "--weight-decay": DEFAULT_WEIGHT_DECAY,
+            "--grad-clip-norm": DEFAULT_GRAD_CLIP_NORM,
+            "--amp-dtype": DEFAULT_AMP_DTYPE,
+            "--warmup-samples": DEFAULT_WARMUP_SAMPLES,
+            "--warmup-fraction": DEFAULT_WARMUP_FRACTION,
             "--minimum-learning-rate": DEFAULT_MINIMUM_LEARNING_RATE,
-            "--scheduler-mode": "epoch-chunk-cosine",
+            "--cosine-cycle-samples": DEFAULT_COSINE_CYCLE_SAMPLES,
+            "--scheduler-mode": DEFAULT_SCHEDULER_MODE,
             "--cosine-restart-decay": DEFAULT_EPOCH_LR_DECAY,
             "--wandb-project": args.wandb_project,
             "--wandb-mode": args.wandb_mode,
@@ -335,12 +349,18 @@ def main(argv: Iterable[str] | None = None) -> int:
         flush=True,
     )
     print(
-        "Schedule: 4M-origin warmup; each cosine cycle spans "
+        f"Optimizer: peak LR={DEFAULT_LEARNING_RATE:g}; "
+        f"weight decay={DEFAULT_WEIGHT_DECAY:g}; "
+        f"gradient clip={DEFAULT_GRAD_CLIP_NORM:g}; "
+        f"precision={DEFAULT_AMP_DTYPE}. Schedule: "
+        f"{DEFAULT_WARMUP_SAMPLES / 1_000_000:g}M-origin warmup; "
+        "each cosine cycle spans "
         f"{args.chunk_cosine_cycle_repetitions} repetitions and restarts every "
         f"{args.chunk_cosine_cycle_repetitions} repetitions or when the chunk changes; "
         "early stopping is authoritative only at cycle ends; "
         f"outer-epoch peak decay={DEFAULT_EPOCH_LR_DECAY:.2f}; "
-        f"minimum learning rate={DEFAULT_MINIMUM_LEARNING_RATE:g}",
+        f"minimum learning rate={DEFAULT_MINIMUM_LEARNING_RATE:g}; "
+        f"scheduler={DEFAULT_SCHEDULER_MODE}",
         flush=True,
     )
     preview_args = trainer_argv(args, resolved_manifest=planned_manifest)
