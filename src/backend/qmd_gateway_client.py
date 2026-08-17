@@ -1101,6 +1101,35 @@ def qmd_historical_scanner_snapshot(
     return response.payload
 
 
+def qmd_historical_scanner_market_snapshot(
+    *,
+    as_of: str,
+    lookback_minutes: int = 15,
+    timeout_seconds: float = 85.0,
+) -> dict[str, Any]:
+    """Return the lightweight causal cross-section owned by QMD History.
+
+    This endpoint aggregates only current market fields in ClickHouse. It is
+    intentionally separate from scanner-derived, whose ordered event replay
+    computes indicators and signals and may continue asynchronously.
+    """
+
+    cutoff = _validate_window_timestamp("as_of", as_of).astimezone(timezone.utc)
+    lookback = max(5, min(int(lookback_minutes), 120))
+    payload = qmd_history_get_json(
+        "/snapshot/scanner-market",
+        {
+            "as_of": cutoff.isoformat(),
+            "end": cutoff.isoformat(),
+            "start": (cutoff - timedelta(minutes=lookback)).isoformat(),
+        },
+        timeout=timeout_seconds,
+    )
+    if not isinstance(payload, dict):
+        raise RuntimeError("QMD History Scanner market response was not an object")
+    return payload
+
+
 def qmd_market_signals(
     symbol: str,
     *,

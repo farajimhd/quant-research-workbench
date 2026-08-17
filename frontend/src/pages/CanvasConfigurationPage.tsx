@@ -4639,21 +4639,29 @@ function useCanvasScannerSnapshot({ cutoffMs, enabled, technicalWindows }: { cut
                 ? corePayload.meta.refresh_status
                 : undefined;
             if (corePayload.rows.length && targetRef.current.key === target.key) {
-              const fullPayload = await api<CanvasScannerSnapshot>(`/api/trading/canvas-scanner${query({
-                as_of: target.asOf,
-                enrichment_scope: "full",
-                lookback_minutes: 15,
-                technical_windows: target.technicalWindows,
-              })}`, { signal: requestController.signal, timeoutMs: 180_000 });
-              if (!mountedRef.current || !targetRef.current.enabled || targetRef.current.key !== target.key) return;
-              setSnapshot(fullPayload);
-              refreshStatus = fullPayload.meta?.status === "building" || fullPayload.meta?.status === "error"
-                ? fullPayload.meta.status
-                : fullPayload.meta?.refresh_status === "building" || fullPayload.meta?.refresh_status === "error"
-                  ? fullPayload.meta.refresh_status
-                  : fullPayload.meta?.qmd_derived_status === "building" || fullPayload.meta?.qmd_derived_status === "error"
-                    ? fullPayload.meta.qmd_derived_status
-                    : undefined;
+              try {
+                const fullPayload = await api<CanvasScannerSnapshot>(`/api/trading/canvas-scanner${query({
+                  as_of: target.asOf,
+                  enrichment_scope: "full",
+                  lookback_minutes: 15,
+                  technical_windows: target.technicalWindows,
+                })}`, { signal: requestController.signal, timeoutMs: 180_000 });
+                if (!mountedRef.current || !targetRef.current.enabled || targetRef.current.key !== target.key) return;
+                setSnapshot(fullPayload);
+                refreshStatus = fullPayload.meta?.status === "building" || fullPayload.meta?.status === "error"
+                  ? fullPayload.meta.status
+                  : fullPayload.meta?.refresh_status === "building" || fullPayload.meta?.refresh_status === "error"
+                    ? fullPayload.meta.refresh_status
+                    : fullPayload.meta?.qmd_derived_status === "building" || fullPayload.meta?.qmd_derived_status === "error"
+                      ? fullPayload.meta.qmd_derived_status
+                      : undefined;
+              } catch (reason) {
+                if (requestController.signal.aborted) throw reason;
+                const message = reason instanceof Error ? reason.message : String(reason);
+                setSnapshot((current) => current && targetRef.current.key === target.key
+                  ? { ...current, errors: { ...current.errors, enrichment: message } }
+                  : current);
+              }
             }
             if (
               targetRef.current.key === target.key

@@ -13,7 +13,7 @@ from src.backend.canvas_preview_service import (
 
 
 class CanvasScannerPayloadTest(unittest.TestCase):
-    def test_core_scope_returns_reference_rows_without_waiting_for_full_enrichment(self) -> None:
+    def test_core_scope_returns_market_rows_without_waiting_for_enrichment(self) -> None:
         as_of = datetime(2026, 7, 17, 13, 45, tzinfo=UTC)
         snapshot = (
             [{"symbol": "AAPL", "last": 200.0, "change_pct": 1.0}],
@@ -42,15 +42,15 @@ class CanvasScannerPayloadTest(unittest.TestCase):
         ):
             payload = scanner_snapshot_payload(as_of=as_of, enrichment_scope="core")
 
-        reference.assert_called_once()
+        reference.assert_not_called()
         fundamentals.assert_not_called()
         news.assert_not_called()
         sec.assert_not_called()
         qmd.assert_not_called()
-        self.assertEqual(payload["rows"][0]["company_name"], "APPLE INC")
+        self.assertEqual(payload["rows"][0]["symbol"], "AAPL")
         self.assertEqual(payload["meta"]["enrichment_scope"], "core")
-        self.assertEqual(payload["meta"]["included_enrichments"], ["reference"])
-        self.assertIn("market_cap", watchlists.call_args.kwargs["available_fields"])
+        self.assertEqual(payload["meta"]["included_enrichments"], [])
+        self.assertNotIn("market_cap", watchlists.call_args.kwargs["available_fields"])
 
     def test_empty_snapshot_skips_every_enrichment_branch(self) -> None:
         as_of = datetime(2026, 7, 17, 13, 45, tzinfo=UTC)
@@ -131,7 +131,7 @@ class CanvasScannerPayloadTest(unittest.TestCase):
             patch(
                 "src.backend.canvas_preview_service.historical_scanner_qmd_projection_or_schedule",
                 return_value=({}, [], {"qmd_derived_status": "ready"}),
-            ),
+            ) as qmd,
             patch(
                 "src.backend.watchlist_runtime_service.project_watchlists_from_candidates",
                 return_value={"status": "ready", "watchlists": [{"watchlist_id": "core-candidates", "members": []}]},
@@ -161,6 +161,10 @@ class CanvasScannerPayloadTest(unittest.TestCase):
         self.assertEqual(payload["errors"], {})
         self.assertEqual(payload["as_of"], "2026-07-17T13:44:00+00:00")
         self.assertEqual(payload["watchlist_runtime"]["status"], "ready")
+        self.assertEqual(
+            qmd.call_args.args[0], datetime(2026, 7, 17, 13, 44, tzinfo=UTC)
+        )
+        self.assertFalse(qmd.call_args.kwargs["schedule_missing"])
 
     def test_company_news_and_sec_labels_are_enriched_separately(self) -> None:
         as_of = datetime(2026, 7, 17, 13, 45, tzinfo=UTC)

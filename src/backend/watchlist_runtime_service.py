@@ -502,11 +502,13 @@ def project_watchlists_from_candidates(
     as_of = as_of.astimezone(UTC)
     discovery = dict(configuration.get("market_discovery") or {})
     rule_sets = list(discovery.get("rule_sets") or [])
+    active_field_refs = compile_data_field_plan(discovery).get("field_refs") or []
     normalized_candidates = project_configured_rule_set_columns(
         configuration,
         project_data_field_outputs(
             [normalize_watchlist_candidate(row) for row in candidates],
             discovery.get("data_fields") or [],
+            field_refs=list(active_field_refs),
         ),
     )
     effective_available_fields = None if available_fields is None else set(available_fields)

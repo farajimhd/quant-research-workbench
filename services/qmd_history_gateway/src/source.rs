@@ -17,6 +17,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::str::FromStr;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::{mpsc, OnceCell};
 
 #[derive(Clone, Debug)]
@@ -134,6 +135,26 @@ pub struct HistoricalMacroChartSnapshot {
     pub source: String,
     pub ticker: String,
     pub timeframe: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct HistoricalScannerMarketSnapshot {
+    pub as_of: DateTime<Utc>,
+    pub event_count: u64,
+    pub lookback_minutes: u16,
+    pub rows: Vec<HistoricalScannerMarketSnapshotRow>,
+    pub source_revision: SourceRevision,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct HistoricalScannerMarketSnapshotRow {
+    pub change_5m_pct: f64,
+    pub change_pct: f64,
+    pub last: f64,
+    pub quote_count: u64,
+    pub symbol: String,
+    pub trade_count: u64,
+    pub volume: f64,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
@@ -386,6 +407,50 @@ impl HistoricalEventSource {
 
     pub fn trade_aggregation_rules(&self) -> TradeAggregationRules {
         self.trade_rules.clone()
+    }
+
+    pub async fn scanner_market_snapshot(
+        &self,
+        window: EventWindow,
+        as_of: DateTime<Utc>,
+    ) -> Result<HistoricalScannerMarketSnapshot, String> {
+        validate_window(&window)?;
+        if !window.tickers.is_empty() {
+            return Err(
+                "historical Scanner market snapshot requires the full market window".into(),
+            );
+        }
+        if as_of < window.start || as_of > window.end {
+            return Err("historical Scanner as_of must fall inside its source window".into());
+        }
+        let mut bounded = window;
+        bounded.end = as_of;
+        let source_revision = self.source_revision(&bounded).await?;
+        if !source_revision.complete_for_history || !source_revision.request_complete {
+            return Err("historical Scanner source window is incomplete".into());
+        }
+        let plan = self.source_plan(&bounded).await?;
+        let sql = scanner_market_snapshot_sql(&self.config, &plan, as_of)?;
+        let text = self.query_bounded(&sql, 75).await?;
+        let rows = text
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .map(|line| {
+                serde_json::from_str::<HistoricalScannerMarketSnapshotRow>(line)
+                    .map_err(|error| format!("invalid historical Scanner market row: {error}"))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let event_count = rows.iter().fold(0_u64, |total, row| {
+            total.saturating_add(row.trade_count.saturating_add(row.quote_count))
+        });
+        let lookback_minutes = (as_of - bounded.start).num_minutes().clamp(1, 390) as u16;
+        Ok(HistoricalScannerMarketSnapshot {
+            as_of,
+            event_count,
+            lookback_minutes,
+            rows,
+            source_revision,
+        })
     }
 
     pub async fn completed_session_dates_before(
@@ -1425,6 +1490,148 @@ impl HistoricalEventSource {
         }
         Ok(text)
     }
+
+    async fn query_bounded(&self, sql: &str, timeout_seconds: u64) -> Result<String, String> {
+        let timeout_seconds = timeout_seconds.clamp(1, 300);
+        let url = format!(
+            "{}/?database={}&enable_http_compression=1&max_execution_time={}",
+            self.config.clickhouse_url,
+            urlencoding::encode(&self.config.clickhouse_database),
+            timeout_seconds
+        );
+        let mut request = self
+            .client
+            .post(url)
+            .timeout(Duration::from_secs(timeout_seconds + 5))
+            .header("Accept-Encoding", "gzip")
+            .header("Content-Type", "text/plain; charset=utf-8")
+            .header("X-ClickHouse-User", &self.config.clickhouse_user)
+            .body(sql.to_string());
+        if !self.config.clickhouse_password.is_empty() {
+            request = request.header("X-ClickHouse-Key", &self.config.clickhouse_password);
+        }
+        let response = request.send().await.map_err(|error| error.to_string())?;
+        let status = response.status();
+        let text = response.text().await.map_err(|error| error.to_string())?;
+        if !status.is_success() {
+            return Err(format!("ClickHouse HTTP {status}: {}", text.trim()));
+        }
+        Ok(text)
+    }
+}
+
+fn scanner_market_snapshot_sql(
+    config: &HistoricalGatewayConfig,
+    plan: &MarketSourcePlan,
+    as_of: DateTime<Utc>,
+) -> Result<String, String> {
+    let mut selects = Vec::new();
+    for segment in plan
+        .segments
+        .iter()
+        .filter(|segment| segment.queryable_by_history)
+    {
+        match segment.tier {
+            MarketSourceTier::Archive => {
+                let last_inclusive = segment.end - chrono::Duration::microseconds(1);
+                for year in segment.start.year()..=last_inclusive.year() {
+                    selects.push(scanner_market_select(
+                        &format!(
+                            "{}.{}{}",
+                            config.clickhouse_database, config.table_prefix, year
+                        ),
+                        false,
+                        segment.start,
+                        segment.end,
+                    ));
+                }
+            }
+            MarketSourceTier::Recent => selects.push(scanner_market_select(
+                &format!("{}.{}", config.recent_database, config.recent_event_table),
+                true,
+                segment.start,
+                segment.end,
+            )),
+            MarketSourceTier::CurrentLive
+            | MarketSourceTier::ClosedMarket
+            | MarketSourceTier::Gap => {}
+        }
+    }
+    if selects.is_empty() {
+        return Err("historical Scanner market snapshot has no queryable source segment".into());
+    }
+    let five_minute_us = (as_of - chrono::Duration::minutes(5)).timestamp_micros();
+    Ok(format!(
+        r#"SELECT
+            upper(ticker) AS symbol,
+            last,
+            if(first_price = 0, 0, (last / first_price - 1) * 100) AS change_pct,
+            if(first_5m_price = 0, 0, (last / first_5m_price - 1) * 100) AS change_5m_pct,
+            volume,
+            trade_count,
+            quote_count
+        FROM
+        (
+            SELECT
+                ticker,
+                argMaxIf(price, tuple(sip_timestamp_us, ordinal), is_trade) AS last,
+                argMinIf(price, tuple(sip_timestamp_us, ordinal), is_trade) AS first_price,
+                argMinIf(price, tuple(sip_timestamp_us, ordinal), is_trade AND sip_timestamp_us >= {five_minute_us}) AS first_5m_price,
+                sumIf(toFloat64(size_primary), is_trade) AS volume,
+                countIf(is_trade) AS trade_count,
+                countIf(NOT is_trade) AS quote_count
+            FROM
+            (
+                SELECT
+                    ticker,
+                    ordinal,
+                    sip_timestamp_us,
+                    size_primary,
+                    bitAnd(event_meta, 1) = 1 AND price_primary_int > 0 AND size_primary > 0 AS is_trade,
+                    toFloat64(price_primary_int) / if(bitAnd(event_meta, 2) != 0, 10000., 100.) AS price
+                FROM ({source})
+            )
+            GROUP BY ticker
+            HAVING trade_count > 0
+        )
+        ORDER BY abs(change_5m_pct) DESC, symbol ASC
+        LIMIT 20000
+        FORMAT JSONEachRow"#,
+        source = selects.join(" UNION ALL "),
+    ))
+}
+
+fn scanner_market_select(
+    table: &str,
+    recent: bool,
+    start: DateTime<Utc>,
+    end: DateTime<Utc>,
+) -> String {
+    let ordinal = if recent {
+        "source.arrival_sequence"
+    } else {
+        "source.ordinal"
+    };
+    let final_clause = if recent { " FINAL" } else { "" };
+    let last_inclusive = end - chrono::Duration::microseconds(1);
+    format!(
+        r#"SELECT
+            source.ticker,
+            {ordinal} AS ordinal,
+            source.event_meta,
+            source.sip_timestamp_us,
+            source.price_primary_int,
+            source.size_primary
+        FROM {table} AS source{final_clause}
+        PREWHERE source.event_date >= toDate('{start_date}')
+          AND source.event_date <= toDate('{end_date}')
+          AND source.sip_timestamp_us >= {start_us}
+          AND source.sip_timestamp_us < {end_us}"#,
+        start_date = start.date_naive(),
+        end_date = last_inclusive.date_naive(),
+        start_us = start.timestamp_micros(),
+        end_us = end.timestamp_micros(),
+    )
 }
 
 fn parse_clickhouse_datetime(value: &str) -> Result<DateTime<Utc>, String> {

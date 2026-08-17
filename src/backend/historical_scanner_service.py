@@ -50,6 +50,7 @@ from src.backend.qmd_gateway_client import (
     normalize_qmd_indicator_scanner_row,
     normalize_qmd_market_signal,
     normalize_qmd_symbol_snapshot,
+    qmd_historical_scanner_market_snapshot,
 )
 from src.backend.ticker_facts_service import (
     FUNDAMENTAL_TAGS,
@@ -254,56 +255,45 @@ def _prune_materialization_states(
 
 
 def historical_scanner_snapshot(as_of: datetime, *, lookback_minutes: int = 15) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    """Return a causal full-universe scanner snapshot, materializing it once per source revision."""
+    """Return QMD History's causal, lightweight full-market snapshot.
+
+    QMD owns the ClickHouse connection and source-plan authority. The backend
+    must not independently connect to a default ClickHouse URL: workspace QMD
+    may be configured for a remote authoritative store while the backend is not.
+    Derived indicators and signals are enriched separately and may build in the
+    background without withholding these base Scanner and Watchlist rows.
+    """
     if as_of.tzinfo is None:
         raise ValueError("Historical scanner clock must be timezone-aware.")
     lookback_minutes = max(5, min(int(lookback_minutes), 120))
     snapshot_at = as_of.astimezone(UTC).replace(second=0, microsecond=0)
-    window_start = snapshot_at - timedelta(minutes=lookback_minutes)
-    client = ClickHouseHttpClient(
-        default_clickhouse_url(),
-        default_clickhouse_user(),
-        default_clickhouse_password(),
-        timeout_seconds=15,
+    payload = qmd_historical_scanner_market_snapshot(
+        as_of=snapshot_at.isoformat(),
+        lookback_minutes=lookback_minutes,
     )
-    source_database = os.environ.get("QMD_HISTORY_CLICKHOUSE_DATABASE", "market_sip_compact")
-    table_prefix = os.environ.get("QMD_HISTORY_TABLE_PREFIX", "events_")
-    if not IDENTIFIER.fullmatch(source_database) or not IDENTIFIER.fullmatch(table_prefix):
-        raise ValueError("Historical scanner source identifiers are invalid.")
-    source_revision = _source_revision(client, source_database, snapshot_at)
-    _ensure_snapshot_table(client)
-    rows = _cached_rows(client, snapshot_at, lookback_minutes, source_revision)
-    effective_snapshot_at = snapshot_at
-    status = "ready"
-    if not rows:
-        rows, fallback_snapshot_at = _latest_cached_rows(
-            client,
-            snapshot_at,
-            lookback_minutes,
-            source_revision,
-        )
-        if fallback_snapshot_at is not None:
-            effective_snapshot_at = fallback_snapshot_at
-        status = _schedule_scanner_materialization(
-            source_database=source_database,
-            table_prefix=table_prefix,
-            snapshot_at=snapshot_at,
-            window_start=window_start,
-            lookback_minutes=lookback_minutes,
-            source_revision=source_revision,
-        )
+    rows = [
+        {**row, "ticker": str(row.get("symbol") or "").strip().upper()}
+        for row in payload.get("rows") or []
+        if isinstance(row, dict) and str(row.get("symbol") or "").strip()
+    ]
+    revision = payload.get("source_revision") or {}
+    source_revision = str(
+        revision.get("token") if isinstance(revision, dict) else revision or ""
+    )
+    status = "ready" if rows else "empty"
     return rows, {
         "complete_universe": bool(rows),
         "lookback_minutes": lookback_minutes,
-        "materialized": status == "ready",
+        "materialized": True,
         "requested_snapshot_at_utc": snapshot_at.isoformat(),
         "row_count": len(rows),
         "schema_version": SCANNER_SCHEMA_VERSION,
-        "snapshot_at_utc": effective_snapshot_at.isoformat(),
+        "snapshot_at_utc": str(payload.get("as_of") or snapshot_at.isoformat()),
         "source_revision": source_revision,
         "refresh_status": status,
-        "status": status if effective_snapshot_at == snapshot_at else "refreshing",
-        "window_start_utc": (effective_snapshot_at - timedelta(minutes=lookback_minutes)).isoformat(),
+        "source": "qmd_history_scanner_market",
+        "status": status,
+        "window_start_utc": (snapshot_at - timedelta(minutes=lookback_minutes)).isoformat(),
     }
 
 
@@ -541,7 +531,11 @@ def historical_scanner_reference_projection(
         raise ValueError("Historical scanner clock must be timezone-aware.")
     cutoff = as_of.astimezone(UTC)
     active_client = client or ClickHouseHttpClient(
-        default_clickhouse_url(), default_clickhouse_user(), default_clickhouse_password(), timeout_seconds=15
+        default_clickhouse_url(),
+        default_clickhouse_user(),
+        default_clickhouse_password(),
+        timeout_seconds=15,
+        default_query_params={"max_execution_time": 14},
     )
     rows = _json_rows(
         active_client.execute(scanner_reference_projection(cutoff, "q_live"))
@@ -575,7 +569,11 @@ def historical_scanner_fundamental_projection(
     cutoff = as_of.astimezone(UTC)
     tags = sorted({tag for _, alternatives in FUNDAMENTAL_TAGS for tag in alternatives})
     active_client = client or ClickHouseHttpClient(
-        default_clickhouse_url(), default_clickhouse_user(), default_clickhouse_password(), timeout_seconds=15
+        default_clickhouse_url(),
+        default_clickhouse_user(),
+        default_clickhouse_password(),
+        timeout_seconds=15,
+        default_query_params={"max_execution_time": 14},
     )
     rows = _json_rows(
         active_client.execute(scanner_fundamentals(tags, cutoff, "q_live"))
@@ -721,6 +719,7 @@ def historical_scanner_qmd_projection_or_schedule(
     as_of: datetime,
     *,
     source_revision: str,
+    schedule_missing: bool = True,
 ) -> tuple[dict[str, dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
     """Read a durable QMD projection or start one bounded background build."""
     if as_of.tzinfo is None:
@@ -738,6 +737,19 @@ def historical_scanner_qmd_projection_or_schedule(
             source_revision=source_revision,
         )
         return projection, signals, {**meta, "qmd_derived_status": "ready"}
+    if not schedule_missing:
+        return {}, [], {
+            "qmd_derived_error": (
+                "The bounded QMD derived snapshot is not materialized for this clock; "
+                "Canvas will not start an unbounded full-market replay."
+            ),
+            "qmd_derived_materialized": False,
+            "qmd_derived_schema_version": SCANNER_QMD_SCHEMA_VERSION,
+            "qmd_derived_status": "not_materialized",
+            "qmd_market_row_count": 0,
+            "qmd_indicator_row_count": 0,
+            "qmd_signal_event_count": 0,
+        }
     key = f"{_clock(snapshot_at)}|{source_revision}|{SCANNER_QMD_SCHEMA_VERSION}"
     now = monotonic()
     with _QMD_MATERIALIZATION_LOCK:

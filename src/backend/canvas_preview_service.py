@@ -144,6 +144,7 @@ def scanner_snapshot_payload(
     )
     from src.backend.trading_configuration_service import configuration_base
     from src.backend.data_field_contracts import (
+        compile_data_field_plan,
         project_composition_data_field_columns,
         project_data_field_outputs,
     )
@@ -170,7 +171,7 @@ def scanner_snapshot_payload(
         for row in rows
         if row.get("symbol") or row.get("ticker")
     }
-    if technical_windows:
+    if technical_windows and enrichment_scope == "full":
         technical_projection, technical_meta = historical_scanner_technical_projection_or_schedule(
             effective_as_of,
             calculation_windows=technical_windows,
@@ -181,8 +182,8 @@ def scanner_snapshot_payload(
         if technical_meta.get("technical_status") in {"building", "capacity_limited", "error"}:
             meta["refresh_status"] = technical_meta["technical_status"]
     enrichment_names: list[str] = []
-    if rows:
-        enrichment_names = ["reference"] if enrichment_scope == "core" else ["fundamentals", "news", "qmd", "reference", "sec"]
+    if rows and enrichment_scope == "full":
+        enrichment_names = ["fundamentals", "news", "qmd", "reference", "sec"]
     with ThreadPoolExecutor(max_workers=max(1, len(enrichment_names))) as executor:
         futures = {}
         if "fundamentals" in enrichment_names:
@@ -198,6 +199,7 @@ def scanner_snapshot_payload(
                 historical_scanner_qmd_projection_or_schedule,
                 effective_as_of,
                 source_revision=str(meta.get("source_revision") or ""),
+                schedule_missing=False,
             )
         if "reference" in enrichment_names:
             futures["reference"] = executor.submit(historical_scanner_reference_projection, effective_as_of)
@@ -229,11 +231,13 @@ def scanner_snapshot_payload(
     rows = project_discovery_columns(
         (classify_watchlist_row(row) for row in rows),
     )
+    discovery = dict(configuration.get("market_discovery") or {})
+    active_field_refs = compile_data_field_plan(discovery).get("field_refs") or []
     rows = project_data_field_outputs(
         rows,
-        list(dict(configuration.get("market_discovery") or {}).get("data_fields") or []),
+        list(discovery.get("data_fields") or []),
+        field_refs=list(active_field_refs),
     )
-    discovery = dict(configuration.get("market_discovery") or {})
     rows = project_composition_data_field_columns(
         rows,
         dict(discovery.get("core_scan") or {}),

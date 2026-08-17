@@ -136,7 +136,7 @@ class HistoricalScannerServiceTest(unittest.TestCase):
         class QmdClient:
             calls: list[str] = []
 
-            def __init__(self, *_args) -> None:
+            def __init__(self, *_args, **_kwargs) -> None:
                 pass
 
             def execute(self, sql: str, **_kwargs) -> str:
@@ -244,68 +244,44 @@ class HistoricalScannerServiceTest(unittest.TestCase):
             )
         )
 
-    def test_full_universe_snapshot_returns_cached_rows_while_exact_clock_builds(self) -> None:
-        FakeClient.calls = []
-        fallback_at = datetime(2026, 7, 17, 13, 44, tzinfo=UTC)
-        fallback_rows = [
-            {
-                "symbol": "AAPL",
-                "ticker": "AAPL",
-                "last": 200,
-                "change_pct": 1.5,
-                "change_5m_pct": 0.4,
-                "volume": 1000,
-                "trade_count": 10,
-                "quote_count": 20,
-            }
-        ]
-        with (
-            patch("src.backend.historical_scanner_service.ClickHouseHttpClient", FakeClient),
-            patch(
-                "src.backend.historical_scanner_service._latest_cached_rows",
-                return_value=(fallback_rows, fallback_at),
-            ),
-            patch(
-                "src.backend.historical_scanner_service._schedule_scanner_materialization",
-                return_value="building",
-            ) as schedule,
-        ):
-            rows, meta = historical_scanner_snapshot(datetime(2026, 7, 17, 13, 45, tzinfo=UTC))
+    @patch("src.backend.historical_scanner_service.qmd_historical_scanner_market_snapshot")
+    def test_full_universe_snapshot_uses_qmd_history_market_authority(self, snapshot) -> None:
+        snapshot.return_value = {
+            "as_of": "2026-07-17T13:45:00+00:00",
+            "rows": [{"symbol": "AAPL", "last": 200, "change_pct": 1.5, "change_5m_pct": 0.4, "volume": 1000, "trade_count": 10, "quote_count": 20}],
+            "source_revision": {"token": "revision-7"},
+        }
+        rows, meta = historical_scanner_snapshot(datetime(2026, 7, 17, 13, 45, tzinfo=UTC))
         self.assertEqual(rows[0]["ticker"], "AAPL")
         self.assertTrue(meta["complete_universe"])
-        self.assertFalse(meta["materialized"])
-        self.assertEqual(meta["source_revision"], "7:1200:2026-07-17 14:00:00")
-        self.assertEqual(meta["snapshot_at_utc"], fallback_at.isoformat())
-        self.assertEqual(meta["status"], "refreshing")
-        self.assertEqual(meta["refresh_status"], "building")
-        schedule.assert_called_once()
+        self.assertTrue(meta["materialized"])
+        self.assertEqual(meta["source_revision"], "revision-7")
+        self.assertEqual(meta["source"], "qmd_history_scanner_market")
+        self.assertEqual(meta["status"], "ready")
+        snapshot.assert_called_once_with(as_of="2026-07-17T13:45:00+00:00", lookback_minutes=15)
 
-    def test_full_universe_snapshot_reports_building_without_a_cached_baseline(self) -> None:
-        with (
-            patch("src.backend.historical_scanner_service.ClickHouseHttpClient", FakeClient),
-            patch(
-                "src.backend.historical_scanner_service._latest_cached_rows",
-                return_value=([], None),
-            ),
-            patch(
-                "src.backend.historical_scanner_service._schedule_scanner_materialization",
-                return_value="building",
-            ),
-        ):
+    @patch("src.backend.historical_scanner_service.qmd_historical_scanner_market_snapshot")
+    def test_full_universe_snapshot_reports_authoritative_empty_result(self, snapshot) -> None:
+        snapshot.return_value = {
+            "as_of": "2026-07-17T13:45:00+00:00",
+            "rows": [],
+            "source_revision": {"token": "revision-7"},
+        }
+        with patch("src.backend.historical_scanner_service.ClickHouseHttpClient", FakeClient):
             rows, meta = historical_scanner_snapshot(
                 datetime(2026, 7, 17, 13, 45, tzinfo=UTC)
             )
 
         self.assertEqual(rows, [])
         self.assertFalse(meta["complete_universe"])
-        self.assertEqual(meta["status"], "building")
+        self.assertEqual(meta["status"], "empty")
         self.assertEqual(meta["row_count"], 0)
 
     def test_reference_projection_is_one_causal_tradable_universe_query(self) -> None:
         class ReferenceClient:
             calls: list[str] = []
 
-            def __init__(self, *_args) -> None:
+            def __init__(self, *_args, **_kwargs) -> None:
                 pass
 
             def execute(self, sql: str, **_kwargs) -> str:
@@ -342,7 +318,7 @@ class HistoricalScannerServiceTest(unittest.TestCase):
         class FundamentalClient:
             calls: list[str] = []
 
-            def __init__(self, *_args) -> None:
+            def __init__(self, *_args, **_kwargs) -> None:
                 pass
 
             def execute(self, sql: str, **_kwargs) -> str:

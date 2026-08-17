@@ -23,6 +23,7 @@ from src.backend.qmd_gateway_client import (
     qmd_materialize_historical_watchlist_timelines,
     qmd_validate_historical_watchlist_plan,
     qmd_history_websocket_url,
+    qmd_historical_scanner_market_snapshot,
     qmd_historical_scanner_snapshot,
     qmd_catalogs,
     qmd_live_market_state,
@@ -210,6 +211,21 @@ class QmdGatewayClientTests(unittest.TestCase):
         self.assertEqual(params["start"], "2026-08-07T13:30:00+00:00")
         self.assertEqual(params["end"], "2026-08-07T14:15:00+00:00")
         self.assertEqual(get_json.call_args_list[1].args[0], "/source-plan")
+
+    @patch("src.backend.qmd_gateway_client.qmd_history_get_json")
+    def test_historical_scanner_market_uses_lightweight_qmd_contract(self, get_json) -> None:
+        get_json.return_value = {"rows": [{"symbol": "AAPL"}]}
+
+        payload = qmd_historical_scanner_market_snapshot(
+            as_of="2026-08-07T10:15:00-04:00",
+            lookback_minutes=15,
+        )
+
+        self.assertEqual(payload["rows"][0]["symbol"], "AAPL")
+        path, params = get_json.call_args.args
+        self.assertEqual(path, "/snapshot/scanner-market")
+        self.assertEqual(params["start"], "2026-08-07T14:00:00+00:00")
+        self.assertEqual(params["end"], "2026-08-07T14:15:00+00:00")
 
     @patch("src.backend.qmd_gateway_client.qmd_get_json")
     def test_typed_product_request_routes_windowless_chart_to_live(self, get_json) -> None:

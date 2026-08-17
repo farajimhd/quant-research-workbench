@@ -425,7 +425,10 @@ def data_field_output_index(data_fields: Iterable[dict[str, Any]]) -> dict[str, 
 
 
 def project_data_field_outputs(
-    rows: Iterable[dict[str, Any]], data_fields: Iterable[dict[str, Any]]
+    rows: Iterable[dict[str, Any]],
+    data_fields: Iterable[dict[str, Any]],
+    *,
+    field_refs: Iterable[str] | None = None,
 ) -> list[dict[str, Any]]:
     """Attach exact Data Field output identities to producer rows.
 
@@ -433,11 +436,21 @@ def project_data_field_outputs(
     or the historical vectorized executor.
     """
 
+    selected_refs = (
+        {str(value) for value in field_refs if str(value)}
+        if field_refs is not None
+        else None
+    )
     outputs = [
         (dict(output), dict(data_field.get("context") or {}))
         for data_field in data_fields
         for output in data_field.get("outputs") or []
         if str(output.get("field_ref") or "")
+        and (
+            selected_refs is None
+            or str(output.get("field_ref") or "") in selected_refs
+            or str(output.get("source_id") or "") in selected_refs
+        )
     ]
     projected: list[dict[str, Any]] = []
     for row in rows:

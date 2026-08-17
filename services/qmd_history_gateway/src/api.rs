@@ -10,8 +10,8 @@ use crate::scanner::{
     HistoricalWatchlistTimelineMaterialization,
 };
 use crate::source::{
-    EventCoverage, EventWindow, HistoricalCursor, HistoricalEventSource, LatestEventCoverage,
-    MarketSourcePlan, SourceRevision,
+    EventCoverage, EventWindow, HistoricalCursor, HistoricalEventSource,
+    HistoricalScannerMarketSnapshot, LatestEventCoverage, MarketSourcePlan, SourceRevision,
 };
 use crate::structure_checkpoint::{
     advance_structure_checkpoint, StructureCheckpointAdvanceRequest,
@@ -209,6 +209,7 @@ pub fn app(state: AppState) -> Router {
         )
         .route("/snapshot/bars/{ticker}", get(bar_snapshot))
         .route("/snapshot/chart-bars/{ticker}", get(chart_bar_snapshot))
+        .route("/snapshot/scanner-market", get(scanner_market_snapshot))
         .route("/snapshot/scanner-derived", get(scanner_derived_snapshot))
         .route(
             "/materialize/generic-structure-checkpoint",
@@ -272,6 +273,29 @@ async fn scanner_derived_snapshot(
     state
         .scanner
         .snapshot(replay_window, as_of)
+        .await
+        .map(Json)
+        .map_err(service_error)
+}
+
+async fn scanner_market_snapshot(
+    Query(query): Query<ScannerDerivedQuery>,
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<HistoricalScannerMarketSnapshot>, ApiError> {
+    let as_of = parse_timestamp(&query.as_of)?;
+    let tickers = query
+        .tickers
+        .as_deref()
+        .unwrap_or_default()
+        .split(',')
+        .filter(|value| !value.trim().is_empty())
+        .map(str::to_string)
+        .collect();
+    let mut replay_window = window(&query.start, &query.end, tickers)?;
+    replay_window.end = replay_window.end.min(as_of);
+    state
+        .source
+        .scanner_market_snapshot(replay_window, as_of)
         .await
         .map(Json)
         .map_err(service_error)
@@ -1774,7 +1798,8 @@ mod tests {
         assert!(validate_timeframe("100ms").is_ok());
         assert!(validate_timeframe("5s").is_ok());
         assert!(validate_timeframe("1m").is_ok());
-        assert!(validate_timeframe("2m").is_err());
+        assert!(validate_timeframe("2m").is_ok());
+        assert!(validate_timeframe("0m").is_err());
     }
 
     #[test]

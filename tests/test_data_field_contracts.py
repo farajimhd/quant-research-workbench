@@ -158,6 +158,27 @@ class DataFieldContractTests(unittest.TestCase):
             101.25,
         )
 
+    def test_projection_can_be_limited_to_active_field_references(self) -> None:
+        last_price = next(
+            output
+            for data_field in self.discovery["data_fields"]
+            for output in data_field["outputs"]
+            if output["source_id"] == "market.last_price"
+        )
+        volume = next(
+            output
+            for data_field in self.discovery["data_fields"]
+            for output in data_field["outputs"]
+            if output["source_id"] == "market.volume"
+        )
+        projected = project_data_field_outputs(
+            [{"last_price": 101.25, "volume": 50_000}],
+            self.discovery["data_fields"],
+            field_refs=[last_price["field_ref"]],
+        )[0]
+        self.assertEqual(projected[last_price["field_ref"]], 101.25)
+        self.assertNotIn(volume["field_ref"], projected)
+
     def test_compiler_derives_signal_stream_dependencies(self) -> None:
         discovery = {**self.discovery, "signal_streams": [{
             "signal_stream_id": "test-stream",
