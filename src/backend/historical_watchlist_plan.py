@@ -177,8 +177,12 @@ def _validated_sources(watchlist: dict[str, Any], rules: list[dict[str, Any]]) -
             right = str(condition.get("right_source_id") or "")
             if not left:
                 raise ValueError("historical Watchlist condition requires left_source_id")
+            if str(condition.get("left_value_selection") or "latest") != "latest":
+                raise ValueError("historical Watchlist condition supports only latest left value selection")
             sources.add(left)
             if right:
+                if str(condition.get("right_value_selection") or "latest") != "latest":
+                    raise ValueError("historical Watchlist condition supports only latest right value selection")
                 sources.add(right)
     sources.discard("")
     unknown = sorted(source for source in sources if source not in SOURCE_FIELDS)

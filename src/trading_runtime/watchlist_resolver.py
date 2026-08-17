@@ -258,6 +258,8 @@ def _rule_matches(rule_set: dict[str, Any] | None, row: dict[str, Any]) -> bool:
 
 
 def _condition_matches(condition: dict[str, Any], row: dict[str, Any]) -> bool:
+    if str(condition.get("left_value_selection") or "latest") != "latest":
+        return False
     left_ref = str(condition.get("left_field_ref") or "")
     left_interval = interval_expression(condition.get("left_interval"))
     left = _source_value(row, field_instance_ref(left_ref, left_interval)) if left_ref else None
@@ -269,6 +271,8 @@ def _condition_matches(condition: dict[str, Any], row: dict[str, Any]) -> bool:
     right_ref = str(condition.get("right_field_ref") or "")
     right_interval = interval_expression(condition.get("right_interval"))
     right_source = str(condition.get("right_source_id") or "")
+    if right_source and str(condition.get("right_value_selection") or "latest") != "latest":
+        return False
     right = _source_value(row, field_instance_ref(right_ref, right_interval)) if right_ref else None
     if right is None and (not right_ref or not right_interval):
         right = _source_value(row, right_source) if right_source else condition.get("value")
@@ -321,6 +325,8 @@ def _condition_expression(
 def _operand_expression(
     condition: dict[str, Any], side: str, schema: set[str]
 ) -> pl.Expr | None:
+    if str(condition.get(f"{side}_value_selection") or "latest") != "latest":
+        return None
     field_ref = str(condition.get(f"{side}_field_ref") or "")
     interval = interval_expression(condition.get(f"{side}_interval"))
     source_id = str(condition.get(f"{side}_source_id") or "")

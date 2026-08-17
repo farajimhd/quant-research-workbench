@@ -142,6 +142,42 @@ class DataFieldContractTests(unittest.TestCase):
                 if condition.get("right_source_id"):
                     self.assertIn(condition["right_field_ref"], output_refs)
 
+    def test_rule_operands_bind_intervals_only_when_the_data_field_requires_one(self) -> None:
+        by_ref = {
+            output["field_ref"]: data_field
+            for data_field in self.discovery["data_fields"]
+            for output in data_field["outputs"]
+        }
+        interval_operands = 0
+        for rule_set in self.discovery["rule_sets"]:
+            for condition in rule_set["conditions"]:
+                for side in ("left", "right"):
+                    field_ref = condition.get(f"{side}_field_ref")
+                    if not field_ref:
+                        continue
+                    self.assertEqual(
+                        condition.get(f"{side}_value_selection"),
+                        "latest",
+                        (rule_set["rule_set_id"], side, field_ref),
+                    )
+                    data_field = by_ref[field_ref]
+                    interval = normalize_interval_spec(condition.get(f"{side}_interval"))
+                    if data_field["context"]["dimension_kind"] == "interval":
+                        interval_operands += 1
+                        self.assertIsNotNone(interval, (rule_set["rule_set_id"], side, field_ref))
+                    else:
+                        self.assertIsNone(interval, (rule_set["rule_set_id"], side, field_ref))
+        self.assertGreater(interval_operands, 0)
+
+        squeeze = next(
+            row for row in self.discovery["rule_sets"]
+            if row["rule_set_id"] == "watchlist-price-or-volume-squeeze"
+        )
+        self.assertEqual(
+            [by_ref[row["left_field_ref"]]["context"]["anchor"] for row in squeeze["conditions"]],
+            ["market_session", "market_session"],
+        )
+
     def test_enabled_rules_use_only_executable_data_fields(self) -> None:
         by_ref = {
             output["field_ref"]: data_field

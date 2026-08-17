@@ -1994,8 +1994,18 @@ def _market_discovery_classifications() -> list[dict[str, Any]]:
     ]
 
 
-def _watchlist_condition(condition_id: str, source_id: str, comparator: str, value: float | bool, timeframe: str = "") -> dict[str, Any]:
-    return {"condition_id": condition_id, "left_source_id": source_id, "left_timeframe": timeframe, "comparator": comparator, "right_source_id": "", "right_timeframe": "", "value": value, "enabled": True}
+def _watchlist_condition(condition_id: str, source_id: str, comparator: str, value: float | bool) -> dict[str, Any]:
+    """Register an anchored/as-of Watchlist condition without a fake bar interval."""
+
+    return {
+        "condition_id": condition_id,
+        "left_source_id": source_id,
+        "left_value_selection": "latest",
+        "comparator": comparator,
+        "right_source_id": "",
+        "value": value,
+        "enabled": True,
+    }
 
 
 def _watchlist_rule(
@@ -2076,18 +2086,18 @@ def _normalize_rule_set_conditions(rule_set: dict[str, Any]) -> None:
 
 def _default_watchlist_rule_sets() -> list[dict[str, Any]]:
     categories = [
-        _watchlist_rule("watchlist-penny-stocks", "Sub-dollar price band", "Passes when last price is positive and below $1.", [_watchlist_condition("penny-positive", "market.last_price", "greater_than", 0, "1s"), _watchlist_condition("penny-under-one", "market.last_price", "less_than", 1, "1s")]),
-        _watchlist_rule("watchlist-small-caps", "Small-cap market value band", "Passes when market capitalization is positive and below $2 billion.", [_watchlist_condition("small-cap-positive", "reference.market_cap", "greater_than", 0, "1d"), _watchlist_condition("small-cap-maximum", "reference.market_cap", "less_than", 2_000_000_000, "1d")]),
-        _watchlist_rule("watchlist-mid-caps", "Mid-cap market value band", "Passes when market capitalization is at least $2 billion and below $10 billion.", [_watchlist_condition("mid-cap-minimum", "reference.market_cap", "greater_or_equal", 2_000_000_000, "1d"), _watchlist_condition("mid-cap-maximum", "reference.market_cap", "less_than", 10_000_000_000, "1d")]),
-        _watchlist_rule("watchlist-large-caps", "Large-cap market value band", "Passes when market capitalization is at least $10 billion.", [_watchlist_condition("large-cap-minimum", "reference.market_cap", "greater_or_equal", 10_000_000_000, "1d")]),
+        _watchlist_rule("watchlist-penny-stocks", "Sub-dollar price band", "Passes when last price is positive and below $1.", [_watchlist_condition("penny-positive", "market.last_price", "greater_than", 0), _watchlist_condition("penny-under-one", "market.last_price", "less_than", 1)]),
+        _watchlist_rule("watchlist-small-caps", "Small-cap market value band", "Passes when market capitalization is positive and below $2 billion.", [_watchlist_condition("small-cap-positive", "reference.market_cap", "greater_than", 0), _watchlist_condition("small-cap-maximum", "reference.market_cap", "less_than", 2_000_000_000)]),
+        _watchlist_rule("watchlist-mid-caps", "Mid-cap market value band", "Passes when market capitalization is at least $2 billion and below $10 billion.", [_watchlist_condition("mid-cap-minimum", "reference.market_cap", "greater_or_equal", 2_000_000_000), _watchlist_condition("mid-cap-maximum", "reference.market_cap", "less_than", 10_000_000_000)]),
+        _watchlist_rule("watchlist-large-caps", "Large-cap market value band", "Passes when market capitalization is at least $10 billion.", [_watchlist_condition("large-cap-minimum", "reference.market_cap", "greater_or_equal", 10_000_000_000)]),
     ]
     float_rules = []
     for row in _market_discovery_classifications():
         if row["group"] != "Public float":
             continue
-        conditions = [_watchlist_condition(f"{row['classification_id']}-minimum", "reference.float_shares", "greater_or_equal", row["minimum"], "1d")]
+        conditions = [_watchlist_condition(f"{row['classification_id']}-minimum", "reference.float_shares", "greater_or_equal", row["minimum"])]
         if row["maximum"] is not None:
-            conditions.append(_watchlist_condition(f"{row['classification_id']}-maximum", "reference.float_shares", "less_than", row["maximum"], "1d"))
+            conditions.append(_watchlist_condition(f"{row['classification_id']}-maximum", "reference.float_shares", "less_than", row["maximum"]))
         float_name = str(row["name"])
         if not float_name.endswith("Float"):
             float_name = f"{float_name} Float"
@@ -2095,18 +2105,18 @@ def _default_watchlist_rule_sets() -> list[dict[str, Any]]:
     return [
         *categories,
         *float_rules,
-        _watchlist_rule("watchlist-positive-gainer", "Positive session gainer", "Requires a positive percentage change from the completed previous-session close.", [_watchlist_condition("positive-session-change", "market.change_pct", "greater_than", 0, "1s")]),
-        _watchlist_rule("watchlist-relative-volume-gainer", "Elevated relative volume", "Requires current volume to exceed the aligned 20-session baseline.", [_watchlist_condition("relative-volume-over-baseline", "market.relative_volume", "greater_than", 1, "10s")]),
-        _watchlist_rule("watchlist-price-or-volume-squeeze", "Session Price or Volume Expansion", "Passes when session return from previous close reaches 5% or aligned 20-session relative volume reaches 3x.", [_watchlist_condition("squeeze-session-price", "market.change_pct", "greater_or_equal", 5, "session"), _watchlist_condition("squeeze-volume", "market.relative_volume", "greater_or_equal", 3, "session")], operator="any"),
-        _watchlist_rule("watchlist-vwap-breakout", "VWAP breakout", "Requires last price to trade at least 5 basis points above current VWAP.", [{**_watchlist_condition("vwap-breakout-price", "market.last_price", "above_by_bps", 5, "1s"), "right_source_id": "indicator.vwap.value", "right_timeframe": "1s"}]),
-        _watchlist_rule("watchlist-news-bullish", "Bullish news sentiment", "Requires a validated news label and a positive sentiment score of at least 0.35.", [_watchlist_condition("news-labeled-positive", "signal.news_labeled", "is_true", True, "event"), _watchlist_condition("news-positive-score", "signal.company_news.score", "greater_or_equal", 0.35, "event")], enabled=False, implementation_status="integration_pending"),
-        _watchlist_rule("watchlist-news-bearish", "Bearish news sentiment", "Requires a validated news label and a negative sentiment score of -0.35 or lower.", [_watchlist_condition("news-labeled-negative", "signal.news_labeled", "is_true", True, "event"), _watchlist_condition("news-negative-score", "signal.company_news.score", "less_or_equal", -0.35, "event")], enabled=False, implementation_status="integration_pending"),
-        _watchlist_rule("watchlist-sec-bullish", "Bullish SEC sentiment", "Requires a validated SEC label and a positive filing score of at least 0.35.", [_watchlist_condition("sec-labeled-positive", "signal.sec_labeled", "is_true", True, "event"), _watchlist_condition("sec-positive-score", "signal.sec_filing.score", "greater_or_equal", 0.35, "event")], enabled=False, implementation_status="integration_pending"),
-        _watchlist_rule("watchlist-sec-bearish", "Bearish SEC sentiment", "Requires a validated SEC label and a negative filing score of -0.35 or lower.", [_watchlist_condition("sec-labeled-negative", "signal.sec_labeled", "is_true", True, "event"), _watchlist_condition("sec-negative-score", "signal.sec_filing.score", "less_or_equal", -0.35, "event")], enabled=False, implementation_status="integration_pending"),
-        _watchlist_rule("watchlist-fundamental-bullish", "Fundamental Bullish", "Requires reliable SEC evidence and a trajectory score of at least 65.", [_watchlist_condition("fundamental-bull-quality", "fundamental.quality_score", "greater_or_equal", 60, "filing"), _watchlist_condition("fundamental-bull-score", "fundamental.trajectory_score", "greater_or_equal", 65, "filing")]),
-        _watchlist_rule("watchlist-fundamental-bearish", "Fundamental Bearish", "Requires reliable SEC evidence and a trajectory score of 35 or lower.", [_watchlist_condition("fundamental-bear-quality", "fundamental.quality_score", "greater_or_equal", 60, "filing"), _watchlist_condition("fundamental-bear-score", "fundamental.trajectory_score", "less_or_equal", 35, "filing")]),
-        _watchlist_rule("watchlist-ipo-window", "Past or Upcoming IPO", "Retains IPOs from 30 days before through 90 days after their event date.", [_watchlist_condition("ipo-window-start", "event.ipo.days_to_event", "greater_or_equal", -90, "event"), _watchlist_condition("ipo-window-end", "event.ipo.days_to_event", "less_or_equal", 30, "event")]),
-        _watchlist_rule("watchlist-split-window", "Stock split window", "Retains symbols from 10 days before through 5 days after a published split execution date.", [_watchlist_condition("split-window-start", "event.split.days_to_event", "greater_or_equal", -5, "event"), _watchlist_condition("split-window-end", "event.split.days_to_event", "less_or_equal", 10, "event")]),
+        _watchlist_rule("watchlist-positive-gainer", "Positive session gainer", "Requires a positive percentage change from the completed previous-session close.", [_watchlist_condition("positive-session-change", "market.change_pct", "greater_than", 0)]),
+        _watchlist_rule("watchlist-relative-volume-gainer", "Elevated relative volume", "Requires current volume to exceed the aligned 20-session baseline.", [_watchlist_condition("relative-volume-over-baseline", "market.relative_volume", "greater_than", 1)]),
+        _watchlist_rule("watchlist-price-or-volume-squeeze", "Session Price or Volume Expansion", "Passes when session return from previous close reaches 5% or aligned 20-session relative volume reaches 3x.", [_watchlist_condition("squeeze-session-price", "market.change_pct", "greater_or_equal", 5), _watchlist_condition("squeeze-volume", "market.relative_volume", "greater_or_equal", 3)], operator="any"),
+        _watchlist_rule("watchlist-vwap-breakout", "VWAP breakout", "Requires last price to trade at least 5 basis points above current VWAP.", [{**_watchlist_condition("vwap-breakout-price", "market.last_price", "above_by_bps", 5), "right_source_id": "indicator.vwap.value"}]),
+        _watchlist_rule("watchlist-news-bullish", "Bullish news sentiment", "Requires a validated news label and a positive sentiment score of at least 0.35.", [_watchlist_condition("news-labeled-positive", "signal.news_labeled", "is_true", True), _watchlist_condition("news-positive-score", "signal.company_news.score", "greater_or_equal", 0.35)], enabled=False, implementation_status="integration_pending"),
+        _watchlist_rule("watchlist-news-bearish", "Bearish news sentiment", "Requires a validated news label and a negative sentiment score of -0.35 or lower.", [_watchlist_condition("news-labeled-negative", "signal.news_labeled", "is_true", True), _watchlist_condition("news-negative-score", "signal.company_news.score", "less_or_equal", -0.35)], enabled=False, implementation_status="integration_pending"),
+        _watchlist_rule("watchlist-sec-bullish", "Bullish SEC sentiment", "Requires a validated SEC label and a positive filing score of at least 0.35.", [_watchlist_condition("sec-labeled-positive", "signal.sec_labeled", "is_true", True), _watchlist_condition("sec-positive-score", "signal.sec_filing.score", "greater_or_equal", 0.35)], enabled=False, implementation_status="integration_pending"),
+        _watchlist_rule("watchlist-sec-bearish", "Bearish SEC sentiment", "Requires a validated SEC label and a negative filing score of -0.35 or lower.", [_watchlist_condition("sec-labeled-negative", "signal.sec_labeled", "is_true", True), _watchlist_condition("sec-negative-score", "signal.sec_filing.score", "less_or_equal", -0.35)], enabled=False, implementation_status="integration_pending"),
+        _watchlist_rule("watchlist-fundamental-bullish", "Fundamental Bullish", "Requires reliable SEC evidence and a trajectory score of at least 65.", [_watchlist_condition("fundamental-bull-quality", "fundamental.quality_score", "greater_or_equal", 60), _watchlist_condition("fundamental-bull-score", "fundamental.trajectory_score", "greater_or_equal", 65)]),
+        _watchlist_rule("watchlist-fundamental-bearish", "Fundamental Bearish", "Requires reliable SEC evidence and a trajectory score of 35 or lower.", [_watchlist_condition("fundamental-bear-quality", "fundamental.quality_score", "greater_or_equal", 60), _watchlist_condition("fundamental-bear-score", "fundamental.trajectory_score", "less_or_equal", 35)]),
+        _watchlist_rule("watchlist-ipo-window", "Past or Upcoming IPO", "Retains IPOs from 30 days before through 90 days after their event date.", [_watchlist_condition("ipo-window-start", "event.ipo.days_to_event", "greater_or_equal", -90), _watchlist_condition("ipo-window-end", "event.ipo.days_to_event", "less_or_equal", 30)]),
+        _watchlist_rule("watchlist-split-window", "Stock split window", "Retains symbols from 10 days before through 5 days after a published split execution date.", [_watchlist_condition("split-window-start", "event.split.days_to_event", "greater_or_equal", -5), _watchlist_condition("split-window-end", "event.split.days_to_event", "less_or_equal", 10)]),
     ]
 
 
@@ -2699,6 +2709,7 @@ def _default_draft() -> dict[str, Any]:
         for binding in bindings
         if "replay" in binding["modes"]
     ]
+    _normalize_market_discovery_interval_specs(discovery)
     return {
         "schema_version": CONFIGURATION_SCHEMA_VERSION,
         "strategy": {
@@ -2862,6 +2873,11 @@ def _validate_market_discovery(section: dict[str, Any]) -> None:
                 raise ValueError(
                     f"Watchlist rule set {rule_set.get('name')} cannot use {comparator} on {source_id}"
                 )
+            left_value_selection = str(condition.get("left_value_selection") or "latest")
+            if left_value_selection != "latest":
+                raise ValueError(
+                    f"Rule Set {rule_set.get('name')} requires latest value selection for {source_id}"
+                )
             left_interval = normalize_interval_spec(condition.get("left_interval"))
             left_available = {
                 str(spec["unit"])
@@ -2891,6 +2907,11 @@ def _validate_market_discovery(section: dict[str, Any]) -> None:
                     f"Watchlist rule set {rule_set.get('name')} references unknown comparison field {right_source_id}"
                 )
             if right_source_id:
+                right_value_selection = str(condition.get("right_value_selection") or "latest")
+                if right_value_selection != "latest":
+                    raise ValueError(
+                        f"Rule Set {rule_set.get('name')} requires latest comparison value selection for {right_source_id}"
+                    )
                 right_output = output_index.get(right_ref, {})
                 right_data_field = data_field_by_output_ref.get(right_ref)
                 if bool(rule_set.get("enabled")) and right_data_field is not None and not bool(right_data_field.get("enabled")):
@@ -3853,10 +3874,16 @@ def _migrate_market_discovery_instances(
 
 
 def _normalize_market_discovery_interval_specs(discovery: dict[str, Any]) -> None:
-    """Persist intervals as value/unit data and leave compact strings to compilation."""
+    """Normalize use-site timing: latest causal value plus optional bar interval."""
 
     for rule_set in discovery.get("rule_sets") or []:
         for condition in rule_set.get("conditions") or []:
+            if str(condition.get("left_source_id") or ""):
+                condition.setdefault("left_value_selection", "latest")
+            if str(condition.get("right_source_id") or ""):
+                condition.setdefault("right_value_selection", "latest")
+            else:
+                condition.pop("right_value_selection", None)
             for key in ("left_interval", "right_interval"):
                 normalized = normalize_interval_spec(condition.get(key))
                 if normalized is None:

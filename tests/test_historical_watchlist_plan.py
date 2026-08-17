@@ -30,7 +30,7 @@ class HistoricalWatchlistPlanTests(unittest.TestCase):
         self.assertEqual(plan["plan_hash"], repeated["plan_hash"])
         self.assertEqual(
             plan["plan_hash"],
-            "sha256:32ae0510773216045b7b239c887bc3e18b27d30b07cb82c35ae762477c9f405a",
+            "sha256:0bb79bec181d384705ca5e6bc101f2c646f3e802a65d7cc0feb5845b9ac91840",
         )
         self.assertEqual(plan["qmd_sources"], ["market.liquidity_rank"])
         self.assertEqual(plan["external_features"][0]["field_id"], "reference.float_shares")
@@ -38,6 +38,20 @@ class HistoricalWatchlistPlanTests(unittest.TestCase):
         self.assertEqual(plan["external_features"][0]["query_plan_version"], 2)
         self.assertEqual(plan["chunk_duration_ms"], plan["cadence_ms"] * 1_800)
         self.assertTrue(plan["state_carry_required"])
+
+    def test_rejects_unsupported_value_selection(self) -> None:
+        configuration = _default_draft()
+        watchlist = next(row for row in configuration["market_discovery"]["watchlists"] if row["watchlist_id"] == "core-candidates")
+        watchlist["inclusion_rule_sets"] = ["watchlist-float-small"]
+        rule = next(row for row in configuration["market_discovery"]["rule_sets"] if row["rule_set_id"] == "watchlist-float-small")
+        rule["conditions"][0]["left_value_selection"] = "oldest"
+        with self.assertRaisesRegex(ValueError, "supports only latest left value selection"):
+            compile_historical_watchlist_plan(
+                configuration,
+                "core-candidates",
+                start=datetime(2026, 8, 7, 13, 30, tzinfo=UTC),
+                end=datetime(2026, 8, 7, 20, 0, tzinfo=UTC),
+            )
 
     def test_rejects_deferred_intelligence_source(self) -> None:
         configuration = _default_draft()

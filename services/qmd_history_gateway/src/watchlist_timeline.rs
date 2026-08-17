@@ -966,9 +966,21 @@ fn validate_rule_graph(
                 ));
             }
             let left = required_string(condition, "left_source_id")?;
+            if optional_string(condition, "left_value_selection").unwrap_or("latest") != "latest" {
+                return Err(format!(
+                    "historical Watchlist condition {condition_id} supports only latest left value selection"
+                ));
+            }
             referenced_sources.insert(left);
             let right = optional_string(condition, "right_source_id").unwrap_or("");
             if !right.is_empty() {
+                if optional_string(condition, "right_value_selection").unwrap_or("latest")
+                    != "latest"
+                {
+                    return Err(format!(
+                        "historical Watchlist condition {condition_id} supports only latest right value selection"
+                    ));
+                }
                 referenced_sources.insert(right);
             }
             if comparator == "above_by_bps" && right.is_empty() {
@@ -1091,9 +1103,8 @@ mod tests {
                         "condition_id": "float.small-minimum",
                         "enabled": true,
                         "left_source_id": "reference.float_shares",
-                        "left_timeframe": "1d",
+                        "left_value_selection": "latest",
                         "right_source_id": "",
-                        "right_timeframe": "",
                         "value": 2_000_000
                     },
                     {
@@ -1101,9 +1112,8 @@ mod tests {
                         "condition_id": "float.small-maximum",
                         "enabled": true,
                         "left_source_id": "reference.float_shares",
-                        "left_timeframe": "1d",
+                        "left_value_selection": "latest",
                         "right_source_id": "",
-                        "right_timeframe": "",
                         "value": 5_000_000
                     }
                 ],
@@ -1142,7 +1152,7 @@ mod tests {
         rehash(&mut plan);
         assert_eq!(
             plan.plan_hash,
-            "sha256:b270dd23d868057aed8ae5930b75f879c2d152f71586f4423683b2f822718d91"
+            "sha256:8b0871442876967333914bf7a2c736bbce59e27482b0a9740aa66dc82bb72012"
         );
         plan
     }
@@ -1185,6 +1195,13 @@ mod tests {
         assert!(validate_plan(&invalid)
             .unwrap_err()
             .contains("exactly match"));
+
+        let mut invalid = plan();
+        invalid.rule_sets[0]["conditions"][0]["left_value_selection"] = json!("oldest");
+        rehash(&mut invalid);
+        assert!(validate_plan(&invalid)
+            .unwrap_err()
+            .contains("supports only latest left value selection"));
     }
 
     fn candidate(ticker: &str, liquidity: f64, public_float: f64) -> WatchlistCandidate {
