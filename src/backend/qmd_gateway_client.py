@@ -1161,11 +1161,11 @@ def qmd_market_signals(
 
 
 def qmd_scanner_indicators(
-    *, timeframe: str = "1s", row_limit: int = 5_000
+    *, timeframe: str = "1s", row_limit: int = 25_000
 ) -> list[dict[str, Any]]:
     payload = qmd_get_json(
         "/snapshot/scanner-indicators",
-        {"limit": max(1, min(int(row_limit), 5_000)), "timeframe": timeframe},
+        {"limit": max(1, min(int(row_limit), 25_000)), "timeframe": timeframe},
         timeout=3,
     )
     source_rows = payload.get("rows") or [] if isinstance(payload, dict) else []
@@ -1177,13 +1177,13 @@ def qmd_scanner_indicators(
 
 
 def qmd_scanner_macro_bars(
-    *, timeframe: str, row_limit: int = 5_000
+    *, timeframe: str, row_limit: int = 25_000
 ) -> list[dict[str, Any]]:
     if timeframe not in {"1d", "1w", "1mo"}:
         raise ValueError(f"Unsupported QMD scanner macro interval: {timeframe}")
     payload = qmd_get_json(
         "/snapshot/scanner-macro-bars",
-        {"limit": max(1, min(int(row_limit), 5_000)), "timeframe": timeframe},
+        {"limit": max(1, min(int(row_limit), 25_000)), "timeframe": timeframe},
         timeout=3,
     )
     grouped: dict[str, list[dict[str, Any]]] = {}

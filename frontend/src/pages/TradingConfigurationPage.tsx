@@ -473,7 +473,9 @@ type SignalStreamConfig = {
   description: string;
   enabled: boolean;
   origin?: "system" | "user";
+  source_id: string;
   source_scan_id: string;
+  source_type: "core_scan" | "watchlist";
   inclusion_rule_sets: string[];
   inclusion_operator: "all" | "any";
   columns: string[];
@@ -1194,6 +1196,8 @@ export function TradingConfigurationPage({ section }: { section: TradingConfigur
   const [status, setStatus] = useState<"loading" | "ready" | "saving" | "saved" | "error">("loading");
   const [message, setMessage] = useState("");
   const [messageTone, setMessageTone] = useState<"success" | "error">("success");
+  const [discoveryRuntimeStatus, setDiscoveryRuntimeStatus] = useState<"idle" | "materializing" | "ready" | "error">("idle");
+  const [discoveryRuntimeError, setDiscoveryRuntimeError] = useState("");
   const [experience, setExperienceState] = useState<ConfigurationExperience>("expert");
   const [showStudioHome, setShowStudioHome] = useState(false);
   const [omsGuidedStage, setOmsGuidedStageState] = useState<OmsGuidedStage>(() => readStoredOmsStage());
@@ -1225,6 +1229,26 @@ export function TradingConfigurationPage({ section }: { section: TradingConfigur
       });
     return () => { cancelled = true; };
   }, [section]);
+
+  useEffect(() => {
+    if (section !== "discovery" || !draft) return undefined;
+    setDiscoveryRuntimeStatus("materializing");
+    setDiscoveryRuntimeError("");
+    const timer = window.setTimeout(() => {
+      api("/api/market-discovery/configuration/materialize", {
+        body: JSON.stringify({ market_discovery: draft.market_discovery }),
+        method: "POST",
+      })
+        .then(() => setDiscoveryRuntimeStatus("ready"))
+        .catch((reason) => {
+          const detail = reason instanceof Error ? reason.message : String(reason);
+          console.error("Market Discovery materialization rejected", detail || reason);
+          setDiscoveryRuntimeStatus("error");
+          setDiscoveryRuntimeError(detail || "The backend rejected this draft without a diagnostic.");
+        });
+    }, 350);
+    return () => window.clearTimeout(timer);
+  }, [draft, section]);
 
   function updateDraft<K extends keyof Draft>(key: K, value: Draft[K]) {
     setDraft((current) => {
@@ -1358,11 +1382,14 @@ export function TradingConfigurationPage({ section }: { section: TradingConfigur
         </div>
         <div className="configuration-header-controls">
           {draft ? <div className="configuration-session-state"><span>Session draft</span><strong>Schema v{draft.schema_version}</strong></div> : null}
+          {draft && section === "discovery" ? <div className="configuration-session-state"><span>QMD materialization</span><strong title={discoveryRuntimeError || undefined}>{discoveryRuntimeStatus === "ready" ? "Runtime active" : discoveryRuntimeStatus === "error" ? "Invalid draft" : "Applying…"}</strong></div> : null}
           {draft && !["revisions", "data_catalog"].includes(section) ? <button className="button compact" onClick={validateSession} type="button"><BadgeCheck size={14} /> Validate</button> : null}
           {draft && !["revisions", "data_catalog"].includes(section) ? <a className="button compact primary" href="#revision-configuration">Review release <ChevronRight size={13} /></a> : null}
           <RevisionBadge approved={approved} />
         </div>
       </header>
+
+      {section === "discovery" && discoveryRuntimeError ? <div className="configuration-message error"><TriangleAlert size={17} /><span>QMD did not apply this Market Discovery draft: {discoveryRuntimeError}</span></div> : null}
 
       {draft && showStudioHome ? (
         <ConfigurationStudioHome

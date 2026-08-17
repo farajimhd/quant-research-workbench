@@ -142,14 +142,14 @@ def scanner_snapshot_payload(
         configured_discovery_technical_windows,
         project_discovery_columns,
     )
-    from src.backend.trading_configuration_service import configuration_base
+    from src.backend.trading_configuration_service import market_discovery_runtime_configuration
     from src.backend.data_field_contracts import (
         compile_data_field_plan,
         project_composition_data_field_columns,
         project_data_field_outputs,
     )
 
-    configuration = configuration_base()
+    configuration = market_discovery_runtime_configuration()
     technical_windows = tuple(sorted({
         *technical_windows,
         *configured_discovery_technical_windows(configuration),
@@ -317,6 +317,7 @@ def scanner_snapshot_payload(
             trading_journal(),
             as_of=effective_as_of,
             limit=10_000,
+            configuration=configuration,
         )
         signal_rows = []
         signal_stream_runtime = {

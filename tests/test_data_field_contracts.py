@@ -290,7 +290,7 @@ class DataFieldContractTests(unittest.TestCase):
                 "available_intervals": [],
                 "update_cadence": "service_owned",
                 "execution_scope": "core_scan",
-                "allowed_scopes": ["core_scan", "watchlist", "strategy_run", "request", "offline"],
+                "allowed_scopes": ["core_scan", "watchlist", "signal_stream", "strategy_run", "request", "offline"],
             },
         )
         self.assertEqual(

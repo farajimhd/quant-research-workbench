@@ -10,6 +10,7 @@ pub enum ExecutionScope {
     UniversalIngest,
     CoreScan,
     Watchlist,
+    SignalStream,
     StrategyRun,
     Request,
     Offline,
@@ -163,12 +164,20 @@ fn allowed_scopes(scope: ExecutionScope) -> Vec<ExecutionScope> {
         ExecutionScope::CoreScan => vec![
             ExecutionScope::CoreScan,
             ExecutionScope::Watchlist,
+            ExecutionScope::SignalStream,
             ExecutionScope::StrategyRun,
             ExecutionScope::Request,
             ExecutionScope::Offline,
         ],
         ExecutionScope::Watchlist => vec![
             ExecutionScope::Watchlist,
+            ExecutionScope::SignalStream,
+            ExecutionScope::StrategyRun,
+            ExecutionScope::Request,
+            ExecutionScope::Offline,
+        ],
+        ExecutionScope::SignalStream => vec![
+            ExecutionScope::SignalStream,
             ExecutionScope::StrategyRun,
             ExecutionScope::Request,
             ExecutionScope::Offline,

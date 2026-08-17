@@ -44,8 +44,8 @@ type DiscoveryScannerColumn = { column_id: string; name: string; source_id: stri
 type DiscoveryCapability = { enabled?: boolean; execution_scope?: string; scanner_columns?: DiscoveryScannerColumn[]; system_required?: boolean };
 type DiscoveryColumn = { column_id: string; description?: string; name: string; provenance?: string; semantic_type?: string; source_id?: string; source_kind?: "data_definition" | "rule_set" | string; unit?: string; value_type?: string };
 type DiscoveryWatchlist = { availability?: string; columns?: string[]; description?: string; enabled?: boolean; name: string; watchlist_id: string };
-type DiscoverySignalStream = { columns?: string[]; description?: string; enabled?: boolean; maximum_events?: number; name: string; refresh_interval_ms?: number; signal_stream_id: string };
-type SignalStreamRuntimeResponse = { as_of: string; occurrence_count: number; occurrences: ScreenerRow[]; status: string };
+type DiscoverySignalStream = { columns?: string[]; description?: string; enabled?: boolean; maximum_events?: number; name: string; refresh_interval_ms?: number; signal_stream_id: string; source_id?: string; source_scan_id?: string; source_type?: "core_scan" | "watchlist" };
+type SignalStreamRuntimeResponse = { as_of: string; occurrence_count: number; occurrences: ScreenerRow[]; session?: { active?: boolean; end_at?: string; retention?: string; session_date?: string; start_at?: string; timezone?: string }; signal_streams?: Array<{ candidate_count?: number; configured?: boolean; enabled?: boolean; signal_stream_id: string; source_id?: string; source_type?: string; status?: string }>; status: string };
 export type WatchUniverseDefinition = {
   description?: string;
   enabled?: boolean;
@@ -58,7 +58,7 @@ export type WatchUniverseDefinition = {
 export type StrategyActivitySettings = { eventType: string; limit: number; runId: string; strategyId: string; ticker: string };
 type StrategyActivityResponse = { as_of: string; complete: boolean; rows: ScreenerRow[]; source: string };
 type WatchUniverseCatalogResponse = {
-  market_discovery?: { column_catalog?: DiscoveryColumn[]; core_scan?: { calculations?: DiscoveryCapability[]; columns?: string[] }; signal_streams?: DiscoverySignalStream[]; watchlists?: DiscoveryWatchlist[] };
+  market_discovery?: { column_catalog?: DiscoveryColumn[]; core_scan?: { calculations?: DiscoveryCapability[]; columns?: string[]; name?: string; scan_id?: string }; signal_streams?: DiscoverySignalStream[]; watchlists?: DiscoveryWatchlist[] };
   run_plans?: { plans?: Array<{ name?: string; run_plan_id: string; universe_id: string }>; universes?: WatchUniverseDefinition[] };
 };
 type ConfigurationSessionSnapshot = { market_discovery?: WatchUniverseCatalogResponse["market_discovery"] };
@@ -221,19 +221,32 @@ function useDiscoveryPresentation() {
   useEffect(() => {
     const controller = new AbortController();
     let baseConfiguration: WatchUniverseCatalogResponse | null = null;
-    const applySessionDiscovery = () => {
-      if (baseConfiguration) setConfiguration(overlaySessionDiscovery(baseConfiguration));
+    const applySessionDiscovery = async () => {
+      if (!baseConfiguration) return;
+      const session = readConfigurationSession<ConfigurationSessionSnapshot>();
+      if (session?.market_discovery) {
+        try {
+          await api("/api/market-discovery/configuration/materialize", {
+            body: JSON.stringify({ market_discovery: session.market_discovery }),
+            method: "POST",
+          });
+        } catch {
+          // The Canvas still presents the draft; runtime diagnostics explain a rejected materialization.
+        }
+      }
+      setConfiguration(overlaySessionDiscovery(baseConfiguration));
     };
-    window.addEventListener(CONFIGURATION_SESSION_CHANGED_EVENT, applySessionDiscovery);
+    const handleSessionChange = () => { void applySessionDiscovery(); };
+    window.addEventListener(CONFIGURATION_SESSION_CHANGED_EVENT, handleSessionChange);
     api<WatchUniverseCatalogResponse>("/api/trading/configuration/base", { signal: controller.signal, timeoutMs: 10000 })
       .then((base) => {
         baseConfiguration = base;
-        applySessionDiscovery();
+        void applySessionDiscovery();
       })
       .catch(() => undefined);
     return () => {
       controller.abort();
-      window.removeEventListener(CONFIGURATION_SESSION_CHANGED_EVENT, applySessionDiscovery);
+      window.removeEventListener(CONFIGURATION_SESSION_CHANGED_EVENT, handleSessionChange);
     };
   }, []);
   const discovery = configuration?.market_discovery;
@@ -384,6 +397,24 @@ export function SignalStreamContainer({ asOf, live, onSettingsChange, onTickerSe
     const normalized: ScreenerRow[] = normalizeScannerRows(runtime?.occurrences ?? []);
     return normalized.filter((row) => String(row["signal_stream_id"] ?? "") === String(stream?.signal_stream_id ?? "")).sort((left, right) => String(right["event_time"] ?? "").localeCompare(String(left["event_time"] ?? "")));
   }, [runtime?.occurrences, stream?.signal_stream_id]);
+  const runtimeDefinition = runtime?.signal_streams?.find((row) => row.signal_stream_id === stream?.signal_stream_id);
+  const sourceType = stream?.source_type ?? "core_scan";
+  const sourceId = stream?.source_id ?? stream?.source_scan_id ?? discovery?.core_scan?.scan_id ?? "";
+  const sourceLabel = sourceType === "watchlist"
+    ? discovery?.watchlists?.find((row) => row.watchlist_id === sourceId)?.name ?? sourceId
+    : `${discovery?.core_scan?.name ?? "Core Scan"} · all eligible tickers`;
+  const emptyMessage = !stream
+    ? "No configured Signal Stream is available."
+    : runtime?.session?.active === false
+      ? "Signal Stream is cleared outside the 04:00–20:00 ET trading-day window."
+      : runtimeDefinition?.configured === false
+        ? "Select at least one Signal Rule in Market Discovery before this stream can emit."
+        : runtimeDefinition?.status === "source_unavailable"
+          ? `The configured source ${sourceLabel} is not available to the live discovery runtime.`
+          : runtimeDefinition?.candidate_count === 0
+            ? `${sourceLabel} currently contains no eligible tickers.`
+        : `No ticker from ${sourceLabel} has transitioned into this signal state since 04:00 ET.`;
+  const displayAsOf = runtime?.as_of ?? asOf;
   const columns = canonicalDiscoveryColumns(["event_time", "symbol", ...(stream?.columns ?? []), ...settings.columns]);
   const selectStream = (signalStreamId: string) => onSettingsChange({ columns: [], signalStreamId });
   const addStream = (signalStreamId: string) => {
@@ -406,14 +437,14 @@ export function SignalStreamContainer({ asOf, live, onSettingsChange, onTickerSe
     });
   };
   return <section className="market-list-surface watchlist-surface signal-stream-surface" aria-label={`${stream?.name ?? "Signal Stream"} signal stream`}>
-    <header className="market-list-heading"><div><span className="market-list-eyebrow"><Flame size={12} /> Immutable occurrences</span><h3>{stream?.name ?? "No Signal Stream open"}</h3><p>{stream ? `${rows.length} captured occurrences · newest first · through ` : "Create or add a configured Signal Stream"}{stream ? <MarketTime value={asOf} /> : null}</p></div><span className="market-list-owner strategy">Market Discovery</span></header>
+    <header className="market-list-heading"><div><span className="market-list-eyebrow"><Flame size={12} /> Today’s immutable occurrences</span><h3>{stream?.name ?? "No Signal Stream open"}</h3><p>{stream ? `${rows.length} captured since 04:00 ET · newest first · through ` : "Create or add a configured Signal Stream"}{stream ? <MarketTime value={displayAsOf} /> : null}</p></div><span className="market-list-owner strategy">Market Discovery</span></header>
     <nav aria-label="Signal Streams" className="watchlist-tabs" role="tablist">
       {visibleStreams.map((row) => { const selected = row.signal_stream_id === stream?.signal_stream_id; return <span className={selected ? "active" : undefined} key={row.signal_stream_id}><button aria-selected={selected} onClick={() => selectStream(row.signal_stream_id)} role="tab" title={row.description || row.name} type="button">{row.name}</button><button aria-label={`Remove ${row.name} tab`} className="watchlist-tab-remove" onClick={() => removeStream(row.signal_stream_id)} type="button"><X size={10} /></button></span>; })}
       <button aria-expanded={addingStream} aria-label="Add Signal Stream tab" className="watchlist-tab-add" disabled={!availableStreams.length} onClick={() => setAddingStream((open) => !open)} role="tab" type="button"><Plus size={12} /><span>Add</span></button>
     </nav>
     {addingStream ? <div className="watchlist-tab-lookup"><InventoryFilterSelect ariaLabel="Signal Stream to add" className="watchlist-add-lookup" onChange={addStream} options={availableStreams.map((row) => ({ description: row.description, label: row.name, value: row.signal_stream_id }))} searchable showAllOnOpen value="" /><button onClick={() => { window.location.hash = "market-discovery-configuration"; }} type="button">Configure Signal Stream <ArrowRight size={13} /></button></div> : null}
-    <div className="watch-universe-context"><div><span>Behavior</span><strong>Trigger-time values are frozen; later market updates do not rewrite prior rows.</strong>{runtimeError ? <small>{runtimeError}</small> : null}</div><button onClick={() => { window.location.hash = "market-discovery-configuration"; }} type="button">Configure in Market Discovery <ArrowRight size={13} /></button></div>
-    <MarketListTable catalog={catalog} columns={columns} customColumns={settings.customColumns} empty={stream ? "This configured Signal Stream has not captured an occurrence yet." : "No configured Signal Stream is available."} limit={Math.min(settings.limit, stream?.maximum_events ?? settings.limit)} lockedColumns={canonicalDiscoveryColumns(["event_time", "symbol", ...(stream?.columns ?? [])])} onColumnsChange={(columns) => onSettingsChange({ columns })} onCustomColumnsChange={(customColumns) => onSettingsChange({ customColumns })} onTickerSelect={onTickerSelect} rows={rows} title={stream?.name ?? "Signal Stream"} />
+    <div className="watch-universe-context"><div><span>Source and retention</span><strong>{sourceLabel} · 04:00–20:00 ET</strong><small>Trigger-time values are frozen. Canvas clears at the end of after-hours while the durable audit remains append-only.</small>{runtimeError ? <small>{runtimeError}</small> : null}</div><button onClick={() => { window.location.hash = "market-discovery-configuration"; }} type="button">Configure in Market Discovery <ArrowRight size={13} /></button></div>
+    <MarketListTable catalog={catalog} columns={columns} customColumns={settings.customColumns} empty={emptyMessage} limit={Math.min(settings.limit, stream?.maximum_events ?? settings.limit)} lockedColumns={canonicalDiscoveryColumns(["event_time", "symbol", ...(stream?.columns ?? [])])} onColumnsChange={(columns) => onSettingsChange({ columns })} onCustomColumnsChange={(customColumns) => onSettingsChange({ customColumns })} onTickerSelect={onTickerSelect} rows={rows} title={stream?.name ?? "Signal Stream"} />
   </section>;
 }
 

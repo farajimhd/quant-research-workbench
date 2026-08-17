@@ -24,7 +24,7 @@ use tokio::time::{interval, sleep, Duration, MissedTickBehavior};
 
 const STRUCTURE_CHECKPOINT_BATCH_LIMIT: usize = 256;
 
-pub const INDICATOR_SCHEMA_VERSION: u16 = 18;
+pub const INDICATOR_SCHEMA_VERSION: u16 = 19;
 const MICROSTRUCTURE_AGGREGATE_TIMEFRAMES: [&str; 7] = ["1s", "5s", "10s", "30s", "1m", "5m", "1h"];
 const INDICATOR_STATE_RECLAIM_INTERVAL_SECONDS: u64 = 30;
 const PREMARKET_SESSION_START_SECONDS: u32 = 4 * 60 * 60;
@@ -68,6 +68,173 @@ pub struct TickIndicatorRow {
 }
 
 #[derive(Clone, Debug, Serialize)]
+pub struct IndicatorBarFields {
+    pub open: f64,
+    pub high: f64,
+    pub low: f64,
+    pub dollar_volume: f64,
+    pub trade_count: u64,
+    pub avg_trade_size: f64,
+    pub trade_rate: f64,
+    pub volume_rate: f64,
+    pub dollar_volume_rate: f64,
+    pub price_change: f64,
+    pub price_change_pct: f64,
+    pub high_low_range_pct: f64,
+    pub return_3_bar: f64,
+    pub return_5_bar: f64,
+    pub price_change_1_bar: Option<f64>,
+    pub price_change_3_bar: Option<f64>,
+    pub price_change_5_bar: Option<f64>,
+    pub price_change_1_bar_pct: Option<f64>,
+    pub price_change_3_bar_pct: Option<f64>,
+    pub price_change_5_bar_pct: Option<f64>,
+    pub price_ratio_1_bar: Option<f64>,
+    pub price_ratio_3_bar: Option<f64>,
+    pub price_ratio_5_bar: Option<f64>,
+    pub volume_change: Option<f64>,
+    pub volume_change_pct: Option<f64>,
+    pub volume_ratio: Option<f64>,
+    pub dollar_volume_change: Option<f64>,
+    pub dollar_volume_change_pct: Option<f64>,
+    pub dollar_volume_ratio: Option<f64>,
+    pub trade_count_change: Option<f64>,
+    pub trade_count_change_pct: Option<f64>,
+    pub trade_count_ratio: Option<f64>,
+    pub trade_rate_change: Option<f64>,
+    pub trade_rate_change_pct: Option<f64>,
+    pub trade_rate_ratio: Option<f64>,
+    pub volume_rate_change: Option<f64>,
+    pub volume_rate_change_pct: Option<f64>,
+    pub volume_rate_ratio: Option<f64>,
+    pub dollar_volume_rate_change: Option<f64>,
+    pub dollar_volume_rate_change_pct: Option<f64>,
+    pub dollar_volume_rate_ratio: Option<f64>,
+    pub avg_trade_size_change: Option<f64>,
+    pub avg_trade_size_change_pct: Option<f64>,
+    pub avg_trade_size_ratio: Option<f64>,
+    pub vwap_change: Option<f64>,
+    pub vwap_change_pct: Option<f64>,
+    pub vwap_ratio: Option<f64>,
+    pub bid_open: f64,
+    pub bid_high: f64,
+    pub bid_low: f64,
+    pub bid_close: f64,
+    pub ask_open: f64,
+    pub ask_high: f64,
+    pub ask_low: f64,
+    pub ask_close: f64,
+    pub mid_open: f64,
+    pub mid_high: f64,
+    pub mid_low: f64,
+    pub mid_close: f64,
+    pub spread_close: f64,
+    pub spread_mean: f64,
+    pub spread_bps_mean: f64,
+    pub spread_bps_close: f64,
+    pub quote_count: u64,
+    pub quote_rate: f64,
+    pub quote_count_change: Option<f64>,
+    pub quote_count_change_pct: Option<f64>,
+    pub quote_count_ratio: Option<f64>,
+    pub quote_rate_change: Option<f64>,
+    pub quote_rate_change_pct: Option<f64>,
+    pub quote_rate_ratio: Option<f64>,
+    pub spread_close_change: Option<f64>,
+    pub spread_close_change_pct: Option<f64>,
+    pub spread_close_ratio: Option<f64>,
+    pub spread_bps_change: Option<f64>,
+    pub spread_bps_change_pct: Option<f64>,
+    pub spread_bps_ratio: Option<f64>,
+    pub buy_sell_volume_delta_change: Option<f64>,
+}
+
+impl From<&BarRow> for IndicatorBarFields {
+    fn from(bar: &BarRow) -> Self {
+        Self {
+            open: bar.open,
+            high: bar.high,
+            low: bar.low,
+            dollar_volume: bar.dollar_volume,
+            trade_count: bar.trade_count,
+            avg_trade_size: bar.avg_trade_size,
+            trade_rate: bar.trade_rate,
+            volume_rate: bar.volume_rate,
+            dollar_volume_rate: bar.dollar_volume_rate,
+            price_change: bar.price_change,
+            price_change_pct: bar.price_change_pct,
+            high_low_range_pct: bar.high_low_range_pct,
+            return_3_bar: bar.return_3_bar,
+            return_5_bar: bar.return_5_bar,
+            price_change_1_bar: bar.price_change_1_bar,
+            price_change_3_bar: bar.price_change_3_bar,
+            price_change_5_bar: bar.price_change_5_bar,
+            price_change_1_bar_pct: bar.price_change_1_bar_pct,
+            price_change_3_bar_pct: bar.price_change_3_bar_pct,
+            price_change_5_bar_pct: bar.price_change_5_bar_pct,
+            price_ratio_1_bar: bar.price_ratio_1_bar,
+            price_ratio_3_bar: bar.price_ratio_3_bar,
+            price_ratio_5_bar: bar.price_ratio_5_bar,
+            volume_change: bar.volume_change,
+            volume_change_pct: bar.volume_change_pct,
+            volume_ratio: bar.volume_ratio,
+            dollar_volume_change: bar.dollar_volume_change,
+            dollar_volume_change_pct: bar.dollar_volume_change_pct,
+            dollar_volume_ratio: bar.dollar_volume_ratio,
+            trade_count_change: bar.trade_count_change,
+            trade_count_change_pct: bar.trade_count_change_pct,
+            trade_count_ratio: bar.trade_count_ratio,
+            trade_rate_change: bar.trade_rate_change,
+            trade_rate_change_pct: bar.trade_rate_change_pct,
+            trade_rate_ratio: bar.trade_rate_ratio,
+            volume_rate_change: bar.volume_rate_change,
+            volume_rate_change_pct: bar.volume_rate_change_pct,
+            volume_rate_ratio: bar.volume_rate_ratio,
+            dollar_volume_rate_change: bar.dollar_volume_rate_change,
+            dollar_volume_rate_change_pct: bar.dollar_volume_rate_change_pct,
+            dollar_volume_rate_ratio: bar.dollar_volume_rate_ratio,
+            avg_trade_size_change: bar.avg_trade_size_change,
+            avg_trade_size_change_pct: bar.avg_trade_size_change_pct,
+            avg_trade_size_ratio: bar.avg_trade_size_ratio,
+            vwap_change: bar.vwap_change,
+            vwap_change_pct: bar.vwap_change_pct,
+            vwap_ratio: bar.vwap_ratio,
+            bid_open: bar.bid_open,
+            bid_high: bar.bid_high,
+            bid_low: bar.bid_low,
+            bid_close: bar.bid_close,
+            ask_open: bar.ask_open,
+            ask_high: bar.ask_high,
+            ask_low: bar.ask_low,
+            ask_close: bar.ask_close,
+            mid_open: bar.mid_open,
+            mid_high: bar.mid_high,
+            mid_low: bar.mid_low,
+            mid_close: bar.mid_close,
+            spread_close: bar.spread_close,
+            spread_mean: bar.spread_mean,
+            spread_bps_mean: bar.spread_bps_mean,
+            spread_bps_close: bar.spread_bps_close,
+            quote_count: bar.quote_count,
+            quote_rate: bar.quote_rate,
+            quote_count_change: bar.quote_count_change,
+            quote_count_change_pct: bar.quote_count_change_pct,
+            quote_count_ratio: bar.quote_count_ratio,
+            quote_rate_change: bar.quote_rate_change,
+            quote_rate_change_pct: bar.quote_rate_change_pct,
+            quote_rate_ratio: bar.quote_rate_ratio,
+            spread_close_change: bar.spread_close_change,
+            spread_close_change_pct: bar.spread_close_change_pct,
+            spread_close_ratio: bar.spread_close_ratio,
+            spread_bps_change: bar.spread_bps_change,
+            spread_bps_change_pct: bar.spread_bps_change_pct,
+            spread_bps_ratio: bar.spread_bps_ratio,
+            buy_sell_volume_delta_change: bar.buy_sell_volume_delta_change,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize)]
 pub struct IndicatorRow {
     pub schema_version: u16,
     pub session_date: String,
@@ -78,6 +245,8 @@ pub struct IndicatorRow {
     pub close: f64,
     pub volume: f64,
     pub vwap: f64,
+    #[serde(flatten)]
+    pub bar_fields: IndicatorBarFields,
     pub ema_9: f64,
     pub ema_20: f64,
     pub ema_50: f64,
@@ -1648,6 +1817,7 @@ impl BarIndicatorState {
             close: bar.close,
             volume: bar.volume,
             vwap: session_vwap,
+            bar_fields: IndicatorBarFields::from(bar),
             ema_9,
             ema_20,
             ema_50,
@@ -2891,6 +3061,14 @@ impl IndicatorClickHouseWriter {
 fn indicator_insert_row(row: &IndicatorRow) -> serde_json::Value {
     let mut value = serde_json::to_value(row).unwrap_or_else(|_| json!({}));
     if let Some(object) = value.as_object_mut() {
+        if let Ok(serde_json::Value::Object(bar_fields)) = serde_json::to_value(&row.bar_fields) {
+            // These fields are flattened for scanner/rule consumers but remain
+            // authoritative in the bar table. Do not duplicate them into the
+            // narrower durable indicator table.
+            for field in bar_fields.keys() {
+                object.remove(field);
+            }
+        }
         // Active candidates are a bounded streaming/chart state carried by the
         // canonical in-memory snapshot. Durable reconstruction comes from the
         // versioned generic-structure checkpoint and event tables, so the wide
@@ -2980,17 +3158,40 @@ fn safe_div(numerator: f64, denominator: f64) -> f64 {
 mod tests {
     use super::{
         anchored_flow_relationship, anchored_market_session_date,
-        calculate_flow_structure_composite, market_structure_reference_sql,
+        calculate_flow_structure_composite, indicator_insert_row, market_structure_reference_sql,
         parse_market_structure_reference_rows, summarize_canonical_composites,
         BarIndicatorCalculator, IndicatorKey, MicrostructureCumulativeFlow,
         MicrostructureSampleAggregate, SessionVwapState, SharedIndicatorStore, TickState,
+        INDICATOR_SCHEMA_VERSION,
     };
     use crate::bars::{TradeAggregationRules, TradeUpdateRule};
     use crate::capability_catalog::ExecutionScope;
     use crate::computation_targets::{ComputationTargetRequest, SharedComputationTargets};
     use crate::microstructure_interval::MicrostructureIntervalWindow;
+    use crate::scanner::tests::base_bar;
     use chrono::{TimeZone, Utc};
     use std::collections::{HashMap, VecDeque};
+
+    #[test]
+    fn scanner_indicator_row_projects_registered_bar_change_fields() {
+        let bar = base_bar();
+        let mut calculator = BarIndicatorCalculator::new();
+        let row = calculator.apply_bar(&bar);
+        let value = serde_json::to_value(row).expect("indicator row should serialize");
+
+        assert_eq!(value["schema_version"], INDICATOR_SCHEMA_VERSION);
+        assert_eq!(value["open"], bar.open);
+        assert_eq!(value["price_change_1_bar_pct"], 1.0);
+        assert_eq!(value["trade_count_change"], 25.0);
+        assert_eq!(value["volume_change"], 1_000.0);
+        assert_eq!(value["quote_rate_change_pct"], 20.0);
+        assert_eq!(value["spread_bps_ratio"], 0.8333);
+
+        let insert = indicator_insert_row(&calculator.apply_bar(&bar));
+        assert!(insert.get("price_change_1_bar_pct").is_none());
+        assert!(insert.get("trade_count_change").is_none());
+        assert!(insert.get("ema_9").is_some());
+    }
 
     #[test]
     fn daily_structure_reference_contract_is_causal_and_parseable() {

@@ -113,8 +113,8 @@ class MarketDiscoveryRuntimeCoordinator:
 
     @staticmethod
     def _default_configuration_loader() -> dict[str, Any]:
-        from src.backend.trading_configuration_service import configuration_base
-        return configuration_base()
+        from src.backend.trading_configuration_service import market_discovery_runtime_configuration
+        return market_discovery_runtime_configuration()
 
     @staticmethod
     def _default_refresh() -> dict[str, Any]:

@@ -698,6 +698,7 @@ class TradingJournal:
         self,
         *,
         signal_stream_id: str = "",
+        from_time: datetime | None = None,
         as_of: datetime | None = None,
         limit: int = 10_000,
     ) -> list[JournalRecord]:
@@ -706,6 +707,9 @@ class TradingJournal:
         if signal_stream_id:
             clauses.append("json_extract(payload_json, '$.signal_stream_id') = ?")
             values.append(signal_stream_id)
+        if from_time is not None:
+            clauses.append("event_time >= ?")
+            values.append(from_time.astimezone(timezone.utc).isoformat())
         if as_of is not None:
             clauses.append("event_time <= ?")
             values.append(as_of.astimezone(timezone.utc).isoformat())
@@ -777,6 +781,7 @@ class TradingJournal:
                     payload_json TEXT NOT NULL, UNIQUE(run_id, sequence)
                 );
                 CREATE INDEX IF NOT EXISTS idx_journal_entity ON journal(entity_type, entity_id, sequence);
+                CREATE INDEX IF NOT EXISTS idx_journal_signal_time ON journal(category, entity_type, event_time DESC);
                 CREATE TABLE IF NOT EXISTS outbox(
                     record_id TEXT PRIMARY KEY REFERENCES journal(record_id), attempts INTEGER NOT NULL,
                     last_error TEXT NOT NULL, delivered_at TEXT

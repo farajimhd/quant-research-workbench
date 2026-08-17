@@ -811,7 +811,7 @@ class QmdGatewayClientTests(unittest.TestCase):
         self.assertNotIn("qmd_structure_timeframe_states", rows[0])
         get_json.assert_called_once_with(
             "/snapshot/scanner-indicators",
-            {"limit": 5_000, "timeframe": "1s"},
+            {"limit": 25_000, "timeframe": "1s"},
             timeout=3,
         )
 
@@ -834,7 +834,7 @@ class QmdGatewayClientTests(unittest.TestCase):
         self.assertEqual(rows[0]["indicator_interval"], "1w")
         get_json.assert_called_once_with(
             "/snapshot/scanner-macro-bars",
-            {"limit": 5_000, "timeframe": "1w"},
+            {"limit": 25_000, "timeframe": "1w"},
             timeout=3,
         )
 

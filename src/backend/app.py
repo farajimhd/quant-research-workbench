@@ -215,6 +215,9 @@ from src.backend.trading_configuration_service import (
     configuration_base,
     configuration_revisions,
     effective_configuration_snapshot,
+    market_discovery_materialization_status,
+    market_discovery_runtime_configuration,
+    materialize_market_discovery,
     publish_configuration,
     public_configuration_revision,
     replay_configuration_snapshot,
@@ -920,6 +923,10 @@ class TradingConfigurationPublishSubmit(BaseModel):
 class TradingConfigurationEffectiveSubmit(BaseModel):
     configuration: dict[str, Any]
     mode: str = Field(default="replay", max_length=32)
+
+
+class MarketDiscoveryMaterializeSubmit(BaseModel):
+    market_discovery: dict[str, Any]
 
 
 class ReplayRunCommandRequest(BaseModel):
@@ -4002,6 +4009,7 @@ def market_discovery_signal_stream_runtime(
         signal_stream_id=signal_stream_id,
         as_of=cutoff,
         limit=limit,
+        configuration=market_discovery_runtime_configuration(),
     )
 
 
@@ -4009,6 +4017,21 @@ def market_discovery_signal_stream_runtime(
 def market_discovery_runtime_status() -> dict[str, Any]:
     from src.backend.market_discovery_runtime_service import MARKET_DISCOVERY_RUNTIME
     return MARKET_DISCOVERY_RUNTIME.snapshot()
+
+
+@app.get("/api/market-discovery/configuration/materialization")
+def market_discovery_configuration_materialization_status() -> dict[str, Any]:
+    return market_discovery_materialization_status()
+
+
+@app.post("/api/market-discovery/configuration/materialize")
+def market_discovery_configuration_materialize(
+    payload: MarketDiscoveryMaterializeSubmit,
+) -> dict[str, Any]:
+    try:
+        return materialize_market_discovery(payload.market_discovery)
+    except (KeyError, TypeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 def bounded_computation_planner_summary(

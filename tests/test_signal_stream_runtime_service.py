@@ -4,9 +4,10 @@ import tempfile
 import unittest
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from unittest.mock import patch
 
 from src.backend.discovery_projection import project_discovery_columns
-from src.backend.signal_stream_runtime_service import SignalStreamRuntime
+from src.backend.signal_stream_runtime_service import SignalStreamRuntime, signal_stream_session
 from src.backend.trading_configuration_service import _default_draft
 from src.backend.watchlist_runtime_service import WatchlistRuntime
 from src.trading_runtime.journal import TradingJournal
@@ -25,6 +26,8 @@ class SignalStreamRuntimeTests(unittest.TestCase):
                 "description": "One occurrence per positive transition.",
                 "enabled": True,
                 "origin": "user",
+                "source_type": "core_scan",
+                "source_id": "qmd-core-scan",
                 "source_scan_id": "qmd-core-scan",
                 "inclusion_rule_sets": ["watchlist-positive-gainer"],
                 "inclusion_operator": "all",
@@ -69,7 +72,7 @@ class SignalStreamRuntimeTests(unittest.TestCase):
 
     def test_occurrences_are_edge_triggered_frozen_and_restart_safe(self) -> None:
         runtime = SignalStreamRuntime()
-        start = datetime(2026, 8, 16, 15, 0, tzinfo=UTC)
+        start = datetime(2026, 8, 17, 15, 0, tzinfo=UTC)
         matching = {
             "ticker": "AAA",
             "change_pct": 4.5,
@@ -117,7 +120,7 @@ class SignalStreamRuntimeTests(unittest.TestCase):
 
     def test_signal_route_admits_without_mutating_occurrence(self) -> None:
         runtime = SignalStreamRuntime()
-        at = datetime(2026, 8, 16, 15, 0, tzinfo=UTC)
+        at = datetime(2026, 8, 17, 15, 0, tzinfo=UTC)
         candidate = {"ticker": "AAA", "change_pct": 4.5, "market_cap": 500_000_000}
         signal = runtime.resolve(
             self.configuration, [candidate], as_of=at, journal=self.journal
@@ -147,7 +150,7 @@ class SignalStreamRuntimeTests(unittest.TestCase):
 
     def test_missing_candidate_rearms_edge_for_later_return(self) -> None:
         runtime = SignalStreamRuntime()
-        start = datetime(2026, 8, 16, 15, 0, tzinfo=UTC)
+        start = datetime(2026, 8, 17, 15, 0, tzinfo=UTC)
         candidate = {"ticker": "AAA", "change_pct": 4.5, "market_cap": 500_000_000}
         runtime.resolve(self.configuration, [candidate], as_of=start, journal=self.journal)
         runtime.resolve(self.configuration, [], as_of=start + timedelta(seconds=1), journal=self.journal)
@@ -165,7 +168,7 @@ class SignalStreamRuntimeTests(unittest.TestCase):
         result = SignalStreamRuntime().resolve(
             self.configuration,
             [{"ticker": "AAA", "change_pct": 4.5, "technical__price_change_pct__5m": 7.25}],
-            as_of=datetime(2026, 8, 16, 15, 0, tzinfo=UTC),
+            as_of=datetime(2026, 8, 17, 15, 0, tzinfo=UTC),
             journal=self.journal,
         )
 
@@ -173,6 +176,99 @@ class SignalStreamRuntimeTests(unittest.TestCase):
         instance_ref = f"{column['field_ref']}@@5m"
         self.assertEqual(result["occurrences"][0]["field_evidence"][instance_ref]["value"], 7.25)
         self.assertEqual(result["occurrences"][0]["field_evidence"][instance_ref]["interval"], "5m")
+
+    def test_watchlist_source_limits_signal_candidates_to_current_members(self) -> None:
+        stream = self.configuration["market_discovery"]["signal_streams"][0]
+        stream.update({"source_type": "watchlist", "source_id": "source-watchlist"})
+        result = SignalStreamRuntime().resolve(
+            self.configuration,
+            [
+                {"ticker": "AAA", "change_pct": 4.5, "market_cap": 500_000_000},
+                {"ticker": "BBB", "change_pct": 5.0, "market_cap": 600_000_000},
+            ],
+            as_of=datetime(2026, 8, 17, 15, 0, tzinfo=UTC),
+            journal=self.journal,
+            watchlist_runtime={"watchlists": [{"watchlist_id": "source-watchlist", "members": [{"ticker": "BBB"}]}]},
+        )
+
+        self.assertEqual(result["signal_streams"][0]["candidate_count"], 1)
+        self.assertEqual([row["ticker"] for row in result["occurrences"]], ["BBB"])
+
+    def test_core_source_uses_complete_candidate_population(self) -> None:
+        result = SignalStreamRuntime().resolve(
+            self.configuration,
+            [
+                {"ticker": "AAA", "change_pct": 4.5, "market_cap": 500_000_000},
+                {"ticker": "BBB", "change_pct": 5.0, "market_cap": 600_000_000},
+            ],
+            as_of=datetime(2026, 8, 17, 15, 0, tzinfo=UTC),
+            journal=self.journal,
+            watchlist_runtime={"watchlists": []},
+        )
+
+        self.assertEqual(result["signal_streams"][0]["candidate_count"], 2)
+        self.assertEqual({row["ticker"] for row in result["occurrences"]}, {"AAA", "BBB"})
+
+    def test_session_window_restarts_edges_and_only_returns_current_day(self) -> None:
+        runtime = SignalStreamRuntime()
+        candidate = {"ticker": "AAA", "change_pct": 4.5, "market_cap": 500_000_000}
+        first_day = datetime(2026, 8, 17, 15, 0, tzinfo=UTC)
+        second_day = first_day + timedelta(days=1)
+
+        runtime.resolve(self.configuration, [candidate], as_of=first_day, journal=self.journal)
+        next_session = runtime.resolve(
+            self.configuration, [candidate], as_of=second_day, journal=self.journal
+        )
+        after_hours = runtime.snapshot(
+            self.journal,
+            as_of=datetime(2026, 8, 19, 1, 0, tzinfo=UTC),
+            configuration=self.configuration,
+        )
+
+        self.assertEqual(next_session["signal_streams"][0]["emitted_count"], 1)
+        self.assertEqual(next_session["occurrence_count"], 1)
+        self.assertEqual(next_session["occurrences"][0]["event_time"], second_day.isoformat())
+        self.assertFalse(after_hours["session"]["active"])
+        self.assertEqual(after_hours["occurrences"], [])
+
+    def test_weekend_is_not_an_active_signal_stream_session(self) -> None:
+        session = signal_stream_session(datetime(2026, 8, 16, 15, 0, tzinfo=UTC))
+
+        self.assertFalse(session["is_trading_day"])
+        self.assertFalse(session["active"])
+
+    @patch("src.backend.signal_stream_runtime_service.publish_computation_target")
+    def test_core_source_leases_only_rule_dependencies_for_all_candidates(self, publish) -> None:
+        self.configuration["market_discovery"]["signal_streams"][0]["inclusion_rule_sets"] = [
+            "watchlist-squeeze-early-impulse-100ms"
+        ]
+        seeds = SignalStreamRuntime().seed_computation_targets(
+            self.configuration,
+            [{"ticker": "AAA"}, {"ticker": "BBB"}],
+        )
+
+        self.assertEqual(seeds[0]["candidate_count"], 2)
+        self.assertIn("core_bars", seeds[0]["capabilities"])
+        self.assertEqual(publish.call_args.args[0], "signal-stream:positive-move-signals")
+        self.assertEqual(publish.call_args.args[1], ["AAA", "BBB"])
+        self.assertEqual(publish.call_args.kwargs["scope"], "signal_stream")
+
+    @patch("src.backend.signal_stream_runtime_service.publish_computation_target")
+    def test_watchlist_source_leases_only_current_members(self, publish) -> None:
+        stream = self.configuration["market_discovery"]["signal_streams"][0]
+        stream.update({
+            "source_type": "watchlist",
+            "source_id": "source-watchlist",
+            "inclusion_rule_sets": ["watchlist-squeeze-early-impulse-100ms"],
+        })
+        seeds = SignalStreamRuntime().seed_computation_targets(
+            self.configuration,
+            [{"ticker": "AAA"}, {"ticker": "BBB"}],
+            watchlist_runtime={"watchlists": [{"watchlist_id": "source-watchlist", "members": [{"ticker": "BBB"}]}]},
+        )
+
+        self.assertEqual(seeds[0]["candidate_count"], 1)
+        self.assertEqual(publish.call_args.args[1], ["BBB"])
 
 
 if __name__ == "__main__":

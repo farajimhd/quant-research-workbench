@@ -544,7 +544,7 @@ def build_data_field_catalog(
                     "available_intervals": list(dimension.get("available_intervals") or []),
                     "update_cadence": "source cadence",
                     "execution_scope": "consumer_selected",
-                    "allowed_scopes": ["core_scan", "watchlist", "strategy_run", "request", "offline"],
+                    "allowed_scopes": ["core_scan", "watchlist", "signal_stream", "strategy_run", "request", "offline"],
                 },
                 "execution": {
                     "producer_intervals": [],

@@ -28,6 +28,8 @@ from src.backend.trading_configuration_service import (
     backtest_debug_configuration_snapshot,
     configuration_base,
     effective_configuration_snapshot,
+    market_discovery_runtime_configuration,
+    materialize_market_discovery,
     publish_configuration,
     public_configuration_revision,
     replay_configuration_snapshot,
@@ -642,6 +644,91 @@ class TradingConfigurationServiceTests(unittest.TestCase):
         watchlist["membership_ttl_ms"] = 0
         with self.assertRaisesRegex(ValueError, "membership TTL must be positive"):
             _validate_market_discovery(discovery)
+
+    def test_signal_stream_accepts_core_or_watchlist_candidate_authority(self) -> None:
+        discovery = deepcopy(_default_draft()["market_discovery"])
+        stream = {
+            "signal_stream_id": "test-stream",
+            "revision": 1,
+            "name": "Test stream",
+            "description": "Test materialized signal stream.",
+            "enabled": True,
+            "source_type": "core_scan",
+            "source_id": discovery["core_scan"]["scan_id"],
+            "source_scan_id": discovery["core_scan"]["scan_id"],
+            "inclusion_rule_sets": [discovery["rule_sets"][0]["rule_set_id"]],
+            "inclusion_operator": "all",
+            "columns": list(discovery["core_scan"]["columns"]),
+            "column_intervals": {},
+            "column_aggregations": {},
+            "refresh_interval_ms": 1000,
+            "trigger_policy": "false_to_true",
+            "rearm_policy": "after_false",
+            "cooldown_ms": 0,
+            "maximum_events": 5000,
+            "watchlist_routes": [],
+        }
+        discovery["signal_streams"].append(stream)
+        discovery = _migrate_draft({**_default_draft(), "market_discovery": discovery})["market_discovery"]
+        stream = discovery["signal_streams"][0]
+        watchlist_id = discovery["watchlists"][0]["watchlist_id"]
+
+        stream.update({"source_type": "watchlist", "source_id": watchlist_id})
+        _validate_market_discovery(discovery)
+
+        stream["source_id"] = "missing-watchlist"
+        with self.assertRaisesRegex(ValueError, "unknown Watchlist"):
+            _validate_market_discovery(discovery)
+
+    def test_market_discovery_materialization_overlays_only_discovery_authority(self) -> None:
+        base = _default_draft()
+        discovery = deepcopy(base["market_discovery"])
+        discovery["signal_streams"].append({
+            "signal_stream_id": "materialized-stream",
+            "revision": 1,
+            "name": "Materialized stream",
+            "description": "Test materialized signal stream.",
+            "enabled": True,
+            "source_type": "core_scan",
+            "source_id": discovery["core_scan"]["scan_id"],
+            "source_scan_id": discovery["core_scan"]["scan_id"],
+            "inclusion_rule_sets": [discovery["rule_sets"][0]["rule_set_id"]],
+            "inclusion_operator": "all",
+            "columns": list(discovery["core_scan"]["columns"]),
+            "column_intervals": {},
+            "column_aggregations": {},
+            "refresh_interval_ms": 1000,
+            "trigger_policy": "false_to_true",
+            "rearm_policy": "after_false",
+            "cooldown_ms": 0,
+            "maximum_events": 5000,
+            "watchlist_routes": [],
+        })
+        with tempfile.TemporaryDirectory() as directory:
+            journal = TradingJournal(Path(directory) / "journal.sqlite3")
+            try:
+                with patch(
+                    "src.backend.trading_configuration_service.configuration_base",
+                    return_value=deepcopy(base),
+                ), patch(
+                    "src.backend.trading_configuration_service.trading_journal",
+                    return_value=journal,
+                ):
+                    first_materialization = materialize_market_discovery(discovery)
+                    repeated_materialization = materialize_market_discovery(discovery)
+                    runtime = market_discovery_runtime_configuration()
+            finally:
+                journal.close()
+
+        self.assertEqual(
+            runtime["market_discovery"]["signal_streams"][0]["name"],
+            "Materialized stream",
+        )
+        self.assertEqual(runtime["strategy"], _migrate_draft(base)["strategy"])
+        self.assertEqual(
+            first_materialization["materialized_at"],
+            repeated_materialization["materialized_at"],
+        )
 
     def test_market_discovery_fields_columns_and_filters_share_registry_authority(self) -> None:
         with patch(

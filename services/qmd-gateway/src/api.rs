@@ -966,7 +966,7 @@ async fn scanner_indicator_snapshot(
             .indicators
             .scanner_snapshot(
                 query.timeframe.as_deref().unwrap_or("10s"),
-                query.limit.unwrap_or(5_000).min(5_000),
+                query.limit.unwrap_or(25_000).min(25_000),
             )
             .await,
     )
@@ -1137,7 +1137,7 @@ async fn macro_bar_scanner_snapshot(
             .products
             .macro_scanner_snapshot(
                 query.timeframe.as_deref().unwrap_or("1d"),
-                query.limit.unwrap_or(5_000).min(5_000),
+                query.limit.unwrap_or(25_000).min(25_000),
                 chrono::Utc::now(),
             )
             .await,

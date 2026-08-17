@@ -1119,11 +1119,6 @@ def _live_reference_projection(cutoff: datetime) -> dict[str, dict[str, Any]]:
         )
         if fresh:
             return projection or {}
-        if projection is None:
-            projection = _load_market_reference_projection(cutoff)
-            _LIVE_REFERENCE_PROJECTION = projection
-            _LIVE_REFERENCE_LOADED_AT = cutoff
-            return projection
         if not _LIVE_REFERENCE_REFRESHING:
             _LIVE_REFERENCE_REFRESHING = True
             threading.Thread(
@@ -1132,7 +1127,17 @@ def _live_reference_projection(cutoff: datetime) -> dict[str, dict[str, Any]]:
                 name="watchlist-reference-refresh",
                 daemon=True,
             ).start()
-        return projection
+        return projection or {}
+
+
+def live_market_reference_status() -> dict[str, Any]:
+    with _LIVE_REFERENCE_LOCK:
+        return {
+            "ready": _LIVE_REFERENCE_PROJECTION is not None,
+            "refreshing": _LIVE_REFERENCE_REFRESHING,
+            "loaded_at": _LIVE_REFERENCE_LOADED_AT.isoformat() if _LIVE_REFERENCE_LOADED_AT else "",
+            "error": _LIVE_REFERENCE_REFRESH_ERROR,
+        }
 
 
 def _refresh_live_reference_projection(cutoff: datetime) -> None:

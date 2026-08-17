@@ -496,6 +496,7 @@ fn scope_key(scope: ExecutionScope) -> &'static str {
         ExecutionScope::UniversalIngest => "universal_ingest",
         ExecutionScope::CoreScan => "core_scan",
         ExecutionScope::Watchlist => "watchlist",
+        ExecutionScope::SignalStream => "signal_stream",
         ExecutionScope::StrategyRun => "strategy_run",
         ExecutionScope::Request => "request",
         ExecutionScope::Offline => "offline",

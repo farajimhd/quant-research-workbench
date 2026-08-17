@@ -278,6 +278,12 @@ def _compose_real_live_scanner_snapshot(*, allow_provider_fallback: bool = True)
             filtered = apply_tradable_filter_to_scanner_payload(payload)
             rows = list(filtered.get("rows") or [])
             reference_error = ""
+            reference_status = {
+                "ready": False,
+                "refreshing": False,
+                "loaded_at": "",
+                "error": "",
+            }
             signal_stream_runtime = {
                 "status": "unavailable",
                 "occurrences": [],
@@ -288,6 +294,7 @@ def _compose_real_live_scanner_snapshot(*, allow_provider_fallback: bool = True)
                     WATCHLIST_RUNTIME,
                     enrich_core_scanner_rows,
                     live_market_reference_projection,
+                    live_market_reference_status,
                 )
                 from src.backend.discovery_projection import (
                     configured_discovery_technical_windows,
@@ -295,7 +302,7 @@ def _compose_real_live_scanner_snapshot(*, allow_provider_fallback: bool = True)
                 )
                 from src.backend.signal_stream_runtime_service import SIGNAL_STREAM_RUNTIME
                 from src.backend.qmd_gateway_client import qmd_scanner_indicators, qmd_scanner_macro_bars
-                from src.backend.trading_configuration_service import configuration_base
+                from src.backend.trading_configuration_service import market_discovery_runtime_configuration
                 from src.backend.data_field_contracts import (
                     compile_data_field_plan,
                     project_composition_data_field_columns,
@@ -303,20 +310,24 @@ def _compose_real_live_scanner_snapshot(*, allow_provider_fallback: bool = True)
                 )
                 from src.backend.trading_runtime_service import trading_journal
 
-                rows = enrich_core_scanner_rows(rows, live_market_reference_projection())
-                configuration = configuration_base()
+                configuration = market_discovery_runtime_configuration()
                 focused_seeds = WATCHLIST_RUNTIME.seed_focused_targets(
                     configuration, rows
                 )
+                signal_target_seeds = SIGNAL_STREAM_RUNTIME.seed_computation_targets(
+                    configuration, rows
+                )
+                rows = enrich_core_scanner_rows(rows, live_market_reference_projection())
+                reference_status = live_market_reference_status()
                 discovery = dict(configuration.get("market_discovery") or {})
                 data_fields = list(discovery.get("data_fields") or [])
                 active_field_refs = list(compile_data_field_plan(discovery).get("field_refs") or [])
                 indicator_rows: dict[str, dict[str, Any]] = {}
                 for interval in configured_discovery_technical_windows(configuration):
                     source_rows = (
-                        qmd_scanner_macro_bars(timeframe=interval, row_limit=5_000)
+                        qmd_scanner_macro_bars(timeframe=interval, row_limit=25_000)
                         if interval in {"1d", "1w", "1mo"}
-                        else qmd_scanner_indicators(timeframe=interval, row_limit=5_000)
+                        else qmd_scanner_indicators(timeframe=interval, row_limit=25_000)
                     )
                     interval_projection = project_data_field_outputs(
                         [
@@ -345,12 +356,27 @@ def _compose_real_live_scanner_snapshot(*, allow_provider_fallback: bool = True)
                     dict(discovery.get("core_scan") or {}),
                     discovery.get("column_catalog") or [],
                 )
+                cycle_as_of = datetime.now(UTC)
+                existing_admissions = SIGNAL_STREAM_RUNTIME.admissions_by_watchlist(cycle_as_of)
+                watchlist_runtime = WATCHLIST_RUNTIME.resolve(
+                    configuration,
+                    rows,
+                    as_of=cycle_as_of,
+                    journal=trading_journal(),
+                    admissions_by_watchlist=existing_admissions,
+                )
+                signal_target_seeds = SIGNAL_STREAM_RUNTIME.seed_computation_targets(
+                    configuration,
+                    rows,
+                    watchlist_runtime=watchlist_runtime,
+                ) or signal_target_seeds
                 try:
                     signal_stream_runtime = SIGNAL_STREAM_RUNTIME.resolve(
                         configuration,
                         rows,
-                        as_of=datetime.now(UTC),
+                        as_of=cycle_as_of,
                         journal=trading_journal(),
+                        watchlist_runtime=watchlist_runtime,
                         include_occurrences=False,
                     )
                 except Exception as exc:
@@ -360,13 +386,17 @@ def _compose_real_live_scanner_snapshot(*, allow_provider_fallback: bool = True)
                         "occurrences": [],
                         "admissions_by_watchlist": {},
                     }
-                watchlist_runtime = WATCHLIST_RUNTIME.resolve(
-                    configuration,
-                    rows,
-                    journal=trading_journal(),
-                    admissions_by_watchlist=signal_stream_runtime.get("admissions_by_watchlist") or {},
-                )
+                current_admissions = signal_stream_runtime.get("admissions_by_watchlist") or {}
+                if current_admissions != existing_admissions:
+                    watchlist_runtime = WATCHLIST_RUNTIME.resolve(
+                        configuration,
+                        rows,
+                        as_of=cycle_as_of,
+                        journal=trading_journal(),
+                        admissions_by_watchlist=current_admissions,
+                    )
                 watchlist_runtime["focused_seeds"] = focused_seeds
+                signal_stream_runtime["computation_target_seeds"] = signal_target_seeds
             except Exception as exc:
                 reference_error = str(exc)
                 watchlist_runtime = {
@@ -382,6 +412,7 @@ def _compose_real_live_scanner_snapshot(*, allow_provider_fallback: bool = True)
                     "watchlist_runtime": watchlist_runtime,
                     "signal_stream_runtime": signal_stream_runtime,
                     "signal_rows": [],
+                    "reference_enrichment_status": reference_status,
                 }
             )
             # The Live UI derives its market-state view from the same compact
@@ -408,11 +439,11 @@ def _compose_real_live_scanner_snapshot(*, allow_provider_fallback: bool = True)
     try:
         from src.backend.data_field_contracts import compile_data_field_plan, project_data_field_outputs
         from src.backend.discovery_projection import project_discovery_columns
-        from src.backend.trading_configuration_service import configuration_base
+        from src.backend.trading_configuration_service import market_discovery_runtime_configuration
         from src.backend.trading_runtime_service import trading_journal
         from src.backend.watchlist_runtime_service import WATCHLIST_RUNTIME, enrich_core_scanner_rows, live_market_reference_projection
 
-        configuration = configuration_base()
+        configuration = market_discovery_runtime_configuration()
         discovery = dict(configuration.get("market_discovery") or {})
         rows = enrich_core_scanner_rows(rows, live_market_reference_projection())
         rows = project_discovery_columns(rows)

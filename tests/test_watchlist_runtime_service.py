@@ -506,6 +506,21 @@ class WatchlistRuntimeServiceTests(unittest.TestCase):
             watchlist_runtime_service._LIVE_REFERENCE_LOADED_AT = None
             watchlist_runtime_service._LIVE_REFERENCE_REFRESHING = False
 
+    @patch("src.backend.watchlist_runtime_service.threading.Thread")
+    def test_initial_live_reference_load_is_progressive_and_non_blocking(self, thread) -> None:
+        watchlist_runtime_service._LIVE_REFERENCE_PROJECTION = None
+        watchlist_runtime_service._LIVE_REFERENCE_LOADED_AT = None
+        watchlist_runtime_service._LIVE_REFERENCE_REFRESHING = False
+        try:
+            returned = live_market_reference_projection()
+            self.assertEqual(returned, {})
+            self.assertTrue(watchlist_runtime_service._LIVE_REFERENCE_REFRESHING)
+            thread.assert_called_once()
+        finally:
+            watchlist_runtime_service._LIVE_REFERENCE_PROJECTION = None
+            watchlist_runtime_service._LIVE_REFERENCE_LOADED_AT = None
+            watchlist_runtime_service._LIVE_REFERENCE_REFRESHING = False
+
     def test_membership_journal_rehydrates_current_projection(self) -> None:
         with TemporaryDirectory() as directory:
             journal = TradingJournal(Path(directory) / "journal.sqlite3")

@@ -19,7 +19,11 @@ from src.backend.data_field_contracts import (
     project_composition_data_field_columns,
     project_data_field_outputs,
 )
-from src.backend.watchlist_runtime_service import normalize_watchlist_candidate
+from src.backend.watchlist_runtime_service import (
+    focused_target_contract,
+    normalize_watchlist_candidate,
+    publish_computation_target,
+)
 from src.trading_runtime.journal import TradingJournal
 from src.trading_runtime.watchlist_resolver import evaluate_rule_sets_frame
 
@@ -37,7 +41,112 @@ class SignalStreamRuntime:
         self._lock = threading.RLock()
         self._states: dict[str, dict[str, dict[str, Any]]] = {}
         self._admissions: dict[str, dict[str, dict[str, Any]]] = {}
+        self._diagnostics: dict[str, dict[str, Any]] = {}
+        self._published_targets: set[str] = set()
+        self._session_key = ""
         self._hydrated = False
+
+    def seed_computation_targets(
+        self,
+        configuration: dict[str, Any],
+        candidates: list[dict[str, Any]],
+        *,
+        watchlist_runtime: dict[str, Any] | None = None,
+    ) -> list[dict[str, Any]]:
+        """Lease only Rule Set operands for each enabled stream's source population."""
+
+        discovery = dict(configuration.get("market_discovery") or {})
+        rule_sets = {
+            str(row.get("rule_set_id") or ""): row
+            for row in discovery.get("rule_sets") or []
+        }
+        calculations = {
+            str(row.get("capability_id") or ""): row
+            for row in discovery.get("calculation_catalog") or []
+        }
+        column_sources = {
+            str(row.get("column_id") or ""): str(row.get("field_ref") or row.get("source_id") or "")
+            for row in discovery.get("column_catalog") or []
+        }
+        core_tickers = sorted({
+            str(row.get("ticker") or row.get("symbol") or "").strip().upper()
+            for row in candidates
+            if str(row.get("ticker") or row.get("symbol") or "").strip()
+        })
+        watchlist_members = {
+            str(snapshot.get("watchlist_id") or ""): sorted({
+                str(member.get("ticker") or member.get("symbol") or "").strip().upper()
+                for member in snapshot.get("members") or []
+                if str(member.get("ticker") or member.get("symbol") or "").strip()
+            })
+            for snapshot in dict(watchlist_runtime or {}).get("watchlists") or []
+        }
+        seeds: list[dict[str, Any]] = []
+        active_target_ids: set[str] = set()
+        with self._lock:
+            previously_published = set(self._published_targets)
+        for stream in discovery.get("signal_streams") or []:
+            stream_id = str(stream.get("signal_stream_id") or "").strip()
+            if not stream_id or not bool(stream.get("enabled", True)):
+                continue
+            rule_only_contract = {
+                **stream,
+                "columns": [],
+                "column_intervals": {},
+                "column_aggregations": {},
+                "ranking_field": "",
+                "ranking_field_ref": "",
+                "ranking_interval": None,
+            }
+            capabilities, timeframes = focused_target_contract(
+                rule_only_contract,
+                rule_sets,
+                calculations,
+                column_sources,
+                discovery.get("data_fields") or [],
+            )
+            if not capabilities:
+                continue
+            source_type = str(stream.get("source_type") or "core_scan")
+            source_id = str(stream.get("source_id") or stream.get("source_scan_id") or "")
+            tickers = core_tickers if source_type == "core_scan" else watchlist_members.get(source_id, [])
+            target_id = f"signal-stream:{stream_id}"
+            active_target_ids.add(target_id)
+            if tickers or target_id in previously_published:
+                publish_computation_target(
+                    target_id,
+                    tickers,
+                    capabilities,
+                    timeframes,
+                    owner="backend.market_discovery",
+                    scope="signal_stream",
+                    ttl_ms=max(5_000, int(stream.get("refresh_interval_ms") or 1_000) * 5),
+                    causation_seed=f"{stream_id}:{source_type}:{source_id}",
+                )
+            if tickers:
+                seeds.append({
+                    "signal_stream_id": stream_id,
+                    "source_type": source_type,
+                    "source_id": source_id,
+                    "candidate_count": len(tickers),
+                    "capabilities": capabilities,
+                    "timeframes": timeframes,
+                })
+        for target_id in previously_published - active_target_ids:
+            publish_computation_target(
+                target_id,
+                [],
+                [],
+                [],
+                owner="backend.market_discovery",
+                scope="signal_stream",
+                ttl_ms=5_000,
+            )
+        with self._lock:
+            self._published_targets = {
+                f"signal-stream:{row['signal_stream_id']}" for row in seeds
+            }
+        return seeds
 
     def resolve(
         self,
@@ -46,11 +155,13 @@ class SignalStreamRuntime:
         *,
         as_of: datetime,
         journal: TradingJournal,
+        watchlist_runtime: dict[str, Any] | None = None,
         include_occurrences: bool = True,
     ) -> dict[str, Any]:
         if as_of.tzinfo is None:
             raise ValueError("Signal Stream as_of must be timezone-aware")
         as_of = as_of.astimezone(UTC)
+        session = signal_stream_session(as_of)
         discovery = dict(configuration.get("market_discovery") or {})
         rule_sets = {
             str(row.get("rule_set_id") or ""): row
@@ -71,10 +182,27 @@ class SignalStreamRuntime:
             for row in normalized
             if str(row.get("ticker") or row.get("symbol") or "").strip()
         }
+        watchlist_members = {
+            str(snapshot.get("watchlist_id") or ""): {
+                str(member.get("ticker") or member.get("symbol") or "").strip().upper()
+                for member in snapshot.get("members") or []
+                if str(member.get("ticker") or member.get("symbol") or "").strip()
+            }
+            for snapshot in dict(watchlist_runtime or {}).get("watchlists") or []
+            if str(snapshot.get("watchlist_id") or "")
+        }
         stream_snapshots: list[dict[str, Any]] = []
         with self._lock:
             self._hydrate(journal)
-            dirty = self._prune_admissions(as_of)
+            dirty = False
+            if self._session_key != session["session_key"] or (
+                not session["active"] and (self._states or self._admissions)
+            ):
+                self._states = {}
+                self._admissions = {}
+                self._session_key = session["session_key"]
+                dirty = True
+            dirty = self._prune_admissions(as_of) or dirty
             active_stream_ids: set[str] = set()
             for stream in discovery.get("signal_streams") or []:
                 stream_id = str(stream.get("signal_stream_id") or "").strip()
@@ -82,6 +210,19 @@ class SignalStreamRuntime:
                     continue
                 active_stream_ids.add(stream_id)
                 enabled = bool(stream.get("enabled", True))
+                source_type = str(stream.get("source_type") or "core_scan")
+                source_id = str(
+                    stream.get("source_id")
+                    or stream.get("source_scan_id")
+                    or discovery.get("core_scan", {}).get("scan_id")
+                    or ""
+                )
+                source_ready = source_type == "core_scan" or source_id in watchlist_members
+                source_tickers = (
+                    set(rows_by_ticker)
+                    if source_type == "core_scan"
+                    else watchlist_members.get(source_id, set())
+                )
                 selected_rule_ids = [
                     str(value) for value in stream.get("inclusion_rule_sets") or [] if str(value)
                 ]
@@ -90,7 +231,9 @@ class SignalStreamRuntime:
                 emitted = 0
                 matching = 0
                 stream_rows = project_composition_data_field_columns(
-                    list(rows_by_ticker.values()), stream, discovery.get("column_catalog") or []
+                    [rows_by_ticker[ticker] for ticker in source_tickers if ticker in rows_by_ticker],
+                    stream,
+                    discovery.get("column_catalog") or [],
                 )
                 masks = evaluate_rule_sets_frame(
                     (rule_sets[rule_id] for rule_id in selected_rule_ids if rule_id in rule_sets),
@@ -103,7 +246,7 @@ class SignalStreamRuntime:
                         continue
                     current_tickers.add(ticker)
                     results = [bool((masks.get(rule_id) or [False] * len(stream_rows))[index]) for rule_id in selected_rule_ids]
-                    matches = enabled and bool(results) and (
+                    matches = session["active"] and enabled and source_ready and bool(results) and (
                         any(results) if str(stream.get("inclusion_operator") or "all") == "any" else all(results)
                     )
                     matching += int(matches)
@@ -162,7 +305,10 @@ class SignalStreamRuntime:
                     "signal_stream_id": stream_id,
                     "name": str(stream.get("name") or stream_id),
                     "enabled": enabled,
-                    "status": "ready" if enabled and selected_rule_ids else "unconfigured" if enabled else "disabled",
+                    "status": "session_closed" if enabled and not session["active"] else "ready" if enabled and source_ready and selected_rule_ids else "source_unavailable" if enabled and not source_ready else "unconfigured" if enabled else "disabled",
+                    "source_type": source_type,
+                    "source_id": source_id,
+                    "candidate_count": len(stream_rows),
                     "matching_count": matching,
                     "emitted_count": emitted,
                     "definition_revision": revision_hash,
@@ -170,22 +316,33 @@ class SignalStreamRuntime:
             for removed_stream_id in set(self._states) - active_stream_ids:
                 del self._states[removed_stream_id]
                 dirty = True
+            self._diagnostics = {
+                str(row.get("signal_stream_id") or ""): dict(row)
+                for row in stream_snapshots
+                if str(row.get("signal_stream_id") or "")
+            }
             if dirty:
                 journal.save_checkpoint(
                     SIGNAL_STATE_RUN_ID,
                     as_of.isoformat(),
-                    {"states": self._states, "admissions": self._admissions},
+                    {"states": self._states, "admissions": self._admissions, "session_key": self._session_key},
                     as_of,
                 )
-            occurrences = (
-                [record.payload for record in journal.signal_stream_records(limit=10_000)]
-                if include_occurrences
-                else []
-            )
+            occurrences = []
+            if include_occurrences and session["active"]:
+                occurrences = [
+                    record.payload
+                    for record in journal.signal_stream_records(
+                        from_time=session["start_at"],
+                        as_of=as_of,
+                        limit=10_000,
+                    )
+                ]
             return {
                 "schema_version": SIGNAL_STREAM_SCHEMA_VERSION,
                 "as_of": as_of.isoformat(),
                 "status": "ready",
+                "session": _session_payload(session),
                 "signal_streams": stream_snapshots,
                 "occurrence_count": len(occurrences) if include_occurrences else sum(int(row.get("emitted_count") or 0) for row in stream_snapshots),
                 "occurrences": occurrences,
@@ -207,16 +364,37 @@ class SignalStreamRuntime:
         signal_stream_id: str = "",
         as_of: datetime | None = None,
         limit: int = 5000,
+        configuration: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
+        cutoff = (as_of or datetime.now(UTC)).astimezone(UTC)
+        session = signal_stream_session(cutoff)
         records = journal.signal_stream_records(
             signal_stream_id=signal_stream_id,
-            as_of=as_of,
+            from_time=session["start_at"] if session["active"] else cutoff,
+            as_of=cutoff,
             limit=limit,
-        )
+        ) if session["active"] else []
+        with self._lock:
+            diagnostics = {key: dict(value) for key, value in self._diagnostics.items()}
+        definitions = [
+            {
+                **diagnostics.get(str(stream.get("signal_stream_id") or ""), {}),
+                "signal_stream_id": str(stream.get("signal_stream_id") or ""),
+                "name": str(stream.get("name") or stream.get("signal_stream_id") or "Signal Stream"),
+                "enabled": bool(stream.get("enabled", True)),
+                "source_type": str(stream.get("source_type") or "core_scan"),
+                "source_id": str(stream.get("source_id") or stream.get("source_scan_id") or ""),
+                "configured": bool(stream.get("inclusion_rule_sets")),
+            }
+            for stream in dict(dict(configuration or {}).get("market_discovery") or {}).get("signal_streams") or []
+            if not signal_stream_id or str(stream.get("signal_stream_id") or "") == signal_stream_id
+        ]
         return {
             "schema_version": SIGNAL_STREAM_SCHEMA_VERSION,
-            "as_of": (as_of or datetime.now(UTC)).astimezone(UTC).isoformat(),
+            "as_of": cutoff.isoformat(),
             "status": "ready",
+            "session": _session_payload(session),
+            "signal_streams": definitions,
             "occurrence_count": len(records),
             "occurrences": [record.payload for record in records],
         }
@@ -235,6 +413,7 @@ class SignalStreamRuntime:
                 str(watchlist_id): {str(ticker): dict(value) for ticker, value in dict(rows).items()}
                 for watchlist_id, rows in dict(state.get("admissions") or {}).items()
             }
+            self._session_key = str(state.get("session_key") or "")
         self._hydrated = True
 
     def _apply_routes(
@@ -286,6 +465,7 @@ def _definition_revision(
         key: stream.get(key)
         for key in (
             "signal_stream_id", "revision", "inclusion_rule_sets", "inclusion_operator",
+            "source_type", "source_id",
             "columns", "column_intervals", "trigger_policy", "rearm_policy", "cooldown_ms", "watchlist_routes",
         )
     }
@@ -378,6 +558,36 @@ def _parse_datetime(value: Any) -> datetime | None:
     except ValueError:
         return None
     return parsed.astimezone(UTC) if parsed.tzinfo else parsed.replace(tzinfo=UTC)
+
+
+def signal_stream_session(as_of: datetime) -> dict[str, Any]:
+    """Return the exchange-day Signal Stream presentation and state window."""
+
+    cutoff = as_of.astimezone(UTC)
+    local = cutoff.astimezone(NEW_YORK)
+    start_local = datetime.combine(local.date(), time(4, 0), NEW_YORK)
+    end_local = datetime.combine(local.date(), time(20, 0), NEW_YORK)
+    is_trading_day = local.weekday() < 5
+    active = is_trading_day and start_local <= local < end_local
+    return {
+        "session_key": local.date().isoformat(),
+        "active": active,
+        "is_trading_day": is_trading_day,
+        "start_at": start_local.astimezone(UTC),
+        "end_at": end_local.astimezone(UTC),
+    }
+
+
+def _session_payload(session: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "session_date": str(session["session_key"]),
+        "active": bool(session["active"]),
+        "is_trading_day": bool(session["is_trading_day"]),
+        "start_at": session["start_at"].isoformat(),
+        "end_at": session["end_at"].isoformat(),
+        "timezone": "America/New_York",
+        "retention": "premarket_to_after_hours",
+    }
 
 
 SIGNAL_STREAM_RUNTIME = SignalStreamRuntime()

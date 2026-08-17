@@ -67,7 +67,8 @@ from src.trading_runtime.strategy_campaign import validate_campaign_policy
 from src.trading_runtime.taxonomy import StrategyTaxonomy
 
 
-CONFIGURATION_SCHEMA_VERSION = 33
+CONFIGURATION_SCHEMA_VERSION = 34
+MARKET_DISCOVERY_MATERIALIZATION_RUN_ID = "market-discovery:materialized-configuration"
 CONFIGURATION_SECTIONS = {
     "strategy",
     "trading_actions",
@@ -92,6 +93,7 @@ DISCOVERY_EXECUTION_SCOPES = {
     "universal_ingest",
     "core_scan",
     "watchlist",
+    "signal_stream",
     "strategy_run",
     "request",
     "offline",
@@ -162,6 +164,83 @@ def configuration_base() -> dict[str, Any]:
     if approved is not None:
         return _migrate_draft(deepcopy(dict(approved.get("payload") or {})))
     return _default_draft()
+
+
+def materialize_market_discovery(section: dict[str, Any]) -> dict[str, Any]:
+    """Make a valid Market Discovery composition the live QMD execution authority.
+
+    This deliberately materializes only Market Discovery. Strategy, Portfolio,
+    OMS, account, Run Plan, and Canvas publication boundaries remain unchanged.
+    """
+
+    if not isinstance(section, dict):
+        raise TypeError("Market Discovery materialization requires an object")
+    candidate = configuration_base()
+    candidate["market_discovery"] = deepcopy(section)
+    normalized = _migrate_draft(candidate)
+    discovery = deepcopy(dict(normalized["market_discovery"]))
+    _validate_market_discovery(discovery)
+    encoded = json.dumps(
+        discovery, separators=(",", ":"), sort_keys=True, default=str
+    ).encode("utf-8")
+    content_hash = hashlib.sha256(encoded).hexdigest()
+    current = trading_journal().load_checkpoint(
+        MARKET_DISCOVERY_MATERIALIZATION_RUN_ID
+    )
+    current_state = dict(dict(current or {}).get("state") or {})
+    if (
+        str(current_state.get("content_hash") or "") == content_hash
+        and isinstance(current_state.get("market_discovery"), dict)
+    ):
+        return current_state
+    materialized_at = datetime.now().astimezone()
+    state = {
+        "schema_version": 1,
+        "configuration_schema_version": CONFIGURATION_SCHEMA_VERSION,
+        "content_hash": content_hash,
+        "market_discovery": discovery,
+        "materialized_at": materialized_at.isoformat(),
+    }
+    trading_journal().save_checkpoint(
+        MARKET_DISCOVERY_MATERIALIZATION_RUN_ID,
+        content_hash,
+        state,
+        materialized_at,
+    )
+    return state
+
+
+def market_discovery_runtime_configuration() -> dict[str, Any]:
+    """Overlay the last valid materialized discovery section on the approved base."""
+
+    base = configuration_base()
+    checkpoint = trading_journal().load_checkpoint(
+        MARKET_DISCOVERY_MATERIALIZATION_RUN_ID
+    )
+    section = dict(dict(checkpoint or {}).get("state") or {}).get(
+        "market_discovery"
+    )
+    if not isinstance(section, dict):
+        return base
+    candidate = deepcopy(base)
+    candidate["market_discovery"] = deepcopy(section)
+    return _migrate_draft(candidate)
+
+
+def market_discovery_materialization_status() -> dict[str, Any]:
+    checkpoint = trading_journal().load_checkpoint(
+        MARKET_DISCOVERY_MATERIALIZATION_RUN_ID
+    )
+    state = dict(dict(checkpoint or {}).get("state") or {})
+    return {
+        "schema_version": 1,
+        "materialized": bool(state.get("market_discovery")),
+        "content_hash": str(state.get("content_hash") or ""),
+        "materialized_at": str(state.get("materialized_at") or ""),
+        "configuration_schema_version": int(
+            state.get("configuration_schema_version") or 0
+        ),
+    }
 
 
 def configuration_revisions() -> list[dict[str, Any]]:
@@ -308,6 +387,7 @@ def publish_configuration(
     content_hash = hashlib.sha256(encoded).hexdigest()
     existing = configuration_revisions()
     if existing and existing[0]["content_hash"] == content_hash:
+        materialize_market_discovery(draft_candidate["market_discovery"])
         return existing[0]
     revision = int(existing[0]["revision"]) + 1 if existing else 1
     published = trading_journal().publish_trading_configuration(
@@ -317,6 +397,7 @@ def publish_configuration(
         content_hash=content_hash,
         payload=payload,
     )
+    materialize_market_discovery(runtime_candidate["market_discovery"])
     return published
 
 
@@ -1793,8 +1874,9 @@ def _normalize_discovery_capability_contract(row: dict[str, Any]) -> dict[str, A
     execution_scope = str(normalized.get("execution_scope") or scope_by_tier.get(tier, "request"))
     allowed_by_scope = {
         "universal_ingest": ["universal_ingest"],
-        "core_scan": ["core_scan", "watchlist", "strategy_run", "request", "offline"],
-        "watchlist": ["watchlist", "strategy_run", "request", "offline"],
+        "core_scan": ["core_scan", "watchlist", "signal_stream", "strategy_run", "request", "offline"],
+        "watchlist": ["watchlist", "signal_stream", "strategy_run", "request", "offline"],
+        "signal_stream": ["signal_stream", "strategy_run", "request", "offline"],
         "strategy_run": ["strategy_run", "request", "offline"],
         "request": ["request", "offline"],
         "offline": ["offline"],
@@ -3215,8 +3297,21 @@ def _validate_market_discovery(section: dict[str, Any]) -> None:
     }
     for stream in signal_streams:
         stream_name = str(stream.get("name") or stream.get("signal_stream_id") or "Signal Stream")
-        if str(stream.get("source_scan_id") or "") != str(core_scan.get("scan_id") or ""):
-            raise ValueError(f"Signal Stream {stream_name} references an unknown Core Scan")
+        source_type = str(stream.get("source_type") or "core_scan")
+        source_id = str(
+            stream.get("source_id")
+            or stream.get("source_scan_id")
+            or core_scan.get("scan_id")
+            or ""
+        )
+        if source_type == "core_scan":
+            if source_id != str(core_scan.get("scan_id") or ""):
+                raise ValueError(f"Signal Stream {stream_name} references an unknown Core Scan")
+        elif source_type == "watchlist":
+            if source_id not in watchlist_ids:
+                raise ValueError(f"Signal Stream {stream_name} references an unknown Watchlist")
+        else:
+            raise ValueError(f"Signal Stream {stream_name} has an unknown source type")
         if str(stream.get("inclusion_operator") or "all") not in {"all", "any"}:
             raise ValueError(f"Signal Stream {stream_name} has unsupported inclusion logic")
         if str(stream.get("trigger_policy") or "false_to_true") != "false_to_true":
@@ -3239,6 +3334,8 @@ def _validate_market_discovery(section: dict[str, Any]) -> None:
             watchlist_id = str(route.get("watchlist_id") or "")
             if watchlist_id not in watchlist_ids:
                 raise ValueError(f"Signal Stream {stream_name} routes to unknown Watchlist {watchlist_id}")
+            if source_type == "watchlist" and watchlist_id == source_id:
+                raise ValueError(f"Signal Stream {stream_name} cannot route back into its source Watchlist")
             expiry = str(route.get("membership_expiry") or "end_of_trading_day")
             if expiry not in {"end_of_trading_day", "time_to_live", "never"}:
                 raise ValueError(f"Signal Stream {stream_name} has an unknown admission expiry policy")
@@ -4314,6 +4411,12 @@ def _migrate_draft(raw: dict[str, Any]) -> dict[str, Any]:
             stream.setdefault("enabled", True)
             stream.setdefault("origin", "user")
             stream.setdefault("source_scan_id", str(core_scan.get("scan_id") or "qmd-core-scan"))
+            legacy_source_id = str(stream.get("source_scan_id") or core_scan.get("scan_id") or "qmd-core-scan")
+            stream.setdefault("source_type", "core_scan")
+            stream.setdefault("source_id", legacy_source_id)
+            if str(stream.get("source_type") or "core_scan") == "core_scan":
+                stream["source_id"] = str(core_scan.get("scan_id") or "qmd-core-scan")
+                stream["source_scan_id"] = stream["source_id"]
             stream.setdefault("inclusion_rule_sets", [])
             stream.setdefault("inclusion_operator", "all")
             stream.setdefault("columns", list(default_core_scan.get("columns") or []))
