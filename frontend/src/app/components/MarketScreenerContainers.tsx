@@ -2,6 +2,7 @@ import { ArrowDown, ArrowLeft, ArrowRight, ArrowUp, ArrowUpDown, Check, ChevronD
 import { forwardRef, useDeferredValue, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
 import { api } from "../../api/client";
+import { CONFIGURATION_SESSION_CHANGED_EVENT, readConfigurationSession } from "../configurationSession";
 import { InventoryFilterSelect } from "./InventoryFilterSelect";
 import { MarketTime } from "./MarketTime";
 import { TickerLogo, useTickerPresentations } from "./TickerIdentity";
@@ -37,7 +38,7 @@ export type ScannerCustomColumn = {
 };
 type TechnicalListSettings = { columns: string[]; customColumns: ScannerCustomColumn[] };
 export type MarketScannerSettings = TechnicalListSettings & { limit: number; preset: string };
-export type SignalStreamSettings = TechnicalListSettings & { limit: number; signalStreamId: string; signalStreamIds: string[] };
+export type SignalStreamSettings = TechnicalListSettings & { limit: number; signalStreamHiddenIds: string[]; signalStreamId: string; signalStreamIds: string[] };
 export type WatchUniverseSettings = TechnicalListSettings & { limit: number; watchlistId: string; watchlistIds: string[]; universeId?: string };
 type DiscoveryScannerColumn = { column_id: string; name: string; source_id: string };
 type DiscoveryCapability = { enabled?: boolean; execution_scope?: string; scanner_columns?: DiscoveryScannerColumn[]; system_required?: boolean };
@@ -60,6 +61,7 @@ type WatchUniverseCatalogResponse = {
   market_discovery?: { column_catalog?: DiscoveryColumn[]; core_scan?: { calculations?: DiscoveryCapability[]; columns?: string[] }; signal_streams?: DiscoverySignalStream[]; watchlists?: DiscoveryWatchlist[] };
   run_plans?: { plans?: Array<{ name?: string; run_plan_id: string; universe_id: string }>; universes?: WatchUniverseDefinition[] };
 };
+type ConfigurationSessionSnapshot = { market_discovery?: WatchUniverseCatalogResponse["market_discovery"] };
 export type WatchlistRuntimeResponse = {
   as_of?: string;
   error?: string;
@@ -218,10 +220,21 @@ function useDiscoveryPresentation() {
   const [configuration, setConfiguration] = useState<WatchUniverseCatalogResponse | null>(null);
   useEffect(() => {
     const controller = new AbortController();
+    let baseConfiguration: WatchUniverseCatalogResponse | null = null;
+    const applySessionDiscovery = () => {
+      if (baseConfiguration) setConfiguration(overlaySessionDiscovery(baseConfiguration));
+    };
+    window.addEventListener(CONFIGURATION_SESSION_CHANGED_EVENT, applySessionDiscovery);
     api<WatchUniverseCatalogResponse>("/api/trading/configuration/base", { signal: controller.signal, timeoutMs: 10000 })
-      .then(setConfiguration)
+      .then((base) => {
+        baseConfiguration = base;
+        applySessionDiscovery();
+      })
       .catch(() => undefined);
-    return () => controller.abort();
+    return () => {
+      controller.abort();
+      window.removeEventListener(CONFIGURATION_SESSION_CHANGED_EVENT, applySessionDiscovery);
+    };
   }, []);
   const discovery = configuration?.market_discovery;
   const { catalog, coreColumns } = useMemo(() => {
@@ -245,6 +258,32 @@ function useDiscoveryPresentation() {
     };
   }, [discovery?.column_catalog, discovery?.core_scan?.calculations, discovery?.core_scan?.columns]);
   return { catalog, configuration, coreColumns, discovery };
+}
+
+function overlaySessionDiscovery(base: WatchUniverseCatalogResponse): WatchUniverseCatalogResponse {
+  try {
+    const session = readConfigurationSession<ConfigurationSessionSnapshot>();
+    const draft = session?.market_discovery;
+    if (!draft) return base;
+    const canonical = base.market_discovery;
+    return {
+      ...base,
+      market_discovery: {
+        ...canonical,
+        ...draft,
+        column_catalog: canonical?.column_catalog ?? [],
+        core_scan: {
+          ...canonical?.core_scan,
+          ...draft.core_scan,
+          calculations: canonical?.core_scan?.calculations ?? [],
+        },
+        signal_streams: draft.signal_streams ?? canonical?.signal_streams ?? [],
+        watchlists: draft.watchlists ?? canonical?.watchlists ?? [],
+      },
+    };
+  } catch {
+    return base;
+  }
 }
 
 function discoveryField(column: DiscoveryColumn): FieldDefinition {
@@ -313,10 +352,12 @@ export function SignalStreamContainer({ asOf, live, onSettingsChange, onTickerSe
   const { catalog, discovery } = useDiscoveryPresentation();
   const [addingStream, setAddingStream] = useState(false);
   const streams = (discovery?.signal_streams ?? []).filter((row) => row.enabled !== false);
-  const configuredIds = Array.from(new Set(settings.signalStreamIds)).filter((id) => streams.some((row) => row.signal_stream_id === id));
-  const visibleStreams = (configuredIds.length ? configuredIds : streams.slice(0, 1).map((row) => row.signal_stream_id)).map((id) => streams.find((row) => row.signal_stream_id === id)).filter((row): row is DiscoverySignalStream => Boolean(row));
+  const hiddenIds = new Set(settings.signalStreamHiddenIds);
+  const configuredIds = Array.from(new Set(settings.signalStreamIds)).filter((id) => !hiddenIds.has(id) && streams.some((row) => row.signal_stream_id === id));
+  const visibleIds = [...configuredIds, ...streams.map((row) => row.signal_stream_id).filter((id) => !hiddenIds.has(id) && !configuredIds.includes(id))];
+  const visibleStreams = visibleIds.map((id) => streams.find((row) => row.signal_stream_id === id)).filter((row): row is DiscoverySignalStream => Boolean(row));
   const stream = visibleStreams.find((row) => row.signal_stream_id === settings.signalStreamId) ?? visibleStreams[0];
-  const availableStreams = streams.filter((row) => !visibleStreams.some((visible) => visible.signal_stream_id === row.signal_stream_id));
+  const availableStreams = streams.filter((row) => hiddenIds.has(row.signal_stream_id));
   const [runtime, setRuntime] = useState<SignalStreamRuntimeResponse | null>(null);
   const [runtimeError, setRuntimeError] = useState("");
   useEffect(() => {
@@ -347,12 +388,22 @@ export function SignalStreamContainer({ asOf, live, onSettingsChange, onTickerSe
   const selectStream = (signalStreamId: string) => onSettingsChange({ columns: [], signalStreamId });
   const addStream = (signalStreamId: string) => {
     if (!signalStreamId) return;
-    onSettingsChange({ columns: [], signalStreamId, signalStreamIds: Array.from(new Set([...settings.signalStreamIds, signalStreamId])) });
+    onSettingsChange({
+      columns: [],
+      signalStreamHiddenIds: settings.signalStreamHiddenIds.filter((id) => id !== signalStreamId),
+      signalStreamId,
+      signalStreamIds: Array.from(new Set([...settings.signalStreamIds, signalStreamId])),
+    });
     setAddingStream(false);
   };
   const removeStream = (signalStreamId: string) => {
-    const nextIds = settings.signalStreamIds.filter((id) => id !== signalStreamId);
-    onSettingsChange({ columns: [], signalStreamId: signalStreamId === settings.signalStreamId ? nextIds[0] ?? "" : settings.signalStreamId, signalStreamIds: nextIds });
+    const nextIds = visibleIds.filter((id) => id !== signalStreamId);
+    onSettingsChange({
+      columns: [],
+      signalStreamHiddenIds: Array.from(new Set([...settings.signalStreamHiddenIds, signalStreamId])),
+      signalStreamId: signalStreamId === settings.signalStreamId ? nextIds[0] ?? "" : settings.signalStreamId,
+      signalStreamIds: nextIds,
+    });
   };
   return <section className="market-list-surface watchlist-surface signal-stream-surface" aria-label={`${stream?.name ?? "Signal Stream"} signal stream`}>
     <header className="market-list-heading"><div><span className="market-list-eyebrow"><Flame size={12} /> Immutable occurrences</span><h3>{stream?.name ?? "No Signal Stream open"}</h3><p>{stream ? `${rows.length} captured occurrences · newest first · through ` : "Create or add a configured Signal Stream"}{stream ? <MarketTime value={asOf} /> : null}</p></div><span className="market-list-owner strategy">Market Discovery</span></header>

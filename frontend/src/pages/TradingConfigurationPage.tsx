@@ -37,6 +37,7 @@ import { createPortal } from "react-dom";
 
 import { api } from "../api/client";
 import { readCanvasRegistry, snapshotCanvasProfile } from "../app/canvasWorkspace";
+import { clearConfigurationSession, readConfigurationSession, writeConfigurationSession } from "../app/configurationSession";
 import { AbstractionCard, type AbstractionKind } from "../app/components/AbstractionCard";
 import { DefinitionRegistryProvider, validateInformationRegistry, type InformationRegistry } from "../app/components/DefinitionRegistry";
 import { InventoryFilterSelect } from "../app/components/InventoryFilterSelect";
@@ -961,10 +962,6 @@ function serializeDraft(draft: Draft) {
   return { ...rest, strategy: { ...rest.strategy, profile_templates: profileTemplates, profiles }, run_plans: { plans: assignments.deployments, universes: assignments.universes } };
 }
 
-const CONFIGURATION_SESSION_KEY = "trading-configuration-session-v2";
-const LEGACY_CONFIGURATION_SESSION_KEY = "trading-configuration-session-v1";
-const CONFIGURATION_SESSION_PAYLOAD_VERSION = 5;
-
 function deduplicateRuleSets(ruleSets: RuleSetDefinition[]): RuleSetDefinition[] {
   const byId = new Map<string, RuleSetDefinition>();
   ruleSets.forEach((ruleSet) => {
@@ -1025,12 +1022,8 @@ function reconcileTradingActions(base: TradingActionsConfiguration, session: Tra
 
 function readSessionConfiguration(base: Draft): Draft {
   try {
-    const current = window.sessionStorage.getItem(CONFIGURATION_SESSION_KEY);
-    const legacy = window.sessionStorage.getItem(LEGACY_CONFIGURATION_SESSION_KEY);
-    const stored = current ?? legacy;
-    if (!stored) return base;
-    const parsed = JSON.parse(stored);
-    const storedDraft = parsed?.payload_version === CONFIGURATION_SESSION_PAYLOAD_VERSION ? parsed.configuration : parsed;
+    const storedDraft = readConfigurationSession<unknown>();
+    if (!storedDraft) return base;
     const session = normalizeDraft(storedDraft);
     const protectedIds = new Set(base.market_discovery.rule_sets.filter((row) => row.protected || row.origin === "system").map((row) => row.rule_set_id));
     const storedCustomRuleSets = session.market_discovery.rule_sets.filter((row) => row.origin === "user" && !row.protected && !protectedIds.has(row.rule_set_id));
@@ -1086,17 +1079,15 @@ function readSessionConfiguration(base: Draft): Draft {
       trading_actions: reconcileTradingActions(base.trading_actions, session.trading_actions),
     };
     writeSessionConfiguration(reconciled);
-    window.sessionStorage.removeItem(LEGACY_CONFIGURATION_SESSION_KEY);
     return reconciled;
   } catch {
-    window.sessionStorage.removeItem(CONFIGURATION_SESSION_KEY);
-    window.sessionStorage.removeItem(LEGACY_CONFIGURATION_SESSION_KEY);
+    clearConfigurationSession();
     return base;
   }
 }
 
 function writeSessionConfiguration(draft: Draft) {
-  window.sessionStorage.setItem(CONFIGURATION_SESSION_KEY, JSON.stringify({ configuration: serializeDraft(draft), payload_version: CONFIGURATION_SESSION_PAYLOAD_VERSION }));
+  writeConfigurationSession(serializeDraft(draft));
 }
 
 type ConfigurationExperience = "guided" | "expert";
@@ -1321,8 +1312,7 @@ export function TradingConfigurationPage({ section }: { section: TradingConfigur
         method: "POST",
       });
       setApproved(revision);
-      window.sessionStorage.removeItem(CONFIGURATION_SESSION_KEY);
-      window.sessionStorage.removeItem(LEGACY_CONFIGURATION_SESSION_KEY);
+      clearConfigurationSession();
       setDraft(normalizeDraft(revision.payload));
       setRevisions((current) => [revision, ...current.filter((row) => row.revision_id !== revision.revision_id)]);
       window.dispatchEvent(new CustomEvent("quant-trading-configuration-published"));

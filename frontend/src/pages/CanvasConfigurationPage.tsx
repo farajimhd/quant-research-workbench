@@ -446,7 +446,7 @@ const DEFAULT_SETTINGS: ContainerSettings = {
   orders: { limit: 6, showOrderIds: true },
   portfolio: { showExposure: true, showPnl: true },
   scanner: { columns: [], customColumns: [], limit: 250, preset: "Core Scan" },
-  signal_stream: { columns: [], customColumns: [], limit: 250, signalStreamId: "", signalStreamIds: [] },
+  signal_stream: { columns: [], customColumns: [], limit: 250, signalStreamHiddenIds: [], signalStreamId: "", signalStreamIds: [] },
   watchlist: { columns: [], customColumns: [], limit: 50, watchlistId: DEFAULT_WATCHLIST_TAB_IDS[0], watchlistIds: DEFAULT_WATCHLIST_TAB_IDS },
   strategy_activity: { eventType: "", limit: 250, runId: "", strategyId: "", ticker: "" },
   sec: { content: "all", endDate: "", label: "", limit: 100, lookbackHours: 168, rangeMode: "preset", startDate: "", ticker: "" },
@@ -4472,6 +4472,7 @@ function normalizeSettings(stored: Partial<ContainerSettings>): ContainerSetting
     ),
     signal_stream: {
       ...normalizeTechnicalListSettings(DEFAULT_SETTINGS.signal_stream, stored.signal_stream),
+      signalStreamHiddenIds: Array.isArray(stored.signal_stream?.signalStreamHiddenIds) ? stored.signal_stream.signalStreamHiddenIds.map(String) : [],
       signalStreamId: String(stored.signal_stream?.signalStreamId ?? ""),
       signalStreamIds: Array.isArray(stored.signal_stream?.signalStreamIds) ? stored.signal_stream.signalStreamIds.map(String) : [],
     },
