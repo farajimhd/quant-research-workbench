@@ -33,6 +33,94 @@ class DataFieldContractTests(unittest.TestCase):
             }.issubset(atomic_ids)
         )
 
+    def test_calendar_components_are_computed_data_fields_not_atomic_fields(self) -> None:
+        atomic_ids = {
+            row["atomic_field_id"] for row in self.discovery["atomic_fields"]
+        }
+        by_source = {
+            output["source_id"]: data_field
+            for data_field in self.discovery["data_fields"]
+            for output in data_field["outputs"]
+        }
+        expected = {
+            "clock.calendar_year",
+            "clock.calendar_quarter",
+            "clock.month_number",
+            "clock.month_name",
+            "clock.iso_week",
+            "clock.day_of_month",
+            "clock.day_of_year",
+            "clock.weekday_number",
+            "clock.hour",
+            "clock.minute",
+            "clock.second",
+            "clock.minutes_since_midnight",
+            "clock.is_weekend",
+            "clock.is_month_start",
+            "clock.is_month_end",
+            "clock.is_quarter_start",
+            "clock.is_quarter_end",
+        }
+        self.assertTrue(expected.issubset(by_source))
+        self.assertFalse(expected.intersection(atomic_ids))
+        self.assertEqual(
+            by_source["clock.weekday_number"]["inputs"],
+            ["clock.exchange_date"],
+        )
+        self.assertEqual(
+            by_source["clock.weekday_number"]["outputs"][0]["runtime_field"],
+            "weekday_number",
+        )
+
+    def test_catalog_fields_publish_source_calculation_and_output_contracts(self) -> None:
+        for data_field in self.discovery["data_fields"]:
+            self.assertTrue(data_field["source"]["location"], data_field["data_field_id"])
+            self.assertTrue(data_field["source"]["query_plan_id"], data_field["data_field_id"])
+            self.assertTrue(data_field["calculation"]["summary"], data_field["data_field_id"])
+            for output in data_field["outputs"]:
+                self.assertTrue(output["runtime_field"], output["field_ref"])
+        source_ids = {
+            output["source_id"]
+            for data_field in self.discovery["data_fields"]
+            for output in data_field["outputs"]
+        }
+        self.assertFalse(any(value.startswith("qmd.primitive.") for value in source_ids))
+        self.assertFalse(any(value.startswith("qmd.family.") for value in source_ids))
+
+    def test_categorical_fields_publish_known_values(self) -> None:
+        by_source = {
+            output["source_id"]: data_field
+            for data_field in self.discovery["data_fields"]
+            for output in data_field["outputs"]
+        }
+        self.assertEqual(
+            [row["value"] for row in by_source["clock.weekday"]["known_values"]],
+            ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"],
+        )
+        self.assertEqual(len(by_source["clock.month_name"]["known_values"]), 12)
+        self.assertEqual(
+            {row["value"] for row in by_source["clock.session_phase"]["known_values"]},
+            {"premarket", "regular", "aftermarket", "maintenance"},
+        )
+        self.assertIn(
+            "does not roll weekends or holidays",
+            by_source["clock.trading_date"]["calculation"]["summary"],
+        )
+
+    def test_catalog_only_fields_are_not_offered_as_rule_inputs(self) -> None:
+        industry = next(
+            row for row in self.discovery["data_fields"]
+            if row["outputs"][0]["source_id"] == "classification.industry"
+        )
+        self.assertFalse(industry["enabled"])
+        self.assertFalse(industry["execution"]["market_discovery_supported"])
+        weekday = next(
+            row for row in self.discovery["data_fields"]
+            if row["outputs"][0]["source_id"] == "clock.weekday"
+        )
+        self.assertTrue(weekday["enabled"])
+        self.assertTrue(weekday["execution"]["market_discovery_supported"])
+
     def test_structured_interval_compiles_without_becoming_field_identity(self) -> None:
         interval = {"value": 3, "unit": "minutes"}
         self.assertEqual(normalize_interval_spec("3m"), interval)
@@ -53,6 +141,32 @@ class DataFieldContractTests(unittest.TestCase):
                 self.assertNotIn("right_timeframe", condition)
                 if condition.get("right_source_id"):
                     self.assertIn(condition["right_field_ref"], output_refs)
+
+    def test_enabled_rules_use_only_executable_data_fields(self) -> None:
+        by_ref = {
+            output["field_ref"]: data_field
+            for data_field in self.discovery["data_fields"]
+            for output in data_field["outputs"]
+        }
+        for rule_set in self.discovery["rule_sets"]:
+            if not rule_set["enabled"]:
+                continue
+            for condition in rule_set["conditions"]:
+                self.assertTrue(by_ref[condition["left_field_ref"]]["enabled"])
+                if condition.get("right_field_ref"):
+                    self.assertTrue(by_ref[condition["right_field_ref"]]["enabled"])
+
+        pending_ids = {
+            "watchlist-news-bullish", "watchlist-news-bearish",
+            "watchlist-sec-bullish", "watchlist-sec-bearish",
+        }
+        pending = {
+            row["rule_set_id"]: row for row in self.discovery["rule_sets"]
+            if row["rule_set_id"] in pending_ids
+        }
+        self.assertEqual(set(pending), pending_ids)
+        self.assertTrue(all(not row["enabled"] for row in pending.values()))
+        self.assertTrue(all(row["implementation_status"] == "integration_pending" for row in pending.values()))
 
     def test_interval_is_not_part_of_the_read_only_data_field_identity(self) -> None:
         rsi = [

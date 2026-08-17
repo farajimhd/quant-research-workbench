@@ -19,15 +19,31 @@ export type DataRuleCondition = {
 };
 
 export type AtomicField = {
+  available_at?: string;
   atomic_field_id: string;
+  calculation_summary?: string;
   description: string;
+  entity_grain?: string;
+  event_at?: string;
   group: string;
+  historical_support?: string;
+  known_values?: KnownValue[];
+  modes?: string[];
   name: string;
+  null_reasons?: string[];
   owner: string;
+  provenance?: string;
+  query_plan_id?: string;
+  source_columns?: string[];
   source_path: string;
+  source_summary?: string;
+  status?: string;
+  update_cadence?: string;
   value_type: string;
   unit: string;
 };
+
+type KnownValue = { description: string; label: string; value: boolean | number | string };
 
 export type DataFieldOutput = {
   column_presentations: Array<{ default_visible?: boolean; label: string; presentation_id: string }>;
@@ -41,6 +57,7 @@ export type DataFieldOutput = {
 };
 
 export type DataFieldDefinition = {
+  calculation?: { documentation_status?: string; formula?: string; kind?: string; summary?: string };
   category?: string;
   configurable: boolean;
   context: {
@@ -58,13 +75,20 @@ export type DataFieldDefinition = {
   data_field_id: string;
   description: string;
   enabled: boolean;
+  execution?: { market_discovery_supported?: boolean; producer_intervals?: string[] };
   inputs: string[];
   name: string;
+  known_values?: KnownValue[];
   owner?: string;
   outputs: DataFieldOutput[];
   parameters: Record<string, unknown>;
   recipe_id: string;
   revision: number;
+  source?: { available_at?: string; location?: string; owner?: string; query_plan_id?: string; source_fields?: string[]; summary?: string };
+  implementation_status?: string;
+  historical_support?: boolean;
+  live_support?: boolean;
+  policies?: { gaps?: string; late_events?: string; missing?: string; warm_up_bars?: number | null };
 };
 
 export type DataRuleSet = {
@@ -163,12 +187,7 @@ function DataFieldCatalog({ atomicFields, dataFields }: { atomicFields: AtomicFi
   const conceptualDataFields = [...dataFamilies.values()].map(preferredDataFieldVariant);
   const rows: Array<AtomicField | DataFieldDefinition> = kind === "atomic" ? atomicFields : conceptualDataFields;
   const needle = query.trim().toLowerCase();
-  const visible = rows.filter((row) => {
-    if (!needle) return true;
-    if ("atomic_field_id" in row) return JSON.stringify(row).toLowerCase().includes(needle);
-    const sourceId = row.outputs[0]?.source_id ?? row.data_field_id;
-    return JSON.stringify(dataFamilies.get(sourceId) ?? [row]).toLowerCase().includes(needle);
-  });
+  const visible = rows.filter((row) => !needle || catalogMatchesSearch(row, "data_field_id" in row ? dataFamilies.get(row.outputs[0]?.source_id ?? "") ?? [row] : [row], needle));
   const definitionByRef = new Map(dataFieldRuleDefinitions(dataFields, false).map((definition) => [definition.registry_id, definition]));
   const groups = groupCatalogFields(visible, definitionByRef);
   const selectedBase = visible.find((row) => {
@@ -211,17 +230,57 @@ function DataFieldCatalog({ atomicFields, dataFields }: { atomicFields: AtomicFi
       </div>
     </aside>
     <main className="data-library-detail">{selected ? "atomic_field_id" in selected
-      ? <article className="data-definition-document data-field-document">
-        <header><span>Atomic Field · source authority</span><h2>{selected.name}</h2><p>{selected.description}</p><div className="data-definition-identity"><code>{selected.atomic_field_id}</code><em>{selected.value_type} · {selected.unit}</em></div></header>
-        <section><h3>Source contract</h3><dl className="data-field-contract-grid"><div><dt>Owner</dt><dd>{selected.owner}</dd></div><div><dt>Group</dt><dd>{selected.group}</dd></div><div className="data-field-contract-wide"><dt>Source path</dt><dd><code>{selected.source_path}</code></dd></div></dl></section>
-      </article>
-      : <article className="data-definition-document data-field-document">
-        <header><span>Data Field · revision {selected.revision}</span><h2>{selected.outputs[0]?.name || selected.name}</h2><p>{selected.description}</p><div className="data-definition-identity"><code>{selected.data_field_id}</code><em>{selected.recipe_id}</em></div></header>
-        <section><h3>Computation context</h3><div className="data-field-context-grid"><article><span>Atomic inputs</span><strong>{selected.inputs.length}</strong><p>{selected.inputs.join(", ") || "Producer-defined"}</p></article><article><span>Execution scope</span><strong>{readable(selected.context.execution_scope)}</strong><p>{selected.context.allowed_scopes?.map(readable).join(", ") || "Exact registered scope"}</p></article>{fieldContextCards(selected.context).map((card) => <article key={card.label}><span>{card.label}</span><strong>{card.value}</strong><p>{card.detail}</p></article>)}</div></section>
-        <section><div className="data-field-section-heading"><div><h3>Typed outputs and presentations</h3><p>Each output has one exact computation identity and independent Canvas presentations.</p></div><em>{selected.outputs.length} output{selected.outputs.length === 1 ? "" : "s"}</em></div><div className="data-field-output-list">{selected.outputs.map((output) => <article key={output.field_ref}><header><div><strong>{output.name}</strong><span>{output.value_type} · {output.unit}</span></div><div><em>{output.column_presentations.length} column</em><em>{output.chart_presentations.length} chart</em></div></header><code>{output.field_ref}</code></article>)}</div></section>
-      </article>
+      ? <AtomicFieldDetail field={selected} />
+      : <DataFieldDetail field={selected} />
       : <div className="data-library-empty"><Database size={22} /><span>No catalog entry matches this search.</span></div>}</main>
   </div>;
+}
+
+function catalogSearchText(row: AtomicField | DataFieldDefinition, variants: Array<AtomicField | DataFieldDefinition>) {
+  const values = variants.flatMap((variant) => "atomic_field_id" in variant
+    ? [variant.atomic_field_id, variant.name, variant.description, variant.group, variant.owner, variant.source_path, variant.source_summary, variant.calculation_summary, variant.value_type, variant.unit, ...(variant.source_columns ?? []), ...(variant.known_values ?? []).flatMap((item) => [String(item.value), item.label, item.description])]
+    : [variant.data_field_id, variant.name, variant.description, variant.category, variant.owner, variant.recipe_id, variant.implementation_status, variant.source?.owner, variant.source?.location, variant.source?.query_plan_id, variant.source?.summary, variant.calculation?.kind, variant.calculation?.summary, variant.calculation?.formula, ...variant.inputs, ...(variant.source?.source_fields ?? []), ...variant.outputs.flatMap((output) => [output.field_ref, output.source_id, output.name, output.value_type, output.unit]), ...(variant.known_values ?? []).flatMap((item) => [String(item.value), item.label, item.description])]);
+  return values.filter((value) => value !== undefined && value !== null).join(" ").toLowerCase();
+}
+
+function catalogMatchesSearch(row: AtomicField | DataFieldDefinition, variants: Array<AtomicField | DataFieldDefinition>, query: string) {
+  const words = catalogSearchText(row, variants).split(/[^a-z0-9]+/).filter(Boolean);
+  const terms = query.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
+  return terms.every((term) => words.some((word) => word.startsWith(term)));
+}
+
+function AtomicFieldDetail({ field }: { field: AtomicField }) {
+  return <article className="data-definition-document data-field-document">
+    <header><span>Atomic Field · source authority</span><h2>{field.name}</h2><p>{field.description}</p><div className="data-definition-identity"><code>{field.atomic_field_id}</code><em>{field.value_type} · {field.unit}</em><em>{readable(field.status || "implemented")}</em></div></header>
+    <section className="data-definition-method data-field-method">
+      <article className="data-definition-source"><span>Source</span><h3 title={field.source_path}>{field.source_path}</h3><p>{field.source_summary || `Published by ${readable(field.owner)}.`}</p><dl className="data-field-method-facts"><div><dt>Owner</dt><dd>{readable(field.owner)}</dd></div><div><dt>Query plan</dt><dd><code>{field.query_plan_id || "Source-owned"}</code></dd></div>{field.source_columns?.length ? <div><dt>Source columns</dt><dd>{field.source_columns.join(", ")}</dd></div> : null}</dl></article>
+      <article className="data-definition-operation"><span>Source handling</span><p className="data-field-calculation-summary">{field.calculation_summary || "No application-side calculation is applied to this source-owned observation."}</p><dl className="data-field-method-facts"><div><dt>Event clock</dt><dd>{field.event_at || "Source effective timestamp"}</dd></div><div><dt>Available at</dt><dd>{field.available_at || "Source publication timestamp"}</dd></div><div><dt>Entity grain</dt><dd>{readable(field.entity_grain || "source grain")}</dd></div></dl></article>
+    </section>
+    <section><h3>Availability and quality</h3><div className="data-field-context-grid"><FieldFact label="Update cadence" value={readable(field.update_cadence || "source cadence")} detail="How often the source may publish a new observation." /><FieldFact label="Historical support" value={readable(field.historical_support || "source policy")} detail="The registered point-in-time history contract." /><FieldFact label="Null reasons" value={String(field.null_reasons?.length ?? 0)} detail={field.null_reasons?.map(readable).join(", ") || "No additional reasons registered."} /></div></section>
+    <KnownValues values={field.known_values ?? []} />
+  </article>;
+}
+
+function DataFieldDetail({ field }: { field: DataFieldDefinition }) {
+  const source = field.source ?? {};
+  const calculation = field.calculation ?? {};
+  return <article className="data-definition-document data-field-document">
+    <header><span>Data Field · revision {field.revision}</span><h2>{field.outputs[0]?.name || field.name}</h2><p>{field.description}</p><div className="data-definition-identity"><code>{field.data_field_id}</code><em>{field.recipe_id}</em><em>{readable(field.implementation_status || "unknown")}</em></div></header>
+    <section className="data-definition-method data-field-method">
+      <article className="data-definition-source"><span>Source</span><h3 title={source.location || readable(source.owner || field.owner || "unknown")}>{source.location || readable(source.owner || field.owner || "Registered producer")}</h3><p>{source.summary || "Registered producer source."}</p><dl className="data-field-method-facts"><div><dt>Owner</dt><dd>{readable(source.owner || field.owner || "unknown")}</dd></div><div><dt>Query plan</dt><dd><code>{source.query_plan_id || "Producer-owned"}</code></dd></div><div><dt>Source fields</dt><dd>{source.source_fields?.join(", ") || field.inputs.join(", ") || "Producer-defined"}</dd></div><div><dt>Available at</dt><dd>{source.available_at || "Producer publication clock"}</dd></div></dl></article>
+      <article className="data-definition-operation"><span>Calculation</span><p className="data-field-calculation-summary">{calculation.summary || field.description}</p>{calculation.formula ? <div className="data-definition-formula"><span>Expression</span><code>{calculation.formula}</code></div> : null}<dl className="data-field-method-facts"><div><dt>Operation</dt><dd>{readable(calculation.kind || "registered calculation")}</dd></div><div><dt>Documentation</dt><dd>{readable(calculation.documentation_status || "complete")}</dd></div></dl></article>
+    </section>
+    <section><h3>Computation contract</h3><div className="data-field-context-grid"><FieldFact label="Atomic inputs" value={String(field.inputs.length)} detail={field.inputs.join(", ") || "No additional atomic input."} /><FieldFact label="Execution scope" value={readable(field.context.execution_scope)} detail={field.context.allowed_scopes?.map(readable).join(", ") || "Exact registered scope"} />{fieldContextCards(field.context).map((card) => <FieldFact detail={card.detail} key={card.label} label={card.label} value={card.value} />)}<FieldFact label="Rule Set support" value={field.execution?.market_discovery_supported === false ? "Catalog only" : "Available"} detail={field.execution?.market_discovery_supported === false ? "The source is registered, but no Scanner/Watchlist execution projection is registered yet; it is not offered in Rule Sets." : "This Data Field has an executable Market Discovery projection and can be instantiated in Rule Sets."} /><FieldFact label="Runtime support" value={`${field.live_support === false ? "No live" : "Live"} · ${field.historical_support === false ? "No history" : "History"}`} detail={`Missing values: ${readable(field.policies?.missing || "unavailable")}; gaps: ${readable(field.policies?.gaps || "preserve")}.`} /></div></section>
+    <section><div className="data-field-section-heading"><div><h3>Outputs and presentations</h3><p>Rule Sets address the immutable output identity. Canvas uses its registered column or chart presentation.</p></div><em>{field.outputs.length} output{field.outputs.length === 1 ? "" : "s"}</em></div><div className="data-field-output-list">{field.outputs.map((output) => <article key={output.field_ref}><header><div><strong>{output.name}</strong><span>{output.value_type} · {output.unit}</span></div><div><em>{output.column_presentations.length} column</em><em>{output.chart_presentations.length} chart</em></div></header><dl><div><dt>Rule Set reference</dt><dd><code>{output.field_ref}</code></dd></div><div><dt>Producer output</dt><dd><code>{output.source_id}</code></dd></div></dl></article>)}</div></section>
+    <KnownValues values={field.known_values ?? []} />
+  </article>;
+}
+
+function FieldFact({ detail, label, value }: { detail: string; label: string; value: string }) { return <article><span>{label}</span><strong>{value}</strong><p>{detail}</p></article>; }
+
+function KnownValues({ values }: { values: KnownValue[] }) {
+  if (!values.length) return null;
+  return <section className="data-field-known-values"><div className="data-field-section-heading"><div><h3>Known values</h3><p>Registered categorical values and their operational meaning.</p></div><em>{values.length} values</em></div><table><thead><tr><th>Value</th><th>Label</th><th>Meaning</th></tr></thead><tbody>{values.map((item) => <tr key={String(item.value)}><td><code>{String(item.value)}</code></td><td><strong>{item.label}</strong></td><td>{item.description}</td></tr>)}</tbody></table></section>;
 }
 
 function dataFieldFamilies(dataFields: DataFieldDefinition[]) {

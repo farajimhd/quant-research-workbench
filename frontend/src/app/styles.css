@@ -23285,6 +23285,12 @@ button {
 .data-definition-parameters span { color: var(--muted-foreground); font-size: 0.75rem; }
 .data-field-document > header { padding-right: clamp(0px, 4vw, 52px); }
 .data-field-document > header > p { max-width: 900px; }
+.data-field-method { align-items: stretch; }
+.data-field-method > article { display: flex; flex-direction: column; }
+.data-field-calculation-summary { max-width: none !important; color: var(--foreground) !important; font-size: 0.88rem; line-height: 1.6 !important; }
+.data-field-method-facts { display: grid !important; grid-template-columns: repeat(2, minmax(0, 1fr)) !important; gap: 12px 18px !important; margin-top: auto !important; padding-top: 18px; }
+.data-field-method-facts dt { font-size: 0.64rem !important; }
+.data-field-method-facts dd { font-size: 0.76rem !important; line-height: 1.45; }
 .data-field-contract-grid .data-field-contract-wide { grid-column: 1 / -1; }
 .data-field-contract-grid code { display: inline-block; max-width: 100%; overflow-wrap: anywhere; }
 .data-field-context-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
@@ -23310,7 +23316,17 @@ button {
 .data-field-output-list > article span { margin-top: 2px; color: var(--muted-foreground); font-size: 0.68rem; }
 .data-field-output-list > article > header > div:last-child { display: flex; flex: 0 0 auto; gap: 5px; }
 .data-field-output-list > article em { padding: 3px 6px; border-radius: 999px; background: color-mix(in oklab, var(--primary) 7%, var(--surface-alt)); color: var(--muted-foreground); font-size: 0.62rem; font-style: normal; }
-.data-field-output-list > article > code { display: block; max-width: 100%; margin-top: 10px; overflow-wrap: anywhere; font-size: 0.68rem; line-height: 1.45; }
+.data-field-output-list > article > dl { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 14px; margin-top: 11px; }
+.data-field-output-list > article > dl dt { font-size: 0.62rem; }
+.data-field-output-list > article > dl dd { min-width: 0; }
+.data-field-output-list > article > dl code { display: block; max-width: 100%; overflow-wrap: anywhere; font-size: 0.66rem; line-height: 1.45; }
+.data-field-known-values table { width: 100%; border: 1px solid var(--border); border-collapse: separate; border-spacing: 0; border-radius: 9px; overflow: hidden; }
+.data-field-known-values th, .data-field-known-values td { padding: 10px 12px; border-bottom: 1px solid var(--border); text-align: left; vertical-align: top; }
+.data-field-known-values th { background: var(--surface-alt); color: var(--muted-foreground); font-size: 0.66rem; font-weight: 600; letter-spacing: 0.055em; text-transform: uppercase; }
+.data-field-known-values td { font-size: 0.78rem; line-height: 1.45; }
+.data-field-known-values td:first-child { width: 18%; }
+.data-field-known-values td:nth-child(2) { width: 22%; }
+.data-field-known-values tbody tr:last-child td { border-bottom: 0; }
 .data-definition-relations { display: grid; grid-template-columns: 160px minmax(0, 1fr); gap: 12px; margin-top: 10px; }
 .data-definition-relations > strong { font-size: 0.76rem; font-weight: 550; }
 .data-definition-relations > div { display: flex; flex-wrap: wrap; gap: 6px; }

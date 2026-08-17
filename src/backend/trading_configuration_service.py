@@ -13,8 +13,10 @@ from uuid import uuid4
 from dotenv import load_dotenv
 
 from src.backend.application_registry import (
+    DERIVED_FIELD_METHODS,
     DISCOVERY_FIELD_PRESENTATIONS,
     FIELD_DEFINITIONS,
+    TEMPORAL_DERIVED_METHODS,
 )
 from src.backend.qmd_gateway_client import qmd_catalogs
 from src.backend.data_field_contracts import (
@@ -1996,12 +1998,21 @@ def _watchlist_condition(condition_id: str, source_id: str, comparator: str, val
     return {"condition_id": condition_id, "left_source_id": source_id, "left_timeframe": timeframe, "comparator": comparator, "right_source_id": "", "right_timeframe": "", "value": value, "enabled": True}
 
 
-def _watchlist_rule(rule_set_id: str, name: str, description: str, conditions: list[dict[str, Any]], *, operator: str = "all") -> dict[str, Any]:
+def _watchlist_rule(
+    rule_set_id: str,
+    name: str,
+    description: str,
+    conditions: list[dict[str, Any]],
+    *,
+    operator: str = "all",
+    enabled: bool = True,
+    implementation_status: str = "implemented",
+) -> dict[str, Any]:
     return {
         "rule_set_id": rule_set_id,
         "name": name,
         "description": description,
-        "enabled": True,
+        "enabled": enabled,
         "operator": operator,
         "required_score": 1.0,
         "conditions": conditions,
@@ -2012,6 +2023,7 @@ def _watchlist_rule(rule_set_id: str, name: str, description: str, conditions: l
         "protected": True,
         "revision": 1,
         "publication_status": "published",
+        "implementation_status": implementation_status,
     }
 
 
@@ -2087,15 +2099,24 @@ def _default_watchlist_rule_sets() -> list[dict[str, Any]]:
         _watchlist_rule("watchlist-relative-volume-gainer", "Elevated relative volume", "Requires current volume to exceed the aligned 20-session baseline.", [_watchlist_condition("relative-volume-over-baseline", "market.relative_volume", "greater_than", 1, "10s")]),
         _watchlist_rule("watchlist-price-or-volume-squeeze", "Session Price or Volume Expansion", "Passes when session return from previous close reaches 5% or aligned 20-session relative volume reaches 3x.", [_watchlist_condition("squeeze-session-price", "market.change_pct", "greater_or_equal", 5, "session"), _watchlist_condition("squeeze-volume", "market.relative_volume", "greater_or_equal", 3, "session")], operator="any"),
         _watchlist_rule("watchlist-vwap-breakout", "VWAP breakout", "Requires last price to trade at least 5 basis points above current VWAP.", [{**_watchlist_condition("vwap-breakout-price", "market.last_price", "above_by_bps", 5, "1s"), "right_source_id": "indicator.vwap.value", "right_timeframe": "1s"}]),
-        _watchlist_rule("watchlist-news-bullish", "Bullish news sentiment", "Requires a validated news label and a positive sentiment score of at least 0.35.", [_watchlist_condition("news-labeled-positive", "signal.news_labeled", "is_true", True, "event"), _watchlist_condition("news-positive-score", "signal.company_news.score", "greater_or_equal", 0.35, "event")]),
-        _watchlist_rule("watchlist-news-bearish", "Bearish news sentiment", "Requires a validated news label and a negative sentiment score of -0.35 or lower.", [_watchlist_condition("news-labeled-negative", "signal.news_labeled", "is_true", True, "event"), _watchlist_condition("news-negative-score", "signal.company_news.score", "less_or_equal", -0.35, "event")]),
-        _watchlist_rule("watchlist-sec-bullish", "Bullish SEC sentiment", "Requires a validated SEC label and a positive filing score of at least 0.35.", [_watchlist_condition("sec-labeled-positive", "signal.sec_labeled", "is_true", True, "event"), _watchlist_condition("sec-positive-score", "signal.sec_filing.score", "greater_or_equal", 0.35, "event")]),
-        _watchlist_rule("watchlist-sec-bearish", "Bearish SEC sentiment", "Requires a validated SEC label and a negative filing score of -0.35 or lower.", [_watchlist_condition("sec-labeled-negative", "signal.sec_labeled", "is_true", True, "event"), _watchlist_condition("sec-negative-score", "signal.sec_filing.score", "less_or_equal", -0.35, "event")]),
+        _watchlist_rule("watchlist-news-bullish", "Bullish news sentiment", "Requires a validated news label and a positive sentiment score of at least 0.35.", [_watchlist_condition("news-labeled-positive", "signal.news_labeled", "is_true", True, "event"), _watchlist_condition("news-positive-score", "signal.company_news.score", "greater_or_equal", 0.35, "event")], enabled=False, implementation_status="integration_pending"),
+        _watchlist_rule("watchlist-news-bearish", "Bearish news sentiment", "Requires a validated news label and a negative sentiment score of -0.35 or lower.", [_watchlist_condition("news-labeled-negative", "signal.news_labeled", "is_true", True, "event"), _watchlist_condition("news-negative-score", "signal.company_news.score", "less_or_equal", -0.35, "event")], enabled=False, implementation_status="integration_pending"),
+        _watchlist_rule("watchlist-sec-bullish", "Bullish SEC sentiment", "Requires a validated SEC label and a positive filing score of at least 0.35.", [_watchlist_condition("sec-labeled-positive", "signal.sec_labeled", "is_true", True, "event"), _watchlist_condition("sec-positive-score", "signal.sec_filing.score", "greater_or_equal", 0.35, "event")], enabled=False, implementation_status="integration_pending"),
+        _watchlist_rule("watchlist-sec-bearish", "Bearish SEC sentiment", "Requires a validated SEC label and a negative filing score of -0.35 or lower.", [_watchlist_condition("sec-labeled-negative", "signal.sec_labeled", "is_true", True, "event"), _watchlist_condition("sec-negative-score", "signal.sec_filing.score", "less_or_equal", -0.35, "event")], enabled=False, implementation_status="integration_pending"),
         _watchlist_rule("watchlist-fundamental-bullish", "Fundamental Bullish", "Requires reliable SEC evidence and a trajectory score of at least 65.", [_watchlist_condition("fundamental-bull-quality", "fundamental.quality_score", "greater_or_equal", 60, "filing"), _watchlist_condition("fundamental-bull-score", "fundamental.trajectory_score", "greater_or_equal", 65, "filing")]),
         _watchlist_rule("watchlist-fundamental-bearish", "Fundamental Bearish", "Requires reliable SEC evidence and a trajectory score of 35 or lower.", [_watchlist_condition("fundamental-bear-quality", "fundamental.quality_score", "greater_or_equal", 60, "filing"), _watchlist_condition("fundamental-bear-score", "fundamental.trajectory_score", "less_or_equal", 35, "filing")]),
         _watchlist_rule("watchlist-ipo-window", "Past or Upcoming IPO", "Retains IPOs from 30 days before through 90 days after their event date.", [_watchlist_condition("ipo-window-start", "event.ipo.days_to_event", "greater_or_equal", -90, "event"), _watchlist_condition("ipo-window-end", "event.ipo.days_to_event", "less_or_equal", 30, "event")]),
         _watchlist_rule("watchlist-split-window", "Stock split window", "Retains symbols from 10 days before through 5 days after a published split execution date.", [_watchlist_condition("split-window-start", "event.split.days_to_event", "greater_or_equal", -5, "event"), _watchlist_condition("split-window-end", "event.split.days_to_event", "less_or_equal", 10, "event")]),
     ]
+
+
+def _producer_output_filter_operators(output_type: str) -> list[str]:
+    normalized = output_type.lower()
+    if normalized == "boolean":
+        return ["is_true", "equals"]
+    if normalized in {"number", "integer", "float", "score", "ratio", "percent", "price", "bps_per_second"}:
+        return ["greater_than", "greater_or_equal", "less_than", "less_or_equal", "equals", "not_equals"]
+    return ["equals", "not_equals"]
 
 
 def _market_discovery_field_catalog(
@@ -2149,6 +2170,15 @@ def _market_discovery_field_catalog(
                 else capability.get("available_at") or "QMD publication clock"
             ),
             "provenance": str(field.provenance if field is not None else "qmd"),
+            "source_columns": list(field.source_columns if field is not None else ()),
+            "source_summary": str(field.source_summary if field is not None else capability.get("provider") or "QMD runtime output."),
+            "calculation_summary": str(field.calculation_summary if field is not None else capability.get("calculation") or presentation.description),
+            "formula": str((DERIVED_FIELD_METHODS.get(field.field_id) or TEMPORAL_DERIVED_METHODS.get(field.field_id, ("", ()))[0]) if field is not None else ""),
+            "input_field_ids": list(field.input_field_ids if field is not None else capability.get("inputs") or []),
+            "known_values": ([
+                {"value": value, "label": label, "description": description}
+                for value, label, description in field.known_values
+            ] if field is not None else []),
             "value_type": str(
                 field.value_type
                 if field is not None
@@ -2162,6 +2192,7 @@ def _market_discovery_field_catalog(
             "timeframes": list(presentation.timeframes),
             "implementation_status": implementation_status,
             "registry_authority": "application_registry",
+            "market_discovery_supported": True,
         })
     for field in sorted(FIELD_DEFINITIONS, key=lambda row: row.field_id):
         if field.field_id in presented_field_ids:
@@ -2171,13 +2202,22 @@ def _market_discovery_field_catalog(
             "field_id": field.field_id,
             "column_id": "",
             "name": field.label,
-            "description": f"Registered {field.group} field from {field.owner}.",
+            "description": field.calculation_summary,
             "semantic_type": "reference",
             "source": field.owner,
             "source_path": field.source_path,
             "query_plan_id": field.query_plan_id,
             "available_at": field.available_at,
             "provenance": field.provenance,
+            "source_columns": list(field.source_columns),
+            "source_summary": field.source_summary,
+            "calculation_summary": field.calculation_summary,
+            "formula": str(DERIVED_FIELD_METHODS.get(field.field_id) or TEMPORAL_DERIVED_METHODS.get(field.field_id, ("", ()))[0]),
+            "input_field_ids": list(field.input_field_ids),
+            "known_values": [
+                {"value": value, "label": label, "description": description}
+                for value, label, description in field.known_values
+            ],
             "value_type": field.value_type,
             "unit": field.unit,
             "default_visible": False,
@@ -2187,47 +2227,63 @@ def _market_discovery_field_catalog(
             "timeframes": list(field.timeframes),
             "implementation_status": field.status,
             "registry_authority": "application_registry",
+            "market_discovery_supported": False,
         })
+    # Some typed QMD outputs (for example confirmed structure levels) are
+    # registered directly by the producer capability rather than the static
+    # source-field registry.  Keep those outputs available to Rule Sets, while
+    # excluding operational/system capabilities that are not Data Fields.
     known_source_ids = {str(row["source_id"]) for row in rows}
     for capability_id, capability in sorted(capabilities.items()):
-        if not capability_id or capability_id in known_source_ids:
+        capability_type = str(capability.get("capability_type") or "").lower()
+        output_type = str(capability.get("output_type") or "").lower()
+        if (
+            not capability_id
+            or capability_id in known_source_ids
+            or capability_type == "system"
+            or output_type == "system"
+        ):
             continue
-        rows.append({
-            "source_id": capability_id,
-            "field_id": "",
-            "column_id": "",
-            "name": str(capability.get("name") or capability_id),
-            "description": str(
-                capability.get("calculation")
-                or capability.get("description")
-                or "Registered runtime capability."
-            ),
-            "semantic_type": str(capability.get("capability_type") or "system"),
-            "source": str(capability.get("owner") or capability.get("provider") or "QMD"),
-            "source_path": str(capability.get("source_path") or "qmd://runtime-capability"),
-            "query_plan_id": str(
-                capability.get("query_plan_id") or "qmd.runtime-capability-catalog"
-            ),
-            "available_at": str(
-                capability.get("available_at") or "QMD publication clock"
-            ),
-            "provenance": "qmd",
-            "value_type": str(capability.get("output_type") or "number"),
-            "unit": str(capability.get("output_type") or "scalar"),
-            "default_visible": False,
-            "filterable": False,
-            "sortable": False,
-            "filter_operators": [],
-            "timeframes": list(capability.get("timeframes") or []),
-            "implementation_status": str(
-                capability.get("implementation_status")
-                or capability.get("availability")
-                or "unknown"
-            ),
-            "registry_authority": str(
-                capability.get("catalog_authority") or "application_registry"
-            ),
-        })
+        fields = [str(value) for value in capability.get("fields") or [] if str(value)]
+        # A family capability describes a computation bundle, not each output's
+        # type/name contract. Only promote a typed capability whose identity is
+        # itself one of its declared producer outputs.
+        if capability_id.startswith("qmd.") or capability_id not in fields:
+            continue
+        source_ids = [capability_id]
+        for source_id in source_ids:
+            if source_id in known_source_ids:
+                continue
+            known_source_ids.add(source_id)
+            rows.append({
+                "source_id": source_id,
+                "field_id": "",
+                "column_id": "",
+                "name": str(capability.get("name") or source_id),
+                "description": str(capability.get("calculation") or capability.get("description") or "Registered QMD producer output."),
+                "semantic_type": capability_type or "qmd_output",
+                "source": str(capability.get("owner") or capability.get("provider") or "qmd"),
+                "source_path": str(capability.get("source_path") or "qmd://registered-output"),
+                "query_plan_id": str(capability.get("query_plan_id") or "qmd.scanner.snapshot.v1"),
+                "available_at": str(capability.get("available_at") or "QMD publication clock"),
+                "provenance": "derived",
+                "source_columns": list(capability.get("inputs") or []),
+                "source_summary": "Published by the registered QMD producer capability.",
+                "calculation_summary": str(capability.get("calculation") or capability.get("description") or "Registered QMD calculation."),
+                "formula": "",
+                "input_field_ids": list(capability.get("inputs") or []),
+                "known_values": [],
+                "value_type": output_type or "number",
+                "unit": output_type or "scalar",
+                "default_visible": False,
+                "filterable": True,
+                "sortable": True,
+                "filter_operators": _producer_output_filter_operators(output_type or "number"),
+                "timeframes": list(capability.get("timeframes") or []),
+                "implementation_status": str(capability.get("implementation_status") or capability.get("availability") or "unknown"),
+                "registry_authority": str(capability.get("catalog_authority") or "qmd_capability_registry"),
+                "market_discovery_supported": True,
+            })
     return rows
 
 
@@ -2768,6 +2824,12 @@ def _validate_market_discovery(section: dict[str, Any]) -> None:
         raise ValueError("Market Discovery requires at least one registered Data Field")
     validate_data_field_catalog(data_fields)
     output_index = data_field_output_index(data_fields)
+    data_field_by_output_ref = {
+        str(output.get("field_ref") or ""): data_field
+        for data_field in data_fields
+        for output in data_field.get("outputs") or []
+        if str(output.get("field_ref") or "")
+    }
     output_refs = {
         str(output.get("field_ref") or "")
         for data_field in data_fields
@@ -2787,6 +2849,11 @@ def _validate_market_discovery(section: dict[str, Any]) -> None:
             if field is None or output is None:
                 raise ValueError(
                     f"Watchlist rule set {rule_set.get('name')} references unknown field {source_id}"
+                )
+            output_data_field = data_field_by_output_ref.get(left_ref)
+            if bool(rule_set.get("enabled")) and output_data_field is not None and not bool(output_data_field.get("enabled")):
+                raise ValueError(
+                    f"Enabled Rule Set {rule_set.get('name')} references unavailable Data Field {source_id}"
                 )
             comparator = str(condition.get("comparator") or "")
             if not bool(output.get("filterable")) or comparator not in set(
@@ -2825,6 +2892,11 @@ def _validate_market_discovery(section: dict[str, Any]) -> None:
                 )
             if right_source_id:
                 right_output = output_index.get(right_ref, {})
+                right_data_field = data_field_by_output_ref.get(right_ref)
+                if bool(rule_set.get("enabled")) and right_data_field is not None and not bool(right_data_field.get("enabled")):
+                    raise ValueError(
+                        f"Enabled Rule Set {rule_set.get('name')} references unavailable comparison Data Field {right_source_id}"
+                    )
                 left_type = str(output.get("value_type") or "").lower()
                 right_type = str(right_output.get("value_type") or "").lower()
                 left_unit = str(output.get("unit") or "").lower()
@@ -3850,10 +3922,21 @@ def _migrate_draft(raw: dict[str, Any]) -> dict[str, Any]:
             str(row.get("rule_set_id") or ""): deepcopy(row)
             for row in result["market_discovery"].get("rule_sets") or []
         }
-        result["market_discovery"]["rule_sets"] = [
-            {**default_rule_set, **current_rule_sets.pop(str(default_rule_set.get("rule_set_id") or ""), {})}
-            for default_rule_set in defaults["market_discovery"].get("rule_sets") or []
-        ] + list(current_rule_sets.values())
+        merged_default_rule_sets: list[dict[str, Any]] = []
+        for default_rule_set in defaults["market_discovery"].get("rule_sets") or []:
+            rule_set_id = str(default_rule_set.get("rule_set_id") or "")
+            merged = {**default_rule_set, **current_rule_sets.pop(rule_set_id, {})}
+            if bool(default_rule_set.get("protected")):
+                # Built-in Rule Sets are read-only registry projections. Keep
+                # their executable semantics and availability aligned with the
+                # current code instead of retaining stale session copies.
+                for key in (
+                    "name", "description", "enabled", "implementation_status",
+                    "publication_status",
+                ):
+                    merged[key] = deepcopy(default_rule_set.get(key))
+            merged_default_rule_sets.append(merged)
+        result["market_discovery"]["rule_sets"] = merged_default_rule_sets + list(current_rule_sets.values())
         default_rule_set_ids = {
             str(row.get("rule_set_id") or "")
             for row in defaults["market_discovery"].get("rule_sets") or []
@@ -3934,22 +4017,12 @@ def _migrate_draft(raw: dict[str, Any]) -> dict[str, Any]:
             merged_calculations,
             list(result["market_discovery"].get("field_catalog") or []),
         )
-        current_data_fields = {
-            str(row.get("data_field_id") or ""): deepcopy(row)
-            for row in result["market_discovery"].get("data_fields") or []
-            if str(row.get("data_field_id") or "")
-        }
-        merged_data_fields = []
-        for generated in generated_data_fields:
-            data_field_id = str(generated.get("data_field_id") or "")
-            current = current_data_fields.pop(data_field_id, {})
-            # Producer semantics and output identities are regenerated; only
-            # user-configurable instance values and presentations are retained.
-            merged = {**generated, **current}
-            merged["outputs"] = list(current.get("outputs") or generated.get("outputs") or [])
-            merged_data_fields.append(merged)
-        if source_schema_version >= CONFIGURATION_SCHEMA_VERSION:
-            merged_data_fields.extend(current_data_fields.values())
+        # Data Fields are a read-only projection of the registered producer
+        # authorities.  Intervals and presentation choices live at Rule Set or
+        # Market Discovery use sites, so stale saved definitions must never
+        # override regenerated source, calculation, output, or availability
+        # contracts.
+        merged_data_fields = generated_data_fields
         validate_data_field_catalog(merged_data_fields)
         result["market_discovery"]["data_fields"] = merged_data_fields
         result["market_discovery"]["atomic_fields"] = atomic_field_catalog(

@@ -99,6 +99,8 @@ def atomic_field_catalog(extra_inputs: Iterable[str] = ()) -> list[dict[str, Any
             "schema_version": field.schema_version,
             "name": field.presentation_label or field.label,
             "description": field.source_summary or f"Source-owned {field.group} observation.",
+            "source_summary": field.source_summary,
+            "calculation_summary": field.calculation_summary,
             "group": field.group,
             "owner": field.owner,
             "source_path": field.source_path,
@@ -113,6 +115,11 @@ def atomic_field_catalog(extra_inputs: Iterable[str] = ()) -> list[dict[str, Any
             "modes": list(field.modes),
             "freshness_policy": field.freshness_policy,
             "null_reasons": list(field.null_reasons),
+            "source_columns": list(field.source_columns),
+            "known_values": [
+                {"value": value, "label": label, "description": description}
+                for value, label, description in field.known_values
+            ],
             "status": field.status,
             "configurable": False,
             "provenance": field.provenance,
@@ -147,6 +154,10 @@ def atomic_field_catalog(extra_inputs: Iterable[str] = ()) -> list[dict[str, Any
             "status": "implemented",
             "configurable": False,
             "provenance": "source",
+            "source_summary": "Producer-declared source input.",
+            "calculation_summary": "No application-side calculation is registered.",
+            "source_columns": [atomic_field_id],
+            "known_values": [],
         }
     return [rows[key] for key in sorted(rows)]
 
@@ -264,6 +275,43 @@ def _enrich_field_metadata(source_id: str, raw: dict[str, Any]) -> dict[str, Any
     return field
 
 
+def _source_contract(field: dict[str, Any], calculation: dict[str, Any]) -> dict[str, Any]:
+    capability_key = str(calculation.get("capability_key") or calculation.get("capability_id") or "registered-output")
+    return {
+        "owner": str(calculation.get("owner") or calculation.get("provider") or field.get("source") or "unknown"),
+        "location": str(field.get("source_path") or calculation.get("source_path") or f"qmd://{capability_key}"),
+        "query_plan_id": str(field.get("query_plan_id") or calculation.get("query_plan_id") or "qmd.runtime-capability-catalog"),
+        "source_fields": [
+            str(value)
+            for value in field.get("source_columns") or field.get("input_field_ids") or calculation.get("inputs") or []
+            if str(value)
+        ],
+        "summary": str(
+            field.get("source_summary")
+            or calculation.get("source_summary")
+            or calculation.get("provider")
+            or "Registered producer source."
+        ),
+        "available_at": str(field.get("available_at") or calculation.get("available_at") or "producer publication clock"),
+    }
+
+
+def _calculation_contract(field: dict[str, Any], calculation: dict[str, Any]) -> dict[str, Any]:
+    provenance = str(field.get("provenance") or "computed")
+    summary = str(
+        field.get("calculation_summary")
+        or calculation.get("calculation")
+        or calculation.get("description")
+        or "The exact producer operation is not registered."
+    )
+    return {
+        "kind": "source_read" if provenance in {"raw", "reported"} else "producer_output" if str(calculation.get("catalog_authority") or "") == "qmd_runtime_catalog" else "derivation",
+        "summary": summary,
+        "formula": str(field.get("formula") or ""),
+        "documentation_status": "partial" if "not registered" in summary.lower() or "not yet" in summary.lower() else "complete",
+    }
+
+
 def build_data_field_catalog(
     calculation_rows: list[dict[str, Any]],
     field_catalog: list[dict[str, Any]],
@@ -280,9 +328,17 @@ def build_data_field_catalog(
     result: list[dict[str, Any]] = []
     for calculation in calculation_rows:
         capability_id = str(calculation.get("capability_id") or "").strip()
-        if not capability_id:
+        if (
+            not capability_id
+            or str(calculation.get("output_type") or "").lower() == "system"
+            or str(calculation.get("capability_type") or "").lower() == "system"
+        ):
             continue
-        sources = [str(value) for value in calculation.get("fields") or [] if str(value)]
+        sources = [
+            str(value)
+            for value in calculation.get("fields") or []
+            if str(value) and re.fullmatch(r"[A-Za-z][A-Za-z0-9_.:-]*", str(value))
+        ]
         if not sources:
             sources = [capability_id]
         revision = int(calculation.get("implementation_version") or 1)
@@ -324,7 +380,14 @@ def build_data_field_catalog(
                     "recipe_id": str(calculation.get("capability_key") or capability_id),
                     "recipe_version": revision,
                     "owner": str(calculation.get("owner") or calculation.get("provider") or "qmd_gateway"),
-                    "inputs": [str(value) for value in calculation.get("inputs") or [] if str(value)],
+                    "inputs": [
+                        str(value)
+                        for value in field.get("input_field_ids") or calculation.get("inputs") or []
+                        if str(value)
+                    ],
+                    "source": _source_contract(field, calculation),
+                    "calculation": _calculation_contract(field, calculation),
+                    "known_values": list(field.get("known_values") or []),
                     "context": {
                         **dimension,
                         "available_intervals": list(dimension.get("available_intervals") or []),
@@ -334,6 +397,7 @@ def build_data_field_catalog(
                     },
                     "execution": {
                         "producer_intervals": [] if dimension.get("dimension_kind") == "interval" else _preferred_producer_intervals(supported_intervals or _EXECUTION_INTERVAL_DEFAULTS.get(source_id, [])),
+                        "market_discovery_supported": True,
                     },
                     "parameters": ({"interval": {"required": True, "allowed": list(dimension.get("available_intervals") or [])}} if dimension.get("dimension_kind") == "interval" else {}),
                     "policies": {
@@ -373,7 +437,14 @@ def build_data_field_catalog(
                 "recipe_id": "registered_projection",
                 "recipe_version": 1,
                 "owner": str(field.get("source") or "application_registry"),
-                "inputs": [str(field.get("field_id") or source_id)],
+                "inputs": [
+                    str(value)
+                    for value in field.get("input_field_ids") or [field.get("field_id") or source_id]
+                    if str(value)
+                ],
+                "source": _source_contract(field, {}),
+                "calculation": _calculation_contract(field, {}),
+                "known_values": list(field.get("known_values") or []),
                 "context": {
                     **dimension,
                     "available_intervals": list(dimension.get("available_intervals") or []),
@@ -381,7 +452,10 @@ def build_data_field_catalog(
                     "execution_scope": "consumer_selected",
                     "allowed_scopes": ["core_scan", "watchlist", "strategy_run", "request", "offline"],
                 },
-                "execution": {"producer_intervals": []},
+                "execution": {
+                    "producer_intervals": [],
+                    "market_discovery_supported": bool(field.get("market_discovery_supported")),
+                },
                 "parameters": ({"interval": {"required": True, "allowed": list(dimension.get("available_intervals") or [])}} if dimension.get("dimension_kind") == "interval" else {}),
                 "policies": {"missing": "unavailable", "gaps": "preserve", "late_events": "source_policy"},
                 "outputs": [_data_field_output(
@@ -391,7 +465,7 @@ def build_data_field_catalog(
                     field,
                     output_id="value",
                 )],
-                "enabled": str(field.get("implementation_status") or "implemented") in {"implemented", "live_only"},
+                "enabled": bool(field.get("market_discovery_supported")) and str(field.get("implementation_status") or "implemented") in {"implemented", "live_only"},
                 "configurable": False,
                 "system_required": False,
                 "implementation_status": str(field.get("implementation_status") or "implemented"),

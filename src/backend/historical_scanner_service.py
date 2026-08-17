@@ -47,6 +47,7 @@ from src.backend.query_plans.reference_scanner_asof_v1 import (
 from src.backend.query_plans.sec_fundamentals_asof_v1 import scanner_fundamentals
 from src.backend.real_live_market_data.startup import logo_asset_url
 from src.backend.qmd_gateway_client import (
+    historical_market_clock_projection,
     normalize_qmd_indicator_scanner_row,
     normalize_qmd_market_signal,
     normalize_qmd_symbol_snapshot,
@@ -271,8 +272,9 @@ def historical_scanner_snapshot(as_of: datetime, *, lookback_minutes: int = 15) 
         as_of=snapshot_at.isoformat(),
         lookback_minutes=lookback_minutes,
     )
+    clock_projection = historical_market_clock_projection(snapshot_at)
     rows = [
-        {**row, "ticker": str(row.get("symbol") or "").strip().upper()}
+        {**row, **clock_projection, "ticker": str(row.get("symbol") or "").strip().upper()}
         for row in payload.get("rows") or []
         if isinstance(row, dict) and str(row.get("symbol") or "").strip()
     ]

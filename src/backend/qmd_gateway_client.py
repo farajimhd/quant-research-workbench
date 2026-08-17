@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Collection, Literal
+from zoneinfo import ZoneInfo
 
 from dotenv import load_dotenv
 
@@ -1458,11 +1459,10 @@ def qmd_catalogs() -> dict[str, Any]:
     }
 
 
-def qmd_scanner_payload(rows: list[dict[str, Any]], raw_payload: dict[str, Any], row_limit: int, *, source: str) -> dict[str, Any]:
-    now = datetime.now(timezone.utc)
-    rows = rows[: max(1, min(int(row_limit or 250), 25_000))]
-    clock = dict(raw_payload.get("market_clock") or {})
-    clock_projection = {
+def market_clock_projection(clock: dict[str, Any]) -> dict[str, Any]:
+    """Project QMD's clock once and derive deterministic calendar components."""
+
+    projection = {
         "clock_observed_at": clock.get("observed_at"),
         "utc_date": clock.get("utc_date"),
         "utc_time": clock.get("utc_time"),
@@ -1483,6 +1483,67 @@ def qmd_scanner_payload(rows: list[dict[str, Any]], raw_payload: dict[str, Any],
         "market_is_open": clock.get("market_is_open"),
         "market_feed_status": clock.get("market_feed_status"),
     }
+    try:
+        exchange_date = datetime.strptime(str(clock.get("exchange_date") or ""), "%Y-%m-%d").date()
+    except ValueError:
+        exchange_date = None
+    try:
+        exchange_time = datetime.strptime(str(clock.get("exchange_time") or "").split(".", 1)[0], "%H:%M:%S").time()
+    except ValueError:
+        exchange_time = None
+    if exchange_date is not None:
+        tomorrow = exchange_date + timedelta(days=1)
+        iso = exchange_date.isocalendar()
+        projection.update({
+            "calendar_year": exchange_date.year,
+            "calendar_quarter": (exchange_date.month - 1) // 3 + 1,
+            "month_number": exchange_date.month,
+            "month_name": exchange_date.strftime("%B"),
+            "iso_week": iso.week,
+            "day_of_month": exchange_date.day,
+            "day_of_year": int(exchange_date.strftime("%j")),
+            "weekday_number": iso.weekday,
+            "is_weekend": iso.weekday >= 6,
+            "is_month_start": exchange_date.day == 1,
+            "is_month_end": tomorrow.month != exchange_date.month,
+            "is_quarter_start": exchange_date.day == 1 and exchange_date.month in {1, 4, 7, 10},
+            "is_quarter_end": tomorrow.month in {1, 4, 7, 10} and tomorrow.day == 1,
+        })
+    if exchange_time is not None:
+        projection.update({
+            "market_hour": exchange_time.hour,
+            "market_minute": exchange_time.minute,
+            "market_second": exchange_time.second,
+            "minutes_since_midnight": exchange_time.hour * 60 + exchange_time.minute,
+        })
+    return projection
+
+
+def historical_market_clock_projection(as_of: datetime) -> dict[str, Any]:
+    """Return clock fields that are safe to derive without inventing a holiday state."""
+
+    if as_of.tzinfo is None:
+        raise ValueError("Historical market clock must be timezone-aware")
+    utc = as_of.astimezone(timezone.utc)
+    local = utc.astimezone(ZoneInfo("America/New_York"))
+    return market_clock_projection({
+        "observed_at": utc.isoformat(),
+        "utc_date": utc.date().isoformat(),
+        "utc_time": utc.strftime("%H:%M:%S.%f")[:-3],
+        "exchange_date": local.date().isoformat(),
+        "exchange_time": local.strftime("%H:%M:%S"),
+        "trading_date": local.date().isoformat(),
+        "timezone": "America/New_York",
+        "weekday": local.strftime("%A"),
+        "session_id": local.date().isoformat(),
+    })
+
+
+def qmd_scanner_payload(rows: list[dict[str, Any]], raw_payload: dict[str, Any], row_limit: int, *, source: str) -> dict[str, Any]:
+    now = datetime.now(timezone.utc)
+    rows = rows[: max(1, min(int(row_limit or 250), 25_000))]
+    clock = dict(raw_payload.get("market_clock") or {})
+    clock_projection = market_clock_projection(clock)
     rows = [{**row, **clock_projection} for row in rows]
     return {
         "provider": "qmd-gateway",

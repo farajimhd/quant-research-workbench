@@ -56,6 +56,7 @@ class FieldDefinition:
     calculation_summary: str = ""
     input_field_ids: tuple[str, ...] = ()
     timeframes: tuple[str, ...] = ()
+    known_values: tuple[tuple[str, str, str], ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -1018,6 +1019,86 @@ FIELD_OPERATOR_DOCUMENTATION: dict[str, dict[str, object]] = {
 }
 
 
+FIELD_OPERATOR_DOCUMENTATION.update({
+    "clock.observed_at": {"source": "QMD scanner market_clock.observed_at in UTC.", "calculation": "Reads the RFC-3339 timestamp at which QMD assembled the scanner snapshot.", "inputs": (), "timeframes": ("event",)},
+    "clock.utc_date": {"source": "QMD scanner market_clock.utc_date.", "calculation": "Reads the UTC calendar date at the QMD evaluation timestamp.", "inputs": (), "timeframes": ("event",)},
+    "clock.utc_time": {"source": "QMD scanner market_clock.utc_time.", "calculation": "Reads the UTC wall-clock time at the QMD evaluation timestamp.", "inputs": (), "timeframes": ("event",)},
+    "clock.exchange_date": {"source": "QMD scanner market_clock.exchange_date.", "calculation": "Reads the calendar date after converting the evaluation timestamp to America/New_York.", "inputs": (), "timeframes": ("event",)},
+    "clock.exchange_time": {"source": "QMD scanner market_clock.exchange_time.", "calculation": "Reads the wall-clock time after converting the evaluation timestamp to America/New_York.", "inputs": (), "timeframes": ("event",)},
+    "clock.trading_date": {"source": "QMD scanner market_clock.trading_date.", "calculation": "Currently publishes the America/New_York calendar date. It does not roll weekends or holidays to another trading session; use is_trading_day to distinguish them.", "inputs": (), "timeframes": ("event",)},
+    "clock.timezone": {"source": "QMD scanner market_clock.timezone.", "calculation": "Reads the IANA timezone used by QMD for exchange-local calendar calculations.", "inputs": (), "timeframes": ("event",)},
+    "clock.weekday": {"source": "QMD scanner market_clock.weekday.", "calculation": "Reads the full English weekday name derived by QMD from the America/New_York calendar date.", "inputs": (), "timeframes": ("event",)},
+    "clock.session_id": {"source": "QMD scanner market_clock.session_id.", "calculation": "Currently uses the America/New_York calendar date as the stable session identity, including closed dates.", "inputs": (), "timeframes": ("event",)},
+    "clock.session_phase": {"source": "QMD scanner market_clock.session_phase.", "calculation": "Classifies America/New_York time as premarket (04:00-09:29), regular (09:30-15:59), aftermarket (16:00-19:59), or maintenance.", "inputs": (), "timeframes": ("event",)},
+    "market.status": {"source": "QMD market-calendar snapshot.", "calculation": "Returns active when the market calendar admits live collection at the evaluation clock; otherwise closed.", "inputs": (), "timeframes": ("event",)},
+    "market.feed_status": {"source": "QMD market-calendar snapshot.", "calculation": "Returns stale when the market-calendar observation exceeds its freshness policy; otherwise ready.", "inputs": (), "timeframes": ("event",)},
+})
+
+
+FIELD_KNOWN_VALUES: dict[str, tuple[tuple[str, str, str], ...]] = {
+    "clock.weekday": tuple(
+        (name, name, f"Exchange-local {name}.")
+        for name in ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday")
+    ),
+    "clock.month_name": tuple(
+        (name, name, f"Exchange-local calendar month {index}.")
+        for index, name in enumerate(
+            (
+                "January", "February", "March", "April", "May", "June",
+                "July", "August", "September", "October", "November", "December",
+            ),
+            start=1,
+        )
+    ),
+    "clock.session_phase": (
+        ("premarket", "Premarket", "Exchange-local time from 04:00 through 09:29."),
+        ("regular", "Regular", "Regular trading session from 09:30 through 15:59."),
+        ("aftermarket", "Aftermarket", "Extended session from 16:00 through 19:59."),
+        ("maintenance", "Maintenance", "Weekend or time outside an active collection session."),
+    ),
+    "market.status": (
+        ("active", "Active", "The market calendar admits live collection at this clock."),
+        ("closed", "Closed", "The market calendar does not admit live collection at this clock."),
+    ),
+    "market.feed_status": (
+        ("ready", "Ready", "The QMD market-calendar publication is current."),
+        ("stale", "Stale", "The QMD market-calendar publication exceeded its freshness policy."),
+    ),
+    "market.luld_state": (
+        ("inside", "Inside bands", "The latest price is inside the estimated LULD bands."),
+        ("near", "Near band", "The latest price is near an estimated LULD band."),
+        ("outside", "Outside bands", "The latest price is outside an estimated LULD band."),
+        ("unavailable", "Unavailable", "Required LULD evidence is not available."),
+    ),
+    "reference.float_quality": (
+        ("reported", "Reported", "A point-in-time public-float publication is available."),
+        ("shares_outstanding_only", "Shares outstanding only", "Only outstanding-share evidence is available; float is not inferred."),
+        ("unavailable", "Unavailable", "No admissible public-float evidence is available."),
+    ),
+}
+
+
+TEMPORAL_DERIVED_METHODS: dict[str, tuple[str, tuple[str, ...]]] = {
+    "clock.calendar_year": ("Extracts the four-digit year from the exchange-local calendar date.", ("clock.exchange_date",)),
+    "clock.calendar_quarter": ("Computes floor((exchange-local month - 1) / 3) + 1.", ("clock.exchange_date",)),
+    "clock.month_number": ("Extracts the month number, 1 through 12, from the exchange-local calendar date.", ("clock.exchange_date",)),
+    "clock.month_name": ("Formats the exchange-local calendar month using its full English name.", ("clock.exchange_date",)),
+    "clock.iso_week": ("Extracts the ISO-8601 week number from the exchange-local calendar date.", ("clock.exchange_date",)),
+    "clock.day_of_month": ("Extracts the day number within the exchange-local calendar month.", ("clock.exchange_date",)),
+    "clock.day_of_year": ("Extracts the ordinal day, 1 through 366, from the exchange-local calendar date.", ("clock.exchange_date",)),
+    "clock.weekday_number": ("Maps the exchange-local weekday to ISO-8601 numbering: Monday=1 through Sunday=7.", ("clock.exchange_date",)),
+    "clock.hour": ("Extracts the hour, 0 through 23, from the exchange-local market time.", ("clock.exchange_time",)),
+    "clock.minute": ("Extracts the minute, 0 through 59, from the exchange-local market time.", ("clock.exchange_time",)),
+    "clock.second": ("Extracts the second, 0 through 59, from the exchange-local market time.", ("clock.exchange_time",)),
+    "clock.minutes_since_midnight": ("Computes exchange-local hour x 60 + minute.", ("clock.exchange_time",)),
+    "clock.is_weekend": ("Returns true when the exchange-local weekday is Saturday or Sunday.", ("clock.exchange_date",)),
+    "clock.is_month_start": ("Returns true when the exchange-local date is the first calendar day of its month.", ("clock.exchange_date",)),
+    "clock.is_month_end": ("Returns true when the next exchange-local calendar day belongs to another month.", ("clock.exchange_date",)),
+    "clock.is_quarter_start": ("Returns true on the first calendar day of January, April, July, or October.", ("clock.exchange_date",)),
+    "clock.is_quarter_end": ("Returns true on the last calendar day of March, June, September, or December.", ("clock.exchange_date",)),
+}
+
+
 FIELD_SOURCE_OVERRIDES: dict[str, tuple[str, tuple[str, ...]]] = {
     "classification.sector": ("q_live.id_issuer_v1", ("sector",)),
     "classification.industry": ("q_live.id_issuer_v1", ("industry",)),
@@ -1182,6 +1263,20 @@ def _presentation_words(value: str) -> str:
 
 
 def _field_presentation_label(field_id: str) -> str:
+    exact = {
+        "clock.weekday": "Market Clock Weekday Name",
+        "clock.calendar_year": "Market Clock Calendar Year",
+        "clock.calendar_quarter": "Market Clock Calendar Quarter",
+        "clock.month_number": "Market Clock Month Number",
+        "clock.month_name": "Market Clock Month Name",
+        "clock.iso_week": "Market Clock ISO Week",
+        "clock.day_of_month": "Market Clock Day of Month",
+        "clock.day_of_year": "Market Clock Day of Year",
+        "clock.weekday_number": "Market Clock Weekday Number",
+        "clock.minutes_since_midnight": "Market Clock Minutes Since Midnight",
+    }
+    if field_id in exact:
+        return exact[field_id]
     parts = [part for part in field_id.split(".") if part]
     if not parts:
         return "Unnamed Field"
@@ -1269,7 +1364,7 @@ def _operator_source_summary(owner: str, source_path: str) -> str:
 
 
 def _operator_calculation_summary(field_id: str, provenance: str, source_columns: tuple[str, ...]) -> str:
-    registered_method = DERIVED_FIELD_METHODS.get(field_id)
+    registered_method = DERIVED_FIELD_METHODS.get(field_id) or TEMPORAL_DERIVED_METHODS.get(field_id, ("", ()))[0]
     if registered_method:
         return registered_method
     readable_columns = ", ".join(column.replace("_", " ") for column in source_columns)
@@ -1311,6 +1406,7 @@ def _field(
     calculation_summary: str = "",
     input_field_ids: Iterable[str] = (),
     timeframes: Iterable[str] = (),
+    known_values: Iterable[tuple[str, str, str]] = (),
 ) -> FieldDefinition:
     label = field_id.split(".")[-1].replace("_", " ").title()
     columns = tuple(source_columns) or (field_id.split(".")[-1],)
@@ -1352,10 +1448,12 @@ def _field(
         input_field_ids=tuple(
             input_field_ids
             or operator_documentation.get("inputs")
+            or TEMPORAL_DERIVED_METHODS.get(field_id, ("", ()))[1]
             or DERIVED_FIELD_INPUTS.get(field_id)
             or ()
         ),
         timeframes=tuple(timeframes or operator_documentation.get("timeframes") or ()),
+        known_values=tuple(known_values or FIELD_KNOWN_VALUES.get(field_id, ())),
     )
 
 
@@ -1421,6 +1519,42 @@ def _fields() -> tuple[FieldDefinition, ...]:
             ),
             coverage_query_plan="qmd.scanner.snapshot.v1",
             status="integration_pending" if field_id == "market.is_halted" else "implemented",
+        ))
+
+    for field_id, value_type, unit in (
+        ("clock.calendar_year", "integer", "year"),
+        ("clock.calendar_quarter", "integer", "quarter"),
+        ("clock.month_number", "integer", "month"),
+        ("clock.month_name", "string", "category"),
+        ("clock.iso_week", "integer", "week"),
+        ("clock.day_of_month", "integer", "day"),
+        ("clock.day_of_year", "integer", "day"),
+        ("clock.weekday_number", "integer", "day_index"),
+        ("clock.hour", "integer", "hour"),
+        ("clock.minute", "integer", "minute"),
+        ("clock.second", "integer", "second"),
+        ("clock.minutes_since_midnight", "integer", "minutes"),
+        ("clock.is_weekend", "boolean", "boolean"),
+        ("clock.is_month_start", "boolean", "boolean"),
+        ("clock.is_month_end", "boolean", "boolean"),
+        ("clock.is_quarter_start", "boolean", "boolean"),
+        ("clock.is_quarter_end", "boolean", "boolean"),
+    ):
+        rows.append(_field(
+            field_id,
+            "market_clock",
+            "backend",
+            "derived://qmd-market-clock",
+            "qmd.scanner.snapshot.v1",
+            value_type=value_type,
+            unit=unit,
+            entity_grain="security_at_market_clock",
+            source_columns=TEMPORAL_DERIVED_METHODS[field_id][1],
+            ttl_seconds=60,
+            publication_cadence="event_driven",
+            provenance="derived",
+            coverage_query_plan="qmd.scanner.snapshot.v1",
+            timeframes=("event",),
         ))
 
     reference_specs = {
@@ -1588,7 +1722,7 @@ DISCOVERY_FIELD_PRESENTATIONS = (
     DiscoveryFieldPresentation("market.liquidity_score", "market.liquidity_score", "liquidity_score", "Liquidity score", "QMD liquidity evidence score used in the base candidate ranking.", "indicator", False, True, True, ("greater_or_equal", "greater_than", "less_or_equal", "less_than", "equals"), ("event",)),
     DiscoveryFieldPresentation("clock.trading_date", "clock.trading_date", "trading_date", "Trading date", "QMD market-clock trading date in America/New_York.", "clock", False, False, True, (), ("event",)),
     DiscoveryFieldPresentation("clock.exchange_time", "clock.exchange_time", "market_time", "Market time", "QMD market-clock time in America/New_York.", "clock", False, False, True, (), ("event",)),
-    DiscoveryFieldPresentation("clock.session_phase", "clock.session_phase", "session_phase", "Session phase", "Canonical QMD premarket, regular, after-hours, or closed session phase.", "clock", True, True, True, ("equals",), ("event",)),
+    DiscoveryFieldPresentation("clock.session_phase", "clock.session_phase", "session_phase", "Session phase", "Canonical QMD premarket, regular, aftermarket, or maintenance phase.", "clock", True, True, True, ("equals",), ("event",)),
     DiscoveryFieldPresentation("market.status", "market.status", "market_status", "Market status", "Canonical QMD active or closed market-calendar status.", "clock", True, True, True, ("equals",), ("event",)),
     DiscoveryFieldPresentation("market.is_open", "market.is_open", "market_is_open", "Market open", "Whether the QMD market calendar admits active collection at the evaluation clock.", "clock", False, True, True, ("is_true", "equals"), ("event",)),
     DiscoveryFieldPresentation("clock.is_trading_day", "clock.is_trading_day", "is_trading_day", "Trading day", "Whether the evaluation date is a QMD-authorized trading session.", "clock", False, True, True, ("is_true", "equals"), ("event",)),
@@ -1623,6 +1757,38 @@ DISCOVERY_FIELD_PRESENTATIONS = (
     DiscoveryFieldPresentation("event.ipo.days_to_event", "event.ipo.days_to_event", "ipo_days_to_event", "IPO event distance", "Signed calendar days from evaluation to the point-in-time IPO event.", "event", False, True, True, ("greater_or_equal", "greater_than", "less_or_equal", "less_than", "equals"), ("event",)),
     DiscoveryFieldPresentation("event.split.execution_date", "event.split.execution_date", "split_event", "Split date", "Latest published stock-split execution date and ratio.", "event", False, False, True, (), ("event",)),
     DiscoveryFieldPresentation("event.split.days_to_event", "event.split.days_to_event", "split_days_to_event", "Split event distance", "Signed calendar days from evaluation to the latest published split execution date.", "event", False, True, True, ("greater_or_equal", "greater_than", "less_or_equal", "less_than", "equals"), ("event",)),
+)
+
+DISCOVERY_FIELD_PRESENTATIONS += (
+    DiscoveryFieldPresentation("clock.observed_at", "clock.observed_at", "clock_observed_at", "Observed at", "UTC timestamp at which QMD evaluated this market-clock snapshot.", "clock", False, False, True, (), ("event",)),
+    DiscoveryFieldPresentation("clock.utc_date", "clock.utc_date", "utc_date", "UTC date", "Calendar date at the QMD evaluation clock in UTC.", "clock", False, True, True, ("equals",), ("event",)),
+    DiscoveryFieldPresentation("clock.utc_time", "clock.utc_time", "utc_time", "UTC time", "Time of day at the QMD evaluation clock in UTC.", "clock", False, True, True, ("equals",), ("event",)),
+    DiscoveryFieldPresentation("clock.exchange_date", "clock.exchange_date", "exchange_date", "Exchange date", "Calendar date at the evaluation clock in America/New_York.", "clock", False, True, True, ("equals",), ("event",)),
+    DiscoveryFieldPresentation("clock.timezone", "clock.timezone", "market_timezone", "Market timezone", "IANA timezone used for the exchange-local clock.", "clock", False, True, True, ("equals",), ("event",)),
+    DiscoveryFieldPresentation("clock.weekday", "clock.weekday", "market_weekday", "Weekday name", "Full English weekday name for the exchange-local calendar date.", "clock", False, True, True, ("equals",), ("event",)),
+    DiscoveryFieldPresentation("clock.session_id", "clock.session_id", "session_id", "Session ID", "Stable exchange-local session identity for the market-clock date.", "clock", False, True, True, ("equals",), ("event",)),
+    DiscoveryFieldPresentation("clock.session_open_at", "clock.session_open_at", "session_open_at", "Session open", "Canonical regular-session open timestamp for the exchange-local date.", "clock", False, False, True, (), ("event",)),
+    DiscoveryFieldPresentation("clock.session_close_at", "clock.session_close_at", "session_close_at", "Session close", "Calendar-authoritative regular-session close timestamp, including early closes.", "clock", False, False, True, (), ("event",)),
+    DiscoveryFieldPresentation("clock.is_early_close", "clock.is_early_close", "is_early_close", "Early close", "Whether the market calendar defines an early regular-session close for this trading date.", "clock", False, True, True, ("is_true", "equals"), ("event",)),
+    DiscoveryFieldPresentation("market.luld_state", "market.luld_state", "estimated_luld_state", "LULD state", "QMD estimate of whether the latest price is inside, near, or outside the applicable LULD bands.", "market_data", False, True, True, ("equals",), ("event",)),
+    DiscoveryFieldPresentation("market.feed_status", "market.feed_status", "market_feed_status", "Market feed status", "QMD ready or stale market-calendar/feed status at the evaluation clock.", "market_data", False, True, True, ("equals",), ("event",)),
+    DiscoveryFieldPresentation("clock.calendar_year", "clock.calendar_year", "calendar_year", "Calendar year", "Four-digit year from the exchange-local calendar date.", "clock", False, True, True, ("greater_or_equal", "greater_than", "less_or_equal", "less_than", "equals"), ("event",)),
+    DiscoveryFieldPresentation("clock.calendar_quarter", "clock.calendar_quarter", "calendar_quarter", "Calendar quarter", "Exchange-local calendar quarter numbered 1 through 4.", "clock", False, True, True, ("greater_or_equal", "greater_than", "less_or_equal", "less_than", "equals"), ("event",)),
+    DiscoveryFieldPresentation("clock.month_number", "clock.month_number", "month_number", "Month number", "Exchange-local calendar month numbered 1 through 12.", "clock", False, True, True, ("greater_or_equal", "greater_than", "less_or_equal", "less_than", "equals"), ("event",)),
+    DiscoveryFieldPresentation("clock.month_name", "clock.month_name", "month_name", "Month name", "Full English month name for the exchange-local calendar date.", "clock", False, True, True, ("equals",), ("event",)),
+    DiscoveryFieldPresentation("clock.iso_week", "clock.iso_week", "iso_week", "ISO week", "ISO-8601 week number for the exchange-local calendar date.", "clock", False, True, True, ("greater_or_equal", "greater_than", "less_or_equal", "less_than", "equals"), ("event",)),
+    DiscoveryFieldPresentation("clock.day_of_month", "clock.day_of_month", "day_of_month", "Day of month", "Exchange-local calendar day number within the month.", "clock", False, True, True, ("greater_or_equal", "greater_than", "less_or_equal", "less_than", "equals"), ("event",)),
+    DiscoveryFieldPresentation("clock.day_of_year", "clock.day_of_year", "day_of_year", "Day of year", "Exchange-local ordinal calendar day numbered 1 through 366.", "clock", False, True, True, ("greater_or_equal", "greater_than", "less_or_equal", "less_than", "equals"), ("event",)),
+    DiscoveryFieldPresentation("clock.weekday_number", "clock.weekday_number", "weekday_number", "Weekday number", "ISO-8601 weekday number, Monday=1 through Sunday=7.", "clock", False, True, True, ("greater_or_equal", "greater_than", "less_or_equal", "less_than", "equals"), ("event",)),
+    DiscoveryFieldPresentation("clock.hour", "clock.hour", "market_hour", "Market hour", "Exchange-local hour numbered 0 through 23.", "clock", False, True, True, ("greater_or_equal", "greater_than", "less_or_equal", "less_than", "equals"), ("event",)),
+    DiscoveryFieldPresentation("clock.minute", "clock.minute", "market_minute", "Market minute", "Exchange-local minute numbered 0 through 59.", "clock", False, True, True, ("greater_or_equal", "greater_than", "less_or_equal", "less_than", "equals"), ("event",)),
+    DiscoveryFieldPresentation("clock.second", "clock.second", "market_second", "Market second", "Exchange-local second numbered 0 through 59.", "clock", False, True, True, ("greater_or_equal", "greater_than", "less_or_equal", "less_than", "equals"), ("event",)),
+    DiscoveryFieldPresentation("clock.minutes_since_midnight", "clock.minutes_since_midnight", "minutes_since_midnight", "Minutes since midnight", "Exchange-local hour multiplied by 60 plus minute.", "clock", False, True, True, ("greater_or_equal", "greater_than", "less_or_equal", "less_than", "equals"), ("event",)),
+    DiscoveryFieldPresentation("clock.is_weekend", "clock.is_weekend", "is_weekend", "Weekend", "Whether the exchange-local calendar date is Saturday or Sunday.", "clock", False, True, True, ("is_true", "equals"), ("event",)),
+    DiscoveryFieldPresentation("clock.is_month_start", "clock.is_month_start", "is_month_start", "Month start", "Whether the exchange-local date is the first calendar day of its month.", "clock", False, True, True, ("is_true", "equals"), ("event",)),
+    DiscoveryFieldPresentation("clock.is_month_end", "clock.is_month_end", "is_month_end", "Month end", "Whether the exchange-local date is the last calendar day of its month.", "clock", False, True, True, ("is_true", "equals"), ("event",)),
+    DiscoveryFieldPresentation("clock.is_quarter_start", "clock.is_quarter_start", "is_quarter_start", "Quarter start", "Whether the exchange-local date is the first calendar day of a quarter.", "clock", False, True, True, ("is_true", "equals"), ("event",)),
+    DiscoveryFieldPresentation("clock.is_quarter_end", "clock.is_quarter_end", "is_quarter_end", "Quarter end", "Whether the exchange-local date is the last calendar day of a quarter.", "clock", False, True, True, ("is_true", "equals"), ("event",)),
 )
 
 # One authoritative translation from semantic discovery fields to the flat row
@@ -2063,8 +2229,12 @@ def _field_operator_documentation(field: FieldDefinition) -> dict[str, Any]:
             else "derivation"
         ),
         "operation_steps": [field.calculation_summary],
-        "formula": DERIVED_FIELD_METHODS.get(field.field_id, ""),
+        "formula": DERIVED_FIELD_METHODS.get(field.field_id, "") or TEMPORAL_DERIVED_METHODS.get(field.field_id, ("", ()))[0],
         "classification_bands": [],
+        "known_values": [
+            {"value": value, "label": label, "description": description}
+            for value, label, description in field.known_values
+        ],
         "calculation_summary": field.calculation_summary,
         "input_field_ids": list(field.input_field_ids),
         "timeframes": list(field.timeframes),

@@ -114,9 +114,15 @@ class WatchlistResolverTest(unittest.TestCase):
 
     def test_bearish_sentiment_ranks_most_negative_first(self) -> None:
         watchlist = {**self.watchlists["news-bearish-sentiment"], "enabled": True}
+        rule_sets = [
+            {**rule_set, "enabled": True}
+            if rule_set["rule_set_id"] == "watchlist-news-bearish"
+            else rule_set
+            for rule_set in self.discovery["rule_sets"]
+        ]
         resolved = resolve_watchlist_membership(
             watchlist,
-            self.discovery["rule_sets"],
+            rule_sets,
             [
                 {"ticker": "AAA", "news_labeled": True, "news_sentiment_score": -0.4},
                 {"ticker": "BBB", "news_labeled": True, "news_sentiment_score": -0.8},

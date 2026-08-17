@@ -4,7 +4,7 @@ import json
 import unittest
 import urllib.error
 from io import BytesIO
-from datetime import datetime
+from datetime import UTC, datetime
 from unittest.mock import MagicMock
 from unittest.mock import patch
 
@@ -13,6 +13,7 @@ from src.backend.qmd_gateway_client import (
     QmdServiceError,
     normalize_qmd_macro_bar_snapshot,
     normalize_qmd_market_signal,
+    historical_market_clock_projection,
     qmd_compact_events,
     qmd_compact_event_page,
     qmd_computation_demand,
@@ -45,6 +46,7 @@ class QmdGatewayClientTests(unittest.TestCase):
     def test_scanner_payload_projects_authoritative_market_clock_into_rows(self) -> None:
         clock = {
             "observed_at": "2026-08-14T14:00:00Z",
+            "exchange_date": "2026-08-14",
             "exchange_time": "10:00:00",
             "trading_date": "2026-08-14",
             "session_phase": "regular",
@@ -62,6 +64,23 @@ class QmdGatewayClientTests(unittest.TestCase):
         self.assertEqual(payload["rows"][0]["market_time"], "10:00:00")
         self.assertEqual(payload["rows"][0]["session_phase"], "regular")
         self.assertTrue(payload["rows"][0]["market_is_open"])
+        self.assertEqual(payload["rows"][0]["market_weekday"], None)
+        self.assertEqual(payload["rows"][0]["calendar_year"], 2026)
+        self.assertEqual(payload["rows"][0]["calendar_quarter"], 3)
+        self.assertEqual(payload["rows"][0]["month_name"], "August")
+        self.assertEqual(payload["rows"][0]["weekday_number"], 5)
+        self.assertEqual(payload["rows"][0]["minutes_since_midnight"], 600)
+        self.assertFalse(payload["rows"][0]["is_weekend"])
+
+    def test_historical_clock_derives_only_calendar_safe_fields(self) -> None:
+        projection = historical_market_clock_projection(
+            datetime(2026, 8, 15, 14, 5, 9, tzinfo=UTC)
+        )
+        self.assertEqual(projection["exchange_date"], "2026-08-15")
+        self.assertEqual(projection["market_weekday"], "Saturday")
+        self.assertEqual(projection["weekday_number"], 6)
+        self.assertTrue(projection["is_weekend"])
+        self.assertNotIn("market_status", {key for key, value in projection.items() if value is not None})
 
     @patch("src.backend.qmd_gateway_client.urllib.request.urlopen")
     @patch("src.backend.qmd_gateway_client.qmd_history_base_url", return_value="http://127.0.0.1:8801")
