@@ -1,3 +1,5 @@
+import { InventoryFilterSelect } from "./InventoryFilterSelect";
+
 export type IntervalUnit = "milliseconds" | "seconds" | "minutes" | "hours" | "days" | "weeks" | "months";
 export type IntervalSpec = { value: number; unit: IntervalUnit };
 export type IntervalValue = IntervalSpec | string | null | undefined;
@@ -25,16 +27,14 @@ export function IntervalSelect({ ariaLabel, className = "", intervals = [], labe
   const current = normalizeInterval(value) ?? preferredInterval(intervals);
   const allowedUnits = new Set(intervals.map((interval) => normalizeInterval(interval)?.unit).filter((unit): unit is IntervalUnit => Boolean(unit)));
   const units = allowedUnits.size ? UNITS.filter((unit) => allowedUnits.has(unit.value)) : UNITS;
-  return <label className={`interval-select ${className}`.trim()}>
+  return <div className={`interval-select ${className}`.trim()}>
     <span>{label}</span>
     <div className="interval-parts">
       <input aria-label={`${ariaLabel} value`} min="1" onChange={(event) => onChange({ ...current, value: Math.max(1, Math.trunc(Number(event.target.value) || 1)) })} step="1" type="number" value={current.value} />
-      <select aria-label={`${ariaLabel} unit`} onChange={(event) => onChange({ ...current, unit: event.target.value as IntervalUnit })} value={current.unit}>
-        {units.map((unit) => <option key={unit.value} value={unit.value}>{unit.label}</option>)}
-      </select>
+      <InventoryFilterSelect ariaLabel={`${ariaLabel} unit`} className="interval-unit-lookup" onChange={(unit) => onChange({ ...current, unit: unit as IntervalUnit })} options={units} value={current.unit} />
       <code aria-label={`${ariaLabel} expression`}>{intervalExpression(current)}</code>
     </div>
-  </label>;
+  </div>;
 }
 
 export function normalizeInterval(value: IntervalValue): IntervalSpec | null {

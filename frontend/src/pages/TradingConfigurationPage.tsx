@@ -1046,7 +1046,10 @@ function readSessionConfiguration(base: Draft): Draft {
         // Catalogs are backend/QMD authority. Preserve user-authored rules,
         // Watchlists, and selections, but never freeze an older catalog in a
         // browser session after the registry gains a field or calculation.
+        atomic_fields: base.market_discovery.atomic_fields,
         classifications: base.market_discovery.classifications,
+        data_field_plan: base.market_discovery.data_field_plan,
+        data_fields: base.market_discovery.data_fields,
         field_catalog: base.market_discovery.field_catalog,
         column_catalog: base.market_discovery.column_catalog,
         calculation_catalog: base.market_discovery.calculation_catalog,
