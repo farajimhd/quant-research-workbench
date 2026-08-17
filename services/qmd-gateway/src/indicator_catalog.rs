@@ -199,13 +199,34 @@ mod taxonomy_tests {
             .filter(|entry| entry.input_basis == "event_native")
             .all(|entry| entry.indicator_type == "qmd"));
     }
+
+    #[test]
+    fn realtime_event_bar_families_expose_subsecond_intervals() {
+        for key in [
+            "core_bars",
+            "quote_mid_spread_bars",
+            "tape_rates",
+            "tape_pressure",
+        ] {
+            let entry = indicator_catalog()
+                .iter()
+                .find(|entry| entry.key == key)
+                .expect("registered realtime event-bar family");
+            assert!(
+                entry.typical_timeframes.contains(&"100ms"),
+                "{key} must expose the canonical subsecond unit"
+            );
+        }
+    }
 }
 
-const ALL_LIVE_TFS: &[&str] = &["1s", "10s", "30s", "1m", "5m", "1h"];
-const CORE_BAR_TFS: &[&str] = &["1s", "10s", "30s", "1m", "5m", "1h", "1d", "1w", "1mo"];
+const ALL_LIVE_TFS: &[&str] = &["100ms", "1s", "10s", "30s", "1m", "5m", "1h"];
+const CORE_BAR_TFS: &[&str] = &[
+    "100ms", "1s", "10s", "30s", "1m", "5m", "1h", "1d", "1w", "1mo",
+];
 const ENRICHED_QMD_TFS: &[&str] = &["100ms", "1s", "5s", "10s", "30s", "1m", "5m", "1h"];
 const BAR_TFS: &[&str] = &["10s", "30s", "1m", "5m", "1h"];
-const SHORT_TFS: &[&str] = &["1s", "10s", "30s", "1m"];
+const SHORT_TFS: &[&str] = &["100ms", "1s", "10s", "30s", "1m"];
 const SESSION_TFS: &[&str] = &["1m", "5m"];
 const DAILY_TFS: &[&str] = &["1d"];
 const NONE_TFS: &[&str] = &[];

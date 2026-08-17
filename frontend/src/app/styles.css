@@ -23210,7 +23210,7 @@ button {
 .data-library-subgroup > div { display: grid; gap: 3px; padding: 5px; }
 .data-library-subgroup button { display: flex; width: 100%; align-items: center; justify-content: space-between; gap: 8px; padding: 8px 9px; border: 1px solid transparent; border-radius: 6px; background: var(--surface); color: var(--foreground); text-align: left; cursor: pointer; }
 .data-library-subgroup button:hover { border-color: var(--border); background: color-mix(in oklab, var(--surface-alt) 58%, var(--surface)); }
-.data-library-subgroup button[aria-current="true"] { border-color: color-mix(in oklab, var(--primary) 34%, var(--border)); background: color-mix(in oklab, var(--primary) 8%, var(--surface)); box-shadow: inset 3px 0 0 var(--primary); }
+.data-library-subgroup button[aria-current="true"] { border-color: color-mix(in oklab, var(--foreground) 16%, var(--border)); background: color-mix(in oklab, var(--muted) 56%, var(--surface)); box-shadow: inset 2px 0 0 color-mix(in oklab, var(--foreground) 42%, var(--border)); }
 .data-library-subgroup button span { min-width: 0; }
 .data-library-subgroup button strong, .data-library-subgroup button small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .data-library-subgroup button strong { font-size: 0.78rem; font-weight: 550; }
@@ -23350,17 +23350,16 @@ button {
 .rule-set-logic label span { display: block; margin-bottom: 5px; color: var(--muted-foreground); font-size: 0.7rem; text-transform: uppercase; }
 .rule-set-logic select, .rule-condition-row select, .rule-condition-row input { min-width: 0; padding: 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface); color: var(--foreground); }
 .rule-set-logic > span { color: var(--muted-foreground); font-size: 0.75rem; }
-.rule-set-evaluation-context { display: grid; grid-template-columns: minmax(260px, .8fr) minmax(0, 1.2fr); align-items: center; gap: 22px; margin: 0 0 14px; padding: 13px 15px; border: 1px solid color-mix(in oklab, var(--primary) 18%, var(--border)); border-radius: 9px; background: color-mix(in oklab, var(--primary) 3%, var(--surface)); }
-.rule-set-evaluation-context > div:first-child > span { color: var(--muted-foreground); font-size: .64rem; font-weight: 650; letter-spacing: .065em; text-transform: uppercase; }
-.rule-set-evaluation-context > div:first-child > strong { display: block; margin-top: 3px; font-size: .82rem; font-weight: 650; }
-.rule-set-evaluation-context > div:first-child > p { margin: 3px 0 0; color: var(--muted-foreground); font-size: .69rem; line-height: 1.4; }
-.rule-set-evaluation-context > div:last-child { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
-.rule-context-chip { display: grid; min-width: 112px; gap: 2px; padding: 7px 9px; border: 1px solid var(--border); border-radius: 7px; background: var(--surface); }
-.rule-context-chip small { color: var(--muted-foreground); font-size: .58rem; font-weight: 650; letter-spacing: .06em; text-transform: uppercase; }
-.rule-context-chip strong { font-size: .69rem; font-weight: 620; }
-.rule-context-latest { border-color: color-mix(in oklab, var(--primary) 28%, var(--border)); background: color-mix(in oklab, var(--primary) 6%, var(--surface)); }
-.rule-context-latest strong { color: var(--primary); }
-.rule-context-interval { border-color: color-mix(in oklab, var(--primary) 26%, var(--border)); background: color-mix(in oklab, var(--primary) 5%, var(--surface)); }
+.rule-set-evaluation-context { display: grid; grid-template-columns: 30px minmax(220px, 1fr) auto; align-items: center; gap: 12px; margin: 0 0 14px; padding: 9px 4px 10px; border-bottom: 1px solid var(--border); }
+.rule-set-evaluation-context > svg { display: grid; width: 28px; height: 28px; padding: 6px; border: 1px solid var(--border); border-radius: 7px; color: var(--muted-foreground); background: var(--surface-alt); }
+.rule-set-evaluation-context > header > span { color: var(--muted-foreground); font-size: .59rem; font-weight: 650; letter-spacing: .065em; text-transform: uppercase; }
+.rule-set-evaluation-context > header > strong { display: block; margin-top: 1px; font-size: .76rem; font-weight: 630; }
+.rule-set-evaluation-context > header > p { margin: 2px 0 0; color: var(--muted-foreground); font-size: .65rem; line-height: 1.35; }
+.rule-set-evaluation-context > dl { display: flex; min-width: 0; margin: 0; }
+.rule-set-evaluation-context > dl > div { display: grid; min-width: 104px; gap: 1px; padding: 2px 12px; border-left: 1px solid var(--border); }
+.rule-set-evaluation-context dt { color: var(--muted-foreground); font-size: .56rem; font-weight: 650; letter-spacing: .06em; text-transform: uppercase; }
+.rule-set-evaluation-context dd { margin: 0; font-size: .67rem; font-weight: 620; white-space: nowrap; }
+.rule-set-evaluation-context .rule-context-interval dd { color: var(--primary); }
 .rule-condition-list { display: grid; gap: 7px; }
 .rule-condition-row { display: grid; grid-template-columns: 28px minmax(220px, 1.35fr) minmax(130px, .72fr) minmax(260px, 1.15fr) 34px; gap: 10px; align-items: center; padding: 11px; border: 1px solid var(--border); border-radius: 8px; }
 .rule-condition-row > span { display: grid; width: 24px; height: 24px; place-items: center; border-radius: 50%; background: var(--surface-alt); color: var(--muted-foreground); font-size: 0.7rem; }
@@ -23534,8 +23533,9 @@ button {
   .data-field-context-grid { grid-template-columns: 1fr; }
   .data-field-dimension-control { align-items: stretch; flex-direction: column; }
   .data-field-dimension-control label { flex-basis: auto; }
-  .rule-set-evaluation-context { grid-template-columns: 1fr; gap: 10px; }
-  .rule-set-evaluation-context > div:last-child { justify-content: flex-start; }
+  .rule-set-evaluation-context { grid-template-columns: 30px 1fr; }
+  .rule-set-evaluation-context > dl { grid-column: 1 / -1; flex-wrap: wrap; }
+  .rule-set-evaluation-context > dl > div:first-child { border-left: 0; padding-left: 0; }
   .rule-condition-row { grid-template-columns: 28px 1fr; }
   .rule-condition-row > :not(:first-child) { grid-column: 2; }
   .rule-condition-expression { grid-template-columns: 1fr; }

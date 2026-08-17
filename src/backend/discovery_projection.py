@@ -118,6 +118,6 @@ def configured_discovery_technical_windows(configuration: dict[str, Any]) -> tup
         windows.update(
             value
             for value in presentation.timeframes
-            if value in {"1s", "5s", "10s", "30s", "1m", "5m", "15m", "30m", "1h", "1d", "1w", "1mo"}
+            if value in {"100ms", "1s", "5s", "10s", "30s", "1m", "5m", "15m", "30m", "1h", "1d", "1w", "1mo"}
         )
     return tuple(sorted(windows))

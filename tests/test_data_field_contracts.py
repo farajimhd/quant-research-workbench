@@ -126,6 +126,10 @@ class DataFieldContractTests(unittest.TestCase):
         self.assertEqual(normalize_interval_spec("3m"), interval)
         self.assertEqual(interval_expression(interval), "3m")
         self.assertEqual(field_instance_ref("data.test@1:value", interval), "data.test@1:value@@3m")
+        subsecond = {"value": 25, "unit": "milliseconds"}
+        self.assertEqual(normalize_interval_spec("25ms"), subsecond)
+        self.assertEqual(interval_expression(subsecond), "25ms")
+        self.assertEqual(field_instance_ref("data.test@1:value", subsecond), "data.test@1:value@@25ms")
 
     def test_every_rule_condition_uses_an_exact_data_field_output(self) -> None:
         output_refs = {
