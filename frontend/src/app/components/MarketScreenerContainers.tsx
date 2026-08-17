@@ -372,9 +372,9 @@ export function SignalStreamContainer({ asOf, live, onSettingsChange, onTickerSe
   const stream = visibleStreams.find((row) => row.signal_stream_id === settings.signalStreamId) ?? visibleStreams[0];
   const availableStreams = streams.filter((row) => hiddenIds.has(row.signal_stream_id));
   const [runtime, setRuntime] = useState<SignalStreamRuntimeResponse | null>(null);
-  const [runtimeError, setRuntimeError] = useState("");
+  const [runtimeUnavailable, setRuntimeUnavailable] = useState(false);
   useEffect(() => {
-    if (!stream) { setRuntime(null); setRuntimeError(""); return undefined; }
+    if (!stream) { setRuntime(null); setRuntimeUnavailable(false); return undefined; }
     let active = true;
     let controller: AbortController | null = null;
     const load = () => {
@@ -386,8 +386,8 @@ export function SignalStreamContainer({ asOf, live, onSettingsChange, onTickerSe
       });
       if (!live) query.set("as_of", asOf);
       api<SignalStreamRuntimeResponse>(`/api/market-discovery/signal-stream/runtime?${query}`, { signal: controller.signal, timeoutMs: 10000 })
-        .then((payload) => { if (active) { setRuntime(payload); setRuntimeError(""); } })
-        .catch((error) => { if (active && (error as Error).name !== "AbortError") setRuntimeError(error instanceof Error ? error.message : String(error)); });
+        .then((payload) => { if (active) { setRuntime(payload); setRuntimeUnavailable(false); } })
+        .catch((error) => { if (active && (error as Error).name !== "AbortError") setRuntimeUnavailable(true); });
     };
     load();
     const timer = live ? window.setInterval(load, Math.max(1000, stream.refresh_interval_ms ?? 5000)) : null;
@@ -405,6 +405,8 @@ export function SignalStreamContainer({ asOf, live, onSettingsChange, onTickerSe
     : `${discovery?.core_scan?.name ?? "Core Scan"} · all eligible tickers`;
   const emptyMessage = !stream
     ? "No configured Signal Stream is available."
+    : runtimeUnavailable && runtime === null
+      ? "Signal Stream data is temporarily unavailable."
     : runtime?.session?.active === false
       ? "Signal Stream is cleared outside the 04:00–20:00 ET trading-day window."
       : runtimeDefinition?.configured === false
@@ -443,7 +445,7 @@ export function SignalStreamContainer({ asOf, live, onSettingsChange, onTickerSe
       <button aria-expanded={addingStream} aria-label="Add Signal Stream tab" className="watchlist-tab-add" disabled={!availableStreams.length} onClick={() => setAddingStream((open) => !open)} role="tab" type="button"><Plus size={12} /><span>Add</span></button>
     </nav>
     {addingStream ? <div className="watchlist-tab-lookup"><InventoryFilterSelect ariaLabel="Signal Stream to add" className="watchlist-add-lookup" onChange={addStream} options={availableStreams.map((row) => ({ description: row.description, label: row.name, value: row.signal_stream_id }))} searchable showAllOnOpen value="" /><button onClick={() => { window.location.hash = "market-discovery-configuration"; }} type="button">Configure Signal Stream <ArrowRight size={13} /></button></div> : null}
-    <div className="watch-universe-context"><div><span>Source and retention</span><strong>{sourceLabel} · 04:00–20:00 ET</strong><small>Trigger-time values are frozen. Canvas clears at the end of after-hours while the durable audit remains append-only.</small>{runtimeError ? <small>{runtimeError}</small> : null}</div><button onClick={() => { window.location.hash = "market-discovery-configuration"; }} type="button">Configure in Market Discovery <ArrowRight size={13} /></button></div>
+    <div className="watch-universe-context"><div><span>Source and retention</span><strong>{sourceLabel} · 04:00–20:00 ET</strong><small>Trigger-time values are frozen. Canvas clears at the end of after-hours while the durable audit remains append-only.</small></div><button onClick={() => { window.location.hash = "market-discovery-configuration"; }} type="button">Configure in Market Discovery <ArrowRight size={13} /></button></div>
     <MarketListTable catalog={catalog} columns={columns} customColumns={settings.customColumns} empty={emptyMessage} limit={Math.min(settings.limit, stream?.maximum_events ?? settings.limit)} lockedColumns={canonicalDiscoveryColumns(["event_time", "symbol", ...(stream?.columns ?? [])])} onColumnsChange={(columns) => onSettingsChange({ columns })} onCustomColumnsChange={(customColumns) => onSettingsChange({ customColumns })} onTickerSelect={onTickerSelect} rows={rows} title={stream?.name ?? "Signal Stream"} />
   </section>;
 }

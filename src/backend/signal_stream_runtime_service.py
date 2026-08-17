@@ -53,7 +53,7 @@ class SignalStreamRuntime:
         *,
         watchlist_runtime: dict[str, Any] | None = None,
     ) -> list[dict[str, Any]]:
-        """Lease only Rule Set operands for each enabled stream's source population."""
+        """Lease trigger operands and frozen evidence for each enabled stream."""
 
         discovery = dict(configuration.get("market_discovery") or {})
         rule_sets = {
@@ -89,17 +89,8 @@ class SignalStreamRuntime:
             stream_id = str(stream.get("signal_stream_id") or "").strip()
             if not stream_id or not bool(stream.get("enabled", True)):
                 continue
-            rule_only_contract = {
-                **stream,
-                "columns": [],
-                "column_intervals": {},
-                "column_aggregations": {},
-                "ranking_field": "",
-                "ranking_field_ref": "",
-                "ranking_interval": None,
-            }
             capabilities, timeframes = focused_target_contract(
-                rule_only_contract,
+                stream,
                 rule_sets,
                 calculations,
                 column_sources,

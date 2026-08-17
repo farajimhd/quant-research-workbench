@@ -238,7 +238,7 @@ class SignalStreamRuntimeTests(unittest.TestCase):
         self.assertFalse(session["active"])
 
     @patch("src.backend.signal_stream_runtime_service.publish_computation_target")
-    def test_core_source_leases_only_rule_dependencies_for_all_candidates(self, publish) -> None:
+    def test_core_source_leases_rules_and_frozen_evidence_for_all_candidates(self, publish) -> None:
         self.configuration["market_discovery"]["signal_streams"][0]["inclusion_rule_sets"] = [
             "watchlist-squeeze-early-impulse-100ms"
         ]
@@ -252,6 +252,29 @@ class SignalStreamRuntimeTests(unittest.TestCase):
         self.assertEqual(publish.call_args.args[0], "signal-stream:positive-move-signals")
         self.assertEqual(publish.call_args.args[1], ["AAA", "BBB"])
         self.assertEqual(publish.call_args.kwargs["scope"], "signal_stream")
+
+    @patch("src.backend.signal_stream_runtime_service.publish_computation_target")
+    def test_configured_bar_column_is_included_in_signal_computation_demand(self, publish) -> None:
+        discovery = self.configuration["market_discovery"]
+        stream = discovery["signal_streams"][0]
+        bar_change = next(
+            row for row in discovery["column_catalog"]
+            if row.get("column_id") == "field__price__change"
+        )
+        stream.update({
+            "columns": ["symbol", bar_change["column_id"]],
+            "column_intervals": {bar_change["column_id"]: "100ms"},
+            "inclusion_rule_sets": ["watchlist-positive-gainer"],
+        })
+
+        seeds = SignalStreamRuntime().seed_computation_targets(
+            self.configuration,
+            [{"ticker": "AAA"}],
+        )
+
+        self.assertEqual(seeds[0]["timeframes"], ["100ms"])
+        self.assertIn("core_bars", seeds[0]["capabilities"])
+        self.assertEqual(publish.call_args.args[1], ["AAA"])
 
     @patch("src.backend.signal_stream_runtime_service.publish_computation_target")
     def test_watchlist_source_leases_only_current_members(self, publish) -> None:

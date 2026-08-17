@@ -53,6 +53,11 @@ def classify_workload(method: str, path: str) -> str:
         return "simulation"
     if normalized_path.endswith("/market-discovery/configuration/materialize"):
         return "commands"
+    if normalized_path.endswith("/market-discovery/signal-stream/runtime"):
+        # This endpoint reads the already-materialized occurrence journal. It
+        # must remain available while heavier scanner discovery work is using
+        # the bounded discovery lane.
+        return "general"
     if any(token in normalized_path for token in ("chart", "/canvas")):
         return "charts"
     if any(token in normalized_path for token in ("scanner", "market-discovery", "watchlist")):

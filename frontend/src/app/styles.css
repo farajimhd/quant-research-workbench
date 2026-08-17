@@ -23489,8 +23489,11 @@ button {
 .market-discovery-reference-list code { margin-top: 4px; color: var(--muted-foreground); }
 .market-discovery-reference-list code { overflow: hidden; max-width: 100%; text-overflow: ellipsis; white-space: nowrap; }
 .market-discovery-reference-list article > span > em { display: block; margin-top: 3px; color: color-mix(in oklab, var(--muted-foreground) 82%, transparent); font-size: .63rem; font-style: normal; }
-.market-discovery-reference-list article > button { display: grid; flex: 0 0 auto; width: 30px; height: 30px; place-items: center; border: 1px solid var(--border); border-radius: 7px; color: var(--muted-foreground); background: var(--surface); cursor: pointer; }
-.market-discovery-reference-list article > button:hover { border-color: var(--danger); color: var(--danger); }
+.market-discovery-reference-actions { display: flex; flex: 0 0 auto; align-items: center; gap: 4px; }
+.market-discovery-reference-actions button { display: grid; width: 30px; height: 30px; place-items: center; border: 1px solid var(--border); border-radius: 7px; color: var(--muted-foreground); background: var(--surface); cursor: pointer; }
+.market-discovery-reference-actions button:hover:not(:disabled) { border-color: var(--foreground); color: var(--foreground); background: var(--surface-alt); }
+.market-discovery-reference-actions button.danger:hover { border-color: var(--danger); color: var(--danger); }
+.market-discovery-reference-actions button:disabled { cursor: not-allowed; opacity: .32; }
 .market-discovery-empty-reference { margin: 12px 0 0; padding: 16px; border: 1px dashed var(--border); border-radius: 8px; color: var(--muted-foreground); font-size: .75rem; text-align: center; }
 .market-discovery-settings > div { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 180px), 1fr)); gap: 10px; margin-top: 12px; }
 .market-discovery-settings label { display: grid; gap: 6px; }
