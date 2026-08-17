@@ -665,8 +665,8 @@ def validate_canvas_interactions(
                 column_lookup.click()
                 if page.get_by_role("group", name="Rule Set Results").count() != 1:
                     issues.append("Column lookup does not expose Rule Set results as columns")
-                if page.get_by_role("group", name="Data Definitions").count() != 1:
-                    issues.append("Column lookup does not expose Data Definitions as columns")
+                if page.get_by_role("group", name="Data Field Outputs").count() != 1:
+                    issues.append("Column lookup does not expose Data Field Outputs as columns")
                 page.keyboard.press("Escape")
             if page.evaluate("document.documentElement.scrollWidth > document.documentElement.clientWidth"):
                 issues.append("Market Discovery page leaks horizontal scrolling to the document")
@@ -1577,6 +1577,14 @@ def capture(args: argparse.Namespace) -> int:
                     lambda request: failed_requests.append(
                         f"{request.method} {request.url}: {request.failure}"
                     ),
+                )
+                page.on(
+                    "response",
+                    lambda response: failed_requests.append(
+                        f"HTTP {response.status} {response.request.method} {response.url}"
+                    )
+                    if response.status >= 400
+                    else None,
                 )
 
                 filename = (
