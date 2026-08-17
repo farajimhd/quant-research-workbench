@@ -332,15 +332,15 @@ class FullChunkPlanTest(unittest.TestCase):
         )
 
     def test_chunk_early_stopping_updates_only_at_two_repetition_cycle_ends(self) -> None:
-        self.assertFalse(
-            _chunk_stopping_evaluation_due(
-                completed_repetitions=1, cycle_repetitions=2
-            )
-        )
-        self.assertTrue(
-            _chunk_stopping_evaluation_due(
-                completed_repetitions=2, cycle_repetitions=2
-            )
+        self.assertEqual(
+            [
+                _chunk_stopping_evaluation_due(
+                    completed_repetitions=repetition,
+                    cycle_repetitions=2,
+                )
+                for repetition in range(1, 7)
+            ],
+            [False, True, False, True, False, True],
         )
         best, reference, stale, exhausted, checked = _chunk_early_stopping_update(
             completed_repetitions=1,
@@ -656,7 +656,8 @@ class FullChunkLauncherTest(unittest.TestCase):
         self.assertFalse(parsed.compile_model)
         self.assertEqual(parsed.warmup_samples, 4_000_000)
         self.assertEqual(parsed.warmup_fraction, 0.01)
-        self.assertEqual(parsed.cosine_cycle_samples, 100_000_000)
+        self.assertNotIn("--cosine-cycle-samples", argv)
+        self.assertEqual(parsed.cosine_cycle_samples, 0)
         self.assertEqual(parsed.scheduler_mode, "epoch-chunk-cosine")
         self.assertEqual(parsed.cosine_restart_decay, 0.95)
         self.assertEqual(parsed.minimum_learning_rate, 1e-5)

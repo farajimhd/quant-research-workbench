@@ -53,7 +53,6 @@ DEFAULT_GRAD_CLIP_NORM = 1.0
 DEFAULT_AMP_DTYPE = "bf16"
 DEFAULT_WARMUP_SAMPLES = 4_000_000
 DEFAULT_WARMUP_FRACTION = 0.01
-DEFAULT_COSINE_CYCLE_SAMPLES = 100_000_000
 DEFAULT_EPOCH_LR_DECAY = 0.95
 DEFAULT_MINIMUM_LEARNING_RATE = 1e-5
 DEFAULT_SCHEDULER_MODE = "epoch-chunk-cosine"
@@ -276,7 +275,6 @@ def trainer_argv(args: argparse.Namespace, *, resolved_manifest: Path) -> list[s
             "--warmup-samples": DEFAULT_WARMUP_SAMPLES,
             "--warmup-fraction": DEFAULT_WARMUP_FRACTION,
             "--minimum-learning-rate": DEFAULT_MINIMUM_LEARNING_RATE,
-            "--cosine-cycle-samples": DEFAULT_COSINE_CYCLE_SAMPLES,
             "--scheduler-mode": DEFAULT_SCHEDULER_MODE,
             "--cosine-restart-decay": DEFAULT_EPOCH_LR_DECAY,
             "--wandb-project": args.wandb_project,

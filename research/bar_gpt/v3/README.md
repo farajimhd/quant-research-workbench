@@ -63,8 +63,11 @@ training.
 
 The full-training launcher pins the v2 production optimizer and scheduler as
 explicit defaults: peak learning rate `3e-4`, weight decay `0.1`, gradient
-clip `1.0`, BF16 AMP, 4M-origin warmup, `epoch-chunk-cosine`, 100M-origin
-cosine cycles, minimum learning rate `1e-5`, and outer-epoch peak decay `0.95`.
+clip `1.0`, BF16 AMP, 4M-origin warmup, `epoch-chunk-cosine`, minimum learning
+rate `1e-5`, and outer-epoch peak decay `0.95`. There is no fixed sample-count
+cycle in this mode. Each cycle spans two complete repetitions of the active
+approximately 30M-origin chunk, then restarts; early stopping is checked at the
+ends of repetitions 2, 4, 6, and so on before that chunk may advance.
 
 ## Diagnostic evaluation
 

@@ -445,8 +445,16 @@ class TrainConfig:
             raise ValueError("warmup_fraction must satisfy 0 <= fraction < 1")
         if self.learning_rate <= 0 or not 0 < self.minimum_learning_rate <= self.learning_rate:
             raise ValueError("learning rates must satisfy 0 < minimum <= peak")
-        if self.cosine_cycle_samples <= 0 or not 0 < self.cosine_restart_decay <= 1:
-            raise ValueError("cosine restart settings are invalid")
+        if not 0 < self.cosine_restart_decay <= 1:
+            raise ValueError("cosine restart/epoch decay must be in (0, 1]")
+        if self.scheduler_mode == "cosine-restarts":
+            if self.cosine_cycle_samples <= 0:
+                raise ValueError("cosine-restarts requires positive cycle samples")
+        elif self.cosine_cycle_samples != 0:
+            raise ValueError(
+                "fixed cosine cycle samples must be zero when the selected "
+                "scheduler derives its span from the run or active chunk"
+            )
         if self.scheduler_mode not in {
             "cosine-restarts",
             "single-cosine",

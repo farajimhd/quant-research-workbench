@@ -359,7 +359,13 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
         default="cosine-restarts",
     )
     parser.add_argument("--dummy-data", action="store_true")
-    return parser.parse_args(list(argv) if argv is not None else None)
+    args = parser.parse_args(list(argv) if argv is not None else None)
+    # Only the sample-clock restarting scheduler owns a fixed cycle length.
+    # Single-cosine uses the complete run span, while epoch-chunk-cosine binds
+    # each cycle dynamically to repetitions of the active chunk.
+    if args.scheduler_mode != "cosine-restarts":
+        args.cosine_cycle_samples = 0
+    return args
 
 
 def build_config(args: argparse.Namespace) -> ExperimentConfig:
