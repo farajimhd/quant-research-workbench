@@ -2003,10 +2003,17 @@ def _market_discovery_classifications() -> list[dict[str, Any]]:
     ]
 
 
-def _watchlist_condition(condition_id: str, source_id: str, comparator: str, value: float | bool) -> dict[str, Any]:
-    """Register an anchored/as-of Watchlist condition without a fake bar interval."""
+def _watchlist_condition(
+    condition_id: str,
+    source_id: str,
+    comparator: str,
+    value: float | bool,
+    *,
+    interval: str = "",
+) -> dict[str, Any]:
+    """Register a typed Watchlist operand, adding an interval only for bar fields."""
 
-    return {
+    condition = {
         "condition_id": condition_id,
         "left_source_id": source_id,
         "comparator": comparator,
@@ -2014,6 +2021,9 @@ def _watchlist_condition(condition_id: str, source_id: str, comparator: str, val
         "value": value,
         "enabled": True,
     }
+    if interval:
+        condition["left_interval"] = normalize_interval_spec(interval)
+    return condition
 
 
 def _watchlist_rule(
@@ -2117,6 +2127,45 @@ def _default_watchlist_rule_sets() -> list[dict[str, Any]]:
         _watchlist_rule("watchlist-positive-gainer", "Positive session gainer", "Requires a positive percentage change from the completed previous-session close.", [_watchlist_condition("positive-session-change", "market.change_pct", "greater_than", 0)]),
         _watchlist_rule("watchlist-relative-volume-gainer", "Elevated relative volume", "Requires current volume to exceed the aligned 20-session baseline.", [_watchlist_condition("relative-volume-over-baseline", "market.relative_volume", "greater_than", 1)]),
         _watchlist_rule("watchlist-price-or-volume-squeeze", "Session Price or Volume Expansion", "Passes when session return from previous close reaches 5% or aligned 20-session relative volume reaches 3x.", [_watchlist_condition("squeeze-session-price", "market.change_pct", "greater_or_equal", 5), _watchlist_condition("squeeze-volume", "market.relative_volume", "greater_or_equal", 3)], operator="any"),
+        _watchlist_rule(
+            "watchlist-squeeze-early-impulse-100ms",
+            "Bullish squeeze early impulse",
+            "Earliest high-sensitivity candidate: the 100 ms close advances at least 0.05% from the prior 100 ms bar while both trade count and volume increase. Use in the all-market scanner, then confirm in an enriched Watchlist.",
+            [
+                _watchlist_condition("squeeze-early-price", "price_change_1_bar_pct", "greater_or_equal", 0.05, interval="100ms"),
+                _watchlist_condition("squeeze-early-trades", "trade_count_change", "greater_than", 0, interval="100ms"),
+                _watchlist_condition("squeeze-early-volume", "volume_change", "greater_than", 0, interval="100ms"),
+            ],
+        ),
+        _watchlist_rule(
+            "watchlist-squeeze-acceleration-1s",
+            "Bullish squeeze acceleration",
+            "Fast acceleration candidate: the 1-second close gains at least 0.20% while trade and share-volume rates are each at least 1.5 times their preceding 1-second bar.",
+            [
+                _watchlist_condition("squeeze-acceleration-price", "price_change_1_bar_pct", "greater_or_equal", 0.20, interval="1s"),
+                _watchlist_condition("squeeze-acceleration-trades", "trade_rate_ratio", "greater_or_equal", 1.5, interval="1s"),
+                _watchlist_condition("squeeze-acceleration-volume", "volume_rate_ratio", "greater_or_equal", 1.5, interval="1s"),
+            ],
+        ),
+        _watchlist_rule(
+            "watchlist-squeeze-confirmation-10s",
+            "Bullish squeeze confirmation",
+            "Lower-noise confirmation: the 10-second close gains at least 0.75% while trade count reaches 1.5 times and volume reaches 2 times their preceding 10-second bars.",
+            [
+                _watchlist_condition("squeeze-confirmation-price", "price_change_1_bar_pct", "greater_or_equal", 0.75, interval="10s"),
+                _watchlist_condition("squeeze-confirmation-trades", "trade_count_ratio", "greater_or_equal", 1.5, interval="10s"),
+                _watchlist_condition("squeeze-confirmation-volume", "volume_ratio", "greater_or_equal", 2.0, interval="10s"),
+            ],
+        ),
+        _watchlist_rule(
+            "watchlist-squeeze-buy-pressure-1s",
+            "Bullish squeeze buy-pressure confirmation",
+            "Enriched Watchlist confirmation: the 1-second close gains at least 0.10% and buyer-initiated volume exceeds seller-initiated volume in that bar.",
+            [
+                _watchlist_condition("squeeze-buy-pressure-price", "price_change_1_bar_pct", "greater_or_equal", 0.10, interval="1s"),
+                _watchlist_condition("squeeze-buy-pressure-delta", "buy_sell_volume_delta", "greater_than", 0, interval="1s"),
+            ],
+        ),
         _watchlist_rule("watchlist-vwap-breakout", "VWAP breakout", "Requires last price to trade at least 5 basis points above current VWAP.", [{**_watchlist_condition("vwap-breakout-price", "market.last_price", "above_by_bps", 5), "right_source_id": "indicator.vwap.value"}]),
         _watchlist_rule("watchlist-news-bullish", "Bullish news sentiment", "Requires a validated news label and a positive sentiment score of at least 0.35.", [_watchlist_condition("news-labeled-positive", "signal.news_labeled", "is_true", True), _watchlist_condition("news-positive-score", "signal.company_news.score", "greater_or_equal", 0.35)], enabled=False, implementation_status="integration_pending"),
         _watchlist_rule("watchlist-news-bearish", "Bearish news sentiment", "Requires a validated news label and a negative sentiment score of -0.35 or lower.", [_watchlist_condition("news-labeled-negative", "signal.news_labeled", "is_true", True), _watchlist_condition("news-negative-score", "signal.company_news.score", "less_or_equal", -0.35)], enabled=False, implementation_status="integration_pending"),
@@ -2925,9 +2974,8 @@ def _validate_market_discovery(section: dict[str, Any]) -> None:
                 raise ValueError(
                     f"Rule Set {rule_set.get('name')} references unknown Data Field output {left_ref or '<empty>'}"
                 )
-            field = field_by_source.get(source_id)
             output = output_index.get(left_ref)
-            if field is None or output is None:
+            if output is None or str(output.get("source_id") or "") != source_id:
                 raise ValueError(
                     f"Watchlist rule set {rule_set.get('name')} references unknown field {source_id}"
                 )
@@ -2973,10 +3021,6 @@ def _validate_market_discovery(section: dict[str, Any]) -> None:
                 raise ValueError(
                     f"Rule Set {rule_set.get('name')} references unknown comparison Data Field output {right_ref or '<empty>'}"
                 )
-            if right_source_id and right_source_id not in field_by_source:
-                raise ValueError(
-                    f"Watchlist rule set {rule_set.get('name')} references unknown comparison field {right_source_id}"
-                )
             if right_source_id:
                 right_value_selection = str(condition.get("right_value_selection") or "latest")
                 if right_value_selection != "latest":
@@ -2984,6 +3028,10 @@ def _validate_market_discovery(section: dict[str, Any]) -> None:
                         f"Rule Set {rule_set.get('name')} requires latest comparison value selection for {right_source_id}"
                     )
                 right_output = output_index.get(right_ref, {})
+                if str(right_output.get("source_id") or "") != right_source_id:
+                    raise ValueError(
+                        f"Watchlist rule set {rule_set.get('name')} references unknown comparison field {right_source_id}"
+                    )
                 right_data_field = data_field_by_output_ref.get(right_ref)
                 if bool(rule_set.get("enabled")) and right_data_field is not None and not bool(right_data_field.get("enabled")):
                     raise ValueError(

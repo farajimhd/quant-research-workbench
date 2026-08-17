@@ -454,6 +454,55 @@ class DataFieldContractTests(unittest.TestCase):
             for condition in rule_set["conditions"]
         ))
 
+    def test_squeeze_detection_rules_use_explicit_fast_change_instances(self) -> None:
+        squeeze_rules = {
+            row["rule_set_id"]: row
+            for row in self.discovery["rule_sets"]
+            if row["rule_set_id"].startswith("watchlist-squeeze-")
+        }
+        expected = {
+            "watchlist-squeeze-early-impulse-100ms": (
+                "100ms",
+                {"price_change_1_bar_pct", "trade_count_change", "volume_change"},
+            ),
+            "watchlist-squeeze-acceleration-1s": (
+                "1s",
+                {"price_change_1_bar_pct", "trade_rate_ratio", "volume_rate_ratio"},
+            ),
+            "watchlist-squeeze-confirmation-10s": (
+                "10s",
+                {"price_change_1_bar_pct", "trade_count_ratio", "volume_ratio"},
+            ),
+            "watchlist-squeeze-buy-pressure-1s": (
+                "1s",
+                {"price_change_1_bar_pct", "buy_sell_volume_delta"},
+            ),
+        }
+        self.assertEqual(set(squeeze_rules), set(expected))
+        for rule_set_id, (interval, sources) in expected.items():
+            rule_set = squeeze_rules[rule_set_id]
+            self.assertEqual({row["left_source_id"] for row in rule_set["conditions"]}, sources)
+            self.assertEqual(
+                {interval_expression(row["left_interval"]) for row in rule_set["conditions"]},
+                {interval},
+            )
+
+        inactive = compile_data_field_plan({
+            **self.discovery,
+            "core_scan": {**self.discovery["core_scan"], "inclusion_rule_sets": []},
+            "watchlists": [],
+            "signal_streams": [],
+        })
+        self.assertTrue(set(expected).isdisjoint(inactive["rule_set_ids"]))
+
+        materialized = deepcopy(self.discovery)
+        materialized["core_scan"]["inclusion_rule_sets"] = [
+            "watchlist-squeeze-early-impulse-100ms"
+        ]
+        plan = compile_data_field_plan(materialized)
+        self.assertIn("watchlist-squeeze-early-impulse-100ms", plan["rule_set_ids"])
+        self.assertIn("100ms", plan["technical_timeframes"])
+
     def test_materialized_event_window_keeps_aggregation_in_compiled_identity(self) -> None:
         discovery = deepcopy(self.discovery)
         trade_price = next(

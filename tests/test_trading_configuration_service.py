@@ -65,6 +65,14 @@ class TradingConfigurationServiceTests(unittest.TestCase):
         self.assertEqual(bullish_choch["conditions"][0]["comparator"], "is_true")
         self.assertIsNone(bullish_choch["conditions"][0]["value"])
 
+        squeeze_rules = [
+            row for row in rule_sets
+            if row["rule_set_id"].startswith("watchlist-squeeze-")
+        ]
+        self.assertEqual(len(squeeze_rules), 4)
+        self.assertTrue(all(row["enabled"] for row in squeeze_rules))
+        self.assertTrue(all(row["protected"] for row in squeeze_rules))
+
     def test_rule_definition_rejects_incomplete_operands(self) -> None:
         base = {
             "name": "Malformed",

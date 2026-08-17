@@ -483,6 +483,7 @@ function ruleSetLibraryLocation(ruleSet: DataRuleSet) {
   if (/watchlist-(penny|small-caps|mid-caps|large-caps)/.test(id)) return { group: "Market Discovery filters", subgroup: "Price and market-cap classifications" };
   if (/watchlist-(news|sec|fundamental)/.test(id)) return { group: "Market Discovery filters", subgroup: "Intelligence filters" };
   if (/watchlist-(ipo|split)/.test(id)) return { group: "Market Discovery filters", subgroup: "Corporate-event windows" };
+  if (/watchlist-(?:squeeze-|price-or-volume-squeeze)/.test(id)) return { group: "Market Discovery filters", subgroup: "Squeeze detection" };
   return { group: "Market Discovery filters", subgroup: "Market activity filters" };
 }
 

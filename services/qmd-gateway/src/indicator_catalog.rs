@@ -253,6 +253,9 @@ mod taxonomy_tests {
                 "missing implemented change field {field}"
             );
         }
+        assert!(indicator_catalog().iter().any(|entry| {
+            entry.fields.contains(&"buy_sell_volume_delta_change")
+        }));
     }
 }
 
@@ -464,6 +467,7 @@ const INDICATOR_CATALOG: &[IndicatorCatalogEntry] = &[
             "buy_volume",
             "sell_volume",
             "buy_sell_volume_delta",
+            "buy_sell_volume_delta_change",
             "cumulative_delta",
         ],
         typical_timeframes: SHORT_TFS,
