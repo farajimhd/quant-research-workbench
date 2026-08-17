@@ -273,7 +273,7 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--units",
         required=True,
-        help="comma-separated ticker-month unit keys; exactly five are required",
+        help="comma-separated unique ticker-month unit keys; at least one is required",
     )
     parser.add_argument("--panel", choices=("validation",), default="validation")
     parser.add_argument(
@@ -310,10 +310,12 @@ def load_portable_manifest(path: Path, *, data_config: DataConfig) -> dict[str, 
     return value
 
 
-def parse_units(value: str, *, expected: int = 5) -> tuple[str, ...]:
+def parse_units(value: str) -> tuple[str, ...]:
     units = tuple(item.strip().upper() for item in value.split(",") if item.strip())
-    if len(units) != expected or len(set(units)) != expected:
-        raise ValueError(f"grouped evaluation requires exactly {expected} unique unit keys")
+    if not units:
+        raise ValueError("grouped evaluation requires at least one unit key")
+    if len(set(units)) != len(units):
+        raise ValueError("grouped evaluation requires unique unit keys")
     for unit in units:
         ticker, separator, year_month = unit.partition(":")
         if not separator or len(year_month) != 7 or year_month[4] != "-":

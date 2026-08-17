@@ -34,12 +34,13 @@ class GroupedCheckpointEvaluationTest(unittest.TestCase):
         _install_pathlib_pickle_compat()
         self.assertIn("pathlib._local", sys.modules)
 
-    def test_requires_exactly_five_unique_units(self) -> None:
+    def test_accepts_arbitrary_unique_units(self) -> None:
         units = parse_units("SPY:2026-07,NVDA:2026-03,SOFI:2026-03,XBIO:2026-03,LIQT:2026-07")
         self.assertEqual(len(units), 5)
-        with self.assertRaisesRegex(ValueError, "exactly 5"):
-            parse_units("SPY:2026-07,NVDA:2026-03")
-        with self.assertRaisesRegex(ValueError, "exactly 5"):
+        self.assertEqual(parse_units("SPY:2026-07,NVDA:2026-03"), ("SPY:2026-07", "NVDA:2026-03"))
+        with self.assertRaisesRegex(ValueError, "at least one"):
+            parse_units("")
+        with self.assertRaisesRegex(ValueError, "unique"):
             parse_units("SPY:2026-07," * 5)
 
     def test_portable_manifest_verifies_hash_and_checkpoint_contract(self) -> None:
