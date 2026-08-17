@@ -670,7 +670,7 @@ def project_data_field_outputs(
                     requested_instances = sorted(
                         (interval, function)
                         for interval, function in selected_instances.get(field_ref, set())
-                        if interval in intervals
+                        if _interval_uses_supported_unit(interval, intervals)
                     )
                 for interval, function in requested_instances:
                     selected_runtime_field = str(runtime_fields.get(function) or runtime_field)
@@ -685,28 +685,31 @@ def project_data_field_outputs(
                     if observed_interval and observed_interval != interval:
                         value_found, value = False, None
                     instance_ref = field_instance_ref(field_ref, interval, function)
-                    if value_found or instance_ref not in result:
+                    # Indicator snapshots are fetched independently per interval
+                    # and merged afterwards. A producer that does not own this
+                    # interval must not publish a null placeholder: doing so
+                    # erases a value materialized by an earlier interval.
+                    if value_found:
                         result[instance_ref] = value
-                    if not value_found and result.get(instance_ref) is None:
+                    if not value_found and instance_ref not in result:
                         result[f"{instance_ref}__null_reason"] = "producer_output_missing"
                     found_any = found_any or value_found or result.get(instance_ref) is not None
-                if observed_interval in intervals:
+                if _interval_uses_supported_unit(observed_interval, intervals):
                     default_function = str(aggregation.get("default") or "")
                     result[field_ref] = result.get(field_instance_ref(field_ref, observed_interval, default_function))
-                elif field_ref not in result:
-                    result[field_ref] = None
                 value_found = found_any
                 value = result.get(field_ref)
             else:
                 value_found, value = _projected_value(row, runtime_field, source_id)
-                result[field_ref] = value
+                if value_found:
+                    result[field_ref] = value
             # Canvas tables address configured presentations by column id while
             # rules address the immutable Data Field output reference. Publish
             # both names from the same resolved value so presentation never has
             # to reconstruct a producer-specific runtime key.
             for presentation in output.get("column_presentations") or []:
                 presentation_id = str(presentation.get("presentation_id") or "")
-                if presentation_id and not intervals:
+                if presentation_id and not intervals and value_found:
                     result[presentation_id] = value
             if not value_found:
                 result[f"{field_ref}__null_reason"] = "producer_output_missing"
@@ -750,7 +753,10 @@ def project_composition_data_field_columns(
                 continue
             interval = bindings.get(str(column_id), "")
             value_ref = field_instance_ref(field_ref, interval, aggregations.get(str(column_id), ""))
-            result[str(column_id)] = row.get(value_ref)
+            # Some canonical presentation IDs are supplied directly by the
+            # producer. Retain them when an optional Data Field output is absent.
+            if value_ref in row:
+                result[str(column_id)] = row.get(value_ref)
             null_reason = row.get(f"{value_ref}__null_reason")
             if null_reason:
                 result[f"{column_id}__null_reason"] = null_reason
@@ -1165,6 +1171,25 @@ def _preferred_instance_interval(values: Iterable[str]) -> str:
     return available[0] if available else ""
 
 
+def _interval_uses_supported_unit(interval: str, examples: Iterable[str]) -> bool:
+    """Accept arbitrary positive values for units supported by a Data Field.
+
+    Catalog intervals are examples/capabilities, not a closed enumeration. A
+    configured 3-minute bar is valid when the producer supports minute bars,
+    even if the catalog happens to advertise 1m and 5m as common choices.
+    """
+
+    selected = normalize_interval_spec(interval)
+    if selected is None:
+        return False
+    supported_units = {
+        str(spec["unit"])
+        for value in examples
+        if (spec := normalize_interval_spec(value)) is not None
+    }
+    return str(selected["unit"]) in supported_units
+
+
 def _projected_value(
     row: dict[str, Any],
     runtime_field: str,
@@ -1175,12 +1200,23 @@ def _projected_value(
     technical_keys: dict[tuple[str, str], str] | None = None,
 ) -> tuple[bool, Any]:
     candidates = [runtime_field, source_id] if allow_generic else []
+    # Historical Scanner bars predate the canonical QMD Data Field names.
+    # Keep compatibility at this projection boundary so consumers do not need
+    # to know which producer vocabulary supplied the same semantic value.
+    producer_aliases = {
+        "price_change_pct": ("change_pct",),
+        "high_low_range_pct": ("range_pct",),
+    }
+    aliases = producer_aliases.get(source_id, ())
+    if allow_generic:
+        candidates.extend(aliases)
     if interval:
         metric_names = list(dict.fromkeys([
             source_id,
             source_id.replace(".", "_"),
             source_id.rsplit(".", 1)[-1],
             runtime_field,
+            *aliases,
         ]))
         candidates = [
             *(f"technical__{metric}__{interval}" for metric in metric_names),

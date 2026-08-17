@@ -151,6 +151,8 @@ pub struct HistoricalScannerMarketSnapshotRow {
     pub change_5m_pct: f64,
     pub change_pct: f64,
     pub last: f64,
+    pub market_event_age_ms: u64,
+    pub market_event_at: String,
     pub quote_count: u64,
     pub symbol: String,
     pub trade_count: u64,
@@ -1567,6 +1569,8 @@ fn scanner_market_snapshot_sql(
             last,
             if(first_price = 0, 0, (last / first_price - 1) * 100) AS change_pct,
             if(first_5m_price = 0, 0, (last / first_5m_price - 1) * 100) AS change_5m_pct,
+            toString(fromUnixTimestamp64Micro(toInt64(last_event_ts_us), 'UTC')) AS market_event_at,
+            toUInt64(greatest(0, intDiv({as_of_us} - toInt64(last_event_ts_us), 1000))) AS market_event_age_ms,
             volume,
             trade_count,
             quote_count
@@ -1577,6 +1581,7 @@ fn scanner_market_snapshot_sql(
                 argMax(price, tuple(sip_timestamp_us, ordinal)) AS last,
                 argMin(price, tuple(sip_timestamp_us, ordinal)) AS first_price,
                 argMinIf(price, tuple(sip_timestamp_us, ordinal), sip_timestamp_us >= {five_minute_us}) AS first_5m_price,
+                max(sip_timestamp_us) AS last_event_ts_us,
                 sum(toFloat64(size_primary)) AS volume,
                 count() AS trade_count,
                 toUInt64(0) AS quote_count
@@ -1596,6 +1601,7 @@ fn scanner_market_snapshot_sql(
         ORDER BY abs(change_5m_pct) DESC, symbol ASC
         LIMIT 20000
         FORMAT JSONEachRow"#,
+        as_of_us = as_of.timestamp_micros(),
         source = selects.join(" UNION ALL "),
     ))
 }

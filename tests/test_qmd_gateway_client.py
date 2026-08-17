@@ -13,6 +13,7 @@ from src.backend.qmd_gateway_client import (
     QmdServiceError,
     normalize_qmd_macro_bar_snapshot,
     normalize_qmd_market_signal,
+    normalize_qmd_symbol_snapshot,
     historical_market_clock_projection,
     qmd_compact_events,
     qmd_compact_event_page,
@@ -43,6 +44,16 @@ from src.request_context import begin_request_context, current_request_identity,
 
 
 class QmdGatewayClientTests(unittest.TestCase):
+    def test_symbol_snapshot_keeps_session_values_separate_from_interval_bars(self) -> None:
+        row = normalize_qmd_symbol_snapshot({
+            "ticker": "AAPL",
+            "last_price": 100.0,
+            "day_volume": 2_000.0,
+            "day_dollar_volume": 198_000.0,
+        })
+        self.assertEqual(row["volume"], 2_000.0)
+        self.assertEqual(row["vwap"], 99.0)
+
     def test_scanner_payload_projects_authoritative_market_clock_into_rows(self) -> None:
         clock = {
             "observed_at": "2026-08-14T14:00:00Z",

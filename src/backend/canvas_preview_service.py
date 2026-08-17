@@ -37,7 +37,6 @@ from src.trading_runtime.domain import BrokerAccount, BrokerEventEnvelope, Broke
 from src.trading_runtime.ibkr_normalizer import normalize_account_values, normalize_execution, normalize_ledger, normalize_order, normalize_position_snapshot
 from src.trading_runtime.projector import TradingStateProjector
 from src.trading_runtime.round_trips import derive_round_trip_trades
-from src.trading_runtime.watchlist_resolver import classify_watchlist_row
 
 
 NEW_YORK = ZoneInfo("America/New_York")
@@ -161,6 +160,26 @@ def scanner_snapshot_payload(
     if effective_as_of.tzinfo is None:
         effective_as_of = effective_as_of.replace(tzinfo=UTC)
     effective_as_of = effective_as_of.astimezone(UTC)
+    if rows:
+        local_clock = effective_as_of.astimezone(NEW_YORK)
+        local_minutes = local_clock.hour * 60 + local_clock.minute
+        session_phase = (
+            "premarket" if 4 * 60 <= local_minutes < 9 * 60 + 30
+            else "regular" if 9 * 60 + 30 <= local_minutes < 16 * 60
+            else "aftermarket" if 16 * 60 <= local_minutes < 20 * 60
+            else "maintenance"
+        )
+        # A non-empty causal event cross-section proves that this historical
+        # date/session was active; no holiday status is inferred for empty days.
+        for row in rows:
+            if row.get("session_phase") is None:
+                row["session_phase"] = session_phase
+            if row.get("market_status") is None:
+                row["market_status"] = "active"
+            if row.get("market_is_open") is None:
+                row["market_is_open"] = session_phase != "maintenance"
+            if row.get("is_trading_day") is None:
+                row["is_trading_day"] = True
     cutoff = effective_as_of
     errors: dict[str, str] = {}
     news: list[dict[str, Any]] = []
@@ -228,8 +247,10 @@ def scanner_snapshot_payload(
                 errors[name] = str(exc)
     if enrichment_scope == "full":
         _merge_scanner_intelligence(rows, news, sec, effective_as_of)
+    from src.backend.watchlist_runtime_service import normalize_watchlist_candidate
+
     rows = project_discovery_columns(
-        (classify_watchlist_row(row) for row in rows),
+        (normalize_watchlist_candidate(row) for row in rows),
     )
     discovery = dict(configuration.get("market_discovery") or {})
     data_field_plan = compile_data_field_plan(discovery)

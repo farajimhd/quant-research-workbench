@@ -396,6 +396,51 @@ class DataFieldContractTests(unittest.TestCase):
         )
         self.assertNotIn(field_instance_ref(output["field_ref"], "1m"), projected)
 
+    def test_projection_does_not_erase_values_from_other_producers_or_intervals(self) -> None:
+        price_change = next(
+            row for row in self.discovery["data_fields"]
+            if row["outputs"][0]["source_id"] == "price_change_pct"
+        )
+        last_price = next(
+            row for row in self.discovery["data_fields"]
+            if row["outputs"][0]["source_id"] == "market.last_price"
+        )
+        output = price_change["outputs"][0]
+        one_second_ref = field_instance_ref(output["field_ref"], "1s")
+        projected = project_data_field_outputs(
+            [{
+                "indicator_interval": "3m",
+                one_second_ref: 1.25,
+                "price_change_pct": 2.5,
+            }],
+            [price_change, last_price],
+            field_instances=[
+                {"field_ref": output["field_ref"], "interval": "1s"},
+                {"field_ref": output["field_ref"], "interval": "3m"},
+            ],
+        )[0]
+        self.assertEqual(projected[one_second_ref], 1.25)
+        self.assertEqual(
+            projected[field_instance_ref(output["field_ref"], "3m")], 2.5
+        )
+        self.assertNotIn(last_price["outputs"][0]["field_ref"], projected)
+        self.assertNotIn("last_price", projected)
+
+    def test_historical_bar_metric_alias_projects_to_canonical_instance(self) -> None:
+        data_field = next(
+            row for row in self.discovery["data_fields"]
+            if row["outputs"][0]["source_id"] == "price_change_pct"
+        )
+        output = data_field["outputs"][0]
+        projected = project_data_field_outputs(
+            [{"technical__change_pct__5m": 3.25}],
+            [data_field],
+            field_instances=[{"field_ref": output["field_ref"], "interval": "5m"}],
+        )[0]
+        self.assertEqual(
+            projected[field_instance_ref(output["field_ref"], "5m")], 3.25
+        )
+
     def test_projection_populates_rule_and_canvas_identities(self) -> None:
         data_field = next(
             row

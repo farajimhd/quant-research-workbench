@@ -324,6 +324,18 @@ def _compose_real_live_scanner_snapshot(*, allow_provider_fallback: bool = True)
                 data_field_plan = compile_data_field_plan(discovery)
                 active_field_refs = list(data_field_plan.get("field_refs") or [])
                 active_field_instances = list(data_field_plan.get("field_instances") or [])
+                interval_field_refs = {
+                    str(output.get("field_ref") or "")
+                    for data_field in data_fields
+                    if list(dict(data_field.get("context") or {}).get("available_intervals") or [])
+                    for output in data_field.get("outputs") or []
+                    if str(output.get("field_ref") or "") in active_field_refs
+                }
+                interval_field_instances = [
+                    instance
+                    for instance in active_field_instances
+                    if str(instance.get("field_ref") or "") in interval_field_refs
+                ]
                 indicator_rows: dict[str, dict[str, Any]] = {}
                 for interval in configured_discovery_technical_windows(configuration):
                     source_rows = (
@@ -337,13 +349,19 @@ def _compose_real_live_scanner_snapshot(*, allow_provider_fallback: bool = True)
                             for row in source_rows
                         ],
                         data_fields,
-                        field_refs=active_field_refs,
-                        field_instances=active_field_instances,
+                        field_refs=interval_field_refs,
+                        field_instances=interval_field_instances,
                     )
                     for indicator_row in interval_projection:
                         ticker = str(indicator_row.get("ticker") or "").upper()
                         if ticker:
-                            indicator_rows[ticker] = {**indicator_rows.get(ticker, {}), **indicator_row}
+                            # Raw bar names such as volume and vwap are local to
+                            # this interval. Merge only instantiated Data Field
+                            # identities so they cannot replace Core Scanner
+                            # session values with the final requested bar.
+                            indicator_rows[ticker] = merge_interval_field_instances(
+                                indicator_rows.get(ticker, {}), indicator_row
+                            )
                 rows = [
                     {**row, **indicator_rows.get(str(row.get("ticker") or "").upper(), {})}
                     for row in rows
@@ -1298,6 +1316,21 @@ def lookup_ibkr_stock_conid(symbol: str) -> int:
             except (TypeError, ValueError):
                 continue
     raise RuntimeError(f"Could not resolve IBKR stock conid for {symbol}.")
+
+
+def merge_interval_field_instances(
+    existing: dict[str, Any], projected_interval_row: dict[str, Any]
+) -> dict[str, Any]:
+    """Merge only configured interval identities, never ambiguous raw bar keys."""
+
+    return {
+        **existing,
+        **{
+            key: value
+            for key, value in projected_interval_row.items()
+            if "@@" in key
+        },
+    }
 
 
 def apply_tradable_filter_to_scanner_payload(payload: dict[str, Any]) -> dict[str, Any]:
