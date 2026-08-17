@@ -1574,12 +1574,12 @@ fn scanner_market_snapshot_sql(
         (
             SELECT
                 ticker,
-                argMaxIf(price, tuple(sip_timestamp_us, ordinal), is_trade) AS last,
-                argMinIf(price, tuple(sip_timestamp_us, ordinal), is_trade) AS first_price,
-                argMinIf(price, tuple(sip_timestamp_us, ordinal), is_trade AND sip_timestamp_us >= {five_minute_us}) AS first_5m_price,
-                sumIf(toFloat64(size_primary), is_trade) AS volume,
-                countIf(is_trade) AS trade_count,
-                countIf(NOT is_trade) AS quote_count
+                argMax(price, tuple(sip_timestamp_us, ordinal)) AS last,
+                argMin(price, tuple(sip_timestamp_us, ordinal)) AS first_price,
+                argMinIf(price, tuple(sip_timestamp_us, ordinal), sip_timestamp_us >= {five_minute_us}) AS first_5m_price,
+                sum(toFloat64(size_primary)) AS volume,
+                count() AS trade_count,
+                toUInt64(0) AS quote_count
             FROM
             (
                 SELECT
@@ -1587,7 +1587,6 @@ fn scanner_market_snapshot_sql(
                     ordinal,
                     sip_timestamp_us,
                     size_primary,
-                    bitAnd(event_meta, 1) = 1 AND price_primary_int > 0 AND size_primary > 0 AS is_trade,
                     toFloat64(price_primary_int) / if(bitAnd(event_meta, 2) != 0, 10000., 100.) AS price
                 FROM ({source})
             )
@@ -1626,7 +1625,10 @@ fn scanner_market_select(
         PREWHERE source.event_date >= toDate('{start_date}')
           AND source.event_date <= toDate('{end_date}')
           AND source.sip_timestamp_us >= {start_us}
-          AND source.sip_timestamp_us < {end_us}"#,
+          AND source.sip_timestamp_us < {end_us}
+          AND bitAnd(source.event_meta, 1) = 1
+          AND source.price_primary_int > 0
+          AND source.size_primary > 0"#,
         start_date = start.date_naive(),
         end_date = last_inclusive.date_naive(),
         start_us = start.timestamp_micros(),

@@ -58,7 +58,7 @@ $uvicornArgs = @(
     "src.backend.app:app",
     "--host", $HostName,
     "--port", "$Port",
-    "--lifespan", "off"
+    "--lifespan", "on"
 )
 
 if (-not $NoReload) {
@@ -66,5 +66,5 @@ if (-not $NoReload) {
 }
 
 Write-Host "Starting backend API at http://$HostName`:$Port"
-Write-Host "Uvicorn lifespan is disabled for this backend because src.backend.app has no startup/shutdown lifespan work."
+Write-Host "Uvicorn lifespan is enabled for owned background runtimes and graceful shutdown."
 & $resolvedPython @uvicornArgs

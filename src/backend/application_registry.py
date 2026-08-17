@@ -347,7 +347,7 @@ LINK_CONTRACTS = (
     LinkContractDefinition(
         "workspace.symbol_context",
         "point_in_time_symbol_identity",
-        ("scanner", "watchlist", "strategy_activity", "positions", "orders", "closed_trades"),
+        ("scanner", "signal_stream", "watchlist", "strategy_activity", "positions", "orders", "closed_trades"),
         SYMBOL_LINK_CONSUMERS,
         "preserve workspace clock",
         "resolve symbol through event-valid identity",
@@ -420,6 +420,7 @@ CONTAINER_DEFINITIONS = (
     _container("facts", "Stock Facts", "frontend/src/app/components/StockFactsContainer.tsx", inputs=("workspace.clock_context", "workspace.symbol_context")),
     _container("microstructure", "Quotes & Tape", "frontend/src/app/components/MarketMicrostructureContainers.tsx", products=("qmd.intraday_bars", "qmd.indicators"), inputs=("workspace.clock_context", "workspace.symbol_context")),
     _container("scanner", "Scanner", "frontend/src/app/components/MarketScreenerContainers.tsx", products=("qmd.scanner",), outputs=("workspace.symbol_context",)),
+    _container("signal_stream", "Signal Stream", "frontend/src/app/components/MarketScreenerContainers.tsx", products=("qmd.scanner",), outputs=("workspace.symbol_context",)),
     _container("watchlist", "Watch Universe", "frontend/src/app/components/MarketScreenerContainers.tsx", products=("qmd.scanner", "qmd.computation_targets"), outputs=("workspace.symbol_context",)),
     _container("strategy_activity", "Strategy Activity", "frontend/src/app/components/MarketScreenerContainers.tsx", outputs=("workspace.symbol_context",)),
     _container("strategy", "Strategy", "frontend/src/pages/CanvasConfigurationPage.tsx"),
@@ -441,7 +442,8 @@ CONTAINER_DEFINITIONS = (
 
 
 CONFIGURATION_SCHEMAS = (
-    ConfigurationSchemaDefinition("trading_configuration", "backend", "src/backend/trading_configuration_service.py", 27, ALL_MODES, True),
+    ConfigurationSchemaDefinition("trading_configuration", "backend", "src/backend/trading_configuration_service.py", 30, ALL_MODES, True),
+    ConfigurationSchemaDefinition("signal_stream", "backend", "src/backend/signal_stream_runtime_service.py", 1, ALL_MODES, True),
     ConfigurationSchemaDefinition("strategy_profile", "strategy_runtime", "src/trading_runtime/strategy_engine.py", 3, ALL_MODES, True),
     ConfigurationSchemaDefinition("watchlist", "backend", "src/backend/watchlist_runtime_service.py", 1, ALL_MODES, True),
     ConfigurationSchemaDefinition("historical_watchlist_plan", "backend", "src/backend/historical_watchlist_plan.py", 2, ("replay", "backtest"), False),

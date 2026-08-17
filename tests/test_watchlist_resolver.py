@@ -5,6 +5,7 @@ import unittest
 from src.backend.trading_configuration_service import _default_draft
 from src.trading_runtime.watchlist_resolver import (
     classify_watchlist_row,
+    evaluate_rule_sets_frame,
     resolve_watchlist_membership,
 )
 
@@ -171,7 +172,7 @@ class WatchlistResolverTest(unittest.TestCase):
                 "enabled": True,
                 "left_field_ref": "data.price_change_pct@1:value",
                 "left_source_id": "price_change_pct",
-                "left_interval": "5m",
+                "left_interval": {"value": 5, "unit": "minutes"},
                 "comparator": "greater_or_equal",
                 "value": 5,
             }],
@@ -185,6 +186,34 @@ class WatchlistResolverTest(unittest.TestCase):
             ],
         )
         self.assertEqual([row["ticker"] for row in resolved], ["RIGHT"])
+
+    def test_vectorized_rules_support_field_comparison_and_string_equality(self) -> None:
+        rules = [{
+            "rule_set_id": "relative-and-status",
+            "enabled": True,
+            "operator": "all",
+            "conditions": [
+                {
+                    "enabled": True,
+                    "left_field_ref": "data.last_price@1:value",
+                    "left_interval": {"value": 3, "unit": "minutes"},
+                    "comparator": "greater_than",
+                    "right_field_ref": "data.vwap@1:value",
+                    "right_interval": {"value": 3, "unit": "minutes"},
+                },
+                {
+                    "enabled": True,
+                    "left_source_id": "market.status",
+                    "comparator": "equals",
+                    "value": "open",
+                },
+            ],
+        }]
+        masks = evaluate_rule_sets_frame(rules, [
+            {"data.last_price@1:value@@3m": 10.5, "data.vwap@1:value@@3m": 10, "market_status": "open"},
+            {"data.last_price@1:value@@3m": 9.5, "data.vwap@1:value@@3m": 10, "market_status": "open"},
+        ])
+        self.assertEqual(masks["relative-and-status"], [True, False])
 
     def test_pending_integration_templates_are_disabled_and_fail_closed(self) -> None:
         for watchlist_id in {

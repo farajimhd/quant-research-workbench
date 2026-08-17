@@ -145,6 +145,16 @@ class SignalStreamRuntimeTests(unittest.TestCase):
             signal["occurrences"][0]["event_id"],
         )
 
+    def test_missing_candidate_rearms_edge_for_later_return(self) -> None:
+        runtime = SignalStreamRuntime()
+        start = datetime(2026, 8, 16, 15, 0, tzinfo=UTC)
+        candidate = {"ticker": "AAA", "change_pct": 4.5, "market_cap": 500_000_000}
+        runtime.resolve(self.configuration, [candidate], as_of=start, journal=self.journal)
+        runtime.resolve(self.configuration, [], as_of=start + timedelta(seconds=1), journal=self.journal)
+        returned = runtime.resolve(self.configuration, [candidate], as_of=start + timedelta(seconds=2), journal=self.journal)
+        self.assertEqual(returned["signal_streams"][0]["emitted_count"], 1)
+        self.assertEqual(returned["occurrence_count"], 2)
+
     def test_occurrence_freezes_the_configured_interval_column_value(self) -> None:
         discovery = self.configuration["market_discovery"]
         column = next(row for row in discovery["column_catalog"] if row.get("source_id") == "price_change_pct")

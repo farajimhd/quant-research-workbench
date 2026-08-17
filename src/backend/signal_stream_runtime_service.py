@@ -13,6 +13,7 @@ from src.backend.discovery_projection import (
     project_discovery_columns,
 )
 from src.backend.data_field_contracts import (
+    compile_data_field_plan,
     field_instance_ref,
     interval_expression,
     project_composition_data_field_columns,
@@ -20,7 +21,7 @@ from src.backend.data_field_contracts import (
 )
 from src.backend.watchlist_runtime_service import normalize_watchlist_candidate
 from src.trading_runtime.journal import TradingJournal
-from src.trading_runtime.watchlist_resolver import evaluate_rule_set_result
+from src.trading_runtime.watchlist_resolver import evaluate_rule_sets_frame
 
 
 NEW_YORK = ZoneInfo("America/New_York")
@@ -45,6 +46,7 @@ class SignalStreamRuntime:
         *,
         as_of: datetime,
         journal: TradingJournal,
+        include_occurrences: bool = True,
     ) -> dict[str, Any]:
         if as_of.tzinfo is None:
             raise ValueError("Signal Stream as_of must be timezone-aware")
@@ -59,10 +61,11 @@ class SignalStreamRuntime:
             for row in discovery.get("column_catalog") or []
         }
         selected_columns = configured_discovery_column_ids(configuration)
+        active_field_refs = list(compile_data_field_plan(discovery).get("field_refs") or [])
         normalized = project_data_field_outputs(project_discovery_columns(
             (normalize_watchlist_candidate(row) for row in candidates),
             column_ids=selected_columns,
-        ), discovery.get("data_fields") or [])
+        ), discovery.get("data_fields") or [], field_refs=active_field_refs)
         rows_by_ticker = {
             str(row.get("ticker") or row.get("symbol") or "").strip().upper(): row
             for row in normalized
@@ -71,11 +74,13 @@ class SignalStreamRuntime:
         stream_snapshots: list[dict[str, Any]] = []
         with self._lock:
             self._hydrate(journal)
-            self._prune_admissions(as_of)
+            dirty = self._prune_admissions(as_of)
+            active_stream_ids: set[str] = set()
             for stream in discovery.get("signal_streams") or []:
                 stream_id = str(stream.get("signal_stream_id") or "").strip()
                 if not stream_id:
                     continue
+                active_stream_ids.add(stream_id)
                 enabled = bool(stream.get("enabled", True))
                 selected_rule_ids = [
                     str(value) for value in stream.get("inclusion_rule_sets") or [] if str(value)
@@ -84,12 +89,22 @@ class SignalStreamRuntime:
                 stream_state = self._states.setdefault(stream_id, {})
                 emitted = 0
                 matching = 0
-                for ticker, row in rows_by_ticker.items():
-                    stream_row = project_composition_data_field_columns(
-                        [row], stream, discovery.get("column_catalog") or []
-                    )[0]
-                    matches = enabled and bool(selected_rule_ids) and _matches_stream(
-                        stream, selected_rule_ids, rule_sets, stream_row
+                stream_rows = project_composition_data_field_columns(
+                    list(rows_by_ticker.values()), stream, discovery.get("column_catalog") or []
+                )
+                masks = evaluate_rule_sets_frame(
+                    (rule_sets[rule_id] for rule_id in selected_rule_ids if rule_id in rule_sets),
+                    stream_rows,
+                )
+                current_tickers: set[str] = set()
+                for index, stream_row in enumerate(stream_rows):
+                    ticker = str(stream_row.get("ticker") or stream_row.get("symbol") or "").strip().upper()
+                    if not ticker:
+                        continue
+                    current_tickers.add(ticker)
+                    results = [bool((masks.get(rule_id) or [False] * len(stream_rows))[index]) for rule_id in selected_rule_ids]
+                    matches = enabled and bool(results) and (
+                        any(results) if str(stream.get("inclusion_operator") or "all") == "any" else all(results)
                     )
                     matching += int(matches)
                     previous = stream_state.get(ticker, {})
@@ -124,14 +139,25 @@ class SignalStreamRuntime:
                             payload=occurrence,
                         )
                         emitted += int(inserted)
-                        self._apply_routes(stream, occurrence, as_of)
+                        dirty = self._apply_routes(stream, occurrence, as_of) or dirty
                         previous["last_emitted_at"] = as_of.isoformat()
-                    stream_state[ticker] = {
+                    next_state = {
                         **previous,
                         "matching": matches,
                         "definition_revision": revision_hash,
-                        "evaluated_at": as_of.isoformat(),
                     }
+                    if stream_state.get(ticker) != next_state:
+                        stream_state[ticker] = next_state
+                        dirty = True
+                for missing_ticker in set(stream_state) - current_tickers:
+                    previous = stream_state[missing_ticker]
+                    if bool(previous.get("matching")) or str(previous.get("definition_revision") or "") != revision_hash:
+                        stream_state[missing_ticker] = {
+                            **previous,
+                            "matching": False,
+                            "definition_revision": revision_hash,
+                        }
+                        dirty = True
                 stream_snapshots.append({
                     "signal_stream_id": stream_id,
                     "name": str(stream.get("name") or stream_id),
@@ -141,19 +167,27 @@ class SignalStreamRuntime:
                     "emitted_count": emitted,
                     "definition_revision": revision_hash,
                 })
-            journal.save_checkpoint(
-                SIGNAL_STATE_RUN_ID,
-                as_of.isoformat(),
-                {"states": self._states, "admissions": self._admissions},
-                as_of,
+            for removed_stream_id in set(self._states) - active_stream_ids:
+                del self._states[removed_stream_id]
+                dirty = True
+            if dirty:
+                journal.save_checkpoint(
+                    SIGNAL_STATE_RUN_ID,
+                    as_of.isoformat(),
+                    {"states": self._states, "admissions": self._admissions},
+                    as_of,
+                )
+            occurrences = (
+                [record.payload for record in journal.signal_stream_records(limit=10_000)]
+                if include_occurrences
+                else []
             )
-            occurrences = [record.payload for record in journal.signal_stream_records(limit=10_000)]
             return {
                 "schema_version": SIGNAL_STREAM_SCHEMA_VERSION,
                 "as_of": as_of.isoformat(),
                 "status": "ready",
                 "signal_streams": stream_snapshots,
-                "occurrence_count": len(occurrences),
+                "occurrence_count": len(occurrences) if include_occurrences else sum(int(row.get("emitted_count") or 0) for row in stream_snapshots),
                 "occurrences": occurrences,
                 "admissions_by_watchlist": self.admissions_by_watchlist(as_of),
             }
@@ -208,8 +242,9 @@ class SignalStreamRuntime:
         stream: dict[str, Any],
         occurrence: dict[str, Any],
         as_of: datetime,
-    ) -> None:
+    ) -> bool:
         ticker = str(occurrence.get("ticker") or "")
+        changed = False
         for route in stream.get("watchlist_routes") or []:
             watchlist_id = str(route.get("watchlist_id") or "")
             if not watchlist_id:
@@ -223,25 +258,22 @@ class SignalStreamRuntime:
                 "event_time": occurrence.get("event_time"),
                 "expires_at": _route_expiry(route, as_of),
             }
+            changed = True
+        return changed
 
-    def _prune_admissions(self, as_of: datetime) -> None:
+    def _prune_admissions(self, as_of: datetime) -> bool:
+        changed = False
         for watchlist_id, rows in list(self._admissions.items()):
-            self._admissions[watchlist_id] = {
+            retained = {
                 ticker: row
                 for ticker, row in rows.items()
                 if _parse_datetime(row.get("expires_at")) is None
                 or _parse_datetime(row.get("expires_at")) > as_of
             }
-
-
-def _matches_stream(
-    stream: dict[str, Any],
-    selected_rule_ids: list[str],
-    rule_sets: dict[str, dict[str, Any]],
-    row: dict[str, Any],
-) -> bool:
-    results = [evaluate_rule_set_result(rule_sets.get(rule_id), row) for rule_id in selected_rule_ids]
-    return any(results) if str(stream.get("inclusion_operator") or "all") == "any" else all(results)
+            if retained != rows:
+                self._admissions[watchlist_id] = retained
+                changed = True
+        return changed
 
 
 def _definition_revision(

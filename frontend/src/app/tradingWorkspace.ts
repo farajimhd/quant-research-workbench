@@ -220,6 +220,15 @@ export const TRADING_WORKSPACE_CONTAINERS: readonly WorkspaceContainerDefinition
     },
   },
   {
+    id: "signal_stream",
+    title: "Signal Stream",
+    groupedTitle: "Signal streams",
+    description: "Append-only signal occurrences with trigger-time evidence frozen at the active market clock.",
+    modes: allModes,
+    defaultOpen: {},
+    sourceByMode: Object.fromEntries(allModes.map((mode) => [mode, runtimeBinding("Immutable Rule Set transitions retained by the Trading Journal", [mode === "live" || mode === "paper" ? qmdLive : qmdHistory, strategyRuntime, tradingJournal])])),
+  },
+  {
     id: "watchlist",
     title: "Watch Universe",
     groupedTitle: "Watch universe",

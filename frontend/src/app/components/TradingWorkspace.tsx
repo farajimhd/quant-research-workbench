@@ -1000,7 +1000,7 @@ function parseWorkspaceState(raw: string, definitions: WorkspaceContainerDefinit
 }
 
 function migrateSignalStreamState(state: CanvasWorkspaceState, definitions: Map<WorkspaceContainerId, WorkspaceContainerDefinition>): CanvasWorkspaceState {
-  if (!definitions.has("scanner")) return state;
+  if (definitions.has("signal_stream") || !definitions.has("scanner")) return state;
   const instances = { ...(state.instances ?? {}) };
   let changed = false;
   for (const id of state.openIds) {

@@ -1665,7 +1665,7 @@ export function CanvasWorkspaceSurface({ accountKeys, approvedCanvas, canvasId, 
   const currentCanvas = registry.canvases.find((canvas) => canvas.id === canvasId) ?? { id: canvasId, label: canvasId === MAIN_CANVAS_ID ? "Main" : "Focus canvas" };
   const primaryChartId = (workspaceState?.openIds ?? []).find((id) => workspaceContainerKind(id, workspaceState) === "chart") ?? "chart";
   const primarySettings = instanceSettings(registry, primaryChartId);
-  const dedicatedContainers = new Set<WorkspaceContainerId>(["chart", "charts_quotes", "facts", "microstructure", "news", "ticker_news", "news_detail", "sec", "ticker_sec", "sec_detail", "xbrl", "scanner", "watchlist", "strategy_activity"]);
+  const dedicatedContainers = new Set<WorkspaceContainerId>(["chart", "charts_quotes", "facts", "microstructure", "news", "ticker_news", "news_detail", "sec", "ticker_sec", "sec_detail", "xbrl", "scanner", "signal_stream", "watchlist", "strategy_activity"]);
   const previewContainerKey = (workspaceState?.openIds ?? []).filter((id) => !dedicatedContainers.has(workspaceContainerKind(id, workspaceState))).sort().join(",");
   const scannerContainerKey = (workspaceState?.openIds ?? []).filter((id) => ["scanner", "signal_stream", "watchlist"].includes(workspaceContainerKind(id, workspaceState))).sort().join(",");
   const scannerTechnicalWindows = useMemo(() => {
@@ -2440,7 +2440,7 @@ function ContainerPreview({ canvasId, chartCutoffMs, definition, instanceId, lin
           ? <div className="canvas-preview-loading">Loading the historical signal cross-section…</div>
           : scannerError && !scannerSnapshot
             ? <div className="canvas-inline-error">Historical signals unavailable: {scannerError}</div>
-            : <SignalStreamContainer asOf={new Date(chartCutoffMs).toISOString()} onSettingsChange={(patch) => updateSettings((state) => ({ ...state, signal_stream: { ...state.signal_stream, ...patch } }))} onTickerSelect={onTickerWorkspaceOpen} rows={scannerSnapshot?.signal_rows ?? []} settings={settings.signal_stream} />
+            : <SignalStreamContainer asOf={new Date(chartCutoffMs).toISOString()} live={liveMode} onSettingsChange={(patch) => updateSettings((state) => ({ ...state, signal_stream: { ...state.signal_stream, ...patch } }))} onTickerSelect={onTickerWorkspaceOpen} settings={settings.signal_stream} />
       : definition.id === "watchlist"
         ? (scannerLoading || scannerSnapshot?.meta.status === "building") && !scannerSnapshot?.rows.length
           ? <div className="canvas-preview-loading">Loading the historical watchlist snapshot…</div>

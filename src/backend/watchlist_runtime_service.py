@@ -33,6 +33,7 @@ from src.trading_runtime.watchlist_resolver import (
     SOURCE_FIELDS,
     classify_watchlist_row,
     evaluate_rule_set_result,
+    evaluate_rule_sets_frame,
     evaluate_watchlist_candidate,
     rank_watchlist_membership,
     resolve_watchlist_membership,
@@ -99,6 +100,9 @@ class WatchlistRuntime:
             project_data_field_outputs(
                 [normalize_watchlist_candidate(row) for row in candidates],
                 discovery.get("data_fields") or [],
+                field_refs=list(
+                    compile_data_field_plan(discovery).get("field_refs") or []
+                ),
             ),
         )
         candidates_by_ticker = {
@@ -714,14 +718,13 @@ def project_configured_rule_set_columns(
         str(rule_set.get("rule_set_id") or ""): rule_set
         for rule_set in discovery.get("rule_sets") or []
     }
+    masks = evaluate_rule_sets_frame(rule_sets.values(), rows)
     projected: list[dict[str, Any]] = []
-    for row in rows:
+    for index, row in enumerate(rows):
         result = dict(row)
         for column_id, column in columns.items():
-            result[column_id] = evaluate_rule_set_result(
-                rule_sets.get(str(column.get("source_id") or "")),
-                row,
-            )
+            rule_id = str(column.get("source_id") or "")
+            result[column_id] = bool((masks.get(rule_id) or [False] * len(rows))[index])
         projected.append(result)
     return projected
 

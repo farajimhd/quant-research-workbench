@@ -43,7 +43,8 @@ type DiscoveryScannerColumn = { column_id: string; name: string; source_id: stri
 type DiscoveryCapability = { enabled?: boolean; execution_scope?: string; scanner_columns?: DiscoveryScannerColumn[]; system_required?: boolean };
 type DiscoveryColumn = { column_id: string; description?: string; name: string; provenance?: string; semantic_type?: string; source_id?: string; source_kind?: "data_definition" | "rule_set" | string; unit?: string; value_type?: string };
 type DiscoveryWatchlist = { availability?: string; columns?: string[]; description?: string; enabled?: boolean; name: string; watchlist_id: string };
-type DiscoverySignalStream = { columns?: string[]; description?: string; enabled?: boolean; maximum_events?: number; name: string; signal_stream_id: string };
+type DiscoverySignalStream = { columns?: string[]; description?: string; enabled?: boolean; maximum_events?: number; name: string; refresh_interval_ms?: number; signal_stream_id: string };
+type SignalStreamRuntimeResponse = { as_of: string; occurrence_count: number; occurrences: ScreenerRow[]; status: string };
 export type WatchUniverseDefinition = {
   description?: string;
   enabled?: boolean;
@@ -308,7 +309,7 @@ export function normalizeMarketScannerPreset(value: unknown): string {
   return QMD_SCANNER_PRESET;
 }
 
-export function SignalStreamContainer({ asOf, onSettingsChange, onTickerSelect, rows: sourceRows, settings }: { asOf: string; onSettingsChange: (patch: Partial<SignalStreamSettings>) => void; onTickerSelect: (ticker: string) => void; rows: ScreenerRow[]; settings: SignalStreamSettings }) {
+export function SignalStreamContainer({ asOf, live, onSettingsChange, onTickerSelect, settings }: { asOf: string; live: boolean; onSettingsChange: (patch: Partial<SignalStreamSettings>) => void; onTickerSelect: (ticker: string) => void; settings: SignalStreamSettings }) {
   const { catalog, discovery } = useDiscoveryPresentation();
   const [addingStream, setAddingStream] = useState(false);
   const streams = (discovery?.signal_streams ?? []).filter((row) => row.enabled !== false);
@@ -316,10 +317,32 @@ export function SignalStreamContainer({ asOf, onSettingsChange, onTickerSelect, 
   const visibleStreams = (configuredIds.length ? configuredIds : streams.slice(0, 1).map((row) => row.signal_stream_id)).map((id) => streams.find((row) => row.signal_stream_id === id)).filter((row): row is DiscoverySignalStream => Boolean(row));
   const stream = visibleStreams.find((row) => row.signal_stream_id === settings.signalStreamId) ?? visibleStreams[0];
   const availableStreams = streams.filter((row) => !visibleStreams.some((visible) => visible.signal_stream_id === row.signal_stream_id));
+  const [runtime, setRuntime] = useState<SignalStreamRuntimeResponse | null>(null);
+  const [runtimeError, setRuntimeError] = useState("");
+  useEffect(() => {
+    if (!stream) { setRuntime(null); setRuntimeError(""); return undefined; }
+    let active = true;
+    let controller: AbortController | null = null;
+    const load = () => {
+      controller?.abort();
+      controller = new AbortController();
+      const query = new URLSearchParams({
+        limit: String(Math.min(settings.limit, stream.maximum_events ?? settings.limit)),
+        signal_stream_id: stream.signal_stream_id,
+      });
+      if (!live) query.set("as_of", asOf);
+      api<SignalStreamRuntimeResponse>(`/api/market-discovery/signal-stream/runtime?${query}`, { signal: controller.signal, timeoutMs: 10000 })
+        .then((payload) => { if (active) { setRuntime(payload); setRuntimeError(""); } })
+        .catch((error) => { if (active && (error as Error).name !== "AbortError") setRuntimeError(error instanceof Error ? error.message : String(error)); });
+    };
+    load();
+    const timer = live ? window.setInterval(load, Math.max(1000, stream.refresh_interval_ms ?? 5000)) : null;
+    return () => { active = false; controller?.abort(); if (timer !== null) window.clearInterval(timer); };
+  }, [asOf, live, settings.limit, stream]);
   const rows = useMemo(() => {
-    const normalized: ScreenerRow[] = normalizeScannerRows(sourceRows);
+    const normalized: ScreenerRow[] = normalizeScannerRows(runtime?.occurrences ?? []);
     return normalized.filter((row) => String(row["signal_stream_id"] ?? "") === String(stream?.signal_stream_id ?? "")).sort((left, right) => String(right["event_time"] ?? "").localeCompare(String(left["event_time"] ?? "")));
-  }, [sourceRows, stream?.signal_stream_id]);
+  }, [runtime?.occurrences, stream?.signal_stream_id]);
   const columns = canonicalDiscoveryColumns(["event_time", "symbol", ...(stream?.columns ?? []), ...settings.columns]);
   const selectStream = (signalStreamId: string) => onSettingsChange({ columns: [], signalStreamId });
   const addStream = (signalStreamId: string) => {
@@ -338,7 +361,7 @@ export function SignalStreamContainer({ asOf, onSettingsChange, onTickerSelect, 
       <button aria-expanded={addingStream} aria-label="Add Signal Stream tab" className="watchlist-tab-add" disabled={!availableStreams.length} onClick={() => setAddingStream((open) => !open)} role="tab" type="button"><Plus size={12} /><span>Add</span></button>
     </nav>
     {addingStream ? <div className="watchlist-tab-lookup"><InventoryFilterSelect ariaLabel="Signal Stream to add" className="watchlist-add-lookup" onChange={addStream} options={availableStreams.map((row) => ({ description: row.description, label: row.name, value: row.signal_stream_id }))} searchable showAllOnOpen value="" /><button onClick={() => { window.location.hash = "market-discovery-configuration"; }} type="button">Configure Signal Stream <ArrowRight size={13} /></button></div> : null}
-    <div className="watch-universe-context"><div><span>Behavior</span><strong>Trigger-time values are frozen; later market updates do not rewrite prior rows.</strong></div><button onClick={() => { window.location.hash = "market-discovery-configuration"; }} type="button">Configure in Market Discovery <ArrowRight size={13} /></button></div>
+    <div className="watch-universe-context"><div><span>Behavior</span><strong>Trigger-time values are frozen; later market updates do not rewrite prior rows.</strong>{runtimeError ? <small>{runtimeError}</small> : null}</div><button onClick={() => { window.location.hash = "market-discovery-configuration"; }} type="button">Configure in Market Discovery <ArrowRight size={13} /></button></div>
     <MarketListTable catalog={catalog} columns={columns} customColumns={settings.customColumns} empty={stream ? "This configured Signal Stream has not captured an occurrence yet." : "No configured Signal Stream is available."} limit={Math.min(settings.limit, stream?.maximum_events ?? settings.limit)} lockedColumns={canonicalDiscoveryColumns(["event_time", "symbol", ...(stream?.columns ?? [])])} onColumnsChange={(columns) => onSettingsChange({ columns })} onCustomColumnsChange={(customColumns) => onSettingsChange({ customColumns })} onTickerSelect={onTickerSelect} rows={rows} title={stream?.name ?? "Signal Stream"} />
   </section>;
 }

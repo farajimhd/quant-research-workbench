@@ -12,6 +12,7 @@ import urllib.parse
 import urllib.request
 import uuid
 from collections import deque
+from contextlib import asynccontextmanager
 from functools import lru_cache
 from dataclasses import asdict
 from datetime import UTC, date, datetime, timedelta
@@ -471,7 +472,17 @@ SERVICE_REGISTRY: dict[str, dict[str, str]] = {
     },
 }
 
-app = FastAPI(title="Quant Research Workbench API", version="1.0.0")
+@asynccontextmanager
+async def application_lifespan(_app: FastAPI):
+    from src.backend.market_discovery_runtime_service import MARKET_DISCOVERY_RUNTIME
+    MARKET_DISCOVERY_RUNTIME.start()
+    try:
+        yield
+    finally:
+        MARKET_DISCOVERY_RUNTIME.stop()
+
+
+app = FastAPI(title="Quant Research Workbench API", version="1.0.0", lifespan=application_lifespan)
 authority_policy = AuthorityPolicy.from_environment()
 
 
@@ -3975,16 +3986,29 @@ def market_discovery_watchlist_runtime() -> dict[str, Any]:
 @app.get("/api/market-discovery/signal-stream/runtime")
 def market_discovery_signal_stream_runtime(
     signal_stream_id: str = "",
+    as_of: str = "",
     limit: int = Query(default=5000, ge=1, le=50_000),
 ) -> dict[str, Any]:
     from src.backend.signal_stream_runtime_service import SIGNAL_STREAM_RUNTIME
     from src.backend.trading_runtime_service import trading_journal
 
+    cutoff = None
+    if as_of.strip():
+        cutoff = datetime.fromisoformat(as_of.strip().replace("Z", "+00:00"))
+        if cutoff.tzinfo is None:
+            raise HTTPException(status_code=422, detail="Signal Stream as_of must include a timezone.")
     return SIGNAL_STREAM_RUNTIME.snapshot(
         trading_journal(),
         signal_stream_id=signal_stream_id,
+        as_of=cutoff,
         limit=limit,
     )
+
+
+@app.get("/api/market-discovery/runtime/status")
+def market_discovery_runtime_status() -> dict[str, Any]:
+    from src.backend.market_discovery_runtime_service import MARKET_DISCOVERY_RUNTIME
+    return MARKET_DISCOVERY_RUNTIME.snapshot()
 
 
 def bounded_computation_planner_summary(

@@ -181,7 +181,7 @@ class ApplicationRegistryTests(unittest.TestCase):
         self.assertEqual(payload["counts"]["configuration_schemas"], len(CONFIGURATION_SCHEMAS))
         self.assertEqual(payload["counts"]["compatibility_aliases"], len(COMPATIBILITY_ALIASES))
         schemas = {row["schema_id"]: row for row in payload["configuration_schemas"]}
-        self.assertEqual(schemas["trading_configuration"]["version"], 27)
+        self.assertEqual(schemas["trading_configuration"]["version"], 30)
         registry_types = {row.kind for row in REGISTRY_TYPES}
         self.assertTrue({"trading_action", "action_policy"} <= registry_types)
         self.assertEqual(
@@ -218,9 +218,9 @@ class ApplicationRegistryTests(unittest.TestCase):
         self.assertIn("qmd.chart", products)
         self.assertIn("qmd.scanner", products)
         self.assertIn("workspace.symbol_context", links)
-        self.assertEqual(len(container_ids), 22)
+        self.assertEqual(len(container_ids), 23)
         self.assertIn("strategy_activity", container_ids)
-        self.assertNotIn("signal_stream", container_ids)
+        self.assertIn("signal_stream", container_ids)
         self.assertTrue(all(set(container.product_ids).issubset(products) for container in CONTAINER_DEFINITIONS))
         self.assertTrue(all((set(container.input_links) | set(container.output_links)).issubset(links) for container in CONTAINER_DEFINITIONS))
         self.assertIn("strategy_intent", {schema.schema_id for schema in CONFIGURATION_SCHEMAS})

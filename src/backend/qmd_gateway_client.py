@@ -413,7 +413,7 @@ def _qmd_product_route(
     quoted_ticker = urllib.parse.quote(ticker)
     if request.product == "scanner":
         if authority == "live":
-            return authority, "/snapshot/scanner", {"limit": min(limit, 5_000)}
+            return authority, "/snapshot/scanner", {"limit": min(limit, 25_000)}
         return authority, "/snapshot/scanner-derived", {
             "as_of": request.as_of or request.end,
             "end": request.end,
@@ -983,8 +983,9 @@ def qmd_scanner_snapshot(
         raise ValueError(f"Unsupported QMD scanner enrichment(s): {', '.join(sorted(unknown))}")
 
     cross_section_limit = 5_000
+    scanner_limit = max(1, min(int(row_limit or 250), 25_000))
     requests: dict[str, tuple[str, dict[str, Any]]] = {
-        "scanner": ("/snapshot/scanner", {"limit": row_limit}),
+        "scanner": ("/snapshot/scanner", {"limit": scanner_limit}),
     }
     if "signals" in requested:
         requests["signals"] = ("/snapshot/signals", {"limit": cross_section_limit})
@@ -1459,7 +1460,7 @@ def qmd_catalogs() -> dict[str, Any]:
 
 def qmd_scanner_payload(rows: list[dict[str, Any]], raw_payload: dict[str, Any], row_limit: int, *, source: str) -> dict[str, Any]:
     now = datetime.now(timezone.utc)
-    rows = rows[: max(1, min(int(row_limit or 250), 5000))]
+    rows = rows[: max(1, min(int(row_limit or 250), 25_000))]
     clock = dict(raw_payload.get("market_clock") or {})
     clock_projection = {
         "clock_observed_at": clock.get("observed_at"),

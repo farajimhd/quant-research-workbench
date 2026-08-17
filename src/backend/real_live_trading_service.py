@@ -36,8 +36,8 @@ DEFAULT_MASSIVE_BASE_URL = "https://api.massive.com"
 IBKR_ORDER_LANE = threading.RLock()
 SCANNER_COMPOSITION_CACHE = BoundedSingleFlightTtlCache[str, dict[str, Any]](
     max_entries=1,
-    ttl_seconds=5.0,
-    contract_revision="real-live-scanner-composition.v1",
+    ttl_seconds=1.0,
+    contract_revision="real-live-scanner-composition.v2",
     wait_timeout_seconds=30.0,
 )
 
@@ -269,11 +269,11 @@ def real_live_scanner_snapshot(row_limit: int = 250) -> dict[str, Any]:
     return result
 
 
-def _compose_real_live_scanner_snapshot() -> dict[str, Any]:
+def _compose_real_live_scanner_snapshot(*, allow_provider_fallback: bool = True) -> dict[str, Any]:
     try:
         # Resolve Watchlists from the complete compact Core Scanner population;
         # the caller's row limit applies only to the returned UI projection.
-        payload = qmd_scanner_snapshot(row_limit=5_000)
+        payload = qmd_scanner_snapshot(row_limit=25_000)
         if payload.get("row_count", 0) > 0:
             filtered = apply_tradable_filter_to_scanner_payload(payload)
             rows = list(filtered.get("rows") or [])
@@ -297,6 +297,7 @@ def _compose_real_live_scanner_snapshot() -> dict[str, Any]:
                 from src.backend.qmd_gateway_client import qmd_scanner_indicators, qmd_scanner_macro_bars
                 from src.backend.trading_configuration_service import configuration_base
                 from src.backend.data_field_contracts import (
+                    compile_data_field_plan,
                     project_composition_data_field_columns,
                     project_data_field_outputs,
                 )
@@ -309,6 +310,7 @@ def _compose_real_live_scanner_snapshot() -> dict[str, Any]:
                 )
                 discovery = dict(configuration.get("market_discovery") or {})
                 data_fields = list(discovery.get("data_fields") or [])
+                active_field_refs = list(compile_data_field_plan(discovery).get("field_refs") or [])
                 indicator_rows: dict[str, dict[str, Any]] = {}
                 for interval in configured_discovery_technical_windows(configuration):
                     source_rows = (
@@ -322,6 +324,7 @@ def _compose_real_live_scanner_snapshot() -> dict[str, Any]:
                             for row in source_rows
                         ],
                         data_fields,
+                        field_refs=active_field_refs,
                     )
                     for indicator_row in interval_projection:
                         ticker = str(indicator_row.get("ticker") or "").upper()
@@ -335,6 +338,7 @@ def _compose_real_live_scanner_snapshot() -> dict[str, Any]:
                 rows = project_data_field_outputs(
                     rows,
                     data_fields,
+                    field_refs=active_field_refs,
                 )
                 rows = project_composition_data_field_columns(
                     rows,
@@ -347,6 +351,7 @@ def _compose_real_live_scanner_snapshot() -> dict[str, Any]:
                         rows,
                         as_of=datetime.now(UTC),
                         journal=trading_journal(),
+                        include_occurrences=False,
                     )
                 except Exception as exc:
                     signal_stream_runtime = {
@@ -376,7 +381,7 @@ def _compose_real_live_scanner_snapshot() -> dict[str, Any]:
                     "core_population_count": len(rows),
                     "watchlist_runtime": watchlist_runtime,
                     "signal_stream_runtime": signal_stream_runtime,
-                    "signal_rows": signal_stream_runtime.get("occurrences") or [],
+                    "signal_rows": [],
                 }
             )
             # The Live UI derives its market-state view from the same compact
@@ -390,6 +395,8 @@ def _compose_real_live_scanner_snapshot() -> dict[str, Any]:
         qmd_error = str(exc)
     else:
         qmd_error = "QMD gateway returned no scanner rows."
+    if not allow_provider_fallback:
+        raise RuntimeError(qmd_error)
     payload = massive_get_json("/v2/snapshot/locale/us/markets/stocks/tickers", {}, timeout=20)
     tickers = payload.get("tickers") or payload.get("results") or []
     rows = [normalize_massive_ticker_snapshot(item) for item in tickers]
@@ -397,6 +404,35 @@ def _compose_real_live_scanner_snapshot() -> dict[str, Any]:
     rows.sort(key=lambda row: (row["live_priority"], row["day_volume"]), reverse=True)
     rows = rows[:1_000]
     rows, tradable_filter = filter_tradable_rows(rows)
+    fallback_runtime_error = ""
+    try:
+        from src.backend.data_field_contracts import compile_data_field_plan, project_data_field_outputs
+        from src.backend.discovery_projection import project_discovery_columns
+        from src.backend.trading_configuration_service import configuration_base
+        from src.backend.trading_runtime_service import trading_journal
+        from src.backend.watchlist_runtime_service import WATCHLIST_RUNTIME, enrich_core_scanner_rows, live_market_reference_projection
+
+        configuration = configuration_base()
+        discovery = dict(configuration.get("market_discovery") or {})
+        rows = enrich_core_scanner_rows(rows, live_market_reference_projection())
+        rows = project_discovery_columns(rows)
+        rows = project_data_field_outputs(
+            rows,
+            discovery.get("data_fields") or [],
+            field_refs=list(compile_data_field_plan(discovery).get("field_refs") or []),
+        )
+        watchlist_runtime = WATCHLIST_RUNTIME.resolve(
+            configuration,
+            rows,
+            journal=trading_journal(),
+        )
+    except Exception as exc:
+        fallback_runtime_error = str(exc)
+        watchlist_runtime = {
+            "status": "degraded",
+            "watchlists": [],
+            "target_errors": [{"watchlist_id": "*", "error": fallback_runtime_error}],
+        }
     now = datetime.now(NEW_YORK)
     result = {
         "provider": "massive",
@@ -404,10 +440,40 @@ def _compose_real_live_scanner_snapshot() -> dict[str, Any]:
         "market_time": now.strftime("%H:%M"),
         "rows": rows,
         "row_count": len(rows),
+        "core_population_count": len(rows),
         "qmd_gateway_error": qmd_error,
         "tradable_filter": tradable_filter,
+        "watchlist_runtime": watchlist_runtime,
+        "signal_stream_runtime": {
+            "status": "unavailable",
+            "error": "Signal capture requires authoritative QMD live rows.",
+            "signal_streams": [],
+            "occurrence_count": 0,
+        },
+        "signal_rows": [],
     }
+    if fallback_runtime_error:
+        result["reference_enrichment_error"] = fallback_runtime_error
     return result
+
+
+def refresh_live_market_discovery() -> dict[str, Any]:
+    """Refresh the approved QMD-only discovery funnel without UI demand.
+
+    The background runtime must never switch authority to a vendor snapshot;
+    provider fallback remains a presentation-only compatibility path.
+    """
+
+    payload = SCANNER_COMPOSITION_CACHE.get_or_load(
+        "complete-population",
+        lambda: _compose_real_live_scanner_snapshot(allow_provider_fallback=False),
+    )
+    return {
+        "as_of": payload.get("as_of") or payload.get("snapshot_at_utc"),
+        "core_population_count": int(payload.get("core_population_count") or payload.get("row_count") or 0),
+        "signal_stream_runtime": payload.get("signal_stream_runtime") or {},
+        "watchlist_runtime": payload.get("watchlist_runtime") or {},
+    }
 
 
 def real_live_portfolio(account_type: str, account_keys: str | list[str] | None = None) -> dict[str, Any]:

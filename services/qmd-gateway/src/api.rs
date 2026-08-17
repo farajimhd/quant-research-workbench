@@ -900,7 +900,7 @@ async fn scanner_snapshot(
     let now = Utc::now();
     let snapshot = state
         .market
-        .scanner_snapshot_at(now, query.limit.unwrap_or(250).min(5_000))
+        .scanner_snapshot_at(now, query.limit.unwrap_or(250).min(25_000))
         .await;
     let calendar = state.market_calendar.snapshot(now);
     let local = now.with_timezone(&New_York);
@@ -1243,7 +1243,7 @@ async fn scanner_stream(
     Query(query): Query<LimitQuery>,
 ) -> impl IntoResponse {
     ws.on_upgrade(move |socket| async move {
-        stream_scanner(socket, state, query.limit.unwrap_or(250).min(5_000)).await;
+        stream_scanner(socket, state, query.limit.unwrap_or(250).min(25_000)).await;
     })
 }
 

@@ -318,7 +318,12 @@ def scanner_snapshot_payload(
             as_of=effective_as_of,
             limit=10_000,
         )
-        signal_rows = signal_stream_runtime.get("occurrences") or []
+        signal_rows = []
+        signal_stream_runtime = {
+            key: value
+            for key, value in signal_stream_runtime.items()
+            if key != "occurrences"
+        }
     except Exception as exc:
         errors["signal_stream"] = str(exc)
         signal_stream_runtime = {
