@@ -1001,24 +1001,37 @@ def _data_field_output(
     base_column_id = str(field.get("column_id") or _generated_column_id(source_id))
     column_id = f"{base_column_id}__{_slug(interval)}" if interval and qualified_presentation else base_column_id
     field_ref = field_output_ref(data_field_id, revision, output_id)
-    numeric = value_type in {
+    normalized_type = value_type.lower()
+    normalized_unit = unit.lower()
+    numeric = normalized_type in {
         "number", "integer", "float", "score", "ratio", "percent", "price", "bps_per_second"
-    } or unit in {
-        "scalar", "score", "ratio", "multiple", "percent", "basis_points", "bps_per_second", "currency", "shares"
     }
-    filterable = bool(field.get("filterable")) or value_type in {
+    known_values = [dict(value) for value in field.get("known_values") or []]
+    if known_values:
+        domain_kind = "enum"
+    elif normalized_type == "boolean":
+        domain_kind = "boolean"
+    elif numeric:
+        domain_kind = "number"
+    elif normalized_type in {"json", "vector", "record", "object", "array"}:
+        domain_kind = "structured"
+    elif normalized_type in {"date", "time", "timestamp", "datetime"}:
+        domain_kind = "timestamp" if normalized_type == "datetime" else normalized_type
+    elif normalized_unit in {"date", "time", "timestamp", "datetime"}:
+        domain_kind = "timestamp" if normalized_unit == "datetime" else normalized_unit
+    else:
+        domain_kind = "text"
+    filterable = domain_kind != "structured" and (bool(field.get("filterable")) or normalized_type in {
         "boolean", "number", "integer", "float", "score", "ratio", "percent", "price", "bps_per_second", "string", "date", "time", "timestamp"
-    }
-    filter_operators = list(field.get("filter_operators") or [])
-    if filterable and not filter_operators:
-        if value_type == "boolean":
-            filter_operators = ["is_true", "equals"]
-        elif numeric:
-            filter_operators = [
-                "greater_than", "greater_or_equal", "less_than", "less_or_equal", "equals", "not_equals"
-            ]
-        else:
-            filter_operators = ["equals", "not_equals"]
+    })
+    if not filterable:
+        filter_operators = []
+    elif domain_kind == "boolean":
+        filter_operators = ["is_true", "equals", "not_equals"]
+    elif domain_kind == "number":
+        filter_operators = ["greater_than", "greater_or_equal", "less_than", "less_or_equal", "equals", "not_equals", "above_by_bps"]
+    else:
+        filter_operators = ["equals", "not_equals"]
     return {
         "output_id": output_id,
         "field_ref": field_ref,
@@ -1030,6 +1043,12 @@ def _data_field_output(
         "description": str(field.get("description") or f"Output {source_id}."),
         "value_type": value_type,
         "unit": unit,
+        "value_domain": {
+            "kind": domain_kind,
+            "closed": bool(known_values),
+            "allowed_values": known_values,
+            "unit": unit,
+        },
         "entity_grain": str(field.get("entity_grain") or "security_at_market_clock"),
         "filterable": filterable,
         "filter_operators": filter_operators,

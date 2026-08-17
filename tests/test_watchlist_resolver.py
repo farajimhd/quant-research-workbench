@@ -69,14 +69,31 @@ class WatchlistResolverTest(unittest.TestCase):
                 "split_event",
             }.issubset(column_ids)
         )
-        field_sources = {
-            row["source_id"] for row in self.discovery["field_catalog"]
-        }
         self.assertTrue(
             all(
                 row.get("source_kind") in {"rule_set", "data_field"}
                 for row in self.discovery["column_catalog"]
             )
+        )
+
+    def test_not_equals_supports_typed_categorical_values(self) -> None:
+        rules = [{
+            "rule_set_id": "not-maintenance",
+            "enabled": True,
+            "operator": "all",
+            "conditions": [{
+                "condition_id": "session",
+                "enabled": True,
+                "left_source_id": "clock.session_phase",
+                "comparator": "not_equals",
+                "right_source_id": "",
+                "value": "maintenance",
+            }],
+        }]
+        rows = [{"ticker": "OPEN", "session_phase": "regular"}, {"ticker": "CLOSED", "session_phase": "maintenance"}]
+        self.assertEqual(
+            [row["ticker"] for row in resolve_watchlist_membership({"enabled": True, "inclusion_rule_sets": ["not-maintenance"], "inclusion_operator": "all", "maximum_size": 10}, rules, rows)],
+            ["OPEN"],
         )
 
     def test_cap_and_float_classifications_use_exact_boundaries(self) -> None:

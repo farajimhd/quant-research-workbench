@@ -357,7 +357,7 @@ class TradingConfigurationServiceTests(unittest.TestCase):
 
         migrated = _migrate_draft(legacy)
 
-        self.assertEqual(migrated["schema_version"], 31)
+        self.assertEqual(migrated["schema_version"], 32)
         last_price = [
             row
             for row in migrated["market_discovery"]["data_fields"]
@@ -489,7 +489,7 @@ class TradingConfigurationServiceTests(unittest.TestCase):
 
         migrated = _migrate_draft(legacy)
 
-        self.assertEqual(migrated["schema_version"], 31)
+        self.assertEqual(migrated["schema_version"], 32)
         migrated_paper = next(
             row
             for row in migrated["accounts"]["bindings"]
@@ -584,6 +584,37 @@ class TradingConfigurationServiceTests(unittest.TestCase):
         ]
 
         with self.assertRaisesRegex(ValueError, "missing required QMD capabilities"):
+            _validate_market_discovery(discovery)
+
+    def test_rule_constants_follow_registered_data_field_domains(self) -> None:
+        discovery = deepcopy(_default_draft()["market_discovery"])
+        session_output = next(
+            output
+            for data_field in discovery["data_fields"]
+            for output in data_field["outputs"]
+            if output["source_id"] == "clock.session_phase"
+        )
+        rule = {
+            "rule_set_id": "session-phase-rule",
+            "name": "Session phase rule",
+            "description": "Typed categorical validation.",
+            "enabled": True,
+            "operator": "all",
+            "required_score": 1,
+            "conditions": [{
+                "condition_id": "session-phase",
+                "enabled": True,
+                "left_source_id": "clock.session_phase",
+                "left_field_ref": session_output["field_ref"],
+                "comparator": "equals",
+                "right_source_id": "",
+                "value": "regular",
+            }],
+        }
+        discovery["rule_sets"].append(rule)
+        _validate_market_discovery(discovery)
+        rule["conditions"][0]["value"] = "open"
+        with self.assertRaisesRegex(ValueError, "requires one registered value"):
             _validate_market_discovery(discovery)
 
     def test_watchlist_defaults_to_end_of_trading_day_expiry(self) -> None:
@@ -783,7 +814,7 @@ class TradingConfigurationServiceTests(unittest.TestCase):
         ):
             draft = _default_draft()
 
-        self.assertEqual(draft["schema_version"], 31)
+        self.assertEqual(draft["schema_version"], 32)
         self.assertTrue(all(rule_set["name"] for rule_set in draft["market_discovery"]["rule_sets"]))
         self.assertTrue(all(rule_set["description"] for rule_set in draft["market_discovery"]["rule_sets"]))
         self.assertTrue(all(rule_set["origin"] == "system" and rule_set["protected"] for rule_set in draft["market_discovery"]["rule_sets"]))
@@ -1453,7 +1484,7 @@ class TradingConfigurationServiceTests(unittest.TestCase):
 
         migrated = _migrate_draft(legacy)
 
-        self.assertEqual(migrated["schema_version"], 31)
+        self.assertEqual(migrated["schema_version"], 32)
         canonical_ids = {
             rule_set["rule_set_id"]
             for rule_set in migrated["market_discovery"]["rule_sets"]
@@ -1531,7 +1562,7 @@ class TradingConfigurationServiceTests(unittest.TestCase):
         ]
         migrated = _migrate_draft(legacy)
         migrated_profile = migrated["strategy"]["profiles"][0]
-        self.assertEqual(migrated["schema_version"], 31)
+        self.assertEqual(migrated["schema_version"], 32)
         self.assertEqual(migrated_profile["action_policy_ids"], ["profit-pocket"])
         self.assertNotIn("capabilities", migrated_profile)
 

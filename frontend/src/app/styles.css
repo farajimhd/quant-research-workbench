@@ -23381,8 +23381,10 @@ button {
 .rule-condition-comparator { display: grid; min-width: 0; align-content: center; gap: 7px; }
 .rule-condition-comparator > small { text-align: center; }
 .rule-condition-comparator select { width: 100%; min-height: 38px; font-weight: 600; text-align: center; }
-.rule-threshold-input { display: grid; gap: 6px; }
-.rule-threshold-input input { width: 100%; min-height: 38px; font-family: var(--font-mono); }
+.rule-constant-editor { display: grid; gap: 6px; min-width: 0; }
+.rule-constant-editor input { width: 100%; min-height: 38px; font-family: var(--font-mono); }
+.rule-constant-editor > em { color: var(--muted-foreground); font: 0.65rem/1.2 var(--font-mono); font-style: normal; }
+.rule-constant-lookup > div { min-width: 0; }
 .rule-condition-readonly { grid-template-columns: 28px minmax(0, 1.4fr) minmax(95px, 0.7fr) minmax(0, 1fr); padding: 13px 14px; background: var(--surface); }
 .rule-condition-relation { display: grid; gap: 3px; align-content: center; }
 .rule-condition-relation small, .rule-condition-operand-label { color: var(--muted-foreground) !important; font: 650 .59rem/1.2 var(--font-sans) !important; letter-spacing: .06em; text-transform: uppercase; }

@@ -6,6 +6,7 @@ import os
 import time
 from copy import deepcopy
 from dataclasses import asdict
+from datetime import date, datetime, time as datetime_time
 from pathlib import Path
 from typing import Any, Callable
 from uuid import uuid4
@@ -66,7 +67,7 @@ from src.trading_runtime.strategy_campaign import validate_campaign_policy
 from src.trading_runtime.taxonomy import StrategyTaxonomy
 
 
-CONFIGURATION_SCHEMA_VERSION = 31
+CONFIGURATION_SCHEMA_VERSION = 32
 CONFIGURATION_SECTIONS = {
     "strategy",
     "trading_actions",
@@ -1975,9 +1976,9 @@ def _market_discovery_classifications() -> list[dict[str, Any]]:
 
     return [
         {"classification_id": "price.penny", "group": "Price", "name": "Penny Stocks", "description": "Last price is positive and below $1. This category is independent of market capitalization.", "minimum": 0, "maximum": 1, "unit": "usd", "source_id": "market.last_price"},
-        {"classification_id": "market_cap.small", "group": "Market capitalization", "name": "Small Caps", "description": "Market capitalization is positive and below $2 billion. This consolidated bucket intentionally includes micro- and nano-cap issuers.", "minimum": 0, "maximum": 2_000_000_000, "unit": "usd", "source_id": "reference.market_cap"},
-        {"classification_id": "market_cap.mid", "group": "Market capitalization", "name": "Mid Caps", "description": "Market capitalization is at least $2 billion and below $10 billion.", "minimum": 2_000_000_000, "maximum": 10_000_000_000, "unit": "usd", "source_id": "reference.market_cap"},
-        {"classification_id": "market_cap.large", "group": "Market capitalization", "name": "Large Caps", "description": "Market capitalization is at least $10 billion.", "minimum": 10_000_000_000, "maximum": None, "unit": "usd", "source_id": "reference.market_cap"},
+        {"classification_id": "market_cap.small", "group": "Market capitalization", "name": "Small Caps", "value": "Small Cap", "description": "Market capitalization is positive and below $2 billion. This consolidated bucket intentionally includes micro- and nano-cap issuers.", "minimum": 0, "maximum": 2_000_000_000, "unit": "usd", "source_id": "reference.market_cap"},
+        {"classification_id": "market_cap.mid", "group": "Market capitalization", "name": "Mid Caps", "value": "Mid Cap", "description": "Market capitalization is at least $2 billion and below $10 billion.", "minimum": 2_000_000_000, "maximum": 10_000_000_000, "unit": "usd", "source_id": "reference.market_cap"},
+        {"classification_id": "market_cap.large", "group": "Market capitalization", "name": "Large Caps", "value": "Large Cap", "description": "Market capitalization is at least $10 billion.", "minimum": 10_000_000_000, "maximum": None, "unit": "usd", "source_id": "reference.market_cap"},
         *[
             {"classification_id": identifier, "group": "Public float", "name": name, "description": description, "minimum": minimum, "maximum": maximum, "unit": "shares", "source_id": "reference.float_shares"}
             for identifier, name, description, minimum, maximum in [
@@ -2072,6 +2073,7 @@ RULE_SET_COMPARATORS = {
     "is_true",
     "less_or_equal",
     "less_than",
+    "not_equals",
 }
 
 
@@ -2130,6 +2132,7 @@ def _producer_output_filter_operators(output_type: str) -> list[str]:
 
 def _market_discovery_field_catalog(
     calculation_rows: list[dict[str, Any]],
+    classifications: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
     """Resolve one registry-owned field catalog for columns and filters."""
 
@@ -2139,6 +2142,16 @@ def _market_discovery_field_catalog(
     }
     presented_field_ids = {
         row.field_id for row in DISCOVERY_FIELD_PRESENTATIONS if row.field_id
+    }
+    classification_values = {
+        "classification.market_cap": [
+            {"value": str(row.get("value") or row.get("name") or ""), "label": str(row.get("name") or ""), "description": str(row.get("description") or "")}
+            for row in classifications if str(row.get("classification_id") or "").startswith("market_cap.")
+        ],
+        "classification.float": [
+            {"value": str(row.get("value") or row.get("name") or ""), "label": str(row.get("name") or ""), "description": str(row.get("description") or "")}
+            for row in classifications if str(row.get("classification_id") or "").startswith("float.")
+        ],
     }
     rows: list[dict[str, Any]] = []
     for presentation in DISCOVERY_FIELD_PRESENTATIONS:
@@ -2184,7 +2197,7 @@ def _market_discovery_field_catalog(
             "calculation_summary": str(field.calculation_summary if field is not None else capability.get("calculation") or presentation.description),
             "formula": str((DERIVED_FIELD_METHODS.get(field.field_id) or TEMPORAL_DERIVED_METHODS.get(field.field_id, ("", ()))[0]) if field is not None else ""),
             "input_field_ids": list(field.input_field_ids if field is not None else capability.get("inputs") or []),
-            "known_values": ([
+            "known_values": (classification_values.get(presentation.source_id) or [
                 {"value": value, "label": label, "description": description}
                 for value, label, description in field.known_values
             ] if field is not None else []),
@@ -2550,7 +2563,8 @@ def _default_market_discovery(
             continue
         rule_set_ids.add(rule_set_id)
         merged_rule_sets.append(deepcopy(rule_set))
-    field_catalog = _market_discovery_field_catalog(calculation_rows)
+    classifications = _market_discovery_classifications()
+    field_catalog = _market_discovery_field_catalog(calculation_rows, classifications)
     _bind_discovery_scanner_columns(calculation_rows, field_catalog)
     data_fields = build_data_field_catalog(calculation_rows, field_catalog)
     migrate_rule_set_field_refs(merged_rule_sets, data_fields)
@@ -2594,7 +2608,7 @@ def _default_market_discovery(
         ),
         "data_fields": data_fields,
         "data_field_plan": {},
-        "classifications": _market_discovery_classifications(),
+        "classifications": classifications,
         "field_catalog": field_catalog,
         "column_catalog": column_catalog,
         "rule_sets": merged_rule_sets,
@@ -2794,6 +2808,37 @@ def _canonical_profile_content(profile: dict[str, Any]) -> str:
     return json.dumps(profile, separators=(",", ":"), sort_keys=True)
 
 
+def _validate_rule_constant(output: dict[str, Any], value: Any, label: str) -> None:
+    domain = dict(output.get("value_domain") or {})
+    kind = str(domain.get("kind") or "text")
+    allowed = [row.get("value") for row in domain.get("allowed_values") or []]
+    if bool(domain.get("closed")):
+        if value not in allowed:
+            raise ValueError(f"{label} requires one registered value: {', '.join(map(str, allowed))}")
+        return
+    if kind == "boolean":
+        if not isinstance(value, bool):
+            raise ValueError(f"{label} requires a Boolean value")
+        return
+    if kind == "number":
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ValueError(f"{label} requires a numeric value")
+        return
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"{label} requires a {kind} value")
+    try:
+        if kind == "date":
+            date.fromisoformat(value)
+        elif kind == "time":
+            datetime_time.fromisoformat(value)
+        elif kind == "timestamp":
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+            if parsed.tzinfo is None:
+                raise ValueError("timezone missing")
+    except ValueError as exc:
+        raise ValueError(f"{label} requires a valid ISO {kind}") from exc
+
+
 def _validate_market_discovery(section: dict[str, Any]) -> None:
     universe = dict(section.get("security_universe") or {})
     if not str(universe.get("universe_id") or ""):
@@ -2967,6 +3012,12 @@ def _validate_market_discovery(section: dict[str, Any]) -> None:
                     raise ValueError(
                         f"Rule Set {rule_set.get('name')} assigns an interval to non-interval comparison field {right_source_id}"
                     )
+            elif comparator != "is_true":
+                _validate_rule_constant(
+                    output,
+                    condition.get("value"),
+                    f"Rule Set {rule_set.get('name')} field {source_id}",
+                )
     for calculation in calculations:
         execution_scope = str(calculation.get("execution_scope") or "")
         if execution_scope not in DISCOVERY_EXECUTION_SCOPES:

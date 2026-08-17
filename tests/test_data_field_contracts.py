@@ -103,6 +103,19 @@ class DataFieldContractTests(unittest.TestCase):
             {row["value"] for row in by_source["clock.session_phase"]["known_values"]},
             {"premarket", "regular", "aftermarket", "maintenance"},
         )
+        self.assertEqual(
+            {row["value"] for row in by_source["classification.market_cap"]["known_values"]},
+            {"Small Cap", "Mid Cap", "Large Cap"},
+        )
+        self.assertEqual(
+            by_source["clock.session_phase"]["outputs"][0]["value_domain"]["kind"],
+            "enum",
+        )
+        self.assertTrue(by_source["clock.session_phase"]["outputs"][0]["value_domain"]["closed"])
+        self.assertEqual(
+            by_source["market.last_price"]["outputs"][0]["value_domain"]["kind"],
+            "number",
+        )
         self.assertIn(
             "does not roll weekends or holidays",
             by_source["clock.trading_date"]["calculation"]["summary"],

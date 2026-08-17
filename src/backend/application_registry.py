@@ -1085,10 +1085,35 @@ FIELD_KNOWN_VALUES: dict[str, tuple[tuple[str, str, str], ...]] = {
         ("outside", "Outside bands", "The latest price is outside an estimated LULD band."),
         ("unavailable", "Unavailable", "Required LULD evidence is not available."),
     ),
+    "market.quality_state": (
+        ("ready", "Ready", "The QMD scanner snapshot satisfies its market-quality checks."),
+        ("stale", "Stale", "The latest admissible market observation exceeded its freshness policy."),
+        ("locked", "Locked", "The best bid equals the best ask."),
+        ("crossed", "Crossed", "The best bid exceeds the best ask."),
+        ("unavailable", "Unavailable", "QMD cannot establish a usable market-quality state."),
+    ),
     "reference.float_quality": (
         ("reported", "Reported", "A point-in-time public-float publication is available."),
         ("shares_outstanding_only", "Shares outstanding only", "Only outstanding-share evidence is available; float is not inferred."),
         ("unavailable", "Unavailable", "No admissible public-float evidence is available."),
+    ),
+    "classification.short_pressure": (
+        ("no_short_data", "No short data", "No reported short-interest, days-to-cover, or short-volume evidence is available."),
+        ("crowded_short", "Crowded short", "Days to cover is at least 5 or short-volume ratio is at least 50%."),
+        ("elevated_short", "Elevated short", "Days to cover is at least 3 or short-volume ratio is at least 35%."),
+        ("normal", "Normal", "Available short-pressure evidence remains below the elevated thresholds."),
+    ),
+    "fundamental.trajectory_label": tuple(
+        (value, value, f"Registered financial-trajectory result: {value}.")
+        for value in ("Unavailable", "Strong", "Improving", "Stable", "Weak", "Deteriorating")
+    ),
+    "fundamental.valuation_label": tuple(
+        (value, value, f"Registered valuation regime: {value}.")
+        for value in ("Not meaningful", "Unavailable", "Discount", "Moderate", "Premium", "Very premium")
+    ),
+    "xbrl.quality_label": tuple(
+        (value, value, f"Registered XBRL evidence-quality result: {value}.")
+        for value in ("Insufficient", "Robust", "Strong", "Mixed", "Fragile", "Weak")
     ),
 }
 

@@ -46,6 +46,7 @@ export type AtomicField = {
 };
 
 type KnownValue = { description: string; label: string; value: boolean | number | string };
+type ValueDomain = { allowed_values?: KnownValue[]; closed: boolean; kind: "boolean" | "date" | "enum" | "number" | "structured" | "text" | "time" | "timestamp"; unit?: string };
 
 export type DataFieldOutput = {
   column_presentations: Array<{ default_visible?: boolean; label: string; presentation_id: string }>;
@@ -56,6 +57,7 @@ export type DataFieldOutput = {
   source_id: string;
   value_type: string;
   unit: string;
+  value_domain?: ValueDomain;
 };
 
 export type DataFieldDefinition = {
@@ -113,7 +115,7 @@ export type DataRuleSet = {
 };
 
 const DATA_KINDS = new Set(["field", "derivation", "signal"]);
-export type RuleFieldDefinition = RegistryDefinition & { data_field_context?: DataFieldDefinition["context"]; field_ref?: string; source_id?: string };
+export type RuleFieldDefinition = RegistryDefinition & { data_field_context?: DataFieldDefinition["context"]; field_ref?: string; source_id?: string; value_domain?: ValueDomain };
 
 export function dataFieldRuleDefinitions(dataFields: DataFieldDefinition[], enabledOnly = true): RuleFieldDefinition[] {
   return dataFields.filter((dataField) => !enabledOnly || dataField.enabled).flatMap((dataField) => dataField.outputs.map((output) => ({
@@ -145,6 +147,7 @@ export function dataFieldRuleDefinitions(dataFields: DataFieldDefinition[], enab
     source_id: output.source_id,
     status: dataField.enabled ? "implemented" : "disabled",
     tags: [dataField.category || "Data Field", dataField.recipe_id, ...fieldDimensionTags(dataField.context)],
+    value_domain: output.value_domain ?? inferValueDomain(output.value_type, output.unit, dataField.known_values ?? []),
     version: dataField.revision,
   })));
 }
@@ -457,10 +460,10 @@ function RuleSetDetail({ fields, onChange, onDelete, onDuplicate, ruleSet }: { f
           const targetStillCompatible = !comparesToField || compatibleRuleTargets(nextSource, target ? [target] : []).length > 0;
           const allowed = ruleComparators(nextSource, "", comparesToField && targetStillCompatible);
           const comparator = allowed.some((row) => row.value === condition.comparator) ? condition.comparator : defaultRuleComparator(nextSource);
-          replaceCondition(condition.condition_id, { ...condition, comparator, left_field_ref: nextSource.field_ref || nextSource.registry_id, left_source_id: nextSource.source_id || nextSource.registry_id, left_aggregation: preferredRuleAggregation(nextSource), left_interval: preferredRuleInterval(nextSource), right_field_ref: comparator === "is_true" || !targetStillCompatible ? "" : condition.right_field_ref, right_source_id: comparator === "is_true" || !targetStillCompatible ? "" : condition.right_source_id, right_aggregation: comparator === "is_true" || !targetStillCompatible ? "" : condition.right_aggregation, right_interval: comparator === "is_true" || !targetStillCompatible ? "" : condition.right_interval, value: comparator === "is_true" ? null : condition.value ?? 0 });
+          replaceCondition(condition.condition_id, { ...condition, comparator, left_field_ref: nextSource.field_ref || nextSource.registry_id, left_source_id: nextSource.source_id || nextSource.registry_id, left_aggregation: preferredRuleAggregation(nextSource), left_interval: preferredRuleInterval(nextSource), right_field_ref: comparator === "is_true" || !targetStillCompatible ? "" : condition.right_field_ref, right_source_id: comparator === "is_true" || !targetStillCompatible ? "" : condition.right_source_id, right_aggregation: comparator === "is_true" || !targetStillCompatible ? "" : condition.right_aggregation, right_interval: comparator === "is_true" || !targetStillCompatible ? "" : condition.right_interval, value: comparator === "is_true" ? null : defaultRuleConstant(nextSource, condition.value) });
         }} optionLimit={0} options={!source && condition.left_source_id ? [{ description: "Unregistered Data Field referenced by this draft.", label: condition.left_source_id, value: condition.left_source_id }, ...definitionOptions] : definitionOptions} placeholder="Choose Data Field" presentation="catalog" searchable searchPlaceholder="Search Data Fields…" showAllOnOpen value={source?.source_id || condition.left_source_id} />{source ? <RuleDimensionControl aggregation={condition.left_aggregation} definition={source} label={`Condition ${index + 1}`} onChange={(left_interval, left_aggregation) => replaceCondition(condition.condition_id, { ...condition, left_aggregation, left_interval })} value={condition.left_interval || ""} /> : <p>Choose the market value or computed output to evaluate.</p>}</div></section>
-        <label className="rule-condition-comparator"><small>Relationship</small><select aria-label={`Condition ${index + 1} comparator`} disabled={!source} onChange={(event) => { const comparator = event.target.value; replaceCondition(condition.condition_id, { ...condition, comparator, right_aggregation: comparator === "is_true" ? "" : condition.right_aggregation, right_field_ref: comparator === "is_true" ? "" : condition.right_field_ref, right_source_id: comparator === "is_true" ? "" : condition.right_source_id, right_interval: comparator === "is_true" ? "" : condition.right_interval, value: comparator === "is_true" ? null : condition.value ?? 0 }); }} value={condition.comparator}>{comparators.map((row) => <option key={row.value} value={row.value}>{row.label}</option>)}</select></label>
-        <section className="rule-condition-side rule-condition-target"><header><span>Compare against</span>{condition.comparator !== "is_true" ? <div aria-label={`Condition ${index + 1} comparison target`} className="rule-operand-mode" role="group"><button aria-pressed={!comparesToField} onClick={() => replaceCondition(condition.condition_id, { ...condition, comparator: condition.comparator === "above_by_bps" ? defaultRuleComparator(source) : condition.comparator, right_aggregation: "", right_field_ref: "", right_source_id: "", right_interval: "" })} type="button">Value</button><button aria-pressed={comparesToField} disabled={!compatibleTargets.length} onClick={() => { const nextTarget = target && compatibleRuleTargets(source, [target]).length ? target : compatibleTargets[0]; if (!nextTarget) return; replaceCondition(condition.condition_id, { ...condition, right_aggregation: preferredRuleAggregation(nextTarget), right_field_ref: nextTarget.field_ref || nextTarget.registry_id, right_source_id: nextTarget.source_id || nextTarget.registry_id, right_interval: preferredRuleInterval(nextTarget) }); }} type="button">Data Field</button></div> : null}</header>{condition.comparator === "is_true" ? <div className="rule-condition-boolean"><small>Required state</small><strong>True</strong></div> : comparesToField ? <div className="rule-condition-definition"><InventoryFilterSelect ariaLabel={`Condition ${index + 1} target Data Field`} className="rule-condition-definition-lookup" onChange={(value) => { const nextTarget = preferredRuleVariant(definitionFamilies.get(value) ?? []); replaceCondition(condition.condition_id, { ...condition, right_aggregation: preferredRuleAggregation(nextTarget), right_field_ref: nextTarget?.field_ref || value, right_source_id: nextTarget?.source_id || value, right_interval: preferredRuleInterval(nextTarget) }); }} optionLimit={0} options={!target && condition.right_source_id ? [{ description: "Unregistered Data Field referenced by this draft.", label: condition.right_source_id, value: condition.right_source_id }, ...compatibleTargetOptions] : compatibleTargetOptions} presentation="catalog" searchable searchPlaceholder="Search compatible Data Fields…" showAllOnOpen value={target?.source_id || condition.right_source_id} />{target ? <RuleDimensionControl aggregation={condition.right_aggregation} definition={target} label={`Condition ${index + 1} target`} onChange={(right_interval, right_aggregation) => replaceCondition(condition.condition_id, { ...condition, right_aggregation, right_interval })} value={condition.right_interval || ""} /> : null}{condition.comparator === "above_by_bps" ? <label className="rule-bps-buffer"><small>Buffer (bps)</small><input aria-label={`Condition ${index + 1} basis point buffer`} onChange={(event) => replaceCondition(condition.condition_id, { ...condition, value: Number(event.target.value) })} step="any" type="number" value={Number(condition.value ?? 0)} /></label> : null}</div> : <label className="rule-threshold-input"><small>Threshold</small><input aria-label={`Condition ${index + 1} value`} disabled={!source} onChange={(event) => { const parsed = Number(event.target.value); replaceCondition(condition.condition_id, { ...condition, value: Number.isNaN(parsed) ? event.target.value : parsed }); }} step="any" type={isNumericRuleDefinition(source) ? "number" : "text"} value={String(condition.value ?? "")} /></label>}</section>
+        <label className="rule-condition-comparator"><small>Relationship</small><select aria-label={`Condition ${index + 1} comparator`} disabled={!source} onChange={(event) => { const comparator = event.target.value; replaceCondition(condition.condition_id, { ...condition, comparator, right_aggregation: comparator === "is_true" ? "" : condition.right_aggregation, right_field_ref: comparator === "is_true" ? "" : condition.right_field_ref, right_source_id: comparator === "is_true" ? "" : condition.right_source_id, right_interval: comparator === "is_true" ? "" : condition.right_interval, value: comparator === "is_true" ? null : defaultRuleConstant(source, condition.value) }); }} value={condition.comparator}>{comparators.map((row) => <option key={row.value} value={row.value}>{row.label}</option>)}</select></label>
+        <section className="rule-condition-side rule-condition-target"><header><span>Compare against</span>{condition.comparator !== "is_true" ? <div aria-label={`Condition ${index + 1} comparison target`} className="rule-operand-mode" role="group"><button aria-pressed={!comparesToField} onClick={() => replaceCondition(condition.condition_id, { ...condition, comparator: condition.comparator === "above_by_bps" ? defaultRuleComparator(source) : condition.comparator, right_aggregation: "", right_field_ref: "", right_source_id: "", right_interval: "", value: defaultRuleConstant(source, condition.value) })} type="button">Value</button><button aria-pressed={comparesToField} disabled={!compatibleTargets.length} onClick={() => { const nextTarget = target && compatibleRuleTargets(source, [target]).length ? target : compatibleTargets[0]; if (!nextTarget) return; replaceCondition(condition.condition_id, { ...condition, right_aggregation: preferredRuleAggregation(nextTarget), right_field_ref: nextTarget.field_ref || nextTarget.registry_id, right_source_id: nextTarget.source_id || nextTarget.registry_id, right_interval: preferredRuleInterval(nextTarget) }); }} type="button">Data Field</button></div> : null}</header>{condition.comparator === "is_true" ? <div className="rule-condition-boolean"><small>Required state</small><strong>True</strong></div> : comparesToField ? <div className="rule-condition-definition"><InventoryFilterSelect ariaLabel={`Condition ${index + 1} target Data Field`} className="rule-condition-definition-lookup" onChange={(value) => { const nextTarget = preferredRuleVariant(definitionFamilies.get(value) ?? []); replaceCondition(condition.condition_id, { ...condition, right_aggregation: preferredRuleAggregation(nextTarget), right_field_ref: nextTarget?.field_ref || value, right_source_id: nextTarget?.source_id || value, right_interval: preferredRuleInterval(nextTarget) }); }} optionLimit={0} options={!target && condition.right_source_id ? [{ description: "Unregistered Data Field referenced by this draft.", label: condition.right_source_id, value: condition.right_source_id }, ...compatibleTargetOptions] : compatibleTargetOptions} presentation="catalog" searchable searchPlaceholder="Search compatible Data Fields…" showAllOnOpen value={target?.source_id || condition.right_source_id} />{target ? <RuleDimensionControl aggregation={condition.right_aggregation} definition={target} label={`Condition ${index + 1} target`} onChange={(right_interval, right_aggregation) => replaceCondition(condition.condition_id, { ...condition, right_aggregation, right_interval })} value={condition.right_interval || ""} /> : null}{condition.comparator === "above_by_bps" ? <label className="rule-bps-buffer"><small>Buffer (bps)</small><input aria-label={`Condition ${index + 1} basis point buffer`} onChange={(event) => replaceCondition(condition.condition_id, { ...condition, value: Number(event.target.value) })} step="any" type="number" value={Number(condition.value ?? 0)} /></label> : null}</div> : <RuleConstantEditor condition={condition} index={index} onChange={(value) => replaceCondition(condition.condition_id, { ...condition, value })} source={source} />}</section>
         </div>
       </div>;
     })}</section>
@@ -489,6 +492,7 @@ const RULE_LIBRARY_COMPARATORS = [
   { label: "is at most", value: "less_or_equal" },
   { label: "is less than", value: "less_than" },
   { label: "equals", value: "equals" },
+  { label: "does not equal", value: "not_equals" },
   { label: "is true", value: "is_true" },
   { label: "is above by", value: "above_by_bps" },
 ];
@@ -548,6 +552,21 @@ function RuleDimensionControl({ aggregation, definition, label, onChange, value 
   return <div className="rule-field-timing">{definition.data_field_context?.dimension_kind === "interval" && intervals.length ? <IntervalSelect ariaLabel={`${label} ${definition.data_field_context.interval_semantics === "event_window" ? "window" : "bar timeframe"}`} className="rule-field-dimension" intervals={intervals} onChange={(interval) => onChange(interval, aggregation)} value={value} /> : <span className="rule-field-dimension-summary"><small>Evaluation context</small><strong>{ruleFieldContext(definition)}</strong></span>}{allowed.length ? <InventoryFilterSelect ariaLabel={`${label} aggregation`} className="rule-field-aggregation" onChange={(next) => onChange(value as IntervalSpec, next)} options={allowed.map((value) => ({ description: aggregationDescription(value), label: aggregationLabel(value), value }))} presentation="catalog" showAllOnOpen value={aggregation || aggregationContract?.default || allowed[0]} /> : null}</div>;
 }
 
+function RuleConstantEditor({ condition, index, onChange, source }: { condition: DataRuleCondition; index: number; onChange: (value: DataRuleCondition["value"]) => void; source?: RuleFieldDefinition }) {
+  const domain = ruleValueDomain(source);
+  const allowed = domain.allowed_values ?? [];
+  if (domain.kind === "enum" && allowed.length) {
+    const options = allowed.map((row) => ({ description: row.description, label: row.label, value: encodeRuleValue(row.value) }));
+    return <label className="rule-constant-editor rule-constant-lookup"><small>Value</small><InventoryFilterSelect ariaLabel={`Condition ${index + 1} value`} onChange={(key) => onChange(allowed.find((row) => encodeRuleValue(row.value) === key)?.value ?? null)} options={options} presentation="catalog" searchable={options.length > 6} searchPlaceholder="Search allowed values…" showAllOnOpen value={encodeRuleValue(defaultRuleConstant(source, condition.value))} /></label>;
+  }
+  if (domain.kind === "boolean") {
+    return <label className="rule-constant-editor rule-constant-lookup"><small>Value</small><InventoryFilterSelect ariaLabel={`Condition ${index + 1} value`} onChange={(value) => onChange(value === "true")} options={[{ description: "The field must be true.", label: "True", value: "true" }, { description: "The field must be false.", label: "False", value: "false" }]} presentation="catalog" showAllOnOpen value={condition.value === false ? "false" : "true"} /></label>;
+  }
+  const inputType = domain.kind === "number" ? "number" : domain.kind === "date" ? "date" : domain.kind === "time" ? "time" : "text";
+  const placeholder = domain.kind === "timestamp" ? "YYYY-MM-DDTHH:MM:SSZ" : domain.kind === "text" ? "Enter value" : undefined;
+  return <label className="rule-constant-editor"><small>{domain.kind === "timestamp" ? "ISO timestamp" : "Value"}</small><input aria-label={`Condition ${index + 1} value`} disabled={!source || domain.kind === "structured"} onChange={(event) => onChange(domain.kind === "number" ? Number(event.target.value) : event.target.value)} placeholder={placeholder} step={domain.kind === "time" ? "1" : domain.kind === "number" ? "any" : undefined} type={inputType} value={String(condition.value ?? "")} />{domain.unit && !["scalar", "producer_defined", "string"].includes(domain.unit.toLowerCase()) ? <em>{readable(domain.unit)}</em> : null}</label>;
+}
+
 function ruleFieldContext(definition?: RuleFieldDefinition, interval: IntervalValue = "") {
   if (!definition?.data_field_context) return "Registered Data Field";
   if (definition.data_field_context.dimension_kind === "interval") return interval ? `${definition.data_field_context.interval_semantics === "event_window" ? "Window" : "Bar"} ${intervalLabel(interval)}` : "Interval required";
@@ -560,10 +579,10 @@ function aggregationLabel(value: string) { return ({ first: "First", last: "Last
 function aggregationDescription(value: string) { return `${aggregationLabel(value)} of the source events inside the selected window.`; }
 function ruleComparators(source: RegistryDefinition | undefined, current: string, comparesToField = false) {
   const values = isBooleanRuleDefinition(source)
-    ? ["is_true"]
+    ? ["is_true", "equals", "not_equals"]
     : isNumericRuleDefinition(source)
-      ? ["greater_or_equal", "greater_than", "less_or_equal", "less_than", "equals", ...(comparesToField ? ["above_by_bps"] : [])]
-      : ["equals"];
+      ? ["greater_or_equal", "greater_than", "less_or_equal", "less_than", "equals", "not_equals", ...(comparesToField ? ["above_by_bps"] : [])]
+      : ["equals", "not_equals"];
   if (current && !values.includes(current)) values.push(current);
   return RULE_LIBRARY_COMPARATORS.filter((row) => values.includes(row.value));
 }
@@ -586,16 +605,38 @@ function defaultRuleComparator(source?: RegistryDefinition) { return isBooleanRu
 function isBooleanRuleDefinition(source?: RegistryDefinition) { const valueType = source?.documentation?.value_type?.toLowerCase(); return valueType === "boolean" || (source?.kind === "signal" && valueType === "event"); }
 function isNumericRuleDefinition(source?: RegistryDefinition) { return /number|integer|float|score|decimal|currency|price|percent|ratio|basis/.test(source?.documentation?.value_type?.toLowerCase() ?? ""); }
 function ruleComparatorLabel(comparator: string, value: DataRuleCondition["value"]) { if (comparator === "above_by_bps") return `is ${formatCompactNumber(Number(value ?? 0))} bps above`; return RULE_LIBRARY_COMPARATORS.find((row) => row.value === comparator)?.label ?? readable(comparator).toLowerCase(); }
-function ruleValueContext(source?: RegistryDefinition) { const unit = source?.documentation?.unit; return unit && unit !== "scalar" && unit !== "producer_defined" ? readable(unit) : "Fixed value"; }
+function ruleValueContext(source?: RegistryDefinition) { const domain = ruleValueDomain(source as RuleFieldDefinition | undefined); if (domain.closed) return "Registered category"; const unit = source?.documentation?.unit; return unit && unit !== "scalar" && unit !== "producer_defined" ? readable(unit) : readable(domain.kind); }
 function formatRuleConstant(value: DataRuleCondition["value"], source?: RegistryDefinition) {
   if (value === null || value === undefined || value === "") return "Missing value";
   if (typeof value === "boolean") return value ? "True" : "False";
+  const known = ruleValueDomain(source as RuleFieldDefinition | undefined).allowed_values?.find((row) => row.value === value);
+  if (known) return known.label;
   if (typeof value !== "number") return String(value);
   const unit = source?.documentation?.unit?.toLowerCase() ?? "";
   if (unit === "currency" || unit === "usd") return `$${formatCompactNumber(value)}`;
   if (unit.includes("percent")) return `${formatCompactNumber(value)}%`;
   if (unit.includes("share")) return `${formatCompactNumber(value)} shares`;
   return formatCompactNumber(value);
+}
+function inferValueDomain(valueType: string, unit: string, knownValues: KnownValue[]): ValueDomain {
+  const normalized = valueType.toLowerCase();
+  if (knownValues.length) return { allowed_values: knownValues, closed: true, kind: "enum", unit };
+  if (normalized === "boolean") return { closed: false, kind: "boolean", unit };
+  if (/number|integer|float|score|decimal|currency|price|percent|ratio|basis/.test(normalized)) return { closed: false, kind: "number", unit };
+  if (["date", "time", "timestamp", "datetime"].includes(normalized) || ["date", "time", "timestamp", "datetime"].includes(unit.toLowerCase())) { const temporal = ["date", "time", "timestamp", "datetime"].includes(normalized) ? normalized : unit.toLowerCase(); return { closed: false, kind: temporal === "datetime" ? "timestamp" : (temporal as ValueDomain["kind"]), unit }; }
+  if (["json", "vector", "record", "object", "array"].includes(normalized)) return { closed: false, kind: "structured", unit };
+  return { closed: false, kind: "text", unit };
+}
+function ruleValueDomain(source?: RuleFieldDefinition): ValueDomain { return source?.value_domain ?? inferValueDomain(source?.documentation?.value_type ?? "string", source?.documentation?.unit ?? "", []); }
+function encodeRuleValue(value: DataRuleCondition["value"]) { return JSON.stringify(value); }
+function defaultRuleConstant(source?: RuleFieldDefinition, current?: DataRuleCondition["value"]): DataRuleCondition["value"] {
+  const domain = ruleValueDomain(source);
+  const allowed = domain.allowed_values ?? [];
+  if (domain.closed) return allowed.some((row) => row.value === current) ? current ?? null : allowed[0]?.value ?? null;
+  if (domain.kind === "boolean") return typeof current === "boolean" ? current : true;
+  if (domain.kind === "number") return typeof current === "number" && Number.isFinite(current) ? current : 0;
+  if (["date", "time", "timestamp", "text"].includes(domain.kind)) return typeof current === "string" ? current : "";
+  return null;
 }
 function formatCompactNumber(value: number) { return new Intl.NumberFormat("en-US", { maximumFractionDigits: 4, notation: Math.abs(value) >= 1_000 ? "compact" : "standard" }).format(value); }
 

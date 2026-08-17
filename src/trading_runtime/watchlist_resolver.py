@@ -279,6 +279,8 @@ def _condition_matches(condition: dict[str, Any], row: dict[str, Any]) -> bool:
         right = _source_value(row, right_source) if right_source else condition.get("value")
     if comparator == "equals":
         return left == right
+    if comparator == "not_equals":
+        return left != right
     left_number, right_number = _number(left), _number(right)
     if left_number is None or right_number is None:
         return False
@@ -309,6 +311,8 @@ def _condition_expression(
         right = pl.lit(condition.get("value"))
     if comparator == "equals":
         return left.eq(right).fill_null(False)
+    if comparator == "not_equals":
+        return left.ne(right).fill_null(False)
     left_number = left.cast(pl.Float64, strict=False)
     right_number = right.cast(pl.Float64, strict=False)
     if comparator == "above_by_bps":
