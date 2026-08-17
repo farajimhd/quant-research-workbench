@@ -23416,9 +23416,8 @@ button {
 .rule-field-dimension-summary small { color: var(--muted-foreground); font-size: .59rem; font-weight: 650; letter-spacing: .055em; text-transform: uppercase; }
 .rule-field-dimension-summary strong { overflow: hidden; font: 620 .67rem/1.2 var(--font-mono); text-overflow: ellipsis; white-space: nowrap; }
 .rule-field-timing { display: grid; gap: 6px; }
-.rule-field-value-selection { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; padding: 7px 9px; border: 1px solid color-mix(in oklab, var(--primary) 24%, var(--border)); border-radius: 7px; background: color-mix(in oklab, var(--primary) 5%, var(--surface)); }
-.rule-field-value-selection small { color: var(--muted-foreground); font-size: .59rem; font-weight: 650; letter-spacing: .055em; text-transform: uppercase; }
-.rule-field-value-selection strong { color: var(--primary); font: 620 .67rem/1.2 var(--font-mono); }
+.rule-field-aggregation,
+.market-discovery-column-aggregation { margin-top: 2px; min-width: 0; }
 .rule-condition-definition-lookup { min-width: 0; width: 100%; }
 .rule-operand-mode { display: grid; grid-template-columns: 1fr 1fr; gap: 2px; padding: 2px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface-alt); }
 .rule-operand-mode button { min-height: 28px; padding: 0 8px; border: 0; border-radius: 6px; color: var(--muted-foreground); background: transparent; font: inherit; font-size: .68rem; font-weight: 580; cursor: pointer; }
@@ -23497,6 +23496,7 @@ button {
 .market-discovery-exact-reference { display: block; overflow: hidden; max-width: 100%; padding: 0 2px; background: transparent; color: var(--muted-foreground); font-size: .62rem; text-overflow: ellipsis; white-space: nowrap; }
 .market-discovery-field-context { display: block; padding: 1px 2px 0; color: var(--muted-foreground); font-size: .66rem; }
 .market-discovery-column-interval { grid-template-columns: 92px minmax(0, 180px); align-items: center; gap: 8px; margin-top: 8px; }
+.market-discovery-column-aggregation { margin-top: 8px; max-width: 280px; }
 .market-discovery-technical-identity { margin-top: 7px; color: var(--muted-foreground); font-size: .64rem; }
 .market-discovery-technical-identity summary { width: max-content; cursor: pointer; }
 .market-discovery-technical-identity code { display: block; overflow: hidden; max-width: 100%; margin-top: 4px; text-overflow: ellipsis; white-space: nowrap; }

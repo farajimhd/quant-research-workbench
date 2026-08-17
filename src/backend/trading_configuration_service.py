@@ -66,7 +66,7 @@ from src.trading_runtime.strategy_campaign import validate_campaign_policy
 from src.trading_runtime.taxonomy import StrategyTaxonomy
 
 
-CONFIGURATION_SCHEMA_VERSION = 30
+CONFIGURATION_SCHEMA_VERSION = 31
 CONFIGURATION_SECTIONS = {
     "strategy",
     "trading_actions",
@@ -2000,7 +2000,6 @@ def _watchlist_condition(condition_id: str, source_id: str, comparator: str, val
     return {
         "condition_id": condition_id,
         "left_source_id": source_id,
-        "left_value_selection": "latest",
         "comparator": comparator,
         "right_source_id": "",
         "value": value,
@@ -2203,6 +2202,11 @@ def _market_discovery_field_catalog(
             "implementation_status": implementation_status,
             "registry_authority": "application_registry",
             "market_discovery_supported": True,
+            "interval_semantics": str(field.interval_semantics if field is not None else ""),
+            "aggregation_functions": list(field.aggregation_functions if field is not None else ()),
+            "default_aggregation": str(field.default_aggregation if field is not None else ""),
+            "intrinsic_aggregation": str(field.intrinsic_aggregation if field is not None else ""),
+            "aggregation_runtime_fields": dict(field.aggregation_runtime_fields if field is not None else ()),
         })
     for field in sorted(FIELD_DEFINITIONS, key=lambda row: row.field_id):
         if field.field_id in presented_field_ids:
@@ -2238,6 +2242,11 @@ def _market_discovery_field_catalog(
             "implementation_status": field.status,
             "registry_authority": "application_registry",
             "market_discovery_supported": False,
+            "interval_semantics": field.interval_semantics,
+            "aggregation_functions": list(field.aggregation_functions),
+            "default_aggregation": field.default_aggregation,
+            "intrinsic_aggregation": field.intrinsic_aggregation,
+            "aggregation_runtime_fields": dict(field.aggregation_runtime_fields),
         })
     # Some typed QMD outputs (for example confirmed structure levels) are
     # registered directly by the producer capability rather than the static
@@ -2835,6 +2844,14 @@ def _validate_market_discovery(section: dict[str, Any]) -> None:
         raise ValueError("Market Discovery requires at least one registered Data Field")
     validate_data_field_catalog(data_fields)
     output_index = data_field_output_index(data_fields)
+    def validate_aggregation(output: dict[str, Any], value: Any, label: str) -> None:
+        contract = dict(output.get("aggregation") or {})
+        mode = str(contract.get("mode") or "none")
+        selected = str(value or "")
+        if mode == "required" and selected not in set(contract.get("allowed") or []):
+            raise ValueError(f"{label} requires a compatible aggregation function")
+        if mode != "required" and selected:
+            raise ValueError(f"{label} cannot override its intrinsic aggregation")
     data_field_by_output_ref = {
         str(output.get("field_ref") or ""): data_field
         for data_field in data_fields
@@ -2892,6 +2909,7 @@ def _validate_market_discovery(section: dict[str, Any]) -> None:
                 raise ValueError(
                     f"Rule Set {rule_set.get('name')} assigns an interval to non-interval field {source_id}"
                 )
+            validate_aggregation(output, condition.get("left_aggregation"), f"Rule Set {rule_set.get('name')} field {source_id}")
             right_source_id = str(condition.get("right_source_id") or "")
             right_ref = str(condition.get("right_field_ref") or "")
             if comparator == "above_by_bps" and not right_source_id:
@@ -2944,6 +2962,7 @@ def _validate_market_discovery(section: dict[str, Any]) -> None:
                     raise ValueError(
                         f"Rule Set {rule_set.get('name')} requires a supported comparison interval for {right_source_id}"
                     )
+                validate_aggregation(right_output, condition.get("right_aggregation"), f"Rule Set {rule_set.get('name')} comparison field {right_source_id}")
                 if not right_available and right_interval is not None:
                     raise ValueError(
                         f"Rule Set {rule_set.get('name')} assigns an interval to non-interval comparison field {right_source_id}"
@@ -3132,8 +3151,15 @@ def _validate_market_discovery(section: dict[str, Any]) -> None:
             for key, value in dict(composition.get("column_intervals") or {}).items()
             if str(key) and str(value)
         }
+        aggregation_bindings = {
+            str(key): str(value)
+            for key, value in dict(composition.get("column_aggregations") or {}).items()
+            if str(key) and str(value)
+        }
         if set(bindings) - selected_columns:
             raise ValueError(f"{composition_name} has interval bindings for unselected columns")
+        if set(aggregation_bindings) - selected_columns:
+            raise ValueError(f"{composition_name} has aggregation bindings for unselected columns")
         for column_id in selected_columns:
             available = {
                 str(spec["unit"])
@@ -3145,6 +3171,7 @@ def _validate_market_discovery(section: dict[str, Any]) -> None:
                 raise ValueError(f"{composition_name} requires an interval for column {column_id}")
             if not available and selected_interval is not None:
                 raise ValueError(f"{composition_name} assigns an interval to non-interval column {column_id}")
+            validate_aggregation(output_index.get(str(columns_by_id.get(column_id, {}).get("field_ref") or ""), {}), aggregation_bindings.get(column_id), f"{composition_name} column {column_id}")
         if "ranking_field_ref" in composition:
             ranking_output = output_index.get(str(composition.get("ranking_field_ref") or ""), {})
             available = {
@@ -3157,6 +3184,7 @@ def _validate_market_discovery(section: dict[str, Any]) -> None:
                 raise ValueError(f"{composition_name} requires a ranking interval")
             if not available and ranking_interval is not None:
                 raise ValueError(f"{composition_name} assigns an interval to a non-interval ranking field")
+            validate_aggregation(ranking_output, composition.get("ranking_aggregation"), f"{composition_name} ranking field")
     compiled_plan = compile_data_field_plan(section)
     stored_plan = dict(section.get("data_field_plan") or {})
     if stored_plan and str(stored_plan.get("content_hash") or "") != str(compiled_plan.get("content_hash") or ""):
@@ -3874,22 +3902,36 @@ def _migrate_market_discovery_instances(
 
 
 def _normalize_market_discovery_interval_specs(discovery: dict[str, Any]) -> None:
-    """Normalize use-site timing: latest causal value plus optional bar interval."""
+    """Normalize use-site timing and typed event-window aggregation bindings."""
+
+    output_index = data_field_output_index(list(discovery.get("data_fields") or []))
+    columns = {str(row.get("column_id") or ""): row for row in discovery.get("column_catalog") or []}
+
+    def normalized_aggregation(output: dict[str, Any], value: Any) -> str:
+        contract = dict(output.get("aggregation") or {})
+        if str(contract.get("mode") or "none") != "required":
+            return ""
+        selected = str(value or "")
+        allowed = [str(item) for item in contract.get("allowed") or []]
+        return selected if selected in allowed else str(contract.get("default") or (allowed[0] if allowed else ""))
 
     for rule_set in discovery.get("rule_sets") or []:
         for condition in rule_set.get("conditions") or []:
-            if str(condition.get("left_source_id") or ""):
-                condition.setdefault("left_value_selection", "latest")
-            if str(condition.get("right_source_id") or ""):
-                condition.setdefault("right_value_selection", "latest")
-            else:
-                condition.pop("right_value_selection", None)
+            condition.pop("left_value_selection", None)
+            condition.pop("right_value_selection", None)
             for key in ("left_interval", "right_interval"):
                 normalized = normalize_interval_spec(condition.get(key))
                 if normalized is None:
                     condition.pop(key, None)
                 else:
                     condition[key] = normalized
+            for side in ("left", "right"):
+                output = output_index.get(str(condition.get(f"{side}_field_ref") or ""), {})
+                aggregation = normalized_aggregation(output, condition.get(f"{side}_aggregation"))
+                if aggregation:
+                    condition[f"{side}_aggregation"] = aggregation
+                else:
+                    condition.pop(f"{side}_aggregation", None)
     for composition in [
         discovery.get("core_scan") or {},
         *list(discovery.get("watchlists") or []),
@@ -3900,11 +3942,25 @@ def _normalize_market_discovery_interval_specs(discovery: dict[str, Any]) -> Non
             for key, value in dict(composition.get("column_intervals") or {}).items()
             if str(key) and (normalized := normalize_interval_spec(value)) is not None
         }
+        composition["column_aggregations"] = {
+            column_id: aggregation
+            for column_id in (str(value) for value in composition.get("columns") or [])
+            if (aggregation := normalized_aggregation(
+                output_index.get(str(columns.get(column_id, {}).get("field_ref") or ""), {}),
+                dict(composition.get("column_aggregations") or {}).get(column_id),
+            ))
+        }
         ranking = normalize_interval_spec(composition.get("ranking_interval"))
         if ranking is None:
             composition.pop("ranking_interval", None)
         else:
             composition["ranking_interval"] = ranking
+        ranking_output = output_index.get(str(composition.get("ranking_field_ref") or ""), {})
+        ranking_aggregation = normalized_aggregation(ranking_output, composition.get("ranking_aggregation"))
+        if ranking_aggregation:
+            composition["ranking_aggregation"] = ranking_aggregation
+        else:
+            composition.pop("ranking_aggregation", None)
 
 
 def _migrate_draft(raw: dict[str, Any]) -> dict[str, Any]:

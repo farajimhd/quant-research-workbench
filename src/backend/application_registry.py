@@ -57,6 +57,11 @@ class FieldDefinition:
     input_field_ids: tuple[str, ...] = ()
     timeframes: tuple[str, ...] = ()
     known_values: tuple[tuple[str, str, str], ...] = ()
+    interval_semantics: str = ""
+    aggregation_functions: tuple[str, ...] = ()
+    default_aggregation: str = ""
+    intrinsic_aggregation: str = ""
+    aggregation_runtime_fields: tuple[tuple[str, str], ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -209,12 +214,12 @@ REGISTRY_TYPES = (
 
 
 CONFIGURATION_BINDINGS = (
-    ConfigurationBindingDefinition("market_discovery.core_scan", "market_discovery.core_scan", "product", "scan_id", "editable_instance", ("name", "description", "inclusion_rule_sets", "ranking_field_ref", "ranking_interval", "ranking_direction", "maximum_size", "refresh_interval_ms", "columns", "column_intervals"), ("inclusion_rule_sets", "ranking_field_ref", "columns")),
+    ConfigurationBindingDefinition("market_discovery.core_scan", "market_discovery.core_scan", "product", "scan_id", "editable_instance", ("name", "description", "inclusion_rule_sets", "ranking_field_ref", "ranking_interval", "ranking_aggregation", "ranking_direction", "maximum_size", "refresh_interval_ms", "columns", "column_intervals", "column_aggregations"), ("inclusion_rule_sets", "ranking_field_ref", "columns")),
     ConfigurationBindingDefinition("market_discovery.columns", "market_discovery.watchlists[].columns[]", "column", "column_id", "select_reference", (), ("column_id",)),
-    ConfigurationBindingDefinition("market_discovery.conditions", "market_discovery.rule_sets[].conditions[]", "condition", "condition_id", "editable_instance", ("left_field_ref", "left_value_selection", "left_interval", "comparator", "right_field_ref", "right_value_selection", "right_interval", "value", "enabled"), ("left_field_ref", "right_field_ref")),
+    ConfigurationBindingDefinition("market_discovery.conditions", "market_discovery.rule_sets[].conditions[]", "condition", "condition_id", "editable_instance", ("left_field_ref", "left_interval", "left_aggregation", "comparator", "right_field_ref", "right_interval", "right_aggregation", "value", "enabled"), ("left_field_ref", "right_field_ref")),
     ConfigurationBindingDefinition("market_discovery.rules", "market_discovery.rule_sets[]", "rule_set", "rule_set_id", "editable_instance", ("name", "description", "operator", "conditions", "enabled")),
-    ConfigurationBindingDefinition("market_discovery.watchlists", "market_discovery.watchlists[]", "watchlist", "watchlist_id", "editable_instance", ("name", "description", "inclusion_rule_sets", "ranking_field_ref", "ranking_interval", "ranking_direction", "maximum_size", "refresh_interval_ms", "membership_expiry", "membership_ttl_ms", "manual_inclusions", "manual_exclusions", "columns", "column_intervals", "enabled"), ("source_scan_id", "inclusion_rule_sets", "ranking_field_ref", "columns")),
-    ConfigurationBindingDefinition("market_discovery.signal_streams", "market_discovery.signal_streams[]", "signal_stream", "signal_stream_id", "editable_instance", ("name", "description", "inclusion_rule_sets", "inclusion_operator", "columns", "column_intervals", "refresh_interval_ms", "trigger_policy", "rearm_policy", "cooldown_ms", "maximum_events", "watchlist_routes", "enabled"), ("source_scan_id", "inclusion_rule_sets", "columns", "watchlist_routes")),
+    ConfigurationBindingDefinition("market_discovery.watchlists", "market_discovery.watchlists[]", "watchlist", "watchlist_id", "editable_instance", ("name", "description", "inclusion_rule_sets", "ranking_field_ref", "ranking_interval", "ranking_aggregation", "ranking_direction", "maximum_size", "refresh_interval_ms", "membership_expiry", "membership_ttl_ms", "manual_inclusions", "manual_exclusions", "columns", "column_intervals", "column_aggregations", "enabled"), ("source_scan_id", "inclusion_rule_sets", "ranking_field_ref", "columns")),
+    ConfigurationBindingDefinition("market_discovery.signal_streams", "market_discovery.signal_streams[]", "signal_stream", "signal_stream_id", "editable_instance", ("name", "description", "inclusion_rule_sets", "inclusion_operator", "columns", "column_intervals", "column_aggregations", "refresh_interval_ms", "trigger_policy", "rearm_policy", "cooldown_ms", "maximum_events", "watchlist_routes", "enabled"), ("source_scan_id", "inclusion_rule_sets", "columns", "watchlist_routes")),
     ConfigurationBindingDefinition("trading_actions.definitions", "trading_actions.definitions[]", "trading_action", "action_id", "locked", (), ()),
     ConfigurationBindingDefinition("trading_actions.policies", "trading_actions.policies[]", "action_policy", "policy_id", "editable_instance", ("name", "description", "action_id", "trigger", "quantity", "authority", "maximum_uses", "enabled"), ("action_id", "trigger.rule_set_ids")),
     ConfigurationBindingDefinition("strategy.profiles", "strategy.profiles[]", "strategy_profile", "profile_id", "editable_instance", ("name", "description", "parameters", "lifecycle", "action_policy_ids"), ("definition_id", "action_policy_ids")),
@@ -488,6 +493,16 @@ def _query_plans() -> tuple[QueryPlanDefinition, ...]:
             "QMD event time and scanner sequence",
             "QMD processing time",
             "service://qmd-gateway/coverage",
+        ),
+        QueryPlanDefinition(
+            "qmd.compact-events.v4",
+            "qmd_gateway",
+            "services/qmd-gateway/src/bars.rs:TradeEvent,QuoteEvent,BarRow",
+            ("market_sip_compact.events_YYYY", "service://qmd-gateway/live-events"),
+            "canonical ticker identity",
+            "SIP participant timestamp within the configured causal window",
+            "QMD ingest timestamp and watermark",
+            "market_sip_compact.events_ordinal_continuity",
         ),
         QueryPlanDefinition(
             "market.daily_session_bars.v1",
@@ -1407,6 +1422,11 @@ def _field(
     input_field_ids: Iterable[str] = (),
     timeframes: Iterable[str] = (),
     known_values: Iterable[tuple[str, str, str]] = (),
+    interval_semantics: str = "",
+    aggregation_functions: Iterable[str] = (),
+    default_aggregation: str = "",
+    intrinsic_aggregation: str = "",
+    aggregation_runtime_fields: Iterable[tuple[str, str]] = (),
 ) -> FieldDefinition:
     label = field_id.split(".")[-1].replace("_", " ").title()
     columns = tuple(source_columns) or (field_id.split(".")[-1],)
@@ -1454,6 +1474,11 @@ def _field(
         ),
         timeframes=tuple(timeframes or operator_documentation.get("timeframes") or ()),
         known_values=tuple(known_values or FIELD_KNOWN_VALUES.get(field_id, ())),
+        interval_semantics=interval_semantics,
+        aggregation_functions=tuple(aggregation_functions),
+        default_aggregation=default_aggregation,
+        intrinsic_aggregation=intrinsic_aggregation,
+        aggregation_runtime_fields=tuple(aggregation_runtime_fields),
     )
 
 
@@ -1520,6 +1545,57 @@ def _fields() -> tuple[FieldDefinition, ...]:
             coverage_query_plan="qmd.scanner.snapshot.v1",
             status="integration_pending" if field_id == "market.is_halted" else "implemented",
         ))
+
+    # Decoded compact SIP event members are first-class source observations.
+    # Numeric members with an exact BarRow equivalent may be instantiated in a
+    # Rule Set as a window plus aggregation. Other members remain discoverable
+    # in the Data Catalog but fail closed for Market Discovery execution.
+    event_windows = ("100ms", "1s", "1m", "1h", "1d", "1w", "1mo")
+    event_specs = (
+        ("trade.price", "number", "currency", ("first", "last", "min", "max", "volume_weighted_mean"), "last", (("first", "open"), ("last", "close"), ("min", "low"), ("max", "high"), ("volume_weighted_mean", "vwap"))),
+        ("trade.size", "number", "shares", ("sum", "mean", "median", "max", "count"), "sum", (("sum", "volume"), ("mean", "avg_trade_size"), ("median", "median_trade_size"), ("max", "max_trade_size"), ("count", "trade_count"))),
+        ("trade.notional", "number", "currency", ("sum",), "sum", (("sum", "dollar_volume"),)),
+        ("trade.event_count", "integer", "count", ("count",), "count", (("count", "trade_count"),)),
+        ("quote.bid_price", "number", "currency", ("first", "last", "min", "max"), "last", (("first", "bid_open"), ("last", "bid_close"), ("min", "bid_low"), ("max", "bid_high"))),
+        ("quote.ask_price", "number", "currency", ("first", "last", "min", "max"), "last", (("first", "ask_open"), ("last", "ask_close"), ("min", "ask_low"), ("max", "ask_high"))),
+        ("quote.mid_price", "number", "currency", ("first", "last", "min", "max"), "last", (("first", "mid_open"), ("last", "mid_close"), ("min", "mid_low"), ("max", "mid_high"))),
+        ("quote.spread", "number", "currency", ("first", "last", "min", "max", "mean"), "mean", (("first", "spread_open"), ("last", "spread_close"), ("min", "spread_low"), ("max", "spread_high"), ("mean", "spread_mean"))),
+        ("quote.bid_size", "number", "shares", ("mean",), "mean", (("mean", "quoted_bid_size_mean"),)),
+        ("quote.ask_size", "number", "shares", ("mean",), "mean", (("mean", "quoted_ask_size_mean"),)),
+        ("quote.event_count", "integer", "count", ("count",), "count", (("count", "quote_count"),)),
+    )
+    for field_id, value_type, unit, functions, default, runtime_fields in event_specs:
+        rows.append(_field(
+            field_id, "qmd_trade_events" if field_id.startswith("trade.") else "qmd_quote_events",
+            "qmd_gateway", "qmd://compact-events/trade" if field_id.startswith("trade.") else "qmd://compact-events/quote",
+            "qmd.compact-events.v4", value_type=value_type, unit=unit,
+            entity_grain="security_event", event_at="SIP participant timestamp",
+            available_at="QMD ingest timestamp", ttl_seconds=None,
+            publication_cadence="event_driven", historical_support="point_in_time",
+            provenance="raw", coverage_query_plan="qmd.compact-events.v4",
+            timeframes=event_windows, interval_semantics="event_window",
+            aggregation_functions=functions, default_aggregation=default,
+            aggregation_runtime_fields=runtime_fields,
+            calculation_summary=f"Aggregates the decoded {field_id} event member over the Rule Set window using the selected compatible function.",
+        ))
+    for prefix, names in {
+        "trade": ("conditions", "exchange", "ingest_ts", "participant_ts", "sequence", "tape", "ticker", "trade_id", "trf_id", "trf_ts", "ts"),
+        "quote": ("ask_exchange", "bid_exchange", "conditions", "indicators", "ingest_ts", "sequence", "tape", "ticker", "ts"),
+    }.items():
+        for name in names:
+            value_type = "integer" if name in {"sequence", "tape", "trade_id", "trf_id"} else "string"
+            unit = "timestamp" if name.endswith("_ts") or name == "ts" else "identity" if name == "ticker" else "category"
+            rows.append(_field(
+                f"{prefix}.{name}", f"qmd_{prefix}_events", "qmd_gateway",
+                f"qmd://compact-events/{prefix}", "qmd.compact-events.v4",
+                value_type=value_type, unit=unit, entity_grain="security_event",
+                event_at="SIP participant timestamp", available_at="QMD ingest timestamp",
+                ttl_seconds=None, publication_cadence="event_driven", provenance="raw",
+                coverage_query_plan="qmd.compact-events.v4", status="integration_pending",
+                timeframes=event_windows, interval_semantics="event_window",
+                source_summary=f"Decoded {prefix} event member published by QMD compact-events v4.",
+                calculation_summary="No aggregation-safe Market Discovery projection is registered; the source member remains available for inspection and future recipes.",
+            ))
 
     for field_id, value_type, unit in (
         ("clock.calendar_year", "integer", "year"),
@@ -1789,6 +1865,24 @@ DISCOVERY_FIELD_PRESENTATIONS += (
     DiscoveryFieldPresentation("clock.is_month_end", "clock.is_month_end", "is_month_end", "Month end", "Whether the exchange-local date is the last calendar day of its month.", "clock", False, True, True, ("is_true", "equals"), ("event",)),
     DiscoveryFieldPresentation("clock.is_quarter_start", "clock.is_quarter_start", "is_quarter_start", "Quarter start", "Whether the exchange-local date is the first calendar day of a quarter.", "clock", False, True, True, ("is_true", "equals"), ("event",)),
     DiscoveryFieldPresentation("clock.is_quarter_end", "clock.is_quarter_end", "is_quarter_end", "Quarter end", "Whether the exchange-local date is the last calendar day of a quarter.", "clock", False, True, True, ("is_true", "equals"), ("event",)),
+)
+
+DISCOVERY_FIELD_PRESENTATIONS += tuple(
+    DiscoveryFieldPresentation(
+        field.field_id,
+        field.field_id,
+        f"event_{field.field_id.replace('.', '_')}",
+        field.presentation_label,
+        field.calculation_summary,
+        "event_data",
+        False,
+        True,
+        True,
+        ("greater_or_equal", "greater_than", "less_or_equal", "less_than", "equals"),
+        field.timeframes,
+    )
+    for field in FIELD_DEFINITIONS
+    if field.aggregation_functions
 )
 
 # One authoritative translation from semantic discovery fields to the flat row

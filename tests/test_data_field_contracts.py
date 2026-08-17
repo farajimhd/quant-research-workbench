@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+from copy import deepcopy
 
 from src.backend.data_field_contracts import (
     compile_data_field_plan,
@@ -159,11 +160,7 @@ class DataFieldContractTests(unittest.TestCase):
                     field_ref = condition.get(f"{side}_field_ref")
                     if not field_ref:
                         continue
-                    self.assertEqual(
-                        condition.get(f"{side}_value_selection"),
-                        "latest",
-                        (rule_set["rule_set_id"], side, field_ref),
-                    )
+                    self.assertNotIn(f"{side}_value_selection", condition)
                     data_field = by_ref[field_ref]
                     interval = normalize_interval_spec(condition.get(f"{side}_interval"))
                     if data_field["context"]["dimension_kind"] == "interval":
@@ -181,6 +178,37 @@ class DataFieldContractTests(unittest.TestCase):
             [by_ref[row["left_field_ref"]]["context"]["anchor"] for row in squeeze["conditions"]],
             ["market_session", "market_session"],
         )
+
+    def test_event_fields_require_typed_window_aggregations(self) -> None:
+        by_source = {
+            output["source_id"]: (data_field, output)
+            for data_field in self.discovery["data_fields"]
+            for output in data_field["outputs"]
+        }
+        trade_price, output = by_source["trade.price"]
+        self.assertTrue(trade_price["enabled"])
+        self.assertEqual(trade_price["context"]["interval_semantics"], "event_window")
+        self.assertEqual(trade_price["context"]["aggregation"]["default"], "last")
+        self.assertEqual(
+            trade_price["execution"]["aggregation_runtime_fields"]["max"],
+            "high",
+        )
+        instance = field_instance_ref(
+            output["field_ref"], {"value": 3, "unit": "minutes"}, "max"
+        )
+        self.assertTrue(instance.endswith("@@3m##max"))
+        projected = project_data_field_outputs(
+            [{"working_timeframe": "1m", "high": 12.5}],
+            [trade_price],
+        )
+        self.assertEqual(
+            projected[0][field_instance_ref(output["field_ref"], "1m", "max")],
+            12.5,
+        )
+
+    def test_decoded_quote_and_trade_members_are_atomic_catalog_entries(self) -> None:
+        atomic_ids = {row["atomic_field_id"] for row in self.discovery["atomic_fields"]}
+        self.assertTrue({"trade.price", "trade.size", "trade.conditions", "quote.bid_price", "quote.ask_size", "quote.indicators"}.issubset(atomic_ids))
 
     def test_enabled_rules_use_only_executable_data_fields(self) -> None:
         by_ref = {
@@ -377,6 +405,38 @@ class DataFieldContractTests(unittest.TestCase):
             by_ref[condition["left_field_ref"]]["context"]["anchor"] == "market_session"
             for condition in rule_set["conditions"]
         ))
+
+    def test_materialized_event_window_keeps_aggregation_in_compiled_identity(self) -> None:
+        discovery = deepcopy(self.discovery)
+        trade_price = next(
+            row for row in discovery["data_fields"]
+            if row["outputs"][0]["source_id"] == "trade.price"
+        )
+        output = trade_price["outputs"][0]
+        discovery["rule_sets"].append({
+            "rule_set_id": "event-window-test",
+            "name": "Event window test",
+            "description": "Test typed event aggregation.",
+            "enabled": True,
+            "operator": "all",
+            "required_score": 1,
+            "conditions": [{
+                "condition_id": "event-window-test-1",
+                "enabled": True,
+                "left_source_id": "trade.price",
+                "left_field_ref": output["field_ref"],
+                "left_interval": {"value": 3, "unit": "minutes"},
+                "left_aggregation": "max",
+                "comparator": "greater_than",
+                "right_source_id": "",
+                "value": 10,
+            }],
+        })
+        discovery["core_scan"]["inclusion_rule_sets"] = ["event-window-test"]
+        plan = compile_data_field_plan(discovery)
+        instance = next(row for row in plan["field_instances"] if row["field_ref"] == output["field_ref"])
+        self.assertEqual(instance["aggregation"], "max")
+        self.assertEqual(instance["instance_ref"], field_instance_ref(output["field_ref"], "3m", "max"))
 
 
 if __name__ == "__main__":

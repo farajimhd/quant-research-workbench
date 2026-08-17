@@ -136,8 +136,12 @@ type RuleCondition = {
   enabled: boolean;
   left_source_id: string;
   left_timeframe: string;
+  left_interval?: import("../app/components/IntervalSelect").IntervalValue;
+  left_aggregation?: string;
   right_source_id: string;
   right_timeframe: string;
+  right_interval?: import("../app/components/IntervalSelect").IntervalValue;
+  right_aggregation?: string;
   value: Primitive | null;
 };
 
@@ -451,8 +455,10 @@ type WatchlistConfig = {
   manual_exclusions: string[];
   columns: string[];
   column_intervals?: Record<string, import("../app/components/IntervalSelect").IntervalValue>;
+  column_aggregations?: Record<string, string>;
   ranking_field_ref?: string;
   ranking_interval?: import("../app/components/IntervalSelect").IntervalValue;
+  ranking_aggregation?: string;
   membership_history: Array<Record<string, unknown>>;
   origin?: "system" | "user";
   template?: boolean;
@@ -471,6 +477,7 @@ type SignalStreamConfig = {
   inclusion_operator: "all" | "any";
   columns: string[];
   column_intervals?: Record<string, import("../app/components/IntervalSelect").IntervalValue>;
+  column_aggregations?: Record<string, string>;
   refresh_interval_ms: number;
   trigger_policy: "false_to_true";
   rearm_policy: "after_false" | "after_cooldown";
@@ -561,7 +568,7 @@ const WATCHLIST_GUIDED_STEPS = ["identity", "rules", "ranking", "columns", "timi
 type WatchlistGuidedStep = typeof WATCHLIST_GUIDED_STEPS[number];
 type MarketDiscoverySection = {
   security_universe: { universe_id: string; name: string; description: string; enabled: boolean; configurable: boolean };
-  core_scan: { scan_id: string; name: string; description: string; refresh_interval_ms: number; published: boolean; inclusion_rule_sets: string[]; inclusion_operator: "all" | "any"; ranking_field: string; ranking_direction: "ascending" | "descending"; maximum_size: number; columns: string[] };
+  core_scan: { scan_id: string; name: string; description: string; refresh_interval_ms: number; published: boolean; inclusion_rule_sets: string[]; inclusion_operator: "all" | "any"; ranking_field: string; ranking_field_ref?: string; ranking_interval?: import("../app/components/IntervalSelect").IntervalValue; ranking_aggregation?: string; ranking_direction: "ascending" | "descending"; maximum_size: number; columns: string[]; column_intervals?: Record<string, import("../app/components/IntervalSelect").IntervalValue>; column_aggregations?: Record<string, string> };
   calculation_catalog: DiscoveryCapability[];
   atomic_fields: AtomicField[];
   data_fields: DataFieldDefinition[];

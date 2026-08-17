@@ -11,12 +11,12 @@ export type DataRuleCondition = {
   enabled: boolean;
   left_source_id: string;
   left_field_ref?: string;
-  left_value_selection?: "latest";
   left_interval?: IntervalValue;
+  left_aggregation?: string;
   right_source_id: string;
   right_field_ref?: string;
-  right_value_selection?: "latest";
   right_interval?: IntervalValue;
+  right_aggregation?: string;
   value: boolean | number | string | null;
 };
 
@@ -73,11 +73,13 @@ export type DataFieldDefinition = {
     update_cadence?: string;
     window?: string;
     window_configurable?: boolean;
+    interval_semantics?: "bar_timeframe" | "event_window" | string;
+    aggregation?: { allowed?: string[]; default?: string; function?: string; mode?: "intrinsic" | "none" | "required" };
   };
   data_field_id: string;
   description: string;
   enabled: boolean;
-  execution?: { market_discovery_supported?: boolean; producer_intervals?: string[] };
+  execution?: { aggregation_runtime_fields?: Record<string, string>; market_discovery_supported?: boolean; producer_intervals?: string[] };
   inputs: string[];
   name: string;
   known_values?: KnownValue[];
@@ -195,7 +197,7 @@ function DataFieldCatalog({ atomicFields, dataFields }: { atomicFields: AtomicFi
   const selectedBase = visible.find((row) => {
     if ("atomic_field_id" in row) return row.atomic_field_id === selectedId;
     return row.data_field_id === selectedId || dataFamilies.get(row.outputs[0]?.source_id ?? "")?.some((variant) => variant.data_field_id === selectedId);
-  }) ?? [...groups.values()][0]?.[0];
+  }) ?? [...groups.values()][0]?.values().next().value?.[0];
   const selectedVariants = selectedBase && "data_field_id" in selectedBase ? dataFamilies.get(selectedBase.outputs[0]?.source_id ?? "") ?? [selectedBase] : [];
   const selected = selectedBase && "data_field_id" in selectedBase
     ? selectedVariants.find((variant) => variant.data_field_id === selectedId) ?? preferredDataFieldVariant(selectedVariants)
@@ -214,8 +216,10 @@ function DataFieldCatalog({ atomicFields, dataFields }: { atomicFields: AtomicFi
       </div>
       <label className="data-library-search"><Search size={15} /><input aria-label="Search Data Catalog" onChange={(event) => setQuery(event.target.value)} placeholder="Search names, IDs, owners, recipes" type="search" value={query} /></label>
       <div className="data-library-tree">
-        {[...groups.entries()].map(([group, groupRows]) => <details key={group} open>
-          <summary><span>{group}</span><em>{groupRows.length}</em></summary>
+        {[...groups.entries()].map(([group, subgroups]) => <details key={group} open>
+          <summary><span>{group}</span><em>{[...subgroups.values()].reduce((count, rows) => count + rows.length, 0)}</em></summary>
+          {[...subgroups.entries()].map(([subgroup, groupRows]) => <details className="data-library-subgroup" key={`${group}:${subgroup}`} open>
+          <summary><span>{subgroup}</span><em>{groupRows.length}</em></summary>
           <div className="data-library-entry-list">{groupRows.map((row) => {
             const id = "atomic_field_id" in row ? row.atomic_field_id : row.data_field_id;
             const context = "data_field_id" in row
@@ -227,7 +231,7 @@ function DataFieldCatalog({ atomicFields, dataFields }: { atomicFields: AtomicFi
             return <button aria-current={active ? "true" : undefined} key={id} onClick={() => setSelectedId(id)} type="button">
               <span><strong>{"data_field_id" in row ? row.outputs[0]?.name || row.name : row.name}</strong><small>{context}</small><code>{"data_field_id" in row ? row.outputs[0]?.source_id || id : id}</code></span><ChevronRight size={13} />
             </button>;
-          })}</div>
+          })}</div></details>)}
         </details>)}
       </div>
     </aside>
@@ -272,7 +276,7 @@ function DataFieldDetail({ field }: { field: DataFieldDefinition }) {
       <article className="data-definition-source"><span>Source</span><h3 title={source.location || readable(source.owner || field.owner || "unknown")}>{source.location || readable(source.owner || field.owner || "Registered producer")}</h3><p>{source.summary || "Registered producer source."}</p><dl className="data-field-method-facts"><div><dt>Owner</dt><dd>{readable(source.owner || field.owner || "unknown")}</dd></div><div><dt>Query plan</dt><dd><code>{source.query_plan_id || "Producer-owned"}</code></dd></div><div><dt>Source fields</dt><dd>{source.source_fields?.join(", ") || field.inputs.join(", ") || "Producer-defined"}</dd></div><div><dt>Available at</dt><dd>{source.available_at || "Producer publication clock"}</dd></div></dl></article>
       <article className="data-definition-operation"><span>Calculation</span><p className="data-field-calculation-summary">{calculation.summary || field.description}</p>{calculation.formula ? <div className="data-definition-formula"><span>Expression</span><code>{calculation.formula}</code></div> : null}<dl className="data-field-method-facts"><div><dt>Operation</dt><dd>{readable(calculation.kind || "registered calculation")}</dd></div><div><dt>Documentation</dt><dd>{readable(calculation.documentation_status || "complete")}</dd></div></dl></article>
     </section>
-    <section><h3>Computation contract</h3><div className="data-field-context-grid"><FieldFact label="Atomic inputs" value={String(field.inputs.length)} detail={field.inputs.join(", ") || "No additional atomic input."} /><FieldFact label="Execution scope" value={readable(field.context.execution_scope)} detail={field.context.allowed_scopes?.map(readable).join(", ") || "Exact registered scope"} />{fieldContextCards(field.context).map((card) => <FieldFact detail={card.detail} key={card.label} label={card.label} value={card.value} />)}<FieldFact label="Rule Set support" value={field.execution?.market_discovery_supported === false ? "Catalog only" : "Available"} detail={field.execution?.market_discovery_supported === false ? "The source is registered, but no Scanner/Watchlist execution projection is registered yet; it is not offered in Rule Sets." : "This Data Field has an executable Market Discovery projection and can be instantiated in Rule Sets."} /><FieldFact label="Runtime support" value={`${field.live_support === false ? "No live" : "Live"} · ${field.historical_support === false ? "No history" : "History"}`} detail={`Missing values: ${readable(field.policies?.missing || "unavailable")}; gaps: ${readable(field.policies?.gaps || "preserve")}.`} /></div></section>
+    <section><h3>Computation contract</h3><div className="data-field-context-grid"><FieldFact label="Atomic inputs" value={String(field.inputs.length)} detail={field.inputs.join(", ") || "No additional atomic input."} /><FieldFact label="Execution scope" value={readable(field.context.execution_scope)} detail={field.context.allowed_scopes?.map(readable).join(", ") || "Exact registered scope"} />{fieldContextCards(field.context).map((card) => <FieldFact detail={card.detail} key={card.label} label={card.label} value={card.value} />)}{field.context.aggregation?.mode === "required" ? <FieldFact label="Window aggregation" value="Selected in Rule Set" detail={(field.context.aggregation.allowed ?? []).map(aggregationLabel).join(", ")} /> : field.context.aggregation?.mode === "intrinsic" ? <FieldFact label="Bar aggregation" value={aggregationLabel(field.context.aggregation.function || "")} detail="Intrinsic to this bar output; the Rule Set selects only the bar timeframe." /> : null}<FieldFact label="Rule Set support" value={field.execution?.market_discovery_supported === false ? "Catalog only" : "Available"} detail={field.execution?.market_discovery_supported === false ? "The source is registered, but no Scanner/Watchlist execution projection is registered yet; it is not offered in Rule Sets." : "This Data Field has an executable Market Discovery projection and can be instantiated in Rule Sets."} /><FieldFact label="Runtime support" value={`${field.live_support === false ? "No live" : "Live"} · ${field.historical_support === false ? "No history" : "History"}`} detail={`Missing values: ${readable(field.policies?.missing || "unavailable")}; gaps: ${readable(field.policies?.gaps || "preserve")}.`} /></div></section>
     <section><div className="data-field-section-heading"><div><h3>Outputs and presentations</h3><p>Rule Sets address the immutable output identity. Canvas uses its registered column or chart presentation.</p></div><em>{field.outputs.length} output{field.outputs.length === 1 ? "" : "s"}</em></div><div className="data-field-output-list">{field.outputs.map((output) => <article key={output.field_ref}><header><div><strong>{output.name}</strong><span>{output.value_type} · {output.unit}</span></div><div><em>{output.column_presentations.length} column</em><em>{output.chart_presentations.length} chart</em></div></header><dl><div><dt>Rule Set reference</dt><dd><code>{output.field_ref}</code></dd></div><div><dt>Producer output</dt><dd><code>{output.source_id}</code></dd></div></dl></article>)}</div></section>
     <KnownValues values={field.known_values ?? []} />
   </article>;
@@ -305,7 +309,7 @@ function fieldDimensionTags(context?: DataFieldDefinition["context"]) {
 }
 
 function fieldDimensionSummary(context: DataFieldDefinition["context"], variantCount = 1) {
-  if (context.dimension_kind === "interval") return "Interval assigned when used";
+  if (context.dimension_kind === "interval") return context.interval_semantics === "event_window" ? context.aggregation?.mode === "required" ? "Window + aggregation assigned when used" : "Event member · aggregation not registered" : "Bar timeframe assigned when used";
   if (context.dimension_kind === "rolling_window") return `Window ${intervalLabel(context.window || "")}`;
   if (context.dimension_kind === "anchored") return context.anchor === "market_session" ? "Session anchored" : `${readable(context.anchor || "anchor")} anchored`;
   if (context.dimension_kind === "as_of") return context.as_of === "evaluation_clock" ? "Current at evaluation" : readable(context.as_of || "latest available");
@@ -314,7 +318,11 @@ function fieldDimensionSummary(context: DataFieldDefinition["context"], variantC
 
 function fieldContextCards(context: DataFieldDefinition["context"]) {
   const cards: Array<{ detail: string; label: string; value: string }> = [];
-  if (context.dimension_kind === "interval") cards.push({ label: "Use parameter", value: "Value + unit", detail: "Assigned only when this Data Field is used in a Rule Set or Market Discovery definition; the compact execution expression is compiled automatically." });
+  if (context.dimension_kind === "interval") cards.push(context.interval_semantics === "event_window"
+    ? context.aggregation?.mode === "required"
+      ? { label: "Use parameters", value: "Window + function", detail: "The Rule Set binds a window value/unit and one compatible event aggregation; QMD compiles both into the executable identity." }
+      : { label: "Use parameters", value: "Not executable", detail: "This raw event member is cataloged, but no aggregation-safe QMD projection is registered yet." }
+    : { label: "Use parameter", value: "Bar timeframe", detail: "The Rule Set selects the bar timeframe; the output's aggregation is intrinsic and cannot be overridden." });
   if (context.window) cards.push({ label: "Rolling window", value: intervalLabel(context.window), detail: context.window_configurable ? "Configurable lookback window." : "Fixed by this field definition." });
   if (context.anchor) cards.push({ label: "Anchor", value: readable(context.anchor), detail: "The value accumulates or resets at this boundary." });
   if (context.as_of) cards.push({ label: "As of", value: context.as_of === "evaluation_clock" ? "Current at evaluation" : readable(context.as_of), detail: "Latest causally available value at this clock." });
@@ -329,32 +337,36 @@ function intervalOrder(value?: string) {
 }
 
 function groupCatalogFields(rows: Array<AtomicField | DataFieldDefinition>, definitionByRef: Map<string, RuleFieldDefinition>) {
-  const grouped = new Map<string, Array<AtomicField | DataFieldDefinition>>();
+  const grouped = new Map<string, Map<string, Array<AtomicField | DataFieldDefinition>>>();
   rows.forEach((row) => {
-    const group = catalogFieldGroup(row, definitionByRef);
-    grouped.set(group, [...(grouped.get(group) ?? []), row]);
+    const { group, subgroup } = catalogFieldLocation(row, definitionByRef);
+    const subgroups = grouped.get(group) ?? new Map<string, Array<AtomicField | DataFieldDefinition>>();
+    subgroups.set(subgroup, [...(subgroups.get(subgroup) ?? []), row]);
+    grouped.set(group, subgroups);
   });
-  const ordered = new Map<string, Array<AtomicField | DataFieldDefinition>>();
+  const ordered = new Map<string, Map<string, Array<AtomicField | DataFieldDefinition>>>();
   DATA_CATALOG_GROUPS.forEach((group) => {
-    const groupRows = grouped.get(group);
-    if (groupRows) ordered.set(group, groupRows.sort((left, right) => left.name.localeCompare(right.name)));
+    const subgroups = grouped.get(group);
+    if (subgroups) ordered.set(group, new Map([...subgroups.entries()].sort(([left], [right]) => catalogSubgroupOrder(group, left) - catalogSubgroupOrder(group, right) || left.localeCompare(right)).map(([subgroup, groupRows]) => [subgroup, groupRows.sort((left, right) => left.name.localeCompare(right.name))])));
   });
-  [...grouped.entries()].filter(([group]) => !ordered.has(group)).sort(([left], [right]) => left.localeCompare(right)).forEach(([group, groupRows]) => ordered.set(group, groupRows.sort((left, right) => left.name.localeCompare(right.name))));
+  [...grouped.entries()].filter(([group]) => !ordered.has(group)).sort(([left], [right]) => left.localeCompare(right)).forEach(([group, subgroups]) => ordered.set(group, subgroups));
   return ordered;
 }
 
-function catalogFieldGroup(row: AtomicField | DataFieldDefinition, definitionByRef: Map<string, RuleFieldDefinition>) {
+function catalogFieldLocation(row: AtomicField | DataFieldDefinition, definitionByRef: Map<string, RuleFieldDefinition>) {
   if ("data_field_id" in row) {
-    if (row.data_field_id.toLowerCase().includes("qmd.signal.")) return "Signals";
+    if (row.data_field_id.toLowerCase().includes("qmd.signal.")) return { group: "Signals", subgroup: "Signal Definitions" };
     const definition = definitionByRef.get(row.outputs[0]?.field_ref ?? "");
-    return definition ? dataCatalogLocation(definition).group : "Other Registered Data";
+    return definition ? dataCatalogLocation(definition) : { group: "Other Registered Data", subgroup: "Numeric Values" };
   }
-  if (["market_clock", "market_reference", "qmd_scanner", "tradability"].includes(row.group)) return "Market Data";
-  if (["identity", "listing", "country", "corporate_event", "presentation"].includes(row.group)) return "Company & Security";
-  if (["fundamental", "sec"].includes(row.group)) return "Fundamentals & Filings";
-  if (row.group === "news") return "News & Intelligence";
-  if (row.group === "quality_and_coverage") return "Data Quality & Operations";
-  return "Other Registered Data";
+  if (row.group === "qmd_trade_events") return { group: "Market Data", subgroup: "Trade Events" };
+  if (row.group === "qmd_quote_events") return { group: "Market Data", subgroup: "Quote Events" };
+  if (["market_clock", "market_reference", "qmd_scanner", "tradability"].includes(row.group)) return { group: "Market Data", subgroup: "Session & Market State" };
+  if (["identity", "listing", "country", "corporate_event", "presentation"].includes(row.group)) return { group: "Company & Security", subgroup: "Reference Classifications" };
+  if (["fundamental", "sec"].includes(row.group)) return { group: "Fundamentals & Filings", subgroup: "Financial Statements" };
+  if (row.group === "news") return { group: "News & Intelligence", subgroup: "News Content" };
+  if (row.group === "quality_and_coverage") return { group: "Data Quality & Operations", subgroup: "Quality & Mapping" };
+  return { group: "Other Registered Data", subgroup: readable(row.group || "Registered fields") };
 }
 
 function DataDefinitionDetail({ definition, onNavigate, registry }: { definition: RegistryDefinition; onNavigate: (id: string) => void; registry: InformationRegistry }) {
@@ -422,12 +434,12 @@ function RuleSetDetail({ fields, onChange, onDelete, onDuplicate, ruleSet }: { f
   }
   function addCondition() {
     if (!definitions.length) return;
-    onChange({ ...ruleSet, conditions: [...ruleSet.conditions, { comparator: "equals", condition_id: `${ruleSet.rule_set_id}-condition-${ruleSet.conditions.length + 1}`, enabled: true, left_source_id: "", left_value_selection: "latest", left_interval: "", right_source_id: "", right_interval: "", value: 0 }] });
+    onChange({ ...ruleSet, conditions: [...ruleSet.conditions, { comparator: "equals", condition_id: `${ruleSet.rule_set_id}-condition-${ruleSet.conditions.length + 1}`, enabled: true, left_source_id: "", left_interval: "", right_source_id: "", right_interval: "", value: 0 }] });
   }
   return <article className="rule-set-document">
     <header><span>{locked ? "Built-in rule set" : "Editable rule set"} · revision {ruleSet.revision ?? 1}</span><input aria-label="Rule set name" disabled={locked} onChange={(event) => onChange({ ...ruleSet, name: event.target.value })} value={ruleSet.name} /><textarea aria-label="Rule set description" disabled={locked} onChange={(event) => onChange({ ...ruleSet, description: event.target.value })} value={ruleSet.description} /><div><code>{ruleSet.rule_set_id}</code>{locked ? <button onClick={onDuplicate} type="button"><Copy size={13} /> Duplicate as custom</button> : <button className="danger" onClick={onDelete} type="button"><Trash2 size={13} /> Remove rule set</button>}</div></header>
     <section className="rule-set-logic"><label><span>Condition logic</span><select disabled={locked} onChange={(event) => onChange({ ...ruleSet, operator: event.target.value as DataRuleSet["operator"] })} value={ruleSet.operator}><option value="all">All conditions</option><option value="any">Any condition</option><option value="score">Required score</option></select></label><span>{ruleSet.conditions.length} condition{ruleSet.conditions.length === 1 ? "" : "s"}</span></section>
-    <section className="rule-set-evaluation-context"><TimerReset aria-hidden="true" size={16} /><header><span>Operand timing</span><strong>{evaluationContexts.some((context) => context.kind === "interval") ? "Latest values · explicit intervals" : "Latest values · field context"}</strong><p>{evaluationContexts.some((context) => context.kind === "interval") ? "Intervals bind value and unit at this Rule Set use site." : "No bar interval is assigned to anchored or point-in-time fields."}</p></header><dl><div><dt>Selection</dt><dd>Latest available</dd></div>{evaluationContexts.map((context) => <div className={`rule-context-${context.kind}`} key={`${context.kind}:${context.label}`}><dt>{context.kind === "interval" ? "Interval" : "Context"}</dt><dd>{context.label}</dd></div>)}</dl></section>
+    <section className="rule-set-evaluation-context"><TimerReset aria-hidden="true" size={16} /><header><span>Operand context</span><strong>{evaluationContexts.some((context) => context.kind === "interval") ? "Explicit time dimensions" : "Field-owned context"}</strong><p>{evaluationContexts.some((context) => context.kind === "interval") ? "Bar fields bind a timeframe; event fields bind a window and compatible aggregation." : "Anchored and point-in-time fields use their registered causal context."}</p></header><dl>{evaluationContexts.map((context) => <div className={`rule-context-${context.kind}`} key={`${context.kind}:${context.label}`}><dt>{context.kind === "interval" ? "Time dimension" : "Context"}</dt><dd>{context.label}</dd></div>)}</dl></section>
     <section className="rule-condition-list">{ruleSet.conditions.map((condition, index) => {
       const source = definitionById.get(condition.left_field_ref || condition.left_source_id);
       const target = condition.right_field_ref ? definitionById.get(condition.right_field_ref) : condition.right_source_id ? definitionById.get(condition.right_source_id) : undefined;
@@ -445,10 +457,10 @@ function RuleSetDetail({ fields, onChange, onDelete, onDuplicate, ruleSet }: { f
           const targetStillCompatible = !comparesToField || compatibleRuleTargets(nextSource, target ? [target] : []).length > 0;
           const allowed = ruleComparators(nextSource, "", comparesToField && targetStillCompatible);
           const comparator = allowed.some((row) => row.value === condition.comparator) ? condition.comparator : defaultRuleComparator(nextSource);
-          replaceCondition(condition.condition_id, { ...condition, comparator, left_field_ref: nextSource.field_ref || nextSource.registry_id, left_source_id: nextSource.source_id || nextSource.registry_id, left_value_selection: "latest", left_interval: preferredRuleInterval(nextSource), right_field_ref: comparator === "is_true" || !targetStillCompatible ? "" : condition.right_field_ref, right_source_id: comparator === "is_true" || !targetStillCompatible ? "" : condition.right_source_id, right_value_selection: comparator === "is_true" || !targetStillCompatible ? undefined : condition.right_value_selection || "latest", right_interval: comparator === "is_true" || !targetStillCompatible ? "" : condition.right_interval, value: comparator === "is_true" ? null : condition.value ?? 0 });
-        }} optionLimit={0} options={!source && condition.left_source_id ? [{ description: "Unregistered Data Field referenced by this draft.", label: condition.left_source_id, value: condition.left_source_id }, ...definitionOptions] : definitionOptions} placeholder="Choose Data Field" presentation="catalog" searchable searchPlaceholder="Search Data Fields…" showAllOnOpen value={source?.source_id || condition.left_source_id} />{source ? <RuleDimensionControl definition={source} label={`Condition ${index + 1}`} onChange={(left_interval) => replaceCondition(condition.condition_id, { ...condition, left_interval })} value={condition.left_interval || ""} /> : <p>Choose the market value or computed output to evaluate.</p>}</div></section>
-        <label className="rule-condition-comparator"><small>Relationship</small><select aria-label={`Condition ${index + 1} comparator`} disabled={!source} onChange={(event) => { const comparator = event.target.value; replaceCondition(condition.condition_id, { ...condition, comparator, right_field_ref: comparator === "is_true" ? "" : condition.right_field_ref, right_source_id: comparator === "is_true" ? "" : condition.right_source_id, right_value_selection: comparator === "is_true" ? undefined : condition.right_value_selection, right_interval: comparator === "is_true" ? "" : condition.right_interval, value: comparator === "is_true" ? null : condition.value ?? 0 }); }} value={condition.comparator}>{comparators.map((row) => <option key={row.value} value={row.value}>{row.label}</option>)}</select></label>
-        <section className="rule-condition-side rule-condition-target"><header><span>Compare against</span>{condition.comparator !== "is_true" ? <div aria-label={`Condition ${index + 1} comparison target`} className="rule-operand-mode" role="group"><button aria-pressed={!comparesToField} onClick={() => replaceCondition(condition.condition_id, { ...condition, comparator: condition.comparator === "above_by_bps" ? defaultRuleComparator(source) : condition.comparator, right_field_ref: "", right_source_id: "", right_value_selection: undefined, right_interval: "" })} type="button">Value</button><button aria-pressed={comparesToField} disabled={!compatibleTargets.length} onClick={() => { const nextTarget = target && compatibleRuleTargets(source, [target]).length ? target : compatibleTargets[0]; if (!nextTarget) return; replaceCondition(condition.condition_id, { ...condition, right_field_ref: nextTarget.field_ref || nextTarget.registry_id, right_source_id: nextTarget.source_id || nextTarget.registry_id, right_value_selection: "latest", right_interval: preferredRuleInterval(nextTarget) }); }} type="button">Data Field</button></div> : null}</header>{condition.comparator === "is_true" ? <div className="rule-condition-boolean"><small>Required state</small><strong>True</strong></div> : comparesToField ? <div className="rule-condition-definition"><InventoryFilterSelect ariaLabel={`Condition ${index + 1} target Data Field`} className="rule-condition-definition-lookup" onChange={(value) => { const nextTarget = preferredRuleVariant(definitionFamilies.get(value) ?? []); replaceCondition(condition.condition_id, { ...condition, right_field_ref: nextTarget?.field_ref || value, right_source_id: nextTarget?.source_id || value, right_value_selection: "latest", right_interval: preferredRuleInterval(nextTarget) }); }} optionLimit={0} options={!target && condition.right_source_id ? [{ description: "Unregistered Data Field referenced by this draft.", label: condition.right_source_id, value: condition.right_source_id }, ...compatibleTargetOptions] : compatibleTargetOptions} presentation="catalog" searchable searchPlaceholder="Search compatible Data Fields…" showAllOnOpen value={target?.source_id || condition.right_source_id} />{target ? <RuleDimensionControl definition={target} label={`Condition ${index + 1} target`} onChange={(right_interval) => replaceCondition(condition.condition_id, { ...condition, right_interval })} value={condition.right_interval || ""} /> : null}{condition.comparator === "above_by_bps" ? <label className="rule-bps-buffer"><small>Buffer (bps)</small><input aria-label={`Condition ${index + 1} basis point buffer`} onChange={(event) => replaceCondition(condition.condition_id, { ...condition, value: Number(event.target.value) })} step="any" type="number" value={Number(condition.value ?? 0)} /></label> : null}</div> : <label className="rule-threshold-input"><small>Threshold</small><input aria-label={`Condition ${index + 1} value`} disabled={!source} onChange={(event) => { const parsed = Number(event.target.value); replaceCondition(condition.condition_id, { ...condition, value: Number.isNaN(parsed) ? event.target.value : parsed }); }} step="any" type={isNumericRuleDefinition(source) ? "number" : "text"} value={String(condition.value ?? "")} /></label>}</section>
+          replaceCondition(condition.condition_id, { ...condition, comparator, left_field_ref: nextSource.field_ref || nextSource.registry_id, left_source_id: nextSource.source_id || nextSource.registry_id, left_aggregation: preferredRuleAggregation(nextSource), left_interval: preferredRuleInterval(nextSource), right_field_ref: comparator === "is_true" || !targetStillCompatible ? "" : condition.right_field_ref, right_source_id: comparator === "is_true" || !targetStillCompatible ? "" : condition.right_source_id, right_aggregation: comparator === "is_true" || !targetStillCompatible ? "" : condition.right_aggregation, right_interval: comparator === "is_true" || !targetStillCompatible ? "" : condition.right_interval, value: comparator === "is_true" ? null : condition.value ?? 0 });
+        }} optionLimit={0} options={!source && condition.left_source_id ? [{ description: "Unregistered Data Field referenced by this draft.", label: condition.left_source_id, value: condition.left_source_id }, ...definitionOptions] : definitionOptions} placeholder="Choose Data Field" presentation="catalog" searchable searchPlaceholder="Search Data Fields…" showAllOnOpen value={source?.source_id || condition.left_source_id} />{source ? <RuleDimensionControl aggregation={condition.left_aggregation} definition={source} label={`Condition ${index + 1}`} onChange={(left_interval, left_aggregation) => replaceCondition(condition.condition_id, { ...condition, left_aggregation, left_interval })} value={condition.left_interval || ""} /> : <p>Choose the market value or computed output to evaluate.</p>}</div></section>
+        <label className="rule-condition-comparator"><small>Relationship</small><select aria-label={`Condition ${index + 1} comparator`} disabled={!source} onChange={(event) => { const comparator = event.target.value; replaceCondition(condition.condition_id, { ...condition, comparator, right_aggregation: comparator === "is_true" ? "" : condition.right_aggregation, right_field_ref: comparator === "is_true" ? "" : condition.right_field_ref, right_source_id: comparator === "is_true" ? "" : condition.right_source_id, right_interval: comparator === "is_true" ? "" : condition.right_interval, value: comparator === "is_true" ? null : condition.value ?? 0 }); }} value={condition.comparator}>{comparators.map((row) => <option key={row.value} value={row.value}>{row.label}</option>)}</select></label>
+        <section className="rule-condition-side rule-condition-target"><header><span>Compare against</span>{condition.comparator !== "is_true" ? <div aria-label={`Condition ${index + 1} comparison target`} className="rule-operand-mode" role="group"><button aria-pressed={!comparesToField} onClick={() => replaceCondition(condition.condition_id, { ...condition, comparator: condition.comparator === "above_by_bps" ? defaultRuleComparator(source) : condition.comparator, right_aggregation: "", right_field_ref: "", right_source_id: "", right_interval: "" })} type="button">Value</button><button aria-pressed={comparesToField} disabled={!compatibleTargets.length} onClick={() => { const nextTarget = target && compatibleRuleTargets(source, [target]).length ? target : compatibleTargets[0]; if (!nextTarget) return; replaceCondition(condition.condition_id, { ...condition, right_aggregation: preferredRuleAggregation(nextTarget), right_field_ref: nextTarget.field_ref || nextTarget.registry_id, right_source_id: nextTarget.source_id || nextTarget.registry_id, right_interval: preferredRuleInterval(nextTarget) }); }} type="button">Data Field</button></div> : null}</header>{condition.comparator === "is_true" ? <div className="rule-condition-boolean"><small>Required state</small><strong>True</strong></div> : comparesToField ? <div className="rule-condition-definition"><InventoryFilterSelect ariaLabel={`Condition ${index + 1} target Data Field`} className="rule-condition-definition-lookup" onChange={(value) => { const nextTarget = preferredRuleVariant(definitionFamilies.get(value) ?? []); replaceCondition(condition.condition_id, { ...condition, right_aggregation: preferredRuleAggregation(nextTarget), right_field_ref: nextTarget?.field_ref || value, right_source_id: nextTarget?.source_id || value, right_interval: preferredRuleInterval(nextTarget) }); }} optionLimit={0} options={!target && condition.right_source_id ? [{ description: "Unregistered Data Field referenced by this draft.", label: condition.right_source_id, value: condition.right_source_id }, ...compatibleTargetOptions] : compatibleTargetOptions} presentation="catalog" searchable searchPlaceholder="Search compatible Data Fields…" showAllOnOpen value={target?.source_id || condition.right_source_id} />{target ? <RuleDimensionControl aggregation={condition.right_aggregation} definition={target} label={`Condition ${index + 1} target`} onChange={(right_interval, right_aggregation) => replaceCondition(condition.condition_id, { ...condition, right_aggregation, right_interval })} value={condition.right_interval || ""} /> : null}{condition.comparator === "above_by_bps" ? <label className="rule-bps-buffer"><small>Buffer (bps)</small><input aria-label={`Condition ${index + 1} basis point buffer`} onChange={(event) => replaceCondition(condition.condition_id, { ...condition, value: Number(event.target.value) })} step="any" type="number" value={Number(condition.value ?? 0)} /></label> : null}</div> : <label className="rule-threshold-input"><small>Threshold</small><input aria-label={`Condition ${index + 1} value`} disabled={!source} onChange={(event) => { const parsed = Number(event.target.value); replaceCondition(condition.condition_id, { ...condition, value: Number.isNaN(parsed) ? event.target.value : parsed }); }} step="any" type={isNumericRuleDefinition(source) ? "number" : "text"} value={String(condition.value ?? "")} /></label>}</section>
         </div>
       </div>;
     })}</section>
@@ -486,16 +498,16 @@ function RuleConditionStatement({ condition, index, source, target }: { conditio
   const showTarget = condition.comparator !== "is_true";
   return <div className="rule-condition-row rule-condition-readonly">
     <span>{index + 1}</span>
-    <div className="rule-condition-operand" title={condition.left_field_ref || condition.left_source_id}><small className="rule-condition-operand-label">Observe</small><strong>{source ? displayLabel(source) : condition.left_source_id}</strong><RuleOperandContext definition={source as RuleFieldDefinition | undefined} interval={condition.left_interval} /></div>
+    <div className="rule-condition-operand" title={condition.left_field_ref || condition.left_source_id}><small className="rule-condition-operand-label">Observe</small><strong>{source ? displayLabel(source) : condition.left_source_id}</strong><RuleOperandContext aggregation={condition.left_aggregation} definition={source as RuleFieldDefinition | undefined} interval={condition.left_interval} /></div>
     <div className="rule-condition-relation"><small>Relationship</small><strong>{relation}</strong></div>
-    {showTarget ? <div className="rule-condition-operand rule-condition-target" title={condition.right_field_ref || condition.right_source_id}><small className="rule-condition-operand-label">Compare against</small><strong>{target ? displayLabel(target) : formatRuleConstant(condition.value, source)}</strong>{target ? <RuleOperandContext definition={target as RuleFieldDefinition} interval={condition.right_interval} /> : <small className="rule-value-context">{ruleValueContext(source)}</small>}</div> : <div className="rule-condition-boolean"><small className="rule-condition-operand-label">Required state</small><strong>True</strong><small>Boolean event state</small></div>}
+    {showTarget ? <div className="rule-condition-operand rule-condition-target" title={condition.right_field_ref || condition.right_source_id}><small className="rule-condition-operand-label">Compare against</small><strong>{target ? displayLabel(target) : formatRuleConstant(condition.value, source)}</strong>{target ? <RuleOperandContext aggregation={condition.right_aggregation} definition={target as RuleFieldDefinition} interval={condition.right_interval} /> : <small className="rule-value-context">{ruleValueContext(source)}</small>}</div> : <div className="rule-condition-boolean"><small className="rule-condition-operand-label">Required state</small><strong>True</strong><small>Boolean event state</small></div>}
   </div>;
 }
 
-function RuleOperandContext({ definition, interval }: { definition?: RuleFieldDefinition; interval: IntervalValue }) {
+function RuleOperandContext({ aggregation, definition, interval }: { aggregation?: string; definition?: RuleFieldDefinition; interval: IntervalValue }) {
   const isInterval = definition?.data_field_context?.dimension_kind === "interval";
   const missing = isInterval && !interval;
-  return <span className={`rule-operand-context${missing ? " rule-operand-context-missing" : ""}`}><span><small>Value selection</small><strong>Latest available</strong></span><span><small>{isInterval ? "Interval" : "Evaluation context"}</small><strong>{missing ? "Required interval missing" : ruleFieldContext(definition, interval)}</strong></span></span>;
+  return <span className={`rule-operand-context${missing ? " rule-operand-context-missing" : ""}`}><span><small>{definition?.data_field_context?.interval_semantics === "event_window" ? "Window" : isInterval ? "Bar timeframe" : "Evaluation context"}</small><strong>{missing ? "Required interval missing" : ruleFieldContext(definition, interval)}</strong></span>{aggregation ? <span><small>Aggregation</small><strong>{aggregationLabel(aggregation)}</strong></span> : null}</span>;
 }
 
 function ruleSetEvaluationContexts(ruleSet: DataRuleSet, definitions: Map<string, RuleFieldDefinition>) {
@@ -529,18 +541,23 @@ function preferredRuleVariant(variants: RuleFieldDefinition[]) {
   return variants[0];
 }
 
-function RuleDimensionControl({ definition, label, onChange, value }: { definition: RuleFieldDefinition; label: string; onChange: (interval: IntervalSpec) => void; value: IntervalValue }) {
+function RuleDimensionControl({ aggregation, definition, label, onChange, value }: { aggregation?: string; definition: RuleFieldDefinition; label: string; onChange: (interval: IntervalSpec, aggregation?: string) => void; value: IntervalValue }) {
   const intervals = definition.data_field_context?.available_intervals ?? [];
-  return <div className="rule-field-timing"><span className="rule-field-value-selection"><small>Value selection</small><strong>Latest available</strong></span>{definition.data_field_context?.dimension_kind === "interval" && intervals.length ? <IntervalSelect ariaLabel={`${label} interval`} className="rule-field-dimension" intervals={intervals} onChange={onChange} value={value} /> : <span className="rule-field-dimension-summary"><small>Evaluation context</small><strong>{ruleFieldContext(definition)}</strong></span>}</div>;
+  const aggregationContract = definition.data_field_context?.aggregation;
+  const allowed = aggregationContract?.mode === "required" ? aggregationContract.allowed ?? [] : [];
+  return <div className="rule-field-timing">{definition.data_field_context?.dimension_kind === "interval" && intervals.length ? <IntervalSelect ariaLabel={`${label} ${definition.data_field_context.interval_semantics === "event_window" ? "window" : "bar timeframe"}`} className="rule-field-dimension" intervals={intervals} onChange={(interval) => onChange(interval, aggregation)} value={value} /> : <span className="rule-field-dimension-summary"><small>Evaluation context</small><strong>{ruleFieldContext(definition)}</strong></span>}{allowed.length ? <InventoryFilterSelect ariaLabel={`${label} aggregation`} className="rule-field-aggregation" onChange={(next) => onChange(value as IntervalSpec, next)} options={allowed.map((value) => ({ description: aggregationDescription(value), label: aggregationLabel(value), value }))} presentation="catalog" showAllOnOpen value={aggregation || aggregationContract?.default || allowed[0]} /> : null}</div>;
 }
 
 function ruleFieldContext(definition?: RuleFieldDefinition, interval: IntervalValue = "") {
   if (!definition?.data_field_context) return "Registered Data Field";
-  if (definition.data_field_context.dimension_kind === "interval") return interval ? `Interval ${intervalLabel(interval)}` : "Interval required";
+  if (definition.data_field_context.dimension_kind === "interval") return interval ? `${definition.data_field_context.interval_semantics === "event_window" ? "Window" : "Bar"} ${intervalLabel(interval)}` : "Interval required";
   return fieldDimensionSummary(definition.data_field_context);
 }
 
 function preferredRuleInterval(definition?: RuleFieldDefinition) { return preferredInterval(definition?.data_field_context?.available_intervals ?? []); }
+function preferredRuleAggregation(definition?: RuleFieldDefinition) { const contract = definition?.data_field_context?.aggregation; return contract?.mode === "required" ? contract.default || contract.allowed?.[0] || "" : ""; }
+function aggregationLabel(value: string) { return ({ first: "First", last: "Last", min: "Minimum", max: "Maximum", sum: "Sum", mean: "Average", median: "Median", count: "Count", volume_weighted_mean: "Volume-weighted average" } as Record<string, string>)[value] || value; }
+function aggregationDescription(value: string) { return `${aggregationLabel(value)} of the source events inside the selected window.`; }
 function ruleComparators(source: RegistryDefinition | undefined, current: string, comparesToField = false) {
   const values = isBooleanRuleDefinition(source)
     ? ["is_true"]
@@ -602,7 +619,7 @@ function groupDefinitions(definitions: RegistryDefinition[]) {
 
 const DATA_CATALOG_GROUPS = ["Market Data", "Technical Analysis", "Company & Security", "Fundamentals & Filings", "News & Intelligence", "Signals", "Models & Context", "Trading & Portfolio", "Data Quality & Operations", "Other Registered Data"] as const;
 const DATA_CATALOG_SUBGROUPS: Record<string, string[]> = {
-  "Market Data": ["Price & Returns", "Quotes & Spreads", "Volume & Activity", "Liquidity", "Order Flow & Microstructure", "Session & Market State", "Tradability"],
+  "Market Data": ["Trade Events", "Quote Events", "Price & Returns", "Quotes & Spreads", "Volume & Activity", "Liquidity", "Order Flow & Microstructure", "Session & Market State", "Tradability"],
   "Technical Analysis": ["Trend & Moving Averages", "Momentum & Oscillators", "Volatility & Risk", "Price Action & Patterns", "Market Structure", "Statistics & Cycles", "Technical Collections"],
   "Company & Security": ["Security Identity", "Listing & Venue", "Market Cap & Float", "Short Interest & Borrow", "Industry & Geography", "Corporate Events", "Reference Classifications"],
   "Fundamentals & Filings": ["Financial Statements", "Profitability & Margins", "Growth & Valuation", "Capital & Shares", "Fundamental Scores", "SEC Filing Data", "XBRL Quality"],
@@ -680,6 +697,8 @@ function dataCatalogLocation(row: RegistryDefinition): { group: string; subgroup
 
   if (isTechnicalDefinition(row, text)) return { group: "Technical Analysis", subgroup: technicalSubgroup(text) };
 
+  if (/^trade\./.test(id)) return { group: "Market Data", subgroup: "Trade Events" };
+  if (/^quote\./.test(id)) return { group: "Market Data", subgroup: "Quote Events" };
   if (/tradability|halt_flag|ssr_flag|estimated_luld/.test(id)) return { group: "Market Data", subgroup: "Tradability" };
   if (/^clock\.|session|market clock|market state|market\.status|market\.is_|market\.luld|market\.feed|market\.event_at|minute_of_day|previous_day_context|daily_context/.test(id)) return { group: "Market Data", subgroup: "Session & Market State" };
   if (/microstructure|pressure|imbalance|aggress|signed_volume|cumulative_delta|large_trade|tape_/.test(id)) return { group: "Market Data", subgroup: "Order Flow & Microstructure" };

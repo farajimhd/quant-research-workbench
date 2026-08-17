@@ -9,7 +9,25 @@ from typing import Any, Iterable
 from src.backend.application_registry import DISCOVERY_RUNTIME_FIELDS, FIELD_DEFINITIONS
 
 
-DATA_FIELD_CONTRACT_VERSION = 3
+DATA_FIELD_CONTRACT_VERSION = 4
+
+AGGREGATION_FUNCTIONS = {
+    "first", "last", "min", "max", "sum", "mean", "median", "count",
+    "volume_weighted_mean",
+}
+_BAR_INTRINSIC_AGGREGATIONS = {
+    "open": "first", "high": "max", "low": "min", "close": "last",
+    "volume": "sum", "dollar_volume": "sum", "trade_count": "count",
+    "vwap": "volume_weighted_mean", "avg_trade_size": "mean",
+    "median_trade_size": "median", "max_trade_size": "max",
+    "quote_count": "count", "bid_open": "first", "bid_high": "max",
+    "bid_low": "min", "bid_close": "last", "ask_open": "first",
+    "ask_high": "max", "ask_low": "min", "ask_close": "last",
+    "mid_open": "first", "mid_high": "max", "mid_low": "min",
+    "mid_close": "last", "spread_open": "first", "spread_high": "max",
+    "spread_low": "min", "spread_close": "last", "spread_mean": "mean",
+    "quoted_bid_size_mean": "mean", "quoted_ask_size_mean": "mean",
+}
 
 INTERVAL_UNIT_SUFFIXES = {
     "milliseconds": "ms",
@@ -75,11 +93,18 @@ def interval_expression(value: Any) -> str:
     return f"{interval['value']}{INTERVAL_UNIT_SUFFIXES[interval['unit']]}"
 
 
-def field_instance_ref(field_ref: str, interval: Any = "") -> str:
+def normalize_aggregation_function(value: Any) -> str:
+    normalized = str(value or "").strip().lower()
+    return normalized if normalized in AGGREGATION_FUNCTIONS else ""
+
+
+def field_instance_ref(field_ref: str, interval: Any = "", aggregation: Any = "") -> str:
     """Identify a configured use of a Data Field without redefining the field."""
 
     expression = interval_expression(interval)
-    return f"{field_ref}@@{expression}" if expression else field_ref
+    aggregation_id = normalize_aggregation_function(aggregation)
+    instance = f"{field_ref}@@{expression}" if expression else field_ref
+    return f"{instance}##{aggregation_id}" if aggregation_id else instance
 
 
 def atomic_field_catalog(extra_inputs: Iterable[str] = ()) -> list[dict[str, Any]]:
@@ -210,10 +235,32 @@ def _field_dimension_instances(
     if source_id in {"vwap", "dollar_volume"}:
         intervals = [value for value in intervals if value not in {"1d", "1w", "1mo", "1y"}]
     if intervals:
+        interval_semantics = str(field.get("interval_semantics") or "")
+        aggregation_functions = [
+            str(value) for value in field.get("aggregation_functions") or []
+            if str(value) in AGGREGATION_FUNCTIONS
+        ]
+        intrinsic = str(field.get("intrinsic_aggregation") or "")
+        if not interval_semantics and source_id in _BAR_INTRINSIC_AGGREGATIONS:
+            interval_semantics = "bar_timeframe"
+            intrinsic = _BAR_INTRINSIC_AGGREGATIONS[source_id]
+        aggregation = (
+            {
+                "mode": "required",
+                "allowed": aggregation_functions,
+                "default": str(field.get("default_aggregation") or aggregation_functions[0]),
+            }
+            if interval_semantics == "event_window" and aggregation_functions
+            else {"mode": "intrinsic", "function": intrinsic}
+            if interval_semantics == "bar_timeframe" and intrinsic
+            else {"mode": "none"}
+        )
         return [{
             "dimension_kind": "interval",
             "available_intervals": intervals,
             "interval_required_when_used": True,
+            "interval_semantics": interval_semantics or "bar_timeframe",
+            "aggregation": aggregation,
         }]
     return [dimensions]
 
@@ -398,8 +445,9 @@ def build_data_field_catalog(
                     "execution": {
                         "producer_intervals": [] if dimension.get("dimension_kind") == "interval" else _preferred_producer_intervals(supported_intervals or _EXECUTION_INTERVAL_DEFAULTS.get(source_id, [])),
                         "market_discovery_supported": True,
+                        "aggregation_runtime_fields": dict(field.get("aggregation_runtime_fields") or {}),
                     },
-                    "parameters": ({"interval": {"required": True, "allowed": list(dimension.get("available_intervals") or [])}} if dimension.get("dimension_kind") == "interval" else {}),
+                    "parameters": ({"interval": {"required": True, "allowed": list(dimension.get("available_intervals") or [])}, "aggregation": dict(dimension.get("aggregation") or {})} if dimension.get("dimension_kind") == "interval" else {}),
                     "policies": {
                         "warm_up_bars": calculation.get("warm_up_bars"),
                         "missing": "unavailable",
@@ -455,8 +503,9 @@ def build_data_field_catalog(
                 "execution": {
                     "producer_intervals": [],
                     "market_discovery_supported": bool(field.get("market_discovery_supported")),
+                    "aggregation_runtime_fields": dict(field.get("aggregation_runtime_fields") or {}),
                 },
-                "parameters": ({"interval": {"required": True, "allowed": list(dimension.get("available_intervals") or [])}} if dimension.get("dimension_kind") == "interval" else {}),
+                "parameters": ({"interval": {"required": True, "allowed": list(dimension.get("available_intervals") or [])}, "aggregation": dict(dimension.get("aggregation") or {})} if dimension.get("dimension_kind") == "interval" else {}),
                 "policies": {"missing": "unavailable", "gaps": "preserve", "late_events": "source_policy"},
                 "outputs": [_data_field_output(
                     data_field_id,
@@ -483,11 +532,15 @@ def data_field_output_index(data_fields: Iterable[dict[str, Any]]) -> dict[str, 
     index: dict[str, dict[str, Any]] = {}
     for data_field in data_fields:
         context = dict(data_field.get("context") or {})
+        execution = dict(data_field.get("execution") or {})
         for output in data_field.get("outputs") or []:
             indexed = {
                 **dict(output),
                 "dimension_kind": str(context.get("dimension_kind") or "point_in_time"),
                 "available_intervals": list(context.get("available_intervals") or []),
+                "interval_semantics": str(context.get("interval_semantics") or ""),
+                "aggregation": dict(context.get("aggregation") or {}),
+                "aggregation_runtime_fields": dict(execution.get("aggregation_runtime_fields") or {}),
             }
             field_ref = str(output.get("field_ref") or "")
             source_id = str(output.get("source_id") or "")
@@ -516,7 +569,7 @@ def project_data_field_outputs(
         else None
     )
     outputs = [
-        (dict(output), dict(data_field.get("context") or {}))
+        (dict(output), dict(data_field.get("context") or {}), dict(data_field.get("execution") or {}))
         for data_field in data_fields
         for output in data_field.get("outputs") or []
         if str(output.get("field_ref") or "")
@@ -529,7 +582,7 @@ def project_data_field_outputs(
     projected: list[dict[str, Any]] = []
     for row in rows:
         result = dict(row)
-        for output, context in outputs:
+        for output, context, execution in outputs:
             field_ref = str(output["field_ref"])
             runtime_field = str(output.get("runtime_field") or output.get("source_id") or "")
             source_id = str(output.get("source_id") or "")
@@ -537,24 +590,30 @@ def project_data_field_outputs(
             intervals = [str(value) for value in context.get("available_intervals") or [] if str(value)]
             if intervals:
                 found_any = False
+                aggregation = dict(context.get("aggregation") or {})
+                functions = list(aggregation.get("allowed") or []) if aggregation.get("mode") == "required" else [""]
+                runtime_fields = dict(execution.get("aggregation_runtime_fields") or {})
                 for interval in intervals:
-                    value_found, value = _projected_value(
-                        row,
-                        runtime_field,
-                        source_id,
-                        interval,
-                        allow_generic=bool(observed_interval),
-                    )
-                    if observed_interval and observed_interval != interval:
-                        value_found, value = False, None
-                    instance_ref = field_instance_ref(field_ref, interval)
-                    if value_found or instance_ref not in result:
-                        result[instance_ref] = value
-                    if not value_found and result.get(instance_ref) is None:
-                        result[f"{instance_ref}__null_reason"] = "producer_output_missing"
-                    found_any = found_any or value_found or result.get(instance_ref) is not None
+                    for function in functions:
+                        selected_runtime_field = str(runtime_fields.get(function) or runtime_field)
+                        value_found, value = _projected_value(
+                            row,
+                            selected_runtime_field,
+                            selected_runtime_field if function else source_id,
+                            interval,
+                            allow_generic=bool(observed_interval),
+                        )
+                        if observed_interval and observed_interval != interval:
+                            value_found, value = False, None
+                        instance_ref = field_instance_ref(field_ref, interval, function)
+                        if value_found or instance_ref not in result:
+                            result[instance_ref] = value
+                        if not value_found and result.get(instance_ref) is None:
+                            result[f"{instance_ref}__null_reason"] = "producer_output_missing"
+                        found_any = found_any or value_found or result.get(instance_ref) is not None
                 if observed_interval in intervals:
-                    result[field_ref] = result.get(field_instance_ref(field_ref, observed_interval))
+                    default_function = str(aggregation.get("default") or "")
+                    result[field_ref] = result.get(field_instance_ref(field_ref, observed_interval, default_function))
                 elif field_ref not in result:
                     result[field_ref] = None
                 value_found = found_any
@@ -597,6 +656,11 @@ def project_composition_data_field_columns(
         for key, value in dict(composition.get("column_intervals") or {}).items()
         if str(key) and str(value)
     }
+    aggregations = {
+        str(key): normalize_aggregation_function(value)
+        for key, value in dict(composition.get("column_aggregations") or {}).items()
+        if str(key) and str(value)
+    }
     projected: list[dict[str, Any]] = []
     for row in rows:
         result = dict(row)
@@ -606,7 +670,7 @@ def project_composition_data_field_columns(
             if not field_ref:
                 continue
             interval = bindings.get(str(column_id), "")
-            value_ref = field_instance_ref(field_ref, interval)
+            value_ref = field_instance_ref(field_ref, interval, aggregations.get(str(column_id), ""))
             result[str(column_id)] = row.get(value_ref)
             null_reason = row.get(f"{value_ref}__null_reason")
             if null_reason:
@@ -654,6 +718,13 @@ def migrate_rule_set_field_refs(
                         condition[f"{side}_interval"] = normalize_interval_spec(_preferred_instance_interval(allowed))
                     elif not allowed:
                         condition.pop(f"{side}_interval", None)
+                    aggregation = dict(output.get("aggregation") or {})
+                    if str(aggregation.get("mode") or "none") == "required":
+                        allowed_aggregations = [str(value) for value in aggregation.get("allowed") or []]
+                        selected = normalize_aggregation_function(condition.get(f"{side}_aggregation"))
+                        condition[f"{side}_aggregation"] = selected if selected in allowed_aggregations else str(aggregation.get("default") or allowed_aggregations[0])
+                    else:
+                        condition.pop(f"{side}_aggregation", None)
                 elif legacy_id:
                     condition[f"{side}_field_ref"] = legacy_id
                 condition.pop(f"{side}_timeframe", None)
@@ -762,7 +833,7 @@ def compile_data_field_plan(
             if str(row.get("scan_id") or row.get("watchlist_id") or row.get("signal_stream_id") or "") in requested_ids
         ]
     field_refs: set[str] = set()
-    field_instances: set[tuple[str, str]] = set()
+    field_instances: set[tuple[str, str, str]] = set()
     rule_ids: set[str] = set()
     for composition in compositions:
         for key in ("inclusion_rule_sets", "exclusion_rule_sets"):
@@ -772,14 +843,15 @@ def compile_data_field_plan(
             output = output_index.get(ranking)
             resolved = str((output or {}).get("field_ref") or ranking)
             field_refs.add(resolved)
-            field_instances.add((resolved, interval_expression(composition.get("ranking_interval"))))
+            field_instances.add((resolved, interval_expression(composition.get("ranking_interval")), normalize_aggregation_function(composition.get("ranking_aggregation"))))
         column_intervals = dict(composition.get("column_intervals") or {})
+        column_aggregations = dict(composition.get("column_aggregations") or {})
         for column_id in composition.get("columns") or []:
             column = columns.get(str(column_id), {})
             if str(column.get("field_ref") or ""):
                 resolved = str(column["field_ref"])
                 field_refs.add(resolved)
-                field_instances.add((resolved, interval_expression(column_intervals.get(str(column_id)))))
+                field_instances.add((resolved, interval_expression(column_intervals.get(str(column_id))), normalize_aggregation_function(column_aggregations.get(str(column_id)))))
     for rule_id in rule_ids:
         for condition in rules.get(rule_id, {}).get("conditions") or []:
             if not bool(condition.get("enabled", True)):
@@ -790,7 +862,7 @@ def compile_data_field_plan(
                     output = output_index.get(field_ref)
                     resolved = str((output or {}).get("field_ref") or field_ref)
                     field_refs.add(resolved)
-                    field_instances.add((resolved, interval_expression(condition.get(f"{side}_interval"))))
+                    field_instances.add((resolved, interval_expression(condition.get(f"{side}_interval")), normalize_aggregation_function(condition.get(f"{side}_aggregation"))))
     selected_fields = []
     atomic_inputs: set[str] = set()
     timeframes: set[str] = set()
@@ -810,7 +882,7 @@ def compile_data_field_plan(
         atomic_inputs.update(str(value) for value in data_field.get("inputs") or [] if str(value))
         definition_intervals = {
             interval
-            for field_ref, interval in field_instances
+            for field_ref, interval, _aggregation in field_instances
             if field_ref in outputs and interval
         }
         timeframes.update(definition_intervals)
@@ -845,9 +917,10 @@ def compile_data_field_plan(
             {
                 "field_ref": field_ref,
                 "interval": interval,
-                "instance_ref": field_instance_ref(field_ref, interval),
+                "aggregation": aggregation,
+                "instance_ref": field_instance_ref(field_ref, interval, aggregation),
             }
-            for field_ref, interval in sorted(field_instances)
+            for field_ref, interval, aggregation in sorted(field_instances)
         ],
         "data_fields": sorted(selected_fields, key=lambda row: row["data_field_id"]),
         "atomic_inputs": sorted(atomic_inputs),
@@ -883,6 +956,19 @@ def validate_data_field_catalog(data_fields: list[dict[str, Any]]) -> None:
             raise ValueError(
                 f"Data Field {data_field_id} stores an interval before it is instantiated"
             )
+        aggregation = dict(context.get("aggregation") or {})
+        aggregation_mode = str(aggregation.get("mode") or "none")
+        allowed_aggregations = [str(value) for value in aggregation.get("allowed") or []]
+        if aggregation_mode == "required":
+            if str(context.get("interval_semantics") or "") != "event_window" or not allowed_aggregations:
+                raise ValueError(f"Data Field {data_field_id} has an invalid required aggregation contract")
+            if any(value not in AGGREGATION_FUNCTIONS for value in allowed_aggregations):
+                raise ValueError(f"Data Field {data_field_id} has an unknown aggregation function")
+            runtime_fields = dict(dict(row.get("execution") or {}).get("aggregation_runtime_fields") or {})
+            if set(allowed_aggregations) - set(runtime_fields):
+                raise ValueError(f"Data Field {data_field_id} lacks a runtime field for an allowed aggregation")
+        if aggregation_mode == "intrinsic" and not str(aggregation.get("function") or ""):
+            raise ValueError(f"Data Field {data_field_id} lacks its intrinsic bar aggregation")
         outputs = list(row.get("outputs") or [])
         if not outputs:
             raise ValueError(f"Data Field {data_field_id} has no outputs")

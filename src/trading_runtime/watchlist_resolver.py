@@ -218,8 +218,9 @@ def rank_watchlist_membership(
         )
     ranking_ref = str(watchlist.get("ranking_field_ref") or "")
     ranking_interval = interval_expression(watchlist.get("ranking_interval"))
+    ranking_aggregation = str(watchlist.get("ranking_aggregation") or "")
     ranking_field = (
-        field_instance_ref(ranking_ref, ranking_interval)
+        field_instance_ref(ranking_ref, ranking_interval, ranking_aggregation)
         if ranking_ref
         else SOURCE_FIELDS.get(
             str(watchlist.get("ranking_field") or ""),
@@ -262,7 +263,7 @@ def _condition_matches(condition: dict[str, Any], row: dict[str, Any]) -> bool:
         return False
     left_ref = str(condition.get("left_field_ref") or "")
     left_interval = interval_expression(condition.get("left_interval"))
-    left = _source_value(row, field_instance_ref(left_ref, left_interval)) if left_ref else None
+    left = _source_value(row, field_instance_ref(left_ref, left_interval, condition.get("left_aggregation"))) if left_ref else None
     if left is None and (not left_ref or not left_interval):
         left = _source_value(row, str(condition.get("left_source_id") or ""))
     comparator = str(condition.get("comparator") or "")
@@ -273,7 +274,7 @@ def _condition_matches(condition: dict[str, Any], row: dict[str, Any]) -> bool:
     right_source = str(condition.get("right_source_id") or "")
     if right_source and str(condition.get("right_value_selection") or "latest") != "latest":
         return False
-    right = _source_value(row, field_instance_ref(right_ref, right_interval)) if right_ref else None
+    right = _source_value(row, field_instance_ref(right_ref, right_interval, condition.get("right_aggregation"))) if right_ref else None
     if right is None and (not right_ref or not right_interval):
         right = _source_value(row, right_source) if right_source else condition.get("value")
     if comparator == "equals":
@@ -329,10 +330,11 @@ def _operand_expression(
         return None
     field_ref = str(condition.get(f"{side}_field_ref") or "")
     interval = interval_expression(condition.get(f"{side}_interval"))
+    aggregation = condition.get(f"{side}_aggregation")
     source_id = str(condition.get(f"{side}_source_id") or "")
     candidates = []
     if field_ref:
-        candidates.append(field_instance_ref(field_ref, interval))
+        candidates.append(field_instance_ref(field_ref, interval, aggregation))
         if not interval:
             candidates.append(field_ref)
     if not interval and source_id:

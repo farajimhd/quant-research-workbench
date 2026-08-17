@@ -632,7 +632,7 @@ def watchlist_dependency_fields(
     ranking_interval = interval_expression(watchlist.get("ranking_interval"))
     source_ids = {
         str(watchlist.get("ranking_field") or ""),
-        field_instance_ref(ranking_ref, ranking_interval)
+        field_instance_ref(ranking_ref, ranking_interval, watchlist.get("ranking_aggregation"))
         if ranking_ref and ranking_interval else "",
     }
     rule_rows = rule_sets.values() if isinstance(rule_sets, dict) else rule_sets
@@ -647,9 +647,9 @@ def watchlist_dependency_fields(
             left_ref = str(condition.get("left_field_ref") or "")
             right_ref = str(condition.get("right_field_ref") or "")
             if left_ref and condition.get("left_interval"):
-                source_ids.add(field_instance_ref(left_ref, condition.get("left_interval")))
+                source_ids.add(field_instance_ref(left_ref, condition.get("left_interval"), condition.get("left_aggregation")))
             if right_ref and condition.get("right_interval"):
-                source_ids.add(field_instance_ref(right_ref, condition.get("right_interval")))
+                source_ids.add(field_instance_ref(right_ref, condition.get("right_interval"), condition.get("right_aggregation")))
     fields = {
         SOURCE_FIELDS.get(source_id, source_id)
         for source_id in source_ids

@@ -30,7 +30,7 @@ class HistoricalWatchlistPlanTests(unittest.TestCase):
         self.assertEqual(plan["plan_hash"], repeated["plan_hash"])
         self.assertEqual(
             plan["plan_hash"],
-            "sha256:0bb79bec181d384705ca5e6bc101f2c646f3e802a65d7cc0feb5845b9ac91840",
+            "sha256:1c34a757707791e7073cc59e13265dde530597e0ef8becdd4924ae6a546fb004",
         )
         self.assertEqual(plan["qmd_sources"], ["market.liquidity_rank"])
         self.assertEqual(plan["external_features"][0]["field_id"], "reference.float_shares")

@@ -319,10 +319,12 @@ def _occurrence(
         field_ref = str(column.get("field_ref") or "")
         if field_ref:
             interval = interval_expression(dict(stream.get("column_intervals") or {}).get(column_id))
-            instance_ref = field_instance_ref(field_ref, interval)
+            aggregation = dict(stream.get("column_aggregations") or {}).get(column_id)
+            instance_ref = field_instance_ref(field_ref, interval, aggregation)
             field_evidence[instance_ref] = {
                 "field_ref": field_ref,
                 "interval": interval,
+                "aggregation": aggregation or "",
                 "value": row.get(instance_ref) if row.get(instance_ref) is not None else value,
                 "available_at": row.get(f"{instance_ref}__available_at"),
                 "null_reason": row.get(f"{instance_ref}__null_reason"),
