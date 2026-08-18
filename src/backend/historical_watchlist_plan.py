@@ -8,11 +8,13 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from src.backend.application_registry import FIELD_DEFINITIONS, QUERY_PLANS
+from src.backend.data_field_contracts import interval_expression
 from src.trading_runtime.watchlist_resolver import SOURCE_FIELDS
 
 
-HISTORICAL_WATCHLIST_PLAN_SCHEMA_VERSION = 3
+HISTORICAL_WATCHLIST_PLAN_SCHEMA_VERSION = 4
 MAX_EVALUATIONS_PER_CHUNK = 1_800
+MAX_MEMBERSHIP_SLOTS_PER_CHUNK = 2_000_000
 FOCUSED_SEED_MULTIPLIER = 5
 NEW_YORK = ZoneInfo("America/New_York")
 SUPPORTED_COMPARATORS = {
@@ -28,11 +30,17 @@ QMD_SOURCE_IDS = {
     "indicator.vwap.value",
     "liquidity-rank",
     "market.liquidity_rank",
+    "market.liquidity_rank",
     "market.change_pct",
     "market.change_actual",
     "market.last_price",
     "market.relative_volume",
     "market.volume",
+    "price_change_1_bar_pct",
+    "volume_rate_ratio",
+    "market.spread_bps",
+    "quote.bid_price",
+    "quote.ask_price",
 }
 
 
@@ -73,11 +81,12 @@ def compile_historical_watchlist_plan(
     if missing_rules:
         raise ValueError(f"historical Watchlist references unknown rules: {', '.join(missing_rules)}")
     selected_rules = [rule_by_id[rule_id] for rule_id in dict.fromkeys(selected_rule_ids)]
-    sources = _validated_sources(watchlist, selected_rules)
+    sources, qmd_source_specs = _validated_sources(watchlist, selected_rules)
     field_by_id = {field.field_id: field for field in FIELD_DEFINITIONS}
     query_plan_by_id = {plan.plan_id: plan for plan in QUERY_PLANS}
     external_features: list[dict[str, Any]] = []
-    for source_id in sorted(sources - QMD_SOURCE_IDS):
+    source_ids = {_base_source_id(source) for source in sources}
+    for source_id in sorted(source_ids - QMD_SOURCE_IDS):
         field = field_by_id.get(source_id)
         if field is None:
             raise ValueError(f"historical Watchlist source is not registered: {source_id}")
@@ -106,6 +115,11 @@ def compile_historical_watchlist_plan(
         )
 
     cadence_ms = max(1, int(watchlist.get("refresh_interval_ms") or 0))
+    maximum_size = max(1, int(watchlist.get("maximum_size") or 1))
+    max_evaluations_per_chunk = min(
+        MAX_EVALUATIONS_PER_CHUNK,
+        max(1, MAX_MEMBERSHIP_SLOTS_PER_CHUNK // maximum_size),
+    )
     evaluation_windows = _evaluation_windows(start, end)
     body = {
         "schema_version": HISTORICAL_WATCHLIST_PLAN_SCHEMA_VERSION,
@@ -114,8 +128,8 @@ def compile_historical_watchlist_plan(
         "end": end.isoformat(),
         "evaluation_windows": evaluation_windows,
         "cadence_ms": cadence_ms,
-        "chunk_duration_ms": cadence_ms * MAX_EVALUATIONS_PER_CHUNK,
-        "max_evaluations_per_chunk": MAX_EVALUATIONS_PER_CHUNK,
+        "chunk_duration_ms": cadence_ms * max_evaluations_per_chunk,
+        "max_evaluations_per_chunk": max_evaluations_per_chunk,
         "source_scan_id": str(watchlist.get("source_scan_id") or ""),
         "inclusion_operator": str(watchlist.get("inclusion_operator") or "all"),
         "inclusion_rule_sets": [str(value) for value in watchlist.get("inclusion_rule_sets") or []],
@@ -123,13 +137,18 @@ def compile_historical_watchlist_plan(
         "rule_sets": selected_rules,
         "ranking_field": str(watchlist.get("ranking_field") or ""),
         "ranking_direction": str(watchlist.get("ranking_direction") or "descending"),
-        "maximum_size": max(1, int(watchlist.get("maximum_size") or 1)),
+        "maximum_size": maximum_size,
         "focused_seed_multiplier": FOCUSED_SEED_MULTIPLIER,
         "membership_expiry": str(watchlist.get("membership_expiry") or "end_of_trading_day"),
         "membership_ttl_ms": max(0, int(watchlist.get("membership_ttl_ms") or 0)),
         "manual_inclusions": sorted({str(value).strip().upper() for value in watchlist.get("manual_inclusions") or [] if str(value).strip()}),
         "manual_exclusions": sorted({str(value).strip().upper() for value in watchlist.get("manual_exclusions") or [] if str(value).strip()}),
-        "qmd_sources": sorted(sources & QMD_SOURCE_IDS),
+        "qmd_sources": sorted(
+            source
+            for source in sources
+            if _base_source_id(source) in QMD_SOURCE_IDS
+        ),
+        "qmd_source_specs": qmd_source_specs,
         "external_features": external_features,
         "output_mode": "initial_membership_then_transition_deltas",
         "state_carry_required": True,
@@ -162,8 +181,14 @@ def _evaluation_windows(start: datetime, end: datetime) -> list[dict[str, str]]:
     return windows
 
 
-def _validated_sources(watchlist: dict[str, Any], rules: list[dict[str, Any]]) -> set[str]:
+def _validated_sources(
+    watchlist: dict[str, Any], rules: list[dict[str, Any]]
+) -> tuple[set[str], list[dict[str, str]]]:
     sources = {str(watchlist.get("ranking_field") or "")}
+    specs: dict[str, dict[str, str]] = {}
+    ranking_source = str(watchlist.get("ranking_field") or "")
+    if ranking_source:
+        specs[ranking_source] = _qmd_source_spec(ranking_source, "")
     for rule in rules:
         operator = str(rule.get("operator") or "all")
         if operator not in {"all", "any", "score"}:
@@ -180,13 +205,49 @@ def _validated_sources(watchlist: dict[str, Any], rules: list[dict[str, Any]]) -
                 raise ValueError("historical Watchlist condition requires left_source_id")
             if str(condition.get("left_value_selection") or "latest") != "latest":
                 raise ValueError("historical Watchlist condition supports only latest left value selection")
-            sources.add(left)
+            left_interval = interval_expression(condition.get("left_interval"))
+            left_instance = _source_instance(left, left_interval)
+            condition["left_instance_id"] = left_instance
+            sources.add(left_instance)
+            specs[left_instance] = _qmd_source_spec(left, left_interval)
             if right:
                 if str(condition.get("right_value_selection") or "latest") != "latest":
                     raise ValueError("historical Watchlist condition supports only latest right value selection")
-                sources.add(right)
+                right_interval = interval_expression(condition.get("right_interval"))
+                right_instance = _source_instance(right, right_interval)
+                condition["right_instance_id"] = right_instance
+                sources.add(right_instance)
+                specs[right_instance] = _qmd_source_spec(right, right_interval)
     sources.discard("")
-    unknown = sorted(source for source in sources if source not in SOURCE_FIELDS)
+    unknown = sorted(
+        source
+        for source in sources
+        if _base_source_id(source) not in SOURCE_FIELDS
+        and _base_source_id(source) not in QMD_SOURCE_IDS
+    )
     if unknown:
         raise ValueError(f"historical Watchlist uses unsupported sources: {', '.join(unknown)}")
-    return sources
+    qmd_specs = [
+        specs[source]
+        for source in sorted(sources)
+        if _base_source_id(source) in QMD_SOURCE_IDS
+    ]
+    return sources, qmd_specs
+
+
+def _source_instance(source_id: str, interval: str) -> str:
+    return f"{source_id}@@{interval}" if interval else source_id
+
+
+def _base_source_id(instance_id: str) -> str:
+    return str(instance_id).split("@@", 1)[0]
+
+
+def _qmd_source_spec(source_id: str, interval: str) -> dict[str, str]:
+    runtime_field = SOURCE_FIELDS.get(source_id, source_id)
+    return {
+        "instance_id": _source_instance(source_id, interval),
+        "source_id": source_id,
+        "runtime_field": runtime_field,
+        "interval": interval,
+    }

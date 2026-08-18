@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import unittest
 import urllib.error
-from datetime import date
+from datetime import UTC, date, datetime, timedelta
 from unittest.mock import MagicMock, patch
+from zoneinfo import ZoneInfo
 
 from src.backend.trading_runtime_service import (
+    _can_use_recent_live_chart_session,
     _historical_gateway_get,
+    _recent_live_bar_history,
     historical_bar_chunk,
     historical_compact_events,
     historical_latest_coverage,
@@ -26,6 +29,42 @@ from src.trading_runtime.strategy_registry import (
 
 
 class HistoricalTradingServiceTests(unittest.TestCase):
+    @patch("src.backend.trading_runtime_service._historical_gateway_get")
+    @patch("src.backend.trading_runtime_service.qmd_intraday_bar_history")
+    def test_recent_live_chart_defers_history_handoff_until_load_earlier(
+        self,
+        live_history,
+        history_get,
+    ) -> None:
+        live_history.return_value = {
+            "bars": [{"bar_start": "2026-08-14T13:44:00+00:00"}],
+            "has_more": False,
+        }
+        payload = _recent_live_bar_history(
+            ticker="AAPL",
+            timeframe="1m",
+            session_date=date(2026, 8, 14),
+            as_of="2026-08-17T20:00:00+00:00",
+            before_bar=None,
+            row_limit=500,
+            stage="bars",
+        )
+        self.assertEqual(payload["previous_session_before"], "2026-08-14")
+        self.assertTrue(payload["has_more"])
+        history_get.assert_not_called()
+
+    @patch("src.backend.trading_runtime_service._is_recent_live_chart_session", return_value=True)
+    def test_recent_live_chart_is_used_only_for_complete_or_current_clocks(self, _recent) -> None:
+        now = datetime.now(UTC)
+        session_date = now.astimezone(ZoneInfo("America/New_York")).date()
+        self.assertTrue(_can_use_recent_live_chart_session(session_date, now.isoformat()))
+        self.assertFalse(
+            _can_use_recent_live_chart_session(
+                session_date,
+                (now - timedelta(hours=2)).isoformat(),
+            )
+        )
+
     def test_automatic_strategy_definition_requires_and_persists_taxonomy(self) -> None:
         journal = MagicMock()
         stored: dict[str, object] = {}

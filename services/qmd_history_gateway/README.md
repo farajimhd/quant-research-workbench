@@ -63,7 +63,8 @@ without a ready historical `/health` response, it stops with an actionable
 address-conflict message instead of attempting a duplicate bind.
 
 Configuration uses `QMD_HISTORY_CLICKHOUSE_URL`, `QMD_HISTORY_DATABASE`,
-`QMD_HISTORY_TABLE_PREFIX`, `QMD_HISTORY_DAILY_SESSION_BARS_TABLE`, `QMD_HISTORY_CLICKHOUSE_USER`,
+`QMD_HISTORY_TABLE_PREFIX`, `QMD_HISTORY_DAILY_SESSION_BARS_TABLE`,
+`QMD_HISTORY_INTRADAY_BASE_BARS_TABLE`, `QMD_HISTORY_CLICKHOUSE_USER`,
 `QMD_HISTORY_CLICKHOUSE_PASSWORD`, `QMD_HISTORY_BIND`,
 `QMD_HISTORY_STRUCTURE_DATABASE`, `QMD_HISTORY_STRUCTURE_EVENTS_TABLE`,
 `QMD_HISTORY_RECENT_DATABASE`, `QMD_HISTORY_RECENT_EVENT_TABLE`,
@@ -101,6 +102,10 @@ Defaults:
   (`QMD_HISTORY_DAILY_SESSION_BARS_TABLE`); QMD derives closed 1-day and
   weekly, monthly, and yearly trade bars only from causally available completed
   daily rows. The current macro period is marked partial.
+- durable intraday fast path: `intraday_base_bars_by_time_ticker`
+  (`QMD_HISTORY_INTRADAY_BASE_BARS_TABLE`); bars-only historical chart pages
+  use the persisted event-derived grid when the requested ticker, date, and
+  resolution exist, and otherwise fall back to causal raw-event reconstruction.
 - generic-structure database/table: `q_live.qmd_structure_events_v2`
 - batch size: `25000`
 - maximum events in one derived calculation: `10000000`

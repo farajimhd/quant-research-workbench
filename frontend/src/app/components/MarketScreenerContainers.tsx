@@ -43,8 +43,8 @@ export type WatchUniverseSettings = TechnicalListSettings & { limit: number; wat
 type DiscoveryScannerColumn = { column_id: string; name: string; source_id: string };
 type DiscoveryCapability = { enabled?: boolean; execution_scope?: string; scanner_columns?: DiscoveryScannerColumn[]; system_required?: boolean };
 type DiscoveryColumn = { column_id: string; description?: string; name: string; provenance?: string; semantic_type?: string; source_id?: string; source_kind?: "data_definition" | "rule_set" | string; unit?: string; value_type?: string };
-type DiscoveryWatchlist = { availability?: string; columns?: string[]; description?: string; enabled?: boolean; name: string; watchlist_id: string };
-type DiscoverySignalStream = { columns?: string[]; description?: string; enabled?: boolean; maximum_events?: number; name: string; refresh_interval_ms?: number; signal_stream_id: string; source_id?: string; source_scan_id?: string; source_type?: "core_scan" | "watchlist" };
+type DiscoveryWatchlist = { availability?: string; columns?: string[]; description?: string; enabled?: boolean; name: string; origin?: string; watchlist_id: string };
+type DiscoverySignalStream = { column_aggregations?: Record<string, string>; column_intervals?: Record<string, unknown>; columns?: string[]; description?: string; enabled?: boolean; maximum_events?: number; name: string; origin?: string; refresh_interval_ms?: number; signal_stream_id: string; source_id?: string; source_scan_id?: string; source_type?: "core_scan" | "watchlist" | "news_events" };
 type SignalStreamRuntimeResponse = { as_of: string; occurrence_count: number; occurrences: ScreenerRow[]; session?: { active?: boolean; end_at?: string; retention?: string; session_date?: string; start_at?: string; timezone?: string }; signal_streams?: Array<{ candidate_count?: number; configured?: boolean; enabled?: boolean; signal_stream_id: string; source_id?: string; source_type?: string; status?: string }>; status: string };
 export type WatchUniverseDefinition = {
   description?: string;
@@ -223,18 +223,18 @@ function useDiscoveryPresentation() {
     let baseConfiguration: WatchUniverseCatalogResponse | null = null;
     const applySessionDiscovery = async () => {
       if (!baseConfiguration) return;
-      const session = readConfigurationSession<ConfigurationSessionSnapshot>();
-      if (session?.market_discovery) {
+      const resolved = overlaySessionDiscovery(baseConfiguration);
+      if (resolved.market_discovery) {
         try {
           await api("/api/market-discovery/configuration/materialize", {
-            body: JSON.stringify({ market_discovery: session.market_discovery }),
+            body: JSON.stringify({ market_discovery: resolved.market_discovery }),
             method: "POST",
           });
         } catch {
           // The Canvas still presents the draft; runtime diagnostics explain a rejected materialization.
         }
       }
-      setConfiguration(overlaySessionDiscovery(baseConfiguration));
+      setConfiguration(resolved);
     };
     const handleSessionChange = () => { void applySessionDiscovery(); };
     window.addEventListener(CONFIGURATION_SESSION_CHANGED_EVENT, handleSessionChange);
@@ -279,6 +279,35 @@ function overlaySessionDiscovery(base: WatchUniverseCatalogResponse): WatchUnive
     const draft = session?.market_discovery;
     if (!draft) return base;
     const canonical = base.market_discovery;
+    const canonicalStreams = canonical?.signal_streams ?? [];
+    const draftStreams = draft.signal_streams ?? [];
+    const draftStreamById = new Map(draftStreams.map((row) => [row.signal_stream_id, row]));
+    const canonicalStreamIds = new Set(canonicalStreams.map((row) => row.signal_stream_id));
+    const reconciledStreams = [
+      ...canonicalStreams.map((row) => {
+        const saved = draftStreamById.get(row.signal_stream_id);
+        if (!saved) return row;
+        if (row.origin === "system") {
+          return {
+            ...row,
+            enabled: saved.enabled,
+            columns: saved.columns?.length ? saved.columns : row.columns,
+            column_intervals: saved.column_intervals ?? row.column_intervals,
+            column_aggregations: saved.column_aggregations ?? row.column_aggregations,
+          };
+        }
+        return { ...row, ...saved };
+      }),
+      ...draftStreams.filter((row) => row.origin === "user" && !canonicalStreamIds.has(row.signal_stream_id)),
+    ];
+    const canonicalWatchlists = canonical?.watchlists ?? [];
+    const draftWatchlists = draft.watchlists ?? [];
+    const draftWatchlistById = new Map(draftWatchlists.map((row) => [row.watchlist_id, row]));
+    const canonicalWatchlistIds = new Set(canonicalWatchlists.map((row) => row.watchlist_id));
+    const reconciledWatchlists = [
+      ...canonicalWatchlists.map((row) => ({ ...row, ...(draftWatchlistById.get(row.watchlist_id) ?? {}) })),
+      ...draftWatchlists.filter((row) => row.origin === "user" && !canonicalWatchlistIds.has(row.watchlist_id)),
+    ];
     return {
       ...base,
       market_discovery: {
@@ -290,8 +319,8 @@ function overlaySessionDiscovery(base: WatchUniverseCatalogResponse): WatchUnive
           ...draft.core_scan,
           calculations: canonical?.core_scan?.calculations ?? [],
         },
-        signal_streams: draft.signal_streams ?? canonical?.signal_streams ?? [],
-        watchlists: draft.watchlists ?? canonical?.watchlists ?? [],
+        signal_streams: reconciledStreams,
+        watchlists: reconciledWatchlists,
       },
     };
   } catch {
@@ -402,6 +431,8 @@ export function SignalStreamContainer({ asOf, live, onSettingsChange, onTickerSe
   const sourceId = stream?.source_id ?? stream?.source_scan_id ?? discovery?.core_scan?.scan_id ?? "";
   const sourceLabel = sourceType === "watchlist"
     ? discovery?.watchlists?.find((row) => row.watchlist_id === sourceId)?.name ?? sourceId
+    : sourceType === "news_events"
+      ? "News Synthesis V1 issuer events"
     : `${discovery?.core_scan?.name ?? "Core Scan"} · all eligible tickers`;
   const emptyMessage = !stream
     ? "No configured Signal Stream is available."

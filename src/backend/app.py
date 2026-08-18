@@ -57,6 +57,11 @@ from src.backend.workload_budget import (
     workload_budget_manager,
 )
 from src.backend.canvas_preview_service import canvas_preview_payload, scanner_snapshot_payload
+from src.backend.canvas_profile_service import (
+    CanvasProfileConflictError,
+    editable_canvas_profile,
+    save_editable_canvas_profile,
+)
 from src.backend.canonical_backtest_service import backtest_comparison_projection
 from src.backend.canonical_trading_service import canonical_trading_state
 from src.backend.portfolio_management_service import (
@@ -477,12 +482,15 @@ SERVICE_REGISTRY: dict[str, dict[str, str]] = {
 
 @asynccontextmanager
 async def application_lifespan(_app: FastAPI):
+    from src.backend.live_strategy_runtime_service import LIVE_STRATEGY_RUNTIME
     from src.backend.market_discovery_runtime_service import MARKET_DISCOVERY_RUNTIME
+    LIVE_STRATEGY_RUNTIME.start()
     MARKET_DISCOVERY_RUNTIME.start()
     try:
         yield
     finally:
         MARKET_DISCOVERY_RUNTIME.stop()
+        LIVE_STRATEGY_RUNTIME.stop()
 
 
 app = FastAPI(title="Quant Research Workbench API", version="1.0.0", lifespan=application_lifespan)
@@ -886,6 +894,7 @@ class BacktestDebugRunCreateRequest(BaseModel):
     fixture_id: str = Field(min_length=1, max_length=128)
     market_events: list[dict[str, Any]] = Field(default_factory=list, max_length=20_000)
     derived_frames: list[dict[str, Any]] = Field(default_factory=list, max_length=20_000)
+    signal_events: list[dict[str, Any]] = Field(default_factory=list, max_length=20_000)
 
 
 class ReplayTradeProposalSubmit(BaseModel):
@@ -923,6 +932,11 @@ class TradingConfigurationPublishSubmit(BaseModel):
 class TradingConfigurationEffectiveSubmit(BaseModel):
     configuration: dict[str, Any]
     mode: str = Field(default="replay", max_length=32)
+
+
+class EditableCanvasProfileSubmit(BaseModel):
+    profile: dict[str, Any]
+    expected_revision: int | None = Field(default=None, ge=0)
 
 
 class MarketDiscoveryMaterializeSubmit(BaseModel):
@@ -4588,6 +4602,24 @@ def trading_configuration_canvas_profile() -> dict[str, Any]:
     return approved_canvas_profile()
 
 
+@app.get("/api/trading/canvas-profile")
+def trading_canvas_profile() -> dict[str, Any]:
+    return editable_canvas_profile()
+
+
+@app.put("/api/trading/canvas-profile")
+def trading_canvas_profile_update(payload: EditableCanvasProfileSubmit) -> dict[str, Any]:
+    try:
+        return save_editable_canvas_profile(
+            payload.profile,
+            expected_revision=payload.expected_revision,
+        )
+    except CanvasProfileConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @app.get("/api/trading/configuration/effective")
 def trading_configuration_effective(
     mode: str = "replay",
@@ -4787,6 +4819,7 @@ async def trading_backtest_debug_run_create(
             fixture_id=payload.fixture_id,
             market_events=tuple(dict(row) for row in payload.market_events),
             derived_frames=tuple(dict(row) for row in payload.derived_frames),
+            signal_events=tuple(dict(row) for row in payload.signal_events),
         )
         definition = ReplayRunDefinition(
             session_date=payload.session_date,

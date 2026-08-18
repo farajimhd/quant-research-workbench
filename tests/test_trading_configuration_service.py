@@ -720,10 +720,12 @@ class TradingConfigurationServiceTests(unittest.TestCase):
             finally:
                 journal.close()
 
-        self.assertEqual(
-            runtime["market_discovery"]["signal_streams"][0]["name"],
-            "Materialized stream",
+        materialized_stream = next(
+            row
+            for row in runtime["market_discovery"]["signal_streams"]
+            if row["signal_stream_id"] == "materialized-stream"
         )
+        self.assertEqual(materialized_stream["name"], "Materialized stream")
         self.assertEqual(runtime["strategy"], base["strategy"])
         self.assertEqual(
             first_materialization["materialized_at"],
@@ -970,7 +972,10 @@ class TradingConfigurationServiceTests(unittest.TestCase):
             and set(_profile_rule_set_ids(profile["lifecycle"])) <= canonical_rule_set_ids
             for profile in draft["strategy"]["profiles"]
         ))
-        self.assertEqual(len(draft["strategy"]["profiles"]), 1)
+        self.assertEqual(
+            {row["profile_id"] for row in draft["strategy"]["profiles"]},
+            {"long-momentum-balanced", "long-momentum-bullish-news"},
+        )
         self.assertEqual(len(draft["strategy"]["profile_templates"]), 1)
         self.assertEqual(
             draft["strategy"]["profile_templates"][0]["name"],
@@ -1014,9 +1019,9 @@ class TradingConfigurationServiceTests(unittest.TestCase):
             lifecycle["initial_entry"]["capital_request"]["mode"],
             "mandate_fraction",
         )
-        self.assertTrue(lifecycle["initial_entry"]["add_steps"])
+        self.assertEqual(lifecycle["initial_entry"]["add_steps"], [])
         self.assertEqual(lifecycle["initial_entry"]["action_id"], "position.enter_long")
-        self.assertEqual(lifecycle["initial_entry"]["add_steps"][0]["action_id"], "position.add_long")
+        self.assertNotIn("confirmed-pullback-add", default_profile["action_policy_ids"])
         self.assertTrue(all(route["action_id"] == "position.exit_long" for route in lifecycle["exit"]["rule_sets"]))
         self.assertNotIn("time_in_force", lifecycle["initial_entry"]["order_intent"])
         self.assertNotIn("outside_rth", lifecycle["initial_entry"]["order_intent"])
@@ -1122,7 +1127,7 @@ class TradingConfigurationServiceTests(unittest.TestCase):
         )
         self.assertEqual(
             saved_draft["run_plans"]["plans"][0]["action_policy_rule_set_ids"],
-            ["add-confirmed-position-add-bullish-structure-add"],
+            [],
         )
 
     def test_approved_canvas_projection_exposes_only_published_profile_identity(self) -> None:
@@ -1465,13 +1470,14 @@ class TradingConfigurationServiceTests(unittest.TestCase):
         profile = draft["strategy"]["profiles"][0]
         opportunity_id = profile["lifecycle"]["initial_entry"]["opportunity"]["expression"]["children"][0]["rule_set_id"]
         condition = next(row for row in draft["market_discovery"]["rule_sets"] if row["rule_set_id"] == opportunity_id)["conditions"][0]
+        condition["left_field_ref"] = "data.qmd.invalid@1:indicator.unregistered.value"
         condition["left_source_id"] = "indicator.unregistered.value"
 
         with patch(
             "src.backend.trading_configuration_service.get_strategy_definition",
             return_value=long_momentum_strategy_definition(),
-        ), self.assertRaisesRegex(ValueError, "unknown left source"):
-            resolve_runtime_configuration(draft, mode="replay")
+        ), self.assertRaisesRegex(ValueError, "unknown Data Field output"):
+            _validate_draft(draft, require_runtime_ready=False)
 
     def test_protected_default_profile_cannot_be_removed_or_weakened(self) -> None:
         draft = self._draft()
@@ -1671,6 +1677,15 @@ class TradingConfigurationServiceTests(unittest.TestCase):
             if row["policy_id"] == "confirmed-pullback-add"
         )
         rule_set_id = policy["trigger"]["rule_set_ids"][0]
+        profile = draft["strategy"]["profiles"][0]
+        profile["action_policy_ids"].append("confirmed-pullback-add")
+        profile["lifecycle"]["initial_entry"]["add_steps"] = [{
+            "action_id": "position.add_long",
+            "action_policy_id": "confirmed-pullback-add",
+            "rules": {"expression": {"kind": "rule_set", "rule_set_id": rule_set_id}},
+            "capital_request": {"mode": "mandate_fraction", "value": 0.25},
+            "order_intent": {"protection_profile": "hybrid-single"},
+        }]
         compiled = deepcopy(draft)
         _compile_run_plans(compiled, canvas_profile_id="current-canvas")
         self.assertIn(rule_set_id, compiled["run_plans"]["plans"][0]["action_policy_rule_set_ids"])

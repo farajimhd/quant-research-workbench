@@ -4,18 +4,33 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 
-pub const WATCHLIST_TIMELINE_PLAN_SCHEMA_VERSION: u16 = 3;
+pub const WATCHLIST_TIMELINE_PLAN_SCHEMA_VERSION: u16 = 4;
 pub const MAX_EVALUATIONS_PER_CHUNK: u64 = 1_800;
 pub const MAX_MEMBERSHIP_SLOTS_PER_CHUNK: u64 = 2_000_000;
-const QMD_SOURCES: [&str; 7] = [
+const QMD_SOURCES: [&str; 13] = [
     "indicator.vwap.value",
     "liquidity-rank",
+    "market.liquidity_rank",
     "market.change_pct",
     "market.change_actual",
     "market.last_price",
     "market.relative_volume",
     "market.volume",
+    "price_change_1_bar_pct",
+    "volume_rate_ratio",
+    "market.spread_bps",
+    "quote.bid_price",
+    "quote.ask_price",
 ];
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct QmdSourceSpec {
+    pub instance_id: String,
+    pub source_id: String,
+    pub runtime_field: String,
+    #[serde(default)]
+    pub interval: String,
+}
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct ExternalFeatureContract {
@@ -60,6 +75,8 @@ pub struct HistoricalWatchlistPlan {
     pub manual_inclusions: Vec<String>,
     pub manual_exclusions: Vec<String>,
     pub qmd_sources: Vec<String>,
+    #[serde(default)]
+    pub qmd_source_specs: Vec<QmdSourceSpec>,
     pub external_features: Vec<ExternalFeatureContract>,
     pub output_mode: String,
     pub state_carry_required: bool,
@@ -318,9 +335,36 @@ pub fn validate_plan(
         .iter()
         .map(|value| value.as_str())
         .collect::<BTreeSet<_>>();
-    if qmd_sources.len() != plan.qmd_sources.len() || !qmd_sources.is_subset(&allowed) {
+    let qmd_source_bases = qmd_sources
+        .iter()
+        .map(|value| value.split("@@").next().unwrap_or_default())
+        .collect::<BTreeSet<_>>();
+    if qmd_sources.len() != plan.qmd_sources.len() || !qmd_source_bases.is_subset(&allowed) {
         return Err(
             "historical Watchlist plan has duplicate or unsupported QMD sources".to_string(),
+        );
+    }
+    let qmd_spec_ids = plan
+        .qmd_source_specs
+        .iter()
+        .map(|spec| spec.instance_id.as_str())
+        .collect::<BTreeSet<_>>();
+    if qmd_spec_ids.len() != plan.qmd_source_specs.len()
+        || qmd_spec_ids != qmd_sources
+        || plan.qmd_source_specs.iter().any(|spec| {
+            spec.source_id.trim().is_empty()
+                || spec.runtime_field.trim().is_empty()
+                || spec.instance_id
+                    != if spec.interval.is_empty() {
+                        spec.source_id.clone()
+                    } else {
+                        format!("{}@@{}", spec.source_id, spec.interval)
+                    }
+        })
+    {
+        return Err(
+            "historical Watchlist QMD source specifications are incomplete or inconsistent"
+                .to_string(),
         );
     }
     let mut feature_ids = BTreeSet::new();
@@ -794,7 +838,9 @@ fn condition_matches(
     condition: &serde_json::Map<String, Value>,
     values: &BTreeMap<String, Value>,
 ) -> bool {
-    let Some(left_source) = optional_string(condition, "left_source_id") else {
+    let Some(left_source) = optional_string(condition, "left_instance_id")
+        .or_else(|| optional_string(condition, "left_source_id"))
+    else {
         return false;
     };
     let left = values.get(left_source);
@@ -802,7 +848,12 @@ fn condition_matches(
     if comparator == "is_true" {
         return left.and_then(Value::as_bool) == Some(true);
     }
-    let right_source = optional_string(condition, "right_source_id").unwrap_or("");
+    let raw_right_source = optional_string(condition, "right_source_id").unwrap_or("");
+    let right_source = if raw_right_source.is_empty() {
+        ""
+    } else {
+        optional_string(condition, "right_instance_id").unwrap_or(raw_right_source)
+    };
     let right = if right_source.is_empty() {
         condition.get("value")
     } else {
@@ -966,14 +1017,20 @@ fn validate_rule_graph(
                     "historical Watchlist condition {condition_id} has unsupported comparator"
                 ));
             }
-            let left = required_string(condition, "left_source_id")?;
+            let left = optional_string(condition, "left_instance_id")
+                .unwrap_or(required_string(condition, "left_source_id")?);
             if optional_string(condition, "left_value_selection").unwrap_or("latest") != "latest" {
                 return Err(format!(
                     "historical Watchlist condition {condition_id} supports only latest left value selection"
                 ));
             }
             referenced_sources.insert(left);
-            let right = optional_string(condition, "right_source_id").unwrap_or("");
+            let right_source = optional_string(condition, "right_source_id").unwrap_or("");
+            let right = if right_source.is_empty() {
+                ""
+            } else {
+                optional_string(condition, "right_instance_id").unwrap_or(right_source)
+            };
             if !right.is_empty() {
                 if optional_string(condition, "right_value_selection").unwrap_or("latest")
                     != "latest"
@@ -1064,7 +1121,7 @@ fn parse_time(value: &str, field: &str) -> Result<DateTime<Utc>, String> {
 mod tests {
     use super::{
         materialize_candidate_chunk, plan_evaluation_clock, validate_plan, ExternalFeatureContract,
-        HistoricalWatchlistPlan, WatchlistCandidate, WatchlistCandidateFrame,
+        HistoricalWatchlistPlan, QmdSourceSpec, WatchlistCandidate, WatchlistCandidateFrame,
         WatchlistEvaluationWindow,
     };
     use serde_json::json;
@@ -1082,7 +1139,7 @@ mod tests {
 
     fn plan() -> HistoricalWatchlistPlan {
         let mut plan = HistoricalWatchlistPlan {
-            schema_version: 3,
+            schema_version: 4,
             watchlist_id: "core-candidates".to_string(),
             start: "2026-08-07T13:30:00+00:00".to_string(),
             end: "2026-08-07T20:00:00+00:00".to_string(),
@@ -1135,6 +1192,12 @@ mod tests {
             manual_inclusions: Vec::new(),
             manual_exclusions: Vec::new(),
             qmd_sources: vec!["liquidity-rank".to_string()],
+            qmd_source_specs: vec![QmdSourceSpec {
+                instance_id: "liquidity-rank".to_string(),
+                source_id: "liquidity-rank".to_string(),
+                runtime_field: "liquidity_rank".to_string(),
+                interval: String::new(),
+            }],
             external_features: vec![ExternalFeatureContract {
                 available_at: "source publication timestamp".to_string(),
                 event_at: "source effective timestamp".to_string(),
@@ -1153,7 +1216,7 @@ mod tests {
         rehash(&mut plan);
         assert_eq!(
             plan.plan_hash,
-            "sha256:8b0871442876967333914bf7a2c736bbce59e27482b0a9740aa66dc82bb72012"
+            "sha256:9d64db8d99dab004ef824443e47dcc20949fcb6661b707a37c06842319e32e90"
         );
         plan
     }
@@ -1185,6 +1248,12 @@ mod tests {
     fn rejects_hashed_but_semantically_inconsistent_rule_graph() {
         let mut invalid = plan();
         invalid.qmd_sources.push("market.volume".to_string());
+        invalid.qmd_source_specs.push(QmdSourceSpec {
+            instance_id: "market.volume".to_string(),
+            source_id: "market.volume".to_string(),
+            runtime_field: "volume".to_string(),
+            interval: String::new(),
+        });
         rehash(&mut invalid);
         assert!(validate_plan(&invalid)
             .unwrap_err()

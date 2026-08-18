@@ -89,6 +89,8 @@ class SignalStreamRuntime:
             stream_id = str(stream.get("signal_stream_id") or "").strip()
             if not stream_id or not bool(stream.get("enabled", True)):
                 continue
+            if str(stream.get("source_type") or "core_scan") == "news_events":
+                continue
             capabilities, timeframes = focused_target_contract(
                 stream,
                 rule_sets,
@@ -192,6 +194,7 @@ class SignalStreamRuntime:
             if str(snapshot.get("watchlist_id") or "")
         }
         stream_snapshots: list[dict[str, Any]] = []
+        new_occurrences: list[dict[str, Any]] = []
         with self._lock:
             self._hydrate(journal)
             dirty = False
@@ -211,6 +214,18 @@ class SignalStreamRuntime:
                 active_stream_ids.add(stream_id)
                 enabled = bool(stream.get("enabled", True))
                 source_type = str(stream.get("source_type") or "core_scan")
+                if source_type == "news_events":
+                    prior = dict(self._diagnostics.get(stream_id) or {})
+                    stream_snapshots.append({
+                        **prior,
+                        "signal_stream_id": stream_id,
+                        "name": str(stream.get("name") or stream_id),
+                        "enabled": enabled,
+                        "status": str(prior.get("status") or ("ready" if enabled else "disabled")),
+                        "source_type": source_type,
+                        "source_id": str(stream.get("source_id") or ""),
+                    })
+                    continue
                 source_id = str(
                     stream.get("source_id")
                     or stream.get("source_scan_id")
@@ -282,6 +297,8 @@ class SignalStreamRuntime:
                             payload=occurrence,
                         )
                         emitted += int(inserted)
+                        if inserted:
+                            new_occurrences.append(occurrence)
                         dirty = self._apply_routes(stream, occurrence, as_of) or dirty
                         previous["last_emitted_at"] = as_of.isoformat()
                     next_state = {
@@ -346,8 +363,87 @@ class SignalStreamRuntime:
                 "signal_streams": stream_snapshots,
                 "occurrence_count": len(occurrences) if include_occurrences else sum(int(row.get("emitted_count") or 0) for row in stream_snapshots),
                 "occurrences": occurrences,
+                "new_occurrences": new_occurrences,
                 "admissions_by_watchlist": self.admissions_by_watchlist(as_of),
             }
+
+    def append_external_event_rows(
+        self,
+        configuration: dict[str, Any],
+        *,
+        signal_stream_id: str,
+        rows: list[dict[str, Any]],
+        journal: TradingJournal,
+        event_run_id: str = SIGNAL_EVENT_RUN_ID,
+        include_existing: bool = False,
+    ) -> list[dict[str, Any]]:
+        """Freeze externally published event rows under a configured stream."""
+
+        discovery = dict(configuration.get("market_discovery") or {})
+        stream = next(
+            (
+                dict(value)
+                for value in discovery.get("signal_streams") or []
+                if str(value.get("signal_stream_id") or "") == signal_stream_id
+            ),
+            None,
+        )
+        if stream is None or not bool(stream.get("enabled", True)):
+            return []
+        rule_sets = {
+            str(value.get("rule_set_id") or ""): dict(value)
+            for value in discovery.get("rule_sets") or []
+        }
+        columns = {
+            str(value.get("column_id") or ""): dict(value)
+            for value in discovery.get("column_catalog") or []
+        }
+        revision = _definition_revision(stream, rule_sets)
+        inserted_rows: list[dict[str, Any]] = []
+        new_count = 0
+        for row in rows:
+            available_at = _parse_datetime(row.get("available_at"))
+            if available_at is None:
+                continue
+            occurrence = _occurrence(
+                stream,
+                row,
+                columns,
+                as_of=available_at,
+                definition_revision=revision,
+            )
+            source_event_id = str(row.get("source_event_id") or "")
+            if source_event_id:
+                occurrence["event_id"] = hashlib.sha256(
+                    f"{signal_stream_id}|{revision}|{occurrence['ticker']}|{source_event_id}".encode("utf-8")
+                ).hexdigest()
+                occurrence["signal_id"] = occurrence["event_id"]
+            record, inserted = journal.append_once(
+                run_id=event_run_id,
+                category="market_discovery_signal",
+                entity_type="signal_occurrence",
+                entity_id=str(occurrence["event_id"]),
+                event_time=available_at,
+                payload=occurrence,
+            )
+            if inserted or include_existing:
+                inserted_rows.append(dict(record.payload))
+            if inserted:
+                new_count += 1
+        with self._lock:
+            self._diagnostics[signal_stream_id] = {
+                "signal_stream_id": signal_stream_id,
+                "name": str(stream.get("name") or signal_stream_id),
+                "enabled": True,
+                "status": "ready",
+                "source_type": str(stream.get("source_type") or "external_events"),
+                "source_id": str(stream.get("source_id") or ""),
+                "candidate_count": len(rows),
+                "matching_count": len(rows),
+                "emitted_count": new_count,
+                "definition_revision": revision,
+            }
+        return inserted_rows
 
     def admissions_by_watchlist(self, as_of: datetime) -> dict[str, list[dict[str, Any]]]:
         self._prune_admissions(as_of.astimezone(UTC))
@@ -524,6 +620,7 @@ def _occurrence(
         "definition_revision": definition_revision,
         "configured_revision": int(stream.get("revision") or 1),
         "ticker": ticker,
+        "conid": int(row.get("ibkr_conid") or row.get("conid") or 0),
         "event_time": as_of.isoformat(),
         "effective_at": as_of.isoformat(),
         "available_at": as_of.isoformat(),

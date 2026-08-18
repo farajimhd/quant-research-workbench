@@ -32,8 +32,7 @@ use crate::scanner::{
 use crate::session::session_phase;
 use crate::signal_catalog::{signal_taxonomy_catalog, SignalTaxonomyEntry};
 use crate::state::{
-    ScannerRowDelta, SharedMarketState, StatusMetrics, SymbolSnapshot,
-    TickerStateSnapshot,
+    ScannerRowDelta, SharedMarketState, StatusMetrics, SymbolSnapshot, TickerStateSnapshot,
 };
 use crate::structure_focus::StructureFocusCoordinator;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
@@ -43,7 +42,7 @@ use axum::middleware;
 use axum::response::IntoResponse;
 use axum::routing::{delete, get, post};
 use axum::{Json, Router};
-use chrono::{Datelike, TimeZone, Timelike, Utc};
+use chrono::{Datelike, NaiveDate, TimeZone, Timelike, Utc};
 use chrono_tz::America::New_York;
 use futures_util::SinkExt;
 use reqwest::Client;
@@ -104,6 +103,15 @@ struct CompactEventMarketPageQuery {
 #[derive(Debug, Deserialize)]
 struct BarsQuery {
     limit: Option<usize>,
+    timeframe: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct IntradayBarHistoryQuery {
+    before_event_timestamp_us: Option<u64>,
+    end_date: Option<String>,
+    limit: Option<usize>,
+    start_date: Option<String>,
     timeframe: Option<String>,
 }
 
@@ -188,6 +196,10 @@ pub fn app(state: AppState) -> Router {
             get(ticker_state_snapshot),
         )
         .route("/snapshot/bars/{ticker}", get(bar_snapshot))
+        .route(
+            "/snapshot/intraday-bar-history/{ticker}",
+            get(intraday_bar_history_snapshot),
+        )
         .route("/snapshot/product-cache", get(product_cache_snapshot))
         .route("/snapshot/family-bars/{ticker}", get(family_bar_snapshot))
         .route(
@@ -1041,6 +1053,185 @@ async fn bar_snapshot(
         snapshot.reconcile_family_authority(&family.rows);
     }
     Json(snapshot)
+}
+
+async fn intraday_bar_history_snapshot(
+    State(state): State<Arc<AppState>>,
+    Path(ticker): Path<String>,
+    Query(query): Query<IntradayBarHistoryQuery>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    let ticker = ticker.trim().to_ascii_uppercase();
+    if !valid_ticker(&ticker) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": "ticker is invalid"})),
+        ));
+    }
+    let timeframe = query
+        .timeframe
+        .as_deref()
+        .unwrap_or("1m")
+        .to_ascii_lowercase();
+    let Some(resolution_us) = parse_resolution_us(&timeframe) else {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": "timeframe is invalid"})),
+        ));
+    };
+    if !state
+        .config
+        .intraday_bar_timeframes
+        .iter()
+        .any(|value| value.eq_ignore_ascii_case(&timeframe))
+    {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": "timeframe is not persisted by QMD Live"})),
+        ));
+    }
+    let today = Utc::now().with_timezone(&New_York).date_naive();
+    let start_date = parse_iso_date(query.start_date.as_deref()).unwrap_or(today);
+    let end_date = parse_iso_date(query.end_date.as_deref()).unwrap_or(today);
+    if start_date > end_date {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": "start_date must not follow end_date"})),
+        ));
+    }
+    let limit = query.limit.unwrap_or(20_000).clamp(1, 50_000);
+    let sql = intraday_bar_history_sql(
+        &state.config.intraday_bar_table,
+        &ticker,
+        resolution_us,
+        start_date,
+        end_date,
+        query.before_event_timestamp_us,
+        limit.saturating_add(1),
+    );
+    let text = clickhouse_query(&state.config, &sql, true)
+        .await
+        .map_err(|error| {
+            (
+                StatusCode::BAD_GATEWAY,
+                Json(json!({"error": error, "source": "qmd_live_clickhouse"})),
+            )
+        })?;
+    let mut rows = text
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| serde_json::from_str::<Value>(line).map_err(|error| error.to_string()))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| {
+            (
+                StatusCode::BAD_GATEWAY,
+                Json(json!({"error": error, "source": "qmd_live_clickhouse"})),
+            )
+        })?;
+    let has_more = rows.len() > limit;
+    rows.truncate(limit);
+    rows.reverse();
+    let bars = rows
+        .into_iter()
+        .filter_map(|row| intraday_row_to_chart_bar(row, &ticker, &timeframe, resolution_us))
+        .collect::<Vec<_>>();
+    let next_before_event_timestamp_us = bars
+        .first()
+        .and_then(|row| row.get("first_event_timestamp_us"))
+        .and_then(Value::as_u64);
+    Ok(Json(json!({
+        "schema_version": 1,
+        "ticker": ticker,
+        "timeframe": timeframe,
+        "bars": bars,
+        "has_more": has_more,
+        "next_before_event_timestamp_us": next_before_event_timestamp_us,
+        "source": "qmd_live_intraday_family_bars_v2",
+    })))
+}
+
+fn parse_iso_date(value: Option<&str>) -> Option<NaiveDate> {
+    value.and_then(|raw| NaiveDate::parse_from_str(raw, "%Y-%m-%d").ok())
+}
+
+fn valid_ticker(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 10
+        && value.bytes().enumerate().all(|(index, byte)| {
+            byte.is_ascii_uppercase()
+                || byte.is_ascii_digit()
+                || (index > 0 && matches!(byte, b'.' | b'-'))
+        })
+}
+
+fn intraday_bar_history_sql(
+    table: &str,
+    ticker: &str,
+    resolution_us: u64,
+    start_date: NaiveDate,
+    end_date: NaiveDate,
+    before_event_timestamp_us: Option<u64>,
+    limit: usize,
+) -> String {
+    let before_filter = before_event_timestamp_us
+        .map(|value| format!(" AND first_event_timestamp_us < {value}"))
+        .unwrap_or_default();
+    format!(
+        "SELECT local_date, open, high, low, close, size_sum, event_count, first_event_timestamp_us, last_event_timestamp_us, bar_start_session_us, bar_end_session_us FROM {table} FINAL WHERE ticker = '{ticker}' AND label_resolution_us = {resolution_us} AND bar_family = 'trade' AND local_date >= toDate('{start_date}') AND local_date <= toDate('{end_date}'){before_filter} ORDER BY local_date DESC, bucket_index DESC LIMIT {limit} FORMAT JSONEachRow"
+    )
+}
+
+fn intraday_row_to_chart_bar(
+    row: Value,
+    ticker: &str,
+    timeframe: &str,
+    resolution_us: u64,
+) -> Option<Value> {
+    let object = row.as_object()?;
+    let local_date =
+        NaiveDate::parse_from_str(object.get("local_date")?.as_str()?, "%Y-%m-%d").ok()?;
+    let session_start_us = object.get("bar_start_session_us")?.as_i64()?;
+    let midnight = New_York
+        .from_local_datetime(&local_date.and_hms_opt(0, 0, 0)?)
+        .single()?;
+    let bar_start = midnight + chrono::Duration::microseconds(session_start_us);
+    let bar_end = bar_start + chrono::Duration::microseconds(i64::try_from(resolution_us).ok()?);
+    let open = object.get("open")?.as_f64()?;
+    let high = object.get("high")?.as_f64()?;
+    let low = object.get("low")?.as_f64()?;
+    let close = object.get("close")?.as_f64()?;
+    let volume = object
+        .get("size_sum")
+        .and_then(Value::as_f64)
+        .unwrap_or(0.0);
+    let trade_count = object
+        .get("event_count")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    Some(json!({
+        "schema_version": 2,
+        "session_date": local_date.to_string(),
+        "timeframe": timeframe,
+        "sym": ticker,
+        "bar_start": bar_start.with_timezone(&Utc).to_rfc3339(),
+        "bar_end": bar_end.with_timezone(&Utc).to_rfc3339(),
+        "is_closed": bar_end.with_timezone(&Utc) <= Utc::now(),
+        "first_event_ts": object.get("first_event_timestamp_us"),
+        "last_event_ts": object.get("last_event_timestamp_us"),
+        "first_event_timestamp_us": object.get("first_event_timestamp_us"),
+        "last_event_timestamp_us": object.get("last_event_timestamp_us"),
+        "open": open,
+        "high": high,
+        "low": low,
+        "close": close,
+        "volume": volume,
+        "trade_count": trade_count,
+        "avg_trade_size": if trade_count > 0 { volume / trade_count as f64 } else { 0.0 },
+        "price_change": close - open,
+        "price_change_pct": if open > 0.0 { (close / open - 1.0) * 100.0 } else { 0.0 },
+        "high_low_range": high - low,
+        "high_low_range_pct": if open > 0.0 { (high - low) / open * 100.0 } else { 0.0 },
+        "source": "qmd_live_intraday_family_bars_v2",
+    }))
 }
 
 async fn product_cache_snapshot(State(state): State<Arc<AppState>>) -> Json<ProductCacheMetrics> {

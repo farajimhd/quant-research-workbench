@@ -395,8 +395,10 @@ class HistoricalContractTests(unittest.TestCase):
         path, params = self.gateway_call(gateway_get, "/snapshot/chart-bars/AAPL")
         self.assertEqual(path, "/snapshot/chart-bars/AAPL")
         self.assertEqual(params["timeframe"], "100ms")
-        self.assertEqual(params["as_of"], "2026-07-10T13:45:00+00:00")
-        self.assertEqual(params["before"], "2026-07-10T13:44:00+00:00")
+        self.assertEqual(params["as_of"], "2026-07-10T13:44:00+00:00")
+        self.assertIsNone(params["before"])
+        self.assertEqual(params["end"], "2026-07-10T13:44:00+00:00")
+        self.assertEqual(params["start"], "2026-07-10T13:33:35+00:00")
         self.assertEqual(params["indicator_columns"], "bar_start,ema_20")
         self.assertEqual(params["stage"], "full")
         self.assertEqual(result["next_before"], "2026-07-10T13:44:00+00:00")
@@ -471,6 +473,28 @@ class HistoricalContractTests(unittest.TestCase):
             [row["bar_start"] for row in result["indicators"]],
             ["2026-07-14T12:54:14Z", "2026-07-14T12:54:14.400Z"],
         )
+
+    @patch("src.backend.trading_runtime_service._is_recent_live_chart_session", return_value=True)
+    @patch("src.backend.trading_runtime_service.qmd_intraday_bar_history")
+    @patch("src.backend.trading_runtime_service._historical_gateway_get")
+    def test_recent_live_chart_defers_older_coverage_lookup_until_requested(
+        self, gateway_get, live_history, _is_recent
+    ) -> None:
+        live_history.return_value = {
+            "bars": [{"bar_start": "2026-07-14T13:44:00+00:00", "close": 315.0}],
+            "has_more": False,
+        }
+        result = historical_bar_history_before(
+            before=date(2026, 7, 15),
+            session_date=date(2026, 7, 14),
+            ticker="AAPL",
+            timeframe="1m",
+        )
+
+        self.assertTrue(result["has_more"])
+        self.assertFalse(result["has_more_in_session"])
+        self.assertEqual(result["previous_session_before"], "2026-07-14")
+        gateway_get.assert_not_called()
 
     @patch("src.backend.trading_runtime_service._historical_gateway_get")
     def test_monthly_chart_history_requests_exact_24_month_macro_window(self, gateway_get) -> None:

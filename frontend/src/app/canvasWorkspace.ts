@@ -45,6 +45,7 @@ export const MAIN_CANVAS_ID = "main";
 export const NEWS_READER_CANVAS_ID = "news-reader";
 export const SEC_READER_CANVAS_ID = "sec-reader";
 export const CANVAS_REGISTRY_UPDATED_EVENT = "quant-canvas-registry-updated";
+export const CANVAS_WORKSPACE_UPDATED_EVENT = "quant-canvas-workspace-updated";
 export const CANVAS_REGISTRY_STORAGE_KEY = "quant-research-workbench.canvas.registry.v1";
 export const CANVAS_PREVIEW_CONTEXT_STORAGE_KEY = "quant-research-workbench.canvas.preview-context.v1";
 export const CANVAS_SETTINGS_STORAGE_KEY = "quant-research-workbench.canvas.container-settings.v1";
@@ -207,31 +208,50 @@ export function readCanvasWorkspaceStateByStorageKey(storageKey: string): Canvas
 export function readCanvasRegistry(): CanvasRegistry {
   try {
     const parsed = JSON.parse(window.localStorage.getItem(CANVAS_REGISTRY_STORAGE_KEY) || "null") as Partial<CanvasRegistry> | null;
-    if (!parsed || ![1, 2, 3].includes(Number(parsed.version)) || !Array.isArray(parsed.canvases)) return defaultCanvasRegistry();
-    const canvases = parsed.canvases.some((canvas) => canvas.id === MAIN_CANVAS_ID)
-      ? parsed.canvases
-      : [{ id: MAIN_CANVAS_ID, label: "Main" }, ...parsed.canvases];
-    const linkAssignments = normalizeLinkAssignments(parsed.linkAssignments);
-    return {
-      canvases,
-      defaultState: normalizeWorkspaceState(parsed.defaultState) ?? undefined,
-      instanceSettings: normalizeInstanceSettings(parsed.instanceSettings),
-      linkAssignments,
-      linkContexts: {
-        A: normalizeLinkContext(parsed.linkContexts?.A, DEFAULT_LINK_CONTEXTS.A),
-        B: normalizeLinkContext(parsed.linkContexts?.B, DEFAULT_LINK_CONTEXTS.B),
-        C: normalizeLinkContext(parsed.linkContexts?.C, DEFAULT_LINK_CONTEXTS.C),
-        D: normalizeLinkContext(parsed.linkContexts?.D, DEFAULT_LINK_CONTEXTS.D),
-        E: normalizeLinkContext(parsed.linkContexts?.E, DEFAULT_LINK_CONTEXTS.E),
-        F: normalizeLinkContext(parsed.linkContexts?.F, DEFAULT_LINK_CONTEXTS.F),
-        G: normalizeLinkContext(parsed.linkContexts?.G, DEFAULT_LINK_CONTEXTS.G),
-      },
-      linkOwners: normalizeLinkOwners(linkAssignments, parsed.linkOwners),
-      version: 3,
-    };
+    return normalizeCanvasRegistry(parsed);
   } catch {
     return defaultCanvasRegistry();
   }
+}
+
+export function normalizeCanvasRegistry(parsed: Partial<CanvasRegistry> | null | undefined): CanvasRegistry {
+  if (!parsed || ![1, 2, 3].includes(Number(parsed.version)) || !Array.isArray(parsed.canvases)) return defaultCanvasRegistry();
+  const canvases = parsed.canvases.some((canvas) => canvas.id === MAIN_CANVAS_ID)
+    ? parsed.canvases
+    : [{ id: MAIN_CANVAS_ID, label: "Main" }, ...parsed.canvases];
+  const linkAssignments = normalizeLinkAssignments(parsed.linkAssignments);
+  const workspaceStates = Object.fromEntries(Object.entries(parsed.workspaceStates ?? {}).flatMap(([canvasId, state]) => {
+    const normalized = normalizeWorkspaceState(state);
+    return normalized ? [[canvasId, normalized]] : [];
+  }));
+  return {
+    canvases,
+    defaultState: normalizeWorkspaceState(parsed.defaultState) ?? undefined,
+    instanceSettings: normalizeInstanceSettings(parsed.instanceSettings),
+    linkAssignments,
+    linkContexts: {
+      A: normalizeLinkContext(parsed.linkContexts?.A, DEFAULT_LINK_CONTEXTS.A),
+      B: normalizeLinkContext(parsed.linkContexts?.B, DEFAULT_LINK_CONTEXTS.B),
+      C: normalizeLinkContext(parsed.linkContexts?.C, DEFAULT_LINK_CONTEXTS.C),
+      D: normalizeLinkContext(parsed.linkContexts?.D, DEFAULT_LINK_CONTEXTS.D),
+      E: normalizeLinkContext(parsed.linkContexts?.E, DEFAULT_LINK_CONTEXTS.E),
+      F: normalizeLinkContext(parsed.linkContexts?.F, DEFAULT_LINK_CONTEXTS.F),
+      G: normalizeLinkContext(parsed.linkContexts?.G, DEFAULT_LINK_CONTEXTS.G),
+    },
+    linkOwners: normalizeLinkOwners(linkAssignments, parsed.linkOwners),
+    workspaceStates,
+    version: 3,
+  };
+}
+
+export function hydrateCanvasProfile(profile: CanvasRegistry): CanvasRegistry {
+  const normalized = normalizeCanvasRegistry(profile);
+  writeCanvasRegistry(normalized);
+  Object.entries(normalized.workspaceStates ?? {}).forEach(([canvasId, state]) => {
+    window.localStorage.setItem(canvasWorkspaceStorageKey(canvasId), JSON.stringify(state));
+  });
+  window.dispatchEvent(new CustomEvent(CANVAS_REGISTRY_UPDATED_EVENT));
+  return normalized;
 }
 
 export function writeCanvasRegistry(registry: CanvasRegistry) {
@@ -281,6 +301,7 @@ export function readCanvasWorkspaceState(canvasId: string): CanvasWorkspaceState
 
 export function writeCanvasWorkspaceState(canvasId: string, state: CanvasWorkspaceState) {
   window.localStorage.setItem(canvasWorkspaceStorageKey(canvasId), JSON.stringify(state));
+  window.dispatchEvent(new CustomEvent(CANVAS_WORKSPACE_UPDATED_EVENT, { detail: { canvasId } }));
 }
 
 export function snapshotCanvasWorkspaceState(state: CanvasWorkspaceState): CanvasWorkspaceState {

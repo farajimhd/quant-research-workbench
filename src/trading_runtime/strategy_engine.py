@@ -1682,7 +1682,8 @@ class AssignedLongMomentumStrategy:
         assignment = self._assignments.get(key)
         if assignment is None:
             return StrategyEvaluation()
-        self._campaigns.assert_owner(assignment)
+        if not self._campaigns.can_evaluate(assignment):
+            return StrategyEvaluation()
         result = self._engine.evaluate(assignment, observation)
         updated = StrategyAssignment(
             assignment_id=assignment.assignment_id,
@@ -1833,12 +1834,12 @@ def _trigger_reference(
         for condition in group.get("conditions") or []:
             if str(condition.get("comparator") or "") != "above_by_bps":
                 continue
-            source_id = str(condition.get("right_source_id") or "")
-            value = _source_value(
-                observation,
-                source_id,
-                str(condition.get("right_timeframe") or ""),
+            source_id = str(
+                condition.get("right_field_ref")
+                or condition.get("right_source_id")
+                or ""
             )
+            value = _condition_operand_value(condition, "right", observation)
             if value is not None:
                 return source_id, float(value), float(condition.get("value") or 0)
     return "", None, 0.0
@@ -1927,23 +1928,17 @@ def strategy_observation_source_values(
 
 
 def _condition_matches(condition: dict[str, Any], observation: StrategyObservation) -> bool:
-    left = _source_value(
-        observation,
-        str(condition.get("left_source_id") or ""),
-        str(condition.get("left_timeframe") or ""),
-    )
+    left = _condition_operand_value(condition, "left", observation)
     if left is None:
         return False
     comparator = str(condition.get("comparator") or "")
     if comparator == "is_true":
         return bool(left)
-    right_source_id = str(condition.get("right_source_id") or "")
+    right_source_id = str(
+        condition.get("right_field_ref") or condition.get("right_source_id") or ""
+    )
     right = (
-        _source_value(
-            observation,
-            right_source_id,
-            str(condition.get("right_timeframe") or ""),
-        )
+        _condition_operand_value(condition, "right", observation)
         if right_source_id
         else condition.get("value")
     )
@@ -1951,6 +1946,8 @@ def _condition_matches(condition: dict[str, Any], observation: StrategyObservati
         return False
     if comparator == "equals":
         return left == right
+    if comparator == "not_equals":
+        return left != right
     try:
         left_number = float(left)
         right_number = float(right)
@@ -1967,6 +1964,57 @@ def _condition_matches(condition: dict[str, Any], observation: StrategyObservati
     if comparator == "less_or_equal":
         return left_number <= right_number
     return False
+
+
+def _condition_operand_value(
+    condition: dict[str, Any], side: str, observation: StrategyObservation
+) -> Any:
+    field_ref = str(condition.get(f"{side}_field_ref") or "")
+    source_id = str(condition.get(f"{side}_source_id") or "")
+    interval = _condition_interval_expression(
+        condition.get(f"{side}_interval")
+        or condition.get(f"{side}_timeframe")
+    )
+    aggregation = str(condition.get(f"{side}_aggregation") or "")
+    candidates = []
+    for identity in (field_ref, source_id):
+        if not identity:
+            continue
+        if interval and aggregation:
+            candidates.append(f"{identity}@{interval}#{aggregation}")
+        if interval:
+            candidates.append(f"{identity}@{interval}")
+        candidates.append(identity)
+    for candidate in candidates:
+        cached = observation.source_values.get(candidate)
+        if isinstance(cached, dict):
+            if cached.get("value") is not None:
+                return cached.get("value")
+        elif cached is not None:
+            return cached
+    return _source_value(observation, source_id or field_ref, interval)
+
+
+def _condition_interval_expression(value: Any) -> str:
+    if isinstance(value, str):
+        return value.strip().lower()
+    if not isinstance(value, dict):
+        return ""
+    count = value.get("value")
+    unit = str(value.get("unit") or "").strip().lower()
+    if count in (None, "") or not unit:
+        return ""
+    aliases = {
+        "millisecond": "ms", "milliseconds": "ms", "ms": "ms",
+        "second": "s", "seconds": "s", "s": "s",
+        "minute": "m", "minutes": "m", "m": "m",
+        "hour": "h", "hours": "h", "h": "h",
+        "day": "d", "days": "d", "d": "d",
+        "week": "w", "weeks": "w", "w": "w",
+        "month": "mo", "months": "mo", "mo": "mo",
+    }
+    suffix = aliases.get(unit)
+    return f"{count}{suffix}" if suffix else ""
 
 
 def _source_value(
@@ -2255,19 +2303,24 @@ def _validate_entry_rules(rules: dict[str, Any]) -> None:
                 if comparator not in RULE_COMPARATORS:
                     raise ValueError(f"Entry rule condition {condition.get('condition_id')} comparator is unsupported")
                 left_source = catalog.get(str(condition.get("left_source_id") or ""))
-                if left_source is None:
+                left_field_ref = str(condition.get("left_field_ref") or "")
+                if left_source is None and not left_field_ref:
                     raise ValueError(f"Entry rule condition {condition.get('condition_id')} has unknown left source")
-                _validate_rule_timeframe(condition, "left_timeframe", left_source)
+                if left_source is not None:
+                    _validate_rule_timeframe(condition, "left_timeframe", left_source)
                 right_source_id = str(condition.get("right_source_id") or "")
+                right_field_ref = str(condition.get("right_field_ref") or "")
                 if comparator == "above_by_bps" and not right_source_id:
-                    raise ValueError(
-                        f"Entry rule condition {condition.get('condition_id')} requires a target source"
-                    )
+                    if not right_field_ref:
+                        raise ValueError(
+                            f"Entry rule condition {condition.get('condition_id')} requires a target source"
+                        )
                 if right_source_id:
                     right_source = catalog.get(right_source_id)
-                    if right_source is None:
+                    if right_source is None and not right_field_ref:
                         raise ValueError(f"Entry rule condition {condition.get('condition_id')} has unknown right source")
-                    _validate_rule_timeframe(condition, "right_timeframe", right_source)
+                    if right_source is not None:
+                        _validate_rule_timeframe(condition, "right_timeframe", right_source)
                 elif comparator != "is_true" and condition.get("value") is None:
                     raise ValueError(f"Entry rule condition {condition.get('condition_id')} requires a value")
 

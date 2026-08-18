@@ -12,6 +12,7 @@ use qmd_core::indicators::{
     daily_session_trade_bars_sql, market_structure_reference_sql,
     parse_market_structure_reference_rows, MarketStructureReferenceLevels,
 };
+use qmd_core::market_products::parse_resolution_us;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -138,6 +139,27 @@ pub struct HistoricalMacroChartSnapshot {
 }
 
 #[derive(Clone, Debug, Serialize)]
+pub struct HistoricalIntradayChartRow {
+    pub bar_end: DateTime<Utc>,
+    pub bar_start: DateTime<Utc>,
+    pub close: f64,
+    pub event_count: u64,
+    pub high: f64,
+    pub low: f64,
+    pub open: f64,
+    pub session_date: String,
+    pub size_sum: f64,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct HistoricalIntradayChartSnapshot {
+    pub bars: Vec<HistoricalIntradayChartRow>,
+    pub has_more: bool,
+    pub next_before: Option<DateTime<Utc>>,
+    pub source: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
 pub struct HistoricalScannerMarketSnapshot {
     pub as_of: DateTime<Utc>,
     pub event_count: u64,
@@ -240,6 +262,19 @@ struct MacroQueryRow {
     size_sum: f64,
     ticker: String,
     timeframe: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct IntradayChartQueryRow {
+    bar_end: String,
+    bar_start: String,
+    close: f64,
+    event_count: u64,
+    high: f64,
+    low: f64,
+    open: f64,
+    session_date: String,
+    size_sum: f64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1213,6 +1248,120 @@ impl HistoricalEventSource {
         })
     }
 
+    pub async fn persisted_intraday_chart_bars(
+        &self,
+        window: &EventWindow,
+        ticker: &str,
+        timeframe: &str,
+        limit: usize,
+        as_of: DateTime<Utc>,
+        before: Option<DateTime<Utc>>,
+    ) -> Result<Option<HistoricalIntradayChartSnapshot>, String> {
+        validate_window(window)?;
+        let ticker = normalize_ticker(ticker)?;
+        let Some(resolution_us) = parse_resolution_us(timeframe) else {
+            return Ok(None);
+        };
+        let start_date = window.start.with_timezone(&New_York).date_naive();
+        let end_date = window
+            .end
+            .checked_sub_signed(chrono::Duration::microseconds(1))
+            .unwrap_or(window.end)
+            .with_timezone(&New_York)
+            .date_naive();
+        let start_text = window.start.to_rfc3339();
+        let end_text = window.end.to_rfc3339();
+        let as_of_text = as_of.to_rfc3339();
+        let before_filter = before
+            .map(|value| {
+                format!(
+                    "AND bar_start < parseDateTime64BestEffort({}, 6, 'UTC')",
+                    sql_literal(&value.to_rfc3339())
+                )
+            })
+            .unwrap_or_default();
+        let requested = limit.saturating_add(1);
+        let table = format!(
+            "{}.{}",
+            self.config.clickhouse_database, self.config.intraday_base_bars_table
+        );
+        let sql = format!(
+            r#"WITH
+                fromUnixTimestamp64Micro(
+                    toUInt64(toUnixTimestamp(toDateTime(local_date, 'America/New_York'))) * 1000000
+                    + bucket_index * label_resolution_us,
+                    'UTC'
+                ) AS computed_bar_start,
+                computed_bar_start + toIntervalMicrosecond(label_resolution_us) AS computed_bar_end
+            SELECT
+                toString(local_date) AS session_date,
+                toString(computed_bar_start) AS bar_start,
+                toString(computed_bar_end) AS bar_end,
+                open,
+                close,
+                high,
+                low,
+                size_sum,
+                event_count
+            FROM {table}
+            PREWHERE local_date >= toDate({start_date})
+              AND local_date <= toDate({end_date})
+              AND ticker = {ticker}
+              AND label_resolution_us = toUInt64({resolution_us})
+            WHERE bar_family = 'trade'
+              AND computed_bar_start >= parseDateTime64BestEffort({start_text}, 6, 'UTC')
+              AND computed_bar_start < parseDateTime64BestEffort({end_text}, 6, 'UTC')
+              AND computed_bar_end <= parseDateTime64BestEffort({as_of_text}, 6, 'UTC')
+              {before_filter}
+            ORDER BY local_date DESC, bucket_index DESC
+            LIMIT {requested}
+            FORMAT JSONEachRow"#,
+            start_date = sql_literal(&start_date.to_string()),
+            end_date = sql_literal(&end_date.to_string()),
+            ticker = sql_literal(&ticker),
+            start_text = sql_literal(&start_text),
+            end_text = sql_literal(&end_text),
+            as_of_text = sql_literal(&as_of_text),
+        );
+        let text = match self.query(&sql).await {
+            Ok(value) => value,
+            Err(error) if missing_table_error(&error) => return Ok(None),
+            Err(error) => return Err(error),
+        };
+        let mut bars = text
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .map(|line| {
+                let row = serde_json::from_str::<IntradayChartQueryRow>(line)
+                    .map_err(|error| format!("invalid persisted intraday bar row: {error}"))?;
+                Ok(HistoricalIntradayChartRow {
+                    bar_end: parse_clickhouse_datetime(&row.bar_end)?,
+                    bar_start: parse_clickhouse_datetime(&row.bar_start)?,
+                    close: row.close,
+                    event_count: row.event_count,
+                    high: row.high,
+                    low: row.low,
+                    open: row.open,
+                    session_date: row.session_date,
+                    size_sum: row.size_sum,
+                })
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        if bars.is_empty() {
+            return Ok(None);
+        }
+        let has_more = bars.len() > limit;
+        bars.truncate(limit);
+        bars.reverse();
+        let next_before = has_more.then(|| bars[0].bar_start);
+        Ok(Some(HistoricalIntradayChartSnapshot {
+            bars,
+            has_more,
+            next_before,
+            source: table,
+        }))
+    }
+
     pub async fn chart_macro_bars(
         &self,
         window: &EventWindow,
@@ -1650,6 +1799,10 @@ fn parse_clickhouse_datetime(value: &str) -> Result<DateTime<Utc>, String> {
                 .map(|value| value.and_utc())
         })
         .map_err(|error| format!("invalid ClickHouse timestamp {value:?}: {error}"))
+}
+
+fn missing_table_error(error: &str) -> bool {
+    error.contains("UNKNOWN_TABLE") || error.contains("doesn't exist")
 }
 
 fn event_select(

@@ -111,6 +111,10 @@ class TradingRuntime:
         self.strategy = strategy
         self.journal = journal
         self.control_plane = control_plane or shared_trading_control_plane(broker)
+        self.control_plane.campaigns.bind_durable_authority(
+            journal,
+            session_key=config.anchor_date.isoformat(),
+        )
         bind_campaigns = getattr(strategy, "bind_campaign_registry", None)
         if bind_campaigns is not None:
             bind_campaigns(self.control_plane.campaigns)
@@ -296,6 +300,7 @@ class TradingRuntime:
         handler = getattr(self.strategy, "on_observation", None)
         if handler is None:
             return
+        self._update_execution_market_from_observation(observation)
         self.last_event_time = observation.observed_at
         for account_id in self.config.account_ids:
             evaluation = normalize_strategy_evaluation(await handler(observation, account_id))
@@ -316,11 +321,38 @@ class TradingRuntime:
         handler = getattr(self.strategy, "on_observation", None)
         if handler is None:
             return
+        self._update_execution_market_from_observation(observation)
         self.last_event_time = observation.observed_at
         evaluation = normalize_strategy_evaluation(await handler(observation, account_id))
         self._record_strategy_signals(evaluation, account_id)
         await self._execute_intents(evaluation, account_id, None)
         self._persist_strategy_assignments(observation.observed_at)
+
+    def _update_execution_market_from_observation(
+        self, observation: StrategyObservation
+    ) -> None:
+        """Make the occurrence's causal quote available to OMS without a raw-event detour."""
+
+        if observation.bid <= 0 or observation.ask < observation.bid:
+            return
+        snapshot = ExecutionMarketSnapshot(
+            ticker=observation.ticker,
+            bid=observation.bid,
+            ask=observation.ask,
+            tick_size=float(
+                observation.source_values.get("market.tick_size", {}).get("value", 0.01)
+                if isinstance(observation.source_values.get("market.tick_size"), Mapping)
+                else 0.01
+            ),
+            observed_at=observation.observed_at,
+            source="signal_stream_occurrence",
+            volatility=float(observation.volatility or 0),
+            upper_price_band=observation.upper_luld_price,
+            lower_price_band=None,
+        )
+        self.execution_market_data.update(snapshot)
+        if self.order_manager is not None:
+            self.order_manager.on_market_snapshot(snapshot)
 
     def _record_strategy_signals(
         self, evaluation: StrategyEvaluation, account_id: str
@@ -369,6 +401,25 @@ class TradingRuntime:
             if approved_intent is None:
                 results.append({"decision": decision.payload(), "order_group": None})
                 continue
+            assignment = self._assignment_for_intent(approved_intent)
+            opening_entry = str(approved_intent.action) in {"enter_long", "enter_short"}
+            if opening_entry and assignment is not None:
+                try:
+                    self.control_plane.campaigns.reserve(assignment)
+                except ValueError:
+                    self.portfolio.release_intent(
+                        approved_intent.intent_id,
+                        reason="ticker_owned_by_competing_strategy",
+                    )
+                    results.append({
+                        "decision": {
+                            **decision.payload(),
+                            "status": "rejected",
+                            "reason": "ticker_owned_by_competing_strategy",
+                        },
+                        "order_group": None,
+                    })
+                    continue
             try:
                 order_group = await self.order_manager.submit_intent(
                     approved_intent,
@@ -386,8 +437,24 @@ class TradingRuntime:
                         approved_intent.intent_id,
                         reason="order_management_submission_failed",
                     )
+                    if opening_entry and assignment is not None:
+                        self.control_plane.campaigns.release_reservation(assignment)
                 raise
         return results
+
+    def _assignment_for_intent(self, intent: StrategyIntent):
+        assignment_id = str(intent.metadata.get("assignment_id") or "")
+        assignments = getattr(self.strategy, "assignments", None)
+        if not assignment_id or assignments is None:
+            return None
+        return next(
+            (
+                assignment
+                for assignment in assignments()
+                if assignment.assignment_id == assignment_id
+            ),
+            None,
+        )
 
     async def submit_external_intent(
         self,
@@ -649,12 +716,24 @@ class TradingRuntime:
             self.journal.save_portfolio_state(account_id, persisted)
 
     async def _on_order_group_fill(self, snapshot) -> None:
+        if str(snapshot.action) in {"enter_long", "enter_short"}:
+            assignment = self._assignment_for_snapshot(snapshot)
+            if assignment is not None:
+                self.control_plane.campaigns.claim(assignment)
         handler = getattr(self.strategy, "on_order_group_update", None)
         if handler is not None:
             await handler(snapshot)
             self._persist_strategy_assignments(snapshot.updated_at)
 
     async def _on_order_group_state(self, snapshot) -> None:
+        if snapshot.state in {
+            OrderManagementState.CANCELLED,
+            OrderManagementState.REJECTED,
+            OrderManagementState.POLICY_BLOCKED,
+        }:
+            assignment = self._assignment_for_snapshot(snapshot)
+            if assignment is not None:
+                self.control_plane.campaigns.release_reservation(assignment)
         self.portfolio.on_order_group_update(snapshot)
         await self.risk_supervisor.evaluate(
             snapshot.account_id,
@@ -662,6 +741,20 @@ class TradingRuntime:
             protection_required=float(snapshot.protection_required_quantity),
             protection_coverage=float(snapshot.protection_coverage_quantity),
             internal_reaction_ms=snapshot.internal_reaction_ms,
+        )
+
+    def _assignment_for_snapshot(self, snapshot):
+        assignment_id = str(getattr(snapshot, "assignment_id", "") or "")
+        assignments = getattr(self.strategy, "assignments", None)
+        if not assignment_id or assignments is None:
+            return None
+        return next(
+            (
+                assignment
+                for assignment in assignments()
+                if assignment.assignment_id == assignment_id
+            ),
+            None,
         )
 
     async def _on_emergency_risk(self, evaluation: RiskEvaluation) -> None:

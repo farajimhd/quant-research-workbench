@@ -26,10 +26,13 @@ class CampaignLease:
     book_id: str
     ticker: str
     side: str
+    state: str = "confirmed"
 
     @property
-    def key(self) -> tuple[str, str, str]:
-        return self.book_id, self.ticker.upper(), self.side
+    def key(self) -> tuple[str, str]:
+        # Ownership is ticker-wide inside a book. Long and short contenders
+        # must not open competing positions for the same instrument.
+        return self.book_id, self.ticker.upper()
 
 
 def campaign_id_for(payload: Any) -> str:
@@ -81,14 +84,28 @@ def campaign_phase_for(payload: Any, *, position_quantity: float = 0.0) -> Campa
 
 
 class StrategyCampaignOrchestrator:
-    """Owns exclusive strategy authority for one ticker in one portfolio book."""
+    """Arbitrates one session owner while allowing competing watchers.
+
+    Registration is deliberately not ownership. A campaign reserves the key
+    immediately before its first entry is submitted and becomes the confirmed
+    owner on the first opening fill. This prevents two strategies from racing
+    orders while still allowing both to observe and evaluate the same ticker.
+    """
 
     def __init__(self, assignments: Iterable[Any] = ()) -> None:
-        self._leases: dict[tuple[str, str, str], CampaignLease] = {}
+        self._leases: dict[tuple[str, str], CampaignLease] = {}
         self._assignment_campaigns: dict[str, str] = {}
         self._campaign_active_legs: dict[str, set[str]] = {}
+        self._journal: Any | None = None
+        self._session_key = ""
         for assignment in assignments:
             self.register(assignment)
+
+    def bind_durable_authority(self, journal: Any, *, session_key: str) -> None:
+        if not session_key:
+            raise ValueError("Campaign durable authority requires a session key")
+        self._journal = journal
+        self._session_key = session_key
 
     def register(self, assignment: Any) -> CampaignLease | None:
         assignment_id = str(_value(assignment, "assignment_id", "") or "").strip()
@@ -102,40 +119,112 @@ class StrategyCampaignOrchestrator:
             self._remove_leg(previous_campaign, assignment_id)
         self._assignment_campaigns[assignment_id] = campaign_id
         if status in TERMINAL_ASSIGNMENT_STATUSES:
-            self._remove_leg(campaign_id, assignment_id)
-            return None
+            return self._lease_for_assignment(assignment)
+        self._campaign_active_legs.setdefault(campaign_id, set()).add(assignment_id)
+        # Recovered campaigns that already manage a position are authoritative.
+        if status in {"managing", "exit_pending", "reentry_cooldown"}:
+            return self.claim(assignment)
+        return self._lease_for_assignment(assignment)
+
+    def reserve(self, assignment: Any) -> CampaignLease:
+        return self._claim(assignment, state="reserved")
+
+    def claim(self, assignment: Any) -> CampaignLease:
+        return self._claim(assignment, state="confirmed")
+
+    def _claim(self, assignment: Any, *, state: str) -> CampaignLease:
+        assignment_id = str(_value(assignment, "assignment_id", "") or "").strip()
+        ticker = str(_value(assignment, "ticker", "") or "").strip().upper()
+        if not assignment_id or not ticker:
+            raise ValueError("Campaign assignments require assignment identity and ticker")
+        campaign_id = campaign_id_for(assignment)
         lease = CampaignLease(
             campaign_id=campaign_id,
             book_id=campaign_book_for(assignment),
             ticker=ticker,
             side=campaign_side_for(assignment),
+            state=state,
         )
         if any(
             row.campaign_id == campaign_id and row.key != lease.key
             for row in self._leases.values()
         ):
             raise ValueError(
-                f"Strategy Campaign {campaign_id} cannot span multiple ticker-side leases"
+                f"Strategy Campaign {campaign_id} cannot span multiple ticker leases"
             )
         current = self._leases.get(lease.key)
+        if self._journal is not None:
+            durable = self._journal.acquire_campaign_session_ownership(
+                _resource_id(lease),
+                session_key=self._session_key,
+                owner_id=campaign_id,
+                state=state,
+            )
+            if durable is None:
+                existing = self._journal.campaign_session_ownership(
+                    _resource_id(lease), session_key=self._session_key
+                )
+                owner_id = str(dict(existing or {}).get("owner_id") or "another campaign")
+                raise ValueError(
+                    f"{ticker} is already owned by active Strategy Campaign "
+                    f"{owner_id} in book {lease.book_id}"
+                )
+            lease = CampaignLease(
+                campaign_id=campaign_id,
+                book_id=lease.book_id,
+                ticker=lease.ticker,
+                side=lease.side,
+                state=str(durable["state"]),
+            )
         if current is not None and current.campaign_id != campaign_id:
             raise ValueError(
                 f"{ticker} is already owned by active Strategy Campaign "
-                f"{current.campaign_id} on the {lease.side} side in book {lease.book_id}"
+                f"{current.campaign_id} in book {lease.book_id}"
             )
+        if current is not None and current.campaign_id == campaign_id and current.state == "confirmed":
+            lease = current
         self._leases[lease.key] = lease
         self._campaign_active_legs.setdefault(campaign_id, set()).add(assignment_id)
         return lease
 
-    def lease_for(self, *, book_id: str, ticker: str, side: str = "long") -> CampaignLease | None:
-        return self._leases.get((book_id or "default", ticker.upper(), side.lower()))
+    def release_reservation(self, assignment: Any) -> None:
+        lease = self._lease_for_assignment(assignment)
+        if lease is not None and lease.state == "reserved":
+            if self._journal is not None:
+                self._journal.release_campaign_session_reservation(
+                    _resource_id(lease),
+                    session_key=self._session_key,
+                    owner_id=lease.campaign_id,
+                )
+            self._leases.pop(lease.key, None)
 
-    def assert_owner(self, assignment: Any) -> None:
-        lease = self.lease_for(
+    def can_evaluate(self, assignment: Any) -> bool:
+        lease = self._lease_for_assignment(assignment)
+        if self._journal is not None:
+            proposed = CampaignLease(
+                campaign_id=campaign_id_for(assignment),
+                book_id=campaign_book_for(assignment),
+                ticker=str(_value(assignment, "ticker", "") or "").upper(),
+                side=campaign_side_for(assignment),
+            )
+            durable = self._journal.campaign_session_ownership(
+                _resource_id(proposed), session_key=self._session_key
+            )
+            if durable is not None:
+                return str(durable.get("owner_id") or "") == proposed.campaign_id
+        return lease is None or lease.campaign_id == campaign_id_for(assignment)
+
+    def _lease_for_assignment(self, assignment: Any) -> CampaignLease | None:
+        return self.lease_for(
             book_id=campaign_book_for(assignment),
             ticker=str(_value(assignment, "ticker", "") or ""),
-            side=campaign_side_for(assignment),
         )
+
+    def lease_for(self, *, book_id: str, ticker: str) -> CampaignLease | None:
+        return self._leases.get((book_id or "default", ticker.upper()))
+
+    def assert_owner(self, assignment: Any) -> None:
+        lease = self._lease_for_assignment(assignment)
         campaign_id = campaign_id_for(assignment)
         if lease is None or lease.campaign_id != campaign_id:
             raise ValueError(
@@ -207,3 +296,7 @@ def _value(payload: Any, key: str, default: Any) -> Any:
     if isinstance(payload, dict):
         return payload.get(key, default)
     return getattr(payload, key, default)
+
+
+def _resource_id(lease: CampaignLease) -> str:
+    return f"{lease.book_id}|{lease.ticker.upper()}"

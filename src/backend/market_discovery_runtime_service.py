@@ -76,6 +76,41 @@ class MarketDiscoveryRuntimeCoordinator:
         duration_ms = round((time.perf_counter() - started) * 1000, 2)
         signal_runtime = dict(payload.get("signal_stream_runtime") or {})
         watchlist_runtime = dict(payload.get("watchlist_runtime") or {})
+        cycle_as_of = _aware_datetime(payload.get("as_of")) or datetime.now(UTC)
+        from src.backend.news_signal_runtime_service import NEWS_SIGNAL_RUNTIME
+        from src.backend.trading_runtime_service import trading_journal
+        try:
+            news_runtime = NEWS_SIGNAL_RUNTIME.refresh(
+                configuration,
+                list(payload.get("strategy_rows") or []),
+                as_of=cycle_as_of,
+                journal=trading_journal(),
+            )
+        except Exception as exc:
+            news_runtime = {
+                "status": "degraded",
+                "error": str(exc),
+                "occurrences": [],
+                "new_occurrences": [],
+            }
+        new_occurrences = [
+            *list(signal_runtime.get("new_occurrences") or []),
+            *list(news_runtime.get("new_occurrences") or []),
+        ]
+        from src.trading_runtime.signal_dispatch import dispatchable_strategy_signals
+        from src.backend.live_strategy_runtime_service import LIVE_STRATEGY_RUNTIME
+        runtime_mode = LIVE_STRATEGY_RUNTIME.mode
+        deliveries = dispatchable_strategy_signals(
+            configuration,
+            new_occurrences,
+            watchlist_runtime=watchlist_runtime,
+            mode=runtime_mode,
+        ) if runtime_mode in {"paper", "live"} else []
+        accepted_deliveries = LIVE_STRATEGY_RUNTIME.submit(deliveries)
+        accepted_market_updates = LIVE_STRATEGY_RUNTIME.submit_market_rows(
+            list(payload.get("strategy_rows") or []),
+            as_of=payload.get("as_of") or datetime.now(UTC).isoformat(),
+        )
         with self._lock:
             self._status.update({
                 "state": "ready",
@@ -87,6 +122,13 @@ class MarketDiscoveryRuntimeCoordinator:
                 "watchlist_count": len(watchlist_runtime.get("watchlists") or []),
                 "signal_stream_count": len(signal_runtime.get("signal_streams") or []),
                 "emitted_count": int(signal_runtime.get("occurrence_count") or 0),
+                "news_signal_status": str(news_runtime.get("status") or "unknown"),
+                "news_signal_error": str(news_runtime.get("error") or ""),
+                "news_signal_emitted_count": len(news_runtime.get("occurrences") or []),
+                "strategy_delivery_count": len(deliveries),
+                "strategy_delivery_accepted_count": accepted_deliveries,
+                "strategy_market_update_accepted_count": accepted_market_updates,
+                "strategy_deliveries": deliveries[-25:],
                 "refresh_interval_ms": refresh_ms,
             })
         return max(1.0, min(refresh_ms / 1000, 60.0))
@@ -131,3 +173,16 @@ def _refresh_interval_ms(discovery: dict[str, Any]) -> int:
 
 
 MARKET_DISCOVERY_RUNTIME = MarketDiscoveryRuntimeCoordinator()
+
+
+def _aware_datetime(value: Any) -> datetime | None:
+    if isinstance(value, datetime):
+        parsed = value
+    elif value:
+        try:
+            parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    else:
+        return None
+    return parsed.astimezone(UTC) if parsed.tzinfo else parsed.replace(tzinfo=UTC)

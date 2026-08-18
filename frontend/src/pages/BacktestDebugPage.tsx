@@ -25,7 +25,7 @@ type DebugPreflight = {
 };
 
 type DebugRun = CanvasReplayRun & {
-  debug_fixture?: { content_hash: string; derived_frame_count: number; fixture_id: string; market_event_count: number };
+  debug_fixture?: { content_hash: string; derived_frame_count: number; fixture_id: string; market_event_count: number; signal_event_count: number };
   mode: "backtest_debug";
 };
 
@@ -33,6 +33,7 @@ type StoredFixture = {
   derivedFrames: string;
   fixtureId: string;
   marketEvents: string;
+  signalEvents?: string;
   sessionDate: string;
   startTime: string;
   symbol: string;
@@ -47,6 +48,7 @@ export function BacktestDebugPage() {
   const [fixtureId, setFixtureId] = useState("opening-range-case-1");
   const [marketEvents, setMarketEvents] = useState(() => fixtureMarketEvents(previousWeekdayIsoDate(), "AAPL"));
   const [derivedFrames, setDerivedFrames] = useState(() => fixtureDerivedFrames(previousWeekdayIsoDate(), "AAPL"));
+  const [signalEvents, setSignalEvents] = useState("[]");
   const [library, setLibrary] = useState<StoredFixture[]>(readFixtureLibrary);
   const [selectedFixture, setSelectedFixture] = useState("");
   const [preflight, setPreflight] = useState<DebugPreflight | null>(null);
@@ -56,7 +58,7 @@ export function BacktestDebugPage() {
   const [error, setError] = useState("");
   const [run, setRun] = useState<DebugRun | null>(null);
   const [runPlanId, setRunPlanId] = useState("");
-  const parsed = useMemo(() => parseFixture(marketEvents, derivedFrames), [derivedFrames, marketEvents]);
+  const parsed = useMemo(() => parseFixture(marketEvents, derivedFrames, signalEvents), [derivedFrames, marketEvents, signalEvents]);
 
   useEffect(() => {
     let cancelled = false;
@@ -90,11 +92,12 @@ export function BacktestDebugPage() {
     setSymbol(nextSymbol.toUpperCase());
     setMarketEvents(fixtureMarketEvents(nextDate, nextSymbol));
     setDerivedFrames(fixtureDerivedFrames(nextDate, nextSymbol));
+    setSignalEvents("[]");
   }
 
   function saveFixture() {
     if (!fixtureId.trim()) { setError("A stable fixture ID is required before saving."); return; }
-    const record = { derivedFrames, fixtureId: fixtureId.trim(), marketEvents, sessionDate, startTime, symbol };
+    const record = { derivedFrames, fixtureId: fixtureId.trim(), marketEvents, signalEvents, sessionDate, startTime, symbol };
     const next = [...library.filter((row) => row.fixtureId !== record.fixtureId), record].sort((a, b) => a.fixtureId.localeCompare(b.fixtureId));
     setLibrary(next);
     setSelectedFixture(record.fixtureId);
@@ -109,6 +112,7 @@ export function BacktestDebugPage() {
     setDerivedFrames(record.derivedFrames);
     setFixtureId(record.fixtureId);
     setMarketEvents(record.marketEvents);
+    setSignalEvents(record.signalEvents ?? "[]");
     setSessionDate(record.sessionDate);
     setStartTime(record.startTime);
     setSymbol(record.symbol);
@@ -133,6 +137,7 @@ export function BacktestDebugPage() {
           derived_frames: parsed.derivedFrames,
           fixture_id: fixtureId,
           market_events: parsed.marketEvents,
+          signal_events: parsed.signalEvents,
           run_plan_id: runPlanId,
           session_date: sessionDate,
           start_time: startTime,
@@ -211,6 +216,7 @@ export function BacktestDebugPage() {
           <div className="debug-fixture-editors">
             <label><span>Canonical market events · JSON array</span><textarea aria-label="Canonical market events JSON" onChange={(event) => setMarketEvents(event.target.value)} spellCheck={false} value={marketEvents} /><small>Quote/trade records require timezone-aware <code>ts</code> values and causal ordering.</small></label>
             <label><span>Derived strategy frames · JSON array</span><textarea aria-label="Derived strategy frames JSON" onChange={(event) => setDerivedFrames(event.target.value)} spellCheck={false} value={derivedFrames} /><small>Frames drive normalized strategy observations through the same controller.</small></label>
+            <label><span>Signal Stream occurrences · JSON array</span><textarea aria-label="Signal Stream occurrences JSON" onChange={(event) => setSignalEvents(event.target.value)} spellCheck={false} value={signalEvents} /><small>Optional external events use <code>signal_stream_id</code>, <code>available_at</code>, ticker, conid, and configured Data Field values.</small></label>
           </div>
           <header className="historical-evidence-header"><div><span>Preflight</span><strong>Configuration and isolated runtime</strong></div>{checking ? <small>Checking…</small> : null}</header>
           <div className="historical-check-list">{preflight?.checks.map((check) => <DebugCheckRow check={check} key={check.id} />)}</div>
@@ -218,7 +224,7 @@ export function BacktestDebugPage() {
       </main>
       <aside className="historical-action-column"><section className={`historical-primary-action ${preflight?.ready && parsed.ok ? "" : "blocked"}`}>
         {preflight?.ready && parsed.ok ? <Play size={24} /> : <CircleStop size={24} />}
-        <div><strong>{run ? `Debug run ${run.status.replaceAll("_", " ")}` : "Exact-input execution"}</strong><p>{run ? `${Math.round(run.progress * 100)}% · ${run.processed_events || 0} events · ${run.current_time}` : parsed.ok ? `${parsed.marketEvents.length} market events and ${parsed.derivedFrames.length} derived frames will be content hashed.` : parsed.error}</p></div>
+        <div><strong>{run ? `Debug run ${run.status.replaceAll("_", " ")}` : "Exact-input execution"}</strong><p>{run ? `${Math.round(run.progress * 100)}% · ${run.processed_events || 0} events · ${run.current_time}` : parsed.ok ? `${parsed.marketEvents.length} market events, ${parsed.derivedFrames.length} derived frames, and ${parsed.signalEvents.length} Signal Stream occurrences will be content hashed.` : parsed.error}</p></div>
         {run && !terminal(run.status) ? <div className="historical-command-buttons"><button className="button secondary" disabled={Boolean(controlBusy)} onClick={() => commandRun(run.status === "paused" ? "play" : "pause")} type="button">{run.status === "paused" ? <Play size={15} /> : <Pause size={15} />} {run.status === "paused" ? "Resume" : "Pause"}</button><button className="button secondary" disabled={Boolean(controlBusy)} onClick={stopRun} type="button"><Square size={15} /> Stop</button></div> : run?.checkpoint?.resume_supported && run.status !== "completed" ? <button className="button primary" disabled={Boolean(controlBusy)} onClick={resumeRun} type="button"><Play size={16} /> {controlBusy === "resume" ? "Restoring…" : "Resume checkpoint"}</button> : <button className="button primary" disabled={checking || creating || !preflight?.ready || !parsed.ok} onClick={createRun} type="button"><Play size={16} /> {creating ? "Creating…" : "Run fixture"}</button>}
         {run?.debug_fixture ? <small>{run.debug_fixture.fixture_id} · {run.debug_fixture.content_hash.slice(0, 12)}</small> : null}
         {run ? <small>{run.checkpoint?.status === "available" ? `Checkpoint ${run.checkpoint.processed_events.toLocaleString()} events · ${run.checkpoint.event_time}` : `Checkpoint pending · every ${run.checkpoint?.interval_events ?? 1_000} events`} · {run.checkpoint?.resume_supported ? "restart-safe" : "resume unavailable"}</small> : null}
@@ -232,17 +238,18 @@ function DebugCheckRow({ check }: { check: DebugCheck }) {
   return <article data-status={check.status}><div className="historical-evidence-icon">{check.status === "ready" ? <CheckCircle2 size={20} /> : <TriangleAlert size={20} />}</div><div><header><strong>{check.label}</strong></header><p>{check.summary}</p><small>{check.evidence}</small></div></article>;
 }
 
-function parseFixture(marketText: string, framesText: string): { derivedFrames: Array<Record<string, unknown>>; error: string; marketEvents: Array<Record<string, unknown>>; ok: boolean } {
+function parseFixture(marketText: string, framesText: string, signalText: string): { derivedFrames: Array<Record<string, unknown>>; error: string; marketEvents: Array<Record<string, unknown>>; signalEvents: Array<Record<string, unknown>>; ok: boolean } {
   try {
     const marketEvents = JSON.parse(marketText) as unknown;
     const derivedFrames = JSON.parse(framesText) as unknown;
-    if (!Array.isArray(marketEvents) || !Array.isArray(derivedFrames)) throw new Error("Both fixture editors must contain JSON arrays.");
-    if (![...marketEvents, ...derivedFrames].every((row) => row !== null && typeof row === "object" && !Array.isArray(row))) throw new Error("Every fixture record must be a JSON object.");
-    if (!marketEvents.length && !derivedFrames.length) throw new Error("Add at least one market event or derived frame.");
-    if (marketEvents.length + derivedFrames.length > 20_000) throw new Error("A fixture may contain at most 20,000 records.");
-    return { derivedFrames, error: "", marketEvents, ok: true } as { derivedFrames: Array<Record<string, unknown>>; error: string; marketEvents: Array<Record<string, unknown>>; ok: boolean };
+    const signalEvents = JSON.parse(signalText) as unknown;
+    if (!Array.isArray(marketEvents) || !Array.isArray(derivedFrames) || !Array.isArray(signalEvents)) throw new Error("All fixture editors must contain JSON arrays.");
+    if (![...marketEvents, ...derivedFrames, ...signalEvents].every((row) => row !== null && typeof row === "object" && !Array.isArray(row))) throw new Error("Every fixture record must be a JSON object.");
+    if (!marketEvents.length && !derivedFrames.length && !signalEvents.length) throw new Error("Add at least one market event, derived frame, or Signal Stream occurrence.");
+    if (marketEvents.length + derivedFrames.length + signalEvents.length > 20_000) throw new Error("A fixture may contain at most 20,000 records.");
+    return { derivedFrames, error: "", marketEvents, signalEvents, ok: true } as { derivedFrames: Array<Record<string, unknown>>; error: string; marketEvents: Array<Record<string, unknown>>; signalEvents: Array<Record<string, unknown>>; ok: boolean };
   } catch (reason) {
-    return { derivedFrames: [], error: message(reason), marketEvents: [], ok: false };
+    return { derivedFrames: [], error: message(reason), marketEvents: [], signalEvents: [], ok: false };
   }
 }
 

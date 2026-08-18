@@ -32,6 +32,7 @@ export type AbstractionKind =
   | "processing_step"
   | "derivation"
   | "signal"
+  | "signal_stream"
   | "event_schema"
   | "product"
   | "query_plan"

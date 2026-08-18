@@ -1230,6 +1230,38 @@ def qmd_bars(symbol: str, *, timeframe: str = "1m", row_limit: int = 500) -> dic
     return payload if isinstance(payload, dict) else {"ticker": symbol.upper(), "timeframe": timeframe, "history": [], "current": None}
 
 
+def qmd_intraday_bar_history(
+    symbol: str,
+    *,
+    timeframe: str,
+    start_date: str,
+    end_date: str,
+    before_event_timestamp_us: int | None = None,
+    row_limit: int = 20_000,
+) -> dict[str, Any]:
+    """Read durable recent-session bars from QMD Live's q_live authority."""
+
+    ticker = symbol.strip().upper()
+    if not ticker:
+        raise ValueError("symbol is required for QMD intraday bar history.")
+    params: dict[str, Any] = {
+        "timeframe": timeframe,
+        "start_date": start_date,
+        "end_date": end_date,
+        "limit": max(1, min(int(row_limit), 50_000)),
+    }
+    if before_event_timestamp_us is not None:
+        params["before_event_timestamp_us"] = max(0, int(before_event_timestamp_us))
+    payload = qmd_get_json(
+        f"/snapshot/intraday-bar-history/{urllib.parse.quote(ticker)}",
+        params,
+        timeout=15,
+    )
+    if not isinstance(payload, dict):
+        raise RuntimeError("QMD Live intraday bar history returned an invalid envelope")
+    return payload
+
+
 def qmd_compact_event_page(
     symbol: str,
     *,

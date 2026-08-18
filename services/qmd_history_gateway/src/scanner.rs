@@ -26,7 +26,9 @@ use tokio::sync::{Mutex, OnceCell};
 
 pub const HISTORICAL_SCANNER_DERIVED_SCHEMA_VERSION: &str = "canvas_historical_qmd_snapshot_v4";
 const SIGNAL_EVENT_LIMIT: usize = 20_000;
-const SCANNER_TIMEFRAMES: [&str; 5] = ["100ms", "1s", "10s", "30s", "1m"];
+const SCANNER_TIMEFRAMES: [&str; 12] = [
+    "100ms", "1s", "10s", "30s", "1m", "5m", "15m", "30m", "1h", "2h", "4h", "1d",
+];
 const SCANNER_INDICATOR_TIMEFRAME: &str = "100ms";
 const WATCHLIST_BATCH_MAX_EVALUATIONS: u64 = 5_000_000;
 const WATCHLIST_BATCH_MAX_MEMBERSHIP_SLOTS: u64 = 10_000_000;
@@ -294,7 +296,9 @@ impl CrossSectionEngine {
         let Some(market) = self.market_state.ticker_snapshot_at(&ticker, as_of).await else {
             return Ok(None);
         };
-        let indicator = self.latest_indicators.get(&ticker);
+        let indicator = self
+            .latest_indicators
+            .get(&format!("{ticker}:{SCANNER_INDICATOR_TIMEFRAME}"));
         let references = self
             .indicator_references
             .get(&ticker)
@@ -302,47 +306,74 @@ impl CrossSectionEngine {
             .unwrap_or_default();
         let mut values = BTreeMap::new();
         for source in sources {
-            let value = match source.as_str() {
-                "market.last_price" if market.last_price.is_finite() && market.last_price > 0.0 => {
-                    Some(market.last_price)
+            let (source_id, interval) = source
+                .split_once("@@")
+                .map_or((source.as_str(), ""), |(source_id, interval)| {
+                    (source_id, interval)
+                });
+            let interval_indicator = if interval.is_empty() {
+                None
+            } else {
+                self.latest_indicators
+                    .get(&format!("{ticker}:{}", interval.to_ascii_lowercase()))
+            };
+            let value = if let Some(interval_row) = interval_indicator {
+                indicator_source_value(interval_row, source_id)
+            } else {
+                match source_id {
+                    "market.last_price"
+                        if market.last_price.is_finite() && market.last_price > 0.0 =>
+                    {
+                        Some(market.last_price)
+                    }
+                    "market.volume" if market.day_volume.is_finite() => Some(market.day_volume),
+                    "liquidity-rank" | "market.liquidity_rank" => {
+                        Some(market.day_dollar_volume / 1_000_000.0 + market.trade_rate_10s * 100.0)
+                    }
+                    "indicator.vwap.value" => indicator
+                        .map(|row| row.vwap)
+                        .filter(|value| value.is_finite() && *value > 0.0),
+                    "market.change_pct"
+                        if market.last_price.is_finite()
+                            && market.last_price > 0.0
+                            && references.previous_session_close.is_finite()
+                            && references.previous_session_close > 0.0 =>
+                    {
+                        Some((market.last_price / references.previous_session_close - 1.0) * 100.0)
+                    }
+                    "market.change_actual"
+                        if market.last_price.is_finite()
+                            && market.last_price > 0.0
+                            && references.previous_session_close.is_finite()
+                            && references.previous_session_close > 0.0 =>
+                    {
+                        Some(market.last_price - references.previous_session_close)
+                    }
+                    "market.relative_volume" => {
+                        let session = session_date(as_of);
+                        let bucket = aligned_volume_bucket(as_of);
+                        self.relative_volume_baselines
+                            .get(&(session, ticker.clone()))
+                            .and_then(|profile| bucket.and_then(|index| profile.get(index)))
+                            .copied()
+                            .filter(|baseline| baseline.is_finite() && *baseline > 0.0)
+                            .map(|baseline| market.day_volume / baseline)
+                    }
+                    "market.spread_bps"
+                        if market.last_price > 0.0
+                            && market.ask >= market.bid
+                            && market.bid > 0.0 =>
+                    {
+                        Some((market.ask - market.bid) / market.last_price * 10_000.0)
+                    }
+                    "quote.bid_price" if market.bid > 0.0 => Some(market.bid),
+                    "quote.ask_price" if market.ask > 0.0 => Some(market.ask),
+                    _ => None,
                 }
-                "market.volume" if market.day_volume.is_finite() => Some(market.day_volume),
-                "liquidity-rank" => {
-                    Some(market.day_dollar_volume / 1_000_000.0 + market.trade_rate_10s * 100.0)
-                }
-                "indicator.vwap.value" => indicator
-                    .map(|row| row.vwap)
-                    .filter(|value| value.is_finite() && *value > 0.0),
-                "market.change_pct"
-                    if market.last_price.is_finite()
-                        && market.last_price > 0.0
-                        && references.previous_session_close.is_finite()
-                        && references.previous_session_close > 0.0 =>
-                {
-                    Some((market.last_price / references.previous_session_close - 1.0) * 100.0)
-                }
-                "market.change_actual"
-                    if market.last_price.is_finite()
-                        && market.last_price > 0.0
-                        && references.previous_session_close.is_finite()
-                        && references.previous_session_close > 0.0 =>
-                {
-                    Some(market.last_price - references.previous_session_close)
-                }
-                "market.relative_volume" => {
-                    let session = session_date(as_of);
-                    let bucket = aligned_volume_bucket(as_of);
-                    self.relative_volume_baselines
-                        .get(&(session, ticker.clone()))
-                        .and_then(|profile| bucket.and_then(|index| profile.get(index)))
-                        .copied()
-                        .filter(|baseline| baseline.is_finite() && *baseline > 0.0)
-                        .map(|baseline| market.day_volume / baseline)
-                }
-                _ => None,
+                .map(Value::from)
             };
             if let Some(value) = value {
-                values.insert(source.clone(), Value::from(value));
+                values.insert(source.clone(), value);
             }
         }
         Ok(Some(WatchlistCandidate { ticker, values }))
@@ -452,7 +483,8 @@ impl CrossSectionEngine {
                 .insert(ticker.clone(), indicator.clone());
             let mut published = indicator.clone();
             published.qmd_structure_active_levels.clear();
-            self.latest_indicators.insert(ticker.clone(), published);
+            self.latest_indicators
+                .insert(format!("{ticker}:{timeframe}"), published);
             self.changed_indicator_tickers.insert(ticker.clone());
             for target in SCANNER_TIMEFRAMES.iter().skip(1) {
                 self.aggregates
@@ -476,6 +508,8 @@ impl CrossSectionEngine {
         }
         calculator.apply_cumulative_microstructure(&mut indicator);
         calculator.apply_market_levels(&mut indicator, &bar);
+        self.latest_indicators
+            .insert(format!("{ticker}:{timeframe}"), indicator.clone());
         let events = self
             .market_signals
             .update_with_indicator(&bar, Some(&indicator));
@@ -544,7 +578,11 @@ impl CrossSectionEngine {
                 market,
             })
             .collect::<Vec<_>>();
-        let mut indicators = self.latest_indicators.into_values().collect::<Vec<_>>();
+        let mut indicators = self
+            .latest_indicators
+            .into_values()
+            .filter(|row| row.timeframe == SCANNER_INDICATOR_TIMEFRAME)
+            .collect::<Vec<_>>();
         indicators.sort_by(|left, right| left.sym.cmp(&right.sym));
         let ticker_count = indicators.len();
         let mut active_signals = self.active_signals.into_values().collect::<Vec<_>>();
@@ -1013,9 +1051,14 @@ pub async fn materialize_watchlist_timelines(
             ));
         }
         batch_evaluations = batch_evaluations.saturating_add(validation.evaluation_count);
+        // The reducer carries one bounded membership state per materialization
+        // chunk. Total session evaluations do not allocate membership slots at
+        // once, so budget the peak chunk working set rather than multiplying by
+        // the full replay duration.
         batch_membership_slots = batch_membership_slots.saturating_add(
-            validation
-                .evaluation_count
+            request
+                .plan
+                .max_evaluations_per_chunk
                 .saturating_mul(request.plan.maximum_size as u64),
         );
         if batch_evaluations > WATCHLIST_BATCH_MAX_EVALUATIONS
@@ -1808,6 +1851,20 @@ fn materialization_id(
     Ok(format!("sha256:{:x}", Sha256::digest(encoded)))
 }
 
+fn indicator_source_value(indicator: &IndicatorRow, source_id: &str) -> Option<Value> {
+    let runtime_field = match source_id {
+        "indicator.vwap.value" => "vwap",
+        "market.last_price" => "close",
+        "market.spread_bps" => "spread_bps",
+        "quote.bid_price" => "bid_close",
+        "quote.ask_price" => "ask_close",
+        other => other,
+    };
+    let payload = serde_json::to_value(indicator).ok()?;
+    let value = payload.get(runtime_field)?.clone();
+    (!value.is_null()).then_some(value)
+}
+
 fn valid_price_bar(bar: &BarRow) -> bool {
     [bar.open, bar.high, bar.low, bar.close]
         .into_iter()
@@ -2023,6 +2080,51 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["AAPL", "MSFT"]
         );
+    }
+
+    #[tokio::test]
+    async fn watchlist_candidate_uses_the_requested_bar_interval() {
+        let rules = TradeAggregationRules::new([(0, TradeUpdateRule::regular())]).unwrap();
+        let mut engine = CrossSectionEngine::new_with_trade_rules(rules, HashMap::new());
+        let start = Utc
+            .with_ymd_and_hms(2026, 8, 7, 13, 30, 0)
+            .single()
+            .unwrap();
+        engine
+            .apply_event(trade("AAPL", start.timestamp_millis(), 100.0))
+            .await
+            .unwrap();
+        engine
+            .apply_event(trade(
+                "AAPL",
+                (start + chrono::Duration::minutes(5)).timestamp_millis(),
+                100.0,
+            ))
+            .await
+            .unwrap();
+        engine
+            .apply_event(trade(
+                "AAPL",
+                (start + chrono::Duration::minutes(10)).timestamp_millis(),
+                105.0,
+            ))
+            .await
+            .unwrap();
+        engine
+            .finalize(start + chrono::Duration::minutes(15))
+            .await
+            .unwrap();
+
+        let candidate = engine
+            .watchlist_candidate(
+                "AAPL",
+                start + chrono::Duration::minutes(15),
+                &BTreeSet::from(["price_change_1_bar_pct@@5m".to_string()]),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(candidate.values["price_change_1_bar_pct@@5m"], json!(5.0));
     }
 
     #[tokio::test]

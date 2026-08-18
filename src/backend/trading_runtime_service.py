@@ -21,7 +21,9 @@ from src.backend.qmd_gateway_client import (
     qmd_history_get_json as _historical_gateway_get,
     qmd_history_websocket_url as historical_gateway_websocket_url,
     qmd_product_request,
+    qmd_intraday_bar_history,
 )
+from src.data_provider.calendar import market_sessions
 from src.trading_runtime.journal import TradingJournal
 from src.trading_runtime.orchestrator import historical_run_window
 from src.trading_runtime.runtime import RunMode
@@ -883,6 +885,156 @@ def historical_scanner_derived_snapshot(as_of: datetime) -> dict[str, Any]:
     return payload
 
 
+def _is_recent_live_chart_session(session_date: date) -> bool:
+    """Assign only the current and prior exchange session to QMD Live."""
+    today = datetime.now(ZoneInfo("America/New_York")).date()
+    sessions = market_sessions(today - timedelta(days=14), today)
+    recent = set(sessions[-2:])
+    # Before the first calendar session is published for a new environment,
+    # the current date remains a valid live-table query and may return empty.
+    recent.add(today)
+    return session_date in recent
+
+
+def _can_use_recent_live_chart_session(session_date: date, as_of: str | None) -> bool:
+    """Use q_live only when its latest-per-bar state cannot leak future events.
+
+    Completed recent sessions are immutable in q_live, and a genuinely current
+    wall-clock request may use the developing session. Historical intraday
+    clocks must use QMD History because q_live retains the latest revision of a
+    bar rather than every point-in-time revision inside that bar.
+    """
+
+    if not _is_recent_live_chart_session(session_date):
+        return False
+    if not as_of:
+        return True
+    clock = datetime.fromisoformat(as_of.replace("Z", "+00:00"))
+    if clock.tzinfo is None:
+        raise ValueError("as_of must include a timezone")
+    local_clock = clock.astimezone(ZoneInfo("America/New_York"))
+    if local_clock.date() > session_date:
+        return True
+    if local_clock.date() < session_date:
+        return False
+    session_end = datetime.combine(
+        session_date,
+        time(20, 0),
+        tzinfo=ZoneInfo("America/New_York"),
+    )
+    if local_clock >= session_end:
+        return True
+    return clock >= datetime.now(ZoneInfo("UTC")) - timedelta(minutes=5)
+
+
+_CHART_TIMEFRAME_MICROSECONDS = {
+    "100ms": 100_000,
+    "1s": 1_000_000,
+    "5s": 5_000_000,
+    "10s": 10_000_000,
+    "30s": 30_000_000,
+    "1m": 60_000_000,
+    "5m": 300_000_000,
+    "1h": 3_600_000_000,
+}
+
+_HISTORICAL_CHART_PAGE_MAX_SECONDS = {
+    "100ms": 15 * 60,
+    "1s": 30 * 60,
+    "5s": 60 * 60,
+    "10s": 2 * 60 * 60,
+    "30s": 2 * 60 * 60,
+    "1m": 2 * 60 * 60,
+    "5m": 4 * 60 * 60,
+    "1h": 16 * 60 * 60,
+}
+
+
+def _bounded_historical_chart_window(
+    *,
+    session_start: datetime,
+    session_end: datetime,
+    as_of: datetime,
+    before_bar: str | None,
+    timeframe: str,
+    row_limit: int,
+) -> tuple[datetime, datetime, bool]:
+    page_end = min(as_of, session_end)
+    if before_bar:
+        parsed_before = datetime.fromisoformat(before_bar.replace("Z", "+00:00"))
+        if parsed_before.tzinfo is None:
+            raise ValueError("before_bar must include a timezone")
+        page_end = min(page_end, parsed_before)
+    resolution_us = _CHART_TIMEFRAME_MICROSECONDS.get(timeframe)
+    if resolution_us is None:
+        return session_start, page_end, False
+    # The extra 25% supplies indicator warm-up without reconstructing the full
+    # raw-event session before the first chart paint.
+    span_us = resolution_us * max(1, min(row_limit, 5_000)) * 5 // 4
+    span_us = min(
+        span_us,
+        _HISTORICAL_CHART_PAGE_MAX_SECONDS[timeframe] * 1_000_000,
+    )
+    page_start = max(session_start, page_end - timedelta(microseconds=span_us))
+    return page_start, page_end, page_start > session_start
+
+
+def _recent_live_bar_history(
+    *,
+    ticker: str,
+    timeframe: str,
+    session_date: date,
+    as_of: str | None,
+    before_bar: str | None,
+    row_limit: int,
+    stage: str,
+) -> dict[str, Any] | None:
+    before_event_timestamp_us: int | None = None
+    if before_bar:
+        cursor = datetime.fromisoformat(before_bar.replace("Z", "+00:00"))
+        if cursor.tzinfo is None:
+            raise ValueError("before_bar must include a timezone")
+        before_event_timestamp_us = int(cursor.timestamp() * 1_000_000)
+    payload = qmd_intraday_bar_history(
+        ticker,
+        timeframe=timeframe,
+        start_date=session_date.isoformat(),
+        end_date=session_date.isoformat(),
+        before_event_timestamp_us=before_event_timestamp_us,
+        row_limit=row_limit,
+    )
+    bars = [dict(row) for row in payload.get("bars") or [] if isinstance(row, dict)]
+    today = datetime.now(ZoneInfo("America/New_York")).date()
+    if not bars and session_date != today:
+        return None
+    bars.sort(key=_bar_start_sort_key)
+    has_more_in_session = bool(payload.get("has_more"))
+    # Do not block the fast q_live page on a second authority. The cursor is a
+    # lazy handoff token: only a subsequent "load earlier" action asks QMD
+    # History to resolve the closest older covered session.
+    previous_session_before = "" if has_more_in_session else session_date.isoformat()
+    return {
+        "ticker": ticker,
+        "timeframe": timeframe,
+        "history": bars,
+        "indicators": [],
+        "market_signal_events": [],
+        "structure_events": [],
+        "structure_level_history": [],
+        "indicator_provenance": {},
+        "indicators_available": False,
+        "earliest_session_date": session_date.isoformat() if bars else "",
+        "has_more": has_more_in_session or bool(previous_session_before),
+        "has_more_in_session": has_more_in_session,
+        "next_before": str(bars[0].get("bar_start") or "") if has_more_in_session and bars else "",
+        "previous_session_before": previous_session_before,
+        "as_of": as_of or datetime.now(tz=ZoneInfo("UTC")).isoformat(),
+        "source": "qmd_live_intraday_family_bars_v2",
+        "stage": stage,
+        "authority": "live",
+    }
+
+
 def historical_bar_history_before(
     *,
     before: date,
@@ -906,6 +1058,19 @@ def historical_bar_history_before(
             session_date=session_date or before,
             as_of=as_of,
         )
+    requested_session = session_date or before
+    if _can_use_recent_live_chart_session(requested_session, as_of):
+        live_payload = _recent_live_bar_history(
+            ticker=resolved_ticker,
+            timeframe=resolved_timeframe,
+            session_date=requested_session,
+            as_of=as_of,
+            before_bar=before_bar,
+            row_limit=row_limit,
+            stage=stage,
+        )
+        if live_payload is not None:
+            return live_payload
     coverage = None
     if session_date is None:
         coverage = _historical_gateway_get(
@@ -972,16 +1137,24 @@ def historical_bar_history_before(
             "source": "qmd_history_gateway",
             "stage": stage,
         }
+    page_start, page_end, has_earlier_window = _bounded_historical_chart_window(
+        session_start=window_start,
+        session_end=window_end,
+        as_of=resolved_as_of,
+        before_bar=before_bar,
+        timeframe=resolved_timeframe,
+        row_limit=row_limit,
+    )
     snapshot = qmd_product_request(
         QmdProductRequest(
             "chart",
             authority="history",
             ticker=resolved_ticker,
             timeframe=resolved_timeframe,
-            start=window["start"],
-            end=window["end"],
-            as_of=resolved_as_of.isoformat(),
-            before=before_bar,
+            start=page_start.isoformat(),
+            end=page_end.isoformat(),
+            as_of=page_end.isoformat(),
+            before=None,
             indicator_columns=tuple(indicator_columns or ()),
             stage=stage,
             limit=row_limit,
@@ -996,7 +1169,8 @@ def historical_bar_history_before(
     structure_level_history = list(snapshot.get("structure_level_history") or []) if isinstance(snapshot, dict) else []
     bars.sort(key=_bar_start_sort_key)
     indicators.sort(key=_bar_start_sort_key)
-    has_more_in_session = bool(snapshot.get("has_more")) if isinstance(snapshot, dict) else False
+    snapshot_has_more = bool(snapshot.get("has_more")) if isinstance(snapshot, dict) else False
+    has_more_in_session = snapshot_has_more or has_earlier_window
     previous_session_before = ""
     if not has_more_in_session:
         previous = _historical_gateway_get(
@@ -1019,7 +1193,11 @@ def historical_bar_history_before(
         "earliest_session_date": session_date_text if bars else "",
         "has_more": has_more_in_session or bool(previous_session_before),
         "has_more_in_session": has_more_in_session,
-        "next_before": str(snapshot.get("next_before") or "") if isinstance(snapshot, dict) else "",
+        "next_before": (
+            str(snapshot.get("next_before") or "")
+            if snapshot_has_more and isinstance(snapshot, dict)
+            else page_start.isoformat() if has_earlier_window else ""
+        ),
         "previous_session_before": previous_session_before,
         "as_of": resolved_as_of.isoformat(),
         "source": "qmd_history_gateway",

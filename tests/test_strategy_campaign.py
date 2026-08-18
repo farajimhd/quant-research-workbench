@@ -32,7 +32,7 @@ def assignment(
 
 
 class StrategyCampaignTests(unittest.TestCase):
-    def test_one_campaign_owns_a_ticker_across_multiple_account_legs(self) -> None:
+    def test_watchers_do_not_claim_ticker_and_one_campaign_can_reserve_all_legs(self) -> None:
         orchestrator = StrategyCampaignOrchestrator()
         first = orchestrator.register(
             assignment("leg-1", campaign_id="campaign-a", account_id="account-1")
@@ -41,59 +41,65 @@ class StrategyCampaignTests(unittest.TestCase):
             assignment("leg-2", campaign_id="campaign-a", account_id="account-2")
         )
 
+        self.assertIsNone(first)
+        self.assertIsNone(second)
+        first = orchestrator.reserve(
+            assignment("leg-1", campaign_id="campaign-a", account_id="account-1")
+        )
+        second = orchestrator.reserve(
+            assignment("leg-2", campaign_id="campaign-a", account_id="account-2")
+        )
         self.assertEqual(first, second)
         self.assertEqual(
             orchestrator.lease_for(book_id="primary", ticker="AAPL").campaign_id,
             "campaign-a",
         )
 
-    def test_competing_active_campaign_cannot_claim_owned_ticker(self) -> None:
+    def test_competing_watchers_are_allowed_but_only_one_can_reserve(self) -> None:
         orchestrator = StrategyCampaignOrchestrator(
             [assignment("leg-1", campaign_id="campaign-a")]
         )
+        orchestrator.register(assignment("leg-2", campaign_id="campaign-b"))
+        orchestrator.reserve(assignment("leg-1", campaign_id="campaign-a"))
         with self.assertRaisesRegex(ValueError, "already owned"):
-            orchestrator.register(
+            orchestrator.reserve(
                 assignment("leg-2", campaign_id="campaign-b")
             )
 
-    def test_opposite_side_campaigns_can_watch_the_same_ticker(self) -> None:
+    def test_opposite_side_campaigns_can_watch_but_only_one_can_reserve_ticker(self) -> None:
         orchestrator = StrategyCampaignOrchestrator(
             [assignment("long-leg", campaign_id="campaign-long", side="long")]
         )
-        short_lease = orchestrator.register(
-            assignment("short-leg", campaign_id="campaign-short", side="short")
-        )
-
-        self.assertEqual(short_lease.side, "short")
+        orchestrator.reserve(assignment("long-leg", campaign_id="campaign-long", side="long"))
+        with self.assertRaisesRegex(ValueError, "already owned"):
+            orchestrator.reserve(
+                assignment("short-leg", campaign_id="campaign-short", side="short")
+            )
         self.assertEqual(
-            orchestrator.lease_for(
-                book_id="primary", ticker="AAPL", side="long"
-            ).campaign_id,
+            orchestrator.lease_for(book_id="primary", ticker="AAPL").campaign_id,
             "campaign-long",
         )
+
+    def test_one_campaign_can_confirm_the_reserved_ticker_from_either_side(self) -> None:
+        orchestrator = StrategyCampaignOrchestrator()
+        orchestrator.reserve(assignment("long-leg", campaign_id="campaign-a", side="long"))
+        lease = orchestrator.claim(
+            assignment("short-leg", campaign_id="campaign-a", side="short")
+        )
+        self.assertEqual(lease.campaign_id, "campaign-a")
         self.assertEqual(
-            orchestrator.lease_for(
-                book_id="primary", ticker="AAPL", side="short"
-            ).campaign_id,
-            "campaign-short",
+            orchestrator.lease_for(book_id="primary", ticker="AAPL").campaign_id,
+            "campaign-a",
         )
 
-    def test_one_campaign_identity_cannot_span_multiple_sides(self) -> None:
-        orchestrator = StrategyCampaignOrchestrator(
-            [assignment("long-leg", campaign_id="campaign-a", side="long")]
-        )
-        with self.assertRaisesRegex(ValueError, "cannot span"):
-            orchestrator.register(
-                assignment("short-leg", campaign_id="campaign-a", side="short")
-            )
-
-    def test_lease_releases_only_after_last_active_account_leg_completes(self) -> None:
+    def test_confirmed_lease_remains_for_session_after_campaign_completes(self) -> None:
         orchestrator = StrategyCampaignOrchestrator(
             [
                 assignment("leg-1", campaign_id="campaign-a", account_id="account-1"),
                 assignment("leg-2", campaign_id="campaign-a", account_id="account-2"),
             ]
         )
+        orchestrator.claim(assignment("leg-1", campaign_id="campaign-a", account_id="account-1"))
         orchestrator.register(
             assignment(
                 "leg-1",
@@ -113,9 +119,16 @@ class StrategyCampaignTests(unittest.TestCase):
                 status="completed",
             )
         )
-        self.assertIsNone(
+        self.assertIsNotNone(
             orchestrator.lease_for(book_id="primary", ticker="AAPL")
         )
+
+    def test_failed_entry_releases_only_a_provisional_reservation(self) -> None:
+        orchestrator = StrategyCampaignOrchestrator()
+        contender = assignment("leg-1", campaign_id="campaign-a")
+        self.assertEqual(orchestrator.reserve(contender).state, "reserved")
+        orchestrator.release_reservation(contender)
+        self.assertIsNone(orchestrator.lease_for(book_id="primary", ticker="AAPL"))
 
     def test_flat_position_after_exit_is_reentry_wait_not_initial_entry(self) -> None:
         payload = assignment(

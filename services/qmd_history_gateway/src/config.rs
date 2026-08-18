@@ -26,6 +26,7 @@ pub struct HistoricalGatewayConfig {
     pub recent_event_coverage_table: String,
     pub recent_focused_repair_table: String,
     pub daily_session_bars_table: String,
+    pub intraday_base_bars_table: String,
     pub fetch_chunk_hours: usize,
     pub product_timeframes: Vec<String>,
     pub product_cache_max_rows_per_entry: usize,
@@ -85,6 +86,10 @@ impl HistoricalGatewayConfig {
             daily_session_bars_table: env_string(
                 "QMD_HISTORY_DAILY_SESSION_BARS_TABLE",
                 "daily_session_bars_by_symbol_time_v1",
+            ),
+            intraday_base_bars_table: env_string(
+                "QMD_HISTORY_INTRADAY_BASE_BARS_TABLE",
+                "intraday_base_bars_by_time_ticker",
             ),
             fetch_chunk_hours: env_usize("QMD_HISTORY_FETCH_CHUNK_HOURS", 24).clamp(1, 168),
             product_timeframes: env_list(
@@ -179,6 +184,11 @@ impl HistoricalGatewayConfig {
         if !valid_identifier(&self.daily_session_bars_table) {
             return Err(
                 "QMD_HISTORY_DAILY_SESSION_BARS_TABLE must be a ClickHouse identifier".to_string(),
+            );
+        }
+        if !valid_identifier(&self.intraday_base_bars_table) {
+            return Err(
+                "QMD_HISTORY_INTRADAY_BASE_BARS_TABLE must be a ClickHouse identifier".to_string(),
             );
         }
         if !valid_identifier(&self.structure_database) {

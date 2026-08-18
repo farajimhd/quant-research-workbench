@@ -7,6 +7,7 @@ import {
   CANVAS_PREVIEW_CONTEXT_STORAGE_KEY,
   CANVAS_REGISTRY_STORAGE_KEY,
   CANVAS_REGISTRY_UPDATED_EVENT,
+  CANVAS_WORKSPACE_UPDATED_EVENT,
   CANVAS_SETTINGS_STORAGE_KEY,
   CANVAS_LINK_GROUPS,
   MAIN_CANVAS_ID,
@@ -19,6 +20,7 @@ import {
   createCanvasRecord,
   focusCanvasUrl,
   ensureNewsReaderCanvas,
+  hydrateCanvasProfile,
   readCanvasRegistry,
   readCanvasRuntimeRegistry,
   readCanvasRuntimeOverlayRecord,
@@ -29,6 +31,7 @@ import {
   replayFocusCanvasUrl,
   rebaseCanvasRuntimeOverlay,
   snapshotCanvasWorkspaceState,
+  snapshotCanvasProfile,
   writeReplayCanvasFocusHandoff,
   writeCanvasRegistry,
   writeCanvasRuntimeOverlayRecord,
@@ -1070,7 +1073,17 @@ function mergeMarketSignalEvents(current: QmdMarketSignalEvent[], incoming: QmdM
 }
 
 function chartPageSize(timeframe: string) {
-  return 5_000;
+  const pageSizes: Record<string, number> = {
+    "100ms": 2_400,
+    "1s": 1_800,
+    "5s": 1_200,
+    "10s": 900,
+    "30s": 600,
+    "1m": 240,
+    "5m": 192,
+    "1h": 64,
+  };
+  return pageSizes[timeframe] ?? 240;
 }
 
 function chartRowBudget(indicatorColumns: string): number {
@@ -1544,6 +1557,15 @@ export type ApprovedCanvasProfile = {
   schema_version: number;
 };
 
+type EditableCanvasProfile = {
+  available: boolean;
+  content_hash: string;
+  profile: CanvasRegistry | null;
+  revision: number;
+  schema_version: number;
+  updated_at: string;
+};
+
 export function ApprovedCanvasRuntimePage({ accountKeys, mode, modeControls }: { accountKeys: string[]; mode: "live" | "paper"; modeControls?: ReactNode }) {
   const [approved, setApproved] = useState<ApprovedCanvasProfile | null>(null);
   const [error, setError] = useState("");
@@ -1658,6 +1680,9 @@ export function CanvasWorkspaceSurface({ accountKeys, approvedCanvas, canvasId, 
   const [error, setError] = useState("");
   const [defaultSaved, setDefaultSaved] = useState(false);
   const [managementOpen, setManagementOpen] = useState(false);
+  const [editableProfileReady, setEditableProfileReady] = useState(Boolean(runtimeBase));
+  const [canvasPersistenceEpoch, setCanvasPersistenceEpoch] = useState(0);
+  const editableProfileRevisionRef = useRef(0);
   const [linkPopoverContainerId, setLinkPopoverContainerId] = useState<string | null>(null);
   const [settingsContainerId, setSettingsContainerId] = useState<string | null>(null);
   const managementEnabled = manager || Boolean(runtimeBase);
@@ -1711,6 +1736,75 @@ export function CanvasWorkspaceSurface({ accountKeys, approvedCanvas, canvasId, 
     if (canvasId === NEWS_READER_CANVAS_ID) ensureNewsReaderCanvas();
     setRegistry(readCanvasRegistry());
   }, [canvasId, runtimeBase]);
+
+  useEffect(() => {
+    if (runtimeBase) return;
+    let cancelled = false;
+    const localProfile = snapshotCanvasProfile();
+    api<EditableCanvasProfile>("/api/trading/canvas-profile", { timeoutMs: 20_000 })
+      .then(async (payload) => {
+        if (cancelled) return;
+        if (payload.available && payload.profile) {
+          const restored = hydrateCanvasProfile(payload.profile);
+          editableProfileRevisionRef.current = payload.revision;
+          setRegistry(restored);
+          setWorkspaceState(focusCanvasState(canvasId, requestedInstanceId));
+          return;
+        }
+        const saved = await api<EditableCanvasProfile>("/api/trading/canvas-profile", {
+          body: JSON.stringify({ expected_revision: payload.revision, profile: localProfile }),
+          method: "PUT",
+          timeoutMs: 20_000,
+        });
+        if (!cancelled) editableProfileRevisionRef.current = saved.revision;
+      })
+      .catch((reason) => {
+        if (!cancelled) setError(`Canvas persistence is unavailable: ${reason instanceof Error ? reason.message : String(reason)}`);
+      })
+      .finally(() => { if (!cancelled) setEditableProfileReady(true); });
+    return () => { cancelled = true; };
+  }, [canvasId, requestedInstanceId, runtimeBase]);
+
+  useEffect(() => {
+    if (runtimeBase) return;
+    const noteWorkspaceChange = () => setCanvasPersistenceEpoch((value) => value + 1);
+    window.addEventListener(CANVAS_WORKSPACE_UPDATED_EVENT, noteWorkspaceChange);
+    return () => window.removeEventListener(CANVAS_WORKSPACE_UPDATED_EVENT, noteWorkspaceChange);
+  }, [runtimeBase]);
+
+  useEffect(() => {
+    if (runtimeBase || !editableProfileReady) return;
+    const timer = window.setTimeout(async () => {
+      const profile = snapshotCanvasProfile(registry);
+      if (workspaceState) {
+        profile.workspaceStates = {
+          ...(profile.workspaceStates ?? {}),
+          [canvasId]: snapshotCanvasWorkspaceState(workspaceState),
+        };
+      }
+      const save = (expectedRevision: number) => api<EditableCanvasProfile>("/api/trading/canvas-profile", {
+        body: JSON.stringify({ expected_revision: expectedRevision, profile }),
+        method: "PUT",
+        timeoutMs: 20_000,
+      });
+      try {
+        const saved = await save(editableProfileRevisionRef.current);
+        editableProfileRevisionRef.current = saved.revision;
+        setError((current) => current.startsWith("Canvas persistence is unavailable:") ? "" : current);
+      } catch (reason) {
+        const status = typeof reason === "object" && reason && "status" in reason ? Number((reason as { status?: number }).status) : 0;
+        try {
+          if (status !== 409) throw reason;
+          const latest = await api<EditableCanvasProfile>("/api/trading/canvas-profile", { timeoutMs: 20_000 });
+          const saved = await save(latest.revision);
+          editableProfileRevisionRef.current = saved.revision;
+        } catch (retryReason) {
+          setError(`Canvas persistence is unavailable: ${retryReason instanceof Error ? retryReason.message : String(retryReason)}`);
+        }
+      }
+    }, 400);
+    return () => window.clearTimeout(timer);
+  }, [canvasId, canvasPersistenceEpoch, editableProfileReady, registry, runtimeBase, workspaceState]);
 
   useEffect(() => {
     if (runtimeBase && runtimeRegistryStorageKey) {

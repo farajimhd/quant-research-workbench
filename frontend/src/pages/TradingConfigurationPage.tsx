@@ -66,6 +66,17 @@ type Primitive = boolean | number | string;
 type ParameterMap = Record<string, unknown>;
 type StrategyPhaseMode = "automatic" | "manual";
 
+function newYorkSessionDate(now = new Date()): string {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    day: "2-digit",
+    month: "2-digit",
+    timeZone: "America/New_York",
+    year: "numeric",
+  }).formatToParts(now);
+  const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+  return `${values.year}-${values.month}-${values.day}`;
+}
+
 type CapabilityParameter = {
   display?: string;
   help: string;
@@ -353,6 +364,10 @@ type RuntimeAssignment = {
 };
 
 type StrategyRunPlan = {
+  activation: {
+    event_policy: "new_occurrences" | "latest_session_occurrence";
+    watchlist_policy: "any_selected" | "all_selected" | "not_required";
+  };
   action_authority: {
     add: ActionAuthority;
     default: Exclude<ActionAuthority, "disabled" | "inherit">;
@@ -380,6 +395,11 @@ type StrategyRunPlan = {
   description: string;
   data_plan_ids: Partial<Record<RuntimeMode, string>>;
   enabled: boolean;
+  enablement: {
+    effective_session: string;
+    scope: "current_session" | "persistent";
+    state: "enabled" | "disabled";
+  };
   mandate_ids: string[];
   name: string;
   oms_profile_id: string;
@@ -387,6 +407,7 @@ type StrategyRunPlan = {
   runtime_assignments: RuntimeAssignment[];
   safety_supervisor: { enabled_by_environment: Record<RuntimeMode, boolean> };
   source_revision_policy: "require_complete" | "allow_partial";
+  signal_stream_ids: string[];
   universe_id: string;
   watchlist_ids: string[];
 };
@@ -396,7 +417,7 @@ type WatchUniverse = {
   enabled: boolean;
   name: string;
   scanner_view_id: string;
-  source: "configured_symbols" | "scanner_view" | "watchlist";
+  source: "configured_symbols" | "scanner_view" | "watchlist" | "signal_stream";
   symbols: string[];
   universe_id: string;
 };
@@ -475,7 +496,7 @@ type SignalStreamConfig = {
   origin?: "system" | "user";
   source_id: string;
   source_scan_id: string;
-  source_type: "core_scan" | "watchlist";
+  source_type: "core_scan" | "watchlist" | "news_events";
   inclusion_rule_sets: string[];
   inclusion_operator: "all" | "any";
   columns: string[];
@@ -940,6 +961,9 @@ function normalizeDraft(payload: any): Draft {
         return {
           ...runPlan,
           watchlist_ids: runPlan.watchlist_ids ?? [legacy.watchlist_id ?? "core-candidates"],
+          signal_stream_ids: runPlan.signal_stream_ids ?? marketDiscovery.signal_streams?.filter((row: SignalStreamConfig) => row.enabled).slice(0, 1).map((row: SignalStreamConfig) => row.signal_stream_id) ?? [],
+          activation: runPlan.activation ?? { event_policy: "new_occurrences", watchlist_policy: "any_selected" },
+          enablement: runPlan.enablement ?? { state: runPlan.enabled === false ? "disabled" : "enabled", scope: "persistent", effective_session: "" },
           canvas_profile_id: runPlan.canvas_profile_id ?? "current-canvas",
           data_plan_ids: runPlan.data_plan_ids ?? Object.fromEntries(modes.map((mode) => [mode, mode === "paper" || mode === "live" ? "qmd.scanner.snapshot.v1" : "market.historical_scanner_materialization.v1"])),
           source_revision_policy: runPlan.source_revision_policy ?? "require_complete",
@@ -1022,6 +1046,63 @@ function reconcileTradingActions(base: TradingActionsConfiguration, session: Tra
   };
 }
 
+function reconcileSignalStreams(baseRows: SignalStreamConfig[], sessionRows: SignalStreamConfig[]): SignalStreamConfig[] {
+  const baseIds = new Set(baseRows.map((row) => row.signal_stream_id));
+  const sessionById = new Map(sessionRows.map((row) => [row.signal_stream_id, row]));
+  return [
+    ...baseRows.map((row) => {
+      const saved = sessionById.get(row.signal_stream_id);
+      if (!saved) return row;
+      if (row.origin === "system") {
+        return {
+          ...row,
+          enabled: saved.enabled,
+          columns: saved.columns?.length ? saved.columns : row.columns,
+          column_intervals: saved.column_intervals ?? row.column_intervals,
+          column_aggregations: saved.column_aggregations ?? row.column_aggregations,
+        };
+      }
+      return { ...row, ...saved };
+    }),
+    ...sessionRows.filter((row) => row.origin === "user" && !baseIds.has(row.signal_stream_id)),
+  ];
+}
+
+function reconcileRunPlans(baseRows: StrategyRunPlan[], sessionRows: StrategyRunPlan[]): StrategyRunPlan[] {
+  const baseIds = new Set(baseRows.map((row) => row.run_plan_id));
+  const sessionById = new Map(sessionRows.map((row) => [row.run_plan_id, row]));
+  return [
+    ...baseRows.map((row) => {
+      const saved = sessionById.get(row.run_plan_id);
+      if (!saved) return row;
+      return {
+        ...row,
+        enabled: saved.enabled,
+        enablement: saved.enablement,
+      };
+    }),
+    ...sessionRows.filter((row) => !baseIds.has(row.run_plan_id)),
+  ];
+}
+
+function reconcileUniverses(baseRows: WatchUniverse[], sessionRows: WatchUniverse[]): WatchUniverse[] {
+  const baseIds = new Set(baseRows.map((row) => row.universe_id));
+  const sessionById = new Map(sessionRows.map((row) => [row.universe_id, row]));
+  return [
+    ...baseRows.map((row) => ({ ...row, ...(sessionById.get(row.universe_id) ?? {}) })),
+    ...sessionRows.filter((row) => !baseIds.has(row.universe_id)),
+  ];
+}
+
+function reconcileMandates(baseRows: Mandate[], sessionRows: Mandate[]): Mandate[] {
+  const baseIds = new Set(baseRows.map((row) => row.mandate_id));
+  const sessionById = new Map(sessionRows.map((row) => [row.mandate_id, row]));
+  return [
+    ...baseRows.map((row) => ({ ...row, ...(sessionById.get(row.mandate_id) ?? {}) })),
+    ...sessionRows.filter((row) => !baseIds.has(row.mandate_id)),
+  ];
+}
+
 function readSessionConfiguration(base: Draft): Draft {
   try {
     const storedDraft = readConfigurationSession<unknown>();
@@ -1066,7 +1147,10 @@ function readSessionConfiguration(base: Draft): Draft {
         },
         rule_sets: reconciledRuleSets,
         watchlists: reconciledWatchlists,
-        signal_streams: session.market_discovery.signal_streams,
+        signal_streams: reconcileSignalStreams(
+          base.market_discovery.signal_streams,
+          session.market_discovery.signal_streams,
+        ),
       },
       strategy: {
         ...session.strategy,
@@ -1079,6 +1163,15 @@ function readSessionConfiguration(base: Draft): Draft {
         profiles: reconcileStrategyProfiles(base.strategy.profiles, session.strategy.profiles),
       },
       trading_actions: reconcileTradingActions(base.trading_actions, session.trading_actions),
+      assignments: {
+        deployments: reconcileRunPlans(base.assignments.deployments, session.assignments.deployments),
+        universes: reconcileUniverses(base.assignments.universes, session.assignments.universes),
+      },
+      portfolio: {
+        ...base.portfolio,
+        ...session.portfolio,
+        mandates: reconcileMandates(base.portfolio.mandates, session.portfolio.mandates),
+      },
     };
     writeSessionConfiguration(reconciled);
     return reconciled;
@@ -1713,6 +1806,9 @@ function GuidedConfiguration({ approved, draft, label, omsStage, onChange, onCon
       oms_profile_id: draft.oms.profiles[0]?.profile_id ?? "",
       universe_id: "",
       watchlist_ids: draft.market_discovery.watchlists.filter((row) => row.enabled && row.availability !== "integration_pending").slice(0, 1).map((row) => row.watchlist_id),
+      signal_stream_ids: draft.market_discovery.signal_streams.filter((row) => row.enabled).slice(0, 1).map((row) => row.signal_stream_id),
+      activation: { event_policy: "new_occurrences", watchlist_policy: "any_selected" },
+      enablement: { state: "disabled", scope: "persistent", effective_session: "" },
       canvas_profile_id: "current-canvas",
       data_plan_ids: { replay: "market.historical_scanner_materialization.v1" },
       source_revision_policy: "require_complete",
@@ -1818,20 +1914,24 @@ function GuidedConfiguration({ approved, draft, label, omsStage, onChange, onCon
 
   const questions: Array<ReactElement<{ label: string }>> = [];
   if (step === "assignments") questions.push(
-    <GuidedQuestion description="A Run Plan is the publishable composition that connects reusable trading behavior, candidate membership, execution, governed accounts, data coverage, and the workspace used at runtime." key="run-plan-identity" label="Which Run Plan are you configuring?" status={deployment.enabled ? "Enabled" : "Draft"}>
+    <GuidedQuestion description="A Run Plan is the publishable composition that connects reusable trading behavior, candidate membership, execution, governed accounts, data coverage, and the workspace used at runtime." key="run-plan-identity" label="Which Run Plan are you configuring?" status={!deployment.enabled ? "Draft" : deployment.enablement.state === "disabled" ? "Installed · disabled" : deployment.enablement.scope === "current_session" ? "Enabled this session" : "Enabled persistently"}>
       <div className="guided-form-grid">
-        <SelectField help="Choose the runnable composition edited by the following questions." label="Run Plan" onChange={selectRunPlan} options={draft.assignments.deployments.map((row) => ({ description: `${row.enabled ? "Enabled" : "Draft"} · ${row.allowed_environments.map(readableLabel).join(", ") || "No modes"}`, label: row.name, value: row.run_plan_id }))} value={deployment.run_plan_id} />
+        <SelectField help="Choose the runnable composition edited by the following questions." label="Run Plan" onChange={selectRunPlan} options={draft.assignments.deployments.map((row) => ({ description: `${!row.enabled ? "Draft" : row.enablement.state === "disabled" ? "Installed · disabled" : row.enablement.scope === "current_session" ? "Enabled this session" : "Enabled persistently"} · ${row.allowed_environments.map(readableLabel).join(", ") || "No modes"}`, label: row.name, value: row.run_plan_id }))} value={deployment.run_plan_id} />
         <div className="guided-inline-actions"><button className="button compact" onClick={addGuidedRunPlan} type="button"><Plus size={14} /> Add Run Plan</button><button className="button compact" onClick={cloneGuidedRunPlan} type="button"><Clipboard size={14} /> Clone</button><button className="button compact danger" disabled={deployment.enabled || draft.assignments.deployments.length <= 1} onClick={removeGuidedRunPlan} type="button"><Trash2 size={14} /> Remove</button></div>
         <TextField help="Operator-facing name shown in release review and runtime selection." label="Run Plan name" onChange={(name) => replaceDeployment({ ...deployment, name })} value={deployment.name} />
         <TextField help="Explain the complete trading purpose of this composition and where it is intended to run." label="Description" onChange={(description) => replaceDeployment({ ...deployment, description })} value={deployment.description} />
-        <BooleanField help="Enabled plans may be selected by an approved runtime. Disable a plan before removing it." label="Run Plan enabled" onChange={(enabled) => replaceDeployment({ ...deployment, enabled })} value={deployment.enabled} />
+        <BooleanField help="Installed Run Plans remain selectable for configuration. Signal activation is controlled separately by Strategy enablement below." label="Run Plan installed" onChange={(enabled) => replaceDeployment({ ...deployment, enabled })} value={deployment.enabled} />
         <div className="configuration-fixed-value"><span>Stable Run Plan ID</span><strong>{deployment.run_plan_id}</strong><small>Published releases retain this identity and its frozen references.</small></div>
       </div>
     </GuidedQuestion>,
     <GuidedQuestion description="The Strategy Profile owns trading behavior and lifecycle decisions. Choosing it does not select symbols, capital, or broker behavior." key="deployment-strategy" label="Which Strategy Profile should this Run Plan execute?" status={deployment.enabled ? "Configured" : "Needs review"}>
       <SelectField help="Select the reusable trading behavior evaluated by this Run Plan. Its entries, adds, reentries, and strategic exits remain unchanged." label="Strategy Profile" onChange={(profile_id) => replaceDeployment({ ...deployment, profile_id })} options={draft.strategy.profiles.map((row) => ({ label: row.name, value: row.profile_id }))} value={deployment.profile_id} />
     </GuidedQuestion>,
-    <GuidedQuestion description="QMD Watchlists are reusable causal membership definitions. A Run Plan may reference several; runtime evaluates their membership union." key="deployment-watchlists" label="Which QMD Watchlists supply candidates?" status={deployment.watchlist_ids.length ? "Configured" : "Needs decision"}>
+    <GuidedQuestion description="Signal Streams are the Strategy activation authority. Every new immutable occurrence carries the exact Rule Set revision and trigger-time evidence into Strategy evaluation." key="deployment-signal-streams" label="Which Signal Streams activate this Strategy?" status={deployment.signal_stream_ids.length ? "Configured" : "Needs decision"}>
+      <div className="configuration-reference-grid">{draft.market_discovery.signal_streams.map((stream) => <AbstractionCard compact control={<input checked={deployment.signal_stream_ids.includes(stream.signal_stream_id)} disabled={!stream.enabled} onChange={() => replaceDeployment({ ...deployment, signal_stream_ids: deployment.signal_stream_ids.includes(stream.signal_stream_id) ? deployment.signal_stream_ids.filter((value) => value !== stream.signal_stream_id) : [...deployment.signal_stream_ids, stream.signal_stream_id] })} type="checkbox" />} description={stream.description} identity={stream.signal_stream_id} key={stream.signal_stream_id} kind="signal_stream" metadata={[{ label: "Rule sets", value: stream.inclusion_rule_sets.length }, { label: "Evidence columns", value: stream.columns.length }]} selected={deployment.signal_stream_ids.includes(stream.signal_stream_id)} status={!stream.enabled ? "Disabled" : deployment.signal_stream_ids.includes(stream.signal_stream_id) ? "Selected" : "Available"} title={stream.name} unavailable={!stream.enabled} />)}</div>
+      <div className="guided-form-grid"><SelectField help="New occurrences avoids replaying earlier session signals when a Run Plan starts. Latest session occurrence may arm from the newest already-captured event." label="Occurrence policy" onChange={(event_policy) => replaceDeployment({ ...deployment, activation: { ...deployment.activation, event_policy: event_policy as StrategyRunPlan["activation"]["event_policy"] } })} options={[{ label: "New occurrences only", value: "new_occurrences" }, { label: "Latest session occurrence", value: "latest_session_occurrence" }]} value={deployment.activation.event_policy} /><SelectField help="Persistent remains enabled for subsequent sessions. Current session automatically expires at the session boundary." label="Strategy enablement" onChange={(value) => replaceDeployment({ ...deployment, enablement: value === "disabled" ? { state: "disabled", scope: deployment.enablement.scope, effective_session: "" } : { state: "enabled", scope: value as StrategyRunPlan["enablement"]["scope"], effective_session: value === "current_session" ? newYorkSessionDate() : "" } })} options={[{ label: "Enabled for subsequent sessions", value: "persistent" }, { label: "Enabled for current session", value: "current_session" }, { label: "Disabled", value: "disabled" }]} value={deployment.enablement.state === "disabled" ? "disabled" : deployment.enablement.scope} /></div>
+    </GuidedQuestion>,
+    <GuidedQuestion description="A Strategy Watchlist is an optional eligibility constraint. Leave it empty to accept any ticker emitted by the selected Signal Streams, or select one or more lists to restrict the candidates." key="deployment-watchlists" label="Should a Watchlist restrict eligible tickers?" status={deployment.watchlist_ids.length ? "Restricted" : "All signaled tickers"}>
       <div className="configuration-reference-grid">{draft.market_discovery.watchlists.map((watchlist) => <AbstractionCard compact control={<input checked={deployment.watchlist_ids.includes(watchlist.watchlist_id)} disabled={watchlist.availability === "integration_pending"} onChange={() => replaceDeployment({ ...deployment, watchlist_ids: deployment.watchlist_ids.includes(watchlist.watchlist_id) ? deployment.watchlist_ids.filter((value) => value !== watchlist.watchlist_id) : [...deployment.watchlist_ids, watchlist.watchlist_id] })} type="checkbox" />} description={watchlist.description} identity={watchlist.watchlist_id} key={watchlist.watchlist_id} kind="watchlist" metadata={[{ label: "Columns", value: watchlist.columns.length }, { label: "Maximum members", value: watchlist.maximum_size }]} selected={deployment.watchlist_ids.includes(watchlist.watchlist_id)} status={watchlist.availability === "integration_pending" ? "Unavailable" : deployment.watchlist_ids.includes(watchlist.watchlist_id) ? "Selected" : "Available"} title={watchlist.name} unavailable={watchlist.availability === "integration_pending"} />)}</div>
     </GuidedQuestion>,
     <GuidedQuestion description="The OMS profile supplies reusable execution and protection defaults after Portfolio approves quantity. It cannot change Strategy intent or Portfolio limits." key="deployment-oms" label="Which execution profile should the Run Plan use?" status="Configured">
@@ -1921,7 +2021,7 @@ function GuidedConfiguration({ approved, draft, label, omsStage, onChange, onCon
 
 function guidedQuestionRailLabel(key: string, fallback: string) {
   const labels: Record<string, string> = {
-    "run-plan-identity": "Plan", "deployment-strategy": "Strategy", "deployment-watchlists": "Watchlists", "deployment-oms": "OMS", "deployment-authority": "Authority", "deployment-modes": "Modes & data", "deployment-safety": "Safety", "deployment-mandates": "Mandates", "deployment-canvas": "Canvas",
+    "run-plan-identity": "Plan", "deployment-strategy": "Strategy", "deployment-signal-streams": "Signals", "deployment-watchlists": "Eligibility", "deployment-oms": "OMS", "deployment-authority": "Authority", "deployment-modes": "Modes & data", "deployment-safety": "Safety", "deployment-mandates": "Mandates", "deployment-canvas": "Canvas",
     "portfolio-account": "Account & policy", "portfolio-policy-identity": "Policy", "portfolio-mandate-limits": "Mandate limits", "portfolio-assignment": "Assignment", "portfolio-replacement": "Replacement", "portfolio-authority": "Authority", "portfolio-capital-policy": "Capital", "portfolio-exposure-policy": "Exposure", "portfolio-risk-policy": "Risk & loss", "portfolio-permissions": "Permissions", "portfolio-allowlists": "Allowlists", "portfolio-operational": "Operations", "portfolio-groups": "Account groups",
     "oms-profile-identity": "OMS profile", "execution-profile": "Defaults", "execution-urgency": "Urgency", "execution-protection-guardrails": "Guardrails", "execution-behavior": "Behavior", "execution-price-envelope": "Price bounds", "execution-timing": "Timing",
     "protection-profile": "Profile", "protection-transitions": "Transitions", "protection-slices": "Slices", "protection-recovery": "Recovery",
@@ -4912,6 +5012,9 @@ function RunPlanCompositionEditor({ draft, onChange, onDraftChange }: {
       oms_profile_id: draft.oms.profiles[0]?.profile_id ?? "",
       universe_id: "",
       watchlist_ids: draft.market_discovery.watchlists.filter((row) => row.enabled && row.availability !== "integration_pending").slice(0, 1).map((row) => row.watchlist_id),
+      signal_stream_ids: draft.market_discovery.signal_streams.filter((row) => row.enabled).slice(0, 1).map((row) => row.signal_stream_id),
+      activation: { event_policy: "new_occurrences", watchlist_policy: "any_selected" },
+      enablement: { state: "enabled", scope: "persistent", effective_session: "" },
       canvas_profile_id: "current-canvas",
       data_plan_ids: { replay: "market.historical_scanner_materialization.v1" },
       source_revision_policy: "require_complete",
@@ -4934,11 +5037,13 @@ function RunPlanCompositionEditor({ draft, onChange, onDraftChange }: {
   const selectedStrategy = draft.strategy.profiles.find((row) => row.profile_id === selected.profile_id);
   const selectedOms = draft.oms.profiles.find((row) => row.profile_id === selected.oms_profile_id);
   const selectedWatchlists = draft.market_discovery.watchlists.filter((row) => selected.watchlist_ids.includes(row.watchlist_id));
+  const selectedSignalStreams = draft.market_discovery.signal_streams.filter((row) => selected.signal_stream_ids.includes(row.signal_stream_id));
   const availableMandateAccounts = draft.accounts.bindings.filter((account) => !linkedMandates.some((mandate) => mandate.account_key === account.account_key));
   const mandateAccountValue = availableMandateAccounts.some((account) => account.account_key === mandateAccountKey) ? mandateAccountKey : availableMandateAccounts[0]?.account_key ?? "";
   const readiness = [
     { label: "Strategy", selection: selectedStrategy?.name ?? "Not selected", ready: Boolean(selectedStrategy) },
-    { label: "Watchlists", selection: selectedWatchlists.length ? `${selectedWatchlists.length} selected` : "None", ready: selectedWatchlists.length > 0 && selectedWatchlists.every((row) => row.availability !== "integration_pending") },
+    { label: "Signal Streams", selection: selectedSignalStreams.length ? `${selectedSignalStreams.length} selected` : "None", ready: selectedSignalStreams.length > 0 && selectedSignalStreams.every((row) => row.enabled) },
+    { label: "Watchlist eligibility", selection: selectedWatchlists.length ? `${selectedWatchlists.length} selected` : "All signaled tickers", ready: selectedWatchlists.every((row) => row.availability !== "integration_pending") },
     { label: "Account mandates", selection: linkedMandates.length ? `${linkedMandates.length} linked` : "None", ready: linkedMandates.length > 0 },
     { label: "Portfolio policies", selection: `${new Set(linkedMandates.map((mandate) => draft.accounts.bindings.find((account) => account.account_key === mandate.account_key)?.portfolio_policy_id).filter(Boolean)).size} resolved`, ready: linkedMandates.length > 0 && linkedMandates.every((mandate) => Boolean(draft.accounts.bindings.find((account) => account.account_key === mandate.account_key)?.portfolio_policy_id)) },
     { label: "OMS", selection: selectedOms?.name ?? "Not selected", ready: Boolean(selectedOms) },
@@ -4970,6 +5075,10 @@ function RunPlanCompositionEditor({ draft, onChange, onDraftChange }: {
     replace({ ...selected, watchlist_ids: selected.watchlist_ids.includes(watchlistId) ? selected.watchlist_ids.filter((value) => value !== watchlistId) : [...selected.watchlist_ids, watchlistId] });
   }
 
+  function toggleSignalStream(signalStreamId: string) {
+    replace({ ...selected, signal_stream_ids: selected.signal_stream_ids.includes(signalStreamId) ? selected.signal_stream_ids.filter((value) => value !== signalStreamId) : [...selected.signal_stream_ids, signalStreamId] });
+  }
+
   function replaceModes(allowed_environments: RuntimeMode[]) {
     const data_plan_ids = { ...selected.data_plan_ids };
     for (const mode of allowed_environments) data_plan_ids[mode] ??= mode === "paper" || mode === "live" ? "qmd.scanner.snapshot.v1" : "market.historical_scanner_materialization.v1";
@@ -4989,9 +5098,10 @@ function RunPlanCompositionEditor({ draft, onChange, onDraftChange }: {
     </aside>
     <main className="configuration-detail configuration-composition-editor">
       <section className="configuration-detail-heading"><div><span>Run Plan · {selected.run_plan_id}</span><input aria-label="Run Plan name" onChange={(event) => replace({ ...selected, name: event.target.value })} value={selected.name} /><textarea aria-label="Run Plan summary" onChange={(event) => replace({ ...selected, description: event.target.value })} rows={2} value={selected.description} /></div><div className="configuration-object-actions"><button className="button compact" onClick={cloneDeployment} type="button">Clone</button><label className="configuration-enabled"><input checked={selected.enabled} onChange={(event) => replace({ ...selected, enabled: event.target.checked })} type="checkbox" /> Enabled</label><button className="button compact danger" disabled={selected.enabled} onClick={deleteDeployment} type="button">Delete draft</button></div></section>
-      <AbstractionCard description={selected.description || "Final composition of reusable decision, discovery, capital, execution, workspace, and data definitions."} identity={selected.run_plan_id} kind="run_plan" metadata={[{ label: "Strategy", value: selectedStrategy?.name ?? selected.profile_id }, { label: "Watchlists", value: selectedWatchlists.length }, { label: "Mandates", value: linkedMandates.length }, { label: "OMS", value: selectedOms?.name ?? selected.oms_profile_id }, { label: "Canvas", value: canvas.revision }, { label: "Modes", value: selected.allowed_environments.map(readableLabel).join(", ") }]} selected={selected.enabled} status={selected.enabled ? "Enabled" : "Disabled"} title={selected.name} />
-      <GuideCallout icon={<Network size={17} />} title="Reusable definitions → Run Plan → Runtime">Strategy owns decisions. Watchlists own candidates. Portfolio mandates own account allocation. OMS owns execution. Canvas owns workspace presentation. The Run Plan selects their immutable revisions.</GuideCallout>
-      <ConfigGroup summary="Reference one or more existing QMD Watchlists. Runtime evaluates their causal membership union." title="1. Watchlists"><div className="configuration-reference-grid">{draft.market_discovery.watchlists.map((watchlist) => <AbstractionCard compact control={<input checked={selected.watchlist_ids.includes(watchlist.watchlist_id)} disabled={watchlist.availability === "integration_pending"} onChange={() => toggleWatchlist(watchlist.watchlist_id)} type="checkbox" />} description={watchlist.description} identity={watchlist.watchlist_id} key={watchlist.watchlist_id} kind="watchlist" metadata={[{ label: "Members", value: watchlist.maximum_size }, { label: "Columns", value: watchlist.columns.length }]} selected={selected.watchlist_ids.includes(watchlist.watchlist_id)} status={watchlist.availability === "integration_pending" ? "Unavailable" : selected.watchlist_ids.includes(watchlist.watchlist_id) ? "Selected" : "Available"} title={watchlist.name} unavailable={watchlist.availability === "integration_pending"} />)}</div></ConfigGroup>
+      <AbstractionCard description={selected.description || "Final composition of reusable decision, discovery, capital, execution, workspace, and data definitions."} identity={selected.run_plan_id} kind="run_plan" metadata={[{ label: "Strategy", value: selectedStrategy?.name ?? selected.profile_id }, { label: "Signal Streams", value: selectedSignalStreams.length }, { label: "Watchlists", value: selectedWatchlists.length || "Optional" }, { label: "Mandates", value: linkedMandates.length }, { label: "OMS", value: selectedOms?.name ?? selected.oms_profile_id }, { label: "Modes", value: selected.allowed_environments.map(readableLabel).join(", ") }]} selected={selected.enablement.state === "enabled"} status={selected.enablement.state === "enabled" ? selected.enablement.scope === "current_session" ? "Enabled this session" : "Enabled" : "Disabled"} title={selected.name} />
+      <GuideCallout icon={<Network size={17} />} title="Signal Stream → Strategy → Portfolio → OMS">Signal Streams activate Strategy evaluation. Optional Watchlists restrict eligible tickers. Portfolio grants capital and the first approved opening campaign receives ticker ownership; OMS alone executes the resulting intent.</GuideCallout>
+      <ConfigGroup summary="Select the immutable occurrence streams that activate this Strategy, then choose whether activation persists across sessions." title="1. Signal activation"><div className="configuration-reference-grid">{draft.market_discovery.signal_streams.map((stream) => <AbstractionCard compact control={<input checked={selected.signal_stream_ids.includes(stream.signal_stream_id)} disabled={!stream.enabled} onChange={() => toggleSignalStream(stream.signal_stream_id)} type="checkbox" />} description={stream.description} identity={stream.signal_stream_id} key={stream.signal_stream_id} kind="signal_stream" metadata={[{ label: "Rule sets", value: stream.inclusion_rule_sets.length }, { label: "Evidence", value: stream.columns.length }]} selected={selected.signal_stream_ids.includes(stream.signal_stream_id)} status={!stream.enabled ? "Disabled" : selected.signal_stream_ids.includes(stream.signal_stream_id) ? "Selected" : "Available"} title={stream.name} unavailable={!stream.enabled} />)}</div><div className="configuration-field-grid"><SelectField help="New occurrences is the low-latency default and never replays stale activation when a runtime starts." label="Occurrence policy" onChange={(event_policy) => replace({ ...selected, activation: { ...selected.activation, event_policy: event_policy as StrategyRunPlan["activation"]["event_policy"] } })} options={[{ label: "New occurrences only", value: "new_occurrences" }, { label: "Latest session occurrence", value: "latest_session_occurrence" }]} value={selected.activation.event_policy} /><SelectField help="Persistent enables subsequent sessions. Current session expires at the market-session boundary." label="Enablement" onChange={(value) => replace({ ...selected, enablement: value === "disabled" ? { ...selected.enablement, state: "disabled" } : { state: "enabled", scope: value as StrategyRunPlan["enablement"]["scope"], effective_session: value === "current_session" ? newYorkSessionDate() : "" } })} options={[{ label: "Enabled for subsequent sessions", value: "persistent" }, { label: "Enabled for current session", value: "current_session" }, { label: "Disabled", value: "disabled" }]} value={selected.enablement.state === "disabled" ? "disabled" : selected.enablement.scope} /></div></ConfigGroup>
+      <ConfigGroup summary="Optional eligibility constraint. With no selection, every ticker emitted by the selected Signal Streams is eligible." title="2. Watchlist eligibility"><div className="configuration-reference-grid">{draft.market_discovery.watchlists.map((watchlist) => <AbstractionCard compact control={<input checked={selected.watchlist_ids.includes(watchlist.watchlist_id)} disabled={watchlist.availability === "integration_pending"} onChange={() => toggleWatchlist(watchlist.watchlist_id)} type="checkbox" />} description={watchlist.description} identity={watchlist.watchlist_id} key={watchlist.watchlist_id} kind="watchlist" metadata={[{ label: "Members", value: watchlist.maximum_size }, { label: "Columns", value: watchlist.columns.length }]} selected={selected.watchlist_ids.includes(watchlist.watchlist_id)} status={watchlist.availability === "integration_pending" ? "Unavailable" : selected.watchlist_ids.includes(watchlist.watchlist_id) ? "Selected" : "Optional"} title={watchlist.name} unavailable={watchlist.availability === "integration_pending"} />)}</div></ConfigGroup>
       <div className="configuration-two-column"><ConfigGroup summary="References existing behavior and execution definitions." title="2. Strategy and OMS"><div className="configuration-field-grid one-column"><SelectField help="Reusable decision behavior." label="Strategy Profile" onChange={(profile_id) => replace({ ...selected, profile_id })} options={draft.strategy.profiles.map((row) => ({ label: row.name, value: row.profile_id }))} value={selected.profile_id} /><SelectField help="Reusable execution and protection composition." label="OMS Profile" onChange={(oms_profile_id) => replace({ ...selected, oms_profile_id })} options={draft.oms.profiles.map((row) => ({ label: row.name, value: row.profile_id }))} value={selected.oms_profile_id} /></div></ConfigGroup><ConfigGroup summary="The current configured workspace is frozen at publication." title="3. Canvas"><div className="configuration-fixed-value"><span>Canvas profile</span><strong>{canvas.revision}</strong><small>{canvas.containerCount} containers · {canvas.ready ? "ready" : "not ready"}</small></div></ConfigGroup></div>
       <ConfigGroup summary="Create or reference Portfolio mandates here; edit their limits under Portfolio & Risk." title="4. Account mandates"><div className="deployment-mandates">{linkedMandates.map((mandate) => <article key={mandate.mandate_id}><strong>{accountName(draft.accounts, mandate.account_key)}</strong><span>{percent(mandate.maximum_cash_fraction)} cash · {readableLabel(mandate.assignment_mode)} · max {readableLabel(mandate.maximum_action_authority)}</span></article>)}</div><div className="configuration-inline-add"><SelectField help="Existing governed account." label="Account to add" onChange={setMandateAccountKey} options={availableMandateAccounts.map((account) => ({ label: account.name, value: account.account_key }))} value={mandateAccountValue} /><button className="button compact" disabled={!mandateAccountValue} onClick={addMandate} type="button"><Plus size={14} /> Add mandate</button></div><a className="configuration-inline-link" href="#portfolio-configuration">Edit allocation and risk limits <ChevronRight size={13} /></a></ConfigGroup>
       <ConfigGroup summary="Portfolio mandate authority remains a hard upper bound." title="5. Action authority"><CampaignPolicyEditor deployment={selected} onChange={replace} /></ConfigGroup>
@@ -5033,6 +5143,9 @@ function DeploymentEditor({ draft, onChange }: { draft: Draft; onChange: (value:
       oms_profile_id: draft.oms.profiles[0]?.profile_id ?? "",
       universe_id: section.universes[0]?.universe_id ?? "",
       watchlist_ids: draft.market_discovery.watchlists.slice(0, 1).map((row) => row.watchlist_id),
+      signal_stream_ids: draft.market_discovery.signal_streams.filter((row) => row.enabled).slice(0, 1).map((row) => row.signal_stream_id),
+      activation: { event_policy: "new_occurrences", watchlist_policy: "any_selected" },
+      enablement: { state: "enabled", scope: "persistent", effective_session: "" },
       canvas_profile_id: "current-canvas",
       data_plan_ids: { replay: "market.historical_scanner_materialization.v1" },
       source_revision_policy: "require_complete",
@@ -5585,16 +5698,18 @@ function releaseReadiness(draft: Draft) {
   const accountKeys = new Set(draft.accounts.bindings.map((row) => row.account_key));
   const policyIds = new Set(draft.portfolio.policies.map((row) => String(row.policy_id ?? "")));
   const watchlists = new Map(draft.market_discovery.watchlists.map((row) => [row.watchlist_id, row]));
+  const signalStreams = new Map(draft.market_discovery.signal_streams.map((row) => [row.signal_stream_id, row]));
   const deployments = draft.assignments.deployments;
   const deploymentsReady = deployments.length > 0 && deployments.every((deployment) => (
     profileIds.has(deployment.profile_id)
     && omsIds.has(deployment.oms_profile_id)
     && draft.portfolio.mandates.some((mandate) => mandate.enabled && mandate.run_plan_id === deployment.run_plan_id)
   ));
-  const watchlistsReady = deployments.length > 0 && deployments.every((deployment) => deployment.watchlist_ids.length > 0 && deployment.watchlist_ids.every((watchlistId) => {
+  const watchlistsReady = deployments.length > 0 && deployments.every((deployment) => deployment.watchlist_ids.every((watchlistId) => {
     const watchlist = watchlists.get(watchlistId);
     return Boolean(watchlist && watchlist.enabled && watchlist.availability !== "integration_pending");
   }));
+  const signalStreamsReady = deployments.length > 0 && deployments.every((deployment) => deployment.signal_stream_ids.length > 0 && deployment.signal_stream_ids.every((streamId) => signalStreams.get(streamId)?.enabled));
   const dataPlansReady = deployments.length > 0 && deployments.every((deployment) => deployment.allowed_environments.length > 0 && deployment.allowed_environments.every((mode) => Boolean(deployment.data_plan_ids[mode])) && Boolean(deployment.canvas_profile_id));
   const mandatesReady = draft.portfolio.mandates.length > 0 && draft.portfolio.mandates.every((mandate) => (
     deployments.some((deployment) => deployment.run_plan_id === mandate.run_plan_id)
@@ -5611,7 +5726,8 @@ function releaseReadiness(draft: Draft) {
   return [
     { detail: String(draft.strategy.profiles.length), label: "Strategy Profiles", ready: draft.strategy.profiles.length > 0 },
     { detail: deploymentsReady ? `${deployments.length} ready` : "needs mandate or strategy", label: "Runtime compilation", ready: deploymentsReady },
-    { detail: watchlistsReady ? "causal membership references" : "missing or unavailable Watchlist", label: "QMD Watchlists", ready: watchlistsReady },
+    { detail: signalStreamsReady ? "immutable activation references" : "missing or disabled Signal Stream", label: "Signal Streams", ready: signalStreamsReady },
+    { detail: watchlistsReady ? "optional eligibility references valid" : "unavailable Watchlist", label: "QMD Watchlists", ready: watchlistsReady },
     { detail: String(draft.portfolio.mandates.length), label: "Account mandates", ready: mandatesReady },
     { detail: String(draft.oms.profiles.length), label: "OMS profiles", ready: draft.oms.profiles.length > 0 },
     { detail: String(draft.accounts.bindings.length), label: "Accounts", ready: draft.accounts.bindings.length > 0 },

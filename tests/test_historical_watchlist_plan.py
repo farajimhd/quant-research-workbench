@@ -30,9 +30,18 @@ class HistoricalWatchlistPlanTests(unittest.TestCase):
         self.assertEqual(plan["plan_hash"], repeated["plan_hash"])
         self.assertEqual(
             plan["plan_hash"],
-            "sha256:1c34a757707791e7073cc59e13265dde530597e0ef8becdd4924ae6a546fb004",
+            "sha256:00a9894472eb75c71fb78045b165b463b31d4adb549d32120bd48485a4fb958f",
         )
         self.assertEqual(plan["qmd_sources"], ["market.liquidity_rank"])
+        self.assertEqual(
+            plan["qmd_source_specs"],
+            [{
+                "instance_id": "market.liquidity_rank",
+                "source_id": "market.liquidity_rank",
+                "runtime_field": "liquidity_rank",
+                "interval": "",
+            }],
+        )
         self.assertEqual(plan["external_features"][0]["field_id"], "reference.float_shares")
         self.assertEqual(plan["external_features"][0]["query_plan_id"], "reference.scanner_asof.v1")
         self.assertEqual(plan["external_features"][0]["query_plan_version"], 2)
@@ -52,6 +61,31 @@ class HistoricalWatchlistPlanTests(unittest.TestCase):
                 start=datetime(2026, 8, 7, 13, 30, tzinfo=UTC),
                 end=datetime(2026, 8, 7, 20, 0, tzinfo=UTC),
             )
+
+    def test_compiles_exact_interval_field_instance_for_qmd_history(self) -> None:
+        configuration = _default_draft()
+        watchlist = next(
+            row
+            for row in configuration["market_discovery"]["watchlists"]
+            if row["watchlist_id"] == "core-candidates"
+        )
+        watchlist["inclusion_rule_sets"] = ["signal-price-squeeze-5m"]
+        plan = compile_historical_watchlist_plan(
+            configuration,
+            "core-candidates",
+            start=datetime(2026, 8, 7, 13, 30, tzinfo=UTC),
+            end=datetime(2026, 8, 7, 20, 0, tzinfo=UTC),
+        )
+
+        self.assertIn("price_change_1_bar_pct@@5m", plan["qmd_sources"])
+        condition = plan["rule_sets"][0]["conditions"][0]
+        self.assertEqual(condition["left_instance_id"], "price_change_1_bar_pct@@5m")
+        spec = next(
+            row
+            for row in plan["qmd_source_specs"]
+            if row["instance_id"] == "price_change_1_bar_pct@@5m"
+        )
+        self.assertEqual(spec["interval"], "5m")
 
     def test_rejects_deferred_intelligence_source(self) -> None:
         configuration = _default_draft()
@@ -85,7 +119,7 @@ class HistoricalWatchlistPlanTests(unittest.TestCase):
             end=datetime(2026, 8, 11, 0, 0, tzinfo=UTC),
         )
 
-        self.assertEqual(plan["schema_version"], 3)
+        self.assertEqual(plan["schema_version"], 4)
         self.assertEqual(plan["focused_seed_multiplier"], 5)
         self.assertEqual(len(plan["evaluation_windows"]), 2)
         self.assertEqual(plan["evaluation_windows"][0]["start"], "2026-08-07T04:00:00-04:00")

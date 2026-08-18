@@ -300,6 +300,94 @@ class TradingJournal:
             )
         return cursor.rowcount == 1
 
+    def acquire_campaign_session_ownership(
+        self,
+        resource_id: str,
+        *,
+        session_key: str,
+        owner_id: str,
+        state: str,
+    ) -> dict[str, Any] | None:
+        """Atomically reserve or confirm one ticker owner for one session."""
+
+        if not resource_id or not session_key or not owner_id:
+            raise ValueError("Campaign ownership requires resource, session, and owner")
+        if state not in {"reserved", "confirmed"}:
+            raise ValueError("Campaign ownership state must be reserved or confirmed")
+        now = datetime.now(timezone.utc).isoformat()
+        with self._lock:
+            try:
+                self._connection.execute("BEGIN IMMEDIATE")
+                row = self._connection.execute(
+                    "SELECT owner_id, state, epoch FROM campaign_session_ownership "
+                    "WHERE resource_id = ? AND session_key = ?",
+                    (resource_id, session_key),
+                ).fetchone()
+                if row is not None and str(row["owner_id"]) != owner_id:
+                    self._connection.rollback()
+                    return None
+                epoch = int(row["epoch"]) + 1 if row is not None else 1
+                resolved_state = (
+                    "confirmed"
+                    if row is not None and str(row["state"]) == "confirmed"
+                    else state
+                )
+                self._connection.execute(
+                    """
+                    INSERT INTO campaign_session_ownership(
+                        resource_id, session_key, owner_id, state, epoch, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(resource_id, session_key) DO UPDATE SET
+                        owner_id=excluded.owner_id, state=excluded.state,
+                        epoch=excluded.epoch, updated_at=excluded.updated_at
+                    """,
+                    (resource_id, session_key, owner_id, resolved_state, epoch, now),
+                )
+                self._connection.commit()
+                return {
+                    "resource_id": resource_id,
+                    "session_key": session_key,
+                    "owner_id": owner_id,
+                    "state": resolved_state,
+                    "epoch": epoch,
+                }
+            except Exception:
+                self._connection.rollback()
+                raise
+
+    def campaign_session_ownership(
+        self, resource_id: str, *, session_key: str
+    ) -> dict[str, Any] | None:
+        with self._lock:
+            row = self._connection.execute(
+                "SELECT owner_id, state, epoch, updated_at FROM campaign_session_ownership "
+                "WHERE resource_id = ? AND session_key = ?",
+                (resource_id, session_key),
+            ).fetchone()
+        if row is None:
+            return None
+        return {
+            "resource_id": resource_id,
+            "session_key": session_key,
+            "owner_id": str(row["owner_id"]),
+            "state": str(row["state"]),
+            "epoch": int(row["epoch"]),
+            "updated_at": str(row["updated_at"]),
+        }
+
+    def release_campaign_session_reservation(
+        self, resource_id: str, *, session_key: str, owner_id: str
+    ) -> bool:
+        """Release a failed pre-fill reservation; confirmed owners are retained."""
+
+        with self._lock, self._connection:
+            cursor = self._connection.execute(
+                "DELETE FROM campaign_session_ownership WHERE resource_id = ? "
+                "AND session_key = ? AND owner_id = ? AND state = 'reserved'",
+                (resource_id, session_key, owner_id),
+            )
+        return cursor.rowcount == 1
+
     def save_order_management_state(
         self,
         group_id: str,
@@ -816,6 +904,12 @@ class TradingJournal:
                 CREATE TABLE IF NOT EXISTS portfolio_admission_leases(
                     resource_id TEXT PRIMARY KEY, owner_id TEXT NOT NULL,
                     epoch INTEGER NOT NULL, expires_at TEXT NOT NULL, updated_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS campaign_session_ownership(
+                    resource_id TEXT NOT NULL, session_key TEXT NOT NULL,
+                    owner_id TEXT NOT NULL, state TEXT NOT NULL,
+                    epoch INTEGER NOT NULL, updated_at TEXT NOT NULL,
+                    PRIMARY KEY(resource_id, session_key)
                 );
                 CREATE TABLE IF NOT EXISTS order_management_states(
                     group_id TEXT PRIMARY KEY, run_id TEXT NOT NULL, account_id TEXT NOT NULL,

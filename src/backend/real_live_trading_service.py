@@ -529,6 +529,9 @@ def refresh_live_market_discovery() -> dict[str, Any]:
     return {
         "as_of": payload.get("as_of") or payload.get("snapshot_at_utc"),
         "core_population_count": int(payload.get("core_population_count") or payload.get("row_count") or 0),
+        # The coordinator immediately narrows this complete vectorized frame to
+        # activated Strategy tickers; it is not serialized to Canvas clients.
+        "strategy_rows": payload.get("rows") or [],
         "signal_stream_runtime": payload.get("signal_stream_runtime") or {},
         "watchlist_runtime": payload.get("watchlist_runtime") or {},
     }

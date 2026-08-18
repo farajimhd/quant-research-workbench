@@ -68,7 +68,7 @@ from src.trading_runtime.strategy_campaign import validate_campaign_policy
 from src.trading_runtime.taxonomy import StrategyTaxonomy
 
 
-CONFIGURATION_SCHEMA_VERSION = 34
+CONFIGURATION_SCHEMA_VERSION = 37
 MARKET_DISCOVERY_MATERIALIZATION_RUN_ID = "market-discovery:materialized-configuration"
 _CONFIGURATION_BASE_CACHE_LOCK = threading.RLock()
 _CONFIGURATION_BASE_CACHE: tuple[str, float, dict[str, Any] | None] = ("", 0.0, None)
@@ -672,6 +672,13 @@ def resolve_runtime_configuration(
     universe = deepcopy(universe)
     if str(universe.get("source") or "") == "watchlist":
         universe = _resolve_watchlist_universe(universe, mode=mode)
+    elif str(universe.get("source") or "") == "signal_stream":
+        universe = _resolve_signal_stream_universe(
+            universe,
+            mode=mode,
+            configuration=model,
+        )
+    if str(universe.get("source") or "") in {"watchlist", "signal_stream"}:
         if mode in {"live", "paper"}:
             from src.backend.real_live_trading_service import tradable_symbol_map
 
@@ -698,7 +705,7 @@ def resolve_runtime_configuration(
                             "status": "watching",
                             "permissions": {},
                             "parameters": {},
-                            "source": "watchlist_runtime",
+                            "source": f"{str(universe.get('source') or 'watchlist')}_runtime",
                         }
                     )
     for assignment in runtime_assignments:
@@ -745,6 +752,21 @@ def resolve_runtime_configuration(
             },
             assignment,
         )
+    discovery = dict(model["market_discovery"])
+    selected_stream_ids = {
+        str(value) for value in run_plan.get("signal_stream_ids") or [] if str(value)
+    }
+    selected_streams = [
+        deepcopy(row)
+        for row in discovery.get("signal_streams") or []
+        if str(row.get("signal_stream_id") or "") in selected_stream_ids
+    ]
+    activation_rule_ids = {
+        str(value)
+        for stream in selected_streams
+        for value in stream.get("inclusion_rule_sets") or []
+        if str(value)
+    }
     return {
         "schema_version": CONFIGURATION_SCHEMA_VERSION,
         "run_plan": deepcopy(run_plan),
@@ -766,6 +788,17 @@ def resolve_runtime_configuration(
             ],
         },
         "strategy_profile": deepcopy(profile),
+        "signal_activation": {
+            "signal_streams": selected_streams,
+            "rule_sets": [
+                deepcopy(row)
+                for row in discovery.get("rule_sets") or []
+                if str(row.get("rule_set_id") or "") in activation_rule_ids
+            ],
+            "data_fields": deepcopy(discovery.get("data_fields") or []),
+            "column_catalog": deepcopy(discovery.get("column_catalog") or []),
+            "data_field_plan": deepcopy(discovery.get("data_field_plan") or {}),
+        },
         "strategy": {
             "strategy_id": profile["definition_id"],
             "revision": int(profile["definition_revision"]),
@@ -831,6 +864,44 @@ def _resolve_watchlist_universe(
     result["resolved"] = len(snapshots) == len(watchlist_ids)
     result["resolved_at"] = runtime.get("as_of")
     result["resolution_status"] = "ready" if result["resolved"] else "awaiting_watchlist_snapshot"
+    return result
+
+
+def _resolve_signal_stream_universe(
+    universe: dict[str, Any], *, mode: str, configuration: dict[str, Any]
+) -> dict[str, Any]:
+    result = deepcopy(universe)
+    if mode not in {"live", "paper"}:
+        result["symbols"] = []
+        result["resolved"] = False
+        result["resolution_status"] = "historical_signal_occurrences_required"
+        return result
+    from src.backend.signal_stream_runtime_service import SIGNAL_STREAM_RUNTIME
+
+    stream_ids = {
+        str(value)
+        for value in result.get("signal_stream_ids") or []
+        if str(value)
+    }
+    snapshot = SIGNAL_STREAM_RUNTIME.snapshot(
+        trading_journal(),
+        configuration=configuration,
+    )
+    result["symbols"] = sorted({
+        str(row.get("ticker") or "").upper()
+        for row in snapshot.get("occurrences") or []
+        if str(row.get("signal_stream_id") or "") in stream_ids
+        and str(row.get("ticker") or "").strip()
+    })
+    configured = {
+        str(row.get("signal_stream_id") or "")
+        for row in snapshot.get("signal_streams") or []
+    }
+    result["resolved"] = bool(stream_ids) and stream_ids <= configured
+    result["resolved_at"] = snapshot.get("as_of")
+    result["resolution_status"] = (
+        "ready" if result["resolved"] else "awaiting_signal_stream_snapshot"
+    )
     return result
 
 
@@ -2121,7 +2192,7 @@ def _watchlist_condition(
     condition_id: str,
     source_id: str,
     comparator: str,
-    value: float | bool,
+    value: float | bool | str,
     *,
     interval: str = "",
 ) -> dict[str, Any]:
@@ -2280,9 +2351,49 @@ def _default_watchlist_rule_sets() -> list[dict[str, Any]]:
                 _watchlist_condition("squeeze-buy-pressure-delta", "buy_sell_volume_delta", "greater_than", 0, interval="1s"),
             ],
         ),
+        _watchlist_rule(
+            "signal-price-squeeze-5m",
+            "Five-minute price squeeze",
+            "Triggers immediately when the live five-minute bar reaches at least 5% above the preceding completed five-minute close; it does not wait for the current bar to close.",
+            [
+                _watchlist_condition(
+                    "price-squeeze-five-minute-change",
+                    "price_change_1_bar_pct",
+                    "greater_or_equal",
+                    5.0,
+                    interval="5m",
+                ),
+            ],
+        ),
+        _watchlist_rule(
+            "strategy-squeeze-volume-spread-quality",
+            "Squeeze volume and spread quality",
+            "Confirms an entry only when one-second share-volume activity is at least 1.5 times its preceding bar and the latest one-second spread is no wider than 50 basis points.",
+            [
+                _watchlist_condition(
+                    "squeeze-volume-attraction",
+                    "volume_rate_ratio",
+                    "greater_or_equal",
+                    1.5,
+                    interval="1s",
+                ),
+                _watchlist_condition(
+                    "squeeze-spread-quality",
+                    "market.spread_bps",
+                    "less_or_equal",
+                    50.0,
+                ),
+            ],
+        ),
+        _watchlist_rule(
+            "strategy-live-spread-quality",
+            "Executable spread quality",
+            "Allows immediate event-driven entry only while the latest quoted spread is no wider than 50 basis points.",
+            [_watchlist_condition("live-spread-quality", "market.spread_bps", "less_or_equal", 50.0)],
+        ),
         _watchlist_rule("watchlist-vwap-breakout", "VWAP breakout", "Requires last price to trade at least 5 basis points above current VWAP.", [{**_watchlist_condition("vwap-breakout-price", "market.last_price", "above_by_bps", 5), "right_source_id": "indicator.vwap.value"}]),
-        _watchlist_rule("watchlist-news-bullish", "Bullish news sentiment", "Requires a validated news label and a positive sentiment score of at least 0.35.", [_watchlist_condition("news-labeled-positive", "signal.news_labeled", "is_true", True), _watchlist_condition("news-positive-score", "signal.company_news.score", "greater_or_equal", 0.35)], enabled=False, implementation_status="integration_pending"),
-        _watchlist_rule("watchlist-news-bearish", "Bearish news sentiment", "Requires a validated news label and a negative sentiment score of -0.35 or lower.", [_watchlist_condition("news-labeled-negative", "signal.news_labeled", "is_true", True), _watchlist_condition("news-negative-score", "signal.company_news.score", "less_or_equal", -0.35)], enabled=False, implementation_status="integration_pending"),
+        _watchlist_rule("watchlist-news-bullish", "Bullish news sentiment", "Requires an issuer-specific positive News Synthesis V1 view admitted by the certified forecast-trigger policy.", [_watchlist_condition("news-forecast-eligible", "news.forecast_trigger_eligible", "is_true", True), _watchlist_condition("news-positive-sentiment", "news.composite_sentiment", "equals", "positive")]),
+        _watchlist_rule("watchlist-news-bearish", "Bearish news sentiment", "Requires an issuer-specific negative News Synthesis V1 view admitted by the certified forecast-trigger policy.", [_watchlist_condition("news-forecast-eligible-negative", "news.forecast_trigger_eligible", "is_true", True), _watchlist_condition("news-negative-sentiment", "news.composite_sentiment", "equals", "negative")]),
         _watchlist_rule("watchlist-sec-bullish", "Bullish SEC sentiment", "Requires a validated SEC label and a positive filing score of at least 0.35.", [_watchlist_condition("sec-labeled-positive", "signal.sec_labeled", "is_true", True), _watchlist_condition("sec-positive-score", "signal.sec_filing.score", "greater_or_equal", 0.35)], enabled=False, implementation_status="integration_pending"),
         _watchlist_rule("watchlist-sec-bearish", "Bearish SEC sentiment", "Requires a validated SEC label and a negative filing score of -0.35 or lower.", [_watchlist_condition("sec-labeled-negative", "signal.sec_labeled", "is_true", True), _watchlist_condition("sec-negative-score", "signal.sec_filing.score", "less_or_equal", -0.35)], enabled=False, implementation_status="integration_pending"),
         _watchlist_rule("watchlist-fundamental-bullish", "Fundamental Bullish", "Requires reliable SEC evidence and a trajectory score of at least 65.", [_watchlist_condition("fundamental-bull-quality", "fundamental.quality_score", "greater_or_equal", 60), _watchlist_condition("fundamental-bull-score", "fundamental.trajectory_score", "greater_or_equal", 65)]),
@@ -2604,8 +2715,8 @@ def _default_watchlist_templates(symbols: list[str], calculation_rows: list[dict
         *gainers,
         template("price-or-volume-squeeze", "Session Price or Volume Expansion", "Symbols with at least 5% session price expansion or 3x aligned 20-session relative volume.", ["watchlist-price-or-volume-squeeze"], "market.relative_volume"),
         template("vwap-breakout", "VWAP Breakout", "Symbols trading at least 5 basis points above causal session VWAP.", ["watchlist-vwap-breakout"], "market.change_pct"),
-        template("news-bullish-sentiment", "News Bullish Sentiment", "New company-news events with a validated positive Text Intelligence label.", ["watchlist-news-bullish"], "signal.company_news.score", refresh=5000, enabled=False, columns=[*common_columns, "news_sentiment"], availability="integration_pending", availability_detail="Requires validated Text Intelligence news-label events."),
-        template("news-bearish-sentiment", "News Bearish Sentiment", "New company-news events with a validated negative Text Intelligence label.", ["watchlist-news-bearish"], "signal.company_news.score", direction="ascending", refresh=5000, enabled=False, columns=[*common_columns, "news_sentiment"], availability="integration_pending", availability_detail="Requires validated Text Intelligence news-label events."),
+        template("news-bullish-sentiment", "News Bullish Sentiment", "Issuers with a forecast-eligible positive News Synthesis V1 event.", ["watchlist-news-bullish"], "news.positive_strength", refresh=1000, columns=[*common_columns, "news_composite_sentiment", "news_positive_strength", "news_published_at"]),
+        template("news-bearish-sentiment", "News Bearish Sentiment", "Issuers with a forecast-eligible negative News Synthesis V1 event.", ["watchlist-news-bearish"], "news.negative_strength", direction="descending", refresh=1000, columns=[*common_columns, "news_composite_sentiment", "news_negative_strength", "news_published_at"]),
         template("sec-bullish-sentiment", "SEC Bullish Sentiment", "New SEC filing events with a validated positive Text Intelligence label.", ["watchlist-sec-bullish"], "signal.sec_filing.score", refresh=5000, enabled=False, columns=[*common_columns, "sec_sentiment"], availability="integration_pending", availability_detail="Requires validated Text Intelligence SEC-label events."),
         template("sec-bearish-sentiment", "SEC Bearish Sentiment", "New SEC filing events with a validated negative Text Intelligence label.", ["watchlist-sec-bearish"], "signal.sec_filing.score", direction="ascending", refresh=5000, enabled=False, columns=[*common_columns, "sec_sentiment"], availability="integration_pending", availability_detail="Requires validated Text Intelligence SEC-label events."),
         template("fundamental-bullish", "Fundamental Bullish", "Issuers with reliable SEC evidence and a financial trajectory score of at least 65.", ["watchlist-fundamental-bullish"], "fundamental.trajectory_score", refresh=60_000, columns=[*common_columns, "fundamental_trajectory", "fundamental_quality"]),
@@ -2615,10 +2726,114 @@ def _default_watchlist_templates(symbols: list[str], calculation_rows: list[dict
     ]
 
 
-def _default_signal_streams() -> list[dict[str, Any]]:
-    """Signal Streams are user compositions; QMD signal methods remain a separate catalog."""
+def _default_signal_streams(
+    column_catalog: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Register practical compositions without making QMD signals order authorities."""
 
-    return []
+    columns_by_source = {
+        str(row.get("source_id") or ""): str(row.get("column_id") or "")
+        for row in column_catalog
+        if str(row.get("source_id") or "") and str(row.get("column_id") or "")
+    }
+    evidence_sources = [
+        "identity.symbol",
+        "market.last_price",
+        "quote.bid_price",
+        "quote.ask_price",
+        "price_change_1_bar_pct",
+        "volume_rate_ratio",
+        "market.spread_bps",
+        "market.volume",
+        "market.session_phase",
+    ]
+    columns = [
+        columns_by_source[source_id]
+        for source_id in evidence_sources
+        if source_id in columns_by_source
+    ]
+    intervals = {
+        columns_by_source[source_id]: normalize_interval_spec(interval)
+        for source_id, interval in {
+            # Quote evidence is event-derived. Bind it at the fastest durable
+            # QMD interval so the frozen occurrence records the actionable
+            # spread rather than an unrelated slower bar.
+            "quote.bid_price": "100ms",
+            "quote.ask_price": "100ms",
+            "price_change_1_bar_pct": "5m",
+            "volume_rate_ratio": "1s",
+        }.items()
+        if source_id in columns_by_source
+    }
+    news_sources = [
+        "identity.symbol",
+        "market.last_price",
+        "quote.bid_price",
+        "quote.ask_price",
+        "market.spread_bps",
+        "market.session_phase",
+        "news.composite_sentiment",
+        "news.positive_strength",
+        "news.negative_strength",
+        "news.forecast_trigger_eligible",
+        "news.canonical_news_id",
+        "news.published_at",
+    ]
+    news_columns = [
+        columns_by_source[source_id]
+        for source_id in news_sources
+        if source_id in columns_by_source
+    ]
+    return [
+        {
+            "signal_stream_id": "price-squeeze-5m",
+            "revision": 1,
+            "name": "Price Squeeze · 5 minutes",
+            "description": "Append-only occurrence stream emitted as soon as the live five-minute bar reaches a 5% price squeeze. Trigger-time price, volume-attraction, and spread evidence is frozen for Strategy evaluation.",
+            "enabled": True,
+            "origin": "system",
+            "protected": True,
+            "source_type": "core_scan",
+            "source_id": "qmd-core-scan",
+            "source_scan_id": "qmd-core-scan",
+            "inclusion_rule_sets": ["signal-price-squeeze-5m"],
+            "inclusion_operator": "all",
+            "columns": columns,
+            "column_intervals": intervals,
+            "refresh_interval_ms": 250,
+            "trigger_policy": "false_to_true",
+            "rearm_policy": "after_false",
+            "cooldown_ms": 0,
+            "maximum_events": 5000,
+            "watchlist_routes": [],
+        },
+        {
+            "signal_stream_id": "bullish-news-v1",
+            "revision": 1,
+            "name": "Bullish News · News Synthesis V1",
+            "description": "Append-only issuer occurrences emitted from forecast-eligible positive News Synthesis V1 views. Source publication, semantic evidence, and current executable market evidence are frozen together.",
+            "enabled": True,
+            "origin": "system",
+            "protected": True,
+            "source_type": "news_events",
+            "source_id": "q_live.news_synthesis_v1",
+            "source_scan_id": "qmd-core-scan",
+            "inclusion_rule_sets": ["watchlist-news-bullish"],
+            "inclusion_operator": "all",
+            "columns": news_columns,
+            "column_intervals": {
+                columns_by_source[source_id]: normalize_interval_spec("100ms")
+                for source_id in ("quote.bid_price", "quote.ask_price")
+                if source_id in columns_by_source
+            },
+            "refresh_interval_ms": 1000,
+            "trigger_policy": "false_to_true",
+            "rearm_policy": "after_false",
+            "cooldown_ms": 0,
+            "maximum_events": 5000,
+            "watchlist_routes": [],
+        },
+    ]
 
 
 def _default_market_discovery(
@@ -2784,12 +2999,13 @@ def _default_market_discovery(
         "column_catalog": column_catalog,
         "rule_sets": merged_rule_sets,
         "watchlists": _default_watchlist_templates(symbols, calculation_rows),
-        "signal_streams": _default_signal_streams(),
+        "signal_streams": _default_signal_streams(column_catalog),
     }
     for watchlist in result["watchlists"]:
         watchlist["ranking_field_ref"] = str(
             output_index.get(str(watchlist.get("ranking_field") or ""), {}).get("field_ref") or ""
         )
+    _normalize_market_discovery_interval_specs(result)
     result["data_field_plan"] = compile_data_field_plan(result)
     return result
 
@@ -2838,7 +3054,62 @@ def _default_draft() -> dict[str, Any]:
             origin="system",
         ),
     ]
+    system_profiles[0]["name"] = "Long Momentum · Squeeze"
+    system_profiles[0]["description"] = (
+        "Extended-hours long momentum strategy activated by the five-minute "
+        "Price Squeeze Signal Stream and confirmed by volume attraction and spread quality."
+    )
+    squeeze_lifecycle = system_profiles[0]["lifecycle"]
+    squeeze_lifecycle["trading_behavior"]["eligible_sessions"] = [
+        "premarket", "regular", "after_hours"
+    ]
+    squeeze_lifecycle["initial_entry"]["opportunity"] = {
+        "expression": {
+            "kind": "operator",
+            "operator": "and",
+            "children": [{
+                "kind": "rule_set",
+                "rule_set_id": "signal-price-squeeze-5m",
+            }],
+        }
+    }
+    squeeze_lifecycle["initial_entry"]["confirmation"] = {
+        "expression": {
+            "kind": "operator",
+            "operator": "and",
+            "children": [{
+                "kind": "rule_set",
+                "rule_set_id": "strategy-squeeze-volume-spread-quality",
+            }],
+        }
+    }
+    squeeze_lifecycle["initial_entry"]["add_steps"] = []
+    system_profiles[0]["action_policy_ids"] = ["profit-pocket"]
     system_profiles[0]["protected"] = True
+    news_profile = deepcopy(system_profiles[0])
+    news_profile["profile_id"] = "long-momentum-bullish-news"
+    news_profile["name"] = "Long Momentum · Bullish News"
+    news_profile["description"] = (
+        "Extended-hours long momentum strategy activated immediately by a "
+        "forecast-eligible positive News Synthesis V1 occurrence, subject to executable spread quality."
+    )
+    news_profile["lifecycle"]["initial_entry"]["opportunity"] = {
+        "expression": {
+            "kind": "operator",
+            "operator": "and",
+            "children": [{"kind": "rule_set", "rule_set_id": "watchlist-news-bullish"}],
+        }
+    }
+    news_profile["lifecycle"]["initial_entry"]["confirmation"] = {
+        "expression": {
+            "kind": "operator",
+            "operator": "and",
+            "children": [{"kind": "rule_set", "rule_set_id": "strategy-live-spread-quality"}],
+        }
+    }
+    news_profile["lifecycle"]["initial_entry"]["add_steps"] = []
+    news_profile["protected"] = True
+    system_profiles.append(news_profile)
     profile_templates = [
         _strategy_profile(
             "long-momentum-template",
@@ -2903,7 +3174,107 @@ def _default_draft() -> dict[str, Any]:
         for binding in bindings
         if "replay" in binding["modes"]
     ]
+    live_mandates = [
+        {
+            "mandate_id": f"long-momentum-squeeze-{binding['account_key']}",
+            "run_plan_id": f"long-momentum-squeeze-{binding['account_key']}",
+            "account_key": binding["account_key"],
+            "enabled": True,
+            "maximum_cash_fraction": 0.10,
+            "maximum_planned_risk_fraction": 0.005,
+            "maximum_positions": 5,
+            "assignment_mode": "single",
+            "allocation_weight": 1.0,
+            "maximum_action_authority": "automatic",
+            "allow_replacement": False,
+            "minimum_replacement_improvement_pct": 20.0,
+        }
+        for binding in bindings
+        if set(binding.get("modes") or []).intersection({"paper", "live"})
+    ]
+    mandates.extend(live_mandates)
+    news_live_mandates = [
+        {
+            **deepcopy(mandate),
+            "mandate_id": str(mandate["mandate_id"]).replace("long-momentum-squeeze", "long-momentum-news"),
+            "run_plan_id": str(mandate["run_plan_id"]).replace("long-momentum-squeeze", "long-momentum-news"),
+        }
+        for mandate in live_mandates
+    ]
+    mandates.extend(news_live_mandates)
+    universes = [
+        _default_universe(runtime_assignments),
+        {
+            "universe_id": "price-squeeze-signal-universe",
+            "name": "Price Squeeze signals",
+            "description": "Tickers are admitted causally by the Price Squeeze Signal Stream.",
+            "source": "signal_stream",
+            "signal_stream_ids": ["price-squeeze-5m"],
+            "symbols": [],
+            "enabled": True,
+        },
+        {
+            "universe_id": "bullish-news-signal-universe",
+            "name": "Bullish News signals",
+            "description": "Tickers are admitted causally by forecast-eligible positive News Synthesis V1 occurrences.",
+            "source": "signal_stream",
+            "signal_stream_ids": ["bullish-news-v1"],
+            "symbols": [],
+            "enabled": True,
+        },
+    ]
+    live_run_plans = [
+        {
+            "run_plan_id": f"long-momentum-squeeze-{binding['account_key']}",
+            "name": f"Long Momentum · Price Squeeze · {str(binding['account_key']).title()}",
+            "description": "Session-enabled extended-hours momentum execution activated by the earliest configured five-minute Price Squeeze occurrence.",
+            "profile_id": "long-momentum-balanced",
+            "oms_profile_id": "adaptive-regular",
+            "universe_id": "price-squeeze-signal-universe",
+            "watchlist_ids": [],
+            "signal_stream_ids": ["price-squeeze-5m"],
+            "activation": {"event_policy": "new_occurrences", "watchlist_policy": "any_selected"},
+            "enablement": {"state": "disabled", "scope": "persistent", "effective_session": ""},
+            "canvas_profile_id": "current-canvas",
+            "data_plan_ids": _default_data_plan_ids(),
+            "source_revision_policy": "require_complete",
+            "book_id": "default",
+            "action_authority": {
+                **_default_action_authority(),
+                "initial_entry": "automatic",
+                "reentry": "automatic",
+                "strategic_exit": "automatic",
+            },
+            "campaign_lifecycle": {
+                **_default_campaign_policy(),
+                "initial_entry_authority": "automatic",
+                "reentry_authority": "automatic",
+            },
+            "safety_supervisor": _default_safety_supervisor(),
+            "mandate_ids": [f"long-momentum-squeeze-{binding['account_key']}"],
+            "enabled": True,
+            "allowed_environments": list(binding.get("modes") or []),
+            "runtime_assignments": [],
+            "protected": True,
+        }
+        for binding in bindings
+        if set(binding.get("modes") or []).intersection({"paper", "live"})
+    ]
+    live_run_plans.extend(
+        {
+            **deepcopy(plan),
+            "run_plan_id": str(plan["run_plan_id"]).replace("long-momentum-squeeze", "long-momentum-news"),
+            "name": str(plan["name"]).replace("Price Squeeze", "Bullish News"),
+            "description": "Session-enabled extended-hours momentum execution activated by a fresh forecast-eligible positive News Synthesis V1 occurrence.",
+            "profile_id": "long-momentum-bullish-news",
+            "universe_id": "bullish-news-signal-universe",
+            "signal_stream_ids": ["bullish-news-v1"],
+            "mandate_ids": [str(value).replace("long-momentum-squeeze", "long-momentum-news") for value in plan["mandate_ids"]],
+        }
+        for plan in list(live_run_plans)
+    )
     _normalize_market_discovery_interval_specs(discovery)
+    discovery["data_field_plan"] = compile_data_field_plan(discovery)
     return {
         "schema_version": CONFIGURATION_SCHEMA_VERSION,
         "strategy": {
@@ -2919,7 +3290,7 @@ def _default_draft() -> dict[str, Any]:
         },
         "market_discovery": discovery,
         "run_plans": {
-            "universes": [_default_universe(runtime_assignments)],
+            "universes": universes,
             "plans": [{
                 "run_plan_id": "balanced-replay",
                 "name": "Balanced Replay",
@@ -2928,6 +3299,16 @@ def _default_draft() -> dict[str, Any]:
                 "oms_profile_id": "adaptive-regular",
                 "universe_id": "configured-watch-universe",
                 "watchlist_ids": ["core-candidates"],
+                "signal_stream_ids": ["price-squeeze-5m"],
+                "activation": {
+                    "event_policy": "new_occurrences",
+                    "watchlist_policy": "any_selected",
+                },
+                "enablement": {
+                    "state": "enabled",
+                    "scope": "persistent",
+                    "effective_session": "",
+                },
                 "canvas_profile_id": "current-canvas",
                 "data_plan_ids": _default_data_plan_ids(),
                 "source_revision_policy": "require_complete",
@@ -2939,7 +3320,7 @@ def _default_draft() -> dict[str, Any]:
                 "enabled": True,
                 "allowed_environments": ["replay", "backtest", "backtest_debug"],
                 "runtime_assignments": runtime_assignments,
-            }]
+            }, *live_run_plans]
         },
         "portfolio": {"policies": [policy], "groups": [], "mandates": mandates},
         "oms": {
@@ -3388,6 +3769,9 @@ def _validate_market_discovery(
         elif source_type == "watchlist":
             if source_id not in watchlist_ids:
                 raise ValueError(f"Signal Stream {stream_name} references an unknown Watchlist")
+        elif source_type == "news_events":
+            if source_id != "q_live.news_synthesis_v1":
+                raise ValueError(f"Signal Stream {stream_name} references an unknown News Synthesis source")
         else:
             raise ValueError(f"Signal Stream {stream_name} has an unknown source type")
         if str(stream.get("inclusion_operator") or "all") not in {"all", "any"}:
@@ -3481,6 +3865,10 @@ def _compile_run_plans(candidate: dict[str, Any], *, canvas_profile_id: str) -> 
         str(row.get("watchlist_id") or ""): row
         for row in discovery.get("watchlists") or []
     }
+    signal_streams = {
+        str(row.get("signal_stream_id") or ""): row
+        for row in discovery.get("signal_streams") or []
+    }
     profiles = {
         str(row.get("profile_id") or ""): row
         for row in dict(candidate.get("strategy") or {}).get("profiles") or []
@@ -3510,9 +3898,14 @@ def _compile_run_plans(candidate: dict[str, Any], *, canvas_profile_id: str) -> 
             for watchlist_id in run_plan.get("watchlist_ids") or []
             if str(watchlist_id) in watchlists
         ]
-        if not selected_watchlists:
-            raise ValueError(f"Run Plan {run_plan_id} requires at least one Watchlist")
-        universe_id = f"run-plan-{run_plan_id}-watchlists"
+        selected_signal_streams = [
+            signal_streams[stream_id]
+            for stream_id in run_plan.get("signal_stream_ids") or []
+            if str(stream_id) in signal_streams
+        ]
+        if not selected_signal_streams:
+            raise ValueError(f"Run Plan {run_plan_id} requires at least one Signal Stream")
+        universe_id = f"run-plan-{run_plan_id}-candidates"
         included = {
             str(value).strip().upper()
             for watchlist in selected_watchlists
@@ -3527,14 +3920,26 @@ def _compile_run_plans(candidate: dict[str, Any], *, canvas_profile_id: str) -> 
         }
         universe = {
             "universe_id": universe_id,
-            "name": " + ".join(str(row.get("name") or row.get("watchlist_id")) for row in selected_watchlists),
-            "description": "Union of the Run Plan's QMD Watchlists.",
-            "source": "watchlist",
+            "name": " + ".join(
+                str(row.get("name") or row.get("watchlist_id"))
+                for row in selected_watchlists
+            ) if selected_watchlists else " + ".join(
+                str(row.get("name") or row.get("signal_stream_id"))
+                for row in selected_signal_streams
+            ),
+            "description": (
+                "Eligibility union of the Run Plan's QMD Watchlists; new Signal Stream occurrences activate evaluation."
+                if selected_watchlists
+                else "Symbols activate from new occurrences in the Run Plan's Signal Streams."
+            ),
+            "source": "watchlist" if selected_watchlists else "signal_stream",
             "symbols": sorted(included - excluded),
-            "scanner_view_id": str(selected_watchlists[0].get("watchlist_id") or ""),
+            "scanner_view_id": str(selected_watchlists[0].get("watchlist_id") or "") if selected_watchlists else "",
             "scanner_view_ids": [str(row.get("watchlist_id") or "") for row in selected_watchlists],
             "watchlist_snapshots": deepcopy(selected_watchlists),
-            "enabled": all(bool(row.get("enabled", True)) for row in selected_watchlists),
+            "signal_stream_ids": [str(row.get("signal_stream_id") or "") for row in selected_signal_streams],
+            "signal_stream_snapshots": deepcopy(selected_signal_streams),
+            "enabled": all(bool(row.get("enabled", True)) for row in [*selected_watchlists, *selected_signal_streams]),
         }
         compiled_universes.append(universe)
         run_plan["universe_id"] = universe_id
@@ -3556,6 +3961,12 @@ def _compile_run_plans(candidate: dict[str, Any], *, canvas_profile_id: str) -> 
         referenced_rule_set_ids = sorted({
             *_profile_rule_set_ids(dict(profile.get("lifecycle") or {})),
             *policy_rule_set_ids,
+            *[
+                str(rule_set_id)
+                for stream in selected_signal_streams
+                for rule_set_id in stream.get("inclusion_rule_sets") or []
+                if str(rule_set_id)
+            ],
         })
         run_plan["observation_dependencies"] = _compiled_observation_dependencies(
             profile,
@@ -3858,6 +4269,10 @@ def _validate_draft(draft: dict[str, Any], *, require_runtime_ready: bool = True
         str(row.get("watchlist_id") or "")
         for row in dict(draft["market_discovery"]).get("watchlists") or []
     }
+    signal_stream_ids = {
+        str(row.get("signal_stream_id") or "")
+        for row in dict(draft["market_discovery"]).get("signal_streams") or []
+    }
     for profile in profiles:
         lifecycle = dict(profile.get("lifecycle") or {})
         for intent in _lifecycle_order_intents(lifecycle):
@@ -3888,6 +4303,7 @@ def _validate_draft(draft: dict[str, Any], *, require_runtime_ready: bool = True
             "configured_symbols",
             "scanner_view",
             "watchlist",
+            "signal_stream",
         }:
             raise ValueError(
                 f"Watch Universe {universe.get('name')} has an unsupported source"
@@ -3923,13 +4339,42 @@ def _validate_draft(draft: dict[str, Any], *, require_runtime_ready: bool = True
         selected_watchlist_ids = {
             str(value) for value in run_plan.get("watchlist_ids") or [] if str(value)
         }
-        if not selected_watchlist_ids:
-            raise ValueError(f"Run Plan {run_plan.get('run_plan_id')} requires at least one Watchlist")
         unknown_watchlists = selected_watchlist_ids - watchlist_ids
         if unknown_watchlists:
             raise ValueError(
                 f"Run Plan {run_plan.get('run_plan_id')} references unknown Watchlists: {', '.join(sorted(unknown_watchlists))}"
             )
+        selected_signal_stream_ids = {
+            str(value) for value in run_plan.get("signal_stream_ids") or [] if str(value)
+        }
+        if not selected_signal_stream_ids:
+            raise ValueError(
+                f"Run Plan {run_plan.get('run_plan_id')} requires at least one Signal Stream"
+            )
+        unknown_signal_streams = selected_signal_stream_ids - signal_stream_ids
+        if unknown_signal_streams:
+            raise ValueError(
+                f"Run Plan {run_plan.get('run_plan_id')} references unknown Signal Streams: "
+                + ", ".join(sorted(unknown_signal_streams))
+            )
+        activation = dict(run_plan.get("activation") or {})
+        if str(activation.get("event_policy") or "") not in {
+            "new_occurrences", "latest_session_occurrence"
+        }:
+            raise ValueError(
+                f"Run Plan {run_plan.get('run_plan_id')} has an unsupported Signal Stream event policy"
+            )
+        if str(activation.get("watchlist_policy") or "") not in {
+            "any_selected", "all_selected", "not_required"
+        }:
+            raise ValueError(
+                f"Run Plan {run_plan.get('run_plan_id')} has an unsupported Watchlist eligibility policy"
+            )
+        enablement = dict(run_plan.get("enablement") or {})
+        if str(enablement.get("state") or "") not in {"enabled", "disabled"}:
+            raise ValueError(f"Run Plan {run_plan.get('run_plan_id')} enablement state is unsupported")
+        if str(enablement.get("scope") or "") not in {"current_session", "persistent"}:
+            raise ValueError(f"Run Plan {run_plan.get('run_plan_id')} enablement scope is unsupported")
         if not str(run_plan.get("canvas_profile_id") or "").strip():
             raise ValueError(f"Run Plan {run_plan.get('run_plan_id')} requires a Canvas profile")
         data_plan_ids = dict(run_plan.get("data_plan_ids") or {})
@@ -4297,7 +4742,7 @@ def _migrate_draft(raw: dict[str, Any]) -> dict[str, Any]:
                 # current code instead of retaining stale session copies.
                 for key in (
                     "name", "description", "enabled", "implementation_status",
-                    "publication_status",
+                    "publication_status", "operator", "required_score", "conditions",
                 ):
                     merged[key] = deepcopy(default_rule_set.get(key))
             merged_default_rule_sets.append(merged)
@@ -4447,10 +4892,43 @@ def _migrate_draft(raw: dict[str, Any]) -> dict[str, Any]:
             merged_watchlists.append(merged)
         merged_watchlists.extend(current_watchlists.values())
         result["market_discovery"]["watchlists"] = merged_watchlists
-        result["market_discovery"].setdefault(
-            "signal_streams",
-            deepcopy(defaults["market_discovery"].get("signal_streams") or []),
-        )
+        current_signal_stream_rows = [
+            deepcopy(row)
+            for row in result["market_discovery"].get("signal_streams") or []
+            if str(row.get("signal_stream_id") or "")
+        ]
+        defaults_by_stream_id = {
+            str(row.get("signal_stream_id") or ""): row
+            for row in defaults["market_discovery"].get("signal_streams") or []
+        }
+        merged_signal_streams: list[dict[str, Any]] = []
+        consumed_stream_ids: set[str] = set()
+        # Preserve the user's visible ordering. Protected definitions keep the
+        # current executable contract, but are not moved ahead of user streams.
+        for current_stream in current_signal_stream_rows:
+            stream_id = str(current_stream.get("signal_stream_id") or "")
+            default_stream = defaults_by_stream_id.get(stream_id)
+            if default_stream is None:
+                merged_signal_streams.append(current_stream)
+                continue
+            merged = {**default_stream, **current_stream}
+            if bool(default_stream.get("protected")):
+                for key in (
+                    "name", "description", "origin", "protected",
+                    "source_type", "source_id", "source_scan_id",
+                    "inclusion_rule_sets", "inclusion_operator",
+                    "columns", "column_intervals", "column_aggregations",
+                    "refresh_interval_ms", "trigger_policy", "rearm_policy",
+                    "cooldown_ms", "maximum_events", "watchlist_routes",
+                ):
+                    merged[key] = deepcopy(default_stream.get(key))
+            merged_signal_streams.append(merged)
+            consumed_stream_ids.add(stream_id)
+        for default_stream in defaults["market_discovery"].get("signal_streams") or []:
+            stream_id = str(default_stream.get("signal_stream_id") or "")
+            if stream_id not in consumed_stream_ids:
+                merged_signal_streams.append(deepcopy(default_stream))
+        result["market_discovery"]["signal_streams"] = merged_signal_streams
         column_ids = {
             str(row.get("column_id") or "")
             for row in result["market_discovery"].get("column_catalog") or []
@@ -4539,6 +5017,36 @@ def _migrate_draft(raw: dict[str, Any]) -> dict[str, Any]:
             ),
         }
         result.pop("assignments", None)
+        if source_schema_version < CONFIGURATION_SCHEMA_VERSION:
+            universe_ids = {
+                str(row.get("universe_id") or "")
+                for row in result["run_plans"]["universes"]
+            }
+            for universe in defaults["run_plans"]["universes"]:
+                if str(universe.get("universe_id") or "") not in universe_ids:
+                    result["run_plans"]["universes"].append(deepcopy(universe))
+            plan_ids = {
+                str(row.get("run_plan_id") or "")
+                for row in result["run_plans"]["plans"]
+            }
+            added_plan_ids: set[str] = set()
+            for plan in defaults["run_plans"]["plans"]:
+                plan_id = str(plan.get("run_plan_id") or "")
+                if bool(plan.get("protected")) and plan_id not in plan_ids:
+                    result["run_plans"]["plans"].append(deepcopy(plan))
+                    added_plan_ids.add(plan_id)
+            mandate_ids = {
+                str(row.get("mandate_id") or "")
+                for row in dict(result.get("portfolio") or {}).get("mandates") or []
+            }
+            for mandate in defaults["portfolio"]["mandates"]:
+                if (
+                    str(mandate.get("run_plan_id") or "") in added_plan_ids
+                    and str(mandate.get("mandate_id") or "") not in mandate_ids
+                ):
+                    result.setdefault("portfolio", {}).setdefault("mandates", []).append(
+                        deepcopy(mandate)
+                    )
         for run_plan in result["run_plans"]["plans"]:
             legacy_policy = dict(run_plan.pop("campaign_policy", {}) or {})
             run_plan["run_plan_id"] = str(
@@ -4760,9 +5268,36 @@ def _migrate_draft(raw: dict[str, Any]) -> dict[str, Any]:
         result["strategy"]["profiles"].extend(
             deepcopy(row)
             for row in defaults["strategy"]["profiles"]
-            if str(row["profile_id"]) == result["strategy"]["default_profile_id"]
+            if bool(row.get("protected"))
             and str(row["profile_id"]) not in existing_profiles
         )
+        if source_schema_version < CONFIGURATION_SCHEMA_VERSION:
+            default_profile = next(
+                row
+                for row in defaults["strategy"]["profiles"]
+                if str(row.get("profile_id") or "")
+                == result["strategy"]["default_profile_id"]
+            )
+            for profile in result["strategy"]["profiles"]:
+                if str(profile.get("profile_id") or "") != str(
+                    default_profile.get("profile_id") or ""
+                ):
+                    continue
+                profile["name"] = deepcopy(default_profile["name"])
+                profile["description"] = deepcopy(default_profile["description"])
+                profile["protected"] = True
+                profile["action_policy_ids"] = ["profit-pocket"]
+                lifecycle = dict(profile.get("lifecycle") or {})
+                default_lifecycle = dict(default_profile["lifecycle"])
+                lifecycle.setdefault("trading_behavior", {}).update(
+                    deepcopy(default_lifecycle["trading_behavior"])
+                )
+                initial_entry = lifecycle.setdefault("initial_entry", {})
+                default_initial = dict(default_lifecycle["initial_entry"])
+                initial_entry["opportunity"] = deepcopy(default_initial["opportunity"])
+                initial_entry["confirmation"] = deepcopy(default_initial["confirmation"])
+                initial_entry["add_steps"] = []
+                profile["lifecycle"] = lifecycle
         for template in result["strategy"]["profile_templates"]:
             template["publication_status"] = "template"
             template["editable"] = False
@@ -4780,9 +5315,9 @@ def _migrate_draft(raw: dict[str, Any]) -> dict[str, Any]:
             deepcopy(defaults["run_plans"]["universes"]),
         )
         plans = result["run_plans"].setdefault("plans", [])
-        plans_by_profile = {
-            str(row.get("profile_id") or ""): row for row in plans
-        }
+        plans_by_profile: dict[str, dict[str, Any]] = {}
+        for row in plans:
+            plans_by_profile.setdefault(str(row.get("profile_id") or ""), row)
         portfolio = result.setdefault("portfolio", deepcopy(defaults["portfolio"]))
         mandates = portfolio.setdefault("mandates", [])
         for profile in result["strategy"].get("profiles") or []:
@@ -4852,6 +5387,15 @@ def _migrate_draft(raw: dict[str, Any]) -> dict[str, Any]:
         for run_plan in result["run_plans"].get("plans") or []:
             run_plan.setdefault("universe_id", fallback_universe)
             run_plan.setdefault("book_id", "default")
+            run_plan.setdefault("signal_stream_ids", ["price-squeeze-5m"])
+            run_plan.setdefault(
+                "activation",
+                {"event_policy": "new_occurrences", "watchlist_policy": "any_selected"},
+            )
+            run_plan.setdefault(
+                "enablement",
+                {"state": "enabled", "scope": "persistent", "effective_session": ""},
+            )
             calculations = list(
                 dict(result.get("market_discovery") or {})
                 .get("core_scan", {})

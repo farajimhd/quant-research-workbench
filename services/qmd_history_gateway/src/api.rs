@@ -755,6 +755,87 @@ async fn chart_bar_snapshot(
     let before = query.before.as_deref().map(parse_timestamp).transpose()?;
     let indicator_columns = parse_indicator_projection(query.indicator_columns.as_deref())?;
     let bars_only = parse_chart_stage(query.stage.as_deref())?;
+    if bars_only {
+        if let Some(persisted) = state
+            .source
+            .persisted_intraday_chart_bars(
+                &window,
+                &ticker,
+                &timeframe,
+                product_query.limit.unwrap_or(5_000).clamp(1, 50_000),
+                as_of,
+                before,
+            )
+            .await
+            .map_err(service_error)?
+        {
+            let event_count = persisted
+                .bars
+                .iter()
+                .map(|bar| bar.event_count)
+                .sum::<u64>();
+            let persisted_source = persisted.source.clone();
+            let bars = persisted
+                .bars
+                .iter()
+                .map(|bar| {
+                    json!({
+                        "schema_version": 1,
+                        "session_date": bar.session_date,
+                        "timeframe": timeframe,
+                        "sym": ticker,
+                        "bar_start": bar.bar_start,
+                        "bar_end": bar.bar_end,
+                        "is_closed": true,
+                        "open": bar.open,
+                        "high": bar.high,
+                        "low": bar.low,
+                        "close": bar.close,
+                        "volume": bar.size_sum,
+                        "vwap": Value::Null,
+                        "estimated_luld_active": false,
+                        "estimated_luld_reference_price": 0.0,
+                        "estimated_luld_lower_price": 0.0,
+                        "estimated_luld_upper_price": 0.0,
+                        "estimated_luld_distance_to_upper_pct": 0.0,
+                        "estimated_luld_distance_to_lower_pct": 0.0,
+                        "estimated_luld_state": "unavailable",
+                    })
+                })
+                .collect::<Vec<_>>();
+            return Ok(Json(json!({
+                "as_of": as_of,
+                "bars": bars,
+                "cache": {
+                    "calculation_revision": HISTORICAL_CALCULATION_REVISION,
+                    "corporate_action_revision": HISTORICAL_CORPORATE_ACTION_REVISION,
+                    "engine_version": HISTORICAL_ENGINE_VERSION,
+                    "event_count": event_count,
+                    "hit": true,
+                    "source_revision": {
+                        "complete_for_history": true,
+                        "event_count": event_count,
+                        "live_continuation_sequence": Value::Null,
+                        "max_build_step": 0,
+                        "max_updated_at": "",
+                        "request_complete": true,
+                        "source_plan_hash": persisted_source,
+                        "source_tiers": ["persisted_intraday_base_bars"],
+                        "token": persisted_source,
+                    }
+                },
+                "has_more": persisted.has_more,
+                "indicators": [],
+                "indicators_available": false,
+                "market_signal_events": [],
+                "next_before": persisted.next_before,
+                "structure_events": [],
+                "structure_level_history": [],
+                "ticker": ticker,
+                "timeframe": timeframe,
+            })));
+        }
+    }
     let snapshot = state
         .cache
         .chart_snapshot(

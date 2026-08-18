@@ -10,7 +10,7 @@ export function inventoryEligibilityOptions(label: string): InventoryFilterOptio
 
 type MenuPlacement = CSSProperties & { maxHeight: number; width: number };
 
-export function InventoryFilterSelect({ ariaLabel, className, defaultValue, onChange, optionLimit = 100, options, placeholder, presentation = "compact", searchable = false, searchPlaceholder = "Search…", showAllOnOpen = false, value }: { ariaLabel: string; className?: string; defaultValue?: string | number; onChange: (value: string) => void; optionLimit?: number; options: InventoryFilterOption[]; placeholder?: string; presentation?: "catalog" | "compact"; searchable?: boolean; searchPlaceholder?: string; showAllOnOpen?: boolean; value: string | number }) {
+export function InventoryFilterSelect({ ariaLabel, className, defaultValue, disabled = false, onChange, optionLimit = 100, options, placeholder, presentation = "compact", searchable = false, searchPlaceholder = "Search…", showAllOnOpen = false, value }: { ariaLabel: string; className?: string; defaultValue?: string | number; disabled?: boolean; onChange: (value: string) => void; optionLimit?: number; options: InventoryFilterOption[]; placeholder?: string; presentation?: "catalog" | "compact"; searchable?: boolean; searchPlaceholder?: string; showAllOnOpen?: boolean; value: string | number }) {
   const normalizedValue = String(value);
   const normalizedDefaultValue = String(defaultValue ?? options[0]?.value ?? "");
   const matchingIndex = options.findIndex((option) => option.value === normalizedValue);
@@ -153,7 +153,7 @@ export function InventoryFilterSelect({ ariaLabel, className, defaultValue, onCh
   }
 
   return <>
-    <button aria-controls={open ? menuId : undefined} aria-expanded={open} aria-haspopup="listbox" aria-label={ariaLabel} className={`inventory-filter-button${className ? ` ${className}` : ""}`} data-filter-active={normalizedValue !== normalizedDefaultValue ? "true" : undefined} data-has-selection={hasSelection ? "true" : "false"} onClick={() => setOpen((current) => !current)} onKeyDown={onButtonKeyDown} ref={buttonRef} type="button">
+    <button aria-controls={open ? menuId : undefined} aria-expanded={open} aria-haspopup="listbox" aria-label={ariaLabel} className={`inventory-filter-button${className ? ` ${className}` : ""}`} data-filter-active={normalizedValue !== normalizedDefaultValue ? "true" : undefined} data-has-selection={hasSelection ? "true" : "false"} disabled={disabled} onClick={() => setOpen((current) => !current)} onKeyDown={onButtonKeyDown} ref={buttonRef} type="button">
       <span>{selected?.label ?? placeholder ?? "Select"}</span><ChevronDown aria-hidden="true" size={12} />
     </button>
     {open ? createPortal(<div className="inventory-filter-menu" data-presentation={presentation} data-searchable={searchable ? "true" : undefined} ref={menuRef} style={placement}>

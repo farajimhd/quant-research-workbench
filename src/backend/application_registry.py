@@ -223,7 +223,7 @@ CONFIGURATION_BINDINGS = (
     ConfigurationBindingDefinition("trading_actions.definitions", "trading_actions.definitions[]", "trading_action", "action_id", "locked", (), ()),
     ConfigurationBindingDefinition("trading_actions.policies", "trading_actions.policies[]", "action_policy", "policy_id", "editable_instance", ("name", "description", "action_id", "trigger", "quantity", "authority", "maximum_uses", "enabled"), ("action_id", "trigger.rule_set_ids")),
     ConfigurationBindingDefinition("strategy.profiles", "strategy.profiles[]", "strategy_profile", "profile_id", "editable_instance", ("name", "description", "parameters", "lifecycle", "action_policy_ids"), ("definition_id", "action_policy_ids")),
-    ConfigurationBindingDefinition("run_plans", "assignments.deployments[]", "run_plan", "run_plan_id", "editable_instance", ("name", "description", "profile_id", "watchlist_ids", "mandate_ids", "oms_profile_id", "canvas_profile_id", "allowed_environments", "data_plan_ids", "source_revision_policy", "action_authority", "campaign_lifecycle", "enabled"), ("profile_id", "watchlist_ids", "mandate_ids", "oms_profile_id", "canvas_profile_id", "data_plan_ids")),
+    ConfigurationBindingDefinition("run_plans", "assignments.deployments[]", "run_plan", "run_plan_id", "editable_instance", ("name", "description", "profile_id", "signal_stream_ids", "watchlist_ids", "activation", "enablement", "mandate_ids", "oms_profile_id", "canvas_profile_id", "allowed_environments", "data_plan_ids", "source_revision_policy", "action_authority", "campaign_lifecycle", "enabled"), ("profile_id", "signal_stream_ids", "watchlist_ids", "mandate_ids", "oms_profile_id", "canvas_profile_id", "data_plan_ids")),
     ConfigurationBindingDefinition("accounts", "accounts.bindings[]", "account_binding", "account_key", "editable_instance", ("name", "account_class", "base_currency", "session_key", "portfolio_policy_id", "enabled", "modes"), ("portfolio_policy_id",)),
     ConfigurationBindingDefinition("portfolio.policies", "portfolio.policies[]", "portfolio_policy", "policy_id", "editable_instance", ("*",)),
     ConfigurationBindingDefinition("portfolio.mandates", "portfolio.mandates[]", "portfolio_mandate", "mandate_id", "editable_instance", ("run_plan_id", "account_key", "maximum_cash_fraction", "maximum_planned_risk_fraction", "maximum_positions", "assignment_mode", "allocation_weight", "maximum_action_authority", "allow_replacement", "minimum_replacement_improvement_pct", "enabled"), ("run_plan_id", "account_key")),
@@ -861,6 +861,16 @@ def _query_plans() -> tuple[QueryPlanDefinition, ...]:
             "service://text-intelligence/news-coverage",
         ),
         QueryPlanDefinition(
+            "intelligence.news_synthesis_events.v1",
+            "backend",
+            "src.backend.news_signal_runtime_service:news_synthesis_events",
+            ("q_live.news_synthesis_v1",),
+            "canonical news ID plus issuer-view entity and resolved ticker",
+            "published_at_utc",
+            "updated_at_utc",
+            "service://text-intelligence/news-coverage",
+        ),
+        QueryPlanDefinition(
             "intelligence.sec_asof.v1",
             "text_intelligence",
             "service://text-intelligence/sec-synthesis-v1",
@@ -1057,6 +1067,12 @@ FIELD_OPERATOR_DOCUMENTATION.update({
 
 
 FIELD_KNOWN_VALUES: dict[str, tuple[tuple[str, str, str], ...]] = {
+    "news.composite_sentiment": (
+        ("positive", "Positive", "Issuer-specific positive evidence exceeds negative evidence."),
+        ("negative", "Negative", "Issuer-specific negative evidence exceeds positive evidence."),
+        ("neutral", "Neutral", "No directional issuer evidence is established."),
+        ("mixed", "Mixed", "Material positive and negative issuer evidence coexist."),
+    ),
     "clock.weekday": tuple(
         (name, name, f"Exchange-local {name}.")
         for name in ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday")
@@ -1771,6 +1787,37 @@ def _fields() -> tuple[FieldDefinition, ...]:
         semantic = name in {"topic", "event_type", "entities", "relationships", "direction", "score", "confidence", "impact", "uncertainty", "horizon", "eligible", "expires_at"}
         rows.append(_field(f"news.{name}", "news", "text_intelligence" if semantic else "news_gateway", "service://text-intelligence/news-synthesis-v1" if semantic else "service://news-gateway/canonical-company-news", "intelligence.news_asof.v1" if semantic else "news.company_asof.v1", value_type="number" if name in {"count", "recency", "score", "confidence", "impact", "uncertainty"} else "boolean" if name == "eligible" else "json" if name in {"entities", "relationships"} else "string", entity_grain="company_news_event", ttl_seconds=900, publication_cadence="event_driven", status="integration_pending" if semantic else "implemented"))
 
+    for field_id, value_type, unit, source_columns in (
+        ("news.composite_sentiment", "string", "category", ("issuer_views.composite_sentiment",)),
+        ("news.positive_strength", "integer", "ordinal", ("issuer_views.positive_strength",)),
+        ("news.negative_strength", "integer", "ordinal", ("issuer_views.negative_strength",)),
+        ("news.forecast_trigger_eligible", "boolean", "boolean", ("eligibility.eligible",)),
+        ("news.canonical_news_id", "string", "identity", ("canonical_news_id",)),
+        ("news.published_at", "string", "timestamp", ("published_at_utc",)),
+    ):
+        rows.append(_field(
+            field_id,
+            "news_synthesis",
+            "text_intelligence",
+            "q_live.news_synthesis_v1",
+            "intelligence.news_synthesis_events.v1",
+            value_type=value_type,
+            unit=unit,
+            entity_grain="issuer_news_event",
+            source_columns=source_columns,
+            event_at="published_at_utc",
+            available_at="news_synthesis_v1.updated_at_utc",
+            ttl_seconds=None,
+            publication_cadence="event_driven",
+            provenance="reported",
+            coverage_query_plan="intelligence.news_synthesis_events.v1",
+            timeframes=("event",),
+            calculation_summary=(
+                "Projects the exact issuer-specific value from the validated News Synthesis V1 document; "
+                "forecast eligibility is selected for product=forecast_trigger and the same entity_id."
+            ),
+        ))
+
     sec_names = ("latest_at", "count", "recency", "latest_form", "cik", "accession", "form", "accepted_at", "filed_at", "period_end", "document_id", "document_type", "source_hash", "renderer_version", "topic", "event_type", "direction", "score", "confidence", "impact", "uncertainty", "entity_relationships", "market_bridge_state")
     for name in sec_names:
         semantic = name in {"topic", "event_type", "direction", "score", "confidence", "impact", "uncertainty", "entity_relationships"}
@@ -1881,6 +1928,12 @@ DISCOVERY_FIELD_PRESENTATIONS = (
     DiscoveryFieldPresentation("fundamental.share_growth_pct", "fundamental.share_growth_pct", "fundamental_share_growth_pct", "Comparable share-count change %", "Comparable basic-share change divided by the absolute prior-period share count.", "reference", False, True, True, ("greater_or_equal", "greater_than", "less_or_equal", "less_than", "equals"), ("filing",)),
     DiscoveryFieldPresentation("signal.news_labeled", "signal.news_labeled", "", "News labeled", "Validated point-in-time Text Intelligence news-label availability.", "signal", False, True, False, ("is_true",), ("event",)),
     DiscoveryFieldPresentation("signal.company_news.score", "news.score", "news_sentiment", "News sentiment", "Latest validated point-in-time company-news score and label.", "signal", False, True, True, ("greater_or_equal", "greater_than", "less_or_equal", "less_than", "equals"), ("event",)),
+    DiscoveryFieldPresentation("news.composite_sentiment", "news.composite_sentiment", "news_composite_sentiment", "News sentiment", "Exact issuer-specific News Synthesis V1 composite sentiment.", "signal", False, True, True, ("equals", "not_equals"), ("event",)),
+    DiscoveryFieldPresentation("news.positive_strength", "news.positive_strength", "news_positive_strength", "Positive evidence", "Issuer-specific positive evidence strength from 0 through 3.", "signal", False, True, True, ("greater_or_equal", "greater_than", "less_or_equal", "less_than", "equals"), ("event",)),
+    DiscoveryFieldPresentation("news.negative_strength", "news.negative_strength", "news_negative_strength", "Negative evidence", "Issuer-specific negative evidence strength from 0 through 3.", "signal", False, True, True, ("greater_or_equal", "greater_than", "less_or_equal", "less_than", "equals"), ("event",)),
+    DiscoveryFieldPresentation("news.forecast_trigger_eligible", "news.forecast_trigger_eligible", "news_forecast_eligible", "Forecast eligible", "Whether the issuer view is admitted to the certified forecast-trigger product.", "signal", False, True, True, ("is_true", "equals"), ("event",)),
+    DiscoveryFieldPresentation("news.canonical_news_id", "news.canonical_news_id", "canonical_news_id", "News ID", "Stable canonical identity of the source news event.", "signal", False, False, True, (), ("event",)),
+    DiscoveryFieldPresentation("news.published_at", "news.published_at", "news_published_at", "Published", "Authoritative source publication time in UTC.", "signal", False, False, True, (), ("event",)),
     DiscoveryFieldPresentation("signal.sec_labeled", "signal.sec_labeled", "", "SEC labeled", "Validated point-in-time Text Intelligence SEC-label availability.", "signal", False, True, False, ("is_true",), ("event",)),
     DiscoveryFieldPresentation("signal.sec_filing.score", "sec.score", "sec_sentiment", "SEC sentiment", "Latest validated point-in-time filing score and label.", "signal", False, True, True, ("greater_or_equal", "greater_than", "less_or_equal", "less_than", "equals"), ("event",)),
     DiscoveryFieldPresentation("event.ipo.date", "event.ipo.date", "ipo_event", "IPO date", "Point-in-time past or upcoming IPO event date.", "event", False, False, True, (), ("event",)),
