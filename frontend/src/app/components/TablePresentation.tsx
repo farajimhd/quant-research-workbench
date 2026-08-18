@@ -1,0 +1,93 @@
+import type { ReactNode } from "react";
+
+import { MarketTime } from "./MarketTime";
+import { TickerLogo } from "./TickerIdentity";
+
+export type PresentationValueType =
+  | "basis_points" | "boolean" | "category" | "date" | "datetime" | "identifier"
+  | "integer" | "money" | "percent" | "price" | "quantity" | "ratio" | "score" | "text" | "time";
+
+export type TableColumnPresentation = {
+  label?: string;
+  presentationValueType?: PresentationValueType;
+  semanticTone?: "directional" | "inverse-directional" | "neutral";
+};
+
+export function presentationForColumn(column: string, override?: TableColumnPresentation): Required<TableColumnPresentation> {
+  const key = column.toLowerCase();
+  if (override?.presentationValueType) return { label: override.label ?? labelForColumn(column), presentationValueType: override.presentationValueType, semanticTone: override.semanticTone ?? "neutral" };
+  const directional = /(^|_)(change|return|pnl|gain|growth|margin|momentum|imbalance|net_flow)(_|$)/.test(key);
+  const inverse = /(^|_)(dilution|drawdown|spread|debt)(_|$)/.test(key);
+  let presentationValueType: PresentationValueType = "text";
+  if (key === "time" || key.endsWith("_time") || key.endsWith("_at") || key.endsWith("_at_utc") || key.includes("timestamp")) presentationValueType = "datetime";
+  else if (key.endsWith("_date") || key === "date") presentationValueType = "date";
+  else if (key.includes("pct") || key.includes("percent") || key.includes("return")) presentationValueType = "percent";
+  else if (key.includes("bps")) presentationValueType = "basis_points";
+  else if (/(^|_)(price|bid|ask|open|high|low|close|vwap|stop)(_|$)/.test(key)) presentationValueType = "price";
+  else if (/(^|_)(pnl|cash|value|cost|proceeds|notional|market_cap|dollar_volume)(_|$)/.test(key)) presentationValueType = "money";
+  else if (/(^|_)(volume|shares|size|count|quantity|qty)(_|$)/.test(key)) presentationValueType = "quantity";
+  else if (/(^|_)(score|confidence)(_|$)/.test(key)) presentationValueType = "score";
+  else if (/(^|_)(ratio|multiple|rate)(_|$)/.test(key)) presentationValueType = "ratio";
+  else if (/(^|_)(status|state|phase|direction|side|type|category|class|role|origin|source|exchange|sector|currency)(_|$)/.test(key)) presentationValueType = "category";
+  else if (/(^|_)(id|symbol|ticker|account|cik|accession)(_|$)/.test(key)) presentationValueType = "identifier";
+  return { label: override?.label ?? labelForColumn(column), presentationValueType, semanticTone: override?.semanticTone ?? (inverse ? "inverse-directional" : directional ? "directional" : "neutral") };
+}
+
+export function PresentedValue({ column, presentation, value }: { column: string; presentation?: TableColumnPresentation; value: unknown }) {
+  const resolved = presentationForColumn(column, presentation);
+  if (value === null || value === undefined || value === "") return <span className="table-value-unavailable">—</span>;
+  if (resolved.presentationValueType === "datetime") return <MarketTime includeSeconds value={String(value)} />;
+  if (resolved.presentationValueType === "date") return <DateOnlyValue value={String(value)} />;
+  if (resolved.presentationValueType === "category" || resolved.presentationValueType === "boolean") return <CategoryBadge value={value} />;
+  const numeric = Number(value);
+  if (Number.isFinite(numeric) && isNumericPresentation(resolved.presentationValueType)) {
+    const tone = numericTone(numeric, resolved.semanticTone);
+    return <span className="table-number" data-tone={tone} title={new Intl.NumberFormat("en-US", { maximumFractionDigits: 10 }).format(numeric)}>{formatNumber(numeric, resolved.presentationValueType)}</span>;
+  }
+  return <span className={resolved.presentationValueType === "identifier" ? "table-identifier" : "table-text"}>{String(value)}</span>;
+}
+
+export function CategoryBadge({ value }: { value: unknown }) {
+  const label = String(value).replaceAll("_", " ").trim();
+  if (!label) return <span className="table-value-unavailable">—</span>;
+  return <span className="table-category-badge" data-tone={categoryTone(label)}>{label}</span>;
+}
+
+export function SecurityIdentityCell({ companyName = "", logoUrl = "", ticker, trailing }: { companyName?: string; logoUrl?: string; ticker: string; trailing?: ReactNode }) {
+  const symbol = ticker.trim().toUpperCase();
+  return <span className="table-security-card" title={[symbol, companyName].filter(Boolean).join(" · ")}>
+    <TickerLogo logoUrl={logoUrl} showLogoPlaceholder ticker={symbol} />
+    <span className="table-security-copy"><strong>{symbol || "—"}</strong>{companyName ? <small>{companyName}</small> : null}</span>
+    {trailing ? <span className="table-security-trailing">{trailing}</span> : null}
+  </span>;
+}
+
+export function tableCellClass(column: string, presentation?: TableColumnPresentation) {
+  const resolved = presentationForColumn(column, presentation);
+  return `table-presented-cell table-presented-${resolved.presentationValueType}`;
+}
+
+export function labelForColumn(column: string) { return column.replace(/[_-]+/g, " ").replace(/\b\w/g, (letter) => letter.toUpperCase()); }
+
+function DateOnlyValue({ value }: { value: string }) {
+  const match = /^(\d{4})-(\d{2})-(\d{2})/.exec(value);
+  if (!match) return <span className="table-text">{value}</span>;
+  const date = new Date(Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3]), 12));
+  const label = new Intl.DateTimeFormat("en-US", { day: "numeric", month: "short", year: "numeric", timeZone: "UTC" }).format(date);
+  return <time className="market-time market-time-inline table-date-only" dateTime={`${match[1]}-${match[2]}-${match[3]}`}><span className="market-time-primary"><strong>{label}</strong></span></time>;
+}
+
+function isNumericPresentation(type: PresentationValueType) { return ["basis_points", "integer", "money", "percent", "price", "quantity", "ratio", "score"].includes(type); }
+function numericTone(value: number, semantic: Required<TableColumnPresentation>["semanticTone"]) { if (!value || semantic === "neutral") return "neutral"; const positive = semantic === "inverse-directional" ? value < 0 : value > 0; return positive ? "positive" : "negative"; }
+function categoryTone(value: string) { const key = value.toLowerCase(); if (/bull|buy|long|open|ready|active|filled|approved|positive|success|yes|true|regular/.test(key)) return "positive"; if (/bear|sell|short|closed|error|failed|rejected|negative|danger|no|false|halt/.test(key)) return "negative"; if (/pending|warning|partial|mixed|pre|post|after|extended|stale/.test(key)) return "warning"; if (/info|cold|news|sec|model/.test(key)) return "info"; return "neutral"; }
+function formatNumber(value: number, type: PresentationValueType) {
+  if (type === "percent") return `${value > 0 ? "+" : ""}${value.toFixed(Math.abs(value) < 1 ? 2 : 1)}%`;
+  if (type === "basis_points") return `${value.toFixed(Math.abs(value) < 10 ? 1 : 0)} bps`;
+  if (type === "price") return new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", minimumFractionDigits: value < 1 ? 4 : 2, maximumFractionDigits: value < 1 ? 4 : 2 }).format(value);
+  if (type === "money") return compact(value, "$", "");
+  if (type === "quantity" || type === "integer") return compact(value, "", "");
+  if (type === "ratio") return `${new Intl.NumberFormat("en-US", { maximumFractionDigits: 2 }).format(value)}×`;
+  if (type === "score") return new Intl.NumberFormat("en-US", { maximumFractionDigits: 1 }).format(value);
+  return String(value);
+}
+function compact(value: number, prefix: string, suffix: string) { const absolute = Math.abs(value); const scales: Array<[number, string]> = [[1e12, "T"], [1e9, "B"], [1e6, "M"], [1e3, "K"]]; const scale = scales.find(([threshold]) => absolute >= threshold); const formatted = scale ? `${(value / scale[0]).toFixed(Math.abs(value / scale[0]) < 10 ? 2 : 1)}${scale[1]}` : new Intl.NumberFormat("en-US", { maximumFractionDigits: 2 }).format(value); return `${prefix}${formatted}${suffix}`; }

@@ -853,6 +853,7 @@ class TradingConfigurationServiceTests(unittest.TestCase):
         self.assertGreaterEqual(len(fields), 180)
         self.assertEqual(fields["market.last_price"]["column_id"], "last_price")
         self.assertTrue(fields["market.last_price"]["filterable"])
+        self.assertEqual(fields["market.last_price"]["presentation_value_type"], "price")
         self.assertIn(
             "greater_or_equal", fields["market.last_price"]["filter_operators"]
         )
@@ -873,6 +874,7 @@ class TradingConfigurationServiceTests(unittest.TestCase):
                 for row in discovery["column_catalog"]
             )
         )
+        self.assertTrue(all(row.get("presentation_value_type") for row in discovery["column_catalog"]))
 
         active_core = [
             row for row in discovery["calculation_catalog"]

@@ -171,7 +171,9 @@ class ApplicationRegistryTests(unittest.TestCase):
 
     def test_payload_includes_versions_and_counts(self) -> None:
         payload = application_registry_payload()
-        self.assertEqual(payload["schema_version"], 5)
+        self.assertEqual(payload["schema_version"], 6)
+        self.assertEqual(payload["fields"][0]["presentation_value_type"], "price")
+        self.assertTrue(all(row["presentation_value_type"] for row in payload["market_discovery_fields"]))
         self.assertEqual(payload["counts"]["fields"], len(FIELD_DEFINITIONS))
         self.assertEqual(payload["counts"]["query_plans"], len(QUERY_PLANS))
         self.assertEqual(payload["counts"]["market_sources"], len(MARKET_SOURCES))

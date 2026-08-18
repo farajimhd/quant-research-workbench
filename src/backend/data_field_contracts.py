@@ -6,10 +6,10 @@ import re
 from copy import deepcopy
 from typing import Any, Iterable
 
-from src.backend.application_registry import DISCOVERY_RUNTIME_FIELDS, FIELD_DEFINITIONS
+from src.backend.application_registry import DISCOVERY_RUNTIME_FIELDS, FIELD_DEFINITIONS, _presentation_value_type
 
 
-DATA_FIELD_CONTRACT_VERSION = 4
+DATA_FIELD_CONTRACT_VERSION = 5
 
 AGGREGATION_FUNCTIONS = {
     "first", "last", "min", "max", "sum", "mean", "median", "count",
@@ -131,6 +131,7 @@ def atomic_field_catalog(extra_inputs: Iterable[str] = ()) -> list[dict[str, Any
             "source_path": field.source_path,
             "query_plan_id": field.query_plan_id,
             "value_type": field.value_type,
+            "presentation_value_type": field.presentation_value_type,
             "unit": field.unit,
             "entity_grain": field.entity_grain,
             "event_at": field.event_at,
@@ -842,6 +843,7 @@ def build_column_catalog(
                     "name": str(presentation.get("label") or output.get("name") or column_id),
                     "description": str(output.get("description") or data_field.get("description") or "Data Field output."),
                     "value_type": str(output.get("value_type") or "number"),
+                    "presentation_value_type": str(output.get("presentation_value_type") or _presentation_value_type(str(output.get("field_id") or output.get("source_id") or column_id), str(output.get("value_type") or "number"), str(output.get("unit") or "scalar"))),
                     "unit": str(output.get("unit") or "scalar"),
                     "default_visible": bool(presentation.get("default_visible")),
                     "filterable": bool(output.get("filterable")),
@@ -872,6 +874,7 @@ def build_column_catalog(
             "name": str(rule_set.get("name") or rule_set_id),
             "description": str(rule_set.get("description") or "Boolean Rule Set result."),
             "value_type": "boolean",
+            "presentation_value_type": "boolean",
             "unit": "boolean",
             "default_visible": False,
             "filterable": True,
@@ -1133,6 +1136,7 @@ def _data_field_output(
         "name": str(field.get("name") or _readable(source_id)),
         "description": str(field.get("description") or f"Output {source_id}."),
         "value_type": value_type,
+        "presentation_value_type": str(field.get("presentation_value_type") or _presentation_value_type(str(field.get("field_id") or source_id), value_type, unit, tuple((str(row.get("value") or ""), str(row.get("label") or ""), str(row.get("description") or "")) for row in known_values))),
         "unit": unit,
         "value_domain": {
             "kind": domain_kind,

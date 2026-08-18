@@ -19,6 +19,7 @@ from src.backend.application_registry import (
     DISCOVERY_FIELD_PRESENTATIONS,
     FIELD_DEFINITIONS,
     TEMPORAL_DERIVED_METHODS,
+    _presentation_value_type,
 )
 from src.backend.qmd_gateway_client import qmd_catalogs
 from src.backend.data_field_contracts import (
@@ -2558,6 +2559,7 @@ def _market_discovery_field_catalog(
                 if field is not None
                 else capability.get("output_type") or "number"
             ),
+            "presentation_value_type": str(field.presentation_value_type if field is not None else _presentation_value_type(presentation.field_id, str(capability.get("output_type") or "number"), str(capability.get("output_type") or "scalar"))),
             "unit": str(field.unit if field is not None else capability.get("output_type") or "scalar"),
             "default_visible": presentation.default_visible,
             "filterable": presentation.filterable,
@@ -2598,6 +2600,7 @@ def _market_discovery_field_catalog(
                 for value, label, description in field.known_values
             ],
             "value_type": field.value_type,
+            "presentation_value_type": field.presentation_value_type,
             "unit": field.unit,
             "default_visible": False,
             "filterable": False,
@@ -2658,6 +2661,7 @@ def _market_discovery_field_catalog(
                 "input_field_ids": list(capability.get("inputs") or []),
                 "known_values": [],
                 "value_type": output_type or "number",
+                "presentation_value_type": _presentation_value_type(source_id, output_type or "number", output_type or "scalar"),
                 "unit": output_type or "scalar",
                 "default_visible": False,
                 "filterable": True,
@@ -2698,6 +2702,7 @@ def _watchlist_column_catalog(
             "name": str(rule_set.get("name") or rule_set_id),
             "description": str(rule_set.get("description") or "Boolean rule-set result."),
             "value_type": "boolean",
+            "presentation_value_type": "boolean",
             "unit": "boolean",
             "default_visible": False,
             "filterable": True,

@@ -25,7 +25,7 @@ import { createPortal } from "react-dom";
 
 import { displayName, formatCell } from "../format";
 import { Modal } from "./Modal";
-import { TickerIdentity } from "./TickerIdentity";
+import { CategoryBadge, PresentedValue, SecurityIdentityCell, tableCellClass } from "./TablePresentation";
 
 type DataRow = Record<string, unknown>;
 export type SortDirection = "asc" | "desc";
@@ -195,8 +195,9 @@ let backendQueryConditionSequence = 0;
 export function DataTable({ backendQuery, columns, defaultFilterPreset, defaultSort, empty = "No rows.", fitToContent = false, filterPresets = [], isRowSelected, onRowClick, preserveFiltersOnDataChange = false, rowAction, rows, title, transposeHelper = false }: DataTableProps) {
   const emptyIsLoading = /^(loading|building|rebuilding|resolving|connecting|querying)\b/i.test(empty.trim());
   const baseColumns = useMemo(() => {
-    if (columns?.length) return columns;
-    return Array.from(new Set(rows.flatMap((row) => Object.keys(row))));
+    const discovered = columns?.length ? columns : Array.from(new Set(rows.flatMap((row) => Object.keys(row))));
+    const hasSecurityIdentity = discovered.some(isTickerColumn);
+    return hasSecurityIdentity ? discovered.filter((column) => !["logo", "logo_url", "company_name", "issuer_name"].includes(column.toLowerCase())) : discovered;
   }, [columns, rows]);
   const columnOrderStorageKeys = useMemo(() => buildColumnOrderStorageKeys(title, baseColumns), [baseColumns, title]);
 
@@ -2791,11 +2792,12 @@ function formatDateValue(value: Date) {
 
 function renderCell(row: DataRow, column: string) {
   if (isLogoColumn(column)) return renderLogoCell(row, column);
-  if (isBadgeCategoryColumn(column.toLowerCase())) return renderCategoricalCell(row[column], column);
-  if (!isTickerColumn(column)) return formatCell(column, row[column]);
+  if (isBadgeCategoryColumn(column.toLowerCase())) return <CategoryBadge value={row[column]} />;
+  if (!isTickerColumn(column)) return <PresentedValue column={column} value={row[column]} />;
   const value = formatCell(column, row[column]);
   const ticker = value === "-" ? "" : value;
-  const identity = <TickerIdentity logoUrl={stringValue(row.logo_url)} ticker={ticker} />;
+  const companyName = stringValue(row.company_name) || stringValue(row.issuer_name) || stringValue(row.name);
+  const identity = <SecurityIdentityCell companyName={companyName} logoUrl={stringValue(row.logo_url)} ticker={ticker} />;
   if (column.toLowerCase() !== "ticker") return identity;
   const newsCount = coerceNumber(row.live_news_count);
   if (!Number.isFinite(newsCount) || newsCount <= 0) return identity;
@@ -2858,7 +2860,7 @@ function isLogoColumn(column: string) {
 
 function isTickerColumn(column: string) {
   const normalized = column.toLowerCase();
-  return normalized === "ticker" || normalized === "candidate_massive_ticker";
+  return normalized === "ticker" || normalized === "symbol" || normalized === "candidate_massive_ticker";
 }
 
 function renderLogoCell(row: DataRow, column: string) {
@@ -2900,19 +2902,19 @@ function normalizedNewsRecency(value: unknown) {
 function cellClassName(value: unknown, column: string) {
   const normalized = column.toLowerCase();
   if (normalized === "logo") return "data-table-cell data-table-logo-column";
-  if (isTickerColumn(column)) return "data-table-cell ticker";
+  if (isTickerColumn(column)) return "data-table-cell ticker table-presented-security";
   if (normalized === "live_news_recency") {
     return `data-table-cell live-news-recency ${normalizedNewsRecency(value)}`;
   }
   if (isPriceColumn(normalized)) return "data-table-cell numeric price";
   if (isBadgeCategoryColumn(normalized)) return "data-table-cell categorical";
   const numeric = coerceNumber(value);
-  if (!Number.isFinite(numeric)) return "data-table-cell";
+  if (!Number.isFinite(numeric)) return `data-table-cell ${tableCellClass(column)}`;
   if (normalized.includes("pnl") || normalized.includes("return") || normalized.includes("change") || normalized.includes("pct")) {
     if (numeric > 0) return "data-table-cell numeric positive";
     if (numeric < 0) return "data-table-cell numeric negative";
   }
-  return "data-table-cell numeric";
+  return `data-table-cell numeric ${tableCellClass(column)}`;
 }
 
 function isPriceColumn(normalizedColumn: string) {

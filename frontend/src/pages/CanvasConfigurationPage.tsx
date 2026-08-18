@@ -56,6 +56,7 @@ import { MarketScannerContainer, migrateMarketScannerSettings, SCANNER_TIMEFRAME
 import { StockFactsContainer } from "../app/components/StockFactsContainer";
 import { XbrlAnalysisContainer, type XbrlAnalysisSettings } from "../app/components/XbrlAnalysisContainer";
 import { TickerIdentity, TickerIdentityWithChange, useTickerPresentations } from "../app/components/TickerIdentity";
+import { PresentedValue, SecurityIdentityCell, tableCellClass } from "../app/components/TablePresentation";
 import { TRADING_WORKSPACE_LAYOUT_VERSION, TradingWorkspace, createFocusLayouts } from "../app/components/TradingWorkspace";
 import type { WorkspaceWindowLayout, WorkspaceWindowMeta, WorkspaceWindowStatus } from "../app/components/WorkspaceCanvas";
 import { TRADING_WORKSPACE_CONTAINERS, containerSupportsCanvasLink, containerSupportsSymbolLink, type WorkspaceContainerDefinition, type WorkspaceContainerId } from "../app/tradingWorkspace";
@@ -3768,7 +3769,8 @@ function PreviewTable({ columns, onSymbolSelect, rows }: { columns: string[]; on
   const tickerColumns = columns.filter(isPreviewTickerColumn);
   const presentations = useTickerPresentations(rows.flatMap((row) => tickerColumns.map((column) => String(row[column] || ""))));
   if (!rows.length) return <EmptyState label="No point-in-time rows" />;
-  return <div className="canvas-preview-table-wrap"><table className="canvas-preview-table"><thead><tr>{columns.map((column) => <th key={column}>{labelFor(column)}</th>)}</tr></thead><tbody>{rows.map((row, index) => <tr key={previewRowKey(row, columns, index)}>{columns.map((column) => <td className={`preview-cell-${column.replace(/[^a-z0-9_-]/gi, "-")}`} data-tone={cellTone(row[column], column)} key={column}><PreviewCell column={column} onSymbolSelect={onSymbolSelect} presentations={presentations} row={row} /></td>)}</tr>)}</tbody></table></div>;
+  const visibleColumns = columns.filter((column) => column !== "logo" && column !== "company_name");
+  return <div className="canvas-preview-table-wrap"><table className="canvas-preview-table"><thead><tr>{visibleColumns.map((column) => <th key={column}>{labelFor(column)}</th>)}</tr></thead><tbody>{rows.map((row, index) => <tr key={previewRowKey(row, visibleColumns, index)}>{visibleColumns.map((column) => <td className={`${tableCellClass(column)} preview-cell-${column.replace(/[^a-z0-9_-]/gi, "-")}`} data-tone={cellTone(row[column], column)} key={column}><PreviewCell column={column} onSymbolSelect={onSymbolSelect} presentations={presentations} row={row} /></td>)}</tr>)}</tbody></table></div>;
 }
 
 type TradingDataTableProps = {
@@ -3783,6 +3785,7 @@ type TradingDataTableProps = {
 };
 
 function TradingDataTable({ columns, defaultSort, filterColumn, filterLabel = "All", onSymbolSelect, renderExpanded, rows, searchPlaceholder }: TradingDataTableProps) {
+  const visibleColumns = useMemo(() => columns.filter((column) => column !== "logo" && column !== "company_name"), [columns]);
   const [queryText, setQueryText] = useState("");
   const [filterValue, setFilterValue] = useState("all");
   const [sortColumn, setSortColumn] = useState(defaultSort || columns[0] || "");
@@ -3796,10 +3799,10 @@ function TradingDataTable({ columns, defaultSort, filterColumn, filterLabel = "A
     const filtered = rows.filter((row) => {
       if (filterColumn && filterValue !== "all" && String(row[filterColumn] ?? "") !== filterValue) return false;
       if (!queryValue) return true;
-      return columns.some((column) => searchableValue(row[column]).includes(queryValue));
+      return visibleColumns.some((column) => searchableValue(row[column]).includes(queryValue));
     });
     return [...filtered].sort((left, right) => compareTradingValues(left[sortColumn], right[sortColumn]) * (sortDirection === "asc" ? 1 : -1));
-  }, [columns, filterColumn, filterValue, queryText, rows, sortColumn, sortDirection]);
+  }, [filterColumn, filterValue, queryText, rows, sortColumn, sortDirection, visibleColumns]);
   function changeSort(column: string) {
     if (sortColumn === column) setSortDirection((current) => current === "asc" ? "desc" : "asc");
     else { setSortColumn(column); setSortDirection("desc"); }
@@ -3810,16 +3813,16 @@ function TradingDataTable({ columns, defaultSort, filterColumn, filterLabel = "A
       {filterColumn ? <label className="trading-table-filter"><Filter aria-hidden="true" size={13} /><select aria-label={`Filter by ${filterLabel}`} onChange={(event) => setFilterValue(event.target.value)} value={filterValue}><option value="all">{filterLabel}</option>{filterOptions.map((option) => <option key={option} value={option}>{option}</option>)}</select></label> : null}
       <span className="trading-table-count">{visibleRows.length} of {rows.length}</span>
     </div>
-    {!visibleRows.length ? <EmptyState label={rows.length ? "No rows match the active search and filter" : "No point-in-time rows"} /> : <div className="canvas-preview-table-wrap"><table className="canvas-preview-table trading-data-table"><thead><tr>{renderExpanded ? <th aria-label="Expand row" className="trading-expand-column" /> : null}{columns.map((column) => <th aria-sort={sortColumn === column ? (sortDirection === "asc" ? "ascending" : "descending") : "none"} key={column}><button onClick={() => changeSort(column)} type="button"><span>{labelFor(column)}</span>{sortColumn === column ? sortDirection === "asc" ? <ArrowUp size={11} /> : <ArrowDown size={11} /> : <ArrowUpDown size={11} />}</button></th>)}</tr></thead><tbody>{visibleRows.map((row, index) => {
-      const key = previewRowKey(row, columns, index);
+    {!visibleRows.length ? <EmptyState label={rows.length ? "No rows match the active search and filter" : "No point-in-time rows"} /> : <div className="canvas-preview-table-wrap"><table className="canvas-preview-table trading-data-table"><thead><tr>{renderExpanded ? <th aria-label="Expand row" className="trading-expand-column" /> : null}{visibleColumns.map((column) => <th aria-sort={sortColumn === column ? (sortDirection === "asc" ? "ascending" : "descending") : "none"} key={column}><button onClick={() => changeSort(column)} type="button"><span>{labelFor(column)}</span>{sortColumn === column ? sortDirection === "asc" ? <ArrowUp size={11} /> : <ArrowDown size={11} /> : <ArrowUpDown size={11} />}</button></th>)}</tr></thead><tbody>{visibleRows.map((row, index) => {
+      const key = previewRowKey(row, visibleColumns, index);
       const expanded = expandedKey === key;
-      return <FragmentRow columns={columns} expanded={expanded} key={key} onExpand={renderExpanded ? () => setExpandedKey(expanded ? "" : key) : undefined} onSymbolSelect={onSymbolSelect} presentations={presentations} renderExpanded={renderExpanded} row={row} />;
+      return <FragmentRow columns={visibleColumns} expanded={expanded} key={key} onExpand={renderExpanded ? () => setExpandedKey(expanded ? "" : key) : undefined} onSymbolSelect={onSymbolSelect} presentations={presentations} renderExpanded={renderExpanded} row={row} />;
     })}</tbody></table></div>}
   </div>;
 }
 
 function FragmentRow({ columns, expanded, onExpand, onSymbolSelect, presentations, renderExpanded, row }: { columns: string[]; expanded: boolean; onExpand?: () => void; onSymbolSelect?: (symbol: string) => void; presentations: ReturnType<typeof useTickerPresentations>; renderExpanded?: (row: PreviewRow) => ReactNode; row: PreviewRow }) {
-  return <>{<tr className={expanded ? "is-expanded" : undefined}>{renderExpanded ? <td className="trading-expand-column"><button aria-label={expanded ? "Collapse row" : "Expand row"} aria-expanded={expanded} onClick={onExpand} type="button">{expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}</button></td> : null}{columns.map((column) => <td className={`preview-cell-${column.replace(/[^a-z0-9_-]/gi, "-")}`} data-tone={cellTone(row[column], column)} key={column}><PreviewCell column={column} onSymbolSelect={onSymbolSelect} presentations={presentations} row={row} /></td>)}</tr>}{expanded && renderExpanded ? <tr className="trading-expanded-row"><td colSpan={columns.length + 1}>{renderExpanded(row)}</td></tr> : null}</>;
+  return <>{<tr className={expanded ? "is-expanded" : undefined}>{renderExpanded ? <td className="trading-expand-column"><button aria-label={expanded ? "Collapse row" : "Expand row"} aria-expanded={expanded} onClick={onExpand} type="button">{expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}</button></td> : null}{columns.map((column) => <td className={`${tableCellClass(column)} preview-cell-${column.replace(/[^a-z0-9_-]/gi, "-")}`} data-tone={cellTone(row[column], column)} key={column}><PreviewCell column={column} onSymbolSelect={onSymbolSelect} presentations={presentations} row={row} /></td>)}</tr>}{expanded && renderExpanded ? <tr className="trading-expanded-row"><td colSpan={columns.length + 1}>{renderExpanded(row)}</td></tr> : null}</>;
 }
 
 function searchableValue(value: unknown) {
@@ -3841,11 +3844,11 @@ function compareTradingValues(left: unknown, right: unknown) {
 function PreviewCell({ column, onSymbolSelect, presentations, row }: { column: string; onSymbolSelect?: (symbol: string) => void; presentations: ReturnType<typeof useTickerPresentations>; row: PreviewRow }) {
   if (isPreviewTickerColumn(column)) {
     const ticker = String(row[column] || "").trim().toUpperCase();
-    const identity = <TickerIdentity logoUrl={presentations[ticker]?.logo_url} ticker={ticker} />;
+    const identity = <SecurityIdentityCell companyName={String(row.company_name ?? row.issuer_name ?? presentations[ticker]?.issuer_name ?? "")} logoUrl={String(row.logo_url ?? presentations[ticker]?.logo_url ?? "")} ticker={ticker} />;
     return column === "symbol" && onSymbolSelect ? <button className="canvas-symbol-link" onClick={() => onSymbolSelect(ticker)} type="button">{identity}</button> : identity;
   }
-  if (isPreviewTimeColumn(column)) return <MarketTime value={String(row[column] || "")} />;
-  return formatCell(row[column], column);
+  if (isPreviewTimeColumn(column)) return <MarketTime includeSeconds value={String(row[column] || "")} />;
+  return <PresentedValue column={column} value={row[column]} />;
 }
 
 function isPreviewTickerColumn(column: string) { return ["symbol", "ticker", "candidate_massive_ticker"].includes(column.toLowerCase()); }

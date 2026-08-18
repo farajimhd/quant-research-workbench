@@ -5,7 +5,8 @@ import { api, apiCached, invalidateApiCache } from "../../api/client";
 import { CONFIGURATION_SESSION_CHANGED_EVENT, readConfigurationSession } from "../configurationSession";
 import { InventoryFilterSelect } from "./InventoryFilterSelect";
 import { MarketTime } from "./MarketTime";
-import { TickerLogo, useTickerPresentations } from "./TickerIdentity";
+import { useTickerPresentations } from "./TickerIdentity";
+import { CategoryBadge, PresentedValue, SecurityIdentityCell, tableCellClass, type PresentationValueType } from "./TablePresentation";
 
 export type ScreenerRow = Record<string, unknown>;
 export type ScannerSnapshotMeta = {
@@ -42,7 +43,7 @@ export type SignalStreamSettings = TechnicalListSettings & { limit: number; sign
 export type WatchUniverseSettings = TechnicalListSettings & { limit: number; watchlistId: string; watchlistIds: string[]; universeId?: string };
 type DiscoveryScannerColumn = { column_id: string; name: string; source_id: string };
 type DiscoveryCapability = { enabled?: boolean; execution_scope?: string; scanner_columns?: DiscoveryScannerColumn[]; system_required?: boolean };
-type DiscoveryColumn = { column_id: string; description?: string; name: string; provenance?: string; semantic_type?: string; source_id?: string; source_kind?: "data_definition" | "rule_set" | string; unit?: string; value_type?: string };
+type DiscoveryColumn = { column_id: string; description?: string; name: string; presentation_value_type?: PresentationValueType; provenance?: string; semantic_type?: string; source_id?: string; source_kind?: "data_definition" | "rule_set" | string; unit?: string; value_type?: string };
 type DiscoveryWatchlist = { availability?: string; columns?: string[]; description?: string; enabled?: boolean; name: string; origin?: string; watchlist_id: string };
 type DiscoverySignalStream = { column_aggregations?: Record<string, string>; column_intervals?: Record<string, unknown>; columns?: string[]; description?: string; enabled?: boolean; maximum_events?: number; name: string; origin?: string; refresh_interval_ms?: number; signal_stream_id: string; source_id?: string; source_scan_id?: string; source_type?: "core_scan" | "watchlist" | "news_events" };
 type SignalStreamRuntimeResponse = { as_of: string; occurrence_count: number; occurrences: ScreenerRow[]; session?: { active?: boolean; end_at?: string; retention?: string; session_date?: string; start_at?: string; timezone?: string }; signal_streams?: Array<{ candidate_count?: number; configured?: boolean; enabled?: boolean; signal_stream_id: string; source_id?: string; source_type?: string; status?: string }>; status: string };
@@ -78,6 +79,7 @@ type FieldDefinition = {
   key: string;
   kind: FieldKind;
   label: string;
+  presentationValueType?: PresentationValueType;
   metric?: TechnicalMetric;
   anchor?: ScannerSessionAnchor;
   lookbackSessions?: number;
@@ -344,7 +346,7 @@ function discoveryField(column: DiscoveryColumn): FieldDefinition {
               : valueType === "number" ? "number" : "text";
   const provenance = String(column.provenance ?? "raw");
   const kind: FieldKind = provenance === "derived" ? "derived" : provenance === "estimated" ? "estimated" : "raw";
-  return field(column.column_id, column.name, readableGroup(column.semantic_type), kind, format, column.description || `QMD-published ${column.name} field.`);
+  return { ...field(column.column_id, column.name, readableGroup(column.semantic_type), kind, format, column.description || `QMD-published ${column.name} field.`), presentationValueType: column.presentation_value_type };
 }
 
 function readableGroup(value: unknown) {
@@ -481,7 +483,7 @@ export function SignalStreamContainer({ asOf, live, onSettingsChange, onTickerSe
     </nav>
     {addingStream ? <div className="watchlist-tab-lookup"><InventoryFilterSelect ariaLabel="Signal Stream to add" className="watchlist-add-lookup" onChange={addStream} options={availableStreams.map((row) => ({ description: row.description, label: row.name, value: row.signal_stream_id }))} searchable showAllOnOpen value="" /><button onClick={() => { window.location.hash = "market-discovery-configuration"; }} type="button">Configure Signal Stream <ArrowRight size={13} /></button></div> : null}
     <div className="watch-universe-context"><div><span>Source</span><strong>{sourceLabel} · 04:00–20:00 ET</strong></div><button onClick={() => { window.location.hash = "market-discovery-configuration"; }} type="button">Configure in Market Discovery <ArrowRight size={13} /></button></div>
-    <MarketListTable catalog={catalog} columns={columns} customColumns={settings.customColumns} empty={emptyMessage} limit={Math.min(settings.limit, stream?.maximum_events ?? settings.limit)} lockedColumns={canonicalDiscoveryColumns(["event_time", "symbol", ...(stream?.columns ?? [])])} onColumnsChange={(columns) => onSettingsChange({ columns })} onCustomColumnsChange={(customColumns) => onSettingsChange({ customColumns })} onTickerSelect={onTickerSelect} rows={rows} title={stream?.name ?? "Signal Stream"} />
+    <MarketListTable catalog={catalog} chronological columns={columns} customColumns={settings.customColumns} empty={emptyMessage} limit={Math.min(settings.limit, stream?.maximum_events ?? settings.limit)} lockedColumns={canonicalDiscoveryColumns(["event_time", "symbol", ...(stream?.columns ?? [])])} onColumnsChange={(columns) => onSettingsChange({ columns })} onCustomColumnsChange={(customColumns) => onSettingsChange({ customColumns })} onTickerSelect={onTickerSelect} rows={rows} title={stream?.name ?? "Signal Stream"} />
   </section>;
 }
 
@@ -600,7 +602,7 @@ export function StrategyActivityContainer({ asOf, onSettingsChange, onTickerSele
       <ActivityFilter label="Ticker" onChange={(ticker) => onSettingsChange({ ticker })} options={tickers} value={settings.ticker} />
       <ActivityFilter label="Event" onChange={(eventType) => onSettingsChange({ eventType })} options={["signal", "decision", "campaign_state"]} value={settings.eventType} />
     </div>
-    {error ? <div className="canvas-inline-error">Strategy activity unavailable: {error}</div> : <MarketListTable columns={["event_time", "ticker", "event_type", "action", "state", "reason", "strategy_id", "run_id"]} customColumns={[]} empty="No persisted strategy events match these filters." limit={settings.limit} lockedColumns={[]} onColumnsChange={() => undefined} onCustomColumnsChange={() => undefined} onTickerSelect={onTickerSelect} rows={rows} title="Strategy activity" />}
+    {error ? <div className="canvas-inline-error">Strategy activity unavailable: {error}</div> : <MarketListTable chronological columns={["event_time", "ticker", "event_type", "action", "state", "reason", "strategy_id", "run_id"]} customColumns={[]} empty="No persisted strategy events match these filters." limit={settings.limit} lockedColumns={[]} onColumnsChange={() => undefined} onCustomColumnsChange={() => undefined} onTickerSelect={onTickerSelect} rows={rows} title="Strategy activity" />}
   </section>;
 }
 
@@ -668,13 +670,14 @@ function MarketListSurface({
 
 function MarketListTable({
   catalog = FIELD_CATALOG,
+  chronological = false,
   columns,
   customColumns,
   empty,
   fieldCoverage,
   limit,
   lockedColumns = [],
-  mergeCompanyWithIdentity = false,
+  mergeCompanyWithIdentity = true,
   onColumnsChange,
   onCustomColumnsChange,
   onTickerSelect,
@@ -684,6 +687,7 @@ function MarketListTable({
   title,
 }: {
   catalog?: FieldDefinition[];
+  chronological?: boolean;
   columns: string[];
   customColumns: ScannerCustomColumn[];
   empty: string;
@@ -703,14 +707,14 @@ function MarketListTable({
   const [filterMode, setFilterMode] = useState("all");
   const [headerMenuColumn, setHeaderMenuColumn] = useState<string | null>(null);
   const [query, setQuery] = useState("");
-  const [sort, setSort] = useState<{ column: string; direction: "asc" | "desc" }>({ column: title === "Signal stream" || title === "Strategy activity" ? "event_time" : "change_pct", direction: "desc" });
+  const [sort, setSort] = useState<{ column: string; direction: "asc" | "desc" }>({ column: chronological ? "event_time" : "change_pct", direction: "desc" });
   const headerMenuRef = useRef<HTMLDivElement | null>(null);
   const deferredQuery = useDeferredValue(query.trim().toLowerCase());
   const identityColumn = columns.includes("symbol") ? "symbol" : "ticker";
-  const effectiveLockedColumns = useMemo(() => [...new Set(["logo", identityColumn, ...lockedColumns])], [identityColumn, lockedColumns]);
+  const effectiveLockedColumns = useMemo(() => [...new Set([...(chronological ? ["event_time"] : []), identityColumn, ...lockedColumns.filter((column) => column !== "logo" && column !== "company_name")])], [chronological, identityColumn, lockedColumns]);
   const selectedColumns = useMemo(() => withLockedColumns(columns, effectiveLockedColumns), [columns, effectiveLockedColumns]);
-  const companyInIdentity = mergeCompanyWithIdentity && selectedColumns.includes("company_name");
-  const tableColumns = useMemo(() => selectedColumns.filter((column) => !(companyInIdentity && column === "company_name")), [companyInIdentity, selectedColumns]);
+  const companyInIdentity = mergeCompanyWithIdentity;
+  const tableColumns = useMemo(() => selectedColumns.filter((column) => column !== "logo" && !(companyInIdentity && column === "company_name")), [companyInIdentity, selectedColumns]);
   useEffect(() => {
     if (sortColumn) setSort({ column: sortColumn, direction: "desc" });
   }, [sortColumn]);
@@ -906,19 +910,15 @@ function normalizeScannerRows(rows: ScreenerRow[]) {
 function renderMarketCell(row: ScreenerRow, column: string, presentations: ReturnType<typeof useTickerPresentations>, customColumns: ScannerCustomColumn[], catalog = FIELD_CATALOG, companyInIdentity = false) {
   const value = row[column];
   const ticker = String(row.ticker ?? row.symbol ?? "").trim().toUpperCase();
-  if (column === "logo") return <TickerLogo logoUrl={String(row.logo_url ?? presentations[ticker]?.logo_url ?? "")} showLogoPlaceholder ticker={ticker} />;
   if (column === "ticker" || column === "symbol") {
     const companyName = companyInIdentity ? String(row.company_name ?? presentations[ticker]?.issuer_name ?? "").trim() : "";
-    return <span className={`market-list-ticker-cell${companyName ? " company-card" : ""}`} title={companyName ? `${ticker} · ${companyName}` : ticker}>
-      <span className="market-list-identity-copy"><strong>{ticker}</strong>{companyName ? <small>{companyName}</small> : null}</span>
-      <span className="market-list-ticker-events">
+    return <SecurityIdentityCell companyName={companyName} logoUrl={String(row.logo_url ?? presentations[ticker]?.logo_url ?? "")} ticker={ticker} trailing={<span className="market-list-ticker-events">
         <TickerEventIcon source="News" value={String(row.live_news_recency ?? "none")} />
         <TickerEventIcon source="SEC" value={String(row.sec_recency ?? "none")} />
-      </span>
-    </span>;
+      </span>} />;
   }
-  if (column === "event_time") return value ? <MarketTime value={String(value)} /> : "—";
-  if (["direction", "source"].includes(column)) return value ? <span className={`market-list-badge ${String(value).toLowerCase().replace(/[^a-z]+/g, "-")}`}>{String(value).replaceAll("_", " ")}</span> : "—";
+  if (column === "event_time") return value ? <MarketTime includeSeconds value={String(value)} /> : "—";
+  if (["direction", "source"].includes(column)) return <CategoryBadge value={value} />;
   if (column === "news_labels" || column === "sec_labels") {
     const labels = rowLabels(value);
     return labels.length ? <span className="market-list-label-badges" data-source={column === "news_labels" ? "news" : "sec"} title={labels.join(", ")}>{labels.slice(0, 1).map((labelValue) => <span key={labelValue}>{labelValue}</span>)}{labels.length > 1 ? <span className="market-list-label-overflow">+{labels.length - 1}</span> : null}</span> : <span className="market-list-unavailable">—</span>;
@@ -927,19 +927,21 @@ function renderMarketCell(row: ScreenerRow, column: string, presentations: Retur
   if (value === null || value === undefined || value === "") return <span className="market-list-unavailable" title={`${definition.label} is not available from the active source at this clock.`}>—</span>;
   if (definition.format === "date") return <MarketTime value={String(value)} />;
   const numeric = numberValue(value);
-  if (definition.format === "percent") return marketNumber(formatPercent(numeric, true), numeric, definition);
-  if (definition.format === "percentPlain") return marketNumber(formatPercent(numeric), numeric, definition);
-  if (definition.format === "money") return marketNumber(formatMoney(numeric), numeric, definition);
-  if (definition.format === "integer") return marketNumber(formatCompact(numeric), numeric, definition);
-  if (definition.format === "multiple") return marketNumber(`${formatDecimal(numeric, Math.abs(numeric) < 10 ? 2 : 1)}\u00d7`, numeric, definition);
-  if (definition.format === "number") return marketNumber(formatDecimal(numeric), numeric, definition);
-  if (definition.format === "score") return marketNumber(formatDecimal(numeric, 0), numeric, definition);
-  return String(value);
+  const semanticTone = toneClass(value, column, customColumns, catalog);
+  if (definition.format === "percent") return marketNumber(formatPercent(numeric, true), numeric, definition, semanticTone);
+  if (definition.format === "percentPlain") return marketNumber(formatPercent(numeric), numeric, definition, semanticTone);
+  if (definition.format === "money") return marketNumber(formatMoney(numeric), numeric, definition, semanticTone);
+  if (definition.format === "integer") return marketNumber(formatCompact(numeric), numeric, definition, semanticTone);
+  if (definition.format === "multiple") return marketNumber(`${formatDecimal(numeric, Math.abs(numeric) < 10 ? 2 : 1)}\u00d7`, numeric, definition, semanticTone);
+  if (definition.format === "number") return marketNumber(formatDecimal(numeric), numeric, definition, semanticTone);
+  if (definition.format === "score") return marketNumber(formatDecimal(numeric, 0), numeric, definition, semanticTone);
+  return <PresentedValue column={column} presentation={{ presentationValueType: definition.presentationValueType }} value={value} />;
 }
 
-function marketNumber(display: string, value: number, definition: FieldDefinition) {
+function marketNumber(display: string, value: number, definition: FieldDefinition, tone = "") {
   const exact = new Intl.NumberFormat("en-US", { maximumFractionDigits: 8 }).format(value);
-  return <span className="market-list-number" title={`${definition.label}: ${exact}`}>{display}</span>;
+  const resolvedTone = tone || (definition.format === "percent" && value !== 0 ? (value > 0 ? "positive" : "negative") : "neutral");
+  return <span className="market-list-number table-number" data-tone={resolvedTone} title={`${definition.label}: ${exact}`}>{display}</span>;
 }
 
 function TickerEventIcon({ source, value }: { source: "News" | "SEC"; value: string }) {
@@ -979,14 +981,12 @@ function canonicalDiscoveryColumns(columns: string[]) {
   return [...new Set(columns.map((column) => column === "ticker" ? "symbol" : column === "last" ? "last_price" : column))];
 }
 function withLockedColumns(columns: string[], lockedColumns: string[]) {
-  const leading: string[] = lockedColumns.filter((column) => column === "logo" || column === "ticker" || column === "symbol");
-  const trailing = lockedColumns.filter((column) => !leading.includes(column));
-  return [...leading, ...columns.filter((column) => !lockedColumns.includes(column)), ...trailing];
+  return [...lockedColumns, ...columns.filter((column) => !lockedColumns.includes(column))];
 }
 function columnClass(column: string, definition = catalogField(column)) {
   const identityClass = column === "logo" ? "market-list-logo-column" : column === "ticker" || column === "symbol" ? "market-list-symbol-column" : column === "news_labels" || column === "sec_labels" ? "market-list-label-column" : "";
   const numericClass = ["integer", "money", "multiple", "number", "percent", "percentPlain", "score"].includes(definition.format) ? "market-list-numeric-column" : "";
-  return `${identityClass} ${numericClass}`.trim();
+  return `${identityClass} ${numericClass} ${tableCellClass(column, { presentationValueType: definition.presentationValueType })}`.trim();
 }
 function rowLabels(value: unknown) { return [...new Set(String(value ?? "").split(",").map((item) => item.trim()).filter(Boolean))]; }
 function collectLabels(rows: ScreenerRow[], column: "news_labels" | "sec_labels") { return [...new Set(rows.flatMap((row) => rowLabels(row[column])))].sort((left, right) => left.localeCompare(right)); }

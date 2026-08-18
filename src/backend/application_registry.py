@@ -62,6 +62,7 @@ class FieldDefinition:
     default_aggregation: str = ""
     intrinsic_aggregation: str = ""
     aggregation_runtime_fields: tuple[tuple[str, str], ...] = ()
+    presentation_value_type: str = "text"
 
 
 @dataclass(frozen=True, slots=True)
@@ -77,6 +78,7 @@ class DiscoveryFieldPresentation:
     sortable: bool
     filter_operators: tuple[str, ...]
     timeframes: tuple[str, ...]
+    presentation_value_type: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -1480,10 +1482,12 @@ def _field(
     default_aggregation: str = "",
     intrinsic_aggregation: str = "",
     aggregation_runtime_fields: Iterable[tuple[str, str]] = (),
+    presentation_value_type: str = "",
 ) -> FieldDefinition:
     label = field_id.split(".")[-1].replace("_", " ").title()
     columns = tuple(source_columns) or (field_id.split(".")[-1],)
     operator_documentation = FIELD_OPERATOR_DOCUMENTATION.get(field_id, {})
+    resolved_known_values = tuple(known_values or FIELD_KNOWN_VALUES.get(field_id, ()))
     return FieldDefinition(
         field_id=field_id,
         label=label,
@@ -1526,13 +1530,37 @@ def _field(
             or ()
         ),
         timeframes=tuple(timeframes or operator_documentation.get("timeframes") or ()),
-        known_values=tuple(known_values or FIELD_KNOWN_VALUES.get(field_id, ())),
+        known_values=resolved_known_values,
         interval_semantics=interval_semantics,
         aggregation_functions=tuple(aggregation_functions),
         default_aggregation=default_aggregation,
         intrinsic_aggregation=intrinsic_aggregation,
         aggregation_runtime_fields=tuple(aggregation_runtime_fields),
+        presentation_value_type=presentation_value_type or _presentation_value_type(field_id, value_type, unit, resolved_known_values),
     )
+
+
+def _presentation_value_type(field_id: str, value_type: str, unit: str, known_values: tuple[tuple[str, str, str], ...] = ()) -> str:
+    """Return the registered UI presentation primitive without changing computation type."""
+    key = field_id.lower()
+    normalized_unit = unit.lower()
+    normalized_type = value_type.lower()
+    if known_values or normalized_type in {"boolean", "bool", "category", "enum"}:
+        return "boolean" if normalized_type in {"boolean", "bool"} else "category"
+    if normalized_unit == "timestamp": return "datetime"
+    if normalized_unit == "date": return "date"
+    if normalized_unit == "time": return "time"
+    if normalized_unit == "percent": return "percent"
+    if normalized_unit == "basis_points": return "basis_points"
+    if normalized_unit == "currency":
+        return "price" if any(token in key for token in ("price", "open", "high", "low", "close", "vwap", "bid", "ask")) else "money"
+    if normalized_unit in {"shares", "count", "events"}: return "quantity"
+    if normalized_unit in {"multiple", "ratio", "events_per_second"}: return "ratio"
+    if normalized_unit == "score": return "score"
+    if normalized_type in {"integer", "int"}: return "integer"
+    if any(token in key.split(".")[-1] for token in ("status", "state", "phase", "direction", "category", "class", "role", "origin")): return "category"
+    if any(token in key.split(".")[-1] for token in ("ticker", "symbol", "identifier", "_id")): return "identifier"
+    return "text" if normalized_type in {"string", "json"} else "ratio"
 
 
 def _fields() -> tuple[FieldDefinition, ...]:
@@ -1865,6 +1893,7 @@ def _fields() -> tuple[FieldDefinition, ...]:
 
 
 FIELD_DEFINITIONS = _fields()
+FIELD_BY_ID = {field.field_id: field for field in FIELD_DEFINITIONS}
 
 
 DISCOVERY_FIELD_PRESENTATIONS = (
@@ -2255,7 +2284,7 @@ def _validate_acyclic_dependencies(graph: dict[str, tuple[str, ...]]) -> None:
 def application_registry_payload() -> dict[str, object]:
     validate_application_registry()
     return {
-        "schema_version": 5,
+        "schema_version": 6,
         "market_sources": [asdict(source) for source in MARKET_SOURCES],
         "products": [asdict(product) for product in PRODUCT_DEFINITIONS],
         "link_contracts": [asdict(link) for link in LINK_CONTRACTS],
@@ -2264,7 +2293,8 @@ def application_registry_payload() -> dict[str, object]:
         "compatibility_aliases": [asdict(alias) for alias in COMPATIBILITY_ALIASES],
         "fields": [asdict(field) for field in FIELD_DEFINITIONS],
         "market_discovery_fields": [
-            asdict(field) for field in DISCOVERY_FIELD_PRESENTATIONS
+            {**asdict(field), "presentation_value_type": field.presentation_value_type or _presentation_value_type(field.field_id, FIELD_BY_ID[field.field_id].value_type, FIELD_BY_ID[field.field_id].unit, FIELD_BY_ID[field.field_id].known_values)}
+            for field in DISCOVERY_FIELD_PRESENTATIONS
         ],
         "query_plans": [asdict(plan) for plan in QUERY_PLANS],
         "counts": {
@@ -2441,6 +2471,7 @@ def _field_operator_documentation(field: FieldDefinition) -> dict[str, Any]:
         "input_field_ids": list(field.input_field_ids),
         "timeframes": list(field.timeframes),
         "value_type": field.value_type,
+        "presentation_value_type": field.presentation_value_type,
         "unit": field.unit,
         "entity_grain": field.entity_grain,
         "update_cadence": field.publication_cadence,

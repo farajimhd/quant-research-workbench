@@ -28257,6 +28257,95 @@ button {
   font-weight: 650;
 }
 
+/* Shared registered table presentation primitives. These are intentionally
+   container-agnostic so Canvas tables, discovery lists, News, and SEC render
+   the same value type with the same hierarchy and semantics. */
+.table-security-card {
+  align-items: center;
+  background: color-mix(in oklab, var(--surface-alt) 58%, var(--surface));
+  border: 1px solid color-mix(in oklab, var(--border) 82%, transparent);
+  border-radius: 9px;
+  box-sizing: border-box;
+  display: inline-grid;
+  gap: 0 9px;
+  grid-template-columns: 38px minmax(0, 1fr) auto;
+  min-height: 48px;
+  min-width: 190px;
+  padding: 4px 7px 4px 4px;
+  vertical-align: middle;
+}
+.table-security-card > .ticker-logo,
+.table-security-card > .ticker-logo-fallback {
+  align-items: center;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-sizing: border-box;
+  display: flex;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  font-weight: 750;
+  grid-row: 1;
+  height: 38px;
+  justify-content: center;
+  object-fit: contain;
+  width: 38px;
+}
+.table-security-copy { display: grid; gap: 2px; min-width: 0; }
+.table-security-copy > strong { color: var(--foreground); font-family: var(--font-mono); font-size: 14px; font-weight: 780; letter-spacing: -.02em; line-height: 1; }
+.table-security-copy > small { color: var(--muted-foreground); display: block; font-size: 10px; font-weight: 550; line-height: 1.15; max-width: 156px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.table-security-trailing { align-items: center; display: inline-flex; }
+.table-number { color: var(--foreground); display: inline-block; font-size: 13px; font-variant-numeric: lining-nums tabular-nums; font-weight: 680; letter-spacing: -.015em; min-width: 100%; text-align: right; }
+.table-number[data-tone="positive"] { color: var(--semantic-positive, var(--success)); }
+.table-number[data-tone="negative"] { color: var(--semantic-negative, var(--danger)); }
+.table-category-badge {
+  background: color-mix(in oklab, var(--muted-foreground) 7%, var(--surface));
+  border: 1px solid color-mix(in oklab, var(--muted-foreground) 24%, var(--border));
+  border-radius: 999px;
+  color: var(--foreground);
+  display: inline-flex;
+  font-size: 10px;
+  font-weight: 690;
+  line-height: 1;
+  max-width: 160px;
+  overflow: hidden;
+  padding: 5px 8px;
+  text-overflow: ellipsis;
+  text-transform: capitalize;
+  white-space: nowrap;
+}
+.table-category-badge[data-tone="positive"] { background: color-mix(in oklab, var(--semantic-positive, var(--success)) 10%, var(--surface)); border-color: color-mix(in oklab, var(--semantic-positive, var(--success)) 32%, var(--border)); color: var(--semantic-positive, var(--success)); }
+.table-category-badge[data-tone="negative"] { background: color-mix(in oklab, var(--semantic-negative, var(--danger)) 9%, var(--surface)); border-color: color-mix(in oklab, var(--semantic-negative, var(--danger)) 30%, var(--border)); color: var(--semantic-negative, var(--danger)); }
+.table-category-badge[data-tone="warning"] { background: color-mix(in oklab, var(--warning) 10%, var(--surface)); border-color: color-mix(in oklab, var(--warning) 32%, var(--border)); color: var(--warning); }
+.table-category-badge[data-tone="info"] { background: color-mix(in oklab, var(--info) 10%, var(--surface)); border-color: color-mix(in oklab, var(--info) 32%, var(--border)); color: var(--info); }
+.table-presented-price,
+.table-presented-money,
+.table-presented-percent,
+.table-presented-basis_points,
+.table-presented-integer,
+.table-presented-quantity,
+.table-presented-ratio,
+.table-presented-score { text-align: right !important; }
+.table-presented-datetime .market-time-primary strong,
+.table-presented-date .market-time-primary strong { color: var(--foreground); font-size: 12px; font-variant-numeric: tabular-nums; font-weight: 720; }
+.table-presented-datetime .market-time-secondary,
+.table-presented-date .market-time-secondary { font-size: 8px; }
+.table-value-unavailable { color: var(--muted-foreground); }
+.table-identifier { font-family: var(--font-mono); font-weight: 650; }
+
+.market-list-table tbody tr { height: 58px; }
+.market-list-table tbody td { height: 58px; }
+.market-list-table .market-list-symbol-column { left: 0; max-width: 230px; min-width: 210px; width: 210px; }
+.market-list-table .market-list-symbol-column > button { max-width: 198px; }
+.market-list-table .market-list-symbol-column .table-security-card { min-width: 194px; width: 100%; }
+.market-list-table td.market-list-numeric-column { font-size: 13px; }
+.canvas-preview-table td.table-presented-security { min-width: 210px; }
+.canvas-preview-table td { font-size: 12px; }
+.news-tickers .table-security-card { min-width: 160px; }
+.intelligence-identity-block .table-security-card { min-width: calc(166px * var(--news-readable-scale)); }
+.intelligence-identity-block .table-security-card > .ticker-logo,
+.intelligence-identity-block .table-security-card > .ticker-logo-fallback { height: calc(34px * var(--news-readable-scale)); width: calc(34px * var(--news-readable-scale)); }
+
 .market-list-table.with-company-identity .market-list-symbol-column {
   max-width: 236px;
   min-width: 204px;
