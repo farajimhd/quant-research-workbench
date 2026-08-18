@@ -28266,7 +28266,9 @@ button {
   display: inline-grid;
   font-family: var(--font-body);
   gap: 0 8px;
+  grid-template-areas: "logo copy country" "logo copy trailing";
   grid-template-columns: 36px minmax(0, 1fr) auto;
+  grid-template-rows: minmax(0, 1fr) minmax(0, 1fr);
   min-height: 42px;
   min-width: 190px;
   padding: 2px 0;
@@ -28283,17 +28285,17 @@ button {
   font-family: var(--font-body);
   font-size: 8px;
   font-weight: 600;
-  grid-row: 1;
+  grid-area: logo;
   height: 36px;
   justify-content: center;
   object-fit: contain;
   width: 36px;
 }
-.table-security-copy { display: grid; gap: 0; min-width: 0; }
+.table-security-copy { align-self: center; display: grid; gap: 0; grid-area: copy; min-width: 0; }
 .table-security-copy > strong { color: var(--foreground); font-family: var(--font-body); font-size: 12px; font-weight: 620; letter-spacing: -.01em; line-height: 1.1; }
 .table-security-copy > small { color: var(--muted-foreground); display: block; font-size: 9px; font-weight: 400; line-height: 1.2; max-width: 156px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.table-security-country { color: color-mix(in oklab, var(--muted-foreground) 82%, transparent); font-size: 7.5px; font-weight: 500; letter-spacing: .035em; line-height: 1.2; overflow: hidden; text-overflow: ellipsis; text-transform: uppercase; white-space: nowrap; }
-.table-security-trailing { align-items: center; display: inline-flex; }
+.table-security-country { align-self: start; color: color-mix(in oklab, var(--muted-foreground) 82%, transparent); font-size: 7.5px; font-weight: 500; grid-area: country; justify-self: end; letter-spacing: .035em; line-height: 1.2; max-width: 74px; overflow: hidden; text-overflow: ellipsis; text-transform: uppercase; white-space: nowrap; }
+.table-security-trailing { align-items: center; align-self: end; display: inline-flex; grid-area: trailing; justify-self: end; }
 .table-number { color: color-mix(in oklab, var(--foreground) 90%, var(--muted-foreground)); display: inline-block; font-family: var(--font-body); font-size: 11.5px; font-variant-numeric: lining-nums tabular-nums; font-weight: 500; letter-spacing: -.008em; min-width: 100%; text-align: right; }
 .table-number[data-importance="strong"] { color: var(--foreground); font-weight: 640; }
 .table-number[data-tone="positive"] { color: color-mix(in oklab, var(--semantic-positive, var(--success)) 72%, var(--foreground)); }

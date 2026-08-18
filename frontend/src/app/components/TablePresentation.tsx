@@ -60,7 +60,8 @@ export function SecurityIdentityCell({ companyName = "", country = "", logoUrl =
   const countryName = formatCountry(country);
   return <span className="table-security-card" title={[symbol, companyName, countryName].filter(Boolean).join(" · ")}>
     <TickerLogo logoUrl={logoUrl} showLogoPlaceholder ticker={symbol} />
-    <span className="table-security-copy"><strong>{symbol || "—"}</strong>{companyName ? <small>{companyName}</small> : null}{countryName ? <span className="table-security-country">{countryName}</span> : null}</span>
+    <span className="table-security-copy"><strong>{symbol || "—"}</strong>{companyName ? <small>{companyName}</small> : null}</span>
+    {countryName ? <span className="table-security-country">{countryName}</span> : null}
     {trailing ? <span className="table-security-trailing">{trailing}</span> : null}
   </span>;
 }
