@@ -497,7 +497,7 @@ class HistoricalContractTests(unittest.TestCase):
         gateway_get.assert_not_called()
 
     @patch("src.backend.trading_runtime_service._historical_gateway_get")
-    def test_monthly_chart_history_requests_exact_24_month_macro_window(self, gateway_get) -> None:
+    def test_monthly_chart_history_requests_three_year_macro_window(self, gateway_get) -> None:
         gateway_get.return_value = {
             "bars": [
                 {
@@ -531,12 +531,14 @@ class HistoricalContractTests(unittest.TestCase):
         )
         self.assertEqual(path, "/snapshot/chart-macro-bars/AAPL")
         self.assertEqual(params["timeframe"], "1mo")
-        self.assertEqual(params["start"], "2024-08-01T00:00:00+00:00")
+        self.assertEqual(params["start"], "2023-08-01T00:00:00+00:00")
         self.assertEqual(result["history"][0]["volume"], 10_000.0)
         self.assertFalse(result["indicators_available"])
+        self.assertTrue(result["has_more"])
+        self.assertEqual(result["next_before"], "2023-08-01T04:00:00+00:00")
 
     @patch("src.backend.trading_runtime_service._historical_gateway_get")
-    def test_daily_chart_history_requests_exact_180_day_macro_window(self, gateway_get) -> None:
+    def test_daily_chart_history_requests_three_year_macro_window(self, gateway_get) -> None:
         gateway_get.return_value = {"bars": [], "source": "market_sip_compact.daily_session_bars_by_symbol_time_v1"}
 
         historical_bar_history_before(
@@ -554,7 +556,38 @@ class HistoricalContractTests(unittest.TestCase):
         )
         self.assertEqual(path, "/snapshot/chart-macro-bars/AAPL")
         self.assertEqual(params["timeframe"], "1d")
-        self.assertEqual(params["start"], "2026-01-12T00:00:00+00:00")
+        self.assertEqual(params["start"], "2023-07-10T00:00:00+00:00")
+
+    @patch("src.backend.trading_runtime_service._historical_gateway_get")
+    def test_daily_chart_history_pages_backward_from_earliest_bar(self, gateway_get) -> None:
+        gateway_get.return_value = {
+            "bars": [
+                {
+                    "bar_family": "trade",
+                    "bar_start": "2020-07-09T08:00:00+00:00",
+                    "bar_end": "2020-07-10T00:00:00+00:00",
+                    "session_date": "2020-07-09",
+                }
+            ],
+            "source": "market_sip_compact.daily_session_bars_by_symbol_time_v1",
+        }
+
+        result = historical_bar_history_before(
+            before=date(2026, 7, 11),
+            session_date=date(2023, 7, 10),
+            as_of="2026-07-10T13:45:00+00:00",
+            before_bar="2023-07-10T08:00:00+00:00",
+            ticker="AAPL",
+            timeframe="1d",
+            row_limit=5_000,
+        )
+
+        path, params = self.gateway_call(gateway_get, "/snapshot/chart-macro-bars/AAPL")
+        self.assertEqual(path, "/snapshot/chart-macro-bars/AAPL")
+        self.assertEqual(params["start"], "2020-07-10T00:00:00+00:00")
+        self.assertEqual(params["end"], "2023-07-10T08:00:00+00:00")
+        self.assertEqual(params["as_of"], "2026-07-10T13:45:00+00:00")
+        self.assertEqual(result["next_before"], "2020-07-09T08:00:00+00:00")
 
     @patch("src.backend.trading_runtime_service._historical_gateway_get")
     def test_weekly_and_yearly_chart_history_use_daily_macro_authority(self, gateway_get) -> None:

@@ -388,6 +388,7 @@ type CanvasLiveChartState = {
   loading: boolean;
   loadingEarlier: boolean;
   pointInTime: boolean;
+  ready: boolean;
 };
 
 type CanvasChartSettings = { showVolume: boolean; symbol: string; timeframe: CanvasChartTimeframe; visibleIndicators: string[] };
@@ -722,11 +723,12 @@ function qmdIndicatorKnowledge(shortDescription: string, detailedDescription: st
   };
 }
 
-function useCanvasHistoricalChart(symbol: string, timeframe: CanvasChartTimeframe, cutoffMs: number, sessionDate: string, visibleIndicatorIds: string[], liveTail = false): CanvasLiveChartState {
+function useCanvasHistoricalChart(symbol: string, timeframe: CanvasChartTimeframe, cutoffMs: number, sessionDate: string, visibleIndicatorIds: string[], liveTail = false, enabled = true): CanvasLiveChartState {
   const pointInTime = !liveTail;
   const indicatorColumns = useMemo(() => requestedIndicatorColumns(visibleIndicatorIds), [visibleIndicatorIds]);
   const rowBudget = useMemo(() => chartRowBudget(indicatorColumns), [indicatorColumns]);
-  const [state, setState] = useState<Omit<CanvasLiveChartState, "loadEarlier">>({ bars: [], canLoadEarlier: false, connected: false, error: "", historyError: "", historyNotice: "", indicators: [], indicatorsAvailable: ENRICHED_QMD_TIMEFRAMES.has(timeframe), lastUpdateAt: "", loading: true, loadingEarlier: false, marketSignalEvents: [], pointInTime, structureEvents: [], structureLevelHistory: [] });
+  const [state, setState] = useState<Omit<CanvasLiveChartState, "loadEarlier" | "ready">>({ bars: [], canLoadEarlier: false, connected: false, error: "", historyError: "", historyNotice: "", indicators: [], indicatorsAvailable: ENRICHED_QMD_TIMEFRAMES.has(timeframe), lastUpdateAt: "", loading: true, loadingEarlier: false, marketSignalEvents: [], pointInTime, structureEvents: [], structureLevelHistory: [] });
+  const [readyKey, setReadyKey] = useState("");
   const historyCursorRef = useRef<ChartHistoryCursor | null>(null);
   const historyRequestRef = useRef(false);
   const historyAbortRef = useRef<AbortController | null>(null);
@@ -756,6 +758,7 @@ function useCanvasHistoricalChart(symbol: string, timeframe: CanvasChartTimefram
   }, [indicatorColumns, symbol, timeframe]);
 
   const loadEarlier = useCallback(() => {
+    if (!enabled) return;
     const ticker = symbol.trim().toUpperCase();
     const requestKey = `${ticker}:${timeframe}:${indicatorColumns}`;
     const cursor = historyCursorRef.current;
@@ -812,9 +815,10 @@ function useCanvasHistoricalChart(symbol: string, timeframe: CanvasChartTimefram
         if (historyAbortRef.current === controller) historyAbortRef.current = null;
         if (requestKeyRef.current === requestKey) setState((current) => ({ ...current, loadingEarlier: false }));
       });
-  }, [cutoffMs, indicatorColumns, prefetchEarlier, rowBudget, symbol, timeframe]);
+  }, [cutoffMs, enabled, indicatorColumns, prefetchEarlier, rowBudget, symbol, timeframe]);
 
   useEffect(() => {
+    if (!enabled) return;
     let active = true;
     const historyController = new AbortController();
     const ticker = symbol.trim().toUpperCase();
@@ -824,6 +828,7 @@ function useCanvasHistoricalChart(symbol: string, timeframe: CanvasChartTimefram
     prefetchedHistoryRef.current = null;
     historyAbortRef.current = historyController;
     requestKeyRef.current = requestKey;
+    setReadyKey("");
     historyCursorRef.current = null;
     historyRequestRef.current = false;
     loadedCutoffRef.current = cutoffMs;
@@ -834,11 +839,12 @@ function useCanvasHistoricalChart(symbol: string, timeframe: CanvasChartTimefram
       const requestParams = { as_of: new Date(cutoffMs).toISOString(), row_limit: chartPageSize(timeframe), session_date: sessionDate, symbol: ticker, timeframe };
       const progressive = ENRICHED_QMD_TIMEFRAMES.has(timeframe);
       const barsRequest = progressive
-        ? api<QmdBarHistory>(`/api/trading/canvas-chart/history${query({ ...requestParams, stage: "bars" })}`, { signal: historyController.signal, timeoutMs: 120000 })
+        ? api<QmdBarHistory>(`/api/trading/canvas-chart/history${query({ ...requestParams, row_limit: chartInitialPageSize(timeframe), stage: "bars" })}`, { signal: historyController.signal, timeoutMs: 120000 })
         : api<QmdBarHistory>(`/api/trading/canvas-chart/history${query({ ...requestParams, indicator_columns: indicatorColumns, stage: "full" })}`, { signal: historyController.signal, timeoutMs: 120000 });
       barsRequest
         .then((payload) => {
           if (!active || requestKeyRef.current !== requestKey) return;
+          setReadyKey(requestKey);
           updateHistoryCursor(historyCursorRef, payload);
           const aligned = alignHistoricalChartRows(
             closedRowsAtCutoff(payload.history, timeframe, cutoffMs),
@@ -897,6 +903,7 @@ function useCanvasHistoricalChart(symbol: string, timeframe: CanvasChartTimefram
         .catch((reason) => {
           if (historyController.signal.aborted) return;
           if (!active || requestKeyRef.current !== requestKey) return;
+          setReadyKey(requestKey);
           setState((current) => ({ ...current, historyError: reason instanceof Error ? reason.message : String(reason), historyNotice: "", loading: false }));
         })
         .finally(() => {
@@ -914,10 +921,10 @@ function useCanvasHistoricalChart(symbol: string, timeframe: CanvasChartTimefram
       prefetchAbortRef.current?.abort();
       prefetchedHistoryRef.current = null;
     };
-  }, [indicatorColumns, pointInTime, prefetchEarlier, rowBudget, sessionDate, symbol, timeframe]);
+  }, [enabled, indicatorColumns, pointInTime, prefetchEarlier, rowBudget, sessionDate, symbol, timeframe]);
 
   useEffect(() => {
-    if (liveTail) return;
+    if (!enabled || liveTail) return;
     const ticker = symbol.trim().toUpperCase();
     const requestKey = `${ticker}:${timeframe}:${indicatorColumns}`;
     if (!ticker || cutoffMs <= loadedCutoffRef.current || requestKeyRef.current !== requestKey) return;
@@ -957,10 +964,10 @@ function useCanvasHistoricalChart(symbol: string, timeframe: CanvasChartTimefram
         }
       });
     return () => controller.abort();
-  }, [cutoffMs, indicatorColumns, liveTail, rowBudget, sessionDate, symbol, timeframe]);
+  }, [cutoffMs, enabled, indicatorColumns, liveTail, rowBudget, sessionDate, symbol, timeframe]);
 
   useEffect(() => {
-    if (!liveTail) return;
+    if (!enabled || !liveTail) return;
     const ticker = symbol.trim().toUpperCase();
     if (!ticker) return;
     let cancelled = false;
@@ -1019,9 +1026,10 @@ function useCanvasHistoricalChart(symbol: string, timeframe: CanvasChartTimefram
       if (timer !== null) window.clearTimeout(timer);
       document.removeEventListener("visibilitychange", resume);
     };
-  }, [liveTail, rowBudget, symbol, timeframe]);
+  }, [enabled, liveTail, rowBudget, symbol, timeframe]);
 
-  return { ...state, loadEarlier };
+  const currentRequestKey = `${symbol.trim().toUpperCase()}:${timeframe}:${indicatorColumns}`;
+  return { ...state, loadEarlier, ready: enabled && readyKey === currentRequestKey };
 }
 
 function mergeStructureEvents(current: QmdStructureEvent[], incoming: QmdStructureEvent[] | undefined) {
@@ -1085,6 +1093,20 @@ function chartPageSize(timeframe: string) {
     "1h": 64,
   };
   return pageSizes[timeframe] ?? 240;
+}
+
+function chartInitialPageSize(timeframe: string) {
+  const pageSizes: Record<string, number> = {
+    "100ms": 600,
+    "1s": 300,
+    "5s": 120,
+    "10s": 90,
+    "30s": 40,
+    "1m": 20,
+    "5m": 12,
+    "1h": 4,
+  };
+  return pageSizes[timeframe] ?? chartPageSize(timeframe);
 }
 
 function chartRowBudget(indicatorColumns: string): number {
@@ -2655,8 +2677,9 @@ const ChartContainerPreview = memo(function ChartContainerPreview({ cutoffMs, in
 
 function ChartsQuotesContainerPreview({ cutoffMs, instanceId, linkContext, liveMode, onLinkContextChange, previewContext, settings, strategy, symbolEditable, trading, updateSettings }: Omit<ChartContainerPreviewProps, "linkGroup">) {
   const main = useCanvasHistoricalChart(linkContext.symbol, settings.charts_quotes.main.timeframe, cutoffMs, previewContext.sessionDate, settings.charts_quotes.main.visibleIndicators, liveMode);
-  const month = useCanvasHistoricalChart(linkContext.symbol, settings.charts_quotes.month.timeframe, cutoffMs, previewContext.sessionDate, settings.charts_quotes.month.visibleIndicators, liveMode);
-  const daily = useCanvasHistoricalChart(linkContext.symbol, settings.charts_quotes.daily.timeframe, cutoffMs, previewContext.sessionDate, settings.charts_quotes.daily.visibleIndicators, liveMode);
+  const macroChartsEnabled = main.ready;
+  const month = useCanvasHistoricalChart(linkContext.symbol, settings.charts_quotes.month.timeframe, cutoffMs, previewContext.sessionDate, settings.charts_quotes.month.visibleIndicators, liveMode, macroChartsEnabled);
+  const daily = useCanvasHistoricalChart(linkContext.symbol, settings.charts_quotes.daily.timeframe, cutoffMs, previewContext.sessionDate, settings.charts_quotes.daily.visibleIndicators, liveMode, macroChartsEnabled);
   const presentations = useTickerPresentations([linkContext.symbol]);
   const logoUrl = presentations[linkContext.symbol]?.logo_url;
   const changeAsOf = new Date(cutoffMs).toISOString();

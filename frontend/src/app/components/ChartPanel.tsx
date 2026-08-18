@@ -362,6 +362,7 @@ type ChartAppearanceSettings = {
   daySeparatorsVisible: boolean;
   downColor: string;
   gridVisible: boolean;
+  hideEmptyIntervals: boolean;
   legendGutterVisible: boolean;
   rightLegendGutterVisible: boolean;
   premarketColor: string;
@@ -459,6 +460,7 @@ const defaultChartAppearanceSettings: ChartAppearanceSettings = {
   daySeparatorsVisible: true,
   downColor: "#FD0E50",
   gridVisible: true,
+  hideEmptyIntervals: true,
   legendGutterVisible: true,
   rightLegendGutterVisible: true,
   premarketColor: "#F2A65A",
@@ -705,10 +707,10 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
 
   useImperativeHandle(ref, () => ({
     fitFirstDay() {
-      executeViewportCommand(() => fitLatestSession(priceChartRef.current, fitCandles(payload), timeframe));
+      executeViewportCommand(() => fitLatestSession(priceChartRef.current, fitCandles(payload), timeframe, chartSettingsRef.current.hideEmptyIntervals));
     },
     fitRecent() {
-      executeViewportCommand(() => centerReferenceOrLatest(priceChartRef.current, fitCandles(payload), reference, timeframe, initialFitMode));
+      executeViewportCommand(() => centerReferenceOrLatest(priceChartRef.current, fitCandles(payload), reference, timeframe, initialFitMode, chartSettingsRef.current.hideEmptyIntervals));
     },
     toggleFullscreen() {
       setFullscreen((value) => !value);
@@ -935,7 +937,7 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
     );
     const currentRange = shouldAutoFit ? null : priceChartRef.current.timeScale().getVisibleLogicalRange();
     const currentTimeRange = !shouldAutoFit && earlierBarsPrepended ? priceChartRef.current.timeScale().getVisibleRange() : null;
-    const timeline = chartTimelineData(payload.candles, timeframe);
+    const timeline = chartTimelineData(payload.candles, timeframe, chartSettingsRef.current.hideEmptyIntervals);
     candleBoundsRef.current = candleValueBounds(payload.candles);
     syncRendererData(candleRef.current, timeline as unknown as RendererDatum[], `candles:${timeframe}`);
     syncRendererData(volumeRef.current, volumeDataForSettings(payload, chartSettingsRef.current) as unknown as RendererDatum[], volumeStyleKey(chartSettingsRef.current));
@@ -951,9 +953,9 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
         if (!currentPayload || !priceChartRef.current) return;
         suppressEarlierLoad();
         if (reference) {
-          fitAroundReference(priceChartRef.current, currentPayload.candles, reference, timeframe);
+          fitAroundReference(priceChartRef.current, currentPayload.candles, reference, timeframe, chartSettingsRef.current.hideEmptyIntervals);
         } else {
-          fitInitialRange(priceChartRef.current, currentPayload.candles, timeframe, initialFitMode);
+          fitInitialRange(priceChartRef.current, currentPayload.candles, timeframe, initialFitMode, chartSettingsRef.current.hideEmptyIntervals);
         }
         drawCurrentRegions();
         initialFitTimerRef.current = null;
@@ -967,12 +969,12 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
       }
       drawCurrentRegions();
     }
-  }, [initialFitMode, payload, reference, referenceKey, ticker, timeframe]);
+  }, [effectiveChartSettings.hideEmptyIntervals, initialFitMode, payload, reference, referenceKey, ticker, timeframe]);
 
   useEffect(() => {
     if (!priceChartRef.current || !payload?.candles.length || !reference) return;
     suppressEarlierLoad();
-    fitAroundReference(priceChartRef.current, payload.candles, reference, timeframe);
+    fitAroundReference(priceChartRef.current, payload.candles, reference, timeframe, chartSettingsRef.current.hideEmptyIntervals);
     drawCurrentRegions();
   }, [referenceKey, timeframe]);
 
@@ -1080,7 +1082,7 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
         };
         oscillatorPaneRuntimesRef.current.set(group.key, runtime);
       }
-      updateOscillatorPaneTimeline(runtime, chartTimelineData(payloadRef.current?.candles ?? [], timeframe));
+      updateOscillatorPaneTimeline(runtime, chartTimelineData(payloadRef.current?.candles ?? [], timeframe, chartSettingsRef.current.hideEmptyIntervals));
       updateOscillatorPaneSeries(runtime, group.series);
       chart.panes()[runtime.paneIndex]?.setStretchFactor(paneStretchFactors[group.key] ?? 1);
     });
@@ -1231,7 +1233,7 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
     const currentPayload = payloadRef.current;
     if (!chart || !currentPayload) return;
     const selectedZones = (currentPayload.price_zones ?? []).filter((zone) => !zone.displayItemId || visibleSelectionRef.current.has(zone.displayItemId.toLowerCase()));
-    const timeline = chartTimelineData(currentPayload.candles, timeframe);
+    const timeline = chartTimelineData(currentPayload.candles, timeframe, chartSettingsRef.current.hideEmptyIntervals);
     priceZonePrimitiveRef.current?.setState({
       candles: currentPayload.candles,
       legendSettings: legendSettingsRef.current,
@@ -1499,9 +1501,9 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
           <Settings size={15} />
         </button>
         <span className="toolbar-divider" />
-        <button aria-label={latestRangeActionLabel(timeframe)} className="toolbar-button" type="button" title={latestRangeActionLabel(timeframe)} onClick={() => executeViewportCommand(() => fitLatestSession(priceChartRef.current, fitCandles(payload), timeframe))}><CalendarDays size={15} /></button>
-        <button aria-label={reference ? "Center trade" : "Center latest"} className="toolbar-button" type="button" title={reference ? "Center trade" : "Center latest"} onClick={() => executeViewportCommand(() => centerReferenceOrLatest(priceChartRef.current, fitCandles(payload), reference, timeframe))}><AlignCenterHorizontal size={15} /></button>
-        <button aria-label="Reset view" className="toolbar-button" type="button" title="Reset view" onClick={() => executeViewportCommand(() => resetChartViewport(priceChartRef.current, fitCandles(payload), timeframe, priceRef.current?.clientWidth ?? 0, chartSettingsRef.current.candleSize))}><RefreshCcw size={15} /></button>
+        <button aria-label={latestRangeActionLabel(timeframe)} className="toolbar-button" type="button" title={latestRangeActionLabel(timeframe)} onClick={() => executeViewportCommand(() => fitLatestSession(priceChartRef.current, fitCandles(payload), timeframe, chartSettingsRef.current.hideEmptyIntervals))}><CalendarDays size={15} /></button>
+        <button aria-label={reference ? "Center trade" : "Center latest"} className="toolbar-button" type="button" title={reference ? "Center trade" : "Center latest"} onClick={() => executeViewportCommand(() => centerReferenceOrLatest(priceChartRef.current, fitCandles(payload), reference, timeframe, undefined, chartSettingsRef.current.hideEmptyIntervals))}><AlignCenterHorizontal size={15} /></button>
+        <button aria-label="Reset view" className="toolbar-button" type="button" title="Reset view" onClick={() => executeViewportCommand(() => resetChartViewport(priceChartRef.current, fitCandles(payload), timeframe, priceRef.current?.clientWidth ?? 0, chartSettingsRef.current.candleSize, chartSettingsRef.current.hideEmptyIntervals))}><RefreshCcw size={15} /></button>
         {enableFullscreen ? (
           <>
             <span className="toolbar-divider" />
@@ -2814,6 +2816,13 @@ function ChartSettingsPopover({
           <input checked={settings.borderVisible} type="checkbox" onChange={(event) => onChange("borderVisible", event.target.checked)} />
           Draw candle borders
         </label>
+        <label className="chart-setting-toggle">
+          <input checked={settings.hideEmptyIntervals} type="checkbox" onChange={(event) => onChange("hideEmptyIntervals", event.target.checked)} />
+          Hide empty intervals
+        </label>
+        <p className="chart-settings-help">
+          Compress periods with no bars so illiquid symbols remain readable. Turn this off to preserve uniform clock-time spacing.
+        </p>
         {settings.borderVisible ? (
           <div className="chart-setting-two-column">
             <label>
@@ -3214,6 +3223,7 @@ function normalizeChartAppearanceSettings(settings: Partial<ChartAppearanceSetti
       typeof settings.daySeparatorsVisible === "boolean" ? settings.daySeparatorsVisible : defaultChartAppearanceSettings.daySeparatorsVisible,
     downColor: validHexColor(settings.downColor, defaultChartAppearanceSettings.downColor),
     gridVisible: typeof settings.gridVisible === "boolean" ? settings.gridVisible : defaultChartAppearanceSettings.gridVisible,
+    hideEmptyIntervals: typeof settings.hideEmptyIntervals === "boolean" ? settings.hideEmptyIntervals : defaultChartAppearanceSettings.hideEmptyIntervals,
     legendGutterVisible: typeof settings.legendGutterVisible === "boolean" ? settings.legendGutterVisible : defaultChartAppearanceSettings.legendGutterVisible,
     rightLegendGutterVisible: typeof settings.rightLegendGutterVisible === "boolean" ? settings.rightLegendGutterVisible : defaultChartAppearanceSettings.rightLegendGutterVisible,
     premarketColor: premarketColor.toUpperCase() === "#FBBF24" ? defaultChartAppearanceSettings.premarketColor : premarketColor,
@@ -3269,7 +3279,8 @@ function candleDataForTimeframe(candles: Candle[], timeframe: string): CandleSer
   return data;
 }
 
-function chartTimelineData(candles: Candle[], timeframe: string): CandleSeriesDatum[] {
+function chartTimelineData(candles: Candle[], timeframe: string, hideEmptyIntervals = true): CandleSeriesDatum[] {
+  if (hideEmptyIntervals) return [...candles].sort((left, right) => left.time - right.time);
   return candleDataForTimeframe(candles, timeframe);
 }
 
@@ -3871,10 +3882,11 @@ function chartOptions(
     leftPriceScale: { alignLabels: false, borderColor: palette.grid, minimumWidth: CHART_PRICE_SCALE_MIN_WIDTH, visible: showLeftPriceScale },
     timeScale: {
       borderColor: palette.grid,
-      fixLeftEdge: true,
-      // Keep history bounded on the left, but leave the future side navigable so
-      // traders can move the latest bar away from the price scale and reserve
-      // working space for bars that have not arrived yet.
+      // The left edge must remain movable so panning can cross the loaded boundary
+      // and trigger the incremental history callback.
+      fixLeftEdge: false,
+      // Leave the future side navigable so traders can reserve working space for
+      // bars that have not arrived yet.
       fixRightEdge: false,
       rightOffset: compact ? 1 : 2,
       shiftVisibleRangeOnNewBar: true,
@@ -3984,15 +3996,15 @@ const marketSubsecondDateTimeFormatter = new Intl.DateTimeFormat("en-US", {
 });
 
 type ChartRangeTarget = IChartApi | null | IChartApi[];
-const DAILY_MACRO_WINDOW_BARS = 180;
+const DAILY_MACRO_WINDOW_BARS = 756;
 const WEEKLY_MACRO_WINDOW_BARS = 156;
-const MONTHLY_MACRO_WINDOW_BARS = 24;
+const MONTHLY_MACRO_WINDOW_BARS = 36;
 const YEARLY_MACRO_WINDOW_BARS = 20;
 
-function fitLatestSession(target: ChartRangeTarget, candles: Candle[], timeframe = "") {
+function fitLatestSession(target: ChartRangeTarget, candles: Candle[], timeframe = "", hideEmptyIntervals = true) {
   const charts = chartRangeTargets(target);
   if (!charts.length || !candles.length) return;
-  const timeline = candleDataForTimeframe(candles, timeframe);
+  const timeline = chartTimelineData(candles, timeframe, hideEmptyIntervals);
   if (isMacroTimeframe(timeframe)) {
     setChartLogicalRange(charts, loadedRange(timeline.length, 0.025));
     return;
@@ -4010,7 +4022,7 @@ function fitLatestSession(target: ChartRangeTarget, candles: Candle[], timeframe
   setChartLogicalRange(charts, { from: Math.max(-1, firstIndex - 1), to: Math.max(firstIndex + 1, lastIndex + 1) });
 }
 
-function resetChartViewport(chart: IChartApi | null, candles: Candle[], timeframe: string, chartWidth: number, candleSize: number) {
+function resetChartViewport(chart: IChartApi | null, candles: Candle[], timeframe: string, chartWidth: number, candleSize: number, hideEmptyIntervals = true) {
   if (!chart) return;
   const timeScale = chart.timeScale();
   const normalizedCandleSize = clampNumber(candleSize, 8, 80, defaultChartAppearanceSettings.candleSize);
@@ -4018,7 +4030,7 @@ function resetChartViewport(chart: IChartApi | null, candles: Candle[], timefram
     barSpacing: normalizedCandleSize,
     rightOffset: 2
   });
-  const timelineLength = candleDataForTimeframe(candles, timeframe).length;
+  const timelineLength = chartTimelineData(candles, timeframe, hideEmptyIntervals).length;
   if (!timelineLength || chartWidth <= 0) {
     timeScale.scrollToPosition(2, false);
     return;
@@ -4059,32 +4071,32 @@ function candleWindow(candles: Candle[]) {
   return { first: candles[0].time, last: candles[candles.length - 1].time };
 }
 
-function fitInitialRange(chart: IChartApi | null, candles: Candle[], timeframe = "", mode: ChartPanelProps["initialFitMode"] = "default") {
+function fitInitialRange(chart: IChartApi | null, candles: Candle[], timeframe = "", mode: ChartPanelProps["initialFitMode"] = "default", hideEmptyIntervals = true) {
   if (!chart || !candles.length) return;
   if (mode === "live_first_10") {
-    fitLiveFirstTenMinutes(chart, candles, timeframe);
+    fitLiveFirstTenMinutes(chart, candles, timeframe, hideEmptyIntervals);
     return;
   }
   if (mode === "recent") {
-    centerLatest(chart, candles, timeframe);
+    centerLatest(chart, candles, timeframe, hideEmptyIntervals);
     return;
   }
   if (mode === "last_market_day") {
-    fitLastMarketDay(chart, candles, timeframe);
+    fitLastMarketDay(chart, candles, timeframe, hideEmptyIntervals);
     return;
   }
   if (hasMultipleMarketDates(candles)) {
-    const timeline = candleDataForTimeframe(candles, timeframe);
+    const timeline = chartTimelineData(candles, timeframe, hideEmptyIntervals);
     chart.timeScale().setVisibleLogicalRange({ from: -1, to: Math.max(8, timeline.length) });
     return;
   }
-  fitLatestSession(chart, candles, timeframe);
+  fitLatestSession(chart, candles, timeframe, hideEmptyIntervals);
 }
 
-function fitLiveFirstTenMinutes(target: ChartRangeTarget, candles: Candle[], timeframe: string) {
+function fitLiveFirstTenMinutes(target: ChartRangeTarget, candles: Candle[], timeframe: string, hideEmptyIntervals = true) {
   const charts = chartRangeTargets(target);
   if (!charts.length || !candles.length) return;
-  const timeline = candleDataForTimeframe(candles, timeframe);
+  const timeline = chartTimelineData(candles, timeframe, hideEmptyIntervals);
   const lastCandle = candles[candles.length - 1];
   const lastIndex = nearestTimelineIndex(timeline, lastCandle.time);
   const stepSeconds = chartTimeframeSeconds(timeframe) ?? 60;
@@ -4096,14 +4108,14 @@ function fitLiveFirstTenMinutes(target: ChartRangeTarget, candles: Candle[], tim
   });
 }
 
-function fitLastMarketDay(chart: IChartApi | null, candles: Candle[], timeframe: string) {
-  fitLatestSession(chart, candles, timeframe);
+function fitLastMarketDay(chart: IChartApi | null, candles: Candle[], timeframe: string, hideEmptyIntervals = true) {
+  fitLatestSession(chart, candles, timeframe, hideEmptyIntervals);
 }
 
-function centerLatest(target: ChartRangeTarget, candles: Candle[], timeframe = "") {
+function centerLatest(target: ChartRangeTarget, candles: Candle[], timeframe = "", hideEmptyIntervals = true) {
   const charts = chartRangeTargets(target);
   if (!charts.length || !candles.length) return;
-  const timeline = candleDataForTimeframe(candles, timeframe);
+  const timeline = chartTimelineData(candles, timeframe, hideEmptyIntervals);
   const lastCandle = candles[candles.length - 1];
   const last = nearestTimelineIndex(timeline, lastCandle.time);
   if (isMacroTimeframe(timeframe)) {
@@ -4126,32 +4138,32 @@ function centerLatest(target: ChartRangeTarget, candles: Candle[], timeframe = "
   setChartLogicalRange(charts, { from: last - (span - futureSpace), to: last + futureSpace });
 }
 
-function centerReferenceOrLatest(target: ChartRangeTarget, candles: Candle[], reference: ChartReference | null | undefined, timeframe: string, mode: ChartPanelProps["initialFitMode"] = "default") {
+function centerReferenceOrLatest(target: ChartRangeTarget, candles: Candle[], reference: ChartReference | null | undefined, timeframe: string, mode: ChartPanelProps["initialFitMode"] = "default", hideEmptyIntervals = true) {
   if (reference) {
-    fitAroundReference(target, candles, reference, timeframe);
+    fitAroundReference(target, candles, reference, timeframe, hideEmptyIntervals);
     return;
   }
   if (mode === "live_first_10") {
-    fitLiveFirstTenMinutes(target, candles, timeframe);
+    fitLiveFirstTenMinutes(target, candles, timeframe, hideEmptyIntervals);
     return;
   }
   if (mode === "last_market_day") {
-    fitLatestSession(target, candles, timeframe);
+    fitLatestSession(target, candles, timeframe, hideEmptyIntervals);
     return;
   }
-  centerLatest(target, candles, timeframe);
+  centerLatest(target, candles, timeframe, hideEmptyIntervals);
 }
 
-function fitAroundReference(target: ChartRangeTarget, candles: Candle[], reference: ChartReference, timeframe: string) {
+function fitAroundReference(target: ChartRangeTarget, candles: Candle[], reference: ChartReference, timeframe: string, hideEmptyIntervals = true) {
   const charts = chartRangeTargets(target);
   const chart = charts[0];
   if (!chart || !candles.length) return;
   const referenceTime = resolveFitReferenceTime(reference, candles);
   if (referenceTime === null) {
-    fitInitialRange(chart, candles, timeframe);
+    fitInitialRange(chart, candles, timeframe, "default", hideEmptyIntervals);
     return;
   }
-  const timeline = candleDataForTimeframe(candles, timeframe);
+  const timeline = chartTimelineData(candles, timeframe, hideEmptyIntervals);
   const referenceIndex = nearestTimelineIndex(timeline, referenceTime);
   const startIndex = typeof reference.startTime === "number" ? nearestTimelineIndex(timeline, reference.startTime) : referenceIndex;
   const endIndex = typeof reference.endTime === "number" ? nearestTimelineIndex(timeline, reference.endTime) : referenceIndex;
