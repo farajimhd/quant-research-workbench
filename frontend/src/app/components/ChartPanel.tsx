@@ -1571,6 +1571,7 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
                   <X size={12} />
                 </button>
                 <ChartLegend
+                  hideHeaderLabel
                   indicatorCount={group.series.length}
                   items={buildSeriesLegendItems(group.series, "oscillator", legendSettings, displayItemOptions, catalogColumns, chartSettings)}
                   onReset={resetLegendSettings}
@@ -1765,6 +1766,7 @@ type LegendItem = {
 };
 
 function ChartLegend({
+  hideHeaderLabel = false,
   indicatorCount,
   items,
   onReset,
@@ -1774,6 +1776,7 @@ function ChartLegend({
   threshold,
   title,
 }: {
+  hideHeaderLabel?: boolean;
   indicatorCount: number;
   items: LegendItem[];
   onReset: (key: string) => void;
@@ -1805,7 +1808,7 @@ function ChartLegend({
         type="button"
       >
         {collapsed ? <ChevronRight size={13} /> : <ChevronDown size={13} />}
-        <b>{title || formatIndicatorCount(indicatorCount)}</b>
+        {!hideHeaderLabel ? <b>{title || formatIndicatorCount(indicatorCount)}</b> : null}
       </button>
       {!collapsed ? (
         <>
