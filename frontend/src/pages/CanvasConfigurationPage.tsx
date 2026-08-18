@@ -1118,17 +1118,6 @@ function chartHistoryLimitNotice(rowBudget: number): string {
   return `${rowBudget.toLocaleString()} chart points loaded. Choose a higher timeframe to inspect earlier history.`;
 }
 
-function indicatorProvenanceNotice(provenance?: QmdIndicatorProvenance): string {
-  if (!provenance?.engine_version) return "";
-  const sourceTier = provenance.source?.tiers?.length ? provenance.source.tiers.join(" + ") : "QMD source plan";
-  const source = `${sourceTier}; price basis ${provenance.corporate_action_revision ?? "unknown"}; calculation ${provenance.calculation_revision ?? provenance.engine_version}`;
-  const warmUp = provenance.warm_up?.status === "partial_in_response"
-    ? `warm-up ${provenance.warm_up.returned_bars ?? 0}/${provenance.warm_up.recommended_minimum_bars ?? 50} bars`
-    : "warm-up satisfied";
-  const coverage = provenance.complete === false ? "partial source coverage" : "source coverage complete";
-  return `${provenance.engine_version} · indicators v${provenance.indicator_schema_version ?? "?"} · ${source} · ${warmUp} · ${coverage}`;
-}
-
 function requestedIndicatorColumns(visibleIndicatorIds: string[]): string {
   const selected = new Set(visibleIndicatorIds.map((value) => value.toLowerCase()));
   const columns = new Set<string>(["bar_start"]);
@@ -2879,8 +2868,7 @@ function ChartPreview({
     quantity,
   } satisfies LiveEntryLine : null;
   const emptyMessage = `No closed ${linkContext.symbol} ${timeframe} bars are available from QMD History at this Canvas clock.`;
-  const infoMessage = [liveChart.historyNotice, indicatorProvenanceNotice(liveChart.indicatorProvenance)].filter(Boolean).join(" · ");
-  return <ChartPanel baseHeight={baseHeight} canLoadEarlier={liveChart.canLoadEarlier} displayItemOptions={liveChart.indicatorsAvailable ? CHART_INDICATORS : []} emptyMessage={emptyMessage} enableFullscreen={false} errorMessage={liveChart.error || liveChart.historyError} featureOptions={[]} fillHeight={fillHeight} indicatorOptions={[]} initialFitMode="recent" infoMessage={infoMessage} liveEntryLine={positionLine} loading={liveChart.loading} loadingEarlier={liveChart.loadingEarlier} onLoadEarlier={liveChart.loadEarlier} onTickerChange={(symbol) => updateChart(symbol.toUpperCase(), timeframe)} onTimeframeChange={(nextTimeframe) => updateChart(linkContext.symbol, nextTimeframe as CanvasChartTimeframe)} onVisibleColumnsChange={(nextVisibleIndicators) => onChartSettingsChange({ ...chartSettings, visibleIndicators: nextVisibleIndicators })} payload={payload} periodEnd={sessionDate} periodStart={sessionDate} settingsStorageKey={`${CANVAS_SETTINGS_STORAGE_KEY}.${instanceId}`} ticker={linkContext.symbol} tickerChangeAsOf={changeAsOf} tickerEditable={symbolEditable} tickerLogoUrl={logoUrl} timeframe={timeframe} timeframes={timeframes} toolbarVariant={toolbarVariant} visibleColumns={visibleIndicators} />;
+  return <ChartPanel baseHeight={baseHeight} canLoadEarlier={liveChart.canLoadEarlier} displayItemOptions={liveChart.indicatorsAvailable ? CHART_INDICATORS : []} emptyMessage={emptyMessage} enableFullscreen={false} errorMessage={liveChart.error || liveChart.historyError} featureOptions={[]} fillHeight={fillHeight} indicatorOptions={[]} initialFitMode="recent" liveEntryLine={positionLine} loading={liveChart.loading} loadingEarlier={liveChart.loadingEarlier} onLoadEarlier={liveChart.loadEarlier} onTickerChange={(symbol) => updateChart(symbol.toUpperCase(), timeframe)} onTimeframeChange={(nextTimeframe) => updateChart(linkContext.symbol, nextTimeframe as CanvasChartTimeframe)} onVisibleColumnsChange={(nextVisibleIndicators) => onChartSettingsChange({ ...chartSettings, visibleIndicators: nextVisibleIndicators })} payload={payload} periodEnd={sessionDate} periodStart={sessionDate} settingsStorageKey={`${CANVAS_SETTINGS_STORAGE_KEY}.${instanceId}`} ticker={linkContext.symbol} tickerChangeAsOf={changeAsOf} tickerEditable={symbolEditable} tickerLogoUrl={logoUrl} timeframe={timeframe} timeframes={timeframes} toolbarVariant={toolbarVariant} visibleColumns={visibleIndicators} />;
 }
 
 function historicalMarketLevelZones(

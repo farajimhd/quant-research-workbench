@@ -12365,14 +12365,14 @@ button {
   pointer-events: auto;
 }
 
-.chart-update-status.info {
-  background: color-mix(in srgb, var(--card) 94%, var(--accent));
-  border-color: color-mix(in srgb, var(--border) 68%, var(--accent));
-  color: var(--text-secondary);
-  max-width: min(34rem, calc(100% - 2rem));
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+.chart-update-status.loading {
+  align-items: center;
+  display: flex;
+  gap: 6px;
+  left: 50%;
+  right: auto;
+  top: 50%;
+  transform: translate(-50%, -50%);
 }
 
 .chart-renderer-error {
