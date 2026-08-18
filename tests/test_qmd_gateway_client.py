@@ -20,6 +20,7 @@ from src.backend.qmd_gateway_client import (
     qmd_computation_demand,
     qmd_computation_requirements,
     qmd_history_base_url,
+    qmd_history_get_json,
     qmd_historical_source_revision,
     qmd_materialize_historical_watchlist_timeline,
     qmd_materialize_historical_watchlist_timelines,
@@ -314,6 +315,22 @@ class QmdGatewayClientTests(unittest.TestCase):
         self.assertEqual(raised.exception.path, "/snapshot/scanner")
         self.assertTrue(raised.exception.retryable)
         self.assertEqual(raised.exception.as_detail()["service"], "QMD")
+
+    @patch("src.backend.qmd_gateway_client.urllib.request.urlopen")
+    @patch("src.backend.qmd_gateway_client.qmd_history_base_url", return_value="http://127.0.0.1:8801")
+    def test_history_timeout_is_typed_retryable_transport_error(
+        self, _base_url, urlopen
+    ) -> None:
+        urlopen.side_effect = TimeoutError("timed out")
+
+        with self.assertRaises(QmdServiceError) as raised:
+            qmd_history_get_json("/coverage/latest", timeout=15)
+
+        self.assertEqual(raised.exception.code, "qmd_upstream_timeout")
+        self.assertEqual(raised.exception.operation, "GET")
+        self.assertEqual(raised.exception.path, "/coverage/latest")
+        self.assertTrue(raised.exception.retryable)
+        self.assertIn("15 seconds", str(raised.exception))
 
     @patch("src.backend.qmd_gateway_client.qmd_enabled", return_value=False)
     def test_disabled_gateway_is_a_typed_non_retryable_error(self, _enabled) -> None:

@@ -557,9 +557,11 @@ def qmd_history_post_json(
             text = response.read().decode("utf-8")
     except urllib.error.HTTPError as exc:
         raise _qmd_http_error("QMD History", "POST", path, url, exc) from exc
-    except urllib.error.URLError as exc:
-        raise _qmd_unavailable_error(
-            "QMD History", "POST", path, url, exc, base_url=qmd_history_base_url()
+    except (urllib.error.URLError, TimeoutError) as exc:
+        raise _qmd_transport_error(
+            "QMD History", "POST", path, url, exc,
+            timeout=timeout,
+            base_url=qmd_history_base_url(),
         ) from exc
     return _qmd_decode_json(text, service_label="QMD History", operation="POST", path=path)
 
@@ -682,9 +684,11 @@ def _qmd_service_get_json(
             text = response.read().decode("utf-8")
     except urllib.error.HTTPError as exc:
         raise _qmd_http_error(service_label, "GET", path, url, exc) from exc
-    except urllib.error.URLError as exc:
-        raise _qmd_unavailable_error(
-            service_label, "GET", path, url, exc, base_url=base_url
+    except (urllib.error.URLError, TimeoutError) as exc:
+        raise _qmd_transport_error(
+            service_label, "GET", path, url, exc,
+            timeout=timeout,
+            base_url=base_url,
         ) from exc
     return _qmd_decode_json(text, service_label=service_label, operation="GET", path=path)
 
@@ -704,8 +708,10 @@ def qmd_put_json(path: str, payload: dict[str, Any], *, timeout: int = 3) -> Any
             text = response.read().decode("utf-8")
     except urllib.error.HTTPError as exc:
         raise _qmd_http_error("QMD", "PUT", path, url, exc) from exc
-    except urllib.error.URLError as exc:
-        raise _qmd_unavailable_error("QMD", "PUT", path, url, exc) from exc
+    except (urllib.error.URLError, TimeoutError) as exc:
+        raise _qmd_transport_error(
+            "QMD", "PUT", path, url, exc, timeout=timeout
+        ) from exc
     return _qmd_decode_json(text, service_label="QMD", operation="PUT", path=path)
 
 
@@ -723,8 +729,10 @@ def qmd_delete_json(path: str, *, timeout: int = 3) -> Any:
             text = response.read().decode("utf-8")
     except urllib.error.HTTPError as exc:
         raise _qmd_http_error("QMD", "DELETE", path, url, exc) from exc
-    except urllib.error.URLError as exc:
-        raise _qmd_unavailable_error("QMD", "DELETE", path, url, exc) from exc
+    except (urllib.error.URLError, TimeoutError) as exc:
+        raise _qmd_transport_error(
+            "QMD", "DELETE", path, url, exc, timeout=timeout
+        ) from exc
     return _qmd_decode_json(text, service_label="QMD", operation="DELETE", path=path)
 
 
@@ -755,7 +763,7 @@ def _qmd_unavailable_error(
     operation: str,
     path: str,
     url: str,
-    error: urllib.error.URLError,
+    error: BaseException,
     *,
     base_url: str = "",
 ) -> QmdServiceError:
@@ -765,8 +773,9 @@ def _qmd_unavailable_error(
             "Start scripts/run_qmd_history_gateway.ps1 and wait for its /health status to be ready."
         )
     else:
+        reason = getattr(error, "reason", None) or str(error) or type(error).__name__
         message = (
-            f"{service_label} {operation} {safe_qmd_url(url)} failed: {error.reason}"
+            f"{service_label} {operation} {safe_qmd_url(url)} failed: {reason}"
         )
     return QmdServiceError(
         service=service_label,
@@ -775,6 +784,40 @@ def _qmd_unavailable_error(
         code="qmd_upstream_unavailable",
         message=message,
         retryable=True,
+    )
+
+
+def _qmd_transport_error(
+    service_label: str,
+    operation: str,
+    path: str,
+    url: str,
+    error: BaseException,
+    *,
+    timeout: float,
+    base_url: str = "",
+) -> QmdServiceError:
+    reason = getattr(error, "reason", None)
+    if isinstance(error, TimeoutError) or isinstance(reason, TimeoutError):
+        timeout_label = f"{timeout:g}"
+        return QmdServiceError(
+            service=service_label,
+            operation=operation,
+            path=path,
+            code="qmd_upstream_timeout",
+            message=(
+                f"{service_label} {operation} {path} timed out after "
+                f"{timeout_label} seconds."
+            ),
+            retryable=True,
+        )
+    return _qmd_unavailable_error(
+        service_label,
+        operation,
+        path,
+        url,
+        error,
+        base_url=base_url,
     )
 
 

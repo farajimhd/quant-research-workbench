@@ -2,7 +2,7 @@ import { Activity, ArrowDown, ArrowUp, ArrowUpDown, BadgeDollarSign, BarChart3, 
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type MutableRefObject, type ReactNode } from "react";
 import type { UTCTimestamp } from "lightweight-charts";
 
-import { api, apiCached, query } from "../api/client";
+import { api, apiCached, query, type ApiError } from "../api/client";
 import {
   CANVAS_PREVIEW_CONTEXT_STORAGE_KEY,
   CANVAS_REGISTRY_STORAGE_KEY,
@@ -1947,20 +1947,34 @@ export function CanvasWorkspaceSurface({ accountKeys, approvedCanvas, canvasId, 
   useEffect(() => {
     if (replayRun || liveMode) return;
     let cancelled = false;
-    apiCached<CanvasContext>("/api/trading/canvas-context", { timeoutMs: 20_000, ttlMs: 300_000 })
-      .then((payload) => {
-        if (cancelled) return;
-        if (!payload.session_date) {
-          setContextError("QMD History has no covered market day.");
+    let retryAttempt = 0;
+    let retryTimer: ReturnType<typeof setTimeout> | undefined;
+    const loadContext = () => {
+      apiCached<CanvasContext>("/api/trading/canvas-context", { timeoutMs: 20_000, ttlMs: 300_000 })
+        .then((payload) => {
+          if (cancelled) return;
+          if (!payload.session_date) {
+            setContextError("QMD History has no covered market day.");
+            setLoading(false);
+            return;
+          }
+          setPreviewContext({ previewTime: payload.preview_time || "09:45", sessionDate: payload.session_date });
+          setContextError("");
+        })
+        .catch((reason: ApiError) => {
+          if (cancelled) return;
+          setContextError("Historical coverage is temporarily unavailable; reconnecting automatically.");
           setLoading(false);
-          return;
-        }
-        setPreviewContext({ previewTime: payload.preview_time || "09:45", sessionDate: payload.session_date });
-        setContextError("");
-      })
-      .catch(() => { if (!cancelled) { setContextError("Historical coverage is temporarily unavailable."); setLoading(false); } })
-      .finally(() => { if (!cancelled) setContextReady(true); });
-    return () => { cancelled = true; };
+          if (reason.retryable === false) return;
+          const delays = [1_000, 2_000, 5_000, 10_000, 15_000];
+          const delay = delays[Math.min(retryAttempt, delays.length - 1)];
+          retryAttempt += 1;
+          retryTimer = window.setTimeout(loadContext, delay);
+        })
+        .finally(() => { if (!cancelled) setContextReady(true); });
+    };
+    loadContext();
+    return () => { cancelled = true; if (retryTimer) window.clearTimeout(retryTimer); };
   }, [liveMode, replayRun]);
 
   useEffect(() => {

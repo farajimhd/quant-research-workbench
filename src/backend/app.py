@@ -528,7 +528,9 @@ async def typed_validation_error(
 def _qmd_http_exception(error: QmdServiceError) -> HTTPException:
     return HTTPException(
         status_code=(
-            503
+            504
+            if error.code == "qmd_upstream_timeout"
+            else 503
             if error.code in {"qmd_disabled", "qmd_upstream_unavailable"}
             else 502
         ),
@@ -5764,6 +5766,20 @@ async def trading_historical_stream(websocket: WebSocket, symbol: str) -> None:
 def trading_canvas_context() -> dict[str, Any]:
     try:
         coverage = historical_latest_coverage()
+    except QmdServiceError as exc:
+        raise _qmd_http_exception(exc) from exc
+    except TimeoutError as exc:
+        raise HTTPException(
+            status_code=504,
+            detail={
+                "code": "qmd_upstream_timeout",
+                "message": "QMD History coverage timed out during Canvas startup.",
+                "operation": "GET",
+                "path": "/coverage/latest",
+                "retryable": True,
+                "service": "QMD History",
+            },
+        ) from exc
     except RuntimeError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     return {

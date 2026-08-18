@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import unittest
+from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
 from src.backend.app import app
+from src.backend.qmd_gateway_client import QmdServiceError
 from src.backend.response_contract import error_response_envelope, success_response_envelope
 from src.request_context import begin_request_context, end_request_context
 
@@ -90,6 +92,28 @@ class ResponseContractTests(unittest.TestCase):
         self.assertEqual(payload["error"]["message"], "QMD is unavailable")
         self.assertTrue(payload["error"]["retryable"])
         self.assertEqual(payload["error"]["details"]["service"], "QMD")
+
+    @patch("src.backend.app.historical_latest_coverage")
+    def test_canvas_context_reports_qmd_timeout_as_retryable_gateway_timeout(
+        self, latest_coverage
+    ) -> None:
+        latest_coverage.side_effect = QmdServiceError(
+            service="QMD History",
+            operation="GET",
+            path="/coverage/latest",
+            code="qmd_upstream_timeout",
+            message="QMD History GET /coverage/latest timed out after 15 seconds.",
+            retryable=True,
+        )
+
+        with TestClient(app) as client:
+            response = client.get("/api/trading/canvas-context")
+
+        payload = response.json()
+        self.assertEqual(response.status_code, 504)
+        self.assertEqual(payload["error"]["code"], "qmd_upstream_timeout")
+        self.assertTrue(payload["error"]["retryable"])
+        self.assertEqual(payload["error"]["details"]["service"], "QMD History")
 
     def test_validation_list_has_stable_code_and_message(self) -> None:
         issues = [{"loc": ["query", "limit"], "msg": "must be positive"}]
