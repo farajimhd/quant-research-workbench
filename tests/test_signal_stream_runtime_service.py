@@ -79,13 +79,18 @@ class SignalStreamRuntimeTests(unittest.TestCase):
             "market_cap": 500_000_000,
             "financial_trajectory_score": 81,
             "xbrl_quality_score": 73,
+            "company_name": "Alpha Analytics",
+            "country": "US",
+            "logo_url": "https://example.test/aaa.svg",
+            "live_news_recency": "hot",
+            "sec_recency": "cold",
         }
         first = runtime.resolve(
             self.configuration, [matching], as_of=start, journal=self.journal
         )
         repeated = runtime.resolve(
             self.configuration,
-            [{**matching, "change_pct": 7.0, "financial_trajectory_score": 22}],
+            [{**matching, "change_pct": 7.0, "financial_trajectory_score": 22, "live_news_recency": "none", "sec_recency": "hot"}],
             as_of=start + timedelta(seconds=1),
             journal=self.journal,
         )
@@ -94,6 +99,10 @@ class SignalStreamRuntimeTests(unittest.TestCase):
         self.assertEqual(repeated["occurrence_count"], 1)
         self.assertEqual(repeated["occurrences"][0]["change_pct"], 4.5)
         self.assertEqual(repeated["occurrences"][0]["fundamental_trajectory"], 81)
+        self.assertEqual(repeated["occurrences"][0]["company_name"], "Alpha Analytics")
+        self.assertEqual(repeated["occurrences"][0]["country"], "US")
+        self.assertEqual(repeated["occurrences"][0]["live_news_recency"], "hot")
+        self.assertEqual(repeated["occurrences"][0]["sec_recency"], "cold")
 
         restarted = SignalStreamRuntime()
         after_restart = restarted.resolve(

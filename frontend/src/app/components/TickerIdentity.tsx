@@ -16,8 +16,9 @@ type TickerPresentationPayload = {
 };
 
 const presentationCache = new Map<string, TickerPresentation | null>();
-const pendingRequests = new Map<string, Promise<void>>();
-const PRESENTATION_REQUEST_BATCH_SIZE = 100;
+const pendingPresentationRequests = new Map<string, Promise<void>>();
+const presentationListeners = new Set<() => void>();
+const PRESENTATION_REQUEST_BATCH_SIZE = 200;
 type TickerChange = { absolute_change: number | null; as_of: string; current_price: number | null; percent_change: number | null; previous_close: number | null; previous_session_date: string; ticker: string };
 const changeCache = new Map<string, TickerChange | null>();
 const pendingChangeRequests = new Map<string, Promise<void>>();
@@ -27,14 +28,26 @@ export function useTickerPresentations(tickers: string[]) {
   const [revision, setRevision] = useState(0);
 
   useEffect(() => {
+    const listener = () => setRevision((value) => value + 1);
+    presentationListeners.add(listener);
+    return () => { presentationListeners.delete(listener); };
+  }, []);
+
+  useEffect(() => {
     const normalized = tickerKey ? tickerKey.split(",") : [];
     const missing = normalized.filter((ticker) => !presentationCache.has(ticker));
     if (!missing.length) return;
-    const request = Promise.all(chunkTickers(missing, PRESENTATION_REQUEST_BATCH_SIZE).map(requestTickerPresentationBatch));
+    const requests = new Set<Promise<void>>();
+    missing.forEach((ticker) => {
+      const pending = pendingPresentationRequests.get(ticker);
+      if (pending) requests.add(pending);
+    });
+    const fresh = missing.filter((ticker) => !pendingPresentationRequests.has(ticker));
+    chunkTickers(fresh, PRESENTATION_REQUEST_BATCH_SIZE).forEach((batch) => requests.add(requestTickerPresentationBatch(batch)));
+    const request = Promise.all(requests);
     let active = true;
     let retryTimer: ReturnType<typeof setTimeout> | undefined;
     request
-      .then(() => { if (active) setRevision((value) => value + 1); })
       .catch(() => { if (active) retryTimer = setTimeout(() => setRevision((value) => value + 1), 5000); });
     return () => { active = false; if (retryTimer) clearTimeout(retryTimer); };
   }, [revision, tickerKey]);
@@ -48,16 +61,18 @@ export function useTickerPresentations(tickers: string[]) {
 }
 
 function requestTickerPresentationBatch(tickers: string[]) {
+  if (!tickers.length) return Promise.resolve();
   const requestKey = tickers.join(",");
-  let request = pendingRequests.get(requestKey);
-  if (request) return request;
-  request = api<TickerPresentationPayload>(`/api/trading/ticker-presentations${query({ tickers: requestKey })}`, { timeoutMs: 15000 })
+  const request = api<TickerPresentationPayload>(`/api/trading/ticker-presentations${query({ tickers: requestKey })}`, { timeoutMs: 15000 })
     .then((payload) => {
       if (payload.status === "unavailable") throw new Error("Ticker presentations are temporarily unavailable.");
       tickers.forEach((ticker) => presentationCache.set(ticker, payload.presentations[ticker] ?? null));
+      presentationListeners.forEach((listener) => listener());
     })
-    .finally(() => pendingRequests.delete(requestKey));
-  pendingRequests.set(requestKey, request);
+    .finally(() => tickers.forEach((ticker) => {
+      if (pendingPresentationRequests.get(ticker) === request) pendingPresentationRequests.delete(ticker);
+    }));
+  tickers.forEach((ticker) => pendingPresentationRequests.set(ticker, request));
   return request;
 }
 

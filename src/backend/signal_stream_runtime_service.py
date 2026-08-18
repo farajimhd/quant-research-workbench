@@ -620,6 +620,17 @@ def _occurrence(
         "definition_revision": definition_revision,
         "configured_revision": int(stream.get("revision") or 1),
         "ticker": ticker,
+        "company_name": str(row.get("company_name") or row.get("issuer_name") or ""),
+        "issuer_name": str(row.get("issuer_name") or row.get("company_name") or ""),
+        "country": str(
+            row.get("country")
+            or row.get("company_country_code")
+            or row.get("domicile_country_code")
+            or ""
+        ),
+        "logo_url": str(row.get("logo_url") or ""),
+        "live_news_recency": str(row.get("live_news_recency") or "none"),
+        "sec_recency": str(row.get("sec_recency") or "none"),
         "conid": int(row.get("ibkr_conid") or row.get("conid") or 0),
         "event_time": as_of.isoformat(),
         "effective_at": as_of.isoformat(),

@@ -3844,7 +3844,7 @@ function compareTradingValues(left: unknown, right: unknown) {
 function PreviewCell({ column, onSymbolSelect, presentations, row }: { column: string; onSymbolSelect?: (symbol: string) => void; presentations: ReturnType<typeof useTickerPresentations>; row: PreviewRow }) {
   if (isPreviewTickerColumn(column)) {
     const ticker = String(row[column] || "").trim().toUpperCase();
-    const identity = <SecurityIdentityCell companyName={String(row.company_name ?? row.issuer_name ?? presentations[ticker]?.issuer_name ?? "")} country={String(row.country ?? row.company_country_code ?? presentations[ticker]?.country ?? "")} logoUrl={String(row.logo_url ?? presentations[ticker]?.logo_url ?? "")} ticker={ticker} />;
+    const identity = <SecurityIdentityCell companyName={String(row.company_name ?? row.issuer_name ?? presentations[ticker]?.issuer_name ?? "")} country={String(row.country ?? row.company_country_code ?? presentations[ticker]?.country ?? "")} logoUrl={String(row.logo_url ?? presentations[ticker]?.logo_url ?? "")} newsRecency={row.live_news_recency} secRecency={row.sec_recency} ticker={ticker} />;
     return column === "symbol" && onSymbolSelect ? <button className="canvas-symbol-link" onClick={() => onSymbolSelect(ticker)} type="button">{identity}</button> : identity;
   }
   if (isPreviewTimeColumn(column)) return <MarketTime includeSeconds value={String(row[column] || "")} />;

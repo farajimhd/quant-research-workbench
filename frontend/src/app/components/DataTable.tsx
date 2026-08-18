@@ -8,11 +8,8 @@ import {
   Database,
   EyeOff,
   Filter,
-  Flame,
   GripVertical,
-  Megaphone,
   MoreHorizontal,
-  Newspaper,
   Plus,
   RotateCcw,
   Rows3,
@@ -2798,22 +2795,7 @@ function renderCell(row: DataRow, column: string) {
   const ticker = value === "-" ? "" : value;
   const companyName = stringValue(row.company_name) || stringValue(row.issuer_name) || stringValue(row.name);
   const country = stringValue(row.country) || stringValue(row.company_country_code) || stringValue(row.domicile_country_code);
-  const identity = <SecurityIdentityCell companyName={companyName} country={country} logoUrl={stringValue(row.logo_url)} ticker={ticker} />;
-  if (column.toLowerCase() !== "ticker") return identity;
-  const newsCount = coerceNumber(row.live_news_count);
-  if (!Number.isFinite(newsCount) || newsCount <= 0) return identity;
-  const recency = normalizedNewsRecency(row.live_news_recency);
-  const latestTitle = stringValue(row.live_news_latest_title);
-  const latestTime = stringValue(row.live_news_latest_time);
-  const title = [latestTitle, latestTime].filter(Boolean).join(" | ") || "News available";
-  const indicator = tickerNewsIndicator(row);
-  const NewsIcon = indicator.icon;
-  return (
-    <span className="data-table-ticker-with-news" title={title}>
-      <NewsIcon className={`data-table-news-icon ${indicator.className}`} size={14} aria-label={`${recency} news`} />
-      {identity}
-    </span>
-  );
+  return <SecurityIdentityCell companyName={companyName} country={country} logoUrl={stringValue(row.logo_url)} newsRecency={row.live_news_recency} secRecency={row.sec_recency} ticker={ticker} />;
 }
 
 function renderCategoricalCell(value: unknown, column: string) {
@@ -2873,24 +2855,6 @@ function renderLogoCell(row: DataRow, column: string) {
       <img alt="" loading="lazy" onError={(event) => { event.currentTarget.hidden = true; }} src={logoUrl} />
     </span>
   );
-}
-
-function tickerNewsIndicator(row: DataRow): { className: string; icon: typeof Newspaper } {
-  const latest = newsItemsFromRow(row)[0];
-  if (latest && articleTickerCount(latest) > 1) return { className: "multi", icon: Newspaper };
-  const recency = normalizedNewsRecency(latest?.recency ?? row.live_news_recency);
-  if (recency === "hot") return { className: "hot-company", icon: Megaphone };
-  return { className: "company", icon: Flame };
-}
-
-function newsItemsFromRow(row: DataRow) {
-  return Array.isArray(row.live_news_items) ? row.live_news_items.filter((item): item is DataRow => Boolean(item && typeof item === "object")) : [];
-}
-
-function articleTickerCount(item: DataRow) {
-  const explicitCount = coerceNumber(item.ticker_count);
-  if (Number.isFinite(explicitCount) && explicitCount > 0) return explicitCount;
-  return Array.isArray(item.tickers) ? item.tickers.length : 1;
 }
 
 function normalizedNewsRecency(value: unknown) {

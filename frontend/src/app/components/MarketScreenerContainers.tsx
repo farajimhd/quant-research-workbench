@@ -912,10 +912,7 @@ function renderMarketCell(row: ScreenerRow, column: string, presentations: Retur
   const ticker = String(row.ticker ?? row.symbol ?? "").trim().toUpperCase();
   if (column === "ticker" || column === "symbol") {
     const companyName = companyInIdentity ? String(row.company_name ?? presentations[ticker]?.issuer_name ?? "").trim() : "";
-    return <SecurityIdentityCell companyName={companyName} country={String(row.country ?? presentations[ticker]?.country ?? "")} logoUrl={String(row.logo_url ?? presentations[ticker]?.logo_url ?? "")} ticker={ticker} trailing={<span className="market-list-ticker-events">
-        <TickerEventIcon source="News" value={String(row.live_news_recency ?? "none")} />
-        <TickerEventIcon source="SEC" value={String(row.sec_recency ?? "none")} />
-      </span>} />;
+    return <SecurityIdentityCell companyName={companyName} country={String(row.country ?? presentations[ticker]?.country ?? "")} logoUrl={String(row.logo_url ?? presentations[ticker]?.logo_url ?? "")} newsRecency={row.live_news_recency} secRecency={row.sec_recency} ticker={ticker} />;
   }
   if (column === "event_time") return value ? <MarketTime includeSeconds value={String(value)} /> : "—";
   if (["direction", "source"].includes(column)) return <CategoryBadge column={column} value={value} />;
@@ -942,14 +939,6 @@ function marketNumber(display: string, value: number, definition: FieldDefinitio
   const exact = new Intl.NumberFormat("en-US", { maximumFractionDigits: 8 }).format(value);
   const resolvedTone = tone || (definition.format === "percent" && value !== 0 ? (value > 0 ? "positive" : "negative") : "neutral");
   return <span className="market-list-number table-number" data-importance={presentationForColumn(definition.key).importance} data-tone={resolvedTone} title={`${definition.label}: ${exact}`}>{display}</span>;
-}
-
-function TickerEventIcon({ source, value }: { source: "News" | "SEC"; value: string }) {
-  const state = value.toLowerCase();
-  if (state !== "hot" && state !== "cold") return null;
-  const Icon = source === "News" ? Flame : FileCheck2;
-  const label = `${state} ${source.toLowerCase()}`;
-  return <span aria-label={label} className="market-list-ticker-event" data-source={source.toLowerCase()} data-state={state} title={label}><Icon aria-hidden="true" fill={source === "News" ? "currentColor" : "none"} size={15} /></span>;
 }
 
 function toneClass(value: unknown, column: string, customColumns: ScannerCustomColumn[] = [], catalog = FIELD_CATALOG) {
