@@ -860,17 +860,17 @@ impl IntradayBarWriter {
               SELECT *, 'trade' AS bar_family,
                 toFloat64(price_primary_int) / if(bitAnd(event_meta, 2) != 0, 10000., 100.) AS price,
                 toFloat64(size_primary) AS size
-              FROM {source} FINAL WHERE bitAnd(event_meta, 1) = 1
+              FROM {source} WHERE bitAnd(event_meta, 1) = 1
               UNION ALL
               SELECT *, 'quote_bid' AS bar_family,
                 toFloat64(price_secondary_int) / if(bitAnd(event_meta, 4) != 0, 10000., 100.) AS price,
                 toFloat64(size_secondary) AS size
-              FROM {source} FINAL WHERE bitAnd(event_meta, 1) = 0
+              FROM {source} WHERE bitAnd(event_meta, 1) = 0
               UNION ALL
               SELECT *, 'quote_ask' AS bar_family,
                 toFloat64(price_primary_int) / if(bitAnd(event_meta, 2) != 0, 10000., 100.) AS price,
                 toFloat64(size_primary) AS size
-              FROM {source} FINAL WHERE bitAnd(event_meta, 1) = 0
+              FROM {source} WHERE bitAnd(event_meta, 1) = 0
             )
             WHERE price > 0 AND session_us >= {session_start} AND session_us < {session_end}{filter}
             GROUP BY ticker, local_date_value, bucket, bar_family"#,
@@ -909,7 +909,7 @@ impl IntradayBarWriter {
               argMin(size_open, bucket_index), argMax(size_close, bucket_index), max(size_high), min(size_low),
               toUInt64(sum(event_count)), min(first_event_timestamp_us), max(last_event_timestamp_us),
               bucket * {resolution}, (bucket + 1) * {resolution}
-            FROM {table} FINAL
+            FROM {table}
             WHERE label_resolution_us = {base}{filter}
             GROUP BY ticker, local_date, bucket, bar_family"#,
             table = self.config.intraday_bar_table,
@@ -1034,7 +1034,7 @@ impl IntradayBarWriter {
         let source_count = parse_count(
             &self
                 .query(&format!(
-                    "SELECT count() FROM {} FINAL WHERE ticker = '{}' AND sip_timestamp_us = {} AND source_sequence = {} AND bitAnd(event_meta, 1) = {} AND arrival_sequence = {} FORMAT TabSeparated",
+                    "SELECT count() FROM {} WHERE ticker = '{}' AND sip_timestamp_us = {} AND source_sequence = {} AND bitAnd(event_meta, 1) = {} AND arrival_sequence = {} FORMAT TabSeparated",
                     self.config.compact_event_table,
                     escape_sql_string(&request.ticker),
                     request.sip_timestamp_us,

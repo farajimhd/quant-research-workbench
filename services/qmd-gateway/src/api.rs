@@ -1176,7 +1176,31 @@ fn intraday_bar_history_sql(
         .map(|value| format!(" AND first_event_timestamp_us < {value}"))
         .unwrap_or_default();
     format!(
-        "SELECT local_date, open, high, low, close, size_sum, event_count, first_event_timestamp_us, last_event_timestamp_us, bar_start_session_us, bar_end_session_us FROM {table} FINAL WHERE ticker = '{ticker}' AND label_resolution_us = {resolution_us} AND bar_family = 'trade' AND local_date >= toDate('{start_date}') AND local_date <= toDate('{end_date}'){before_filter} ORDER BY local_date DESC, bucket_index DESC LIMIT {limit} FORMAT JSONEachRow"
+        r#"SELECT local_date, open, high, low, close, size_sum, event_count,
+            first_event_timestamp_us, last_event_timestamp_us,
+            bar_start_session_us, bar_end_session_us
+        FROM (
+            SELECT local_date, bucket_index,
+                argMax(open, updated_at_utc) AS open,
+                argMax(high, updated_at_utc) AS high,
+                argMax(low, updated_at_utc) AS low,
+                argMax(close, updated_at_utc) AS close,
+                argMax(size_sum, updated_at_utc) AS size_sum,
+                argMax(event_count, updated_at_utc) AS event_count,
+                argMax(first_event_timestamp_us, updated_at_utc) AS first_event_timestamp_us,
+                argMax(last_event_timestamp_us, updated_at_utc) AS last_event_timestamp_us,
+                argMax(bar_start_session_us, updated_at_utc) AS bar_start_session_us,
+                argMax(bar_end_session_us, updated_at_utc) AS bar_end_session_us
+            FROM {table}
+            WHERE ticker = '{ticker}' AND label_resolution_us = {resolution_us}
+              AND bar_family = 'trade' AND local_date >= toDate('{start_date}')
+              AND local_date <= toDate('{end_date}')
+            GROUP BY local_date, bucket_index
+        )
+        WHERE 1 = 1{before_filter}
+        ORDER BY local_date DESC, bucket_index DESC
+        LIMIT {limit}
+        FORMAT JSONEachRow"#
     )
 }
 

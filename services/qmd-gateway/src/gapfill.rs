@@ -324,7 +324,7 @@ impl GapFillService {
                 status = repair.status.as_str();
             }
         } else {
-            message = "Recent q_live event table has duplicate canonical event identities after FINAL; a validated rebuild is required.".to_string();
+            message = "Recent q_live event table has duplicate canonical event identities; a validated rebuild is required.".to_string();
         }
         self.record_coverage_run(
             started_at,
@@ -1420,7 +1420,7 @@ impl GapFillService {
         let sql = format!(
             r#"
             SELECT count()
-            FROM {table} FINAL
+            FROM {table}
             WHERE label_resolution_us = 100000
               AND last_event_timestamp_us > {start_us}
               AND first_event_timestamp_us < {end_us}
@@ -1487,7 +1487,7 @@ impl GapFillService {
                     condition_token_3,
                     condition_token_4,
                     condition_token_5
-                FROM {table} FINAL
+                FROM {table}
                 WHERE event_date >= toDate('{start_date}')
                   AND sip_timestamp_us >= {start_us}
                   AND ticker != ''
@@ -1811,20 +1811,20 @@ impl GapFillService {
                 ifNull(min({schema_version}), 0) AS schema_version_min,
                 ifNull(max({schema_version}), 0) AS schema_version_max,
                 ifNull(sumWithOverflow(cityHash64(
-                    ticker, sip_timestamp_us, source_sequence, bitAnd(event_meta, 1),
+                    ticker, sip_timestamp_us, bitAnd(event_meta, 1),
                     event_meta, price_primary_int, price_secondary_int,
                     size_primary, size_secondary, exchange_primary, exchange_secondary,
                     condition_token_1, condition_token_2, condition_token_3,
                     condition_token_4, condition_token_5
                 )), 0) AS identity_hash_sum,
                 ifNull(groupBitXor(cityHash64(
-                    ticker, sip_timestamp_us, source_sequence, bitAnd(event_meta, 1),
+                    ticker, sip_timestamp_us, bitAnd(event_meta, 1),
                     event_meta, price_primary_int, price_secondary_int,
                     size_primary, size_secondary, exchange_primary, exchange_secondary,
                     condition_token_1, condition_token_2, condition_token_3,
                     condition_token_4, condition_token_5
                 )), 0) AS identity_hash_xor
-            FROM {table} FINAL
+            FROM {table}
             WHERE toDate(toTimeZone(fromUnixTimestamp64Micro(toInt64(sip_timestamp_us)),
                 'America/New_York')) = toDate('{date}')
             FORMAT JSONEachRow"#,
@@ -1970,7 +1970,7 @@ impl GapFillService {
         let old_sessions = self
             .query(
                 &format!(
-                    "SELECT toString(toDate(toTimeZone(fromUnixTimestamp64Micro(toInt64(sip_timestamp_us)), 'America/New_York'))) AS session_date, count() FROM {} FINAL WHERE toDate(toTimeZone(fromUnixTimestamp64Micro(toInt64(sip_timestamp_us)), 'America/New_York')) < toDate('{}') GROUP BY session_date ORDER BY session_date FORMAT TSV",
+                    "SELECT toString(toDate(toTimeZone(fromUnixTimestamp64Micro(toInt64(sip_timestamp_us)), 'America/New_York'))) AS session_date, count() FROM {} WHERE toDate(toTimeZone(fromUnixTimestamp64Micro(toInt64(sip_timestamp_us)), 'America/New_York')) < toDate('{}') GROUP BY session_date ORDER BY session_date FORMAT TSV",
                     self.config.compact_event_table, cutoff,
                 ),
                 true,
@@ -1989,7 +1989,7 @@ impl GapFillService {
         let old_bar_sessions = self
             .query(
                 &format!(
-                    "SELECT toString(local_date), count() FROM {} FINAL WHERE local_date < toDate('{}') GROUP BY local_date ORDER BY local_date FORMAT TSV",
+                    "SELECT toString(local_date), count() FROM {} WHERE local_date < toDate('{}') GROUP BY local_date ORDER BY local_date FORMAT TSV",
                     self.config.intraday_bar_table, cutoff,
                 ),
                 true,
