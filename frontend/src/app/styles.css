@@ -28274,6 +28274,10 @@ button {
   padding: 2px 0;
   vertical-align: middle;
 }
+.table-security-card[data-has-trailing="false"] {
+  grid-template-areas: "logo country" "logo copy";
+  grid-template-columns: 42px minmax(0, 1fr);
+}
 .table-security-card > .ticker-logo,
 .table-security-card > .ticker-logo-fallback {
   align-items: center;
@@ -28298,7 +28302,6 @@ button {
 .table-security-trailing { align-items: center; align-self: center; display: inline-flex; gap: 3px; grid-area: trailing; justify-self: end; }
 .table-security-recency-icon {
   align-items: center;
-  color: color-mix(in oklab, var(--muted-foreground) 30%, transparent);
   display: inline-flex;
   height: 16px;
   justify-content: center;
@@ -28306,8 +28309,6 @@ button {
 }
 .table-security-recency-icon[data-state="hot"] { color: color-mix(in oklab, var(--danger) 86%, var(--foreground)); }
 .table-security-recency-icon[data-state="cold"] { color: color-mix(in oklab, var(--info) 82%, var(--foreground)); }
-.table-security-recency-icon[data-state="old"] { color: color-mix(in oklab, var(--muted-foreground) 68%, var(--foreground)); }
-.table-security-recency-icon[data-state="none"] { color: color-mix(in oklab, var(--muted-foreground) 42%, transparent); }
 .table-number { color: color-mix(in oklab, var(--foreground) 90%, var(--muted-foreground)); display: inline-block; font-family: var(--font-body); font-size: 11.5px; font-variant-numeric: lining-nums tabular-nums; font-weight: 500; letter-spacing: -.008em; min-width: 100%; text-align: right; }
 .table-number[data-importance="strong"] { color: var(--foreground); font-weight: 640; }
 .table-number[data-tone="positive"] { color: color-mix(in oklab, var(--semantic-positive, var(--success)) 72%, var(--foreground)); }

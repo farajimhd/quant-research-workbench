@@ -59,32 +59,39 @@ export function CategoryBadge({ column = "", value }: { column?: string; value: 
 export function SecurityIdentityCell({ companyName = "", country = "", logoUrl = "", newsRecency, secRecency, ticker, trailing }: { companyName?: string; country?: string; logoUrl?: string; newsRecency?: unknown; secRecency?: unknown; ticker: string; trailing?: ReactNode }) {
   const symbol = ticker.trim().toUpperCase();
   const countryName = formatCountry(country);
-  return <span className="table-security-card" title={[symbol, companyName, countryName].filter(Boolean).join(" · ")}>
+  const newsState = normalizedRecency(newsRecency);
+  const secState = normalizedRecency(secRecency);
+  const hasTrailing = isRecentRecency(newsState) || isRecentRecency(secState) || Boolean(trailing);
+  return <span className="table-security-card" data-has-trailing={hasTrailing} title={[symbol, companyName, countryName].filter(Boolean).join(" · ")}>
     <TickerLogo logoUrl={logoUrl} showLogoPlaceholder ticker={symbol} />
     <span className="table-security-copy"><strong>{symbol || "—"}</strong>{companyName ? <small>{companyName}</small> : null}</span>
     {countryName ? <span className="table-security-country">{countryName}</span> : null}
-    <span className="table-security-trailing">
-      <SecurityRecencyIcon kind="news" value={newsRecency} />
-      <SecurityRecencyIcon kind="sec" value={secRecency} />
+    {hasTrailing ? <span className="table-security-trailing">
+      <SecurityRecencyIcon kind="news" state={newsState} />
+      <SecurityRecencyIcon kind="sec" state={secState} />
       {trailing}
-    </span>
+    </span> : null}
   </span>;
 }
 
-function SecurityRecencyIcon({ kind, value }: { kind: "news" | "sec"; value: unknown }) {
-  const state = normalizedRecency(value);
+type RecencyState = "hot" | "cold" | "old" | "none" | "unavailable";
+
+function SecurityRecencyIcon({ kind, state }: { kind: "news" | "sec"; state: RecencyState }) {
+  if (!isRecentRecency(state)) return null;
   const source = kind === "news" ? "News" : "SEC filing";
   const Icon = kind === "news" ? Flame : FileCheck2;
-  const description = state === "unavailable" ? `${source} recency unavailable` : state === "none" ? `No recent ${source.toLowerCase()}` : `${state} ${source.toLowerCase()}`;
-  return <span aria-label={description} className="table-security-recency-icon" data-source={kind} data-state={state} title={description}><Icon aria-hidden="true" fill={kind === "news" && state !== "none" && state !== "unavailable" ? "currentColor" : "none"} size={14} /></span>;
+  const description = `${state} ${source.toLowerCase()}`;
+  return <span aria-label={description} className="table-security-recency-icon" data-source={kind} data-state={state} title={description}><Icon aria-hidden="true" fill={kind === "news" ? "currentColor" : "none"} size={14} /></span>;
 }
 
-function normalizedRecency(value: unknown) {
+function normalizedRecency(value: unknown): RecencyState {
   if (value === null || value === undefined || value === "") return "unavailable";
   const state = String(value).trim().toLowerCase();
   if (state === "warm" || state === "recent") return "cold";
-  return ["hot", "cold", "old", "none"].includes(state) ? state : "unavailable";
+  return state === "hot" || state === "cold" || state === "old" || state === "none" ? state : "unavailable";
 }
+
+function isRecentRecency(state: RecencyState) { return state === "hot" || state === "cold"; }
 
 export function tableCellClass(column: string, presentation?: TableColumnPresentation) {
   const resolved = presentationForColumn(column, presentation);
