@@ -495,6 +495,7 @@ def project_watchlists_from_candidates(
     available_fields: set[str] | None = None,
     source_complete: bool,
     source_status: str,
+    candidates_projected: bool = False,
 ) -> dict[str, Any]:
     """Project every configured Watchlist from one causal scanner snapshot.
 
@@ -509,7 +510,7 @@ def project_watchlists_from_candidates(
     rule_sets = list(discovery.get("rule_sets") or [])
     data_field_plan = compile_data_field_plan(discovery)
     active_field_refs = data_field_plan.get("field_refs") or []
-    normalized_candidates = project_configured_rule_set_columns(
+    normalized_candidates = [dict(row) for row in candidates] if candidates_projected else project_configured_rule_set_columns(
         configuration,
         project_data_field_outputs(
             [normalize_watchlist_candidate(row) for row in candidates],

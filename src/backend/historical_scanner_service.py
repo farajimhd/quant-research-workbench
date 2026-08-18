@@ -4,6 +4,7 @@ import json
 import os
 import re
 from collections import defaultdict
+from copy import deepcopy
 from datetime import UTC, date, datetime, timedelta
 from threading import Lock, Thread
 from time import monotonic
@@ -94,6 +95,44 @@ _INTERVAL_DURATION_US = {
     "w": 7 * 24 * 60 * 60_000_000,
     "mo": 30 * 24 * 60 * 60_000_000,
 }
+
+_SCANNER_MARKET_CACHE_TTL_SECONDS = 60.0
+_SCANNER_MARKET_CACHE_MAX_ENTRIES = 8
+_SCANNER_MARKET_CACHE_LOCK = Lock()
+_SCANNER_MARKET_CACHE: dict[tuple[str, int, int], tuple[float, dict[str, Any]]] = {}
+_SCANNER_MARKET_KEY_LOCKS: dict[tuple[str, int, int], Lock] = {}
+
+
+def _cached_historical_scanner_market_payload(snapshot_at: datetime, lookback_minutes: int) -> dict[str, Any]:
+    key = (snapshot_at.isoformat(), lookback_minutes, id(qmd_historical_scanner_market_snapshot))
+    now = monotonic()
+    with _SCANNER_MARKET_CACHE_LOCK:
+        cached = _SCANNER_MARKET_CACHE.get(key)
+        if cached and cached[0] > now:
+            return deepcopy(cached[1])
+        key_lock = _SCANNER_MARKET_KEY_LOCKS.setdefault(key, Lock())
+    with key_lock:
+        now = monotonic()
+        with _SCANNER_MARKET_CACHE_LOCK:
+            cached = _SCANNER_MARKET_CACHE.get(key)
+            if cached and cached[0] > now:
+                return deepcopy(cached[1])
+        payload = qmd_historical_scanner_market_snapshot(
+            as_of=snapshot_at.isoformat(),
+            lookback_minutes=lookback_minutes,
+        )
+        with _SCANNER_MARKET_CACHE_LOCK:
+            _SCANNER_MARKET_CACHE[key] = (now + _SCANNER_MARKET_CACHE_TTL_SECONDS, payload)
+            expired = [cache_key for cache_key, (expires_at, _) in _SCANNER_MARKET_CACHE.items() if expires_at <= now]
+            for cache_key in expired:
+                _SCANNER_MARKET_CACHE.pop(cache_key, None)
+                _SCANNER_MARKET_KEY_LOCKS.pop(cache_key, None)
+            if len(_SCANNER_MARKET_CACHE) > _SCANNER_MARKET_CACHE_MAX_ENTRIES:
+                oldest = sorted(_SCANNER_MARKET_CACHE, key=lambda cache_key: _SCANNER_MARKET_CACHE[cache_key][0])
+                for cache_key in oldest[:-_SCANNER_MARKET_CACHE_MAX_ENTRIES]:
+                    _SCANNER_MARKET_CACHE.pop(cache_key, None)
+                    _SCANNER_MARKET_KEY_LOCKS.pop(cache_key, None)
+        return deepcopy(payload)
 
 
 def scanner_interval_duration_us(value: str) -> int | None:
@@ -270,10 +309,7 @@ def historical_scanner_snapshot(as_of: datetime, *, lookback_minutes: int = 15) 
         raise ValueError("Historical scanner clock must be timezone-aware.")
     lookback_minutes = max(5, min(int(lookback_minutes), 120))
     snapshot_at = as_of.astimezone(UTC).replace(second=0, microsecond=0)
-    payload = qmd_historical_scanner_market_snapshot(
-        as_of=snapshot_at.isoformat(),
-        lookback_minutes=lookback_minutes,
-    )
+    payload = _cached_historical_scanner_market_payload(snapshot_at, lookback_minutes)
     clock_projection = historical_market_clock_projection(snapshot_at)
     rows = [
         {**row, **clock_projection, "ticker": str(row.get("symbol") or "").strip().upper()}
@@ -529,6 +565,7 @@ def historical_scanner_reference_projection(
     as_of: datetime,
     *,
     client: ClickHouseHttpClient | None = None,
+    tickers: tuple[str, ...] = (),
 ) -> dict[str, dict[str, Any]]:
     """Batch-project point-in-time identity, supply, market, and short facts for the scanner universe."""
     if as_of.tzinfo is None:
@@ -542,7 +579,7 @@ def historical_scanner_reference_projection(
         default_query_params={"max_execution_time": 14},
     )
     rows = _json_rows(
-        active_client.execute(scanner_reference_projection(cutoff, "q_live"))
+        active_client.execute(scanner_reference_projection(cutoff, "q_live", tickers=tickers))
     )
     projection: dict[str, dict[str, Any]] = {}
     for row in rows:
@@ -566,6 +603,7 @@ def historical_scanner_fundamental_projection(
     *,
     client: ClickHouseHttpClient | None = None,
     prices_by_ticker: dict[str, float] | None = None,
+    tickers: tuple[str, ...] = (),
 ) -> dict[str, dict[str, Any]]:
     """Calculate the Stock Facts and XBRL financial fields in one causal, set-based read."""
     if as_of.tzinfo is None:
@@ -580,7 +618,7 @@ def historical_scanner_fundamental_projection(
         default_query_params={"max_execution_time": 14},
     )
     rows = _json_rows(
-        active_client.execute(scanner_fundamentals(tags, cutoff, "q_live"))
+        active_client.execute(scanner_fundamentals(tags, cutoff, "q_live", tickers=tickers))
     )
     grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for row in rows:

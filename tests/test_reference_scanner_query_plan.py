@@ -35,6 +35,13 @@ class ReferenceScannerQueryPlanTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "timezone"):
             scanner_reference_projection(datetime(2026, 8, 11))
 
+    def test_plan_can_bound_the_projection_to_a_visible_page(self) -> None:
+        sql = scanner_reference_projection(
+            datetime(2026, 8, 11, tzinfo=UTC),
+            tickers=("msft", "AAPL", "AAPL"),
+        )
+        self.assertIn("upper(ticker) IN ('AAPL', 'MSFT')", sql)
+
 
 if __name__ == "__main__":
     unittest.main()

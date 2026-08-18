@@ -29,6 +29,7 @@ from src.backend.trading_configuration_service import (
     configuration_base,
     effective_configuration_snapshot,
     market_discovery_runtime_configuration,
+    market_discovery_presentation_configuration,
     materialize_market_discovery,
     publish_configuration,
     public_configuration_revision,
@@ -260,6 +261,64 @@ class TradingConfigurationServiceTests(unittest.TestCase):
             (0.0, []),
         ):
             self.assertEqual(_qmd_family_capabilities(), [])
+
+    @patch("src.backend.trading_configuration_service.market_discovery_runtime_configuration")
+    def test_market_discovery_presentation_projects_only_canvas_metadata(self, runtime) -> None:
+        runtime.return_value = {
+            "schema_version": 31,
+            "market_discovery": {
+                "atomic_fields": [{"field_id": "atomic.trade.price"}],
+                "data_fields": [{"field_id": "field.price.change"}],
+                "data_field_plan": {"nodes": ["large executable plan"]},
+                "column_catalog": [{
+                    "column_id": "last_price",
+                    "name": "Last price",
+                    "description": "Latest eligible trade price.",
+                    "source_id": "field.market.last_price",
+                    "source_kind": "data_field",
+                    "semantic_type": "price",
+                    "value_type": "number",
+                    "unit": "USD",
+                    "provenance": {"authority": "qmd"},
+                    "query_expression": "must not be sent to Canvas",
+                }],
+                "core_scan": {
+                    "scan_id": "core",
+                    "name": "Core scan",
+                    "description": "All eligible symbols.",
+                    "columns": ["last_price"],
+                    "calculations": [{
+                        "capability_id": "qmd.family.core_bars",
+                        "enabled": True,
+                        "scanner_columns": ["last_price"],
+                        "query_expression": "must not be sent to Canvas",
+                    }],
+                },
+                "watchlists": [{"watchlist_id": "leaders"}],
+                "signal_streams": [{"signal_stream_id": "squeezes"}],
+            },
+            "run_plans": {
+                "plans": [{"run_plan_id": "paper"}],
+                "universes": [{"universe_id": "all"}],
+                "strategy_definitions": [{"large": "unused"}],
+            },
+        }
+
+        projected = market_discovery_presentation_configuration()
+
+        discovery = projected["market_discovery"]
+        self.assertEqual(projected["schema_version"], 31)
+        self.assertNotIn("atomic_fields", discovery)
+        self.assertNotIn("data_fields", discovery)
+        self.assertNotIn("data_field_plan", discovery)
+        self.assertNotIn("query_expression", discovery["column_catalog"][0])
+        self.assertNotIn("query_expression", discovery["core_scan"]["calculations"][0])
+        self.assertEqual(discovery["watchlists"], [{"watchlist_id": "leaders"}])
+        self.assertEqual(discovery["signal_streams"], [{"signal_stream_id": "squeezes"}])
+        self.assertEqual(projected["run_plans"], {
+            "plans": [{"run_plan_id": "paper"}],
+            "universes": [{"universe_id": "all"}],
+        })
 
     def test_saved_qmd_capability_remains_reviewable_during_outage(self) -> None:
         draft = self._draft()

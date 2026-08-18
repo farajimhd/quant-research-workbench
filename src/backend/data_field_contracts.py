@@ -639,6 +639,29 @@ def project_data_field_outputs(
             or str(output.get("source_id") or "") in selected_refs
         )
     ]
+    prepared_outputs = []
+    for output, context, execution in outputs:
+        field_ref = str(output["field_ref"])
+        intervals = tuple(str(value) for value in context.get("available_intervals") or [] if str(value))
+        aggregation = dict(context.get("aggregation") or {})
+        if not intervals:
+            requested_instances: tuple[tuple[str, str], ...] = ()
+        elif selected_instances is None:
+            functions = tuple(aggregation.get("allowed") or ()) if aggregation.get("mode") == "required" else ("",)
+            requested_instances = tuple((interval, function) for interval in intervals for function in functions)
+        else:
+            requested_instances = tuple(sorted(
+                (interval, function)
+                for interval, function in selected_instances.get(field_ref, set())
+                if _interval_uses_supported_unit(interval, intervals)
+            ))
+        prepared_outputs.append((
+            output,
+            intervals,
+            requested_instances,
+            str(aggregation.get("default") or ""),
+            dict(execution.get("aggregation_runtime_fields") or {}),
+        ))
     projected: list[dict[str, Any]] = []
     for row in rows:
         result = dict(row)
@@ -649,29 +672,13 @@ def project_data_field_outputs(
             parts = key.split("__", 3)
             if len(parts) >= 3:
                 technical_keys.setdefault((parts[1], parts[2]), key)
-        for output, context, execution in outputs:
+        for output, intervals, requested_instances, default_function, runtime_fields in prepared_outputs:
             field_ref = str(output["field_ref"])
             runtime_field = str(output.get("runtime_field") or output.get("source_id") or "")
             source_id = str(output.get("source_id") or "")
             observed_interval = str(row.get("indicator_interval") or row.get("indicator_timeframe") or row.get("working_timeframe") or "")
-            intervals = [str(value) for value in context.get("available_intervals") or [] if str(value)]
             if intervals:
                 found_any = False
-                aggregation = dict(context.get("aggregation") or {})
-                runtime_fields = dict(execution.get("aggregation_runtime_fields") or {})
-                if selected_instances is None:
-                    functions = list(aggregation.get("allowed") or []) if aggregation.get("mode") == "required" else [""]
-                    requested_instances = [
-                        (interval, function)
-                        for interval in intervals
-                        for function in functions
-                    ]
-                else:
-                    requested_instances = sorted(
-                        (interval, function)
-                        for interval, function in selected_instances.get(field_ref, set())
-                        if _interval_uses_supported_unit(interval, intervals)
-                    )
                 for interval, function in requested_instances:
                     selected_runtime_field = str(runtime_fields.get(function) or runtime_field)
                     value_found, value = _projected_value(
@@ -694,8 +701,7 @@ def project_data_field_outputs(
                     if not value_found and instance_ref not in result:
                         result[f"{instance_ref}__null_reason"] = "producer_output_missing"
                     found_any = found_any or value_found or result.get(instance_ref) is not None
-                if _interval_uses_supported_unit(observed_interval, intervals):
-                    default_function = str(aggregation.get("default") or "")
+                if observed_interval and _interval_uses_supported_unit(observed_interval, intervals):
                     result[field_ref] = result.get(field_instance_ref(field_ref, observed_interval, default_function))
                 value_found = found_any
                 value = result.get(field_ref)

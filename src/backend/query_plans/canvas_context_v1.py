@@ -16,7 +16,7 @@ def company_news(cutoff: datetime, *, engine_version: str, synthesis_table: str)
         SELECT
             n.canonical_news_id,
             formatDateTime(n.published_at_utc, '%Y-%m-%dT%H:%i:%S.%fZ', 'UTC') AS published_at_utc,
-            n.title, n.teaser, {ticker_links} AS tickers, n.channels,
+            n.title, n.teaser, {ticker_links} AS tickers, n.channels, n.provider_tags,
             toUInt8(s.information_origin = 'issuer') AS is_company_news,
             s.concepts AS news_topics
         FROM q_live.benzinga_news_event_v2 AS n FINAL

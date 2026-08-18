@@ -1,7 +1,7 @@
 import { ArrowDown, ArrowLeft, ArrowRight, ArrowUp, ArrowUpDown, Check, ChevronDown, ChevronLeft, Columns3, FileCheck2, Filter, Flame, ListFilter, Plus, Search, Star, Trash2, X } from "lucide-react";
 import { forwardRef, useDeferredValue, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
-import { api } from "../../api/client";
+import { api, apiCached, invalidateApiCache } from "../../api/client";
 import { CONFIGURATION_SESSION_CHANGED_EVENT, readConfigurationSession } from "../configurationSession";
 import { InventoryFilterSelect } from "./InventoryFilterSelect";
 import { MarketTime } from "./MarketTime";
@@ -224,22 +224,26 @@ function useDiscoveryPresentation() {
     const applySessionDiscovery = async () => {
       if (!baseConfiguration) return;
       const resolved = overlaySessionDiscovery(baseConfiguration);
-      if (resolved.market_discovery) {
-        try {
-          await api("/api/market-discovery/configuration/materialize", {
-            body: JSON.stringify({ market_discovery: resolved.market_discovery }),
-            method: "POST",
-          });
-        } catch {
-          // The Canvas still presents the draft; runtime diagnostics explain a rejected materialization.
-        }
-      }
       setConfiguration(resolved);
     };
-    const handleSessionChange = () => { void applySessionDiscovery(); };
+    const handleSessionChange = () => {
+      if (readConfigurationSession()) {
+        void applySessionDiscovery();
+        return;
+      }
+      invalidateApiCache("/api/market-discovery/configuration/presentation");
+      apiCached<WatchUniverseCatalogResponse>("/api/market-discovery/configuration/presentation", { timeoutMs: 10000, ttlMs: 30_000 })
+        .then((base) => {
+          if (controller.signal.aborted) return;
+          baseConfiguration = base;
+          void applySessionDiscovery();
+        })
+        .catch(() => undefined);
+    };
     window.addEventListener(CONFIGURATION_SESSION_CHANGED_EVENT, handleSessionChange);
-    api<WatchUniverseCatalogResponse>("/api/trading/configuration/base", { signal: controller.signal, timeoutMs: 10000 })
+    apiCached<WatchUniverseCatalogResponse>("/api/market-discovery/configuration/presentation", { timeoutMs: 10000, ttlMs: 30_000 })
       .then((base) => {
+        if (controller.signal.aborted) return;
         baseConfiguration = base;
         void applySessionDiscovery();
       })

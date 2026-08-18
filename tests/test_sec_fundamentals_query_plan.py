@@ -63,6 +63,13 @@ class SecFundamentalsQueryPlanTests(unittest.TestCase):
         self.assertIn("f.filed_at_utc <= cutoff", sql)
         self.assertIn("f.recorded_at_utc <= cutoff", sql)
         self.assertIn("LIMIT 8 BY ticker, tag", sql)
+        bounded_sql = scanner_fundamentals(
+            ("Revenue",),
+            datetime(2026, 8, 11, 15, 45, tzinfo=UTC),
+            "q_live",
+            tickers=("msft", "AAPL", "AAPL"),
+        )
+        self.assertIn("upper(u.ticker) IN ('AAPL', 'MSFT')", bounded_sql)
         with self.assertRaisesRegex(ValueError, "at least one"):
             fundamental_fact_queries(
                 cik="0000320193",

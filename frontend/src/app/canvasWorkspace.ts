@@ -254,6 +254,45 @@ export function hydrateCanvasProfile(profile: CanvasRegistry): CanvasRegistry {
   return normalized;
 }
 
+export function mergeCanvasProfiles(
+  remoteProfile: CanvasRegistry,
+  localProfile: CanvasRegistry,
+  activeCanvasId: string,
+): CanvasRegistry {
+  const remote = normalizeCanvasRegistry(remoteProfile);
+  const local = normalizeCanvasRegistry(localProfile);
+  const remoteCanvasIds = new Set(remote.canvases.map((canvas) => canvas.id));
+  const localCanvas = local.canvases.find((canvas) => canvas.id === activeCanvasId);
+  const activeState = local.workspaceStates?.[activeCanvasId] ?? readCanvasWorkspaceState(activeCanvasId);
+  const activeCanvas = localCanvas
+    ?? (activeState && !remoteCanvasIds.has(activeCanvasId)
+      ? { id: activeCanvasId, label: "Recovered Canvas" }
+      : undefined);
+  const activeInstanceIds = new Set(activeState?.openIds ?? []);
+  const activeSettings = Object.fromEntries(
+    Object.entries(local.instanceSettings).filter(([instanceId]) => activeInstanceIds.has(instanceId)),
+  );
+  const activeAssignments = Object.fromEntries(
+    Object.entries(local.linkAssignments).filter(([instanceId]) => activeInstanceIds.has(instanceId)),
+  );
+  const activeOwners = Object.fromEntries(
+    Object.entries(local.linkOwners).filter(([, instanceId]) => activeInstanceIds.has(instanceId)),
+  );
+  return normalizeCanvasRegistry({
+    ...remote,
+    canvases: activeCanvas && !remoteCanvasIds.has(activeCanvasId)
+      ? [...remote.canvases, activeCanvas]
+      : remote.canvases,
+    instanceSettings: { ...remote.instanceSettings, ...activeSettings },
+    linkAssignments: { ...remote.linkAssignments, ...activeAssignments },
+    linkOwners: { ...remote.linkOwners, ...activeOwners },
+    workspaceStates: {
+      ...(remote.workspaceStates ?? {}),
+      ...(activeState ? { [activeCanvasId]: snapshotCanvasWorkspaceState(activeState) } : {}),
+    },
+  });
+}
+
 export function writeCanvasRegistry(registry: CanvasRegistry) {
   window.localStorage.setItem(CANVAS_REGISTRY_STORAGE_KEY, JSON.stringify(registry));
 }

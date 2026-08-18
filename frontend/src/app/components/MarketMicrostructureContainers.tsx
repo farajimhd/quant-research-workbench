@@ -51,6 +51,7 @@ type QuoteSignalGroup = { id: number; quote: QuoteUpdate; signals: QuoteSignal[]
 type MarketContainerProps = { end?: string; onSymbolChange?: (symbol: string) => void; settings: MarketEventSettings; start?: string; symbol: string };
 const EMPTY_REFERENCES: MarketReferences = { conditions: {}, exchanges: {} };
 const MARKET_EVENT_HISTORY_LIMIT = 1024;
+const MARKET_EVENT_RENDER_LIMIT = 200;
 const MARKET_EVENT_SOURCE_LIMIT = 5000;
 const MARKET_EVENTS_UNAVAILABLE = "Live market events are unavailable. Start or reconnect QMD Gateway.";
 const HISTORICAL_EVENTS_UNAVAILABLE = "Historical market events are unavailable. Start or reconnect QMD History.";
@@ -85,10 +86,12 @@ export function QuotesTapeContainer({ end, onSymbolChange, start, symbol }: Mark
   const quotes = decoded.quotes.slice(-MARKET_EVENT_HISTORY_LIMIT);
   const trades = decoded.trades.slice(-MARKET_EVENT_HISTORY_LIMIT);
   const prints = [...trades].reverse();
+  const visiblePrints = prints.slice(0, MARKET_EVENT_RENDER_LIMIT);
   const last = prints[0];
   const current = quotes.at(-1);
   const signals = useMemo(() => quoteSignals(quotes).reverse(), [quotes]);
   const groups = useMemo(() => groupQuoteSignals(signals), [signals]);
+  const visibleGroups = groups.slice(0, MARKET_EVENT_RENDER_LIMIT);
   const [expandedGroups, setExpandedGroups] = useState<Set<number>>(() => new Set());
   const buyVolume = trades.reduce((sum, item) => sum + (item.direction === "buy" ? item.size : 0), 0);
   const sellVolume = trades.reduce((sum, item) => sum + (item.direction === "sell" ? item.size : 0), 0);
@@ -154,11 +157,11 @@ export function QuotesTapeContainer({ end, onSymbolChange, start, symbol }: Mark
     </div>
     <div className="combined-stream-grid">
       <section aria-label="Quote liquidity events" className="microstructure-stream-lane">
-        <header className="market-stream-heading"><span><strong>Quote events</strong><small>NBBO price, size and venue changes</small></span><em>{formatCount(groups.length)} grouped rows</em></header>
-        {error && !groups.length ? <MicrostructureEmpty message={error} /> : groups.length ? <div className="microstructure-scroll">
+        <header className="market-stream-heading"><span><strong>Quote events</strong><small>Latest {formatCount(visibleGroups.length)} of {formatCount(groups.length)} grouped rows</small></span><em>{formatCount(groups.length)}</em></header>
+        {error && !groups.length ? <MicrostructureEmpty message={error} /> : visibleGroups.length ? <div className="microstructure-scroll">
           <table className="quote-signal-table">
             <thead><tr><th>Time ET</th><th>Liquidity event</th><th>Bid</th><th>Ask</th></tr></thead>
-            <tbody>{groups.flatMap((group, index) => {
+            <tbody>{visibleGroups.flatMap((group, index) => {
               const summary = group.signals[0];
               const grouped = group.signals.length > 1;
               const expanded = expandedGroups.has(group.id);
@@ -174,11 +177,11 @@ export function QuotesTapeContainer({ end, onSymbolChange, start, symbol }: Mark
         </div> : <MicrostructureEmpty message={connected === "point-in-time" ? "No NBBO updates were found before the Canvas clock." : connected === "live" ? "Waiting for the next NBBO update." : "Connecting to live NBBO…"} />}
       </section>
       <section aria-label="Trade prints" className="microstructure-stream-lane">
-        <header className="market-stream-heading"><span><strong>Trade prints</strong><small>Price, size, venue and conditions</small></span><em>{formatCount(prints.length)} rows</em></header>
-        {error && !prints.length ? <MicrostructureEmpty message={error} /> : prints.length ? <div className="microstructure-scroll">
+        <header className="market-stream-heading"><span><strong>Trade prints</strong><small>Latest {formatCount(visiblePrints.length)} of {formatCount(prints.length)} rows</small></span><em>{formatCount(prints.length)}</em></header>
+        {error && !prints.length ? <MicrostructureEmpty message={error} /> : visiblePrints.length ? <div className="microstructure-scroll">
           <table className="tape-table">
             <thead><tr><th>Time ET</th><th>Price</th><th>Size</th><th>Exchange</th><th>Condition</th></tr></thead>
-            <tbody>{prints.map((print) => {
+            <tbody>{visiblePrints.map((print) => {
               const exchange = venueReference(print.exchange, references);
               const condition = tradeCondition(print, references);
               const conditions = tradeConditionItems(print, references);
@@ -225,6 +228,7 @@ export function ChartsQuotesMarketLayout({
   const quotes = decoded.quotes.slice(-MARKET_EVENT_HISTORY_LIMIT);
   const trades = decoded.trades.slice(-MARKET_EVENT_HISTORY_LIMIT);
   const prints = [...trades].reverse();
+  const visiblePrints = prints.slice(0, MARKET_EVENT_RENDER_LIMIT);
   const current = quotes.at(-1);
   const last = prints[0];
   const buyVolume = trades.reduce((sum, item) => sum + (item.direction === "buy" ? item.size : 0), 0);
@@ -338,8 +342,8 @@ export function ChartsQuotesMarketLayout({
       <aside aria-label="Tape and liquidity" className="charts-quotes-tape">
         <CompactTapeQuoteCharts quotes={quotes} trades={trades} />
         <section className="charts-quotes-trades">
-          <header><span><strong>Trade prints</strong><small>Latest 1,024 executions</small></span><em>{formatCount(prints.length)}</em></header>
-          {error && !prints.length ? <MicrostructureEmpty message={error} /> : prints.length ? <TapePrintTable prints={prints} references={references} /> : <MicrostructureEmpty message="Waiting for trade prints." />}
+          <header><span><strong>Trade prints</strong><small>Latest {formatCount(visiblePrints.length)} of {formatCount(prints.length)} executions</small></span><em>{formatCount(prints.length)}</em></header>
+          {error && !prints.length ? <MicrostructureEmpty message={error} /> : visiblePrints.length ? <TapePrintTable prints={visiblePrints} references={references} /> : <MicrostructureEmpty message="Waiting for trade prints." />}
         </section>
       </aside>
       <div className="charts-quotes-context-row">
@@ -498,17 +502,22 @@ function useMarketEvents(symbol: string, start?: string, end?: string) {
           if (!target.key || target.key === historicalLoadedKeyRef.current) break;
           setConnected("connecting");
           setError("");
-          const [eventsResult, stateResult] = await Promise.allSettled([
-            api<MarketEventsPayload>(`/api/trading/canvas-market-events/${encodeURIComponent(target.ticker)}${query({
-              end: target.end,
-              row_limit: MARKET_EVENT_SOURCE_LIMIT,
-              start: target.start,
-            })}`, { timeoutMs: 20_000 }),
-            api<MarketState>(`/api/trading/canvas-market-state/${encodeURIComponent(target.ticker)}${query({
+          const stateRequest = api<MarketState>(`/api/trading/canvas-market-state/${encodeURIComponent(target.ticker)}${query({
               end: target.end,
               start: target.start,
-            })}`, { timeoutMs: 120_000 }),
-          ]);
+            })}`, { timeoutMs: 120_000 })
+            .then((payload) => {
+              if (mountedRef.current && historicalTargetRef.current.key === target.key) setMarketState(payload);
+            })
+            .catch(() => undefined);
+          const eventsResult = await api<MarketEventsPayload>(`/api/trading/canvas-market-events/${encodeURIComponent(target.ticker)}${query({
+            end: target.end,
+            row_limit: MARKET_EVENT_SOURCE_LIMIT,
+            start: target.start,
+          })}`, { timeoutMs: 20_000 }).then(
+            (value) => ({ status: "fulfilled" as const, value }),
+            (reason) => ({ status: "rejected" as const, reason }),
+          );
           if (!mountedRef.current) return;
           if (!historicalTargetRef.current.key || historicalTargetRef.current.ticker !== target.ticker) {
             continue;
@@ -526,7 +535,7 @@ function useMarketEvents(symbol: string, start?: string, end?: string) {
           } else {
             setError(HISTORICAL_EVENTS_UNAVAILABLE);
           }
-          if (stateResult.status === "fulfilled") setMarketState(stateResult.value);
+          void stateRequest;
           historicalLoadedKeyRef.current = target.key;
           if (historicalTargetRef.current.key === target.key) break;
         }

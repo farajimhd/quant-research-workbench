@@ -50,7 +50,8 @@ class CanvasScannerPayloadTest(unittest.TestCase):
         self.assertEqual(payload["rows"][0]["symbol"], "AAPL")
         self.assertEqual(payload["meta"]["enrichment_scope"], "core")
         self.assertEqual(payload["meta"]["included_enrichments"], [])
-        self.assertNotIn("market_cap", watchlists.call_args.kwargs["available_fields"])
+        watchlists.assert_not_called()
+        self.assertEqual(payload["watchlist_runtime"]["status"], "not_requested")
 
     def test_empty_snapshot_skips_every_enrichment_branch(self) -> None:
         as_of = datetime(2026, 7, 17, 13, 45, tzinfo=UTC)
@@ -82,6 +83,39 @@ class CanvasScannerPayloadTest(unittest.TestCase):
             enrichment.assert_not_called()
         self.assertEqual(payload["rows"], [])
         self.assertEqual(payload["meta"]["included_enrichments"], [])
+
+    def test_page_enrichment_does_not_materialize_discovery_runtime(self) -> None:
+        as_of = datetime(2026, 7, 17, 13, 45, tzinfo=UTC)
+        snapshot = (
+            [
+                {"symbol": "LOW", "last": 10.0, "change_5m_pct": 1.0},
+                {"symbol": "HIGH", "last": 20.0, "change_5m_pct": 5.0},
+            ],
+            {"complete_universe": True, "snapshot_at_utc": as_of.isoformat(), "status": "ready"},
+        )
+        with (
+            patch("src.backend.canvas_preview_service.historical_scanner_snapshot", return_value=snapshot),
+            patch("src.backend.canvas_preview_service.historical_scanner_reference_projection", return_value={}),
+            patch("src.backend.canvas_preview_service.historical_scanner_fundamental_projection", return_value={}),
+            patch("src.backend.canvas_preview_service._query_scanner_news_intelligence", return_value=[]),
+            patch("src.backend.canvas_preview_service._query_scanner_sec_intelligence", return_value=[]),
+            patch(
+                "src.backend.canvas_preview_service.historical_scanner_qmd_projection_or_schedule",
+                return_value=({}, [], {"qmd_derived_status": "ready"}),
+            ),
+            patch("src.backend.watchlist_runtime_service.project_watchlists_from_candidates") as watchlists,
+        ):
+            payload = scanner_snapshot_payload(
+                as_of=as_of,
+                enrichment_scope="full",
+                materialize_discovery=False,
+                row_limit=1,
+            )
+
+        self.assertEqual([row["symbol"] for row in payload["rows"]], ["HIGH"])
+        self.assertEqual(payload["meta"]["total_row_count"], 2)
+        self.assertEqual(payload["watchlist_runtime"]["status"], "not_requested")
+        watchlists.assert_not_called()
 
     def test_reference_fields_merge_and_publish_coverage(self) -> None:
         as_of = datetime(2026, 7, 17, 13, 45, tzinfo=UTC)

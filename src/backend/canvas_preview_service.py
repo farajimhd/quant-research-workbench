@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import json
 import re
+from copy import deepcopy
 from dataclasses import asdict
 from datetime import UTC, date, datetime
+from threading import Lock
+from time import monotonic
 from typing import Any, Callable
 from zoneinfo import ZoneInfo
 
@@ -40,12 +43,25 @@ from src.trading_runtime.round_trips import derive_round_trip_trades
 
 
 NEW_YORK = ZoneInfo("America/New_York")
+_SCANNER_RESPONSE_CACHE_TTL_SECONDS = 30.0
+_SCANNER_RESPONSE_CACHE_LOCK = Lock()
+_SCANNER_RESPONSE_CACHE: dict[tuple[Any, ...], tuple[float, dict[str, Any]]] = {}
+_SCANNER_RESPONSE_KEY_LOCKS: dict[tuple[Any, ...], Lock] = {}
+
+
+def clear_scanner_snapshot_cache() -> None:
+    with _SCANNER_RESPONSE_CACHE_LOCK:
+        _SCANNER_RESPONSE_CACHE.clear()
+        _SCANNER_RESPONSE_KEY_LOCKS.clear()
+
+
 def canvas_preview_payload(
     *,
     session_date: date,
     preview_time: str = "09:45",
     chart_symbol: str = "AAPL",
     chart_timeframe: str = "1m",
+    include_domains: list[str] | tuple[str, ...] = ("coverage", "news", "scanner", "sec"),
 ) -> dict[str, Any]:
     as_of = _as_of(session_date, preview_time)
     symbol = chart_symbol.strip().upper()
@@ -56,12 +72,20 @@ def canvas_preview_payload(
 
     cutoff = as_of.astimezone(UTC)
 
-    jobs: dict[str, Callable[[], Any]] = {
-        "coverage": lambda: historical_day_coverage(session_date),
-        "news": lambda: _query_news(cutoff),
-        "scanner": lambda: historical_scanner_snapshot(as_of, lookback_minutes=15),
-        "sec": lambda: _query_sec(cutoff),
-    }
+    requested_domains = {str(value).strip().lower() for value in include_domains}
+    supported_domains = {"coverage", "news", "scanner", "sec"}
+    invalid_domains = sorted(requested_domains - supported_domains)
+    if invalid_domains:
+        raise ValueError(f"Unsupported Canvas preview domain(s): {', '.join(invalid_domains)}")
+    jobs: dict[str, Callable[[], Any]] = {}
+    if "coverage" in requested_domains:
+        jobs["coverage"] = lambda: historical_day_coverage(session_date)
+    if "news" in requested_domains:
+        jobs["news"] = lambda: _query_news(cutoff)
+    if "scanner" in requested_domains:
+        jobs["scanner"] = lambda: historical_scanner_snapshot(as_of, lookback_minutes=15)
+    if "sec" in requested_domains:
+        jobs["sec"] = lambda: _query_sec(cutoff)
 
     results: dict[str, Any] = {}
     errors: dict[str, str] = {}
@@ -82,7 +106,7 @@ def canvas_preview_payload(
     scanner_meta = scanner_result[1] if isinstance(scanner_result, tuple) else {
         "complete_universe": False,
         "row_count": 0,
-        "status": "unavailable",
+        "status": "not_requested" if "scanner" not in requested_domains else "unavailable",
     }
     _enrich_scanner_intelligence(scanner, results.get("news", []), results.get("sec", []), as_of)
     scanner.sort(key=lambda row: (-abs(float(row.get("change_5m_pct") or 0)), str(row.get("symbol") or "")))
@@ -131,12 +155,68 @@ def scanner_snapshot_payload(
     *,
     as_of: datetime,
     enrichment_scope: str = "full",
+    materialize_discovery: bool = True,
     lookback_minutes: int = 15,
+    row_limit: int = 500,
+    row_offset: int = 0,
+    technical_windows: list[str] | tuple[str, ...] = (),
+) -> dict[str, Any]:
+    normalized_windows = tuple(sorted({str(value).strip() for value in technical_windows if str(value).strip()}))
+    key = (
+        as_of.isoformat(),
+        enrichment_scope,
+        bool(materialize_discovery),
+        int(lookback_minutes),
+        int(row_limit),
+        int(row_offset),
+        normalized_windows,
+        id(historical_scanner_snapshot),
+    )
+    now = monotonic()
+    with _SCANNER_RESPONSE_CACHE_LOCK:
+        cached = _SCANNER_RESPONSE_CACHE.get(key)
+        if cached and cached[0] > now:
+            return deepcopy(cached[1])
+        key_lock = _SCANNER_RESPONSE_KEY_LOCKS.setdefault(key, Lock())
+    with key_lock:
+        now = monotonic()
+        with _SCANNER_RESPONSE_CACHE_LOCK:
+            cached = _SCANNER_RESPONSE_CACHE.get(key)
+            if cached and cached[0] > now:
+                return deepcopy(cached[1])
+        payload = _build_scanner_snapshot_payload(
+            as_of=as_of,
+            enrichment_scope=enrichment_scope,
+            materialize_discovery=materialize_discovery,
+            lookback_minutes=lookback_minutes,
+            row_limit=row_limit,
+            row_offset=row_offset,
+            technical_windows=normalized_windows,
+        )
+        with _SCANNER_RESPONSE_CACHE_LOCK:
+            _SCANNER_RESPONSE_CACHE[key] = (monotonic() + _SCANNER_RESPONSE_CACHE_TTL_SECONDS, payload)
+            expired = [cache_key for cache_key, (expires_at, _) in _SCANNER_RESPONSE_CACHE.items() if expires_at <= now]
+            for cache_key in expired:
+                _SCANNER_RESPONSE_CACHE.pop(cache_key, None)
+                _SCANNER_RESPONSE_KEY_LOCKS.pop(cache_key, None)
+        return deepcopy(payload)
+
+
+def _build_scanner_snapshot_payload(
+    *,
+    as_of: datetime,
+    enrichment_scope: str = "full",
+    materialize_discovery: bool = True,
+    lookback_minutes: int = 15,
+    row_limit: int = 500,
+    row_offset: int = 0,
     technical_windows: list[str] | tuple[str, ...] = (),
 ) -> dict[str, Any]:
     """Return the causal cross-sectional scanner independently of other Canvas sources."""
     if enrichment_scope not in {"core", "full"}:
         raise ValueError("enrichment_scope must be core or full")
+    row_limit = max(1, min(int(row_limit), 2_000))
+    row_offset = max(0, int(row_offset))
     from src.backend.discovery_projection import (
         configured_discovery_technical_windows,
         project_discovery_columns,
@@ -154,6 +234,7 @@ def scanner_snapshot_payload(
         *configured_discovery_technical_windows(configuration),
     }))
     rows, meta = historical_scanner_snapshot(as_of, lookback_minutes=lookback_minutes)
+    source_total_rows = len(rows)
     effective_as_of = datetime.fromisoformat(
         str(meta.get("snapshot_at_utc") or as_of.isoformat()).replace("Z", "+00:00")
     )
@@ -180,6 +261,10 @@ def scanner_snapshot_payload(
                 row["market_is_open"] = session_phase != "maintenance"
             if row.get("is_trading_day") is None:
                 row["is_trading_day"] = True
+    page_limited = enrichment_scope == "full" and not materialize_discovery
+    if page_limited:
+        rows.sort(key=lambda row: (-abs(float(row.get("change_5m_pct") or 0)), str(row.get("symbol") or row.get("ticker") or "")))
+        rows = rows[row_offset:row_offset + row_limit]
     cutoff = effective_as_of
     errors: dict[str, str] = {}
     news: list[dict[str, Any]] = []
@@ -190,7 +275,8 @@ def scanner_snapshot_payload(
         for row in rows
         if row.get("symbol") or row.get("ticker")
     }
-    if technical_windows and enrichment_scope == "full":
+    page_tickers = tuple(prices_by_ticker) if page_limited else ()
+    if rows and technical_windows and enrichment_scope == "full":
         technical_projection, technical_meta = historical_scanner_technical_projection_or_schedule(
             effective_as_of,
             calculation_windows=technical_windows,
@@ -210,6 +296,7 @@ def scanner_snapshot_payload(
                 historical_scanner_fundamental_projection,
                 effective_as_of,
                 prices_by_ticker=prices_by_ticker,
+                tickers=page_tickers,
             )
         if "news" in enrichment_names:
             futures["news"] = executor.submit(_query_scanner_news_intelligence, cutoff)
@@ -221,7 +308,11 @@ def scanner_snapshot_payload(
                 schedule_missing=False,
             )
         if "reference" in enrichment_names:
-            futures["reference"] = executor.submit(historical_scanner_reference_projection, effective_as_of)
+            futures["reference"] = executor.submit(
+                historical_scanner_reference_projection,
+                effective_as_of,
+                tickers=page_tickers,
+            )
         if "sec" in enrichment_names:
             futures["sec"] = executor.submit(_query_scanner_sec_intelligence, cutoff)
         for name, future in futures.items():
@@ -249,11 +340,22 @@ def scanner_snapshot_payload(
         _merge_scanner_intelligence(rows, news, sec, effective_as_of)
     from src.backend.watchlist_runtime_service import normalize_watchlist_candidate
 
-    rows = project_discovery_columns(
-        (normalize_watchlist_candidate(row) for row in rows),
-    )
+    normalized_rows = [normalize_watchlist_candidate(row) for row in rows]
+    if not page_limited:
+        source_total_rows = len(normalized_rows)
+    if enrichment_scope == "core":
+        normalized_rows.sort(key=lambda row: (-abs(float(row.get("change_5m_pct") or 0)), str(row.get("symbol") or "")))
+        for rank, row in enumerate(normalized_rows, start=1):
+            row["rank"] = rank
+        normalized_rows = normalized_rows[row_offset:row_offset + row_limit]
+    rows = project_discovery_columns(normalized_rows)
     discovery = dict(configuration.get("market_discovery") or {})
-    data_field_plan = compile_data_field_plan(discovery)
+    core_scan = dict(discovery.get("core_scan") or {})
+    core_scan_id = str(core_scan.get("scan_id") or "")
+    data_field_plan = compile_data_field_plan(
+        discovery,
+        composition_ids=[core_scan_id] if (enrichment_scope == "core" or not materialize_discovery) and core_scan_id else (),
+    )
     active_field_refs = data_field_plan.get("field_refs") or []
     rows = project_data_field_outputs(
         rows,
@@ -263,12 +365,13 @@ def scanner_snapshot_payload(
     )
     rows = project_composition_data_field_columns(
         rows,
-        dict(discovery.get("core_scan") or {}),
+        core_scan,
         discovery.get("column_catalog") or [],
     )
-    rows.sort(key=lambda row: (-abs(float(row.get("change_5m_pct") or 0)), str(row.get("symbol") or "")))
-    for rank, row in enumerate(rows, start=1):
-        row["rank"] = rank
+    if enrichment_scope == "full":
+        rows.sort(key=lambda row: (-abs(float(row.get("change_5m_pct") or 0)), str(row.get("symbol") or "")))
+        for rank, row in enumerate(rows, start=1):
+            row["rank"] = rank
     projected_fields = (
         "company_name", "exchange", "country", "sector", "industry", "market_cap",
         "market_cap_category", "shares_outstanding", "float_shares", "float_category",
@@ -298,76 +401,102 @@ def scanner_snapshot_payload(
             }
         ),
     )
-    total = max(1, len(rows))
+    coverage_rows = rows
+    total = max(1, len(coverage_rows))
     meta = {
         **meta,
         "enrichment_scope": enrichment_scope,
         "enrichment_status": "ready" if enrichment_scope == "full" else "partial",
         "included_enrichments": enrichment_names,
         "field_coverage": {
-            field: round(sum(row.get(field) not in (None, "") for row in rows) / total * 100, 1)
+            field: round(sum(row.get(field) not in (None, "") for row in coverage_rows) / total * 100, 1)
             for field in projected_fields
         },
     }
-    try:
-        from src.backend.watchlist_runtime_service import (
-            project_configured_rule_set_columns,
-            project_watchlists_from_candidates,
-        )
-
-        rows = project_configured_rule_set_columns(configuration, rows)
-        watchlist_runtime = project_watchlists_from_candidates(
-            configuration,
-            rows,
-            as_of=effective_as_of,
-            available_fields=set().union(*(set(row) for row in rows)) if rows else set(),
-            source_complete=bool(meta.get("complete_universe")),
-            source_status=str(meta.get("status") or "partial"),
-        )
-    except Exception as exc:
-        errors["watchlists"] = str(exc)
+    if enrichment_scope == "core" or not materialize_discovery:
         watchlist_runtime = {
             "as_of": effective_as_of.isoformat(),
-            "error": str(exc),
-            "status": "error",
+            "status": "not_requested",
             "watchlists": [],
         }
-    try:
-        from src.backend.signal_stream_runtime_service import SIGNAL_STREAM_RUNTIME
-        from src.backend.trading_runtime_service import trading_journal
+    else:
+        try:
+            from src.backend.watchlist_runtime_service import (
+                project_configured_rule_set_columns,
+                project_watchlists_from_candidates,
+            )
 
-        signal_stream_runtime = SIGNAL_STREAM_RUNTIME.snapshot(
-            trading_journal(),
-            as_of=effective_as_of,
-            limit=10_000,
-            configuration=configuration,
-        )
-        signal_rows = []
-        signal_stream_runtime = {
-            key: value
-            for key, value in signal_stream_runtime.items()
-            if key != "occurrences"
-        }
-    except Exception as exc:
-        errors["signal_stream"] = str(exc)
+            rows = project_configured_rule_set_columns(configuration, rows)
+            watchlist_runtime = project_watchlists_from_candidates(
+                configuration,
+                rows,
+                as_of=effective_as_of,
+                available_fields=set().union(*(set(row) for row in rows)) if rows else set(),
+                candidates_projected=True,
+                source_complete=bool(meta.get("complete_universe")),
+                source_status=str(meta.get("status") or "partial"),
+            )
+        except Exception as exc:
+            errors["watchlists"] = str(exc)
+            watchlist_runtime = {
+                "as_of": effective_as_of.isoformat(),
+                "error": str(exc),
+                "status": "error",
+                "watchlists": [],
+            }
+    if enrichment_scope == "core" or not materialize_discovery:
         signal_stream_runtime = {
             "as_of": effective_as_of.isoformat(),
-            "error": str(exc),
-            "status": "error",
-            "occurrences": [],
+            "status": "not_requested",
+            "signal_streams": [],
         }
         signal_rows = []
+    else:
+        try:
+            from src.backend.signal_stream_runtime_service import SIGNAL_STREAM_RUNTIME
+            from src.backend.trading_runtime_service import trading_journal
+
+            signal_stream_runtime = SIGNAL_STREAM_RUNTIME.snapshot(
+                trading_journal(),
+                as_of=effective_as_of,
+                limit=10_000,
+                configuration=configuration,
+            )
+            signal_rows = []
+            signal_stream_runtime = {
+                key: value
+                for key, value in signal_stream_runtime.items()
+                if key != "occurrences"
+            }
+        except Exception as exc:
+            errors["signal_stream"] = str(exc)
+            signal_stream_runtime = {
+                "as_of": effective_as_of.isoformat(),
+                "error": str(exc),
+                "status": "error",
+                "occurrences": [],
+            }
+            signal_rows = []
+    total_rows = source_total_rows
+    response_rows = rows if enrichment_scope == "core" or page_limited else rows[row_offset:row_offset + row_limit]
+    meta = {
+        **meta,
+        "page_row_count": len(response_rows),
+        "row_limit": row_limit,
+        "row_offset": row_offset,
+        "total_row_count": total_rows,
+    }
     return {
         "as_of": effective_as_of.isoformat(),
         "errors": errors,
         "feature_projection": compact_feature_projection(
-            rows,
+            response_rows,
             as_of=effective_as_of,
             source_revision=str(meta.get("source_revision") or ""),
             source_schema_version=str(meta.get("schema_version") or "1"),
         ),
         "meta": meta,
-        "rows": rows,
+        "rows": response_rows,
         "signal_rows": signal_rows,
         "signal_stream_runtime": signal_stream_runtime,
         "watchlist_runtime": watchlist_runtime,

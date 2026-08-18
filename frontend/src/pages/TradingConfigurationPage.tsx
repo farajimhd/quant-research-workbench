@@ -35,11 +35,10 @@ import {
 import { useEffect, useId, useMemo, useRef, useState, type ReactElement, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 
-import { api } from "../api/client";
+import { api, apiCached, invalidateApiCache } from "../api/client";
 import { readCanvasRegistry, snapshotCanvasProfile } from "../app/canvasWorkspace";
 import { clearConfigurationSession, readConfigurationSession, writeConfigurationSession } from "../app/configurationSession";
 import { AbstractionCard, type AbstractionKind } from "../app/components/AbstractionCard";
-import { DefinitionRegistryProvider, validateInformationRegistry, type InformationRegistry } from "../app/components/DefinitionRegistry";
 import { InventoryFilterSelect } from "../app/components/InventoryFilterSelect";
 import { formatSemanticNumber } from "../app/format";
 import { DataCatalogPage, RuleSetLibraryPage, dataFieldRuleDefinitions, type AtomicField, type DataFieldDefinition, type DataRuleSet } from "./DataConfigurationPages";
@@ -1282,7 +1281,6 @@ const LEGACY_ENTRY_LOGIC_PATHS = new Set([
 
 export function TradingConfigurationPage({ section }: { section: TradingConfigurationSection }) {
   const [draft, setDraft] = useState<Draft | null>(null);
-  const [definitionRegistry, setDefinitionRegistry] = useState<InformationRegistry | null>(null);
   const [approved, setApproved] = useState<Revision | null>(null);
   const [revisions, setRevisions] = useState<Revision[]>([]);
   const [label, setLabel] = useState("");
@@ -1305,14 +1303,12 @@ export function TradingConfigurationPage({ section }: { section: TradingConfigur
       ? api<{ rows: Revision[] }>("/api/trading/configuration/revisions")
       : Promise.resolve({ rows: [] as Revision[] });
     Promise.all([
-      api<Draft>("/api/trading/configuration/base"),
+      apiCached<Draft>("/api/trading/configuration/base", { timeoutMs: 20_000, ttlMs: 300_000 }),
       api<{ approved: Revision | null }>("/api/trading/configuration/approved"),
       revisionsRequest,
-      api<InformationRegistry>("/api/registries/definitions"),
     ])
-      .then(([nextDraft, approvedPayload, revisionPayload, registryPayload]) => {
+      .then(([nextDraft, approvedPayload, revisionPayload]) => {
         if (cancelled) return;
-        setDefinitionRegistry(validateInformationRegistry(registryPayload));
         setDraft(readSessionConfiguration(normalizeDraft(nextDraft)));
         setApproved(approvedPayload.approved ? { ...approvedPayload.approved, payload: normalizeDraft(approvedPayload.approved.payload) as Revision["payload"] } : null);
         setRevisions(revisionPayload.rows.map((row) => ({ ...row, payload: normalizeDraft(row.payload) as Revision["payload"] })));
@@ -1448,6 +1444,8 @@ export function TradingConfigurationPage({ section }: { section: TradingConfigur
         method: "POST",
       });
       setApproved(revision);
+      invalidateApiCache("/api/trading/configuration/base");
+      invalidateApiCache("/api/market-discovery/configuration/presentation");
       clearConfigurationSession();
       setDraft(normalizeDraft(revision.payload));
       setRevisions((current) => [revision, ...current.filter((row) => row.revision_id !== revision.revision_id)]);
@@ -1473,7 +1471,7 @@ export function TradingConfigurationPage({ section }: { section: TradingConfigur
     setStatus(failed.length ? "error" : "ready");
   }
 
-  if (!definitionRegistry) {
+  if (!draft) {
     return <div className="trading-configuration-page" data-configuration-experience={experience} data-configuration-section={section}>
       <header className="configuration-page-header">
         <div className="configuration-page-icon"><Icon size={20} /></div>
@@ -1484,7 +1482,7 @@ export function TradingConfigurationPage({ section }: { section: TradingConfigur
   }
 
   return (
-    <DefinitionRegistryProvider registry={definitionRegistry}><div className="trading-configuration-page" data-configuration-experience={experience} data-configuration-section={section}>
+    <div className="trading-configuration-page" data-configuration-experience={experience} data-configuration-section={section}>
       <header className="configuration-page-header">
         <div className="configuration-page-icon"><Icon size={20} /></div>
         <div className="configuration-page-heading">
@@ -1521,7 +1519,7 @@ export function TradingConfigurationPage({ section }: { section: TradingConfigur
         </div>
       ) : null}
 
-      {section === "data_catalog" ? <DataCatalogPage atomicFields={draft?.market_discovery.atomic_fields} dataFields={draft?.market_discovery.data_fields} onDataFieldsChange={draft ? (dataFields) => updateConfigurationBook({ ...draft, market_discovery: { ...draft.market_discovery, data_fields: dataFields } }) : undefined} registry={definitionRegistry} /> : section === "rule_sets" && draft ? <RuleSetLibraryPage
+      {section === "data_catalog" ? <DataCatalogPage atomicFields={draft?.market_discovery.atomic_fields} dataFields={draft?.market_discovery.data_fields} onDataFieldsChange={draft ? (dataFields) => updateConfigurationBook({ ...draft, market_discovery: { ...draft.market_discovery, data_fields: dataFields } }) : undefined} /> : section === "rule_sets" && draft ? <RuleSetLibraryPage
         fields={dataFieldRuleDefinitions(draft.market_discovery.data_fields)}
         ruleSets={draft.market_discovery.rule_sets as DataRuleSet[]}
         onChange={(ruleSets) => updateConfigurationBook({
@@ -1590,7 +1588,7 @@ export function TradingConfigurationPage({ section }: { section: TradingConfigur
       ) : <ConfigurationLoading />}
         </>
       )}
-    </div></DefinitionRegistryProvider>
+    </div>
   );
 }
 

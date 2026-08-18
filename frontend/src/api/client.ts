@@ -7,6 +7,13 @@ export type ApiError = Error & {
 };
 export type ApiRequestInit = RequestInit & { timeoutMs?: number };
 
+type CachedApiEntry = {
+  expiresAt: number;
+  promise: Promise<unknown>;
+};
+
+const GET_CACHE = new Map<string, CachedApiEntry>();
+
 export async function api<T>(path: string, init?: ApiRequestInit): Promise<T> {
   const { timeoutMs, ...requestInit } = init ?? {};
   const controller = new AbortController();
@@ -47,6 +54,29 @@ export async function api<T>(path: string, init?: ApiRequestInit): Promise<T> {
   } finally {
     if (timeout !== null) window.clearTimeout(timeout);
     requestInit.signal?.removeEventListener("abort", abortFromCaller);
+  }
+}
+
+export function apiCached<T>(path: string, options?: { timeoutMs?: number; ttlMs?: number }): Promise<T> {
+  const ttlMs = Math.max(0, options?.ttlMs ?? 30_000);
+  const now = Date.now();
+  const cached = GET_CACHE.get(path);
+  if (cached && cached.expiresAt > now) return cached.promise as Promise<T>;
+  const promise = api<T>(path, { timeoutMs: options?.timeoutMs }).catch((error) => {
+    if (GET_CACHE.get(path)?.promise === promise) GET_CACHE.delete(path);
+    throw error;
+  });
+  GET_CACHE.set(path, { expiresAt: now + ttlMs, promise });
+  return promise;
+}
+
+export function invalidateApiCache(pathPrefix?: string) {
+  if (!pathPrefix) {
+    GET_CACHE.clear();
+    return;
+  }
+  for (const path of GET_CACHE.keys()) {
+    if (path.startsWith(pathPrefix)) GET_CACHE.delete(path);
   }
 }
 

@@ -221,6 +221,7 @@ from src.backend.trading_configuration_service import (
     configuration_revisions,
     effective_configuration_snapshot,
     market_discovery_materialization_status,
+    market_discovery_presentation_configuration,
     market_discovery_runtime_configuration,
     materialize_market_discovery,
     publish_configuration,
@@ -955,6 +956,7 @@ class CanvasPreviewRequest(BaseModel):
     preview_time: str = "09:45"
     chart_symbol: str = "AAPL"
     chart_timeframe: str = "1m"
+    include_domains: list[str] = Field(default_factory=lambda: ["coverage", "news", "scanner", "sec"])
 
 
 class TradeAnnotationSubmit(BaseModel):
@@ -4038,6 +4040,11 @@ def market_discovery_configuration_materialization_status() -> dict[str, Any]:
     return market_discovery_materialization_status()
 
 
+@app.get("/api/market-discovery/configuration/presentation")
+def market_discovery_configuration_presentation() -> dict[str, Any]:
+    return market_discovery_presentation_configuration()
+
+
 @app.post("/api/market-discovery/configuration/materialize")
 def market_discovery_configuration_materialize(
     payload: MarketDiscoveryMaterializeSubmit,
@@ -5233,6 +5240,7 @@ def trading_canvas_preview(payload: CanvasPreviewRequest) -> dict[str, Any]:
             preview_time=payload.preview_time,
             chart_symbol=payload.chart_symbol,
             chart_timeframe=payload.chart_timeframe,
+            include_domains=payload.include_domains,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -5242,7 +5250,10 @@ def trading_canvas_preview(payload: CanvasPreviewRequest) -> dict[str, Any]:
 def trading_canvas_scanner(
     as_of: datetime,
     enrichment_scope: str = Query(default="full", pattern="^(?:core|full)$"),
+    materialize_discovery: bool = Query(default=True),
     lookback_minutes: int = Query(default=15, ge=1, le=120),
+    row_limit: int = Query(default=500, ge=1, le=2000),
+    row_offset: int = Query(default=0, ge=0),
     technical_windows: str = Query(default=""),
     technical_timeframes: str = Query(default="", deprecated=True),
 ) -> dict[str, Any]:
@@ -5255,7 +5266,10 @@ def trading_canvas_scanner(
         return scanner_snapshot_payload(
             as_of=as_of,
             enrichment_scope=enrichment_scope,
+            materialize_discovery=materialize_discovery,
             lookback_minutes=lookback_minutes,
+            row_limit=row_limit,
+            row_offset=row_offset,
             technical_windows=requested_windows,
         )
     except ValueError as exc:

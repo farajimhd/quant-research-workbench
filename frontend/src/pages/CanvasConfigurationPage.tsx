@@ -2,7 +2,7 @@ import { Activity, ArrowDown, ArrowUp, ArrowUpDown, BadgeDollarSign, BarChart3, 
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type MutableRefObject, type ReactNode } from "react";
 import type { UTCTimestamp } from "lightweight-charts";
 
-import { api, query } from "../api/client";
+import { api, apiCached, query } from "../api/client";
 import {
   CANVAS_PREVIEW_CONTEXT_STORAGE_KEY,
   CANVAS_REGISTRY_STORAGE_KEY,
@@ -21,6 +21,7 @@ import {
   focusCanvasUrl,
   ensureNewsReaderCanvas,
   hydrateCanvasProfile,
+  mergeCanvasProfiles,
   readCanvasRegistry,
   readCanvasRuntimeRegistry,
   readCanvasRuntimeOverlayRecord,
@@ -1590,6 +1591,15 @@ export function CanvasFocusPage() {
   const replayRunId = params.get("replay_run") || undefined;
   const replayFocusToken = params.get("replay_focus") || undefined;
   if (replayRunId && replayFocusToken) return <ReplayCanvasFocusPage focusToken={replayFocusToken} runId={replayRunId} />;
+  const acceptanceKind = params.get("container_preview") as WorkspaceContainerId | null;
+  if (acceptanceKind && TRADING_WORKSPACE_CONTAINERS.some((definition) => definition.id === acceptanceKind)) {
+    return <CanvasContainerAcceptancePage
+      kind={acceptanceKind}
+      requestedNewsId={params.get("news") || undefined}
+      requestedSecAccession={params.get("sec_accession") || undefined}
+      requestedSecCik={params.get("sec_cik") || undefined}
+    />;
+  }
   const canvasId = params.get("canvas") || MAIN_CANVAS_ID;
   const requestedInstanceId = params.get("container") || undefined;
   const requestedNewsId = params.get("news") || undefined;
@@ -1597,6 +1607,39 @@ export function CanvasFocusPage() {
   const requestedSecAccession = params.get("sec_accession") || undefined;
   if (params.get("canvas_profile") === "draft") return <CanvasWorkspaceSurface canvasId={canvasId} manager={false} requestedInstanceId={requestedInstanceId} requestedNewsId={requestedNewsId} requestedSecAccession={requestedSecAccession} requestedSecCik={requestedSecCik} />;
   return <ApprovedCanvasFocusPage canvasId={canvasId} requestedInstanceId={requestedInstanceId} requestedNewsId={requestedNewsId} requestedSecAccession={requestedSecAccession} requestedSecCik={requestedSecCik} />;
+}
+
+function CanvasContainerAcceptancePage({ kind, requestedNewsId, requestedSecAccession, requestedSecCik }: { kind: WorkspaceContainerId; requestedNewsId?: string; requestedSecAccession?: string; requestedSecCik?: string }) {
+  const instanceId = `${kind}-acceptance`;
+  const acceptanceCanvasId = "container-acceptance";
+  const approved = useMemo<ApprovedCanvasProfile>(() => {
+    const state: CanvasWorkspaceState = {
+      groups: {},
+      instances: { [instanceId]: kind },
+      layoutVersion: TRADING_WORKSPACE_LAYOUT_VERSION,
+      layouts: createFocusLayouts([instanceId]),
+      openIds: [instanceId],
+    };
+    const local = readCanvasRegistry();
+    const profile: CanvasRegistry = {
+      ...local,
+      canvases: [{ id: acceptanceCanvasId, label: `${containerTitle(kind)} acceptance` }],
+      defaultState: state,
+      workspaceStates: { [acceptanceCanvasId]: state },
+    };
+    return {
+      available: true,
+      canvas_revision: `container-acceptance-${kind}-v1`,
+      configuration_revision: 0,
+      content_hash: `container-acceptance-${kind}-v1`,
+      profile,
+      revision_id: "container-acceptance",
+      schema_version: 1,
+    };
+  }, [acceptanceCanvasId, instanceId, kind]);
+  return <div data-canvas-container-acceptance={kind}>
+    <CanvasWorkspaceSurface approvedCanvas={approved} canvasId={acceptanceCanvasId} manager={false} requestedInstanceId={instanceId} requestedNewsId={requestedNewsId} requestedSecAccession={requestedSecAccession} requestedSecCik={requestedSecCik} />
+  </div>;
 }
 
 function ApprovedCanvasFocusPage({ canvasId, requestedInstanceId, requestedNewsId, requestedSecAccession, requestedSecCik }: { canvasId: string; requestedInstanceId?: string; requestedNewsId?: string; requestedSecAccession?: string; requestedSecCik?: string }) {
@@ -1692,12 +1735,13 @@ export function CanvasWorkspaceSurface({ accountKeys, approvedCanvas, canvasId, 
   const primarySettings = instanceSettings(registry, primaryChartId);
   const dedicatedContainers = new Set<WorkspaceContainerId>(["chart", "charts_quotes", "facts", "microstructure", "news", "ticker_news", "news_detail", "sec", "ticker_sec", "sec_detail", "xbrl", "scanner", "signal_stream", "watchlist", "strategy_activity"]);
   const previewContainerKey = (workspaceState?.openIds ?? []).filter((id) => !dedicatedContainers.has(workspaceContainerKind(id, workspaceState))).sort().join(",");
-  const scannerContainerKey = (workspaceState?.openIds ?? []).filter((id) => ["scanner", "signal_stream", "watchlist"].includes(workspaceContainerKind(id, workspaceState))).sort().join(",");
+  const scannerContainerKey = (workspaceState?.openIds ?? []).filter((id) => ["scanner", "watchlist"].includes(workspaceContainerKind(id, workspaceState))).sort().join(",");
+  const scannerNeedsDiscoveryRuntime = (workspaceState?.openIds ?? []).some((id) => workspaceContainerKind(id, workspaceState) === "watchlist");
   const scannerTechnicalWindows = useMemo(() => {
     const values = new Set<string>();
     for (const instanceId of (workspaceState?.openIds ?? [])) {
       const kind = workspaceContainerKind(instanceId, workspaceState);
-      if (!["scanner", "signal_stream", "watchlist"].includes(kind)) continue;
+      if (!["scanner", "watchlist"].includes(kind)) continue;
       const settings = instanceSettings(registry, instanceId);
       const list = kind === "scanner" ? settings.scanner : kind === "signal_stream" ? settings.signal_stream : settings.watchlist;
       for (const column of list.customColumns) {
@@ -1715,6 +1759,7 @@ export function CanvasWorkspaceSurface({ accountKeys, approvedCanvas, canvasId, 
   const historicalScanner = useCanvasScannerSnapshot({
     cutoffMs: scannerCutoffMs,
     enabled: Boolean(scannerContainerKey) && contextReady && !liveMode,
+    materializeDiscovery: scannerNeedsDiscoveryRuntime,
     technicalWindows: scannerTechnicalWindows,
   });
   const liveScanner = useCanvasLiveScannerSnapshot(Boolean(scannerContainerKey) && contextReady && liveMode);
@@ -1745,7 +1790,7 @@ export function CanvasWorkspaceSurface({ accountKeys, approvedCanvas, canvasId, 
       .then(async (payload) => {
         if (cancelled) return;
         if (payload.available && payload.profile) {
-          const restored = hydrateCanvasProfile(payload.profile);
+          const restored = hydrateCanvasProfile(mergeCanvasProfiles(payload.profile, localProfile, canvasId));
           editableProfileRevisionRef.current = payload.revision;
           setRegistry(restored);
           setWorkspaceState(focusCanvasState(canvasId, requestedInstanceId));
@@ -1782,8 +1827,8 @@ export function CanvasWorkspaceSurface({ accountKeys, approvedCanvas, canvasId, 
           [canvasId]: snapshotCanvasWorkspaceState(workspaceState),
         };
       }
-      const save = (expectedRevision: number) => api<EditableCanvasProfile>("/api/trading/canvas-profile", {
-        body: JSON.stringify({ expected_revision: expectedRevision, profile }),
+      const save = (expectedRevision: number, candidate = profile) => api<EditableCanvasProfile>("/api/trading/canvas-profile", {
+        body: JSON.stringify({ expected_revision: expectedRevision, profile: candidate }),
         method: "PUT",
         timeoutMs: 20_000,
       });
@@ -1796,7 +1841,8 @@ export function CanvasWorkspaceSurface({ accountKeys, approvedCanvas, canvasId, 
         try {
           if (status !== 409) throw reason;
           const latest = await api<EditableCanvasProfile>("/api/trading/canvas-profile", { timeoutMs: 20_000 });
-          const saved = await save(latest.revision);
+          const merged = latest.profile ? mergeCanvasProfiles(latest.profile, profile, canvasId) : profile;
+          const saved = await save(latest.revision, merged);
           editableProfileRevisionRef.current = saved.revision;
         } catch (retryReason) {
           setError(`Canvas persistence is unavailable: ${retryReason instanceof Error ? retryReason.message : String(retryReason)}`);
@@ -1889,7 +1935,7 @@ export function CanvasWorkspaceSurface({ accountKeys, approvedCanvas, canvasId, 
   useEffect(() => {
     if (replayRun || liveMode) return;
     let cancelled = false;
-    api<CanvasContext>("/api/trading/canvas-context", { timeoutMs: 20000 })
+    apiCached<CanvasContext>("/api/trading/canvas-context", { timeoutMs: 20_000, ttlMs: 300_000 })
       .then((payload) => {
         if (cancelled) return;
         if (!payload.session_date) {
@@ -1925,6 +1971,7 @@ export function CanvasWorkspaceSurface({ accountKeys, approvedCanvas, canvasId, 
           body: JSON.stringify({
             chart_symbol: activeSymbol,
             chart_timeframe: "1m",
+            include_domains: [],
             preview_time: previewContext.previewTime,
             session_date: previewContext.sessionDate,
           }),
@@ -4691,7 +4738,7 @@ function instanceSettings(registry: CanvasRegistry, instanceId: string) {
   const stored = registry.instanceSettings[instanceId] as Partial<ContainerSettings> | undefined;
   return stored ? normalizeSettings(stored) : instanceId === "chart" ? readSettings() : cloneDefaultSettings();
 }
-function useCanvasScannerSnapshot({ cutoffMs, enabled, technicalWindows }: { cutoffMs: number; enabled: boolean; technicalWindows: string }) {
+function useCanvasScannerSnapshot({ cutoffMs, enabled, materializeDiscovery, technicalWindows }: { cutoffMs: number; enabled: boolean; materializeDiscovery: boolean; technicalWindows: string }) {
   const [snapshot, setSnapshot] = useState<CanvasScannerSnapshot | null>(null);
   const [loading, setLoading] = useState(enabled);
   const [error, setError] = useState("");
@@ -4719,6 +4766,7 @@ function useCanvasScannerSnapshot({ cutoffMs, enabled, technicalWindows }: { cut
               as_of: target.asOf,
               enrichment_scope: "core",
               lookback_minutes: 15,
+              row_limit: 250,
               technical_windows: target.technicalWindows,
             })}`, { signal: requestController.signal, timeoutMs: 120_000 });
             if (!mountedRef.current) return;
@@ -4737,6 +4785,8 @@ function useCanvasScannerSnapshot({ cutoffMs, enabled, technicalWindows }: { cut
                   as_of: target.asOf,
                   enrichment_scope: "full",
                   lookback_minutes: 15,
+                  materialize_discovery: materializeDiscovery,
+                  row_limit: 250,
                   technical_windows: target.technicalWindows,
                 })}`, { signal: requestController.signal, timeoutMs: 180_000 });
                 if (!mountedRef.current || !targetRef.current.enabled || targetRef.current.key !== target.key) return;
@@ -4788,7 +4838,7 @@ function useCanvasScannerSnapshot({ cutoffMs, enabled, technicalWindows }: { cut
         }
       }
     })();
-  }, []);
+  }, [materializeDiscovery]);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -4802,7 +4852,7 @@ function useCanvasScannerSnapshot({ cutoffMs, enabled, technicalWindows }: { cut
   useEffect(() => {
     requestControllerRef.current?.abort();
     const asOf = new Date(cutoffMs).toISOString();
-    const key = `${asOf}:${technicalWindows}`;
+    const key = `${asOf}:${technicalWindows}:${materializeDiscovery ? "materialized" : "page"}`;
     targetRef.current = { asOf, enabled, key, technicalWindows };
     if (retryTimerRef.current !== null) {
       window.clearTimeout(retryTimerRef.current);
@@ -4816,7 +4866,7 @@ function useCanvasScannerSnapshot({ cutoffMs, enabled, technicalWindows }: { cut
       return;
     }
     pump();
-  }, [cutoffMs, enabled, pump, technicalWindows]);
+  }, [cutoffMs, enabled, materializeDiscovery, pump, technicalWindows]);
 
   return { error, loading, snapshot };
 }

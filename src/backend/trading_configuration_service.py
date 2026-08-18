@@ -240,6 +240,9 @@ def materialize_market_discovery(section: dict[str, Any]) -> dict[str, Any]:
         state,
         materialized_at,
     )
+    from src.backend.canvas_preview_service import clear_scanner_snapshot_cache
+
+    clear_scanner_snapshot_cache()
     return state
 
 
@@ -257,6 +260,73 @@ def market_discovery_runtime_configuration() -> dict[str, Any]:
         return base
     base["market_discovery"] = deepcopy(section)
     return base
+
+
+def market_discovery_presentation_configuration() -> dict[str, Any]:
+    """Return only the discovery metadata Canvas needs to render and configure lists.
+
+    The full configuration contains executable Data Field recipes, Atomic Field
+    lineage, and calculation plans that are intentionally not browser table
+    metadata. Canvas consumes the materialized runtime composition and a narrow
+    presentation projection instead of rebuilding or retransmitting that book.
+    """
+
+    configuration = market_discovery_runtime_configuration()
+    discovery = dict(configuration.get("market_discovery") or {})
+    core_scan = dict(discovery.get("core_scan") or {})
+    calculations = []
+    for row in core_scan.get("calculations") or []:
+        calculations.append(
+            {
+                key: deepcopy(row.get(key))
+                for key in (
+                    "capability_id",
+                    "enabled",
+                    "execution_scope",
+                    "scanner_columns",
+                    "system_required",
+                )
+                if key in row
+            }
+        )
+    columns = []
+    for row in discovery.get("column_catalog") or []:
+        columns.append(
+            {
+                key: deepcopy(row.get(key))
+                for key in (
+                    "column_id",
+                    "description",
+                    "name",
+                    "provenance",
+                    "semantic_type",
+                    "source_id",
+                    "source_kind",
+                    "unit",
+                    "value_type",
+                )
+                if key in row
+            }
+        )
+    run_plans = dict(configuration.get("run_plans") or {})
+    return {
+        "schema_version": int(configuration.get("schema_version") or 0),
+        "market_discovery": {
+            "core_scan": {
+                key: deepcopy(core_scan.get(key))
+                for key in ("scan_id", "name", "description", "columns")
+                if key in core_scan
+            }
+            | {"calculations": calculations},
+            "column_catalog": columns,
+            "watchlists": deepcopy(discovery.get("watchlists") or []),
+            "signal_streams": deepcopy(discovery.get("signal_streams") or []),
+        },
+        "run_plans": {
+            "plans": deepcopy(run_plans.get("plans") or []),
+            "universes": deepcopy(run_plans.get("universes") or []),
+        },
+    }
 
 
 def market_discovery_materialization_status() -> dict[str, Any]:

@@ -152,9 +152,9 @@ export function dataFieldRuleDefinitions(dataFields: DataFieldDefinition[], enab
   })));
 }
 
-export function DataCatalogPage({ atomicFields = [], dataFields = [], onDataFieldsChange, registry }: { atomicFields?: AtomicField[]; dataFields?: DataFieldDefinition[]; onDataFieldsChange?: (value: DataFieldDefinition[]) => void; registry: InformationRegistry }) {
+export function DataCatalogPage({ atomicFields = [], dataFields = [], onDataFieldsChange, registry }: { atomicFields?: AtomicField[]; dataFields?: DataFieldDefinition[]; onDataFieldsChange?: (value: DataFieldDefinition[]) => void; registry?: InformationRegistry }) {
   if (atomicFields.length || dataFields.length) return <DataFieldCatalog atomicFields={atomicFields} dataFields={dataFields} />;
-  return <LegacyDataCatalog registry={registry} />;
+  return registry ? <LegacyDataCatalog registry={registry} /> : <div className="data-library-empty"><Database size={22} /><span>The Data Catalog is not available.</span></div>;
 }
 
 function LegacyDataCatalog({ registry }: { registry: InformationRegistry }) {

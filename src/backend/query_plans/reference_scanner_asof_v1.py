@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from typing import Iterable
 from zoneinfo import ZoneInfo
 
 from research.mlops.clickhouse import quote_ident, sql_string
@@ -11,7 +12,7 @@ QUERY_PLAN_VERSION = 2
 NEW_YORK = ZoneInfo("America/New_York")
 
 
-def scanner_reference_projection(cutoff: datetime, database: str = "q_live") -> str:
+def scanner_reference_projection(cutoff: datetime, database: str = "q_live", *, tickers: Iterable[str] = ()) -> str:
     """Build the causal, set-based reference projection for Historical Scanner."""
     if cutoff.tzinfo is None:
         raise ValueError("scanner reference cutoff must include a timezone")
@@ -20,6 +21,8 @@ def scanner_reference_projection(cutoff: datetime, database: str = "q_live") -> 
         cutoff.astimezone(UTC).isoformat(timespec="milliseconds")
     )
     cutoff_date = sql_string(cutoff.astimezone(NEW_YORK).date().isoformat())
+    ticker_catalog = tuple(sorted({str(ticker).strip().upper() for ticker in tickers if str(ticker).strip()}))
+    ticker_filter = f"\n              AND upper(ticker) IN ({', '.join(sql_string(ticker) for ticker in ticker_catalog)})" if ticker_catalog else ""
     return f"""
         WITH
             parseDateTime64BestEffort({instant}) AS cutoff,
@@ -91,6 +94,7 @@ def scanner_reference_projection(cutoff: datetime, database: str = "q_live") -> 
             WHERE universe_date = latest_universe_date
               AND inserted_at <= cutoff
               AND is_tradable = 1
+              {ticker_filter}
             GROUP BY ticker
         ) AS u
         LEFT JOIN

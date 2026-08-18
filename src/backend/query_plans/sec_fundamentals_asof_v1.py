@@ -31,12 +31,16 @@ def scanner_fundamentals(
     tags: Iterable[str],
     cutoff: datetime,
     database: str,
+    *,
+    tickers: Iterable[str] = (),
 ) -> str:
     """Build the causal all-universe XBRL projection used by historical Scanner."""
     db = quote_ident(database)
     instant = sql_string(clickhouse_timestamp(cutoff))
     cutoff_date = sql_string(cutoff.astimezone(UTC).date().isoformat())
     history_start = sql_string(clickhouse_timestamp(XBRL_HISTORY_START))
+    ticker_catalog = tuple(sorted({str(ticker).strip().upper() for ticker in tickers if str(ticker).strip()}))
+    ticker_filter = f"\n                  AND upper(u.ticker) IN ({', '.join(sql_string(ticker) for ticker in ticker_catalog)})" if ticker_catalog else ""
     return f"""
         WITH
             parseDateTime64BestEffort({instant}) AS cutoff,
@@ -59,6 +63,7 @@ def scanner_fundamentals(
                   AND u.inserted_at <= cutoff
                   AND notEmpty(u.ticker)
                   AND startsWith(u.issuer_id, 'issuer:cik:')
+                  {ticker_filter}
                 GROUP BY upper(u.ticker)
             )
         SELECT *
