@@ -38,6 +38,7 @@ def ticker_presentation_payload(tickers: Iterable[str], *, database: str = "q_li
             continue
         relative_path = str(row.get("logo_relative_path") or "").strip()
         presentations[ticker] = {
+            "country": str(row.get("country") or "").strip().upper(),
             "issuer_name": str(row.get("issuer_name") or "").strip(),
             "logo_url": logo_asset_url(relative_path),
             "ticker": ticker,

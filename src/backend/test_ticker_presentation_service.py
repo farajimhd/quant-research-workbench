@@ -19,12 +19,13 @@ class TickerPresentationServiceTest(unittest.TestCase):
     def test_missing_logo_path_stays_empty_without_fallback_asset(self) -> None:
         with patch(
             "src.backend.ticker_presentation_service._clickhouse_rows",
-            return_value=[{"ticker": "AAPL", "issuer_name": "Apple Inc.", "logo_relative_path": ""}],
+            return_value=[{"ticker": "AAPL", "issuer_name": "Apple Inc.", "country": "US", "logo_relative_path": ""}],
         ):
             payload = ticker_presentation_payload(["AAPL"])
 
         self.assertEqual(payload["status"], "ready")
         self.assertEqual(payload["presentations"]["AAPL"]["logo_url"], "")
+        self.assertEqual(payload["presentations"]["AAPL"]["country"], "US")
 
 
 if __name__ == "__main__":

@@ -2792,12 +2792,13 @@ function formatDateValue(value: Date) {
 
 function renderCell(row: DataRow, column: string) {
   if (isLogoColumn(column)) return renderLogoCell(row, column);
-  if (isBadgeCategoryColumn(column.toLowerCase())) return <CategoryBadge value={row[column]} />;
+  if (isBadgeCategoryColumn(column.toLowerCase())) return <CategoryBadge column={column} value={row[column]} />;
   if (!isTickerColumn(column)) return <PresentedValue column={column} value={row[column]} />;
   const value = formatCell(column, row[column]);
   const ticker = value === "-" ? "" : value;
   const companyName = stringValue(row.company_name) || stringValue(row.issuer_name) || stringValue(row.name);
-  const identity = <SecurityIdentityCell companyName={companyName} logoUrl={stringValue(row.logo_url)} ticker={ticker} />;
+  const country = stringValue(row.country) || stringValue(row.company_country_code) || stringValue(row.domicile_country_code);
+  const identity = <SecurityIdentityCell companyName={companyName} country={country} logoUrl={stringValue(row.logo_url)} ticker={ticker} />;
   if (column.toLowerCase() !== "ticker") return identity;
   const newsCount = coerceNumber(row.live_news_count);
   if (!Number.isFinite(newsCount) || newsCount <= 0) return identity;

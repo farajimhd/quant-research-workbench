@@ -4,6 +4,7 @@ import { ArrowDownRight, ArrowRight, ArrowUpRight } from "lucide-react";
 import { api, query } from "../../api/client";
 
 export type TickerPresentation = {
+  country: string;
   issuer_name: string;
   logo_url: string;
   ticker: string;

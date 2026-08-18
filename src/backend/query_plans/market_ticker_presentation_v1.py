@@ -50,16 +50,34 @@ def ticker_presentation(
         SELECT
             base.ticker AS ticker,
             base.issuer_name AS issuer_name,
+            base.country AS country,
             if(notEmpty(base.linked_logo_relative_path), base.linked_logo_relative_path, ifNull(fallback.relative_path, '')) AS logo_relative_path
         FROM
         (
             SELECT
                 upper(u.ticker) AS ticker,
                 coalesce(nullIf(issuer.branding_name, ''), issuer.issuer_name, '') AS issuer_name,
+                coalesce(nullIf(country.effective_country_code, ''), nullIf(issuer.domicile_country_code, ''), '') AS country,
                 ifNull(asset.relative_path, '') AS linked_logo_relative_path
             FROM {database_name}.feature_tradable_universe_v1 AS u FINAL
             LEFT JOIN {database_name}.id_issuer_v1 AS issuer FINAL
                 ON issuer.issuer_id = u.issuer_id
+            LEFT JOIN
+            (
+                SELECT
+                    symbol_id,
+                    argMax(effective_country_code, tuple(assertion_date, inserted_at)) AS effective_country_code
+                FROM {database_name}.market_security_country_v1 FINAL
+                WHERE symbol_id IN
+                (
+                    SELECT symbol_id
+                    FROM {database_name}.feature_tradable_universe_v1 FINAL
+                    WHERE universe_date = latest_universe_date
+                      AND ticker IN ({ticker_clause})
+                )
+                GROUP BY symbol_id
+            ) AS country
+                ON country.symbol_id = u.symbol_id
             LEFT JOIN {database_name}.feature_scanner_static_v1 AS scanner FINAL
                 ON scanner.feature_date = latest_scanner_date
                AND scanner.symbol_id = u.symbol_id

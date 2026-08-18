@@ -6,7 +6,7 @@ import { CONFIGURATION_SESSION_CHANGED_EVENT, readConfigurationSession } from ".
 import { InventoryFilterSelect } from "./InventoryFilterSelect";
 import { MarketTime } from "./MarketTime";
 import { useTickerPresentations } from "./TickerIdentity";
-import { CategoryBadge, PresentedValue, SecurityIdentityCell, tableCellClass, type PresentationValueType } from "./TablePresentation";
+import { CategoryBadge, PresentedValue, SecurityIdentityCell, presentationForColumn, tableCellClass, type PresentationValueType } from "./TablePresentation";
 
 export type ScreenerRow = Record<string, unknown>;
 export type ScannerSnapshotMeta = {
@@ -912,13 +912,13 @@ function renderMarketCell(row: ScreenerRow, column: string, presentations: Retur
   const ticker = String(row.ticker ?? row.symbol ?? "").trim().toUpperCase();
   if (column === "ticker" || column === "symbol") {
     const companyName = companyInIdentity ? String(row.company_name ?? presentations[ticker]?.issuer_name ?? "").trim() : "";
-    return <SecurityIdentityCell companyName={companyName} logoUrl={String(row.logo_url ?? presentations[ticker]?.logo_url ?? "")} ticker={ticker} trailing={<span className="market-list-ticker-events">
+    return <SecurityIdentityCell companyName={companyName} country={String(row.country ?? presentations[ticker]?.country ?? "")} logoUrl={String(row.logo_url ?? presentations[ticker]?.logo_url ?? "")} ticker={ticker} trailing={<span className="market-list-ticker-events">
         <TickerEventIcon source="News" value={String(row.live_news_recency ?? "none")} />
         <TickerEventIcon source="SEC" value={String(row.sec_recency ?? "none")} />
       </span>} />;
   }
   if (column === "event_time") return value ? <MarketTime includeSeconds value={String(value)} /> : "—";
-  if (["direction", "source"].includes(column)) return <CategoryBadge value={value} />;
+  if (["direction", "source"].includes(column)) return <CategoryBadge column={column} value={value} />;
   if (column === "news_labels" || column === "sec_labels") {
     const labels = rowLabels(value);
     return labels.length ? <span className="market-list-label-badges" data-source={column === "news_labels" ? "news" : "sec"} title={labels.join(", ")}>{labels.slice(0, 1).map((labelValue) => <span key={labelValue}>{labelValue}</span>)}{labels.length > 1 ? <span className="market-list-label-overflow">+{labels.length - 1}</span> : null}</span> : <span className="market-list-unavailable">—</span>;
@@ -941,7 +941,7 @@ function renderMarketCell(row: ScreenerRow, column: string, presentations: Retur
 function marketNumber(display: string, value: number, definition: FieldDefinition, tone = "") {
   const exact = new Intl.NumberFormat("en-US", { maximumFractionDigits: 8 }).format(value);
   const resolvedTone = tone || (definition.format === "percent" && value !== 0 ? (value > 0 ? "positive" : "negative") : "neutral");
-  return <span className="market-list-number table-number" data-tone={resolvedTone} title={`${definition.label}: ${exact}`}>{display}</span>;
+  return <span className="market-list-number table-number" data-importance={presentationForColumn(definition.key).importance} data-tone={resolvedTone} title={`${definition.label}: ${exact}`}>{display}</span>;
 }
 
 function TickerEventIcon({ source, value }: { source: "News" | "SEC"; value: string }) {
@@ -986,7 +986,8 @@ function withLockedColumns(columns: string[], lockedColumns: string[]) {
 function columnClass(column: string, definition = catalogField(column)) {
   const identityClass = column === "logo" ? "market-list-logo-column" : column === "ticker" || column === "symbol" ? "market-list-symbol-column" : column === "news_labels" || column === "sec_labels" ? "market-list-label-column" : "";
   const numericClass = ["integer", "money", "multiple", "number", "percent", "percentPlain", "score"].includes(definition.format) ? "market-list-numeric-column" : "";
-  return `${identityClass} ${numericClass} ${tableCellClass(column, { presentationValueType: definition.presentationValueType })}`.trim();
+  const timeClass = ["date", "datetime", "time"].includes(definition.presentationValueType ?? "") ? "market-list-time-column" : "";
+  return `${identityClass} ${numericClass} ${timeClass} ${tableCellClass(column, { presentationValueType: definition.presentationValueType })}`.trim();
 }
 function rowLabels(value: unknown) { return [...new Set(String(value ?? "").split(",").map((item) => item.trim()).filter(Boolean))]; }
 function collectLabels(rows: ScreenerRow[], column: "news_labels" | "sec_labels") { return [...new Set(rows.flatMap((row) => rowLabels(row[column])))].sort((left, right) => left.localeCompare(right)); }
