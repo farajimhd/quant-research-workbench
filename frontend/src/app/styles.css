@@ -28266,11 +28266,11 @@ button {
   display: inline-grid;
   font-family: var(--font-body);
   gap: 0 8px;
-  grid-template-areas: "logo copy country" "logo copy trailing";
-  grid-template-columns: 36px minmax(0, 1fr) auto;
-  grid-template-rows: minmax(0, 1fr) minmax(0, 1fr);
-  min-height: 42px;
-  min-width: 190px;
+  grid-template-areas: "logo country trailing" "logo copy trailing";
+  grid-template-columns: 42px minmax(0, 1fr) auto;
+  grid-template-rows: 10px minmax(0, 1fr);
+  min-height: 46px;
+  min-width: 172px;
   padding: 2px 0;
   vertical-align: middle;
 }
@@ -28286,16 +28286,16 @@ button {
   font-size: 8px;
   font-weight: 600;
   grid-area: logo;
-  height: 36px;
+  height: 42px;
   justify-content: center;
   object-fit: contain;
-  width: 36px;
+  width: 42px;
 }
 .table-security-copy { align-self: center; display: grid; gap: 0; grid-area: copy; min-width: 0; }
-.table-security-copy > strong { color: var(--foreground); font-family: var(--font-body); font-size: 12px; font-weight: 620; letter-spacing: -.01em; line-height: 1.1; }
-.table-security-copy > small { color: var(--muted-foreground); display: block; font-size: 9px; font-weight: 400; line-height: 1.2; max-width: 156px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.table-security-country { align-self: start; color: color-mix(in oklab, var(--muted-foreground) 82%, transparent); font-size: 7.5px; font-weight: 500; grid-area: country; justify-self: end; letter-spacing: .035em; line-height: 1.2; max-width: 74px; overflow: hidden; text-overflow: ellipsis; text-transform: uppercase; white-space: nowrap; }
-.table-security-trailing { align-items: center; align-self: end; display: inline-flex; grid-area: trailing; justify-self: end; }
+.table-security-copy > strong { color: var(--foreground); font-family: var(--font-body); font-size: 15px; font-weight: 650; letter-spacing: -.015em; line-height: 1; }
+.table-security-copy > small { color: var(--muted-foreground); display: block; font-size: 9.5px; font-weight: 400; line-height: 1.15; max-width: 118px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.table-security-country { align-self: end; color: color-mix(in oklab, var(--muted-foreground) 82%, transparent); font-size: 7.5px; font-weight: 500; grid-area: country; justify-self: start; letter-spacing: .035em; line-height: 1; max-width: 86px; overflow: hidden; text-overflow: ellipsis; text-transform: uppercase; white-space: nowrap; }
+.table-security-trailing { align-items: center; align-self: center; display: inline-flex; grid-area: trailing; justify-self: end; }
 .table-number { color: color-mix(in oklab, var(--foreground) 90%, var(--muted-foreground)); display: inline-block; font-family: var(--font-body); font-size: 11.5px; font-variant-numeric: lining-nums tabular-nums; font-weight: 500; letter-spacing: -.008em; min-width: 100%; text-align: right; }
 .table-number[data-importance="strong"] { color: var(--foreground); font-weight: 640; }
 .table-number[data-tone="positive"] { color: color-mix(in oklab, var(--semantic-positive, var(--success)) 72%, var(--foreground)); }
@@ -28340,25 +28340,25 @@ button {
 .market-list-table tbody td { height: 48px; padding-block: 3px; }
 .market-list-table .market-list-time-column { max-width: 112px; min-width: 94px; width: 102px; }
 .market-list-table .market-list-time-column .market-time { line-height: 1.05; }
-.market-list-table .market-list-symbol-column { left: 0; max-width: 230px; min-width: 210px; width: 210px; }
-.market-list-table .market-list-symbol-column > button { max-width: 198px; }
-.market-list-table .market-list-symbol-column .table-security-card { min-width: 194px; width: 100%; }
+.market-list-table .market-list-symbol-column { left: 0; max-width: 204px; min-width: 188px; width: 196px; }
+.market-list-table .market-list-symbol-column > button { max-width: 184px; }
+.market-list-table .market-list-symbol-column .table-security-card { min-width: 172px; width: 100%; }
 .market-list-table td.market-list-numeric-column { font-size: 13px; }
 .canvas-preview-table td.table-presented-security { min-width: 210px; }
 .canvas-preview-table td { font-size: 12px; }
 .news-tickers .table-security-card { min-width: 160px; }
 .intelligence-identity-block .table-security-card { min-width: calc(166px * var(--news-readable-scale)); }
 .intelligence-identity-block .table-security-card > .ticker-logo,
-.intelligence-identity-block .table-security-card > .ticker-logo-fallback { height: calc(34px * var(--news-readable-scale)); width: calc(34px * var(--news-readable-scale)); }
+.intelligence-identity-block .table-security-card > .ticker-logo-fallback { height: calc(42px * var(--news-readable-scale)); width: calc(42px * var(--news-readable-scale)); }
 
 .market-list-table.with-company-identity .market-list-symbol-column {
-  max-width: 236px;
-  min-width: 204px;
-  width: 224px;
+  max-width: 208px;
+  min-width: 190px;
+  width: 198px;
 }
 
 .market-list-table.with-company-identity .market-list-symbol-column > button {
-  max-width: 216px;
+  max-width: 186px;
 }
 
 .market-list-ticker-cell.company-card {
