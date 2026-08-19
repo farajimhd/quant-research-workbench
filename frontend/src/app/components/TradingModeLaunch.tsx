@@ -52,9 +52,8 @@ export function TradingModeLaunch({
   const readyCount = requiredChecks.filter((check) => check.status === "ready").length;
   return <main className="mode-launch-page">
     <header className="mode-launch-heading">
-      <span><Icon aria-hidden="true" size={15} /> {eyebrow}</span>
-      <h1>{title}</h1>
-      <p>{description}</p>
+      <div className="mode-launch-heading-icon"><Icon aria-hidden="true" size={20} /></div>
+      <div><span>{eyebrow}</span><h1>{title}</h1><p>{description}</p></div>
     </header>
 
     {error ? <div className="mode-launch-error" role="alert"><TriangleAlert aria-hidden="true" size={17} /><div><strong>Unable to prepare this mode</strong><span>{error}</span></div></div> : null}
