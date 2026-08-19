@@ -183,7 +183,13 @@ export function ServicesPage({ mode, onNavigate }: { mode: ServicePageMode; onNa
         else fastInFlight = false;
       }
     }
-    void load(true);
+    // Paint liveness and readiness first. Database inspection is useful
+    // enrichment, but it must not hold the whole operational dashboard behind
+    // a blocking loader.
+    void (async () => {
+      await load(false);
+      if (!cancelled) void load(true);
+    })();
     const fastTimer = window.setInterval(() => void load(false), 5000);
     const fullTimer = window.setInterval(() => void load(true), 30000);
     return () => {

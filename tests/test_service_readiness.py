@@ -1,8 +1,14 @@
 from __future__ import annotations
 
 import unittest
+from unittest.mock import patch
 
-from src.backend.app import service_operational_evidence, service_readiness_payload
+from src.backend.app import (
+    compact_service_status_evidence,
+    service_operational_evidence,
+    service_readiness_payload,
+    service_status_payload,
+)
 
 
 def readiness(
@@ -29,6 +35,53 @@ def readiness(
 
 
 class ServiceReadinessTests(unittest.TestCase):
+    @patch("src.backend.app.fetch_service_json")
+    def test_health_fallback_keeps_service_online_when_rich_snapshot_times_out(
+        self, fetch_json
+    ) -> None:
+        def response(_base_url: str, path: str):
+            if path == "/snapshot/status":
+                return None, "TimeoutError: timed out"
+            if path == "/health":
+                return {"service_status": "READY"}, None
+            if path == "/metrics":
+                return {"cache_entries": 1}, None
+            raise AssertionError(path)
+
+        fetch_json.side_effect = response
+        payload = service_status_payload(
+            "qmd-history",
+            include_database_tables=False,
+            include_logs=False,
+            include_recent=False,
+        )
+
+        self.assertTrue(payload["online"])
+        self.assertEqual(payload["status"], "READY")
+        self.assertEqual(payload["readiness"]["liveness"]["status"], "ready")
+        self.assertEqual(payload["errors"]["snapshot"], "TimeoutError: timed out")
+
+    def test_high_cardinality_qmd_demand_is_summarized_for_browser_status(self) -> None:
+        payload = compact_service_status_evidence({
+            "service_specific": {
+                "computation_demand": {
+                    "active_requirement_count": 2,
+                    "requirements": [{"id": "a"}, {"id": "b"}],
+                    "requirement_ref_counts": {"a": 2, "b": 1},
+                    "symbol_ref_counts": {"AAPL": 2},
+                    "targets": [{"id": "scanner"}],
+                }
+            }
+        })
+        demand = payload["service_specific"]["computation_demand"]
+
+        self.assertEqual(demand["active_requirement_count"], 2)
+        self.assertEqual(demand["requirements_omitted_count"], 2)
+        self.assertEqual(demand["requirement_ref_counts_omitted_count"], 2)
+        self.assertEqual(demand["symbol_ref_counts_omitted_count"], 1)
+        self.assertEqual(demand["targets_omitted_count"], 1)
+        self.assertNotIn("requirements", demand)
+
     def test_offline_does_not_claim_dependency_or_data_readiness(self) -> None:
         payload = readiness(online=False, errors={"snapshot": "connection refused"})
 

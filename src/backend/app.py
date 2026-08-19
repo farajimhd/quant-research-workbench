@@ -260,6 +260,7 @@ CHART_DISPLAY_ITEMS_NONE = "__none__"
 EXCHANGE_TIME_ZONE = MARKET_TIME_ZONE_NAME
 BACKTEST_ARTIFACT_ROOT = PROJECT_ROOT / "data" / "backtests"
 SERVICE_STATUS_TIMEOUT_SECONDS = 1.8
+SERVICE_FLEET_STATUS_TIMEOUT_SECONDS = 1.0
 NEWS_QUERY_TIMEOUT_SECONDS = 12.0
 NEWS_INTELLIGENCE_TIMEOUT_SECONDS = 1.5
 SERVICE_LOG_TAIL_LIMIT = 160
@@ -1071,11 +1072,11 @@ def parse_service_bind(bind: str) -> tuple[str, int]:
     return host or "127.0.0.1", int(port_text)
 
 
-def fetch_service_json(base_url: str, path: str) -> tuple[dict[str, Any] | list[Any] | None, str | None]:
+def fetch_service_json(base_url: str, path: str, *, timeout_seconds: float = SERVICE_STATUS_TIMEOUT_SECONDS) -> tuple[dict[str, Any] | list[Any] | None, str | None]:
     url = f"{base_url}{path}"
     request = urllib.request.Request(url, headers={"Accept": "application/json"})
     try:
-        with urllib.request.urlopen(request, timeout=SERVICE_STATUS_TIMEOUT_SECONDS) as response:
+        with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
             text = response.read().decode("utf-8", errors="replace")
     except urllib.error.HTTPError as exc:
         body = exc.read().decode("utf-8", errors="replace")[:500]
@@ -2637,17 +2638,37 @@ def format_bytes(value: int) -> str:
     return f"{value} B"
 
 
-def service_status_payload(service_id: str, *, include_database_tables: bool = True, include_logs: bool = True, include_recent: bool = True) -> dict[str, Any]:
+def service_status_payload(service_id: str, *, include_database_tables: bool = True, include_logs: bool = True, include_recent: bool = True, fleet_probe: bool = False) -> dict[str, Any]:
     service = SERVICE_REGISTRY.get(service_id)
     if service is None:
         raise HTTPException(status_code=404, detail="Unknown service")
     base_url = service_base_url(service)
-    snapshot, snapshot_error = fetch_service_json(base_url, "/snapshot/status")
     health_payload: dict[str, Any] | list[Any] | None = None
     health_error: str | None = None
     metrics_payload: dict[str, Any] | list[Any] | None = None
     metrics_error: str | None = None
-    if snapshot_error is not None:
+    if fleet_probe:
+        # Fleet status is a first-paint surface. Probe the rich snapshot and
+        # cheap liveness endpoint together so one unavailable service costs one
+        # timeout window rather than two serialized windows.
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            snapshot_future = executor.submit(
+                fetch_service_json,
+                base_url,
+                "/snapshot/status",
+                timeout_seconds=SERVICE_FLEET_STATUS_TIMEOUT_SECONDS,
+            )
+            health_future = executor.submit(
+                fetch_service_json,
+                base_url,
+                "/health",
+                timeout_seconds=SERVICE_FLEET_STATUS_TIMEOUT_SECONDS,
+            )
+            snapshot, snapshot_error = snapshot_future.result()
+            health_payload, health_error = health_future.result()
+    else:
+        snapshot, snapshot_error = fetch_service_json(base_url, "/snapshot/status")
+    if snapshot_error is not None and not fleet_probe:
         health_payload, health_error = fetch_service_json(base_url, "/health")
         if health_error is None:
             metrics_payload, metrics_error = fetch_service_json(base_url, "/metrics")
@@ -2655,10 +2676,10 @@ def service_status_payload(service_id: str, *, include_database_tables: bool = T
     recent_error: str | None = None
     if include_recent and snapshot_error is None and service.get("recent_path"):
         recent_payload, recent_error = fetch_service_json(base_url, service["recent_path"])
-    unreachable = service_unreachable_error(snapshot_error) or (
-        snapshot_error is not None and service_unreachable_error(health_error) and service_unreachable_error(metrics_error)
-    )
-    online = not unreachable and (snapshot_error is None or health_error is None or metrics_error is None)
+    # Snapshot is the richest contract, but it is not the liveness authority by
+    # itself.  A service remains online when its declared health fallback
+    # answers even if a temporarily expensive snapshot times out.
+    online = snapshot_error is None or health_error is None
     normalized_snapshot = snapshot if isinstance(snapshot, dict) else {}
     header = normalized_snapshot.get("header") if isinstance(normalized_snapshot.get("header"), dict) else {}
     current_operation = normalized_snapshot.get("current_operation") if isinstance(normalized_snapshot.get("current_operation"), dict) else {}
@@ -2691,9 +2712,9 @@ def service_status_payload(service_id: str, *, include_database_tables: bool = T
         "status": status,
         "header": header,
         "current_operation": current_operation,
-        "snapshot": normalized_snapshot,
+        "snapshot": compact_service_status_evidence(normalized_snapshot),
         "health": health,
-        "metrics": metrics,
+        "metrics": compact_service_status_evidence(metrics),
         "operations": service_operational_evidence(
             service_id,
             snapshot=normalized_snapshot,
@@ -2716,6 +2737,38 @@ def service_status_payload(service_id: str, *, include_database_tables: bool = T
         "errors": errors,
         "checked_at_utc": datetime.now(UTC).isoformat(timespec="seconds").replace("+00:00", "Z"),
     }
+
+
+def compact_service_status_evidence(payload: dict[str, Any]) -> dict[str, Any]:
+    """Remove high-cardinality demand internals from browser status payloads.
+
+    QMD exposes exact active requirements through its own authority API.  The
+    service dashboard needs aggregate counts and health, not thousands of
+    repeated per-symbol requirement records on every five-second poll.
+    """
+
+    result = dict(payload)
+    service_specific = result.get("service_specific")
+    if isinstance(service_specific, dict):
+        compact_specific = dict(service_specific)
+        demand = compact_specific.get("computation_demand")
+        if isinstance(demand, dict):
+            compact_specific["computation_demand"] = compact_computation_demand(demand)
+        result["service_specific"] = compact_specific
+    demand = result.get("computation_demand")
+    if isinstance(demand, dict):
+        result["computation_demand"] = compact_computation_demand(demand)
+    return result
+
+
+def compact_computation_demand(demand: dict[str, Any]) -> dict[str, Any]:
+    compact = dict(demand)
+    for key in ("requirements", "requirement_ref_counts", "symbol_ref_counts", "targets"):
+        value = compact.pop(key, None)
+        if value is not None:
+            compact[f"{key}_omitted_count"] = len(value) if hasattr(value, "__len__") else 0
+    compact["detail_path"] = "/api/system/computation-requirements"
+    return compact
 
 
 def service_operational_evidence(
@@ -2952,13 +3005,14 @@ def service_readiness_payload(
     }
 
 
-def safe_service_status_payload(service_id: str, *, include_database_tables: bool = True, include_logs: bool = True, include_recent: bool = True) -> dict[str, Any]:
+def safe_service_status_payload(service_id: str, *, include_database_tables: bool = True, include_logs: bool = True, include_recent: bool = True, fleet_probe: bool = False) -> dict[str, Any]:
     try:
         return service_status_payload(
             service_id,
             include_database_tables=include_database_tables,
             include_logs=include_logs,
             include_recent=include_recent,
+            fleet_probe=fleet_probe,
         )
     except HTTPException:
         raise
@@ -3045,6 +3099,7 @@ def services_status(include_recent: bool = False, include_database_tables: bool 
                     include_database_tables=include_database_tables,
                     include_logs=include_logs,
                     include_recent=include_recent,
+                    fleet_probe=True,
                 ),
                 service_ids,
             )
