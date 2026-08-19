@@ -4859,6 +4859,267 @@
   .configuration-domain-tabs button:last-child { border-bottom: 0; }
 }
 
+/* Accounts and Sessions guided composition
+   ----------------------------------------
+   Sessions, deployment fan-out, and account-local values use the same field,
+   rule, and compact register grammar as the other configuration studios. */
+.accounts-session-configuration,
+.accounts-allocation-configuration {
+  container-type: inline-size;
+  display: grid;
+  gap: 18px;
+}
+
+.accounts-session-fields,
+.accounts-allocation-fields {
+  align-items: start;
+}
+
+.accounts-session-facts {
+  background: var(--surface-alt);
+  border-block: 1px solid var(--configuration-rule);
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  margin: 0;
+}
+
+.accounts-session-facts > div {
+  border-right: 1px solid var(--configuration-rule);
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  padding: 10px 12px;
+}
+
+.accounts-session-facts > div:last-child { border-right: 0; }
+.accounts-session-facts dt,
+.accounts-route-register > header span,
+.accounts-allocation-limits > section > header span,
+.account-configuration-scope small {
+  color: var(--muted-foreground);
+  font-size: 9.5px;
+  font-weight: 650;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+}
+
+.accounts-session-facts dd {
+  color: var(--foreground);
+  font-size: 11.5px;
+  font-weight: 570;
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.accounts-route-register {
+  border: 1px solid var(--configuration-rule);
+  border-radius: 9px;
+  overflow: hidden;
+}
+
+.accounts-route-register > header {
+  align-items: end;
+  background: var(--surface-alt);
+  border-bottom: 1px solid var(--configuration-rule);
+  display: flex;
+  gap: 16px;
+  justify-content: space-between;
+  padding: 11px 13px;
+}
+
+.accounts-route-register > header > div { display: grid; gap: 3px; }
+.accounts-route-register > header strong { font-size: 13px; font-weight: 620; }
+.accounts-route-register > header small { color: var(--muted-foreground); font-size: 10.5px; }
+.accounts-route-table { display: grid; }
+.accounts-route-table-header,
+.accounts-route-table-row {
+  display: grid;
+  gap: 14px;
+  grid-template-columns: minmax(170px, 1.4fr) minmax(150px, 1fr) minmax(150px, 1fr) minmax(100px, .7fr);
+}
+
+.accounts-route-table-header {
+  border-bottom: 1px solid var(--configuration-rule);
+  color: var(--muted-foreground);
+  font-size: 9px;
+  font-weight: 650;
+  letter-spacing: .055em;
+  padding: 8px 13px;
+  text-transform: uppercase;
+}
+
+.accounts-route-table-row {
+  align-items: center;
+  background: var(--surface);
+  border: 0;
+  border-bottom: 1px solid var(--configuration-rule);
+  color: var(--foreground);
+  cursor: pointer;
+  font: inherit;
+  padding: 10px 13px;
+  text-align: left;
+  width: 100%;
+}
+
+.accounts-route-table-row:last-child { border-bottom: 0; }
+.accounts-route-table-row:hover { background: var(--surface-alt); }
+.accounts-route-table-row > span { display: grid; gap: 3px; min-width: 0; }
+.accounts-route-table-row strong { font-size: 11.5px; font-weight: 590; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.accounts-route-table-row small { color: var(--muted-foreground); font-size: 10px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.accounts-route-table-row em,
+.accounts-route-choice-list em {
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--muted-foreground);
+  font-size: 9.5px;
+  font-style: normal;
+  justify-self: start;
+  padding: 3px 7px;
+}
+
+.accounts-route-table-row em[data-state="ready"],
+.accounts-route-choice-list em[data-state="selected"] {
+  background: var(--badge-success-bg);
+  border-color: var(--badge-success-border);
+  color: var(--success);
+}
+
+.accounts-allocation-explanation,
+.accounts-manual-boundary {
+  align-items: start;
+  background: color-mix(in oklab, var(--surface-alt) 94%, var(--configuration-section-accent));
+  border: 1px solid var(--configuration-rule);
+  border-left: 3px solid var(--configuration-section-accent);
+  border-radius: 8px;
+  display: grid;
+  gap: 10px;
+  grid-template-columns: auto minmax(0, 1fr);
+  padding: 11px 13px;
+}
+
+.accounts-allocation-explanation > svg,
+.accounts-manual-boundary > svg { color: var(--configuration-section-accent); margin-top: 1px; }
+.accounts-allocation-explanation div,
+.accounts-manual-boundary p { display: grid; gap: 4px; margin: 0; }
+.accounts-allocation-explanation strong,
+.accounts-manual-boundary strong { font-size: 11.5px; font-weight: 620; }
+.accounts-allocation-explanation p,
+.accounts-manual-boundary span { color: var(--muted-foreground); font-size: 10.5px; line-height: 1.5; margin: 0; }
+
+.accounts-route-choice-list {
+  border: 0;
+  display: grid;
+  gap: 0;
+  margin: 0;
+  padding: 0;
+}
+
+.accounts-route-choice-list legend {
+  color: var(--muted-foreground);
+  font-size: 9.5px;
+  font-weight: 650;
+  letter-spacing: .06em;
+  margin-bottom: 6px;
+  text-transform: uppercase;
+}
+
+.accounts-route-choice-list label {
+  align-items: center;
+  border-block: 1px solid var(--configuration-rule);
+  cursor: pointer;
+  display: grid;
+  gap: 10px;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  margin-top: -1px;
+  padding: 10px 4px;
+}
+
+.accounts-route-choice-list label[data-selected="true"] { background: color-mix(in oklab, var(--surface) 96%, var(--configuration-section-accent)); }
+.accounts-route-choice-list label:has(input:disabled) { cursor: not-allowed; opacity: .58; }
+.accounts-route-choice-list label > span { display: grid; gap: 3px; }
+.accounts-route-choice-list label strong { font-size: 11.5px; font-weight: 590; }
+.accounts-route-choice-list label small { color: var(--muted-foreground); font-size: 10px; }
+
+.accounts-allocation-limits { display: grid; gap: 10px; }
+.accounts-allocation-limits > section {
+  border: 1px solid var(--configuration-rule);
+  border-radius: 8px;
+  display: grid;
+  gap: 13px;
+  padding: 12px;
+}
+
+.accounts-allocation-limits > section > header {
+  align-items: end;
+  border-bottom: 1px solid var(--configuration-rule);
+  display: flex;
+  justify-content: space-between;
+  padding-bottom: 9px;
+}
+
+.accounts-allocation-limits > section > header > div { display: grid; gap: 3px; }
+.accounts-allocation-limits > section > header strong { font-size: 12px; font-weight: 610; }
+.accounts-allocation-limits > section > header small { color: var(--muted-foreground); font-size: 10px; }
+
+.account-configuration-scope {
+  align-items: center;
+  background: var(--surface-alt);
+  border-block: 1px solid var(--configuration-rule);
+  display: grid;
+  gap: 11px;
+  grid-template-columns: auto minmax(160px, 1fr) minmax(280px, auto);
+  margin-bottom: 20px;
+  padding: 10px 12px;
+}
+
+.account-configuration-scope > span {
+  align-items: center;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  color: var(--configuration-section-accent);
+  display: inline-flex;
+  height: 34px;
+  justify-content: center;
+  width: 34px;
+}
+
+.account-configuration-scope > div { align-items: baseline; display: flex; flex-wrap: wrap; gap: 5px 9px; min-width: 0; }
+.account-configuration-scope strong { font-size: 12.5px; font-weight: 620; }
+.account-configuration-scope code { color: var(--muted-foreground); font-size: 9.5px; }
+.account-configuration-scope dl { display: flex; gap: 16px; justify-content: flex-end; margin: 0; }
+.account-configuration-scope dl > div { display: grid; gap: 2px; }
+.account-configuration-scope dt { color: var(--muted-foreground); font-size: 8.5px; letter-spacing: .055em; text-transform: uppercase; }
+.account-configuration-scope dd { font-size: 10.5px; font-weight: 570; margin: 0; }
+
+@media (max-width: 900px) {
+  .accounts-session-facts { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .accounts-session-facts > div:nth-child(2) { border-right: 0; }
+  .accounts-session-facts > div:nth-child(-n+2) { border-bottom: 1px solid var(--configuration-rule); }
+  .accounts-route-table-header { display: none; }
+  .accounts-route-table-row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .account-configuration-scope { grid-template-columns: auto minmax(0, 1fr); }
+  .account-configuration-scope dl { grid-column: 1 / -1; justify-content: flex-start; }
+}
+
+@container (max-width: 700px) {
+  .accounts-session-facts { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .accounts-session-facts > div:nth-child(2) { border-right: 0; }
+  .accounts-session-facts > div:nth-child(-n+2) { border-bottom: 1px solid var(--configuration-rule); }
+  .accounts-route-table-header { display: none; }
+  .accounts-route-table-row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+@media (max-width: 560px) {
+  .accounts-session-facts,
+  .accounts-route-table-row { grid-template-columns: minmax(0, 1fr); }
+  .accounts-session-facts > div { border-bottom: 1px solid var(--configuration-rule); border-right: 0; }
+  .accounts-session-facts > div:last-child { border-bottom: 0; }
+  .accounts-route-register > header { align-items: start; flex-direction: column; }
+  .account-configuration-scope dl { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); width: 100%; }
+}
+
 /* Abstraction cards are the single presentation contract. These compatibility
    rules prevent retired page-specific card selectors from changing its anatomy. */
 .trading-configuration-page .discovery-watchlist-available .abstraction-card,

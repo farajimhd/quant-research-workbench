@@ -1778,6 +1778,8 @@ function GuidedConfiguration({ approved, draft, label, omsStage, onChange, onCon
   const [activeOmsProfileId, setActiveOmsProfileId] = useState(() => window.sessionStorage.getItem("guided-oms-profile-id") || draft.oms.profiles[0]?.profile_id || "");
   const [activeExecutionPolicyId, setActiveExecutionPolicyId] = useState(() => window.sessionStorage.getItem("guided-execution-policy-id") || draft.oms.profiles[0]?.settings.entry_execution_policy_id || "");
   const [activeAccountKey, setActiveAccountKey] = useState(() => window.sessionStorage.getItem("guided-account-key") || draft.accounts.bindings[0]?.account_key || "");
+  const [activeSessionProfileId, setActiveSessionProfileId] = useState(() => window.sessionStorage.getItem("guided-session-profile-id") || draft.sessions.profiles.find((row) => row.enabled)?.session_profile_id || draft.sessions.profiles[0]?.session_profile_id || "");
+  const [activeStrategyDeploymentId, setActiveStrategyDeploymentId] = useState(() => window.sessionStorage.getItem("guided-strategy-deployment-id") || draft.sessions.strategy_deployments.find((row) => row.enabled)?.strategy_deployment_id || draft.sessions.strategy_deployments[0]?.strategy_deployment_id || "");
   const profile = draft.strategy.profiles.find((row) => row.profile_id === activeStrategyProfileId) ?? draft.strategy.profiles.find((row) => row.profile_id === draft.strategy.default_profile_id) ?? draft.strategy.profiles[0];
   const deployment = draft.assignments.deployments.find((row) => row.run_plan_id === activeRunPlanId) ?? draft.assignments.deployments.find((row) => row.enabled) ?? draft.assignments.deployments[0];
   const mandate = draft.portfolio.mandates.find((row) => row.mandate_id === activeMandateId) ?? draft.portfolio.mandates.find((row) => row.run_plan_id === deployment?.run_plan_id) ?? draft.portfolio.mandates[0];
@@ -1785,6 +1787,15 @@ function GuidedConfiguration({ approved, draft, label, omsStage, onChange, onCon
   const executionPolicy = draft.oms.execution_policies.find((row) => row.policy_id === activeExecutionPolicyId) ?? draft.oms.execution_policies.find((row) => row.policy_id === omsProfile?.settings.entry_execution_policy_id) ?? draft.oms.execution_policies[0];
   const protectionProfile = draft.oms.protection_profiles.find((row) => row.profile_id === omsProfile?.settings.protection_profile_id) ?? draft.oms.protection_profiles[0];
   const account = draft.accounts.bindings.find((row) => row.account_key === (section === "accounts" ? activeAccountKey : mandate?.account_key)) ?? draft.accounts.bindings[0];
+  const sessionProfile = draft.sessions.profiles.find((row) => row.session_profile_id === activeSessionProfileId) ?? draft.sessions.profiles.find((row) => row.enabled) ?? draft.sessions.profiles[0];
+  const strategyDeployment = draft.sessions.strategy_deployments.find((row) => row.strategy_deployment_id === activeStrategyDeploymentId) ?? draft.sessions.strategy_deployments.find((row) => row.enabled) ?? draft.sessions.strategy_deployments[0];
+  const sessionRoutes = draft.sessions.execution_routes.filter((row) => row.session_profile_id === sessionProfile?.session_profile_id);
+  const eligibleDeploymentRoutes = draft.sessions.execution_routes.filter((row) => row.session_profile_id === strategyDeployment?.session_profile_id);
+  const selectedDeploymentRoutes = eligibleDeploymentRoutes.filter((row) => strategyDeployment?.execution_route_ids.includes(row.execution_route_id));
+  const selectedDeploymentMandates = draft.portfolio.mandates.filter((row) => strategyDeployment?.portfolio_mandate_ids.includes(row.mandate_id));
+  const deploymentRunPlan = draft.assignments.deployments.find((row) => row.run_plan_id === strategyDeployment?.run_plan_id);
+  const deploymentStrategyProfile = draft.strategy.profiles.find((row) => row.profile_id === deploymentRunPlan?.profile_id);
+  const deploymentCapitalRequest = deploymentStrategyProfile?.lifecycle.initial_entry.capital_request;
   const steps: GuidedStep[] = ["strategy", "accounts", "portfolio", "execution", "protection", "assignments", "revisions"];
   const index = steps.indexOf(step);
   const previous = steps[index - 1];
@@ -1825,6 +1836,59 @@ function GuidedConfiguration({ approved, draft, label, omsStage, onChange, onCon
   function selectAccount(accountKey: string) {
     setActiveAccountKey(accountKey);
     window.sessionStorage.setItem("guided-account-key", accountKey);
+  }
+
+  function selectSessionProfile(sessionProfileId: string) {
+    setActiveSessionProfileId(sessionProfileId);
+    window.sessionStorage.setItem("guided-session-profile-id", sessionProfileId);
+  }
+
+  function selectStrategyDeployment(strategyDeploymentId: string) {
+    setActiveStrategyDeploymentId(strategyDeploymentId);
+    window.sessionStorage.setItem("guided-strategy-deployment-id", strategyDeploymentId);
+  }
+
+  function replaceSessionProfile(nextProfile: SessionProfile) {
+    onChange("sessions", { ...draft.sessions, profiles: draft.sessions.profiles.map((row) => row.session_profile_id === nextProfile.session_profile_id ? nextProfile : row) });
+  }
+
+  function configureStrategyDeployment(routeIds: string[], requestedMode: Mandate["assignment_mode"]) {
+    if (!strategyDeployment) return;
+    const selectedRoutes = eligibleDeploymentRoutes.filter((route) => routeIds.includes(route.execution_route_id));
+    const assignmentMode: Mandate["assignment_mode"] = selectedRoutes.length <= 1 ? "single" : requestedMode === "single" ? "replicated" : requestedMode;
+    const ownedMandates = draft.portfolio.mandates.filter((row) => row.principal_kind === "strategy_deployment" && row.principal_id === strategyDeployment.strategy_deployment_id);
+    const occupiedIds = draft.portfolio.mandates.map((row) => row.mandate_id);
+    const nextMandates = selectedRoutes.map((route) => {
+      const current = ownedMandates.find((row) => row.account_key === route.account_key);
+      if (current) return { ...current, assignment_mode: assignmentMode, enabled: true };
+      const mandate_id = uniqueId(`${strategyDeployment.run_plan_id}-${route.account_key}`, occupiedIds);
+      occupiedIds.push(mandate_id);
+      return {
+        mandate_id,
+        run_plan_id: strategyDeployment.run_plan_id,
+        account_key: route.account_key,
+        enabled: true,
+        maximum_cash_fraction: .3,
+        maximum_planned_risk_fraction: .01,
+        maximum_positions: 10,
+        assignment_mode: assignmentMode,
+        allocation_weight: 1,
+        maximum_action_authority: "confirm" as const,
+        allow_replacement: false,
+        minimum_replacement_improvement_pct: 20,
+        principal_kind: "strategy_deployment" as const,
+        principal_id: strategyDeployment.strategy_deployment_id,
+      };
+    });
+    const ownedIds = new Set(ownedMandates.map((row) => row.mandate_id));
+    const mandateIds = nextMandates.map((row) => row.mandate_id);
+    onChange("portfolio", { ...draft.portfolio, mandates: [...draft.portfolio.mandates.filter((row) => !ownedIds.has(row.mandate_id)), ...nextMandates] });
+    onChange("assignments", { ...draft.assignments, deployments: draft.assignments.deployments.map((row) => row.run_plan_id === strategyDeployment.run_plan_id ? { ...row, mandate_ids: [...row.mandate_ids.filter((value) => !ownedIds.has(value)), ...mandateIds] } : row) });
+    onChange("sessions", { ...draft.sessions, strategy_deployments: draft.sessions.strategy_deployments.map((row) => row.strategy_deployment_id === strategyDeployment.strategy_deployment_id ? { ...row, execution_route_ids: selectedRoutes.map((route) => route.execution_route_id), portfolio_mandate_ids: mandateIds, system_generated: false } : row) });
+  }
+
+  function replaceDeploymentMandate(mandateId: string, patch: Partial<Mandate>) {
+    onChange("portfolio", { ...draft.portfolio, mandates: draft.portfolio.mandates.map((row) => row.mandate_id === mandateId ? { ...row, ...patch } : row) });
   }
 
   function replaceDeployment(nextDeployment: StrategyRunPlan) {
@@ -2044,11 +2108,72 @@ function GuidedConfiguration({ approved, draft, label, omsStage, onChange, onCon
     <GuidedQuestion description="OMS continuously reconciles broker-held protection. These values bound repair time and determine whether a catastrophic fallback is mandatory." key="protection-recovery" label="Configure protection recovery" status={protectionProfile.mandatory_catastrophic_backstop ? "Fail closed" : "Review required"}><div className="guided-form-grid"><NumberField help="Maximum time allowed to repair missing or inconsistent broker-held protection." label="Emergency repair deadline" minimum={1} onChange={(emergency_repair_deadline_ms) => replaceProtectionProfile({ ...protectionProfile, emergency_repair_deadline_ms })} step={25} unit="ms" value={protectionProfile.emergency_repair_deadline_ms} /><BooleanField help="Require OMS to retain or immediately repair a catastrophic broker-held backstop." label="Mandatory catastrophic backstop" onChange={(mandatory_catastrophic_backstop) => replaceProtectionProfile({ ...protectionProfile, mandatory_catastrophic_backstop })} value={protectionProfile.mandatory_catastrophic_backstop} /></div></GuidedQuestion>,
   );
   if (step === "accounts") questions.push(
-    <GuidedQuestion description="Session Profiles own the market-data authority and clock. Execution Routes bind a stable account to one Portfolio mandate and OMS profile. Manual and semi-automatic trading use these routes directly; Strategy Deployments may use the same routes without an open Canvas." key="session-profiles" label="Which runtime sessions and routes are available?" status={draft.sessions.profiles.some((row) => row.enabled) ? "Configured" : "Needs decision"}><div className="configuration-reference-grid">{draft.sessions.profiles.map((profile) => { const routes = draft.sessions.execution_routes.filter((route) => route.session_profile_id === profile.session_profile_id); return <AbstractionCard compact control={<input checked={profile.enabled} onChange={(event) => onChange("sessions", { ...draft.sessions, profiles: draft.sessions.profiles.map((row) => row.session_profile_id === profile.session_profile_id ? { ...row, enabled: event.target.checked } : row) })} type="checkbox" />} description={profile.description} identity={profile.session_profile_id} key={profile.session_profile_id} kind="processing_step" metadata={[{ label: "Modes", value: profile.modes.map(readableLabel).join(", ") }, { label: "Market data", value: profile.market_data.authority }, { label: "Clock", value: readableLabel(profile.market_data.clock) }, { label: "Routes", value: routes.length }]} selected={profile.enabled} status={profile.manual_authority.enabled ? "Manual + Strategy" : "Strategy only"} title={profile.name}>{routes.map((route) => <div className="configuration-fixed-value" key={route.execution_route_id}><span>{route.name}</span><strong>{accountName(draft.accounts, route.account_key)}</strong><small>{draft.oms.profiles.find((row) => row.profile_id === route.oms_profile_id)?.name ?? route.oms_profile_id}</small></div>)}</AbstractionCard>; })}</div></GuidedQuestion>,
-    <GuidedQuestion description="Choose one stable account binding, create a custom simulated account, or remove an unused custom binding. Run Plans and Portfolio mandates retain the stable key while runtime resolves synchronized account state." key="account-selection" label="Which account binding are you configuring?" status={account.enabled ? "Enabled" : "Disabled"}><div className="guided-form-grid"><SelectField help="Changing this selection changes which account the following questions edit; it does not reassign any Portfolio mandate." label="Account binding" onChange={selectAccount} options={draft.accounts.bindings.map((row) => ({ description: `${row.system_managed ? "Managed broker binding" : "Custom binding"} · ${readableLabel(row.account_class)} · ${row.modes.map(readableLabel).join(", ")}`, label: row.name, value: row.account_key }))} value={account.account_key} /><div className="guided-inline-actions"><button className="button compact" onClick={addGuidedAccount} type="button"><Plus size={14} /> Add account</button><button className="button compact danger" disabled={Boolean(account.system_managed) || draft.accounts.bindings.length <= 1 || draft.portfolio.mandates.some((row) => row.account_key === account.account_key) || draft.portfolio.groups.some((row) => Array.isArray(row.account_keys) && row.account_keys.map(String).includes(account.account_key))} onClick={removeGuidedAccount} title={account.system_managed ? "Managed broker bindings are disabled instead of deleted." : draft.portfolio.mandates.some((row) => row.account_key === account.account_key) || draft.portfolio.groups.some((row) => Array.isArray(row.account_keys) && row.account_keys.map(String).includes(account.account_key)) ? "Remove this account from Portfolio mandates and groups first." : "Remove this custom account binding."} type="button"><Trash2 size={14} /> Remove account</button></div><TextField help="Operator-facing name shown in configuration, Run Plans, and runtime evidence." label="Account name" onChange={(name) => replaceAccount({ ...account, name })} value={account.name} /><BooleanField help="Disabled bindings remain saved but cannot be selected by a new runtime. Use this control to retire a managed broker binding." label="Account enabled" onChange={(enabled) => replaceAccount({ ...account, enabled })} value={account.enabled} /><div className="configuration-fixed-value"><span>Stable account key</span><strong>{account.account_key}</strong><small>{account.system_managed ? "Backend-managed broker identity; disable it when unused." : "Run Plans, mandates, and runtime state retain this custom identity."}</small></div></div></GuidedQuestion>,
-    <GuidedQuestion description="Account class and currency define the broker capabilities and monetary unit Portfolio uses. The safety policy remains the account-wide capital and risk authority." key="account-authority" label="How is this account governed?" status="Configured"><div className="guided-form-grid"><SelectField help="Determines broker capability and regulatory constraints." label="Account class" onChange={(account_class) => replaceAccount({ ...account, account_class })} options={["simulated", "paper", "cash", "margin", "registered"].map((value) => ({ label: readableLabel(value), value }))} value={account.account_class} /><SelectField help="Reusable account-level capital, exposure, loss, and permission policy." label="Portfolio policy" onChange={(portfolio_policy_id) => replaceAccount({ ...account, portfolio_policy_id })} options={draft.portfolio.policies.map((row) => ({ label: String(row.name ?? row.policy_id), value: String(row.policy_id) }))} value={account.portfolio_policy_id} /><TextField help="Currency used for Portfolio limits and account summaries." label="Base currency" onChange={(base_currency) => replaceAccount({ ...account, base_currency: base_currency.toUpperCase() })} value={account.base_currency} /></div></GuidedQuestion>,
-    <GuidedQuestion description="Paper and Live require an exact broker account and session match. Replay and Backtest use deterministic simulated account state instead." key="account-modes" label="Which modes may bind this account?" status={account.modes.length ? "Configured" : "Needs decision"}><ModeSelector modes={account.modes} onChange={(modes) => replaceAccount({ ...account, modes })} /></GuidedQuestion>,
-    ...(account.modes.some((mode) => mode === "paper" || mode === "live") ? [<GuidedQuestion description="The broker account ID is resolved only by the backend environment. Publication and broker preflight fail closed when the resolved identity differs from IBKR discovery." key="account-broker" label="Confirm the broker account and gateway session" status={account.source_account_env && account.session_key.trim() ? "Needs broker verification" : "Invalid"}><div className="guided-form-grid"><div className="configuration-fixed-value"><span>IBKR account ID source</span><strong>{account.source_account_env || "Missing server-side binding"}</strong><small>The browser can select the stable account key but cannot enter or receive the broker account ID.</small></div><TextField help="Enter the configured gateway session identity that owns this account connection." label="Session key" onChange={(session_key) => replaceAccount({ ...account, session_key })} value={account.session_key} /></div></GuidedQuestion>] : [<GuidedQuestion description="Replay and Backtest use a deterministic simulated account identity and session. These values do not grant broker access." key="account-simulated" label="Configure the simulated account session" status={account.source_account_id.trim() && account.session_key.trim() ? "Configured" : "Invalid"}><div className="guided-form-grid"><TextField help="Simulated runtime account identity used in broker-neutral account snapshots." label="Source account" onChange={(source_account_id) => replaceAccount({ ...account, source_account_id })} value={account.source_account_id} /><TextField help="Simulated session identity used to locate deterministic runtime state." label="Session key" onChange={(session_key) => replaceAccount({ ...account, session_key })} value={account.session_key} /></div></GuidedQuestion>]),
+    <GuidedQuestion description="Choose one operational session first. Its clock and market-data authority determine which account routes are valid for manual, semi-automatic, and strategy execution." key="session-profiles" label="Choose the session and review its execution routes" status={sessionProfile?.enabled ? "Enabled" : "Disabled"}>
+      <div className="accounts-session-configuration">
+        <div className="guided-form-grid accounts-session-fields">
+          <SelectField help="The selected Session Profile owns the runtime clock, data authority, and compatible account routes shown below." label="Session Profile" onChange={selectSessionProfile} options={draft.sessions.profiles.map((row) => ({ description: `${row.modes.map(readableLabel).join(", ")} · ${row.market_data.authority}`, label: row.name, value: row.session_profile_id }))} value={sessionProfile.session_profile_id} />
+          <BooleanField help="Disabled sessions remain configured but cannot start a new manual or strategy runtime." label="Session enabled" onChange={(enabled) => replaceSessionProfile({ ...sessionProfile, enabled })} value={sessionProfile.enabled} />
+          <BooleanField help="Allows manual orders and confirmed Trading Actions to use this session without requiring a Strategy Deployment." label="Manual and semi-automatic trading" onChange={(enabled) => replaceSessionProfile({ ...sessionProfile, manual_authority: { ...sessionProfile.manual_authority, enabled } })} value={sessionProfile.manual_authority.enabled} />
+        </div>
+        <dl className="accounts-session-facts">
+          <div><dt>Market data</dt><dd>{sessionProfile.market_data.authority}</dd></div>
+          <div><dt>Clock</dt><dd>{readableLabel(sessionProfile.market_data.clock)}</dd></div>
+          <div><dt>Modes</dt><dd>{sessionProfile.modes.map(readableLabel).join(", ")}</dd></div>
+          <div><dt>Recovery</dt><dd>{readableLabel(sessionProfile.recovery_policy)}</dd></div>
+        </dl>
+        <section className="accounts-route-register">
+          <header><div><span>Execution routes</span><strong>{sessionRoutes.length} account route{sessionRoutes.length === 1 ? "" : "s"}</strong></div><small>Each route binds exactly one account, Portfolio mandate, and OMS profile.</small></header>
+          <div className="accounts-route-table" role="table" aria-label={`${sessionProfile.name} execution routes`}>
+            <div className="accounts-route-table-header" role="row"><span>Route and account</span><span>Portfolio</span><span>OMS</span><span>Access</span></div>
+            {sessionRoutes.map((route) => {
+              const routeAccount = draft.accounts.bindings.find((row) => row.account_key === route.account_key);
+              const routeMandate = draft.portfolio.mandates.find((row) => row.mandate_id === route.portfolio_mandate_id);
+              const routeOms = draft.oms.profiles.find((row) => row.profile_id === route.oms_profile_id);
+              return <button className="accounts-route-table-row" key={route.execution_route_id} onClick={() => { selectAccount(route.account_key); setQuestionIndex(2); }} role="row" type="button">
+                <span><strong>{route.name}</strong><small>{routeAccount?.name ?? route.account_key}</small></span>
+                <span><strong>{routeMandate ? `${percent(routeMandate.maximum_cash_fraction)} maximum cash` : "Missing mandate"}</strong><small>{routeMandate ? readableLabel(routeMandate.maximum_action_authority) : route.portfolio_mandate_id}</small></span>
+                <span><strong>{routeOms?.name ?? route.oms_profile_id}</strong><small>{route.modes.map(readableLabel).join(", ")}</small></span>
+                <span><em data-state={route.enabled && routeAccount?.enabled ? "ready" : "disabled"}>{route.enabled && routeAccount?.enabled ? "Ready" : "Disabled"}</em><small>{route.manual_enabled ? "Manual allowed" : "Strategy only"}</small></span>
+              </button>;
+            })}
+          </div>
+        </section>
+      </div>
+    </GuidedQuestion>,
+    <GuidedQuestion description="A Strategy Deployment may send the same broker-neutral intent to several account routes. Portfolio then calculates a separate safe quantity from each account's synchronized funds and mandate; OMS submits and reconciles each account independently." key="account-allocation" label="Configure multi-account strategy distribution" status={selectedDeploymentRoutes.length > 1 ? `${selectedDeploymentRoutes.length} accounts` : "Single account"}>
+      {strategyDeployment ? <div className="accounts-allocation-configuration">
+        <div className="guided-form-grid accounts-allocation-fields">
+          <SelectField help="Choose the deployed Run Plan whose account distribution you want to configure." label="Strategy Deployment" onChange={selectStrategyDeployment} options={draft.sessions.strategy_deployments.map((row) => ({ description: `${draft.sessions.profiles.find((profileRow) => profileRow.session_profile_id === row.session_profile_id)?.name ?? row.session_profile_id} · ${row.headless ? "Headless capable" : "Launch controlled"}`, label: row.name, value: row.strategy_deployment_id }))} value={strategyDeployment.strategy_deployment_id} />
+          <SelectField help="Replicated evaluates the same request independently in every selected account. Weighted scales each account by its relative weight. Partitioned reserves distinct capacity for deployment-specific routing." label="Distribution method" onChange={(value) => configureStrategyDeployment(value === "single" ? selectedDeploymentRoutes.slice(0, 1).map((row) => row.execution_route_id) : selectedDeploymentRoutes.map((row) => row.execution_route_id), value as Mandate["assignment_mode"])} options={[{ description: "One account route only.", label: "Single account", value: "single" }, { description: "Same intent; each account sizes from its own available funds and mandate.", label: "Proportional per account", value: "replicated" }, { description: "Same intent with a relative allocation weight per account.", label: "Weighted per account", value: "weighted" }, { description: "Reserve distinct account capacity for assigned work.", label: "Partitioned capacity", value: "partitioned" }]} value={selectedDeploymentMandates[0]?.assignment_mode ?? "single"} />
+        </div>
+        <div className="accounts-allocation-explanation">
+          <GitBranch size={17} />
+          <div><strong>One decision, account-specific quantities</strong><p>{deploymentCapitalRequest ? `The Strategy requests ${readableLabel(deploymentCapitalRequest.mode)}${deploymentCapitalRequest.mode === "all_available" ? "" : deploymentCapitalRequest.mode === "fixed_quantity" ? ` ${deploymentCapitalRequest.value} shares` : ` ${percent(deploymentCapitalRequest.value)}`}. Portfolio applies that request separately to each selected account's live funds, reservations, risk limits, and maximum cash allowance.` : "Choose a Strategy Deployment with a registered Strategy Profile to inspect its sizing request."}</p></div>
+        </div>
+        <fieldset className="accounts-route-choice-list"><legend>Accounts used by this Strategy Deployment</legend>
+          {eligibleDeploymentRoutes.map((route) => {
+            const routeAccount = draft.accounts.bindings.find((row) => row.account_key === route.account_key);
+            const checked = strategyDeployment.execution_route_ids.includes(route.execution_route_id);
+            const selectedOmsProfileId = selectedDeploymentRoutes[0]?.oms_profile_id;
+            const incompatibleOms = Boolean(selectedOmsProfileId && selectedOmsProfileId !== route.oms_profile_id);
+            const unavailable = !route.enabled || !routeAccount?.enabled || incompatibleOms;
+            return <label data-selected={checked ? "true" : "false"} key={route.execution_route_id}>
+              <input checked={checked} disabled={unavailable} onChange={(event) => configureStrategyDeployment(event.target.checked ? [...strategyDeployment.execution_route_ids, route.execution_route_id] : strategyDeployment.execution_route_ids.filter((value) => value !== route.execution_route_id), selectedDeploymentMandates[0]?.assignment_mode ?? "replicated")} type="checkbox" />
+              <span><strong>{routeAccount?.name ?? route.account_key}</strong><small>{route.name} · {route.modes.map(readableLabel).join(", ")}</small></span>
+              <em data-state={unavailable ? "disabled" : checked ? "selected" : "available"}>{incompatibleOms ? "Different OMS" : unavailable ? "Unavailable" : checked ? "Included" : "Available"}</em>
+            </label>;
+          })}
+        </fieldset>
+        {selectedDeploymentMandates.length ? <div className="accounts-allocation-limits">
+          {selectedDeploymentMandates.map((deploymentMandate) => <section key={deploymentMandate.mandate_id}><header><div><span>Account mandate</span><strong>{accountName(draft.accounts, deploymentMandate.account_key)}</strong></div><small>{readableLabel(deploymentMandate.assignment_mode)}</small></header><div className="guided-form-grid"><NumberField help="Upper percentage of this account's available cash that the Strategy Deployment may request. Portfolio can still approve less or reject it." label="Maximum account funds" maximum={1} minimum={0} onChange={(maximum_cash_fraction) => replaceDeploymentMandate(deploymentMandate.mandate_id, { maximum_cash_fraction })} step={0.05} unit="fraction" value={deploymentMandate.maximum_cash_fraction} />{deploymentMandate.assignment_mode === "weighted" ? <NumberField help="Relative share used after each account's own funds and limits are evaluated." label="Allocation weight" minimum={0.01} onChange={(allocation_weight) => replaceDeploymentMandate(deploymentMandate.mandate_id, { allocation_weight })} step={0.1} unit="weight" value={deploymentMandate.allocation_weight} /> : null}</div></section>)}
+        </div> : null}
+        <div className="accounts-manual-boundary"><ShieldCheck size={16} /><p><strong>Manual and semi-automatic orders remain explicitly routed.</strong><span>Select one Execution Route when submitting a manual proposal. Multi-account fan-out is a Strategy Deployment behavior so every account retains an independent Portfolio approval and OMS audit trail.</span></p></div>
+      </div> : <div className="configuration-empty-state"><strong>No Strategy Deployment is registered.</strong><span>Create a Run Plan and Strategy Deployment before configuring multi-account distribution.</span></div>}
+    </GuidedQuestion>,
+    <GuidedQuestion description="Choose one stable account binding, create a custom simulated account, or remove an unused custom binding. Every following page keeps this selection visible so account-specific values cannot be mistaken for session or deployment settings." key="account-selection" label="Which account binding are you configuring?" status={account.enabled ? "Enabled" : "Disabled"}><AccountConfigurationScope account={account} /><div className="guided-form-grid"><SelectField help="Changing this selection changes which account the following questions edit; it does not reassign any Portfolio mandate or Execution Route." label="Account binding" onChange={selectAccount} options={draft.accounts.bindings.map((row) => ({ description: `${row.system_managed ? "Managed broker binding" : "Custom binding"} · ${readableLabel(row.account_class)} · ${row.modes.map(readableLabel).join(", ")}`, label: row.name, value: row.account_key }))} value={account.account_key} /><div className="guided-inline-actions"><button className="button compact" onClick={addGuidedAccount} type="button"><Plus size={14} /> Add account</button><button className="button compact danger" disabled={Boolean(account.system_managed) || draft.accounts.bindings.length <= 1 || draft.portfolio.mandates.some((row) => row.account_key === account.account_key) || draft.portfolio.groups.some((row) => Array.isArray(row.account_keys) && row.account_keys.map(String).includes(account.account_key))} onClick={removeGuidedAccount} title={account.system_managed ? "Managed broker bindings are disabled instead of deleted." : draft.portfolio.mandates.some((row) => row.account_key === account.account_key) || draft.portfolio.groups.some((row) => Array.isArray(row.account_keys) && row.account_keys.map(String).includes(account.account_key)) ? "Remove this account from Portfolio mandates and groups first." : "Remove this custom account binding."} type="button"><Trash2 size={14} /> Remove account</button></div><TextField help="Operator-facing name shown in configuration, Run Plans, and runtime evidence." label="Account name" onChange={(name) => replaceAccount({ ...account, name })} value={account.name} /><BooleanField help="Disabled bindings remain saved but cannot be selected by a new runtime. Use this control to retire a managed broker binding." label="Account enabled" onChange={(enabled) => replaceAccount({ ...account, enabled })} value={account.enabled} /><div className="configuration-fixed-value"><span>Stable account key</span><strong>{account.account_key}</strong><small>{account.system_managed ? "Backend-managed broker identity; disable it when unused." : "Run Plans, mandates, and runtime state retain this custom identity."}</small></div></div></GuidedQuestion>,
+    <GuidedQuestion description="These values belong only to the selected account. Account class and currency define broker capabilities and Portfolio's monetary unit; the selected policy remains the account-wide capital and risk authority." key="account-authority" label="How is this account governed?" status="Configured"><AccountConfigurationScope account={account} /><div className="guided-form-grid"><SelectField help="Determines broker capability and regulatory constraints." label="Account class" onChange={(account_class) => replaceAccount({ ...account, account_class })} options={["simulated", "paper", "cash", "margin", "registered"].map((value) => ({ label: readableLabel(value), value }))} value={account.account_class} /><SelectField help="Reusable account-level capital, exposure, loss, and permission policy." label="Portfolio policy" onChange={(portfolio_policy_id) => replaceAccount({ ...account, portfolio_policy_id })} options={draft.portfolio.policies.map((row) => ({ label: String(row.name ?? row.policy_id), value: String(row.policy_id) }))} value={account.portfolio_policy_id} /><TextField help="Currency used for Portfolio limits and account summaries." label="Base currency" onChange={(base_currency) => replaceAccount({ ...account, base_currency: base_currency.toUpperCase() })} value={account.base_currency} /></div></GuidedQuestion>,
+    <GuidedQuestion description="These mode permissions belong only to the selected account. A Session Profile and Execution Route must also allow the mode before a runtime can use it." key="account-modes" label="Which modes may bind this account?" status={account.modes.length ? "Configured" : "Needs decision"}><AccountConfigurationScope account={account} /><ModeSelector modes={account.modes} onChange={(modes) => replaceAccount({ ...account, modes })} /></GuidedQuestion>,
+    ...(account.modes.some((mode) => mode === "paper" || mode === "live") ? [<GuidedQuestion description="These broker-session values belong only to the selected account. The account ID is resolved by the backend environment, and preflight fails closed when it differs from IBKR discovery." key="account-broker" label="Confirm the broker account and gateway session" status={account.source_account_env && account.session_key.trim() ? "Needs broker verification" : "Invalid"}><AccountConfigurationScope account={account} /><div className="guided-form-grid"><div className="configuration-fixed-value"><span>IBKR account ID source</span><strong>{account.source_account_env || "Missing server-side binding"}</strong><small>The browser can select the stable account key but cannot enter or receive the broker account ID.</small></div><TextField help="Enter the configured gateway session identity that owns this account connection." label="Session key" onChange={(session_key) => replaceAccount({ ...account, session_key })} value={account.session_key} /></div></GuidedQuestion>] : [<GuidedQuestion description="These deterministic simulation values belong only to the selected account and do not grant broker access." key="account-simulated" label="Configure the simulated account session" status={account.source_account_id.trim() && account.session_key.trim() ? "Configured" : "Invalid"}><AccountConfigurationScope account={account} /><div className="guided-form-grid"><TextField help="Simulated runtime account identity used in broker-neutral account snapshots." label="Source account" onChange={(source_account_id) => replaceAccount({ ...account, source_account_id })} value={account.source_account_id} /><TextField help="Simulated session identity used to locate deterministic runtime state." label="Session key" onChange={(session_key) => replaceAccount({ ...account, session_key })} value={account.session_key} /></div></GuidedQuestion>]),
   );
   const questionCount = questions.length;
   const safeQuestionIndex = Math.min(questionIndex, Math.max(questionCount - 1, 0));
@@ -2061,7 +2186,7 @@ function GuidedConfiguration({ approved, draft, label, omsStage, onChange, onCon
   return <div className={`guided-configuration-shell${usesRightRail ? " configuration-guided-drilldown" : ""}`} data-guided-step={step}>
     <div className="configuration-guided-step-navigation">
       <button aria-label="Previous configuration question" className="button compact configuration-guided-direction configuration-guided-direction-previous" disabled={atFirstQuestion && !previous} onClick={movePrevious} type="button"><ArrowLeft aria-hidden="true" size={15} /><span>Previous</span></button>
-      {usesRightRail ? <div className="configuration-guided-flow-title"><span>{step === "assignments" ? "Strategy Run Plan" : step === "portfolio" ? "Portfolio and risk" : step === "execution" ? "OMS execution" : step === "protection" ? "OMS protection" : "Account binding"}</span><strong>{questions[safeQuestionIndex]?.props.label}</strong></div> : <nav aria-label={`${readableLabel(step)} questions`} className="configuration-guided-question-tabs" style={{ gridTemplateColumns: `repeat(${questionCount}, minmax(0, 1fr))` }}>
+      {usesRightRail ? <div className="configuration-guided-flow-title"><span>{step === "assignments" ? "Strategy Run Plan" : step === "portfolio" ? "Portfolio and risk" : step === "execution" ? "OMS execution" : step === "protection" ? "OMS protection" : safeQuestionIndex < 2 ? "Sessions and account routing" : account.name}</span><strong>{questions[safeQuestionIndex]?.props.label}</strong></div> : <nav aria-label={`${readableLabel(step)} questions`} className="configuration-guided-question-tabs" style={{ gridTemplateColumns: `repeat(${questionCount}, minmax(0, 1fr))` }}>
         {questions.map((question, index) => <button aria-current={index === safeQuestionIndex ? "step" : undefined} key={question.key ?? index} onClick={() => setQuestionIndex(index)} title={question.props.label} type="button"><span>{index + 1}</span><strong>{question.props.label}</strong></button>)}
       </nav>}
       <button aria-label="Next configuration question" className="button compact primary configuration-guided-direction configuration-guided-direction-next" disabled={atLastQuestion && !next} onClick={moveNext} type="button"><span>Next</span><ArrowRight aria-hidden="true" size={15} /></button>
@@ -2078,7 +2203,7 @@ function guidedQuestionRailLabel(key: string, fallback: string) {
     "portfolio-account": "Account & policy", "portfolio-policy-identity": "Policy", "portfolio-mandate-limits": "Mandate limits", "portfolio-assignment": "Assignment", "portfolio-replacement": "Replacement", "portfolio-authority": "Authority", "portfolio-capital-policy": "Capital", "portfolio-exposure-policy": "Exposure", "portfolio-risk-policy": "Risk & loss", "portfolio-permissions": "Permissions", "portfolio-allowlists": "Allowlists", "portfolio-operational": "Operations", "portfolio-groups": "Account groups",
     "oms-profile-identity": "OMS profile", "execution-profile": "Defaults", "execution-urgency": "Urgency", "execution-protection-guardrails": "Guardrails", "execution-behavior": "Behavior", "execution-price-envelope": "Price bounds", "execution-timing": "Timing",
     "protection-profile": "Profile", "protection-transitions": "Transitions", "protection-slices": "Slices", "protection-recovery": "Recovery",
-    "session-profiles": "Sessions & routes", "account-selection": "Account", "account-authority": "Governance", "account-modes": "Modes", "account-broker": "Broker session", "account-simulated": "Simulation",
+    "session-profiles": "Session & routes", "account-allocation": "Multi-account", "account-selection": "Account identity", "account-authority": "Governance", "account-modes": "Modes", "account-broker": "Broker session", "account-simulated": "Simulation",
   };
   if (key.startsWith("protection-stop-")) return "Hard stop";
   if (key.startsWith("protection-target-")) return "Target & trail";
@@ -2652,6 +2777,14 @@ function uniqueProfileName(base: string, existing: StrategyProfile[]) {
 
 function GuidedQuestion({ children, description, label, status }: { children: ReactNode; description: string; label: string; status: string }) {
   return <section className="guided-question"><section className="guided-question-prompt"><header><div><span>{label}</span><p>{description}</p></div><em data-state={status.toLowerCase().replaceAll(" ", "-")}>{status}</em></header></section><section className="guided-answer-surface"><div className="guided-answer-content">{children}</div></section></section>;
+}
+
+function AccountConfigurationScope({ account }: { account: AccountBinding }) {
+  return <section className="account-configuration-scope" aria-label={`Editing ${account.name}`}>
+    <span><WalletCards aria-hidden="true" size={17} /></span>
+    <div><small>Editing account</small><strong>{account.name}</strong><code>{account.account_key}</code></div>
+    <dl><div><dt>Class</dt><dd>{readableLabel(account.account_class)}</dd></div><div><dt>Modes</dt><dd>{account.modes.map(readableLabel).join(", ") || "None"}</dd></div><div><dt>Status</dt><dd>{account.enabled ? "Enabled" : "Disabled"}</dd></div></dl>
+  </section>;
 }
 
 function ConfigurationGuidance({ items }: { items: Array<{ label: string; value: string }> }) {
@@ -5015,7 +5148,7 @@ function AddStepsEditor({ catalog, eligibleSessions, executionPolicies, onChange
 type ConfigurableSection = Extract<TradingConfigurationSection, "assignments" | "portfolio" | "oms" | "accounts">;
 
 const SECTION_STUDIO_COPY: Record<ConfigurableSection, { guided: string; title: string }> = {
-  accounts: { guided: "Configure one account binding at a time", title: "Accounts & Sessions" },
+  accounts: { guided: "Compose sessions, account routes, and account-specific authority", title: "Accounts & Sessions" },
   assignments: { guided: "Assemble one runnable plan at a time", title: "Strategy Run Plans" },
   oms: { guided: "Configure execution and protection step by step", title: "OMS & Protection" },
   portfolio: { guided: "Configure mandates and account policy step by step", title: "Portfolio & Risk" },

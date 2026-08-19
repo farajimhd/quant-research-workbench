@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+from copy import deepcopy
 from datetime import date, time
 from pathlib import Path
 from unittest.mock import patch
@@ -59,6 +60,93 @@ class SessionExecutionArchitectureTests(unittest.TestCase):
         self.assertEqual(resolved["session_profile"]["session_profile_id"], "historical-session")
         self.assertTrue(resolved["execution_routes"])
         self.assertNotIn("canvas", resolved)
+
+    def test_replicated_strategy_sizes_each_account_through_its_own_mandate(self) -> None:
+        draft = self._draft()
+        source_account = next(
+            row for row in draft["accounts"]["bindings"]
+            if row["account_key"] == "replay"
+        )
+        second_account = {
+            **deepcopy(source_account),
+            "account_key": "replay-secondary",
+            "name": "Replay secondary",
+            "source_account_id": "REPLAY-SECONDARY",
+            "session_key": "replay-secondary",
+        }
+        draft["accounts"]["bindings"].append(second_account)
+
+        source_route = next(
+            row for row in draft["sessions"]["execution_routes"]
+            if row["execution_route_id"] == "historical-session:replay"
+        )
+        second_route = {
+            **deepcopy(source_route),
+            "execution_route_id": "historical-session:replay-secondary",
+            "name": "Replay secondary route",
+            "account_key": "replay-secondary",
+            "portfolio_mandate_id": "session:historical-session:replay-secondary",
+            "system_generated": False,
+        }
+        draft["sessions"]["execution_routes"].append(second_route)
+        historical = next(
+            row for row in draft["sessions"]["profiles"]
+            if row["session_profile_id"] == "historical-session"
+        )
+        historical["execution_route_ids"].append(second_route["execution_route_id"])
+
+        source_session_mandate = next(
+            row for row in draft["portfolio"]["mandates"]
+            if row["mandate_id"] == "session:historical-session:replay"
+        )
+        draft["portfolio"]["mandates"].append({
+            **deepcopy(source_session_mandate),
+            "mandate_id": "session:historical-session:replay-secondary",
+            "account_key": "replay-secondary",
+        })
+
+        deployment = next(
+            row for row in draft["sessions"]["strategy_deployments"]
+            if row["strategy_deployment_id"] == "balanced-replay:historical-session"
+        )
+        source_strategy_mandate = next(
+            row for row in draft["portfolio"]["mandates"]
+            if row["mandate_id"] == "balanced-replay"
+        )
+        source_strategy_mandate["assignment_mode"] = "replicated"
+        source_strategy_mandate["maximum_cash_fraction"] = 0.3
+        second_strategy_mandate = {
+            **deepcopy(source_strategy_mandate),
+            "mandate_id": "balanced-replay-secondary",
+            "account_key": "replay-secondary",
+            "maximum_cash_fraction": 0.15,
+        }
+        draft["portfolio"]["mandates"].append(second_strategy_mandate)
+        deployment["execution_route_ids"].append(second_route["execution_route_id"])
+        deployment["portfolio_mandate_ids"].append(second_strategy_mandate["mandate_id"])
+        deployment["system_generated"] = False
+        run_plan = next(
+            row for row in draft["run_plans"]["plans"]
+            if row["run_plan_id"] == "balanced-replay"
+        )
+        run_plan["mandate_ids"].append(second_strategy_mandate["mandate_id"])
+
+        resolved = resolve_runtime_configuration(
+            draft,
+            mode="replay",
+            run_plan_id="balanced-replay",
+            resolve_broker_ids=False,
+        )
+
+        self.assertEqual(resolved["account_topology"]["mode"], "replicated")
+        self.assertEqual(
+            {row["account_key"]: row["maximum_cash_fraction"] for row in resolved["account_topology"]["legs"]},
+            {"replay": 0.3, "replay-secondary": 0.15},
+        )
+        self.assertEqual(
+            {row["account_key"]: row["strategy_allocation"] for row in resolved["accounts"]["bindings"]},
+            {"replay": 0.3, "replay-secondary": 0.15},
+        )
 
     def test_live_session_selects_only_the_route_for_the_requested_mode(self) -> None:
         draft = self._draft()
