@@ -12,7 +12,11 @@ from src.backend.real_live_trading_service import (
     require_tradable_symbol,
     resolve_real_live_accounts,
 )
-from src.backend.trading_configuration_service import approved_configuration
+from src.backend.trading_configuration_service import (
+    _migrate_draft,
+    approved_configuration,
+    resolve_session_configuration,
+)
 from src.backend.trading_runtime_service import trading_journal
 from src.backend.trading_action_registry import resolve_trading_action
 from src.trading_runtime.domain import InstrumentContract
@@ -63,7 +67,7 @@ async def stage_live_trade_proposal(
         )
     configuration_checks = _approved_configuration_checks([account])
     if not configuration_checks or any(row.get("status") != "ready" for row in configuration_checks):
-        raise ValueError("The approved Run Plan does not authorize this account and mode")
+        raise ValueError("The approved Session Profile does not authorize this account and mode")
 
     ticker = str(payload.get("ticker") or "").strip().upper()
     if not ticker:
@@ -267,10 +271,32 @@ async def _validate_control_plane(
     exchange: str,
 ) -> dict[str, Any]:
     release = approved_configuration(required=True)
-    configuration = dict(release.get("payload") or {})
+    configuration_model = _migrate_draft(dict(release.get("payload") or {}))
+    session_options = dict(configuration_model.get("sessions") or {})
+    route = next(
+        (
+            row for row in session_options.get("execution_routes") or []
+            if str(row.get("account_key") or "") == account.account_key
+            and bool(row.get("enabled", True))
+            and bool(row.get("manual_enabled", True))
+        ),
+        None,
+    )
+    if session_options:
+        resolved_session = resolve_session_configuration(
+            configuration_model,
+            mode=mode,
+            execution_route_id=str(dict(route or {}).get("execution_route_id") or ""),
+            resolve_broker_ids=False,
+        )
+        session_profile_id = str(resolved_session["session_profile"]["session_profile_id"])
+    else:
+        # Compatibility for isolated control-plane callers; published releases
+        # are validated through the Session Profile path above.
+        session_profile_id = "interactive-trade-proposal"
     profiles, groups = configured_portfolio_profiles(
         configured_real_live_accounts(),
-        configuration=configuration,
+        configuration=configuration_model,
     )
     mode_profiles = tuple(profile for profile in profiles if profile.mode == mode)
     profile = next(
@@ -284,7 +310,7 @@ async def _validate_control_plane(
         ",".join(row.account_key for row in mode_profiles),
     )
     journal = trading_journal()
-    run_id = f"live-control:{mode}:{account.account_key}"
+    run_id = f"live-control:{mode}:{session_profile_id}:{account.account_key}"
     portfolio = PortfolioManagementEngine(
         mode_profiles,
         journal=journal,
@@ -292,7 +318,7 @@ async def _validate_control_plane(
         strategy_id="interactive-trade-proposal",
         strategy_revision=1,
         groups=groups,
-        allocation_identity="interactive-trade-proposal",
+        allocation_identity=session_profile_id,
     )
     portfolio.synchronize_canonical(snapshot)
     decision, approved_intent = await portfolio.approve(
@@ -348,7 +374,7 @@ async def _validate_control_plane(
         "status": status,
         "portfolio": {**decision_payload, "reservation_status": "released"},
         "oms": oms,
-        "run_plan_id": str(dict(configuration.get("run_plan") or {}).get("run_plan_id") or ""),
+        "run_plan_id": f"session:{session_profile_id}",
     }
 
 

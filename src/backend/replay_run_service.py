@@ -41,6 +41,7 @@ from src.backend.trading_runtime_service import (
     historical_preflight,
 )
 from src.backend.trading_configuration_service import (
+    approved_session_configuration_snapshot,
     backtest_configuration_snapshot,
     backtest_debug_configuration_snapshot,
     merged_assignment_parameters,
@@ -158,6 +159,7 @@ class ReplayRunDefinition:
     assignment_ids: tuple[str, ...] = ()
     tickers: tuple[str, ...] = ()
     configuration_revision: dict[str, Any] = field(default_factory=dict)
+    execution_mode: str = "strategy"
     mode: RunMode = RunMode.REPLAY
     final_session_date: date | None = None
     debug_fixture: HistoricalDebugFixture | None = None
@@ -165,6 +167,10 @@ class ReplayRunDefinition:
     def __post_init__(self) -> None:
         if self.mode not in {RunMode.REPLAY, RunMode.BACKTEST, RunMode.BACKTEST_DEBUG}:
             raise ValueError("Historical controller mode must be replay, backtest, or backtest_debug")
+        if self.execution_mode not in {"manual", "strategy"}:
+            raise ValueError("Historical execution mode must be manual or strategy")
+        if self.mode in {RunMode.BACKTEST, RunMode.BACKTEST_DEBUG} and self.execution_mode != "strategy":
+            raise ValueError("Backtest and Debug require a Strategy Deployment")
         if self.mode == RunMode.BACKTEST_DEBUG and self.debug_fixture is None:
             raise ValueError("Backtest Debug requires a deterministic fixture")
         if self.mode != RunMode.BACKTEST_DEBUG and self.debug_fixture is not None:
@@ -219,6 +225,7 @@ class ReplayRunDefinition:
         canvas = dict(configuration.get("canvas") or {})
         payload = {
             "mode": self.mode.value,
+            "execution_mode": self.execution_mode,
             "session_date": self.session_date.isoformat(),
             "start_time": self.start_time.isoformat(timespec="seconds"),
             "session_start": self.session_start.isoformat(),
@@ -710,7 +717,7 @@ class ReplayRunController:
         }
 
     def _restart_checkpoint_state(self) -> dict[str, Any]:
-        if self._runtime is None or self._strategy is None:
+        if self._runtime is None:
             raise RuntimeError("Historical runtime is not ready for checkpointing")
         broker_checkpoint = getattr(self._runtime.broker, "checkpoint_state", None)
         if broker_checkpoint is None:
@@ -790,6 +797,7 @@ class ReplayRunController:
             },
             "assignments": [
                 assignment.payload() for assignment in self._strategy.assignments()
+            ] if self._strategy is not None else [
             ],
             "broker": broker_checkpoint(),
         }
@@ -848,7 +856,7 @@ class ReplayRunController:
             row for row in assignments if str(row.get("ticker") or "").upper() == ticker
         ]
         configuration = self.definition.configuration_revision["payload"]
-        strategy_configuration = dict(configuration["strategy"])
+        strategy_configuration = dict(configuration.get("strategy") or {})
         definition = {
             **strategy_configuration,
             "config": {"parameters": strategy_configuration.get("parameters") or {}},
@@ -857,15 +865,15 @@ class ReplayRunController:
             "fixture": False,
             "run_id": self.run_id,
             "runtime_mode": self.definition.mode.value,
-            "strategy_id": strategy_configuration["strategy_id"],
-            "name": strategy_configuration["name"],
-            "revision": strategy_configuration["revision"],
+            "strategy_id": strategy_configuration.get("strategy_id", ""),
+            "name": strategy_configuration.get("name", "Manual trading"),
+            "revision": strategy_configuration.get("revision", 0),
             "profile_id": strategy_configuration.get("profile_id"),
             "profile_revision": strategy_configuration.get("profile_revision"),
             "deployment": deepcopy(configuration.get("deployment") or {}),
             "action_definitions": deepcopy(strategy_configuration.get("action_definitions") or []),
             "action_policies": deepcopy(strategy_configuration.get("action_policies") or []),
-            "automatic": True,
+            "automatic": self._strategy is not None,
             "state": ticker_assignments[0]["status"] if ticker_assignments else "not_assigned",
             "definition": definition,
             "assignment": ticker_assignments[0] if ticker_assignments else None,
@@ -1085,8 +1093,9 @@ class ReplayRunController:
 
     async def _initialize_runtime(self) -> None:
         configuration = self.definition.configuration_revision["payload"]
-        strategy_configuration = dict(configuration["strategy"])
-        source_assignments = self._selected_assignments()
+        strategy_configuration = dict(configuration.get("strategy") or {})
+        strategy_enabled = self.definition.execution_mode == "strategy"
+        source_assignments = self._selected_assignments() if strategy_enabled else []
         bindings = [
             dict(row)
             for row in configuration["accounts"]["bindings"]
@@ -1113,7 +1122,7 @@ class ReplayRunController:
             )
             for row in source_assignments
         ]
-        if self._resume_state is not None:
+        if self._resume_state is not None and strategy_enabled:
             checkpoint_assignments = self._resume_state.get("assignments")
             if not isinstance(checkpoint_assignments, list):
                 raise ValueError("Restart checkpoint omitted Strategy assignment state")
@@ -1121,19 +1130,23 @@ class ReplayRunController:
                 _strategy_assignment_from_checkpoint(dict(row))
                 for row in checkpoint_assignments
             ]
-        self._strategy_registration = strategy_executor(
-            str(strategy_configuration["strategy_id"]),
-            int(strategy_configuration["revision"]),
-        )
-        assignment_identities = {
-            (assignment.strategy_id, assignment.strategy_revision)
-            for assignment in assignments
-        }
-        if assignment_identities - {self._strategy_registration.key}:
-            raise ValueError(
-                "Historical Run Plan contains assignments for a different Strategy executor"
+        if strategy_enabled:
+            self._strategy_registration = strategy_executor(
+                str(strategy_configuration["strategy_id"]),
+                int(strategy_configuration["revision"]),
             )
-        self._strategy = self._strategy_registration.strategy_factory(assignments)
+            assignment_identities = {
+                (assignment.strategy_id, assignment.strategy_revision)
+                for assignment in assignments
+            }
+            if assignment_identities - {self._strategy_registration.key}:
+                raise ValueError(
+                    "Historical Run Plan contains assignments for a different Strategy executor"
+                )
+            self._strategy = self._strategy_registration.strategy_factory(assignments)
+        else:
+            self._strategy_registration = None
+            self._strategy = None
         instruments = {
             assignment.ticker: InstrumentContract(
                 instrument_id=f"simulated:{assignment.conid}",
@@ -1147,8 +1160,8 @@ class ReplayRunController:
         }
         self._planner = RuntimeIbkrStrategyOrderPlanner(
             instruments,
-            strategy_id=str(strategy_configuration["strategy_id"]),
-            strategy_revision=int(strategy_configuration["revision"]),
+            strategy_id=str(strategy_configuration.get("strategy_id") or "manual"),
+            strategy_revision=int(strategy_configuration.get("revision") or 0),
             run_id=self.run_id,
             limit_offset_bps=float(configuration["oms"]["limit_offset_bps"]),
         )
@@ -1177,12 +1190,12 @@ class ReplayRunController:
                 enabled=bool(binding.get("enabled", True)),
                 base_currency=str(binding.get("base_currency") or "USD"),
                 strategy_allocations={
-                    str(strategy_configuration["strategy_id"]): float(
+                    str(strategy_configuration.get("strategy_id") or "manual"): float(
                         binding.get("strategy_allocation", 1.0)
                     )
                 },
                 strategy_mandates={
-                    str(strategy_configuration["strategy_id"]): next(
+                    str(strategy_configuration.get("strategy_id") or "manual"): next(
                         (
                             dict(row)
                             for row in configuration["portfolio"].get("mandates") or []
@@ -1207,8 +1220,8 @@ class ReplayRunController:
             portfolio_profiles,
             journal=self._journal,
             run_id=self.run_id,
-            strategy_id=str(strategy_configuration["strategy_id"]),
-            strategy_revision=int(strategy_configuration["revision"]),
+            strategy_id=str(strategy_configuration.get("strategy_id") or "manual"),
+            strategy_revision=int(strategy_configuration.get("revision") or 0),
             groups=groups,
         )
         broker = SimulatedBrokerAdapter(
@@ -1224,14 +1237,15 @@ class ReplayRunController:
         self._runtime = TradingRuntime(
             RunConfig(
                 mode=self.definition.mode,
-                strategy_id=str(strategy_configuration["strategy_id"]),
-                strategy_revision=int(strategy_configuration["revision"]),
+                strategy_id=str(strategy_configuration.get("strategy_id") or ""),
+                strategy_revision=int(strategy_configuration.get("revision") or 0),
                 account_ids=self.account_ids,
                 anchor_date=self.definition.session_date,
                 run_id=self.run_id,
                 run_plan_id=str(
                     dict(configuration.get("run_plan") or {}).get("run_plan_id")
                     or dict(configuration.get("deployment") or {}).get("deployment_id")
+                    or dict(configuration.get("session_profile") or {}).get("session_profile_id")
                     or ""
                 ),
                 safety_supervisor_enabled=bool(
@@ -1258,7 +1272,7 @@ class ReplayRunController:
             self._restore_restart_checkpoint()
 
     def _restore_restart_checkpoint(self) -> None:
-        if self._runtime is None or self._strategy is None or self._resume_state is None:
+        if self._runtime is None or self._resume_state is None:
             raise RuntimeError("Restart runtime is not initialized")
         state = self._resume_state
         if (
@@ -1968,23 +1982,19 @@ class ReplayRunController:
             str(row.get("ticker") or "").upper()
             for row in self._historical_watchlist_members()
         )
-        canvas_tickers = _canvas_profile_tickers(
-            dict(dict(configuration.get("canvas") or {}).get("profile") or {})
-        )
         tickers = tuple(
             dict.fromkeys(
                 [
                     *assignment_tickers,
                     *universe_tickers,
                     *(event.ticker for event in self._historical_external_signal_events),
-                    *sorted(canvas_tickers),
                     *(_ticker(value) for value in self.definition.tickers),
                 ]
             )
         )
         if not tickers:
             raise ValueError(
-                "Historical run requires at least one configured Canvas symbol or strategy assignment"
+                "Historical run requires at least one explicit symbol, strategy assignment, or configured universe member"
             )
         return tickers
 
@@ -2584,6 +2594,7 @@ def _definition_from_manifest(
         assignment_ids=tuple(str(value) for value in definition.get("assignment_ids") or ()),
         tickers=tuple(str(value) for value in definition.get("tickers") or ()),
         configuration_revision=deepcopy(approved),
+        execution_mode=str(definition.get("execution_mode") or "strategy"),
         mode=mode,
         debug_fixture=fixture,
     )
@@ -3173,11 +3184,20 @@ def replay_preflight(
     assignment_ids: tuple[str, ...] = (),
     tickers: tuple[str, ...] = (),
     configuration_revision: dict[str, Any] | None = None,
+    execution_mode: str = "strategy",
+    session_profile_id: str = "",
+    execution_route_id: str = "",
 ) -> dict[str, Any]:
-    approved = configuration_revision or replay_configuration_snapshot()
+    approved = configuration_revision or (
+        approved_session_configuration_snapshot(
+            "replay",
+            session_profile_id=session_profile_id,
+            execution_route_id=execution_route_id,
+        )
+        if execution_mode == "manual"
+        else replay_configuration_snapshot()
+    )
     configuration = approved["payload"]
-    canvas = dict(configuration["canvas"])
-    configured_canvas_tickers = _canvas_profile_tickers(dict(canvas.get("profile") or {}))
     definition = ReplayRunDefinition(
         session_date=session_date,
         start_time=start_time,
@@ -3185,6 +3205,7 @@ def replay_preflight(
         assignment_ids=assignment_ids,
         tickers=tickers,
         configuration_revision=approved,
+        execution_mode=execution_mode,
     )
     gateway = historical_gateway_snapshot()
     coverage: dict[str, Any] = {}
@@ -3196,7 +3217,7 @@ def replay_preflight(
             coverage_error = str(exc)
     assignments = [
         dict(row)
-        for row in configuration["assignments"]
+        for row in configuration.get("assignments") or []
         if str(row.get("status") or "") not in {"disabled", "completed", "error"}
     ]
     if assignment_ids:
@@ -3210,10 +3231,11 @@ def replay_preflight(
     historical_watchlist_members: list[dict[str, Any]] = []
     historical_watchlist_error = ""
     try:
-        historical_watchlist_members = _historical_watchlist_members_for_configuration(
-            approved,
-            as_of=definition.requested_start,
-        )
+        if execution_mode == "strategy":
+            historical_watchlist_members = _historical_watchlist_members_for_configuration(
+                approved,
+                as_of=definition.requested_start,
+            )
     except Exception as exc:
         historical_watchlist_error = str(exc)
     universe_tickers = {
@@ -3232,7 +3254,6 @@ def replay_preflight(
                 str(row.get("ticker") or "").strip().upper()
                 for row in historical_watchlist_members
             ),
-            *configured_canvas_tickers,
             *(_ticker(value) for value in tickers),
         }
     )
@@ -3306,8 +3327,8 @@ def replay_preflight(
             bool(resolved_tickers),
             f"{len(resolved_tickers)} configured symbol(s): {', '.join(resolved_tickers[:8])}"
             if resolved_tickers
-            else "No Canvas symbol or active strategy assignment is available.",
-            "Approved Canvas link contexts plus approved strategy assignments",
+            else "No explicit symbol or active Strategy assignment is available.",
+            "Explicit session symbols plus approved Strategy assignments",
         ),
         _check(
             "strategy_assignments",
@@ -3321,7 +3342,7 @@ def replay_preflight(
                 f"{row.get('ticker')}@{row.get('account_key')}" for row in assignments
             )
             or "Optional for market-only Replay",
-            required=bool(assignment_ids),
+            required=execution_mode == "strategy" and bool(assignment_ids),
         ),
     ]
     ready = all(check["status"] == "ready" for check in checks if check["required"])
@@ -3350,9 +3371,10 @@ def replay_preflight(
         "configuration_label": approved["label"],
         "configuration_content_hash": approved["content_hash"],
         "run_plan_id": approved.get("run_plan_id", ""),
+        "session_profile_id": approved.get("session_profile_id", ""),
+        "execution_route_id": approved.get("execution_route_id", ""),
+        "execution_mode": execution_mode,
         "available_run_plans": deepcopy(approved.get("available_run_plans") or []),
-        "canvas_revision": canvas["revision"],
-        "canvas_profile": canvas["profile"],
     }
 
 

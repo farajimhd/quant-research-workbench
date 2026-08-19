@@ -39,6 +39,7 @@ import { api, apiCached, invalidateApiCache } from "../api/client";
 import { readCanvasRegistry, snapshotCanvasProfile } from "../app/canvasWorkspace";
 import { clearConfigurationSession, readConfigurationSession, writeConfigurationSession } from "../app/configurationSession";
 import { AbstractionCard, type AbstractionKind } from "../app/components/AbstractionCard";
+import { DefinitionRegistryProvider, type InformationRegistry } from "../app/components/DefinitionRegistry";
 import { InventoryFilterSelect } from "../app/components/InventoryFilterSelect";
 import { formatSemanticNumber } from "../app/format";
 import { DataCatalogPage, RuleSetLibraryPage, dataFieldRuleDefinitions, type AtomicField, type DataFieldDefinition, type DataRuleSet } from "./DataConfigurationPages";
@@ -688,6 +689,8 @@ type Mandate = {
   assignment_mode: "single" | "replicated" | "weighted" | "partitioned";
   maximum_action_authority: "manual" | "confirm" | "automatic";
   run_plan_id: string;
+  principal_kind?: "session" | "strategy_deployment";
+  principal_id?: string;
   enabled: boolean;
   mandate_id: string;
   maximum_cash_fraction: number;
@@ -804,6 +807,45 @@ type AccountBinding = {
   system_managed?: boolean;
 };
 type AccountSection = { bindings: AccountBinding[] };
+type SessionProfile = {
+  session_profile_id: string;
+  name: string;
+  description: string;
+  enabled: boolean;
+  modes: RuntimeMode[];
+  market_data: { authority: string; clock: string };
+  manual_authority: { enabled: boolean; maximum: "manual" | "confirm" | "automatic" };
+  recovery_policy: string;
+  execution_route_ids: string[];
+  default_execution_route_id: string;
+};
+type ExecutionRoute = {
+  execution_route_id: string;
+  name: string;
+  session_profile_id: string;
+  account_key: string;
+  portfolio_mandate_id: string;
+  oms_profile_id: string;
+  modes: RuntimeMode[];
+  enabled: boolean;
+  manual_enabled: boolean;
+  system_generated?: boolean;
+};
+type StrategyDeployment = {
+  strategy_deployment_id: string;
+  name: string;
+  description: string;
+  run_plan_id: string;
+  session_profile_id: string;
+  execution_route_ids: string[];
+  portfolio_mandate_ids: string[];
+  enabled: boolean;
+  headless: boolean;
+  priority: number;
+  modes: RuntimeMode[];
+  system_generated?: boolean;
+};
+type SessionSection = { profiles: SessionProfile[]; execution_routes: ExecutionRoute[]; strategy_deployments: StrategyDeployment[] };
 
 type Draft = {
   accounts: AccountSection;
@@ -812,6 +854,7 @@ type Draft = {
   oms: OmsSection;
   portfolio: PortfolioSection;
   schema_version: number;
+  sessions: SessionSection;
   strategy: StrategySection;
   trading_actions: TradingActionsConfiguration;
   updated_at?: string;
@@ -953,6 +996,15 @@ function normalizeDraft(payload: any): Draft {
       profiles: (strategy.profiles ?? []).map(normalizeProfile),
     },
     trading_actions: payload?.trading_actions ?? { definitions: [], policies: [] },
+    sessions: payload?.sessions ? {
+      ...payload.sessions,
+      profiles: payload.sessions.profiles ?? [],
+      execution_routes: (payload.sessions.execution_routes ?? []).map((route: any) => ({
+        ...route,
+        modes: route.modes ?? (payload.accounts?.bindings ?? []).find((account: any) => account.account_key === route.account_key)?.modes ?? [],
+      })),
+      strategy_deployments: payload.sessions.strategy_deployments ?? [],
+    } : { profiles: [], execution_routes: [], strategy_deployments: [] },
     assignments: {
       deployments: (runPlans.plans ?? runPlans.deployments ?? []).map((runPlan: any) => {
         const legacy = (strategy.profiles ?? []).find((profile: any) => profile.profile_id === runPlan.profile_id)?.composition ?? {};
@@ -1283,6 +1335,7 @@ export function TradingConfigurationPage({ section }: { section: TradingConfigur
   const [draft, setDraft] = useState<Draft | null>(null);
   const [approved, setApproved] = useState<Revision | null>(null);
   const [revisions, setRevisions] = useState<Revision[]>([]);
+  const [registry, setRegistry] = useState<InformationRegistry | null>(null);
   const [label, setLabel] = useState("");
   const [status, setStatus] = useState<"loading" | "ready" | "saving" | "saved" | "error">("loading");
   const [message, setMessage] = useState("");
@@ -1306,12 +1359,14 @@ export function TradingConfigurationPage({ section }: { section: TradingConfigur
       apiCached<Draft>("/api/trading/configuration/base", { timeoutMs: 20_000, ttlMs: 300_000 }),
       api<{ approved: Revision | null }>("/api/trading/configuration/approved"),
       revisionsRequest,
+      apiCached<InformationRegistry>("/api/registries/definitions", { timeoutMs: 20_000, ttlMs: 300_000 }),
     ])
-      .then(([nextDraft, approvedPayload, revisionPayload]) => {
+      .then(([nextDraft, approvedPayload, revisionPayload, registryPayload]) => {
         if (cancelled) return;
         setDraft(readSessionConfiguration(normalizeDraft(nextDraft)));
         setApproved(approvedPayload.approved ? { ...approvedPayload.approved, payload: normalizeDraft(approvedPayload.approved.payload) as Revision["payload"] } : null);
         setRevisions(revisionPayload.rows.map((row) => ({ ...row, payload: normalizeDraft(row.payload) as Revision["payload"] })));
+        setRegistry(registryPayload);
         setStatus("ready");
       })
       .catch((reason) => {
@@ -1432,13 +1487,12 @@ export function TradingConfigurationPage({ section }: { section: TradingConfigur
     setMessage("");
     try {
       const canvas = canvasApprovalSnapshot();
-      if (!canvas.ready) throw new Error("Configure at least one Canvas container before publishing.");
       const selectedRunPlan = draft.assignments.deployments.find((row) => row.run_plan_id === selectionId)
         ?? draft.assignments.deployments.find((row) => row.profile_id === selectionId)
         ?? draft.assignments.deployments.find((row) => row.enabled)
         ?? draft.assignments.deployments[0];
       if (!selectedRunPlan) throw new Error("Configure a Run Plan before publishing.");
-      const configuration = serializeDraft({ ...draft, assignments: { ...draft.assignments, deployments: draft.assignments.deployments.map((row) => row.run_plan_id === selectedRunPlan.run_plan_id ? { ...row, canvas_profile_id: canvas.revision } : row) } });
+      const configuration = serializeDraft(draft);
       const revision = await api<Revision>("/api/trading/configuration/publish", {
         body: JSON.stringify({ canvas_profile: canvas.profile, canvas_revision: canvas.revision, configuration, label, run_plan_id: selectedRunPlan.run_plan_id }),
         method: "POST",
@@ -1471,7 +1525,7 @@ export function TradingConfigurationPage({ section }: { section: TradingConfigur
     setStatus(failed.length ? "error" : "ready");
   }
 
-  if (!draft) {
+  if (!draft || !registry) {
     return <div className="trading-configuration-page" data-configuration-experience={experience} data-configuration-section={section}>
       <header className="configuration-page-header">
         <div className="configuration-page-icon"><Icon size={20} /></div>
@@ -1482,6 +1536,7 @@ export function TradingConfigurationPage({ section }: { section: TradingConfigur
   }
 
   return (
+    <DefinitionRegistryProvider registry={registry}>
     <div className="trading-configuration-page" data-configuration-experience={experience} data-configuration-section={section}>
       <header className="configuration-page-header">
         <div className="configuration-page-icon"><Icon size={20} /></div>
@@ -1519,7 +1574,7 @@ export function TradingConfigurationPage({ section }: { section: TradingConfigur
         </div>
       ) : null}
 
-      {section === "data_catalog" ? <DataCatalogPage atomicFields={draft?.market_discovery.atomic_fields} dataFields={draft?.market_discovery.data_fields} onDataFieldsChange={draft ? (dataFields) => updateConfigurationBook({ ...draft, market_discovery: { ...draft.market_discovery, data_fields: dataFields } }) : undefined} /> : section === "rule_sets" && draft ? <RuleSetLibraryPage
+      {section === "data_catalog" ? <DataCatalogPage atomicFields={draft?.market_discovery.atomic_fields} dataFields={draft?.market_discovery.data_fields} onDataFieldsChange={draft ? (dataFields) => updateConfigurationBook({ ...draft, market_discovery: { ...draft.market_discovery, data_fields: dataFields } }) : undefined} registry={registry} /> : section === "rule_sets" && draft ? <RuleSetLibraryPage
         fields={dataFieldRuleDefinitions(draft.market_discovery.data_fields)}
         ruleSets={draft.market_discovery.rule_sets as DataRuleSet[]}
         onChange={(ruleSets) => updateConfigurationBook({
@@ -1589,6 +1644,7 @@ export function TradingConfigurationPage({ section }: { section: TradingConfigur
         </>
       )}
     </div>
+    </DefinitionRegistryProvider>
   );
 }
 
@@ -1925,6 +1981,7 @@ function GuidedConfiguration({ approved, draft, label, omsStage, onChange, onCon
     <GuidedQuestion description="The Strategy Profile owns trading behavior and lifecycle decisions. Choosing it does not select symbols, capital, or broker behavior." key="deployment-strategy" label="Which Strategy Profile should this Run Plan execute?" status={deployment.enabled ? "Configured" : "Needs review"}>
       <SelectField help="Select the reusable trading behavior evaluated by this Run Plan. Its entries, adds, reentries, and strategic exits remain unchanged." label="Strategy Profile" onChange={(profile_id) => replaceDeployment({ ...deployment, profile_id })} options={draft.strategy.profiles.map((row) => ({ label: row.name, value: row.profile_id }))} value={deployment.profile_id} />
     </GuidedQuestion>,
+    <GuidedQuestion description="A Strategy Deployment binds this reusable Run Plan to a Session Profile and one or more Execution Routes. Enabled headless deployments keep running when no Canvas is open; Canvas may attach later by run ID." key="strategy-deployments" label="Where and how is this Run Plan deployed?" status={draft.sessions.strategy_deployments.some((row) => row.run_plan_id === deployment.run_plan_id && row.enabled) ? "Enabled" : "Disabled"}><div className="configuration-reference-grid">{draft.sessions.strategy_deployments.filter((row) => row.run_plan_id === deployment.run_plan_id).map((strategyDeployment) => <AbstractionCard compact control={<input checked={strategyDeployment.enabled} onChange={(event) => onChange("sessions", { ...draft.sessions, strategy_deployments: draft.sessions.strategy_deployments.map((row) => row.strategy_deployment_id === strategyDeployment.strategy_deployment_id ? { ...row, enabled: event.target.checked } : row) })} type="checkbox" />} description={strategyDeployment.description} identity={strategyDeployment.strategy_deployment_id} key={strategyDeployment.strategy_deployment_id} kind="processing_step" metadata={[{ label: "Session", value: draft.sessions.profiles.find((row) => row.session_profile_id === strategyDeployment.session_profile_id)?.name ?? strategyDeployment.session_profile_id }, { label: "Modes", value: strategyDeployment.modes.map(readableLabel).join(", ") }, { label: "Routes", value: strategyDeployment.execution_route_ids.length }, { label: "Runtime", value: strategyDeployment.headless ? "Headless" : "Launch only" }]} selected={strategyDeployment.enabled} status={strategyDeployment.enabled ? "Enabled" : "Disabled"} title={strategyDeployment.name} />)}</div>{!draft.sessions.strategy_deployments.some((row) => row.run_plan_id === deployment.run_plan_id) ? <div className="configuration-empty-state"><strong>No Strategy Deployment exists yet.</strong><span>Save this Run Plan, then bind it to a Session Profile and Execution Route.</span></div> : null}</GuidedQuestion>,
     <GuidedQuestion description="Signal Streams are the Strategy activation authority. Every new immutable occurrence carries the exact Rule Set revision and trigger-time evidence into Strategy evaluation." key="deployment-signal-streams" label="Which Signal Streams activate this Strategy?" status={deployment.signal_stream_ids.length ? "Configured" : "Needs decision"}>
       <div className="configuration-reference-grid">{draft.market_discovery.signal_streams.map((stream) => <AbstractionCard compact control={<input checked={deployment.signal_stream_ids.includes(stream.signal_stream_id)} disabled={!stream.enabled} onChange={() => replaceDeployment({ ...deployment, signal_stream_ids: deployment.signal_stream_ids.includes(stream.signal_stream_id) ? deployment.signal_stream_ids.filter((value) => value !== stream.signal_stream_id) : [...deployment.signal_stream_ids, stream.signal_stream_id] })} type="checkbox" />} description={stream.description} identity={stream.signal_stream_id} key={stream.signal_stream_id} kind="signal_stream" metadata={[{ label: "Rule sets", value: stream.inclusion_rule_sets.length }, { label: "Evidence columns", value: stream.columns.length }]} selected={deployment.signal_stream_ids.includes(stream.signal_stream_id)} status={!stream.enabled ? "Disabled" : deployment.signal_stream_ids.includes(stream.signal_stream_id) ? "Selected" : "Available"} title={stream.name} unavailable={!stream.enabled} />)}</div>
       <div className="guided-form-grid"><SelectField help="New occurrences avoids replaying earlier session signals when a Run Plan starts. Latest session occurrence may arm from the newest already-captured event." label="Occurrence policy" onChange={(event_policy) => replaceDeployment({ ...deployment, activation: { ...deployment.activation, event_policy: event_policy as StrategyRunPlan["activation"]["event_policy"] } })} options={[{ label: "New occurrences only", value: "new_occurrences" }, { label: "Latest session occurrence", value: "latest_session_occurrence" }]} value={deployment.activation.event_policy} /><SelectField help="Persistent remains enabled for subsequent sessions. Current session automatically expires at the session boundary." label="Strategy enablement" onChange={(value) => replaceDeployment({ ...deployment, enablement: value === "disabled" ? { state: "disabled", scope: deployment.enablement.scope, effective_session: "" } : { state: "enabled", scope: value as StrategyRunPlan["enablement"]["scope"], effective_session: value === "current_session" ? newYorkSessionDate() : "" } })} options={[{ label: "Enabled for subsequent sessions", value: "persistent" }, { label: "Enabled for current session", value: "current_session" }, { label: "Disabled", value: "disabled" }]} value={deployment.enablement.state === "disabled" ? "disabled" : deployment.enablement.scope} /></div>
@@ -1950,9 +2007,6 @@ function GuidedConfiguration({ approved, draft, label, omsStage, onChange, onCon
       <div className="configuration-reference-grid">{draft.portfolio.mandates.filter((row) => row.run_plan_id === deployment.run_plan_id).map((row) => <AbstractionCard compact description={`${accountName(draft.accounts, row.account_key)} · ${readableLabel(row.assignment_mode)} assignment`} identity={row.mandate_id} key={row.mandate_id} kind="portfolio_mandate" metadata={[{ label: "Maximum positions", value: row.maximum_positions }, { label: "Action authority", value: readableLabel(row.maximum_action_authority) }]} selected={row.enabled} status={row.enabled ? "Enabled" : "Disabled"} title={accountName(draft.accounts, row.account_key)} />)}</div>
       {!draft.portfolio.mandates.some((row) => row.run_plan_id === deployment.run_plan_id) ? <div className="configuration-empty-state"><strong>No Portfolio mandate is attached.</strong><span>Configure an account allocation before this Run Plan can approve capital.</span></div> : null}
       <div className="guided-inline-actions"><button className="button compact" onClick={() => { window.location.hash = "portfolio-configuration"; }} type="button"><ArrowRight size={14} /> Configure Portfolio mandates</button></div>
-    </GuidedQuestion>,
-    <GuidedQuestion description="The current Canvas layout is a reusable workspace dependency and is frozen with the release." key="deployment-canvas" label="Which workspace will this Run Plan open?" status={canvasApprovalSnapshot().ready ? "Configured" : "Needs Canvas"}>
-      <div className="configuration-fixed-value"><span>Canvas profile</span><strong>{canvasApprovalSnapshot().revision}</strong><small>{canvasApprovalSnapshot().containerCount} configured containers</small></div>
     </GuidedQuestion>,
   );
   const portfolioPolicy = draft.portfolio.policies.find((row) => String(row.policy_id ?? "") === account.portfolio_policy_id) ?? draft.portfolio.policies[0];
@@ -1990,6 +2044,7 @@ function GuidedConfiguration({ approved, draft, label, omsStage, onChange, onCon
     <GuidedQuestion description="OMS continuously reconciles broker-held protection. These values bound repair time and determine whether a catastrophic fallback is mandatory." key="protection-recovery" label="Configure protection recovery" status={protectionProfile.mandatory_catastrophic_backstop ? "Fail closed" : "Review required"}><div className="guided-form-grid"><NumberField help="Maximum time allowed to repair missing or inconsistent broker-held protection." label="Emergency repair deadline" minimum={1} onChange={(emergency_repair_deadline_ms) => replaceProtectionProfile({ ...protectionProfile, emergency_repair_deadline_ms })} step={25} unit="ms" value={protectionProfile.emergency_repair_deadline_ms} /><BooleanField help="Require OMS to retain or immediately repair a catastrophic broker-held backstop." label="Mandatory catastrophic backstop" onChange={(mandatory_catastrophic_backstop) => replaceProtectionProfile({ ...protectionProfile, mandatory_catastrophic_backstop })} value={protectionProfile.mandatory_catastrophic_backstop} /></div></GuidedQuestion>,
   );
   if (step === "accounts") questions.push(
+    <GuidedQuestion description="Session Profiles own the market-data authority and clock. Execution Routes bind a stable account to one Portfolio mandate and OMS profile. Manual and semi-automatic trading use these routes directly; Strategy Deployments may use the same routes without an open Canvas." key="session-profiles" label="Which runtime sessions and routes are available?" status={draft.sessions.profiles.some((row) => row.enabled) ? "Configured" : "Needs decision"}><div className="configuration-reference-grid">{draft.sessions.profiles.map((profile) => { const routes = draft.sessions.execution_routes.filter((route) => route.session_profile_id === profile.session_profile_id); return <AbstractionCard compact control={<input checked={profile.enabled} onChange={(event) => onChange("sessions", { ...draft.sessions, profiles: draft.sessions.profiles.map((row) => row.session_profile_id === profile.session_profile_id ? { ...row, enabled: event.target.checked } : row) })} type="checkbox" />} description={profile.description} identity={profile.session_profile_id} key={profile.session_profile_id} kind="processing_step" metadata={[{ label: "Modes", value: profile.modes.map(readableLabel).join(", ") }, { label: "Market data", value: profile.market_data.authority }, { label: "Clock", value: readableLabel(profile.market_data.clock) }, { label: "Routes", value: routes.length }]} selected={profile.enabled} status={profile.manual_authority.enabled ? "Manual + Strategy" : "Strategy only"} title={profile.name}>{routes.map((route) => <div className="configuration-fixed-value" key={route.execution_route_id}><span>{route.name}</span><strong>{accountName(draft.accounts, route.account_key)}</strong><small>{draft.oms.profiles.find((row) => row.profile_id === route.oms_profile_id)?.name ?? route.oms_profile_id}</small></div>)}</AbstractionCard>; })}</div></GuidedQuestion>,
     <GuidedQuestion description="Choose one stable account binding, create a custom simulated account, or remove an unused custom binding. Run Plans and Portfolio mandates retain the stable key while runtime resolves synchronized account state." key="account-selection" label="Which account binding are you configuring?" status={account.enabled ? "Enabled" : "Disabled"}><div className="guided-form-grid"><SelectField help="Changing this selection changes which account the following questions edit; it does not reassign any Portfolio mandate." label="Account binding" onChange={selectAccount} options={draft.accounts.bindings.map((row) => ({ description: `${row.system_managed ? "Managed broker binding" : "Custom binding"} · ${readableLabel(row.account_class)} · ${row.modes.map(readableLabel).join(", ")}`, label: row.name, value: row.account_key }))} value={account.account_key} /><div className="guided-inline-actions"><button className="button compact" onClick={addGuidedAccount} type="button"><Plus size={14} /> Add account</button><button className="button compact danger" disabled={Boolean(account.system_managed) || draft.accounts.bindings.length <= 1 || draft.portfolio.mandates.some((row) => row.account_key === account.account_key) || draft.portfolio.groups.some((row) => Array.isArray(row.account_keys) && row.account_keys.map(String).includes(account.account_key))} onClick={removeGuidedAccount} title={account.system_managed ? "Managed broker bindings are disabled instead of deleted." : draft.portfolio.mandates.some((row) => row.account_key === account.account_key) || draft.portfolio.groups.some((row) => Array.isArray(row.account_keys) && row.account_keys.map(String).includes(account.account_key)) ? "Remove this account from Portfolio mandates and groups first." : "Remove this custom account binding."} type="button"><Trash2 size={14} /> Remove account</button></div><TextField help="Operator-facing name shown in configuration, Run Plans, and runtime evidence." label="Account name" onChange={(name) => replaceAccount({ ...account, name })} value={account.name} /><BooleanField help="Disabled bindings remain saved but cannot be selected by a new runtime. Use this control to retire a managed broker binding." label="Account enabled" onChange={(enabled) => replaceAccount({ ...account, enabled })} value={account.enabled} /><div className="configuration-fixed-value"><span>Stable account key</span><strong>{account.account_key}</strong><small>{account.system_managed ? "Backend-managed broker identity; disable it when unused." : "Run Plans, mandates, and runtime state retain this custom identity."}</small></div></div></GuidedQuestion>,
     <GuidedQuestion description="Account class and currency define the broker capabilities and monetary unit Portfolio uses. The safety policy remains the account-wide capital and risk authority." key="account-authority" label="How is this account governed?" status="Configured"><div className="guided-form-grid"><SelectField help="Determines broker capability and regulatory constraints." label="Account class" onChange={(account_class) => replaceAccount({ ...account, account_class })} options={["simulated", "paper", "cash", "margin", "registered"].map((value) => ({ label: readableLabel(value), value }))} value={account.account_class} /><SelectField help="Reusable account-level capital, exposure, loss, and permission policy." label="Portfolio policy" onChange={(portfolio_policy_id) => replaceAccount({ ...account, portfolio_policy_id })} options={draft.portfolio.policies.map((row) => ({ label: String(row.name ?? row.policy_id), value: String(row.policy_id) }))} value={account.portfolio_policy_id} /><TextField help="Currency used for Portfolio limits and account summaries." label="Base currency" onChange={(base_currency) => replaceAccount({ ...account, base_currency: base_currency.toUpperCase() })} value={account.base_currency} /></div></GuidedQuestion>,
     <GuidedQuestion description="Paper and Live require an exact broker account and session match. Replay and Backtest use deterministic simulated account state instead." key="account-modes" label="Which modes may bind this account?" status={account.modes.length ? "Configured" : "Needs decision"}><ModeSelector modes={account.modes} onChange={(modes) => replaceAccount({ ...account, modes })} /></GuidedQuestion>,
@@ -2019,11 +2074,11 @@ function GuidedConfiguration({ approved, draft, label, omsStage, onChange, onCon
 
 function guidedQuestionRailLabel(key: string, fallback: string) {
   const labels: Record<string, string> = {
-    "run-plan-identity": "Plan", "deployment-strategy": "Strategy", "deployment-signal-streams": "Signals", "deployment-watchlists": "Eligibility", "deployment-oms": "OMS", "deployment-authority": "Authority", "deployment-modes": "Modes & data", "deployment-safety": "Safety", "deployment-mandates": "Mandates", "deployment-canvas": "Canvas",
+    "run-plan-identity": "Plan", "deployment-strategy": "Strategy", "strategy-deployments": "Deployment", "deployment-signal-streams": "Signals", "deployment-watchlists": "Eligibility", "deployment-oms": "OMS", "deployment-authority": "Authority", "deployment-modes": "Modes & data", "deployment-safety": "Safety", "deployment-mandates": "Mandates", "deployment-canvas": "Canvas",
     "portfolio-account": "Account & policy", "portfolio-policy-identity": "Policy", "portfolio-mandate-limits": "Mandate limits", "portfolio-assignment": "Assignment", "portfolio-replacement": "Replacement", "portfolio-authority": "Authority", "portfolio-capital-policy": "Capital", "portfolio-exposure-policy": "Exposure", "portfolio-risk-policy": "Risk & loss", "portfolio-permissions": "Permissions", "portfolio-allowlists": "Allowlists", "portfolio-operational": "Operations", "portfolio-groups": "Account groups",
     "oms-profile-identity": "OMS profile", "execution-profile": "Defaults", "execution-urgency": "Urgency", "execution-protection-guardrails": "Guardrails", "execution-behavior": "Behavior", "execution-price-envelope": "Price bounds", "execution-timing": "Timing",
     "protection-profile": "Profile", "protection-transitions": "Transitions", "protection-slices": "Slices", "protection-recovery": "Recovery",
-    "account-selection": "Account", "account-authority": "Governance", "account-modes": "Modes", "account-broker": "Broker session", "account-simulated": "Simulation",
+    "session-profiles": "Sessions & routes", "account-selection": "Account", "account-authority": "Governance", "account-modes": "Modes", "account-broker": "Broker session", "account-simulated": "Simulation",
   };
   if (key.startsWith("protection-stop-")) return "Hard stop";
   if (key.startsWith("protection-target-")) return "Target & trail";
@@ -3335,7 +3390,7 @@ function StrategyStudio({ approved, draft, label, onChange, onDeleteProfile, onD
               <p>An account binding maps a stable application account key to a simulated or broker session. Modes define where the binding may be used. They do not prove connectivity or broker readiness. Paper and Live still require backend account discovery, capability checks, session health, and safety preflight.</p>
             </div>
             <BookConfigurationSurface label="Configure account bindings">
-              <AccountsEditor draft={draft} onChange={(accounts) => onDraftChange({ ...draft, accounts })} />
+              <AccountsEditor draft={draft} onChange={(accounts) => onDraftChange({ ...draft, accounts })} onSessionsChange={(sessions) => onDraftChange({ ...draft, sessions })} />
             </BookConfigurationSurface>
           </StoryChapter>
 
@@ -4970,7 +5025,7 @@ const SECTION_SYSTEM_KEYS = new Set([
   "assignment_id", "condition_id", "group_id", "revision", "slice_id", "origin", "editable", "runtime_assignments", "mandate_ids",
 ]);
 
-function ConfigurationSectionStudio({ guided, section }: {
+function ConfigurationSectionStudio({ draft, guided, onDraftChange, section }: {
   draft: Draft;
   guided: ReactNode;
   onChange: (value: Draft[ConfigurableSection]) => void;
@@ -4984,6 +5039,7 @@ function ConfigurationSectionStudio({ guided, section }: {
       <span><strong>{copy.title}</strong><small>{copy.guided}</small></span>
     </nav>
     <div className="configuration-guided-workspace configuration-section-guided">{guided}</div>
+    {section === "accounts" ? <details className="configuration-advanced configuration-session-authority-editor"><summary><span><strong>Edit complete session authority</strong><small>Session Profiles, Execution Routes, Strategy Deployments, and account bindings</small></span><ChevronRight size={15} /></summary><div className="configuration-stack"><AccountsEditor draft={draft} onChange={(accounts) => onDraftChange({ ...draft, accounts })} onSessionsChange={(sessions) => onDraftChange({ ...draft, sessions })} /></div></details> : null}
   </div>;
 }
 
@@ -5045,7 +5101,6 @@ function RunPlanCompositionEditor({ draft, onChange, onDraftChange }: {
     { label: "Account mandates", selection: linkedMandates.length ? `${linkedMandates.length} linked` : "None", ready: linkedMandates.length > 0 },
     { label: "Portfolio policies", selection: `${new Set(linkedMandates.map((mandate) => draft.accounts.bindings.find((account) => account.account_key === mandate.account_key)?.portfolio_policy_id).filter(Boolean)).size} resolved`, ready: linkedMandates.length > 0 && linkedMandates.every((mandate) => Boolean(draft.accounts.bindings.find((account) => account.account_key === mandate.account_key)?.portfolio_policy_id)) },
     { label: "OMS", selection: selectedOms?.name ?? "Not selected", ready: Boolean(selectedOms) },
-    { label: "Canvas", selection: canvas.ready ? `${canvas.containerCount} containers` : "Empty", ready: canvas.ready },
     { label: "Data plans", selection: `${selected.allowed_environments.length} modes`, ready: selected.allowed_environments.length > 0 && selected.allowed_environments.every((mode) => Boolean(selected.data_plan_ids[mode])) },
     { label: "Historical coverage", selection: readableLabel(selected.source_revision_policy), ready: selected.source_revision_policy === "require_complete" },
   ];
@@ -5603,7 +5658,7 @@ function ProtectionProfilesEditor({ onChange, profiles }: { onChange: (value: Pr
   </ConfigGroup>;
 }
 
-function AccountsEditor({ draft, onChange }: { draft: Draft; onChange: (value: AccountSection) => void }) {
+function AccountsEditor({ draft, onChange, onSessionsChange }: { draft: Draft; onChange: (value: AccountSection) => void; onSessionsChange: (value: SessionSection) => void }) {
   const section = draft.accounts;
   function replace(index: number, next: AccountBinding) {
     onChange({ bindings: section.bindings.map((row, rowIndex) => rowIndex === index ? next : row) });
@@ -5622,11 +5677,42 @@ function AccountsEditor({ draft, onChange }: { draft: Draft; onChange: (value: A
       modes: ["replay"],
     }] });
   }
+  function replaceProfile(profileIndex: number, profile: SessionProfile) {
+    onSessionsChange({ ...draft.sessions, profiles: draft.sessions.profiles.map((row, index) => index === profileIndex ? profile : row) });
+  }
+  function replaceRoute(route: ExecutionRoute) {
+    onSessionsChange({ ...draft.sessions, execution_routes: draft.sessions.execution_routes.map((row) => row.execution_route_id === route.execution_route_id ? { ...route, system_generated: false } : row) });
+  }
+  function replaceStrategyDeployment(deployment: StrategyDeployment) {
+    onSessionsChange({ ...draft.sessions, strategy_deployments: draft.sessions.strategy_deployments.map((row) => row.strategy_deployment_id === deployment.strategy_deployment_id ? { ...deployment, system_generated: false } : row) });
+  }
   return (
     <div className="configuration-stack">
-      <GuideCallout icon={<Boxes size={17} />} title="One stable key, mode-specific session binding">
-        Published Strategies and Portfolio mandates reference the stable account key. Replay and Backtest bind simulated accounts; Paper and Live require the exact externally discovered IBKR account ID.
+      <GuideCallout icon={<Boxes size={17} />} title="Session Profile → Execution Route → account, Portfolio, and OMS">
+        Manual and semi-automatic trading use a Session Profile directly. A Strategy Deployment may use the same route headlessly; Canvas is an optional presentation attachment and never owns execution.
       </GuideCallout>
+      <ConfigGroup summary="Session Profiles own market clock and data authority. Execution Routes bind accounts, Portfolio mandates, and OMS without requiring a Strategy or Canvas." title="Session Profiles and execution routes">
+        <div className="account-config-grid">{draft.sessions.profiles.map((profile, profileIndex) => {
+          const routes = draft.sessions.execution_routes.filter((route) => route.session_profile_id === profile.session_profile_id);
+          return <AbstractionCard actions={<label className="configuration-switch"><input checked={profile.enabled} onChange={(event) => replaceProfile(profileIndex, { ...profile, enabled: event.target.checked })} type="checkbox" /><span /></label>} description={profile.description} identity={profile.session_profile_id} key={profile.session_profile_id} kind="processing_step" metadata={[{ label: "Modes", value: profile.modes.map(readableLabel).join(", ") }, { label: "Data", value: profile.market_data.authority }, { label: "Clock", value: readableLabel(profile.market_data.clock) }, { label: "Routes", value: routes.length }]} selected={profile.enabled} status={profile.enabled ? "Ready" : "Disabled"} title={profile.name}>
+            <div className="configuration-field-grid one-column">
+              <TextField help="Operator-facing session name." label="Session name" onChange={(name) => replaceProfile(profileIndex, { ...profile, name })} value={profile.name} />
+              <TextField help="Explain the clock, market-data authority, and intended execution modes." label="Description" onChange={(description) => replaceProfile(profileIndex, { ...profile, description })} value={profile.description} />
+              <ModeSelector modes={profile.modes} onChange={(modes) => replaceProfile(profileIndex, { ...profile, modes })} />
+              <SelectField help="Authoritative data plane for this session." label="Market-data authority" onChange={(authority) => replaceProfile(profileIndex, { ...profile, market_data: { ...profile.market_data, authority } })} options={[{ label: "QMD Live", value: "qmd_live" }, { label: "QMD History", value: "qmd_history" }]} value={profile.market_data.authority} />
+              <SelectField help="Clock that timestamps decisions and orders." label="Clock" onChange={(clock) => replaceProfile(profileIndex, { ...profile, market_data: { ...profile.market_data, clock } })} options={[{ label: "Exchange time", value: "exchange_time" }, { label: "Event time", value: "event_time" }]} value={profile.market_data.clock} />
+              <BooleanField help="Allows manual and Trading Action proposals to use this Session Profile without a Strategy Run Plan." label="Manual and semi-automatic trading" onChange={(enabled) => replaceProfile(profileIndex, { ...profile, manual_authority: { ...profile.manual_authority, enabled } })} value={profile.manual_authority.enabled} />
+              {routes.map((route) => <article className="configuration-nested-card" key={route.execution_route_id}><div className="configuration-nested-card-header"><div><span>Execution Route</span><strong>{route.name}</strong><small>{route.execution_route_id}</small></div><label className="configuration-switch"><input checked={route.enabled} onChange={(event) => replaceRoute({ ...route, enabled: event.target.checked })} type="checkbox" /><span /></label></div><div className="configuration-field-grid two-columns"><TextField help="Name shown when selecting an execution path." label="Route name" onChange={(name) => replaceRoute({ ...route, name })} value={route.name} /><SelectField help="Stable broker or simulated account binding." label="Account" onChange={(account_key) => replaceRoute({ ...route, account_key })} options={draft.accounts.bindings.map((row) => ({ label: row.name, value: row.account_key }))} value={route.account_key} /><SelectField help="Portfolio allocation and risk authority for this session and account." label="Portfolio mandate" onChange={(portfolio_mandate_id) => replaceRoute({ ...route, portfolio_mandate_id })} options={draft.portfolio.mandates.filter((row) => row.account_key === route.account_key && row.principal_kind === "session" && row.principal_id === profile.session_profile_id).map((row) => ({ label: row.mandate_id, value: row.mandate_id }))} value={route.portfolio_mandate_id} /><SelectField help="OMS execution and protection contract." label="OMS profile" onChange={(oms_profile_id) => replaceRoute({ ...route, oms_profile_id })} options={draft.oms.profiles.map((row) => ({ label: row.name, value: row.profile_id }))} value={route.oms_profile_id} /><BooleanField help="Permit manual orders and confirmed Trading Actions through this route." label="Manual route" onChange={(manual_enabled) => replaceRoute({ ...route, manual_enabled })} value={route.manual_enabled} /></div><ModeSelector modes={route.modes} onChange={(modes) => replaceRoute({ ...route, modes })} /></article>)}
+            </div>
+          </AbstractionCard>;
+        })}</div>
+      </ConfigGroup>
+      <ConfigGroup summary="Strategy Deployments bind reusable Run Plans to sessions and routes. Headless deployments do not depend on an open Canvas." title="Strategy Deployments">
+        <div className="account-config-grid">{draft.sessions.strategy_deployments.map((deployment) => {
+          const availableRoutes = draft.sessions.execution_routes.filter((route) => route.session_profile_id === deployment.session_profile_id);
+          return <AbstractionCard actions={<label className="configuration-switch"><input checked={deployment.enabled} onChange={(event) => replaceStrategyDeployment({ ...deployment, enabled: event.target.checked })} type="checkbox" /><span /></label>} description={deployment.description} identity={deployment.strategy_deployment_id} key={deployment.strategy_deployment_id} kind="run_plan" metadata={[{ label: "Run Plan", value: draft.assignments.deployments.find((row) => row.run_plan_id === deployment.run_plan_id)?.name ?? deployment.run_plan_id }, { label: "Session", value: draft.sessions.profiles.find((row) => row.session_profile_id === deployment.session_profile_id)?.name ?? deployment.session_profile_id }, { label: "Routes", value: deployment.execution_route_ids.length }, { label: "Runtime", value: deployment.headless ? "Headless" : "Launch controlled" }]} selected={deployment.enabled} status={deployment.enabled ? "Enabled" : "Disabled"} title={deployment.name}><div className="configuration-field-grid two-columns"><TextField help="Operator-facing deployment name." label="Deployment name" onChange={(name) => replaceStrategyDeployment({ ...deployment, name })} value={deployment.name} /><TextField help="Explain when this deployment should run." label="Description" onChange={(description) => replaceStrategyDeployment({ ...deployment, description })} value={deployment.description} /><SelectField help="Session whose clock, market data, and execution routes this strategy uses." label="Session Profile" onChange={(session_profile_id) => replaceStrategyDeployment({ ...deployment, session_profile_id, execution_route_ids: [] })} options={draft.sessions.profiles.map((row) => ({ label: row.name, value: row.session_profile_id }))} value={deployment.session_profile_id} /><NumberField help="Lower numbers win deterministic arbitration when deployments compete before a ticker campaign is owned." label="Priority" minimum={0} onChange={(priority) => replaceStrategyDeployment({ ...deployment, priority })} step={1} value={deployment.priority} /><BooleanField help="Keep the strategy runtime active without any Canvas. Canvas may attach later using the run ID." label="Headless runtime" onChange={(headless) => replaceStrategyDeployment({ ...deployment, headless })} value={deployment.headless} /></div><ModeSelector modes={deployment.modes} onChange={(modes) => replaceStrategyDeployment({ ...deployment, modes })} /><fieldset className="configuration-choice-list"><legend>Execution routes</legend>{availableRoutes.map((route) => { const checked = deployment.execution_route_ids.includes(route.execution_route_id); return <label key={route.execution_route_id}><input checked={checked} onChange={(event) => replaceStrategyDeployment({ ...deployment, execution_route_ids: event.target.checked ? [...deployment.execution_route_ids, route.execution_route_id] : deployment.execution_route_ids.filter((value) => value !== route.execution_route_id) })} type="checkbox" /><span><strong>{route.name}</strong><small>{accountName(draft.accounts, route.account_key)} · {route.modes.map(readableLabel).join(", ")}</small></span></label>; })}</fieldset></AbstractionCard>;
+        })}</div>
+      </ConfigGroup>
       <ConfigGroup action={<button className="button compact" onClick={addAccount} type="button"><Plus size={14} /> Add account</button>} summary="Account settings are reusable across published Strategies." title="Configured accounts">
         <div className="account-config-grid">
           {section.bindings.map((account, index) => (
@@ -5673,13 +5759,13 @@ function RevisionPublisher({ approved, draft, guided = false, label, onLabelChan
     <div className="configuration-revision-layout">
       <section className="configuration-publish-card">
         <header><div><span>{guided ? "Ready for use" : "Completion gate"}</span><strong>{guided ? "Publish this setup" : "Publish the application release"}</strong></div><Send size={18} /></header>
-        <p>{guided ? "Publishing makes this complete setup available to new runs. Existing runs keep the release they started with." : "A release freezes every referenced Strategy, capability setting, compiled runtime contract, mandate, policy, OMS configuration, account binding, and Canvas. Active runs keep the release they started with."}</p>
+        <p>{guided ? "Publishing makes this execution setup available to new runs. Existing runs keep the release they started with." : "A release freezes every referenced Strategy, Session Profile, Execution Route, mandate, policy, OMS configuration, and account binding. Canvas profiles remain separately versioned presentation and may attach to a run by run ID."}</p>
         <div className="configuration-publish-proof">
           {visibleChecks.map((check) => <span data-ready={check.ready ? "true" : "false"} key={check.label}>{check.ready ? <CheckCircle2 size={14} /> : <TriangleAlert size={14} />} {guided ? publishCheckLabel(check.label) : check.label} · {check.detail}</span>)}
-          <span data-ready={canvas.ready ? "true" : "false"}><CheckCircle2 size={14} /> {guided ? "Workspace layout" : "Canvas"} · {canvas.containerCount} containers</span>
+          <span data-ready="true"><CheckCircle2 size={14} /> Optional Canvas · {canvas.containerCount} saved containers</span>
         </div>
         <label><span>Release label <FieldHelp content="Use a short operational label that explains what this release is intended to validate." /></span><input onChange={(event) => onLabelChange(event.target.value)} placeholder="Replay strategy-studio acceptance" value={label} /></label>
-        <button className="button primary" disabled={!draft || !configurationReady || !canvas.ready || !label.trim() || publishing} onClick={onPublish} type="button"><Send size={15} /> {publishing ? "Publishing…" : "Publish release"}</button>
+        <button className="button primary" disabled={!draft || !configurationReady || !label.trim() || publishing} onClick={onPublish} type="button"><Send size={15} /> {publishing ? "Publishing…" : "Publish release"}</button>
       </section>
       <section className="configuration-history-card">
         <header><span>Immutable history</span><strong>{revisions.length} approved release{revisions.length === 1 ? "" : "s"}</strong></header>
@@ -6160,6 +6246,7 @@ function cloneApprovedDraft(approved: Revision, current: Draft): Draft {
     oms: deepClone(approved.payload.oms),
     portfolio: deepClone(approved.payload.portfolio),
     schema_version: approved.payload.schema_version,
+    sessions: deepClone(approved.payload.sessions ?? current.sessions),
     strategy: deepClone(approved.payload.strategy),
     trading_actions: deepClone(approved.payload.trading_actions),
     updated_at: current.updated_at,

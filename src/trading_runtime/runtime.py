@@ -93,7 +93,7 @@ class TradingRuntime:
         self,
         config: RunConfig,
         broker: BrokerAdapter,
-        strategy: AutomaticStrategy,
+        strategy: AutomaticStrategy | None,
         journal: TradingJournal,
         risk: RiskAuthority | None = None,
         intent_planner: RuntimeIntentPlanner | None = None,
@@ -101,10 +101,17 @@ class TradingRuntime:
         portfolio_configuration: Mapping[str, Any] | None = None,
         control_plane: TradingControlPlane | None = None,
     ) -> None:
-        if config.strategy_id != strategy.strategy_id or config.strategy_revision != strategy.revision:
+        if strategy is not None and (
+            config.strategy_id != strategy.strategy_id
+            or config.strategy_revision != strategy.revision
+        ):
             raise ValueError("Run strategy identity does not match loaded strategy revision")
-        if config.mode in {RunMode.BACKTEST, RunMode.BACKTEST_DEBUG} and not strategy.automatic:
-            raise ValueError("Only automatic strategies can be backtested")
+        if strategy is None and (config.strategy_id or config.strategy_revision):
+            raise ValueError("Manual runs cannot declare a Strategy identity")
+        if config.mode in {RunMode.BACKTEST, RunMode.BACKTEST_DEBUG} and (
+            strategy is None or not strategy.automatic
+        ):
+            raise ValueError("Backtest and Debug require an automatic Strategy")
         self.config = config
         self.run_id = config.resolved_run_id()
         self.broker = broker
@@ -266,12 +273,13 @@ class TradingRuntime:
         if executions and self._canonical_session is not None:
             await self._canonical_session.reconcile()
             self.portfolio.synchronize_canonical(self._canonical_session.projector.snapshot())
-        for account_id in self.config.account_ids:
-            evaluation = normalize_strategy_evaluation(
-                await self.strategy.on_event(event, account_id)
-            )
-            self._record_strategy_signals(evaluation, account_id)
-            await self._execute_intents(evaluation, account_id, event)
+        if self.strategy is not None:
+            for account_id in self.config.account_ids:
+                evaluation = normalize_strategy_evaluation(
+                    await self.strategy.on_event(event, account_id)
+                )
+                self._record_strategy_signals(evaluation, account_id)
+                await self._execute_intents(evaluation, account_id, event)
         cursor = f"{event.ts.astimezone(timezone.utc).isoformat()}|{event.sequence}|{event.kind}"
         self._latest_checkpoint_cursor = cursor
         if self.processed_events % self.config.checkpoint_interval_events == 0:

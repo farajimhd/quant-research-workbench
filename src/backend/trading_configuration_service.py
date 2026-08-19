@@ -69,7 +69,7 @@ from src.trading_runtime.strategy_campaign import validate_campaign_policy
 from src.trading_runtime.taxonomy import StrategyTaxonomy
 
 
-CONFIGURATION_SCHEMA_VERSION = 37
+CONFIGURATION_SCHEMA_VERSION = 38
 MARKET_DISCOVERY_MATERIALIZATION_RUN_ID = "market-discovery:materialized-configuration"
 _CONFIGURATION_BASE_CACHE_LOCK = threading.RLock()
 _CONFIGURATION_BASE_CACHE: tuple[str, float, dict[str, Any] | None] = ("", 0.0, None)
@@ -78,6 +78,7 @@ CONFIGURATION_SECTIONS = {
     "trading_actions",
     "market_discovery",
     "run_plans",
+    "sessions",
     "portfolio",
     "oms",
     "accounts",
@@ -399,14 +400,6 @@ def publish_configuration(
     normalized_label = label.strip()
     if not normalized_label:
         raise ValueError("An approval label is required")
-    if not canvas_revision.strip() or not canvas_profile:
-        raise ValueError("Publishing requires the current configured Canvas profile")
-    container_count = sum(
-        len(list(dict(state).get("openIds") or []))
-        for state in dict(canvas_profile.get("workspaceStates") or {}).values()
-    )
-    if container_count <= 0:
-        raise ValueError("Publishing requires at least one open container in the Canvas profile")
     if not isinstance(configuration, dict):
         raise TypeError("Publishing requires the complete session configuration")
     base_configuration = configuration_base()
@@ -478,15 +471,16 @@ def publish_configuration(
     # Publishing freezes every Run Plan and its referenced graph without replacing
     # the reusable Portfolio, OMS, account, or discovery catalogs.
     runtime_candidate = deepcopy(draft_candidate)
-    _compile_run_plans(
-        runtime_candidate,
-        canvas_profile_id=canvas_revision.strip(),
-    )
+    _compile_run_plans(runtime_candidate)
     _validate_draft(runtime_candidate)
     payload = {
         **runtime_candidate,
         "schema_version": CONFIGURATION_SCHEMA_VERSION,
-        "canvas": {"revision": canvas_revision.strip(), "profile": deepcopy(canvas_profile)},
+        "canvas": {
+            "revision": canvas_revision.strip(),
+            "profile": deepcopy(canvas_profile),
+            "execution_authority": False,
+        },
     }
     encoded = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
     content_hash = hashlib.sha256(encoded).hexdigest()
@@ -512,6 +506,42 @@ def replay_configuration_snapshot(run_plan_id: str = "") -> dict[str, Any]:
     return approved_runtime_configuration_snapshot("replay")
 
 
+def approved_session_configuration_snapshot(
+    mode: str,
+    *,
+    session_profile_id: str = "",
+    execution_route_id: str = "",
+) -> dict[str, Any]:
+    """Pin a strategy-free Session Profile for manual or semi-automatic operation."""
+
+    if mode not in SUPPORTED_MODES:
+        raise ValueError(f"Unsupported trading configuration mode: {mode}")
+    approved = approved_configuration(required=True)
+    assert approved is not None
+    model = _migrate_draft(deepcopy(approved["payload"]))
+    _validate_draft(model)
+    resolved = resolve_session_configuration(
+        model,
+        mode=mode,
+        session_profile_id=session_profile_id,
+        execution_route_id=execution_route_id,
+    )
+    return {
+        "revision_id": approved["revision_id"],
+        "revision": approved["revision"],
+        "label": approved["label"],
+        "content_hash": approved["content_hash"],
+        "approved_at": approved["approved_at"],
+        "schema_version": CONFIGURATION_SCHEMA_VERSION,
+        "mode": mode,
+        "execution_mode": "manual",
+        "session_profile_id": str(resolved["session_profile"]["session_profile_id"]),
+        "execution_route_id": str(resolved["execution_routes"][0]["execution_route_id"]),
+        "configuration_model": model,
+        "payload": resolved,
+    }
+
+
 def backtest_configuration_snapshot(run_plan_id: str = "") -> dict[str, Any]:
     if run_plan_id:
         return approved_runtime_configuration_snapshot("backtest", run_plan_id=run_plan_id)
@@ -535,8 +565,6 @@ def approved_runtime_configuration_snapshot(
     assert approved is not None
     model = _migrate_draft(deepcopy(approved["payload"]))
     _validate_draft(model)
-    if not model.get("canvas", {}).get("profile"):
-        raise ValueError("The approved trading configuration does not contain a Canvas profile")
     runtimes = resolve_runtime_configurations(model, mode=mode)
     if not runtimes:
         raise ValueError(f"No enabled Strategy Run Plan supports {mode}")
@@ -551,7 +579,9 @@ def approved_runtime_configuration_snapshot(
     if selected is None:
         raise ValueError(f"No enabled Strategy Run Plan named {run_plan_id} supports {mode}")
     runtime_payload = deepcopy(selected)
-    runtime_payload["canvas"] = deepcopy(model["canvas"])
+    if dict(model.get("canvas") or {}).get("profile"):
+        # Returned for optional presentation attachment only.
+        runtime_payload["canvas"] = deepcopy(model["canvas"])
     return {
         "revision_id": approved["revision_id"],
         "revision": approved["revision"],
@@ -637,26 +667,129 @@ def resolve_runtime_configurations(
     resolve_broker_ids: bool = True,
 ) -> list[dict[str, Any]]:
     migrated = _migrate_draft(model)
+    enabled_route_ids = {
+        str(row.get("execution_route_id") or "")
+        for row in dict(migrated["sessions"]).get("execution_routes") or []
+        if bool(row.get("enabled", True))
+    }
     eligible = [
         row
-        for row in dict(migrated["run_plans"]).get("plans") or []
+        for row in dict(migrated["sessions"]).get("strategy_deployments") or []
         if bool(row.get("enabled", True))
-        and mode in set(row.get("allowed_environments") or [])
+        and mode in set(row.get("modes") or [])
+        and bool({str(value) for value in row.get("execution_route_ids") or []} & enabled_route_ids)
     ]
     eligible.sort(
         key=lambda row: (
-            str(row.get("run_plan_id") or ""),
+            str(row.get("strategy_deployment_id") or ""),
         )
     )
     return [
         resolve_runtime_configuration(
             migrated,
             mode=mode,
-            run_plan_id=str(row["run_plan_id"]),
+            deployment_id=str(row["strategy_deployment_id"]),
             resolve_broker_ids=resolve_broker_ids,
         )
         for row in eligible
     ]
+
+
+def resolve_session_configuration(
+    model: dict[str, Any],
+    *,
+    mode: str,
+    session_profile_id: str = "",
+    execution_route_id: str = "",
+    resolve_broker_ids: bool = True,
+) -> dict[str, Any]:
+    """Resolve manual/semi-automatic execution without requiring a Strategy."""
+
+    model = _migrate_draft(model)
+    sessions = dict(model["sessions"])
+    profiles = [
+        row for row in sessions.get("profiles") or []
+        if bool(row.get("enabled", True)) and mode in set(row.get("modes") or [])
+    ]
+    profile = next(
+        (row for row in profiles if str(row.get("session_profile_id") or "") == session_profile_id),
+        profiles[0] if profiles and not session_profile_id else None,
+    )
+    if profile is None:
+        raise ValueError(f"No enabled Session Profile supports {mode}")
+    if not bool(dict(profile.get("manual_authority") or {}).get("enabled", False)):
+        raise ValueError(f"Session Profile {profile.get('name')} does not permit manual execution")
+    route_ids = {str(value) for value in profile.get("execution_route_ids") or []}
+    routes = [
+        row for row in sessions.get("execution_routes") or []
+        if str(row.get("execution_route_id") or "") in route_ids
+        and str(row.get("session_profile_id") or "") == str(profile.get("session_profile_id") or "")
+        and mode in set(row.get("modes") or [])
+        and bool(row.get("enabled", True))
+        and bool(row.get("manual_enabled", False))
+    ]
+    profile_default_route_id = str(profile.get("default_execution_route_id") or "")
+    requested_route_id = execution_route_id or (
+        profile_default_route_id
+        if any(str(row.get("execution_route_id") or "") == profile_default_route_id for row in routes)
+        else str(routes[0].get("execution_route_id") or "") if routes else ""
+    )
+    selected_routes = [
+        row for row in routes
+        if not requested_route_id or str(row.get("execution_route_id") or "") == requested_route_id
+    ]
+    if not selected_routes:
+        raise ValueError(f"Session Profile {profile.get('name')} requires an enabled Execution Route")
+    selected_account_keys = {str(row.get("account_key") or "") for row in selected_routes}
+    bindings = [
+        _runtime_account_binding(dict(row)) if resolve_broker_ids else deepcopy(dict(row))
+        for row in dict(model["accounts"]).get("bindings") or []
+        if str(row.get("account_key") or "") in selected_account_keys
+        and bool(row.get("enabled", True))
+        and mode in set(row.get("modes") or [])
+    ]
+    if {str(row.get("account_key") or "") for row in bindings} != selected_account_keys:
+        raise ValueError(f"Session Profile {profile.get('name')} selected an account unavailable for {mode}")
+    selected_mandate_ids = {str(row.get("portfolio_mandate_id") or "") for row in selected_routes}
+    mandates = [
+        deepcopy(row) for row in dict(model["portfolio"]).get("mandates") or []
+        if str(row.get("mandate_id") or "") in selected_mandate_ids
+        and bool(row.get("enabled", True))
+    ]
+    oms_ids = {str(row.get("oms_profile_id") or "") for row in selected_routes}
+    if len(oms_ids) != 1:
+        raise ValueError("One manual Session cannot mix OMS profiles across execution routes")
+    oms_profile = next(
+        (
+            row for row in dict(model["oms"]).get("profiles") or []
+            if str(row.get("profile_id") or "") == next(iter(oms_ids))
+        ),
+        None,
+    )
+    if oms_profile is None:
+        raise ValueError("Execution Route references an unknown OMS profile")
+    return {
+        "schema_version": CONFIGURATION_SCHEMA_VERSION,
+        "execution_principal": {
+            "kind": "session",
+            "id": str(profile["session_profile_id"]),
+        },
+        "session_profile": deepcopy(profile),
+        "execution_routes": deepcopy(selected_routes),
+        "portfolio": {
+            "policies": deepcopy(dict(model["portfolio"]).get("policies") or []),
+            "groups": deepcopy(dict(model["portfolio"]).get("groups") or []),
+            "mandates": mandates,
+        },
+        "oms": {
+            **deepcopy(dict(oms_profile.get("settings") or {})),
+            "profile_id": str(oms_profile.get("profile_id") or ""),
+            "profile_revision": int(oms_profile.get("revision") or 1),
+            "execution_policies": deepcopy(dict(model["oms"]).get("execution_policies") or []),
+            "protection_profiles": deepcopy(dict(model["oms"]).get("protection_profiles") or []),
+        },
+        "accounts": {"bindings": bindings},
+    }
 
 
 def resolve_runtime_configuration(
@@ -667,22 +800,60 @@ def resolve_runtime_configuration(
     deployment_id: str = "",
     resolve_broker_ids: bool = True,
 ) -> dict[str, Any]:
-    """Resolve one approved Strategy Run Plan into shared runtime contracts."""
+    """Resolve a Strategy Deployment through its Session Profile and Execution Routes."""
 
     model = _migrate_draft(model)
-    run_plans = list(dict(model["run_plans"]).get("plans") or [])
-    eligible = [
-        row for row in run_plans
+    sessions = dict(model["sessions"])
+    enabled_route_ids = {
+        str(row.get("execution_route_id") or "")
+        for row in sessions.get("execution_routes") or []
         if bool(row.get("enabled", True))
-        and mode in set(row.get("allowed_environments") or [])
+    }
+    deployments = [
+        row for row in sessions.get("strategy_deployments") or []
+        if bool(row.get("enabled", True))
+        and mode in set(row.get("modes") or [])
+        and bool({str(value) for value in row.get("execution_route_ids") or []} & enabled_route_ids)
     ]
-    requested_id = run_plan_id or deployment_id
+    requested_id = deployment_id or run_plan_id
+    deployment = next(
+        (
+            row for row in deployments
+            if str(row.get("strategy_deployment_id") or "") == requested_id
+            or str(row.get("run_plan_id") or "") == requested_id
+        ),
+        deployments[0] if deployments and not requested_id else None,
+    )
+    if deployment is None:
+        raise ValueError(f"No enabled Strategy Deployment supports {mode}")
+    run_plans = list(dict(model["run_plans"]).get("plans") or [])
     run_plan = next(
-        (row for row in eligible if str(row.get("run_plan_id")) == requested_id),
-        eligible[0] if eligible else None,
+        (row for row in run_plans if str(row.get("run_plan_id") or "") == str(deployment.get("run_plan_id") or "")),
+        None,
     )
     if run_plan is None:
-        raise ValueError(f"No enabled Strategy Run Plan supports {mode}")
+        raise ValueError(f"Strategy Deployment {deployment.get('strategy_deployment_id')} references an unknown Run Plan")
+    session_profile = next(
+        (
+            row for row in sessions.get("profiles") or []
+            if str(row.get("session_profile_id") or "") == str(deployment.get("session_profile_id") or "")
+        ),
+        None,
+    )
+    if session_profile is None:
+        raise ValueError(f"Strategy Deployment {deployment.get('strategy_deployment_id')} references an unknown Session Profile")
+    if not bool(session_profile.get("enabled", True)) or mode not in set(session_profile.get("modes") or []):
+        raise ValueError(f"Strategy Deployment {deployment.get('strategy_deployment_id')} requires an enabled Session Profile for {mode}")
+    selected_route_ids = {str(value) for value in deployment.get("execution_route_ids") or []}
+    execution_routes = [
+        row for row in sessions.get("execution_routes") or []
+        if str(row.get("execution_route_id") or "") in selected_route_ids
+        and str(row.get("session_profile_id") or "") == str(session_profile.get("session_profile_id") or "")
+        and mode in set(row.get("modes") or [])
+        and bool(row.get("enabled", True))
+    ]
+    if not execution_routes:
+        raise ValueError(f"Strategy Deployment {deployment.get('strategy_deployment_id')} requires an enabled Execution Route")
     profiles = {
         str(row["profile_id"]): row
         for row in dict(model["strategy"]).get("profiles") or []
@@ -700,15 +871,19 @@ def resolve_runtime_configuration(
         str(row["profile_id"]): row
         for row in dict(model["oms"]).get("profiles") or []
     }
-    oms = oms_profiles.get(str(run_plan.get("oms_profile_id") or ""))
+    oms_profile_ids = {str(row.get("oms_profile_id") or "") for row in execution_routes}
+    if len(oms_profile_ids) != 1:
+        raise ValueError("One Strategy Deployment cannot mix OMS profiles across execution routes")
+    oms = oms_profiles.get(next(iter(oms_profile_ids)))
     if oms is None:
-        raise ValueError(f"Run Plan {run_plan.get('run_plan_id')} references an unknown OMS profile")
+        raise ValueError(f"Execution Route references an unknown OMS profile")
+    selected_mandate_ids = {str(value) for value in deployment.get("portfolio_mandate_ids") or []}
     mandates = [
         row for row in dict(model["portfolio"]).get("mandates") or []
-        if str(row.get("run_plan_id")) == str(run_plan["run_plan_id"])
+        if str(row.get("mandate_id") or "") in selected_mandate_ids
         and bool(row.get("enabled", True))
     ]
-    account_keys = {str(row["account_key"]) for row in mandates}
+    account_keys = {str(row.get("account_key") or "") for row in execution_routes}
     bindings = [
         (
             _runtime_account_binding(dict(row))
@@ -717,7 +892,11 @@ def resolve_runtime_configuration(
         )
         for row in dict(model["accounts"]).get("bindings") or []
         if str(row.get("account_key")) in account_keys
+        and bool(row.get("enabled", True))
+        and mode in set(row.get("modes") or [])
     ]
+    if {str(row.get("account_key") or "") for row in bindings} != account_keys:
+        raise ValueError(f"Strategy Deployment {deployment.get('strategy_deployment_id')} selected an account unavailable for {mode}")
     mandate_by_account = {str(row["account_key"]): row for row in mandates}
     assignment_mode = str(mandates[0].get("assignment_mode") or "single") if mandates else "single"
     total_weight = sum(float(row.get("allocation_weight") or 1.0) for row in mandates)
@@ -804,7 +983,7 @@ def resolve_runtime_configuration(
         assignment["strategy_revision"] = int(profile["definition_revision"])
         assignment["profile_id"] = str(profile["profile_id"])
         assignment["run_plan_id"] = str(run_plan["run_plan_id"])
-        assignment["deployment_id"] = str(run_plan["run_plan_id"])
+        assignment["deployment_id"] = str(deployment["strategy_deployment_id"])
         assignment["universe_id"] = str(run_plan["universe_id"])
         assignment["book_id"] = str(run_plan["book_id"])
         assignment["side"] = side
@@ -843,7 +1022,9 @@ def resolve_runtime_configuration(
     return {
         "schema_version": CONFIGURATION_SCHEMA_VERSION,
         "run_plan": deepcopy(run_plan),
-        "deployment": {**deepcopy(run_plan), "deployment_id": str(run_plan["run_plan_id"])},
+        "deployment": {**deepcopy(deployment), "deployment_id": str(deployment["strategy_deployment_id"])},
+        "session_profile": deepcopy(session_profile),
+        "execution_routes": deepcopy(execution_routes),
         "universe": universe,
         "campaign_policy": deepcopy(
             _effective_campaign_policy(run_plan)
@@ -3119,6 +3300,137 @@ def _strategy_definition_summary(definition: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _session_profile_id_for_modes(modes: set[str]) -> str:
+    return "live-session" if modes.intersection({"paper", "live"}) else "historical-session"
+
+
+def _build_session_configuration(
+    bindings: list[dict[str, Any]],
+    mandates: list[dict[str, Any]],
+    run_plans: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Build the execution authority graph independently from Canvas presentation."""
+
+    profiles = [
+        {
+            "session_profile_id": "historical-session",
+            "name": "Historical simulation",
+            "description": "Deterministic Replay, Backtest, and Debug clock with simulated execution.",
+            "enabled": True,
+            "modes": ["replay", "backtest", "backtest_debug"],
+            "market_data": {"authority": "qmd_history", "clock": "event_time"},
+            "manual_authority": {"enabled": True, "maximum": "confirm"},
+            "recovery_policy": "resume_from_checkpoint",
+            "execution_route_ids": [],
+            "default_execution_route_id": "",
+        },
+        {
+            "session_profile_id": "live-session",
+            "name": "Live market session",
+            "description": "Real-time QMD clock with explicit Paper or Live broker execution routes.",
+            "enabled": True,
+            "modes": ["paper", "live"],
+            "market_data": {"authority": "qmd_live", "clock": "exchange_time"},
+            "manual_authority": {"enabled": True, "maximum": "confirm"},
+            "recovery_policy": "resume_from_checkpoint",
+            "execution_route_ids": [],
+            "default_execution_route_id": "",
+        },
+    ]
+    profile_by_id = {str(row["session_profile_id"]): row for row in profiles}
+    routes: list[dict[str, Any]] = []
+    manual_mandates: list[dict[str, Any]] = []
+    for binding in bindings:
+        modes = set(binding.get("modes") or [])
+        session_profile_id = _session_profile_id_for_modes(modes)
+        account_key = str(binding.get("account_key") or "")
+        if not account_key:
+            continue
+        route_id = f"{session_profile_id}:{account_key}"
+        manual_mandate_id = f"session:{session_profile_id}:{account_key}"
+        routes.append({
+            "execution_route_id": route_id,
+            "name": f"{binding.get('name') or account_key} route",
+            "session_profile_id": session_profile_id,
+            "account_key": account_key,
+            "portfolio_mandate_id": manual_mandate_id,
+            "oms_profile_id": "adaptive-regular",
+            "modes": sorted(modes & set(profile_by_id[session_profile_id]["modes"])),
+            "enabled": bool(binding.get("enabled", True)),
+            "manual_enabled": True,
+            "system_generated": True,
+        })
+        profile = profile_by_id[session_profile_id]
+        profile["execution_route_ids"].append(route_id)
+        if not profile["default_execution_route_id"]:
+            profile["default_execution_route_id"] = route_id
+        manual_mandates.append({
+            "mandate_id": manual_mandate_id,
+            "principal_kind": "session",
+            "principal_id": session_profile_id,
+            "run_plan_id": "",
+            "account_key": account_key,
+            "enabled": bool(binding.get("enabled", True)),
+            "maximum_cash_fraction": 1.0,
+            "maximum_planned_risk_fraction": 0.01,
+            "maximum_positions": 10,
+            "assignment_mode": "single",
+            "allocation_weight": 1.0,
+            "maximum_action_authority": "confirm",
+            "allow_replacement": False,
+            "minimum_replacement_improvement_pct": 20.0,
+        })
+
+    routes_by_session: dict[str, list[dict[str, Any]]] = {}
+    for route in routes:
+        routes_by_session.setdefault(str(route["session_profile_id"]), []).append(route)
+    mandate_ids_by_plan: dict[str, list[str]] = {}
+    for mandate in mandates:
+        mandate_ids_by_plan.setdefault(str(mandate.get("run_plan_id") or ""), []).append(
+            str(mandate.get("mandate_id") or "")
+        )
+    deployments: list[dict[str, Any]] = []
+    for plan in run_plans:
+        plan_modes = set(plan.get("allowed_environments") or [])
+        for profile in profiles:
+            session_profile_id = str(profile["session_profile_id"])
+            eligible_modes = sorted(plan_modes.intersection(set(profile.get("modes") or [])))
+            if not eligible_modes:
+                continue
+            plan_id = str(plan.get("run_plan_id") or "")
+            deployment_id = f"{plan_id}:{session_profile_id}"
+            eligible_routes = [
+                row for row in routes_by_session.get(session_profile_id, [])
+                if str(row.get("account_key") or "") in {
+                    str(mandate.get("account_key") or "")
+                    for mandate in mandates
+                    if str(mandate.get("run_plan_id") or "") == plan_id
+                }
+            ]
+            deployments.append({
+                "strategy_deployment_id": deployment_id,
+                "name": str(plan.get("name") or plan_id),
+                "description": str(plan.get("description") or ""),
+                "run_plan_id": plan_id,
+                "session_profile_id": session_profile_id,
+                "execution_route_ids": [str(row["execution_route_id"]) for row in eligible_routes],
+                "portfolio_mandate_ids": list(mandate_ids_by_plan.get(plan_id, [])),
+                "enabled": bool(plan.get("enabled", True)),
+                "enablement": deepcopy(plan.get("enablement") or {"state": "enabled", "scope": "persistent"}),
+                "activation": deepcopy(plan.get("activation") or {}),
+                "headless": True,
+                "priority": 100,
+                "modes": eligible_modes,
+                "system_generated": True,
+            })
+    return {
+        "profiles": profiles,
+        "execution_routes": routes,
+        "strategy_deployments": deployments,
+        "manual_mandates": manual_mandates,
+    }
+
+
 def _default_draft() -> dict[str, Any]:
     definition = get_strategy_definition(STRATEGY_ID, STRATEGY_REVISION)
     parameters = deepcopy(definition.get("config", {}).get("parameters") or default_long_momentum_parameters())
@@ -3313,6 +3625,7 @@ def _default_draft() -> dict[str, Any]:
             "activation": {"event_policy": "new_occurrences", "watchlist_policy": "any_selected"},
             "enablement": {"state": "disabled", "scope": "persistent", "effective_session": ""},
             "canvas_profile_id": "current-canvas",
+            "canvas_profile_id": "current-canvas",
             "data_plan_ids": _default_data_plan_ids(),
             "source_revision_policy": "require_complete",
             "book_id": "default",
@@ -3350,6 +3663,41 @@ def _default_draft() -> dict[str, Any]:
         }
         for plan in list(live_run_plans)
     )
+    replay_run_plan = {
+        "run_plan_id": "balanced-replay",
+        "name": "Balanced Replay",
+        "description": "Approved balanced strategy prepared for historical simulation.",
+        "profile_id": "long-momentum-balanced",
+        "oms_profile_id": "adaptive-regular",
+        "universe_id": "configured-watch-universe",
+        "watchlist_ids": ["core-candidates"],
+        "signal_stream_ids": ["price-squeeze-5m"],
+        "activation": {"event_policy": "new_occurrences", "watchlist_policy": "any_selected"},
+        "enablement": {"state": "enabled", "scope": "persistent", "effective_session": ""},
+        "canvas_profile_id": "current-canvas",
+        "data_plan_ids": _default_data_plan_ids(),
+        "source_revision_policy": "require_complete",
+        "book_id": "default",
+        "action_authority": _default_action_authority(),
+        "campaign_lifecycle": _default_campaign_policy(),
+        "safety_supervisor": _default_safety_supervisor(),
+        "mandate_ids": [row["mandate_id"] for row in mandates],
+        "enabled": True,
+        "allowed_environments": ["replay", "backtest", "backtest_debug"],
+        "runtime_assignments": runtime_assignments,
+    }
+    all_run_plans = [replay_run_plan, *live_run_plans]
+    sessions = _build_session_configuration(bindings, mandates, all_run_plans)
+    deployment_by_plan = {
+        str(row.get("run_plan_id") or ""): str(row.get("strategy_deployment_id") or "")
+        for row in sessions.get("strategy_deployments") or []
+    }
+    for mandate in mandates:
+        run_plan_id = str(mandate.get("run_plan_id") or "")
+        if run_plan_id:
+            mandate["principal_kind"] = "strategy_deployment"
+            mandate["principal_id"] = deployment_by_plan.get(run_plan_id, run_plan_id)
+    mandates.extend(sessions.pop("manual_mandates"))
     _normalize_market_discovery_interval_specs(discovery)
     discovery["data_field_plan"] = compile_data_field_plan(discovery)
     return {
@@ -3368,37 +3716,9 @@ def _default_draft() -> dict[str, Any]:
         "market_discovery": discovery,
         "run_plans": {
             "universes": universes,
-            "plans": [{
-                "run_plan_id": "balanced-replay",
-                "name": "Balanced Replay",
-                "description": "Approved balanced strategy prepared for historical simulation.",
-                "profile_id": "long-momentum-balanced",
-                "oms_profile_id": "adaptive-regular",
-                "universe_id": "configured-watch-universe",
-                "watchlist_ids": ["core-candidates"],
-                "signal_stream_ids": ["price-squeeze-5m"],
-                "activation": {
-                    "event_policy": "new_occurrences",
-                    "watchlist_policy": "any_selected",
-                },
-                "enablement": {
-                    "state": "enabled",
-                    "scope": "persistent",
-                    "effective_session": "",
-                },
-                "canvas_profile_id": "current-canvas",
-                "data_plan_ids": _default_data_plan_ids(),
-                "source_revision_policy": "require_complete",
-                "book_id": "default",
-                "action_authority": _default_action_authority(),
-                "campaign_lifecycle": _default_campaign_policy(),
-                "safety_supervisor": _default_safety_supervisor(),
-                "mandate_ids": [row["mandate_id"] for row in mandates],
-                "enabled": True,
-                "allowed_environments": ["replay", "backtest", "backtest_debug"],
-                "runtime_assignments": runtime_assignments,
-            }, *live_run_plans]
+            "plans": all_run_plans,
         },
+        "sessions": sessions,
         "portfolio": {"policies": [policy], "groups": [], "mandates": mandates},
         "oms": {
             "profiles": [_default_oms_profile()],
@@ -3934,7 +4254,9 @@ def _validate_market_discovery(
         raise ValueError("Market Discovery Data Field plan is stale; save the configuration again")
 
 
-def _compile_run_plans(candidate: dict[str, Any], *, canvas_profile_id: str) -> None:
+def _compile_run_plans(
+    candidate: dict[str, Any], *, canvas_profile_id: str = ""
+) -> None:
     """Freeze user-authored Run Plans without copying deployment authority into Strategy."""
 
     discovery = dict(candidate.get("market_discovery") or {})
@@ -4020,7 +4342,9 @@ def _compile_run_plans(candidate: dict[str, Any], *, canvas_profile_id: str) -> 
         }
         compiled_universes.append(universe)
         run_plan["universe_id"] = universe_id
-        run_plan["canvas_profile_id"] = canvas_profile_id
+        if canvas_profile_id:
+            # Legacy metadata remains readable, but is not runtime authority.
+            run_plan["canvas_profile_id"] = canvas_profile_id
         run_plan["mandate_ids"] = [
             str(row.get("mandate_id") or "")
             for row in mandates
@@ -4392,7 +4716,10 @@ def _validate_draft(draft: dict[str, Any], *, require_runtime_ready: bool = True
     mandates = list(dict(draft["portfolio"]).get("mandates") or [])
     mandate_ids = _unique_ids(mandates, "mandate_id", "Strategy-account mandate")
     for mandate in mandates:
-        if str(mandate.get("run_plan_id") or "") not in run_plan_ids:
+        principal_kind = str(mandate.get("principal_kind") or "strategy_deployment")
+        if principal_kind not in {"session", "strategy_deployment"}:
+            raise ValueError(f"Mandate {mandate.get('mandate_id')} has an unsupported principal kind")
+        if principal_kind == "strategy_deployment" and str(mandate.get("run_plan_id") or "") not in run_plan_ids:
             raise ValueError(f"Mandate {mandate.get('mandate_id')} references an unknown Run Plan")
         if str(mandate.get("account_key") or "") not in account_keys:
             raise ValueError(f"Mandate {mandate.get('mandate_id')} references an unknown account")
@@ -4452,8 +4779,6 @@ def _validate_draft(draft: dict[str, Any], *, require_runtime_ready: bool = True
             raise ValueError(f"Run Plan {run_plan.get('run_plan_id')} enablement state is unsupported")
         if str(enablement.get("scope") or "") not in {"current_session", "persistent"}:
             raise ValueError(f"Run Plan {run_plan.get('run_plan_id')} enablement scope is unsupported")
-        if not str(run_plan.get("canvas_profile_id") or "").strip():
-            raise ValueError(f"Run Plan {run_plan.get('run_plan_id')} requires a Canvas profile")
         data_plan_ids = dict(run_plan.get("data_plan_ids") or {})
         if any(mode not in data_plan_ids for mode in environments):
             raise ValueError(f"Run Plan {run_plan.get('run_plan_id')} requires a data plan for every enabled environment")
@@ -4533,28 +4858,118 @@ def _validate_draft(draft: dict[str, Any], *, require_runtime_ready: bool = True
                 raise ValueError(f"Runtime assignment {assignment.get('assignment_id')} references an unknown account")
             if not str(assignment.get("ticker") or "").strip() or int(assignment.get("conid") or 0) <= 0:
                 raise ValueError(f"Runtime assignment {assignment.get('assignment_id')} requires ticker and conid")
+    sessions = dict(draft.get("sessions") or {})
+    session_profiles = list(sessions.get("profiles") or [])
+    routes = list(sessions.get("execution_routes") or [])
+    deployments = list(sessions.get("strategy_deployments") or [])
+    if require_runtime_ready and not session_profiles:
+        raise ValueError("At least one Session Profile is required")
+    session_profile_ids = _unique_ids(session_profiles, "session_profile_id", "Session Profile")
+    route_ids = _unique_ids(routes, "execution_route_id", "Execution Route")
+    deployment_ids = _unique_ids(deployments, "strategy_deployment_id", "Strategy Deployment")
+    route_by_id = {str(row.get("execution_route_id") or ""): row for row in routes}
+    profile_by_id = {str(row.get("session_profile_id") or ""): row for row in session_profiles}
+    account_by_key = {str(row.get("account_key") or ""): row for row in accounts}
+    mandate_by_id = {str(row.get("mandate_id") or ""): row for row in mandates}
+    for profile in session_profiles:
+        modes = set(profile.get("modes") or [])
+        if not modes or not modes <= SUPPORTED_MODES:
+            raise ValueError(f"Session Profile {profile.get('name')} has unsupported modes")
+        references = {str(value) for value in profile.get("execution_route_ids") or []}
+        if references - route_ids:
+            raise ValueError(f"Session Profile {profile.get('name')} references unknown execution routes")
+        default_route_id = str(profile.get("default_execution_route_id") or "")
+        if default_route_id and default_route_id not in references:
+            raise ValueError(f"Session Profile {profile.get('name')} has an invalid default execution route")
+    for route in routes:
+        route_profile_id = str(route.get("session_profile_id") or "")
+        if route_profile_id not in session_profile_ids:
+            raise ValueError(f"Execution Route {route.get('name')} references an unknown Session Profile")
+        route_id = str(route.get("execution_route_id") or "")
+        if route_id not in {str(value) for value in profile_by_id[route_profile_id].get("execution_route_ids") or []}:
+            raise ValueError(f"Execution Route {route.get('name')} is not owned by its Session Profile")
+        account_key = str(route.get("account_key") or "")
+        if account_key not in account_keys:
+            raise ValueError(f"Execution Route {route.get('name')} references an unknown account")
+        route_modes = set(route.get("modes") or [])
+        if not route_modes:
+            raise ValueError(f"Execution Route {route.get('name')} requires at least one mode")
+        if not route_modes <= set(profile_by_id[route_profile_id].get("modes") or []):
+            raise ValueError(f"Execution Route {route.get('name')} has modes outside its Session Profile")
+        if str(route.get("oms_profile_id") or "") not in oms_ids:
+            raise ValueError(f"Execution Route {route.get('name')} references an unknown OMS profile")
+        mandate_id = str(route.get("portfolio_mandate_id") or "")
+        if mandate_id not in mandate_ids:
+            raise ValueError(f"Execution Route {route.get('name')} references an unknown Portfolio mandate")
+        mandate = mandate_by_id[mandate_id]
+        if str(mandate.get("account_key") or "") != account_key:
+            raise ValueError(f"Execution Route {route.get('name')} account and Portfolio mandate disagree")
+        if str(mandate.get("principal_kind") or "") != "session" or str(mandate.get("principal_id") or "") != route_profile_id:
+            raise ValueError(f"Execution Route {route.get('name')} requires a mandate owned by its Session Profile")
+    for deployment in deployments:
+        deployment_id = str(deployment.get("strategy_deployment_id") or "")
+        if str(deployment.get("run_plan_id") or "") not in run_plan_ids:
+            raise ValueError(f"Strategy Deployment {deployment_id} references an unknown Run Plan")
+        if str(deployment.get("session_profile_id") or "") not in session_profile_ids:
+            raise ValueError(f"Strategy Deployment {deployment_id} references an unknown Session Profile")
+        deployment_route_ids = {str(value) for value in deployment.get("execution_route_ids") or []}
+        if deployment_route_ids - route_ids:
+            raise ValueError(f"Strategy Deployment {deployment_id} references unknown execution routes")
+        deployment_profile_id = str(deployment.get("session_profile_id") or "")
+        if any(str(route_by_id[route_id].get("session_profile_id") or "") != deployment_profile_id for route_id in deployment_route_ids):
+            raise ValueError(f"Strategy Deployment {deployment_id} mixes Execution Routes from another Session Profile")
+        if not set(deployment.get("modes") or []) <= set(profile_by_id[deployment_profile_id].get("modes") or []):
+            raise ValueError(f"Strategy Deployment {deployment_id} has modes outside its Session Profile")
+        deployment_mandate_ids = {str(value) for value in deployment.get("portfolio_mandate_ids") or []}
+        if deployment_mandate_ids - mandate_ids:
+            raise ValueError(f"Strategy Deployment {deployment_id} requires at least one account mandate")
+        deployment_mandates = [mandate_by_id[mandate_id] for mandate_id in deployment_mandate_ids]
+        if bool(deployment.get("enabled", True)) and not deployment_mandates:
+            raise ValueError(f"Strategy Deployment {deployment_id} requires at least one account mandate")
+        route_account_keys = {str(route_by_id[route_id].get("account_key") or "") for route_id in deployment_route_ids}
+        if {str(row.get("account_key") or "") for row in deployment_mandates} != route_account_keys:
+            raise ValueError(f"Strategy Deployment {deployment_id} routes and Portfolio mandates disagree")
+        if any(
+            str(row.get("principal_kind") or "") != "strategy_deployment"
+            or str(row.get("principal_id") or "") != deployment_id
+            for row in deployment_mandates
+        ):
+            raise ValueError(f"Strategy Deployment {deployment_id} requires mandates owned by that deployment")
+    known_principals = session_profile_ids | deployment_ids
+    for mandate in mandates:
+        principal_id = str(mandate.get("principal_id") or "")
+        if principal_id and principal_id not in known_principals:
+            raise ValueError(f"Mandate {mandate.get('mandate_id')} references an unknown execution principal")
     if require_runtime_ready:
-        mandate_pairs = {
-            (str(mandate.get("account_key") or ""), str(mandate.get("run_plan_id") or ""))
-            for mandate in mandates
-            if bool(mandate.get("enabled", True))
+        legacy_mandate_pairs = {
+            (str(row.get("account_key") or ""), str(row.get("run_plan_id") or ""))
+            for row in mandates
+            if bool(row.get("enabled", True)) and str(row.get("run_plan_id") or "")
         }
         for account in accounts:
             if not bool(account.get("enabled", True)):
                 continue
             for mode in account.get("modes") or []:
                 eligible = any(
+                    bool(route.get("enabled", True))
+                    and str(route.get("account_key") or "") == str(account.get("account_key") or "")
+                    and mode in set(
+                        next(
+                            row.get("modes") or []
+                            for row in session_profiles
+                            if str(row.get("session_profile_id") or "") == str(route.get("session_profile_id") or "")
+                        )
+                    )
+                    for route in routes
+                ) or any(
                     bool(run_plan.get("enabled", True))
                     and mode in set(run_plan.get("allowed_environments") or [])
-                    and (
-                        str(account.get("account_key") or ""),
-                        str(run_plan.get("run_plan_id") or ""),
-                    ) in mandate_pairs
+                    and (str(account.get("account_key") or ""), str(run_plan.get("run_plan_id") or "")) in legacy_mandate_pairs
                     for run_plan in run_plans
                 )
                 if not eligible:
                     raise ValueError(
-                        f"Account {account.get('account_key')} requires an enabled {mode} Run Plan mandate"
+                        f"Account {account.get('account_key')} requires an enabled {mode} Execution Route"
                     )
     for raw in dict(draft["portfolio"]).get("groups") or []:
         group = PortfolioGroupPolicy(
@@ -5519,6 +5934,106 @@ def _migrate_draft(raw: dict[str, Any]) -> dict[str, Any]:
             result["accounts"]["bindings"],
             str(result["portfolio"]["policies"][0]["policy_id"]),
         )
+        derived_sessions = _build_session_configuration(
+            list(result["accounts"].get("bindings") or []),
+            list(result["portfolio"].get("mandates") or []),
+            list(result["run_plans"].get("plans") or []),
+        )
+        manual_mandates = derived_sessions.pop("manual_mandates")
+        existing_mandate_ids = {
+            str(row.get("mandate_id") or "")
+            for row in result["portfolio"].get("mandates") or []
+        }
+        result["portfolio"]["mandates"].extend(
+            row for row in manual_mandates
+            if str(row.get("mandate_id") or "") not in existing_mandate_ids
+        )
+        if source_schema_version < 38 or not isinstance(result.get("sessions"), dict):
+            result["sessions"] = derived_sessions
+        else:
+            sessions = result["sessions"]
+            derived_route_ids = {
+                str(row.get("execution_route_id") or "")
+                for row in derived_sessions["execution_routes"]
+            }
+            sessions["execution_routes"] = [
+                row for row in sessions.setdefault("execution_routes", [])
+                if not bool(row.get("system_generated", True))
+                or str(row.get("execution_route_id") or "") in derived_route_ids
+            ]
+            derived_deployment_ids = {
+                str(row.get("strategy_deployment_id") or "")
+                for row in derived_sessions["strategy_deployments"]
+            }
+            sessions["strategy_deployments"] = [
+                row for row in sessions.setdefault("strategy_deployments", [])
+                if not bool(row.get("system_generated", True))
+                or str(row.get("strategy_deployment_id") or "") in derived_deployment_ids
+            ]
+            for profile in sessions.setdefault("profiles", []):
+                profile["execution_route_ids"] = [
+                    str(value) for value in profile.get("execution_route_ids") or []
+                    if str(value) in {
+                        str(row.get("execution_route_id") or "")
+                        for row in sessions["execution_routes"]
+                    }
+                ]
+            for key, identity_key in (
+                ("profiles", "session_profile_id"),
+                ("execution_routes", "execution_route_id"),
+                ("strategy_deployments", "strategy_deployment_id"),
+            ):
+                rows = sessions.setdefault(key, [])
+                by_identity = {str(row.get(identity_key) or ""): row for row in rows}
+                for derived in derived_sessions[key]:
+                    identity = str(derived.get(identity_key) or "")
+                    current = by_identity.get(identity)
+                    if current is None:
+                        rows.append(deepcopy(derived))
+                        by_identity[identity] = rows[-1]
+                        continue
+                    if key == "profiles":
+                        current["execution_route_ids"] = list(dict.fromkeys([
+                            *list(current.get("execution_route_ids") or []),
+                            *list(derived.get("execution_route_ids") or []),
+                        ]))
+                        if str(current.get("default_execution_route_id") or "") not in current["execution_route_ids"]:
+                            current["default_execution_route_id"] = str(derived.get("default_execution_route_id") or "")
+                    elif key == "execution_routes":
+                        if bool(current.get("system_generated", True)):
+                            current["modes"] = deepcopy(derived.get("modes") or [])
+                            current["system_generated"] = True
+                        else:
+                            current.setdefault("modes", deepcopy(derived.get("modes") or []))
+                    elif key == "strategy_deployments":
+                        if bool(current.get("system_generated", True)):
+                            current["execution_route_ids"] = deepcopy(derived.get("execution_route_ids") or [])
+                            current["portfolio_mandate_ids"] = deepcopy(derived.get("portfolio_mandate_ids") or [])
+                            current["modes"] = deepcopy(derived.get("modes") or [])
+                            current["system_generated"] = True
+                        else:
+                            current["execution_route_ids"] = list(dict.fromkeys([
+                                *list(current.get("execution_route_ids") or []),
+                                *list(derived.get("execution_route_ids") or []),
+                            ]))
+                            current["portfolio_mandate_ids"] = list(dict.fromkeys([
+                                *list(current.get("portfolio_mandate_ids") or []),
+                                *list(derived.get("portfolio_mandate_ids") or []),
+                            ]))
+                            current["modes"] = deepcopy(current.get("modes") or derived.get("modes") or [])
+        deployments = list(dict(result.get("sessions") or {}).get("strategy_deployments") or [])
+        deployments_by_plan = {
+            str(row.get("run_plan_id") or ""): str(row.get("strategy_deployment_id") or "")
+            for row in deployments
+        }
+        for mandate in result["portfolio"].get("mandates") or []:
+            run_plan_id = str(mandate.get("run_plan_id") or "")
+            if run_plan_id:
+                mandate["principal_kind"] = "strategy_deployment"
+                mandate["principal_id"] = deployments_by_plan.get(run_plan_id, run_plan_id)
+            else:
+                mandate.setdefault("principal_kind", "session")
+                mandate.setdefault("principal_id", "")
         return result
     if not isinstance(raw.get("strategy"), dict) or "strategy_id" not in dict(raw.get("strategy") or {}):
         return deepcopy(raw)

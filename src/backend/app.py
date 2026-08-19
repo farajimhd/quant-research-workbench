@@ -217,6 +217,7 @@ from src.backend.trading_runtime_service import (
     trading_taxonomy_catalog,
 )
 from src.backend.trading_configuration_service import (
+    approved_session_configuration_snapshot,
     approved_canvas_profile,
     approved_configuration,
     backtest_configuration_snapshot,
@@ -900,6 +901,9 @@ class ReplayPreflightRequest(BaseModel):
     tickers: list[str] = Field(default_factory=list, max_length=100)
     configuration_revision_id: str = Field(default="", max_length=128)
     run_plan_id: str = Field(default="", max_length=128)
+    execution_mode: str = Field(default="strategy", pattern="^(manual|strategy)$")
+    session_profile_id: str = Field(default="", max_length=128)
+    execution_route_id: str = Field(default="", max_length=256)
 
 
 class ReplayRunCreateRequest(ReplayPreflightRequest):
@@ -953,8 +957,8 @@ class ReplayTradeProposalSubmit(BaseModel):
 
 class TradingConfigurationPublishSubmit(BaseModel):
     label: str = Field(min_length=1, max_length=200)
-    canvas_revision: str = Field(min_length=1, max_length=128)
-    canvas_profile: dict[str, Any]
+    canvas_revision: str = Field(default="", max_length=128)
+    canvas_profile: dict[str, Any] = Field(default_factory=dict)
     configuration: dict[str, Any]
     run_plan_id: str = Field(default="", max_length=200)
     strategy_profile_id: str = Field(default="", max_length=200)
@@ -4825,7 +4829,13 @@ def trading_replay_preflight(payload: ReplayPreflightRequest) -> dict[str, Any]:
         return _blocked_trading_launch_preflight("replay")
     try:
         configuration_revision = (
-            replay_configuration_snapshot(payload.run_plan_id)
+            approved_session_configuration_snapshot(
+                "replay",
+                session_profile_id=payload.session_profile_id,
+                execution_route_id=payload.execution_route_id,
+            )
+            if payload.execution_mode == "manual"
+            else replay_configuration_snapshot(payload.run_plan_id)
             if payload.run_plan_id
             else replay_configuration_snapshot()
         )
@@ -4841,6 +4851,9 @@ def trading_replay_preflight(payload: ReplayPreflightRequest) -> dict[str, Any]:
             assignment_ids=tuple(payload.assignment_ids),
             tickers=tuple(payload.tickers),
             configuration_revision=configuration_revision,
+            execution_mode=payload.execution_mode,
+            session_profile_id=payload.session_profile_id,
+            execution_route_id=payload.execution_route_id,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -4850,7 +4863,13 @@ def trading_replay_preflight(payload: ReplayPreflightRequest) -> dict[str, Any]:
 async def trading_replay_run_create(payload: ReplayRunCreateRequest) -> dict[str, Any]:
     try:
         configuration_revision = (
-            replay_configuration_snapshot(payload.run_plan_id)
+            approved_session_configuration_snapshot(
+                "replay",
+                session_profile_id=payload.session_profile_id,
+                execution_route_id=payload.execution_route_id,
+            )
+            if payload.execution_mode == "manual"
+            else replay_configuration_snapshot(payload.run_plan_id)
             if payload.run_plan_id
             else replay_configuration_snapshot()
         )
@@ -4863,6 +4882,7 @@ async def trading_replay_run_create(payload: ReplayRunCreateRequest) -> dict[str
             assignment_ids=tuple(payload.assignment_ids),
             tickers=tuple(payload.tickers),
             configuration_revision=configuration_revision,
+            execution_mode=payload.execution_mode,
         )
         preflight = replay_preflight(
             session_date=definition.session_date,
@@ -4871,6 +4891,9 @@ async def trading_replay_run_create(payload: ReplayRunCreateRequest) -> dict[str
             assignment_ids=definition.assignment_ids,
             tickers=definition.tickers,
             configuration_revision=configuration_revision,
+            execution_mode=definition.execution_mode,
+            session_profile_id=payload.session_profile_id,
+            execution_route_id=payload.execution_route_id,
         )
         if not preflight["ready"]:
             raise ValueError("Replay dependencies changed after approval; run preflight again")

@@ -1618,7 +1618,7 @@ function RealLiveTradingGate({
     <div className="mode-launch-authority">
       <span>Configuration authority</span>
       <strong>{preflightStatus ? "Approved release" : "Resolving approved release"}</strong>
-      <small>Run Plans, strategies, account bindings, and risk controls remain owned by their configuration pages.</small>
+      <small>The Session Profile selects market data, clock, account, Portfolio, and OMS routes. Enabled Strategy Deployments run independently and may be observed here.</small>
       <div><button className="button secondary compact" onClick={() => { window.location.hash = "#revision-configuration"; }} type="button">Approved Releases</button><button className="button secondary compact" onClick={() => { window.location.hash = "#account-configuration"; }} type="button">Accounts &amp; Sessions</button></div>
     </div>
   </TradingModeLaunch>;

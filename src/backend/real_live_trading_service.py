@@ -219,7 +219,7 @@ def real_live_preflight(account_type: str = "paper", account_keys: str | list[st
 def _approved_configuration_checks(
     accounts: list[RealLiveAccount],
 ) -> list[dict[str, Any]]:
-    from src.backend.trading_configuration_service import approved_configuration
+    from src.backend.trading_configuration_service import approved_configuration, _migrate_draft
 
     approved = approved_configuration()
     if approved is None:
@@ -234,34 +234,44 @@ def _approved_configuration_checks(
                 "label": "Review Approved Releases",
             },
         }]
-    payload = dict(approved.get("payload") or {})
+    payload = _migrate_draft(dict(approved.get("payload") or {}))
     bindings = {
         str(row.get("account_key") or ""): row
         for row in dict(payload.get("accounts") or {}).get("bindings") or []
     }
-    run_plan_section = dict(payload.get("run_plans") or payload.get("assignments") or {})
-    run_plans = list(run_plan_section.get("plans") or run_plan_section.get("deployments") or [])
-    mandate_pairs = {
-        (
-            str(row.get("account_key") or ""),
-            str(row.get("run_plan_id") or row.get("deployment_id") or ""),
-        )
-        for row in dict(payload.get("portfolio") or {}).get("mandates") or []
-        if bool(row.get("enabled", True))
+    sessions = dict(payload.get("sessions") or {})
+    profiles = {
+        str(row.get("session_profile_id") or ""): row
+        for row in sessions.get("profiles") or []
     }
+    routes = list(sessions.get("execution_routes") or [])
+    legacy_deployments = list(dict(payload.get("assignments") or {}).get("deployments") or [])
+    legacy_mandates = list(dict(payload.get("portfolio") or {}).get("mandates") or [])
     checks: list[dict[str, Any]] = []
     for account in accounts:
         binding = bindings.get(account.account_key)
         mode_ready = any(
-            bool(row.get("enabled", True))
-            and account.trading_mode
-            in set(row.get("allowed_environments") or row.get("modes") or [])
-            and (
-                account.account_key,
-                str(row.get("run_plan_id") or row.get("deployment_id") or ""),
-            ) in mandate_pairs
-            for row in run_plans
+            bool(route.get("enabled", True))
+            and bool(route.get("manual_enabled", True))
+            and str(route.get("account_key") or "") == account.account_key
+            and account.trading_mode in set(
+                profiles.get(str(route.get("session_profile_id") or ""), {}).get("modes") or []
+            )
+            for route in routes
         )
+        if not mode_ready:
+            eligible_legacy_ids = {
+                str(row.get("run_plan_id") or row.get("deployment_id") or "")
+                for row in legacy_deployments
+                if bool(row.get("enabled", True))
+                and account.trading_mode in set(row.get("allowed_environments") or row.get("modes") or [])
+            }
+            mode_ready = any(
+                bool(row.get("enabled", True))
+                and str(row.get("account_key") or "") == account.account_key
+                and str(row.get("run_plan_id") or row.get("deployment_id") or "") in eligible_legacy_ids
+                for row in legacy_mandates
+            )
         configured_account_id = str(binding.get("source_account_id") or "").strip() if binding else ""
         if binding and not configured_account_id:
             configured_account_id = os.environ.get(str(binding.get("source_account_env") or ""), "").strip()
@@ -277,9 +287,9 @@ def _approved_configuration_checks(
             "label": f"{account.label} approved configuration",
             "status": "ready" if ready else "blocked",
             "message": (
-                f"Release {approved.get('revision')} binds this {account.trading_mode} account and Run Plan."
+                f"Release {approved.get('revision')} binds this {account.trading_mode} account through an Execution Route."
                 if ready
-                else "The approved release must bind the exact broker account and include an enabled Run Plan for this mode."
+                else "The approved release must bind the exact broker account to an enabled Session Profile and Execution Route."
             ),
             "required": True,
             "action": None if ready else {
@@ -975,6 +985,7 @@ def check_live_strategy_runtime(mode: str) -> dict[str, Any]:
             "configured_mode": configured_mode,
             "state": snapshot.get("state"),
             "queued": snapshot.get("queued", 0),
+            "active_runs": snapshot.get("active_runs") or [],
         },
     }
 def check_ibkr(account: RealLiveAccount) -> list[dict[str, Any]]:

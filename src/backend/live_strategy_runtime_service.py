@@ -4,6 +4,7 @@ import asyncio
 import concurrent.futures
 import os
 import queue
+import sys
 import threading
 from copy import deepcopy
 from dataclasses import replace
@@ -51,6 +52,7 @@ class LiveStrategyRuntimeSupervisor:
             "processed": 0,
             "failed": 0,
             "last_error": "",
+            "active_runs": [],
         }
 
     @property
@@ -59,7 +61,10 @@ class LiveStrategyRuntimeSupervisor:
         return value if value in {"paper", "live"} else "disabled"
 
     def start(self) -> None:
-        if os.environ.get("PYTEST_CURRENT_TEST") or self.mode == "disabled":
+        running_under_test = bool(os.environ.get("PYTEST_CURRENT_TEST")) or any(
+            name == "tests" or name.startswith("tests.") for name in sys.modules
+        )
+        if running_under_test or self.mode == "disabled":
             with self._lock:
                 self._status.update({"running": False, "state": "disabled", "mode": self.mode})
             return
@@ -179,7 +184,23 @@ class LiveStrategyRuntimeSupervisor:
 
     def snapshot(self) -> dict[str, Any]:
         with self._lock:
-            return dict(self._status)
+            return deepcopy(self._status)
+
+    def _update_active_runs(self, runtimes: dict[str, dict[str, Any]]) -> None:
+        active_runs = []
+        for principal_id, state in sorted(runtimes.items()):
+            runtime = state["runtime"]
+            active_runs.append({
+                "run_id": runtime.config.run_id,
+                "principal_id": principal_id,
+                "execution_mode": "manual" if state.get("strategy") is None else "strategy",
+                "strategy_id": runtime.config.strategy_id,
+                "strategy_revision": runtime.config.strategy_revision,
+                "account_ids": list(runtime.config.account_ids),
+                "configuration_revision_id": str(state.get("revision_id") or ""),
+            })
+        with self._lock:
+            self._status["active_runs"] = active_runs
 
     def _run_thread(self) -> None:
         asyncio.run(self._run())
@@ -231,6 +252,7 @@ class LiveStrategyRuntimeSupervisor:
                     await state["runtime"].finish(status="stopped")
                 except Exception:
                     pass
+            self._update_active_runs({})
 
     async def _process(
         self,
@@ -265,6 +287,7 @@ class LiveStrategyRuntimeSupervisor:
         if state is None:
             state = await _build_runtime(snapshot, broker)
             runtimes[run_plan_id] = state
+            self._update_active_runs(runtimes)
         else:
             _upsert_runtime_assignments(state, runtime_configuration)
 
@@ -348,14 +371,28 @@ class LiveStrategyRuntimeSupervisor:
         runtimes: dict[str, dict[str, Any]],
     ) -> tuple[IbkrClientPortalAdapter, dict[str, Any]]:
         from src.backend.real_live_trading_service import ibkr_base_url
-        from src.backend.trading_configuration_service import approved_runtime_configuration_snapshot
+        from src.backend.trading_configuration_service import (
+            approved_runtime_configuration_snapshot,
+            approved_session_configuration_snapshot,
+        )
 
         mode = self.mode
-        snapshot = approved_runtime_configuration_snapshot(
-            mode, run_plan_id=str(delivery.get("run_plan_id") or "")
+        requested_principal = str(delivery.get("run_plan_id") or "")
+        manual = requested_principal.startswith("session:")
+        snapshot = (
+            approved_session_configuration_snapshot(
+                mode,
+                session_profile_id=requested_principal.removeprefix("session:"),
+            )
+            if manual
+            else approved_runtime_configuration_snapshot(mode, run_plan_id=requested_principal)
         )
         configuration = dict(snapshot["payload"])
-        run_plan_id = str(configuration["run_plan"]["run_plan_id"])
+        run_plan_id = (
+            f"session:{configuration['session_profile']['session_profile_id']}"
+            if manual
+            else str(configuration["run_plan"]["run_plan_id"])
+        )
         state = runtimes.get(run_plan_id)
         revision_id = str(snapshot.get("revision_id") or "")
         if state is not None and str(state.get("revision_id") or "") != revision_id:
@@ -365,9 +402,10 @@ class LiveStrategyRuntimeSupervisor:
         if broker is None:
             broker = IbkrClientPortalAdapter(ibkr_base_url(), verify_tls=False, mode=TradingMode(mode))
         if state is None:
-            state = await _build_runtime(snapshot, broker)
+            state = await (_build_manual_runtime(snapshot, broker) if manual else _build_runtime(snapshot, broker))
             runtimes[run_plan_id] = state
-        else:
+            self._update_active_runs(runtimes)
+        elif not manual:
             _upsert_runtime_assignments(state, configuration)
         return broker, state
 
@@ -483,6 +521,61 @@ async def _build_runtime(
         "revision_id": str(snapshot.get("revision_id") or ""),
         "runtime": runtime,
         "strategy": strategy,
+        "planner": planner,
+        "bindings": bindings,
+        "positions_cache": {},
+    }
+
+
+async def _build_manual_runtime(
+    snapshot: dict[str, Any], broker: IbkrClientPortalAdapter
+) -> dict[str, Any]:
+    configuration = dict(snapshot["payload"])
+    session_profile = dict(configuration["session_profile"])
+    session_profile_id = str(session_profile["session_profile_id"])
+    bindings = {
+        str(row.get("account_key") or ""): row
+        for row in dict(configuration.get("accounts") or {}).get("bindings") or []
+    }
+    account_ids = tuple(
+        dict.fromkeys(
+            str(row.get("source_account_id") or "").strip()
+            for row in bindings.values()
+            if bool(row.get("enabled", True)) and str(row.get("source_account_id") or "").strip()
+        )
+    )
+    if not account_ids:
+        raise ValueError("Enabled Session Profile has no resolved broker account")
+    run_id = f"{snapshot['mode']}:session:{session_profile_id}:{datetime.now(NEW_YORK).date().isoformat()}"
+    planner = RuntimeIbkrStrategyOrderPlanner(
+        {},
+        strategy_id="manual",
+        strategy_revision=0,
+        run_id=run_id,
+        limit_offset_bps=float(dict(configuration.get("oms") or {}).get("limit_offset_bps") or 5),
+    )
+    runtime = TradingRuntime(
+        RunConfig(
+            mode=RunMode(str(snapshot["mode"])),
+            strategy_id="",
+            strategy_revision=0,
+            account_ids=account_ids,
+            anchor_date=datetime.now(NEW_YORK).date(),
+            run_id=run_id,
+            run_plan_id=session_profile_id,
+            safety_supervisor_enabled=True,
+        ),
+        broker,
+        None,
+        trading_journal(),
+        intent_planner=planner,
+        portfolio_configuration=dict(snapshot["configuration_model"]),
+    )
+    await runtime.initialize()
+    return {
+        "revision_id": str(snapshot.get("revision_id") or ""),
+        "runtime": runtime,
+        "strategy": None,
         "planner": planner,
         "bindings": bindings,
         "positions_cache": {},

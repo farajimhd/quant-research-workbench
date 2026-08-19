@@ -103,6 +103,19 @@ def portfolio_profiles_from_configuration(
         str(row.get("run_plan_id") or row.get("deployment_id") or ""): row
         for row in (run_plan_section.get("plans") or run_plan_section.get("deployments") or [])
     }
+    session_section = dict(configuration.get("sessions") or {})
+    session_modes = {
+        str(row.get("session_profile_id") or ""): {
+            str(value) for value in row.get("modes") or []
+        }
+        for row in session_section.get("profiles") or []
+    }
+    deployment_modes = {
+        str(row.get("strategy_deployment_id") or ""): {
+            str(value) for value in row.get("modes") or []
+        }
+        for row in session_section.get("strategy_deployments") or []
+    }
     mandates_by_account: dict[str, list[dict[str, Any]]] = {}
     for mandate in portfolio.get("mandates") or []:
         if bool(mandate.get("enabled", True)):
@@ -141,10 +154,24 @@ def portfolio_profiles_from_configuration(
         allocations: dict[str, float] = {}
         strategy_mandates: dict[str, dict[str, Any]] = {}
         for mandate in mandates_by_account.get(account_key, []):
+            principal_kind = str(mandate.get("principal_kind") or "strategy_deployment")
+            principal_id = str(mandate.get("principal_id") or "")
             run_plan_id = str(
                 mandate.get("run_plan_id") or mandate.get("deployment_id") or ""
             )
             run_plan = run_plans.get(run_plan_id) or {}
+            if principal_kind == "session":
+                if mode not in session_modes.get(principal_id, set()):
+                    continue
+                allocations[principal_id] = float(mandate.get("maximum_cash_fraction") or 0)
+                strategy_mandates[principal_id] = mandate
+                continue
+            if principal_id in deployment_modes:
+                if mode not in deployment_modes[principal_id]:
+                    continue
+                allocations[principal_id] = float(mandate.get("maximum_cash_fraction") or 0)
+                strategy_mandates[principal_id] = mandate
+                continue
             if (
                 not bool(run_plan.get("enabled", True))
                 or mode
