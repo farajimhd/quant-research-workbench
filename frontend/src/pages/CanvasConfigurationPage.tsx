@@ -733,30 +733,8 @@ function useCanvasHistoricalChart(symbol: string, timeframe: CanvasChartTimefram
   const historyCursorRef = useRef<ChartHistoryCursor | null>(null);
   const historyRequestRef = useRef(false);
   const historyAbortRef = useRef<AbortController | null>(null);
-  const prefetchAbortRef = useRef<AbortController | null>(null);
-  const prefetchedHistoryRef = useRef<{ key: string; payload: QmdBarHistory } | null>(null);
   const requestKeyRef = useRef("");
   const loadedCutoffRef = useRef(0);
-
-  const prefetchEarlier = useCallback((requestKey: string, cursor: ChartHistoryCursor | null) => {
-    const ticker = symbol.trim().toUpperCase();
-    const request = earlierChartHistoryRequest(cursor, ticker, timeframe, indicatorColumns);
-    if (!request || requestKeyRef.current !== requestKey) return;
-    prefetchAbortRef.current?.abort();
-    prefetchedHistoryRef.current = null;
-    const controller = new AbortController();
-    prefetchAbortRef.current = controller;
-    api<QmdBarHistory>(`/api/trading/canvas-chart/history${query(request.params)}`, { signal: controller.signal, timeoutMs: 120000 })
-      .then((payload) => {
-        if (!controller.signal.aborted && requestKeyRef.current === requestKey) {
-          prefetchedHistoryRef.current = { key: request.key, payload };
-        }
-      })
-      .catch(() => undefined)
-      .finally(() => {
-        if (prefetchAbortRef.current === controller) prefetchAbortRef.current = null;
-      });
-  }, [indicatorColumns, symbol, timeframe]);
 
   const loadEarlier = useCallback(() => {
     if (!enabled) return;
@@ -771,14 +749,7 @@ function useCanvasHistoricalChart(symbol: string, timeframe: CanvasChartTimefram
     historyAbortRef.current = controller;
     historyRequestRef.current = true;
     setState((current) => ({ ...current, historyError: "", loadingEarlier: true }));
-    const prefetched = prefetchedHistoryRef.current?.key === request.key
-      ? prefetchedHistoryRef.current.payload
-      : null;
-    prefetchAbortRef.current?.abort();
-    if (prefetched) prefetchedHistoryRef.current = null;
-    const page = prefetched
-      ? Promise.resolve(prefetched)
-      : api<QmdBarHistory>(`/api/trading/canvas-chart/history${query(request.params)}`, { signal: controller.signal, timeoutMs: 120000 });
+    const page = api<QmdBarHistory>(`/api/trading/canvas-chart/history${query(request.params)}`, { signal: controller.signal, timeoutMs: 120000 });
     page
       .then((payload) => {
         if (requestKeyRef.current !== requestKey) return;
@@ -804,7 +775,6 @@ function useCanvasHistoricalChart(symbol: string, timeframe: CanvasChartTimefram
             structureLevelHistory: mergeStructureLevelHistory(current.structureLevelHistory, payload.structure_level_history),
           };
         });
-        prefetchEarlier(requestKey, historyCursorRef.current);
       })
       .catch((reason) => {
         if (controller.signal.aborted) return;
@@ -816,7 +786,7 @@ function useCanvasHistoricalChart(symbol: string, timeframe: CanvasChartTimefram
         if (historyAbortRef.current === controller) historyAbortRef.current = null;
         if (requestKeyRef.current === requestKey) setState((current) => ({ ...current, loadingEarlier: false }));
       });
-  }, [cutoffMs, enabled, indicatorColumns, prefetchEarlier, rowBudget, symbol, timeframe]);
+  }, [cutoffMs, enabled, indicatorColumns, rowBudget, symbol, timeframe]);
 
   useEffect(() => {
     if (!enabled) return;
@@ -825,8 +795,6 @@ function useCanvasHistoricalChart(symbol: string, timeframe: CanvasChartTimefram
     const ticker = symbol.trim().toUpperCase();
     const requestKey = `${ticker}:${timeframe}:${indicatorColumns}`;
     historyAbortRef.current?.abort();
-    prefetchAbortRef.current?.abort();
-    prefetchedHistoryRef.current = null;
     historyAbortRef.current = historyController;
     requestKeyRef.current = requestKey;
     setReadyKey("");
@@ -870,7 +838,6 @@ function useCanvasHistoricalChart(symbol: string, timeframe: CanvasChartTimefram
             };
           });
           if (!progressive) {
-            prefetchEarlier(requestKey, historyCursorRef.current);
             return null;
           }
           return api<QmdBarHistory>(`/api/trading/canvas-chart/history${query({ ...requestParams, indicator_columns: indicatorColumns, stage: "full" })}`, { signal: historyController.signal, timeoutMs: 120000 });
@@ -899,7 +866,6 @@ function useCanvasHistoricalChart(symbol: string, timeframe: CanvasChartTimefram
               structureLevelHistory: mergeStructureLevelHistory(current.structureLevelHistory, payload.structure_level_history),
             };
           });
-          prefetchEarlier(requestKey, historyCursorRef.current);
         })
         .catch((reason) => {
           if (historyController.signal.aborted) return;
@@ -919,10 +885,8 @@ function useCanvasHistoricalChart(symbol: string, timeframe: CanvasChartTimefram
       active = false;
       if (requestKeyRef.current === requestKey) requestKeyRef.current = "";
       historyController.abort();
-      prefetchAbortRef.current?.abort();
-      prefetchedHistoryRef.current = null;
     };
-  }, [enabled, indicatorColumns, pointInTime, prefetchEarlier, rowBudget, sessionDate, symbol, timeframe]);
+  }, [enabled, indicatorColumns, pointInTime, rowBudget, sessionDate, symbol, timeframe]);
 
   useEffect(() => {
     if (!enabled || liveTail) return;

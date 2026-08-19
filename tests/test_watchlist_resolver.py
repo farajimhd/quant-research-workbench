@@ -141,9 +141,9 @@ class WatchlistResolverTest(unittest.TestCase):
             watchlist,
             rule_sets,
             [
-                {"ticker": "AAA", "news_labeled": True, "news_sentiment_score": -0.4},
-                {"ticker": "BBB", "news_labeled": True, "news_sentiment_score": -0.8},
-                {"ticker": "CCC", "news_labeled": False, "news_sentiment_score": -0.9},
+                {"ticker": "AAA", "news_forecast_eligible": True, "news_composite_sentiment": "negative", "news_negative_strength": 1},
+                {"ticker": "BBB", "news_forecast_eligible": True, "news_composite_sentiment": "negative", "news_negative_strength": 3},
+                {"ticker": "CCC", "news_forecast_eligible": False, "news_composite_sentiment": "negative", "news_negative_strength": 3},
             ],
         )
         self.assertEqual([row["ticker"] for row in resolved], ["BBB", "AAA"])
@@ -238,10 +238,8 @@ class WatchlistResolverTest(unittest.TestCase):
         ])
         self.assertEqual(masks["relative-and-status"], [True, False])
 
-    def test_pending_integration_templates_are_disabled_and_fail_closed(self) -> None:
+    def test_only_pending_integration_templates_are_disabled_and_fail_closed(self) -> None:
         for watchlist_id in {
-            "news-bullish-sentiment",
-            "news-bearish-sentiment",
             "sec-bullish-sentiment",
             "sec-bearish-sentiment",
         }:
@@ -256,6 +254,9 @@ class WatchlistResolverTest(unittest.TestCase):
                 ),
                 [],
             )
+        for watchlist_id in {"news-bullish-sentiment", "news-bearish-sentiment"}:
+            self.assertEqual(self.watchlists[watchlist_id]["availability"], "available")
+            self.assertTrue(self.watchlists[watchlist_id]["enabled"])
         self.assertEqual(self.watchlists["past-upcoming-ipos"]["availability"], "available")
         self.assertTrue(self.watchlists["past-upcoming-ipos"]["enabled"])
 

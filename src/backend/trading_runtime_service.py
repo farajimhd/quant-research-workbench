@@ -17,6 +17,7 @@ from pipelines.reference_data.clickhouse_load_market_references import build_con
 from src.backend.qmd_gateway_client import (
     ENRICHED_QMD_TIMEFRAMES,
     QmdProductRequest,
+    QmdServiceError,
     qmd_history_base_url as historical_gateway_base_url,
     qmd_history_get_json as _historical_gateway_get,
     qmd_history_websocket_url as historical_gateway_websocket_url,
@@ -75,6 +76,19 @@ def trading_journal() -> TradingJournal:
     runtime_root = Path(os.environ.get("TRADING_RUNTIME_ROOT", str(DEFAULT_TRADING_RUNTIME_ROOT)))
     path = Path(configured) if configured else runtime_root / "journal.sqlite3"
     return TradingJournal(path)
+
+
+def close_trading_journal() -> None:
+    """Close and evict the process-owned journal, if it was opened.
+
+    The journal is intentionally shared for the process lifetime.  Explicit
+    eviction must close the SQLite connection first so application shutdown
+    and tests that replace the runtime root do not leak file handles.
+    """
+
+    if trading_journal.cache_info().currsize:
+        trading_journal().close()
+        trading_journal.cache_clear()
 
 
 def save_strategy_definition(payload: dict[str, Any]) -> dict[str, Any]:
@@ -905,14 +919,21 @@ def _can_use_recent_live_chart_session(session_date: date, as_of: str | None) ->
     bar rather than every point-in-time revision inside that bar.
     """
 
-    if not _is_recent_live_chart_session(session_date):
-        return False
     if not as_of:
-        return True
+        return _is_recent_live_chart_session(session_date)
     clock = datetime.fromisoformat(as_of.replace("Z", "+00:00"))
     if clock.tzinfo is None:
         raise ValueError("as_of must include a timezone")
     local_clock = clock.astimezone(ZoneInfo("America/New_York"))
+    # A Canvas clock anchored inside this session can safely probe q_live even
+    # when the wall clock has advanced beyond its short retention window.  The
+    # query below is bounded strictly before the requested clock, so only
+    # completed bars are exposed; an empty recent-table result falls back to
+    # QMD History's archive/recent source plan.
+    if local_clock.date() == session_date:
+        return True
+    if not _is_recent_live_chart_session(session_date):
+        return False
     if local_clock.date() > session_date:
         return True
     if local_clock.date() < session_date:
@@ -989,20 +1010,33 @@ def _recent_live_bar_history(
     row_limit: int,
     stage: str,
 ) -> dict[str, Any] | None:
-    before_event_timestamp_us: int | None = None
+    before_candidates: list[datetime] = []
+    if as_of:
+        as_of_clock = datetime.fromisoformat(as_of.replace("Z", "+00:00"))
+        if as_of_clock.tzinfo is None:
+            raise ValueError("as_of must include a timezone")
+        before_candidates.append(as_of_clock)
     if before_bar:
         cursor = datetime.fromisoformat(before_bar.replace("Z", "+00:00"))
         if cursor.tzinfo is None:
             raise ValueError("before_bar must include a timezone")
-        before_event_timestamp_us = int(cursor.timestamp() * 1_000_000)
-    payload = qmd_intraday_bar_history(
-        ticker,
-        timeframe=timeframe,
-        start_date=session_date.isoformat(),
-        end_date=session_date.isoformat(),
-        before_event_timestamp_us=before_event_timestamp_us,
-        row_limit=row_limit,
+        before_candidates.append(cursor)
+    before_event_timestamp_us = (
+        int(min(before_candidates).timestamp() * 1_000_000)
+        if before_candidates
+        else None
     )
+    try:
+        payload = qmd_intraday_bar_history(
+            ticker,
+            timeframe=timeframe,
+            start_date=session_date.isoformat(),
+            end_date=session_date.isoformat(),
+            before_event_timestamp_us=before_event_timestamp_us,
+            row_limit=row_limit,
+        )
+    except QmdServiceError:
+        return None
     bars = [dict(row) for row in payload.get("bars") or [] if isinstance(row, dict)]
     today = datetime.now(ZoneInfo("America/New_York")).date()
     if not bars and session_date != today:
@@ -1060,7 +1094,10 @@ def historical_bar_history_before(
             before_bar=before_bar,
         )
     requested_session = session_date or before
-    if _can_use_recent_live_chart_session(requested_session, as_of):
+    # Recent durable bars are the fast first-paint authority.  The full stage
+    # still goes through QMD History so requested indicators and structure are
+    # calculated from the exact causal event window in the background.
+    if stage == "bars" and _can_use_recent_live_chart_session(requested_session, as_of):
         live_payload = _recent_live_bar_history(
             ticker=resolved_ticker,
             timeframe=resolved_timeframe,

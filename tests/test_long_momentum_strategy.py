@@ -894,7 +894,7 @@ class LongMomentumServiceTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             previous = os.environ.get("TRADING_JOURNAL_PATH")
             os.environ["TRADING_JOURNAL_PATH"] = str(Path(directory) / "service.sqlite3")
-            trading_runtime_service.trading_journal.cache_clear()
+            trading_runtime_service.close_trading_journal()
             try:
                 rows = trading_runtime_service.list_strategy_definitions()
                 self.assertEqual([row["strategy_id"] for row in rows], [STRATEGY_ID])
@@ -942,9 +942,7 @@ class LongMomentumServiceTests(unittest.TestCase):
                 self.assertTrue(any(row["action"] == "enter_long" for row in activity["rows"]))
                 self.assertEqual(activity["catalog"]["tickers"], ["AAPL"])
             finally:
-                journal = trading_runtime_service.trading_journal()
-                journal.close()
-                trading_runtime_service.trading_journal.cache_clear()
+                trading_runtime_service.close_trading_journal()
                 if previous is None:
                     os.environ.pop("TRADING_JOURNAL_PATH", None)
                 else:

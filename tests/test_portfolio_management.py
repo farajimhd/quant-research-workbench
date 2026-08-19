@@ -30,12 +30,12 @@ from src.trading_runtime.portfolio_config import (
 from src.trading_runtime.signals import CapitalRequest, StrategyIntent
 
 
-NOW = datetime.now(timezone.utc)
 RUNTIME_ROOT = Path(r"D:\TradingML\runtimes")
 TEST_RUNTIME_ROOT = RUNTIME_ROOT / "portfolio_tests"
 
 
-def summary(account_id: str, *, equity: float = 100_000, available: float = 80_000, at: datetime = NOW) -> AccountSummary:
+def summary(account_id: str, *, equity: float = 100_000, available: float = 80_000, at: datetime | None = None) -> AccountSummary:
+    observed_at = at or datetime.now(timezone.utc)
     return AccountSummary(
         account_id=account_id,
         netliquidation=equity,
@@ -44,11 +44,12 @@ def summary(account_id: str, *, equity: float = 100_000, available: float = 80_0
         grosspositionvalue=0,
         availablefunds=available,
         excessliquidity=available,
-        timestamp=at,
+        timestamp=observed_at,
     )
 
 
-def ledger(account_id: str, *, cash: float = 80_000, at: datetime = NOW) -> AccountLedger:
+def ledger(account_id: str, *, cash: float = 80_000, at: datetime | None = None) -> AccountLedger:
+    observed_at = at or datetime.now(timezone.utc)
     return AccountLedger(
         acctId=account_id,
         cashbalance=cash,
@@ -57,7 +58,7 @@ def ledger(account_id: str, *, cash: float = 80_000, at: datetime = NOW) -> Acco
         netliquidationvalue=100_000,
         realizedpnl=0,
         unrealizedpnl=0,
-        timestamp=at,
+        timestamp=observed_at,
     )
 
 
@@ -89,7 +90,7 @@ def intent(
     return StrategyIntent(
         intent_id=intent_id,
         ticker=ticker,
-        event_time=NOW,
+        event_time=datetime.now(timezone.utc),
         action=action,  # type: ignore[arg-type]
         quantity=quantity,
         reference_price=price,
@@ -372,7 +373,7 @@ class PortfolioManagementTests(unittest.IsolatedAsyncioTestCase):
         )
 
     async def test_stale_live_state_blocks_entries_but_allows_broker_bounded_exit(self) -> None:
-        old = NOW - timedelta(minutes=1)
+        old = datetime.now(timezone.utc) - timedelta(minutes=1)
         policy = PortfolioPolicy(policy_id="stale", maximum_snapshot_age_ms=100)
         engine = self.engine([PortfolioAccountProfile("cash", "CASH1", "live", "cash", policy)])
         engine.synchronize_snapshot(
@@ -442,8 +443,8 @@ class PortfolioManagementTests(unittest.IsolatedAsyncioTestCase):
                 state=OrderManagementState.FILLED,
                 client_order_ids=("client",),
                 broker_order_ids=("broker",),
-                submitted_at=NOW,
-                updated_at=NOW,
+                submitted_at=datetime.now(timezone.utc),
+                updated_at=datetime.now(timezone.utc),
                 filled_quantity=20,
                 remaining_quantity=0,
                 warning_message_ids=(),
@@ -595,7 +596,7 @@ class PortfolioManagementTests(unittest.IsolatedAsyncioTestCase):
             planned_risk=20,
             realized_pnl=0,
             source="test",
-            updated_at=NOW,
+            updated_at=datetime.now(timezone.utc),
         )
         request = intent("replace", quantity=100)
         request = StrategyIntent(

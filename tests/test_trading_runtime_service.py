@@ -51,18 +51,39 @@ class HistoricalTradingServiceTests(unittest.TestCase):
         )
         self.assertEqual(payload["previous_session_before"], "2026-08-14")
         self.assertTrue(payload["has_more"])
+        self.assertEqual(
+            live_history.call_args.kwargs["before_event_timestamp_us"],
+            int(datetime(2026, 8, 17, 20, 0, tzinfo=UTC).timestamp() * 1_000_000),
+        )
         history_get.assert_not_called()
 
     @patch("src.backend.trading_runtime_service._is_recent_live_chart_session", return_value=True)
-    def test_recent_live_chart_is_used_only_for_complete_or_current_clocks(self, _recent) -> None:
+    def test_recent_live_chart_accepts_point_in_time_session_clocks(self, _recent) -> None:
         now = datetime.now(UTC)
         session_date = now.astimezone(ZoneInfo("America/New_York")).date()
         self.assertTrue(_can_use_recent_live_chart_session(session_date, now.isoformat()))
-        self.assertFalse(
+        self.assertTrue(
             _can_use_recent_live_chart_session(
                 session_date,
                 (now - timedelta(hours=2)).isoformat(),
             )
+        )
+
+    @patch("src.backend.trading_runtime_service.qmd_intraday_bar_history")
+    def test_recent_live_chart_uses_earliest_as_of_or_page_cursor(self, live_history) -> None:
+        live_history.return_value = {"bars": [], "has_more": False}
+        _recent_live_bar_history(
+            ticker="AAPL",
+            timeframe="1m",
+            session_date=date(2026, 8, 17),
+            as_of="2026-08-17T13:45:00Z",
+            before_bar="2026-08-17T13:30:00Z",
+            row_limit=20,
+            stage="bars",
+        )
+        self.assertEqual(
+            live_history.call_args.kwargs["before_event_timestamp_us"],
+            int(datetime(2026, 8, 17, 13, 30, tzinfo=UTC).timestamp() * 1_000_000),
         )
 
     def test_automatic_strategy_definition_requires_and_persists_taxonomy(self) -> None:

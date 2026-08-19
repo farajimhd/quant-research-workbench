@@ -12,7 +12,7 @@ from src.backend.portfolio_management_service import (
     portfolio_management_command,
     portfolio_management_snapshot,
 )
-from src.backend.trading_runtime_service import trading_journal
+from src.backend.trading_runtime_service import close_trading_journal, trading_journal
 
 
 RUNTIME_ROOT = Path(r"D:\TradingML\runtimes")
@@ -91,12 +91,10 @@ class PortfolioManagementServiceTests(unittest.TestCase):
             clear=False,
         )
         self.environment.start()
-        trading_journal.cache_clear()
+        close_trading_journal()
 
     def tearDown(self) -> None:
-        if trading_journal.cache_info().currsize:
-            trading_journal().close()
-        trading_journal.cache_clear()
+        close_trading_journal()
         self.environment.stop()
         self.temp.cleanup()
 

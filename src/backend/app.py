@@ -192,6 +192,7 @@ from src.backend.real_live_market_data.config import market_gateway_config
 from src.backend.trading_runtime_service import (
     SUPPORTED_HISTORICAL_TIMEFRAMES,
     command_strategy_assignment,
+    close_trading_journal,
     create_strategy_assignment,
     evaluate_strategy_assignment,
     get_trade_annotation,
@@ -502,6 +503,7 @@ async def application_lifespan(_app: FastAPI):
     finally:
         MARKET_DISCOVERY_RUNTIME.stop()
         LIVE_STRATEGY_RUNTIME.stop()
+        close_trading_journal()
 
 
 app = FastAPI(title="Quant Research Workbench API", version="1.0.0", lifespan=application_lifespan)

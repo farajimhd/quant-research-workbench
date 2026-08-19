@@ -489,6 +489,7 @@ class HistoricalContractTests(unittest.TestCase):
             session_date=date(2026, 7, 14),
             ticker="AAPL",
             timeframe="1m",
+            stage="bars",
         )
 
         self.assertTrue(result["has_more"])
