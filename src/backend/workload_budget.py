@@ -58,10 +58,10 @@ def classify_workload(method: str, path: str) -> str:
         # must remain available while heavier scanner discovery work is using
         # the bounded discovery lane.
         return "general"
-    if any(token in normalized_path for token in ("chart", "/canvas")):
-        return "charts"
     if any(token in normalized_path for token in ("scanner", "market-discovery", "watchlist")):
         return "discovery"
+    if any(token in normalized_path for token in ("chart", "/canvas")):
+        return "charts"
     if any(token in normalized_path for token in ("/build", "/research", "/offline", "/artifact")):
         return "offline"
     if normalized_method in {"POST", "PUT", "PATCH", "DELETE"}:

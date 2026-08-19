@@ -189,6 +189,8 @@ async def stage_live_trade_proposal(
             "quote_observed_at": observed_at,
             "security_type": "STK",
             "currency": str(payload.get("currency") or "USD").upper(),
+            "conid": conid,
+            "exchange": str(payload.get("exchange") or "SMART"),
         },
     )
     control = await _validate_control_plane(

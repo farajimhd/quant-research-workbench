@@ -295,8 +295,22 @@ class LiveStrategyRuntimeSupervisor:
     ) -> tuple[IbkrClientPortalAdapter, dict[str, Any]]:
         delivery = {"run_plan_id": str(item.get("run_plan_id") or "")}
         broker, state = await self._runtime_state(delivery, broker, runtimes)
+        intent = item["intent"]
+        conid = int(intent.metadata.get("conid") or 0)
+        if conid <= 0:
+            raise ValueError("Confirmed proposal omitted its point-in-time instrument identity")
+        state["planner"].upsert_instrument(
+            InstrumentContract(
+                instrument_id=f"ibkr:{conid}",
+                conid=conid,
+                symbol=intent.ticker,
+                security_type="STK",
+                currency=str(intent.metadata.get("currency") or "USD"),
+                exchange=str(intent.metadata.get("exchange") or "SMART"),
+            )
+        )
         result = await state["runtime"].submit_external_intent(
-            item["intent"],
+            intent,
             account_id=str(item["account_id"]),
             proposal_id=str(item["proposal_id"]),
             proposal_authority=str(item["proposal_authority"]),
@@ -427,9 +441,26 @@ async def _build_runtime(
         run_id=f"{snapshot['mode']}:{run_plan_id}",
         limit_offset_bps=float(dict(configuration.get("oms") or {}).get("limit_offset_bps") or 5),
     )
-    account_ids = tuple(dict.fromkeys(row.account_id for row in assignments))
+    from src.backend.real_live_trading_service import configured_real_live_accounts
+
+    enabled_binding_keys = {
+        key
+        for key, row in bindings.items()
+        if bool(row.get("enabled", True))
+        and str(snapshot["mode"]) in set(row.get("modes") or [])
+    }
+    interactive_account_ids = [
+        row.account_id
+        for row in configured_real_live_accounts()
+        if row.account_key in enabled_binding_keys
+        and row.trading_mode == str(snapshot["mode"])
+        and row.account_id
+    ]
+    account_ids = tuple(
+        dict.fromkeys([*(row.account_id for row in assignments), *interactive_account_ids])
+    )
     if not account_ids:
-        raise ValueError("Enabled Strategy Run Plan has no resolved broker assignments")
+        raise ValueError("Enabled Run Plan has no resolved broker account for strategy or interactive trading")
     runtime = TradingRuntime(
         RunConfig(
             mode=RunMode(str(snapshot["mode"])),

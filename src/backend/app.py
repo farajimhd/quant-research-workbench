@@ -327,6 +327,14 @@ _COMPUTATION_REQUIREMENT_SUMMARY_CACHE = BoundedSingleFlightTtlCache[
     contract_revision="computation-requirement-summary.v1",
     wait_timeout_seconds=10.0,
 )
+_CANVAS_CHART_HISTORY_CACHE = BoundedSingleFlightTtlCache[
+    tuple[Any, ...], dict[str, Any]
+](
+    max_entries=256,
+    ttl_seconds=120.0,
+    contract_revision="canvas-chart-history.v1",
+    wait_timeout_seconds=95.0,
+)
 
 SERVICE_DATABASE_TABLES: dict[str, list[dict[str, str]]] = {
     "qmd": [
@@ -5509,16 +5517,23 @@ def trading_canvas_live_chart_history(
         if len(projected_columns) > 128 or any(not re.fullmatch(r"[A-Za-z0-9_]{1,64}", column) for column in projected_columns):
             raise HTTPException(status_code=400, detail="indicator_columns contains an invalid column")
     try:
-        return _canvas_live_chart_history(
-            ticker=ticker,
-            timeframe=timeframe,
-            before=before,
-            session_date=session_date,
-            as_of=as_of,
-            before_bar=before_bar,
-            indicator_columns=projected_columns,
-            stage=stage,
-            row_limit=row_limit,
+        cache_key = (
+            ticker, timeframe, before or "", session_date or "", as_of or "",
+            before_bar or "", tuple(projected_columns or ()), stage, row_limit,
+        )
+        return _CANVAS_CHART_HISTORY_CACHE.get_or_load(
+            cache_key,
+            lambda: _canvas_live_chart_history(
+                ticker=ticker,
+                timeframe=timeframe,
+                before=before,
+                session_date=session_date,
+                as_of=as_of,
+                before_bar=before_bar,
+                indicator_columns=projected_columns,
+                stage=stage,
+                row_limit=row_limit,
+            ),
         )
     except QmdServiceError as exc:
         raise _qmd_http_exception(exc) from exc

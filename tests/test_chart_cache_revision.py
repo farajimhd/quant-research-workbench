@@ -113,6 +113,26 @@ class ChartCacheRevisionTests(unittest.TestCase):
         )
         self.assertEqual(cached.call_args.args[1], "revision-7")
 
+    def test_canvas_history_coalesces_identical_initial_pages(self) -> None:
+        from src.backend import app as backend_app
+
+        with patch.object(
+            backend_app,
+            "_canvas_live_chart_history",
+            return_value={"history": [{"bar_start": "2026-08-17T13:44:00Z"}]},
+        ) as history:
+            first = backend_app.trading_canvas_live_chart_history(
+                "ZZTEST", timeframe="1m", session_date="2026-08-17",
+                as_of="2026-08-17T13:45:00Z", row_limit=20, stage="bars",
+            )
+            second = backend_app.trading_canvas_live_chart_history(
+                "ZZTEST", timeframe="1m", session_date="2026-08-17",
+                as_of="2026-08-17T13:45:00Z", row_limit=20, stage="bars",
+            )
+
+        self.assertEqual(first, second)
+        history.assert_called_once()
+
 
 if __name__ == "__main__":
     unittest.main()

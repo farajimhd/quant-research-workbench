@@ -15,6 +15,8 @@ class WorkloadClassificationTests(unittest.TestCase):
         self.assertEqual(classify_workload("POST", "/api/trading/replay/runs"), "simulation")
         self.assertEqual(classify_workload("GET", "/api/market-data/chart"), "charts")
         self.assertEqual(classify_workload("GET", "/api/market-discovery/scanner/history"), "discovery")
+        self.assertEqual(classify_workload("GET", "/api/trading/canvas-scanner"), "discovery")
+        self.assertEqual(classify_workload("GET", "/api/trading/canvas-watchlists"), "discovery")
         self.assertEqual(
             classify_workload(
                 "POST", "/api/market-discovery/configuration/materialize"

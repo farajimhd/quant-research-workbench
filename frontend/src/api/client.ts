@@ -131,7 +131,8 @@ function formatNonJsonApiResponse(path: string, text: string): string {
 function formatApiErrorDetail(payload: unknown): string {
   if (typeof payload === "string") return payload;
   if (!payload || typeof payload !== "object") return String(payload);
-  const detail = "detail" in payload ? (payload as { detail?: unknown }).detail : payload;
+  const envelopeError = "error" in payload ? (payload as { error?: unknown }).error : undefined;
+  const detail = "detail" in payload ? (payload as { detail?: unknown }).detail : envelopeError ?? payload;
   if (typeof detail === "string") return detail;
   if (Array.isArray(detail)) {
     const messages = detail.map(formatValidationIssue).filter(Boolean);
