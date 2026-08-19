@@ -191,22 +191,22 @@ export function ReplayTradingPage() {
       title="Open a historical session"
       secondary={recentRuns.length ? <details className="mode-launch-history"><summary><span>Recent runs</span><small>Resume a run owned by this backend session</small></summary><div>{recentRuns.map((recent) => <button disabled={recent.status === "failed" || recent.status === "stopped"} key={recent.run_id} onClick={() => setRun(recent)} type="button"><span><strong>{recent.session_date}</strong><small>{formatReplayClock(recent.current_time)} ET · {recent.status.replaceAll("_", " ")}</small></span><em>{Math.round(recent.progress * 100)}%</em></button>)}</div></details> : null}
     >
-              <label>
+              <label className="configuration-field">
                 <span>Strategy Run Plan</span>
                 <select aria-label="Strategy Run Plan" onChange={(event) => setRunPlanId(event.target.value)} value={runPlanId}>{(preflight?.available_run_plans ?? []).map((plan) => <option key={plan.run_plan_id} value={plan.run_plan_id}>{plan.name} · {plan.strategy_id} r{plan.strategy_revision}</option>)}</select>
                 <small>Published strategy and installed executor revision.</small>
               </label>
-              <label>
+              <label className="configuration-field">
                 <span>Exchange date</span>
                 <input onChange={(event) => setSessionDate(event.target.value)} type="date" value={sessionDate} />
                 <small>One 04:00–20:00 New York session.</small>
               </label>
-              <label>
+              <label className="configuration-field">
                 <span>Enter Canvas at</span>
                 <input max="20:00" min="04:00" onChange={(event) => setStartTime(event.target.value)} step="1" type="time" value={startTime} />
                 <small>Canvas opens paused at this event-time clock.</small>
               </label>
-              <label>
+              <label className="configuration-field">
                 <span>Initial cash</span>
                 <input max={1_000_000_000} min={1_000} onChange={(event) => setInitialCash(Math.max(1_000, Number(event.target.value) || 1_000))} step={1_000} type="number" value={initialCash} />
                 <small>Applied to the Run Plan's simulated account boundaries.</small>

@@ -5466,3 +5466,100 @@
   .trading-actions-workbench { grid-template-columns: 18rem minmax(0, 1fr); }
   .action-policy-field-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
+
+/* Runtime launch pages use the same visual authority as Data/System Configuration. */
+.trading-configuration-page[data-configuration-section="runtime"] {
+  --configuration-accent: var(--canvas-link-blue);
+  font-family: var(--font-body);
+  gap: 14px;
+  padding: 20px 0 88px;
+}
+
+.trading-configuration-page[data-configuration-section="runtime"] .mode-launch-heading {
+  margin: 0;
+}
+
+.trading-configuration-page[data-configuration-section="runtime"] .mode-launch-surface {
+  border-color: var(--configuration-rule, var(--border));
+  border-radius: 10px;
+}
+
+.trading-configuration-page[data-configuration-section="runtime"] .mode-launch-definition,
+.trading-configuration-page[data-configuration-section="runtime"] .mode-launch-readiness {
+  padding: 20px;
+}
+
+.trading-configuration-page[data-configuration-section="runtime"] .mode-launch-readiness {
+  background: var(--surface);
+  border-left-color: var(--configuration-rule, var(--border));
+}
+
+.trading-configuration-page[data-configuration-section="runtime"] .mode-launch-section-heading,
+.trading-configuration-page[data-configuration-section="runtime"] .mode-launch-readiness > header {
+  border-bottom: 1px solid var(--configuration-rule, var(--border));
+  margin: -4px 0 18px;
+  padding-bottom: 14px;
+}
+
+.trading-configuration-page[data-configuration-section="runtime"] .mode-launch-section-heading strong,
+.trading-configuration-page[data-configuration-section="runtime"] .mode-launch-readiness > header strong {
+  font-size: 14px;
+  font-weight: 650;
+}
+
+.trading-configuration-page[data-configuration-section="runtime"] .mode-launch-fields {
+  gap: 20px 24px;
+}
+
+.trading-configuration-page[data-configuration-section="runtime"] .configuration-field {
+  gap: 6px;
+}
+
+.trading-configuration-page[data-configuration-section="runtime"] .configuration-field > span {
+  font-size: 12px;
+  font-weight: 580;
+}
+
+.trading-configuration-page[data-configuration-section="runtime"] .configuration-field > small {
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.trading-configuration-page[data-configuration-section="runtime"] .configuration-field input:not([type="checkbox"]),
+.trading-configuration-page[data-configuration-section="runtime"] .configuration-field select {
+  background: var(--configuration-control-fill, var(--surface-alt));
+  border: 1px solid var(--configuration-control-border, var(--border));
+  border-radius: 6px;
+  color: var(--foreground);
+  font: inherit;
+  min-height: 42px;
+  padding: 0 12px;
+  width: 100%;
+}
+
+.trading-configuration-page[data-configuration-section="runtime"] .configuration-field:focus-within input:not([type="checkbox"]),
+.trading-configuration-page[data-configuration-section="runtime"] .configuration-field:focus-within select {
+  border-color: var(--configuration-accent);
+  box-shadow: 0 0 0 3px color-mix(in oklab, var(--configuration-accent) 13%, transparent);
+  outline: 0;
+}
+
+.trading-configuration-page[data-configuration-section="runtime"] .mode-launch-state-icon {
+  border-color: var(--configuration-rule, var(--border));
+  border-radius: 7px;
+}
+
+.trading-configuration-page[data-configuration-section="runtime"] .mode-launch-command .button {
+  min-height: 42px;
+}
+
+@media (max-width: 900px) {
+  .trading-configuration-page[data-configuration-section="runtime"] .mode-launch-readiness {
+    border-left: 0;
+    border-top: 1px solid var(--configuration-rule, var(--border));
+  }
+}
+
+@media (max-width: 620px) {
+  .trading-configuration-page[data-configuration-section="runtime"] { padding: 12px 0 48px; }
+}

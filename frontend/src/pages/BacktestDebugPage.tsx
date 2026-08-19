@@ -98,7 +98,7 @@ export function BacktestDebugPage() {
   }
 
   function saveFixture() {
-    if (!fixtureId.trim()) { setError("A stable fixture ID is required before saving."); return; }
+    if (!fixtureId.trim()) { setError("A stable Test Scenario ID is required before saving."); return; }
     const record = { derivedFrames, fixtureId: fixtureId.trim(), marketEvents, signalEvents, sessionDate, startTime, symbol };
     const next = [...library.filter((row) => row.fixtureId !== record.fixtureId), record].sort((a, b) => a.fixtureId.localeCompare(b.fixtureId));
     setLibrary(next);
@@ -214,12 +214,12 @@ export function BacktestDebugPage() {
   }
 
   return <TradingModeLaunch
-    actionLabel="Run Fixture"
+    actionLabel="Run Test Scenario"
     actionSummary={parsed.ok ? <><strong>{parsed.marketEvents.length}</strong> market events, <strong>{parsed.derivedFrames.length}</strong> derived frames, and <strong>{parsed.signalEvents.length}</strong> signal occurrences will be content hashed.</> : parsed.error}
     busy={creating}
     checking={checking}
     checks={preflight?.checks ?? []}
-    description="Reproduce a small, exact event sequence through the production historical runtime. Use the same Run Plan and Canvas contracts with deterministic fixture input."
+    description="Reproduce a small, exact event sequence through the production historical runtime. Use the same Run Plan and Canvas contracts with deterministic scenario input."
     error={error || (!parsed.ok ? parsed.error : "")}
     eyebrow="Debug"
     icon={Bug}
@@ -227,15 +227,15 @@ export function BacktestDebugPage() {
     ready={Boolean(preflight?.ready && parsed.ok)}
     title="Inspect an exact scenario"
   >
-            <label><span>Strategy Run Plan</span><select aria-label="Strategy Run Plan" onChange={(event) => setRunPlanId(event.target.value)} value={runPlanId}>{(preflight?.available_run_plans ?? []).map((plan) => <option key={plan.run_plan_id} value={plan.run_plan_id}>{plan.name} · {plan.strategy_id} r{plan.strategy_revision}</option>)}</select><small>The fixture runs through this exact Strategy Studio profile and installed executor.</small></label>
-            <label><span>Fixture library</span><select onChange={(event) => loadFixture(event.target.value)} value={selectedFixture}><option value="">Unsaved fixture</option>{library.map((row) => <option key={row.fixtureId} value={row.fixtureId}>{row.fixtureId}</option>)}</select><small>Stored in this browser; exact submitted records are persisted with the backend run.</small></label>
-            <label><span>Stable fixture ID</span><input onChange={(event) => setFixtureId(event.target.value)} value={fixtureId} /><small>Used with the backend content hash to identify evidence.</small></label>
-            <label><span>Session date</span><input onChange={(event) => updateTemplate(event.target.value, symbol)} type="date" value={sessionDate} /></label>
-            <label><span>Start clock · New York</span><input onChange={(event) => setStartTime(event.target.value)} step="1" type="time" value={startTime} /></label>
-            <label><span>Primary symbol</span><input maxLength={32} onChange={(event) => updateTemplate(sessionDate, event.target.value)} value={symbol} /></label>
-          <div className="debug-fixture-actions"><button className="button secondary compact" onClick={saveFixture} type="button"><Save size={14} /> Save fixture</button><button aria-label="Delete selected fixture" className="button secondary compact" disabled={!selectedFixture} onClick={deleteFixture} type="button"><Trash2 size={14} /> Delete</button></div>
+            <label className="configuration-field"><span>Strategy Run Plan</span><select aria-label="Strategy Run Plan" onChange={(event) => setRunPlanId(event.target.value)} value={runPlanId}>{(preflight?.available_run_plans ?? []).map((plan) => <option key={plan.run_plan_id} value={plan.run_plan_id}>{plan.name} · {plan.strategy_id} r{plan.strategy_revision}</option>)}</select><small>The test scenario runs through this exact Strategy Studio profile and installed executor.</small></label>
+            <label className="configuration-field"><span>Test Scenario library</span><select onChange={(event) => loadFixture(event.target.value)} value={selectedFixture}><option value="">Unsaved scenario</option>{library.map((row) => <option key={row.fixtureId} value={row.fixtureId}>{row.fixtureId}</option>)}</select><small>Stored in this browser; exact submitted records are persisted with the backend run.</small></label>
+            <label className="configuration-field"><span>Stable scenario ID</span><input onChange={(event) => setFixtureId(event.target.value)} value={fixtureId} /><small>Used with the backend content hash to identify reproducible evidence.</small></label>
+            <label className="configuration-field"><span>Session date</span><input onChange={(event) => updateTemplate(event.target.value, symbol)} type="date" value={sessionDate} /></label>
+            <label className="configuration-field"><span>Start clock · New York</span><input onChange={(event) => setStartTime(event.target.value)} step="1" type="time" value={startTime} /></label>
+            <label className="configuration-field"><span>Primary symbol</span><input maxLength={32} onChange={(event) => updateTemplate(sessionDate, event.target.value)} value={symbol} /></label>
+          <div className="debug-fixture-actions"><button className="button secondary compact" onClick={saveFixture} type="button"><Save size={14} /> Save scenario</button><button aria-label="Delete selected scenario" className="button secondary compact" disabled={!selectedFixture} onClick={deleteFixture} type="button"><Trash2 size={14} /> Delete</button></div>
           <details className="mode-launch-advanced">
-            <summary><span>Fixture payload</span><small>{parsed.ok ? `${parsed.marketEvents.length + parsed.derivedFrames.length + parsed.signalEvents.length} exact records` : "JSON needs attention"}</small></summary>
+            <summary><span>Test Scenario payload</span><small>{parsed.ok ? `${parsed.marketEvents.length + parsed.derivedFrames.length + parsed.signalEvents.length} exact records` : "JSON needs attention"}</small></summary>
             <div className="debug-fixture-editors">
             <label><span>Canonical market events · JSON array</span><textarea aria-label="Canonical market events JSON" onChange={(event) => setMarketEvents(event.target.value)} spellCheck={false} value={marketEvents} /><small>Quote/trade records require timezone-aware <code>ts</code> values and causal ordering.</small></label>
             <label><span>Derived strategy frames · JSON array</span><textarea aria-label="Derived strategy frames JSON" onChange={(event) => setDerivedFrames(event.target.value)} spellCheck={false} value={derivedFrames} /><small>Frames drive normalized strategy observations through the same controller.</small></label>
@@ -254,10 +254,10 @@ function parseFixture(marketText: string, framesText: string, signalText: string
     const marketEvents = JSON.parse(marketText) as unknown;
     const derivedFrames = JSON.parse(framesText) as unknown;
     const signalEvents = JSON.parse(signalText) as unknown;
-    if (!Array.isArray(marketEvents) || !Array.isArray(derivedFrames) || !Array.isArray(signalEvents)) throw new Error("All fixture editors must contain JSON arrays.");
-    if (![...marketEvents, ...derivedFrames, ...signalEvents].every((row) => row !== null && typeof row === "object" && !Array.isArray(row))) throw new Error("Every fixture record must be a JSON object.");
+    if (!Array.isArray(marketEvents) || !Array.isArray(derivedFrames) || !Array.isArray(signalEvents)) throw new Error("All Test Scenario editors must contain JSON arrays.");
+    if (![...marketEvents, ...derivedFrames, ...signalEvents].every((row) => row !== null && typeof row === "object" && !Array.isArray(row))) throw new Error("Every Test Scenario record must be a JSON object.");
     if (!marketEvents.length && !derivedFrames.length && !signalEvents.length) throw new Error("Add at least one market event, derived frame, or Signal Stream occurrence.");
-    if (marketEvents.length + derivedFrames.length + signalEvents.length > 20_000) throw new Error("A fixture may contain at most 20,000 records.");
+    if (marketEvents.length + derivedFrames.length + signalEvents.length > 20_000) throw new Error("A Test Scenario may contain at most 20,000 records.");
     return { derivedFrames, error: "", marketEvents, signalEvents, ok: true } as { derivedFrames: Array<Record<string, unknown>>; error: string; marketEvents: Array<Record<string, unknown>>; signalEvents: Array<Record<string, unknown>>; ok: boolean };
   } catch (reason) {
     return { derivedFrames: [], error: message(reason), marketEvents: [], signalEvents: [], ok: false };

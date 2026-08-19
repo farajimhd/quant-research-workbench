@@ -50,21 +50,21 @@ export function TradingModeLaunch({
 }) {
   const requiredChecks = checks.filter((check) => check.required !== false);
   const readyCount = requiredChecks.filter((check) => check.status === "ready").length;
-  return <main className="mode-launch-page">
-    <header className="mode-launch-heading">
-      <div className="mode-launch-heading-icon"><Icon aria-hidden="true" size={20} /></div>
-      <div><span>{eyebrow}</span><h1>{title}</h1><p>{description}</p></div>
+  return <main className="mode-launch-page trading-configuration-page" data-configuration-section="runtime">
+    <header className="configuration-page-header mode-launch-heading">
+      <div className="configuration-page-icon mode-launch-heading-icon"><Icon aria-hidden="true" size={20} /></div>
+      <div className="configuration-page-heading"><span>{eyebrow}</span><h1>{title}</h1><p>{description}</p></div>
     </header>
 
     {error ? <div className="mode-launch-error" role="alert"><TriangleAlert aria-hidden="true" size={17} /><div><strong>Unable to prepare this mode</strong><span>{error}</span></div></div> : null}
 
     <section className="mode-launch-surface">
-      <div className="mode-launch-definition">
+      <div className="configuration-expert-workspace mode-launch-definition">
         <div className="mode-launch-section-heading">
           <div><span>{setupEyebrow}</span><strong>{setupTitle}</strong></div>
           {onRefresh ? <button aria-label="Check readiness again" className="button secondary compact" disabled={checking} onClick={onRefresh} type="button"><RefreshCcw aria-hidden="true" size={14} /> Check again</button> : null}
         </div>
-        <div className="mode-launch-fields">{children}</div>
+        <div className="configuration-field-grid mode-launch-fields">{children}</div>
       </div>
 
       <aside className="mode-launch-readiness" data-ready={ready ? "true" : "false"}>
