@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import threading
+import time as monotonic_time
 from collections import deque
 from datetime import UTC, datetime, time, timedelta
 from typing import Any
@@ -59,6 +60,8 @@ _LIVE_REFERENCE_PROJECTION: dict[str, dict[str, Any]] | None = None
 _LIVE_REFERENCE_LOADED_AT: datetime | None = None
 _LIVE_REFERENCE_REFRESHING = False
 _LIVE_REFERENCE_REFRESH_ERROR = ""
+_TARGET_PUBLICATION_LOCK = threading.RLock()
+_TARGET_PUBLICATION_STATE: dict[str, tuple[str, float]] = {}
 
 
 class WatchlistRuntime:
@@ -1015,7 +1018,18 @@ def publish_computation_target(
     causation_seed: object | None = None,
 ) -> None:
     if not tickers or not capabilities:
-        qmd_delete_json(f"/computation-targets/{target_id}", timeout=3)
+        claimed, previous, claim = _claim_target_publication(
+            target_id,
+            "delete",
+            refresh_after_seconds=5.0,
+        )
+        if not claimed:
+            return
+        try:
+            qmd_delete_json(f"/computation-targets/{target_id}", timeout=3)
+        except Exception:
+            _restore_target_publication(target_id, previous, claim)
+            raise
         return
     lineage = causal_identity(
         correlation_seed=target_id,
@@ -1031,23 +1045,88 @@ def publish_computation_target(
             sort_keys=True,
         ).encode("utf-8")
     ).hexdigest()
-    qmd_put_json(
-        "/computation-targets",
-        {
-            "target_id": target_id,
-            "owner": owner,
-            "scope": scope,
-            "tickers": tickers,
-            "capabilities": capabilities,
-            "timeframes": timeframes,
-            "parameter_hash": parameter_hash,
-            "anchor": "new_york_session",
-            "source_revision": "advancing_live",
-            "ttl_seconds": max(1, int(ttl_ms) // 1000),
-            **lineage,
-        },
-        timeout=3,
+    ttl_seconds = max(1, int(ttl_ms) // 1000)
+    payload = {
+        "target_id": target_id,
+        "owner": owner,
+        "scope": scope,
+        "tickers": tickers,
+        "capabilities": capabilities,
+        "timeframes": timeframes,
+        "parameter_hash": parameter_hash,
+        "anchor": "new_york_session",
+        "source_revision": "advancing_live",
+        "ttl_seconds": ttl_seconds,
+        **lineage,
+    }
+    fingerprint = hashlib.sha256(
+        json.dumps(
+            {
+                key: payload[key]
+                for key in (
+                    "target_id",
+                    "owner",
+                    "scope",
+                    "tickers",
+                    "capabilities",
+                    "timeframes",
+                    "parameter_hash",
+                    "anchor",
+                    "source_revision",
+                    "ttl_seconds",
+                )
+            },
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+    ).hexdigest()
+    claimed, previous, claim = _claim_target_publication(
+        target_id,
+        fingerprint,
+        refresh_after_seconds=max(1.0, min(ttl_seconds / 2.0, 15.0)),
     )
+    if not claimed:
+        return
+    try:
+        qmd_put_json("/computation-targets", payload, timeout=3)
+    except Exception:
+        _restore_target_publication(target_id, previous, claim)
+        raise
+
+
+def clear_computation_target_publication_cache() -> None:
+    with _TARGET_PUBLICATION_LOCK:
+        _TARGET_PUBLICATION_STATE.clear()
+
+
+def _claim_target_publication(
+    target_id: str,
+    fingerprint: str,
+    *,
+    refresh_after_seconds: float,
+) -> tuple[bool, tuple[str, float] | None, tuple[str, float] | None]:
+    now = monotonic_time.monotonic()
+    with _TARGET_PUBLICATION_LOCK:
+        current = _TARGET_PUBLICATION_STATE.get(target_id)
+        if current is not None and current[0] == fingerprint and current[1] > now:
+            return False, current, None
+        claim = (fingerprint, now + refresh_after_seconds)
+        _TARGET_PUBLICATION_STATE[target_id] = claim
+        return True, current, claim
+
+
+def _restore_target_publication(
+    target_id: str,
+    previous: tuple[str, float] | None,
+    claim: tuple[str, float] | None,
+) -> None:
+    with _TARGET_PUBLICATION_LOCK:
+        if claim is None or _TARGET_PUBLICATION_STATE.get(target_id) != claim:
+            return
+        if previous is None:
+            _TARGET_PUBLICATION_STATE.pop(target_id, None)
+        else:
+            _TARGET_PUBLICATION_STATE[target_id] = previous
 
 
 def strategy_target_contracts(

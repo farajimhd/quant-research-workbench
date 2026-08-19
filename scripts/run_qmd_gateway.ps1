@@ -241,6 +241,16 @@ try {
 
     & $python @terminalArgs
     $terminalExitCode = $LASTEXITCODE
+    if ($terminalExitCode -ne 130 -and -not $gatewayProcess.HasExited) {
+        Write-Warning (
+            "The QMD terminal monitor exited unexpectedly with code $terminalExitCode. " +
+            "The healthy gateway will remain supervised; press Ctrl+C or use the managed stop script to shut it down."
+        )
+        while (-not $gatewayProcess.WaitForExit(1000)) {
+            # A presentation failure must not terminate live market-data authority.
+            # The bounded wait keeps Ctrl+C responsive and leaves shutdown in finally.
+        }
+    }
 }
 finally {
     if ($gatewayProcess -and -not $gatewayProcess.HasExited) {

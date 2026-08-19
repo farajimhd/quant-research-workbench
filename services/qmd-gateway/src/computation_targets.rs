@@ -218,6 +218,27 @@ impl SharedComputationTargets {
         lease
     }
 
+    pub fn matches_active_contract(&self, lease: &ComputationTargetLease) -> bool {
+        let now = Utc::now();
+        let state = self.inner.read().expect("computation target lock poisoned");
+        let Some(current) = state.targets.get(&lease.target_id) else {
+            return false;
+        };
+        current
+            .expires_at
+            .map(|expiry| expiry > now)
+            .unwrap_or(true)
+            && current.owner == lease.owner
+            && current.scope == lease.scope
+            && current.tickers == lease.tickers
+            && current.capabilities == lease.capabilities
+            && current.timeframes == lease.timeframes
+            && current.parameter_hash == lease.parameter_hash
+            && current.anchor == lease.anchor
+            && current.source_revision == lease.source_revision
+            && current.event_driven == lease.event_driven
+    }
+
     pub fn remove(&self, target_id: &str) -> bool {
         let removed = self
             .inner
@@ -730,6 +751,27 @@ mod tests {
         let after_remove = targets.summary();
         assert_eq!(after_remove.active_target_count, 1);
         assert_eq!(after_remove.active_symbol_count, 2);
+    }
+
+    #[test]
+    fn active_contract_match_ignores_renewal_metadata_but_detects_demand_changes() {
+        let targets = SharedComputationTargets::default();
+        let original = targets
+            .replace(request("watchlist:one", ExecutionScope::Watchlist))
+            .unwrap();
+        let mut renewal_request = request("watchlist:one", ExecutionScope::Watchlist);
+        renewal_request.correlation_id = "run:renewal".to_string();
+        renewal_request.causation_id = "event:renewal".to_string();
+        renewal_request.ttl_seconds = Some(300);
+        let renewal = targets.prepare(renewal_request).unwrap();
+
+        assert!(targets.matches_active_contract(&renewal));
+        assert_ne!(original.correlation_id, renewal.correlation_id);
+
+        let mut changed_request = request("watchlist:one", ExecutionScope::Watchlist);
+        changed_request.tickers = vec!["NVDA".to_string()];
+        let changed = targets.prepare(changed_request).unwrap();
+        assert!(!targets.matches_active_contract(&changed));
     }
 
     #[test]

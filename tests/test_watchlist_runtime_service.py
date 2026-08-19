@@ -12,6 +12,7 @@ from src.backend.trading_configuration_service import (
 )
 from src.backend.watchlist_runtime_service import (
     WatchlistRuntime,
+    clear_computation_target_publication_cache,
     focused_target_contract,
     live_market_reference_projection,
     normalize_watchlist_candidate,
@@ -40,6 +41,7 @@ class FakeJournal:
 
 class WatchlistRuntimeServiceTests(unittest.TestCase):
     def setUp(self) -> None:
+        clear_computation_target_publication_cache()
         self.configuration = _default_draft()
         discovery = self.configuration["market_discovery"]
         discovery["watchlists"] = [
@@ -482,6 +484,42 @@ class WatchlistRuntimeServiceTests(unittest.TestCase):
         self.assertEqual(
             lease["causation_id"], "event:watchlist:small:revision-19"
         )
+
+    @patch("src.backend.watchlist_runtime_service.qmd_put_json")
+    def test_unchanged_target_is_not_republished_before_bounded_renewal(self, put_json) -> None:
+        arguments = dict(
+            target_id="strategy:run-7",
+            tickers=["AAPL"],
+            capabilities=["momentum_core"],
+            timeframes=["1m"],
+            owner="backend.strategy_runtime",
+            scope="strategy_run",
+            ttl_ms=300_000,
+        )
+        publish_computation_target(**arguments)
+        publish_computation_target(**arguments)
+        publish_computation_target(**{**arguments, "tickers": ["AAPL", "MSFT"]})
+
+        self.assertEqual(put_json.call_count, 2)
+
+    @patch("src.backend.watchlist_runtime_service.qmd_put_json")
+    def test_failed_target_publication_can_retry_immediately(self, put_json) -> None:
+        put_json.side_effect = [RuntimeError("QMD unavailable"), None]
+        arguments = dict(
+            target_id="strategy:run-7",
+            tickers=["AAPL"],
+            capabilities=["momentum_core"],
+            timeframes=["1m"],
+            owner="backend.strategy_runtime",
+            scope="strategy_run",
+            ttl_ms=300_000,
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "QMD unavailable"):
+            publish_computation_target(**arguments)
+        publish_computation_target(**arguments)
+
+        self.assertEqual(put_json.call_count, 2)
 
     @patch("src.backend.watchlist_runtime_service.ClickHouseHttpClient")
     @patch(

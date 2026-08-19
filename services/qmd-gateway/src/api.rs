@@ -274,6 +274,12 @@ async fn replace_computation_target(
         .computation_targets
         .prepare(request)
         .map_err(|error| (StatusCode::BAD_REQUEST, Json(json!({ "error": error }))))?;
+    if state.computation_targets.matches_active_contract(&prepared) {
+        // A lease renewal changes expiry and lineage timestamps, not its
+        // computation demand. Reactivate the normalized lease without
+        // restaging structure state or replay-warming every ticker/timeframe.
+        return Ok(Json(state.computation_targets.activate(prepared)));
+    }
     state
         .structure_focus
         .stage_and_activate(&prepared)

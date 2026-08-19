@@ -113,7 +113,7 @@ class SignalStreamRuntime:
                     timeframes,
                     owner="backend.market_discovery",
                     scope="signal_stream",
-                    ttl_ms=max(5_000, int(stream.get("refresh_interval_ms") or 1_000) * 5),
+                    ttl_ms=max(60_000, int(stream.get("refresh_interval_ms") or 1_000) * 5),
                     causation_seed=f"{stream_id}:{source_type}:{source_id}",
                 )
             if tickers:

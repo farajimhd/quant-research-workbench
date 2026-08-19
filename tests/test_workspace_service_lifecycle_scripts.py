@@ -97,6 +97,15 @@ def test_qmd_cargo_output_is_external_and_binary_is_executed_directly() -> None:
     assert 'join-path $reporoot ".tmp' not in live_source
 
 
+def test_qmd_live_survives_an_unexpected_terminal_monitor_exit() -> None:
+    source = _source("run_qmd_gateway.ps1")
+
+    assert "$terminalexitcode -ne 130" in source
+    assert "the healthy gateway will remain supervised" in source
+    assert "$gatewayprocess.waitforexit(1000)" in source
+    assert "a presentation failure must not terminate live market-data authority" in source
+
+
 def test_direct_cargo_commands_also_write_outside_the_repository() -> None:
     cargo_config = (REPO_ROOT / ".cargo" / "config.toml").read_text(encoding="utf-8").lower()
 
