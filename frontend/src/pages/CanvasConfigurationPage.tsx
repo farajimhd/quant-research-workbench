@@ -1568,12 +1568,14 @@ export function CanvasFocusPage() {
   const replayFocusToken = params.get("replay_focus") || undefined;
   if (replayRunId && replayFocusToken) return <ReplayCanvasFocusPage focusToken={replayFocusToken} runId={replayRunId} />;
   const acceptanceKind = params.get("container_preview") as WorkspaceContainerId | null;
+  const acceptanceRuntimeMode = params.get("runtime_mode");
   if (acceptanceKind && TRADING_WORKSPACE_CONTAINERS.some((definition) => definition.id === acceptanceKind)) {
     return <CanvasContainerAcceptancePage
       kind={acceptanceKind}
       requestedNewsId={params.get("news") || undefined}
       requestedSecAccession={params.get("sec_accession") || undefined}
       requestedSecCik={params.get("sec_cik") || undefined}
+      runtimeMode={acceptanceRuntimeMode === "live" || acceptanceRuntimeMode === "paper" ? acceptanceRuntimeMode : undefined}
     />;
   }
   const canvasId = params.get("canvas") || MAIN_CANVAS_ID;
@@ -1585,7 +1587,7 @@ export function CanvasFocusPage() {
   return <ApprovedCanvasFocusPage canvasId={canvasId} requestedInstanceId={requestedInstanceId} requestedNewsId={requestedNewsId} requestedSecAccession={requestedSecAccession} requestedSecCik={requestedSecCik} />;
 }
 
-function CanvasContainerAcceptancePage({ kind, requestedNewsId, requestedSecAccession, requestedSecCik }: { kind: WorkspaceContainerId; requestedNewsId?: string; requestedSecAccession?: string; requestedSecCik?: string }) {
+function CanvasContainerAcceptancePage({ kind, requestedNewsId, requestedSecAccession, requestedSecCik, runtimeMode }: { kind: WorkspaceContainerId; requestedNewsId?: string; requestedSecAccession?: string; requestedSecCik?: string; runtimeMode?: Extract<CanvasRuntimeMode, "live" | "paper"> }) {
   const instanceId = `${kind}-acceptance`;
   const acceptanceCanvasId = "container-acceptance";
   const approved = useMemo<ApprovedCanvasProfile>(() => {
@@ -1614,7 +1616,7 @@ function CanvasContainerAcceptancePage({ kind, requestedNewsId, requestedSecAcce
     };
   }, [acceptanceCanvasId, instanceId, kind]);
   return <div data-canvas-container-acceptance={kind}>
-    <CanvasWorkspaceSurface approvedCanvas={approved} canvasId={acceptanceCanvasId} manager={false} requestedInstanceId={instanceId} requestedNewsId={requestedNewsId} requestedSecAccession={requestedSecAccession} requestedSecCik={requestedSecCik} />
+    <CanvasWorkspaceSurface approvedCanvas={approved} canvasId={acceptanceCanvasId} manager={false} requestedInstanceId={instanceId} requestedNewsId={requestedNewsId} requestedSecAccession={requestedSecAccession} requestedSecCik={requestedSecCik} runtimeMode={runtimeMode} />
   </div>;
 }
 
