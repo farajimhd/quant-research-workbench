@@ -75,6 +75,13 @@ class LiveTradeProposalServiceTests(unittest.IsolatedAsyncioTestCase):
         }
 
     async def _stage(self, payload=None, *, ticker_state=None):
+        async def execute(**kwargs):
+            return {
+                "proposal_id": kwargs["proposal_id"],
+                "decision": {"status": "approved"},
+                "order_group": {"state": "submitted"},
+            }
+
         with (
             patch(
                 "src.backend.live_trade_proposal_service.resolve_real_live_accounts",
@@ -108,19 +115,20 @@ class LiveTradeProposalServiceTests(unittest.IsolatedAsyncioTestCase):
                 dict(payload or self.payload),
                 ticker_state=ticker_state or self._ticker_state,
                 tradable_symbol=self._identity,
+                execution_sink=execute,
             )
 
-    async def test_validates_and_journals_without_broker_submission(self) -> None:
+    async def test_confirmed_proposal_is_routed_to_shared_runtime(self) -> None:
         result = await self._stage()
 
-        self.assertEqual(result["status"], "validated_pending_broker_runtime")
+        self.assertEqual(result["status"], "approved")
         self.assertEqual(result["account_key"], "paper")
         self.assertEqual(result["market_snapshot"]["source_sequence"], 42)
         self.assertEqual(
             result["identity_revision"],
             "tradable-universe:2026-08-11:AAPL:265598",
         )
-        self.assertFalse(result["execution"]["broker_submission"])
+        self.assertTrue(result["execution"]["broker_submission"])
         self.assertFalse(result["execution"]["portfolio_admission_required"])
         self.assertFalse(result["execution"]["oms_validation_required"])
         self.assertEqual(result["portfolio"]["reservation_status"], "released")
@@ -163,10 +171,9 @@ class LiveTradeProposalServiceTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaisesRegex(ValueError, "chart snapshot is stale"):
             await self._stage(payload)
 
-    async def test_accepts_automatic_proposal_origin(self) -> None:
-        result = await self._stage({**self.payload, "authority": "automatic"})
-
-        self.assertEqual(result["authority"], "automatic")
+    async def test_rejects_automatic_proposal_origin(self) -> None:
+        with self.assertRaisesRegex(ValueError, "automatic orders originate"):
+            await self._stage({**self.payload, "authority": "automatic"})
 
     async def test_control_plane_releases_admission_after_oms_plan(self) -> None:
         released = []

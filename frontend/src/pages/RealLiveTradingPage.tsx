@@ -3833,6 +3833,7 @@ function buildGateProgressSteps({
   const approvalChecks = preflightChecks.filter((check) => check.id.startsWith("approved_"));
   const massiveCheck = preflightChecks.find((check) => check.id === "massive_rest" || check.id === "massive_api_key");
   const qmdCheck = preflightChecks.find((check) => check.id === "qmd_live");
+  const runtimeCheck = preflightChecks.find((check) => check.id === "shared_trading_runtime");
   const ibkrChecks = preflightChecks.filter((check) => check.id.includes("ibkr") || check.id.includes("account_env"));
   const qmdStatus = gatewayStatus?.qmd_gateway && typeof gatewayStatus.qmd_gateway === "object" ? gatewayStatus.qmd_gateway as Record<string, unknown> : null;
   const qmdMetrics = qmdStatus?.metrics && typeof qmdStatus.metrics === "object" ? qmdStatus.metrics as Record<string, unknown> : {};
@@ -3896,6 +3897,13 @@ function buildGateProgressSteps({
       label: "QMD gateway",
       message: qmdMessage,
       status: qmdReady ? "complete" : qmdStatus ? "blocked" : "running",
+    }),
+    makeGateProgressStep({
+      detail: runtimeCheck?.status === "ready" ? "Portfolio + OMS" : "Execution required",
+      id: "shared_trading_runtime",
+      label: "Shared trading runtime",
+      message: runtimeCheck?.message || (loading ? "Checking the manual, semi-automatic, and strategy execution loop." : "Connection check starts automatically on page load."),
+      status: loading && !runtimeCheck ? "running" : runtimeCheck?.status === "ready" ? "complete" : runtimeCheck ? "blocked" : "waiting",
     }),
     makeGateProgressStep({
       detail: ibkrChecks.length ? `${ibkrChecks.filter((check) => check.status === "ready").length}/${ibkrChecks.length}` : "Gateway",

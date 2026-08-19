@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import Any, Callable
+from typing import Any, Awaitable, Callable
 from uuid import uuid4
 
 from src.backend.qmd_gateway_client import qmd_ticker_state
@@ -42,21 +42,17 @@ async def stage_live_trade_proposal(
     *,
     ticker_state: Callable[[str], dict[str, Any]] = qmd_ticker_state,
     tradable_symbol: Callable[[str], dict[str, Any]] = require_tradable_symbol,
+    execution_sink: Callable[..., Awaitable[dict[str, Any]]] | None = None,
 ) -> dict[str, Any]:
-    """Validate and journal a Live/Paper semantic proposal without executing it.
-
-    Broker submission remains disabled until the shared Live/Paper runtime is
-    explicitly deployed. That runtime must consume this evidence and repeat
-    Portfolio admission and OMS validation immediately before any command.
-    """
+    """Validate a confirmed Live/Paper proposal and route it through the shared runtime."""
 
     normalized_mode = str(mode or "").strip().lower()
     if normalized_mode not in {"live", "paper"}:
         raise ValueError("Live trade proposals require live or paper mode")
     authority = str(payload.get("authority") or "manual").strip().lower()
-    if authority not in {"manual", "semi_automatic", "automatic"}:
+    if authority not in {"manual", "semi_automatic"}:
         raise ValueError(
-            "Trade proposal authority must be manual, semi_automatic, or automatic"
+            "Canvas trade proposal authority must be manual or semi_automatic; automatic orders originate from an enabled strategy"
         )
     account_key = str(payload.get("account_id") or "").strip().lower()
     accounts = resolve_real_live_accounts([account_key], account_type=normalized_mode)
@@ -202,6 +198,29 @@ async def stage_live_trade_proposal(
         conid=conid,
         exchange=str(payload.get("exchange") or "SMART"),
     )
+    execution: dict[str, Any] = {
+        "broker_submission": False,
+        "portfolio_admission_required": True,
+        "oms_validation_required": True,
+        "reason": "Portfolio or OMS rejected the confirmed proposal.",
+    }
+    if control["status"] == "validated_pending_broker_runtime":
+        sink = execution_sink or _execute_shared_runtime
+        runtime_result = await sink(
+            mode=normalized_mode,
+            run_plan_id=str(control.get("run_plan_id") or ""),
+            intent=intent,
+            account_id=account.account_id,
+            proposal_id=proposal_id,
+            proposal_authority=authority,
+        )
+        execution = {
+            "broker_submission": True,
+            "portfolio_admission_required": False,
+            "oms_validation_required": False,
+            "reason": "Confirmed proposal was accepted by the shared runtime.",
+            "runtime": runtime_result,
+        }
     result = {
         "schema_version": 1,
         "proposal_id": proposal_id,
@@ -220,15 +239,10 @@ async def stage_live_trade_proposal(
             "profit_target_price": profit_target_price,
             "trailing_amount": trailing_amount,
         },
-        "status": control["status"],
+        "status": str(dict(execution.get("runtime") or {}).get("decision", {}).get("status") or control["status"]),
         "portfolio": control["portfolio"],
         "oms": control["oms"],
-        "execution": {
-            "broker_submission": False,
-            "portfolio_admission_required": False,
-            "oms_validation_required": False,
-            "reason": "Shared Live/Paper runtime deployment requires separate broker authorization.",
-        },
+        "execution": execution,
     }
     trading_journal().append(
         run_id=run_id,
@@ -332,7 +346,14 @@ async def _validate_control_plane(
         "status": status,
         "portfolio": {**decision_payload, "reservation_status": "released"},
         "oms": oms,
+        "run_plan_id": str(dict(configuration.get("run_plan") or {}).get("run_plan_id") or ""),
     }
+
+
+async def _execute_shared_runtime(**kwargs: Any) -> dict[str, Any]:
+    from src.backend.live_strategy_runtime_service import LIVE_STRATEGY_RUNTIME
+
+    return await LIVE_STRATEGY_RUNTIME.submit_external_intent(**kwargs)
 
 
 def _identity_revision(identity: dict[str, Any], ticker: str, conid: int) -> str:

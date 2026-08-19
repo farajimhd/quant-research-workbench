@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import os
 import queue
 import threading
@@ -136,6 +137,46 @@ class LiveStrategyRuntimeSupervisor:
             self._status["active_ticker_count"] = len(by_ticker)
         return accepted
 
+    async def submit_external_intent(
+        self,
+        *,
+        mode: str,
+        run_plan_id: str,
+        intent: Any,
+        account_id: str,
+        proposal_id: str,
+        proposal_authority: str,
+    ) -> dict[str, Any]:
+        """Execute one confirmed Canvas proposal on the supervisor event loop."""
+
+        if mode != self.mode:
+            raise ValueError(
+                f"The shared strategy runtime is configured for {self.mode}, not {mode}"
+            )
+        if not self._thread or not self._thread.is_alive():
+            raise RuntimeError("The shared strategy runtime is not running")
+        result: concurrent.futures.Future[dict[str, Any]] = concurrent.futures.Future()
+        try:
+            self._queue.put_nowait({
+                "kind": "external_intent",
+                "mode": mode,
+                "run_plan_id": run_plan_id,
+                "intent": intent,
+                "account_id": account_id,
+                "proposal_id": proposal_id,
+                "proposal_authority": proposal_authority,
+                "result": result,
+            })
+        except queue.Full as exc:
+            raise RuntimeError("Strategy runtime queue capacity is exhausted") from exc
+        with self._lock:
+            self._status["queued"] = self._queue.qsize()
+        try:
+            return await asyncio.wait_for(asyncio.wrap_future(result), timeout=20)
+        except TimeoutError:
+            result.cancel()
+            raise RuntimeError("Timed out waiting for the shared strategy runtime") from None
+
     def snapshot(self) -> dict[str, Any]:
         with self._lock:
             return dict(self._status)
@@ -152,11 +193,20 @@ class LiveStrategyRuntimeSupervisor:
                 if delivery is None:
                     break
                 try:
-                    if str(delivery.get("kind") or "signal") == "market_row":
+                    kind = str(delivery.get("kind") or "signal")
+                    if kind == "market_row":
                         broker = await self._process_market_row(delivery, broker, runtimes)
+                    elif kind == "external_intent":
+                        broker, external_result = await self._process_external_intent(
+                            delivery, broker, runtimes
+                        )
+                        delivery["result"].set_result(external_result)
                     else:
                         broker = await self._process(dict(delivery.get("delivery") or delivery), broker, runtimes)
                 except Exception as exc:
+                    result = delivery.get("result")
+                    if isinstance(result, concurrent.futures.Future) and not result.done():
+                        result.set_exception(exc)
                     with self._lock:
                         self._status.update({
                             "state": "degraded",
@@ -236,6 +286,22 @@ class LiveStrategyRuntimeSupervisor:
                 assignment.account_id,
             )
         return broker
+
+    async def _process_external_intent(
+        self,
+        item: dict[str, Any],
+        broker: IbkrClientPortalAdapter | None,
+        runtimes: dict[str, dict[str, Any]],
+    ) -> tuple[IbkrClientPortalAdapter, dict[str, Any]]:
+        delivery = {"run_plan_id": str(item.get("run_plan_id") or "")}
+        broker, state = await self._runtime_state(delivery, broker, runtimes)
+        result = await state["runtime"].submit_external_intent(
+            item["intent"],
+            account_id=str(item["account_id"]),
+            proposal_id=str(item["proposal_id"]),
+            proposal_authority=str(item["proposal_authority"]),
+        )
+        return broker, result
 
     async def _process_market_row(
         self,

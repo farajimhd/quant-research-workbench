@@ -176,7 +176,12 @@ def configured_real_live_account(account_type: str) -> RealLiveAccount:
 def real_live_preflight(account_type: str = "paper", account_keys: str | list[str] | None = None) -> dict[str, Any]:
     accounts = configured_real_live_accounts()
     selected_accounts = resolve_real_live_accounts(account_keys, account_type)
-    checks = [check_qmd_live(), check_massive_rest(), *_approved_configuration_checks(selected_accounts)]
+    checks = [
+        check_qmd_live(),
+        check_live_strategy_runtime(selected_accounts[0].trading_mode),
+        check_massive_rest(),
+        *_approved_configuration_checks(selected_accounts),
+    ]
     for account in selected_accounts:
         checks.extend(check_ibkr(account))
     return {
@@ -768,6 +773,29 @@ def check_qmd_live() -> dict[str, Any]:
         }
 
 
+def check_live_strategy_runtime(mode: str) -> dict[str, Any]:
+    from src.backend.live_strategy_runtime_service import LIVE_STRATEGY_RUNTIME
+
+    snapshot = LIVE_STRATEGY_RUNTIME.snapshot()
+    configured_mode = str(snapshot.get("mode") or "disabled")
+    running = bool(snapshot.get("running"))
+    ready = running and configured_mode == mode
+    return {
+        "id": "shared_trading_runtime",
+        "label": "Shared trading runtime",
+        "status": "ready" if ready else "blocked",
+        "message": (
+            f"The {mode} Portfolio and OMS execution loop is running."
+            if ready
+            else f"The execution loop must be running in {mode} mode before Canvas can submit manual, semi-automatic, or strategy actions."
+        ),
+        "required": True,
+        "details": {
+            "configured_mode": configured_mode,
+            "state": snapshot.get("state"),
+            "queued": snapshot.get("queued", 0),
+        },
+    }
 def check_ibkr(account: RealLiveAccount) -> list[dict[str, Any]]:
     if not account.account_id:
         return [{"id": f"{account.account_key}_ibkr_account_env", "label": f"{account.label} account", "status": "blocked", "message": f"Set an account id for {account.account_key} in .env."}]
