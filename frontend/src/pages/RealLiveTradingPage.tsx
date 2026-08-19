@@ -35,6 +35,7 @@ import { DataTable, type BackendQueryPreset, type BackendTableQuery } from "../a
 import { MetricRatio } from "../app/components/MetricRatio";
 import { PageIntro } from "../app/components/PageIntro";
 import { Tabs } from "../app/components/Tabs";
+import { TradingModeLaunch, type TradingLaunchCheck } from "../app/components/TradingModeLaunch";
 import { ApprovedCanvasRuntimePage } from "./CanvasConfigurationPage";
 import {
   WorkspaceCanvasManager,
@@ -804,17 +805,6 @@ export function RealLiveTradingPage({ onMarketStatusChange, onTopbarCenterChange
   }, [isChildCanvas, loadGatewayStatus, started]);
 
   useEffect(() => {
-    if (
-      started
-      || isChildCanvas
-      || !preflightStatus?.ready
-      || universePreview
-      || universePreviewLoading
-    ) return;
-    void loadUniversePreview();
-  }, [isChildCanvas, loadUniversePreview, preflightStatus?.ready, started, universePreview, universePreviewLoading]);
-
-  useEffect(() => {
     if (started || isChildCanvas || autoPreflightRequestedRef.current || !availableAccounts.length) return;
     autoPreflightRequestedRef.current = true;
     void checkConnections(ensureSelectedAccountKeys(availableAccounts, selectedAccountKeys));
@@ -1411,24 +1401,12 @@ export function RealLiveTradingPage({ onMarketStatusChange, onTopbarCenterChange
   if (!started) {
     return (
       <RealLiveTradingGate
-        accounts={availableAccounts}
         loading={loading}
         gatewayStatus={gatewayStatus}
         message={liveClockMessage}
         preflightStatus={preflightStatus}
-        scannerSetupPreset={scannerSetupPreset}
-        scannerSetupPresetId={scannerSetupPresetId}
-        scannerSetupRowLimit={scannerSetupRowLimit}
-        selectedAccountKeys={selectedAccountKeys}
-        setScannerSetupPresetId={setScannerSetupPresetId}
-        setScannerSetupRowLimit={setScannerSetupRowLimit}
-        universePreview={universePreview}
-        universePreviewLoading={universePreviewLoading}
         onCheck={() => void checkConnections()}
         onEnter={() => void enterLiveWorkspace()}
-        onRefreshEnrichment={() => void loadUniversePreview({ refreshEnrichment: true })}
-        onRefreshUniverse={() => void loadUniversePreview()}
-        onToggleAccount={(accountKey) => toggleSelectedAccount(accountKey, availableAccounts, setSelectedAccountKeys)}
       />
     );
   }
@@ -1600,179 +1578,50 @@ export function RealLiveTradingPage({ onMarketStatusChange, onTopbarCenterChange
 }
 
 function RealLiveTradingGate({
-  accounts,
   gatewayStatus,
   loading,
   message,
   onCheck,
   onEnter,
-  onRefreshEnrichment,
-  onRefreshUniverse,
-  onToggleAccount,
   preflightStatus,
-  scannerSetupPreset,
-  scannerSetupPresetId,
-  scannerSetupRowLimit,
-  selectedAccountKeys,
-  setScannerSetupPresetId,
-  setScannerSetupRowLimit,
-  universePreview,
-  universePreviewLoading,
 }: {
-  accounts: RealLiveAccountConfig[];
   gatewayStatus: RealLiveGatewayStatusPayload | null;
   loading: boolean;
   message: string;
   onCheck: () => void;
   onEnter: () => void;
-  onRefreshEnrichment: () => void;
-  onRefreshUniverse: () => void;
-  onToggleAccount: (accountKey: string) => void;
   preflightStatus: RealLivePreflightPayload | null;
-  scannerSetupPreset: ScannerSetupPreset;
-  scannerSetupPresetId: string;
-  scannerSetupRowLimit: number;
-  selectedAccountKeys: string[];
-  setScannerSetupPresetId: Dispatch<SetStateAction<string>>;
-  setScannerSetupRowLimit: Dispatch<SetStateAction<number>>;
-  universePreview: RealLiveUniversePreviewPayload | null;
-  universePreviewLoading: boolean;
 }) {
   const qmdReady = isQmdGatewayReady(gatewayStatus);
-  const ready = Boolean(preflightStatus?.ready && qmdReady && universePreview?.can_query_universe);
-  const selectedAccounts = selectedAccountList(accounts, selectedAccountKeys);
-  const selectedLabel = selectedAccounts.length ? selectedAccounts.map((account) => account.label).join(", ") : "No account selected";
-  const mirrorMode = selectedAccounts.length > 1;
-  const progressSteps = buildGateProgressSteps({
-    gatewayStatus,
-    loading,
-    preflightStatus,
-    selectedAccountKeys,
-    universePreview,
-    universePreviewLoading,
-  });
-  const completedSteps = progressSteps.filter((step) => step.tone === "success").length;
-  const blockedSteps = progressSteps.filter((step) => step.tone === "danger").length;
-  const activeSteps = progressSteps.filter((step) => step.tone === "warning").length;
-  const workflowPercent = Math.round((completedSteps / Math.max(progressSteps.length, 1)) * 100);
-  const readinessTone = ready && universePreview?.can_query_universe ? "success" : blockedSteps ? "danger" : activeSteps ? "warning" : "muted";
-  const readinessLabel = ready && universePreview?.can_query_universe ? "Ready" : blockedSteps ? "Blocked" : activeSteps ? "Checking" : "Waiting";
-  const approvalBlock = preflightStatus?.checks.find((check) => check.id.startsWith("approved_") && check.status !== "ready");
-  return (
-    <section className="live-gate-shell" aria-label="Live trading gate">
-      <div className="live-gate-console panel" data-tone={readinessTone}>
-        <div className="live-gate-toolbar">
-          <div className="live-gate-title">
-            <span>Live Trading Setup</span>
-            <strong>Session Gate</strong>
-            <p>Choose accounts, verify broker and data access, then create the live trading session.</p>
-          </div>
-          <div className="live-start-actions">
-            <button className="button secondary" disabled={loading} onClick={onCheck} type="button">
-              {loading ? <span className="loading-spinner" aria-hidden="true" /> : <CheckCircle2 size={15} />} Check Connections
-            </button>
-            <button className="button secondary" disabled={universePreviewLoading} onClick={onRefreshUniverse} type="button">
-              {universePreviewLoading ? <span className="loading-spinner" aria-hidden="true" /> : <RefreshCw size={15} />} Refresh Data
-            </button>
-            <button className="button primary" disabled={!ready || loading || !selectedAccountKeys.length} onClick={onEnter} type="button">
-              <Play size={15} /> Enter Workspace
-            </button>
-          </div>
-        </div>
-        {approvalBlock ? <div className="historical-error-banner">
-          <ShieldAlert size={18} />
-          <div><strong>{approvalBlock.label}</strong><span>{approvalBlock.message}</span></div>
-          {approvalBlock.action?.hash ? <button className="button secondary compact" onClick={() => { window.location.hash = approvalBlock.action?.hash || "#revision-configuration"; }} type="button">{approvalBlock.action.label || "Review release"}</button> : null}
-        </div> : null}
-        <div className="live-gate-status-strip" aria-label="Gate status summary">
-          <div>
-            <span>State</span>
-            <strong>{readinessLabel}</strong>
-          </div>
-          <div>
-            <span>Progress</span>
-            <strong><MetricRatio accent={2} current={completedSteps} total={progressSteps.length} /></strong>
-          </div>
-          <div>
-            <span>Accounts</span>
-            <strong>{selectedAccounts.length ? selectedAccounts.length : "-"}</strong>
-          </div>
-          <div>
-            <span>Joined Universe</span>
-            <strong>{integer(universePreview?.joined_snapshot_row_count ?? 0)}</strong>
-          </div>
-          <div>
-            <span>Preview Policy</span>
-            <strong>Read-only</strong>
-          </div>
-        </div>
-        <div className="live-gate-setup-grid">
-          <section className="live-gate-section live-gate-account-section" aria-label="Account selection">
-            <div className="live-gate-section-heading">
-              <span>Accounts</span>
-              <strong>{selectedLabel}</strong>
-              <small>{mirrorMode ? "Mirrored orders will be sent to each selected account." : "Default is paper. Select more accounts only when mirroring is intended."}</small>
-            </div>
-            <div className="live-account-card-grid compact" role="group" aria-label="Accounts">
-              {accounts.map((account) => {
-                const selected = selectedAccountKeys.includes(account.account_key);
-                return (
-                  <button className={selected ? "live-account-card selected" : "live-account-card"} key={account.account_key} onClick={() => onToggleAccount(account.account_key)} type="button">
-                    <span className="live-account-card-top">
-                      <strong>{account.label}</strong>
-                      <em data-mode={account.trading_mode}>{account.trading_mode === "paper" ? "Paper" : "Live"}</em>
-                    </span>
-                    <span>{account.account_class}</span>
-                    <small>{account.account_id || (account.configured ? "Configured" : "Missing account id")}</small>
-                  </button>
-                );
-              })}
-            </div>
-          </section>
-          <aside className="live-gate-progress live-gate-workflow" aria-label="Initial page progress report">
-            <div className="live-gate-section-heading">
-              <span>Connections and Startup</span>
-              <strong>Running checks</strong>
-              <small>{message || "Massive and IBKR checks run automatically when this page loads."}</small>
-            </div>
-            <div className="live-gate-progress-summary" data-tone={readinessTone}>
-              <div>
-                <span>Overall</span>
-                <strong>{workflowPercent}%</strong>
-              </div>
-              <div>
-                <span>Done</span>
-                <strong><MetricRatio accent={2} current={completedSteps} total={progressSteps.length} /></strong>
-              </div>
-              <div>
-                <span>Active</span>
-                <strong>{activeSteps}</strong>
-              </div>
-              <div>
-                <span>Blocked</span>
-                <strong>{blockedSteps}</strong>
-              </div>
-              <div className="live-gate-progress-summary-bar" aria-hidden="true">
-                <span style={{ width: `${workflowPercent}%` }} />
-              </div>
-            </div>
-            <LiveGateProgressList steps={progressSteps} />
-          </aside>
-        </div>
-      </div>
-      <LiveUniversePreviewPanel
-        loading={universePreviewLoading}
-        onRefresh={onRefreshUniverse}
-        onRefreshEnrichment={onRefreshEnrichment}
-        preview={universePreview}
-        scannerSetupPreset={scannerSetupPreset}
-        scannerSetupPresetId={scannerSetupPresetId}
-        scannerSetupRowLimit={scannerSetupRowLimit}
-        setScannerSetupPresetId={setScannerSetupPresetId}
-        setScannerSetupRowLimit={setScannerSetupRowLimit}
-      />
-    </section>
-  );
+  const checks: TradingLaunchCheck[] = [
+    ...(preflightStatus?.checks ?? []).map((check) => ({ ...check, evidence: check.message, summary: check.message })),
+    { evidence: qmdReady ? "Live event and historical context routes are available." : "Waiting for the QMD service core.", id: "qmd_runtime", label: "Market data runtime", required: true, status: qmdReady ? "ready" : "blocked" },
+  ];
+  const ready = Boolean(preflightStatus?.ready && qmdReady);
+  const accountAuthority = preflightStatus?.selected_accounts?.map((account) => account.label).join(", ") || "the account binding managed in Accounts & Sessions";
+  return <TradingModeLaunch
+    actionLabel="Open Live Canvas"
+    actionSummary={<>Manual orders, Trading Actions, and enabled strategies will use <strong>{accountAuthority}</strong>. Scanner and portfolio data load after Canvas opens.</>}
+    checking={loading || !preflightStatus}
+    checks={checks}
+    description="Trade manually, use configured Trading Actions, or operate enabled strategies against real-time market data. Account bindings and approved configuration are managed separately."
+    error={!loading && !preflightStatus ? message : ""}
+    eyebrow="Live"
+    icon={Activity}
+    onAction={onEnter}
+    onRefresh={onCheck}
+    ready={ready}
+    setupEyebrow="Session authority"
+    setupTitle="Managed configuration"
+    title="Open the live workspace"
+  >
+    <div className="mode-launch-authority">
+      <span>Configuration authority</span>
+      <strong>{preflightStatus ? "Approved release" : "Resolving approved release"}</strong>
+      <small>Run Plans, strategies, account bindings, and risk controls remain owned by their configuration pages.</small>
+      <div><button className="button secondary compact" onClick={() => { window.location.hash = "#revision-configuration"; }} type="button">Approved Releases</button><button className="button secondary compact" onClick={() => { window.location.hash = "#account-configuration"; }} type="button">Accounts &amp; Sessions</button></div>
+    </div>
+  </TradingModeLaunch>;
 }
 
 const SCANNER_SETUP_TAB = "Scanner Setup";

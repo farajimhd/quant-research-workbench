@@ -2,7 +2,7 @@ import { ArrowLeft, CheckCircle2, CircleStop, Gauge, Pause, Play, RefreshCcw, Sq
 import { useEffect, useState } from "react";
 
 import { api } from "../api/client";
-import { MarketStatusBadge, historicalMarketStatus } from "../app/components/MarketStatusBadge";
+import { TradingModeLaunch } from "../app/components/TradingModeLaunch";
 import type { CanvasReplayRun } from "../app/replayRun";
 import { CanvasWorkspaceSurface } from "./CanvasConfigurationPage";
 
@@ -223,36 +223,32 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
   }
 
   return (
-    <div className="historical-home">
-      <header className="historical-goal-hero">
-        <div className="historical-goal-copy">
-          <h1>Backtest a strategy</h1>
-          <p>Choose an exclusive anchor date and the prior exchange sessions to evaluate.</p>
-        </div>
-        <MarketStatusBadge value={historicalMarketStatus(anchorDate)} />
-      </header>
-
-      {error ? <div className="historical-error-banner"><TriangleAlert size={18} /><div><strong>Preflight failed</strong><span>{error}</span></div></div> : null}
-
-      <div className="historical-home-grid">
-        <main className="historical-primary-column">
-          <section className="historical-run-card">
-            <header>
-              <div><span>Run definition</span><strong>Sessions before the anchor</strong></div>
-              <button className="button secondary" disabled={checking} onClick={() => setRefreshKey((value) => value + 1)} type="button"><RefreshCcw size={16} /> Check again</button>
-            </header>
-            <div className="historical-large-fields">
+    <TradingModeLaunch
+      actionLabel="Run Backtest"
+      actionSummary={preflight?.strategy_run_ready ? <>Revision <strong>{preflight.configuration_revision}</strong> will run through <strong>{preflight.window.session_count} sessions</strong> in an isolated simulated Portfolio and OMS.</> : "Resolve each required readiness item before starting."}
+      busy={creating}
+      checking={checking}
+      checks={preflight?.checks ?? []}
+      description="Evaluate a published Run Plan across a bounded historical window using the same strategy, Portfolio, OMS, and journal contracts as Replay."
+      error={error}
+      eyebrow="Backtest"
+      icon={Gauge}
+      onAction={createRun}
+      onRefresh={() => setRefreshKey((value) => value + 1)}
+      ready={Boolean(preflight?.strategy_run_ready)}
+      secondary={results ? <HistoricalResults comparison={comparison} comparisonError={comparisonError} results={results} /> : null}
+      title="Evaluate a strategy"
+    >
               <label><span>Strategy Run Plan</span><select aria-label="Strategy Run Plan" onChange={(event) => setRunPlanId(event.target.value)} value={runPlanId}>{(preflight?.available_run_plans ?? []).map((plan) => <option key={plan.run_plan_id} value={plan.run_plan_id}>{plan.name} · {plan.strategy_id} r{plan.strategy_revision}</option>)}</select><small>The exact Strategy Studio profile and installed executor revision used for this Backtest.</small></label>
               <label><span>Anchor date · exclusive</span><input onChange={(event) => setAnchorDate(event.target.value)} type="date" value={anchorDate} /><small>The selected date is never included in the result window.</small></label>
               <label><span>Prior exchange sessions</span><input max={260} min={1} onChange={(event) => setSessionCount(Math.max(1, Number(event.target.value) || 1))} type="number" value={sessionCount} /><small>Resolved backward from the exclusive anchor.</small></label>
               <label><span>Initial cash</span><input max={1_000_000_000} min={1_000} onChange={(event) => setInitialCash(Math.max(1_000, Number(event.target.value) || 1_000))} step={1_000} type="number" value={initialCash} /><small>Applied to each isolated simulated account for the full run.</small></label>
-            </div>
-            <header className="historical-evidence-header"><div><span>Preflight</span><strong>Verified dependencies and data</strong></div>{checking ? <span className="historical-checking"><Gauge size={15} /> Checking</span> : null}</header>
-            <div className="historical-check-list">
-              {preflight?.checks.map((check) => <EvidenceCheck check={check} key={check.id} />)}
-            </div>
-          </section>
-          {results ? <section className="historical-run-card historical-results-card">
+    </TradingModeLaunch>
+  );
+}
+
+function HistoricalResults({ comparison, comparisonError, results }: { comparison: BacktestComparison | null; comparisonError: string; results: BacktestResults }) {
+  return <section className="historical-run-card historical-results-card">
             <header><div><span>Canonical results</span><strong>Portfolio and OMS journal projection</strong></div><small>{results.as_of}</small></header>
             <div className="historical-results-grid">
               <ResultMetric label="Net P&L" value={formatResultValue(results.performance_snapshot.net_pnl_today ?? results.portfolio.metrics?.net_pnl)} />
@@ -264,21 +260,7 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
             <BacktestAttribution report={results.performance_journal} />
             {comparison ? <BacktestComparisonTable comparison={comparison} currentRunId="" /> : null}
             {comparisonError ? <p className="historical-analysis-warning historical-analysis-standalone">Run comparison unavailable: {comparisonError}</p> : null}
-          </section> : null}
-        </main>
-
-        <aside className="historical-action-column">
-          <section className={`historical-primary-action ${preflight?.strategy_run_ready ? "" : "blocked"}`}>
-            {preflight?.strategy_run_ready ? <Play size={24} /> : <CircleStop size={24} />}
-            <div><strong>{preflight?.strategy_run_ready ? "Backtest is ready" : "Backtest execution is blocked"}</strong><p>{preflight?.strategy_run_ready
-              ? `Revision ${preflight.configuration_revision} will run through ${preflight.window.session_count} sessions using one simulated Portfolio/OMS state.`
-              : "Resolve every required preflight item before starting."}</p></div>
-            <button className="button primary" disabled={checking || creating || !preflight?.strategy_run_ready} onClick={createRun} type="button"><Play size={16} /> {creating ? "Creating run…" : "Run backtest"}</button>
-          </section>
-        </aside>
-      </div>
-    </div>
-  );
+          </section>;
 }
 
 function EvidenceCheck({ check }: { check: HistoricalCheck }) {

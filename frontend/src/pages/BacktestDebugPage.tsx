@@ -2,6 +2,7 @@ import { ArrowLeft, Bug, CheckCircle2, CircleStop, Pause, Play, Save, Square, Tr
 import { useEffect, useMemo, useState } from "react";
 
 import { api } from "../api/client";
+import { TradingModeLaunch } from "../app/components/TradingModeLaunch";
 import type { CanvasReplayRun } from "../app/replayRun";
 import { CanvasWorkspaceSurface } from "./CanvasConfigurationPage";
 
@@ -212,40 +213,36 @@ export function BacktestDebugPage() {
     />;
   }
 
-  return <div className="historical-home backtest-debug-page">
-    <header className="historical-goal-hero">
-      <div className="historical-goal-copy"><h1>Backtest Debug</h1><p>Run a small, exact event sequence through the production historical runtime contracts.</p></div>
-      <span className="trading-mode-badge" data-mode="backtest_debug"><Bug size={14} /> Deterministic fixture</span>
-    </header>
-    {error || !parsed.ok ? <div className="historical-error-banner"><TriangleAlert size={18} /><div><strong>Fixture needs attention</strong><span>{error || parsed.error}</span></div></div> : null}
-    <div className="historical-home-grid">
-      <main className="historical-primary-column">
-        <section className="historical-run-card">
-          <header><div><span>Fixture identity</span><strong>Saved local cases and causal scope</strong></div><div className="debug-fixture-actions"><button className="button secondary" onClick={saveFixture} type="button"><Save size={15} /> Save</button><button aria-label="Delete selected fixture" className="button secondary" disabled={!selectedFixture} onClick={deleteFixture} type="button"><Trash2 size={15} /></button></div></header>
-          <div className="historical-large-fields">
+  return <TradingModeLaunch
+    actionLabel="Run Fixture"
+    actionSummary={parsed.ok ? <><strong>{parsed.marketEvents.length}</strong> market events, <strong>{parsed.derivedFrames.length}</strong> derived frames, and <strong>{parsed.signalEvents.length}</strong> signal occurrences will be content hashed.</> : parsed.error}
+    busy={creating}
+    checking={checking}
+    checks={preflight?.checks ?? []}
+    description="Reproduce a small, exact event sequence through the production historical runtime. Use the same Run Plan and Canvas contracts with deterministic fixture input."
+    error={error || (!parsed.ok ? parsed.error : "")}
+    eyebrow="Debug"
+    icon={Bug}
+    onAction={createRun}
+    ready={Boolean(preflight?.ready && parsed.ok)}
+    title="Inspect an exact scenario"
+  >
             <label><span>Strategy Run Plan</span><select aria-label="Strategy Run Plan" onChange={(event) => setRunPlanId(event.target.value)} value={runPlanId}>{(preflight?.available_run_plans ?? []).map((plan) => <option key={plan.run_plan_id} value={plan.run_plan_id}>{plan.name} · {plan.strategy_id} r{plan.strategy_revision}</option>)}</select><small>The fixture runs through this exact Strategy Studio profile and installed executor.</small></label>
             <label><span>Fixture library</span><select onChange={(event) => loadFixture(event.target.value)} value={selectedFixture}><option value="">Unsaved fixture</option>{library.map((row) => <option key={row.fixtureId} value={row.fixtureId}>{row.fixtureId}</option>)}</select><small>Stored in this browser; exact submitted records are persisted with the backend run.</small></label>
             <label><span>Stable fixture ID</span><input onChange={(event) => setFixtureId(event.target.value)} value={fixtureId} /><small>Used with the backend content hash to identify evidence.</small></label>
             <label><span>Session date</span><input onChange={(event) => updateTemplate(event.target.value, symbol)} type="date" value={sessionDate} /></label>
             <label><span>Start clock · New York</span><input onChange={(event) => setStartTime(event.target.value)} step="1" type="time" value={startTime} /></label>
             <label><span>Primary symbol</span><input maxLength={32} onChange={(event) => updateTemplate(sessionDate, event.target.value)} value={symbol} /></label>
-          </div>
-          <div className="debug-fixture-editors">
+          <div className="debug-fixture-actions"><button className="button secondary compact" onClick={saveFixture} type="button"><Save size={14} /> Save fixture</button><button aria-label="Delete selected fixture" className="button secondary compact" disabled={!selectedFixture} onClick={deleteFixture} type="button"><Trash2 size={14} /> Delete</button></div>
+          <details className="mode-launch-advanced">
+            <summary><span>Fixture payload</span><small>{parsed.ok ? `${parsed.marketEvents.length + parsed.derivedFrames.length + parsed.signalEvents.length} exact records` : "JSON needs attention"}</small></summary>
+            <div className="debug-fixture-editors">
             <label><span>Canonical market events · JSON array</span><textarea aria-label="Canonical market events JSON" onChange={(event) => setMarketEvents(event.target.value)} spellCheck={false} value={marketEvents} /><small>Quote/trade records require timezone-aware <code>ts</code> values and causal ordering.</small></label>
             <label><span>Derived strategy frames · JSON array</span><textarea aria-label="Derived strategy frames JSON" onChange={(event) => setDerivedFrames(event.target.value)} spellCheck={false} value={derivedFrames} /><small>Frames drive normalized strategy observations through the same controller.</small></label>
             <label><span>Signal Stream occurrences · JSON array</span><textarea aria-label="Signal Stream occurrences JSON" onChange={(event) => setSignalEvents(event.target.value)} spellCheck={false} value={signalEvents} /><small>Optional external events use <code>signal_stream_id</code>, <code>available_at</code>, ticker, conid, and configured Data Field values.</small></label>
-          </div>
-          <header className="historical-evidence-header"><div><span>Preflight</span><strong>Configuration and isolated runtime</strong></div>{checking ? <small>Checking…</small> : null}</header>
-          <div className="historical-check-list">{preflight?.checks.map((check) => <DebugCheckRow check={check} key={check.id} />)}</div>
-        </section>
-      </main>
-      <aside className="historical-action-column"><section className={`historical-primary-action ${preflight?.ready && parsed.ok ? "" : "blocked"}`}>
-        {preflight?.ready && parsed.ok ? <Play size={24} /> : <CircleStop size={24} />}
-        <div><strong>Exact-input execution</strong><p>{parsed.ok ? `${parsed.marketEvents.length} market events, ${parsed.derivedFrames.length} derived frames, and ${parsed.signalEvents.length} Signal Stream occurrences will be content hashed.` : parsed.error}</p></div>
-        <button className="button primary" disabled={checking || creating || !preflight?.ready || !parsed.ok} onClick={createRun} type="button"><Play size={16} /> {creating ? "Creating…" : "Run fixture"}</button>
-      </section></aside>
-    </div>
-  </div>;
+            </div>
+          </details>
+  </TradingModeLaunch>;
 }
 
 function DebugCheckRow({ check }: { check: DebugCheck }) {

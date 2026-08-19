@@ -19,6 +19,7 @@ import { useEffect, useState } from "react";
 
 import { api } from "../api/client";
 import { MAIN_CANVAS_ID } from "../app/canvasWorkspace";
+import { TradingModeLaunch } from "../app/components/TradingModeLaunch";
 import { isTerminalReplayStatus, latestReplayRun, useReplayRunEvents, type CanvasReplayRun } from "../app/replayRun";
 import { CanvasWorkspaceSurface } from "./CanvasConfigurationPage";
 
@@ -174,91 +175,43 @@ export function ReplayTradingPage() {
   }
 
   return (
-    <div className="replay-setup-page">
-      <header className="replay-setup-header">
-        <div>
-          <span className="replay-setup-eyebrow"><Sparkles size={15} /> Historical simulation</span>
-          <h1>Start Replay</h1>
-          <p>Choose the event-time entry point. Replay warms every configured symbol causally, then opens the approved Canvas paused at that clock.</p>
-        </div>
-        <div className="replay-canvas-proof">
-          <ShieldCheck size={19} />
-          <span><small>Approved configuration</small><strong>{preflight ? `Revision ${preflight.configuration_revision}` : "Resolving"}</strong><em>{preflight?.configuration_content_hash.slice(0, 10) ?? "—"}</em></span>
-        </div>
-      </header>
-
-      {error ? <div className="historical-error-banner"><TriangleAlert size={18} /><div><strong>Replay unavailable</strong><span>{error}</span></div></div> : null}
-
-      <div className="replay-setup-grid">
-        <main className="replay-definition-panel">
-          <section className="replay-definition-card">
-            <header>
-              <div><span>Run definition</span><strong>One New York exchange session</strong></div>
-              <button className="button secondary compact" disabled={checking} onClick={() => setRefreshKey((value) => value + 1)} type="button"><RefreshCcw size={14} /> Check again</button>
-            </header>
-            <div className="replay-definition-fields">
+    <TradingModeLaunch
+      actionLabel="Open Replay Canvas"
+      actionSummary={<>The approved revision is pinned to a durable simulated run. Replay opens paused at <strong>{sessionDate} · {startTime} ET</strong>.</>}
+      busy={creating}
+      checking={checking}
+      checks={preflight?.checks ?? []}
+      description="Practice manual and strategy-assisted trading against the historical quote and trade sequence. Earlier events warm the workspace causally."
+      error={error}
+      eyebrow="Replay"
+      icon={FastForward}
+      onAction={createRun}
+      onRefresh={() => setRefreshKey((value) => value + 1)}
+      ready={replayReady}
+      title="Open a historical session"
+      secondary={recentRuns.length ? <details className="mode-launch-history"><summary><span>Recent runs</span><small>Resume a run owned by this backend session</small></summary><div>{recentRuns.map((recent) => <button disabled={recent.status === "failed" || recent.status === "stopped"} key={recent.run_id} onClick={() => setRun(recent)} type="button"><span><strong>{recent.session_date}</strong><small>{formatReplayClock(recent.current_time)} ET · {recent.status.replaceAll("_", " ")}</small></span><em>{Math.round(recent.progress * 100)}%</em></button>)}</div></details> : null}
+    >
               <label>
                 <span>Strategy Run Plan</span>
                 <select aria-label="Strategy Run Plan" onChange={(event) => setRunPlanId(event.target.value)} value={runPlanId}>{(preflight?.available_run_plans ?? []).map((plan) => <option key={plan.run_plan_id} value={plan.run_plan_id}>{plan.name} · {plan.strategy_id} r{plan.strategy_revision}</option>)}</select>
-                <small>The selected published profile and exact installed executor revision are pinned to this run.</small>
+                <small>Published strategy and installed executor revision.</small>
               </label>
               <label>
                 <span>Exchange date</span>
                 <input onChange={(event) => setSessionDate(event.target.value)} type="date" value={sessionDate} />
-                <small>Exactly one inclusive 04:00–20:00 New York session.</small>
+                <small>One 04:00–20:00 New York session.</small>
               </label>
               <label>
                 <span>Enter Canvas at</span>
                 <input max="20:00" min="04:00" onChange={(event) => setStartTime(event.target.value)} step="1" type="time" value={startTime} />
-                <small>Earlier events warm indicators and broker marks without placing pre-start trades.</small>
+                <small>Canvas opens paused at this event-time clock.</small>
               </label>
               <label>
                 <span>Initial cash</span>
                 <input max={1_000_000_000} min={1_000} onChange={(event) => setInitialCash(Math.max(1_000, Number(event.target.value) || 1_000))} step={1_000} type="number" value={initialCash} />
-                <small>Applied independently to every explicit simulated account.</small>
+                <small>Applied to the Run Plan's simulated account boundaries.</small>
               </label>
-            </div>
-          </section>
-
-          <section className="replay-preflight-card">
-            <header>
-              <div><span>Preflight</span><strong>Resolved from Canvas, strategy, and runtime authorities</strong></div>
-              {checking ? <span className="replay-checking"><Gauge size={15} /> Checking</span> : null}
-            </header>
-            <div className="replay-check-list">
-              {preflight?.checks.map((check) => <ReplayCheckRow check={check} key={check.id} />)}
-              {!preflight && checking ? <div className="replay-check-skeleton"><Gauge size={19} /><span><strong>Resolving dependencies</strong><small>QMD History, canonical coverage, runtime storage, symbols, and assignments.</small></span></div> : null}
-            </div>
-          </section>
-
-          {recentRuns.length ? <section className="replay-recent-card">
-            <header><div><span>Recent runs</span><strong>Resume a run owned by this backend session</strong></div></header>
-            <div>
-              {recentRuns.map((recent) => <button disabled={recent.status === "failed" || recent.status === "stopped"} key={recent.run_id} onClick={() => setRun(recent)} type="button">
-                <span><strong>{recent.session_date}</strong><small>{formatReplayClock(recent.current_time)} ET / {recent.status.replaceAll("_", " ")}</small></span>
-                <em>{Math.round(recent.progress * 100)}%</em>
-              </button>)}
-            </div>
-          </section> : null}
-        </main>
-
-        <aside className="replay-approval-panel">
-          <section className="replay-approval-card" data-ready={replayReady ? "true" : "false"}>
-            <header><Play size={22} /><div><span>Ready state</span><strong>{replayReady ? "Approval required" : checking ? "Checking dependencies" : "Blocked"}</strong></div></header>
-            <div className="replay-approval-clock"><Clock3 size={18} /><span><small>Replay begins</small><strong>{sessionDate} · {startTime} ET</strong></span></div>
-            <div className="replay-approval-stat"><Database size={16} /><span><strong>{formatInteger(preflight?.coverage.event_count)}</strong><small>canonical events in session</small></span></div>
-            <div className="replay-approval-stat"><WalletCards size={16} /><span><strong>{Object.keys(preflight?.account_mapping ?? {}).length || 1}</strong><small>simulated account boundary</small></span></div>
-            <div className="replay-approval-stat"><CheckCircle2 size={16} /><span><strong>{preflight?.tickers.length ?? 0}</strong><small>configured symbols</small></span></div>
-            {preflight?.assignments.length ? <div className="replay-assignment-summary">
-              <span>Active assignments</span>
-              {preflight.assignments.slice(0, 6).map((assignment) => <div key={assignment.assignment_id}><strong>{assignment.ticker}</strong><small>{assignment.account_key} · {assignment.status.replaceAll("_", " ")}</small></div>)}
-            </div> : <div className="replay-market-only-note"><CircleStop size={16} /><span><strong>Market-only until assigned</strong><small>You can arm a configured strategy from Canvas after the run opens.</small></span></div>}
-            <button className="button primary replay-approve-button" disabled={checking || creating || !replayReady} onClick={createRun} type="button"><Play size={17} /> {creating ? "Creating durable run…" : "Approve and open Canvas"}</button>
-            <small className="replay-approval-disclosure">Approval pins the published application revision and creates a journaled simulated run. Session changes cannot alter it. No IBKR session or live order route is used.</small>
-          </section>
-        </aside>
-      </div>
-    </div>
+    </TradingModeLaunch>
   );
 }
 
