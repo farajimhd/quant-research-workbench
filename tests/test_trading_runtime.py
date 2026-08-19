@@ -709,51 +709,53 @@ class _SignalAwareStrategy(_NoopStrategy):
 
 class RuntimeTests(unittest.IsolatedAsyncioTestCase):
     async def test_confirmed_external_proposal_is_journaled_before_portfolio_and_oms(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            journal = TradingJournal(Path(directory) / "journal.sqlite3")
-            try:
-                runtime = TradingRuntime.__new__(TradingRuntime)
-                runtime.config = RunConfig(
-                    RunMode.REPLAY,
-                    "manual-proposal",
-                    1,
-                    ("SIM-01",),
-                    date(2026, 7, 14),
-                    run_id="00000000-0000-0000-0000-000000000003",
-                )
-                runtime.run_id = runtime.config.run_id
-                runtime.journal = journal
-                runtime.last_event_time = TS
-                runtime._execute_intents = AsyncMock(return_value=[{
-                    "decision": {"status": "approved", "reservation_id": "reservation-1"},
-                    "order_group": {"state": "submitted"},
-                }])
-                intent = StrategyIntent(
-                    intent_id="proposal:proposal-1",
-                    ticker="AAPL",
-                    event_time=TS,
-                    action="enter_long",
-                    quantity=10,
-                    reference_price=100,
-                    invalidation_price=95,
-                )
+        for index, authority in enumerate(("manual", "semi_automatic"), start=3):
+            with self.subTest(authority=authority), tempfile.TemporaryDirectory() as directory:
+                journal = TradingJournal(Path(directory) / "journal.sqlite3")
+                try:
+                    runtime = TradingRuntime.__new__(TradingRuntime)
+                    runtime.config = RunConfig(
+                        RunMode.REPLAY,
+                        "interactive-proposal",
+                        1,
+                        ("SIM-01",),
+                        date(2026, 7, 14),
+                        run_id=f"00000000-0000-0000-0000-{index:012d}",
+                    )
+                    runtime.run_id = runtime.config.run_id
+                    runtime.journal = journal
+                    runtime.last_event_time = TS
+                    runtime._execute_intents = AsyncMock(return_value=[{
+                        "decision": {"status": "approved", "reservation_id": "reservation-1"},
+                        "order_group": {"state": "submitted"},
+                    }])
+                    intent = StrategyIntent(
+                        intent_id=f"proposal:proposal-{index}",
+                        ticker="AAPL",
+                        event_time=TS,
+                        action="enter_long",
+                        quantity=10,
+                        reference_price=100,
+                        invalidation_price=95,
+                    )
 
-                result = await runtime.submit_external_intent(
-                    intent,
-                    account_id="SIM-01",
-                    proposal_id="proposal-1",
-                    proposal_authority="manual",
-                )
+                    result = await runtime.submit_external_intent(
+                        intent,
+                        account_id="SIM-01",
+                        proposal_id=f"proposal-{index}",
+                        proposal_authority=authority,
+                    )
 
-                records = journal.records(runtime.run_id)
-                self.assertEqual(
-                    [row.entity_type for row in records],
-                    ["trade_proposal_confirmed", "trade_proposal_result"],
-                )
-                self.assertEqual(result["decision"]["status"], "approved")
-                runtime._execute_intents.assert_awaited_once()
-            finally:
-                journal.close()
+                    records = journal.records(runtime.run_id)
+                    self.assertEqual(
+                        [row.entity_type for row in records],
+                        ["trade_proposal_confirmed", "trade_proposal_result"],
+                    )
+                    self.assertEqual(records[0].payload["authority"], authority)
+                    self.assertEqual(result["decision"]["status"], "approved")
+                    runtime._execute_intents.assert_awaited_once()
+                finally:
+                    journal.close()
 
     async def test_market_signal_validates_qmd_payload_at_strategy_boundary(self) -> None:
         payload = {

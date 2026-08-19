@@ -800,9 +800,19 @@ export function RealLiveTradingPage({ onMarketStatusChange, onTopbarCenterChange
 
   useEffect(() => {
     if (started || isChildCanvas) return;
-    void loadUniversePreview();
     void loadGatewayStatus().catch(() => undefined);
-  }, [isChildCanvas, loadGatewayStatus, loadUniversePreview, started]);
+  }, [isChildCanvas, loadGatewayStatus, started]);
+
+  useEffect(() => {
+    if (
+      started
+      || isChildCanvas
+      || !preflightStatus?.ready
+      || universePreview
+      || universePreviewLoading
+    ) return;
+    void loadUniversePreview();
+  }, [isChildCanvas, loadUniversePreview, preflightStatus?.ready, started, universePreview, universePreviewLoading]);
 
   useEffect(() => {
     if (started || isChildCanvas || autoPreflightRequestedRef.current || !availableAccounts.length) return;
@@ -1629,7 +1639,7 @@ function RealLiveTradingGate({
   universePreviewLoading: boolean;
 }) {
   const qmdReady = isQmdGatewayReady(gatewayStatus);
-  const ready = Boolean(preflightStatus?.ready && qmdReady);
+  const ready = Boolean(preflightStatus?.ready && qmdReady && universePreview?.can_query_universe);
   const selectedAccounts = selectedAccountList(accounts, selectedAccountKeys);
   const selectedLabel = selectedAccounts.length ? selectedAccounts.map((account) => account.label).join(", ") : "No account selected";
   const mirrorMode = selectedAccounts.length > 1;

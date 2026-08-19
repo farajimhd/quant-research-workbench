@@ -136,6 +136,14 @@ class LiveTradeProposalServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(self.journal.appended), 1)
         self.assertEqual(self.journal.appended[0]["account_id"], "paper")
 
+    async def test_semi_automatic_proposal_uses_the_same_confirmed_runtime_path(self) -> None:
+        result = await self._stage({**self.payload, "authority": "semi_automatic"})
+
+        self.assertEqual(result["authority"], "semi_automatic")
+        self.assertEqual(result["status"], "approved")
+        self.assertTrue(result["execution"]["broker_submission"])
+        self.assertEqual(self.journal.appended[0]["payload"]["authority"], "semi_automatic")
+
     async def test_rejects_stale_authoritative_state(self) -> None:
         def stale_state(ticker: str):
             result = self._ticker_state(ticker)
