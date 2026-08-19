@@ -4881,29 +4881,33 @@ function useCanvasLiveScannerSnapshot(enabled: boolean) {
       if (cancelled || controller) return;
       const request = new AbortController();
       controller = request;
+      let retryMs = 15_000;
       try {
-        const payload = await api<{ market_time?: string; provider?: string; rows?: Record<string, unknown>[]; session_date?: string; signal_rows?: Record<string, unknown>[]; watchlist_runtime?: WatchlistRuntimeResponse }>("/api/real-live-trading/scanner?row_limit=500", { signal: request.signal, timeoutMs: 45_000 });
+        const payload = await api<{ composition_status?: string; market_time?: string; provider?: string; rows?: Record<string, unknown>[]; session_date?: string; signal_rows?: Record<string, unknown>[]; watchlist_runtime?: WatchlistRuntimeResponse }>("/api/real-live-trading/scanner?row_limit=500", { signal: request.signal, timeoutMs: 45_000 });
         if (cancelled || request.signal.aborted) return;
         const rows = payload.rows ?? [];
+        const compositionStatus = payload.composition_status === "building" ? "building" : payload.composition_status === "refreshing" ? "refreshing" : "ready";
+        retryMs = compositionStatus === "building" ? 1_000 : 15_000;
         const asOfContext = payload.session_date && payload.market_time
           ? dateInTimeZone(payload.session_date, payload.market_time, "America/New_York")
           : new Date();
         setSnapshot({
           as_of: asOfContext.toISOString(),
           errors: {},
-          meta: { complete_universe: true, row_count: rows.length, source: payload.provider || "qmd-gateway", status: "ready" } as ScannerSnapshotMeta,
+          meta: { complete_universe: compositionStatus === "ready", row_count: rows.length, source: payload.provider || "qmd-gateway", status: compositionStatus } as ScannerSnapshotMeta,
           rows,
           signal_rows: payload.signal_rows ?? [],
           watchlist_runtime: payload.watchlist_runtime,
         });
         setError("");
+        setLoading(compositionStatus === "building" && rows.length === 0);
       } catch (reason) {
         if (!cancelled && !request.signal.aborted) setError(reason instanceof Error ? reason.message : String(reason));
       } finally {
         if (controller === request) controller = null;
         if (!cancelled) {
-          setLoading(false);
-          timer = window.setTimeout(load, 15_000);
+          if (retryMs !== 1_000) setLoading(false);
+          timer = window.setTimeout(load, retryMs);
         }
       }
     };

@@ -35,11 +35,16 @@ DEFAULT_IBKR_BASE_URL = "https://localhost:5000/v1/api"
 DEFAULT_MASSIVE_BASE_URL = "https://api.massive.com"
 IBKR_ORDER_LANE = threading.RLock()
 SCANNER_COMPOSITION_CACHE = BoundedSingleFlightTtlCache[str, dict[str, Any]](
-    max_entries=1,
+    max_entries=2,
     ttl_seconds=1.0,
     contract_revision="real-live-scanner-composition.v2",
     wait_timeout_seconds=30.0,
 )
+SCANNER_SNAPSHOT_LOCK = threading.RLock()
+SCANNER_LATEST_COMPLETE: dict[str, Any] | None = None
+SCANNER_REFRESH_ERROR = ""
+SCANNER_REFRESH_GENERATION: int | None = None
+SCANNER_CONFIGURATION_GENERATION = 0
 
 
 @dataclass(frozen=True)
@@ -285,14 +290,28 @@ def _approved_configuration_checks(
 
 
 def real_live_scanner_snapshot(row_limit: int = 250) -> dict[str, Any]:
-    complete = SCANNER_COMPOSITION_CACHE.get_or_load(
-        "complete-population",
-        _compose_real_live_scanner_snapshot,
-    )
+    generation = _scanner_configuration_generation()
+    complete = SCANNER_COMPOSITION_CACHE.get(_scanner_cache_key(generation))
+    composition_status = "ready"
+    if complete is not None:
+        _publish_scanner_snapshot(complete, generation=generation)
+    else:
+        _start_scanner_snapshot_refresh(generation)
+        with SCANNER_SNAPSHOT_LOCK:
+            complete = SCANNER_LATEST_COMPLETE
+            refresh_error = SCANNER_REFRESH_ERROR
+        if complete is None:
+            if refresh_error:
+                raise RuntimeError(refresh_error)
+            complete = _building_scanner_snapshot()
+            composition_status = "building"
+        else:
+            composition_status = "refreshing"
     limit = max(1, min(int(row_limit or 250), 1_000))
     limited_rows = list(complete.get("rows") or [])[:limit]
     result = {
         **complete,
+        "composition_status": composition_status,
         "rows": limited_rows,
         "row_count": len(limited_rows),
     }
@@ -303,6 +322,93 @@ def real_live_scanner_snapshot(row_limit: int = 250) -> dict[str, Any]:
         source_schema_version=str(result.get("schema_version") or "1"),
     )
     return result
+
+
+def clear_real_live_scanner_snapshot_cache() -> None:
+    """Invalidate the presentation snapshot when discovery configuration changes."""
+
+    global SCANNER_CONFIGURATION_GENERATION
+    global SCANNER_LATEST_COMPLETE
+    global SCANNER_REFRESH_ERROR
+    global SCANNER_REFRESH_GENERATION
+    with SCANNER_SNAPSHOT_LOCK:
+        SCANNER_CONFIGURATION_GENERATION += 1
+        SCANNER_LATEST_COMPLETE = None
+        SCANNER_REFRESH_ERROR = ""
+        SCANNER_REFRESH_GENERATION = None
+
+
+def _scanner_configuration_generation() -> int:
+    with SCANNER_SNAPSHOT_LOCK:
+        return SCANNER_CONFIGURATION_GENERATION
+
+
+def _scanner_cache_key(generation: int) -> str:
+    return f"qmd-complete-population:{generation}"
+
+
+def _load_scanner_composition(generation: int) -> dict[str, Any]:
+    payload = SCANNER_COMPOSITION_CACHE.get_or_load(
+        _scanner_cache_key(generation),
+        lambda: _compose_real_live_scanner_snapshot(allow_provider_fallback=False),
+    )
+    _publish_scanner_snapshot(payload, generation=generation)
+    return payload
+
+
+def _publish_scanner_snapshot(payload: dict[str, Any], *, generation: int) -> None:
+    global SCANNER_LATEST_COMPLETE
+    global SCANNER_REFRESH_ERROR
+    with SCANNER_SNAPSHOT_LOCK:
+        if generation != SCANNER_CONFIGURATION_GENERATION:
+            return
+        SCANNER_LATEST_COMPLETE = payload
+        SCANNER_REFRESH_ERROR = ""
+
+
+def _start_scanner_snapshot_refresh(generation: int) -> None:
+    global SCANNER_REFRESH_GENERATION
+    with SCANNER_SNAPSHOT_LOCK:
+        if SCANNER_REFRESH_GENERATION == generation:
+            return
+        SCANNER_REFRESH_GENERATION = generation
+    threading.Thread(
+        target=_refresh_scanner_snapshot,
+        args=(generation,),
+        name="live-scanner-snapshot-refresh",
+        daemon=True,
+    ).start()
+
+
+def _refresh_scanner_snapshot(generation: int) -> None:
+    global SCANNER_REFRESH_ERROR
+    global SCANNER_REFRESH_GENERATION
+    try:
+        _load_scanner_composition(generation)
+    except Exception as exc:
+        with SCANNER_SNAPSHOT_LOCK:
+            if generation == SCANNER_CONFIGURATION_GENERATION:
+                SCANNER_REFRESH_ERROR = str(exc)
+    finally:
+        with SCANNER_SNAPSHOT_LOCK:
+            if SCANNER_REFRESH_GENERATION == generation:
+                SCANNER_REFRESH_GENERATION = None
+
+
+def _building_scanner_snapshot() -> dict[str, Any]:
+    now = datetime.now(NEW_YORK)
+    return {
+        "schema_version": 2,
+        "provider": "qmd-gateway",
+        "session_date": now.date().isoformat(),
+        "market_time": now.strftime("%H:%M:%S"),
+        "rows": [],
+        "row_count": 0,
+        "core_population_count": 0,
+        "signal_rows": [],
+        "watchlist_runtime": {"status": "building", "watchlists": []},
+        "signal_stream_runtime": {"status": "building", "signal_streams": []},
+    }
 
 
 def _compose_real_live_scanner_snapshot(*, allow_provider_fallback: bool = True) -> dict[str, Any]:
@@ -373,12 +479,12 @@ def _compose_real_live_scanner_snapshot(*, allow_provider_fallback: bool = True)
                     if str(instance.get("field_ref") or "") in interval_field_refs
                 ]
                 indicator_rows: dict[str, dict[str, Any]] = {}
-                for interval in configured_discovery_technical_windows(configuration):
-                    source_rows = (
-                        qmd_scanner_macro_bars(timeframe=interval, row_limit=25_000)
-                        if interval in {"1d", "1w", "1mo"}
-                        else qmd_scanner_indicators(timeframe=interval, row_limit=25_000)
-                    )
+                interval_sources = load_discovery_interval_sources(
+                    configured_discovery_technical_windows(configuration),
+                    indicator_loader=qmd_scanner_indicators,
+                    macro_loader=qmd_scanner_macro_bars,
+                )
+                for interval, source_rows in interval_sources:
                     interval_projection = project_data_field_outputs(
                         [
                             {**row, "indicator_interval": str(row.get("indicator_interval") or interval)}
@@ -551,6 +657,33 @@ def _compose_real_live_scanner_snapshot(*, allow_provider_fallback: bool = True)
     return result
 
 
+def load_discovery_interval_sources(
+    intervals: tuple[str, ...] | list[str],
+    *,
+    indicator_loader: Any,
+    macro_loader: Any,
+) -> list[tuple[str, list[dict[str, Any]]]]:
+    """Load independent QMD interval frames concurrently in stable order.
+
+    Each interval is an independent, already-vectorized QMD cross-section.
+    Serial reads made one Scanner refresh wait for the sum of their bounded
+    network deadlines, which in turn blocked Canvas consumers coalesced behind
+    the same single-flight cache entry.
+    """
+
+    ordered = tuple(dict.fromkeys(str(value).strip().lower() for value in intervals if str(value).strip()))
+    if not ordered:
+        return []
+
+    def load(interval: str) -> list[dict[str, Any]]:
+        loader = macro_loader if interval in {"1d", "1w", "1mo"} else indicator_loader
+        return list(loader(timeframe=interval, row_limit=25_000))
+
+    with ThreadPoolExecutor(max_workers=min(len(ordered), 6)) as executor:
+        futures = {interval: executor.submit(load, interval) for interval in ordered}
+        return [(interval, futures[interval].result()) for interval in ordered]
+
+
 def refresh_live_market_discovery() -> dict[str, Any]:
     """Refresh the approved QMD-only discovery funnel without UI demand.
 
@@ -558,10 +691,7 @@ def refresh_live_market_discovery() -> dict[str, Any]:
     provider fallback remains a presentation-only compatibility path.
     """
 
-    payload = SCANNER_COMPOSITION_CACHE.get_or_load(
-        "complete-population",
-        lambda: _compose_real_live_scanner_snapshot(allow_provider_fallback=False),
-    )
+    payload = _load_scanner_composition(_scanner_configuration_generation())
     return {
         "as_of": payload.get("as_of") or payload.get("snapshot_at_utc"),
         "core_population_count": int(payload.get("core_population_count") or payload.get("row_count") or 0),

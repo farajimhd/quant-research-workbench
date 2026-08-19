@@ -242,8 +242,10 @@ def materialize_market_discovery(section: dict[str, Any]) -> dict[str, Any]:
         materialized_at,
     )
     from src.backend.canvas_preview_service import clear_scanner_snapshot_cache
+    from src.backend.real_live_trading_service import clear_real_live_scanner_snapshot_cache
 
     clear_scanner_snapshot_cache()
+    clear_real_live_scanner_snapshot_cache()
     return state
 
 
