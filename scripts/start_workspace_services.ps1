@@ -55,11 +55,6 @@ function Resolve-PythonExecutable {
         }
     }
 
-    $pythonCommand = Get-Command python -ErrorAction SilentlyContinue
-    if ($pythonCommand) {
-        return $pythonCommand.Source
-    }
-
     $userCandidates = @(
         (Join-Path $env:USERPROFILE "miniconda3\python.exe"),
         (Join-Path $env:USERPROFILE "anaconda3\python.exe")
@@ -68,6 +63,13 @@ function Resolve-PythonExecutable {
         if (Test-Path -LiteralPath $candidate -PathType Leaf) {
             return $candidate
         }
+    }
+
+    $pythonCommand = Get-Command python -ErrorAction SilentlyContinue
+    if ($pythonCommand -and
+        $pythonCommand.Source -and
+        $pythonCommand.Source.IndexOf("\Microsoft\WindowsApps\", [StringComparison]::OrdinalIgnoreCase) -lt 0) {
+        return $pythonCommand.Source
     }
 
     throw "Python was not found. Activate the intended environment or pass -PythonExe <path-to-python.exe>."

@@ -261,6 +261,13 @@ EXCHANGE_TIME_ZONE = MARKET_TIME_ZONE_NAME
 BACKTEST_ARTIFACT_ROOT = PROJECT_ROOT / "data" / "backtests"
 SERVICE_STATUS_TIMEOUT_SECONDS = 1.8
 SERVICE_FLEET_STATUS_TIMEOUT_SECONDS = 1.0
+SERVICE_FLEET_STATUS_TIMEOUT_OVERRIDES_SECONDS = {
+    # QMD History publishes bounded cache/coverage evidence in its rich status
+    # snapshot.  That payload performs causal cache inspection and regularly
+    # needs a little longer than the cheap liveness probes; treating the normal
+    # response time as a timeout made the fleet dashboard report a false error.
+    "qmd-history": 2.5,
+}
 NEWS_QUERY_TIMEOUT_SECONDS = 12.0
 NEWS_INTELLIGENCE_TIMEOUT_SECONDS = 1.5
 SERVICE_LOG_TAIL_LIMIT = 160
@@ -2651,18 +2658,22 @@ def service_status_payload(service_id: str, *, include_database_tables: bool = T
         # Fleet status is a first-paint surface. Probe the rich snapshot and
         # cheap liveness endpoint together so one unavailable service costs one
         # timeout window rather than two serialized windows.
+        fleet_timeout_seconds = SERVICE_FLEET_STATUS_TIMEOUT_OVERRIDES_SECONDS.get(
+            service_id,
+            SERVICE_FLEET_STATUS_TIMEOUT_SECONDS,
+        )
         with ThreadPoolExecutor(max_workers=2) as executor:
             snapshot_future = executor.submit(
                 fetch_service_json,
                 base_url,
                 "/snapshot/status",
-                timeout_seconds=SERVICE_FLEET_STATUS_TIMEOUT_SECONDS,
+                timeout_seconds=fleet_timeout_seconds,
             )
             health_future = executor.submit(
                 fetch_service_json,
                 base_url,
                 "/health",
-                timeout_seconds=SERVICE_FLEET_STATUS_TIMEOUT_SECONDS,
+                timeout_seconds=fleet_timeout_seconds,
             )
             snapshot, snapshot_error = snapshot_future.result()
             health_payload, health_error = health_future.result()

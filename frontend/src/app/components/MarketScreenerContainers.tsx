@@ -358,9 +358,12 @@ export function MarketScannerContainer({ asOf, meta, onSettingsChange, onTickerS
   const normalizedRows = useMemo(() => normalizeScannerRows(rows), [rows]);
   const { catalog, coreColumns } = useDiscoveryPresentation();
   const columns = canonicalDiscoveryColumns([...(coreColumns.length ? coreColumns : ["symbol", "last_price", "change_pct", "volume"]), ...settings.columns]);
+  const refreshing = meta?.status === "refreshing";
   const subtitle = meta?.complete_universe
-    ? `QMD Core Scan · full historical universe · ${meta.lookback_minutes ?? 15}-minute discovery window`
-    : "QMD Core Scan universe unavailable or incomplete";
+    ? `QMD Core Scan · full eligible universe${refreshing ? " · refreshing projection" : ""}`
+    : meta?.status === "building"
+      ? "QMD Core Scan is building its first complete eligible-universe snapshot"
+      : "QMD Core Scan universe unavailable or incomplete";
   return <MarketListSurface
     asOf={asOf}
     catalog={catalog}

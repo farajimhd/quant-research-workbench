@@ -46,11 +46,6 @@ function Resolve-PythonExecutable {
         }
     }
 
-    $pythonCommand = Get-Command python -ErrorAction SilentlyContinue
-    if ($pythonCommand) {
-        return $pythonCommand.Source
-    }
-
     foreach ($candidate in @(
         (Join-Path $env:USERPROFILE "miniconda3\python.exe"),
         (Join-Path $env:USERPROFILE "anaconda3\python.exe")
@@ -58,6 +53,13 @@ function Resolve-PythonExecutable {
         if (Test-Path -LiteralPath $candidate -PathType Leaf) {
             return $candidate
         }
+    }
+
+    $pythonCommand = Get-Command python -ErrorAction SilentlyContinue
+    if ($pythonCommand -and
+        $pythonCommand.Source -and
+        $pythonCommand.Source.IndexOf("\Microsoft\WindowsApps\", [StringComparison]::OrdinalIgnoreCase) -lt 0) {
+        return $pythonCommand.Source
     }
 
     return ""
@@ -95,11 +97,29 @@ function Get-ProcessSnapshot {
 function Test-ProcessStartIdentity {
     param(
         $Process,
-        [string]$ExpectedUtc
+        $ExpectedUtc
     )
 
-    [DateTimeOffset]$expected = [DateTimeOffset]::MinValue
-    if (-not [DateTimeOffset]::TryParse($ExpectedUtc, [ref]$expected)) {
+    try {
+        # PowerShell 7 ConvertFrom-Json materializes ISO timestamps as DateTime.
+        # Preserve that typed UTC value; casting it to string first applies the
+        # current culture and discards the Z marker and fractional precision.
+        if ($ExpectedUtc -is [DateTimeOffset]) {
+            $expected = [DateTimeOffset]$ExpectedUtc
+        }
+        elseif ($ExpectedUtc -is [DateTime]) {
+            $expected = [DateTimeOffset]([DateTime]$ExpectedUtc).ToUniversalTime()
+        }
+        else {
+            $expected = [DateTimeOffset]::ParseExact(
+                [string]$ExpectedUtc,
+                "o",
+                [Globalization.CultureInfo]::InvariantCulture,
+                [Globalization.DateTimeStyles]::RoundtripKind
+            )
+        }
+    }
+    catch {
         return $false
     }
     $actual = ([DateTime]$Process.CreationDate).ToUniversalTime()
@@ -151,12 +171,14 @@ function Read-ValidRegistration {
     $hostProcess = $Snapshot[$hostPid]
     $hostName = ([string]$hostProcess.Name).ToLowerInvariant()
     $hostCommand = [string]$hostProcess.CommandLine
-    if ($hostName -notin @("powershell.exe", "pwsh.exe") -or
-        $hostCommand.IndexOf($serviceTabHost, [StringComparison]::OrdinalIgnoreCase) -lt 0 -or
-        $hostCommand.IndexOf($recordPath, [StringComparison]::OrdinalIgnoreCase) -lt 0 -or
-        $hostCommand.IndexOf([string]$record.instance_id, [StringComparison]::OrdinalIgnoreCase) -lt 0 -or
-        -not (Test-ProcessStartIdentity -Process $hostProcess -ExpectedUtc ([string]$record.host_started_at_utc))) {
-        Write-Warning "Ignoring stale or mismatched workspace ownership record: $Path"
+    $identityFailures = @()
+    if ($hostName -notin @("powershell.exe", "pwsh.exe")) { $identityFailures += "host executable" }
+    if ($hostCommand.IndexOf($serviceTabHost, [StringComparison]::OrdinalIgnoreCase) -lt 0) { $identityFailures += "tab host path" }
+    if ($hostCommand.IndexOf($recordPath, [StringComparison]::OrdinalIgnoreCase) -lt 0) { $identityFailures += "registry path" }
+    if ($hostCommand.IndexOf([string]$record.instance_id, [StringComparison]::OrdinalIgnoreCase) -lt 0) { $identityFailures += "instance id" }
+    if (-not (Test-ProcessStartIdentity -Process $hostProcess -ExpectedUtc $record.host_started_at_utc)) { $identityFailures += "process start time" }
+    if ($identityFailures.Count -gt 0) {
+        Write-Warning "Ignoring stale or mismatched workspace ownership record ($($identityFailures -join ', ')): $Path"
         return $null
     }
 

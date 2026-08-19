@@ -36,6 +36,36 @@ def readiness(
 
 class ServiceReadinessTests(unittest.TestCase):
     @patch("src.backend.app.fetch_service_json")
+    def test_qmd_history_fleet_probe_allows_rich_status_contract_to_finish(
+        self, fetch_json
+    ) -> None:
+        observed_timeouts: dict[str, float] = {}
+
+        def response(_base_url: str, path: str, *, timeout_seconds: float):
+            observed_timeouts[path] = timeout_seconds
+            if path == "/snapshot/status":
+                return {"header": {"status": "ONLINE"}}, None
+            if path == "/health":
+                return {"service_status": "ONLINE"}, None
+            raise AssertionError(path)
+
+        fetch_json.side_effect = response
+        payload = service_status_payload(
+            "qmd-history",
+            include_database_tables=False,
+            include_logs=False,
+            include_recent=False,
+            fleet_probe=True,
+        )
+
+        self.assertTrue(payload["online"])
+        self.assertGreater(observed_timeouts["/snapshot/status"], 1.0)
+        self.assertEqual(
+            observed_timeouts["/snapshot/status"],
+            observed_timeouts["/health"],
+        )
+
+    @patch("src.backend.app.fetch_service_json")
     def test_health_fallback_keeps_service_online_when_rich_snapshot_times_out(
         self, fetch_json
     ) -> None:

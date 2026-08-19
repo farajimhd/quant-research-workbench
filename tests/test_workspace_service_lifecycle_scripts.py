@@ -22,6 +22,13 @@ def test_workspace_stop_uses_registered_ownership_not_global_command_matches() -
     assert 'commandline.contains("vite")' not in source
     assert 'commandline.contains("run_frontend.py")' not in source
     assert "get-portownerids" not in source
+    assert "datetimeoffset]::parseexact(" in source
+    assert "expectedutc -is [datetime]" in source
+    assert "-expectedutc $record.host_started_at_utc" in source
+    assert "datetimestyles]::roundtripkind" in source
+    assert "cultureinfo]::invariantculture" in source
+    assert source.index("miniconda3\\python.exe") < source.index("get-command python")
+    assert "\\microsoft\\windowsapps\\" in source
     assert "foreign processes and ports were left untouched" in source
 
 
@@ -46,6 +53,8 @@ def test_workspace_start_registers_each_role_and_rejects_foreign_port_adoption()
     assert "maintain_repository_git.ps1 -compact" in source
     assert "maxgitdirectorygb = 2.0" in source
     assert "pythondontwritebytecode" in source
+    assert source.index("miniconda3\\python.exe") < source.index("get-command python")
+    assert "\\microsoft\\windowsapps\\" in source
 
 
 def test_workspace_stop_has_no_qmd_live_shutdown_authority() -> None:
@@ -65,8 +74,16 @@ def test_qmd_live_has_separate_managed_start_and_stop_scripts() -> None:
     assert '"-servicerole"' in start_source
     assert "startup refuses to adopt an existing port owner" in start_source
     assert '"qmd_live"' in stop_source
+    assert start_source.index("miniconda3\\python.exe") < start_source.index("get-command python")
+    assert "\\microsoft\\windowsapps\\" in start_source
     assert "read-validregistration" in stop_source
     assert "test-processstartidentity" in stop_source
+    assert "datetimeoffset]::parseexact(" in stop_source
+    assert "expectedutc -is [datetime]" in stop_source
+    assert "datetimestyles]::roundtripkind" in stop_source
+    assert "cultureinfo]::invariantculture" in stop_source
+    assert stop_source.index("miniconda3\\python.exe") < stop_source.index("get-command python")
+    assert "\\microsoft\\windowsapps\\" in stop_source
     assert "legacyworkspaceruntimeroot" in stop_source
     assert r"d:\tradingml\runtimes\workspace_services" in stop_source
     assert "foreign processes and ports were left untouched" in stop_source
