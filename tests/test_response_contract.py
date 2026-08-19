@@ -3,9 +3,10 @@ from __future__ import annotations
 import unittest
 from unittest.mock import patch
 
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
-from src.backend.app import app
+from src.backend.app import app, trading_canvas_context
 from src.backend.qmd_gateway_client import QmdServiceError
 from src.backend.response_contract import error_response_envelope, success_response_envelope
 from src.request_context import begin_request_context, end_request_context
@@ -106,14 +107,27 @@ class ResponseContractTests(unittest.TestCase):
             retryable=True,
         )
 
-        with TestClient(app) as client:
-            response = client.get("/api/trading/canvas-context")
+        with self.assertRaises(HTTPException) as raised:
+            trading_canvas_context()
 
-        payload = response.json()
-        self.assertEqual(response.status_code, 504)
-        self.assertEqual(payload["error"]["code"], "qmd_upstream_timeout")
-        self.assertTrue(payload["error"]["retryable"])
-        self.assertEqual(payload["error"]["details"]["service"], "QMD History")
+        self.assertEqual(raised.exception.status_code, 504)
+        self.assertEqual(raised.exception.detail["code"], "qmd_upstream_timeout")
+        self.assertTrue(raised.exception.detail["retryable"])
+        self.assertEqual(raised.exception.detail["service"], "QMD History")
+
+    @patch(
+        "src.backend.app.historical_latest_coverage",
+        return_value={"session_date": "2026-08-17", "event_count": 10, "ticker_count": 2},
+    )
+    def test_canvas_context_reuses_one_short_lived_coverage_snapshot(
+        self, latest_coverage
+    ) -> None:
+        first = trading_canvas_context()
+        second = trading_canvas_context()
+
+        self.assertEqual(first["coverage"]["ticker_count"], 2)
+        self.assertEqual(second["coverage"]["ticker_count"], 2)
+        latest_coverage.assert_called_once_with()
 
     def test_validation_list_has_stable_code_and_message(self) -> None:
         issues = [{"loc": ["query", "limit"], "msg": "must be positive"}]

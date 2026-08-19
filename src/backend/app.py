@@ -338,6 +338,12 @@ _CANVAS_CHART_HISTORY_CACHE = BoundedSingleFlightTtlCache[
     contract_revision="canvas-chart-history.v1",
     wait_timeout_seconds=95.0,
 )
+_CANVAS_COVERAGE_CACHE = BoundedSingleFlightTtlCache[str, dict[str, Any]](
+    max_entries=1,
+    ttl_seconds=30.0,
+    contract_revision="canvas-latest-coverage.v1",
+    wait_timeout_seconds=20.0,
+)
 
 SERVICE_DATABASE_TABLES: dict[str, list[dict[str, str]]] = {
     "qmd": [
@@ -5888,7 +5894,14 @@ async def trading_historical_stream(websocket: WebSocket, symbol: str) -> None:
 @app.get("/api/trading/canvas-context")
 def trading_canvas_context() -> dict[str, Any]:
     try:
-        coverage = historical_latest_coverage()
+        # A Canvas can mount many independent containers and browser tabs at
+        # once.  Coalesce their identical startup probe so QMD History remains
+        # an authority rather than becoming a per-container bottleneck.
+        coverage = _CANVAS_COVERAGE_CACHE.get_or_load(
+            "latest",
+            historical_latest_coverage,
+            source_revision=f"provider:{id(historical_latest_coverage)}",
+        )
     except QmdServiceError as exc:
         raise _qmd_http_exception(exc) from exc
     except TimeoutError as exc:
