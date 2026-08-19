@@ -50,10 +50,10 @@ def news_synthesis_events(
   )"""
     sql = f"""
 SELECT canonical_news_id,
-       toString(published_at_utc) AS published_at_utc,
+       toString(published_at_utc) AS published_at_text,
        engine_version,
        synthesis_json,
-       toString(updated_at_utc) AS updated_at_utc
+       toString(updated_at_utc) AS updated_at_text
 FROM `q_live`.`news_synthesis_v1` FINAL
 WHERE engine_version={sql_string(ENGINE_VERSION)}
   AND updated_at_utc>=parseDateTime64BestEffort({sql_string(start_at.astimezone(UTC).isoformat())})
@@ -64,7 +64,19 @@ LIMIT {max(1, min(int(limit), 10_000))}
 FORMAT JSONEachRow
 """
     try:
-        return list(active.iter_json_each_row(sql))
+        rows = list(active.iter_json_each_row(sql))
+        return [
+            {
+                **{
+                    key: value
+                    for key, value in row.items()
+                    if key not in {"published_at_text", "updated_at_text"}
+                },
+                "published_at_utc": row.get("published_at_text"),
+                "updated_at_utc": row.get("updated_at_text"),
+            }
+            for row in rows
+        ]
     finally:
         if owned:
             active.close()

@@ -6,7 +6,7 @@ import unittest
 from datetime import UTC, datetime
 from pathlib import Path
 
-from src.backend.news_signal_runtime_service import NewsSignalRuntime, all_news_synthesis_events
+from src.backend.news_signal_runtime_service import NewsSignalRuntime, all_news_synthesis_events, news_synthesis_events
 from src.trading_runtime.journal import TradingJournal
 
 
@@ -80,6 +80,31 @@ def source_row(updated_at: str) -> dict:
 
 
 class NewsSignalRuntimeTests(unittest.TestCase):
+    def test_clickhouse_bounds_compare_native_datetimes_not_string_aliases(self) -> None:
+        class Client:
+            sql = ""
+
+            def iter_json_each_row(self, sql: str):
+                self.sql = sql
+                return iter([{
+                    "canonical_news_id": "news-1",
+                    "published_at_text": "2026-08-17 14:59:00.000",
+                    "updated_at_text": "2026-08-17 15:00:00.000",
+                }])
+
+        client = Client()
+        rows = news_synthesis_events(
+            start_at=datetime(2026, 8, 17, 14, 0, tzinfo=UTC),
+            as_of=datetime(2026, 8, 17, 16, 0, tzinfo=UTC),
+            client=client,
+        )
+
+        self.assertIn("toString(updated_at_utc) AS updated_at_text", client.sql)
+        self.assertNotIn("toString(updated_at_utc) AS updated_at_utc", client.sql)
+        self.assertIn("updated_at_utc>=parseDateTime64BestEffort", client.sql)
+        self.assertEqual(rows[0]["updated_at_utc"], "2026-08-17 15:00:00.000")
+        self.assertEqual(rows[0]["published_at_utc"], "2026-08-17 14:59:00.000")
+
     def test_complete_news_interval_uses_stable_keyset_pages(self) -> None:
         calls: list[tuple[datetime | None, str]] = []
         rows = [
