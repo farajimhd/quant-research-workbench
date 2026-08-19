@@ -11,9 +11,44 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::BTreeMap;
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 use std::time::Duration;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, OwnedMutexGuard};
+
+#[derive(Clone, Default)]
+struct SymbolActivationLocks {
+    inner: Arc<Mutex<BTreeMap<String, Weak<Mutex<()>>>>>,
+}
+
+impl SymbolActivationLocks {
+    async fn acquire(&self, tickers: &[String]) -> Vec<OwnedMutexGuard<()>> {
+        // Computation target tickers are normalized, but sorting here keeps
+        // multi-symbol acquisitions deadlock-free for every caller.
+        let mut symbols = tickers.to_vec();
+        symbols.sort();
+        symbols.dedup();
+        let locks = {
+            let mut registry = self.inner.lock().await;
+            registry.retain(|_, lock| lock.strong_count() > 0);
+            symbols
+                .into_iter()
+                .map(|symbol| {
+                    if let Some(lock) = registry.get(&symbol).and_then(Weak::upgrade) {
+                        return lock;
+                    }
+                    let lock = Arc::new(Mutex::new(()));
+                    registry.insert(symbol, Arc::downgrade(&lock));
+                    lock
+                })
+                .collect::<Vec<_>>()
+        };
+        let mut guards = Vec::with_capacity(locks.len());
+        for lock in locks {
+            guards.push(lock.lock_owned().await);
+        }
+        guards
+    }
+}
 
 #[derive(Clone)]
 pub struct StructureFocusCoordinator {
@@ -27,6 +62,7 @@ pub struct StructureFocusCoordinator {
     inactive_registry: Arc<Mutex<BTreeMap<String, DateTime<Utc>>>>,
     inactive_registry_limit: usize,
     staging_max_events: usize,
+    activation_locks: SymbolActivationLocks,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -64,6 +100,8 @@ struct HistorySourceSegment {
     tier: String,
 }
 
+const CHECKPOINT_ADVANCE_SLICE_HOURS: i64 = 48;
+
 impl StructureFocusCoordinator {
     pub fn new(
         config: &GatewayConfig,
@@ -88,6 +126,7 @@ impl StructureFocusCoordinator {
             inactive_registry: Arc::new(Mutex::new(BTreeMap::new())),
             inactive_registry_limit: config.structure_focus_inactive_registry_limit,
             staging_max_events: config.structure_focus_staging_max_events,
+            activation_locks: SymbolActivationLocks::default(),
         })
     }
 
@@ -102,6 +141,11 @@ impl StructureFocusCoordinator {
         {
             return Ok(Vec::new());
         }
+        // Target upserts can arrive concurrently from chart history and live
+        // refreshes. Serialize only overlapping symbols so the later request
+        // observes and reuses the first request's activated structure instead
+        // of colliding with its transient staging marker.
+        let _activation_guards = self.activation_locks.acquire(&lease.tickers).await;
         let mut staged = Vec::new();
         let mut activated = Vec::new();
         let result = async {
@@ -158,31 +202,7 @@ impl StructureFocusCoordinator {
                         .repair_focused_ticker_intervals(ticker, &gaps)
                         .await?;
                 }
-                let response = self
-                    .client
-                    .post(format!(
-                        "{}/materialize/generic-structure-checkpoint",
-                        self.history_url
-                    ))
-                    .json(&json!({
-                        "schema_version": 1,
-                        "checkpoint": checkpoint,
-                        "as_of": Utc::now(),
-                    }))
-                    .send()
-                    .await
-                    .map_err(|error| format!("QMD History checkpoint request failed: {error}"))?;
-                let status = response.status();
-                if !status.is_success() {
-                    let body = response.text().await.unwrap_or_default();
-                    return Err(format!(
-                        "QMD History checkpoint advancement returned HTTP {status}: {body}"
-                    ));
-                }
-                let advanced = response
-                    .json::<HistoryAdvanceResponse>()
-                    .await
-                    .map_err(|error| format!("invalid QMD History checkpoint response: {error}"))?;
+                let advanced = self.advance_checkpoint_through(checkpoint, Utc::now()).await?;
                 if !advanced.complete
                     || advanced.checkpoint.sym.to_ascii_uppercase() != *ticker
                     || advanced.checkpoint.algorithm_version
@@ -313,7 +333,9 @@ impl StructureFocusCoordinator {
                     .repair_focused_ticker_intervals(&ticker, &gaps)
                     .await?;
             }
-            let response = self.advance_checkpoint(checkpoint).await?;
+            let response = self
+                .advance_checkpoint_through(checkpoint, Utc::now())
+                .await?;
             self.checkpoint_store
                 .persist_structure_checkpoint(&response.checkpoint)
                 .await?;
@@ -333,6 +355,7 @@ impl StructureFocusCoordinator {
     async fn advance_checkpoint(
         &self,
         checkpoint: GenericStructureCheckpoint,
+        as_of: DateTime<Utc>,
     ) -> Result<HistoryAdvanceResponse, String> {
         let response = self
             .client
@@ -343,7 +366,7 @@ impl StructureFocusCoordinator {
             .json(&json!({
                 "schema_version": 1,
                 "checkpoint": checkpoint,
-                "as_of": Utc::now(),
+                "as_of": as_of,
             }))
             .send()
             .await
@@ -359,6 +382,45 @@ impl StructureFocusCoordinator {
             .json::<HistoryAdvanceResponse>()
             .await
             .map_err(|error| format!("invalid QMD History checkpoint response: {error}"))
+    }
+
+    async fn advance_checkpoint_through(
+        &self,
+        mut checkpoint: GenericStructureCheckpoint,
+        as_of: DateTime<Utc>,
+    ) -> Result<HistoryAdvanceResponse, String> {
+        let mut total_event_count = 0_u64;
+        let mut total_advanced_event_count = 0_u64;
+        loop {
+            let cursor_at = checkpoint
+                .updated_at
+                .ok_or_else(|| "Generic Structure checkpoint lacks updated_at".to_string())?;
+            let start = checkpoint.replayed_through.unwrap_or(cursor_at);
+            let slice_end = next_checkpoint_slice_end(start, as_of);
+            let previous_cursor = (start, checkpoint.last_arrival_sequence);
+            let mut response = self.advance_checkpoint(checkpoint, slice_end).await?;
+            total_event_count = total_event_count.saturating_add(response.event_count);
+            total_advanced_event_count =
+                total_advanced_event_count.saturating_add(response.advanced_event_count);
+            let next_cursor = (
+                response.checkpoint.replayed_through.ok_or_else(|| {
+                    "QMD History returned a Generic Structure checkpoint without replayed_through"
+                        .to_string()
+                })?,
+                response.checkpoint.last_arrival_sequence,
+            );
+            if slice_end < as_of && next_cursor <= previous_cursor {
+                return Err(format!(
+                    "Generic Structure checkpoint made no cursor progress through {slice_end}; cannot safely bridge the remaining replay window"
+                ));
+            }
+            response.event_count = total_event_count;
+            response.advanced_event_count = total_advanced_event_count;
+            if slice_end >= as_of {
+                return Ok(response);
+            }
+            checkpoint = response.checkpoint.clone();
+        }
     }
 
     async fn history_gap_segments(
@@ -395,5 +457,59 @@ impl StructureFocusCoordinator {
             .filter(|segment| segment.tier == "gap")
             .map(|segment| (segment.start, segment.end))
             .collect())
+    }
+}
+
+fn next_checkpoint_slice_end(start: DateTime<Utc>, as_of: DateTime<Utc>) -> DateTime<Utc> {
+    (start + ChronoDuration::hours(CHECKPOINT_ADVANCE_SLICE_HOURS)).min(as_of)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{next_checkpoint_slice_end, SymbolActivationLocks};
+    use chrono::{Duration as ChronoDuration, TimeZone, Utc};
+    use std::time::Duration;
+
+    #[tokio::test]
+    async fn overlapping_symbol_activation_waits_for_the_active_request() {
+        let locks = SymbolActivationLocks::default();
+        let first = locks.acquire(&["AAPL".to_string()]).await;
+        let waiting_locks = locks.clone();
+        let waiter =
+            tokio::spawn(async move { waiting_locks.acquire(&["AAPL".to_string()]).await });
+
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        assert!(!waiter.is_finished());
+        drop(first);
+        let second = tokio::time::timeout(Duration::from_secs(1), waiter)
+            .await
+            .expect("same-symbol request should resume after release")
+            .expect("same-symbol request task should succeed");
+        assert_eq!(second.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn unrelated_symbol_activation_remains_parallel() {
+        let locks = SymbolActivationLocks::default();
+        let _first = locks.acquire(&["AAPL".to_string()]).await;
+        let second = tokio::time::timeout(
+            Duration::from_millis(100),
+            locks.acquire(&["MSFT".to_string()]),
+        )
+        .await
+        .expect("different-symbol request should not wait");
+        assert_eq!(second.len(), 1);
+    }
+
+    #[test]
+    fn stale_checkpoints_are_planned_inside_history_resource_limits() {
+        let start = Utc.with_ymd_and_hms(2026, 8, 1, 12, 0, 0).unwrap();
+        let distant_end = start + ChronoDuration::hours(240);
+        assert_eq!(
+            next_checkpoint_slice_end(start, distant_end),
+            start + ChronoDuration::hours(48)
+        );
+        let near_end = start + ChronoDuration::hours(12);
+        assert_eq!(next_checkpoint_slice_end(start, near_end), near_end);
     }
 }

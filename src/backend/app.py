@@ -4306,9 +4306,9 @@ def real_live_market_gateway_bars(symbol: str = "", timeframe: str = "1m", row_l
 
 
 @app.get("/api/real-live-trading/qmd-gateway/indicators")
-def real_live_qmd_gateway_indicators(symbol: str, timeframe: str = "1m", row_limit: int = Query(default=500, ge=1, le=5000)) -> dict[str, Any]:
+def real_live_qmd_gateway_indicators(symbol: str, timeframe: str = "1m", row_limit: int = Query(default=500, ge=1, le=5000), indicator_columns: str = "") -> dict[str, Any]:
     try:
-        return qmd_indicators(symbol, timeframe=timeframe, row_limit=row_limit)
+        return qmd_indicators(symbol, timeframe=timeframe, row_limit=row_limit, indicator_columns=indicator_columns)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except QmdServiceError as exc:
@@ -5463,7 +5463,7 @@ def trading_canvas_scanner(
 
 
 @app.get("/api/trading/canvas-live-chart")
-def trading_canvas_live_chart(symbol: str, timeframe: str = "1m", row_limit: int = Query(default=500, ge=1, le=5000)) -> dict[str, Any]:
+def trading_canvas_live_chart(symbol: str, timeframe: str = "1m", row_limit: int = Query(default=500, ge=1, le=5000), indicator_columns: str = "") -> dict[str, Any]:
     ticker = symbol.strip().upper()
     if not re.fullmatch(r"[A-Z][A-Z0-9.\-]{0,9}", ticker):
         raise HTTPException(status_code=400, detail="symbol must be a valid ticker")
@@ -5472,7 +5472,7 @@ def trading_canvas_live_chart(symbol: str, timeframe: str = "1m", row_limit: int
     with ThreadPoolExecutor(max_workers=2) as executor:
         bars_future = executor.submit(qmd_chart_bars, ticker, timeframe=timeframe, row_limit=row_limit)
         indicators_future = (
-            executor.submit(qmd_indicators, ticker, timeframe=timeframe, row_limit=row_limit)
+            executor.submit(qmd_indicators, ticker, timeframe=timeframe, row_limit=row_limit, indicator_columns=indicator_columns)
             if timeframe in ENRICHED_QMD_TIMEFRAMES
             else None
         )

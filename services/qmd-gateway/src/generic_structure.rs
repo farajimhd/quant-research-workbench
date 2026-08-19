@@ -389,6 +389,7 @@ struct PriceVolumeBin {
 pub struct GenericStructureEngine {
     sym: String,
     last_ts: Option<DateTime<Utc>>,
+    replayed_through: Option<DateTime<Utc>>,
     last_arrival_sequence: u64,
     last_reference_price: f64,
     last_trade_price: f64,
@@ -417,6 +418,8 @@ pub struct GenericStructureCheckpoint {
     pub sym: String,
     pub updated_at: Option<DateTime<Utc>>,
     #[serde(default)]
+    pub replayed_through: Option<DateTime<Utc>>,
+    #[serde(default)]
     pub last_arrival_sequence: u64,
     last_reference_price: f64,
     last_trade_price: f64,
@@ -444,6 +447,7 @@ impl GenericStructureEngine {
         Self {
             sym: sym.into().to_ascii_uppercase(),
             last_ts: None,
+            replayed_through: None,
             last_arrival_sequence: 0,
             last_reference_price: 0.0,
             last_trade_price: 0.0,
@@ -530,6 +534,11 @@ impl GenericStructureEngine {
             _ => {}
         }
         self.last_ts = Some(ts);
+        self.replayed_through = Some(
+            self.replayed_through
+                .map(|current| current.max(ts))
+                .unwrap_or(ts),
+        );
         self.last_arrival_sequence = arrival_sequence;
         if let Some(last) = emitted.last().cloned() {
             self.last_event = Some(last);
@@ -1186,6 +1195,7 @@ impl GenericStructureEngine {
             algorithm_version: GENERIC_STRUCTURE_ALGORITHM_VERSION,
             sym: self.sym.clone(),
             updated_at: self.last_ts,
+            replayed_through: self.replayed_through,
             last_arrival_sequence: self.last_arrival_sequence,
             last_reference_price: self.last_reference_price,
             last_trade_price: self.last_trade_price,
@@ -1215,6 +1225,7 @@ impl GenericStructureEngine {
         }
         self.sym = checkpoint.sym.clone();
         self.last_ts = checkpoint.updated_at;
+        self.replayed_through = checkpoint.replayed_through.or(checkpoint.updated_at);
         self.last_arrival_sequence = checkpoint.last_arrival_sequence;
         self.last_reference_price = checkpoint.last_reference_price;
         self.last_trade_price = checkpoint.last_trade_price;
@@ -2422,6 +2433,7 @@ mod tests {
         let serialized = serde_json::to_string(&source.checkpoint()).unwrap();
         let checkpoint = serde_json::from_str::<GenericStructureCheckpoint>(&serialized).unwrap();
         assert_eq!(checkpoint.last_arrival_sequence, 2);
+        assert_eq!(checkpoint.replayed_through, checkpoint.updated_at);
         let mut restored = GenericStructureEngine::new("TEST");
         restored.seed_checkpoint(&checkpoint);
         assert_eq!(
@@ -2437,6 +2449,16 @@ mod tests {
         let legacy_checkpoint =
             serde_json::from_value::<GenericStructureCheckpoint>(legacy).unwrap();
         assert_eq!(legacy_checkpoint.last_arrival_sequence, 0);
+
+        let mut legacy_without_watermark =
+            serde_json::from_str::<serde_json::Value>(&serialized).unwrap();
+        legacy_without_watermark
+            .as_object_mut()
+            .unwrap()
+            .remove("replayed_through");
+        let legacy_checkpoint =
+            serde_json::from_value::<GenericStructureCheckpoint>(legacy_without_watermark).unwrap();
+        assert_eq!(legacy_checkpoint.replayed_through, None);
     }
 
     #[test]

@@ -985,7 +985,12 @@ class QmdGatewayClientTests(unittest.TestCase):
             "current": None,
         }
 
-        payload = qmd_indicators("aapl", timeframe="1m", row_limit=50)
+        payload = qmd_indicators(
+            "aapl",
+            timeframe="1m",
+            row_limit=50,
+            indicator_columns="macd_line,macd_signal,atr_14",
+        )
 
         self.assertEqual(payload["ticker"], "AAPL")
         lease = put_json.call_args.args[1]
@@ -993,9 +998,12 @@ class QmdGatewayClientTests(unittest.TestCase):
         self.assertEqual(lease["scope"], "request")
         self.assertEqual(lease["tickers"], ["AAPL"])
         self.assertEqual(lease["timeframes"], ["1m"])
+        self.assertEqual(lease["capabilities"], ["momentum_core", "volatility_core"])
+        self.assertNotIn("flow_structure_composite", lease["capabilities"])
         self.assertEqual(lease["ttl_seconds"], 300)
         self.assertEqual(lease["correlation_id"], "run:chart:AAPL:1m")
         self.assertEqual(lease["causation_id"], "event:chart-request:AAPL:1m")
+        self.assertEqual(put_json.call_args.kwargs["timeout"], 70)
         get_json.assert_called_once_with(
             "/snapshot/indicators/AAPL",
             {"timeframe": "1m", "limit": 50},

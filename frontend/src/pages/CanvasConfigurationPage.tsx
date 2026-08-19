@@ -946,7 +946,7 @@ function useCanvasHistoricalChart(symbol: string, timeframe: CanvasChartTimefram
       const request = new AbortController();
       controller = request;
       try {
-        const payload = await api<QmdLiveChartPayload>(`/api/trading/canvas-live-chart${query({ row_limit: chartPageSize(timeframe), symbol: ticker, timeframe })}`, { signal: request.signal, timeoutMs: 30_000 });
+        const payload = await api<QmdLiveChartPayload>(`/api/trading/canvas-live-chart${query({ indicator_columns: indicatorColumns, row_limit: chartPageSize(timeframe), symbol: ticker, timeframe })}`, { signal: request.signal, timeoutMs: 75_000 });
         if (cancelled || request.signal.aborted) return;
         const bars = [...(payload.bars.history ?? []), ...(payload.bars.current ? [payload.bars.current] : [])];
         const indicators = [...(payload.indicators.history ?? []), ...(payload.indicators.current ? [payload.indicators.current] : [])];

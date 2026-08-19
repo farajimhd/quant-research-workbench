@@ -30,7 +30,7 @@ from src.trading_runtime.portfolio_config import (
 from src.trading_runtime.signals import CapitalRequest, StrategyIntent
 
 
-RUNTIME_ROOT = Path(r"D:\TradingML\runtimes")
+RUNTIME_ROOT = Path(r"D:\TradingML\runtimes\quant-research-workbench\test-temp")
 TEST_RUNTIME_ROOT = RUNTIME_ROOT / "portfolio_tests"
 
 

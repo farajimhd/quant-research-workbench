@@ -37,7 +37,7 @@ from src.trading_runtime.strategy_orders import IbkrStrategyOrderPlanner, Strate
 
 
 NOW = datetime.now(timezone.utc)
-RUNTIME_ROOT = Path(r"D:\TradingML\runtimes")
+RUNTIME_ROOT = Path(r"D:\TradingML\runtimes\quant-research-workbench\test-temp")
 
 
 class RecordingBroker(SimulatedBrokerAdapter):

@@ -100,7 +100,8 @@ pub async fn advance_structure_checkpoint(
     if source_revision_after.source_plan_hash != source_plan.plan_hash {
         return Err("Generic Structure checkpoint source plan changed during replay".to_string());
     }
-    let checkpoint = engine.checkpoint();
+    let mut checkpoint = engine.checkpoint();
+    checkpoint.replayed_through = Some(request.as_of);
     if checkpoint.checkpoint_cursor() < initial_cursor {
         return Err("Generic Structure checkpoint replay moved its cursor backward".to_string());
     }
@@ -142,10 +143,16 @@ fn validate_request(
             "Generic Structure checkpoint must have an exact nonzero arrival cursor".to_string(),
         );
     }
-    let start = request
+    let cursor_at = request
         .checkpoint
         .updated_at
         .ok_or_else(|| "Generic Structure checkpoint must have updated_at".to_string())?;
+    let start = request.checkpoint.replayed_through.unwrap_or(cursor_at);
+    if start < cursor_at {
+        return Err(
+            "Generic Structure checkpoint replayed_through must not precede updated_at".to_string(),
+        );
+    }
     if request.as_of < start {
         return Err("Generic Structure checkpoint as_of must not precede updated_at".to_string());
     }

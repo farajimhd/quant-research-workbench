@@ -282,21 +282,44 @@ async fn replace_computation_target(
         // restaging structure state or replay-warming every ticker/timeframe.
         return Ok(Json(state.computation_targets.activate(prepared)));
     }
-    state
-        .structure_focus
-        .stage_and_activate(&prepared)
-        .await
-        .map_err(|error| {
-            (
-                StatusCode::SERVICE_UNAVAILABLE,
-                Json(json!({
-                    "error": error,
-                    "error_code": "structure_focus_activation_failed",
-                    "retryable": true,
-                    "retry_action": "retry_computation_target",
-                })),
-            )
-        })?;
+    // Focus activation can include a bounded QMD History advancement. Run the
+    // mutation in its own task so a caller timeout or browser navigation does
+    // not cancel it midway and strand a ticker in transient staging state.
+    let activation_state = state.clone();
+    let lease = tokio::spawn(async move {
+        activate_prepared_computation_target(activation_state, prepared).await
+    })
+    .await
+    .map_err(|error| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({
+                "error": format!("computation target activation task failed: {error}"),
+                "error_code": "computation_target_activation_task_failed",
+                "retryable": true,
+                "retry_action": "retry_computation_target",
+            })),
+        )
+    })?
+    .map_err(|error| {
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({
+                "error": error,
+                "error_code": "structure_focus_activation_failed",
+                "retryable": true,
+                "retry_action": "retry_computation_target",
+            })),
+        )
+    })?;
+    Ok(Json(lease))
+}
+
+async fn activate_prepared_computation_target(
+    state: Arc<AppState>,
+    prepared: ComputationTargetLease,
+) -> Result<ComputationTargetLease, String> {
+    state.structure_focus.stage_and_activate(&prepared).await?;
     let lease = state.computation_targets.activate(prepared);
     for ticker in &lease.tickers {
         for timeframe in &lease.timeframes {
@@ -323,7 +346,7 @@ async fn replace_computation_target(
     {
         eprintln!("QMD structure-state reclaim deferred after target replacement: {error}");
     }
-    Ok(Json(lease))
+    Ok(lease)
 }
 
 async fn remove_computation_target(

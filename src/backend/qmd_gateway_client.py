@@ -1468,17 +1468,41 @@ def is_qmd_trade_price_bar(row: dict[str, Any]) -> bool:
     )
 
 
-def qmd_indicators(symbol: str, *, timeframe: str = "1m", row_limit: int = 500) -> dict[str, Any]:
+def qmd_indicator_capabilities(indicator_columns: str | Iterable[str] | None) -> list[str]:
+    if isinstance(indicator_columns, str):
+        columns = {value.strip().lower() for value in indicator_columns.split(",") if value.strip()}
+    else:
+        columns = {str(value).strip().lower() for value in (indicator_columns or ()) if str(value).strip()}
+    capabilities: list[str] = []
+    if columns.intersection({"rsi_14", "macd_line", "macd_signal", "macd_histogram", "price_vs_vwap_pct"}):
+        capabilities.append("momentum_core")
+    if any(
+        value.startswith(("ema_", "sma_", "close_sma_", "price_vs_ema", "trend_score"))
+        for value in columns
+    ):
+        capabilities.append("trend_moving_averages")
+    if any(value.startswith(("atr_", "bollinger_", "realized_volatility")) for value in columns):
+        capabilities.append("volatility_core")
+    if any(value.startswith("flow_structure_composite") for value in columns):
+        capabilities.append("flow_structure_composite")
+    # Base-bar values (VWAP, return, and volume) are already maintained by the
+    # universal/core funnel. A scoped core_bars lease keeps the request
+    # contract explicit without materializing unrelated derived families.
+    return capabilities or ["core_bars"]
+
+
+def qmd_indicators(
+    symbol: str,
+    *,
+    timeframe: str = "1m",
+    row_limit: int = 500,
+    indicator_columns: str | Iterable[str] | None = None,
+) -> dict[str, Any]:
     if not symbol.strip():
         raise ValueError("symbol is required for QMD indicators.")
     ticker = symbol.strip().upper()
     target_id = f"chart:{ticker}:{timeframe}"
-    capabilities = [
-        "flow_structure_composite",
-        "momentum_core",
-        "trend_moving_averages",
-        "volatility_core",
-    ]
+    capabilities = qmd_indicator_capabilities(indicator_columns)
     parameter_hash = hashlib.sha256(
         json.dumps(
             {"capabilities": capabilities, "timeframes": [timeframe]},
@@ -1490,6 +1514,9 @@ def qmd_indicators(symbol: str, *, timeframe: str = "1m", row_limit: int = 500) 
         correlation_seed=target_id,
         causation_seed=f"chart-request:{ticker}:{timeframe}",
     )
+    # Structure focus activation may causally advance a persisted checkpoint
+    # through QMD History. Match the gateway's 60-second advancement budget
+    # instead of aborting the request after the ordinary 3-second read budget.
     qmd_put_json(
         "/computation-targets",
         {
@@ -1505,7 +1532,7 @@ def qmd_indicators(symbol: str, *, timeframe: str = "1m", row_limit: int = 500) 
             "ttl_seconds": 300,
             **lineage,
         },
-        timeout=3,
+        timeout=70,
     )
     payload = qmd_get_json(f"/snapshot/indicators/{urllib.parse.quote(ticker)}", {"timeframe": timeframe, "limit": row_limit}, timeout=3)
     return payload if isinstance(payload, dict) else {"ticker": symbol.upper(), "timeframe": timeframe, "history": [], "current": None, "tick": None}

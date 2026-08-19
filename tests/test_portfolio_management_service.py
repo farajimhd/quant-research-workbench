@@ -15,7 +15,7 @@ from src.backend.portfolio_management_service import (
 from src.backend.trading_runtime_service import close_trading_journal, trading_journal
 
 
-RUNTIME_ROOT = Path(r"D:\TradingML\runtimes")
+RUNTIME_ROOT = Path(r"D:\TradingML\runtimes\quant-research-workbench\test-temp")
 TEST_RUNTIME_ROOT = RUNTIME_ROOT / "portfolio_service_tests"
 
 
