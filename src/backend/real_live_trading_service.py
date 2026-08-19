@@ -176,14 +176,23 @@ def configured_real_live_account(account_type: str) -> RealLiveAccount:
 def real_live_preflight(account_type: str = "paper", account_keys: str | list[str] | None = None) -> dict[str, Any]:
     accounts = configured_real_live_accounts()
     selected_accounts = resolve_real_live_accounts(account_keys, account_type)
-    checks = [
-        check_qmd_live(),
-        check_live_strategy_runtime(selected_accounts[0].trading_mode),
-        check_massive_rest(),
-        *_approved_configuration_checks(selected_accounts),
-    ]
-    for account in selected_accounts:
-        checks.extend(check_ibkr(account))
+    # These probes describe independent authorities. Serializing them made the
+    # launch page wait for the sum of QMD, enrichment, and broker round trips.
+    # Preserve the stable presentation order while executing a bounded set of
+    # read-only probes concurrently.
+    with ThreadPoolExecutor(max_workers=min(4 + len(selected_accounts), 8)) as executor:
+        qmd_future = executor.submit(check_qmd_live)
+        runtime_future = executor.submit(check_live_strategy_runtime, selected_accounts[0].trading_mode)
+        massive_future = executor.submit(check_massive_rest)
+        ibkr_futures = [executor.submit(check_ibkr, account) for account in selected_accounts]
+        checks = [
+            qmd_future.result(),
+            runtime_future.result(),
+            massive_future.result(),
+            *_approved_configuration_checks(selected_accounts),
+        ]
+        for future in ibkr_futures:
+            checks.extend(future.result())
     return {
         "ready": all(
             check["status"] == "ready"
@@ -799,24 +808,34 @@ def check_live_strategy_runtime(mode: str) -> dict[str, Any]:
 def check_ibkr(account: RealLiveAccount) -> list[dict[str, Any]]:
     if not account.account_id:
         return [{"id": f"{account.account_key}_ibkr_account_env", "label": f"{account.label} account", "status": "blocked", "message": f"Set an account id for {account.account_key} in .env."}]
-    checks: list[dict[str, Any]] = []
-    try:
-        status = ibkr_get_json("/iserver/auth/status", timeout=5)
-        authenticated = bool(status.get("authenticated") or (status.get("connected") and status.get("competing") is False))
-        checks.append({"id": f"{account.account_key}_ibkr_auth", "label": f"{account.label} session", "status": "ready" if authenticated else "blocked", "message": "Authenticated Client Portal session is available." if authenticated else "Authenticate Client Portal Gateway first."})
-    except Exception as exc:
-        return [{"id": f"{account.account_key}_ibkr_gateway", "label": f"{account.label} gateway", "status": "blocked", "message": str(exc)}]
-    try:
-        accounts = ibkr_account_ids(ibkr_get_json("/iserver/accounts", timeout=6))
-        checks.append({"id": f"{account.account_key}_ibkr_account", "label": f"{account.label} access", "status": "ready" if account.account_id in accounts else "blocked", "message": "Configured account is available." if account.account_id in accounts else "Configured account was not returned by IBKR.", "details": {"available_accounts": [mask_account_id(item) for item in accounts]}})
-    except Exception as exc:
-        checks.append({"id": f"{account.account_key}_ibkr_account", "label": f"{account.label} access", "status": "blocked", "message": str(exc)})
-    try:
-        ibkr_get_json(f"/portfolio/{urllib.parse.quote(account.account_id, safe='')}/summary", timeout=6)
-        checks.append({"id": f"{account.account_key}_ibkr_portfolio", "label": f"{account.label} portfolio", "status": "ready", "message": "Portfolio summary is readable."})
-    except Exception as exc:
-        checks.append({"id": f"{account.account_key}_ibkr_portfolio", "label": f"{account.label} portfolio", "status": "blocked", "message": str(exc)})
-    return checks
+    account_path = urllib.parse.quote(account.account_id, safe="")
+    with ThreadPoolExecutor(max_workers=3) as executor:
+        status_future = executor.submit(ibkr_get_json, "/iserver/auth/status", timeout=5)
+        accounts_future = executor.submit(ibkr_get_json, "/iserver/accounts", timeout=6)
+        portfolio_future = executor.submit(ibkr_get_json, f"/portfolio/{account_path}/summary", timeout=6)
+
+        try:
+            status = status_future.result()
+            authenticated = bool(status.get("authenticated") or (status.get("connected") and status.get("competing") is False))
+            auth_check = {"id": f"{account.account_key}_ibkr_auth", "label": f"{account.label} session", "status": "ready" if authenticated else "blocked", "message": "Authenticated Client Portal session is available." if authenticated else "Authenticate Client Portal Gateway first."}
+        except Exception as exc:
+            auth_check = {"id": f"{account.account_key}_ibkr_gateway", "label": f"{account.label} gateway", "status": "blocked", "message": str(exc)}
+
+        try:
+            available_accounts = ibkr_account_ids(accounts_future.result())
+            account_check = {"id": f"{account.account_key}_ibkr_account", "label": f"{account.label} access", "status": "ready" if account.account_id in available_accounts else "blocked", "message": "Configured account is available." if account.account_id in available_accounts else "Configured account was not returned by IBKR.", "details": {"available_accounts": [mask_account_id(item) for item in available_accounts]}}
+        except Exception as exc:
+            account_check = {"id": f"{account.account_key}_ibkr_account", "label": f"{account.label} access", "status": "blocked", "message": str(exc)}
+
+        try:
+            portfolio_future.result()
+            portfolio_check = {"id": f"{account.account_key}_ibkr_portfolio", "label": f"{account.label} portfolio", "status": "ready", "message": "Portfolio summary is readable."}
+        except Exception as exc:
+            portfolio_check = {"id": f"{account.account_key}_ibkr_portfolio", "label": f"{account.label} portfolio", "status": "blocked", "message": str(exc)}
+
+    if auth_check["id"].endswith("_ibkr_gateway"):
+        return [auth_check]
+    return [auth_check, account_check, portfolio_check]
 
 
 def ibkr_order_payload(order: dict[str, Any], account_id: str) -> dict[str, Any]:

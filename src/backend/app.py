@@ -26,6 +26,7 @@ import websockets
 from fastapi import FastAPI, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.middleware.gzip import GZipMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -583,6 +584,7 @@ app.add_middleware(
     allow_headers=["*"],
     expose_headers=[CORRELATION_HEADER, CAUSATION_HEADER, RESPONSE_ENVELOPE_HEADER],
 )
+app.add_middleware(GZipMiddleware, minimum_size=1024)
 
 
 @app.middleware("http")
