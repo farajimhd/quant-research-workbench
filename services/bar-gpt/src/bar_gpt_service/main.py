@@ -63,6 +63,16 @@ async def replace_scope(scope_id: str, request: ScopeRequest) -> dict:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
+@app.post("/scopes/{scope_id}/advance")
+async def advance_scope(scope_id: str, request: ScopeRequest) -> dict:
+    try:
+        return await runtime.advance_scope(scope_id, request)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
 @app.delete("/scopes/{scope_id}")
 def remove_scope(scope_id: str) -> dict:
     return {"scope_id": scope_id, "removed": runtime.remove_scope(scope_id)}

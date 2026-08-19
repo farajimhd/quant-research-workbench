@@ -78,6 +78,23 @@ class ModelFeatureStore:
                 for row in rows
             ]
 
+    def scoped_fields(self, *, mode: str, scope_id: str, ticker: str, as_of_us: int) -> dict[str, Any]:
+        fields: dict[str, Any] = {}
+        ticker = ticker.strip().upper()
+        with self._lock:
+            for (row_mode, row_scope, row_ticker, _model_id), update in self._latest.items():
+                if (row_mode, row_scope, row_ticker) != (mode, scope_id, ticker):
+                    continue
+                if int(update.get("event_at_us") or 0) > as_of_us:
+                    continue
+                if int(update.get("available_at_us") or 0) > as_of_us:
+                    continue
+                fields.update(update.get("fields") or {})
+                fields["model.bargpt.latest_prediction_id"] = update["prediction_id"]
+                fields["model.bargpt.latest_origin_us"] = int(update["event_at_us"])
+                fields["model.bargpt.latest_available_at_us"] = int(update["available_at_us"])
+        return fields
+
     def snapshot(self, ticker: str = "", limit: int = 100) -> dict[str, Any]:
         ticker = ticker.strip().upper()
         with self._lock:

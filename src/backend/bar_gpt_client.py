@@ -84,6 +84,36 @@ def remove_bar_gpt_scope(scope_id: str, timeout: float = 2.0) -> dict[str, Any]:
     return _request("DELETE", f"/scopes/{urllib.parse.quote(scope_id, safe='')}", timeout=timeout)
 
 
+def advance_bar_gpt_scope(
+    scope_id: str,
+    *,
+    mode: str,
+    tickers: list[str],
+    watchlist_ids: list[str] | None = None,
+    clock_us: int,
+    revision: int = 1,
+    ttl_ms: int = 60_000,
+    source: str = "application",
+    timeout: float = 120.0,
+) -> dict[str, Any]:
+    payload = {
+        "mode": mode,
+        "trigger_mode": "manual",
+        "tickers": sorted({str(value).strip().upper() for value in tickers if str(value).strip()}),
+        "watchlist_ids": sorted({str(value) for value in watchlist_ids or [] if str(value)}),
+        "clock_us": int(clock_us),
+        "revision": max(1, int(revision)),
+        "ttl_ms": max(1_000, int(ttl_ms)),
+        "source": source,
+    }
+    return _request(
+        "POST",
+        f"/scopes/{urllib.parse.quote(scope_id, safe='')}/advance",
+        payload=payload,
+        timeout=timeout,
+    )
+
+
 def _request(
     method: str,
     path: str,

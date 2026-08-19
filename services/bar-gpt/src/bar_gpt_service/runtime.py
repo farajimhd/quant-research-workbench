@@ -164,6 +164,34 @@ class BarGptRuntime:
         self._reclaim_cache()
         return self.scope_snapshot(scope_id)
 
+    async def advance_scope(self, scope_id: str, request: ScopeRequest) -> dict[str, Any]:
+        """Advance a historical clock and return its prediction before the caller proceeds."""
+        if request.clock_us is None:
+            raise ValueError("a synchronous scope advance requires clock_us")
+        manual_request = request.model_copy(update={"trigger_mode": "manual"})
+        await self.replace_scope(scope_id, manual_request)
+        cache_id = self._scope_cache_id(scope_id)
+        warm_tasks = [
+            task for (task_cache_id, ticker), task in list(self._warm_tasks.items())
+            if task_cache_id == cache_id and ticker in request.tickers
+        ]
+        if warm_tasks:
+            await asyncio.gather(*warm_tasks)
+        for ticker in request.tickers:
+            self._promote_pending(cache_id, ticker, request.clock_us)
+        snapshot = self.scope_snapshot(scope_id)
+        if int(snapshot["ready_count"]) != int(snapshot["ticker_count"]):
+            missing = [row["ticker"] for row in snapshot["readiness"] if not row["ready"]]
+            raise RuntimeError("BarGPT synchronous advance is not warm for: " + ",".join(missing))
+        predictions = await self.infer(
+            InferenceRequest(scope_id=scope_id, tickers=request.tickers, origin_us=request.clock_us)
+        )
+        with self._lock:
+            active = self.scopes.get(scope_id)
+            if active is not None:
+                active["request"]["trigger_mode"] = request.trigger_mode
+        return {**self.scope_snapshot(scope_id), "predictions": predictions, "prediction_count": len(predictions)}
+
     def remove_scope(self, scope_id: str) -> bool:
         with self._lock:
             removed = self.scopes.pop(scope_id, None) is not None
@@ -256,7 +284,12 @@ class BarGptRuntime:
                 self.metrics["inference_batches"] = int(self.metrics["inference_batches"]) + 1
                 for prediction in predictions:
                     prediction["scope_id"] = scope_id
-                    prediction["mode"] = self.active_scopes().get(scope_id, {}).get("request", {}).get("mode", "live")
+                    mode = self.active_scopes().get(scope_id, {}).get("request", {}).get("mode", "live")
+                    prediction["mode"] = mode
+                    if mode in {"live", "paper"}:
+                        prediction["available_at_us"] = max(
+                            int(prediction["event_at_us"]), time.time_ns() // 1_000
+                        )
                     await self._record_prediction(prediction)
                 results.extend(predictions)
         return results

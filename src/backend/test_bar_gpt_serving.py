@@ -40,6 +40,11 @@ class BarGptServingTests(unittest.TestCase):
         }
         self.assertEqual(store.publish(first)["status"], "accepted")
         self.assertEqual(store.project_rows([{"ticker": "AAPL"}])[0]["model.bargpt.v2.raw"], -0.25)
+        self.assertEqual(
+            store.scoped_fields(mode="live", scope_id="live:test", ticker="AAPL", as_of_us=now_us)["model.bargpt.v2.raw"],
+            -0.25,
+        )
+        self.assertEqual(store.scoped_fields(mode="replay", scope_id="live:test", ticker="AAPL", as_of_us=now_us), {})
         with self.assertRaisesRegex(ValueError, "backward"):
             store.publish({**first, "prediction_id": "p0", "event_at_us": now_us - 1, "available_at_us": now_us - 1})
 

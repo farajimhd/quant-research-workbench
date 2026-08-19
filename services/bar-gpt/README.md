@@ -25,6 +25,10 @@ or Manual inference trigger. Cache updates continue in Manual mode. Automatic
 serving performs one forward pass after each completed eligible one-second bar;
 it never recursively generates future bars.
 
+Historical Rule Sets that reference BarGPT fields use a synchronous,
+fail-closed clock barrier so a fast backtest cannot outrun GPU inference. Runs
+without BarGPT field dependencies retain the asynchronous scope path.
+
 The initial authority is full-prefix inference. KV reuse is disabled until a
 separate parity certification covers rollover, masks, session boundaries,
 splits, late corrections, and multiview as-of fusion.

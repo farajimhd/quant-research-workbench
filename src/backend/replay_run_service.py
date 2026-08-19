@@ -339,6 +339,7 @@ class ReplayRunController:
         self._frame_cursor: dict[str, Any] = {}
         self._processed_frames = 0
         self._bar_gpt_origin_us = 0
+        self._bar_gpt_prediction_origin_us = 0
         self._bar_gpt_scope_task: asyncio.Task[None] | None = None
         self._bar_gpt_pending_scope: dict[str, Any] | None = None
         if self.definition.debug_fixture is not None:
@@ -1385,6 +1386,7 @@ class ReplayRunController:
     async def _process_strategy_frame(self, frame: ReplayDerivedFrame) -> None:
         if self._runtime is None or self._strategy is None:
             return
+        await self._ensure_bar_gpt_features(frame.as_of)
         quote = self._quotes.get(frame.ticker)
         indicator = frame.indicator
         bar = frame.bar
@@ -1570,6 +1572,15 @@ class ReplayRunController:
             **dict(frame.indicator),
             **dict(frame.signals),
         }
+        if self._bar_gpt_fields_required():
+            from src.backend.model_feature_store import MODEL_FEATURE_STORE
+
+            raw.update(MODEL_FEATURE_STORE.scoped_fields(
+                mode=self.definition.mode.value,
+                scope_id=f"{self.definition.mode.value}:{self.run_id}",
+                ticker=frame.ticker,
+                as_of_us=int(frame.as_of.timestamp() * 1_000_000),
+            ))
         projected = project_data_field_outputs(
             [raw],
             activation.get("data_fields") or [],
@@ -1748,6 +1759,8 @@ class ReplayRunController:
             pass
 
     def _schedule_bar_gpt_scope(self, event_time: datetime) -> None:
+        if self._bar_gpt_fields_required():
+            return
         origin_us = int(event_time.timestamp()) * 1_000_000
         if origin_us <= self._bar_gpt_origin_us:
             return
@@ -1784,6 +1797,52 @@ class ReplayRunController:
                 self._publish_pending_bar_gpt_scopes(),
                 name=f"bar-gpt-scope-{self.run_id}",
             )
+
+    def _bar_gpt_fields_required(self) -> bool:
+        activation = dict(
+            self.definition.configuration_revision["payload"].get("signal_activation") or {}
+        )
+        return "model.bargpt." in json.dumps(activation, sort_keys=True, default=str)
+
+    async def _ensure_bar_gpt_features(self, event_time: datetime) -> None:
+        if not self._bar_gpt_fields_required():
+            return
+        origin_us = int(event_time.timestamp() * 1_000_000)
+        if origin_us <= self._bar_gpt_prediction_origin_us:
+            return
+        configuration = dict(self.definition.configuration_revision.get("payload") or {})
+        discovery = dict(configuration.get("market_discovery") or {})
+        serving = dict(dict(discovery.get("model_serving") or {}).get("bar_gpt") or {})
+        if not bool(serving.get("enabled", True)):
+            raise RuntimeError("BarGPT Data Fields are active but model serving is disabled")
+        selected = {str(value) for value in serving.get("watchlist_ids") or ["core-candidates"] if str(value)}
+        tickers = sorted({
+            ticker
+            for watchlist_id, members in self._active_historical_watchlists.items()
+            if watchlist_id in selected
+            for ticker in members
+        }) or sorted(set(self._stream_tickers or self.definition.tickers))
+        maximum = max(1, min(int(serving.get("maximum_tickers") or 500), 5000))
+        from src.backend.bar_gpt_client import advance_bar_gpt_scope
+        from src.backend.model_feature_store import MODEL_FEATURE_STORE
+
+        result = await asyncio.to_thread(
+            advance_bar_gpt_scope,
+            f"{self.definition.mode.value}:{self.run_id}",
+            mode=self.definition.mode.value,
+            tickers=tickers[:maximum],
+            watchlist_ids=sorted(selected),
+            clock_us=origin_us,
+            revision=max(1, self.processed_events + self._processed_frames),
+            source="backend.replay_rule_barrier",
+            timeout=float(os.environ.get("BAR_GPT_BACKTEST_INFERENCE_TIMEOUT_SECONDS", "120")),
+        )
+        predictions = list(result.get("predictions") or [])
+        if not predictions:
+            raise RuntimeError(f"BarGPT produced no predictions at historical origin {origin_us}")
+        for prediction in predictions:
+            MODEL_FEATURE_STORE.publish(dict(prediction))
+        self._bar_gpt_prediction_origin_us = origin_us
 
     async def _publish_pending_bar_gpt_scopes(self) -> None:
         from src.backend.bar_gpt_client import publish_bar_gpt_scope
