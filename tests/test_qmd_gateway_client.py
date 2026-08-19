@@ -831,7 +831,11 @@ class QmdGatewayClientTests(unittest.TestCase):
             }]
         }
 
-        rows = qmd_scanner_indicators(timeframe="1s", row_limit=99_999)
+        rows = qmd_scanner_indicators(
+            timeframe="1s",
+            row_limit=99_999,
+            fields={"vwap", "price_change_pct"},
+        )
 
         self.assertEqual(rows[0]["ticker"], "AAPL")
         self.assertEqual(rows[0]["vwap"], 101.5)
@@ -839,7 +843,7 @@ class QmdGatewayClientTests(unittest.TestCase):
         self.assertNotIn("qmd_structure_timeframe_states", rows[0])
         get_json.assert_called_once_with(
             "/snapshot/scanner-indicators",
-            {"limit": 25_000, "timeframe": "1s"},
+            {"limit": 25_000, "timeframe": "1s", "fields": "price_change_pct,vwap"},
             timeout=3,
         )
 

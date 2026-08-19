@@ -5,6 +5,7 @@ import os
 import re
 import ssl
 import threading
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -412,6 +413,15 @@ def _building_scanner_snapshot() -> dict[str, Any]:
 
 
 def _compose_real_live_scanner_snapshot(*, allow_provider_fallback: bool = True) -> dict[str, Any]:
+    stage_durations_ms: dict[str, float] = {}
+    stage_started = time.perf_counter()
+
+    def finish_stage(name: str) -> None:
+        nonlocal stage_started
+        now = time.perf_counter()
+        stage_durations_ms[name] = round((now - stage_started) * 1000, 2)
+        stage_started = now
+
     try:
         # Resolve Watchlists from the complete compact Core Scanner population;
         # the caller's row limit applies only to the returned UI projection.
@@ -419,6 +429,7 @@ def _compose_real_live_scanner_snapshot(*, allow_provider_fallback: bool = True)
         if payload.get("row_count", 0) > 0:
             filtered = apply_tradable_filter_to_scanner_payload(payload)
             rows = list(filtered.get("rows") or [])
+            finish_stage("core_snapshot")
             reference_error = ""
             reference_status = {
                 "ready": False,
@@ -447,6 +458,7 @@ def _compose_real_live_scanner_snapshot(*, allow_provider_fallback: bool = True)
                 from src.backend.trading_configuration_service import market_discovery_runtime_configuration
                 from src.backend.data_field_contracts import (
                     compile_data_field_plan,
+                    data_field_output_index,
                     project_composition_data_field_columns,
                     project_data_field_outputs,
                 )
@@ -461,6 +473,7 @@ def _compose_real_live_scanner_snapshot(*, allow_provider_fallback: bool = True)
                 )
                 rows = enrich_core_scanner_rows(rows, live_market_reference_projection())
                 reference_status = live_market_reference_status()
+                finish_stage("configuration_and_reference")
                 discovery = dict(configuration.get("market_discovery") or {})
                 data_fields = list(discovery.get("data_fields") or [])
                 data_field_plan = compile_data_field_plan(discovery)
@@ -478,11 +491,25 @@ def _compose_real_live_scanner_snapshot(*, allow_provider_fallback: bool = True)
                     for instance in active_field_instances
                     if str(instance.get("field_ref") or "") in interval_field_refs
                 ]
+                output_index = data_field_output_index(data_fields)
+                interval_runtime_fields = {
+                    str(
+                        dict(output_index.get(str(instance.get("field_ref") or ""), {}))
+                        .get("aggregation_runtime_fields", {})
+                        .get(str(instance.get("aggregation") or ""))
+                        or output_index.get(str(instance.get("field_ref") or ""), {}).get("runtime_field")
+                        or output_index.get(str(instance.get("field_ref") or ""), {}).get("source_id")
+                        or ""
+                    )
+                    for instance in interval_field_instances
+                }
+                interval_runtime_fields.discard("")
                 indicator_rows: dict[str, dict[str, Any]] = {}
                 interval_sources = load_discovery_interval_sources(
                     configured_discovery_technical_windows(configuration),
                     indicator_loader=qmd_scanner_indicators,
                     macro_loader=qmd_scanner_macro_bars,
+                    indicator_fields=interval_runtime_fields,
                 )
                 for interval, source_rows in interval_sources:
                     interval_projection = project_data_field_outputs(
@@ -504,6 +531,7 @@ def _compose_real_live_scanner_snapshot(*, allow_provider_fallback: bool = True)
                             indicator_rows[ticker] = merge_interval_field_instances(
                                 indicator_rows.get(ticker, {}), indicator_row
                             )
+                finish_stage("interval_sources")
                 rows = [
                     {**row, **indicator_rows.get(str(row.get("ticker") or "").upper(), {})}
                     for row in rows
@@ -520,6 +548,7 @@ def _compose_real_live_scanner_snapshot(*, allow_provider_fallback: bool = True)
                     dict(discovery.get("core_scan") or {}),
                     discovery.get("column_catalog") or [],
                 )
+                finish_stage("core_projection")
                 cycle_as_of = datetime.now(UTC)
                 existing_admissions = SIGNAL_STREAM_RUNTIME.admissions_by_watchlist(cycle_as_of)
                 watchlist_runtime = WATCHLIST_RUNTIME.resolve(
@@ -530,6 +559,7 @@ def _compose_real_live_scanner_snapshot(*, allow_provider_fallback: bool = True)
                     admissions_by_watchlist=existing_admissions,
                     data_fields_projected=True,
                 )
+                finish_stage("watchlists")
                 signal_target_seeds = SIGNAL_STREAM_RUNTIME.seed_computation_targets(
                     configuration,
                     rows,
@@ -564,6 +594,7 @@ def _compose_real_live_scanner_snapshot(*, allow_provider_fallback: bool = True)
                     )
                 watchlist_runtime["focused_seeds"] = focused_seeds
                 signal_stream_runtime["computation_target_seeds"] = signal_target_seeds
+                finish_stage("signal_streams")
             except Exception as exc:
                 reference_error = str(exc)
                 watchlist_runtime = {
@@ -580,6 +611,7 @@ def _compose_real_live_scanner_snapshot(*, allow_provider_fallback: bool = True)
                     "signal_stream_runtime": signal_stream_runtime,
                     "signal_rows": [],
                     "reference_enrichment_status": reference_status,
+                    "stage_durations_ms": stage_durations_ms,
                 }
             )
             # The Live UI derives its market-state view from the same compact
@@ -662,6 +694,7 @@ def load_discovery_interval_sources(
     *,
     indicator_loader: Any,
     macro_loader: Any,
+    indicator_fields: set[str] | tuple[str, ...] = (),
 ) -> list[tuple[str, list[dict[str, Any]]]]:
     """Load independent QMD interval frames concurrently in stable order.
 
@@ -677,6 +710,14 @@ def load_discovery_interval_sources(
 
     def load(interval: str) -> list[dict[str, Any]]:
         loader = macro_loader if interval in {"1d", "1w", "1mo"} else indicator_loader
+        if loader is indicator_loader:
+            return list(
+                loader(
+                    timeframe=interval,
+                    row_limit=25_000,
+                    fields=indicator_fields,
+                )
+            )
         return list(loader(timeframe=interval, row_limit=25_000))
 
     with ThreadPoolExecutor(max_workers=min(len(ordered), 6)) as executor:
@@ -700,6 +741,7 @@ def refresh_live_market_discovery() -> dict[str, Any]:
         "strategy_rows": payload.get("rows") or [],
         "signal_stream_runtime": payload.get("signal_stream_runtime") or {},
         "watchlist_runtime": payload.get("watchlist_runtime") or {},
+        "stage_durations_ms": payload.get("stage_durations_ms") or {},
     }
 
 

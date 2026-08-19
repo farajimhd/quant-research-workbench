@@ -194,6 +194,30 @@ class JournalTests(unittest.TestCase):
             self.assertTrue(reopened.strategy("s")["automatic"])
             reopened.close()
 
+    def test_journal_batch_is_atomic_and_preserves_per_run_sequence(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "journal.sqlite3"
+            journal = TradingJournal(path)
+            journal.append(
+                run_id="run-a",
+                category="command",
+                entity_type="order",
+                entity_id="before",
+                payload={"position": 0},
+            )
+
+            records = journal.append_many(
+                [
+                    {"run_id": "run-a", "category": "command", "entity_type": "order", "entity_id": "a-1", "payload": {"position": 1}},
+                    {"run_id": "run-b", "category": "command", "entity_type": "order", "entity_id": "b-1", "payload": {"position": 1}},
+                    {"run_id": "run-a", "category": "command", "entity_type": "order", "entity_id": "a-2", "payload": {"position": 2}},
+                ]
+            )
+
+            self.assertEqual([(row.run_id, row.sequence) for row in records], [("run-a", 2), ("run-b", 1), ("run-a", 3)])
+            self.assertEqual(len(journal.pending_outbox()), 4)
+            journal.close()
+
     def test_journal_preserves_explicit_autonomous_lineage(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             journal = TradingJournal(Path(directory) / "journal.sqlite3")

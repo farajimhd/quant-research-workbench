@@ -12,6 +12,7 @@ SOURCE_FIELDS = {
     **DISCOVERY_RUNTIME_FIELDS,
     "liquidity-rank": "liquidity_rank",
 }
+PRECOMPUTED_RULE_PREFIX = "__rule_set__"
 
 
 def classify_watchlist_row(row: dict[str, Any]) -> dict[str, Any]:
@@ -106,26 +107,34 @@ def evaluate_watchlist_candidate(
     }
     if symbol in manual_exclusions:
         return None
-    rule_by_id = {
-        str(rule.get("rule_set_id") or ""): rule for rule in rule_sets
-    }
     include_ids = [
         str(value) for value in watchlist.get("inclusion_rule_sets") or []
     ]
     exclude_ids = [
         str(value) for value in watchlist.get("exclusion_rule_sets") or []
     ]
-    include_results = [
-        _rule_matches(rule_by_id.get(rule_id), row) for rule_id in include_ids
-    ]
+    selected_ids = [*include_ids, *exclude_ids]
+    uses_precomputed = bool(selected_ids) and all(
+        f"{PRECOMPUTED_RULE_PREFIX}{rule_id}" in row for rule_id in selected_ids
+    )
+    rule_by_id = {} if uses_precomputed else {
+        str(rule.get("rule_set_id") or ""): rule for rule in rule_sets
+    }
+    include_results = (
+        [row.get(f"{PRECOMPUTED_RULE_PREFIX}{rule_id}") is True for rule_id in include_ids]
+        if uses_precomputed
+        else [_rule_matches(rule_by_id.get(rule_id), row) for rule_id in include_ids]
+    )
     include_operator = str(watchlist.get("inclusion_operator") or "all")
     included = not include_results or (
         any(include_results)
         if include_operator == "any"
         else all(include_results)
     )
-    excluded = any(
-        _rule_matches(rule_by_id.get(rule_id), row) for rule_id in exclude_ids
+    excluded = (
+        any(row.get(f"{PRECOMPUTED_RULE_PREFIX}{rule_id}") is True for rule_id in exclude_ids)
+        if uses_precomputed
+        else any(_rule_matches(rule_by_id.get(rule_id), row) for rule_id in exclude_ids)
     )
     if not ((included and not excluded) or symbol in manual_inclusions):
         return None
@@ -247,6 +256,10 @@ def rank_watchlist_membership(
 def _rule_matches(rule_set: dict[str, Any] | None, row: dict[str, Any]) -> bool:
     if not rule_set or not bool(rule_set.get("enabled", True)):
         return False
+    rule_id = str(rule_set.get("rule_set_id") or "")
+    precomputed_key = f"{PRECOMPUTED_RULE_PREFIX}{rule_id}"
+    if rule_id and precomputed_key in row:
+        return row.get(precomputed_key) is True
     results = [_condition_matches(condition, row) for condition in rule_set.get("conditions") or [] if bool(condition.get("enabled", True))]
     if not results:
         return False

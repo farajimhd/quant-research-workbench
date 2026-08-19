@@ -12,8 +12,9 @@ class RealLiveScannerCompositionTests(unittest.TestCase):
     def test_interval_sources_load_concurrently_and_preserve_configuration_order(self) -> None:
         barrier = threading.Barrier(3, timeout=1)
 
-        def indicator_loader(*, timeframe: str, row_limit: int):
+        def indicator_loader(*, timeframe: str, row_limit: int, fields):
             self.assertEqual(row_limit, 25_000)
+            self.assertEqual(fields, {"price_change_pct"})
             barrier.wait()
             return [{"ticker": timeframe.upper()}]
 
@@ -26,6 +27,7 @@ class RealLiveScannerCompositionTests(unittest.TestCase):
             ("5m", "1d", "100ms"),
             indicator_loader=indicator_loader,
             macro_loader=macro_loader,
+            indicator_fields={"price_change_pct"},
         )
 
         self.assertEqual([interval for interval, _ in rows], ["5m", "1d", "100ms"])

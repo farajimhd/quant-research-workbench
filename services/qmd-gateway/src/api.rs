@@ -48,6 +48,7 @@ use futures_util::SinkExt;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use std::collections::BTreeSet;
 use std::sync::Arc;
 use tokio::sync::{broadcast, watch};
 use tokio::time::{interval, Duration};
@@ -104,6 +105,7 @@ struct CompactEventMarketPageQuery {
 struct BarsQuery {
     limit: Option<usize>,
     timeframe: Option<String>,
+    fields: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -434,7 +436,11 @@ async fn send_resnapshot_required(
 
 #[cfg(test)]
 mod shutdown_tests {
-    use super::{resnapshot_required_frame, scanner_sequence_gap, valid_shutdown_token};
+    use super::{
+        parse_indicator_projection_fields, resnapshot_required_frame,
+        retain_indicator_projection_fields, scanner_sequence_gap, valid_shutdown_token,
+    };
+    use serde_json::json;
 
     #[test]
     fn shutdown_requires_the_configured_non_empty_token() {
@@ -463,6 +469,46 @@ mod shutdown_tests {
         assert_eq!(frame["action"], "resnapshot_required");
         assert_eq!(frame["skipped"], 7);
         assert_eq!(frame["continuation_after_arrival_sequence"], 42);
+    }
+
+    #[test]
+    fn indicator_projection_retains_identity_and_requested_fields_only() {
+        let requested = parse_indicator_projection_fields(Some("close,price_change_pct"))
+            .expect("projection fields are valid")
+            .expect("projection is requested");
+        let mut payload = json!({
+            "rows": [{
+                "schema_version": "qmd.indicators.v1",
+                "session_date": "2026-08-19",
+                "timeframe": "5m",
+                "sym": "AAPL",
+                "bar_start": 1,
+                "bar_end": 2,
+                "close": 225.5,
+                "price_change_pct": 5.1,
+                "qmd_structure_score": 0.9
+            }]
+        });
+
+        retain_indicator_projection_fields(&mut payload, &requested);
+
+        let row = payload["rows"][0]
+            .as_object()
+            .expect("projected row is an object");
+        assert_eq!(row["sym"], "AAPL");
+        assert_eq!(row["close"], 225.5);
+        assert_eq!(row["price_change_pct"], 5.1);
+        assert!(!row.contains_key("qmd_structure_score"));
+    }
+
+    #[test]
+    fn indicator_projection_rejects_unsafe_or_unbounded_fields() {
+        assert!(parse_indicator_projection_fields(Some("close,$secret")).is_err());
+        let oversized = (0..65)
+            .map(|index| format!("field_{index}"))
+            .collect::<Vec<_>>()
+            .join(",");
+        assert!(parse_indicator_projection_fields(Some(&oversized)).is_err());
     }
 }
 
@@ -978,16 +1024,77 @@ async fn scanner_primitive_snapshot(
 async fn scanner_indicator_snapshot(
     State(state): State<Arc<AppState>>,
     Query(query): Query<BarsQuery>,
-) -> Json<IndicatorScannerSnapshot> {
-    Json(
-        state
-            .indicators
-            .scanner_snapshot(
-                query.timeframe.as_deref().unwrap_or("10s"),
-                query.limit.unwrap_or(25_000).min(25_000),
-            )
-            .await,
-    )
+) -> Result<Json<Value>, (StatusCode, String)> {
+    let fields = parse_indicator_projection_fields(query.fields.as_deref())
+        .map_err(|error| (StatusCode::BAD_REQUEST, error))?;
+    let snapshot = state
+        .indicators
+        .scanner_snapshot(
+            query.timeframe.as_deref().unwrap_or("10s"),
+            query.limit.unwrap_or(25_000).min(25_000),
+        )
+        .await;
+    Ok(Json(project_indicator_scanner_snapshot(
+        snapshot,
+        fields.as_ref(),
+    )))
+}
+
+fn parse_indicator_projection_fields(
+    raw: Option<&str>,
+) -> Result<Option<BTreeSet<String>>, String> {
+    let Some(raw) = raw.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok(None);
+    };
+    let fields = raw
+        .split(',')
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .collect::<BTreeSet<_>>();
+    if fields.len() > 64 {
+        return Err("fields accepts at most 64 indicator field names".to_string());
+    }
+    if fields.iter().any(|field| {
+        field.len() > 64
+            || !field
+                .chars()
+                .all(|character| character.is_ascii_alphanumeric() || character == '_')
+    }) {
+        return Err("fields contains an invalid indicator field name".to_string());
+    }
+    Ok(Some(fields))
+}
+
+fn project_indicator_scanner_snapshot(
+    snapshot: IndicatorScannerSnapshot,
+    requested: Option<&BTreeSet<String>>,
+) -> Value {
+    let mut value = serde_json::to_value(snapshot).expect("indicator snapshot is serializable");
+    let Some(requested) = requested else {
+        return value;
+    };
+    retain_indicator_projection_fields(&mut value, requested);
+    value
+}
+
+fn retain_indicator_projection_fields(value: &mut Value, requested: &BTreeSet<String>) {
+    let mandatory = [
+        "schema_version",
+        "session_date",
+        "timeframe",
+        "sym",
+        "bar_start",
+        "bar_end",
+    ];
+    if let Some(rows) = value.get_mut("rows").and_then(Value::as_array_mut) {
+        for row in rows {
+            if let Some(object) = row.as_object_mut() {
+                object
+                    .retain(|key, _| mandatory.contains(&key.as_str()) || requested.contains(key));
+            }
+        }
+    }
 }
 
 async fn market_signal_snapshot(

@@ -56,55 +56,124 @@ class TradingJournal:
         account_id: str = "",
         event_time: datetime | None = None,
     ) -> JournalRecord:
-        event_time = (event_time or datetime.now(timezone.utc)).astimezone(timezone.utc)
-        recorded_at = datetime.now(timezone.utc)
-        record_id = str(uuid.uuid4())
-        active_lineage = current_request_identity()
-        needs_generic_lineage = not payload.get("intent_id") or bool(active_lineage)
-        lineage = (
-            causal_identity(
-                correlation_seed=run_id,
-                causation_seed=(
-                    f"{category}:{entity_type}:{entity_id}:"
-                    f"{event_time.isoformat(timespec='microseconds')}"
-                ),
+        return self.append_many(
+            [
+                {
+                    "run_id": run_id,
+                    "category": category,
+                    "entity_type": entity_type,
+                    "entity_id": entity_id,
+                    "payload": payload,
+                    "account_id": account_id,
+                    "event_time": event_time,
+                }
+            ]
+        )[0]
+
+    def append_many(self, entries: Iterable[dict[str, Any]]) -> list[JournalRecord]:
+        """Append an ordered event batch in one durable SQLite transaction."""
+
+        prepared: list[dict[str, Any]] = []
+        for entry in entries:
+            run_id = str(entry["run_id"])
+            category = str(entry["category"])
+            entity_type = str(entry["entity_type"])
+            entity_id = str(entry["entity_id"])
+            account_id = str(entry.get("account_id") or "")
+            event_time = (
+                entry.get("event_time") or datetime.now(timezone.utc)
+            ).astimezone(timezone.utc)
+            recorded_at = datetime.now(timezone.utc)
+            record_id = str(uuid.uuid4())
+            payload = dict(entry.get("payload") or {})
+            active_lineage = current_request_identity()
+            needs_generic_lineage = not payload.get("intent_id") or bool(active_lineage)
+            lineage = (
+                causal_identity(
+                    correlation_seed=run_id,
+                    causation_seed=(
+                        f"{category}:{entity_type}:{entity_id}:"
+                        f"{event_time.isoformat(timespec='microseconds')}"
+                    ),
+                )
+                if needs_generic_lineage
+                else {}
             )
-            if needs_generic_lineage
-            else {}
-        )
-        payload = {**lineage, **payload}
-        payload_json = json.dumps(payload, separators=(",", ":"), sort_keys=True, default=_json_default)
+            payload = {**lineage, **payload}
+            prepared.append(
+                {
+                    "record_id": record_id,
+                    "run_id": run_id,
+                    "category": category,
+                    "entity_type": entity_type,
+                    "entity_id": entity_id,
+                    "account_id": account_id,
+                    "event_time": event_time,
+                    "recorded_at": recorded_at,
+                    "payload": payload,
+                    "payload_json": json.dumps(
+                        payload,
+                        separators=(",", ":"),
+                        sort_keys=True,
+                        default=_json_default,
+                    ),
+                }
+            )
+        if not prepared:
+            return []
+
+        records: list[JournalRecord] = []
         with self._lock, self._connection:
-            sequence = int(
+            next_sequence: dict[str, int] = {}
+            for entry in prepared:
+                run_id = entry["run_id"]
+                if run_id not in next_sequence:
+                    next_sequence[run_id] = int(
+                        self._connection.execute(
+                            "SELECT COALESCE(MAX(sequence), 0) + 1 FROM journal WHERE run_id = ?",
+                            (run_id,),
+                        ).fetchone()[0]
+                    )
+                sequence = next_sequence[run_id]
+                next_sequence[run_id] += 1
                 self._connection.execute(
-                    "SELECT COALESCE(MAX(sequence), 0) + 1 FROM journal WHERE run_id = ?",
-                    (run_id,),
-                ).fetchone()[0]
-            )
-            self._connection.execute(
-                """
-                INSERT INTO journal(record_id, run_id, sequence, event_time, recorded_at, category,
-                                    entity_type, entity_id, account_id, payload_json)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    record_id,
-                    run_id,
-                    sequence,
-                    event_time.isoformat(),
-                    recorded_at.isoformat(),
-                    category,
-                    entity_type,
-                    entity_id,
-                    account_id,
-                    payload_json,
-                ),
-            )
-            self._connection.execute(
-                "INSERT INTO outbox(record_id, attempts, last_error, delivered_at) VALUES (?, 0, '', NULL)",
-                (record_id,),
-            )
-        return JournalRecord(record_id, run_id, sequence, event_time, recorded_at, category, entity_type, entity_id, account_id, payload)
+                    """
+                    INSERT INTO journal(record_id, run_id, sequence, event_time, recorded_at, category,
+                                        entity_type, entity_id, account_id, payload_json)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        entry["record_id"],
+                        run_id,
+                        sequence,
+                        entry["event_time"].isoformat(),
+                        entry["recorded_at"].isoformat(),
+                        entry["category"],
+                        entry["entity_type"],
+                        entry["entity_id"],
+                        entry["account_id"],
+                        entry["payload_json"],
+                    ),
+                )
+                self._connection.execute(
+                    "INSERT INTO outbox(record_id, attempts, last_error, delivered_at) VALUES (?, 0, '', NULL)",
+                    (entry["record_id"],),
+                )
+                records.append(
+                    JournalRecord(
+                        entry["record_id"],
+                        run_id,
+                        sequence,
+                        entry["event_time"],
+                        entry["recorded_at"],
+                        entry["category"],
+                        entry["entity_type"],
+                        entry["entity_id"],
+                        entry["account_id"],
+                        entry["payload"],
+                    )
+                )
+        return records
 
     def append_once(
         self,

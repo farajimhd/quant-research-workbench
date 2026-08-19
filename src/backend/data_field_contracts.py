@@ -656,11 +656,23 @@ def project_data_field_outputs(
                 for interval, function in selected_instances.get(field_ref, set())
                 if _interval_uses_supported_unit(interval, intervals)
             ))
+        default_function = str(aggregation.get("default") or "")
         prepared_outputs.append((
             output,
             intervals,
-            requested_instances,
-            str(aggregation.get("default") or ""),
+            tuple(
+                (
+                    interval,
+                    function,
+                    field_instance_ref(field_ref, interval, function),
+                )
+                for interval, function in requested_instances
+            ),
+            {
+                interval: field_instance_ref(field_ref, interval, default_function)
+                for interval, _function in requested_instances
+            },
+            default_function,
             dict(execution.get("aggregation_runtime_fields") or {}),
         ))
     projected: list[dict[str, Any]] = []
@@ -673,14 +685,14 @@ def project_data_field_outputs(
             parts = key.split("__", 3)
             if len(parts) >= 3:
                 technical_keys.setdefault((parts[1], parts[2]), key)
-        for output, intervals, requested_instances, default_function, runtime_fields in prepared_outputs:
+        for output, intervals, requested_instances, default_instance_refs, default_function, runtime_fields in prepared_outputs:
             field_ref = str(output["field_ref"])
             runtime_field = str(output.get("runtime_field") or output.get("source_id") or "")
             source_id = str(output.get("source_id") or "")
             observed_interval = str(row.get("indicator_interval") or row.get("indicator_timeframe") or row.get("working_timeframe") or "")
             if intervals:
                 found_any = False
-                for interval, function in requested_instances:
+                for interval, function, instance_ref in requested_instances:
                     selected_runtime_field = str(runtime_fields.get(function) or runtime_field)
                     value_found, value = _projected_value(
                         row,
@@ -692,7 +704,6 @@ def project_data_field_outputs(
                     )
                     if observed_interval and observed_interval != interval:
                         value_found, value = False, None
-                    instance_ref = field_instance_ref(field_ref, interval, function)
                     # Indicator snapshots are fetched independently per interval
                     # and merged afterwards. A producer that does not own this
                     # interval must not publish a null placeholder: doing so
@@ -702,8 +713,8 @@ def project_data_field_outputs(
                     if not value_found and instance_ref not in result:
                         result[f"{instance_ref}__null_reason"] = "producer_output_missing"
                     found_any = found_any or value_found or result.get(instance_ref) is not None
-                if observed_interval and _interval_uses_supported_unit(observed_interval, intervals):
-                    result[field_ref] = result.get(field_instance_ref(field_ref, observed_interval, default_function))
+                if observed_interval and observed_interval in default_instance_refs:
+                    result[field_ref] = result.get(default_instance_refs[observed_interval])
                 value_found = found_any
                 value = result.get(field_ref)
             else:

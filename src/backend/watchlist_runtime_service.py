@@ -31,6 +31,7 @@ from src.backend.data_field_contracts import (
 )
 from src.request_context import causal_identity
 from src.trading_runtime.watchlist_resolver import (
+    PRECOMPUTED_RULE_PREFIX,
     SOURCE_FIELDS,
     classify_watchlist_row,
     evaluate_rule_set_result,
@@ -112,6 +113,11 @@ class WatchlistRuntime:
             configuration,
             candidate_rows,
         )
+        _project_watchlist_rule_results(
+            normalized_candidates,
+            discovery.get("watchlists") or [],
+            rule_sets,
+        )
         candidates_by_ticker = {
             str(row.get("ticker") or "").upper(): row
             for row in normalized_candidates
@@ -120,6 +126,7 @@ class WatchlistRuntime:
         snapshots: list[dict[str, Any]] = []
         target_errors: list[dict[str, str]] = []
         desired_strategy_targets: set[str] = set()
+        journal_entries: list[dict[str, Any]] = []
         with self._lock:
             if journal is not None and not self._hydrated:
                 self._hydrate(journal)
@@ -201,13 +208,15 @@ class WatchlistRuntime:
                 for event in events:
                     self._history.append(event)
                     if journal is not None:
-                        journal.append(
-                            run_id=f"watchlist:{watchlist_id}",
-                            category="watchlist_membership",
-                            entity_type="watchlist_member",
-                            entity_id=f"{watchlist_id}:{event['ticker']}",
-                            event_time=as_of,
-                            payload=event,
+                        journal_entries.append(
+                            {
+                                "run_id": f"watchlist:{watchlist_id}",
+                                "category": "watchlist_membership",
+                                "entity_type": "watchlist_member",
+                                "entity_id": f"{watchlist_id}:{event['ticker']}",
+                                "event_time": as_of,
+                                "payload": event,
+                            }
                         )
                 capabilities, timeframes = focused_target_contract(
                     watchlist, rule_sets, calculations, column_sources, discovery.get("data_fields") or []
@@ -299,6 +308,13 @@ class WatchlistRuntime:
                             "run_plan_id": target_id.removeprefix("strategy:"),
                             "error": str(exc),
                         })
+            if journal is not None and journal_entries:
+                append_many = getattr(journal, "append_many", None)
+                if callable(append_many):
+                    append_many(journal_entries)
+                else:
+                    for entry in journal_entries:
+                        journal.append(**entry)
         return {
             "as_of": as_of.isoformat(),
             "watchlist_count": len(snapshots),
@@ -307,6 +323,7 @@ class WatchlistRuntime:
             "target_errors": target_errors,
             "status": "ready" if not target_errors else "degraded",
         }
+
 
     def _resolve_incremental(
         self,
@@ -488,6 +505,35 @@ class WatchlistRuntime:
 
 
 WATCHLIST_RUNTIME = WatchlistRuntime()
+
+
+def _project_watchlist_rule_results(
+    rows: list[dict[str, Any]],
+    watchlists: list[dict[str, Any]],
+    rule_sets: list[dict[str, Any]],
+) -> None:
+    """Evaluate shared Watchlist rules once as a vectorized cross-section."""
+
+    selected_ids = {
+        str(value)
+        for watchlist in watchlists
+        if bool(watchlist.get("enabled", True))
+        for key in ("inclusion_rule_sets", "exclusion_rule_sets")
+        for value in watchlist.get(key) or []
+        if str(value)
+    }
+    selected_rules = [
+        rule_set
+        for rule_set in rule_sets
+        if str(rule_set.get("rule_set_id") or "") in selected_ids
+    ]
+    if not rows or not selected_rules:
+        return
+    masks = evaluate_rule_sets_frame(selected_rules, rows)
+    for rule_id, values in masks.items():
+        key = f"{PRECOMPUTED_RULE_PREFIX}{rule_id}"
+        for index, value in enumerate(values):
+            rows[index][key] = value
 
 
 def project_watchlists_from_candidates(

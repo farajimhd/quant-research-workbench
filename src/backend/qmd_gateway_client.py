@@ -10,7 +10,7 @@ import urllib.request
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Callable, Collection, Literal
+from typing import Any, Callable, Collection, Iterable, Literal
 from zoneinfo import ZoneInfo
 
 from dotenv import load_dotenv
@@ -1204,11 +1204,21 @@ def qmd_market_signals(
 
 
 def qmd_scanner_indicators(
-    *, timeframe: str = "1s", row_limit: int = 25_000
+    *,
+    timeframe: str = "1s",
+    row_limit: int = 25_000,
+    fields: Iterable[str] | None = None,
 ) -> list[dict[str, Any]]:
+    requested_fields = sorted({str(value).strip() for value in fields or [] if str(value).strip()})
+    params: dict[str, Any] = {
+        "limit": max(1, min(int(row_limit), 25_000)),
+        "timeframe": timeframe,
+    }
+    if requested_fields:
+        params["fields"] = ",".join(requested_fields)
     payload = qmd_get_json(
         "/snapshot/scanner-indicators",
-        {"limit": max(1, min(int(row_limit), 25_000)), "timeframe": timeframe},
+        params,
         timeout=3,
     )
     source_rows = payload.get("rows") or [] if isinstance(payload, dict) else []

@@ -147,6 +147,35 @@ class WatchlistRuntimeServiceTests(unittest.TestCase):
             projection["watchlists"][0]["candidate_population_count"], 3
         )
 
+    def test_shared_watchlist_rules_are_vectorized_once_before_incremental_membership(self) -> None:
+        discovery = self.configuration["market_discovery"]
+        discovery["rule_sets"].append({
+            "rule_set_id": "test-positive-change",
+            "enabled": True,
+            "operator": "all",
+            "conditions": [{
+                "enabled": True,
+                "left_source_id": "market.change_pct",
+                "comparator": "greater_than",
+                "value": 0,
+            }],
+        })
+        discovery["watchlists"][0]["inclusion_rule_sets"] = ["test-positive-change"]
+
+        projection = WatchlistRuntime().resolve(
+            self.configuration,
+            [
+                {"ticker": "AAA", "market_cap": 1_000_000_000, "change_pct": 4.0},
+                {"ticker": "BBB", "market_cap": 1_000_000_000, "change_pct": -2.0},
+            ],
+            publish_targets=False,
+        )
+
+        self.assertEqual(
+            [row["ticker"] for row in projection["watchlists"][0]["members"]],
+            ["AAA"],
+        )
+
     def test_canvas_watchlist_member_keeps_the_configured_interval_column_value(self) -> None:
         discovery = self.configuration["market_discovery"]
         column = next(row for row in discovery["column_catalog"] if row.get("source_id") == "price_change_pct")

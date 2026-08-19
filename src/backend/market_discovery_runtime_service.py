@@ -130,8 +130,9 @@ class MarketDiscoveryRuntimeCoordinator:
                 "strategy_market_update_accepted_count": accepted_market_updates,
                 "strategy_deliveries": deliveries[-25:],
                 "refresh_interval_ms": refresh_ms,
+                "stage_durations_ms": dict(payload.get("stage_durations_ms") or {}),
             })
-        return max(1.0, min(refresh_ms / 1000, 60.0))
+        return max(0.01, min((refresh_ms - duration_ms) / 1000, 60.0))
 
     def _run(self) -> None:
         while not self._stop.is_set():
