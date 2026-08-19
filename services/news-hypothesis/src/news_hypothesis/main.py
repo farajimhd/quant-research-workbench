@@ -7,9 +7,9 @@ from contextlib import asynccontextmanager
 import uvicorn
 from fastapi import FastAPI, HTTPException
 
-from .contextual import ContextualMarketAi, HypothesisRequest
+from .contextual import HypothesisRequest, NewsHypothesisRuntime
 
-runtime = ContextualMarketAi()
+runtime = NewsHypothesisRuntime()
 
 
 @asynccontextmanager
@@ -21,17 +21,17 @@ async def lifespan(_app: FastAPI):
         await runtime.stop()
 
 
-app = FastAPI(title="Market AI Service", version="1.0", lifespan=lifespan)
+app = FastAPI(title="News Hypothesis Service", version="1.0", lifespan=lifespan)
 
 
 @app.get("/health")
 def health() -> dict[str, object]:
     return {
         "status": "ready",
-        "service": "market_ai",
+        "service": "news_hypothesis",
         "queue_size": runtime.queue.qsize(),
         "metrics": runtime.metrics,
-        "responsibility": "contextual hypotheses only; no order authority",
+        "responsibility": "contextual news hypotheses only; no market-model or order authority",
     }
 
 
@@ -40,12 +40,12 @@ def hypothesize(request: HypothesisRequest) -> dict[str, str]:
     try:
         runtime.enqueue(request)
     except asyncio.QueueFull as exc:
-        raise HTTPException(status_code=503, detail="market AI queue is full") from exc
+        raise HTTPException(status_code=503, detail="news hypothesis queue is full") from exc
     return {"status": "queued", "canonical_news_id": request.canonical_news_id, "ticker": request.ticker}
 
 
 def main() -> None:
-    bind = os.environ.get("MARKET_AI_BIND", "127.0.0.1:8803")
+    bind = os.environ.get("NEWS_HYPOTHESIS_BIND", "127.0.0.1:8803")
     host, port = bind.rsplit(":", 1)
     uvicorn.run(app, host=host, port=int(port), access_log=False)
 

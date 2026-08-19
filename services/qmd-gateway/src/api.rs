@@ -102,6 +102,13 @@ struct CompactEventMarketPageQuery {
 }
 
 #[derive(Debug, Deserialize)]
+struct CompactEventBatchQuery {
+    max_delay_ms: Option<u64>,
+    max_events: Option<usize>,
+    tickers: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
 struct BarsQuery {
     limit: Option<usize>,
     timeframe: Option<String>,
@@ -235,6 +242,7 @@ pub fn app(state: AppState) -> Router {
             get(ticker_live_market_state_snapshot),
         )
         .route("/stream/compact-events", get(compact_event_stream))
+        .route("/stream/compact-events-batch", get(compact_event_batch_stream))
         .route("/stream/intraday-bars", get(intraday_bar_stream))
         .route("/stream/events", get(event_stream))
         .route("/stream/live-market-state", get(live_market_state_stream))
@@ -1858,6 +1866,16 @@ async fn compact_event_stream(
     })
 }
 
+async fn compact_event_batch_stream(
+    ws: WebSocketUpgrade,
+    State(state): State<Arc<AppState>>,
+    Query(query): Query<CompactEventBatchQuery>,
+) -> impl IntoResponse {
+    ws.on_upgrade(move |socket| async move {
+        stream_compact_event_batches(socket, state, query).await;
+    })
+}
+
 async fn intraday_bar_stream(
     ws: WebSocketUpgrade,
     State(state): State<Arc<AppState>>,
@@ -1970,6 +1988,92 @@ async fn stream_compact_events(mut socket: WebSocket, state: Arc<AppState>) {
             }
             Err(broadcast::error::RecvError::Closed) => break,
         }
+    }
+}
+
+async fn stream_compact_event_batches(
+    mut socket: WebSocket,
+    state: Arc<AppState>,
+    query: CompactEventBatchQuery,
+) {
+    let maximum = query.max_events.unwrap_or(4_096).clamp(1, 16_384);
+    let delay_ms = query.max_delay_ms.unwrap_or(25).clamp(1, 1_000);
+    let selected = query.tickers.as_deref().map(|value| {
+        value
+            .split(',')
+            .map(|ticker| ticker.trim().to_ascii_uppercase())
+            .filter(|ticker| !ticker.is_empty())
+            .collect::<BTreeSet<_>>()
+    });
+    let mut receiver = state.compact_events.subscribe();
+    let mut flush = interval(Duration::from_millis(delay_ms));
+    let mut rows = Vec::<LiveCompactEvent>::with_capacity(maximum);
+    let mut delivered_arrival_sequence = 0_u64;
+    loop {
+        tokio::select! {
+            received = receiver.recv() => match received {
+                Ok(event) => {
+                    if selected.as_ref().map_or(true, |tickers| tickers.contains(&event.ticker)) {
+                        rows.push(event);
+                    }
+                    if rows.len() >= maximum
+                        && !send_compact_event_batch(&mut socket, &mut rows, &mut delivered_arrival_sequence).await
+                    {
+                        break;
+                    }
+                }
+                Err(broadcast::error::RecvError::Lagged(count)) => {
+                    send_resnapshot_required(
+                        &mut socket,
+                        "compact_event_batch_stream_lagged",
+                        count,
+                        "/snapshot/compact-event-market-page",
+                        Some(delivered_arrival_sequence),
+                    ).await;
+                    break;
+                }
+                Err(broadcast::error::RecvError::Closed) => break,
+            },
+            _ = flush.tick() => {
+                if !rows.is_empty()
+                    && !send_compact_event_batch(&mut socket, &mut rows, &mut delivered_arrival_sequence).await
+                {
+                    break;
+                }
+            }
+        }
+    }
+}
+
+async fn send_compact_event_batch(
+    socket: &mut WebSocket,
+    rows: &mut Vec<LiveCompactEvent>,
+    delivered_arrival_sequence: &mut u64,
+) -> bool {
+    if rows.is_empty() {
+        return true;
+    }
+    let first = rows.first().map(|row| row.arrival_sequence).unwrap_or_default();
+    let last = rows.last().map(|row| row.arrival_sequence).unwrap_or_default();
+    let payload = json!({
+        "schema_version": 1,
+        "type": "compact_event_batch",
+        "first_arrival_sequence": first,
+        "last_arrival_sequence": last,
+        "events": std::mem::take(rows),
+    });
+    match serde_json::to_string(&payload) {
+        Ok(text) => {
+            if socket.send(Message::Text(text.into())).await.is_err() {
+                return false;
+            }
+            *delivered_arrival_sequence = last;
+            true
+        }
+        Err(error) => socket
+            .send(Message::Text(format!(r#"{{"error":"{error}"}}"#).into()))
+            .await
+            .is_ok(),
     }
 }
 

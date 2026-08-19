@@ -1,17 +1,19 @@
 [project]
-name = "market-ai"
+name = "bar-gpt-service"
 version = "0.1.0"
-description = "Market event batching and ML serving primitives."
+description = "Causal multiscale BarGPT v2/v3 production inference service."
 requires-python = ">=3.11"
 dependencies = [
   "fastapi",
   "numpy",
+  "polars",
   "pydantic",
-  "rich",
+  "pyarrow",
+  "torch",
   "uvicorn",
   "websockets",
 ]
 
 [tool.pytest.ini_options]
-pythonpath = ["src"]
+pythonpath = ["src", "../.."]
 testpaths = ["tests"]

@@ -14,7 +14,7 @@ class NewsSynthesisPresentationTests(unittest.TestCase):
             root / "src/backend/app.py": ("news_classification", "news_rules_v1", "news_semantic_label_v2"),
             root / "src/backend/canvas_preview_service.py": ("news_classification", "news_rules_v1", "scoped_text_labels_v5"),
             root / "frontend/src/app/components/NewsContainers.tsx": ("scoped_labels", "scoped_summary", "news_rules_v1", "prior_context_eligible", "followup_eligible"),
-            root / "services/market-ai/src/market_ai/contextual.py": ("news_semantic_label_v2",),
+            root / "services/news-hypothesis/src/news_hypothesis/contextual.py": ("news_semantic_label_v2",),
         }
         for path, forbidden in checks.items():
             source = path.read_text(encoding="utf-8")

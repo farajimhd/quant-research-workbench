@@ -338,6 +338,9 @@ class ReplayRunController:
         self._source_cursor: dict[str, Any] = {}
         self._frame_cursor: dict[str, Any] = {}
         self._processed_frames = 0
+        self._bar_gpt_origin_us = 0
+        self._bar_gpt_scope_task: asyncio.Task[None] | None = None
+        self._bar_gpt_pending_scope: dict[str, Any] | None = None
         if self.definition.debug_fixture is not None:
             self._data_authority["market_events"] = {
                 "authority": "backtest_debug_fixture",
@@ -1696,6 +1699,7 @@ class ReplayRunController:
     async def _after_event(self, event_time: datetime) -> None:
         self.current_time = event_time
         self.updated_at = datetime.now(UTC)
+        self._schedule_bar_gpt_scope(event_time)
         transport_boundary = False
         if self._step_until is not None and event_time >= self._step_until:
             self._step_until = None
@@ -1735,6 +1739,59 @@ class ReplayRunController:
         self.updated_at = datetime.now(UTC)
         await self._publish(force=True)
         self._write_manifest()
+        if self._bar_gpt_scope_task is not None:
+            await asyncio.gather(self._bar_gpt_scope_task, return_exceptions=True)
+        try:
+            from src.backend.bar_gpt_client import remove_bar_gpt_scope
+            await asyncio.to_thread(remove_bar_gpt_scope, f"{self.definition.mode.value}:{self.run_id}", 0.5)
+        except Exception:
+            pass
+
+    def _schedule_bar_gpt_scope(self, event_time: datetime) -> None:
+        origin_us = int(event_time.timestamp()) * 1_000_000
+        if origin_us <= self._bar_gpt_origin_us:
+            return
+        configuration = dict(self.definition.configuration_revision.get("payload") or {})
+        discovery = dict(configuration.get("market_discovery") or {})
+        serving = dict(dict(discovery.get("model_serving") or {}).get("bar_gpt") or {})
+        if not bool(serving.get("enabled", True)):
+            return
+        selected = {str(value) for value in serving.get("watchlist_ids") or ["core-candidates"] if str(value)}
+        tickers = sorted({
+            ticker
+            for watchlist_id, members in self._active_historical_watchlists.items()
+            if watchlist_id in selected
+            for ticker in members
+        })
+        if not tickers:
+            tickers = sorted(set(self._stream_tickers or self.definition.tickers))
+        maximum = max(1, min(int(serving.get("maximum_tickers") or 500), 5000))
+        self._bar_gpt_origin_us = origin_us
+        self._bar_gpt_pending_scope = {
+            "scope_id": f"{self.definition.mode.value}:{self.run_id}",
+            "mode": self.definition.mode.value,
+            "tickers": tickers[:maximum],
+            "watchlist_ids": sorted(selected),
+            "trigger_mode": str(serving.get("trigger_mode") or "auto"),
+            "clock_us": origin_us,
+            "revision": max(1, self.processed_events + self._processed_frames),
+            "ttl_ms": 60_000,
+            "source": "backend.replay_run",
+            "timeout": 0.75,
+        }
+        if self._bar_gpt_scope_task is None or self._bar_gpt_scope_task.done():
+            self._bar_gpt_scope_task = asyncio.create_task(
+                self._publish_pending_bar_gpt_scopes(),
+                name=f"bar-gpt-scope-{self.run_id}",
+            )
+
+    async def _publish_pending_bar_gpt_scopes(self) -> None:
+        from src.backend.bar_gpt_client import publish_bar_gpt_scope
+        while self._bar_gpt_pending_scope is not None:
+            payload = self._bar_gpt_pending_scope
+            self._bar_gpt_pending_scope = None
+            scope_id = str(payload.pop("scope_id"))
+            await asyncio.to_thread(publish_bar_gpt_scope, scope_id, **payload)
 
     async def _publish(self, *, force: bool = False) -> None:
         now = time.monotonic()

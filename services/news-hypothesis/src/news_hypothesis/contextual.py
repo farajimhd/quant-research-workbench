@@ -50,14 +50,14 @@ class HypothesisRequest(BaseModel):
     session_id: str = ""
 
 
-class ContextualMarketAi:
+class NewsHypothesisRuntime:
     def __init__(self) -> None:
-        self.model_gateway_url = os.environ.get("MARKET_AI_MODEL_GATEWAY_URL", "http://127.0.0.1:8802").rstrip("/")
-        self.qmd_url = os.environ.get("MARKET_AI_QMD_URL", "http://127.0.0.1:8795").rstrip("/")
-        self.backend_url = os.environ.get("MARKET_AI_BACKEND_URL", "").rstrip("/")
-        self.expiry_seconds = int(os.environ.get("MARKET_AI_HYPOTHESIS_EXPIRY_SECONDS", "120"))
+        self.model_gateway_url = os.environ.get("NEWS_HYPOTHESIS_MODEL_GATEWAY_URL", "http://127.0.0.1:8802").rstrip("/")
+        self.qmd_url = os.environ.get("NEWS_HYPOTHESIS_QMD_URL", "http://127.0.0.1:8795").rstrip("/")
+        self.backend_url = os.environ.get("NEWS_HYPOTHESIS_BACKEND_URL", "").rstrip("/")
+        self.expiry_seconds = int(os.environ.get("NEWS_HYPOTHESIS_EXPIRY_SECONDS", "120"))
         self.queue: asyncio.Queue[HypothesisRequest | None] = asyncio.Queue(
-            maxsize=int(os.environ.get("MARKET_AI_QUEUE_MAX", "2048"))
+            maxsize=int(os.environ.get("NEWS_HYPOTHESIS_QUEUE_MAX", "2048"))
         )
         self.workers: list[asyncio.Task[None]] = []
         self.reconcile_task: asyncio.Task[None] | None = None
@@ -66,14 +66,14 @@ class ContextualMarketAi:
         self.client = ClickHouseHttpClient(
             default_clickhouse_url(), default_clickhouse_user(), default_clickhouse_password(), timeout_seconds=20
         )
-        self.database = os.environ.get("MARKET_AI_DATABASE", "q_live")
-        self.table = os.environ.get("MARKET_AI_HYPOTHESIS_TABLE", "news_market_hypothesis_v1")
+        self.database = os.environ.get("NEWS_HYPOTHESIS_DATABASE", "q_live")
+        self.table = os.environ.get("NEWS_HYPOTHESIS_TABLE", "news_market_hypothesis_v1")
 
     async def start(self) -> None:
         await asyncio.to_thread(self._ensure_table)
         self.workers = [
             asyncio.create_task(self._worker())
-            for _ in range(max(1, int(os.environ.get("MARKET_AI_WORKERS", "2"))))
+            for _ in range(max(1, int(os.environ.get("NEWS_HYPOTHESIS_WORKERS", "2"))))
         ]
         self.reconcile_task = asyncio.create_task(self._reconcile_loop())
 
@@ -158,7 +158,7 @@ class ContextualMarketAi:
         self.metrics["completed"] += 1
 
     async def _reconcile_loop(self) -> None:
-        interval = max(3.0, float(os.environ.get("MARKET_AI_RECONCILE_SECONDS", "10")))
+        interval = max(3.0, float(os.environ.get("NEWS_HYPOTHESIS_RECONCILE_SECONDS", "10")))
         while True:
             await asyncio.sleep(interval)
             try:
@@ -224,7 +224,7 @@ class ContextualMarketAi:
             from services.market_hours import get_market_hours_client
 
             status = await asyncio.to_thread(
-                get_market_hours_client("MARKET_AI").snapshot, datetime.now(UTC)
+                get_market_hours_client("NEWS_HYPOTHESIS").snapshot, datetime.now(UTC)
             )
             raw_status = asdict(status) if is_dataclass(status) else dict(status)
             market_status = _json_safe(raw_status)

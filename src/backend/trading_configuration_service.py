@@ -2761,13 +2761,14 @@ def _market_discovery_field_catalog(
     for field in sorted(FIELD_DEFINITIONS, key=lambda row: row.field_id):
         if field.field_id in presented_field_ids:
             continue
+        bar_gpt_field = field.field_id.startswith("model.bargpt.")
         rows.append({
             "source_id": field.field_id,
             "field_id": field.field_id,
-            "column_id": "",
+            "column_id": field.field_id if bar_gpt_field else "",
             "name": field.label,
             "description": field.calculation_summary,
-            "semantic_type": "reference",
+            "semantic_type": "model" if bar_gpt_field else "reference",
             "source": field.owner,
             "source_path": field.source_path,
             "query_plan_id": field.query_plan_id,
@@ -2786,13 +2787,13 @@ def _market_discovery_field_catalog(
             "presentation_value_type": field.presentation_value_type,
             "unit": field.unit,
             "default_visible": False,
-            "filterable": False,
-            "sortable": False,
-            "filter_operators": [],
+            "filterable": bar_gpt_field,
+            "sortable": bar_gpt_field,
+            "filter_operators": _producer_output_filter_operators(field.value_type) if bar_gpt_field else [],
             "timeframes": list(field.timeframes),
             "implementation_status": field.status,
             "registry_authority": "application_registry",
-            "market_discovery_supported": False,
+            "market_discovery_supported": bar_gpt_field,
             "interval_semantics": field.interval_semantics,
             "aggregation_functions": list(field.aggregation_functions),
             "default_aggregation": field.default_aggregation,
@@ -3258,6 +3259,15 @@ def _default_market_discovery(
         "rule_sets": merged_rule_sets,
         "watchlists": _default_watchlist_templates(symbols, calculation_rows),
         "signal_streams": _default_signal_streams(column_catalog),
+        "model_serving": {
+            "bar_gpt": {
+                "enabled": True,
+                "watchlist_ids": ["core-candidates"],
+                "trigger_mode": "auto",
+                "maximum_tickers": 500,
+                "model_ids": ["bar_gpt_v2", "bar_gpt_v3"],
+            }
+        },
     }
     for watchlist in result["watchlists"]:
         watchlist["ranking_field_ref"] = str(
@@ -4076,6 +4086,19 @@ def _validate_market_discovery(
     if not watchlists:
         raise ValueError("Market Discovery requires at least one Watchlist")
     _unique_ids(watchlists, "watchlist_id", "Watchlist")
+    serving = dict(dict(section.get("model_serving") or {}).get("bar_gpt") or {})
+    if serving:
+        trigger_mode = str(serving.get("trigger_mode") or "auto")
+        if trigger_mode not in {"auto", "manual"}:
+            raise ValueError("BarGPT model serving trigger_mode must be auto or manual")
+        maximum_tickers = int(serving.get("maximum_tickers") or 0)
+        if maximum_tickers < 1 or maximum_tickers > 5000:
+            raise ValueError("BarGPT model serving maximum_tickers must be between 1 and 5000")
+        unknown = set(serving.get("watchlist_ids") or []) - {
+            str(row.get("watchlist_id") or "") for row in watchlists
+        }
+        if unknown:
+            raise ValueError("BarGPT model serving references unknown Watchlists: " + ", ".join(sorted(unknown)))
     column_catalog = list(section.get("column_catalog") or [])
     columns_by_id = {
         str(row.get("column_id") or ""): row for row in column_catalog
@@ -5210,6 +5233,11 @@ def _migrate_draft(raw: dict[str, Any]) -> dict[str, Any]:
         result["trading_actions"]["policies"] = list(default_policies.values())
         result["market_discovery"] = deepcopy(
             result.get("market_discovery") or defaults["market_discovery"]
+        )
+        result["market_discovery"]["model_serving"] = deepcopy(
+            result["market_discovery"].get("model_serving")
+            or defaults["market_discovery"].get("model_serving")
+            or {}
         )
         result["market_discovery"]["classifications"] = deepcopy(
             defaults["market_discovery"].get("classifications") or []

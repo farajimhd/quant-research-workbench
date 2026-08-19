@@ -7,6 +7,10 @@ param(
     [int]$BackendPort = 8000,
     [ValidateRange(1, 65535)]
     [int]$FrontendPort = 5173,
+    [ValidateRange(1, 65535)]
+    [int]$BarGptPort = 8805,
+    [string]$BarGptV2Checkpoint = "",
+    [string]$BarGptV3Checkpoint = "",
     [string]$PythonExe = "",
     [string]$WindowsTerminalExe = "",
     [ValidateSet("Auto", "Caller", "Named")]
@@ -15,7 +19,8 @@ param(
     [string]$WorkspaceRuntimeRoot = "",
     [ValidateRange(0.01, 100.0)]
     [double]$MaxGitDirectoryGB = 2.0,
-    [switch]$NoBackendReload
+    [switch]$NoBackendReload,
+    [switch]$WithBarGpt
 )
 
 $ErrorActionPreference = "Stop"
@@ -26,6 +31,7 @@ $repoRoot = Split-Path -Parent $PSScriptRoot
 $qmdHistoryLauncher = Join-Path $PSScriptRoot "run_qmd_history_gateway.ps1"
 $backendLauncher = Join-Path $PSScriptRoot "run_backend.ps1"
 $frontendLauncher = Join-Path $PSScriptRoot "run_frontend.py"
+$barGptLauncher = Join-Path $PSScriptRoot "run_bar_gpt.ps1"
 $serviceTabHost = Join-Path $PSScriptRoot "run_windows_terminal_service_tab.ps1"
 $terminalWindowTargetHelper = Join-Path $PSScriptRoot "windows_terminal_window_target.ps1"
 
@@ -186,6 +192,7 @@ Assert-Launcher -Path $qmdHistoryLauncher
 Assert-Launcher -Path $backendLauncher
 Assert-Launcher -Path $frontendLauncher
 Assert-Launcher -Path $serviceTabHost
+if ($WithBarGpt) { Assert-Launcher -Path $barGptLauncher }
 Assert-RepositoryGitSize -MaximumGB $MaxGitDirectoryGB
 
 $resolvedPython = Resolve-PythonExecutable -Requested $PythonExe
@@ -231,6 +238,17 @@ $frontendCommand = $pathAssignment +
     " " + (ConvertTo-PowerShellLiteral -Value $frontendLauncher) +
     " dev -- --host " + (ConvertTo-PowerShellLiteral -Value $HostName) +
     " --port $FrontendPort"
+$barGptCommand = $pathAssignment +
+    '$env:BAR_GPT_BIND = ' + (ConvertTo-PowerShellLiteral -Value "$HostName`:$BarGptPort") + [Environment]::NewLine
+if ($BarGptV2Checkpoint.Trim()) {
+    $barGptCommand += '$env:BAR_GPT_V2_CHECKPOINT = ' + (ConvertTo-PowerShellLiteral -Value $BarGptV2Checkpoint.Trim()) + [Environment]::NewLine
+}
+if ($BarGptV3Checkpoint.Trim()) {
+    $barGptCommand += '$env:BAR_GPT_V3_CHECKPOINT = ' + (ConvertTo-PowerShellLiteral -Value $BarGptV3Checkpoint.Trim()) + [Environment]::NewLine
+}
+$barGptCommand += "& " + (ConvertTo-PowerShellLiteral -Value $barGptLauncher) +
+    " -Bind " + (ConvertTo-PowerShellLiteral -Value "$HostName`:$BarGptPort") +
+    " -PythonExe " + (ConvertTo-PowerShellLiteral -Value $resolvedPython)
 
 function Open-ServiceTabs {
     param([object[]]$Tabs)
@@ -301,6 +319,17 @@ $serviceTabs = @(
         Command = $frontendCommand
     }
 )
+if ($WithBarGpt) {
+    if (-not $BarGptV2Checkpoint.Trim() -and -not $BarGptV3Checkpoint.Trim() -and -not $env:BAR_GPT_RELEASES_JSON) {
+        throw "-WithBarGpt requires a v2/v3 checkpoint or BAR_GPT_RELEASES_JSON."
+    }
+    $serviceTabs += [pscustomobject]@{
+        Title = "BarGPT"
+        Role = "bar_gpt"
+        Port = $BarGptPort
+        Command = $barGptCommand
+    }
+}
 
 foreach ($serviceTab in $serviceTabs) {
     $commandTokens = $null
@@ -325,12 +354,13 @@ if ($WhatIfPreference) {
 }
 
 Write-Host ""
-Write-Host "Opened independent QMD History, Backend, and Frontend PowerShell tabs in $($usedTerminalWindowTarget.Description)."
-Write-Host "This starter now exits instead of supervising the three launcher processes."
+Write-Host "Opened $($serviceTabs.Count) independent workspace service tabs in $($usedTerminalWindowTarget.Description)."
+Write-Host "This starter now exits instead of supervising the launcher processes."
 Write-Host "A successful graceful stop exits each tab host cleanly so Windows Terminal closes the service tabs."
 Write-Host "QMD History: http://$HostName`:$QmdHistoryPort"
 Write-Host "Backend:    http://$HostName`:$BackendPort"
 Write-Host "Frontend:   http://$HostName`:$FrontendPort"
+if ($WithBarGpt) { Write-Host "BarGPT:     http://$HostName`:$BarGptPort" }
 Write-Host "Ownership:  $workspaceInstanceRoot"
 Write-Host "Stop only launcher-owned instances with scripts\stop_workspace_services.ps1."
 Write-Host "QMD Live has an independent lifecycle: scripts\start_qmd_live_gateway.ps1 and scripts\stop_qmd_live_gateway.ps1."

@@ -883,10 +883,20 @@ def _query_plans() -> tuple[QueryPlanDefinition, ...]:
             "service://text-intelligence/sec-coverage",
         ),
         QueryPlanDefinition(
+            "model.bargpt.prediction.v1",
+            "bar_gpt",
+            "service://bar-gpt/predictions",
+            ("service://qmd/compact-events-batch", "service://qmd-history/event-bars", "artifact://bar-gpt/checkpoint"),
+            "ticker + mode-scoped cache authority + checkpoint hash + causal origin",
+            "completed model-origin bar timestamp",
+            "BarGPT inference publication timestamp",
+            "service://bar-gpt/health",
+        ),
+        QueryPlanDefinition(
             "model.context_asof.v1",
             "model_gateway",
             "service://model-gateway/context-by-artifact",
-            ("service://text-embed/embeddings", "service://market-ai/hypotheses"),
+            ("service://text-embed/embeddings", "service://news-hypothesis/hypotheses"),
             "stable identity + frozen context hash",
             "source event_at",
             "artifact available_at",
@@ -1563,6 +1573,80 @@ def _presentation_value_type(field_id: str, value_type: str, unit: str, known_va
     return "text" if normalized_type in {"string", "json"} else "ratio"
 
 
+def _bar_gpt_fields() -> list[FieldDefinition]:
+    price_targets = tuple(
+        f"{family}_{component}_return"
+        for family in ("trade", "bid", "ask")
+        for component in ("open", "high", "low", "close")
+    )
+    continuous = (*price_targets, "trade_realized_volatility", "log_trade_volume", "log_trade_count")
+    availability = (
+        "trade_available", "bid_available", "ask_available", "quote_pair_available",
+        "halt_pause_within_horizon", "resume_within_horizon",
+        "news_risk_within_horizon", "luld_limit_state_within_horizon",
+    )
+    horizons = ("5s", "30s", "1m", "5m", "15m", "1h")
+    views = ("1s", "5s", "10s", "30s", "1m", "5m", "30m", "1h")
+    classes = ("negative", "neutral", "positive")
+    gap_classes = (
+        "one_interval", "two_intervals", "three_to_five_intervals",
+        "six_to_thirty_intervals", "more_than_thirty_intervals", "cross_session",
+    )
+    rows: list[FieldDefinition] = []
+
+    def add(field_id: str, *, unit: str = "scalar", timeframe: str) -> None:
+        rows.append(_field(
+            field_id, "bar_gpt_forecast", "bar_gpt", "service://bar-gpt/predictions",
+            "model.bargpt.prediction.v1", unit=unit, entity_grain="security_model_origin",
+            event_at="completed causal model-origin bar timestamp",
+            available_at="BarGPT inference publication timestamp", ttl_seconds=None,
+            publication_cadence="completed_1s_bar_or_manual_request", provenance="model",
+            coverage_query_plan="model.bargpt.prediction.v1", timeframes=(timeframe,),
+            source_summary="BarGPT versioned checkpoint output from a causal full-prefix inference pass.",
+            calculation_summary="Raw fields preserve checkpoint head values; probability and value fields are explicitly named decoded projections.",
+        ))
+
+    for version in ("v2", "v3"):
+        for horizon in horizons:
+            for target in continuous:
+                unit = "currency" if target in price_targets else "count" if target.startswith("log_") else "ratio"
+                for quantile in ("q10", "q50", "q90"):
+                    prefix = f"model.bargpt.{version}.physical.{horizon}.{target}.{quantile}"
+                    add(f"{prefix}.raw", timeframe=horizon)
+                    add(f"{prefix}.value", unit=unit, timeframe=horizon)
+            for target in availability:
+                prefix = f"model.bargpt.{version}.physical.{horizon}.{target}"
+                add(f"{prefix}.logit", timeframe=horizon)
+                add(f"{prefix}.probability", unit="probability", timeframe=horizon)
+            if version == "v2":
+                for target in price_targets:
+                    for label in classes:
+                        prefix = f"model.bargpt.v2.physical.{horizon}.{target}.class_{label}"
+                        add(f"{prefix}.logit", timeframe=horizon)
+                        add(f"{prefix}.probability", unit="probability", timeframe=horizon)
+        for view in views:
+            for target in continuous:
+                prefix = f"model.bargpt.{version}.next_bar.{view}.{target}"
+                unit = "currency" if target in price_targets else "count" if target.startswith("log_") else "ratio"
+                add(f"{prefix}.raw", timeframe=view)
+                add(f"{prefix}.value", unit=unit, timeframe=view)
+            for target in availability[:4]:
+                prefix = f"model.bargpt.{version}.next_bar.{view}.{target}"
+                add(f"{prefix}.logit", timeframe=view)
+                add(f"{prefix}.probability", unit="probability", timeframe=view)
+            if version == "v2":
+                for target in price_targets:
+                    for label in classes:
+                        prefix = f"model.bargpt.v2.next_bar.{view}.{target}.class_{label}"
+                        add(f"{prefix}.logit", timeframe=view)
+                        add(f"{prefix}.probability", unit="probability", timeframe=view)
+            else:
+                for label in gap_classes:
+                    add(f"model.bargpt.v3.next_bar.{view}.gap_logit.{label}", timeframe=view)
+                    add(f"model.bargpt.v3.next_bar.{view}.gap_probability.{label}", unit="probability", timeframe=view)
+    return rows
+
+
 def _fields() -> tuple[FieldDefinition, ...]:
     rows: list[FieldDefinition] = []
 
@@ -1884,10 +1968,12 @@ def _fields() -> tuple[FieldDefinition, ...]:
     for field_id, owner, source in (
         ("embedding.news.vector", "text_embed_gateway", "service://text-embed/news"),
         ("embedding.sec.vector", "text_embed_gateway", "service://text-embed/sec"),
-        ("model.market_hypothesis.payload", "market_ai", "service://market-ai/hypotheses"),
+        ("model.market_hypothesis.payload", "news_hypothesis", "service://news-hypothesis/hypotheses"),
         ("model.market_prediction.payload", "model_gateway", "service://model-gateway/predictions"),
     ):
         rows.append(_field(field_id, "model_context", owner, source, "model.context_asof.v1", value_type="vector" if field_id.startswith("embedding") else "json", entity_grain="frozen_context", ttl_seconds=None, publication_cadence="artifact_or_event_driven", provenance="model", status="integration_pending", coverage_query_plan="model.context_asof.v1"))
+
+    rows.extend(_bar_gpt_fields())
 
     return tuple(rows)
 

@@ -45,7 +45,7 @@ import { buildSegmentButtonClassName } from "../selectionStyles";
 import { Modal } from "./Modal";
 import { TickerChangeBadge, TickerIdentity, TickerLogo } from "./TickerIdentity";
 
-type Candle = { time: number; open: number; high: number; low: number; close: number };
+type Candle = { time: number; open: number; high: number; low: number; close: number; color?: string; borderColor?: string; wickColor?: string };
 type ChartSeries = {
   autoscaleMax?: number;
   autoscaleMin?: number;

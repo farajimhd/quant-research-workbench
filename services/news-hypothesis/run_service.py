@@ -12,6 +12,6 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 if __name__ == "__main__":
-    from market_ai.main import main
+    from news_hypothesis.main import main
 
     main()

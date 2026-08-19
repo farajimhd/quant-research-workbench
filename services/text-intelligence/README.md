@@ -60,7 +60,7 @@ next reconciliation cycle rather than misreported as processing failures.
 - `TEXT_INTELLIGENCE_ENABLE_LLM`, default `false`
 - `TEXT_INTELLIGENCE_ENABLE_LIVE_AI`, default `false`; when `true`, eligible
   News during an explicitly active Live session is routed through Model
-  Gateway and then optionally to Market AI. This setting does not affect the
+  Gateway and then optionally to News Hypothesis. This setting does not affect the
   required News Synthesis V1 or SEC classifier.
 - `TEXT_INTELLIGENCE_LLM_BASE_URL`, default `http://127.0.0.1:8000/v1`
 - `TEXT_INTELLIGENCE_LLM_MODEL`, default `Qwen/Qwen3-1.7B`
@@ -75,7 +75,7 @@ next reconciliation cycle rather than misreported as processing failures.
 - `TEXT_INTELLIGENCE_LLM_MIN_TEXT_CHARS`, default `80`
 - `TEXT_INTELLIGENCE_LLM_TIMEOUT_MS`, default `3500`
 - `NEWS_INTELLIGENCE_MODEL_GATEWAY_URL`, default `http://127.0.0.1:8802`
-- `NEWS_INTELLIGENCE_MARKET_AI_URL`, default `http://127.0.0.1:8803`
+- `NEWS_INTELLIGENCE_NEWS_HYPOTHESIS_URL`, default `http://127.0.0.1:8803`
 - `NEWS_INTELLIGENCE_BACKEND_URL`, default `http://127.0.0.1:8000`; this is
   polled to restore the explicit Live-session gate after either service restarts
 - `NEWS_INTELLIGENCE_QMD_URL`, default `http://127.0.0.1:8795`
@@ -120,7 +120,7 @@ or:
 
 The bare launcher runs News Synthesis V1 plus the separate SEC V5 classifier
 and reconciler. It does not load local language models and does not call an
-LLM, Model Gateway, or Market AI. The standard live-gateway launcher also
+LLM, Model Gateway, or News Hypothesis. The standard live-gateway launcher also
 starts this deterministic service as its fifth tab with the shared Rich
 operational terminal. That terminal keeps current reconciliation, worker
 focus, queue depth, durable completion counts, and active failures visible;
@@ -134,7 +134,7 @@ $env:TEXT_INTELLIGENCE_ENABLE_MODELS = "true"
 # Optional OpenAI-compatible LLM route.
 $env:TEXT_INTELLIGENCE_ENABLE_LLM = "true"
 
-# Optional live-trading AI route. Model Gateway must be running; Market AI is
+# Optional live-trading AI route. Model Gateway must be running; News Hypothesis is
 # the separate deeper-hypothesis consumer.
 $env:TEXT_INTELLIGENCE_ENABLE_LIVE_AI = "true"
 .\scripts\run_text_intelligence.ps1

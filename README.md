@@ -16,14 +16,11 @@ not currently wired into the UI.
 ### Automatic trading
 
 Algorithmic strategies define scanning, entry, position management, exit, and
-account-routing behavior. The active forecasting research is
-`research/packed_market_model` with shared infrastructure in `research/mlops`.
-The intended production path is for `services/market-ai` to serve the selected
-causal model and make live forecasts available to automatic strategies.
-
-`services/market-ai` is currently a reserved, disabled boundary rather than a
-production inference service. Live model-driven trading therefore remains a
-target capability, not a completed one.
+account-routing behavior. BarGPT v2 and v3 research lives under
+`research/bar_gpt`; `services/bar-gpt` loads promoted checkpoints, maintains
+mode-scoped causal context, and publishes raw heads plus decoded Data Fields.
+The former generic Market AI prototype was removed. Its active news-specific
+hypothesis responsibility now lives at `services/news-hypothesis`.
 
 ### Manual and semi-automatic trading
 
@@ -132,7 +129,8 @@ paper or live accounts.
 | Text intelligence | `services/text-intelligence` | Shared post-persistence `scoped_text_labeling_v5` authority for News and SEC, plus optional gated live News model inference. It does not own acquisition or canonical storage. |
 | Active model research | `research/packed_market_model` | Current causal packed-event model family and trainer. |
 | Shared data/ML infrastructure | `research/mlops` | Environment, ClickHouse, manifests, checkpoints, metrics, packed loaders, and other shared utilities. It is also imported by operational services and pipelines, so it cannot be archived with old models. |
-| Forecast serving | `services/market-ai` | Reserved production boundary for the final causal model. It is intentionally disabled today; code below `src/market_ai` is exploratory. |
+| Forecast serving | `services/bar-gpt` | Mode-scoped BarGPT v2/v3 full-prefix inference, bounded context caches, dynamic batches, raw heads, decoded fields, and chart forecasts. |
+| News hypotheses | `services/news-hypothesis` | Expiring contextual hypotheses from frozen News, QMD, SEC, and fundamental evidence. |
 
 `services/gateway_core` is shared infrastructure used by multiple gateways and
 is active even though it is not a standalone product service.
@@ -212,7 +210,7 @@ SEC Gateway  --> q_live filing/text/XBRL -------+--> Text Embed Gateway
                                        tokens and embeddings
                                                      |
                                                      v
-Packed Market Model research --> Market AI (future) --> strategy forecasts
+BarGPT v2/v3 checkpoints --> BarGPT Service --> Data Fields --> Rule Sets / charts
 
 IBKR Supervisor --> accounts/session --> IBKR adapter ----+
 Historical events --> simulated IBKR-shaped broker -------+--> shared trading runtime
@@ -497,10 +495,10 @@ required before the workbench is a complete end-to-end application:
    separate live-QMD and historical-gateway authorities now expose compatible
    compact events and event-derived bars. Migrate the remaining legacy
    prepared-bar backtest/replay consumers and certify parity.
-3. **Finish causal model selection and production forecast serving.** Complete
-   the intended packed-model inputs and validation, approve a checkpoint and
-   prediction contract, and implement the currently disabled `market-ai`
-   service for replay and live forecasts.
+3. **Promote and certify production BarGPT releases.** The serving path now
+   supports BarGPT v2/v3 checkpoints in live, replay, and backtest modes. Finish
+   release evaluation, promote approved v2/v3 checkpoint manifests, benchmark
+   representative GPU capacity, and certify forecast parity before strategy use.
 4. **Migrate and select strategies on the shared runtime.** The IBKR-shaped
    runtime, simulated broker, central risk checks, strategy revision store, and
    historical runner exist. Remove the legacy strategy host's fill/portfolio

@@ -91,8 +91,8 @@ class LiveNewsRuntime:
         self.model_gateway_url = os.environ.get(
             "NEWS_INTELLIGENCE_MODEL_GATEWAY_URL", "http://127.0.0.1:8802"
         ).rstrip("/")
-        self.market_ai_url = os.environ.get(
-            "NEWS_INTELLIGENCE_MARKET_AI_URL", "http://127.0.0.1:8803"
+        self.news_hypothesis_url = os.environ.get(
+            "NEWS_INTELLIGENCE_NEWS_HYPOTHESIS_URL", "http://127.0.0.1:8803"
         ).rstrip("/")
         self.backend_url = os.environ.get(
             "NEWS_INTELLIGENCE_BACKEND_URL", "http://127.0.0.1:8000"
@@ -323,10 +323,10 @@ class LiveNewsRuntime:
             _json_safe(asdict(market_clock)),
         )
         self.metrics["processed"] += 1
-        # Deep analysis is independent and may arrive later. Market AI owns its
+        # Deep analysis is independent and may arrive later. News Hypothesis owns its
         # expiry; this service never waits for it before persisting the fast label.
         asyncio.create_task(
-            self._dispatch_market_ai(
+            self._dispatch_news_hypothesis(
                 candidate=candidate,
                 ticker=ticker,
                 label=label,
@@ -354,7 +354,7 @@ WHERE canonical_news_id={sql_string(canonical_news_id)}
 """
         return int(self.client.execute(sql).strip() or "0") > 0
 
-    async def _dispatch_market_ai(
+    async def _dispatch_news_hypothesis(
         self,
         *,
         candidate: LiveCandidate,
@@ -366,7 +366,7 @@ WHERE canonical_news_id={sql_string(canonical_news_id)}
         try:
             await asyncio.to_thread(
                 _post_json,
-                f"{self.market_ai_url}/hypothesize",
+                f"{self.news_hypothesis_url}/hypothesize",
                 {
                     "canonical_news_id": candidate.canonical_news_id,
                     "ticker": ticker,
@@ -382,7 +382,7 @@ WHERE canonical_news_id={sql_string(canonical_news_id)}
             )
         except Exception:
             # Fast semantic persistence is authoritative for this service.
-            # Market AI separately reconciles/retries deep work by idempotency.
+            # News Hypothesis separately reconciles/retries deep work by idempotency.
             return
 
     def _ensure_table(self) -> None:

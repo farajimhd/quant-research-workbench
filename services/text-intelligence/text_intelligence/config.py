@@ -53,7 +53,7 @@ class IntelligenceConfig:
                 "TEXT_INTELLIGENCE_BIND", "127.0.0.1:8804", "NEWS_INTELLIGENCE_BIND"
             ),
             # News Synthesis V1 and the separate SEC classifier are the standard
-            # responsibility. Model Gateway and Market AI are a separate,
+            # responsibility. Model Gateway and News Hypothesis are a separate,
             # explicitly authorized live-trading dependency chain.
             enable_live_ai=env_bool(
                 "TEXT_INTELLIGENCE_ENABLE_LIVE_AI",

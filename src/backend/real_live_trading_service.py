@@ -473,6 +473,8 @@ def _compose_real_live_scanner_snapshot(*, allow_provider_fallback: bool = True)
                     project_data_field_outputs,
                 )
                 from src.backend.trading_runtime_service import trading_journal
+                from src.backend.bar_gpt_client import publish_bar_gpt_scope
+                from src.backend.model_feature_store import MODEL_FEATURE_STORE
 
                 configuration = market_discovery_runtime_configuration()
                 focused_seeds = WATCHLIST_RUNTIME.seed_focused_targets(
@@ -482,6 +484,7 @@ def _compose_real_live_scanner_snapshot(*, allow_provider_fallback: bool = True)
                     configuration, rows
                 )
                 rows = enrich_core_scanner_rows(rows, live_market_reference_projection())
+                rows = MODEL_FEATURE_STORE.project_rows(rows)
                 reference_status = live_market_reference_status()
                 finish_stage("configuration_and_reference")
                 discovery = dict(configuration.get("market_discovery") or {})
@@ -569,6 +572,44 @@ def _compose_real_live_scanner_snapshot(*, allow_provider_fallback: bool = True)
                     admissions_by_watchlist=existing_admissions,
                     data_fields_projected=True,
                 )
+                active_watchlists = [
+                    snapshot
+                    for snapshot in watchlist_runtime.get("watchlists") or []
+                    if str(snapshot.get("status") or "ready") not in {"disabled", "unavailable"}
+                ]
+                serving = dict(dict(discovery.get("model_serving") or {}).get("bar_gpt") or {})
+                selected_watchlist_ids = {
+                    str(value) for value in serving.get("watchlist_ids") or ["core-candidates"] if str(value)
+                }
+                serving_watchlists = [
+                    row for row in active_watchlists
+                    if str(row.get("watchlist_id") or "") in selected_watchlist_ids
+                ]
+                maximum_tickers = max(1, min(int(serving.get("maximum_tickers") or 500), 5000))
+                bar_gpt_tickers = sorted({
+                    str(member.get("ticker") or member.get("symbol") or "").upper()
+                    for snapshot in serving_watchlists
+                    for member in snapshot.get("members") or []
+                    if str(member.get("ticker") or member.get("symbol") or "").strip()
+                })[:maximum_tickers]
+                try:
+                    bar_gpt_runtime = (
+                        publish_bar_gpt_scope(
+                            "live:market-discovery", mode="live", tickers=bar_gpt_tickers,
+                            watchlist_ids=sorted(selected_watchlist_ids),
+                            trigger_mode=str(serving.get("trigger_mode") or "auto"),
+                            ttl_ms=30_000, source="backend.market_discovery",
+                        )
+                        if bool(serving.get("enabled", True))
+                        else {"status": "disabled", "ticker_count": 0}
+                    )
+                except Exception as exc:
+                    bar_gpt_runtime = {
+                        "status": "unavailable",
+                        "error": str(exc),
+                        "ticker_count": len(bar_gpt_tickers),
+                    }
+                watchlist_runtime["bar_gpt"] = bar_gpt_runtime
                 finish_stage("watchlists")
                 signal_target_seeds = SIGNAL_STREAM_RUNTIME.seed_computation_targets(
                     configuration,
@@ -651,11 +692,13 @@ def _compose_real_live_scanner_snapshot(*, allow_provider_fallback: bool = True)
         from src.backend.trading_configuration_service import market_discovery_runtime_configuration
         from src.backend.trading_runtime_service import trading_journal
         from src.backend.watchlist_runtime_service import WATCHLIST_RUNTIME, enrich_core_scanner_rows, live_market_reference_projection
+        from src.backend.model_feature_store import MODEL_FEATURE_STORE
 
         configuration = market_discovery_runtime_configuration()
         discovery = dict(configuration.get("market_discovery") or {})
         data_field_plan = compile_data_field_plan(discovery)
         rows = enrich_core_scanner_rows(rows, live_market_reference_projection())
+        rows = MODEL_FEATURE_STORE.project_rows(rows)
         rows = project_discovery_columns(rows)
         rows = project_data_field_outputs(
             rows,

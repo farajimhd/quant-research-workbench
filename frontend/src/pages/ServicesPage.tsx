@@ -10,7 +10,7 @@ import { displayName, formatBytes, formatCell, formatCompactNumber, formatDurati
 import "./ServicesOverview.css";
 
 export type ServicePageMode = "dashboard" | ServiceId;
-export type ServiceId = "ibkr" | "market-ai" | "model-gateway" | "news" | "qmd" | "qmd-history" | "reference" | "sec" | "text-embed" | "text-intelligence";
+export type ServiceId = "bar-gpt" | "ibkr" | "model-gateway" | "news" | "news-hypothesis" | "qmd" | "qmd-history" | "reference" | "sec" | "text-embed" | "text-intelligence";
 
 type ServiceRegistry = {
   base_url: string;
@@ -113,7 +113,7 @@ type ServiceRuntimeLogRow = {
   ts_utc?: string;
 };
 
-const SERVICE_IDS: ServiceId[] = ["qmd", "qmd-history", "news", "text-intelligence", "model-gateway", "market-ai", "sec", "text-embed", "reference", "ibkr"];
+const SERVICE_IDS: ServiceId[] = ["qmd", "qmd-history", "bar-gpt", "news", "text-intelligence", "news-hypothesis", "model-gateway", "sec", "text-embed", "reference", "ibkr"];
 const EXCHANGE_TIME_ZONE = "America/New_York";
 const VANCOUVER_TIME_ZONE = "America/Vancouver";
 
@@ -4730,7 +4730,7 @@ function serviceActivitySpec(service: ServiceStatusPayload): ServiceActivitySpec
       title: "Inference Routing Activity",
     };
   }
-  if (service.registry.id === "market-ai") {
+  if (service.registry.id === "news-hypothesis") {
     return {
       description: "Frozen point-in-time context, deep model work, expiring hypotheses, and recovery.",
       status,
@@ -4740,6 +4740,19 @@ function serviceActivitySpec(service: ServiceStatusPayload): ServiceActivitySpec
         metricSummary(metrics, "Failed", ["failed"], "bad"),
       ],
       title: "Contextual Hypothesis Activity",
+    };
+  }
+  if (service.registry.id === "bar-gpt") {
+    return {
+      description: "Mode-scoped causal context, dynamic GPU batches, raw prediction heads, and decoded forecast fields.",
+      status,
+      summary: [
+        metricSummary(metrics, "Predictions", ["predictions"]),
+        metricSummary(metrics, "Batches", ["inference_batches"]),
+        metricSummary(metrics, "Warm", ["warm_completed"]),
+        metricSummary(metrics, "Failed", ["failed_batches", "warm_failed"], "bad"),
+      ],
+      title: "BarGPT Serving Activity",
     };
   }
   if (service.registry.id === "qmd") {
@@ -5095,7 +5108,8 @@ const SERVICE_PRIMARY_DATABASE_ROLES: Record<ServiceId, string[]> = {
   news: ["normalized news"],
   qmd: ["live events"],
   "qmd-history": [],
-  "market-ai": ["contextual hypotheses"],
+  "news-hypothesis": ["contextual hypotheses"],
+  "bar-gpt": [],
   "model-gateway": [],
   "text-intelligence": ["semantic labels"],
   reference: ["tradable universe"],
@@ -5133,12 +5147,21 @@ function serviceFleetMetrics(service: ServiceStatusPayload): ServiceFleetMetric[
     ];
   }
 
-  if (service.registry.id === "market-ai") {
+  if (service.registry.id === "news-hypothesis") {
     return [
       { label: "Completed", value: compact(number(["completed"])), detail: "persisted hypotheses" },
       { label: "Queued", value: compact(number(["queued", "queue_size"])), detail: "deep contextual work" },
       { label: "Failed", value: compact(number(["failed"])), detail: "reconciled while unexpired", tone: (number(["failed"]) ?? 0) > 0 ? "warn" : "neutral" },
       { label: "Authority", value: "Advisory", detail: "no order or sizing control" },
+    ];
+  }
+
+  if (service.registry.id === "bar-gpt") {
+    return [
+      { label: "Predictions", value: compact(number(["predictions"])), detail: "published causal forecasts" },
+      { label: "Batches", value: compact(number(["inference_batches"])), detail: "full-prefix dynamic batches" },
+      { label: "Warm", value: compact(number(["warm_completed"])), detail: "ticker contexts ready" },
+      { label: "Failures", value: compact(number(["failed_batches", "warm_failed"])), detail: "visible serving failures", tone: (number(["failed_batches", "warm_failed"]) ?? 0) > 0 ? "warn" : "neutral" },
     ];
   }
 
@@ -6693,7 +6716,7 @@ function serviceResponsibilitySpecs(serviceId: ServiceId): ServiceResponsibility
         title: "Semantic Labeling",
       },
       {
-        description: "Durable label persistence, canonical-news reconciliation, retry recovery, and downstream Market AI dispatch.",
+        description: "Durable label persistence, canonical-news reconciliation, retry recovery, and downstream News Hypothesis dispatch.",
         id: "persistence",
         match: [/persist|database|clickhouse|reconcile|retry|failed|canonical|dispatch|recover/],
         title: "Persistence And Recovery",
@@ -6721,7 +6744,7 @@ function serviceResponsibilitySpecs(serviceId: ServiceId): ServiceResponsibility
       },
       common.other,
     ],
-    "market-ai": [
+    "news-hypothesis": [
       {
         description: "Frozen point-in-time QMD, SEC, fundamental, and market context assembled for each labeled news event.",
         id: "context",
@@ -6739,6 +6762,27 @@ function serviceResponsibilitySpecs(serviceId: ServiceId): ServiceResponsibility
         id: "persistence",
         match: [/queue|reconcile|persist|database|clickhouse|expire|failed|retry|recover/],
         title: "Persistence And Recovery",
+      },
+      common.other,
+    ],
+    "bar-gpt": [
+      {
+        description: "Checkpoint identity, device placement, context contracts, and full-prefix causal inference authority.",
+        id: "models",
+        match: [/model|checkpoint|device|dtype|context|contract|full.?prefix/],
+        title: "Models And Contracts",
+      },
+      {
+        description: "Mode- and run-scoped watchlists, bounded warm-up, causal ring buffers, queue depth, and GPU batching.",
+        id: "serving",
+        match: [/scope|watchlist|warm|cache|queue|batch|ticker|memory/],
+        title: "Serving Runtime",
+      },
+      {
+        description: "QMD ingestion, backend field publication, raw heads, decoded forecasts, and explicit failures.",
+        id: "publication",
+        match: [/qmd|backend|prediction|head|field|publish|failed|error/],
+        title: "Data And Publication",
       },
       common.other,
     ],

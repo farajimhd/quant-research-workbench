@@ -291,6 +291,20 @@ type QmdLiveChartPayload = {
   source?: string;
   stream_interval_ms?: number;
 };
+type BarGptForecast = {
+  prediction_id: string;
+  model_id: string;
+  model_version: "v2" | "v3";
+  origin_us: number;
+  available_at_us: number;
+  horizon: string;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  geometry_valid: boolean;
+};
+type BarGptForecastPayload = { rows: BarGptForecast[]; row_count: number; ticker: string };
 type QmdBarHistory = {
   as_of: string;
   market_signal_events: QmdMarketSignalEvent[];
@@ -484,6 +498,11 @@ const INDICATOR_GUIDES: Record<string, ChartCatalogKnowledge> = {
   "indicator.trend_score": indicatorGuide("Read the combined direction and agreement of the configured trend inputs on a normalized negative-to-positive scale.", "Composite normalization of price location and moving-trend evidence; positive components add bullish weight and negative components add bearish weight.", "A positive score that strengthens and remains supported by price above its trend references indicates aligned upside structure.", "A negative score that weakens further and remains supported by price below trend references indicates aligned downside structure.", "Every component is calculated from the selected timeframe, so higher timeframes produce slower and usually more persistent scores.", ["A composite can hide disagreement between its inputs.", "Inspect the underlying averages and price response before acting on the score alone."]),
 };
 const CHART_INDICATORS: ChartDisplayItem[] = [
+  displayIndicator("model.bargpt.forecast.candles", "BarGPT · Forecast Candles", "model_forecast", [], "price"),
+  displayIndicator("model.bargpt.forecast.open", "BarGPT · Forecast Open", "model_forecast", [], "price"),
+  displayIndicator("model.bargpt.forecast.high", "BarGPT · Forecast High", "model_forecast", [], "price"),
+  displayIndicator("model.bargpt.forecast.low", "BarGPT · Forecast Low", "model_forecast", [], "price"),
+  displayIndicator("model.bargpt.forecast.close", "BarGPT · Forecast Close", "model_forecast", [], "price"),
   displayIndicator("strategy.presentation", "Long Campaign · Strategy Decisions", "price_action", [], "price", INDICATOR_GUIDES["strategy.presentation"]),
   displayIndicator("indicator.vwap", "VWAP", "volume_liquidity", ["vwap"]),
   displayIndicator("indicator.ema_9", "EMA 9", "momentum", ["ema_9"]),
@@ -2800,9 +2819,54 @@ function ChartPreview({
   strategyPresentation?: StrategyChartPresentation;
   trading?: CanonicalTradingPreview;
 }) {
+  const [barGptForecasts, setBarGptForecasts] = useState<BarGptForecast[]>([]);
   const indicators = liveChart.indicators;
-  const visibleIndicators = liveChart.indicatorsAvailable ? chartSettings.visibleIndicators : [];
+  const visibleIndicators = chartSettings.visibleIndicators;
   const timeframe = chartSettings.timeframe;
+  const latestChartBar = liveChart.bars[liveChart.bars.length - 1];
+  const barGptClockUs = latestChartBar ? Math.floor(Date.parse(latestChartBar.bar_end || latestChartBar.bar_start) * 1000) : undefined;
+  const showForecastCandles = chartSettings.visibleIndicators.includes("model.bargpt.forecast.candles");
+  const forecastLineComponents = (["open", "high", "low", "close"] as const).filter((component) =>
+    chartSettings.visibleIndicators.includes(`model.bargpt.forecast.${component}`),
+  );
+  useEffect(() => {
+    if (!showForecastCandles && forecastLineComponents.length === 0) {
+      setBarGptForecasts([]);
+      return;
+    }
+    let cancelled = false;
+    let timer = 0;
+    const scopeId = `canvas:${instanceId}`;
+    const refresh = async () => {
+      try {
+        await api(`/api/bar-gpt/scopes/${encodeURIComponent(scopeId)}`, {
+          method: "PUT",
+          body: JSON.stringify({
+            mode: liveChart.pointInTime ? "replay" : "live",
+            trigger_mode: "auto",
+            tickers: [linkContext.symbol],
+            watchlist_ids: [],
+            clock_us: barGptClockUs,
+            revision: Math.max(1, Math.floor((barGptClockUs ?? Date.now() * 1000) / 1_000_000)),
+            ttl_ms: 10_000,
+            source: "canvas.chart",
+          }),
+          timeoutMs: 2500,
+        });
+        const forecasts = await api<BarGptForecastPayload>(`/api/model-features/chart/${encodeURIComponent(linkContext.symbol)}?model_version=v2&scope_id=${encodeURIComponent(scopeId)}`, { timeoutMs: 2500 });
+        if (!cancelled) setBarGptForecasts(latestForecastsByHorizon(forecasts.rows));
+      } catch {
+        if (!cancelled) setBarGptForecasts([]);
+      }
+      if (!cancelled) timer = window.setTimeout(refresh, 1_000);
+    };
+    void refresh();
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+      void api(`/api/bar-gpt/scopes/${encodeURIComponent(scopeId)}`, { method: "DELETE", timeoutMs: 1000 }).catch(() => undefined);
+    };
+  }, [barGptClockUs, forecastLineComponents.join("|"), instanceId, linkContext.symbol, liveChart.pointInTime, showForecastCandles]);
   const payload = useMemo<ChartPayload>(() => {
     const marketSignalMarkers = qmdMarketSignalChartMarkers(
       liveChart.marketSignalEvents,
@@ -2819,11 +2883,33 @@ function ChartPreview({
       liveChart.bars,
       strategyPresentation,
     );
+    const realizedCandles = liveChart.bars.map((bar) => ({ close: bar.close, high: bar.high, low: bar.low, open: bar.open, time: Date.parse(bar.bar_start) / 1000 }));
+    const lastRealizedTime = realizedCandles[realizedCandles.length - 1]?.time ?? 0;
+    const forecastCandles = showForecastCandles ? barGptForecasts
+      .filter((row) => row.geometry_valid)
+      .map((row) => ({
+        close: row.close, high: row.high, low: row.low, open: row.open,
+        time: row.origin_us / 1_000_000 + durationSeconds(row.horizon),
+        color: row.close >= row.open ? "rgba(51, 228, 42, 0.28)" : "rgba(253, 14, 80, 0.28)",
+        borderColor: row.close >= row.open ? "rgba(51, 228, 42, 0.55)" : "rgba(253, 14, 80, 0.55)",
+        wickColor: row.close >= row.open ? "rgba(77, 199, 70, 0.55)" : "rgba(197, 42, 85, 0.55)",
+      }))
+      .filter((row) => row.time > lastRealizedTime) : [];
+    const forecastLines = forecastLineComponents.map((component) => ({
+      column: `model.bargpt.v2.physical.${component}.q50.value`,
+      label: `BarGPT v2 · q50 forecast ${component}`,
+      style: "line" as const,
+      color: ({ open: "#F59E0B", high: "#22C55E", low: "#EF4444", close: "#A78BFA" })[component],
+      lineWidth: component === "close" ? 2 : 1,
+      lineStyle: "dashed" as const,
+      opacity: component === "close" ? 0.9 : 0.72,
+      data: barGptForecasts.map((row) => ({ time: row.origin_us / 1_000_000 + durationSeconds(row.horizon), value: row[component] })),
+    }));
     return {
-      candles: liveChart.bars.map((bar) => ({ close: bar.close, high: bar.high, low: bar.low, open: bar.open, time: Date.parse(bar.bar_start) / 1000 })),
+      candles: [...realizedCandles, ...forecastCandles],
       markers: [...(marketSignalMarkers ?? []), ...strategyMarkers],
       oscillator_series: historicalIndicatorSeries(indicators, "oscillator", visibleIndicators),
-      overlay_series: historicalIndicatorSeries(indicators, "price", visibleIndicators),
+      overlay_series: [...historicalIndicatorSeries(indicators, "price", visibleIndicators), ...forecastLines],
       price_zones: [
         ...historicalMarketLevelZones(indicators, liveChart.bars, liveChart.structureEvents, liveChart.structureLevelHistory, visibleIndicators, timeframe),
         ...strategyInvalidations,
@@ -2831,7 +2917,7 @@ function ChartPreview({
       regions: MACRO_TIMEFRAMES.has(timeframe) ? [] : extendedSessionRegions(liveChart.bars),
       volume: chartSettings.showVolume ? liveChart.bars.map((bar) => ({ color: bar.close >= bar.open ? "var(--success)" : "var(--danger)", time: Date.parse(bar.bar_start) / 1000, value: bar.volume })) : [],
     };
-  }, [chartSettings.showVolume, indicators, linkContext.symbol, liveChart.bars, liveChart.marketSignalEvents, liveChart.structureEvents, liveChart.structureLevelHistory, strategyDecisions, strategyPresentation, timeframe, visibleIndicators]);
+  }, [barGptForecasts, chartSettings.showVolume, forecastLineComponents.join("|"), indicators, linkContext.symbol, liveChart.bars, liveChart.marketSignalEvents, liveChart.structureEvents, liveChart.structureLevelHistory, showForecastCandles, strategyDecisions, strategyPresentation, timeframe, visibleIndicators]);
   function updateChart(symbol: string, nextTimeframe: CanvasChartTimeframe) {
     onChartSettingsChange({ ...chartSettings, symbol, timeframe: nextTimeframe });
     onLinkContextChange({ symbol });
@@ -2849,7 +2935,21 @@ function ChartPreview({
     quantity,
   } satisfies LiveEntryLine : null;
   const emptyMessage = `No closed ${linkContext.symbol} ${timeframe} bars are available from QMD History at this Canvas clock.`;
-  return <ChartPanel baseHeight={baseHeight} canLoadEarlier={liveChart.canLoadEarlier} displayItemOptions={liveChart.indicatorsAvailable ? CHART_INDICATORS : []} emptyMessage={emptyMessage} enableFullscreen={false} errorMessage={liveChart.error || liveChart.historyError} featureOptions={[]} fillHeight={fillHeight} indicatorOptions={[]} initialFitMode="recent" liveEntryLine={positionLine} loading={liveChart.loading} loadingEarlier={liveChart.loadingEarlier} onLoadEarlier={liveChart.loadEarlier} onTickerChange={(symbol) => updateChart(symbol.toUpperCase(), timeframe)} onTimeframeChange={(nextTimeframe) => updateChart(linkContext.symbol, nextTimeframe as CanvasChartTimeframe)} onVisibleColumnsChange={(nextVisibleIndicators) => onChartSettingsChange({ ...chartSettings, visibleIndicators: nextVisibleIndicators })} payload={payload} periodEnd={sessionDate} periodStart={sessionDate} settingsStorageKey={`${CANVAS_SETTINGS_STORAGE_KEY}.${instanceId}`} ticker={linkContext.symbol} tickerChangeAsOf={changeAsOf} tickerEditable={symbolEditable} tickerLogoUrl={logoUrl} timeframe={timeframe} timeframes={timeframes} toolbarVariant={toolbarVariant} visibleColumns={visibleIndicators} />;
+  return <ChartPanel baseHeight={baseHeight} canLoadEarlier={liveChart.canLoadEarlier} displayItemOptions={CHART_INDICATORS} emptyMessage={emptyMessage} enableFullscreen={false} errorMessage={liveChart.error || liveChart.historyError} featureOptions={[]} fillHeight={fillHeight} indicatorOptions={[]} initialFitMode="recent" liveEntryLine={positionLine} loading={liveChart.loading} loadingEarlier={liveChart.loadingEarlier} onLoadEarlier={liveChart.loadEarlier} onTickerChange={(symbol) => updateChart(symbol.toUpperCase(), timeframe)} onTimeframeChange={(nextTimeframe) => updateChart(linkContext.symbol, nextTimeframe as CanvasChartTimeframe)} onVisibleColumnsChange={(nextVisibleIndicators) => onChartSettingsChange({ ...chartSettings, visibleIndicators: nextVisibleIndicators })} payload={payload} periodEnd={sessionDate} periodStart={sessionDate} settingsStorageKey={`${CANVAS_SETTINGS_STORAGE_KEY}.${instanceId}`} ticker={linkContext.symbol} tickerChangeAsOf={changeAsOf} tickerEditable={symbolEditable} tickerLogoUrl={logoUrl} timeframe={timeframe} timeframes={timeframes} toolbarVariant={toolbarVariant} visibleColumns={visibleIndicators} />;
+}
+
+function durationSeconds(value: string): number {
+  const match = /^(\d+)(s|m|h)$/.exec(value);
+  if (!match) return 0;
+  const amount = Number(match[1]);
+  return amount * (match[2] === "h" ? 3600 : match[2] === "m" ? 60 : 1);
+}
+
+function latestForecastsByHorizon(rows: BarGptForecast[]): BarGptForecast[] {
+  const latestOrigin = rows.reduce((value, row) => Math.max(value, row.origin_us), 0);
+  return rows
+    .filter((row) => row.origin_us === latestOrigin)
+    .sort((left, right) => durationSeconds(left.horizon) - durationSeconds(right.horizon));
 }
 
 function historicalMarketLevelZones(

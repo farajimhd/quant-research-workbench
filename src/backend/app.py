@@ -52,7 +52,14 @@ from src.backend.application_registry import (
     runtime_capability_registry_payload,
 )
 from src.backend.application_authority import AuthorityDenied, AuthorityPolicy
+from src.backend.bar_gpt_client import (
+    bar_gpt_health,
+    bar_gpt_predictions,
+    publish_bar_gpt_scope,
+    remove_bar_gpt_scope,
+)
 from src.backend.bounded_cache import BoundedSingleFlightTtlCache, BoundedTtlCache
+from src.backend.model_feature_store import MODEL_FEATURE_STORE
 from src.backend.workload_budget import (
     WorkloadBudgetRejected,
     classify_workload,
@@ -268,6 +275,7 @@ SERVICE_FLEET_STATUS_TIMEOUT_OVERRIDES_SECONDS = {
     # needs a little longer than the cheap liveness probes; treating the normal
     # response time as a timeout made the fleet dashboard report a false error.
     "qmd-history": 2.5,
+    "bar-gpt": 2.5,
 }
 NEWS_QUERY_TIMEOUT_SECONDS = 12.0
 NEWS_INTELLIGENCE_TIMEOUT_SECONDS = 1.5
@@ -410,9 +418,10 @@ SERVICE_DATABASE_TABLES: dict[str, list[dict[str, str]]] = {
         {"database": "q_live", "table": "scoped_text_labels_v5", "role": "SEC deterministic scoped labels"},
         {"database": "q_live", "table": "scoped_content_relations_v3", "role": "SEC content relationships"},
     ],
-    "market-ai": [
+    "news-hypothesis": [
         {"database": "q_live", "table": "news_market_hypothesis_v1", "role": "contextual hypotheses"},
     ],
+    "bar-gpt": [],
 }
 
 SERVICE_REGISTRY: dict[str, dict[str, str]] = {
@@ -488,14 +497,23 @@ SERVICE_REGISTRY: dict[str, dict[str, str]] = {
         "description": "Provider-neutral structured inference, failover, idempotency, cost budgets, and audit telemetry.",
         "recent_path": "/routes",
     },
-    "market-ai": {
-        "id": "market-ai",
-        "label": "Market AI",
-        "kind": "market hypotheses",
-        "bind_env": "MARKET_AI_BIND",
+    "news-hypothesis": {
+        "id": "news-hypothesis",
+        "label": "News Hypothesis",
+        "kind": "contextual news hypotheses",
+        "bind_env": "NEWS_HYPOTHESIS_BIND",
         "default_bind": "127.0.0.1:8803",
         "description": "Point-in-time news, market, SEC, and fundamental context synthesis into expiring hypotheses.",
         "recent_path": "/health",
+    },
+    "bar-gpt": {
+        "id": "bar-gpt",
+        "label": "BarGPT",
+        "kind": "causal market forecasts",
+        "bind_env": "BAR_GPT_BIND",
+        "default_bind": "127.0.0.1:8805",
+        "description": "Mode-scoped BarGPT v2/v3 context caching, full-prefix batching, raw heads, and decoded forecast fields.",
+        "recent_path": "/predictions?limit=25",
     },
     "text-intelligence": {
         "id": "text-intelligence",
@@ -993,6 +1011,31 @@ class CanvasPreviewRequest(BaseModel):
     include_domains: list[str] = Field(default_factory=lambda: ["coverage", "news", "scanner", "sec"])
 
 
+class ModelFeatureUpdate(BaseModel):
+    schema_version: int = Field(default=1, ge=1)
+    prediction_id: str = Field(min_length=1, max_length=128)
+    ticker: str = Field(min_length=1, max_length=32)
+    event_at_us: int = Field(gt=0)
+    available_at_us: int = Field(gt=0)
+    model_id: str = Field(min_length=1, max_length=128)
+    model_version: str = Field(min_length=1, max_length=32)
+    checkpoint_hash: str = Field(min_length=1, max_length=128)
+    scope_id: str = Field(min_length=1, max_length=256)
+    mode: str = Field(pattern="^(live|paper|replay|backtest|backtest_debug)$")
+    fields: dict[str, Any]
+    raw: dict[str, Any]
+
+
+class BarGptScopeSubmit(BaseModel):
+    mode: str = Field(pattern="^(live|paper|replay|backtest|backtest_debug)$")
+    trigger_mode: str = Field(default="auto", pattern="^(auto|manual)$")
+    tickers: list[str] = Field(default_factory=list, max_length=5000)
+    watchlist_ids: list[str] = Field(default_factory=list, max_length=100)
+    clock_us: int | None = Field(default=None, gt=0)
+    revision: int = Field(default=1, ge=1)
+    ttl_ms: int = Field(default=30_000, ge=1_000, le=3_600_000)
+    source: str = Field(default="application", max_length=128)
+
 class TradeAnnotationSubmit(BaseModel):
     note: str = Field(default="", max_length=10_000)
     tags: list[str] = Field(default_factory=list, max_length=32)
@@ -1178,6 +1221,8 @@ def service_log_roots(service_id: str) -> list[Path]:
     roots_by_service: dict[str, list[Path]] = {
         "qmd": [PROJECT_ROOT / ".tmp" / "qmd-gateway"],
         "qmd-history": [PROJECT_ROOT / ".tmp" / "qmd-history-gateway"],
+        "bar-gpt": [Path(os.environ.get("BAR_GPT_RUNTIME_ROOT", r"D:\TradingML\runtimes\bar_gpt_service"))],
+        "news-hypothesis": [root / "prepared" / "news_hypothesis" / "logs" for root in data_roots],
         "news": env_paths("NEWS_GATEWAY_LOG_ROOT_WIN") + [root / "prepared" / "news_gateway" / "logs" for root in data_roots],
         "sec": env_paths("SEC_GATEWAY_LOG_ROOT_WIN") + [root / "prepared" / "sec_gateway" / "logs" for root in data_roots],
         "text-embed": env_paths("TEXT_EMBED_GATEWAY_LOG_ROOT_WIN") + [root / "prepared" / "text_embed_gateway" / "logs" for root in data_roots],
@@ -3130,6 +3175,55 @@ def service_status(service_id: str, include_database_tables: bool = True, includ
     if service_id not in SERVICE_REGISTRY:
         raise HTTPException(status_code=404, detail="Unknown service")
     return safe_service_status_payload(service_id, include_database_tables=include_database_tables, include_logs=include_logs, include_recent=include_recent)
+
+
+@app.post("/api/model-features/updates", status_code=202)
+def publish_model_feature_update(update: ModelFeatureUpdate) -> dict[str, Any]:
+    try:
+        return MODEL_FEATURE_STORE.publish(update.model_dump())
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@app.get("/api/model-features")
+def model_features(ticker: str = "", limit: int = Query(default=100, ge=1, le=10_000)) -> dict[str, Any]:
+    return MODEL_FEATURE_STORE.snapshot(ticker=ticker, limit=limit)
+
+
+@app.get("/api/model-features/chart/{ticker}")
+def model_feature_chart(ticker: str, model_version: str = "v2", scope_id: str = "") -> dict[str, Any]:
+    if model_version not in {"v2", "v3"}:
+        raise HTTPException(status_code=400, detail="model_version must be v2 or v3")
+    return MODEL_FEATURE_STORE.chart_forecasts(ticker, model_version=model_version, scope_id=scope_id)
+
+
+@app.get("/api/bar-gpt/status")
+def bar_gpt_status() -> dict[str, Any]:
+    try:
+        return bar_gpt_health()
+    except RuntimeError as exc:
+        return {"service": "bar_gpt", "status": "unavailable", "error": str(exc)}
+
+
+@app.get("/api/bar-gpt/predictions")
+def get_bar_gpt_predictions(ticker: str = "", limit: int = Query(default=100, ge=1, le=10_000)) -> dict[str, Any]:
+    try:
+        return bar_gpt_predictions(ticker=ticker, limit=limit)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@app.put("/api/bar-gpt/scopes/{scope_id}")
+def replace_bar_gpt_scope(scope_id: str, request: BarGptScopeSubmit) -> dict[str, Any]:
+    return publish_bar_gpt_scope(scope_id, **request.model_dump())
+
+
+@app.delete("/api/bar-gpt/scopes/{scope_id}")
+def delete_bar_gpt_scope(scope_id: str) -> dict[str, Any]:
+    try:
+        return remove_bar_gpt_scope(scope_id)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
 @app.get("/api/services/{service_id}/tables/{database}/{table}/preview")
