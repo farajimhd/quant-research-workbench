@@ -1189,6 +1189,32 @@ have no production callers.
 
 ## Deferred backlog
 
+### Runtime dependency TODOs observed on 2026-08-19
+
+The application acceptance pass queried the shared service-readiness contract
+without starting, stopping, or modifying deferred producer services. QMD Live,
+QMD History, News, SEC, and IBKR were online. The following dependencies were
+explicitly `not_started`; their consumers must continue to degrade honestly and
+must not synthesize substitute data:
+
+- [ ] Start and validate Reference Gateway (`127.0.0.1:8799`) before requiring
+      fresh reference enrichment in launch readiness. Persisted reference facts
+      may remain visible, but an offline producer is not fresh-data evidence.
+- [ ] Start and validate Text Intelligence (`127.0.0.1:8804`) before enabling
+      News/SEC semantic signals. News Detail currently renders canonical article
+      text and reports synthesis as pending, which is the required fallback.
+- [ ] Start and validate Text Embed Gateway (`127.0.0.1:8798`) before enabling
+      embedding-dependent retrieval, clustering, or model inputs.
+- [ ] Start and validate Model Gateway (`127.0.0.1:8802`) before enabling any
+      promoted model route that declares it as required.
+- [ ] Implement/start and validate Market AI (`127.0.0.1:8803`) only after its
+      model and promoted context contract are approved; it remains an optional,
+      non-ordering authority.
+
+These are producer-service deployment/integration tasks, not reasons to block
+manual trading, core market-data Canvas containers, or deterministic historical
+simulation when their own declared dependencies are ready.
+
 - [ ] Wire Market AI to QMD History.
 - [ ] Change Market AI direct ClickHouse contextual queries.
 - [ ] Add News/SEC/Text Intelligence FeatureUpdate publication.
