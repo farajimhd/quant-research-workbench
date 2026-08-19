@@ -483,22 +483,33 @@ class WatchlistRuntime:
                 )
         return seeded
 
-    def snapshot(self) -> dict[str, Any]:
+    def snapshot(
+        self,
+        *,
+        history_limit: int = MEMBERSHIP_HISTORY_LIMIT,
+        include_members: bool = True,
+    ) -> dict[str, Any]:
+        bounded_history_limit = max(0, min(int(history_limit), MEMBERSHIP_HISTORY_LIMIT))
         with self._lock:
             watchlists = [
                 {
                     "watchlist_id": watchlist_id,
                     "member_count": len(members),
-                    "members": list(members.values()),
+                    **({"members": list(members.values())} if include_members else {}),
                 }
                 for watchlist_id, members in sorted(self._members.items())
             ]
+            history = (
+                list(self._history)[-bounded_history_limit:]
+                if bounded_history_limit
+                else []
+            )
             return {
                 "as_of": datetime.now(UTC).isoformat(),
                 "watchlist_count": len(watchlists),
                 "member_count": sum(row["member_count"] for row in watchlists),
                 "watchlists": watchlists,
-                "history": list(self._history),
+                "history": history,
                 "history_count": len(self._history),
                 "status": "ready" if self._hydrated else "awaiting_first_resolution",
             }

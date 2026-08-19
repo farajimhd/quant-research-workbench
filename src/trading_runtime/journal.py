@@ -43,7 +43,24 @@ class TradingJournal:
         self._initialize()
 
     def close(self) -> None:
-        self._connection.close()
+        with self._lock:
+            self._connection.close()
+
+    def _fetchone(
+        self, query: str, parameters: Iterable[Any] = ()
+    ) -> sqlite3.Row | None:
+        """Fetch one row without overlapping another use of the shared connection."""
+
+        with self._lock:
+            return self._connection.execute(query, tuple(parameters)).fetchone()
+
+    def _fetchall(
+        self, query: str, parameters: Iterable[Any] = ()
+    ) -> list[sqlite3.Row]:
+        """Fetch rows under the connection lock and decode them after releasing it."""
+
+        with self._lock:
+            return self._connection.execute(query, tuple(parameters)).fetchall()
 
     def append(
         self,
@@ -257,9 +274,9 @@ class TradingJournal:
             )
 
     def portfolio_states(self) -> dict[str, dict[str, Any]]:
-        rows = self._connection.execute(
+        rows = self._fetchall(
             "SELECT account_id, state_json FROM portfolio_states ORDER BY account_id"
-        ).fetchall()
+        )
         return {str(row["account_id"]): json.loads(row["state_json"]) for row in rows}
 
     def portfolio_reservation(
@@ -486,14 +503,14 @@ class TradingJournal:
 
     def order_management_states(self, *, run_id: str | None = None) -> list[dict[str, Any]]:
         if run_id:
-            rows = self._connection.execute(
+            rows = self._fetchall(
                 "SELECT * FROM order_management_states WHERE run_id = ? ORDER BY updated_at",
                 (run_id,),
-            ).fetchall()
+            )
         else:
-            rows = self._connection.execute(
+            rows = self._fetchall(
                 "SELECT * FROM order_management_states ORDER BY updated_at"
-            ).fetchall()
+            )
         return [
             {
                 "group_id": str(row["group_id"]),
@@ -541,15 +558,15 @@ class TradingJournal:
         }
 
     def trading_configuration_revisions(self) -> list[dict[str, Any]]:
-        rows = self._connection.execute(
+        rows = self._fetchall(
             "SELECT * FROM trading_configuration_revisions ORDER BY revision DESC"
-        ).fetchall()
+        )
         return [_configuration_revision(row) for row in rows]
 
     def approved_trading_configuration(self) -> dict[str, Any] | None:
-        row = self._connection.execute(
+        row = self._fetchone(
             "SELECT * FROM trading_configuration_revisions ORDER BY revision DESC LIMIT 1"
-        ).fetchone()
+        )
         return _configuration_revision(row) if row is not None else None
 
     def save_trade_annotation(
@@ -577,7 +594,9 @@ class TradingJournal:
         return self.trade_annotation(episode_id) or {}
 
     def trade_annotation(self, episode_id: str) -> dict[str, Any] | None:
-        row = self._connection.execute("SELECT * FROM trade_annotations WHERE episode_id = ?", (episode_id,)).fetchone()
+        row = self._fetchone(
+            "SELECT * FROM trade_annotations WHERE episode_id = ?", (episode_id,)
+        )
         if row is None:
             return None
         return {
@@ -611,13 +630,13 @@ class TradingJournal:
 
     def strategy(self, strategy_id: str, revision: int | None = None) -> dict[str, Any] | None:
         if revision is None:
-            row = self._connection.execute(
+            row = self._fetchone(
                 "SELECT * FROM strategies WHERE strategy_id = ? ORDER BY revision DESC LIMIT 1", (strategy_id,)
-            ).fetchone()
+            )
         else:
-            row = self._connection.execute(
+            row = self._fetchone(
                 "SELECT * FROM strategies WHERE strategy_id = ? AND revision = ?", (strategy_id, revision)
-            ).fetchone()
+            )
         if row is None:
             return None
         result = dict(row)
@@ -628,16 +647,18 @@ class TradingJournal:
 
     def strategies(self, *, latest_only: bool = True) -> list[dict[str, Any]]:
         if latest_only:
-            rows = self._connection.execute(
+            rows = self._fetchall(
                 """
                 SELECT strategies.* FROM strategies
                 JOIN (SELECT strategy_id, MAX(revision) AS revision FROM strategies GROUP BY strategy_id) latest
                   ON latest.strategy_id = strategies.strategy_id AND latest.revision = strategies.revision
                 ORDER BY strategies.name, strategies.strategy_id
                 """
-            ).fetchall()
+            )
         else:
-            rows = self._connection.execute("SELECT * FROM strategies ORDER BY name, strategy_id, revision DESC").fetchall()
+            rows = self._fetchall(
+                "SELECT * FROM strategies ORDER BY name, strategy_id, revision DESC"
+            )
         results = []
         for row in rows:
             result = dict(row)
@@ -685,9 +706,9 @@ class TradingJournal:
         return self.strategy_assignment(assignment_id) or {}
 
     def strategy_assignment(self, assignment_id: str) -> dict[str, Any] | None:
-        row = self._connection.execute(
+        row = self._fetchone(
             "SELECT * FROM strategy_assignments WHERE assignment_id = ?", (assignment_id,)
-        ).fetchone()
+        )
         return _assignment(row) if row is not None else None
 
     def strategy_assignments(
@@ -708,9 +729,9 @@ class TradingJournal:
         if active_only:
             clauses.append("status NOT IN ('disabled', 'completed', 'error')")
         where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
-        rows = self._connection.execute(
+        rows = self._fetchall(
             f"SELECT * FROM strategy_assignments{where} ORDER BY updated_at DESC", values
-        ).fetchall()
+        )
         return [_assignment(row) for row in rows]
 
     def strategy_records(
@@ -733,10 +754,10 @@ class TradingJournal:
             clauses.append("event_time <= ?")
             values.append(as_of.astimezone(timezone.utc).isoformat())
         values.append(max(1, min(int(limit), 50_000)))
-        rows = self._connection.execute(
+        rows = self._fetchall(
             f"SELECT * FROM journal WHERE {' AND '.join(clauses)} ORDER BY event_time DESC, recorded_at DESC LIMIT ?",
             values,
-        ).fetchall()
+        )
         return [_record(row) for row in reversed(rows)]
 
     def strategy_activity_records(
@@ -770,11 +791,11 @@ class TradingJournal:
             clauses.append("event_time <= ?")
             values.append(as_of.astimezone(timezone.utc).isoformat())
         values.append(max(1, min(int(limit), 50_000)))
-        rows = self._connection.execute(
+        rows = self._fetchall(
             f"SELECT * FROM journal WHERE {' AND '.join(clauses)} "
             "ORDER BY event_time DESC, recorded_at DESC, sequence DESC LIMIT ?",
             values,
-        ).fetchall()
+        )
         return [_record(row) for row in rows]
 
     def order_management_records(
@@ -799,11 +820,11 @@ class TradingJournal:
             clauses.append("event_time <= ?")
             values.append(as_of.astimezone(timezone.utc).isoformat())
         values.append(max(1, min(int(limit), 50_000)))
-        rows = self._connection.execute(
+        rows = self._fetchall(
             f"SELECT * FROM journal WHERE {' AND '.join(clauses)} "
             "ORDER BY event_time DESC, recorded_at DESC LIMIT ?",
             values,
-        ).fetchall()
+        )
         return [_record(row) for row in reversed(rows)]
 
     def portfolio_management_records(
@@ -818,18 +839,18 @@ class TradingJournal:
             clauses.append("account_id = ?")
             values.append(account_id)
         values.append(max(1, min(int(limit), 50_000)))
-        rows = self._connection.execute(
+        rows = self._fetchall(
             f"SELECT * FROM journal WHERE {' AND '.join(clauses)} "
             "ORDER BY event_time DESC, recorded_at DESC LIMIT ?",
             values,
-        ).fetchall()
+        )
         return [_record(row) for row in reversed(rows)]
 
     def records(self, run_id: str, *, after_sequence: int = 0) -> list[JournalRecord]:
-        rows = self._connection.execute(
+        rows = self._fetchall(
             "SELECT * FROM journal WHERE run_id = ? AND sequence > ? ORDER BY sequence",
             (run_id, after_sequence),
-        ).fetchall()
+        )
         return [_record(row) for row in rows]
 
     def watchlist_membership_records(
@@ -844,11 +865,11 @@ class TradingJournal:
             clauses.append("json_extract(payload_json, '$.watchlist_id') = ?")
             values.append(watchlist_id)
         values.append(max(1, min(int(limit), 50_000)))
-        rows = self._connection.execute(
+        rows = self._fetchall(
             f"SELECT * FROM journal WHERE {' AND '.join(clauses)} "
             "ORDER BY event_time ASC, recorded_at ASC, sequence ASC LIMIT ?",
             values,
-        ).fetchall()
+        )
         return [_record(row) for row in rows]
 
     def signal_stream_records(
@@ -871,11 +892,11 @@ class TradingJournal:
             clauses.append("event_time <= ?")
             values.append(as_of.astimezone(timezone.utc).isoformat())
         values.append(max(1, min(int(limit), 50_000)))
-        rows = self._connection.execute(
+        rows = self._fetchall(
             f"SELECT * FROM journal WHERE {' AND '.join(clauses)} "
             "ORDER BY event_time DESC, recorded_at DESC, sequence DESC LIMIT ?",
             values,
-        ).fetchall()
+        )
         return [_record(row) for row in rows]
 
     def recent_records(
@@ -889,7 +910,7 @@ class TradingJournal:
             return []
         bounded_limit = max(1, min(int(limit), 50_000))
         placeholders = ",".join("?" for _ in categories)
-        rows = self._connection.execute(
+        rows = self._fetchall(
             f"""
             SELECT * FROM (
                 SELECT * FROM journal
@@ -898,11 +919,11 @@ class TradingJournal:
             ) ORDER BY sequence
             """,
             (run_id, *categories, bounded_limit),
-        ).fetchall()
+        )
         return [_record(row) for row in rows]
 
     def pending_outbox(self, limit: int = 500) -> list[JournalRecord]:
-        rows = self._connection.execute(
+        rows = self._fetchall(
             """
             SELECT journal.* FROM journal
             JOIN outbox USING(record_id)
@@ -910,7 +931,7 @@ class TradingJournal:
             ORDER BY journal.recorded_at, journal.sequence LIMIT ?
             """,
             (limit,),
-        ).fetchall()
+        )
         return [_record(row) for row in rows]
 
     def mark_delivered(self, record_ids: Iterable[str]) -> None:

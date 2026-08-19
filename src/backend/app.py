@@ -4081,10 +4081,15 @@ def real_live_trading_scanner(row_limit: int = Query(default=250, ge=1, le=1000)
 
 
 @app.get("/api/market-discovery/watchlists/runtime")
-def market_discovery_watchlist_runtime() -> dict[str, Any]:
+def market_discovery_watchlist_runtime(
+    history_limit: int = Query(default=250, ge=0, le=1_000),
+) -> dict[str, Any]:
     from src.backend.watchlist_runtime_service import WATCHLIST_RUNTIME
 
-    payload = WATCHLIST_RUNTIME.snapshot()
+    payload = WATCHLIST_RUNTIME.snapshot(
+        history_limit=history_limit,
+        include_members=False,
+    )
     planner = computation_requirement_summary()
     requirement_summary, demand_summary = bounded_computation_planner_summary(planner)
     payload["computation_requirements"] = requirement_summary

@@ -29,6 +29,14 @@ class WorkloadClassificationTests(unittest.TestCase):
             ),
             "general",
         )
+        self.assertEqual(
+            classify_workload("GET", "/api/market-discovery/watchlists/runtime"),
+            "general",
+        )
+        self.assertEqual(
+            classify_workload("GET", "/api/market-discovery/runtime/status"),
+            "general",
+        )
         self.assertEqual(classify_workload("POST", "/api/build/submit"), "offline")
         self.assertEqual(classify_workload("POST", "/api/configuration/publish"), "commands")
         self.assertEqual(classify_workload("GET", "/api/health"), "general")

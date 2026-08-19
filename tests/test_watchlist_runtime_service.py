@@ -657,6 +657,11 @@ class WatchlistRuntimeServiceTests(unittest.TestCase):
             self.assertEqual(restored["history_count"], 1)
             self.assertEqual(restored["watchlists"][0]["members"][0]["ticker"], "AAPL")
             self.assertEqual(restored["history"][0]["event"], "added")
+            summary = runtime.snapshot(history_limit=0, include_members=False)
+            self.assertEqual(summary["history"], [])
+            self.assertEqual(summary["history_count"], 1)
+            self.assertEqual(summary["watchlists"][0]["member_count"], 1)
+            self.assertNotIn("members", summary["watchlists"][0])
             journal.close()
 
     @patch("src.backend.watchlist_runtime_service.publish_watchlist_target")

@@ -515,7 +515,7 @@ type WatchlistRuntimeSnapshot = {
   member_count: number;
   status: "awaiting_first_resolution" | "ready";
   watchlist_count: number;
-  watchlists: Array<{ member_count: number; members: Array<Record<string, unknown>>; watchlist_id: string }>;
+  watchlists: Array<{ member_count: number; members?: Array<Record<string, unknown>>; watchlist_id: string }>;
   computation_demand?: {
     active_symbol_count: number;
     active_target_count: number;

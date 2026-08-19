@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import tempfile
 import unittest
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
@@ -153,6 +154,32 @@ class SimulatedBrokerTests(unittest.IsolatedAsyncioTestCase):
 
 
 class JournalTests(unittest.TestCase):
+    def test_shared_connection_reads_wait_for_active_journal_transaction(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            journal = TradingJournal(Path(directory) / "journal.sqlite3")
+            journal.append(
+                run_id="signal-stream",
+                category="market_discovery_signal",
+                entity_type="signal_occurrence",
+                entity_id="occurrence-1",
+                event_time=TS,
+                payload={"signal_stream_id": "squeeze", "ticker": "AAPL"},
+            )
+
+            with ThreadPoolExecutor(max_workers=1) as executor:
+                with journal._lock:
+                    future = executor.submit(
+                        journal.signal_stream_records,
+                        signal_stream_id="squeeze",
+                    )
+                    with self.assertRaises(FutureTimeoutError):
+                        future.result(timeout=0.05)
+
+                rows = future.result(timeout=1.0)
+
+            self.assertEqual([row.entity_id for row in rows], ["occurrence-1"])
+            journal.close()
+
     def test_strategy_activity_is_newest_first_and_excludes_broker_records(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             journal = TradingJournal(Path(directory) / "journal.sqlite3")

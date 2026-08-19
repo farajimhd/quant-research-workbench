@@ -246,6 +246,29 @@ class SignalStreamRuntimeTests(unittest.TestCase):
         self.assertFalse(session["is_trading_day"])
         self.assertFalse(session["active"])
 
+    def test_current_session_snapshot_coalesces_repeated_journal_reads(self) -> None:
+        runtime = SignalStreamRuntime()
+        session = {
+            "session_key": "2026-08-19",
+            "active": True,
+            "is_trading_day": True,
+            "start_at": datetime(2026, 8, 19, 8, 0, tzinfo=UTC),
+            "end_at": datetime(2026, 8, 20, 0, 0, tzinfo=UTC),
+        }
+        with patch(
+            "src.backend.signal_stream_runtime_service.signal_stream_session",
+            return_value=session,
+        ), patch.object(
+            self.journal,
+            "signal_stream_records",
+            wraps=self.journal.signal_stream_records,
+        ) as records:
+            first = runtime.snapshot(self.journal, configuration=self.configuration)
+            second = runtime.snapshot(self.journal, configuration=self.configuration)
+
+        self.assertIs(first, second)
+        records.assert_called_once()
+
     @patch("src.backend.signal_stream_runtime_service.publish_computation_target")
     def test_core_source_leases_rules_and_frozen_evidence_for_all_candidates(self, publish) -> None:
         self.configuration["market_discovery"]["signal_streams"][0]["inclusion_rule_sets"] = [
