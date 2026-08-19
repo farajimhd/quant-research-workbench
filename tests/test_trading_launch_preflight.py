@@ -24,6 +24,8 @@ class TradingLaunchPreflightTests(unittest.TestCase):
         self.assertEqual(payload["checks"][0]["id"], "approved_configuration")
         self.assertEqual(payload["checks"][0]["status"], "blocked")
         self.assertEqual(payload["checks"][0]["action"]["hash"], "#revision-configuration")
+        self.assertIn("historical_source", {row["id"] for row in payload["checks"]})
+        self.assertIn("runtime_storage", {row["id"] for row in payload["checks"]})
 
     @patch("src.backend.app.approved_configuration", return_value=None)
     def test_backtest_missing_release_preserves_launch_contract(self, _approved) -> None:
@@ -47,6 +49,10 @@ class TradingLaunchPreflightTests(unittest.TestCase):
 
         self.assertFalse(payload["ready"])
         self.assertEqual(payload["mode"], "backtest_debug")
+        self.assertEqual(
+            {row["id"] for row in payload["checks"]},
+            {"approved_configuration", "runtime_storage"},
+        )
 
 
 if __name__ == "__main__":

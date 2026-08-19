@@ -79,6 +79,7 @@ from src.backend.replay_run_service import (
     backtest_debug_preflight,
     backtest_preflight,
     backtest_runtime_root,
+    replay_runtime_root,
     replay_preflight,
 )
 from src.backend.market_data_service import (
@@ -4921,12 +4922,47 @@ def _blocked_trading_launch_preflight(mode: str) -> dict[str, Any]:
             "label": "Review Approved Releases",
         },
     }
+    checks = [check]
+    if mode in {"replay", "backtest"}:
+        gateway = historical_gateway_snapshot()
+        gateway_ready = bool(gateway.get("ready"))
+        checks.append({
+            "id": "historical_source",
+            "label": "QMD History",
+            "status": "ready" if gateway_ready else "blocked",
+            "summary": "Historical market authority is ready." if gateway_ready else "QMD History is unavailable or returned the wrong service identity.",
+            "evidence": str(gateway.get("base_url") or "QMD History"),
+            "required": True,
+        })
+    runtime_root = {
+        "replay": replay_runtime_root,
+        "backtest": backtest_runtime_root,
+        "backtest_debug": backtest_debug_runtime_root,
+    }[mode]()
+    storage_ready = False
+    storage_evidence = str(runtime_root)
+    try:
+        runtime_root.mkdir(parents=True, exist_ok=True)
+        probe = runtime_root / f".launch-preflight-{uuid.uuid4().hex}.tmp"
+        probe.write_text("ready", encoding="utf-8")
+        probe.unlink()
+        storage_ready = True
+    except OSError as exc:
+        storage_evidence = str(exc)
+    checks.append({
+        "id": "runtime_storage",
+        "label": f"{mode.replace('_', ' ').title()} runtime storage",
+        "status": "ready" if storage_ready else "blocked",
+        "summary": "Run manifests and journals can be written outside the repository." if storage_ready else "The configured runtime root is not writable.",
+        "evidence": storage_evidence,
+        "required": True,
+    })
     result: dict[str, Any] = {
         "schema_version": 1,
         "mode": mode,
         "ready": False,
         "strategy_run_ready": False,
-        "checks": [check],
+        "checks": checks,
         "configuration_revision_id": "",
         "configuration_revision": 0,
         "configuration_content_hash": "",
