@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 from fastapi import HTTPException
 
-from src.backend.app import SERVICE_REGISTRY, service_websocket_url, trading_news_detail, trading_news_rows
+from src.backend.app import SERVICE_REGISTRY, service_websocket_url, trading_news_detail, trading_news_detail_route, trading_news_rows
 
 
 class TradingNewsTests(unittest.TestCase):
@@ -308,6 +308,13 @@ class TradingNewsTests(unittest.TestCase):
         with self.assertRaises(HTTPException) as raised:
             trading_news_rows(as_of="2026-07-10T13:45:00Z")
         self.assertEqual(raised.exception.status_code, 504)
+
+    @patch("src.backend.app.trading_news_detail", side_effect=TimeoutError("partial response"))
+    def test_detail_timeout_is_reported_as_recoverable_service_failure(self, _detail_mock) -> None:
+        with self.assertRaises(HTTPException) as raised:
+            trading_news_detail_route("news-1")
+        self.assertEqual(raised.exception.status_code, 503)
+        self.assertIn("Reopen it from All News", str(raised.exception.detail))
 
 
 if __name__ == "__main__":

@@ -1,4 +1,4 @@
-import { Bug, CheckCircle2, CircleStop, Pause, Play, Save, Square, Trash2, TriangleAlert } from "lucide-react";
+import { ArrowLeft, Bug, CheckCircle2, CircleStop, Pause, Play, Save, Square, Trash2, TriangleAlert } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 
 import { api } from "../api/client";
@@ -6,6 +6,7 @@ import type { CanvasReplayRun } from "../app/replayRun";
 import { CanvasWorkspaceSurface } from "./CanvasConfigurationPage";
 
 type DebugCheck = {
+  action?: { hash?: string; label?: string };
   evidence: string;
   id: string;
   label: string;
@@ -195,6 +196,22 @@ export function BacktestDebugPage() {
     }
   }
 
+  if (run) {
+    const runTerminal = terminal(run.status);
+    return <CanvasWorkspaceSurface
+      canvasId="main"
+      manager={false}
+      modeControls={<div className="historical-canvas-run-state">
+        <button aria-label="Return to Backtest Debug setup" className="button secondary compact" onClick={() => setRun(null)} type="button"><ArrowLeft size={14} /> Setup</button>
+        <strong>Backtest Debug · {run.status.replaceAll("_", " ")}</strong>
+        <span>{run.processed_events || 0} exact events</span>
+        {!runTerminal ? <><button className="button secondary compact" disabled={Boolean(controlBusy)} onClick={() => void commandRun(run.status === "paused" ? "play" : "pause")} type="button">{run.status === "paused" ? <Play size={14} /> : <Pause size={14} />}{run.status === "paused" ? "Resume" : "Pause"}</button><button className="button secondary compact" disabled={Boolean(controlBusy)} onClick={() => void stopRun()} type="button"><Square size={14} /> Stop</button></> : null}
+      </div>}
+      replayRun={run}
+      runtimeWorkspaceId="main"
+    />;
+  }
+
   return <div className="historical-home backtest-debug-page">
     <header className="historical-goal-hero">
       <div className="historical-goal-copy"><h1>Backtest Debug</h1><p>Run a small, exact event sequence through the production historical runtime contracts.</p></div>
@@ -224,18 +241,15 @@ export function BacktestDebugPage() {
       </main>
       <aside className="historical-action-column"><section className={`historical-primary-action ${preflight?.ready && parsed.ok ? "" : "blocked"}`}>
         {preflight?.ready && parsed.ok ? <Play size={24} /> : <CircleStop size={24} />}
-        <div><strong>{run ? `Debug run ${run.status.replaceAll("_", " ")}` : "Exact-input execution"}</strong><p>{run ? `${Math.round(run.progress * 100)}% · ${run.processed_events || 0} events · ${run.current_time}` : parsed.ok ? `${parsed.marketEvents.length} market events, ${parsed.derivedFrames.length} derived frames, and ${parsed.signalEvents.length} Signal Stream occurrences will be content hashed.` : parsed.error}</p></div>
-        {run && !terminal(run.status) ? <div className="historical-command-buttons"><button className="button secondary" disabled={Boolean(controlBusy)} onClick={() => commandRun(run.status === "paused" ? "play" : "pause")} type="button">{run.status === "paused" ? <Play size={15} /> : <Pause size={15} />} {run.status === "paused" ? "Resume" : "Pause"}</button><button className="button secondary" disabled={Boolean(controlBusy)} onClick={stopRun} type="button"><Square size={15} /> Stop</button></div> : run?.checkpoint?.resume_supported && run.status !== "completed" ? <button className="button primary" disabled={Boolean(controlBusy)} onClick={resumeRun} type="button"><Play size={16} /> {controlBusy === "resume" ? "Restoring…" : "Resume checkpoint"}</button> : <button className="button primary" disabled={checking || creating || !preflight?.ready || !parsed.ok} onClick={createRun} type="button"><Play size={16} /> {creating ? "Creating…" : "Run fixture"}</button>}
-        {run?.debug_fixture ? <small>{run.debug_fixture.fixture_id} · {run.debug_fixture.content_hash.slice(0, 12)}</small> : null}
-        {run ? <small>{run.checkpoint?.status === "available" ? `Checkpoint ${run.checkpoint.processed_events.toLocaleString()} events · ${run.checkpoint.event_time}` : `Checkpoint pending · every ${run.checkpoint?.interval_events ?? 1_000} events`} · {run.checkpoint?.resume_supported ? "restart-safe" : "resume unavailable"}</small> : null}
+        <div><strong>Exact-input execution</strong><p>{parsed.ok ? `${parsed.marketEvents.length} market events, ${parsed.derivedFrames.length} derived frames, and ${parsed.signalEvents.length} Signal Stream occurrences will be content hashed.` : parsed.error}</p></div>
+        <button className="button primary" disabled={checking || creating || !preflight?.ready || !parsed.ok} onClick={createRun} type="button"><Play size={16} /> {creating ? "Creating…" : "Run fixture"}</button>
       </section></aside>
     </div>
-    {run ? <section className="historical-runtime-canvas" aria-label="Backtest Debug Canvas workspace"><CanvasWorkspaceSurface canvasId="main" manager={false} modeControls={<div className="historical-canvas-run-state"><strong>Backtest Debug · {run.status.replaceAll("_", " ")}</strong><span>{run.processed_events || 0} exact events</span></div>} replayRun={run} runtimeWorkspaceId="main" /></section> : null}
   </div>;
 }
 
 function DebugCheckRow({ check }: { check: DebugCheck }) {
-  return <article data-status={check.status}><div className="historical-evidence-icon">{check.status === "ready" ? <CheckCircle2 size={20} /> : <TriangleAlert size={20} />}</div><div><header><strong>{check.label}</strong></header><p>{check.summary}</p><small>{check.evidence}</small></div></article>;
+  return <article data-status={check.status}><div className="historical-evidence-icon">{check.status === "ready" ? <CheckCircle2 size={20} /> : <TriangleAlert size={20} />}</div><div><header><strong>{check.label}</strong></header><p>{check.summary}</p><small>{check.evidence}</small>{check.action?.hash ? <button className="button secondary compact" onClick={() => { window.location.hash = check.action?.hash || "#revision-configuration"; }} type="button">{check.action.label || "Resolve"}</button> : null}</div></article>;
 }
 
 function parseFixture(marketText: string, framesText: string, signalText: string): { derivedFrames: Array<Record<string, unknown>>; error: string; marketEvents: Array<Record<string, unknown>>; signalEvents: Array<Record<string, unknown>>; ok: boolean } {

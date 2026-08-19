@@ -1,4 +1,4 @@
-import { CheckCircle2, CircleStop, Gauge, Pause, Play, RefreshCcw, Square, TriangleAlert } from "lucide-react";
+import { ArrowLeft, CheckCircle2, CircleStop, Gauge, Pause, Play, RefreshCcw, Square, TriangleAlert } from "lucide-react";
 import { useEffect, useState } from "react";
 
 import { api } from "../api/client";
@@ -7,6 +7,7 @@ import type { CanvasReplayRun } from "../app/replayRun";
 import { CanvasWorkspaceSurface } from "./CanvasConfigurationPage";
 
 type HistoricalCheck = {
+  action?: { hash?: string; label?: string };
   evidence: string;
   id: string;
   label: string;
@@ -205,6 +206,22 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
     }
   }
 
+  if (run) {
+    const terminal = ["completed", "stopped", "failed"].includes(run.status);
+    return <CanvasWorkspaceSurface
+      canvasId="main"
+      manager={false}
+      modeControls={<div className="historical-canvas-run-state">
+        <button aria-label="Return to Backtest setup" className="button secondary compact" onClick={() => setRun(null)} type="button"><ArrowLeft size={14} /> Setup</button>
+        <strong>Backtest {run.status.replaceAll("_", " ")}</strong>
+        <span>{Math.round(run.progress * 100)}% · {new Intl.NumberFormat("en-US", { notation: "compact" }).format(run.processed_events || 0)} events</span>
+        {!terminal ? <><button className="button secondary compact" disabled={Boolean(controlBusy)} onClick={() => void commandRun(run.status === "paused" ? "play" : "pause")} type="button">{run.status === "paused" ? <Play size={14} /> : <Pause size={14} />}{run.status === "paused" ? "Resume" : "Pause"}</button><button className="button secondary compact" disabled={Boolean(controlBusy)} onClick={() => void stopRun()} type="button"><Square size={14} /> Stop</button></> : null}
+      </div>}
+      replayRun={run}
+      runtimeWorkspaceId="main"
+    />;
+  }
+
   return (
     <div className="historical-home">
       <header className="historical-goal-hero">
@@ -245,7 +262,7 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
               <ResultMetric label="Closed trades" value={String(results.closed_trades.length)} />
             </div>
             <BacktestAttribution report={results.performance_journal} />
-            {comparison ? <BacktestComparisonTable comparison={comparison} currentRunId={run?.run_id || ""} /> : null}
+            {comparison ? <BacktestComparisonTable comparison={comparison} currentRunId="" /> : null}
             {comparisonError ? <p className="historical-analysis-warning historical-analysis-standalone">Run comparison unavailable: {comparisonError}</p> : null}
           </section> : null}
         </main>
@@ -253,36 +270,19 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
         <aside className="historical-action-column">
           <section className={`historical-primary-action ${preflight?.strategy_run_ready ? "" : "blocked"}`}>
             {preflight?.strategy_run_ready ? <Play size={24} /> : <CircleStop size={24} />}
-            <div><strong>{run ? `Backtest ${run.status.replaceAll("_", " ")}` : preflight?.strategy_run_ready ? "Backtest is ready" : "Backtest execution is blocked"}</strong><p>{run
-              ? `${Math.round(run.progress * 100)}% complete · ${new Intl.NumberFormat("en-US", { notation: "compact" }).format(run.processed_events || 0)} events · ${run.current_time}`
-              : preflight?.strategy_run_ready
-                ? `Revision ${preflight.configuration_revision} will run through ${preflight.window.session_count} sessions using one simulated Portfolio/OMS state.`
-                : "Resolve every required preflight item before starting."}</p></div>
-            {run && !["completed", "stopped", "failed"].includes(run.status)
-              ? <div className="historical-command-buttons"><button className="button secondary" disabled={Boolean(controlBusy)} onClick={() => commandRun(run.status === "paused" ? "play" : "pause")} type="button">{run.status === "paused" ? <Play size={15} /> : <Pause size={15} />} {run.status === "paused" ? "Resume" : "Pause"}</button><button className="button secondary" disabled={Boolean(controlBusy)} onClick={stopRun} type="button"><Square size={15} /> Stop</button></div>
-              : run?.checkpoint?.resume_supported && run.status !== "completed"
-                ? <button className="button primary" disabled={Boolean(controlBusy)} onClick={resumeRun} type="button"><Play size={16} /> {controlBusy === "resume" ? "Restoring…" : "Resume checkpoint"}</button>
-                : <button className="button primary" disabled={checking || creating || !preflight?.strategy_run_ready} onClick={createRun} type="button"><Play size={16} /> {creating ? "Creating run…" : "Run backtest"}</button>}
-            {run?.error ? <small>{run.error}</small> : null}
-            {run ? <small>{run.checkpoint?.status === "available" ? `Checkpoint ${run.checkpoint.processed_events.toLocaleString()} events · ${run.checkpoint.event_time}` : `Checkpoint pending · every ${run.checkpoint?.interval_events ?? 1_000} events`} · {run.checkpoint?.resume_supported ? "restart-safe" : "resume unavailable"}</small> : null}
+            <div><strong>{preflight?.strategy_run_ready ? "Backtest is ready" : "Backtest execution is blocked"}</strong><p>{preflight?.strategy_run_ready
+              ? `Revision ${preflight.configuration_revision} will run through ${preflight.window.session_count} sessions using one simulated Portfolio/OMS state.`
+              : "Resolve every required preflight item before starting."}</p></div>
+            <button className="button primary" disabled={checking || creating || !preflight?.strategy_run_ready} onClick={createRun} type="button"><Play size={16} /> {creating ? "Creating run…" : "Run backtest"}</button>
           </section>
         </aside>
       </div>
-      {run ? <section className="historical-runtime-canvas" aria-label="Backtest Canvas workspace">
-        <CanvasWorkspaceSurface
-          canvasId="main"
-          manager={false}
-          modeControls={<div className="historical-canvas-run-state"><strong>Backtest {run.status.replaceAll("_", " ")}</strong><span>{Math.round(run.progress * 100)}% · {new Intl.NumberFormat("en-US", { notation: "compact" }).format(run.processed_events || 0)} events</span></div>}
-          replayRun={run}
-          runtimeWorkspaceId="main"
-        />
-      </section> : null}
     </div>
   );
 }
 
 function EvidenceCheck({ check }: { check: HistoricalCheck }) {
-  return <article data-status={check.status}><div className="historical-evidence-icon">{check.status === "ready" ? <CheckCircle2 size={20} /> : <TriangleAlert size={20} />}</div><div><header><strong>{check.label}</strong></header><p>{check.summary}</p><small>{check.evidence}</small></div></article>;
+  return <article data-status={check.status}><div className="historical-evidence-icon">{check.status === "ready" ? <CheckCircle2 size={20} /> : <TriangleAlert size={20} />}</div><div><header><strong>{check.label}</strong></header><p>{check.summary}</p><small>{check.evidence}</small>{check.action?.hash ? <button className="button secondary compact" onClick={() => { window.location.hash = check.action?.hash || "#revision-configuration"; }} type="button">{check.action.label || "Resolve"}</button> : null}</div></article>;
 }
 
 function ResultMetric({ label, value }: { label: string; value: string }) {

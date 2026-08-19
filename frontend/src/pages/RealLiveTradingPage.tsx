@@ -108,10 +108,12 @@ type RealLiveAccountsPayload = {
 };
 
 type RealLivePreflightCheck = {
+  action?: { hash?: string; label?: string };
   details?: Record<string, unknown>;
   id: string;
   label: string;
   message?: string;
+  required?: boolean;
   status: "ready" | "blocked" | string;
 };
 
@@ -189,10 +191,15 @@ function normalizePreflightPayload(value: unknown): RealLivePreflightPayload {
     accounts: normalizeAccounts(payload.accounts),
     broker: normalizeService(payload.broker),
     checks: recordValues(payload.checks).map((check) => ({
+      action: optionalRecord(check.action) ? {
+        hash: stringValue(objectValue(check.action), "hash") || undefined,
+        label: stringValue(objectValue(check.action), "label") || undefined,
+      } : undefined,
       details: optionalRecord(check.details),
-      id: stringValue(check, "id"),
-      label: stringValue(check, "label"),
-      message: stringValue(check, "message") || undefined,
+      id: stringValue(check, "id") || stringValue(check, "name"),
+      label: stringValue(check, "label") || stringValue(check, "name").replaceAll("_", " "),
+      message: stringValue(check, "message") || stringValue(check, "detail") || undefined,
+      required: check.required !== false,
       status: stringValue(check, "status") || "blocked",
     })).filter((check) => check.id.length > 0),
     data_provider: normalizeService(payload.data_provider),
@@ -1640,6 +1647,7 @@ function RealLiveTradingGate({
   const workflowPercent = Math.round((completedSteps / Math.max(progressSteps.length, 1)) * 100);
   const readinessTone = ready && universePreview?.can_query_universe ? "success" : blockedSteps ? "danger" : activeSteps ? "warning" : "muted";
   const readinessLabel = ready && universePreview?.can_query_universe ? "Ready" : blockedSteps ? "Blocked" : activeSteps ? "Checking" : "Waiting";
+  const approvalBlock = preflightStatus?.checks.find((check) => check.id.startsWith("approved_") && check.status !== "ready");
   return (
     <section className="live-gate-shell" aria-label="Live trading gate">
       <div className="live-gate-console panel" data-tone={readinessTone}>
@@ -1661,6 +1669,11 @@ function RealLiveTradingGate({
             </button>
           </div>
         </div>
+        {approvalBlock ? <div className="historical-error-banner">
+          <ShieldAlert size={18} />
+          <div><strong>{approvalBlock.label}</strong><span>{approvalBlock.message}</span></div>
+          {approvalBlock.action?.hash ? <button className="button secondary compact" onClick={() => { window.location.hash = approvalBlock.action?.hash || "#revision-configuration"; }} type="button">{approvalBlock.action.label || "Review release"}</button> : null}
+        </div> : null}
         <div className="live-gate-status-strip" aria-label="Gate status summary">
           <div>
             <span>State</span>
@@ -3817,7 +3830,9 @@ function buildGateProgressSteps({
   const errors = universePreview?.errors ?? [];
   const backendStepsById = new Map((universePreview?.progress_steps ?? []).map((step) => [step.id, step]));
   const preflightChecks = preflightStatus?.checks ?? [];
+  const approvalChecks = preflightChecks.filter((check) => check.id.startsWith("approved_"));
   const massiveCheck = preflightChecks.find((check) => check.id === "massive_rest" || check.id === "massive_api_key");
+  const qmdCheck = preflightChecks.find((check) => check.id === "qmd_live");
   const ibkrChecks = preflightChecks.filter((check) => check.id.includes("ibkr") || check.id.includes("account_env"));
   const qmdStatus = gatewayStatus?.qmd_gateway && typeof gatewayStatus.qmd_gateway === "object" ? gatewayStatus.qmd_gateway as Record<string, unknown> : null;
   const qmdMetrics = qmdStatus?.metrics && typeof qmdStatus.metrics === "object" ? qmdStatus.metrics as Record<string, unknown> : {};
@@ -3826,7 +3841,7 @@ function buildGateProgressSteps({
     ? qmdReady
       ? `${integer(numberValue(qmdMetrics, "symbols_seen"))} symbols, ${integer(numberValue(qmdMetrics, "events_received"))} events`
       : stringValue(qmdStatus, "message") || stringValue(qmdStatus, "status") || "QMD gateway is not ready."
-    : "Checking dedicated quote/trade gateway.";
+    : qmdCheck?.message || "Checking dedicated quote/trade gateway.";
   const requestError = errors.find((error) => ["request", "connection"].includes(stringValue(error, "scope")));
   const metadataError = errors.find((error) => ["tables", "columns"].includes(stringValue(error, "scope")));
   const persistenceStatus = stringValue(universePreview?.persistence, "status") || "read_only_preview";
@@ -3862,11 +3877,18 @@ function buildGateProgressSteps({
       status: selectedAccountKeys.length ? "complete" : "waiting",
     }),
     makeGateProgressStep({
+      detail: approvalChecks.length && approvalChecks.every((check) => check.status === "ready") ? "Pinned release" : "Publication required",
+      id: "approved_configuration",
+      label: "Approved configuration",
+      message: firstBlockedMessage(approvalChecks) || (approvalChecks.length ? "The selected account and Run Plan are bound by the published release." : loading ? "Resolving the published release and Run Plan." : "Connection check starts automatically on page load."),
+      status: loading && !approvalChecks.length ? "running" : approvalChecks.length && approvalChecks.every((check) => check.status === "ready") ? "complete" : approvalChecks.length ? "blocked" : "waiting",
+    }),
+    makeGateProgressStep({
       detail: "Provider",
       id: "massive_rest",
-      label: "Massive REST",
+      label: "Massive REST enrichment",
       message: massiveCheck?.message || (loading ? "Validating Massive REST credentials and reference access." : "Connection check starts automatically on page load."),
-      status: loading && !massiveCheck ? "running" : massiveCheck?.status === "ready" ? "complete" : massiveCheck ? "blocked" : "waiting",
+      status: loading && !massiveCheck ? "running" : massiveCheck?.status === "ready" ? "complete" : massiveCheck?.required === false ? "optional" : massiveCheck ? "blocked" : "waiting",
     }),
     makeGateProgressStep({
       detail: "Quotes/trades",

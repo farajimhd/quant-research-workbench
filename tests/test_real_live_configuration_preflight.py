@@ -6,6 +6,7 @@ from unittest.mock import patch
 from src.backend.real_live_trading_service import (
     RealLiveAccount,
     _approved_configuration_checks,
+    resolve_real_live_accounts,
 )
 
 
@@ -27,6 +28,28 @@ class RealLiveConfigurationPreflightTests(unittest.TestCase):
             checks = _approved_configuration_checks([self.account])
 
         self.assertEqual(checks[0]["status"], "blocked")
+        self.assertEqual(checks[0]["id"], "approved_trading_configuration")
+        self.assertEqual(checks[0]["label"], "Approved configuration")
+        self.assertIn("Publish", checks[0]["message"])
+        self.assertEqual(checks[0]["action"]["hash"], "#revision-configuration")
+
+    def test_paper_and_live_accounts_cannot_share_one_session(self) -> None:
+        accounts = [
+            self.account,
+            RealLiveAccount(
+                account_key="live-primary",
+                account_class="margin",
+                account_id="U1234567",
+                label="Live primary",
+                trading_mode="live",
+            ),
+        ]
+        with patch(
+            "src.backend.real_live_trading_service.configured_real_live_accounts",
+            return_value=accounts,
+        ):
+            with self.assertRaisesRegex(ValueError, "cannot share one trading session"):
+                resolve_real_live_accounts(["paper-primary", "live-primary"])
 
     def test_exact_account_and_enabled_mode_deployment_are_required(self) -> None:
         release = {

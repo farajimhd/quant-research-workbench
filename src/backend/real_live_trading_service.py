@@ -19,7 +19,7 @@ from src.request_context import ContextThreadPoolExecutor as ThreadPoolExecutor
 
 from dotenv import load_dotenv
 
-from src.backend.qmd_gateway_client import qmd_scanner_snapshot
+from src.backend.qmd_gateway_client import qmd_scanner_snapshot, qmd_status
 from src.backend.bounded_cache import BoundedSingleFlightTtlCache
 from src.backend.feature_projection import compact_feature_projection
 from src.backend.query_plans.market_tradable_universe_v1 import tradable_symbol_lookup
@@ -150,6 +150,12 @@ def resolve_real_live_accounts(account_keys: str | list[str] | None = None, acco
         raise ValueError(f"Unknown configured IBKR account key(s): {', '.join(missing)}")
     if not selected:
         raise ValueError("Select at least one configured IBKR account.")
+    trading_modes = {account.trading_mode for account in selected}
+    if len(trading_modes) > 1:
+        raise ValueError(
+            "Paper and Live accounts cannot share one trading session. "
+            "Select accounts from exactly one execution environment."
+        )
     return selected
 
 
@@ -170,11 +176,15 @@ def configured_real_live_account(account_type: str) -> RealLiveAccount:
 def real_live_preflight(account_type: str = "paper", account_keys: str | list[str] | None = None) -> dict[str, Any]:
     accounts = configured_real_live_accounts()
     selected_accounts = resolve_real_live_accounts(account_keys, account_type)
-    checks = [check_massive_rest(), *_approved_configuration_checks(selected_accounts)]
+    checks = [check_qmd_live(), check_massive_rest(), *_approved_configuration_checks(selected_accounts)]
     for account in selected_accounts:
         checks.extend(check_ibkr(account))
     return {
-        "ready": all(check["status"] == "ready" for check in checks),
+        "ready": all(
+            check["status"] == "ready"
+            for check in checks
+            if bool(check.get("required", True))
+        ),
         "account_type": selected_accounts[0].account_key,
         "account_id": ", ".join(mask_account_id(account.account_id) for account in selected_accounts if account.account_id),
         "accounts": [public_account(account) for account in accounts],
@@ -194,9 +204,15 @@ def _approved_configuration_checks(
     approved = approved_configuration()
     if approved is None:
         return [{
-            "name": "approved_trading_configuration",
+            "id": "approved_trading_configuration",
+            "label": "Approved configuration",
             "status": "blocked",
-            "detail": "Publish an immutable trading configuration before Paper or Live operation.",
+            "message": "Publish an immutable trading configuration before Paper or Live operation.",
+            "required": True,
+            "action": {
+                "hash": "#revision-configuration",
+                "label": "Review Approved Releases",
+            },
         }]
     payload = dict(approved.get("payload") or {})
     bindings = {
@@ -237,13 +253,19 @@ def _approved_configuration_checks(
             and mode_ready
         )
         checks.append({
-            "name": f"approved_configuration:{account.account_key}",
+            "id": f"approved_configuration:{account.account_key}",
+            "label": f"{account.label} approved configuration",
             "status": "ready" if ready else "blocked",
-            "detail": (
+            "message": (
                 f"Release {approved.get('revision')} binds this {account.trading_mode} account and Run Plan."
                 if ready
                 else "The approved release must bind the exact broker account and include an enabled Run Plan for this mode."
             ),
+            "required": True,
+            "action": None if ready else {
+                "hash": "#revision-configuration",
+                "label": "Review Approved Releases",
+            },
         })
     return checks
 
@@ -712,13 +734,38 @@ def submit_real_live_order_for_account(account: RealLiveAccount, order: dict[str
 
 def check_massive_rest() -> dict[str, Any]:
     if not massive_api_key():
-        return {"id": "massive_api_key", "label": "Massive API key", "status": "blocked", "message": "Set MASSIVE_API_KEY in .env."}
+        return {"id": "massive_api_key", "label": "Massive REST enrichment", "status": "blocked", "message": "Optional reference enrichment is unavailable because MASSIVE_API_KEY is not configured.", "required": False}
     try:
         payload = massive_get_json("/v3/reference/tickers", {"market": "stocks", "active": "true", "limit": "1"}, timeout=8)
         ready = bool(payload.get("results"))
-        return {"id": "massive_rest", "label": "Massive REST", "status": "ready" if ready else "blocked", "message": "Massive REST is reachable." if ready else "Massive returned no reference rows."}
+        return {"id": "massive_rest", "label": "Massive REST enrichment", "status": "ready" if ready else "blocked", "message": "Optional Massive reference enrichment is reachable." if ready else "Optional Massive reference enrichment returned no rows.", "required": False}
     except Exception as exc:
-        return {"id": "massive_rest", "label": "Massive REST", "status": "blocked", "message": str(exc)}
+        return {"id": "massive_rest", "label": "Massive REST enrichment", "status": "blocked", "message": f"Optional Massive reference enrichment is unavailable: {exc}", "required": False}
+
+
+def check_qmd_live() -> dict[str, Any]:
+    try:
+        payload = qmd_status()
+        ready = bool(payload.get("running")) and str(payload.get("status") or "") in {"ready", "running"}
+        return {
+            "id": "qmd_live",
+            "label": "QMD Live",
+            "status": "ready" if ready else "blocked",
+            "message": "Real-time quote and trade computation is ready." if ready else "QMD Live is reachable but not ready for a trading session.",
+            "required": True,
+            "details": {
+                "base_url": payload.get("base_url"),
+                "session_phase": payload.get("session_phase"),
+            },
+        }
+    except Exception as exc:
+        return {
+            "id": "qmd_live",
+            "label": "QMD Live",
+            "status": "blocked",
+            "message": f"QMD Live is unavailable: {exc}",
+            "required": True,
+        }
 
 
 def check_ibkr(account: RealLiveAccount) -> list[dict[str, Any]]:

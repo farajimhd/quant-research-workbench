@@ -18,7 +18,6 @@ export function App() {
   const [page, setPage] = useState<PageKey>(() => {
     return pageFromHash(window.location.hash) ?? "real-live-trading";
   });
-  const [visitedPages, setVisitedPages] = useState<Set<PageKey>>(() => new Set([page]));
   const [topbarCenter, setTopbarCenter] = useState<ReactNode>(null);
   const [liveStatus, setLiveStatus] = useState<MarketStatus>(() => liveMarketStatus(null));
 
@@ -36,10 +35,6 @@ export function App() {
     if (page !== "real-live-trading") {
       setTopbarCenter(null);
     }
-    setVisitedPages((current) => {
-      if (current.has(page)) return current;
-      return new Set([...current, page]);
-    });
   }, [page]);
 
   if (page === "canvas-focus") {
@@ -48,24 +43,12 @@ export function App() {
 
   return (
     <Layout compactContent={page === "canvas-configuration" || page === "replay-trading"} page={page} onPageChange={setPage} topbarCenter={topbarCenter} topbarStatus={page === "real-live-trading" ? <MarketStatusBadge value={liveStatus} /> : null}>
-      <div aria-hidden={page !== "real-live-trading"} className={page === "real-live-trading" ? "page-cache-panel active" : "page-cache-panel"}>
-        {page === "real-live-trading" || visitedPages.has("real-live-trading") ? <RealLiveTradingPage onMarketStatusChange={page === "real-live-trading" ? setLiveStatus : undefined} onTopbarCenterChange={page === "real-live-trading" ? setTopbarCenter : undefined} /> : null}
-      </div>
-      <div aria-hidden={page !== "replay-trading"} className={page === "replay-trading" ? "page-cache-panel active" : "page-cache-panel"}>
-        {page === "replay-trading" || visitedPages.has("replay-trading") ? <ReplayTradingPage /> : null}
-      </div>
-      <div aria-hidden={page !== "backtest-trading"} className={page === "backtest-trading" ? "page-cache-panel active" : "page-cache-panel"}>
-        {page === "backtest-trading" || visitedPages.has("backtest-trading") ? <HistoricalTradingPage mode="backtest" /> : null}
-      </div>
-      <div aria-hidden={page !== "backtest-debug"} className={page === "backtest-debug" ? "page-cache-panel active" : "page-cache-panel"}>
-        {page === "backtest-debug" || visitedPages.has("backtest-debug") ? <BacktestDebugPage /> : null}
-      </div>
-      <div aria-hidden={page !== "research-workspace"} className={page === "research-workspace" ? "page-cache-panel active" : "page-cache-panel"}>
-        {page === "research-workspace" || visitedPages.has("research-workspace") ? <ResearchWorkspacePage /> : null}
-      </div>
-      <div aria-hidden={page !== "canvas-configuration"} className={page === "canvas-configuration" ? "page-cache-panel active" : "page-cache-panel"}>
-        {page === "canvas-configuration" || visitedPages.has("canvas-configuration") ? <CanvasConfigurationPage /> : null}
-      </div>
+      {page === "real-live-trading" ? <div className="page-cache-panel active"><RealLiveTradingPage onMarketStatusChange={setLiveStatus} onTopbarCenterChange={setTopbarCenter} /></div> : null}
+      {page === "replay-trading" ? <div className="page-cache-panel active"><ReplayTradingPage /></div> : null}
+      {page === "backtest-trading" ? <div className="page-cache-panel active"><HistoricalTradingPage mode="backtest" /></div> : null}
+      {page === "backtest-debug" ? <div className="page-cache-panel active"><BacktestDebugPage /></div> : null}
+      {page === "research-workspace" ? <div className="page-cache-panel active"><ResearchWorkspacePage /></div> : null}
+      {page === "canvas-configuration" ? <div className="page-cache-panel active"><CanvasConfigurationPage /></div> : null}
       {configurationSection(page) ? (
         <div className="page-cache-panel active">
           <TradingConfigurationPage section={configurationSection(page) ?? "strategy"} />

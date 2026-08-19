@@ -266,7 +266,15 @@ function TickerNewsStory({ asOfMs, queryId, row, showTeaser }: { asOfMs: number;
 
 export function NewsDetailContainer({ asOf, canvasId, requestedNewsId }: { asOf: string; canvasId: string; requestedNewsId?: string }) {
   const wallClockMs = useWallClock();
-  const [selection, setSelection] = useState<NewsSelection>(() => { const stored = readSelectedNews(canvasId); return requestedNewsId ? stored.newsId === requestedNewsId ? stored : { newsId: requestedNewsId, publishedAt: "", queryId: "" } : stored; });
+  const [selection, setSelection] = useState<NewsSelection>(() => {
+    const stored = readSelectedNews(canvasId);
+    if (!requestedNewsId) return stored;
+    const params = new URLSearchParams(window.location.search);
+    const publishedAt = params.get("news_published_at") || "";
+    const queryId = params.get("news_query_id") || "";
+    if (publishedAt || queryId) return { newsId: requestedNewsId, publishedAt, queryId };
+    return stored.newsId === requestedNewsId ? stored : { newsId: requestedNewsId, publishedAt: "", queryId: "" };
+  });
   const newsId = selection.newsId;
   const [detail, setDetail] = useState<NewsDetailPayload | null>(null);
   const [error, setError] = useState("");
@@ -503,5 +511,5 @@ function parseNewsSelection(value: string): NewsSelection { try { const parsed =
 function readSelectedNews(canvasId: string) { return parseNewsSelection(window.localStorage.getItem(selectionKey(canvasId)) || ""); }
 function selectNews(canvasId: string, selection: NewsSelection) { window.localStorage.setItem(selectionKey(canvasId), JSON.stringify(selection)); window.dispatchEvent(new CustomEvent(NEWS_SELECTION_EVENT, { detail: { canvasId, ...selection } })); }
 function prepareNewsReader(selection: NewsSelection) { ensureNewsReaderCanvas(); selectNews(NEWS_READER_CANVAS_ID, selection); }
-function newsPageUrl(selection: NewsSelection) { const url = new URL(focusCanvasUrl(NEWS_READER_CANVAS_ID, "news_detail")); url.searchParams.set("news", selection.newsId); return url.toString(); }
+function newsPageUrl(selection: NewsSelection) { const url = new URL(focusCanvasUrl(NEWS_READER_CANVAS_ID, "news_detail")); url.searchParams.set("news", selection.newsId); if (selection.publishedAt) url.searchParams.set("news_published_at", selection.publishedAt); if (selection.queryId) url.searchParams.set("news_query_id", selection.queryId); return url.toString(); }
 function openNewsPage(row: NewsRow, queryId: string) { const selection = { newsId: row.canonical_news_id, publishedAt: row.published_at_utc, queryId }; prepareNewsReader(selection); window.open(newsPageUrl(selection), "quant-news-reader"); }

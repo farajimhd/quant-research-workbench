@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import http.client
 import json
 import logging
 import os
@@ -2581,6 +2582,10 @@ def clickhouse_status_query(sql: str, *, timeout_seconds: float = SERVICE_STATUS
     try:
         with urllib.request.urlopen(req, timeout=timeout_seconds) as response:
             return response.read().decode("utf-8", errors="replace")
+    except http.client.IncompleteRead as exc:
+        raise TimeoutError(
+            f"ClickHouse response ended before completion ({len(exc.partial)} bytes received)"
+        ) from exc
     except urllib.error.HTTPError as exc:
         body = exc.read().decode("utf-8", errors="replace")
         raise RuntimeError(f"ClickHouse HTTP {exc.code} {exc.reason}: {body}") from exc
@@ -3149,7 +3154,15 @@ def trading_ticker_fact_history(symbol: str, metric: str, as_of: str | None = No
 
 @app.get("/api/trading/news/detail/{canonical_news_id}")
 def trading_news_detail_route(canonical_news_id: str, published_at: str = "", query_id: str = "") -> dict[str, Any]:
-    return trading_news_detail(canonical_news_id, published_at=published_at, query_id=query_id)
+    try:
+        return trading_news_detail(canonical_news_id, published_at=published_at, query_id=query_id)
+    except TimeoutError as error:
+        raise HTTPException(
+            status_code=503,
+            detail="News detail is temporarily unavailable. Reopen it from All News so the published-time partition can be reused.",
+        ) from error
+    except RuntimeError as error:
+        raise HTTPException(status_code=503, detail=f"News detail is temporarily unavailable: {error}") from error
 
 
 @app.get("/api/trading/sec")
@@ -4694,6 +4707,8 @@ def trading_historical_window(payload: HistoricalWindowPreviewRequest) -> dict[s
 def trading_historical_preflight(payload: HistoricalPreflightRequest) -> dict[str, Any]:
     if payload.mode not in {"replay", "backtest"}:
         raise HTTPException(status_code=400, detail="mode must be replay or backtest")
+    if approved_configuration() is None:
+        return _blocked_trading_launch_preflight(payload.mode)
     try:
         if payload.mode == "backtest":
             return backtest_preflight(
@@ -4716,6 +4731,8 @@ def trading_historical_preflight(payload: HistoricalPreflightRequest) -> dict[st
 
 @app.post("/api/trading/replay/preflight")
 def trading_replay_preflight(payload: ReplayPreflightRequest) -> dict[str, Any]:
+    if approved_configuration() is None:
+        return _blocked_trading_launch_preflight("replay")
     try:
         configuration_revision = (
             replay_configuration_snapshot(payload.run_plan_id)
@@ -4850,6 +4867,8 @@ async def trading_backtest_debug_run_create(
 
 @app.post("/api/trading/backtest_debug/preflight")
 def trading_backtest_debug_preflight(payload: ReplayPreflightRequest) -> dict[str, Any]:
+    if approved_configuration() is None:
+        return _blocked_trading_launch_preflight("backtest_debug")
     try:
         configuration_revision = (
             backtest_debug_configuration_snapshot(payload.run_plan_id)
@@ -4873,6 +4892,55 @@ def trading_backtest_debug_preflight(payload: ReplayPreflightRequest) -> dict[st
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+def _blocked_trading_launch_preflight(mode: str) -> dict[str, Any]:
+    """Represent missing publication as a normal blocked launch state.
+
+    A missing Approved Release is an operator-remediable readiness condition,
+    not malformed request input. Run-creation routes continue to fail closed.
+    """
+
+    check = {
+        "id": "approved_configuration",
+        "label": "Approved configuration",
+        "status": "blocked",
+        "summary": "Publish an immutable trading configuration before starting this mode.",
+        "evidence": "Configuration > Approved Releases",
+        "required": True,
+        "action": {
+            "hash": "#revision-configuration",
+            "label": "Review Approved Releases",
+        },
+    }
+    result: dict[str, Any] = {
+        "schema_version": 1,
+        "mode": mode,
+        "ready": False,
+        "strategy_run_ready": False,
+        "checks": [check],
+        "configuration_revision_id": "",
+        "configuration_revision": 0,
+        "configuration_content_hash": "",
+        "configuration_label": "",
+        "run_plan_id": "",
+        "available_run_plans": [],
+        "assignments": [],
+        "tickers": [],
+        "account_mapping": {},
+        "coverage": {},
+        "canvas_profile": {},
+        "canvas_revision": "",
+    }
+    if mode == "backtest":
+        result["window"] = {
+            "start": "",
+            "end": "",
+            "sessions": [],
+            "session_count": 0,
+        }
+        result["automatic_strategy_count"] = 0
+    return result
 
 
 @app.get("/api/trading/backtest_debug/runs")

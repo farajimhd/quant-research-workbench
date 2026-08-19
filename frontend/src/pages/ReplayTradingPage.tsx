@@ -23,6 +23,7 @@ import { isTerminalReplayStatus, latestReplayRun, useReplayRunEvents, type Canva
 import { CanvasWorkspaceSurface } from "./CanvasConfigurationPage";
 
 type ReplayCheck = {
+  action?: { hash?: string; label?: string };
   evidence: string;
   id: string;
   label: string;
@@ -327,7 +328,7 @@ function compactEventCount(value?: number) {
 function ReplayCheckRow({ check }: { check: ReplayCheck }) {
   return <article data-status={check.status}>
     <span className="replay-check-icon">{check.status === "ready" ? <CheckCircle2 size={18} /> : <TriangleAlert size={18} />}</span>
-    <div><header><strong>{check.label}</strong>{check.required ? <em>Required</em> : <em>Optional</em>}</header><p>{check.summary}</p><small>{check.evidence}</small></div>
+    <div><header><strong>{check.label}</strong>{check.required ? <em>Required</em> : <em>Optional</em>}</header><p>{check.summary}</p><small>{check.evidence}</small>{check.action?.hash ? <button className="button secondary compact" onClick={() => { window.location.hash = check.action?.hash || "#revision-configuration"; }} type="button">{check.action.label || "Resolve"}</button> : null}</div>
   </article>;
 }
 
