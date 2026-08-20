@@ -148,6 +148,9 @@ def test_qmd_structure_checkpoint_rebuild_uses_ephemeral_operator_authority() ->
     assert "dataprotectionscope]::localmachine" in launcher
     assert "icacls.exe" in launcher
     assert "inheritance:r" in launcher
+    assert "operatortokentemporarypath" in launcher
+    assert '"${operatortokenidentity}:(f)"' in launcher
+    assert "copy-item -literalpath $operatortokentemporarypath" in launcher
     assert "remove-item env:qmd_operator_token" in launcher
     assert "remove-item -literalpath $operatortokenpath" in launcher
     assert "x-qmd-operator-token" in rebuild

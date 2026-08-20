@@ -219,19 +219,54 @@ $protectedOperatorTokenBytes = [Security.Cryptography.ProtectedData]::Protect(
     $null,
     [Security.Cryptography.DataProtectionScope]::LocalMachine
 )
-[IO.File]::WriteAllText(
-    $operatorTokenPath,
-    [Convert]::ToBase64String($protectedOperatorTokenBytes),
-    [Text.Encoding]::ASCII
-)
 $operatorTokenIdentity = [Security.Principal.WindowsIdentity]::GetCurrent().Name
-& "$env:SystemRoot\System32\icacls.exe" `
-    $operatorTokenPath `
-    '/inheritance:r' `
-    '/grant:r' `
-    "${operatorTokenIdentity}:(R)" | Out-Null
-if ($LASTEXITCODE -ne 0) {
-    throw "Failed to restrict the QMD operator token ACL for $operatorTokenIdentity."
+$operatorTokenTemporaryPath = "$operatorTokenPath.$PID.$([Guid]::NewGuid().ToString('N')).tmp"
+try {
+    [IO.File]::WriteAllText(
+        $operatorTokenTemporaryPath,
+        [Convert]::ToBase64String($protectedOperatorTokenBytes),
+        [Text.Encoding]::ASCII
+    )
+    & "$env:SystemRoot\System32\icacls.exe" `
+        $operatorTokenTemporaryPath `
+        '/inheritance:r' `
+        '/grant:r' `
+        "${operatorTokenIdentity}:(R)" | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        throw "Failed to restrict the QMD operator token ACL for $operatorTokenIdentity."
+    }
+    # The published token is intentionally read-only. Build its replacement in
+    # a restricted temporary file, then restore owner write authority only for
+    # the bounded copy operation. The final block always returns it to read-only.
+    if (Test-Path -LiteralPath $operatorTokenPath -PathType Leaf) {
+        & "$env:SystemRoot\System32\icacls.exe" `
+            $operatorTokenPath `
+            '/grant:r' `
+            "${operatorTokenIdentity}:(F)" | Out-Null
+        if ($LASTEXITCODE -ne 0) {
+            throw "Failed to authorize QMD operator token rotation for $operatorTokenIdentity."
+        }
+    }
+    Copy-Item -LiteralPath $operatorTokenTemporaryPath -Destination $operatorTokenPath -Force
+}
+finally {
+    if (Test-Path -LiteralPath $operatorTokenTemporaryPath -PathType Leaf) {
+        & "$env:SystemRoot\System32\icacls.exe" `
+            $operatorTokenTemporaryPath `
+            '/grant:r' `
+            "${operatorTokenIdentity}:(F)" | Out-Null
+    }
+    Remove-Item -LiteralPath $operatorTokenTemporaryPath -Force -ErrorAction SilentlyContinue
+    if (Test-Path -LiteralPath $operatorTokenPath -PathType Leaf) {
+        & "$env:SystemRoot\System32\icacls.exe" `
+            $operatorTokenPath `
+            '/inheritance:r' `
+            '/grant:r' `
+            "${operatorTokenIdentity}:(R)" | Out-Null
+        if ($LASTEXITCODE -ne 0) {
+            throw "Failed to restore the QMD operator token ACL for $operatorTokenIdentity."
+        }
+    }
 }
 
 Write-Host "Starting qmd-gateway at $baseUrl"
