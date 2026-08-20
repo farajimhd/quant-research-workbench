@@ -1649,7 +1649,7 @@ function RealLiveTradingGate({
   >
     <div className="mode-launch-authority live-observation-launch">
       <span>Market observation</span>
-      <strong>Scanner, Signal Stream, and live news</strong>
+      <strong>Scanner, Watchlists, Signal Stream, and live news</strong>
       <small>Open a persisted read-only Canvas using QMD Live and News. No account, Portfolio, OMS, broker connection, or approved trading release is required. BarGPT forecasts appear when its service and configured Data Fields are available, but do not block the monitor.</small>
       <div><button className="button primary compact" onClick={onObserve} type="button"><Eye aria-hidden="true" size={14} /> Observe Live</button><button className="button secondary compact" onClick={() => { window.location.hash = "#market-discovery-configuration"; }} type="button">Market Discovery</button></div>
     </div>
@@ -1669,11 +1669,13 @@ function ensureLiveObservationCanvas() {
     "live-monitor-news": "news",
     "live-monitor-scanner": "scanner",
     "live-monitor-signal-stream": "signal_stream",
+    "live-monitor-watchlist": "watchlist",
   } as const;
   const legacyIds: Record<string, keyof typeof requiredInstances> = {
     news: "live-monitor-news",
     scanner: "live-monitor-scanner",
     signal_stream: "live-monitor-signal-stream",
+    watchlist: "live-monitor-watchlist",
   };
   const migrateId = (instanceId: string) => legacyIds[instanceId] ?? instanceId;
   const requiredIds = Object.keys(requiredInstances);
