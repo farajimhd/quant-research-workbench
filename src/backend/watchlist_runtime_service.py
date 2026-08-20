@@ -1345,12 +1345,37 @@ def enrich_core_scanner_rows(
     rows: list[dict[str, Any]],
     reference_projection: dict[str, dict[str, Any]],
 ) -> list[dict[str, Any]]:
-    return [
-        normalize_watchlist_candidate(
-            {**row, **reference_projection.get(str(row.get("ticker") or "").upper(), {})}
+    enriched: list[dict[str, Any]] = []
+    for row in rows:
+        merged = {
+            **row,
+            **reference_projection.get(str(row.get("ticker") or "").upper(), {}),
+        }
+        session_volume = numeric_value(merged, "volume", "day_volume", "last_day_volume_so_far")
+        average_daily_volume = numeric_value(merged, "average_daily_volume")
+        observed_at = parse_datetime(
+            merged.get("last_event_ts")
+            or merged.get("snapshot_at_utc")
+            or merged.get("reference_available_at")
         )
-        for row in rows
-    ]
+        if (
+            merged.get("relative_volume") is None
+            and session_volume is not None
+            and average_daily_volume is not None
+            and average_daily_volume > 0
+            and observed_at is not None
+        ):
+            local = observed_at.astimezone(NEW_YORK)
+            session_start = datetime.combine(local.date(), time(4, 0), NEW_YORK)
+            elapsed_seconds = min(
+                16 * 60 * 60,
+                max(1.0, (local - session_start).total_seconds()),
+            )
+            merged["relative_volume"] = session_volume / (
+                average_daily_volume * elapsed_seconds / (16 * 60 * 60)
+            )
+        enriched.append(normalize_watchlist_candidate(merged))
+    return enriched
 
 
 def numeric_value(row: dict[str, Any], *keys: str) -> float | None:

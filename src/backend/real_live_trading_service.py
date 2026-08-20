@@ -183,7 +183,19 @@ def qmd_signal_stream_candidates(
 ) -> list[dict[str, Any]]:
     """Project only fields reachable from materialized Signal Streams."""
 
-    from src.backend.data_field_contracts import field_instance_ref
+    from src.backend.data_field_contracts import (
+        field_instance_ref,
+        project_composition_data_field_columns,
+    )
+
+    streams = list(discovery.get("signal_streams") or [])
+    projected_rows = rows
+    for stream in streams:
+        projected_rows = project_composition_data_field_columns(
+            projected_rows,
+            stream,
+            discovery.get("column_catalog") or [],
+        )
 
     fixed = {
         "ticker", "symbol", "conid", "company_name", "logo_url", "country",
@@ -196,7 +208,7 @@ def qmd_signal_stream_candidates(
     }
     required = set(fixed)
     aliases: dict[str, str] = {}
-    for stream in discovery.get("signal_streams") or []:
+    for stream in streams:
         required.update(str(value) for value in stream.get("columns") or [] if str(value))
         for rule_id in stream.get("inclusion_rule_sets") or []:
             for condition in rule_index.get(str(rule_id), {}).get("conditions") or []:
@@ -215,7 +227,7 @@ def qmd_signal_stream_candidates(
                         if source_id:
                             aliases[source_id] = instance
     compact: list[dict[str, Any]] = []
-    for row in rows:
+    for row in projected_rows:
         projected = {key: row.get(key) for key in required if key in row}
         for alias, instance in aliases.items():
             if alias not in projected and instance in row:

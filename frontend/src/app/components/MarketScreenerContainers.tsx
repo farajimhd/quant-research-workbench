@@ -960,7 +960,8 @@ function renderMarketCell(row: ScreenerRow, column: string, presentations: Retur
   }
   const definition = catalogField(column, customColumns, catalog);
   if (value === null || value === undefined || value === "") return <span className="market-list-unavailable" title={`${definition.label} is not available from the active source at this clock.`}>—</span>;
-  if (definition.format === "date") return <MarketTime value={String(value)} />;
+  if (definition.presentationValueType === "date") return <PresentedValue column={column} presentation={{ presentationValueType: "date" }} value={value} />;
+  if (definition.presentationValueType === "datetime" || definition.format === "date") return <MarketTime includeDate value={String(value)} />;
   const numeric = numberValue(value);
   const semanticTone = toneClass(value, column, customColumns, catalog);
   if (definition.format === "percent") return marketNumber(formatPercent(numeric, true), numeric, definition, semanticTone);

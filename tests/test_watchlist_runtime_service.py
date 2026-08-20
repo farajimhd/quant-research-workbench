@@ -13,6 +13,7 @@ from src.backend.trading_configuration_service import (
 from src.backend.watchlist_runtime_service import (
     WatchlistRuntime,
     clear_computation_target_publication_cache,
+    enrich_core_scanner_rows,
     focused_target_contract,
     live_market_reference_projection,
     normalize_watchlist_candidate,
@@ -91,6 +92,21 @@ class WatchlistRuntimeServiceTests(unittest.TestCase):
         self.assertAlmostEqual(row["change_pct"], 10)
         self.assertEqual(row["volume"], 50_000)
         self.assertEqual(row["liquidity_rank"], 9)
+
+    def test_live_reference_enrichment_materializes_aligned_relative_volume(self) -> None:
+        rows = enrich_core_scanner_rows(
+            [
+                {
+                    "ticker": "AAA",
+                    "day_volume": 1_000_000,
+                    "last_event_ts": "2026-08-20T16:00:00Z",
+                }
+            ],
+            {"AAA": {"average_daily_volume": 2_000_000}},
+        )
+
+        # 12:00 ET is halfway through the 04:00-20:00 extended session.
+        self.assertEqual(rows[0]["relative_volume"], 1.0)
 
     def test_projects_selected_rule_set_results_as_boolean_columns(self) -> None:
         discovery = self.configuration["market_discovery"]

@@ -121,6 +121,12 @@ function numericTone(value: number, semantic: Required<TableColumnPresentation>[
 function categoryTone(column: string, value: string) {
   const field = column.toLowerCase();
   const key = value.toLowerCase();
+  if (field === "float_category") {
+    if (key === "tiny" || key === "extra small") return "negative";
+    if (key === "small" || key === "medium") return "warning";
+    if (key === "medium+" || key === "large") return "info";
+    if (key === "extra large" || key === "broad float") return "positive";
+  }
   if (/(phase|session|exchange|sector|industry|country|currency|source|origin|role|type|category|class)/.test(field)) return "neutral";
   if (/(direction|side|action|sentiment|bias|outlook)/.test(field)) {
     if (/bull|buy|long|positive/.test(key)) return "positive";

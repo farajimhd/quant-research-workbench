@@ -157,6 +157,71 @@ class RealLiveScannerCompositionTests(unittest.TestCase):
         self.assertEqual(merged["vwap"], 340.25)
         self.assertEqual(merged["data.price_change_pct@1:value@@3m"], 0.25)
 
+    def test_signal_candidates_materialize_exact_configured_field_instances(self) -> None:
+        discovery = {
+            "column_catalog": [
+                {
+                    "column_id": "event_quote_bid_price",
+                    "field_ref": "data.quote.bid_price@1:value",
+                },
+                {
+                    "column_id": "event_quote_ask_price",
+                    "field_ref": "data.quote.ask_price@1:value",
+                },
+                {
+                    "column_id": "field__price__change__1__bar__pct",
+                    "field_ref": "data.price_change_1_bar_pct@1:value",
+                },
+                {
+                    "column_id": "field__volume__rate__ratio",
+                    "field_ref": "data.volume_rate_ratio@1:value",
+                },
+            ],
+            "rule_sets": [],
+            "signal_streams": [
+                {
+                    "columns": [
+                        "symbol",
+                        "event_quote_bid_price",
+                        "event_quote_ask_price",
+                        "field__price__change__1__bar__pct",
+                        "field__volume__rate__ratio",
+                    ],
+                    "column_intervals": {
+                        "event_quote_bid_price": {"value": 100, "unit": "milliseconds"},
+                        "event_quote_ask_price": {"value": 100, "unit": "milliseconds"},
+                        "field__price__change__1__bar__pct": {"value": 5, "unit": "minutes"},
+                        "field__volume__rate__ratio": {"value": 1, "unit": "seconds"},
+                    },
+                    "column_aggregations": {
+                        "event_quote_bid_price": "last",
+                        "event_quote_ask_price": "last",
+                    },
+                }
+            ],
+        }
+
+        candidates = service.qmd_signal_stream_candidates(
+            discovery,
+            [
+                {
+                    "ticker": "AAA",
+                    "symbol": "AAA",
+                    "data.quote.bid_price@1:value@@100ms##last": 12.34,
+                    "data.quote.ask_price@1:value@@100ms##last": 12.36,
+                    "data.price_change_1_bar_pct@1:value@@5m": 6.25,
+                    "data.volume_rate_ratio@1:value@@1s": 2.5,
+                    "unrelated": "do not publish",
+                }
+            ],
+        )
+
+        self.assertEqual(candidates[0]["event_quote_bid_price"], 12.34)
+        self.assertEqual(candidates[0]["event_quote_ask_price"], 12.36)
+        self.assertEqual(candidates[0]["field__price__change__1__bar__pct"], 6.25)
+        self.assertEqual(candidates[0]["field__volume__rate__ratio"], 2.5)
+        self.assertNotIn("unrelated", candidates[0])
+
     def test_full_population_is_cached_before_per_request_slicing(self) -> None:
         cache = BoundedSingleFlightTtlCache[str, dict](
             max_entries=1,
