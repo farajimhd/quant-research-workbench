@@ -66,6 +66,29 @@ IMPLEMENTED_PUBLICATION_TABLES: frozenset[str] = frozenset(
 PLANNED_PUBLICATION_TABLES: frozenset[str] = frozenset()
 
 
+# FINAL is a logical-read requirement for replacing publication tables, but it is
+# invalid for the append-only MergeTree selection history. Keep that distinction
+# explicit so adding a publication table cannot silently inherit the wrong query
+# semantics.
+MARKET_PUBLICATION_AUDIT_SPECS: tuple[tuple[str, str, bool], ...] = (
+    ("market_security_market_snapshot_v1", "observed_at_utc", True),
+    ("market_security_float_v1", "effective_date", True),
+    ("market_short_interest_v1", "settlement_date", True),
+    ("market_short_volume_v1", "trade_date", True),
+    ("market_stock_split_v1", "execution_date", True),
+    ("market_cash_dividend_v1", "ex_dividend_date", True),
+    ("market_ipo_v1", "listing_date", True),
+    ("market_presentation_asset_v1", "last_seen_at_utc", True),
+    ("market_issuer_presentation_candidate_v1", "observed_at_utc", True),
+    ("market_issuer_presentation_selection_v1", "selected_at_utc", False),
+    ("market_fails_to_deliver_v1", "settlement_date", True),
+    ("market_reg_sho_threshold_v1", "threshold_date", True),
+    ("market_security_borrow_v1", "observed_at_utc", True),
+    ("market_security_country_v1", "assertion_date", True),
+    ("market_reference_publication_coverage_v1", "coverage_start_date", True),
+)
+
+
 @dataclass(frozen=True, slots=True)
 class PublicationGap:
     coverage_kind: str
@@ -364,31 +387,15 @@ def publication_alters(database: str) -> list[tuple[str, str]]:
 
 def market_publication_audit(client: ClickHouseHttpClient, *, database: str) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
-    table_specs = {
-        "market_security_market_snapshot_v1": "observed_at_utc",
-        "market_security_float_v1": "effective_date",
-        "market_short_interest_v1": "settlement_date",
-        "market_short_volume_v1": "trade_date",
-        "market_stock_split_v1": "execution_date",
-        "market_cash_dividend_v1": "ex_dividend_date",
-        "market_ipo_v1": "listing_date",
-        "market_presentation_asset_v1": "last_seen_at_utc",
-        "market_issuer_presentation_candidate_v1": "observed_at_utc",
-        "market_issuer_presentation_selection_v1": "selected_at_utc",
-        "market_fails_to_deliver_v1": "settlement_date",
-        "market_reg_sho_threshold_v1": "threshold_date",
-        "market_security_borrow_v1": "observed_at_utc",
-        "market_security_country_v1": "assertion_date",
-        "market_reference_publication_coverage_v1": "coverage_start_date",
-    }
-    for name, date_column in table_specs.items():
+    for name, date_column, use_final in MARKET_PUBLICATION_AUDIT_SPECS:
         if not table_exists(client, database, name):
             rows.append({"table": name, "status": "missing", "rows": 0, "min": None, "max": None})
             continue
+        final_clause = " FINAL" if use_final else ""
         result = query_one(
             client,
             f"SELECT count() AS rows, min({qn(date_column)}) AS min_value, max({qn(date_column)}) AS max_value "
-            f"FROM {table(database, name)} FINAL",
+            f"FROM {table(database, name)}{final_clause}",
         )
         rows.append(
             {
