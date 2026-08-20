@@ -28619,9 +28619,31 @@ button {
 .trading-configuration-page[data-configuration-section="strategy"] .configuration-help > button,
 .trading-configuration-page[data-configuration-section="strategy"] .configuration-help > button svg { color: var(--muted-foreground); }
 
-/* Shared Scanner and Watchlist table readability. */
+/* Canvas market tables use the same header grammar as the All News feed while
+   retaining their native sort, configuration-menu, and sticky-column behavior. */
 .market-list-table th {
-  letter-spacing: 0;
+  background: color-mix(in oklab, var(--surface-alt) 70%, var(--surface));
+  border-bottom: 1px solid var(--border);
+  color: var(--muted-foreground);
+  font-family: var(--font-body);
+  font-size: calc(9.5px * var(--app-readable-scale, 1));
+  font-weight: 650;
+  height: calc(34px * var(--app-readable-scale, 1));
+  letter-spacing: .045em;
+  line-height: 1.2;
+  text-transform: uppercase;
+}
+
+.market-list-table th > button {
+  letter-spacing: inherit;
+  min-height: calc((34px * var(--app-readable-scale, 1)) - .5px);
+  padding: 0 calc(10px * var(--app-readable-scale, 1));
+  text-transform: inherit;
+}
+
+.market-list-table th > button > svg {
+  height: calc(11px * var(--app-readable-scale, 1));
+  width: calc(11px * var(--app-readable-scale, 1));
 }
 
 .market-list-table td.market-list-numeric-column {
@@ -28714,7 +28736,7 @@ button {
   display: inline-flex;
   font-family: var(--font-badge);
   font-size: 9.5px;
-  font-weight: 400;
+  font-weight: 300;
   gap: 5px;
   letter-spacing: .006em;
   line-height: 1.2;
@@ -28733,14 +28755,14 @@ button {
   background: color-mix(in oklab, var(--table-badge-tone) 8%, var(--surface));
   border-color: color-mix(in oklab, var(--table-badge-tone) 34%, var(--border));
   color: color-mix(in oklab, var(--table-badge-tone) 76%, var(--foreground));
-  font-weight: 400;
+  font-weight: 300;
   min-height: 22px;
 }
 .table-category-badge[data-emphasis="strong"] {
   background: color-mix(in oklab, var(--table-badge-tone) 15%, var(--surface));
   border-color: color-mix(in oklab, var(--table-badge-tone) 70%, var(--border));
   color: color-mix(in oklab, var(--table-badge-tone) 90%, var(--foreground));
-  font-weight: 450;
+  font-weight: 350;
   min-height: 23px;
   padding: 4px 11px;
 }
@@ -28787,7 +28809,10 @@ button {
   width: var(--signal-stream-time-column-width);
   z-index: 4;
 }
-.signal-stream-surface .market-list-table th.market-list-time-column:first-child { z-index: 6; }
+.signal-stream-surface .market-list-table th.market-list-time-column:first-child {
+  background: color-mix(in oklab, var(--surface-alt) 70%, var(--surface));
+  z-index: 6;
+}
 .signal-stream-surface .market-list-table .market-list-symbol-column {
   left: var(--signal-stream-time-column-width);
   z-index: 4;
