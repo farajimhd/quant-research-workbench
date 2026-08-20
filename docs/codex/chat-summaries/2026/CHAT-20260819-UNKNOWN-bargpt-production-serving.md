@@ -1,8 +1,8 @@
 # Productionize BarGPT v2/v3 serving across application modes
 
 - Chat started: Exact time unavailable; 2026-08-19 PDT (America/Vancouver)
-- Chat ended or last activity: 2026-08-19 16:54 PDT (America/Vancouver)
-- Summary written: 2026-08-19 16:54 PDT (America/Vancouver)
+- Chat ended or last activity: 2026-08-19 17:18 PDT (America/Vancouver)
+- Summary written: 2026-08-19 17:18 PDT (America/Vancouver)
 - Chat/task identifier: unavailable
 - Repository or scope: `quant-research-workbench`, BarGPT v2/v3 serving, QMD, backend, Market Discovery, Canvas, and service operations
 - Related task-history entries: `TASK-0170`, `TASK-0197`
@@ -26,7 +26,7 @@ The stale `market-ai` launcher and implementation were removed. Service lifecycl
 
 Workstation verification corrected the earlier belief that a v3 artifact was unavailable. The v2 production run has a stable `checkpoint_latest.pt` dated August 17. The v3 production run was active on August 19, with bounded metrics showing 3,837,067,192 origins at 16:52 PDT and immutable global-validation checkpoints through 3,500,046,492 origins. The immutable 3.5B-origin v3 checkpoint loaded read-only through the actual service loader on laptop CPU. It reports 38,667,089 parameters, checkpoint SHA-256 `06885fdf8281e6e04366afcd690b59ddf54e9a1f3d41f09e799d0e7df154b180`, contract hash `61c8b8fca977403971ada4dd94202586e46a4567a0b3ee10f08ec3ba0e5196b0`, the expected six physical horizons, and full-prefix KV-disabled authority. This proves loader compatibility, not release approval.
 
-The final UI review found a concrete navigation defect and an ownership decision. The Services dashboard already includes BarGPT, but `service-bar-gpt` is absent from the valid page and service-mode maps in `frontend/src/App.tsx`, so selecting its detail view can render no page. A dedicated BarGPT operational configuration page is justified because releases, device and memory capacity, batching, caches, scopes, and inference health exceed what a generic service card can communicate. It belongs under Services. Market Discovery must continue to own revisioned product intent—Watchlists, selected models, Auto/Manual behavior, ticker limits, and downstream fields. The operational page must select immutable promoted release records rather than expose editable arbitrary checkpoint paths.
+The final implementation repaired the missing `service-bar-gpt` route and added a dedicated BarGPT operational editor inside the established Services detail page. The service owns a revisioned external configuration journal for immutable promoted-release selection, champion/shadow roles, device and precision, capacity and batching bounds, cache warm-up, prediction retention, and QMD connection intent. The UI distinguishes desired from currently effective settings and requires restart for safe activation. It receives release IDs, artifact basenames, hashes, parameters, and roles but never checkpoint paths. Market Discovery continues to own revisioned product intent—Watchlists, selected models, Auto/Manual behavior, ticker limits, Data Fields, Rule Sets, and Signal Streams. The service also adopted the shared `/snapshot/status` and `/metrics` contracts so the Services dashboard reports healthy BarGPT evidence without false HTTP 404 degradation.
 
 ### Durable decisions
 
@@ -49,14 +49,15 @@ The final UI review found a concrete navigation defect and an ownership decision
 - Added QMD, backend, lifecycle, service telemetry, and documentation support.
 - Pushed commits `5b9e06e2` and `faa6366f`.
 - Loaded the immutable workstation v3 3.5B-origin checkpoint through the real service loader without touching active training.
+- Added the Services → BarGPT configuration page, immutable release selection, desired/effective restart semantics, backend proxy, shared Services telemetry endpoints, and targeted UI review coverage.
+- Captured a 12-scenario light/dark, 0.8/1.0/1.25 scale, normal/compact visual matrix with no objective issues, then visually verified the corrected healthy service state.
 
 ### Unfinished or hanging work
 
-- **Dedicated BarGPT Services page.** Current state: dashboard card exists, but its route is missing and there is no complete operational editor. Next action: add the route and a page for promoted releases, desired versus effective/restart-required settings, capacity, caches, scopes, queues, latency, and output inventory. Keep Market Discovery intent separate. Related task: `TASK-0197`.
 - **Release promotion.** Current state: loader compatibility is proven for v2 and the immutable v3 3.5B checkpoint, but neither filename recency nor loading is sufficient evidence for promotion. Next action: finish v3 training, compare fixed-panel checkpoints against v2, and publish an immutable release manifest. Related tasks: `TASK-0170`, `TASK-0197`.
 - **GPU capacity certification.** Current state: defaults are bounded but not measured for the production workstation. Next action: benchmark memory and latency across ticker count, batch size, model combination, and context geometry; derive safe capacity rather than editing N by guess. Related task: `TASK-0197`.
 - **End-to-end workstation smoke.** Current state: loader, unit, frontend, QMD, and API checks passed independently. Next action: deploy the service on the workstation with promoted shadow releases, warm a bounded Watchlist from QMD History, consume live QMD, and verify publication, freshness, queue behavior, and chart/rule consumption. Related task: `TASK-0197`.
 
 ### Handoff to the next chat
 
-Read `TASK-0170`, `TASK-0197`, this summary, `services/bar-gpt/README.md`, and commits `5b9e06e2` and `faa6366f`. Do not point production automatically at a changing latest checkpoint, merge operational service settings into Market Discovery, remove raw heads in favor of decoded fields, or add KV reuse without parity evidence. The next implementation should repair the `service-bar-gpt` route and build the dedicated operational page around promoted immutable release records, then run the measured workstation capacity and end-to-end smoke after a release is explicitly approved.
+Read `TASK-0170`, `TASK-0197`, this summary, `services/bar-gpt/README.md`, and the BarGPT serving commits. Do not point production automatically at a changing latest checkpoint, merge operational service settings into Market Discovery, remove raw heads in favor of decoded fields, or add KV reuse without parity evidence. Next, publish approved immutable release manifests from fixed-panel evidence, measure workstation GPU capacity and latency, and run the end-to-end QMD History warm-up plus live-publication smoke.

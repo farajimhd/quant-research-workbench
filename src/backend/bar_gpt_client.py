@@ -28,6 +28,14 @@ def bar_gpt_predictions(ticker: str = "", limit: int = 100, timeout: float = 2.0
     return _request("GET", f"/predictions?{query}", timeout=timeout)
 
 
+def bar_gpt_configuration(timeout: float = 2.0) -> dict[str, Any]:
+    return _request("GET", "/configuration", timeout=timeout)
+
+
+def update_bar_gpt_configuration(payload: dict[str, Any], timeout: float = 5.0) -> dict[str, Any]:
+    return _request("PUT", "/configuration", payload=payload, timeout=timeout)
+
+
 def publish_bar_gpt_scope(
     scope_id: str,
     *,

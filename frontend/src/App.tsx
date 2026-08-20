@@ -12,7 +12,7 @@ import { ServicesPage, type ServicePageMode } from "./pages/ServicesPage";
 import { TradingConfigurationPage, type TradingConfigurationSection } from "./pages/TradingConfigurationPage";
 import { TypographyPublicSansPage } from "./pages/TypographySystemPage";
 
-const validPages: PageKey[] = ["real-live-trading", "replay-trading", "backtest-trading", "backtest-debug", "research-workspace", "canvas-configuration", "data-catalog-configuration", "rule-set-configuration", "market-discovery-configuration", "typography-public-sans", "trading-action-configuration", "strategy-configuration", "assignment-configuration", "portfolio-configuration", "oms-configuration", "account-configuration", "revision-configuration", "canvas-focus", "services-dashboard", "service-qmd", "service-qmd-history", "service-news", "service-sec", "service-text-embed", "service-reference", "service-ibkr"];
+const validPages: PageKey[] = ["real-live-trading", "replay-trading", "backtest-trading", "backtest-debug", "research-workspace", "canvas-configuration", "data-catalog-configuration", "rule-set-configuration", "market-discovery-configuration", "typography-public-sans", "trading-action-configuration", "strategy-configuration", "assignment-configuration", "portfolio-configuration", "oms-configuration", "account-configuration", "revision-configuration", "canvas-focus", "services-dashboard", "service-bar-gpt", "service-qmd", "service-qmd-history", "service-news", "service-sec", "service-text-embed", "service-reference", "service-ibkr"];
 
 export function App() {
   const [page, setPage] = useState<PageKey>(() => {
@@ -89,6 +89,7 @@ function configurationSection(page: PageKey): TradingConfigurationSection | null
 
 function servicePageMode(page: PageKey): ServicePageMode | null {
   if (page === "services-dashboard") return "dashboard";
+  if (page === "service-bar-gpt") return "bar-gpt";
   if (page === "service-qmd") return "qmd";
   if (page === "service-qmd-history") return "qmd-history";
   if (page === "service-news") return "news";

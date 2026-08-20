@@ -75,3 +75,24 @@ class FeatureUpdate(BaseModel):
     prediction_id: str
     fields: dict[str, float | int | str | bool | None]
     raw: dict[str, Any]
+
+
+class OperationalConfigurationUpdate(BaseModel):
+    expected_revision: int = Field(ge=0)
+    selected_release_ids: list[str] = Field(default_factory=list, max_length=16)
+    release_roles: dict[str, Literal["champion", "shadow"]] = Field(default_factory=dict)
+    device: Literal["auto", "cuda", "cpu"] = "auto"
+    dtype: Literal["bfloat16", "float16", "float32"] = "bfloat16"
+    maximum_tickers: int = Field(ge=1, le=5000)
+    maximum_batch_size: int = Field(ge=1, le=2048)
+    maximum_batch_delay_ms: int = Field(ge=0, le=1000)
+    queue_capacity: int = Field(ge=1, le=1_000_000)
+    warm_concurrency: int = Field(ge=1, le=128)
+    minimum_warm_1s_bars: int = Field(ge=1, le=100_000)
+    prediction_history: int = Field(ge=1, le=1_000_000)
+    connect_qmd: bool = True
+
+    @field_validator("selected_release_ids")
+    @classmethod
+    def normalize_release_ids(cls, values: list[str]) -> list[str]:
+        return sorted({str(value).strip() for value in values if str(value).strip()})

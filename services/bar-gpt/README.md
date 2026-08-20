@@ -19,6 +19,20 @@ under `D:\TradingML\runtimes\bar_gpt_service`, never in the repository.
 `BAR_GPT_MAX_TICKERS` defaults to 500; size it together with
 `BAR_GPT_MAX_BATCH_SIZE` from measured host-memory and GPU-memory headroom.
 
+The app's **Services → BarGPT** page edits service-owned operational intent:
+promoted release selection and champion/shadow roles, device and precision,
+batch and queue bounds, warm-up concurrency, retained prediction history, and
+the QMD Live connection. It selects immutable server-registered release IDs;
+checkpoint paths are never accepted from or exposed to the browser. Updates
+are revisioned and persisted atomically outside the repository, then become
+effective after a BarGPT restart. Override the default configuration journal
+with `BAR_GPT_OPERATIONAL_CONFIG` when a host needs a different runtime root.
+
+Watchlists, Auto/Manual trigger mode, application ticker limits, enabled model
+use, Data Fields, Rule Sets, and Signal Streams remain revisioned application
+intent in **Market Discovery**. Operational status follows the common Services
+contract through `/health`, `/snapshot/status`, and `/metrics`.
+
 Serving scopes are replaced atomically with `PUT /scopes/{scope_id}` and carry
 an explicit Live, Paper, Replay, Backtest, or Backtest Debug mode plus an Auto
 or Manual inference trigger. Cache updates continue in Manual mode. Automatic

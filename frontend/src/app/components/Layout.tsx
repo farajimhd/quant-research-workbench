@@ -5,7 +5,7 @@ import { useEffect, useState } from "react";
 import { buildMenuItemButtonClassName, buildThemeMenuItemButtonClassName } from "../selectionStyles";
 import { APP_THEMES, DEFAULT_THEME_ID, applyThemeDefinition, isAppThemeId, type AppThemeDefinition, type AppThemeId } from "../theme";
 
-export type PageKey = "real-live-trading" | "replay-trading" | "backtest-trading" | "backtest-debug" | "research-workspace" | "canvas-configuration" | "data-catalog-configuration" | "rule-set-configuration" | "market-discovery-configuration" | "typography-public-sans" | "trading-action-configuration" | "strategy-configuration" | "assignment-configuration" | "portfolio-configuration" | "oms-configuration" | "account-configuration" | "revision-configuration" | "canvas-focus" | "services-dashboard" | "service-qmd" | "service-qmd-history" | "service-news" | "service-sec" | "service-text-embed" | "service-reference" | "service-ibkr";
+export type PageKey = "real-live-trading" | "replay-trading" | "backtest-trading" | "backtest-debug" | "research-workspace" | "canvas-configuration" | "data-catalog-configuration" | "rule-set-configuration" | "market-discovery-configuration" | "typography-public-sans" | "trading-action-configuration" | "strategy-configuration" | "assignment-configuration" | "portfolio-configuration" | "oms-configuration" | "account-configuration" | "revision-configuration" | "canvas-focus" | "services-dashboard" | "service-bar-gpt" | "service-qmd" | "service-qmd-history" | "service-news" | "service-sec" | "service-text-embed" | "service-reference" | "service-ibkr";
 export type UiScale = 0.8 | 0.9 | 1 | 1.1 | 1.25;
 
 type LayoutProps = {

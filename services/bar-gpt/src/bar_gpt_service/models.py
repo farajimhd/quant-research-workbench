@@ -173,7 +173,7 @@ def release_summary(release: LoadedRelease) -> dict[str, Any]:
         "model_id": release.config.model_id,
         "version": release.config.version,
         "role": release.config.role,
-        "checkpoint": str(release.config.checkpoint),
+        "artifact_name": release.config.checkpoint.name,
         "checkpoint_hash": release.checkpoint_hash,
         "contract_hash": release.contract_hash,
         "device": str(release.device),

@@ -50,6 +50,7 @@ PAGES = (
     "revision-configuration",
     "canvas-focus",
     "services-dashboard",
+    "service-bar-gpt",
     "service-qmd",
     "service-qmd-history",
     "service-news",

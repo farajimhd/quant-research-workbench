@@ -53,10 +53,12 @@ from src.backend.application_registry import (
 )
 from src.backend.application_authority import AuthorityDenied, AuthorityPolicy
 from src.backend.bar_gpt_client import (
+    bar_gpt_configuration,
     bar_gpt_health,
     bar_gpt_predictions,
     publish_bar_gpt_scope,
     remove_bar_gpt_scope,
+    update_bar_gpt_configuration,
 )
 from src.backend.bounded_cache import BoundedSingleFlightTtlCache, BoundedTtlCache
 from src.backend.model_feature_store import MODEL_FEATURE_STORE
@@ -1035,6 +1037,22 @@ class BarGptScopeSubmit(BaseModel):
     revision: int = Field(default=1, ge=1)
     ttl_ms: int = Field(default=30_000, ge=1_000, le=3_600_000)
     source: str = Field(default="application", max_length=128)
+
+
+class BarGptOperationalConfigurationSubmit(BaseModel):
+    expected_revision: int = Field(ge=0)
+    selected_release_ids: list[str] = Field(default_factory=list, max_length=16)
+    release_roles: dict[str, str] = Field(default_factory=dict)
+    device: str = Field(pattern="^(auto|cuda|cpu)$")
+    dtype: str = Field(pattern="^(bfloat16|float16|float32)$")
+    maximum_tickers: int = Field(ge=1, le=5000)
+    maximum_batch_size: int = Field(ge=1, le=2048)
+    maximum_batch_delay_ms: int = Field(ge=0, le=1000)
+    queue_capacity: int = Field(ge=1, le=1_000_000)
+    warm_concurrency: int = Field(ge=1, le=128)
+    minimum_warm_1s_bars: int = Field(ge=1, le=100_000)
+    prediction_history: int = Field(ge=1, le=1_000_000)
+    connect_qmd: bool
 
 class TradeAnnotationSubmit(BaseModel):
     note: str = Field(default="", max_length=10_000)
@@ -3209,6 +3227,22 @@ def bar_gpt_status() -> dict[str, Any]:
 def get_bar_gpt_predictions(ticker: str = "", limit: int = Query(default=100, ge=1, le=10_000)) -> dict[str, Any]:
     try:
         return bar_gpt_predictions(ticker=ticker, limit=limit)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@app.get("/api/bar-gpt/configuration")
+def get_bar_gpt_configuration() -> dict[str, Any]:
+    try:
+        return bar_gpt_configuration()
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@app.put("/api/bar-gpt/configuration", status_code=202)
+def put_bar_gpt_configuration(request: BarGptOperationalConfigurationSubmit) -> dict[str, Any]:
+    try:
+        return update_bar_gpt_configuration(request.model_dump())
     except RuntimeError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
