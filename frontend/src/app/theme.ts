@@ -96,17 +96,20 @@ export type AppThemeDefinition = {
 /**
  * Product typography authority.
  *
- * Public Sans owns every human-facing surface: navigation, headings, prose,
- * controls, tables, chart labels, tickers, timestamps, status copy, and
- * financial numbers. Use tabular lining numerals for aligned market values;
- * do not switch those values to monospace.
+ * Public Sans owns the primary interface: navigation, headings, prose,
+ * controls, tables, chart labels, tickers, timestamps, and financial numbers.
+ * Inter is reserved for compact categorical and status badges, where its
+ * screen-oriented shapes stay distinct at small sizes. Use tabular lining
+ * numerals for aligned market values; do not switch those values to monospace.
  *
  * JetBrains Mono is reserved for machine-facing syntax: canonical IDs, raw
  * source paths, payload keys, contracts, and code. Components must consume
- * --font-body, --font-display, or --font-mono instead of naming a font family.
+ * --font-body, --font-display, --font-badge, or --font-mono instead of naming
+ * a font family.
  */
 const BODY_FONT_STACK = "\"Public Sans Variable\", \"Public Sans\", sans-serif";
 const DISPLAY_FONT_STACK = BODY_FONT_STACK;
+const BADGE_FONT_STACK = "\"Inter Variable\", Inter, sans-serif";
 const MONO_FONT_STACK = "\"JetBrains Mono\", monospace";
 
 const paletteDefinitions: Array<{
@@ -340,6 +343,7 @@ export function applyThemeDefinition(target: HTMLElement, themeId: AppThemeId = 
     "--destructive-foreground": "#ffffff",
     "--divider": tokens.divider,
     "--focus-ring": tokens.focusRing,
+    "--font-badge": BADGE_FONT_STACK,
     "--font-body": BODY_FONT_STACK,
     "--font-display": DISPLAY_FONT_STACK,
     "--font-mono": MONO_FONT_STACK,

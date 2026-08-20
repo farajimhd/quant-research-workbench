@@ -6,8 +6,10 @@
   --font-size: 16px;
   --font-size-base: 16px;
   --font-size-panel: 15px;
-  /* Typography authority lives in theme.ts. Public Sans is the interface and
-     numeric family; JetBrains Mono is only for machine-facing identifiers. */
+  /* Typography authority lives in theme.ts. Public Sans is the primary
+     interface family, Inter is the compact badge family, and JetBrains Mono
+     is only for machine-facing identifiers. */
+  --font-badge: "Inter Variable", Inter, sans-serif;
   --font-body: "Public Sans Variable", "Public Sans", sans-serif;
   --font-display: "Public Sans Variable", "Public Sans", sans-serif;
   --font-mono: "JetBrains Mono", monospace;
@@ -450,6 +452,12 @@ html body :is(
   /* Product-level role: legacy component specificity must not reassign values. */
   font-family: var(--font-body) !important;
   font-variant-numeric: lining-nums tabular-nums;
+}
+
+html body :is(.table-category-badge, .data-table-category-badge) {
+  /* Categorical status copy is the deliberate compact-display exception. */
+  font-family: var(--font-badge) !important;
+  font-variant-numeric: normal;
 }
 
 html body :is(
@@ -28639,16 +28647,16 @@ button {
   border-radius: 6px;
   color: color-mix(in oklab, var(--table-badge-tone) 62%, var(--foreground));
   display: inline-flex;
-  font-family: var(--font-body);
-  font-size: 9px;
-  font-weight: 590;
-  gap: 5px;
-  letter-spacing: .006em;
-  line-height: 1.1;
+  font-family: var(--font-badge);
+  font-size: 10px;
+  font-weight: 600;
+  gap: 6px;
+  letter-spacing: .008em;
+  line-height: 1.2;
   max-width: 160px;
-  min-height: 18px;
+  min-height: 23px;
   overflow: hidden;
-  padding: 3px 9px;
+  padding: 4px 11px;
   text-overflow: ellipsis;
   text-transform: capitalize;
   white-space: nowrap;
@@ -28660,16 +28668,16 @@ button {
   background: color-mix(in oklab, var(--table-badge-tone) 8%, var(--surface));
   border-color: color-mix(in oklab, var(--table-badge-tone) 34%, var(--border));
   color: color-mix(in oklab, var(--table-badge-tone) 76%, var(--foreground));
-  font-weight: 630;
-  min-height: 19px;
+  font-weight: 650;
+  min-height: 24px;
 }
 .table-category-badge[data-emphasis="strong"] {
   background: color-mix(in oklab, var(--table-badge-tone) 15%, var(--surface));
   border-color: color-mix(in oklab, var(--table-badge-tone) 70%, var(--border));
   color: color-mix(in oklab, var(--table-badge-tone) 90%, var(--foreground));
   font-weight: 700;
-  min-height: 20px;
-  padding-inline: 10px;
+  min-height: 25px;
+  padding: 5px 12px;
 }
 .table-category-badge[data-tone="positive"] { --table-badge-tone: var(--semantic-positive, var(--success)); }
 .table-category-badge[data-tone="negative"],

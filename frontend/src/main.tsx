@@ -1,5 +1,6 @@
 import React from "react";
 import { createRoot } from "react-dom/client";
+import "@fontsource-variable/inter/wght.css";
 import "@fontsource-variable/public-sans/wght.css";
 import "@fontsource-variable/public-sans/wght-italic.css";
 
