@@ -1,4 +1,4 @@
-import { FileCheck2, Flame, ShieldAlert, Snowflake } from "lucide-react";
+import { Building2, CheckCircle2, CircleAlert, Clock3, FileCheck2, Flame, Gauge, Info, Minus, ShieldAlert, Snowflake, TrendingDown, TrendingUp, Zap } from "lucide-react";
 import type { ReactNode } from "react";
 
 import { MarketTime } from "./MarketTime";
@@ -54,7 +54,12 @@ export function PresentedValue({ column, presentation, value }: { column: string
 export function CategoryBadge({ column = "", value }: { column?: string; value: unknown }) {
   const label = String(value).replaceAll("_", " ").trim();
   if (!label) return <span className="table-value-unavailable">—</span>;
-  return <span className="table-category-badge" data-tone={categoryTone(column, label)}>{label}</span>;
+  const tone = categoryTone(column, label);
+  const Icon = categoryIcon(column, tone);
+  return <span className="table-category-badge" data-emphasis={categoryEmphasis(column)} data-tone={tone} title={label}>
+    {Icon ? <Icon aria-hidden="true" className="table-category-badge-icon" size={11} strokeWidth={2} /> : null}
+    <span>{label}</span>
+  </span>;
 }
 
 export function SecurityIdentityCell({ companyName = "", country = "", halted, logoUrl = "", newsRecency, secRecency, ticker, trailing }: { companyName?: string; country?: string; halted?: unknown; logoUrl?: string; newsRecency?: unknown; secRecency?: unknown; ticker: string; trailing?: ReactNode }) {
@@ -128,6 +133,17 @@ function categoryTone(column: string, value: string) {
     if (/extra large|large/.test(key)) return "warning";
     if (/broad/.test(key)) return "negative";
   }
+  if (/(^|_)(cap_category|market_cap_category)$/.test(field)) {
+    if (/small/.test(key)) return "highlight";
+    if (/mid|medium/.test(key)) return "info";
+    return "neutral";
+  }
+  if (/(^|_)(session_phase|market_phase)$/.test(field)) {
+    if (/regular|open/.test(key)) return "positive";
+    if (/pre/.test(key)) return "info";
+    if (/after/.test(key)) return "highlight";
+    if (/maintenance|closed/.test(key)) return "warning";
+  }
   if (/(phase|session|exchange|sector|industry|country|currency|source|origin|role|type|category|class)/.test(field)) return "neutral";
   if (/(direction|side|action|sentiment|bias|outlook)/.test(field)) {
     if (/bull|buy|long|positive/.test(key)) return "positive";
@@ -141,6 +157,22 @@ function categoryTone(column: string, value: string) {
     if (/pending|warning|partial|stale|degraded/.test(key)) return "warning";
   }
   return "neutral";
+}
+function categoryEmphasis(column: string) {
+  const field = column.toLowerCase();
+  if (/(float_category|float_profile|status|state|quality|health|eligib|valid|direction|side|action|sentiment|bias|outlook|signal)/.test(field)) return "strong";
+  if (/(cap_category|market_cap_category|phase|type|class|coverage)/.test(field)) return "medium";
+  return "subtle";
+}
+function categoryIcon(column: string, tone: ReturnType<typeof categoryTone>) {
+  const field = column.toLowerCase();
+  if (/(float_category|float_profile)/.test(field)) return Gauge;
+  if (/(cap_category|market_cap_category)/.test(field)) return Building2;
+  if (/(session_phase|market_phase)/.test(field)) return Clock3;
+  if (/(direction|side|sentiment|bias|outlook)/.test(field)) return tone === "positive" ? TrendingUp : tone === "negative" ? TrendingDown : Minus;
+  if (/(signal|action)/.test(field)) return Zap;
+  if (/(status|state|quality|health|eligib|valid)/.test(field)) return tone === "positive" ? CheckCircle2 : tone === "negative" || tone === "warning" ? CircleAlert : Info;
+  return null;
 }
 function isCategoricalColumn(column: string) {
   if (/(^|_)(id|identifier|accession|cik)(_|$)/.test(column)) return false;
