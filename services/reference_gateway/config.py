@@ -88,6 +88,16 @@ class ReferenceGatewayConfig:
     current_ticker_detail_request_retry_base_seconds: float
     current_ticker_detail_request_retry_max_seconds: float
     presentation_asset_root_win: Path
+    presentation_refresh_frequency_seconds: int
+    presentation_massive_refresh_days: int
+    presentation_massive_refresh_batch_size: int
+    presentation_candidate_batch_size: int
+    presentation_sec_candidate_batch_size: int
+    presentation_sec_lookback_days: int
+    presentation_sec_request_min_interval_seconds: float
+    presentation_sec_request_timeout_seconds: int
+    presentation_sec_max_asset_bytes: int
+    presentation_insert_batch_size: int
     ibkr_borrow_snapshot_batch_size: int
     ibkr_borrow_insert_batch_size: int
     ibkr_borrow_request_min_interval_seconds: float
@@ -198,6 +208,16 @@ class ReferenceGatewayConfig:
                     str(data_root / "reference_gateway" / "artifacts" / "presentation_assets"),
                 )
             ),
+            presentation_refresh_frequency_seconds=env_int("REFERENCE_GATEWAY_PRESENTATION_REFRESH_FREQUENCY_SECONDS", 3_600),
+            presentation_massive_refresh_days=env_int("REFERENCE_GATEWAY_PRESENTATION_MASSIVE_REFRESH_DAYS", 7),
+            presentation_massive_refresh_batch_size=env_int("REFERENCE_GATEWAY_PRESENTATION_MASSIVE_REFRESH_BATCH_SIZE", 100),
+            presentation_candidate_batch_size=env_int("REFERENCE_GATEWAY_PRESENTATION_CANDIDATE_BATCH_SIZE", 5_000),
+            presentation_sec_candidate_batch_size=env_int("REFERENCE_GATEWAY_PRESENTATION_SEC_CANDIDATE_BATCH_SIZE", 100),
+            presentation_sec_lookback_days=env_int("REFERENCE_GATEWAY_PRESENTATION_SEC_LOOKBACK_DAYS", 730),
+            presentation_sec_request_min_interval_seconds=env_float("REFERENCE_GATEWAY_PRESENTATION_SEC_REQUEST_MIN_INTERVAL_SECONDS", 0.12),
+            presentation_sec_request_timeout_seconds=env_int("REFERENCE_GATEWAY_PRESENTATION_SEC_REQUEST_TIMEOUT_SECONDS", 60),
+            presentation_sec_max_asset_bytes=env_int("REFERENCE_GATEWAY_PRESENTATION_SEC_MAX_ASSET_BYTES", 10_000_000),
+            presentation_insert_batch_size=env_int("REFERENCE_GATEWAY_PRESENTATION_INSERT_BATCH_SIZE", 1_000),
             ibkr_borrow_snapshot_batch_size=env_int("REFERENCE_GATEWAY_IBKR_BORROW_SNAPSHOT_BATCH_SIZE", 100),
             ibkr_borrow_insert_batch_size=env_int("REFERENCE_GATEWAY_IBKR_BORROW_INSERT_BATCH_SIZE", 50_000),
             ibkr_borrow_request_min_interval_seconds=env_float("REFERENCE_GATEWAY_IBKR_BORROW_REQUEST_MIN_INTERVAL_SECONDS", 0.12),
@@ -259,6 +279,16 @@ class ReferenceGatewayConfig:
                 "current_ticker_detail_request_retry_base_seconds": self.current_ticker_detail_request_retry_base_seconds,
                 "current_ticker_detail_request_retry_max_seconds": self.current_ticker_detail_request_retry_max_seconds,
                 "presentation_asset_root_win": str(self.presentation_asset_root_win),
+                "presentation_refresh_frequency_seconds": self.presentation_refresh_frequency_seconds,
+                "presentation_massive_refresh_days": self.presentation_massive_refresh_days,
+                "presentation_massive_refresh_batch_size": self.presentation_massive_refresh_batch_size,
+                "presentation_candidate_batch_size": self.presentation_candidate_batch_size,
+                "presentation_sec_candidate_batch_size": self.presentation_sec_candidate_batch_size,
+                "presentation_sec_lookback_days": self.presentation_sec_lookback_days,
+                "presentation_sec_request_min_interval_seconds": self.presentation_sec_request_min_interval_seconds,
+                "presentation_sec_request_timeout_seconds": self.presentation_sec_request_timeout_seconds,
+                "presentation_sec_max_asset_bytes": self.presentation_sec_max_asset_bytes,
+                "presentation_insert_batch_size": self.presentation_insert_batch_size,
                 "ibkr_borrow_frequency_seconds": self.ibkr_borrow_frequency_seconds,
                 "country_assertion_frequency_seconds": self.country_assertion_frequency_seconds,
                 "sec_bridge_sync_frequency_seconds": self.sec_bridge_sync_frequency_seconds,

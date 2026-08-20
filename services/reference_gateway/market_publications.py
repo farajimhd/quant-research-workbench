@@ -53,6 +53,8 @@ IMPLEMENTED_PUBLICATION_TABLES: frozenset[str] = frozenset(
         "market_cash_dividend_v1",
         "market_ipo_v1",
         "market_presentation_asset_v1",
+        "market_issuer_presentation_candidate_v1",
+        "market_issuer_presentation_selection_v1",
         "market_fails_to_deliver_v1",
         "market_reg_sho_threshold_v1",
         "market_security_borrow_v1",
@@ -227,6 +229,69 @@ ORDER BY (ifNull(symbol_id, ''), assertion_date, source_system, country_assertio
 SETTINGS {settings}
 """.strip()
     )
+    execute_idempotent_schema_query(
+        client,
+        f"""
+CREATE TABLE IF NOT EXISTS {table(database, 'market_issuer_presentation_candidate_v1')}
+(
+    candidate_id String,
+    issuer_id String,
+    listing_id Nullable(String),
+    provider_ticker Nullable(String),
+    asset_id String,
+    source_system LowCardinality(String),
+    source_kind LowCardinality(String),
+    source_cik Nullable(String),
+    source_accession_number Nullable(String),
+    source_document_id Nullable(String),
+    source_revision_rank UInt64,
+    source_version_key String,
+    observed_at_utc DateTime64(3, 'UTC'),
+    valid_from_date Nullable(Date),
+    quality_class LowCardinality(String),
+    width_px Nullable(UInt32),
+    height_px Nullable(UInt32),
+    aspect_ratio Nullable(Float64),
+    identity_confidence Float64,
+    quality_score Float64,
+    candidate_status LowCardinality(String),
+    status_reason LowCardinality(String),
+    evidence_json String,
+    source_run_id String,
+    source_content_sha256 String,
+    inserted_at DateTime64(3, 'UTC')
+)
+ENGINE = ReplacingMergeTree(inserted_at)
+PARTITION BY cityHash64(issuer_id) % 32
+ORDER BY (issuer_id, source_system, source_kind, candidate_id)
+SETTINGS {settings}
+""".strip()
+    )
+    execute_idempotent_schema_query(
+        client,
+        f"""
+CREATE TABLE IF NOT EXISTS {table(database, 'market_issuer_presentation_selection_v1')}
+(
+    selection_id String,
+    issuer_id String,
+    asset_id String,
+    source_system LowCardinality(String),
+    source_kind LowCardinality(String),
+    quality_class LowCardinality(String),
+    quality_score Float64,
+    policy_version LowCardinality(String),
+    selection_reason LowCardinality(String),
+    candidate_set_sha256 String,
+    selected_at_utc DateTime64(3, 'UTC'),
+    source_run_id String,
+    inserted_at DateTime64(3, 'UTC')
+)
+ENGINE = MergeTree
+PARTITION BY toYYYYMM(selected_at_utc)
+ORDER BY (issuer_id, selected_at_utc, selection_id)
+SETTINGS {settings}
+""".strip()
+    )
     for table_name, statement in publication_alters(database):
         if not table_exists(client, database, table_name):
             continue
@@ -279,6 +344,8 @@ MARKET_PUBLICATION_SOURCE_TABLES: tuple[str, ...] = (
     "market_cash_dividend_v1",
     "market_ipo_v1",
     "market_presentation_asset_v1",
+    "market_issuer_presentation_candidate_v1",
+    "market_issuer_presentation_selection_v1",
 )
 
 
@@ -291,6 +358,7 @@ def publication_alters(database: str) -> list[tuple[str, str]]:
         ("market_short_volume_v1", f"ALTER TABLE {table(database, 'market_short_volume_v1')} ADD COLUMN IF NOT EXISTS published_at_utc Nullable(DateTime64(3, 'UTC')) AFTER trade_date"),
         ("market_security_float_v1", f"ALTER TABLE {table(database, 'market_security_float_v1')} ADD COLUMN IF NOT EXISTS shares_outstanding Nullable(UInt64) AFTER free_float_percent"),
         ("market_security_float_v1", f"ALTER TABLE {table(database, 'market_security_float_v1')} ADD COLUMN IF NOT EXISTS float_source_tag LowCardinality(String) DEFAULT '' AFTER shares_outstanding"),
+        ("market_issuer_presentation_candidate_v1", f"ALTER TABLE {table(database, 'market_issuer_presentation_candidate_v1')} ADD COLUMN IF NOT EXISTS source_version_key String DEFAULT '' AFTER source_revision_rank"),
     ]
 
 
@@ -305,6 +373,8 @@ def market_publication_audit(client: ClickHouseHttpClient, *, database: str) -> 
         "market_cash_dividend_v1": "ex_dividend_date",
         "market_ipo_v1": "listing_date",
         "market_presentation_asset_v1": "last_seen_at_utc",
+        "market_issuer_presentation_candidate_v1": "observed_at_utc",
+        "market_issuer_presentation_selection_v1": "selected_at_utc",
         "market_fails_to_deliver_v1": "settlement_date",
         "market_reg_sho_threshold_v1": "threshold_date",
         "market_security_borrow_v1": "observed_at_utc",

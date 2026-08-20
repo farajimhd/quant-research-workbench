@@ -48,6 +48,7 @@ SOURCE_TARGETS: dict[str, tuple[str, str, str]] = {
     "massive_dividends": ("Massive dividends", "market_cash_dividend_v1", "cash dividend corporate actions"),
     "massive_ipos": ("Massive IPOs", "market_ipo_v1", "IPO publication rows"),
     "massive_presentation_assets": ("Massive presentation assets", "market_presentation_asset_v1", "presentation asset inventory coverage"),
+    "presentation_asset_resolution": ("Presentation asset resolver", "market_issuer_presentation_candidate_v1, market_issuer_presentation_selection_v1", "issuer-linked SEC and Massive presentation selection"),
     "massive_ticker_details": ("Massive ticker details", "market_security_market_snapshot_v1, market_security_float_v1", "current-state market snapshot and shares"),
     "ibkr_borrow_availability": ("IBKR borrow snapshot", "market_security_borrow_v1", "broker shortability and borrow availability"),
     "sec_country_assertions": ("Country assertions", "market_security_country_v1", "canonical exchange/listing country assertions"),

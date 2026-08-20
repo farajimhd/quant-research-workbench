@@ -776,6 +776,61 @@ ENGINE = ReplacingMergeTree(inserted_at)
 ORDER BY (asset_kind, status, asset_id)
 SETTINGS index_granularity = 8192, storage_policy = '{{CLICKHOUSE_LIVE_STORAGE_POLICY}}';
 
+CREATE TABLE IF NOT EXISTS q_live.market_issuer_presentation_candidate_v1
+(
+    candidate_id String,
+    issuer_id String,
+    listing_id Nullable(String),
+    provider_ticker Nullable(String),
+    asset_id String,
+    source_system LowCardinality(String),
+    source_kind LowCardinality(String),
+    source_cik Nullable(String),
+    source_accession_number Nullable(String),
+    source_document_id Nullable(String),
+    source_revision_rank UInt64,
+    source_version_key String,
+    observed_at_utc DateTime64(3, 'UTC'),
+    valid_from_date Nullable(Date),
+    quality_class LowCardinality(String),
+    width_px Nullable(UInt32),
+    height_px Nullable(UInt32),
+    aspect_ratio Nullable(Float64),
+    identity_confidence Float64,
+    quality_score Float64,
+    candidate_status LowCardinality(String),
+    status_reason LowCardinality(String),
+    evidence_json String,
+    source_run_id String,
+    source_content_sha256 String,
+    inserted_at DateTime64(3, 'UTC')
+)
+ENGINE = ReplacingMergeTree(inserted_at)
+PARTITION BY cityHash64(issuer_id) % 32
+ORDER BY (issuer_id, source_system, source_kind, candidate_id)
+SETTINGS index_granularity = 8192, storage_policy = '{{CLICKHOUSE_LIVE_STORAGE_POLICY}}';
+
+CREATE TABLE IF NOT EXISTS q_live.market_issuer_presentation_selection_v1
+(
+    selection_id String,
+    issuer_id String,
+    asset_id String,
+    source_system LowCardinality(String),
+    source_kind LowCardinality(String),
+    quality_class LowCardinality(String),
+    quality_score Float64,
+    policy_version LowCardinality(String),
+    selection_reason LowCardinality(String),
+    candidate_set_sha256 String,
+    selected_at_utc DateTime64(3, 'UTC'),
+    source_run_id String,
+    inserted_at DateTime64(3, 'UTC')
+)
+ENGINE = MergeTree
+PARTITION BY toYYYYMM(selected_at_utc)
+ORDER BY (issuer_id, selected_at_utc, selection_id)
+SETTINGS index_granularity = 8192, storage_policy = '{{CLICKHOUSE_LIVE_STORAGE_POLICY}}';
+
 CREATE TABLE IF NOT EXISTS q_live.massive_flatfile_source_file_v1
 (
     file_id String,

@@ -61,6 +61,7 @@ class ApplicationRegistryTests(unittest.TestCase):
             "q_live.market_presentation_asset_v1",
             presentation_plan.source_paths,
         )
+        self.assertIn("q_live.market_issuer_presentation_selection_v1", presentation_plan.source_paths)
         universe_plan = {
             plan.plan_id: plan for plan in QUERY_PLANS
         }["market.tradable_universe.v1"]

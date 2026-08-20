@@ -24,6 +24,7 @@ from services.reference_gateway.ibkr_borrow_sync import IbkrBorrowSyncResult, ru
 from services.reference_gateway.market_publications import ensure_market_publication_schema
 from services.reference_gateway.memory import memory_snapshot, start_memory_trace
 from services.reference_gateway.policy import evaluate_write_policy
+from services.reference_gateway.presentation_assets import PresentationRefreshResult, run_presentation_asset_refresh
 from services.reference_gateway.preflight import run_preflight
 from services.reference_gateway.providers import MassiveReferenceClient
 from services.reference_gateway.publication_bootstrap import bootstrap_existing_publication_coverage
@@ -53,6 +54,7 @@ SOURCE_SYNC_OPERATION_NAMES = {
     "ibkr_borrow_availability": "Source: IBKR /iserver/marketdata/snapshot",
     "country_assertions": "Source: country assertions",
     "sec_market_bridge": "Source: SEC market bridge",
+    "presentation_asset_resolution": "Source: presentation asset resolver",
     "ticker_reconciliation": "Source: ticker reconciliation",
     "massive_ticker_event_inventory": "Source: Massive ticker-event inventory",
     "massive_ticker_events": "Source: Massive ticker events",
@@ -626,6 +628,62 @@ def main() -> None:
                 seconds=0.0,
             )
         logger.event(
+            "sec_market_bridge_source_sync_completed",
+            status=getattr(bridge_rebuild, "status", "skipped"),
+            schedule_reason=bridge_schedule.reason,
+        )
+
+        presentation_started = time.perf_counter()
+
+        def presentation_progress(source: str, status: str, message: str, rows: int | None) -> None:
+            update_latest_operation(
+                SOURCE_SYNC_OPERATION_NAMES[source],
+                status,
+                truncate_detail(message),
+                rows=rows,
+                seconds=time.perf_counter() - presentation_started,
+            )
+
+        presentation_schedule = schedule_decision(
+            schedule_client,
+            config,
+            source_name="presentation_asset_resolution",
+            frequency_seconds=config.presentation_refresh_frequency_seconds,
+            force=bool(accepted_tickers) or config.maintenance_mode == "force",
+        )
+        if presentation_schedule.should_run:
+            presentation_result = run_presentation_asset_refresh(
+                config,
+                tickers=accepted_tickers or None,
+                refresh_massive=not bool(accepted_tickers),
+                reason="new_ticker" if accepted_tickers else "scheduled_refresh",
+                on_progress=presentation_progress,
+            )
+            record_source_schedule(
+                schedule_client,
+                config,
+                source_name="presentation_asset_resolution",
+                status=presentation_result.status,
+                rows_written=presentation_result.selections_written,
+                details=asdict(presentation_result) | {"schedule_reason": presentation_schedule.reason},
+                frequency_seconds=config.presentation_refresh_frequency_seconds,
+            )
+        else:
+            presentation_result = PresentationRefreshResult(
+                False,
+                "skipped",
+                details={"reason": presentation_schedule.reason, "next_due_at_utc": presentation_schedule.next_due_at_utc},
+            )
+            update_latest_operation(
+                SOURCE_SYNC_OPERATION_NAMES["presentation_asset_resolution"],
+                "skipped",
+                f"{presentation_schedule.reason}; next_due={presentation_schedule.next_due_at_utc or '-'}",
+                rows=0,
+                seconds=0.0,
+            )
+        logger.event("presentation_asset_resolution_completed", **asdict(presentation_result))
+
+        logger.event(
             "source_sync_completed",
             provider_rows=plan.provider_rows,
             provider_pages=plan.provider_pages,
@@ -651,6 +709,10 @@ def main() -> None:
             country_assertion_written=getattr(country_result, "rows_written", 0),
             sec_bridge_status=getattr(bridge_rebuild, "status", "skipped"),
             sec_bridge_schedule_reason=bridge_schedule.reason,
+            presentation_status=presentation_result.status,
+            presentation_massive_candidates=presentation_result.massive_candidates_written,
+            presentation_sec_candidates=presentation_result.sec_candidates_written,
+            presentation_selections=presentation_result.selections_written,
             wall_seconds=time.perf_counter() - source_sync_started,
             report_path=str(plan_path or ""),
         )
@@ -664,7 +726,8 @@ def main() -> None:
             wall_seconds=borrow_sync.wall_seconds,
             details=borrow_sync.details,
         )
-        source_sync_status = "completed" if borrow_status == "completed" and current_details_status == "completed" and bridge_status == "completed" else "warning"
+        presentation_status = "completed" if presentation_result.status in {"completed", "skipped"} else "warning"
+        source_sync_status = "completed" if borrow_status == "completed" and current_details_status == "completed" and bridge_status == "completed" and presentation_status == "completed" else "warning"
         add_operation(
             "Source sync",
             source_sync_status,
@@ -676,6 +739,7 @@ def main() -> None:
                 f"borrow_written={borrow_sync.written:,} borrow_failed={borrow_sync.failed:,} "
                 f"country_written={getattr(country_result, 'rows_written', 0):,} "
                 f"sec_bridge={getattr(bridge_rebuild, 'status', 'skipped')}"
+                f" presentation={presentation_result.status} selections={presentation_result.selections_written:,}"
             ),
             rows=plan.missing_tickers,
             seconds=time.perf_counter() - source_sync_started,
@@ -689,6 +753,7 @@ def main() -> None:
             f"borrow_written={borrow_sync.written:,} borrow_failed={borrow_sync.failed:,} "
             f"country_written={getattr(country_result, 'rows_written', 0):,} "
             f"sec_bridge={getattr(bridge_rebuild, 'status', 'skipped')} "
+            f"presentation={presentation_result.status} presentation_selections={presentation_result.selections_written:,} "
             f"saturated={plan.provider_saturated} wall_seconds={time.perf_counter() - source_sync_started:.2f}"
         )
         refresh_reference_state("after_source_sync_writes")

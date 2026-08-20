@@ -555,6 +555,7 @@ def _query_plans() -> tuple[QueryPlanDefinition, ...]:
                 "q_live.feature_scanner_static_v1",
                 "q_live.id_issuer_v1",
                 "q_live.market_presentation_asset_v1",
+                "q_live.market_issuer_presentation_selection_v1",
             ),
             "bounded uppercase ticker set to latest symbol and issuer identity",
             "latest universe_date and feature_date",
@@ -570,6 +571,7 @@ def _query_plans() -> tuple[QueryPlanDefinition, ...]:
                 "q_live.feature_scanner_static_v1",
                 "q_live.id_issuer_v1",
                 "q_live.market_presentation_asset_v1",
+                "q_live.market_issuer_presentation_selection_v1",
             ),
             "latest canonical symbol, listing, security, and broker conid identity",
             "latest universe_date and feature_date",
@@ -636,6 +638,7 @@ def _query_plans() -> tuple[QueryPlanDefinition, ...]:
                 "q_live.market_short_interest_v1",
                 "q_live.market_security_country_v1",
                 "q_live.market_presentation_asset_v1",
+                "q_live.market_issuer_presentation_selection_v1",
                 "q_live.market_ipo_v1",
                 "q_live.market_stock_split_v1",
             ),
@@ -1821,12 +1824,12 @@ def _fields() -> tuple[FieldDefinition, ...]:
             ("listing", "issuer_legal", "headquarters", "issue", "effective"),
         ),
         "presentation": (
-            "q_live.market_presentation_asset_v1",
+            "q_live.market_issuer_presentation_selection_v1",
             "reference.scanner_asof.v1",
-            ("logo_url", "asset_status"),
+            ("logo_url", "asset_status", "source", "kind", "selection_revision", "quality_class"),
         ),
     }
-    string_fields = {"symbol", "company_name", "security_name", "composite_figi", "share_class_figi", "cik", "conid", "cusip", "isin", "previous_symbol", "current_symbol", "exchange", "primary_exchange", "currency", "asset_class", "security_type", "ticker_type", "block_reason", "listing", "issuer_legal", "headquarters", "issue", "effective", "logo_url", "asset_status"}
+    string_fields = {"symbol", "company_name", "security_name", "composite_figi", "share_class_figi", "cik", "conid", "cusip", "isin", "previous_symbol", "current_symbol", "exchange", "primary_exchange", "currency", "asset_class", "security_type", "ticker_type", "block_reason", "listing", "issuer_legal", "headquarters", "issue", "effective", "logo_url", "asset_status", "source", "kind", "selection_revision", "quality_class"}
     for group, (source, plan, names) in reference_specs.items():
         for name in names:
             rows.append(_field(f"{group}.{name}", group, "reference_gateway", source, plan, value_type="string" if name in string_fields else "boolean" if name == "is_tradable" else "number", coverage_query_plan="reference.schema_inventory.v1"))

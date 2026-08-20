@@ -142,11 +142,18 @@ def scanner_reference_projection(cutoff: datetime, database: str = "q_live", *, 
         ) AS current_branding ON current_branding.issuer_id = u.issuer_id
         LEFT JOIN
         (
+            SELECT issuer_id,
+                argMax(asset_id, tuple(selected_at_utc, inserted_at, selection_id)) AS asset_id
+            FROM {db}.market_issuer_presentation_selection_v1
+            GROUP BY issuer_id
+        ) AS presentation_selection ON presentation_selection.issuer_id = u.issuer_id
+        LEFT JOIN
+        (
             SELECT asset_id, argMax(relative_path, inserted_at) AS relative_path
             FROM {db}.market_presentation_asset_v1 FINAL
-            WHERE asset_kind = 'logo' AND status = 'active' AND inserted_at <= cutoff
+            WHERE status = 'active'
             GROUP BY asset_id
-        ) AS a ON a.asset_id = coalesce(scanner.logo_asset_id, current_branding.logo_asset_id, i.logo_asset_id)
+        ) AS a ON a.asset_id = coalesce(presentation_selection.asset_id, scanner.logo_asset_id, current_branding.logo_asset_id, i.logo_asset_id)
         LEFT JOIN
         (
             SELECT symbol_id,

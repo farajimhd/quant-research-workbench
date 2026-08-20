@@ -35,7 +35,7 @@ def ticker_presentation_payload(
 ) -> dict[str, Any]:
     normalized = normalize_tickers(tickers)
     if not normalized:
-        return {"presentations": {}, "source": f"{database}.market_presentation_asset_v1", "status": "ready"}
+        return {"presentations": {}, "source": f"{database}.market_issuer_presentation_selection_v1", "status": "ready"}
     try:
         if include_recency:
             cutoff = datetime.now(UTC)
@@ -66,7 +66,7 @@ def ticker_presentation_payload(
     except (RuntimeError, TimeoutError, urllib.error.URLError):
         # Branding is optional presentation data. Database pressure must not make
         # the ticker identity or its containing Canvas surface unavailable.
-        return {"presentations": {}, "source": f"{database}.market_presentation_asset_v1", "status": "unavailable"}
+        return {"presentations": {}, "source": f"{database}.market_issuer_presentation_selection_v1", "status": "unavailable"}
     news_by_ticker = {
         str(row.get("ticker") or "").strip().upper(): row for row in news_rows
     }
@@ -83,6 +83,10 @@ def ticker_presentation_payload(
             "country": str(row.get("country") or "").strip().upper(),
             "issuer_name": str(row.get("issuer_name") or "").strip(),
             "logo_url": logo_asset_url(relative_path),
+            "logo_source": str(row.get("logo_source") or "").strip(),
+            "logo_kind": str(row.get("logo_kind") or "").strip(),
+            "logo_selection_revision": str(row.get("logo_selection_revision") or "").strip(),
+            "logo_quality_class": str(row.get("logo_quality_class") or "").strip(),
             "live_news_recency": _recency(
                 news_by_ticker.get(ticker, {}).get("latest_news_at"), cutoff
             ),
@@ -91,7 +95,7 @@ def ticker_presentation_payload(
             ),
             "ticker": ticker,
         }
-    return {"presentations": presentations, "source": f"{database}.market_presentation_asset_v1", "status": "ready"}
+    return {"presentations": presentations, "source": f"{database}.market_issuer_presentation_selection_v1", "status": "ready"}
 
 
 def normalize_tickers(tickers: Iterable[str]) -> list[str]:

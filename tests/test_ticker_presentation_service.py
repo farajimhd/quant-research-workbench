@@ -15,10 +15,12 @@ class TickerPresentationServiceTests(unittest.TestCase):
         sql = ticker_presentation_sql(["AAPL", "MSFT"])
         self.assertEqual(sql, ticker_presentation(["AAPL", "MSFT"]))
         self.assertIn("market_presentation_asset_v1 FINAL", sql)
+        self.assertIn("market_issuer_presentation_selection_v1", sql)
         self.assertIn("feature_tradable_universe_v1 AS u FINAL", sql)
         self.assertIn("u.ticker IN ('AAPL', 'MSFT')", sql)
         self.assertNotIn("max(universe_date) FROM `q_live`.feature_tradable_universe_v1 FINAL", sql)
         self.assertIn("coalesce(scanner.logo_asset_id, issuer.logo_asset_id)", sql)
+        self.assertIn("asset_kind IN ('icon', 'logo')", sql)
         self.assertIn("market_security_country_v1 FINAL", sql)
         self.assertIn("base.country AS country", sql)
         self.assertIn("WHERE symbol_id IN", sql)
@@ -26,11 +28,13 @@ class TickerPresentationServiceTests(unittest.TestCase):
 
     @patch("src.backend.ticker_presentation_service._clickhouse_rows")
     def test_payload_converts_storage_path_to_existing_logo_endpoint(self, rows_mock) -> None:
-        rows_mock.return_value = [{"ticker": "AAPL", "issuer_name": "Apple", "country": "US", "logo_relative_path": "logos/aapl.svg"}]
+        rows_mock.return_value = [{"ticker": "AAPL", "issuer_name": "Apple", "country": "US", "logo_relative_path": "logos/aapl.svg", "logo_source": "massive", "logo_kind": "massive_icon", "logo_selection_revision": "selection:1", "logo_quality_class": "compact_mark"}]
         payload = ticker_presentation_payload(["AAPL"])
         self.assertEqual(payload["presentations"]["AAPL"]["logo_url"], "/api/real-live-trading/logo?path=logos%2Faapl.svg")
         self.assertEqual(payload["presentations"]["AAPL"]["issuer_name"], "Apple")
         self.assertEqual(payload["presentations"]["AAPL"]["country"], "US")
+        self.assertEqual(payload["presentations"]["AAPL"]["logo_source"], "massive")
+        self.assertEqual(payload["presentations"]["AAPL"]["logo_kind"], "massive_icon")
         self.assertEqual(payload["status"], "ready")
 
     @patch("src.backend.ticker_presentation_service._clickhouse_rows")

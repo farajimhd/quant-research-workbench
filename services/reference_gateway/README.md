@@ -282,6 +282,41 @@ under `REFERENCE_GATEWAY_PRESENTATION_ASSET_ROOT_WIN`, defaulting to
 `D:/market-data/reference_gateway/artifacts/presentation_assets` on the
 workstation data root.
 
+Presentation selection is issuer-linked and source-preserving. The gateway
+records every Massive icon/logo and SEC filing-image decision in
+`market_issuer_presentation_candidate_v1`, then appends changes to
+`market_issuer_presentation_selection_v1`. The versioned resolver policy is:
+
+1. verified compact SEC issuer mark;
+2. Massive icon;
+3. verified SEC wordmark;
+4. Massive logo.
+
+Rejected, ambiguous, and retryable SEC candidates remain visible with reason
+codes. An existing selection is never replaced until the new image has been
+downloaded, decoded, identity-checked, and accepted. New canonical tickers run
+a targeted two-year SEC lookback after their Massive details and SEC bridge are
+available. Scheduled cycles refresh a bounded stale Massive batch and consume a
+bounded set of unclassified SEC document revisions, so the same ledger also
+serves as restart-safe historical backfill state.
+
+Presentation refresh controls:
+
+- `REFERENCE_GATEWAY_PRESENTATION_REFRESH_FREQUENCY_SECONDS` (default `3600`)
+- `REFERENCE_GATEWAY_PRESENTATION_MASSIVE_REFRESH_DAYS` (default `7`)
+- `REFERENCE_GATEWAY_PRESENTATION_MASSIVE_REFRESH_BATCH_SIZE` (default `100`)
+- `REFERENCE_GATEWAY_PRESENTATION_CANDIDATE_BATCH_SIZE` (default `5000`)
+- `REFERENCE_GATEWAY_PRESENTATION_SEC_CANDIDATE_BATCH_SIZE` (default `100`)
+- `REFERENCE_GATEWAY_PRESENTATION_SEC_LOOKBACK_DAYS` (default `730`)
+- `REFERENCE_GATEWAY_PRESENTATION_SEC_REQUEST_MIN_INTERVAL_SECONDS` (default `0.12`)
+- `REFERENCE_GATEWAY_PRESENTATION_SEC_REQUEST_TIMEOUT_SECONDS` (default `60`)
+- `REFERENCE_GATEWAY_PRESENTATION_SEC_MAX_ASSET_BYTES` (default `10000000`)
+- `REFERENCE_GATEWAY_PRESENTATION_INSERT_BATCH_SIZE` (default `1000`)
+
+SEC downloads require the existing contact-bearing `SEC_USER_AGENT` authority.
+If it is absent, SEC acquisition is reported as partial and the Massive
+selection remains available.
+
 ## Memory Guardrail
 
 Each child cycle writes memory snapshots to the runtime JSONL log. The parent

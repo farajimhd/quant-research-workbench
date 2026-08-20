@@ -40,10 +40,10 @@ def full_tradable_universe(*, database: str) -> str:
         u.currency_code AS currency_code,
         u.issuer_id AS issuer_id,
         issuer.issuer_name AS issuer_name,
-        asset.asset_id AS logo_asset_id,
-        asset.relative_path AS logo_relative_path,
-        asset.mime_type AS logo_mime_type,
-        asset.source_reference AS logo_source_reference,
+        coalesce(resolved_asset.asset_id, asset.asset_id) AS logo_asset_id,
+        coalesce(resolved_asset.relative_path, asset.relative_path) AS logo_relative_path,
+        coalesce(resolved_asset.mime_type, asset.mime_type) AS logo_mime_type,
+        coalesce(resolved_asset.source_reference, asset.source_reference) AS logo_source_reference,
         scanner.free_float AS massive_float,
         scanner.short_interest AS massive_short_interest,
         scanner.days_to_cover AS massive_days_to_cover,
@@ -59,6 +59,14 @@ def full_tradable_universe(*, database: str) -> str:
         ON scanner.feature_date = (SELECT feature_date FROM latest_scanner)
        AND scanner.symbol_id = u.symbol_id
        AND scanner.listing_id = u.listing_id
+    LEFT JOIN
+    (
+        SELECT issuer_id, argMax(asset_id, tuple(selected_at_utc, inserted_at, selection_id)) AS asset_id
+        FROM {db}.market_issuer_presentation_selection_v1
+        GROUP BY issuer_id
+    ) AS presentation_selection ON presentation_selection.issuer_id = u.issuer_id
+    LEFT JOIN (SELECT * FROM {db}.market_presentation_asset_v1 FINAL WHERE status = 'active') AS resolved_asset
+        ON resolved_asset.asset_id = presentation_selection.asset_id
     LEFT JOIN (SELECT * FROM {db}.market_presentation_asset_v1 FINAL) AS asset
         ON asset.asset_id = coalesce(scanner.logo_asset_id, issuer.logo_asset_id)
     WHERE u.universe_date = (SELECT universe_date FROM latest_universe)
