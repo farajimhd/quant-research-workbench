@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::Mutex;
 
 pub const SIGNAL_STREAM_SCHEMA_VERSION: u16 = 2;
@@ -23,6 +24,8 @@ pub struct SignalStreamConfigurationRequest {
     pub rule_sets: Vec<Value>,
     #[serde(default)]
     pub column_catalog: Vec<Value>,
+    #[serde(default)]
+    pub recovery_templates: Vec<Value>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -63,6 +66,7 @@ pub struct SignalStreamSnapshot {
     pub new_occurrences: Vec<Value>,
     pub signal_streams: Vec<Value>,
     pub admissions_by_watchlist: BTreeMap<String, Vec<Value>>,
+    pub recovery: Value,
 }
 
 #[derive(Clone)]
@@ -70,13 +74,39 @@ pub struct SharedSignalStreamStore {
     inner: Arc<Mutex<SignalStreamStore>>,
     mutation: Arc<Mutex<()>>,
     writer: SignalStreamClickHouseWriter,
+    recovery: Arc<Mutex<SignalRecoveryState>>,
+    history_url: String,
+    history_client: Client,
 }
 
 #[derive(Clone, Default)]
 struct MatchState {
     matching: bool,
     last_emitted_at: Option<DateTime<Utc>>,
+    observed_at: Option<DateTime<Utc>>,
     definition_revision: String,
+}
+
+#[derive(Clone, Default)]
+struct PendingBaseline {
+    at: Option<DateTime<Utc>>,
+    definition_revision: String,
+    row: Value,
+}
+
+#[derive(Default)]
+struct SignalRecoveryState {
+    key: String,
+    status: String,
+    attempts: u64,
+    started_at: Option<DateTime<Utc>>,
+    completed_at: Option<DateTime<Utc>>,
+    recovery_through: Option<DateTime<Utc>>,
+    recovered_count: usize,
+    source_revision: Value,
+    last_error: String,
+    active: bool,
+    pending_baselines: HashMap<(String, String), PendingBaseline>,
 }
 
 #[derive(Default)]
@@ -92,12 +122,19 @@ struct SignalStreamStore {
 
 impl SharedSignalStreamStore {
     pub async fn new(config: GatewayConfig) -> Result<Self, String> {
+        let history_url = config
+            .qmd_history_gateway_url
+            .trim_end_matches('/')
+            .to_string();
         let writer = SignalStreamClickHouseWriter::new(config);
         writer.initialize().await?;
         Ok(Self {
             inner: Arc::new(Mutex::new(SignalStreamStore::default())),
             mutation: Arc::new(Mutex::new(())),
             writer,
+            recovery: Arc::new(Mutex::new(SignalRecoveryState::default())),
+            history_url,
+            history_client: Client::new(),
         })
     }
 
@@ -144,7 +181,11 @@ impl SharedSignalStreamStore {
             store.diagnostics.clear();
         }
         store.configuration = Some(request);
-        Ok(snapshot_locked(&store, None, None, None, 0))
+        drop(store);
+        self.schedule_recovery().await;
+        let recovery = self.recovery_snapshot().await;
+        let store = self.inner.lock().await;
+        Ok(snapshot_locked(&store, None, None, None, 0, recovery))
     }
 
     pub async fn evaluate(
@@ -152,6 +193,9 @@ impl SharedSignalStreamStore {
         request: SignalStreamEvaluateRequest,
     ) -> Result<SignalStreamSnapshot, String> {
         let _mutation = self.mutation.lock().await;
+        let mut recovery = self.recovery.lock().await;
+        let recovering = recovery.active && recovery.status == "recovering";
+        let recovery_snapshot = recovery_value(&recovery);
         let store = self.inner.lock().await;
         let configuration = store
             .configuration
@@ -160,7 +204,14 @@ impl SharedSignalStreamStore {
         if request.as_of < configuration.session_start_utc
             || request.as_of > configuration.session_end_utc
         {
-            return Ok(snapshot_locked(&store, None, Some(request.as_of), None, 0));
+            return Ok(snapshot_locked(
+                &store,
+                None,
+                Some(request.as_of),
+                None,
+                0,
+                recovery_snapshot,
+            ));
         }
         let rules = configuration
             .rule_sets
@@ -235,6 +286,7 @@ impl SharedSignalStreamStore {
                     };
                 matching_count += usize::from(matches);
                 let key = (stream_id.to_string(), symbol.clone());
+                let state_was_known = next_states.contains_key(&key);
                 let previous = next_states.get(&key).cloned().unwrap_or_default();
                 let previous_match =
                     previous.matching && previous.definition_revision == definition_revision;
@@ -253,6 +305,7 @@ impl SharedSignalStreamStore {
                             && cooldown_ready));
                 let mut next = previous;
                 next.matching = matches;
+                next.observed_at = Some(request.as_of);
                 next.definition_revision = definition_revision.clone();
                 if should_emit {
                     let occurrence = occurrence(
@@ -263,12 +316,23 @@ impl SharedSignalStreamStore {
                         &definition_revision,
                         "qmd_live_rule_evaluator",
                     );
-                    let event_id = string(&occurrence, "event_id").unwrap_or("");
-                    if !event_id.is_empty() && !store.event_ids.contains(event_id) {
-                        pending.push(occurrence);
-                        emitted_count += 1;
+                    if recovering && !state_was_known {
+                        recovery.pending_baselines.insert(
+                            key.clone(),
+                            PendingBaseline {
+                                at: Some(request.as_of),
+                                definition_revision: definition_revision.clone(),
+                                row: row.clone(),
+                            },
+                        );
+                    } else {
+                        let event_id = string(&occurrence, "event_id").unwrap_or("");
+                        if !event_id.is_empty() && !store.event_ids.contains(event_id) {
+                            pending.push(occurrence);
+                            emitted_count += 1;
+                        }
+                        next.last_emitted_at = Some(request.as_of);
                     }
-                    next.last_emitted_at = Some(request.as_of);
                 }
                 next_states.insert(key, next);
             }
@@ -291,15 +355,24 @@ impl SharedSignalStreamStore {
         }
         let pending = assign_sequences(&store, pending);
         drop(store);
+        drop(recovery);
         self.writer.insert(&pending).await?;
+        let recovery_snapshot = self.recovery_snapshot().await;
         let mut store = self.inner.lock().await;
         store.states = next_states;
         store.diagnostics = diagnostics;
         for occurrence in &pending {
             append_occurrence(&mut store, occurrence.clone());
         }
-        Ok(snapshot_locked(&store, None, Some(request.as_of), None, 0)
-            .with_new_occurrences(pending))
+        Ok(snapshot_locked(
+            &store,
+            None,
+            Some(request.as_of),
+            None,
+            0,
+            recovery_snapshot,
+        )
+        .with_new_occurrences(pending))
     }
 
     pub async fn append_external(
@@ -363,6 +436,7 @@ impl SharedSignalStreamStore {
         let pending = assign_sequences(&store, pending);
         drop(store);
         self.writer.insert(&pending).await?;
+        let recovery_snapshot = self.recovery_snapshot().await;
         let mut store = self.inner.lock().await;
         for occurrence in &pending {
             append_occurrence(&mut store, occurrence.clone());
@@ -377,10 +451,14 @@ impl SharedSignalStreamStore {
                 pending.len(),
             ),
         );
-        Ok(snapshot_locked(&store, None, None, None, 0).with_new_occurrences(pending))
+        Ok(
+            snapshot_locked(&store, None, None, None, 0, recovery_snapshot)
+                .with_new_occurrences(pending),
+        )
     }
 
     pub async fn snapshot(&self, query: SignalStreamSnapshotQuery) -> SignalStreamSnapshot {
+        let recovery = self.recovery_snapshot().await;
         let store = self.inner.lock().await;
         snapshot_locked(
             &store,
@@ -388,8 +466,449 @@ impl SharedSignalStreamStore {
             query.as_of,
             query.after_sequence,
             query.limit.unwrap_or(5_000).clamp(1, 50_000),
+            recovery,
         )
     }
+
+    async fn recovery_snapshot(&self) -> Value {
+        let recovery = self.recovery.lock().await;
+        recovery_value(&recovery)
+    }
+
+    async fn schedule_recovery(&self) {
+        let configuration = self.inner.lock().await.configuration.clone();
+        let Some(configuration) = configuration else {
+            return;
+        };
+        let recoverable = configuration
+            .recovery_templates
+            .iter()
+            .any(|row| string(row, "recovery_kind") == Some("qmd_history_timeline"));
+        let unavailable = configuration
+            .recovery_templates
+            .iter()
+            .filter(|row| string(row, "recovery_kind") == Some("coverage_unavailable"))
+            .count();
+        let key = format!(
+            "{}|{}",
+            configuration.session_key, configuration.configuration_revision
+        );
+        if !recoverable {
+            let mut recovery = self.recovery.lock().await;
+            recovery.key = key;
+            recovery.status = if unavailable > 0 {
+                "coverage_incomplete"
+            } else {
+                "source_native"
+            }
+            .to_string();
+            recovery.active = false;
+            return;
+        }
+        let now = Utc::now();
+        let cutoff = (now - chrono::Duration::seconds(5)).min(configuration.session_end_utc);
+        if cutoff <= configuration.session_start_utc {
+            return;
+        }
+        {
+            let mut recovery = self.recovery.lock().await;
+            if recovery.key == key && (recovery.active || recovery.status == "complete") {
+                return;
+            }
+            recovery.key = key.clone();
+            recovery.status = "recovering".to_string();
+            recovery.attempts = recovery.attempts.saturating_add(1);
+            recovery.started_at = Some(now);
+            recovery.completed_at = None;
+            recovery.recovery_through = Some(cutoff);
+            recovery.last_error.clear();
+            recovery.active = true;
+            recovery.pending_baselines.clear();
+        }
+        let runtime = self.clone();
+        tokio::spawn(async move {
+            loop {
+                match runtime
+                    .recover_session(key.clone(), configuration.clone(), cutoff)
+                    .await
+                {
+                    Ok(()) => return,
+                    Err(error) => {
+                        let mut recovery = runtime.recovery.lock().await;
+                        if recovery.key != key {
+                            return;
+                        }
+                        recovery.status = if error.contains("complete pinned market-event window")
+                            || error.contains("not complete_for_history")
+                            || error.contains("coverage")
+                        {
+                            "coverage_incomplete"
+                        } else {
+                            "retryable_error"
+                        }
+                        .to_string();
+                        recovery.last_error = error;
+                        // Keep ownership of the recovery loop inside QMD. An
+                        // idempotent configuration PUT or a Canvas open must
+                        // never become the mechanism that starts another scan.
+                        recovery.active = true;
+                        recovery.completed_at = Some(Utc::now());
+                    }
+                }
+                tokio::time::sleep(Duration::from_secs(30)).await;
+                let mut recovery = runtime.recovery.lock().await;
+                if recovery.key != key || recovery.status == "complete" {
+                    return;
+                }
+                recovery.status = "recovering".to_string();
+                recovery.attempts = recovery.attempts.saturating_add(1);
+                recovery.started_at = Some(Utc::now());
+                recovery.completed_at = None;
+            }
+        });
+    }
+
+    async fn recover_session(
+        &self,
+        key: String,
+        configuration: SignalStreamConfigurationRequest,
+        cutoff: DateTime<Utc>,
+    ) -> Result<(), String> {
+        let mut requests = Vec::new();
+        for template in &configuration.recovery_templates {
+            if string(template, "recovery_kind") != Some("qmd_history_timeline") {
+                continue;
+            }
+            let plan = bounded_recovery_plan(
+                template
+                    .get("plan")
+                    .cloned()
+                    .ok_or_else(|| "Signal recovery template has no plan".to_string())?,
+                configuration.session_start_utc,
+                cutoff,
+            )?;
+            requests.push(json!({
+                "plan": plan,
+                "external_feature_revisions": template
+                    .get("external_feature_revisions")
+                    .cloned()
+                    .unwrap_or_else(|| json!([])),
+                "external_feature_intervals": template
+                    .get("external_feature_intervals")
+                    .cloned()
+                    .unwrap_or_else(|| json!([])),
+            }));
+        }
+        if requests.is_empty() {
+            return Ok(());
+        }
+        let response = self
+            .history_client
+            .post(format!(
+                "{}/materialize/watchlist-timelines",
+                self.history_url
+            ))
+            .timeout(Duration::from_secs(600))
+            .json(&json!({"requests": requests}))
+            .send()
+            .await
+            .map_err(|error| format!("QMD History signal recovery request failed: {error}"))?;
+        let status = response.status();
+        let payload = response.json::<Value>().await.map_err(|error| {
+            format!("QMD History signal recovery response was invalid: {error}")
+        })?;
+        if !status.is_success() {
+            return Err(format!(
+                "QMD History signal recovery failed status={status}: {}",
+                payload
+                    .get("error")
+                    .and_then(Value::as_str)
+                    .unwrap_or("unknown error")
+            ));
+        }
+        let source_revision = payload
+            .get("source_revision")
+            .ok_or_else(|| "QMD History signal recovery has no source revision".to_string())?;
+        if source_revision
+            .get("request_complete")
+            .and_then(Value::as_bool)
+            != Some(true)
+            || source_revision
+                .get("complete_for_history")
+                .and_then(Value::as_bool)
+                != Some(true)
+        {
+            return Err(
+                "QMD History signal recovery source window is not complete_for_history".to_string(),
+            );
+        }
+        let recovered_count = self
+            .merge_recovery(&configuration, cutoff, &payload)
+            .await?;
+        let mut recovery = self.recovery.lock().await;
+        if recovery.key == key {
+            recovery.status = "complete".to_string();
+            recovery.active = false;
+            recovery.completed_at = Some(Utc::now());
+            recovery.recovery_through = Some(cutoff);
+            recovery.recovered_count = recovered_count;
+            recovery.source_revision = payload
+                .get("source_revision")
+                .cloned()
+                .unwrap_or(Value::Null);
+            recovery.last_error.clear();
+            recovery.pending_baselines.clear();
+        }
+        Ok(())
+    }
+
+    async fn merge_recovery(
+        &self,
+        configuration: &SignalStreamConfigurationRequest,
+        cutoff: DateTime<Utc>,
+        payload: &Value,
+    ) -> Result<usize, String> {
+        let _mutation = self.mutation.lock().await;
+        let mut recovery = self.recovery.lock().await;
+        let mut store = self.inner.lock().await;
+        let rules = configuration
+            .rule_sets
+            .iter()
+            .filter_map(|rule| Some((string(rule, "rule_set_id")?.to_string(), rule.clone())))
+            .collect::<HashMap<_, _>>();
+        let stream_by_id = configuration
+            .streams
+            .iter()
+            .filter_map(|stream| {
+                Some((
+                    string(stream, "signal_stream_id")?.to_string(),
+                    stream.clone(),
+                ))
+            })
+            .collect::<HashMap<_, _>>();
+        let mut recovered_states = HashMap::<(String, String), bool>::new();
+        let mut pending = Vec::<Value>::new();
+        for materialization in payload
+            .get("materializations")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            let stream_id = string(materialization, "watchlist_id")
+                .unwrap_or("")
+                .strip_prefix("signal-recovery:")
+                .unwrap_or("")
+                .to_string();
+            let Some(stream) = stream_by_id.get(&stream_id) else {
+                continue;
+            };
+            let selected_rules = stream
+                .get("inclusion_rule_sets")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+                .collect::<Vec<_>>();
+            let revision = definition_revision(stream, &rules, &selected_rules);
+            for chunk in materialization
+                .get("chunks")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+            {
+                for transition in chunk
+                    .get("transitions")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                {
+                    let symbol = string(transition, "ticker")
+                        .unwrap_or("")
+                        .to_ascii_uppercase();
+                    if symbol.is_empty() {
+                        continue;
+                    }
+                    let key = (stream_id.clone(), symbol.clone());
+                    match string(transition, "event").unwrap_or("") {
+                        "added" => {
+                            recovered_states.insert(key, true);
+                            let at =
+                                datetime_value(transition, "effective_at").ok_or_else(|| {
+                                    "Recovered Signal transition has no time".to_string()
+                                })?;
+                            let row = recovery_row(stream, transition, configuration);
+                            pending.push(occurrence(
+                                stream,
+                                &row,
+                                at,
+                                configuration,
+                                &revision,
+                                "qmd_history_signal_recovery",
+                            ));
+                        }
+                        "removed" => {
+                            recovered_states.insert(key, false);
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+        for (key, baseline) in recovery.pending_baselines.drain() {
+            if recovered_states.get(&key).copied().unwrap_or(false) {
+                continue;
+            }
+            let Some(at) = baseline.at else {
+                continue;
+            };
+            let Some(stream) = stream_by_id.get(&key.0) else {
+                continue;
+            };
+            pending.push(occurrence(
+                stream,
+                &baseline.row,
+                at,
+                configuration,
+                &baseline.definition_revision,
+                "qmd_live_recovery_handoff",
+            ));
+        }
+        for (key, matching) in recovered_states {
+            let state = store.states.entry(key).or_default();
+            if state.observed_at.is_none_or(|observed| observed <= cutoff) {
+                state.matching = matching;
+                state.observed_at = Some(cutoff);
+            }
+        }
+        pending.sort_by_key(|row| datetime_value(row, "event_time"));
+        pending.retain(|row| {
+            string(row, "event_id").is_some_and(|event_id| !store.event_ids.contains(event_id))
+        });
+        let pending = assign_sequences(&store, pending);
+        drop(store);
+        drop(recovery);
+        self.writer.insert(&pending).await?;
+        let mut store = self.inner.lock().await;
+        let inserted_count = pending.len();
+        for occurrence in pending {
+            append_occurrence(&mut store, occurrence);
+        }
+        Ok(inserted_count)
+    }
+}
+
+fn recovery_value(state: &SignalRecoveryState) -> Value {
+    json!({
+        "status": if state.status.is_empty() { "not_started" } else { state.status.as_str() },
+        "active": state.active,
+        "attempts": state.attempts,
+        "started_at": state.started_at,
+        "completed_at": state.completed_at,
+        "recovery_through": state.recovery_through,
+        "recovered_count": state.recovered_count,
+        "source_revision": state.source_revision,
+        "last_error": state.last_error,
+    })
+}
+
+fn bounded_recovery_plan(
+    mut plan: Value,
+    start: DateTime<Utc>,
+    end: DateTime<Utc>,
+) -> Result<Value, String> {
+    let object = plan
+        .as_object_mut()
+        .ok_or_else(|| "Signal recovery plan must be an object".to_string())?;
+    object.insert("start".to_string(), json!(start.to_rfc3339()));
+    object.insert("end".to_string(), json!(end.to_rfc3339()));
+    object.insert(
+        "evaluation_windows".to_string(),
+        json!([{"start": start.to_rfc3339(), "end": end.to_rfc3339()}]),
+    );
+    object.remove("plan_hash");
+    let encoded = serde_json::to_vec(&plan)
+        .map_err(|error| format!("Signal recovery plan encoding failed: {error}"))?;
+    plan["plan_hash"] = json!(format!("sha256:{}", sha256_bytes(&encoded)));
+    Ok(plan)
+}
+
+fn recovery_row(
+    stream: &Value,
+    transition: &Value,
+    configuration: &SignalStreamConfigurationRequest,
+) -> Value {
+    let mut row = transition
+        .get("evidence")
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    let symbol = string(transition, "ticker").unwrap_or("");
+    row.insert("ticker".to_string(), json!(symbol));
+    row.insert("symbol".to_string(), json!(symbol));
+    let intervals = stream.get("column_intervals").and_then(Value::as_object);
+    let aggregations = stream.get("column_aggregations").and_then(Value::as_object);
+    for column_id in stream
+        .get("columns")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+    {
+        let Some(column) = configuration
+            .column_catalog
+            .iter()
+            .find(|column| string(column, "column_id") == Some(column_id))
+        else {
+            continue;
+        };
+        let source_id = string(column, "source_id").unwrap_or("");
+        let interval = intervals
+            .and_then(|values| values.get(column_id))
+            .and_then(interval_value);
+        let mut instance = interval
+            .map(|value| format!("{source_id}@@{value}"))
+            .unwrap_or_else(|| source_id.to_string());
+        if let Some(aggregation) = aggregations
+            .and_then(|values| values.get(column_id))
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+        {
+            instance.push_str("##");
+            instance.push_str(aggregation);
+        }
+        if let Some(value) = row
+            .get(&instance)
+            .cloned()
+            .or_else(|| row.get(source_id).cloned())
+        {
+            row.insert(column_id.to_string(), value);
+        }
+    }
+    Value::Object(row)
+}
+
+fn interval_value(value: &Value) -> Option<String> {
+    let object = value.as_object()?;
+    let amount = object.get("value")?.as_u64()?;
+    let suffix = match object.get("unit")?.as_str()? {
+        "milliseconds" => "ms",
+        "seconds" => "s",
+        "minutes" => "m",
+        "hours" => "h",
+        "days" => "d",
+        "weeks" => "w",
+        "months" => "mo",
+        _ => return None,
+    };
+    Some(format!("{amount}{suffix}"))
+}
+
+fn sha256_bytes(value: &[u8]) -> String {
+    digest(&SHA256, value)
+        .as_ref()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
 }
 
 trait SnapshotNewOccurrences {
@@ -701,6 +1220,7 @@ fn hydrate_occurrence(store: &mut SignalStreamStore, occurrence: Value) {
             MatchState {
                 matching: true,
                 last_emitted_at: at,
+                observed_at: at,
                 definition_revision: definition,
             },
         );
@@ -713,6 +1233,7 @@ fn snapshot_locked(
     as_of: Option<DateTime<Utc>>,
     after_sequence: Option<u64>,
     limit: usize,
+    recovery: Value,
 ) -> SignalStreamSnapshot {
     let now = as_of.unwrap_or_else(Utc::now);
     let configuration = store.configuration.as_ref();
@@ -761,6 +1282,10 @@ fn snapshot_locked(
         .filter(|row| stream_id.is_none_or(|id| string(row, "signal_stream_id") == Some(id)))
         .cloned()
         .collect::<Vec<_>>();
+    let overall_recovery_status = recovery
+        .get("status")
+        .and_then(Value::as_str)
+        .unwrap_or("not_started");
     let definitions = configuration
         .map(|config| {
             config
@@ -791,6 +1316,23 @@ fn snapshot_locked(
                         .iter()
                         .filter(|row| string(row, "signal_stream_id") == Some(id))
                         .count());
+                    if let Some(template) = config
+                        .recovery_templates
+                        .iter()
+                        .find(|template| string(template, "signal_stream_id") == Some(id))
+                    {
+                        let kind =
+                            string(template, "recovery_kind").unwrap_or("coverage_unavailable");
+                        value["recovery_kind"] = json!(kind);
+                        value["recovery_status"] = json!(match kind {
+                            "qmd_history_timeline" => overall_recovery_status,
+                            "source_native" => "source_native",
+                            _ => "coverage_incomplete",
+                        });
+                        if let Some(reason) = template.get("reason") {
+                            value["recovery_reason"] = reason.clone();
+                        }
+                    }
                     value
                 })
                 .collect::<Vec<_>>()
@@ -827,6 +1369,7 @@ fn snapshot_locked(
         admissions_by_watchlist: configuration
             .map(|config| admissions_by_watchlist(config, store, now))
             .unwrap_or_default(),
+        recovery,
     }
 }
 
@@ -1116,11 +1659,55 @@ mod tests {
             json!({"event_id":"b","signal_stream_id":"squeeze","ticker":"BBB","event_time":"2026-08-17T15:01:00Z","sequence":2}),
         );
 
-        let snapshot = snapshot_locked(&store, Some("squeeze"), None, Some(1), 5000);
+        let snapshot = snapshot_locked(&store, Some("squeeze"), None, Some(1), 5000, Value::Null);
 
         assert!(snapshot.occurrences.is_empty());
         assert_eq!(snapshot.occurrence_count, 2);
         assert_eq!(snapshot.new_occurrences.len(), 1);
         assert_eq!(snapshot.new_occurrences[0]["event_id"], "b");
+    }
+
+    #[test]
+    fn recovery_plan_rebinds_bounds_and_hashes_exact_content() {
+        let start = "2026-08-17T08:00:00Z".parse().unwrap();
+        let end = "2026-08-17T15:00:00Z".parse().unwrap();
+        let plan = bounded_recovery_plan(
+            json!({"watchlist_id":"signal-recovery:squeeze","plan_hash":"stale"}),
+            start,
+            end,
+        )
+        .unwrap();
+        assert_eq!(plan["start"], "2026-08-17T08:00:00+00:00");
+        assert_eq!(plan["end"], "2026-08-17T15:00:00+00:00");
+        assert!(plan["plan_hash"].as_str().unwrap().starts_with("sha256:"));
+    }
+
+    #[test]
+    fn recovered_evidence_maps_exact_interval_and_aggregation_to_canvas_column() {
+        let configuration = SignalStreamConfigurationRequest {
+            configuration_revision: "rev".to_string(),
+            session_key: "2026-08-17".to_string(),
+            session_start_utc: "2026-08-17T08:00:00Z".parse().unwrap(),
+            session_end_utc: "2026-08-18T00:00:00Z".parse().unwrap(),
+            streams: Vec::new(),
+            rule_sets: Vec::new(),
+            column_catalog: vec![json!({
+                "column_id":"bid-price",
+                "source_id":"quote.bid_price"
+            })],
+            recovery_templates: Vec::new(),
+        };
+        let stream = json!({
+            "columns":["bid-price"],
+            "column_intervals":{"bid-price":{"value":100,"unit":"milliseconds"}},
+            "column_aggregations":{"bid-price":"max"}
+        });
+        let transition = json!({
+            "ticker":"ABC",
+            "evidence":{"quote.bid_price@@100ms##max":12.34}
+        });
+        let row = recovery_row(&stream, &transition, &configuration);
+        assert_eq!(row["bid-price"], 12.34);
+        assert_eq!(row["ticker"], "ABC");
     }
 }

@@ -716,6 +716,16 @@ impl HistoricalEventSource {
         batch_size: usize,
         live_continuation_sequence: Option<u64>,
     ) -> Result<mpsc::Receiver<Result<Vec<LiveCompactEvent>, String>>, String> {
+        self.stream_ordered_filtered(window, batch_size, live_continuation_sequence, None)
+    }
+
+    pub fn stream_ordered_filtered(
+        &self,
+        window: EventWindow,
+        batch_size: usize,
+        live_continuation_sequence: Option<u64>,
+        event_type_filter: Option<u8>,
+    ) -> Result<mpsc::Receiver<Result<Vec<LiveCompactEvent>, String>>, String> {
         validate_window(&window)?;
         let batch_size = batch_size.clamp(1, 100_000);
         let (sender, receiver) = mpsc::channel(2);
@@ -728,6 +738,7 @@ impl HistoricalEventSource {
                     window,
                     batch_size,
                     live_continuation_sequence,
+                    event_type_filter,
                     stream_sender,
                 ) => result,
             };
@@ -743,10 +754,11 @@ impl HistoricalEventSource {
         window: EventWindow,
         batch_size: usize,
         live_continuation_sequence: Option<u64>,
+        event_type_filter: Option<u8>,
         sender: mpsc::Sender<Result<Vec<LiveCompactEvent>, String>>,
     ) -> Result<(), String> {
         let plan = self.source_plan(&window).await?;
-        let ticker_filter = if window.tickers.is_empty() {
+        let mut ticker_filter = if window.tickers.is_empty() {
             String::new()
         } else {
             let tickers = window
@@ -760,52 +772,72 @@ impl HistoricalEventSource {
                 .join(",");
             format!(" AND ticker IN ({tickers})")
         };
-        let mut selects = Vec::new();
-        for segment in plan
+        if let Some(event_type) = event_type_filter.filter(|value| *value <= 1) {
+            ticker_filter.push_str(&format!(
+                " AND bitAnd(source.event_meta, 1) = toUInt8({event_type})"
+            ));
+        }
+        let mut historical_segments = plan
             .segments
             .iter()
             .filter(|segment| segment.queryable_by_history)
-        {
-            match segment.tier {
-                MarketSourceTier::Archive => {
-                    let last_inclusive = segment.end - chrono::Duration::microseconds(1);
-                    for year in segment.start.year()..=last_inclusive.year() {
-                        selects.push(event_select(
-                            &format!(
-                                "{}.{}{}",
-                                self.config.clickhouse_database, self.config.table_prefix, year
-                            ),
-                            false,
-                            segment.start,
-                            segment.end,
-                            &ticker_filter,
-                            None,
-                        ));
-                    }
+            .collect::<Vec<_>>();
+        historical_segments.sort_by_key(|segment| segment.start);
+        let chunk_duration =
+            chrono::Duration::minutes(self.config.scanner_fetch_chunk_minutes.max(1) as i64);
+        for segment in historical_segments {
+            let mut chunk_start = segment.start;
+            while chunk_start < segment.end {
+                if sender.is_closed() {
+                    return Ok(());
                 }
-                MarketSourceTier::Recent => selects.push(event_select(
-                    &format!(
-                        "{}.{}",
-                        self.config.recent_database, self.config.recent_event_table
+                let mut chunk_end = (chunk_start + chunk_duration).min(segment.end);
+                if matches!(segment.tier, MarketSourceTier::Archive) {
+                    let next_year = Utc
+                        .with_ymd_and_hms(chunk_start.year() + 1, 1, 1, 0, 0, 0)
+                        .single()
+                        .ok_or_else(|| "invalid archive year boundary".to_string())?;
+                    chunk_end = chunk_end.min(next_year);
+                }
+                let select = match segment.tier {
+                    MarketSourceTier::Archive => event_select(
+                        &format!(
+                            "{}.{}{}",
+                            self.config.clickhouse_database,
+                            self.config.table_prefix,
+                            chunk_start.year()
+                        ),
+                        false,
+                        chunk_start,
+                        chunk_end,
+                        &ticker_filter,
+                        None,
                     ),
-                    true,
-                    segment.start,
-                    segment.end,
-                    &ticker_filter,
-                    None,
-                )),
-                MarketSourceTier::CurrentLive
-                | MarketSourceTier::ClosedMarket
-                | MarketSourceTier::Gap => {}
+                    MarketSourceTier::Recent => event_select(
+                        &format!(
+                            "{}.{}",
+                            self.config.recent_database, self.config.recent_event_table
+                        ),
+                        true,
+                        chunk_start,
+                        chunk_end,
+                        &ticker_filter,
+                        None,
+                    ),
+                    MarketSourceTier::CurrentLive
+                    | MarketSourceTier::ClosedMarket
+                    | MarketSourceTier::Gap => {
+                        chunk_start = chunk_end;
+                        continue;
+                    }
+                };
+                let sql = format!(
+                    "SELECT * FROM ({select}) ORDER BY sip_timestamp_us, ticker, ordinal FORMAT TabSeparated"
+                );
+                self.stream_query_rows(sql, batch_size, sender.clone())
+                    .await?;
+                chunk_start = chunk_end;
             }
-        }
-        if !selects.is_empty() {
-            let sql = format!(
-                "SELECT * FROM ({}) ORDER BY sip_timestamp_us, ticker, ordinal FORMAT TabSeparated",
-                selects.join(" UNION ALL ")
-            );
-            self.stream_query_rows(sql, batch_size, sender.clone())
-                .await?;
         }
         for segment in plan
             .segments

@@ -30,6 +30,8 @@ pub struct QmdSourceSpec {
     pub runtime_field: String,
     #[serde(default)]
     pub interval: String,
+    #[serde(default)]
+    pub aggregation: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -285,7 +287,10 @@ pub fn validate_plan(
             "historical Watchlist chunk exceeds membership-slot budget={MAX_MEMBERSHIP_SLOTS_PER_CHUNK}"
         ));
     }
-    if plan.output_mode != "initial_membership_then_transition_deltas" || !plan.state_carry_required
+    if !matches!(
+        plan.output_mode.as_str(),
+        "initial_membership_then_transition_deltas" | "signal_transitions_only"
+    ) || !plan.state_carry_required
     {
         return Err(
             "historical Watchlist plan requires transition output with state carry".to_string(),
@@ -337,7 +342,15 @@ pub fn validate_plan(
         .collect::<BTreeSet<_>>();
     let qmd_source_bases = qmd_sources
         .iter()
-        .map(|value| value.split("@@").next().unwrap_or_default())
+        .map(|value| {
+            value
+                .split("@@")
+                .next()
+                .unwrap_or_default()
+                .split("##")
+                .next()
+                .unwrap_or_default()
+        })
         .collect::<BTreeSet<_>>();
     if qmd_sources.len() != plan.qmd_sources.len() || !qmd_source_bases.is_subset(&allowed) {
         return Err(
@@ -354,12 +367,7 @@ pub fn validate_plan(
         || plan.qmd_source_specs.iter().any(|spec| {
             spec.source_id.trim().is_empty()
                 || spec.runtime_field.trim().is_empty()
-                || spec.instance_id
-                    != if spec.interval.is_empty() {
-                        spec.source_id.clone()
-                    } else {
-                        format!("{}@@{}", spec.source_id, spec.interval)
-                    }
+                || spec.instance_id != qmd_source_instance(spec)
         })
     {
         return Err(
@@ -400,6 +408,19 @@ pub fn validate_plan(
         qmd_source_count: plan.qmd_sources.len(),
         valid: true,
     })
+}
+
+fn qmd_source_instance(spec: &QmdSourceSpec) -> String {
+    let mut value = if spec.interval.is_empty() {
+        spec.source_id.clone()
+    } else {
+        format!("{}@@{}", spec.source_id, spec.interval)
+    };
+    if !spec.aggregation.is_empty() {
+        value.push_str("##");
+        value.push_str(&spec.aggregation);
+    }
+    value
 }
 
 fn validate_evaluation_windows(
@@ -1070,9 +1091,9 @@ fn validate_rule_graph(
                 .to_string(),
         );
     }
-    if referenced_sources != available_sources {
+    if !referenced_sources.is_subset(&available_sources) {
         return Err(
-            "historical Watchlist declared sources must exactly match rule and ranking dependencies"
+            "historical Watchlist declared sources must include every rule and ranking dependency"
                 .to_string(),
         );
     }
@@ -1197,6 +1218,7 @@ mod tests {
                 source_id: "liquidity-rank".to_string(),
                 runtime_field: "liquidity_rank".to_string(),
                 interval: String::new(),
+                aggregation: String::new(),
             }],
             external_features: vec![ExternalFeatureContract {
                 available_at: "source publication timestamp".to_string(),
@@ -1216,7 +1238,7 @@ mod tests {
         rehash(&mut plan);
         assert_eq!(
             plan.plan_hash,
-            "sha256:9d64db8d99dab004ef824443e47dcc20949fcb6661b707a37c06842319e32e90"
+            "sha256:ac9583c4da6a0652e3844d8b34984ee97f858d37180a3285b87944e0d4bfaf5a"
         );
         plan
     }
@@ -1245,19 +1267,19 @@ mod tests {
     }
 
     #[test]
-    fn rejects_hashed_but_semantically_inconsistent_rule_graph() {
-        let mut invalid = plan();
-        invalid.qmd_sources.push("market.volume".to_string());
-        invalid.qmd_source_specs.push(QmdSourceSpec {
+    fn accepts_projection_sources_but_rejects_inconsistent_rule_graph() {
+        let mut projected = plan();
+        projected.output_mode = "signal_transitions_only".to_string();
+        projected.qmd_sources.push("market.volume".to_string());
+        projected.qmd_source_specs.push(QmdSourceSpec {
             instance_id: "market.volume".to_string(),
             source_id: "market.volume".to_string(),
             runtime_field: "volume".to_string(),
             interval: String::new(),
+            aggregation: String::new(),
         });
-        rehash(&mut invalid);
-        assert!(validate_plan(&invalid)
-            .unwrap_err()
-            .contains("declared sources"));
+        rehash(&mut projected);
+        assert!(validate_plan(&projected).unwrap().valid);
 
         let mut invalid = plan();
         invalid.inclusion_rule_sets = vec!["missing-rule".to_string()];

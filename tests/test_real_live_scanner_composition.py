@@ -14,6 +14,31 @@ from src.trading_runtime.journal import TradingJournal
 
 
 class RealLiveScannerCompositionTests(unittest.TestCase):
+    def test_signal_stream_materialization_publishes_qmd_recovery_graph(self) -> None:
+        configuration = _default_draft()
+        at = datetime(2026, 8, 20, 15, 0, tzinfo=UTC)
+        with patch.object(
+            service, "qmd_configure_signal_streams", side_effect=lambda payload: payload
+        ):
+            payload = service.materialize_qmd_signal_stream_configuration(
+                configuration, as_of=at
+            )
+
+        recovery = {
+            row["signal_stream_id"]: row
+            for row in payload["recovery_templates"]
+        }
+        self.assertEqual(
+            recovery["price-squeeze-5m"]["recovery_kind"],
+            "qmd_history_timeline",
+        )
+        self.assertEqual(
+            recovery["price-squeeze-5m"]["plan"]["output_mode"],
+            "signal_transitions_only",
+        )
+        self.assertEqual(recovery["market-halts"]["recovery_kind"], "source_native")
+        self.assertTrue(payload["configuration_revision"].startswith("sha256:"))
+
     def test_native_halt_hydration_reconstructs_session_and_is_idempotent(self) -> None:
         configuration = _default_draft()
         configuration["market_discovery"]["signal_streams"] = [
@@ -37,30 +62,48 @@ class RealLiveScannerCompositionTests(unittest.TestCase):
                 "source_run_id": "qmd-live-1",
             }],
         }
+        seen_source_ids: set[str] = set()
+
+        def append_once(_stream_id: str, rows: list[dict]) -> dict:
+            fresh = [
+                row
+                for row in rows
+                if str(row.get("source_event_id") or "") not in seen_source_ids
+            ]
+            seen_source_ids.update(
+                str(row.get("source_event_id") or "") for row in fresh
+            )
+            return {"new_occurrences": fresh}
+
         with tempfile.TemporaryDirectory() as temporary:
             journal = TradingJournal(Path(temporary) / "journal.sqlite3")
             try:
-                first = service.hydrate_native_signal_streams(
-                    configuration,
-                    as_of=at,
-                    journal=journal,
-                    history_loader=lambda **_: source,
-                    force=True,
-                )
-                second = service.hydrate_native_signal_streams(
-                    configuration,
-                    as_of=at,
-                    journal=journal,
-                    history_loader=lambda **_: source,
-                    force=True,
-                )
+                with patch.object(
+                    service,
+                    "qmd_append_signal_stream_rows",
+                    side_effect=append_once,
+                ):
+                    first = service.hydrate_native_signal_streams(
+                        configuration,
+                        as_of=at,
+                        journal=journal,
+                        history_loader=lambda **_: source,
+                        force=True,
+                    )
+                    second = service.hydrate_native_signal_streams(
+                        configuration,
+                        as_of=at,
+                        journal=journal,
+                        history_loader=lambda **_: source,
+                        force=True,
+                    )
             finally:
                 journal.close()
 
         self.assertEqual(first["source_row_count"], 1)
         self.assertEqual(first["inserted_count"], 1)
         self.assertEqual(first["new_occurrences"][0]["ticker"], "HALT")
-        self.assertIn(10.0, first["new_occurrences"][0]["evidence"].values())
+        self.assertEqual(service._halt_occurrence_row(source["rows"][0])["bid"], 10.0)
         self.assertEqual(second["inserted_count"], 0)
 
     def test_interval_demand_prefers_qmd_source_names_over_projection_names(self) -> None:

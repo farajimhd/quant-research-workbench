@@ -31,6 +31,7 @@ pub struct HistoricalGatewayConfig {
     pub product_timeframes: Vec<String>,
     pub product_cache_max_rows_per_entry: usize,
     pub scanner_cache_max_entries: usize,
+    pub scanner_fetch_chunk_minutes: usize,
     pub scanner_max_events_per_snapshot: usize,
     pub scanner_shard_count: usize,
     pub structure_checkpoint_max_concurrent_advancements: usize,
@@ -104,6 +105,8 @@ impl HistoricalGatewayConfig {
             .clamp(10_000, 20_000_000),
             scanner_cache_max_entries: env_usize("QMD_HISTORY_SCANNER_CACHE_MAX_ENTRIES", 2)
                 .clamp(1, 16),
+            scanner_fetch_chunk_minutes: env_usize("QMD_HISTORY_SCANNER_FETCH_CHUNK_MINUTES", 30)
+                .clamp(1, 1_440),
             scanner_max_events_per_snapshot: env_usize(
                 "QMD_HISTORY_SCANNER_MAX_EVENTS_PER_SNAPSHOT",
                 250_000_000,

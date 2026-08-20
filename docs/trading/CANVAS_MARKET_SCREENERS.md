@@ -22,6 +22,39 @@ only newer sequence values. Replay, Backtest, and Debug use the corresponding
 QMD History materialization, filtered by run identity and virtual clock, so
 occurrences from different runs cannot mix.
 
+### Signal Stream restart and gap recovery
+
+QMD owns recovery; neither the backend nor Canvas recomputes a Signal Stream
+when it is opened. For every enabled Market Discovery stream, the backend
+publishes one recovery contract with the materialized configuration revision:
+
+1. QMD hydrates the current session occurrence cache from its durable table.
+2. Source-native streams (for example, market halts or news events) retain the
+   durable recovery contract of their owning source.
+3. Rule-evaluated Core Scan streams compile to the same causal Data Field and
+   Rule Set graph in QMD History, bounded from 04:00 ET to a fixed handoff
+   cursor just behind live time.
+4. QMD History replays the globally ordered market events and emits compact
+   false-to-true transitions plus the terminal match state. Historical storage
+   is read in bounded chronological windows while one reducer state is carried
+   across them; it does not issue one unbounded session query or return full
+   cross-sectional candidate snapshots for every evaluation tick.
+5. QMD Live continues consuming live data while that materialization runs. It
+   retains first-observed baselines until the historical terminal state is
+   known, then performs one deterministic handoff.
+6. Recovered and live occurrences use the same definition revision and event
+   identity, are deduplicated before persistence, and receive one monotonic
+   session sequence for snapshot-then-delta delivery.
+7. Recovery is marked complete only when QMD History reports both
+   `request_complete=true` and `complete_for_history=true`. Missing coverage or
+   an unsupported Data Field/aggregation remains explicitly incomplete and is
+   retried; it is never reported as a complete empty signal history.
+
+The resulting session list is therefore warm from QMD's in-memory cache,
+append-only in the durable occurrence table, and incrementally delivered with
+`after_sequence`. Configuration changes create a new content-bound recovery
+revision; page navigation does not.
+
 ## Shared field catalog
 
 Columns are described by a stable key, label, group, format, provenance, and explanation. The initial groups are:

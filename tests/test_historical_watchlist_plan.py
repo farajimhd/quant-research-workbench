@@ -4,12 +4,40 @@ import unittest
 from copy import deepcopy
 from datetime import UTC, datetime
 
-from src.backend.historical_watchlist_plan import compile_historical_watchlist_plan
+from src.backend.historical_watchlist_plan import (
+    compile_historical_watchlist_plan,
+    compile_signal_stream_recovery_templates,
+)
 from src.backend.replay_run_service import _historical_watchlist_plans_for_configuration
 from src.backend.trading_configuration_service import _default_draft
 
 
 class HistoricalWatchlistPlanTests(unittest.TestCase):
+    def test_signal_recovery_compiles_rule_and_trigger_time_projection_sources(self) -> None:
+        templates = compile_signal_stream_recovery_templates(
+            _default_draft(),
+            start=datetime(2026, 8, 7, 8, 0, tzinfo=UTC),
+            end=datetime(2026, 8, 8, 0, 0, tzinfo=UTC),
+        )
+
+        squeeze = next(
+            row for row in templates if row["signal_stream_id"] == "price-squeeze-5m"
+        )
+        self.assertEqual(squeeze["recovery_kind"], "qmd_history_timeline")
+        plan = squeeze["plan"]
+        self.assertEqual(plan["output_mode"], "signal_transitions_only")
+        self.assertEqual(plan["maximum_size"], 5_000)
+        self.assertIn("price_change_1_bar_pct@@5m", plan["qmd_sources"])
+        self.assertIn("volume_rate_ratio@@1s", plan["qmd_sources"])
+        self.assertIn("quote.bid_price@@100ms##last", plan["qmd_sources"])
+        self.assertIn("quote.ask_price@@100ms##last", plan["qmd_sources"])
+        self.assertTrue(plan["plan_hash"].startswith("sha256:"))
+
+        halt = next(row for row in templates if row["signal_stream_id"] == "market-halts")
+        news = next(row for row in templates if row["signal_stream_id"] == "bullish-news-v1")
+        self.assertEqual(halt["recovery_kind"], "source_native")
+        self.assertEqual(news["recovery_kind"], "source_native")
+
     def test_compiles_deterministic_qmd_and_external_feature_contract(self) -> None:
         configuration = _default_draft()
         watchlist = next(row for row in configuration["market_discovery"]["watchlists"] if row["watchlist_id"] == "core-candidates")
@@ -30,7 +58,7 @@ class HistoricalWatchlistPlanTests(unittest.TestCase):
         self.assertEqual(plan["plan_hash"], repeated["plan_hash"])
         self.assertEqual(
             plan["plan_hash"],
-            "sha256:00a9894472eb75c71fb78045b165b463b31d4adb549d32120bd48485a4fb958f",
+            "sha256:2a801e7316a02548d9618cefd87afde00fdee61d87c60be5facaa1246940d05c",
         )
         self.assertEqual(plan["qmd_sources"], ["market.liquidity_rank"])
         self.assertEqual(
@@ -40,6 +68,7 @@ class HistoricalWatchlistPlanTests(unittest.TestCase):
                 "source_id": "market.liquidity_rank",
                 "runtime_field": "liquidity_rank",
                 "interval": "",
+                "aggregation": "",
             }],
         )
         self.assertEqual(plan["external_features"][0]["field_id"], "reference.float_shares")

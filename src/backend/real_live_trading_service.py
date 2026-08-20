@@ -31,6 +31,7 @@ from src.backend.qmd_gateway_client import (
 )
 from src.backend.bounded_cache import BoundedSingleFlightTtlCache
 from src.backend.feature_projection import compact_feature_projection
+from src.backend.historical_watchlist_plan import compile_signal_stream_recovery_templates
 from src.backend.query_plans.market_tradable_universe_v1 import tradable_symbol_lookup
 from src.backend.real_live_market_data.clickhouse import ClickHouseHttpClient
 from src.backend.real_live_market_data.config import market_gateway_config
@@ -149,10 +150,16 @@ def materialize_qmd_signal_stream_configuration(
         for row in discovery.get("column_catalog") or []
         if str(row.get("column_id") or "") in selected_column_ids
     ]
+    recovery_templates = compile_signal_stream_recovery_templates(
+        configuration,
+        start=session["start_at"],
+        end=session["end_at"],
+    )
     revision_payload = {
         "streams": streams,
         "rule_sets": rule_sets,
         "column_catalog": catalog,
+        "recovery_templates": recovery_templates,
     }
     revision = hashlib.sha256(
         json.dumps(revision_payload, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
@@ -166,6 +173,7 @@ def materialize_qmd_signal_stream_configuration(
             "streams": streams,
             "rule_sets": rule_sets,
             "column_catalog": catalog,
+            "recovery_templates": recovery_templates,
         }
     )
 

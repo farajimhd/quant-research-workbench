@@ -1,7 +1,7 @@
 use crate::config::HistoricalGatewayConfig;
 use crate::source::{EventWindow, HistoricalEventSource, SourceRevision};
 use crate::watchlist_timeline::{
-    plan_evaluation_clock, validate_plan, ExternalFeatureRevisionEvidence,
+    plan_evaluation_clock, validate_plan, ExternalFeatureRevisionEvidence, HistoricalWatchlistPlan,
     HistoricalWatchlistPlanValidation, HistoricalWatchlistTimelineBatchRequest,
     HistoricalWatchlistTimelineRequest, WatchlistCandidate, WatchlistCandidateDeltaFrame,
     WatchlistTimelineChunk, WatchlistTimelineReducer,
@@ -306,10 +306,15 @@ impl CrossSectionEngine {
             .unwrap_or_default();
         let mut values = BTreeMap::new();
         for source in sources {
-            let (source_id, interval) = source
+            let (source_id, dimension) = source
                 .split_once("@@")
-                .map_or((source.as_str(), ""), |(source_id, interval)| {
-                    (source_id, interval)
+                .map_or((source.as_str(), ""), |(source_id, dimension)| {
+                    (source_id, dimension)
+                });
+            let (interval, aggregation) = dimension
+                .split_once("##")
+                .map_or((dimension, ""), |(interval, aggregation)| {
+                    (interval, aggregation)
                 });
             let interval_indicator = if interval.is_empty() {
                 None
@@ -318,7 +323,7 @@ impl CrossSectionEngine {
                     .get(&format!("{ticker}:{}", interval.to_ascii_lowercase()))
             };
             let value = if let Some(interval_row) = interval_indicator {
-                indicator_source_value(interval_row, source_id)
+                indicator_source_value(interval_row, source_id, aggregation)
             } else {
                 match source_id {
                     "market.last_price"
@@ -721,6 +726,129 @@ struct ParsedExternalInterval {
 
 type ExternalIntervalIndex = BTreeMap<String, BTreeMap<String, Vec<ParsedExternalInterval>>>;
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+enum RuleEventRequirement {
+    #[default]
+    Neutral,
+    Quote,
+    Trade,
+    Both,
+}
+
+impl RuleEventRequirement {
+    fn union(self, other: Self) -> Self {
+        match (self, other) {
+            (Self::Neutral, value) | (value, Self::Neutral) => value,
+            (Self::Quote, Self::Quote) => Self::Quote,
+            (Self::Trade, Self::Trade) => Self::Trade,
+            _ => Self::Both,
+        }
+    }
+
+    fn event_type_filter(self) -> Option<u8> {
+        match self {
+            Self::Quote => Some(0),
+            Self::Trade => Some(1),
+            Self::Neutral | Self::Both => None,
+        }
+    }
+}
+
+fn combined_rule_event_type_filter<'a>(
+    plans: impl Iterator<Item = &'a HistoricalWatchlistPlan>,
+) -> Option<u8> {
+    plans
+        .fold(RuleEventRequirement::Neutral, |required, plan| {
+            required.union(rule_event_requirement(plan))
+        })
+        .event_type_filter()
+}
+
+fn rule_event_type_filter(plan: &HistoricalWatchlistPlan) -> Option<u8> {
+    rule_event_requirement(plan).event_type_filter()
+}
+
+fn rule_event_requirement(plan: &HistoricalWatchlistPlan) -> RuleEventRequirement {
+    plan.rule_sets
+        .iter()
+        .flat_map(|rule| {
+            rule.get("conditions")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+        })
+        .filter(|condition| {
+            condition
+                .get("enabled")
+                .and_then(Value::as_bool)
+                .unwrap_or(true)
+        })
+        .flat_map(|condition| {
+            ["left_source_id", "right_source_id"]
+                .into_iter()
+                .filter_map(|key| condition.get(key).and_then(Value::as_str))
+        })
+        .filter(|source_id| !source_id.trim().is_empty())
+        .fold(RuleEventRequirement::Neutral, |required, source_id| {
+            required.union(source_event_requirement(source_id))
+        })
+}
+
+fn source_event_requirement(source_id: &str) -> RuleEventRequirement {
+    let source = source_id
+        .split("@@")
+        .next()
+        .unwrap_or(source_id)
+        .trim()
+        .to_ascii_lowercase();
+    if source.starts_with("quote.")
+        || matches!(
+            source.as_str(),
+            "market.bid_price"
+                | "market.ask_price"
+                | "market.spread"
+                | "market.spread_bps"
+                | "market.microprice"
+                | "market.imbalance"
+                | "market.quote_rate"
+        )
+    {
+        return RuleEventRequirement::Quote;
+    }
+    if source.starts_with("bar.")
+        || source.starts_with("trade.")
+        || source.starts_with("price_change")
+        || source.starts_with("volume")
+        || source.starts_with("transaction")
+        || matches!(
+            source.as_str(),
+            "market.last_price"
+                | "market.volume"
+                | "market.session_volume"
+                | "market.session_vwap"
+                | "market.session_change"
+                | "market.session_change_percent"
+        )
+    {
+        return RuleEventRequirement::Trade;
+    }
+    if source.starts_with("time.")
+        || source.starts_with("calendar.")
+        || source.starts_with("reference.")
+        || source.starts_with("company.")
+        || source.starts_with("security.")
+        || matches!(
+            source.as_str(),
+            "market.session_phase" | "market.market_status" | "market.trading_halted"
+        )
+    {
+        return RuleEventRequirement::Neutral;
+    }
+    // Unknown computed fields fail open to the complete market-event stream;
+    // filtering is only safe when every rule operand has a known event family.
+    RuleEventRequirement::Both
+}
+
 pub async fn materialize_watchlist_timeline(
     config: HistoricalGatewayConfig,
     source: HistoricalEventSource,
@@ -762,6 +890,13 @@ pub async fn materialize_watchlist_timeline(
         end,
         tickers: Vec::new(),
     };
+    let source_plan = source.source_plan(&window).await?;
+    if !source_plan.complete_for_history {
+        return Err(
+            "historical Watchlist timeline requires a complete pinned market-event window"
+                .to_string(),
+        );
+    }
     let source_revision = source.source_revision(&window).await?;
     if !source_revision.complete_for_history || !source_revision.request_complete {
         return Err(
@@ -784,10 +919,11 @@ pub async fn materialize_watchlist_timeline(
     let mut evaluation_index = 0_u64;
     let mut event_count = 0_u64;
     let mut reference_session = session_date(start);
-    let mut batches = source.stream_ordered(
+    let mut batches = source.stream_ordered_filtered(
         window,
         config.batch_size.max(100_000),
         source_revision.live_continuation_sequence,
+        rule_event_type_filter(&request.plan),
     )?;
     while let Some(events) = batches.recv().await {
         for compact in events? {
@@ -1093,6 +1229,12 @@ pub async fn materialize_watchlist_timelines(
         end,
         tickers: Vec::new(),
     };
+    let source_plan = source.source_plan(&window).await?;
+    if !source_plan.complete_for_history {
+        return Err(
+            "historical Watchlist batch requires a complete pinned market-event window".to_string(),
+        );
+    }
     let source_revision = source.source_revision(&window).await?;
     if !source_revision.complete_for_history || !source_revision.request_complete {
         return Err(
@@ -1126,10 +1268,11 @@ pub async fn materialize_watchlist_timelines(
     let mut recent_until = HashMap::<String, DateTime<Utc>>::new();
     let mut event_count = 0_u64;
     let mut reference_session = session_date(start);
-    let mut batches = source.stream_ordered(
+    let mut batches = source.stream_ordered_filtered(
         window,
         config.batch_size.max(100_000),
         source_revision.live_continuation_sequence,
+        combined_rule_event_type_filter(batch.requests.iter().map(|request| &request.plan)),
     )?;
     while let Some(events) = batches.recv().await {
         for compact in events? {
@@ -1813,11 +1956,17 @@ fn finish_reducer_chunk_if_due<'a>(
     {
         return Ok(());
     }
-    let completed = reducer
+    let mut completed = reducer
         .take()
         .ok_or_else(|| "historical Watchlist reducer is unavailable".to_string())?
         .finish()?;
     let state = completed.next_state.clone();
+    if plan.output_mode == "signal_transitions_only" {
+        completed.next_state.candidates.clear();
+        if evaluation_index < evaluation_count {
+            completed.next_state.members.clear();
+        }
+    }
     chunks.push(completed);
     if evaluation_index < evaluation_count {
         *reducer = Some(WatchlistTimelineReducer::new(plan, Some(state))?);
@@ -1851,14 +2000,25 @@ fn materialization_id(
     Ok(format!("sha256:{:x}", Sha256::digest(encoded)))
 }
 
-fn indicator_source_value(indicator: &IndicatorRow, source_id: &str) -> Option<Value> {
-    let runtime_field = match source_id {
-        "indicator.vwap.value" => "vwap",
-        "market.last_price" => "close",
-        "market.spread_bps" => "spread_bps",
-        "quote.bid_price" => "bid_close",
-        "quote.ask_price" => "ask_close",
-        other => other,
+fn indicator_source_value(
+    indicator: &IndicatorRow,
+    source_id: &str,
+    aggregation: &str,
+) -> Option<Value> {
+    let runtime_field = match (source_id, aggregation) {
+        ("quote.bid_price", "first") => "bid_open",
+        ("quote.bid_price", "min") => "bid_low",
+        ("quote.bid_price", "max") => "bid_high",
+        ("quote.ask_price", "first") => "ask_open",
+        ("quote.ask_price", "min") => "ask_low",
+        ("quote.ask_price", "max") => "ask_high",
+        ("indicator.vwap.value", _) => "vwap",
+        ("market.last_price", _) => "close",
+        ("market.spread_bps", _) => "spread_bps",
+        ("quote.bid_price", "" | "last") => "bid_close",
+        ("quote.ask_price", "" | "last") => "ask_close",
+        (other, "") => other,
+        (_, _) => return None,
     };
     let payload = serde_json::to_value(indicator).ok()?;
     let value = payload.get(runtime_field)?.clone();
@@ -1953,8 +2113,8 @@ fn scanner_shard_index(ticker: &str, shard_count: usize) -> usize {
 mod tests {
     use super::{
         accumulate_aligned_volume_session, aligned_volume_bucket, empty_source_revision,
-        scanner_shard_index, CoreLiquidityIndex, CrossSectionEngine,
-        RelativeVolumeRevisionEvidence, ALIGNED_VOLUME_BUCKET_COUNT,
+        scanner_shard_index, source_event_requirement, CoreLiquidityIndex, CrossSectionEngine,
+        RelativeVolumeRevisionEvidence, RuleEventRequirement, ALIGNED_VOLUME_BUCKET_COUNT,
     };
     use chrono::{TimeZone, Utc};
     use qmd_core::bars::{TradeAggregationRules, TradeUpdateRule};
@@ -2225,6 +2385,26 @@ mod tests {
         assert_eq!(
             index.top(2).into_iter().collect::<Vec<_>>(),
             vec!["HIGH".to_string(), "MID".to_string()]
+        );
+    }
+
+    #[test]
+    fn rule_operands_select_only_the_required_market_event_family() {
+        assert_eq!(
+            source_event_requirement("price_change_1_bar_pct"),
+            RuleEventRequirement::Trade
+        );
+        assert_eq!(
+            source_event_requirement("quote.bid_price"),
+            RuleEventRequirement::Quote
+        );
+        assert_eq!(
+            source_event_requirement("time.session_phase"),
+            RuleEventRequirement::Neutral
+        );
+        assert_eq!(
+            source_event_requirement("custom.unknown_signal"),
+            RuleEventRequirement::Both
         );
     }
 }

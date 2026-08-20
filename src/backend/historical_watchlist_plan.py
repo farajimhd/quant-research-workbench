@@ -8,7 +8,11 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from src.backend.application_registry import FIELD_DEFINITIONS, QUERY_PLANS
-from src.backend.data_field_contracts import interval_expression
+from src.backend.data_field_contracts import (
+    field_instance_ref,
+    interval_expression,
+    normalize_aggregation_function,
+)
 from src.trading_runtime.watchlist_resolver import SOURCE_FIELDS
 
 
@@ -157,6 +161,126 @@ def compile_historical_watchlist_plan(
     return {**body, "plan_hash": f"sha256:{hashlib.sha256(encoded).hexdigest()}"}
 
 
+def compile_signal_stream_recovery_templates(
+    configuration: dict[str, Any],
+    *,
+    start: datetime,
+    end: datetime,
+) -> list[dict[str, Any]]:
+    """Compile QMD History catch-up plans from materialized Signal Streams.
+
+    Event-native streams retain their owning durable source. Rule-evaluated
+    Core Scan streams reuse the historical Watchlist timeline engine because
+    it already owns causal Data Field projection, Rule Set evaluation, source
+    completeness, and transition state.
+    """
+
+    discovery = dict(configuration.get("market_discovery") or {})
+    column_by_id = {
+        str(row.get("column_id") or ""): deepcopy(row)
+        for row in discovery.get("column_catalog") or []
+        if str(row.get("column_id") or "")
+    }
+    templates: list[dict[str, Any]] = []
+    for raw_stream in discovery.get("signal_streams") or []:
+        stream = deepcopy(raw_stream)
+        stream_id = str(stream.get("signal_stream_id") or "").strip()
+        if not stream_id or not bool(stream.get("enabled", True)):
+            continue
+        occurrence_source = str(stream.get("occurrence_source") or "").strip()
+        source_type = str(stream.get("source_type") or "core_scan").strip()
+        if occurrence_source or source_type != "core_scan":
+            templates.append({
+                "signal_stream_id": stream_id,
+                "recovery_kind": "source_native",
+                "source_type": source_type,
+                "occurrence_source": occurrence_source,
+            })
+            continue
+
+        synthetic_id = f"signal-recovery:{stream_id}"
+        synthetic = {
+            "watchlist_id": synthetic_id,
+            "enabled": True,
+            "source_scan_id": str(stream.get("source_scan_id") or "qmd-core-scan"),
+            "inclusion_rule_sets": list(stream.get("inclusion_rule_sets") or []),
+            "inclusion_operator": str(stream.get("inclusion_operator") or "all"),
+            "exclusion_rule_sets": [],
+            "ranking_field": "market.liquidity_rank",
+            "ranking_direction": "descending",
+            "maximum_size": 5_000,
+            "refresh_interval_ms": max(100, int(stream.get("refresh_interval_ms") or 1_000)),
+            "membership_expiry": "end_of_trading_day",
+            "membership_ttl_ms": 0,
+            "manual_inclusions": [],
+            "manual_exclusions": [],
+        }
+        scoped = deepcopy(configuration)
+        scoped_discovery = dict(scoped.get("market_discovery") or {})
+        scoped_discovery["watchlists"] = [synthetic]
+        scoped["market_discovery"] = scoped_discovery
+        try:
+            plan = compile_historical_watchlist_plan(
+                scoped, synthetic_id, start=start, end=end
+            )
+            _add_signal_projection_sources(plan, stream, column_by_id)
+            plan["output_mode"] = "signal_transitions_only"
+            plan["plan_hash"] = _plan_hash(plan)
+            templates.append({
+                "signal_stream_id": stream_id,
+                "recovery_kind": "qmd_history_timeline",
+                "source_type": source_type,
+                "plan": plan,
+                "external_feature_revisions": [],
+                "external_feature_intervals": [],
+            })
+        except ValueError as exc:
+            templates.append({
+                "signal_stream_id": stream_id,
+                "recovery_kind": "coverage_unavailable",
+                "source_type": source_type,
+                "reason": str(exc),
+            })
+    return templates
+
+
+def _add_signal_projection_sources(
+    plan: dict[str, Any],
+    stream: dict[str, Any],
+    column_by_id: dict[str, dict[str, Any]],
+) -> None:
+    """Include reconstructable trigger-time presentation fields in evidence."""
+
+    sources = set(str(value) for value in plan.get("qmd_sources") or [])
+    specs = {
+        str(row.get("instance_id") or ""): dict(row)
+        for row in plan.get("qmd_source_specs") or []
+        if str(row.get("instance_id") or "")
+    }
+    intervals = dict(stream.get("column_intervals") or {})
+    aggregations = dict(stream.get("column_aggregations") or {})
+    for column_id in stream.get("columns") or []:
+        column = column_by_id.get(str(column_id), {})
+        source_id = str(column.get("source_id") or "")
+        if source_id not in QMD_SOURCE_IDS:
+            continue
+        interval = interval_expression(intervals.get(str(column_id)))
+        aggregation = normalize_aggregation_function(aggregations.get(str(column_id)))
+        spec = _qmd_source_spec(source_id, interval, aggregation)
+        sources.add(spec["instance_id"])
+        specs[spec["instance_id"]] = spec
+    plan["qmd_sources"] = sorted(sources)
+    plan["qmd_source_specs"] = [specs[key] for key in sorted(specs)]
+
+
+def _plan_hash(plan: dict[str, Any]) -> str:
+    body = {key: value for key, value in plan.items() if key != "plan_hash"}
+    encoded = json.dumps(
+        body, sort_keys=True, separators=(",", ":"), ensure_ascii=True
+    ).encode("utf-8")
+    return f"sha256:{hashlib.sha256(encoded).hexdigest()}"
+
+
 def _evaluation_windows(start: datetime, end: datetime) -> list[dict[str, str]]:
     local_start = start.astimezone(NEW_YORK)
     local_end = end.astimezone(NEW_YORK)
@@ -206,18 +330,30 @@ def _validated_sources(
             if str(condition.get("left_value_selection") or "latest") != "latest":
                 raise ValueError("historical Watchlist condition supports only latest left value selection")
             left_interval = interval_expression(condition.get("left_interval"))
-            left_instance = _source_instance(left, left_interval)
+            left_aggregation = normalize_aggregation_function(
+                condition.get("left_aggregation")
+            )
+            left_instance = field_instance_ref(left, left_interval, left_aggregation)
             condition["left_instance_id"] = left_instance
             sources.add(left_instance)
-            specs[left_instance] = _qmd_source_spec(left, left_interval)
+            specs[left_instance] = _qmd_source_spec(
+                left, left_interval, left_aggregation
+            )
             if right:
                 if str(condition.get("right_value_selection") or "latest") != "latest":
                     raise ValueError("historical Watchlist condition supports only latest right value selection")
                 right_interval = interval_expression(condition.get("right_interval"))
-                right_instance = _source_instance(right, right_interval)
+                right_aggregation = normalize_aggregation_function(
+                    condition.get("right_aggregation")
+                )
+                right_instance = field_instance_ref(
+                    right, right_interval, right_aggregation
+                )
                 condition["right_instance_id"] = right_instance
                 sources.add(right_instance)
-                specs[right_instance] = _qmd_source_spec(right, right_interval)
+                specs[right_instance] = _qmd_source_spec(
+                    right, right_interval, right_aggregation
+                )
     sources.discard("")
     unknown = sorted(
         source
@@ -240,14 +376,27 @@ def _source_instance(source_id: str, interval: str) -> str:
 
 
 def _base_source_id(instance_id: str) -> str:
-    return str(instance_id).split("@@", 1)[0]
+    return str(instance_id).split("@@", 1)[0].split("##", 1)[0]
 
 
-def _qmd_source_spec(source_id: str, interval: str) -> dict[str, str]:
-    runtime_field = SOURCE_FIELDS.get(source_id, source_id)
+def _qmd_source_spec(
+    source_id: str, interval: str, aggregation: str = ""
+) -> dict[str, str]:
+    field = next((row for row in FIELD_DEFINITIONS if row.field_id == source_id), None)
+    runtime_fields = dict(field.aggregation_runtime_fields) if field is not None else {}
+    if aggregation:
+        runtime_field = runtime_fields.get(aggregation)
+        if not runtime_field:
+            raise ValueError(
+                f"historical Watchlist source does not support aggregation "
+                f"{source_id}##{aggregation}"
+            )
+    else:
+        runtime_field = SOURCE_FIELDS.get(source_id, source_id)
     return {
-        "instance_id": _source_instance(source_id, interval),
+        "instance_id": field_instance_ref(source_id, interval, aggregation),
         "source_id": source_id,
         "runtime_field": runtime_field,
         "interval": interval,
+        "aggregation": aggregation,
     }

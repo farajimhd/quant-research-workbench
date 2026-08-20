@@ -46,7 +46,7 @@ type DiscoveryCapability = { enabled?: boolean; execution_scope?: string; scanne
 type DiscoveryColumn = { column_id: string; description?: string; name: string; presentation_value_type?: PresentationValueType; provenance?: string; semantic_type?: string; source_id?: string; source_kind?: "data_definition" | "rule_set" | string; unit?: string; value_type?: string };
 type DiscoveryWatchlist = { availability?: string; columns?: string[]; description?: string; enabled?: boolean; name: string; origin?: string; watchlist_id: string };
 type DiscoverySignalStream = { column_aggregations?: Record<string, string>; column_intervals?: Record<string, unknown>; columns?: string[]; description?: string; enabled?: boolean; maximum_events?: number; name: string; origin?: string; refresh_interval_ms?: number; signal_stream_id: string; source_id?: string; source_scan_id?: string; source_type?: "core_scan" | "watchlist" | "news_events" };
-type SignalStreamRuntimeResponse = { as_of: string; last_sequence?: number; new_occurrences?: ScreenerRow[]; occurrence_count: number; occurrences: ScreenerRow[]; session?: { active?: boolean; end_at?: string; retention?: string; session_date?: string; session_key?: string; start_at?: string; timezone?: string }; signal_streams?: Array<{ candidate_count?: number; configured?: boolean; enabled?: boolean; signal_stream_id: string; source_id?: string; source_type?: string; status?: string }>; status: string };
+type SignalStreamRuntimeResponse = { as_of: string; last_sequence?: number; new_occurrences?: ScreenerRow[]; occurrence_count: number; occurrences: ScreenerRow[]; recovery?: { active?: boolean; recovered_count?: number; recovery_through?: string; status?: "complete" | "coverage_incomplete" | "not_started" | "recovering" | "retryable_error" | "source_native" }; session?: { active?: boolean; end_at?: string; retention?: string; session_date?: string; session_key?: string; start_at?: string; timezone?: string }; signal_streams?: Array<{ candidate_count?: number; configured?: boolean; enabled?: boolean; recovery_kind?: "coverage_unavailable" | "qmd_history_timeline" | "source_native"; recovery_status?: "complete" | "coverage_incomplete" | "not_started" | "recovering" | "retryable_error" | "source_native"; signal_stream_id: string; source_id?: string; source_type?: string; status?: string }>; status: string };
 export type WatchUniverseDefinition = {
   description?: string;
   enabled?: boolean;
@@ -459,6 +459,9 @@ export function SignalStreamContainer({ asOf, live, onSettingsChange, onTickerSe
   const runtimeDefinition = runtime?.signal_streams?.find((row) => row.signal_stream_id === stream?.signal_stream_id);
   const sourceType = stream?.source_type ?? "core_scan";
   const sourceId = stream?.source_id ?? stream?.source_scan_id ?? discovery?.core_scan?.scan_id ?? "";
+  const recoveryStatus = runtimeDefinition?.recovery_status;
+  const recoveryActive = recoveryStatus === "recovering";
+  const recoveryPending = recoveryActive || recoveryStatus === "coverage_incomplete" || recoveryStatus === "retryable_error";
   const sourceLabel = sourceType === "watchlist"
     ? discovery?.watchlists?.find((row) => row.watchlist_id === sourceId)?.name ?? sourceId
     : sourceType === "news_events"
@@ -468,6 +471,10 @@ export function SignalStreamContainer({ asOf, live, onSettingsChange, onTickerSe
     ? "No configured Signal Stream is available."
     : runtimeUnavailable && runtime === null
       ? "Signal Stream data is temporarily unavailable."
+    : recoveryPending && rows.length === 0
+      ? recoveryActive
+        ? "Earlier session signals are catching up in the background. New live signals remain available."
+        : "Earlier session signals are waiting for complete historical source coverage. New live signals remain available."
     : runtime?.session?.active === false
       ? "Signal Stream is cleared outside the 04:00–20:00 ET trading-day window."
       : runtimeDefinition?.configured === false
@@ -500,7 +507,7 @@ export function SignalStreamContainer({ asOf, live, onSettingsChange, onTickerSe
     });
   };
   return <section className="market-list-surface watchlist-surface signal-stream-surface" aria-label={`${stream?.name ?? "Signal Stream"} signal stream`}>
-    <header className="market-list-heading"><div><span className="market-list-eyebrow"><Flame size={12} /> Today’s immutable occurrences</span><h3>{stream?.name ?? "No Signal Stream open"}</h3><p>{stream ? `${rows.length} captured since 04:00 ET · newest first · through ` : "Create or add a configured Signal Stream"}{stream ? <MarketTime value={displayAsOf} /> : null}</p></div><span className="market-list-owner strategy">Market Discovery</span></header>
+    <header className="market-list-heading"><div><span className="market-list-eyebrow"><Flame size={12} /> Today’s immutable occurrences</span><h3>{stream?.name ?? "No Signal Stream open"}</h3><p>{stream ? recoveryPending ? `${rows.length} cached · earlier session catch-up ${recoveryActive ? "in progress" : "waiting for complete source coverage"} · through ` : `${rows.length} captured since 04:00 ET · newest first · through ` : "Create or add a configured Signal Stream"}{stream ? <MarketTime value={displayAsOf} /> : null}</p></div><span className="market-list-owner strategy">Market Discovery</span></header>
     <nav aria-label="Signal Streams" className="watchlist-tabs" role="tablist">
       {visibleStreams.map((row) => { const selected = row.signal_stream_id === stream?.signal_stream_id; return <span className={selected ? "active" : undefined} key={row.signal_stream_id}><button aria-selected={selected} onClick={() => selectStream(row.signal_stream_id)} role="tab" title={row.description || row.name} type="button">{row.name}</button><button aria-label={`Remove ${row.name} tab`} className="watchlist-tab-remove" onClick={() => removeStream(row.signal_stream_id)} type="button"><X size={10} /></button></span>; })}
       <button aria-expanded={addingStream} aria-label="Add Signal Stream tab" className="watchlist-tab-add" disabled={!availableStreams.length} onClick={() => setAddingStream((open) => !open)} role="tab" type="button"><Plus size={12} /><span>Add</span></button>
