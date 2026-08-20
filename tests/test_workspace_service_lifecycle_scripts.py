@@ -53,6 +53,7 @@ def test_workspace_start_registers_each_role_and_rejects_foreign_port_adoption()
     assert "maintain_repository_git.ps1 -compact" in source
     assert "maxgitdirectorygb = 2.0" in source
     assert "pythondontwritebytecode" in source
+    assert "retrying that tab once" in source
     assert source.index("miniconda3\\python.exe") < source.index("get-command python")
     assert "\\microsoft\\windowsapps\\" in source
 
@@ -76,6 +77,10 @@ def test_application_manager_composes_existing_owned_lifecycles() -> None:
     assert '"-bargptreleasemanifest"' in source
     assert "checkpoint_sha256" in source
     assert "contract_hash" in source
+    assert 'if args.action == "start"' in source
+    assert "prepare_bar_gpt_release_manifest.py" in source
+    assert '"-pythonexe"' in source
+    assert source.index("_validate_manifest(args.release_manifest)") < source.index("stop(keep_qmd_live=true)")
     assert "qmd live is already healthy; preserving its stream" in source
     assert source.index('"stop_workspace_services.ps1"') < source.index('"stop_qmd_live_gateway.ps1"')
 

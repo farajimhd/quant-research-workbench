@@ -27,6 +27,11 @@ The manifest is a JSON array whose rows contain `model_id`, `version`,
 `enabled`. The service verifies the expected checkpoint and model-contract
 hashes before admitting a release. The full application stack can be managed
 with `python scripts\manage_application_services.py start|stop|restart|status`.
+If the catalog does not exist yet, pass
+`--checkpoint-root "\\DESKTOP-SAAI85T\Workstation-D\TradingML\runtimes\bar_gpt"`;
+the manager selects immutable versioned artifacts, calculates both hashes, and
+writes the external catalog before starting any workspace process. It does not
+replace an existing catalog from checkpoint filename recency.
 
 The default bind is `127.0.0.1:8805`. Runtime prediction journals are written
 under `D:\TradingML\runtimes\bar_gpt_service`, never in the repository.
@@ -52,6 +57,19 @@ an explicit Live, Paper, Replay, Backtest, or Backtest Debug mode plus an Auto
 or Manual inference trigger. Cache updates continue in Manual mode. Automatic
 serving performs one forward pass after each completed eligible one-second bar;
 it never recursively generates future bars.
+
+Warm-up uses the same point-in-time identity, split normalization, sparse-event
+aggregation, masks, and feature contract as the checkpoint loader. Intraday
+history expands from a short causal window only when a thin ticker still lacks
+required view counts. Calendar views are rebuilt with the v13 vectorized
+compact-event daily authority; the removed legacy BarGPT daily table is not a
+serving dependency. Tickers removed from every active scope have their pending
+warm work cancelled and their cache rows reclaimed.
+
+Canvas can render translucent forecast OHLC candles and independent open,
+high, low, and close lines. Operators can select v2 or v3, q10/q50/q90, one
+physical horizon or all horizons, and Auto or Manual trigger mode. Manual mode
+keeps context current and exposes **Infer now** only after the ticker is warm.
 
 Historical Rule Sets that reference BarGPT fields use a synchronous,
 fail-closed clock barrier so a fast backtest cannot outrun GPU inference. Runs

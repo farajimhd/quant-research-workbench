@@ -119,7 +119,14 @@ class ModelFeatureStore:
                 },
             }
 
-    def chart_forecasts(self, ticker: str, model_version: str = "v2", scope_id: str = "") -> dict[str, Any]:
+    def chart_forecasts(
+        self,
+        ticker: str,
+        model_version: str = "v2",
+        scope_id: str = "",
+        quantile: str = "q50",
+        model_id: str = "",
+    ) -> dict[str, Any]:
         prefix = f"model.bargpt.{model_version}.physical."
         rows = []
         with self._lock:
@@ -127,16 +134,18 @@ class ModelFeatureStore:
                 row for row in self._history
                 if row["ticker"] == ticker.upper()
                 and (not scope_id or row.get("scope_id") == scope_id)
+                and (not model_id or row.get("model_id") == model_id)
             ]
         for update in history:
             fields = dict(update.get("fields") or {})
             grouped: dict[str, dict[str, float]] = {}
             for field_id, value in fields.items():
-                if not field_id.startswith(prefix) or not field_id.endswith(".q50.value"):
+                suffix_marker = f".{quantile}.value"
+                if not field_id.startswith(prefix) or not field_id.endswith(suffix_marker):
                     continue
                 if value is None:
                     continue
-                rest = field_id[len(prefix):].removesuffix(".q50.value")
+                rest = field_id[len(prefix):].removesuffix(suffix_marker)
                 try:
                     horizon, target = rest.split(".", 1)
                     family, component, suffix = target.split("_", 2)
@@ -159,7 +168,16 @@ class ModelFeatureStore:
                     "geometry_valid": values["high"] >= max(values["open"], values["close"])
                     and values["low"] <= min(values["open"], values["close"]),
                 })
-        return {"schema_version": 1, "ticker": ticker.upper(), "scope_id": scope_id, "rows": rows, "row_count": len(rows)}
+        return {
+            "schema_version": 1,
+            "ticker": ticker.upper(),
+            "scope_id": scope_id,
+            "model_version": model_version,
+            "model_id": model_id,
+            "quantile": quantile,
+            "rows": rows,
+            "row_count": len(rows),
+        }
 
 
 MODEL_FEATURE_STORE = ModelFeatureStore()

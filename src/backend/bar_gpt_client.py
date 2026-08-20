@@ -28,6 +28,27 @@ def bar_gpt_predictions(ticker: str = "", limit: int = 100, timeout: float = 2.0
     return _request("GET", f"/predictions?{query}", timeout=timeout)
 
 
+def request_bar_gpt_inference(
+    *,
+    scope_id: str,
+    tickers: list[str] | None = None,
+    model_ids: list[str] | None = None,
+    origin_us: int | None = None,
+    request_id: str = "",
+    timeout: float = 120.0,
+) -> dict[str, Any]:
+    payload = {
+        "scope_id": scope_id.strip(),
+        "tickers": sorted({str(value).strip().upper() for value in tickers or [] if str(value).strip()}),
+        "model_ids": sorted({str(value).strip() for value in model_ids or [] if str(value).strip()}),
+        "origin_us": origin_us,
+        "request_id": request_id.strip(),
+    }
+    if not payload["scope_id"]:
+        raise RuntimeError("BarGPT manual inference requires a scope_id")
+    return _request("POST", "/infer", payload=payload, timeout=timeout)
+
+
 def bar_gpt_configuration(timeout: float = 2.0) -> dict[str, Any]:
     return _request("GET", "/configuration", timeout=timeout)
 

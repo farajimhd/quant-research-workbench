@@ -287,6 +287,20 @@ python .\scripts\manage_application_services.py restart
 python .\scripts\manage_application_services.py stop
 ```
 
+On a first deployment, the manager can create the missing hash-pinned catalog
+from the workstation runtime and launch Backend plus BarGPT with a CUDA-capable
+Python environment:
+
+```powershell
+python .\scripts\manage_application_services.py start `
+  --checkpoint-root "\\DESKTOP-SAAI85T\Workstation-D\TradingML\runtimes\bar_gpt" `
+  --python-exe C:\Users\g835l\miniconda3\envs\ml4t\python.exe
+```
+
+Checkpoint-root discovery runs only when the release catalog is absent. Once
+written, the immutable catalog remains authoritative and is never silently
+advanced to a newer checkpoint.
+
 The start path preserves an already-healthy QMD Live stream, starts it only
 when absent, then opens QMD History, Backend, Frontend, and BarGPT and waits for
 all HTTP readiness endpoints. It rolls back only services started by a failed

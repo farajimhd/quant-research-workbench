@@ -2,17 +2,22 @@ from __future__ import annotations
 
 import os
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 import uvicorn
 from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
 
 from services.gateway_core.dashboard import build_dashboard_snapshot
+from research.mlops.env import discover_env_files, load_env_files
 
 from .config import ServiceConfig
 from .contracts import BarBatchRequest, InferenceRequest, OperationalConfigurationUpdate, ScopeRequest
 from .operational import configuration_snapshot, update_configuration
 from .runtime import BarGptRuntime
 
+
+REPO_ROOT = Path(__file__).resolve().parents[4]
+load_env_files(discover_env_files(REPO_ROOT))
 
 config = ServiceConfig.from_env()
 runtime = BarGptRuntime(config)

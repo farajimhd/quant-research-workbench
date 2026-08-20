@@ -308,6 +308,41 @@ function Open-ServiceTabs {
     if ($LASTEXITCODE -ne 0) {
         throw "Windows Terminal failed to create the service tabs (exit code $LASTEXITCODE)."
     }
+
+    # Windows Terminal can occasionally acknowledge a multi-tab dispatch while
+    # dropping one tab. Registration is written by the tab host before the
+    # service command starts, so retry only tabs that never acquired ownership.
+    Start-Sleep -Milliseconds 1500
+    foreach ($tab in $Tabs) {
+        $registryPath = Join-Path $workspaceInstanceRoot "$($tab.Role).json"
+        if (Test-Path -LiteralPath $registryPath -PathType Leaf) {
+            continue
+        }
+        Write-Warning "Windows Terminal did not register '$($tab.Title)'; retrying that tab once."
+        $retryArguments = @(
+            "-w", $dispatchTarget.Window,
+            "new-tab",
+            "--title", $tab.Title,
+            "--suppressApplicationTitle",
+            "-d", $repoRoot,
+            $powerShellExe,
+            "-NoLogo",
+            "-NoProfile",
+            "-ExecutionPolicy", "Bypass",
+            "-File", $serviceTabHost,
+            "-EncodedCommand", (ConvertTo-PowerShellEncodedCommand -Command $tab.Command),
+            "-PowerShellExe", $powerShellExe,
+            "-RegistryPath", $registryPath,
+            "-ServiceRole", $tab.Role,
+            "-ServicePort", $tab.Port,
+            "-InstanceId", $workspaceInstanceId,
+            "-RepositoryRoot", $repoRoot
+        )
+        & $resolvedWindowsTerminal @retryArguments
+        if ($LASTEXITCODE -ne 0) {
+            throw "Windows Terminal failed to retry '$($tab.Title)' (exit code $LASTEXITCODE)."
+        }
+    }
     return $dispatchTarget
 }
 

@@ -21,6 +21,27 @@ class BarGptServingTests(unittest.TestCase):
         catalog = {row["field_id"]: row for row in discovery["field_catalog"]}
         self.assertTrue(catalog[raw]["market_discovery_supported"])
         self.assertTrue(catalog[raw]["filterable"])
+        self.assertEqual(
+            FIELD_BY_ID[raw].label,
+            "BarGPT V2 · Physical 1m · Trade Close Return · Median quantile (q50) · Raw head",
+        )
+        self.assertEqual(
+            FIELD_BY_ID[decoded].label,
+            "BarGPT V2 · Physical 1m · Trade Close Forecast Price · Median quantile (q50) · Decoded value",
+        )
+        self.assertNotIn(FIELD_BY_ID[raw].label, {"Raw", "Value", "Probability", "Logit", "Vector"})
+
+        bar_gpt_labels = [
+            field.label
+            for field in FIELD_BY_ID.values()
+            if field.field_id.startswith("model.bargpt.")
+        ]
+        self.assertEqual(len(bar_gpt_labels), 2_984)
+        self.assertEqual(len(set(bar_gpt_labels)), len(bar_gpt_labels))
+        self.assertFalse(
+            {label.casefold() for label in bar_gpt_labels}
+            & {"raw", "value", "probability", "logit", "logits", "vector"}
+        )
 
     def test_model_serving_watchlist_contract_fails_closed(self) -> None:
         discovery = _default_market_discovery([], [])

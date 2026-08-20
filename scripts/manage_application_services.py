@@ -129,6 +129,27 @@ def _validate_manifest(path: Path) -> Path:
     return resolved
 
 
+def _prepare_manifest_if_needed(path: Path, checkpoint_root: Path | None) -> None:
+    if path.is_file() or checkpoint_root is None:
+        return
+    print(f"[prepare] BarGPT release manifest from checkpoint root {checkpoint_root}")
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-B",
+            str(SCRIPTS / "prepare_bar_gpt_release_manifest.py"),
+            "--checkpoint-root",
+            str(checkpoint_root),
+            "--output",
+            str(path),
+        ],
+        cwd=REPO_ROOT,
+        check=False,
+    )
+    if completed.returncode:
+        raise RuntimeError("BarGPT release-manifest preparation failed")
+
+
 def status() -> bool:
     all_ready = True
     print("Application service status")
@@ -141,7 +162,14 @@ def status() -> bool:
     return all_ready
 
 
-def start(release_manifest: Path, timeout_seconds: int, terminal_target: str) -> None:
+def start(
+    release_manifest: Path,
+    timeout_seconds: int,
+    terminal_target: str,
+    checkpoint_root: Path | None = None,
+    python_exe: Path | None = None,
+) -> None:
+    _prepare_manifest_if_needed(release_manifest, checkpoint_root)
     manifest = _validate_manifest(release_manifest)
     qmd_started_here = False
     workspace_started_here = False
@@ -172,6 +200,7 @@ def start(release_manifest: Path, timeout_seconds: int, terminal_target: str) ->
                 "-WithBarGpt",
                 "-BarGptReleaseManifest",
                 str(manifest),
+                *(["-PythonExe", str(python_exe.expanduser().resolve())] if python_exe else []),
                 "-TerminalTarget",
                 terminal_target,
             ],
@@ -206,6 +235,18 @@ def main() -> int:
     )
     parser.add_argument("action", choices=("start", "stop", "restart", "status"))
     parser.add_argument("--release-manifest", type=Path, default=DEFAULT_RELEASE_MANIFEST)
+    parser.add_argument(
+        "--checkpoint-root",
+        type=Path,
+        default=Path(os.environ["BAR_GPT_CHECKPOINT_ROOT"]) if os.environ.get("BAR_GPT_CHECKPOINT_ROOT") else None,
+        help="Authoritative BarGPT runtime root used only to create a missing immutable release manifest.",
+    )
+    parser.add_argument(
+        "--python-exe",
+        type=Path,
+        default=Path(os.environ["WORKSPACE_PYTHON_EXE"]) if os.environ.get("WORKSPACE_PYTHON_EXE") else None,
+        help="Python runtime for Backend and BarGPT; use a CUDA-capable environment for GPU serving.",
+    )
     parser.add_argument("--timeout-seconds", type=int, default=600)
     parser.add_argument("--terminal-target", choices=("Auto", "Caller", "Named"), default="Named")
     parser.add_argument(
@@ -220,9 +261,14 @@ def main() -> int:
         if args.action == "stop":
             stop(keep_qmd_live=args.keep_qmd_live)
             return 0
+        if args.action == "start":
+            start(args.release_manifest, args.timeout_seconds, args.terminal_target, args.checkpoint_root, args.python_exe)
+            return 0
         if args.action == "restart":
+            _prepare_manifest_if_needed(args.release_manifest, args.checkpoint_root)
+            _validate_manifest(args.release_manifest)
             stop(keep_qmd_live=True)
-        start(args.release_manifest, args.timeout_seconds, args.terminal_target)
+            start(args.release_manifest, args.timeout_seconds, args.terminal_target, args.checkpoint_root, args.python_exe)
         return 0
     except (RuntimeError, ValueError) as error:
         print(f"[failed]  {error}", file=sys.stderr)

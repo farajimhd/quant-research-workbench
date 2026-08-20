@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from dataclasses import asdict, dataclass
 from functools import lru_cache
 from pathlib import Path
@@ -1520,8 +1521,9 @@ def _field(
     intrinsic_aggregation: str = "",
     aggregation_runtime_fields: Iterable[tuple[str, str]] = (),
     presentation_value_type: str = "",
+    label: str = "",
 ) -> FieldDefinition:
-    label = field_id.split(".")[-1].replace("_", " ").title()
+    label = label or field_id.split(".")[-1].replace("_", " ").title()
     columns = tuple(source_columns) or (field_id.split(".")[-1],)
     operator_documentation = FIELD_OPERATOR_DOCUMENTATION.get(field_id, {})
     resolved_known_values = tuple(known_values or FIELD_KNOWN_VALUES.get(field_id, ()))
@@ -1631,6 +1633,7 @@ def _bar_gpt_fields() -> list[FieldDefinition]:
             coverage_query_plan="model.bargpt.prediction.v1", timeframes=(timeframe,),
             source_summary="BarGPT versioned checkpoint output from a causal full-prefix inference pass.",
             calculation_summary="Raw fields preserve checkpoint head values; probability and value fields are explicitly named decoded projections.",
+            label=_bar_gpt_field_label(field_id),
         ))
 
     for version in ("v2", "v3"):
@@ -1672,6 +1675,58 @@ def _bar_gpt_fields() -> list[FieldDefinition]:
                     add(f"model.bargpt.v3.next_bar.{view}.gap_logit.{label}", timeframe=view)
                     add(f"model.bargpt.v3.next_bar.{view}.gap_probability.{label}", unit="probability", timeframe=view)
     return rows
+
+
+def _bar_gpt_field_label(field_id: str) -> str:
+    """Return a semantic label while preserving the immutable model field ID."""
+
+    parts = field_id.split(".")
+    if len(parts) < 5 or parts[:2] != ["model", "bargpt"]:
+        return _field_presentation_label(field_id)
+    version = parts[2].upper()
+    product = parts[3]
+    path = parts[4:]
+    representation = path[-1]
+    representation_labels = {
+        "raw": "Raw head",
+        "value": "Decoded value",
+        "logit": "Raw logit",
+        "probability": "Decoded probability",
+    }
+    if product == "physical" and len(path) >= 3:
+        timeframe = _presentation_words(path[0])
+        semantic = path[1:-1]
+        quantile = semantic[-1] if semantic and re.fullmatch(r"q\d{2}", semantic[-1]) else ""
+        if quantile:
+            semantic = semantic[:-1]
+        target_key = "_".join(semantic)
+        target = _presentation_words(target_key)
+        if representation == "value" and target_key.endswith("_return"):
+            target = _presentation_words(target_key.removesuffix("_return") + "_forecast_price")
+        quantile_label = {
+            "q10": "Lower quantile (q10)",
+            "q50": "Median quantile (q50)",
+            "q90": "Upper quantile (q90)",
+        }.get(quantile, quantile.upper())
+        components = [f"BarGPT {version}", f"Physical {timeframe}", target]
+        if quantile_label:
+            components.append(quantile_label)
+        components.append(representation_labels.get(representation, _presentation_words(representation)))
+        return " · ".join(components)
+    if product == "next_bar" and len(path) >= 3:
+        view = _presentation_words(path[0])
+        semantic = path[1:-1]
+        if semantic and semantic[0] in {"gap_logit", "gap_probability"}:
+            representation = "logit" if semantic[0] == "gap_logit" else "probability"
+            semantic = ["gap", path[-1]]
+        target = _presentation_words("_".join(semantic))
+        if representation == "value" and "_".join(semantic).endswith("_return"):
+            target = _presentation_words("_".join(semantic).removesuffix("_return") + "_forecast_price")
+        return " · ".join((
+            f"BarGPT {version}", f"Next sparse {view} bar", target,
+            representation_labels.get(representation, _presentation_words(representation)),
+        ))
+    return _field_presentation_label(field_id)
 
 
 def _fields() -> tuple[FieldDefinition, ...]:

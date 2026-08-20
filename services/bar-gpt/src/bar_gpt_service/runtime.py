@@ -77,19 +77,12 @@ class BarGptRuntime:
             )
             self.caches["live"] = self._new_cache()
             if self.config.connect_qmd:
-                try:
-                    references = await asyncio.to_thread(
-                        ConditionReferences.load,
-                        authority.data_config.database,
-                        authority.data_config.condition_reference_table,
+                self._tasks.append(
+                    asyncio.create_task(
+                        self._live_dependency_loop(authority),
+                        name="bar-gpt-live-dependencies",
                     )
-                    self._builder = LiveEventBarBuilder(
-                        references, authority.data_config.max_quote_spread_bps
-                    )
-                    self._tasks.append(asyncio.create_task(self._qmd_loop(), name="bar-gpt-qmd"))
-                    self._tasks.append(asyncio.create_task(self._clock_loop(), name="bar-gpt-clock"))
-                except Exception as exc:
-                    self._set_qmd_state("blocked", str(exc))
+                )
             else:
                 self._set_qmd_state("disabled", "BAR_GPT_CONNECT_QMD is false")
             self._tasks.append(asyncio.create_task(self._batch_loop(), name="bar-gpt-batcher"))
@@ -260,6 +253,27 @@ class BarGptRuntime:
         scope_id = request.scope_id or self._default_scope_id()
         cache_id = self._scope_cache_id(scope_id)
         tickers = request.tickers or sorted(self.active_tickers(cache_id))
+        if not tickers:
+            raise RuntimeError(f"BarGPT scope {scope_id!r} has no active tickers")
+        scope = self.active_scopes().get(scope_id)
+        if scope is None:
+            raise KeyError(f"unknown or expired BarGPT scope {scope_id!r}")
+        outside_scope = sorted(set(tickers) - set(scope["request"]["tickers"]))
+        if outside_scope:
+            raise RuntimeError(
+                f"BarGPT inference tickers are outside scope {scope_id!r}: {','.join(outside_scope)}"
+            )
+        readiness_origin = int(request.origin_us or scope["request"].get("clock_us") or time.time_ns() // 1_000)
+        not_ready = [
+            ticker for ticker in tickers
+            if not self._cache(cache_id).readiness(
+                ticker, readiness_origin, self.config.minimum_warm_1s_bars
+            )["ready"]
+        ]
+        if not_ready:
+            raise RuntimeError(
+                "BarGPT context is still warming for: " + ",".join(not_ready)
+            )
         model_ids = request.model_ids or list(self.releases)
         unknown = sorted(set(model_ids) - set(self.releases))
         if unknown:
@@ -276,7 +290,9 @@ class BarGptRuntime:
                     )
                 except ValueError as exc:
                     self._record_failure("inference_not_ready", str(exc))
-                    continue
+                    raise RuntimeError(
+                        f"BarGPT inference batch is not causally ready for {model_id}: {exc}"
+                    ) from exc
                 except Exception as exc:
                     self.metrics["failed_batches"] = int(self.metrics["failed_batches"]) + 1
                     self._record_failure("inference_failed", str(exc))
@@ -390,6 +406,30 @@ class BarGptRuntime:
             self._set_qmd_state,
         )
 
+    async def _live_dependency_loop(self, authority: LoadedRelease) -> None:
+        """Recover the reference authority before starting the live event stream."""
+        retry_seconds = 5.0
+        while True:
+            try:
+                self._set_qmd_state("initializing", "loading condition references")
+                references = await asyncio.to_thread(
+                    ConditionReferences.load,
+                    authority.data_config.database,
+                    authority.data_config.condition_reference_table,
+                )
+                self._builder = LiveEventBarBuilder(
+                    references, authority.data_config.max_quote_spread_bps
+                )
+                await asyncio.gather(self._qmd_loop(), self._clock_loop())
+                raise RuntimeError("BarGPT live dependency tasks stopped unexpectedly")
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                self._builder = None
+                self._set_qmd_state("retrying", str(exc))
+                self._record_failure("live_dependency_retry", str(exc))
+                await asyncio.sleep(retry_seconds)
+
     async def _on_qmd_events(self, events: list[dict[str, Any]]) -> None:
         if self._builder is None:
             return
@@ -476,13 +516,20 @@ class BarGptRuntime:
 
     def _reclaim_cache(self) -> None:
         active_cache_ids = {str(row["cache_id"]) for row in self.active_scopes().values()} | {"live"}
+        active_by_cache = {
+            cache_id: self.active_tickers(cache_id)
+            for cache_id in active_cache_ids
+        }
+        for (cache_id, ticker), task in list(self._warm_tasks.items()):
+            if ticker not in active_by_cache.get(cache_id, set()):
+                task.cancel()
         for cache_id in list(self.caches):
             if cache_id not in active_cache_ids:
                 del self.caches[cache_id]
                 for key in [key for key in self._pending_historical if key[0] == cache_id]:
                     del self._pending_historical[key]
             else:
-                self.caches[cache_id].evict_except(self.active_tickers(cache_id))
+                self.caches[cache_id].evict_except(active_by_cache[cache_id])
 
     def _new_cache(self) -> CausalCache:
         if self._cache_config is None:

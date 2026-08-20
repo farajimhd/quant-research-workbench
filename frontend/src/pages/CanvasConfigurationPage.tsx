@@ -305,6 +305,13 @@ type BarGptForecast = {
   geometry_valid: boolean;
 };
 type BarGptForecastPayload = { rows: BarGptForecast[]; row_count: number; ticker: string };
+type BarGptScopePayload = {
+  status?: string;
+  error?: string;
+  ready_count?: number;
+  ticker_count?: number;
+  readiness?: Array<{ ready: boolean; ticker: string }>;
+};
 type QmdBarHistory = {
   as_of: string;
   market_signal_events: QmdMarketSignalEvent[];
@@ -406,7 +413,18 @@ type CanvasLiveChartState = {
   ready: boolean;
 };
 
-type CanvasChartSettings = { showVolume: boolean; symbol: string; timeframe: CanvasChartTimeframe; visibleIndicators: string[] };
+type BarGptChartVersion = "v2" | "v3";
+type BarGptChartQuantile = "q10" | "q50" | "q90";
+type CanvasChartSettings = {
+  showVolume: boolean;
+  symbol: string;
+  timeframe: CanvasChartTimeframe;
+  visibleIndicators: string[];
+  barGptVersion: BarGptChartVersion;
+  barGptQuantile: BarGptChartQuantile;
+  barGptHorizon: "all" | "5s" | "30s" | "1m" | "5m" | "15m" | "1h";
+  barGptTriggerMode: "auto" | "manual";
+};
 type ContainerSettings = {
   version: 28;
   chart: CanvasChartSettings;
@@ -457,11 +475,11 @@ const READ_ONLY_BLOCKED_CONTAINERS = new Set<WorkspaceContainerId>([
 const DEFAULT_WATCHLIST_TAB_IDS = ["top-large-cap-gainers", "top-mid-cap-gainers", "top-small-cap-gainers", "top-penny-gainers"];
 const DEFAULT_SETTINGS: ContainerSettings = {
   version: 28,
-  chart: { showVolume: true, symbol: "AAPL", timeframe: "1m", visibleIndicators: ["indicator.vwap", "indicator.macd", "indicator.flow_structure_composite", "strategy.presentation"] },
+  chart: { showVolume: true, symbol: "AAPL", timeframe: "1m", visibleIndicators: ["indicator.vwap", "indicator.macd", "indicator.flow_structure_composite", "strategy.presentation"], barGptVersion: "v2", barGptQuantile: "q50", barGptHorizon: "all", barGptTriggerMode: "auto" },
   charts_quotes: {
-    main: { showVolume: true, symbol: "AAPL", timeframe: "10s", visibleIndicators: ["indicator.macd", "strategy.presentation"] },
-    month: { showVolume: true, symbol: "AAPL", timeframe: "1mo", visibleIndicators: [] },
-    daily: { showVolume: true, symbol: "AAPL", timeframe: "1d", visibleIndicators: [] },
+    main: { showVolume: true, symbol: "AAPL", timeframe: "10s", visibleIndicators: ["indicator.macd", "strategy.presentation"], barGptVersion: "v2", barGptQuantile: "q50", barGptHorizon: "all", barGptTriggerMode: "auto" },
+    month: { showVolume: true, symbol: "AAPL", timeframe: "1mo", visibleIndicators: [], barGptVersion: "v2", barGptQuantile: "q50", barGptHorizon: "all", barGptTriggerMode: "auto" },
+    daily: { showVolume: true, symbol: "AAPL", timeframe: "1d", visibleIndicators: [], barGptVersion: "v2", barGptQuantile: "q50", barGptHorizon: "all", barGptTriggerMode: "auto" },
     layout: { lowerRowPercent: 33, monthColumnPercent: 40, reservedColumnPercent: 20, tapeColumnPercent: 20 },
   },
   microstructure: { limit: 1024 },
@@ -2850,6 +2868,9 @@ function ChartPreview({
   trading?: CanonicalTradingPreview;
 }) {
   const [barGptForecasts, setBarGptForecasts] = useState<BarGptForecast[]>([]);
+  const [barGptScope, setBarGptScope] = useState<BarGptScopePayload | null>(null);
+  const [barGptError, setBarGptError] = useState("");
+  const [barGptInferring, setBarGptInferring] = useState(false);
   const indicators = liveChart.indicators;
   const visibleIndicators = chartSettings.visibleIndicators;
   const timeframe = chartSettings.timeframe;
@@ -2859,21 +2880,28 @@ function ChartPreview({
   const forecastLineComponents = (["open", "high", "low", "close"] as const).filter((component) =>
     chartSettings.visibleIndicators.includes(`model.bargpt.forecast.${component}`),
   );
+  const showBarGpt = showForecastCandles || forecastLineComponents.length > 0;
+  const barGptVersion = chartSettings.barGptVersion;
+  const barGptQuantile = chartSettings.barGptQuantile;
+  const barGptHorizon = chartSettings.barGptHorizon;
+  const barGptTriggerMode = chartSettings.barGptTriggerMode;
+  const barGptScopeId = `canvas:${instanceId}`;
   useEffect(() => {
-    if (!showForecastCandles && forecastLineComponents.length === 0) {
+    if (!showBarGpt) {
       setBarGptForecasts([]);
+      setBarGptScope(null);
+      setBarGptError("");
       return;
     }
     let cancelled = false;
     let timer = 0;
-    const scopeId = `canvas:${instanceId}`;
     const refresh = async () => {
       try {
-        await api(`/api/bar-gpt/scopes/${encodeURIComponent(scopeId)}`, {
+        const scope = await api<BarGptScopePayload>(`/api/bar-gpt/scopes/${encodeURIComponent(barGptScopeId)}`, {
           method: "PUT",
           body: JSON.stringify({
             mode: liveChart.pointInTime ? "replay" : "live",
-            trigger_mode: "auto",
+            trigger_mode: barGptTriggerMode,
             tickers: [linkContext.symbol],
             watchlist_ids: [],
             clock_us: barGptClockUs,
@@ -2883,10 +2911,18 @@ function ChartPreview({
           }),
           timeoutMs: 2500,
         });
-        const forecasts = await api<BarGptForecastPayload>(`/api/model-features/chart/${encodeURIComponent(linkContext.symbol)}?model_version=v2&scope_id=${encodeURIComponent(scopeId)}`, { timeoutMs: 2500 });
-        if (!cancelled) setBarGptForecasts(latestForecastsByHorizon(forecasts.rows));
-      } catch {
-        if (!cancelled) setBarGptForecasts([]);
+        if (!cancelled) setBarGptScope(scope);
+        const forecasts = await api<BarGptForecastPayload>(`/api/model-features/chart/${encodeURIComponent(linkContext.symbol)}?model_version=${encodeURIComponent(barGptVersion)}&quantile=${encodeURIComponent(barGptQuantile)}&scope_id=${encodeURIComponent(barGptScopeId)}`, { timeoutMs: 2500 });
+        if (!cancelled) {
+          const rows = latestForecastsByHorizon(forecasts.rows);
+          setBarGptForecasts(barGptHorizon === "all" ? rows : rows.filter((row) => row.horizon === barGptHorizon));
+          setBarGptError(scope.status === "unavailable" ? scope.error || "BarGPT is unavailable." : "");
+        }
+      } catch (error) {
+        if (!cancelled) {
+          setBarGptForecasts([]);
+          setBarGptError(error instanceof Error ? error.message : "BarGPT forecast refresh failed.");
+        }
       }
       if (!cancelled) timer = window.setTimeout(refresh, 1_000);
     };
@@ -2894,9 +2930,9 @@ function ChartPreview({
     return () => {
       cancelled = true;
       window.clearTimeout(timer);
-      void api(`/api/bar-gpt/scopes/${encodeURIComponent(scopeId)}`, { method: "DELETE", timeoutMs: 1000 }).catch(() => undefined);
+      void api(`/api/bar-gpt/scopes/${encodeURIComponent(barGptScopeId)}`, { method: "DELETE", timeoutMs: 1000 }).catch(() => undefined);
     };
-  }, [barGptClockUs, forecastLineComponents.join("|"), instanceId, linkContext.symbol, liveChart.pointInTime, showForecastCandles]);
+  }, [barGptClockUs, barGptHorizon, barGptQuantile, barGptScopeId, barGptTriggerMode, barGptVersion, forecastLineComponents.join("|"), linkContext.symbol, liveChart.pointInTime, showBarGpt]);
   const payload = useMemo<ChartPayload>(() => {
     const marketSignalMarkers = qmdMarketSignalChartMarkers(
       liveChart.marketSignalEvents,
@@ -2926,8 +2962,8 @@ function ChartPreview({
       }))
       .filter((row) => row.time > lastRealizedTime) : [];
     const forecastLines = forecastLineComponents.map((component) => ({
-      column: `model.bargpt.v2.physical.${component}.q50.value`,
-      label: `BarGPT v2 · q50 forecast ${component}`,
+      column: `model.bargpt.${barGptVersion}.physical.${component}.${barGptQuantile}.value`,
+      label: `BarGPT ${barGptVersion} · ${barGptQuantile} forecast ${component}`,
       style: "line" as const,
       color: ({ open: "#F59E0B", high: "#22C55E", low: "#EF4444", close: "#A78BFA" })[component],
       lineWidth: component === "close" ? 2 : 1,
@@ -2947,7 +2983,7 @@ function ChartPreview({
       regions: MACRO_TIMEFRAMES.has(timeframe) ? [] : extendedSessionRegions(liveChart.bars),
       volume: chartSettings.showVolume ? liveChart.bars.map((bar) => ({ color: bar.close >= bar.open ? "var(--success)" : "var(--danger)", time: Date.parse(bar.bar_start) / 1000, value: bar.volume })) : [],
     };
-  }, [barGptForecasts, chartSettings.showVolume, forecastLineComponents.join("|"), indicators, linkContext.symbol, liveChart.bars, liveChart.marketSignalEvents, liveChart.structureEvents, liveChart.structureLevelHistory, showForecastCandles, strategyDecisions, strategyPresentation, timeframe, visibleIndicators]);
+  }, [barGptForecasts, barGptQuantile, barGptVersion, chartSettings.showVolume, forecastLineComponents.join("|"), indicators, linkContext.symbol, liveChart.bars, liveChart.marketSignalEvents, liveChart.structureEvents, liveChart.structureLevelHistory, showForecastCandles, strategyDecisions, strategyPresentation, timeframe, visibleIndicators]);
   function updateChart(symbol: string, nextTimeframe: CanvasChartTimeframe) {
     onChartSettingsChange({ ...chartSettings, symbol, timeframe: nextTimeframe });
     onLinkContextChange({ symbol });
@@ -2965,7 +3001,50 @@ function ChartPreview({
     quantity,
   } satisfies LiveEntryLine : null;
   const emptyMessage = `No closed ${linkContext.symbol} ${timeframe} bars are available from QMD History at this Canvas clock.`;
-  return <ChartPanel baseHeight={baseHeight} canLoadEarlier={liveChart.canLoadEarlier} displayItemOptions={CHART_INDICATORS} emptyMessage={emptyMessage} enableFullscreen={false} errorMessage={liveChart.error || liveChart.historyError} featureOptions={[]} fillHeight={fillHeight} indicatorOptions={[]} initialFitMode="recent" liveEntryLine={positionLine} loading={liveChart.loading} loadingEarlier={liveChart.loadingEarlier} onLoadEarlier={liveChart.loadEarlier} onTickerChange={(symbol) => updateChart(symbol.toUpperCase(), timeframe)} onTimeframeChange={(nextTimeframe) => updateChart(linkContext.symbol, nextTimeframe as CanvasChartTimeframe)} onVisibleColumnsChange={(nextVisibleIndicators) => onChartSettingsChange({ ...chartSettings, visibleIndicators: nextVisibleIndicators })} payload={payload} periodEnd={sessionDate} periodStart={sessionDate} settingsStorageKey={`${CANVAS_SETTINGS_STORAGE_KEY}.${instanceId}`} ticker={linkContext.symbol} tickerChangeAsOf={changeAsOf} tickerEditable={symbolEditable} tickerLogoUrl={logoUrl} timeframe={timeframe} timeframes={timeframes} toolbarVariant={toolbarVariant} visibleColumns={visibleIndicators} />;
+  const barGptReady = Boolean(barGptScope?.ticker_count && barGptScope.ready_count === barGptScope.ticker_count);
+  const barGptState = barGptError
+    ? "Unavailable"
+    : !barGptReady
+      ? "Warming context"
+      : barGptInferring
+        ? "Inference running"
+        : barGptForecasts.length
+          ? `${barGptForecasts.length} horizons ready`
+          : barGptTriggerMode === "manual"
+            ? "Ready for manual inference"
+            : "Waiting for next 1s close";
+  async function runManualInference() {
+    setBarGptInferring(true);
+    setBarGptError("");
+    try {
+      const response = await api<{ row_count: number }>("/api/bar-gpt/infer", {
+        method: "POST",
+        body: JSON.stringify({
+          scope_id: barGptScopeId,
+          tickers: [linkContext.symbol],
+          origin_us: barGptClockUs,
+          request_id: `canvas:${instanceId}:${barGptClockUs ?? Date.now() * 1000}`,
+        }),
+        timeoutMs: 120_000,
+      });
+      if (!response.row_count) setBarGptError("Inference completed without a prediction row.");
+    } catch (error) {
+      setBarGptError(error instanceof Error ? error.message : "Manual inference failed.");
+    } finally {
+      setBarGptInferring(false);
+    }
+  }
+  return <div className={`canvas-chart-with-model ${fillHeight ? "is-fill-height" : ""}`}>
+    {showBarGpt ? <div className="canvas-bar-gpt-controls" data-state={barGptError ? "error" : barGptReady ? "ready" : "warming"}>
+      <div className="canvas-bar-gpt-state"><Activity size={13} /><span>BarGPT</span><strong>{barGptState}</strong>{barGptError ? <small title={barGptError}>{barGptError}</small> : null}</div>
+      <label><span>Model</span><select aria-label="BarGPT model version" onChange={(event) => onChartSettingsChange({ ...chartSettings, barGptVersion: event.target.value as BarGptChartVersion })} value={barGptVersion}><option value="v2">V2</option><option value="v3">V3</option></select></label>
+      <label><span>Forecast</span><select aria-label="BarGPT forecast quantile" onChange={(event) => onChartSettingsChange({ ...chartSettings, barGptQuantile: event.target.value as BarGptChartQuantile })} value={barGptQuantile}><option value="q10">Lower q10</option><option value="q50">Median q50</option><option value="q90">Upper q90</option></select></label>
+      <label><span>Horizon</span><select aria-label="BarGPT forecast horizon" onChange={(event) => onChartSettingsChange({ ...chartSettings, barGptHorizon: event.target.value as CanvasChartSettings["barGptHorizon"] })} value={barGptHorizon}>{["all", "5s", "30s", "1m", "5m", "15m", "1h"].map((value) => <option key={value} value={value}>{value === "all" ? "All horizons" : value}</option>)}</select></label>
+      <label><span>Trigger</span><select aria-label="BarGPT trigger mode" onChange={(event) => onChartSettingsChange({ ...chartSettings, barGptTriggerMode: event.target.value as CanvasChartSettings["barGptTriggerMode"] })} value={barGptTriggerMode}><option value="auto">Auto</option><option value="manual">Manual</option></select></label>
+      {barGptTriggerMode === "manual" ? <button disabled={!barGptReady || barGptInferring} onClick={() => void runManualInference()} type="button">{barGptInferring ? "Running…" : "Infer now"}</button> : null}
+    </div> : null}
+    <ChartPanel baseHeight={baseHeight} canLoadEarlier={liveChart.canLoadEarlier} displayItemOptions={CHART_INDICATORS} emptyMessage={emptyMessage} enableFullscreen={false} errorMessage={liveChart.error || liveChart.historyError} featureOptions={[]} fillHeight={fillHeight} indicatorOptions={[]} initialFitMode="recent" liveEntryLine={positionLine} loading={liveChart.loading} loadingEarlier={liveChart.loadingEarlier} onLoadEarlier={liveChart.loadEarlier} onTickerChange={(symbol) => updateChart(symbol.toUpperCase(), timeframe)} onTimeframeChange={(nextTimeframe) => updateChart(linkContext.symbol, nextTimeframe as CanvasChartTimeframe)} onVisibleColumnsChange={(nextVisibleIndicators) => onChartSettingsChange({ ...chartSettings, visibleIndicators: nextVisibleIndicators })} payload={payload} periodEnd={sessionDate} periodStart={sessionDate} settingsStorageKey={`${CANVAS_SETTINGS_STORAGE_KEY}.${instanceId}`} ticker={linkContext.symbol} tickerChangeAsOf={changeAsOf} tickerEditable={symbolEditable} tickerLogoUrl={logoUrl} timeframe={timeframe} timeframes={timeframes} toolbarVariant={toolbarVariant} visibleColumns={visibleIndicators} />
+  </div>;
 }
 
 function durationSeconds(value: string): number {

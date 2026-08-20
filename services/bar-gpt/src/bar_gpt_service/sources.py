@@ -18,9 +18,9 @@ from pipelines.market_sip.events.clickhouse_build_intraday_base_bars import (
     CONDITION_INDICATOR_SOURCE_FAMILIES,
     FUTURE_CONDITION_GROUPS,
 )
-from research.bar_gpt.v3.corporate_actions import normalize_features_to_anchor
+from research.bar_gpt.v3.corporate_actions import normalize_features_to_anchor, split_execution_dates
 from research.bar_gpt.v3.data import BarView, rollup_calendar_view, rollup_intraday_view
-from research.bar_gpt.v3.direct_event_shards import DirectEventArrowStreamClient
+from research.bar_gpt.v3.direct_event_shards import DirectEventArrowStreamClient, append_daily
 from research.bar_gpt.v3.loader import ArrowStreamClient, ClickHouseBarStreamConfig
 from research.bar_gpt.v3.schema import FEATURE_INDEX, FEATURE_NAMES, SESSION_TIMEZONE
 from research.mlops.clickhouse import (
@@ -56,7 +56,7 @@ class ConditionReferences:
         try:
             sql = f"""
 SELECT source_family, modifier_int, token_id, update_high_low, update_last, update_volume
-FROM `{database}`.`{table}` FINAL
+FROM `{database}`.`{table}`
 WHERE is_join_canonical = 1
 ORDER BY token_id
 FORMAT JSONEachRow
@@ -325,7 +325,6 @@ class HistoricalBootstrap:
         data = self.release.data_config
         local_day = as_of.astimezone(NEW_YORK).date()
         history_start = local_day - dt.timedelta(days=800)
-        intraday_start = local_day - dt.timedelta(days=10)
         end = local_day + dt.timedelta(days=1)
         intervals = self.materialized.read_identity_intervals(
             (ticker,),
@@ -342,13 +341,17 @@ class HistoricalBootstrap:
             split_database=data.split_database,
             split_table=data.split_table,
         )[ticker]
-        session_views = list(self.direct.iter_session_views(
-            ticker=ticker,
-            start_date=intraday_start.isoformat(),
-            end_date=end.isoformat(),
-            source_intervals=intervals,
-            prefetch_pages=1,
-        ))
+        session_views: list[tuple[str, BarView]] = []
+        for lookback_days in (2, 4, 7, 10):
+            session_views = list(self.direct.iter_session_views(
+                ticker=ticker,
+                start_date=(local_day - dt.timedelta(days=lookback_days)).isoformat(),
+                end_date=end.isoformat(),
+                source_intervals=intervals,
+                prefetch_pages=max(1, int(data.clickhouse_prefetch_pages)),
+            ))
+            if _intraday_context_satisfied(session_views, data.intraday_context_by_name):
+                break
         raw: list[RawBar] = []
         anchor_us = int(as_of.timestamp() * 1_000_000)
         for _day, view in session_views:
@@ -362,20 +365,34 @@ class HistoricalBootstrap:
                     continue
                 rolled = rollup_intraday_view(normalized_view, timeframe_us)
                 raw.extend(_view_rows(ticker, name, rolled, rolled.features, "qmd-history:direct-events"))
-        daily = self.materialized.read_daily_view(
+        daily: tuple[list[str], BarView] | None = None
+        excluded_daily = split_execution_dates(actions)
+        for day, view, _eligible_seconds in self.direct.iter_daily_views(
             ticker=ticker,
             start_date=history_start.isoformat(),
             end_date=end.isoformat(),
-            daily_table=data.daily_table,
             source_intervals=intervals,
-        )
-        if daily is not None:
-            dates, view = daily
+            prefetch_pages=max(1, int(data.clickhouse_prefetch_pages)),
+        ):
+            if day in excluded_daily:
+                continue
             normalized = normalize_features_to_anchor(
                 view.features, view.bar_start_us, anchor_us=anchor_us, actions=actions
             )
-            normalized_view = BarView(normalized, view.bar_start_us, view.bar_end_us, view.available_at_us)
-            raw.extend(_view_rows(ticker, "1D", normalized_view, normalized, "qmd-history:daily-session-bars"))
+            daily = append_daily(
+                daily,
+                ([day], BarView(normalized, view.bar_start_us, view.bar_end_us, view.available_at_us)),
+                max_rows=int(data.calendar_warmup_daily_bars) + 32,
+            )
+        if daily is not None:
+            dates, normalized_view = daily
+            raw.extend(_view_rows(
+                ticker,
+                "1D",
+                normalized_view,
+                normalized_view.features,
+                "qmd-history:direct-events-daily",
+            ))
             calendar_dates = [dt.date.fromisoformat(str(value)) for value in dates]
             identifiers = {
                 "1W": torch.as_tensor([date.isocalendar().year * 100 + date.isocalendar().week for date in calendar_dates], dtype=torch.long),
@@ -383,8 +400,27 @@ class HistoricalBootstrap:
             }
             for name, group_ids in identifiers.items():
                 rolled = rollup_calendar_view(normalized_view, group_ids)
-                raw.extend(_view_rows(ticker, name, rolled, rolled.features, "qmd-history:daily-session-bars"))
+                raw.extend(_view_rows(
+                    ticker,
+                    name,
+                    rolled,
+                    rolled.features,
+                    "qmd-history:direct-events-daily",
+                ))
         return raw
+
+
+def _intraday_context_satisfied(
+    sessions: list[tuple[str, BarView]],
+    required: dict[str, int],
+) -> bool:
+    counts = {name: 0 for name in required}
+    for _day, view in sessions:
+        counts["1s"] = counts.get("1s", 0) + int(view.features.shape[0])
+        for name, timeframe_us in INTRADAY_VIEW_US.items():
+            if name != "1s" and name in counts:
+                counts[name] += int(rollup_intraday_view(view, timeframe_us).features.shape[0])
+    return all(counts.get(name, 0) >= int(size) for name, size in required.items())
 
 
 async def consume_qmd_events(

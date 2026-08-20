@@ -17152,6 +17152,71 @@ button {
   position: absolute;
 }
 
+.canvas-chart-with-model {
+  display: grid;
+  min-height: 0;
+}
+
+.canvas-chart-with-model.is-fill-height {
+  grid-template-rows: auto minmax(0, 1fr);
+  height: 100%;
+}
+
+.canvas-bar-gpt-controls {
+  align-items: center;
+  background: var(--surface-alt);
+  border-bottom: 1px solid var(--surface-border);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-height: calc(34px * var(--ui-scale));
+  padding: 5px 8px;
+}
+
+.canvas-bar-gpt-state {
+  align-items: center;
+  display: grid;
+  gap: 1px 6px;
+  grid-template-columns: auto auto minmax(100px, auto);
+  margin-right: auto;
+  min-width: 0;
+}
+
+.canvas-bar-gpt-state svg { color: var(--warning); grid-row: 1 / span 2; }
+.canvas-bar-gpt-controls[data-state="ready"] .canvas-bar-gpt-state svg { color: var(--success); }
+.canvas-bar-gpt-controls[data-state="error"] .canvas-bar-gpt-state svg { color: var(--danger); }
+.canvas-bar-gpt-state > span { color: var(--muted-foreground); font-size: 8px; font-weight: 750; letter-spacing: .06em; text-transform: uppercase; }
+.canvas-bar-gpt-state > strong { font-size: 9px; font-weight: 680; }
+.canvas-bar-gpt-state > small { color: var(--danger); font-size: 8px; grid-column: 2 / -1; max-width: min(420px, 45vw); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.canvas-bar-gpt-controls > label {
+  align-items: center;
+  display: flex;
+  gap: 4px;
+}
+
+.canvas-bar-gpt-controls > label > span { color: var(--muted-foreground); font-size: 8px; }
+.canvas-bar-gpt-controls select,
+.canvas-bar-gpt-controls button {
+  background: var(--surface);
+  border: 1px solid var(--input-border);
+  border-radius: 5px;
+  color: var(--foreground);
+  font: inherit;
+  font-size: 9px;
+  min-height: 24px;
+  padding: 3px 6px;
+}
+.canvas-bar-gpt-controls button { background: var(--primary); border-color: var(--primary); color: var(--primary-foreground); cursor: pointer; font-weight: 700; }
+.canvas-bar-gpt-controls button:disabled { cursor: not-allowed; opacity: .5; }
+.canvas-bar-gpt-controls :is(select, button):focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 1px; }
+
+@media (max-width: 720px) {
+  .canvas-bar-gpt-state { flex-basis: 100%; }
+  .canvas-bar-gpt-controls > label { flex: 1 1 120px; }
+  .canvas-bar-gpt-controls select { width: 100%; }
+}
+
 .workspace-window[data-dragging="true"] {
   cursor: grabbing;
   transition: none;

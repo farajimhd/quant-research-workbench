@@ -57,6 +57,7 @@ from src.backend.bar_gpt_client import (
     bar_gpt_health,
     bar_gpt_predictions,
     publish_bar_gpt_scope,
+    request_bar_gpt_inference,
     remove_bar_gpt_scope,
     update_bar_gpt_configuration,
 )
@@ -1037,6 +1038,14 @@ class BarGptScopeSubmit(BaseModel):
     revision: int = Field(default=1, ge=1)
     ttl_ms: int = Field(default=30_000, ge=1_000, le=3_600_000)
     source: str = Field(default="application", max_length=128)
+
+
+class BarGptInferenceSubmit(BaseModel):
+    scope_id: str = Field(min_length=1, max_length=256)
+    tickers: list[str] = Field(default_factory=list, max_length=5000)
+    model_ids: list[str] = Field(default_factory=list, max_length=16)
+    origin_us: int | None = Field(default=None, gt=0)
+    request_id: str = Field(default="", max_length=128)
 
 
 class BarGptOperationalConfigurationSubmit(BaseModel):
@@ -3209,10 +3218,24 @@ def model_features(ticker: str = "", limit: int = Query(default=100, ge=1, le=10
 
 
 @app.get("/api/model-features/chart/{ticker}")
-def model_feature_chart(ticker: str, model_version: str = "v2", scope_id: str = "") -> dict[str, Any]:
+def model_feature_chart(
+    ticker: str,
+    model_version: str = "v2",
+    scope_id: str = "",
+    quantile: str = "q50",
+    model_id: str = "",
+) -> dict[str, Any]:
     if model_version not in {"v2", "v3"}:
         raise HTTPException(status_code=400, detail="model_version must be v2 or v3")
-    return MODEL_FEATURE_STORE.chart_forecasts(ticker, model_version=model_version, scope_id=scope_id)
+    if quantile not in {"q10", "q50", "q90"}:
+        raise HTTPException(status_code=400, detail="quantile must be q10, q50, or q90")
+    return MODEL_FEATURE_STORE.chart_forecasts(
+        ticker,
+        model_version=model_version,
+        scope_id=scope_id,
+        quantile=quantile,
+        model_id=model_id,
+    )
 
 
 @app.get("/api/bar-gpt/status")
@@ -3227,6 +3250,14 @@ def bar_gpt_status() -> dict[str, Any]:
 def get_bar_gpt_predictions(ticker: str = "", limit: int = Query(default=100, ge=1, le=10_000)) -> dict[str, Any]:
     try:
         return bar_gpt_predictions(ticker=ticker, limit=limit)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@app.post("/api/bar-gpt/infer")
+def infer_bar_gpt(request: BarGptInferenceSubmit) -> dict[str, Any]:
+    try:
+        return request_bar_gpt_inference(**request.model_dump())
     except RuntimeError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
