@@ -111,6 +111,7 @@ pub struct GatewayConfig {
     pub historical_clickhouse_user: String,
     pub qmd_history_gateway_url: String,
     pub structure_focus_history_timeout_seconds: u64,
+    pub structure_focus_rebuild_timeout_seconds: u64,
     pub structure_focus_inactive_advance_hours: u64,
     pub structure_focus_inactive_batch_size: usize,
     pub structure_focus_inactive_registry_limit: usize,
@@ -147,6 +148,8 @@ pub struct GatewayConfig {
     pub qmd_live_event_coverage_table: String,
     pub qmd_run_id: String,
     pub qmd_run_started_at_utc: String,
+    #[serde(skip_serializing)]
+    pub qmd_operator_token: String,
     #[serde(skip_serializing)]
     pub qmd_shutdown_token: String,
     pub qmd_startup_maintenance_enabled: bool,
@@ -309,6 +312,11 @@ impl GatewayConfig {
                 60,
             )
             .clamp(1, 300),
+            structure_focus_rebuild_timeout_seconds: env_u64(
+                "QMD_STRUCTURE_FOCUS_REBUILD_TIMEOUT_SECONDS",
+                1_800,
+            )
+            .clamp(60, 7_200),
             structure_focus_inactive_advance_hours: env_u64(
                 "QMD_STRUCTURE_FOCUS_INACTIVE_ADVANCE_HOURS",
                 24,
@@ -410,6 +418,7 @@ impl GatewayConfig {
                 "QMD_RUN_STARTED_AT_UTC",
                 &Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
             ),
+            qmd_operator_token: env_string("QMD_OPERATOR_TOKEN", ""),
             qmd_shutdown_token: env_string("QMD_SHUTDOWN_TOKEN", ""),
             qmd_startup_maintenance_enabled: env_bool("QMD_STARTUP_MAINTENANCE_ENABLED", true),
             market_holidays_refresh_seconds: env_u64("QMD_MARKET_HOLIDAYS_REFRESH_SECONDS", 3_600),

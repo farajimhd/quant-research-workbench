@@ -2865,6 +2865,55 @@ impl IndicatorClickHouseWriter {
         .await
     }
 
+    pub async fn load_structure_focus_status(
+        &self,
+        ticker: &str,
+    ) -> Result<Option<(String, String, String)>, String> {
+        let sym = ticker.trim().to_ascii_uppercase();
+        if sym.is_empty()
+            || sym.len() > 32
+            || !sym
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_'))
+        {
+            return Err("invalid structure focus registry ticker".to_string());
+        }
+        let sql = format!(
+            r#"SELECT
+                argMax(state, updated_at) AS state,
+                argMax(error_code, updated_at) AS error_code,
+                argMax(retry_action, updated_at) AS retry_action
+            FROM qmd_structure_focus_registry_v1
+            WHERE sym = '{}'
+            HAVING length(state) > 0
+            FORMAT JSONEachRow"#,
+            sym.replace('\'', "''"),
+        );
+        let text = self.query(&sql, true).await?;
+        let Some(line) = text.lines().find(|line| !line.trim().is_empty()) else {
+            return Ok(None);
+        };
+        let value = serde_json::from_str::<serde_json::Value>(line)
+            .map_err(|error| format!("invalid structure focus status row: {error}"))?;
+        Ok(Some((
+            value
+                .get("state")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+            value
+                .get("error_code")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+            value
+                .get("retry_action")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+        )))
+    }
+
     pub async fn run(
         self,
         mut receiver: mpsc::Receiver<IndicatorRow>,

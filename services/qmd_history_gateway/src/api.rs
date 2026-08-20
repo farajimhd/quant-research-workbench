@@ -14,8 +14,9 @@ use crate::source::{
     HistoricalScannerMarketSnapshot, LatestEventCoverage, MarketSourcePlan, SourceRevision,
 };
 use crate::structure_checkpoint::{
-    advance_structure_checkpoint, StructureCheckpointAdvanceRequest,
-    StructureCheckpointAdvanceResponse,
+    advance_structure_checkpoint, rebuild_structure_checkpoint, StructureCheckpointAdvanceRequest,
+    StructureCheckpointAdvanceResponse, StructureCheckpointRebuildRequest,
+    StructureCheckpointRebuildResponse,
 };
 use crate::watchlist_timeline::{
     validate_plan, HistoricalWatchlistPlan, HistoricalWatchlistPlanValidation,
@@ -216,6 +217,10 @@ pub fn app(state: AppState) -> Router {
             post(materialize_generic_structure_checkpoint),
         )
         .route(
+            "/materialize/generic-structure-rebuild",
+            post(materialize_generic_structure_rebuild),
+        )
+        .route(
             "/plans/watchlist-timeline/validate",
             post(validate_watchlist_timeline_plan),
         )
@@ -325,6 +330,49 @@ async fn materialize_generic_structure_checkpoint(
         .await
         .map(Json)
         .map_err(structure_checkpoint_advancement_error)
+}
+
+async fn materialize_generic_structure_rebuild(
+    State(state): State<Arc<AppState>>,
+    Json(request): Json<StructureCheckpointRebuildRequest>,
+) -> Result<Json<StructureCheckpointRebuildResponse>, ApiError> {
+    if !is_loopback_bind(&state.config.bind) {
+        return Err((
+            StatusCode::FORBIDDEN,
+            Json(json!({
+                "error": "Generic Structure checkpoint rebuild is available only when QMD History is bound to loopback",
+                "error_code": "structure_checkpoint_rebuild_not_local",
+                "retryable": false,
+                "source": "qmd_history_gateway",
+            })),
+        ));
+    }
+    let _permit = state
+        .structure_checkpoint_advancement_permits
+        .clone()
+        .try_acquire_owned()
+        .map_err(|_| {
+            (
+                StatusCode::TOO_MANY_REQUESTS,
+                Json(json!({
+                    "error": "Generic Structure checkpoint rebuild capacity is busy",
+                    "error_code": "structure_checkpoint_capacity_busy",
+                    "retryable": true,
+                    "retry_action": "retry_checkpoint_rebuild",
+                    "source": "qmd_history_gateway",
+                })),
+            )
+        })?;
+    rebuild_structure_checkpoint(&state.config, &state.source, request)
+        .await
+        .map(Json)
+        .map_err(structure_checkpoint_advancement_error)
+}
+
+fn is_loopback_bind(bind: &str) -> bool {
+    bind.parse::<std::net::SocketAddr>()
+        .map(|address| address.ip().is_loopback())
+        .unwrap_or(false)
 }
 
 async fn validate_watchlist_timeline_plan(
@@ -1861,9 +1909,10 @@ fn event_revision_changed(
 #[cfg(test)]
 mod tests {
     use super::{
-        causal_product_window, event_revision_changed, expected_event_revision, parse_chart_stage,
-        parse_indicator_projection, parse_timestamp, product_resolution, stream_gap_frame,
-        validate_timeframe, watchlist_materialization_error, EventRevisionPolicy, ProductQuery,
+        causal_product_window, event_revision_changed, expected_event_revision, is_loopback_bind,
+        parse_chart_stage, parse_indicator_projection, parse_timestamp, product_resolution,
+        stream_gap_frame, validate_timeframe, watchlist_materialization_error, EventRevisionPolicy,
+        ProductQuery,
     };
     use crate::source::SourceRevision;
     use axum::http::StatusCode;
@@ -2020,5 +2069,14 @@ mod tests {
         assert!(parse_chart_stage(Some("bars")).unwrap());
         assert!(!parse_chart_stage(Some("full")).unwrap());
         assert!(parse_chart_stage(Some("indicators")).is_err());
+    }
+
+    #[test]
+    fn checkpoint_rebuild_is_restricted_to_loopback_bindings() {
+        assert!(is_loopback_bind("127.0.0.1:8801"));
+        assert!(is_loopback_bind("[::1]:8801"));
+        assert!(!is_loopback_bind("0.0.0.0:8801"));
+        assert!(!is_loopback_bind("192.168.1.4:8801"));
+        assert!(!is_loopback_bind("localhost:8801"));
     }
 }

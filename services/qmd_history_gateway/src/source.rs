@@ -721,15 +721,17 @@ impl HistoricalEventSource {
         let (sender, receiver) = mpsc::channel(2);
         let source = self.clone();
         tokio::spawn(async move {
-            if let Err(error) = source
-                .stream_scanner_window(
+            let stream_sender = sender.clone();
+            let result = tokio::select! {
+                _ = sender.closed() => return,
+                result = source.stream_scanner_window(
                     window,
                     batch_size,
                     live_continuation_sequence,
-                    sender.clone(),
-                )
-                .await
-            {
+                    stream_sender,
+                ) => result,
+            };
+            if let Err(error) = result {
                 let _ = sender.send(Err(error)).await;
             }
         });

@@ -57,6 +57,15 @@ reaches Archive ordinal identity or a possible in-session coverage gap,
 advancement fails closed. QMD Gateway remains responsible for verifying and
 persisting the returned checkpoint; QMD History never mutates live state.
 
+When an older checkpoint cannot be advanced because its stored live-arrival
+identity is incompatible with rebuilt canonical archive history, the operator
+path does not translate or fabricate a cursor. QMD History instead starts a
+fresh shared engine at an explicit certified boundary and replays a gap-free,
+bounded, revision-pinned Archive + Recent + Current window. QMD Live exposes
+the token-protected orchestration endpoint, persists the completed checkpoint
+first, and clears the blocked focus-registry record second. The History rebuild
+primitive is disabled unless its listener is loopback-bound.
+
 ### Focused Generic Structure activation
 
 ```mermaid

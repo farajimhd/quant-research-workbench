@@ -138,6 +138,26 @@ def test_qmd_live_survives_an_unexpected_terminal_monitor_exit() -> None:
     assert "a presentation failure must not terminate live market-data authority" in source
 
 
+def test_qmd_structure_checkpoint_rebuild_uses_ephemeral_operator_authority() -> None:
+    launcher = _source("run_qmd_gateway.ps1")
+    rebuild = _source("rebuild_qmd_structure_checkpoint.ps1")
+
+    assert "qmd_operator_token" in launcher
+    assert "operator_token.dpapi" in launcher
+    assert "protecteddata]::protect" in launcher
+    assert "dataprotectionscope]::localmachine" in launcher
+    assert "icacls.exe" in launcher
+    assert "inheritance:r" in launcher
+    assert "remove-item env:qmd_operator_token" in launcher
+    assert "remove-item -literalpath $operatortokenpath" in launcher
+    assert "x-qmd-operator-token" in rebuild
+    assert "protecteddata]::unprotect" in rebuild
+    assert "supportsshouldprocess" in rebuild
+    assert "planonly" in rebuild
+    assert "source-plan" in rebuild
+    assert "uncovered segment" in rebuild
+
+
 def test_direct_cargo_commands_also_write_outside_the_repository() -> None:
     cargo_config = (REPO_ROOT / ".cargo" / "config.toml").read_text(encoding="utf-8").lower()
 

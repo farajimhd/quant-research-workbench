@@ -164,6 +164,12 @@ Supported bar timeframes are the live QMD set: `100ms`, `1s`, `5s`, `10s`,
   returns a typed conflict instead of fabricating an exact continuation. The
   response includes the advanced checkpoint, event counts, source plan, and
   source revisions before and after replay.
+- `POST /materialize/generic-structure-rebuild` reconstructs a checkpoint from
+  a fresh shared engine over one explicit, gap-free canonical Archive + Recent
+  + Current-Live window. It is an operator recovery primitive, available only
+  while QMD History is bound to loopback. Replay is event-bounded and
+  revision-pinned; source-plan or source-revision drift fails closed. QMD Live
+  remains the only service allowed to persist and activate the result.
 - `GET /snapshot/family-bars/{ticker}?start=...&end=...&as_of=...&resolution=1m`
 - `GET /snapshot/condition-bars/{ticker}?start=...&end=...&as_of=...&resolution=1m`
 - `GET /snapshot/macro-bars/{ticker}?start=...&end=...&as_of=...&timeframe=1d`

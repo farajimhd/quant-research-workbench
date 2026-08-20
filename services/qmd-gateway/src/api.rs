@@ -34,7 +34,7 @@ use crate::signal_catalog::{signal_taxonomy_catalog, SignalTaxonomyEntry};
 use crate::state::{
     ScannerRowDelta, SharedMarketState, StatusMetrics, SymbolSnapshot, TickerStateSnapshot,
 };
-use crate::structure_focus::StructureFocusCoordinator;
+use crate::structure_focus::{StructureFocusCoordinator, StructureFocusRebuild};
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
@@ -109,6 +109,13 @@ struct CompactEventBatchQuery {
 }
 
 #[derive(Debug, Deserialize)]
+struct StructureCheckpointRebuildRequest {
+    start: chrono::DateTime<Utc>,
+    as_of: Option<chrono::DateTime<Utc>>,
+    event_limit: Option<usize>,
+}
+
+#[derive(Debug, Deserialize)]
 struct BarsQuery {
     limit: Option<usize>,
     timeframe: Option<String>,
@@ -169,6 +176,10 @@ pub fn app(state: AppState) -> Router {
         .route("/config", get(config))
         .route("/metrics", get(metrics_snapshot))
         .route("/admin/shutdown", post(request_shutdown))
+        .route(
+            "/admin/structure-checkpoints/{ticker}/rebuild",
+            post(rebuild_structure_checkpoint),
+        )
         .route("/snapshot/status", get(status_snapshot))
         .route("/snapshot/maintenance", get(maintenance_snapshot))
         .route("/snapshot/coverage", get(coverage_snapshot))
@@ -242,7 +253,10 @@ pub fn app(state: AppState) -> Router {
             get(ticker_live_market_state_snapshot),
         )
         .route("/stream/compact-events", get(compact_event_stream))
-        .route("/stream/compact-events-batch", get(compact_event_batch_stream))
+        .route(
+            "/stream/compact-events-batch",
+            get(compact_event_batch_stream),
+        )
         .route("/stream/intraday-bars", get(intraday_bar_stream))
         .route("/stream/events", get(event_stream))
         .route("/stream/live-market-state", get(live_market_state_stream))
@@ -413,6 +427,59 @@ async fn request_shutdown(State(state): State<Arc<AppState>>, headers: HeaderMap
         Ok(()) => StatusCode::ACCEPTED,
         Err(_) => StatusCode::SERVICE_UNAVAILABLE,
     }
+}
+
+async fn rebuild_structure_checkpoint(
+    State(state): State<Arc<AppState>>,
+    Path(ticker): Path<String>,
+    headers: HeaderMap,
+    Json(request): Json<StructureCheckpointRebuildRequest>,
+) -> Result<Json<StructureFocusRebuild>, (StatusCode, Json<Value>)> {
+    let expected = state.config.qmd_operator_token.trim();
+    let supplied = headers
+        .get("x-qmd-operator-token")
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default();
+    if !valid_shutdown_token(expected, supplied) {
+        return Err((
+            StatusCode::FORBIDDEN,
+            Json(json!({
+                "error": "a valid QMD operator token is required",
+                "error_code": "qmd_operator_token_required",
+                "retryable": false,
+            })),
+        ));
+    }
+    let rebuild_state = state.clone();
+    let as_of = request.as_of.unwrap_or_else(Utc::now);
+    tokio::spawn(async move {
+        rebuild_state
+            .structure_focus
+            .rebuild_blocked_checkpoint(&ticker, request.start, as_of, request.event_limit)
+            .await
+    })
+    .await
+    .map_err(|error| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({
+                "error": format!("Generic Structure rebuild task failed: {error}"),
+                "error_code": "structure_checkpoint_rebuild_task_failed",
+                "retryable": true,
+            })),
+        )
+    })?
+    .map(Json)
+    .map_err(|error| {
+        (
+            StatusCode::CONFLICT,
+            Json(json!({
+                "error": error,
+                "error_code": "structure_checkpoint_rebuild_failed",
+                "retryable": false,
+            })),
+        )
+    })
 }
 
 fn valid_shutdown_token(expected: &str, supplied: &str) -> bool {
@@ -2053,8 +2120,14 @@ async fn send_compact_event_batch(
     if rows.is_empty() {
         return true;
     }
-    let first = rows.first().map(|row| row.arrival_sequence).unwrap_or_default();
-    let last = rows.last().map(|row| row.arrival_sequence).unwrap_or_default();
+    let first = rows
+        .first()
+        .map(|row| row.arrival_sequence)
+        .unwrap_or_default();
+    let last = rows
+        .last()
+        .map(|row| row.arrival_sequence)
+        .unwrap_or_default();
     let payload = json!({
         "schema_version": 1,
         "type": "compact_event_batch",

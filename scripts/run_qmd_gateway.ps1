@@ -196,7 +196,7 @@ $runStamp = Get-Date -Format "yyyyMMdd_HHmmss"
 $stdoutLog = Join-Path $logRoot "qmd_gateway_$runStamp.out.log"
 $stderrLog = Join-Path $logRoot "qmd_gateway_$runStamp.err.log"
 $shutdownToken = [Guid]::NewGuid().ToString("N")
-$env:QMD_SHUTDOWN_TOKEN = $shutdownToken
+$operatorTokenPath = Join-Path $resolvedRuntimeRoot "operator_token.dpapi"
 
 Write-Host "Building qmd-gateway ($targetProfile)..."
 if ($DebugBuild) {
@@ -210,21 +210,45 @@ if ($LASTEXITCODE -ne 0) {
 if (-not (Test-Path $gatewayExe)) {
     throw "Built qmd-gateway executable was not found: $gatewayExe"
 }
+$env:QMD_SHUTDOWN_TOKEN = $shutdownToken
+$env:QMD_OPERATOR_TOKEN = $shutdownToken
+Add-Type -AssemblyName System.Security
+$operatorTokenBytes = [Text.Encoding]::UTF8.GetBytes($shutdownToken)
+$protectedOperatorTokenBytes = [Security.Cryptography.ProtectedData]::Protect(
+    $operatorTokenBytes,
+    $null,
+    [Security.Cryptography.DataProtectionScope]::LocalMachine
+)
+[IO.File]::WriteAllText(
+    $operatorTokenPath,
+    [Convert]::ToBase64String($protectedOperatorTokenBytes),
+    [Text.Encoding]::ASCII
+)
+$operatorTokenIdentity = [Security.Principal.WindowsIdentity]::GetCurrent().Name
+& "$env:SystemRoot\System32\icacls.exe" `
+    $operatorTokenPath `
+    '/inheritance:r' `
+    '/grant:r' `
+    "${operatorTokenIdentity}:(R)" | Out-Null
+if ($LASTEXITCODE -ne 0) {
+    throw "Failed to restrict the QMD operator token ACL for $operatorTokenIdentity."
+}
 
 Write-Host "Starting qmd-gateway at $baseUrl"
 Write-Host "Gateway logs:"
 Write-Host "  stdout: $stdoutLog"
 Write-Host "  stderr: $stderrLog"
 $terminalExitCode = 1
-$gatewayProcess = Start-Process `
-    -FilePath $gatewayExe `
-    -WorkingDirectory $repoRoot `
-    -RedirectStandardOutput $stdoutLog `
-    -RedirectStandardError $stderrLog `
-    -WindowStyle Hidden `
-    -PassThru
+$gatewayProcess = $null
 
 try {
+    $gatewayProcess = Start-Process `
+        -FilePath $gatewayExe `
+        -WorkingDirectory $repoRoot `
+        -RedirectStandardOutput $stdoutLog `
+        -RedirectStandardError $stderrLog `
+        -WindowStyle Hidden `
+        -PassThru
     Wait-QmdGatewayHealth -BaseUrl $baseUrl
     Write-Host "qmd-gateway is healthy. Starting Rich terminal monitor..."
 
@@ -277,6 +301,8 @@ finally {
         $terminalExitCode = $gatewayProcess.ExitCode
     }
     Remove-Item Env:QMD_SHUTDOWN_TOKEN -ErrorAction SilentlyContinue
+    Remove-Item Env:QMD_OPERATOR_TOKEN -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $operatorTokenPath -Force -ErrorAction SilentlyContinue
 }
 
 exit $terminalExitCode

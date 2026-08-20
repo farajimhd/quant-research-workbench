@@ -35,6 +35,7 @@ pub struct HistoricalGatewayConfig {
     pub scanner_shard_count: usize,
     pub structure_checkpoint_max_concurrent_advancements: usize,
     pub structure_checkpoint_max_events: usize,
+    pub structure_checkpoint_rebuild_max_events: usize,
     pub structure_checkpoint_max_window_hours: usize,
     pub structure_database: String,
     pub structure_events_table: String,
@@ -119,6 +120,11 @@ impl HistoricalGatewayConfig {
                 5_000_000,
             )
             .clamp(1_000, 50_000_000),
+            structure_checkpoint_rebuild_max_events: env_usize(
+                "QMD_HISTORY_STRUCTURE_CHECKPOINT_REBUILD_MAX_EVENTS",
+                50_000_000,
+            )
+            .clamp(1_000, 250_000_000),
             structure_checkpoint_max_window_hours: env_usize(
                 "QMD_HISTORY_STRUCTURE_CHECKPOINT_MAX_WINDOW_HOURS",
                 72,

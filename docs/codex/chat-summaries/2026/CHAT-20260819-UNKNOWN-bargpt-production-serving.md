@@ -74,7 +74,29 @@ persists that specific conflict as a blocked registry record with its error
 code and required canonical-history rebuild action. It no longer retries every
 five minutes, while all exact cursor checks remain unchanged. The restarted
 gateway produced one blocked transition and no repeated conflict or deferred
-lines. PLAG remains fail-closed until canonical reconstruction exists.
+lines. PLAG remained fail-closed until canonical reconstruction existed.
+
+The follow-up implemented and completed that reconstruction. QMD History now
+has a loopback-only, event-bounded, revision-pinned rebuild product that starts
+from a fresh shared Generic Structure engine and accepts a gap-free canonical
+Archive + Recent + Current-Live plan. QMD Live owns the token-protected
+operator endpoint, verifies the response, persists the checkpoint first, and
+only then changes the focus registry from blocked to active. The managed
+launcher stores its per-run operator token using Windows machine-scope DPAPI
+behind a launching-identity-only file ACL;
+the operator script performs a source-plan preflight and never exposes an
+arbitrary checkpoint path or cursor rewrite.
+
+The certified PLAG plan from 2019-01-01 through the recovery cutoff had five
+segments and zero gaps. The completed rebuild applied 4,038,142 canonical
+events and persisted exact cursor `(2026-08-19T23:59:53.061Z,
+2045854651)`, source-plan hash `fnv1a64:48130516f14aa804`, and replayed-through
+time `2026-08-20T02:31:21.658843100Z`. Direct ClickHouse verification found
+registry state `active`, empty error and retry fields, and zero remaining PLAG
+queries. Two abandoned scans from canceled diagnostic attempts were identified
+by exact query ID and terminated before the successful clean run. On restart,
+QMD Live reported one restored inactive focus checkpoint and zero blocked;
+QMD Live, QMD History, Backend, and Frontend all returned HTTP 200.
 
 Application lifecycle is now composed by
 `scripts/manage_application_services.py start|stop|restart|status`. It

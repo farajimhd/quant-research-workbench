@@ -55,6 +55,7 @@ pub struct StructureFocusCoordinator {
     bars: SharedBarStore,
     checkpoint_store: IndicatorClickHouseWriter,
     client: Client,
+    rebuild_client: Client,
     focused_repair: GapFillService,
     history_url: String,
     inactive_advance_hours: u64,
@@ -89,6 +90,21 @@ pub struct StructureFocusAdvance {
     pub blocked: Vec<String>,
 }
 
+#[derive(Clone, Debug, Serialize)]
+pub struct StructureFocusRebuild {
+    pub ticker: String,
+    pub replay_start: DateTime<Utc>,
+    pub as_of: DateTime<Utc>,
+    pub event_count: u64,
+    pub advanced_event_count: u64,
+    pub checkpoint_updated_at: DateTime<Utc>,
+    pub checkpoint_arrival_sequence: u64,
+    pub source_plan_hash: String,
+    pub source_revision_token: String,
+    pub previous_error_code: String,
+    pub previous_retry_action: String,
+}
+
 #[derive(Debug, Deserialize)]
 struct HistoryErrorResponse {
     #[serde(default)]
@@ -112,6 +128,25 @@ struct HistoryAdvanceResponse {
     advanced_event_count: u64,
     source_plan: HistorySourcePlan,
     complete: bool,
+}
+
+#[derive(Debug, Deserialize)]
+struct HistoryRebuildResponse {
+    checkpoint: GenericStructureCheckpoint,
+    ticker: String,
+    as_of: DateTime<Utc>,
+    replay_start: DateTime<Utc>,
+    event_count: u64,
+    advanced_event_count: u64,
+    source_plan: HistorySourcePlan,
+    source_revision_before: HistorySourceRevision,
+    source_revision_after: HistorySourceRevision,
+    complete: bool,
+}
+
+#[derive(Debug, Deserialize)]
+struct HistorySourceRevision {
+    token: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -143,10 +178,17 @@ impl StructureFocusCoordinator {
             ))
             .build()
             .map_err(|error| format!("failed to build QMD History client: {error}"))?;
+        let rebuild_client = Client::builder()
+            .timeout(Duration::from_secs(
+                config.structure_focus_rebuild_timeout_seconds,
+            ))
+            .build()
+            .map_err(|error| format!("failed to build QMD History rebuild client: {error}"))?;
         Ok(Self {
             bars,
             checkpoint_store,
             client,
+            rebuild_client,
             focused_repair,
             history_url: config.qmd_history_gateway_url.clone(),
             inactive_advance_hours: config.structure_focus_inactive_advance_hours,
@@ -284,6 +326,121 @@ impl StructureFocusCoordinator {
         let active = entries.len();
         self.inactive_registry.lock().await.extend(entries);
         Ok(StructureFocusRestore { active, blocked })
+    }
+
+    pub async fn rebuild_blocked_checkpoint(
+        &self,
+        ticker: &str,
+        replay_start: DateTime<Utc>,
+        as_of: DateTime<Utc>,
+        event_limit: Option<usize>,
+    ) -> Result<StructureFocusRebuild, String> {
+        let ticker = ticker.trim().to_ascii_uppercase();
+        if ticker.is_empty()
+            || ticker.len() > 32
+            || !ticker
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_'))
+        {
+            return Err("invalid Generic Structure rebuild ticker".to_string());
+        }
+        if replay_start >= as_of {
+            return Err("Generic Structure rebuild start must precede as_of".to_string());
+        }
+        let _activation_guards = self.activation_locks.acquire(&[ticker.clone()]).await;
+        if self.bars.active_structure_symbols().await.contains(&ticker) {
+            return Err(format!(
+                "Generic Structure rebuild refuses to replace active state for {ticker}"
+            ));
+        }
+        let Some((state, error_code, retry_action)) = self
+            .checkpoint_store
+            .load_structure_focus_status(&ticker)
+            .await?
+        else {
+            return Err(format!(
+                "no Generic Structure focus registry record exists for {ticker}"
+            ));
+        };
+        if state != "blocked"
+            || error_code != "structure_checkpoint_source_incompatible"
+            || retry_action != "rebuild_checkpoint_from_canonical_history"
+        {
+            return Err(format!(
+                "Generic Structure checkpoint for {ticker} is not blocked for canonical-history rebuild"
+            ));
+        }
+        let response = self
+            .rebuild_client
+            .post(format!(
+                "{}/materialize/generic-structure-rebuild",
+                self.history_url
+            ))
+            .json(&json!({
+                "schema_version": 1,
+                "ticker": ticker,
+                "start": replay_start,
+                "as_of": as_of,
+                "event_limit": event_limit,
+            }))
+            .send()
+            .await
+            .map_err(|error| format!("QMD History checkpoint rebuild request failed: {error}"))?;
+        let status = response.status();
+        if !status.is_success() {
+            let body = response.text().await.unwrap_or_default();
+            return Err(format!(
+                "QMD History checkpoint rebuild returned HTTP {status}: {body}"
+            ));
+        }
+        let rebuilt = response
+            .json::<HistoryRebuildResponse>()
+            .await
+            .map_err(|error| format!("invalid QMD History rebuild response: {error}"))?;
+        let checkpoint_updated_at = rebuilt
+            .checkpoint
+            .updated_at
+            .ok_or_else(|| "rebuilt Generic Structure checkpoint lacks updated_at".to_string())?;
+        if !rebuilt.complete
+            || rebuilt.ticker != ticker
+            || rebuilt.checkpoint.sym.to_ascii_uppercase() != ticker
+            || rebuilt.checkpoint.algorithm_version != GENERIC_STRUCTURE_ALGORITHM_VERSION
+            || rebuilt.checkpoint.last_arrival_sequence == 0
+            || rebuilt.source_revision_before.token != rebuilt.source_revision_after.token
+            || rebuilt
+                .source_plan
+                .segments
+                .iter()
+                .any(|segment| segment.tier == "gap")
+        {
+            return Err(format!(
+                "QMD History returned an incomplete or mismatched rebuild for {ticker}"
+            ));
+        }
+        self.checkpoint_store
+            .persist_structure_checkpoint(&rebuilt.checkpoint)
+            .await?;
+        let next_due = Utc::now() + ChronoDuration::hours(self.inactive_advance_hours as i64);
+        self.checkpoint_store
+            .persist_structure_focus_registry(&ticker, next_due)
+            .await?;
+        self.inactive_registry
+            .lock()
+            .await
+            .insert(ticker.clone(), next_due);
+        Ok(StructureFocusRebuild {
+            ticker,
+            replay_start: rebuilt.replay_start,
+            as_of: rebuilt.as_of,
+            event_count: rebuilt.event_count,
+            advanced_event_count: rebuilt.advanced_event_count,
+            checkpoint_updated_at,
+            checkpoint_arrival_sequence: rebuilt.checkpoint.last_arrival_sequence,
+            source_plan_hash: rebuilt.source_plan.plan_hash,
+            source_revision_token: rebuilt.source_revision_after.token,
+            previous_error_code: error_code,
+            previous_retry_action: retry_action,
+        })
     }
 
     pub async fn persist_and_reclaim_unused(

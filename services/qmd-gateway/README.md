@@ -608,6 +608,22 @@ forced-stop fallback. Gateway stdout/stderr remain under `.tmp/qmd-gateway/`.
 Failed final batches continue retrying within that drain window; they are never
 cleared merely because shutdown was requested.
 
+The launcher also writes the same per-run value as a machine-scope DPAPI
+protected operator token with inherited access removed and read access granted
+only to the launching Windows identity under the external QMD runtime. A blocked Generic
+Structure checkpoint whose archive identity no longer matches canonical
+history can be recovered without rewriting its cursor:
+
+```powershell
+.\scripts\rebuild_qmd_structure_checkpoint.ps1 -Ticker PLAG -PlanOnly
+.\scripts\rebuild_qmd_structure_checkpoint.ps1 -Ticker PLAG
+```
+
+The first command proves the explicit source window is gap-free. The second
+asks QMD Live to orchestrate a fresh bounded replay in QMD History, persist the
+completed checkpoint, and only then clear the blocked focus-registry record.
+The operator token is removed whenever the managed QMD Live process exits.
+
 Useful terminal modes:
 
 ```powershell
