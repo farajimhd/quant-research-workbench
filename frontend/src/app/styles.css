@@ -28709,40 +28709,40 @@ button {
   align-items: center;
   background: color-mix(in oklab, var(--table-badge-tone) 4%, var(--surface));
   border: 1px solid color-mix(in oklab, var(--table-badge-tone) 16%, var(--border));
-  border-radius: 6px;
+  border-radius: 5px;
   color: color-mix(in oklab, var(--table-badge-tone) 62%, var(--foreground));
   display: inline-flex;
   font-family: var(--font-badge);
-  font-size: 10px;
-  font-weight: 600;
-  gap: 6px;
-  letter-spacing: .008em;
+  font-size: 9.5px;
+  font-weight: 520;
+  gap: 5px;
+  letter-spacing: .006em;
   line-height: 1.2;
   max-width: 160px;
-  min-height: 23px;
+  min-height: 21px;
   overflow: hidden;
-  padding: 4px 11px;
+  padding: 3.5px 10px;
   text-overflow: ellipsis;
   text-transform: capitalize;
   white-space: nowrap;
 }
 .table-category-badge > span,
 .data-table-category-badge > span { overflow: hidden; text-overflow: ellipsis; }
-.table-category-badge-icon { flex: 0 0 auto; }
+.table-category-badge-icon { flex: 0 0 auto; height: 10px; width: 10px; }
 .table-category-badge[data-emphasis="medium"] {
   background: color-mix(in oklab, var(--table-badge-tone) 8%, var(--surface));
   border-color: color-mix(in oklab, var(--table-badge-tone) 34%, var(--border));
   color: color-mix(in oklab, var(--table-badge-tone) 76%, var(--foreground));
-  font-weight: 650;
-  min-height: 24px;
+  font-weight: 560;
+  min-height: 22px;
 }
 .table-category-badge[data-emphasis="strong"] {
   background: color-mix(in oklab, var(--table-badge-tone) 15%, var(--surface));
   border-color: color-mix(in oklab, var(--table-badge-tone) 70%, var(--border));
   color: color-mix(in oklab, var(--table-badge-tone) 90%, var(--foreground));
-  font-weight: 700;
-  min-height: 25px;
-  padding: 5px 12px;
+  font-weight: 600;
+  min-height: 23px;
+  padding: 4px 11px;
 }
 .table-category-badge[data-tone="positive"] { --table-badge-tone: var(--semantic-positive, var(--success)); }
 .table-category-badge[data-tone="negative"],
