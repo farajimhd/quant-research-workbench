@@ -326,14 +326,17 @@ eligible-trade handling are not yet wired into QMD, these fields are named
 `estimated_luld_*` and should not be used as authoritative halt/limit-state
 messages.
 
-The live abnormal market-state overlay consumes quote/trade events and closed
-1s bars. It keeps current state in memory and appends durable rows only when a
+The live abnormal market-state overlay consumes Massive quote/trade events,
+official `LULD.*` events, and closed 1s bars. It keeps current state in memory and appends durable rows only when a
 predefined special state opens or closes. Ordinary `normal` state is
 not persisted. The default persisted families are estimated LULD near/breach
-states and locked/crossed quote states. Configured halt/resume condition ids can
-also open or close `condition_halt` rows. Consumers read
+states and locked/crossed quote states. Official LULD indicators 17 and 18 open
+or close `condition_halt`; validated configured halt/resume condition ids remain
+an optional secondary source. Consumers read
 `/snapshot/live-market-state`, `/snapshot/live-market-state/{ticker}`, or
-`/stream/live-market-state` and combine those live blocks with reference
+`/stream/live-market-state`. Session reconstruction reads the same durable
+authority through `/history/live-market-state`; consumers combine those live
+blocks with reference
 tradability and broker/account checks.
 
 Bar-level indicator history is retained per timeframe using

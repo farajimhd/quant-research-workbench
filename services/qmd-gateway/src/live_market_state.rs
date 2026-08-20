@@ -1,6 +1,6 @@
 use crate::bars::BarRow;
 use crate::config::GatewayConfig;
-use crate::event::MarketEvent;
+use crate::event::{LuldEvent, MarketEvent};
 use crate::metrics::SharedMetrics;
 use crate::timefmt::{clickhouse_datetime64, clickhouse_datetime64_opt};
 use chrono::{DateTime, Utc};
@@ -80,6 +80,7 @@ pub struct LiveMarketStateRouter {
 #[derive(Clone, Debug)]
 pub enum LiveMarketStateInput {
     Event(MarketEvent),
+    Luld(LuldEvent),
     Bar(BarRow),
 }
 
@@ -100,6 +101,13 @@ impl LiveMarketStateRouter {
         row: BarRow,
     ) -> Result<(), mpsc::error::SendError<LiveMarketStateInput>> {
         self.sender.send(LiveMarketStateInput::Bar(row)).await
+    }
+
+    pub async fn send_luld(
+        &self,
+        event: LuldEvent,
+    ) -> Result<(), mpsc::error::SendError<LiveMarketStateInput>> {
+        self.sender.send(LiveMarketStateInput::Luld(event)).await
     }
 }
 
@@ -316,7 +324,40 @@ fn evaluate_input(
 ) -> Vec<LiveSymbolMarketStateEvent> {
     match input {
         LiveMarketStateInput::Event(event) => evaluate_market_event(config, active, event),
+        LiveMarketStateInput::Luld(event) => evaluate_luld_event(config, active, event),
         LiveMarketStateInput::Bar(row) => evaluate_bar_row(config, active, row),
+    }
+}
+
+fn evaluate_luld_event(
+    config: &GatewayConfig,
+    active: &mut HashMap<StateKey, LiveSymbolMarketStateEvent>,
+    event: LuldEvent,
+) -> Vec<LiveSymbolMarketStateEvent> {
+    let evidence = Evidence::new(
+        event.ticker.clone(),
+        "luld",
+        event.ts,
+        Vec::new(),
+        event.indicators.clone(),
+    )
+    .with_json(json!({
+        "high_price": event.high_price,
+        "low_price": event.low_price,
+        "sequence": event.sequence,
+        "tape": event.tape,
+    }));
+    if event.indicators.contains(&17) {
+        open_or_update(
+            config,
+            active,
+            EventSpec::blocking("condition_halt", "critical", "luld_indicator_17"),
+            evidence,
+        )
+    } else if event.indicators.contains(&18) {
+        close_state(config, active, &event.ticker, "condition_halt", evidence)
+    } else {
+        Vec::new()
     }
 }
 
@@ -891,6 +932,32 @@ mod tests {
             "condition_halt",
             Evidence::new("AAPL".to_string(), "trade", ts, vec![2], Vec::new()),
         );
+        assert_eq!(closed[0].event_status, "closed");
+        assert!(active.is_empty());
+    }
+
+    #[test]
+    fn luld_indicator_seventeen_opens_and_eighteen_closes_halt() {
+        let config = config();
+        let mut active = HashMap::new();
+        let ts = Utc.with_ymd_and_hms(2026, 8, 20, 15, 0, 0).unwrap();
+        let event = |indicator| LuldEvent {
+            high_price: 10.5,
+            indicators: vec![indicator],
+            low_price: 9.5,
+            raw: json!({}),
+            sequence: u64::from(indicator),
+            tape: 3,
+            ticker: "HALT".to_string(),
+            ts,
+        };
+
+        let opened = evaluate_luld_event(&config, &mut active, event(17));
+        let closed = evaluate_luld_event(&config, &mut active, event(18));
+
+        assert_eq!(opened[0].event_status, "opened");
+        assert_eq!(opened[0].source_event_type, "luld");
+        assert_eq!(opened[0].block_reason.as_deref(), Some("luld_indicator_17"));
         assert_eq!(closed[0].event_status, "closed");
         assert!(active.is_empty());
     }

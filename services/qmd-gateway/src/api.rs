@@ -87,6 +87,15 @@ struct LimitQuery {
 }
 
 #[derive(Debug, Deserialize)]
+struct LiveMarketStateHistoryQuery {
+    start: chrono::DateTime<Utc>,
+    end: chrono::DateTime<Utc>,
+    event_type: Option<String>,
+    event_status: Option<String>,
+    limit: Option<usize>,
+}
+
+#[derive(Debug, Deserialize)]
 struct CompactEventPageQuery {
     after_arrival_sequence: Option<u64>,
     limit: Option<usize>,
@@ -253,6 +262,7 @@ pub fn app(state: AppState) -> Router {
             "/snapshot/live-market-state/{ticker}",
             get(ticker_live_market_state_snapshot),
         )
+        .route("/history/live-market-state", get(live_market_state_history))
         .route("/stream/compact-events", get(compact_event_stream))
         .route(
             "/stream/compact-events-batch",
@@ -536,9 +546,11 @@ async fn send_resnapshot_required(
 #[cfg(test)]
 mod shutdown_tests {
     use super::{
-        parse_indicator_projection_fields, resnapshot_required_frame,
-        retain_indicator_projection_fields, scanner_sequence_gap, valid_shutdown_token,
+        live_market_state_history_sql, parse_indicator_projection_fields,
+        resnapshot_required_frame, retain_indicator_projection_fields, scanner_sequence_gap,
+        valid_shutdown_token,
     };
+    use chrono::{TimeZone, Utc};
     use serde_json::json;
 
     #[test]
@@ -608,6 +620,22 @@ mod shutdown_tests {
             .collect::<Vec<_>>()
             .join(",");
         assert!(parse_indicator_projection_fields(Some(&oversized)).is_err());
+    }
+
+    #[test]
+    fn live_market_state_history_is_bounded_ordered_and_filtered() {
+        let sql = live_market_state_history_sql(
+            "q_live.live_market_state_v1",
+            Utc.with_ymd_and_hms(2026, 8, 20, 8, 0, 0).unwrap(),
+            Utc.with_ymd_and_hms(2026, 8, 20, 20, 0, 0).unwrap(),
+            "condition_halt",
+            "opened",
+            5001,
+        );
+        assert!(sql.contains("event_type = 'condition_halt'"));
+        assert!(sql.contains("event_status = 'opened'"));
+        assert!(sql.contains("ORDER BY source_event_ts_utc ASC, event_id ASC"));
+        assert!(sql.contains("LIMIT 5001"));
     }
 }
 
@@ -886,6 +914,112 @@ async fn ticker_live_market_state_snapshot(
             .live_market_state
             .ticker_snapshot(&ticker, query.limit.unwrap_or(250).min(5_000))
             .await,
+    )
+}
+
+async fn live_market_state_history(
+    State(state): State<Arc<AppState>>,
+    Query(query): Query<LiveMarketStateHistoryQuery>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    if query.start > query.end {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": "start must not follow end"})),
+        ));
+    }
+    let event_type = query.event_type.as_deref().unwrap_or("");
+    let event_status = query.event_status.as_deref().unwrap_or("");
+    if !valid_market_state_filter(event_type) || !valid_market_state_filter(event_status) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(
+                json!({"error": "event_type and event_status may contain only lowercase letters, digits, and underscores"}),
+            ),
+        ));
+    }
+    let limit = query.limit.unwrap_or(5_000).clamp(1, 50_000);
+    let sql = live_market_state_history_sql(
+        &state.config.live_market_state_table,
+        query.start,
+        query.end,
+        event_type,
+        event_status,
+        limit.saturating_add(1),
+    );
+    let text = clickhouse_query(&state.config, &sql, true)
+        .await
+        .map_err(|error| {
+            (
+                StatusCode::BAD_GATEWAY,
+                Json(json!({"error": error, "source": "qmd_live_market_state_history"})),
+            )
+        })?;
+    let mut rows = text
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| serde_json::from_str::<Value>(line).map_err(|error| error.to_string()))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| {
+            (
+                StatusCode::BAD_GATEWAY,
+                Json(json!({"error": error, "source": "qmd_live_market_state_history"})),
+            )
+        })?;
+    let complete = rows.len() <= limit;
+    rows.truncate(limit);
+    Ok(Json(json!({
+        "schema_version": 1,
+        "start": query.start,
+        "end": query.end,
+        "event_type": event_type,
+        "event_status": event_status,
+        "complete": complete,
+        "row_count": rows.len(),
+        "rows": rows,
+        "source": "qmd_live_market_state_clickhouse_v1",
+    })))
+}
+
+fn valid_market_state_filter(value: &str) -> bool {
+    value.len() <= 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_')
+}
+
+fn live_market_state_history_sql(
+    table: &str,
+    start: chrono::DateTime<Utc>,
+    end: chrono::DateTime<Utc>,
+    event_type: &str,
+    event_status: &str,
+    limit: usize,
+) -> String {
+    let event_type_filter = if event_type.is_empty() {
+        String::new()
+    } else {
+        format!(" AND event_type = '{event_type}'")
+    };
+    let event_status_filter = if event_status.is_empty() {
+        String::new()
+    } else {
+        format!(" AND event_status = '{event_status}'")
+    };
+    format!(
+        r#"SELECT schema_version, event_id, ticker, event_type, event_status,
+            event_start_utc, event_end_utc, source_event_ts_utc,
+            source_event_type, source_conditions, source_indicators, severity,
+            is_live_tradability_blocking, block_reason, evidence_json,
+            source_run_id, inserted_at_utc
+        FROM {table}
+        WHERE source_event_ts_utc >= parseDateTime64BestEffort('{start}', 3, 'UTC')
+          AND source_event_ts_utc <= parseDateTime64BestEffort('{end}', 3, 'UTC')
+          {event_type_filter}{event_status_filter}
+        ORDER BY source_event_ts_utc ASC, event_id ASC
+        LIMIT {limit}
+        FORMAT JSONEachRow"#,
+        start = start.to_rfc3339(),
+        end = end.to_rfc3339(),
     )
 }
 

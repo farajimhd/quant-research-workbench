@@ -863,6 +863,34 @@ class QmdGatewayClientTests(unittest.TestCase):
         self.assertEqual(rows[0]["halt_source_conditions"], [7])
         self.assertIs(rows[1]["market_is_halted"], False)
 
+    @patch("src.backend.qmd_gateway_client.qmd_get_json")
+    def test_live_market_state_history_requires_complete_bounded_envelope(self, get_json) -> None:
+        from src.backend.qmd_gateway_client import qmd_live_market_state_history
+
+        start = datetime(2026, 8, 20, 8, 0, tzinfo=UTC)
+        end = datetime(2026, 8, 20, 15, 0, tzinfo=UTC)
+        get_json.return_value = {"complete": True, "rows": [{"event_id": "halt-1"}]}
+
+        payload = qmd_live_market_state_history(
+            start=start,
+            end=end,
+            event_type="condition_halt",
+            event_status="opened",
+        )
+
+        self.assertEqual(payload["rows"][0]["event_id"], "halt-1")
+        get_json.assert_called_once_with(
+            "/history/live-market-state",
+            {
+                "start": start.isoformat(),
+                "end": end.isoformat(),
+                "event_type": "condition_halt",
+                "event_status": "opened",
+                "limit": 5_000,
+            },
+            timeout=5,
+        )
+
     def test_scanner_rejects_unknown_enrichment_scope(self) -> None:
         with self.assertRaisesRegex(ValueError, "Unsupported QMD scanner enrichment"):
             qmd_scanner_snapshot(enrichments={"everything"})

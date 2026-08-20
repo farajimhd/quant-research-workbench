@@ -148,7 +148,7 @@ the QMD hot path.
 ## Live Abnormal Market-State Flow
 
 ```text
-MarketEvent and closed BarRow
+MarketEvent, official LULD event, and closed BarRow
   -> live_market_state.rs
   -> update in-memory active abnormal states
   -> append durable transition only when a special state opens/closes
@@ -162,9 +162,14 @@ tradability or risk review.
 
 Default sources:
 
+- official Massive `LULD.*` indicators 17/18 open/close `condition_halt`
 - closed 1s bars open/close estimated LULD near/breach states
 - closed 1s bars open/close locked/crossed quote states
-- configured quote/trade condition ids open/close `condition_halt`
+- validated configured quote/trade condition ids can also open/close `condition_halt`
+
+The durable `/history/live-market-state` query is the session-reconstruction
+authority for event-native Signal Streams. It returns ascending transitions for
+an explicit UTC interval and fails closed when the requested limit is exhausted.
 
 The gateway treats this as a live overlay only. Reference tradability and broker
 routing remain owned by the reference gateway and broker/order services.

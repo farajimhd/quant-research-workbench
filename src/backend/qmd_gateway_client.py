@@ -909,6 +909,38 @@ def qmd_live_market_state(ticker: str) -> dict[str, Any]:
     return payload
 
 
+def qmd_live_market_state_history(
+    *,
+    start: datetime,
+    end: datetime,
+    event_type: str = "",
+    event_status: str = "",
+    limit: int = 5_000,
+) -> dict[str, Any]:
+    """Read durable QMD market-state transitions for a bounded causal window."""
+
+    if start.tzinfo is None or end.tzinfo is None:
+        raise ValueError("QMD live market-state history bounds must be timezone-aware")
+    if start > end:
+        raise ValueError("QMD live market-state history start must not follow end")
+    payload = qmd_get_json(
+        "/history/live-market-state",
+        {
+            "start": start.astimezone(timezone.utc).isoformat(),
+            "end": end.astimezone(timezone.utc).isoformat(),
+            "event_type": event_type or None,
+            "event_status": event_status or None,
+            "limit": max(1, min(int(limit), 50_000)),
+        },
+        timeout=5,
+    )
+    if not isinstance(payload, dict) or not isinstance(payload.get("rows"), list):
+        raise RuntimeError("QMD live market-state history returned an invalid envelope")
+    if payload.get("complete") is not True:
+        raise RuntimeError("QMD live market-state history exceeded its bounded result limit")
+    return payload
+
+
 def qmd_ticker_state(ticker: str) -> dict[str, Any]:
     """Return the versioned live-memory state for one ticker."""
     symbol = ticker.strip().upper()

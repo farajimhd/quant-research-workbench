@@ -1,14 +1,68 @@
 from __future__ import annotations
 
 import threading
+import tempfile
 import unittest
+from datetime import UTC, datetime
+from pathlib import Path
 from unittest.mock import patch
 
 from src.backend.bounded_cache import BoundedSingleFlightTtlCache
 from src.backend import real_live_trading_service as service
+from src.backend.trading_configuration_service import _default_draft
+from src.trading_runtime.journal import TradingJournal
 
 
 class RealLiveScannerCompositionTests(unittest.TestCase):
+    def test_native_halt_hydration_reconstructs_session_and_is_idempotent(self) -> None:
+        configuration = _default_draft()
+        configuration["market_discovery"]["signal_streams"] = [
+            stream
+            for stream in configuration["market_discovery"]["signal_streams"]
+            if stream["signal_stream_id"] == "market-halts"
+        ]
+        at = datetime(2026, 8, 20, 15, 0, tzinfo=UTC)
+        source = {
+            "complete": True,
+            "rows": [{
+                "event_id": "qmd-halt-open-1",
+                "ticker": "HALT",
+                "event_start_utc": "2026-08-20T14:15:00+00:00",
+                "source_event_ts_utc": "2026-08-20T14:15:00+00:00",
+                "source_event_type": "quote",
+                "source_conditions": [7],
+                "source_indicators": [],
+                "block_reason": "quote_condition_halt",
+                "evidence_json": '{"bid": 10.0, "ask": 10.1}',
+                "source_run_id": "qmd-live-1",
+            }],
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            journal = TradingJournal(Path(temporary) / "journal.sqlite3")
+            try:
+                first = service.hydrate_native_signal_streams(
+                    configuration,
+                    as_of=at,
+                    journal=journal,
+                    history_loader=lambda **_: source,
+                    force=True,
+                )
+                second = service.hydrate_native_signal_streams(
+                    configuration,
+                    as_of=at,
+                    journal=journal,
+                    history_loader=lambda **_: source,
+                    force=True,
+                )
+            finally:
+                journal.close()
+
+        self.assertEqual(first["source_row_count"], 1)
+        self.assertEqual(first["inserted_count"], 1)
+        self.assertEqual(first["new_occurrences"][0]["ticker"], "HALT")
+        self.assertIn(10.0, first["new_occurrences"][0]["evidence"].values())
+        self.assertEqual(second["inserted_count"], 0)
+
     def test_interval_demand_prefers_qmd_source_names_over_projection_names(self) -> None:
         selected = service.qmd_interval_runtime_field(
             {"field_ref": "data.price_change@1:value", "aggregation": ""},

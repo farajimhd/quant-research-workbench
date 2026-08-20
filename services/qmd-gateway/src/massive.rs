@@ -1,6 +1,8 @@
 use crate::bars::BarEventRouter;
 use crate::config::GatewayConfig;
-use crate::event::{massive_status_message, parse_massive_payload, MarketEvent};
+use crate::event::{
+    massive_status_message, parse_massive_luld_payload, parse_massive_payload, MarketEvent,
+};
 use crate::indicators::IndicatorEventRouter;
 use crate::live_market_state::LiveMarketStateRouter;
 use crate::metrics::{SharedMetrics, TimingTarget};
@@ -77,6 +79,26 @@ pub async fn run_massive_ingest(config: GatewayConfig, fanout: MarketEventFanout
                         Ok(Message::Text(text)) => {
                             if let Some(status) = massive_status_message(&text) {
                                 eprintln!("Massive status: {status}");
+                            }
+                            if text.contains("\"LULD\"") {
+                                match parse_massive_luld_payload(&text) {
+                                    Ok(events) => {
+                                        for event in events {
+                                            if fanout
+                                                .live_market_state_router
+                                                .send_luld(event)
+                                                .await
+                                                .is_err()
+                                            {
+                                                eprintln!("Live market state receiver closed; could not route one LULD event.");
+                                            }
+                                        }
+                                    }
+                                    Err(error) => {
+                                        fanout.metrics.inc_parse_failure();
+                                        eprintln!("Massive LULD parse failed: {error}");
+                                    }
+                                }
                             }
                             match parse_massive_payload(&text) {
                                 Ok(events) => {

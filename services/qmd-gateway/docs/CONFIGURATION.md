@@ -60,6 +60,12 @@ Required data-path queues use awaited sends. A full queue applies backpressure i
 | `QMD_LIVE_MARKET_STATE_QUOTE_HALT_CONDITIONS` | empty | Comma-separated Massive quote condition ids that open `condition_halt`. | Optional; trade conditions are usually the first candidate. |
 | `QMD_LIVE_MARKET_STATE_QUOTE_RESUME_CONDITIONS` | empty | Comma-separated Massive quote condition ids that close `condition_halt`. | Optional; use only after validation. |
 
+When all-symbol live subscription is enabled, the gateway subscribes to
+`LULD.*`; official indicator 17 opens `condition_halt` and indicator 18 closes
+it. Massive currently documents halt/resumption indicators as NASDAQ-listed
+coverage, so validated condition mappings may still be configured as a
+secondary authority for other venues.
+
 The gateway also opens/closes abnormal states from bar-derived conditions:
 
 - `estimated_luld_near_upper`
@@ -68,8 +74,8 @@ The gateway also opens/closes abnormal states from bar-derived conditions:
 - `estimated_luld_breach_lower`
 - `locked_crossed_quote`
 
-LULD rows are estimates from QMD's bar logic, not official SIP LULD messages.
-Near-band rows are warning context. Breach rows and locked/crossed quote rows
+Fields and event families prefixed `estimated_luld_` remain QMD estimates and
+must not be confused with official `LULD.*` messages. Near-band rows are warning context. Breach rows and locked/crossed quote rows
 are live-tradability blocking until their close transition is observed.
 
 ## Bars

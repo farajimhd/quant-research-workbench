@@ -45,6 +45,18 @@ pub struct QuoteEvent {
     pub ts: DateTime<Utc>,
 }
 
+#[derive(Clone, Debug, Serialize)]
+pub struct LuldEvent {
+    pub high_price: f64,
+    pub indicators: Vec<u16>,
+    pub low_price: f64,
+    pub raw: Value,
+    pub sequence: u64,
+    pub tape: u8,
+    pub ticker: String,
+    pub ts: DateTime<Utc>,
+}
+
 impl MarketEvent {
     pub fn ticker(&self) -> &str {
         match self {
@@ -81,6 +93,30 @@ pub fn parse_massive_payload(text: &str) -> Result<Vec<MarketEvent>, serde_json:
     Ok(items
         .into_iter()
         .filter_map(|item| parse_massive_item(item, now))
+        .collect())
+}
+
+pub fn parse_massive_luld_payload(text: &str) -> Result<Vec<LuldEvent>, serde_json::Error> {
+    let payload: Value = serde_json::from_str(text)?;
+    let items = match payload {
+        Value::Array(items) => items,
+        item => vec![item],
+    };
+    Ok(items
+        .into_iter()
+        .filter(|item| string_field(item, "ev") == "LULD")
+        .filter_map(|item| {
+            Some(LuldEvent {
+                high_price: f64_field(&item, "h"),
+                indicators: u16_array_field(&item, "i"),
+                low_price: f64_field(&item, "l"),
+                raw: item.clone(),
+                sequence: u64_field(&item, "q"),
+                tape: u8_field(&item, "z"),
+                ticker: string_field(&item, "T").to_ascii_uppercase(),
+                ts: optional_epoch_field(&item, "t")?,
+            })
+        })
         .collect())
 }
 
@@ -153,6 +189,23 @@ fn optional_millis_field(item: &Value, key: &str) -> Option<DateTime<Utc>> {
     Utc.timestamp_millis_opt(millis as i64).single()
 }
 
+fn optional_epoch_field(item: &Value, key: &str) -> Option<DateTime<Utc>> {
+    let value = u64_field(item, key);
+    if value == 0 {
+        return None;
+    }
+    if value >= 100_000_000_000_000_000 {
+        let seconds = i64::try_from(value / 1_000_000_000).ok()?;
+        let nanos = u32::try_from(value % 1_000_000_000).ok()?;
+        Utc.timestamp_opt(seconds, nanos).single()
+    } else if value >= 100_000_000_000_000 {
+        Utc.timestamp_micros(i64::try_from(value).ok()?).single()
+    } else {
+        Utc.timestamp_millis_opt(i64::try_from(value).ok()?)
+            .single()
+    }
+}
+
 fn string_field(item: &Value, key: &str) -> String {
     item.get(key)
         .and_then(Value::as_str)
@@ -215,5 +268,15 @@ mod tests {
             },
             0
         );
+    }
+
+    #[test]
+    fn luld_parser_preserves_nanosecond_halt_timestamp_and_indicator() {
+        let payload = r#"[{"ev":"LULD","T":"HALT","h":10.5,"l":9.5,"i":[17],"z":3,"t":1764086430905642800,"q":42}]"#;
+        let rows = parse_massive_luld_payload(payload).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].ticker, "HALT");
+        assert_eq!(rows[0].indicators, vec![17]);
+        assert_eq!(rows[0].ts.timestamp_nanos_opt(), Some(1764086430905642800));
     }
 }

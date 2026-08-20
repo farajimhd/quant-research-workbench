@@ -20,7 +20,11 @@ from src.request_context import ContextThreadPoolExecutor as ThreadPoolExecutor
 
 from dotenv import load_dotenv
 
-from src.backend.qmd_gateway_client import qmd_scanner_snapshot, qmd_status
+from src.backend.qmd_gateway_client import (
+    qmd_live_market_state_history,
+    qmd_scanner_snapshot,
+    qmd_status,
+)
 from src.backend.bounded_cache import BoundedSingleFlightTtlCache
 from src.backend.feature_projection import compact_feature_projection
 from src.backend.query_plans.market_tradable_universe_v1 import tradable_symbol_lookup
@@ -46,6 +50,150 @@ SCANNER_LATEST_COMPLETE: dict[str, Any] | None = None
 SCANNER_REFRESH_ERROR = ""
 SCANNER_REFRESH_GENERATION: int | None = None
 SCANNER_CONFIGURATION_GENERATION = 0
+NATIVE_SIGNAL_HYDRATION_LOCK = threading.RLock()
+NATIVE_SIGNAL_HYDRATION_LAST_CHECK: dict[str, float] = {}
+NATIVE_SIGNAL_HYDRATION_INTERVAL_SECONDS = 5.0
+
+
+def hydrate_native_signal_streams(
+    configuration: dict[str, Any],
+    *,
+    as_of: datetime,
+    journal: Any,
+    history_loader: Any = qmd_live_market_state_history,
+    force: bool = False,
+) -> dict[str, Any]:
+    """Reconstruct event-native Signal Streams from their durable session authority."""
+
+    from src.backend.signal_stream_runtime_service import SIGNAL_STREAM_RUNTIME, signal_stream_session
+
+    session = signal_stream_session(as_of)
+    streams = [
+        dict(stream)
+        for stream in dict(configuration.get("market_discovery") or {}).get("signal_streams") or []
+        if bool(stream.get("enabled", True))
+        and str(stream.get("occurrence_source") or "rule_evaluator") == "qmd_live_market_state"
+    ]
+    if not session["active"] or not streams:
+        return {"status": "not_required", "new_occurrences": [], "source_row_count": 0}
+
+    cache_key = f"{session['session_key']}:qmd_live_market_state"
+    now = time.monotonic()
+    with NATIVE_SIGNAL_HYDRATION_LOCK:
+        last_check = NATIVE_SIGNAL_HYDRATION_LAST_CHECK.get(cache_key, 0.0)
+        if not force and now - last_check < NATIVE_SIGNAL_HYDRATION_INTERVAL_SECONDS:
+            return {"status": "throttled", "new_occurrences": [], "source_row_count": 0}
+        NATIVE_SIGNAL_HYDRATION_LAST_CHECK[cache_key] = now
+
+    payload = history_loader(
+        start=session["start_at"],
+        end=as_of,
+        event_type="condition_halt",
+        event_status="opened",
+        limit=5_000,
+    )
+    source_rows = [dict(row) for row in payload.get("rows") or [] if isinstance(row, dict)]
+    occurrence_rows = [
+        _project_native_market_state_columns(configuration, _halt_occurrence_row(row))
+        for row in source_rows
+    ]
+    occurrence_rows = [row for row in occurrence_rows if row.get("ticker") and row.get("available_at")]
+    inserted: list[dict[str, Any]] = []
+    for stream in streams:
+        inserted.extend(
+            SIGNAL_STREAM_RUNTIME.append_external_event_rows(
+                configuration,
+                signal_stream_id=str(stream.get("signal_stream_id") or ""),
+                rows=occurrence_rows,
+                journal=journal,
+                event_run_id="market-discovery:signal-stream:qmd-live-market-state",
+            )
+        )
+    return {
+        "status": "ready",
+        "new_occurrences": inserted,
+        "source_row_count": len(source_rows),
+        "inserted_count": len(inserted),
+        "session_key": session["session_key"],
+    }
+
+
+def _halt_occurrence_row(row: dict[str, Any]) -> dict[str, Any]:
+    try:
+        evidence = json.loads(str(row.get("evidence_json") or "{}"))
+    except (TypeError, ValueError, json.JSONDecodeError):
+        evidence = {}
+    if not isinstance(evidence, dict):
+        evidence = {}
+    available_at = str(row.get("source_event_ts_utc") or row.get("event_start_utc") or "")
+    bid = evidence.get("bid")
+    ask = evidence.get("ask")
+    spread_bps = None
+    spread_value = None
+    try:
+        spread_value = float(ask) - float(bid)
+        midpoint = (float(bid) + float(ask)) / 2.0
+        if midpoint > 0:
+            spread_bps = spread_value / midpoint * 10_000.0
+    except (TypeError, ValueError):
+        pass
+    try:
+        parsed = datetime.fromisoformat(available_at.replace("Z", "+00:00"))
+        parsed = parsed.astimezone(UTC) if parsed.tzinfo else parsed.replace(tzinfo=UTC)
+    except ValueError:
+        parsed = None
+    phase = ""
+    if parsed is not None:
+        local = parsed.astimezone(NEW_YORK)
+        minute = local.hour * 60 + local.minute
+        phase = "premarket" if 240 <= minute < 570 else "regular" if minute < 960 else "after_hours" if minute < 1200 else "closed"
+    return {
+        "ticker": str(row.get("ticker") or "").upper(),
+        "available_at": available_at,
+        "source_event_id": str(row.get("event_id") or ""),
+        "market_is_halted": True,
+        "trading_status": "halted",
+        "halt_reason": str(row.get("block_reason") or "condition_halt"),
+        "halt_started_at": str(row.get("event_start_utc") or available_at),
+        "halt_source_at": available_at,
+        "halt_source_conditions": list(row.get("source_conditions") or []),
+        "halt_source_indicators": list(row.get("source_indicators") or []),
+        "market_event_at": available_at,
+        "last_market_event_at": available_at,
+        "price": evidence.get("price"),
+        "last_price": evidence.get("price"),
+        "bid": bid,
+        "bid_price": bid,
+        "ask": ask,
+        "ask_price": ask,
+        "spread": spread_value,
+        "spread_bps": spread_bps,
+        "session_phase": phase,
+        "source_event_type": str(row.get("source_event_type") or ""),
+        "source_run_id": str(row.get("source_run_id") or ""),
+    }
+
+
+def _project_native_market_state_columns(
+    configuration: dict[str, Any], row: dict[str, Any]
+) -> dict[str, Any]:
+    result = dict(row)
+    source_values = {
+        "identity.symbol": row.get("ticker"),
+        "market.is_halted": row.get("market_is_halted"),
+        "market.last_price": row.get("last_price"),
+        "quote.bid_price": row.get("bid_price"),
+        "quote.ask_price": row.get("ask_price"),
+        "market.spread_bps": row.get("spread_bps"),
+        "market.event_at": row.get("market_event_at"),
+        "clock.session_phase": row.get("session_phase"),
+    }
+    for column in dict(configuration.get("market_discovery") or {}).get("column_catalog") or []:
+        source_id = str(column.get("source_id") or "")
+        column_id = str(column.get("column_id") or "")
+        if column_id and source_id in source_values:
+            result[column_id] = source_values[source_id]
+    return result
 
 
 @dataclass(frozen=True)
@@ -609,6 +757,19 @@ def _compose_real_live_scanner_snapshot(*, allow_provider_fallback: bool = True)
                     rows,
                     watchlist_runtime=watchlist_runtime,
                 ) or signal_target_seeds
+                native_hydration: dict[str, Any] = {"status": "not_required", "new_occurrences": []}
+                try:
+                    native_hydration = hydrate_native_signal_streams(
+                        configuration,
+                        as_of=cycle_as_of,
+                        journal=trading_journal(),
+                    )
+                except Exception as exc:
+                    native_hydration = {
+                        "status": "degraded",
+                        "error": str(exc),
+                        "new_occurrences": [],
+                    }
                 try:
                     signal_stream_runtime = SIGNAL_STREAM_RUNTIME.resolve(
                         configuration,
@@ -619,6 +780,15 @@ def _compose_real_live_scanner_snapshot(*, allow_provider_fallback: bool = True)
                         include_occurrences=False,
                         data_fields_projected=True,
                     )
+                    signal_stream_runtime["new_occurrences"] = [
+                        *list(native_hydration.get("new_occurrences") or []),
+                        *list(signal_stream_runtime.get("new_occurrences") or []),
+                    ]
+                    signal_stream_runtime["session_hydration"] = {
+                        key: value
+                        for key, value in native_hydration.items()
+                        if key != "new_occurrences"
+                    }
                 except Exception as exc:
                     signal_stream_runtime = {
                         "status": "degraded",

@@ -3123,6 +3123,7 @@ def _default_signal_streams(
             "source_type": "core_scan",
             "source_id": "qmd-core-scan",
             "source_scan_id": "qmd-core-scan",
+            "occurrence_source": "qmd_live_market_state",
             "inclusion_rule_sets": ["signal-market-halt"],
             "inclusion_operator": "all",
             "columns": halt_columns,
@@ -4270,6 +4271,11 @@ def _validate_market_discovery(
             raise ValueError(f"Signal Stream {stream_name} has unsupported inclusion logic")
         if str(stream.get("trigger_policy") or "false_to_true") != "false_to_true":
             raise ValueError(f"Signal Stream {stream_name} has an unknown trigger policy")
+        if str(stream.get("occurrence_source") or "rule_evaluator") not in {
+            "rule_evaluator",
+            "qmd_live_market_state",
+        }:
+            raise ValueError(f"Signal Stream {stream_name} has an unknown occurrence source")
         if str(stream.get("rearm_policy") or "after_false") not in {"after_false", "after_cooldown"}:
             raise ValueError(f"Signal Stream {stream_name} has an unknown rearm policy")
         if int(stream.get("refresh_interval_ms") or 0) <= 0:
@@ -5508,6 +5514,7 @@ def _migrate_draft(raw: dict[str, Any]) -> dict[str, Any]:
                 for key in (
                     "name", "description", "origin", "protected",
                     "source_type", "source_id", "source_scan_id",
+                    "occurrence_source",
                     "inclusion_rule_sets", "inclusion_operator",
                     "columns", "column_intervals", "column_aggregations",
                     "refresh_interval_ms", "trigger_policy", "rearm_policy",

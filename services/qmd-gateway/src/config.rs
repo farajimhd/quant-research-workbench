@@ -465,6 +465,7 @@ impl GatewayConfig {
             if self.subscribe_quotes {
                 channels.push("Q.*".to_string());
             }
+            channels.push("LULD.*".to_string());
             return channels;
         }
         Vec::new()

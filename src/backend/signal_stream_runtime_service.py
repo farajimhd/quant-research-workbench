@@ -247,6 +247,7 @@ class SignalStreamRuntime:
                     str(value) for value in stream.get("inclusion_rule_sets") or [] if str(value)
                 ]
                 revision_hash = _definition_revision(stream, rule_sets)
+                occurrence_source = str(stream.get("occurrence_source") or "rule_evaluator")
                 stream_state = self._states.setdefault(stream_id, {})
                 emitted = 0
                 matching = 0
@@ -281,7 +282,7 @@ class SignalStreamRuntime:
                         last_emitted is None
                         or as_of >= last_emitted + timedelta(milliseconds=cooldown_ms)
                     )
-                    should_emit = matches and (
+                    should_emit = occurrence_source == "rule_evaluator" and matches and (
                         not previous_match
                         or (rearm_policy == "after_cooldown" and cooldown_elapsed)
                     )
@@ -332,6 +333,7 @@ class SignalStreamRuntime:
                     "status": "session_closed" if enabled and not session["active"] else "ready" if enabled and source_ready and selected_rule_ids else "source_unavailable" if enabled and not source_ready else "unconfigured" if enabled else "disabled",
                     "source_type": source_type,
                     "source_id": source_id,
+                    "occurrence_source": occurrence_source,
                     "candidate_count": len(stream_rows),
                     "matching_count": matching,
                     "emitted_count": emitted,
@@ -417,7 +419,11 @@ class SignalStreamRuntime:
         revision = _definition_revision(stream, rule_sets)
         inserted_rows: list[dict[str, Any]] = []
         new_count = 0
-        for row in rows:
+        projected_rows = project_discovery_columns(
+            rows,
+            column_ids=(str(value) for value in stream.get("columns") or []),
+        )
+        for row in projected_rows:
             available_at = _parse_datetime(row.get("available_at"))
             if available_at is None:
                 continue
@@ -631,6 +637,7 @@ def _definition_revision(
         for key in (
             "signal_stream_id", "revision", "inclusion_rule_sets", "inclusion_operator",
             "source_type", "source_id",
+            "occurrence_source",
             "columns", "column_intervals", "trigger_policy", "rearm_policy", "cooldown_ms", "watchlist_routes",
         )
     }

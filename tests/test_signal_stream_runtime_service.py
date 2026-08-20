@@ -127,7 +127,7 @@ class SignalStreamRuntimeTests(unittest.TestCase):
         )
         self.assertEqual(rearmed["signal_streams"][0]["emitted_count"], 1)
 
-    def test_default_halt_stream_emits_once_and_rearms_after_resume(self) -> None:
+    def test_default_halt_stream_uses_durable_native_events_idempotently(self) -> None:
         configuration = _default_draft()
         halt_stream = next(
             stream
@@ -139,32 +139,33 @@ class SignalStreamRuntimeTests(unittest.TestCase):
         start = datetime(2026, 8, 17, 15, 0, tzinfo=UTC)
         halted = {"ticker": "HALT", "market_is_halted": True, "last_price": 12.34}
 
-        first = runtime.resolve(configuration, [halted], as_of=start, journal=self.journal)
-        repeated = runtime.resolve(
+        polled = runtime.resolve(configuration, [halted], as_of=start, journal=self.journal)
+        first = runtime.append_external_event_rows(
             configuration,
-            [halted],
-            as_of=start + timedelta(seconds=1),
+            signal_stream_id="market-halts",
+            rows=[{**halted, "available_at": start.isoformat(), "source_event_id": "halt-open-1"}],
             journal=self.journal,
         )
-        runtime.resolve(
+        duplicate = runtime.append_external_event_rows(
             configuration,
-            [{**halted, "market_is_halted": False}],
-            as_of=start + timedelta(seconds=2),
+            signal_stream_id="market-halts",
+            rows=[{**halted, "available_at": start.isoformat(), "source_event_id": "halt-open-1"}],
             journal=self.journal,
         )
-        rearmed = runtime.resolve(
+        second = runtime.append_external_event_rows(
             configuration,
-            [halted],
-            as_of=start + timedelta(seconds=3),
+            signal_stream_id="market-halts",
+            rows=[{**halted, "available_at": (start + timedelta(minutes=10)).isoformat(), "source_event_id": "halt-open-2"}],
             journal=self.journal,
         )
 
-        self.assertEqual(first["signal_streams"][0]["emitted_count"], 1)
-        self.assertEqual(repeated["signal_streams"][0]["emitted_count"], 0)
-        self.assertEqual(first["new_occurrences"][0]["signal_stream_id"], "market-halts")
-        self.assertIs(first["new_occurrences"][0]["market_is_halted"], True)
-        self.assertEqual(rearmed["signal_streams"][0]["emitted_count"], 1)
-        self.assertEqual(rearmed["occurrence_count"], 2)
+        self.assertEqual(polled["signal_streams"][0]["emitted_count"], 0)
+        self.assertEqual(polled["signal_streams"][0]["occurrence_source"], "qmd_live_market_state")
+        self.assertEqual(len(first), 1)
+        self.assertEqual(duplicate, [])
+        self.assertEqual(len(second), 1)
+        snapshot = runtime.snapshot(self.journal, signal_stream_id="market-halts", as_of=start + timedelta(minutes=11), configuration=configuration)
+        self.assertEqual(snapshot["occurrence_count"], 2)
 
     def test_signal_route_admits_without_mutating_occurrence(self) -> None:
         runtime = SignalStreamRuntime()

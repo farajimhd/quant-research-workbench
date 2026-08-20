@@ -183,7 +183,7 @@ persisted.
 | `event_start_utc` | Source timestamp that opened the active abnormal state. |
 | `event_end_utc` | Source timestamp that closed the state, otherwise null. |
 | `source_event_ts_utc` | Quote/trade/bar timestamp that caused this transition. |
-| `source_event_type` | `trade`, `quote`, or `bar`. |
+| `source_event_type` | `trade`, `quote`, `luld`, or `bar`. |
 | `source_conditions` | Raw Massive condition ids from the source quote/trade, if any. |
 | `source_indicators` | Raw Massive quote indicator ids from the source quote, if any. |
 | `severity` | `warning` or `critical`. |
@@ -195,15 +195,17 @@ persisted.
 
 Current default event families:
 
+- official Massive LULD indicator 17/18 halt transitions
 - estimated LULD near/breach states from closed 1s bars
 - locked/crossed quote states from closed 1s bars
-- configured halt/resume condition ids from quote/trade events
+- optional validated halt/resume condition ids from quote/trade events
 
 API contracts:
 
 ```text
 GET /snapshot/live-market-state?limit=250
 GET /snapshot/live-market-state/{ticker}?limit=250
+GET /history/live-market-state?start=<UTC>&end=<UTC>&event_type=<type>&event_status=<status>&limit=250
 WS  /stream/live-market-state
 ```
 
