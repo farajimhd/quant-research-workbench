@@ -759,6 +759,11 @@ class TradingConfigurationServiceTests(unittest.TestCase):
     def test_market_discovery_materialization_overlays_only_discovery_authority(self) -> None:
         base = _default_draft()
         discovery = deepcopy(base["market_discovery"])
+        discovery["signal_streams"] = [
+            row
+            for row in discovery["signal_streams"]
+            if row["signal_stream_id"] != "market-halts"
+        ]
         discovery["signal_streams"].append({
             "signal_stream_id": "materialized-stream",
             "revision": 1,
@@ -802,6 +807,13 @@ class TradingConfigurationServiceTests(unittest.TestCase):
             if row["signal_stream_id"] == "materialized-stream"
         )
         self.assertEqual(materialized_stream["name"], "Materialized stream")
+        self.assertIn(
+            "market-halts",
+            {
+                row["signal_stream_id"]
+                for row in runtime["market_discovery"]["signal_streams"]
+            },
+        )
         self.assertEqual(runtime["strategy"], base["strategy"])
         self.assertEqual(
             first_materialization["materialized_at"],

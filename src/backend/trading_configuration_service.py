@@ -275,7 +275,14 @@ def market_discovery_runtime_configuration() -> dict[str, Any]:
             "market_discovery"
         )
         if isinstance(section, dict):
-            base["market_discovery"] = deepcopy(section)
+            # Materialized user composition remains authoritative, while the
+            # normal migration boundary supplies newly registered protected
+            # system definitions. Without this merge, an older checkpoint can
+            # permanently hide a later built-in stream from Canvas.
+            migration_input = deepcopy(base)
+            migration_input["market_discovery"] = deepcopy(section)
+            migrated_section = _migrate_draft(migration_input)
+            base["market_discovery"] = migrated_section["market_discovery"]
         # Materialization explicitly invalidates this cache above. Keeping the
         # immutable runtime configuration until that event prevents every
         # Canvas poll wave from re-reading the shared journal and contending
