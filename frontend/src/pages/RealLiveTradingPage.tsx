@@ -1625,7 +1625,6 @@ function RealLiveTradingGate({
   preflightStatus: RealLivePreflightPayload | null;
 }) {
   const qmdReady = isQmdGatewayReady(gatewayStatus);
-  const observationReady = isQmdObservationReady(gatewayStatus);
   const checks: TradingLaunchCheck[] = [
     ...(preflightStatus?.checks ?? []).map((check) => ({ ...check, evidence: check.message, summary: check.message })),
     { evidence: qmdReady ? "Live event and historical context routes are available." : "Waiting for the QMD service core.", id: "qmd_runtime", label: "Market data runtime", required: true, status: qmdReady ? "ready" : "blocked" },
@@ -1652,7 +1651,7 @@ function RealLiveTradingGate({
       <span>Market observation</span>
       <strong>Scanner, Signal Stream, and live news</strong>
       <small>Open a persisted read-only Canvas using QMD Live and News. No account, Portfolio, OMS, broker connection, or approved trading release is required. BarGPT forecasts appear when its service and configured Data Fields are available, but do not block the monitor.</small>
-      <div><button className="button primary compact" disabled={!observationReady} onClick={onObserve} type="button"><Eye aria-hidden="true" size={14} /> Observe Live</button><button className="button secondary compact" onClick={() => { window.location.hash = "#market-discovery-configuration"; }} type="button">Market Discovery</button></div>
+      <div><button className="button primary compact" onClick={onObserve} type="button"><Eye aria-hidden="true" size={14} /> Observe Live</button><button className="button secondary compact" onClick={() => { window.location.hash = "#market-discovery-configuration"; }} type="button">Market Discovery</button></div>
     </div>
     <div className="mode-launch-authority">
       <span>Configuration authority</span>
@@ -3868,16 +3867,6 @@ function buildGateProgressSteps({
 function isQmdGatewayReady(gatewayStatus: RealLiveGatewayStatusPayload | null) {
   const qmdStatus = gatewayStatus?.qmd_gateway && typeof gatewayStatus.qmd_gateway === "object" ? gatewayStatus.qmd_gateway as Record<string, unknown> : null;
   return Boolean(qmdStatus && ["running", "ready"].includes(stringValue(qmdStatus, "status")));
-}
-
-function isQmdObservationReady(gatewayStatus: RealLiveGatewayStatusPayload | null) {
-  const qmdStatus = gatewayStatus?.qmd_gateway && typeof gatewayStatus.qmd_gateway === "object" ? gatewayStatus.qmd_gateway as Record<string, unknown> : null;
-  // Observation is non-authorizing: let the operator enter the monitor while
-  // startup probes recover, but disable it when QMD explicitly reports a hard
-  // stop. Containers retain their own loading, stale, and unavailable states.
-  if (!qmdStatus) return true;
-  const status = stringValue(qmdStatus, "status").toLowerCase();
-  return !["blocked", "failed", "not_started", "stopped", "unavailable"].includes(status);
 }
 
 function progressStepFromBackend(step: RealLiveProgressStep, label = step.label): GateProgressStep {
