@@ -11,6 +11,7 @@ param(
     [int]$BarGptPort = 8805,
     [string]$BarGptV2Checkpoint = "",
     [string]$BarGptV3Checkpoint = "",
+    [string]$BarGptReleaseManifest = "",
     [string]$PythonExe = "",
     [string]$WindowsTerminalExe = "",
     [ValidateSet("Auto", "Caller", "Named")]
@@ -193,6 +194,9 @@ Assert-Launcher -Path $backendLauncher
 Assert-Launcher -Path $frontendLauncher
 Assert-Launcher -Path $serviceTabHost
 if ($WithBarGpt) { Assert-Launcher -Path $barGptLauncher }
+if ($BarGptReleaseManifest.Trim() -and ($BarGptV2Checkpoint.Trim() -or $BarGptV3Checkpoint.Trim())) {
+    throw "Use -BarGptReleaseManifest or direct checkpoint arguments, not both."
+}
 Assert-RepositoryGitSize -MaximumGB $MaxGitDirectoryGB
 
 $resolvedPython = Resolve-PythonExecutable -Requested $PythonExe
@@ -240,15 +244,23 @@ $frontendCommand = $pathAssignment +
     " --port $FrontendPort"
 $barGptCommand = $pathAssignment +
     '$env:BAR_GPT_BIND = ' + (ConvertTo-PowerShellLiteral -Value "$HostName`:$BarGptPort") + [Environment]::NewLine
+if ($BarGptReleaseManifest.Trim()) {
+    $barGptCommand += "& " + (ConvertTo-PowerShellLiteral -Value $barGptLauncher) +
+        " -Bind " + (ConvertTo-PowerShellLiteral -Value "$HostName`:$BarGptPort") +
+        " -ReleaseManifest " + (ConvertTo-PowerShellLiteral -Value ([IO.Path]::GetFullPath($BarGptReleaseManifest.Trim()))) +
+        " -PythonExe " + (ConvertTo-PowerShellLiteral -Value $resolvedPython)
+}
 if ($BarGptV2Checkpoint.Trim()) {
     $barGptCommand += '$env:BAR_GPT_V2_CHECKPOINT = ' + (ConvertTo-PowerShellLiteral -Value $BarGptV2Checkpoint.Trim()) + [Environment]::NewLine
 }
 if ($BarGptV3Checkpoint.Trim()) {
     $barGptCommand += '$env:BAR_GPT_V3_CHECKPOINT = ' + (ConvertTo-PowerShellLiteral -Value $BarGptV3Checkpoint.Trim()) + [Environment]::NewLine
 }
-$barGptCommand += "& " + (ConvertTo-PowerShellLiteral -Value $barGptLauncher) +
-    " -Bind " + (ConvertTo-PowerShellLiteral -Value "$HostName`:$BarGptPort") +
-    " -PythonExe " + (ConvertTo-PowerShellLiteral -Value $resolvedPython)
+if (-not $BarGptReleaseManifest.Trim()) {
+    $barGptCommand += "& " + (ConvertTo-PowerShellLiteral -Value $barGptLauncher) +
+        " -Bind " + (ConvertTo-PowerShellLiteral -Value "$HostName`:$BarGptPort") +
+        " -PythonExe " + (ConvertTo-PowerShellLiteral -Value $resolvedPython)
+}
 
 function Open-ServiceTabs {
     param([object[]]$Tabs)
@@ -320,8 +332,14 @@ $serviceTabs = @(
     }
 )
 if ($WithBarGpt) {
-    if (-not $BarGptV2Checkpoint.Trim() -and -not $BarGptV3Checkpoint.Trim() -and -not $env:BAR_GPT_RELEASES_JSON) {
-        throw "-WithBarGpt requires a v2/v3 checkpoint or BAR_GPT_RELEASES_JSON."
+    if ($BarGptReleaseManifest.Trim()) {
+        & $barGptLauncher -Bind "$HostName`:$BarGptPort" -ReleaseManifest $BarGptReleaseManifest.Trim() -PythonExe $resolvedPython -CheckOnly
+        if ($LASTEXITCODE -ne 0) {
+            throw "BarGPT release manifest preflight failed: $BarGptReleaseManifest"
+        }
+    }
+    elseif (-not $BarGptV2Checkpoint.Trim() -and -not $BarGptV3Checkpoint.Trim() -and -not $env:BAR_GPT_RELEASES_JSON) {
+        throw "-WithBarGpt requires -BarGptReleaseManifest, a v2/v3 checkpoint, or BAR_GPT_RELEASES_JSON."
     }
     $serviceTabs += [pscustomobject]@{
         Title = "BarGPT"

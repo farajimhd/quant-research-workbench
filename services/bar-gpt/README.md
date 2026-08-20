@@ -14,6 +14,20 @@ Configure one or both immutable releases:
   -V3Checkpoint D:\TradingML\runtimes\bar_gpt\v3\checkpoint.pt
 ```
 
+Production startup should use an approved external release manifest rather
+than selecting a checkpoint by filename or recency:
+
+```powershell
+.\scripts\run_bar_gpt.ps1 `
+  -ReleaseManifest D:\TradingML\runtimes\bar_gpt_service\configuration\releases.json
+```
+
+The manifest is a JSON array whose rows contain `model_id`, `version`,
+`checkpoint`, `checkpoint_sha256`, `contract_hash`, `role`, and optional
+`enabled`. The service verifies the expected checkpoint and model-contract
+hashes before admitting a release. The full application stack can be managed
+with `python scripts\manage_application_services.py start|stop|restart|status`.
+
 The default bind is `127.0.0.1:8805`. Runtime prediction journals are written
 under `D:\TradingML\runtimes\bar_gpt_service`, never in the repository.
 `BAR_GPT_MAX_TICKERS` defaults to 500; size it together with

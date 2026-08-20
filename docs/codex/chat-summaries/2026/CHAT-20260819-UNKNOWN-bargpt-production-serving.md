@@ -58,6 +58,35 @@ The final implementation repaired the missing `service-bar-gpt` route and added 
 - **GPU capacity certification.** Current state: defaults are bounded but not measured for the production workstation. Next action: benchmark memory and latency across ticker count, batch size, model combination, and context geometry; derive safe capacity rather than editing N by guess. Related task: `TASK-0197`.
 - **End-to-end workstation smoke.** Current state: loader, unit, frontend, QMD, and API checks passed independently. Next action: deploy the service on the workstation with promoted shadow releases, warm a bounded Watchlist from QMD History, consume live QMD, and verify publication, freshness, queue behavior, and chart/rule consumption. Related task: `TASK-0197`.
 
+### 2026-08-19 service lifecycle and QMD follow-up
+
+Services and Market Discovery were reported unavailable. Runtime evidence showed
+that QMD Live, QMD History, Backend, and Frontend were down. After using the
+ownership-aware launchers, Services rendered normally after its roughly
+two-second aggregate request, and Market Discovery recovered when QMD Live
+restored the fail-closed definitions authority. QMD Live's earlier process had
+shut down gracefully; it had not crashed.
+
+The QMD log did expose a separate real defect: the inactive PLAG Generic
+Structure checkpoint repeatedly received a non-retryable HTTP 409 because its
+exact live cursor cannot be reconciled with archive ordinal identity. QMD now
+persists that specific conflict as a blocked registry record with its error
+code and required canonical-history rebuild action. It no longer retries every
+five minutes, while all exact cursor checks remain unchanged. The restarted
+gateway produced one blocked transition and no repeated conflict or deferred
+lines. PLAG remains fail-closed until canonical reconstruction exists.
+
+Application lifecycle is now composed by
+`scripts/manage_application_services.py start|stop|restart|status`. It
+preserves an already-healthy QMD Live stream, starts QMD Live when absent,
+opens QMD History, Backend, Frontend, and BarGPT, waits for HTTP readiness, and
+rolls back only services started by a failed attempt. The existing support
+gateway bundle is unchanged. BarGPT production startup now accepts an external
+promoted-release manifest and verifies its checkpoint SHA-256 and model
+contract hash before loading. No workstation checkpoint was promoted: the
+default external manifest is absent and fixed-panel release approval remains
+the explicit blocker.
+
 ### Handoff to the next chat
 
 Read `TASK-0170`, `TASK-0197`, this summary, `services/bar-gpt/README.md`, and the BarGPT serving commits. Do not point production automatically at a changing latest checkpoint, merge operational service settings into Market Discovery, remove raw heads in favor of decoded fields, or add KV reuse without parity evidence. Next, publish approved immutable release manifests from fixed-panel evidence, measure workstation GPU capacity and latency, and run the end-to-end QMD History warm-up plus live-publication smoke.

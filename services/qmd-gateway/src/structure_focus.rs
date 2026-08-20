@@ -77,6 +77,34 @@ pub struct StructureFocusActivation {
     pub source_plan_hash: String,
 }
 
+#[derive(Clone, Debug, Default)]
+pub struct StructureFocusRestore {
+    pub active: usize,
+    pub blocked: usize,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct StructureFocusAdvance {
+    pub advanced: Vec<String>,
+    pub blocked: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct HistoryErrorResponse {
+    #[serde(default)]
+    error: String,
+    #[serde(default)]
+    error_code: String,
+    #[serde(default)]
+    retry_action: String,
+    #[serde(default = "default_true")]
+    retryable: bool,
+}
+
+fn default_true() -> bool {
+    true
+}
+
 #[derive(Debug, Deserialize)]
 struct HistoryAdvanceResponse {
     checkpoint: GenericStructureCheckpoint,
@@ -248,14 +276,14 @@ impl StructureFocusCoordinator {
         Ok(activated)
     }
 
-    pub async fn restore_inactive_registry(&self) -> Result<usize, String> {
-        let entries = self
+    pub async fn restore_inactive_registry(&self) -> Result<StructureFocusRestore, String> {
+        let (entries, blocked) = self
             .checkpoint_store
             .load_structure_focus_registry(self.inactive_registry_limit)
             .await?;
-        let count = entries.len();
+        let active = entries.len();
         self.inactive_registry.lock().await.extend(entries);
-        Ok(count)
+        Ok(StructureFocusRestore { active, blocked })
     }
 
     pub async fn persist_and_reclaim_unused(
@@ -297,7 +325,7 @@ impl StructureFocusCoordinator {
         Ok(reclaimed)
     }
 
-    pub async fn advance_inactive_due(&self) -> Result<Vec<String>, String> {
+    pub async fn advance_inactive_due(&self) -> Result<StructureFocusAdvance, String> {
         let now = Utc::now();
         let due = {
             let mut inactive = self.inactive_registry.lock().await;
@@ -313,6 +341,7 @@ impl StructureFocusCoordinator {
             due
         };
         let mut advanced = Vec::new();
+        let mut blocked = Vec::new();
         for ticker in due {
             let checkpoint = self
                 .checkpoint_store
@@ -333,9 +362,28 @@ impl StructureFocusCoordinator {
                     .repair_focused_ticker_intervals(&ticker, &gaps)
                     .await?;
             }
-            let response = self
+            let response = match self
                 .advance_checkpoint_through(checkpoint, Utc::now())
-                .await?;
+                .await
+            {
+                Ok(response) => response,
+                Err(error) => {
+                    if let Some(history_error) = non_retryable_history_error(&error) {
+                        self.checkpoint_store
+                            .persist_structure_focus_blocked(
+                                &ticker,
+                                &history_error.error_code,
+                                &history_error.retry_action,
+                                &history_error.error,
+                            )
+                            .await?;
+                        self.inactive_registry.lock().await.remove(&ticker);
+                        blocked.push(ticker);
+                        continue;
+                    }
+                    return Err(format!("{ticker}: {error}"));
+                }
+            };
             self.checkpoint_store
                 .persist_structure_checkpoint(&response.checkpoint)
                 .await?;
@@ -349,7 +397,7 @@ impl StructureFocusCoordinator {
                 .insert(ticker.clone(), next_due);
             advanced.push(ticker);
         }
-        Ok(advanced)
+        Ok(StructureFocusAdvance { advanced, blocked })
     }
 
     async fn advance_checkpoint(
@@ -460,13 +508,20 @@ impl StructureFocusCoordinator {
     }
 }
 
+fn non_retryable_history_error(message: &str) -> Option<HistoryErrorResponse> {
+    let body = message.get(message.find('{')?..)?;
+    let parsed = serde_json::from_str::<HistoryErrorResponse>(body).ok()?;
+    (!parsed.retryable && parsed.error_code == "structure_checkpoint_source_incompatible")
+        .then_some(parsed)
+}
+
 fn next_checkpoint_slice_end(start: DateTime<Utc>, as_of: DateTime<Utc>) -> DateTime<Utc> {
     (start + ChronoDuration::hours(CHECKPOINT_ADVANCE_SLICE_HOURS)).min(as_of)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{next_checkpoint_slice_end, SymbolActivationLocks};
+    use super::{next_checkpoint_slice_end, non_retryable_history_error, SymbolActivationLocks};
     use chrono::{Duration as ChronoDuration, TimeZone, Utc};
     use std::time::Duration;
 
@@ -511,5 +566,22 @@ mod tests {
         );
         let near_end = start + ChronoDuration::hours(12);
         assert_eq!(next_checkpoint_slice_end(start, near_end), near_end);
+    }
+
+    #[test]
+    fn non_retryable_history_conflicts_are_typed_for_quarantine() {
+        let error = r#"QMD History checkpoint advancement returned HTTP 409 Conflict: {"error":"cursor identity mismatch","error_code":"structure_checkpoint_source_incompatible","retry_action":"rebuild_checkpoint_from_canonical_history","retryable":false}"#;
+        let parsed = non_retryable_history_error(error).expect("non-retryable conflict");
+        assert_eq!(
+            parsed.error_code,
+            "structure_checkpoint_source_incompatible"
+        );
+        assert_eq!(
+            parsed.retry_action,
+            "rebuild_checkpoint_from_canonical_history"
+        );
+        assert!(
+            non_retryable_history_error(r#"{"error_code":"temporary","retryable":true}"#).is_none()
+        );
     }
 }

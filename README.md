@@ -277,6 +277,25 @@ data gap. Start and stop it independently with:
 .\scripts\stop_qmd_live_gateway.ps1
 ```
 
+For an explicit full application start, stop, restart, or status check that
+also includes BarGPT, use the composite manager:
+
+```powershell
+python .\scripts\manage_application_services.py start
+python .\scripts\manage_application_services.py status
+python .\scripts\manage_application_services.py restart
+python .\scripts\manage_application_services.py stop
+```
+
+The start path preserves an already-healthy QMD Live stream, starts it only
+when absent, then opens QMD History, Backend, Frontend, and BarGPT and waits for
+all HTTP readiness endpoints. It rolls back only services started by a failed
+attempt. The default promoted-release catalog is
+`D:\TradingML\runtimes\bar_gpt_service\configuration\releases.json`; override
+it with `--release-manifest`. Every row must bind model ID, version, checkpoint,
+checkpoint SHA-256, contract hash, and champion/shadow role. The separate
+`start_live_gateway_services.ps1` gateway bundle is unchanged.
+
 Shutdown validates the registered host PID, creation time, repository, and
 launcher identity; sends one Ctrl+C event to each registered tab console; and
 waits up to eight seconds. Its bounded fallback terminates only the validated

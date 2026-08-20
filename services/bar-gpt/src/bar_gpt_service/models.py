@@ -79,14 +79,26 @@ def load_releases(config: ServiceConfig) -> dict[str, LoadedRelease]:
             from research.bar_gpt.v2.inference import load_pretrained
         else:
             from research.bar_gpt.v3.inference import load_pretrained
+        checkpoint_hash = _file_sha256(release.checkpoint)
+        if release.expected_checkpoint_hash and checkpoint_hash != release.expected_checkpoint_hash:
+            raise ValueError(
+                f"BarGPT checkpoint hash mismatch for {release.model_id}: "
+                f"expected {release.expected_checkpoint_hash}, observed {checkpoint_hash}"
+            )
         model, data_config, payload = load_pretrained(release.checkpoint, device=device)
+        contract_hash = str(payload["contract_hash"]).strip().lower()
+        if release.expected_contract_hash and contract_hash != release.expected_contract_hash:
+            raise ValueError(
+                f"BarGPT contract hash mismatch for {release.model_id}: "
+                f"expected {release.expected_contract_hash}, observed {contract_hash}"
+            )
         model.eval()
         releases[release.model_id] = LoadedRelease(
             config=release,
             model=model,
             data_config=data_config,
-            checkpoint_hash=_file_sha256(release.checkpoint),
-            contract_hash=str(payload["contract_hash"]),
+            checkpoint_hash=checkpoint_hash,
+            contract_hash=contract_hash,
             device=device,
             dtype=dtype,
         )

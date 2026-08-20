@@ -2646,10 +2646,23 @@ impl IndicatorClickHouseWriter {
             (
                 sym LowCardinality(String),
                 next_advance_at_ms Int64,
+                state LowCardinality(String) DEFAULT 'active',
+                error_code LowCardinality(String) DEFAULT '',
+                retry_action LowCardinality(String) DEFAULT '',
+                error_detail String DEFAULT '',
                 updated_at DateTime64(3, 'UTC')
             )
             ENGINE = ReplacingMergeTree(updated_at)
             ORDER BY sym"#,
+            true,
+        )
+        .await?;
+        self.execute(
+            r#"ALTER TABLE qmd_structure_focus_registry_v1
+                ADD COLUMN IF NOT EXISTS state LowCardinality(String) DEFAULT 'active',
+                ADD COLUMN IF NOT EXISTS error_code LowCardinality(String) DEFAULT '',
+                ADD COLUMN IF NOT EXISTS retry_action LowCardinality(String) DEFAULT '',
+                ADD COLUMN IF NOT EXISTS error_detail String DEFAULT ''"#,
             true,
         )
         .await?;
@@ -2747,12 +2760,13 @@ impl IndicatorClickHouseWriter {
     pub async fn load_structure_focus_registry(
         &self,
         limit: usize,
-    ) -> Result<Vec<(String, DateTime<Utc>)>, String> {
+    ) -> Result<(Vec<(String, DateTime<Utc>)>, usize), String> {
         let bounded = limit.max(1);
         let sql = format!(
             r#"SELECT
                 sym,
-                argMax(next_advance_at_ms, updated_at) AS next_advance_at_ms
+                argMax(next_advance_at_ms, updated_at) AS next_advance_at_ms,
+                argMax(state, updated_at) AS state
             FROM qmd_structure_focus_registry_v1
             GROUP BY sym
             ORDER BY sym
@@ -2762,7 +2776,17 @@ impl IndicatorClickHouseWriter {
         );
         let text = self.query(&sql, true).await?;
         let mut entries = Vec::new();
-        for line in text.lines().filter(|line| !line.trim().is_empty()) {
+        let mut blocked = 0_usize;
+        let rows = text
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .collect::<Vec<_>>();
+        if rows.len() > bounded {
+            return Err(format!(
+                "structure focus registry exceeds configured limit {bounded}"
+            ));
+        }
+        for line in rows {
             let value = serde_json::from_str::<serde_json::Value>(line)
                 .map_err(|error| format!("invalid structure focus registry row: {error}"))?;
             let sym = value
@@ -2778,16 +2802,19 @@ impl IndicatorClickHouseWriter {
                         .or_else(|| value.as_str().and_then(|raw| raw.parse().ok()))
                 })
                 .unwrap_or_default();
+            let state = value
+                .get("state")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("active");
+            if state == "blocked" {
+                blocked = blocked.saturating_add(1);
+                continue;
+            }
             let next_due = DateTime::<Utc>::from_timestamp_millis(millis)
                 .ok_or_else(|| format!("invalid structure focus registry time for {sym}"))?;
             entries.push((sym, next_due));
         }
-        if entries.len() > bounded {
-            return Err(format!(
-                "structure focus registry exceeds configured limit {bounded}"
-            ));
-        }
-        Ok(entries)
+        Ok((entries, blocked))
     }
 
     pub async fn persist_structure_focus_registry(
@@ -2798,9 +2825,39 @@ impl IndicatorClickHouseWriter {
         let body = serde_json::to_string(&json!({
             "sym": ticker.trim().to_ascii_uppercase(),
             "next_advance_at_ms": next_advance_at.timestamp_millis(),
+            "state": "active",
+            "error_code": "",
+            "retry_action": "",
+            "error_detail": "",
             "updated_at": clickhouse_datetime64(&Utc::now()),
         }))
         .map_err(|error| format!("failed to serialize structure focus registry: {error}"))?;
+        self.query_with_body(
+            "INSERT INTO qmd_structure_focus_registry_v1 FORMAT JSONEachRow",
+            body,
+        )
+        .await
+    }
+
+    pub async fn persist_structure_focus_blocked(
+        &self,
+        ticker: &str,
+        error_code: &str,
+        retry_action: &str,
+        error_detail: &str,
+    ) -> Result<(), String> {
+        let body = serde_json::to_string(&json!({
+            "sym": ticker.trim().to_ascii_uppercase(),
+            "next_advance_at_ms": Utc::now().timestamp_millis(),
+            "state": "blocked",
+            "error_code": error_code,
+            "retry_action": retry_action,
+            "error_detail": error_detail,
+            "updated_at": clickhouse_datetime64(&Utc::now()),
+        }))
+        .map_err(|error| {
+            format!("failed to serialize blocked structure focus registry: {error}")
+        })?;
         self.query_with_body(
             "INSERT INTO qmd_structure_focus_registry_v1 FORMAT JSONEachRow",
             body,

@@ -133,7 +133,11 @@ Focused Generic Structure continuity uses `QMD_HISTORY_GATEWAY_URL`,
 `QMD_STRUCTURE_FOCUS_INACTIVE_BATCH_SIZE`, and
 `QMD_STRUCTURE_FOCUS_INACTIVE_REGISTRY_LIMIT`. Structure persistence is required
 for the live service. The restart-safe inactive authority is
-`q_live.qmd_structure_focus_registry_v1`.
+`q_live.qmd_structure_focus_registry_v1`. Non-retryable source-identity
+conflicts are persisted there as `state=blocked` with their error code and
+required action; they are not retried in a five-minute loop. A blocked ticker
+remains fail-closed until its checkpoint is explicitly rebuilt from canonical
+history. Transient failures remain retryable and visible in the gateway log.
 | `GET /snapshot/bars/AAPL?timeframe=1m&limit=500` | Recent in-memory closed bars for one ticker/timeframe. |
 | `GET /snapshot/indicators/AAPL?timeframe=1m&limit=500` | Recent indicator state for one ticker/timeframe. |
 | `GET /snapshot/live-market-state?limit=250` | Active and recent abnormal market-state transitions. |

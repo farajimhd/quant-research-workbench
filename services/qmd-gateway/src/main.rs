@@ -382,7 +382,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                     "qmd-gateway structure focus registry restore failed: {error}"
                 ))
             })?;
-    eprintln!("Restored {restored_inactive_focus} inactive Generic Structure focus checkpoints.");
+    eprintln!(
+        "Restored {} inactive Generic Structure focus checkpoints; {} remain blocked pending canonical-history rebuild.",
+        restored_inactive_focus.active, restored_inactive_focus.blocked,
+    );
     drop(canonical_event_sender);
     let mut canonical_fanout = event_fanout.clone();
     canonical_fanout.canonical_event_capacity = None;
@@ -452,11 +455,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         loop {
             sleep(Duration::from_secs(60)).await;
             match structure_focus_advancer.advance_inactive_due().await {
-                Ok(advanced) if !advanced.is_empty() => eprintln!(
-                    "QMD advanced {} inactive Generic Structure checkpoints before retention.",
-                    advanced.len()
-                ),
-                Ok(_) => {}
+                Ok(result) => {
+                    if !result.blocked.is_empty() {
+                        eprintln!(
+                            "QMD blocked {} non-retryable inactive Generic Structure checkpoints pending canonical-history rebuild: {}",
+                            result.blocked.len(),
+                            result.blocked.join(","),
+                        );
+                    }
+                    if !result.advanced.is_empty() {
+                        eprintln!(
+                            "QMD advanced {} inactive Generic Structure checkpoints before retention.",
+                            result.advanced.len()
+                        );
+                    }
+                }
                 Err(error) => {
                     eprintln!("QMD inactive structure checkpoint advancement deferred: {error}")
                 }

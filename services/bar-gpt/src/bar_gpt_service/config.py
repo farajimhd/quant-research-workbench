@@ -14,6 +14,8 @@ class ReleaseConfig:
     checkpoint: Path
     role: str = "shadow"
     enabled: bool = True
+    expected_checkpoint_hash: str = ""
+    expected_contract_hash: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -89,6 +91,7 @@ class ServiceConfig:
 
 def _release_configs(environment: Any) -> tuple[ReleaseConfig, ...]:
     raw = str(environment.get("BAR_GPT_RELEASES_JSON", "")).strip()
+    manifest_backed = bool(raw)
     rows: list[dict[str, Any]] = []
     if raw:
         parsed = json.loads(raw)
@@ -111,12 +114,25 @@ def _release_configs(environment: Any) -> tuple[ReleaseConfig, ...]:
         if version not in {"v2", "v3"}:
             raise ValueError(f"unsupported BarGPT release version {version!r}")
         checkpoint = Path(str(row.get("checkpoint") or "")).expanduser().resolve()
+        checkpoint_hash = str(row.get("checkpoint_sha256") or "").strip().lower()
+        contract_hash = str(row.get("contract_hash") or "").strip().lower()
+        if manifest_backed and (
+            len(checkpoint_hash) != 64
+            or any(character not in "0123456789abcdef" for character in checkpoint_hash)
+            or len(contract_hash) != 64
+            or any(character not in "0123456789abcdef" for character in contract_hash)
+        ):
+            raise ValueError(
+                "BarGPT manifest releases require 64-character checkpoint_sha256 and contract_hash values"
+            )
         result.append(ReleaseConfig(
             model_id=str(row.get("model_id") or f"bar_gpt_{version}").strip(),
             version=version,
             checkpoint=checkpoint,
             role=str(row.get("role") or "shadow").strip().lower(),
             enabled=bool(row.get("enabled", True)),
+            expected_checkpoint_hash=checkpoint_hash,
+            expected_contract_hash=contract_hash,
         ))
     identifiers = [row.model_id for row in result]
     if len(identifiers) != len(set(identifiers)):
@@ -165,6 +181,8 @@ def _selected_releases(
             checkpoint=row.checkpoint,
             role=str(roles.get(row.model_id) or row.role),
             enabled=row.model_id in selected_ids,
+            expected_checkpoint_hash=row.expected_checkpoint_hash,
+            expected_contract_hash=row.expected_contract_hash,
         )
         for row in catalog
         if row.model_id in selected_ids

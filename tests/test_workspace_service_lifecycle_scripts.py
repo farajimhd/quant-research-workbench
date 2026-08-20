@@ -35,7 +35,7 @@ def test_workspace_stop_uses_registered_ownership_not_global_command_matches() -
 def test_workspace_start_registers_each_role_and_rejects_foreign_port_adoption() -> None:
     source = _source("start_workspace_services.ps1")
 
-    for role in ("qmd_history", "backend", "frontend"):
+    for role in ("qmd_history", "backend", "frontend", "bar_gpt"):
         assert f'role = "{role}"' in source
     assert 'role = "qmd_live"' not in source
     assert "qmdliveport" not in source
@@ -60,9 +60,24 @@ def test_workspace_start_registers_each_role_and_rejects_foreign_port_adoption()
 def test_workspace_stop_has_no_qmd_live_shutdown_authority() -> None:
     source = _source("stop_workspace_services.ps1")
 
-    assert '$serviceroles = @("qmd_history", "backend", "frontend")' in source
+    assert '$serviceroles = @("qmd_history", "backend", "frontend", "bar_gpt")' in source
     assert "qmdliveport" not in source
     assert "leaving independently managed service ownership record untouched" in source
+
+
+def test_application_manager_composes_existing_owned_lifecycles() -> None:
+    source = _source("manage_application_services.py")
+
+    assert '"start_qmd_live_gateway.ps1"' in source
+    assert '"stop_qmd_live_gateway.ps1"' in source
+    assert '"start_workspace_services.ps1"' in source
+    assert '"stop_workspace_services.ps1"' in source
+    assert '"-withbargpt"' in source
+    assert '"-bargptreleasemanifest"' in source
+    assert "checkpoint_sha256" in source
+    assert "contract_hash" in source
+    assert "qmd live is already healthy; preserving its stream" in source
+    assert source.index('"stop_workspace_services.ps1"') < source.index('"stop_qmd_live_gateway.ps1"')
 
 
 def test_qmd_live_has_separate_managed_start_and_stop_scripts() -> None:
