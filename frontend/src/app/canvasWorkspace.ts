@@ -42,6 +42,7 @@ export type CanvasRegistry = {
 };
 
 export const MAIN_CANVAS_ID = "main";
+export const LIVE_OBSERVATION_CANVAS_ID = "live-observation";
 export const NEWS_READER_CANVAS_ID = "news-reader";
 export const SEC_READER_CANVAS_ID = "sec-reader";
 export const CANVAS_REGISTRY_UPDATED_EVENT = "quant-canvas-registry-updated";

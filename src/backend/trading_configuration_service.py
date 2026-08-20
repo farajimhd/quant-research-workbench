@@ -73,6 +73,8 @@ CONFIGURATION_SCHEMA_VERSION = 38
 MARKET_DISCOVERY_MATERIALIZATION_RUN_ID = "market-discovery:materialized-configuration"
 _CONFIGURATION_BASE_CACHE_LOCK = threading.RLock()
 _CONFIGURATION_BASE_CACHE: tuple[str, float, dict[str, Any] | None] = ("", 0.0, None)
+_MARKET_DISCOVERY_RUNTIME_CACHE_LOCK = threading.RLock()
+_MARKET_DISCOVERY_RUNTIME_CACHE: tuple[float, dict[str, Any] | None] = (0.0, None)
 CONFIGURATION_SECTIONS = {
     "strategy",
     "trading_actions",
@@ -242,6 +244,9 @@ def materialize_market_discovery(section: dict[str, Any]) -> dict[str, Any]:
         state,
         materialized_at,
     )
+    global _MARKET_DISCOVERY_RUNTIME_CACHE
+    with _MARKET_DISCOVERY_RUNTIME_CACHE_LOCK:
+        _MARKET_DISCOVERY_RUNTIME_CACHE = (0.0, None)
     from src.backend.canvas_preview_service import clear_scanner_snapshot_cache
     from src.backend.real_live_trading_service import clear_real_live_scanner_snapshot_cache
 
@@ -253,17 +258,26 @@ def materialize_market_discovery(section: dict[str, Any]) -> dict[str, Any]:
 def market_discovery_runtime_configuration() -> dict[str, Any]:
     """Overlay the last valid materialized discovery section on the approved base."""
 
-    base = configuration_base()
-    checkpoint = trading_journal().load_checkpoint(
-        MARKET_DISCOVERY_MATERIALIZATION_RUN_ID
-    )
-    section = dict(dict(checkpoint or {}).get("state") or {}).get(
-        "market_discovery"
-    )
-    if not isinstance(section, dict):
+    global _MARKET_DISCOVERY_RUNTIME_CACHE
+    now = time.monotonic()
+    cached_until, cached = _MARKET_DISCOVERY_RUNTIME_CACHE
+    if cached is not None and now < cached_until:
+        return deepcopy(cached)
+    with _MARKET_DISCOVERY_RUNTIME_CACHE_LOCK:
+        cached_until, cached = _MARKET_DISCOVERY_RUNTIME_CACHE
+        if cached is not None and now < cached_until:
+            return deepcopy(cached)
+        base = configuration_base()
+        checkpoint = trading_journal().load_checkpoint(
+            MARKET_DISCOVERY_MATERIALIZATION_RUN_ID
+        )
+        section = dict(dict(checkpoint or {}).get("state") or {}).get(
+            "market_discovery"
+        )
+        if isinstance(section, dict):
+            base["market_discovery"] = deepcopy(section)
+        _MARKET_DISCOVERY_RUNTIME_CACHE = (now + 30.0, deepcopy(base))
         return base
-    base["market_discovery"] = deepcopy(section)
-    return base
 
 
 def market_discovery_presentation_configuration() -> dict[str, Any]:

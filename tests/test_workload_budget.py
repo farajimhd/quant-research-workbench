@@ -27,15 +27,19 @@ class WorkloadClassificationTests(unittest.TestCase):
             classify_workload(
                 "GET", "/api/market-discovery/signal-stream/runtime"
             ),
-            "general",
+            "discovery_state",
         )
         self.assertEqual(
             classify_workload("GET", "/api/market-discovery/watchlists/runtime"),
-            "general",
+            "discovery_state",
         )
         self.assertEqual(
             classify_workload("GET", "/api/market-discovery/runtime/status"),
-            "general",
+            "runtime_state",
+        )
+        self.assertEqual(
+            classify_workload("GET", "/api/real-live-trading/market-gateway/status"),
+            "runtime_state",
         )
         self.assertEqual(classify_workload("POST", "/api/build/submit"), "offline")
         self.assertEqual(classify_workload("POST", "/api/configuration/publish"), "commands")

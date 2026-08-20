@@ -67,6 +67,7 @@ type TradingWorkspaceProps = {
   defaultOpenIds?: string[];
   defaultStateOverride?: CanvasWorkspaceState | null;
   definitionsOverride?: readonly WorkspaceContainerDefinition[];
+  excludedContainerIds?: readonly WorkspaceContainerId[];
   historicalSourceReady: boolean;
   initialStateOverride?: CanvasWorkspaceState | null;
   layoutPreset?: "focus" | "global" | "mode";
@@ -169,6 +170,7 @@ export function TradingWorkspace({
   defaultOpenIds,
   defaultStateOverride,
   definitionsOverride,
+  excludedContainerIds,
   historicalSourceReady,
   initialStateOverride,
   layoutPreset = "mode",
@@ -233,11 +235,12 @@ export function TradingWorkspace({
   const registryAdapterError = useMemo(() => {
     if (!registeredContainers) return "";
     const localIds = new Set(localDefinitions.map((definition) => definition.id));
+    const excludedIds = new Set(excludedContainerIds ?? []);
     const missing = registeredContainers
-      .filter((row) => row.status === "implemented" && row.modes.includes(mode) && !localIds.has(row.container_id as WorkspaceContainerId))
+      .filter((row) => row.status === "implemented" && row.modes.includes(mode) && !excludedIds.has(row.container_id as WorkspaceContainerId) && !localIds.has(row.container_id as WorkspaceContainerId))
       .map((row) => row.container_id);
     return missing.length ? `No frontend renderer is registered for: ${missing.join(", ")}.` : "";
-  }, [localDefinitions, mode, registeredContainers]);
+  }, [excludedContainerIds, localDefinitions, mode, registeredContainers]);
   const definitions = useMemo(() => {
     if (!registeredContainers) return localDefinitions;
     const authority = new Map(registeredContainers.map((row) => [row.container_id, row]));

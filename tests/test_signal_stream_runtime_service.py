@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import tempfile
+import threading
 import unittest
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -268,6 +269,41 @@ class SignalStreamRuntimeTests(unittest.TestCase):
 
         self.assertIs(first, second)
         records.assert_called_once()
+
+    def test_snapshot_does_not_wait_for_full_universe_evaluation_lock(self) -> None:
+        runtime = SignalStreamRuntime()
+        lock_held = threading.Event()
+        release_lock = threading.Event()
+        result: list[dict[str, object]] = []
+
+        def hold_runtime_lock() -> None:
+            with runtime._lock:
+                lock_held.set()
+                release_lock.wait(timeout=2)
+
+        holder = threading.Thread(target=hold_runtime_lock)
+        holder.start()
+        self.assertTrue(lock_held.wait(timeout=1))
+        session = {
+            "session_key": "2026-08-19",
+            "active": True,
+            "is_trading_day": True,
+            "start_at": datetime(2026, 8, 19, 8, 0, tzinfo=UTC),
+            "end_at": datetime(2026, 8, 20, 0, 0, tzinfo=UTC),
+        }
+        with patch(
+            "src.backend.signal_stream_runtime_service.signal_stream_session",
+            return_value=session,
+        ):
+            reader = threading.Thread(
+                target=lambda: result.append(runtime.snapshot(self.journal, configuration=self.configuration))
+            )
+            reader.start()
+            reader.join(timeout=0.5)
+            self.assertFalse(reader.is_alive(), "Canvas snapshot waited for the evaluation lock")
+        release_lock.set()
+        holder.join(timeout=1)
+        self.assertEqual(result[0]["status"], "ready")
 
     @patch("src.backend.signal_stream_runtime_service.publish_computation_target")
     def test_core_source_leases_rules_and_frozen_evidence_for_all_candidates(self, publish) -> None:

@@ -41,6 +41,7 @@ class SignalStreamRuntime:
 
     def __init__(self) -> None:
         self._lock = threading.RLock()
+        self._snapshot_lock = threading.RLock()
         self._states: dict[str, dict[str, dict[str, Any]]] = {}
         self._admissions: dict[str, dict[str, dict[str, Any]]] = {}
         self._diagnostics: dict[str, dict[str, Any]] = {}
@@ -301,7 +302,8 @@ class SignalStreamRuntime:
                         )
                         emitted += int(inserted)
                         if inserted:
-                            self._snapshot_cache.clear()
+                            with self._snapshot_lock:
+                                self._snapshot_cache.clear()
                             new_occurrences.append(occurrence)
                         dirty = self._apply_routes(stream, occurrence, as_of) or dirty
                         previous["last_emitted_at"] = as_of.isoformat()
@@ -436,7 +438,8 @@ class SignalStreamRuntime:
                 new_count += 1
         with self._lock:
             if new_count:
-                self._snapshot_cache.clear()
+                with self._snapshot_lock:
+                    self._snapshot_cache.clear()
             self._diagnostics[signal_stream_id] = {
                 "signal_stream_id": signal_stream_id,
                 "name": str(stream.get("name") or signal_stream_id),
@@ -484,47 +487,59 @@ class SignalStreamRuntime:
             max(1, min(int(limit), 50_000)),
             configuration_key,
         )
-        with self._lock:
-            now = monotonic_time.monotonic()
-            cached = self._snapshot_cache.get(cache_key) if as_of is None else None
-            if cached is not None and cached[0] > now:
-                return cached[1]
-            records = journal.signal_stream_records(
-                signal_stream_id=signal_stream_id,
-                from_time=session["start_at"] if session["active"] else cutoff,
-                as_of=cutoff,
-                limit=limit,
-            ) if session["active"] else []
-            diagnostics = {key: dict(value) for key, value in self._diagnostics.items()}
-            definitions = [
-                {
-                    **diagnostics.get(str(stream.get("signal_stream_id") or ""), {}),
-                    "signal_stream_id": str(stream.get("signal_stream_id") or ""),
-                    "name": str(stream.get("name") or stream.get("signal_stream_id") or "Signal Stream"),
-                    "enabled": bool(stream.get("enabled", True)),
-                    "source_type": str(stream.get("source_type") or "core_scan"),
-                    "source_id": str(stream.get("source_id") or stream.get("source_scan_id") or ""),
-                    "configured": bool(stream.get("inclusion_rule_sets")),
-                }
-                for stream in configuration_streams
-            ]
-            payload = {
-                "schema_version": SIGNAL_STREAM_SCHEMA_VERSION,
-                "as_of": cutoff.isoformat(),
-                "status": "ready",
-                "session": _session_payload(session),
-                "signal_streams": definitions,
-                "occurrence_count": len(records),
-                "occurrences": [record.payload for record in records],
+        now = monotonic_time.monotonic()
+        if as_of is None:
+            with self._snapshot_lock:
+                cached = self._snapshot_cache.get(cache_key)
+                if cached is not None and cached[0] > now:
+                    return cached[1]
+
+        # Occurrence history is independently durable. Never queue a Canvas
+        # read behind the full-universe transition evaluation protected by the
+        # runtime state lock; diagnostics may be one cycle stale while resolve
+        # is active, but immutable occurrences remain authoritative.
+        records = journal.signal_stream_records(
+            signal_stream_id=signal_stream_id,
+            from_time=session["start_at"] if session["active"] else cutoff,
+            as_of=cutoff,
+            limit=limit,
+        ) if session["active"] else []
+        diagnostics: dict[str, dict[str, Any]] = {}
+        if self._lock.acquire(blocking=False):
+            try:
+                diagnostics = {key: dict(value) for key, value in self._diagnostics.items()}
+            finally:
+                self._lock.release()
+        definitions = [
+            {
+                **diagnostics.get(str(stream.get("signal_stream_id") or ""), {}),
+                "signal_stream_id": str(stream.get("signal_stream_id") or ""),
+                "name": str(stream.get("name") or stream.get("signal_stream_id") or "Signal Stream"),
+                "enabled": bool(stream.get("enabled", True)),
+                "source_type": str(stream.get("source_type") or "core_scan"),
+                "source_id": str(stream.get("source_id") or stream.get("source_scan_id") or ""),
+                "configured": bool(stream.get("inclusion_rule_sets")),
             }
-            if as_of is None:
+            for stream in configuration_streams
+        ]
+        payload = {
+            "schema_version": SIGNAL_STREAM_SCHEMA_VERSION,
+            "as_of": cutoff.isoformat(),
+            "status": "ready",
+            "session": _session_payload(session),
+            "signal_streams": definitions,
+            "occurrence_count": len(records),
+            "occurrences": [record.payload for record in records],
+        }
+        if as_of is None:
+            with self._snapshot_lock:
                 if len(self._snapshot_cache) >= 32:
                     self._snapshot_cache.clear()
                 self._snapshot_cache[cache_key] = (
                     monotonic_time.monotonic() + SIGNAL_STREAM_SNAPSHOT_CACHE_SECONDS,
                     payload,
                 )
-            return payload
+        return payload
 
     def _hydrate(self, journal: TradingJournal) -> None:
         if self._hydrated:

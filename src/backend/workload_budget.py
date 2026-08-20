@@ -39,9 +39,11 @@ def workload_limits() -> dict[str, int]:
     return {
         "commands": _env_limit("BACKEND_COMMAND_CONCURRENCY", 8),
         "discovery": _env_limit("BACKEND_DISCOVERY_CONCURRENCY", 8),
+        "discovery_state": _env_limit("BACKEND_DISCOVERY_STATE_CONCURRENCY", 8),
         "charts": _env_limit("BACKEND_CHART_CONCURRENCY", 12),
         "simulation": _env_limit("BACKEND_SIMULATION_CONCURRENCY", 6),
         "offline": _env_limit("BACKEND_OFFLINE_CONCURRENCY", 2),
+        "runtime_state": _env_limit("BACKEND_RUNTIME_STATE_CONCURRENCY", 16),
         "general": _env_limit("BACKEND_GENERAL_CONCURRENCY", 32),
     }
 
@@ -54,14 +56,21 @@ def classify_workload(method: str, path: str) -> str:
     if normalized_path.endswith("/market-discovery/configuration/materialize"):
         return "commands"
     if normalized_path.endswith((
+        "/real-live-trading/market-gateway/status",
+        "/real-live-trading/qmd-gateway/status",
         "/market-discovery/runtime/status",
+    )):
+        # Control-plane probes must remain independent of Canvas data reads.
+        # Signal Stream and Watchlist payloads stay on the discovery lane so
+        # slow upstream readiness checks cannot consume their delivery budget.
+        return "runtime_state"
+    if normalized_path.endswith((
         "/market-discovery/signal-stream/runtime",
         "/market-discovery/watchlists/runtime",
     )):
-        # These endpoints read already-materialized state. They must remain
-        # available while heavier scanner discovery work is using the bounded
-        # discovery lane.
-        return "general"
+        # These are lightweight reads of already-materialized discovery state.
+        # Keep them responsive while full-universe scanner requests are active.
+        return "discovery_state"
     if any(token in normalized_path for token in ("scanner", "market-discovery", "watchlist")):
         return "discovery"
     if any(token in normalized_path for token in ("chart", "/canvas")):

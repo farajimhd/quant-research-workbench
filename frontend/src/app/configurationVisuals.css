@@ -5858,6 +5858,25 @@
   min-height: 42px;
 }
 
+.trading-configuration-page[data-configuration-section="runtime"] .live-observation-launch {
+  background: color-mix(in oklab, var(--surface) 94%, var(--configuration-accent) 6%);
+  border-color: color-mix(in oklab, var(--configuration-rule, var(--border)) 76%, var(--configuration-accent) 24%);
+}
+
+.live-observation-badge {
+  align-items: center;
+  background: var(--surface-alt);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--muted-foreground);
+  display: inline-flex;
+  font-size: 10px;
+  font-weight: 620;
+  gap: 5px;
+  line-height: 1;
+  padding: 6px 9px;
+}
+
 @media (max-width: 900px) {
   .trading-configuration-page[data-configuration-section="runtime"] .mode-launch-readiness {
     border-left: 0;

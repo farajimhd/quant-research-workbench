@@ -9,6 +9,7 @@ import {
   CircleDollarSign,
   ClipboardList,
   Clock3,
+  Eye,
   Flame,
   FolderOpen,
   Info,
@@ -36,7 +37,17 @@ import { MetricRatio } from "../app/components/MetricRatio";
 import { PageIntro } from "../app/components/PageIntro";
 import { Tabs } from "../app/components/Tabs";
 import { TradingModeLaunch, type TradingLaunchCheck } from "../app/components/TradingModeLaunch";
-import { ApprovedCanvasRuntimePage } from "./CanvasConfigurationPage";
+import {
+  CANVAS_REGISTRY_UPDATED_EVENT,
+  LIVE_OBSERVATION_CANVAS_ID,
+  readCanvasRegistry,
+  readCanvasWorkspaceState,
+  writeCanvasRegistry,
+  writeCanvasWorkspaceState,
+  type CanvasWorkspaceState,
+} from "../app/canvasWorkspace";
+import { TRADING_WORKSPACE_LAYOUT_VERSION, createFocusLayouts } from "../app/components/TradingWorkspace";
+import { ApprovedCanvasRuntimePage, CanvasWorkspaceSurface } from "./CanvasConfigurationPage";
 import {
   WorkspaceCanvasManager,
   WorkspaceWindow,
@@ -657,6 +668,7 @@ export function RealLiveTradingPage({ onMarketStatusChange, onTopbarCenterChange
   const [localClock, setLocalClock] = useState(() => formatLocalClock(new Date()));
   const [exchangeClock, setExchangeClock] = useState(() => formatExchangeClock(new Date()));
   const [started, setStarted] = useState(isChildCanvas);
+  const [observing, setObserving] = useState(false);
   const [scannerQueryGroups, setScannerQueryGroups] = useState<ScannerQueryGroup[]>(readStoredScannerQueryGroups);
   const [scannerQueryName, setScannerQueryName] = useState(() => readStoredScannerQueryName() || DEFAULT_SCANNER_QUERY_GROUPS[0]?.name || "Scanner Query");
   const [snapshot, setSnapshot] = useState<ScannerSnapshot | null>(null);
@@ -1076,6 +1088,11 @@ export function RealLiveTradingPage({ onMarketStatusChange, onTopbarCenterChange
     await refreshLiveWorkspace({ warmCharts: true });
   }
 
+  function enterObservationWorkspace() {
+    ensureLiveObservationCanvas();
+    setObserving(true);
+  }
+
   async function refreshLiveWorkspace(options: { warmCharts?: boolean } = {}) {
     await Promise.all([loadScannerAt(session.barTime, options), loadBrokerPortfolio()]);
   }
@@ -1399,6 +1416,18 @@ export function RealLiveTradingPage({ onMarketStatusChange, onTopbarCenterChange
   }
 
   if (!started) {
+    if (observing) {
+      return <CanvasWorkspaceSurface
+        canvasId={LIVE_OBSERVATION_CANVAS_ID}
+        manager={false}
+        modeControls={<div className="live-global-status-actions" aria-label="Live observation controls">
+          <span className="live-observation-badge"><Eye aria-hidden="true" size={13} /> Read only</span>
+          <button className="button secondary compact" onClick={() => setObserving(false)} type="button"><X size={14} /> Exit monitor</button>
+        </div>}
+        readOnly
+        runtimeMode="live"
+      />;
+    }
     return (
       <RealLiveTradingGate
         loading={loading}
@@ -1407,6 +1436,7 @@ export function RealLiveTradingPage({ onMarketStatusChange, onTopbarCenterChange
         preflightStatus={preflightStatus}
         onCheck={() => void checkConnections()}
         onEnter={() => void enterLiveWorkspace()}
+        onObserve={enterObservationWorkspace}
       />
     );
   }
@@ -1583,6 +1613,7 @@ function RealLiveTradingGate({
   message,
   onCheck,
   onEnter,
+  onObserve,
   preflightStatus,
 }: {
   gatewayStatus: RealLiveGatewayStatusPayload | null;
@@ -1590,9 +1621,11 @@ function RealLiveTradingGate({
   message: string;
   onCheck: () => void;
   onEnter: () => void;
+  onObserve: () => void;
   preflightStatus: RealLivePreflightPayload | null;
 }) {
   const qmdReady = isQmdGatewayReady(gatewayStatus);
+  const observationReady = isQmdObservationReady(gatewayStatus);
   const checks: TradingLaunchCheck[] = [
     ...(preflightStatus?.checks ?? []).map((check) => ({ ...check, evidence: check.message, summary: check.message })),
     { evidence: qmdReady ? "Live event and historical context routes are available." : "Waiting for the QMD service core.", id: "qmd_runtime", label: "Market data runtime", required: true, status: qmdReady ? "ready" : "blocked" },
@@ -1615,6 +1648,12 @@ function RealLiveTradingGate({
     setupTitle="Managed configuration"
     title="Open the live workspace"
   >
+    <div className="mode-launch-authority live-observation-launch">
+      <span>Market observation</span>
+      <strong>Scanner, Signal Stream, and live news</strong>
+      <small>Open a persisted read-only Canvas using QMD Live and News. No account, Portfolio, OMS, broker connection, or approved trading release is required. BarGPT forecasts appear when its service and configured Data Fields are available, but do not block the monitor.</small>
+      <div><button className="button primary compact" disabled={!observationReady} onClick={onObserve} type="button"><Eye aria-hidden="true" size={14} /> Observe Live</button><button className="button secondary compact" onClick={() => { window.location.hash = "#market-discovery-configuration"; }} type="button">Market Discovery</button></div>
+    </div>
     <div className="mode-launch-authority">
       <span>Configuration authority</span>
       <strong>{preflightStatus ? "Approved release" : "Resolving approved release"}</strong>
@@ -1622,6 +1661,33 @@ function RealLiveTradingGate({
       <div><button className="button secondary compact" onClick={() => { window.location.hash = "#revision-configuration"; }} type="button">Approved Releases</button><button className="button secondary compact" onClick={() => { window.location.hash = "#account-configuration"; }} type="button">Accounts &amp; Sessions</button></div>
     </div>
   </TradingModeLaunch>;
+}
+
+function ensureLiveObservationCanvas() {
+  const registry = readCanvasRegistry();
+  const existing = readCanvasWorkspaceState(LIVE_OBSERVATION_CANVAS_ID) ?? registry.workspaceStates?.[LIVE_OBSERVATION_CANVAS_ID];
+  const requiredIds = ["scanner", "signal_stream", "news"] as const;
+  const openIds = existing
+    ? [...existing.openIds, ...requiredIds.filter((id) => !existing.openIds.some((instanceId) => instanceId === id || instanceId.startsWith(`${id}-`)))]
+    : [...requiredIds];
+  const fallbackLayouts = createFocusLayouts(openIds);
+  const state: CanvasWorkspaceState = {
+    groups: existing?.groups ?? {},
+    instances: { scanner: "scanner", signal_stream: "signal_stream", news: "news", ...(existing?.instances ?? {}) },
+    layoutVersion: TRADING_WORKSPACE_LAYOUT_VERSION,
+    layouts: { ...fallbackLayouts, ...(existing?.layouts ?? {}) },
+    openIds,
+  };
+  const canvases = registry.canvases.some((canvas) => canvas.id === LIVE_OBSERVATION_CANVAS_ID)
+    ? registry.canvases
+    : [...registry.canvases, { id: LIVE_OBSERVATION_CANVAS_ID, label: "Live Monitor" }];
+  writeCanvasWorkspaceState(LIVE_OBSERVATION_CANVAS_ID, state);
+  writeCanvasRegistry({
+    ...registry,
+    canvases,
+    workspaceStates: { ...(registry.workspaceStates ?? {}), [LIVE_OBSERVATION_CANVAS_ID]: state },
+  });
+  window.dispatchEvent(new CustomEvent(CANVAS_REGISTRY_UPDATED_EVENT));
 }
 
 const SCANNER_SETUP_TAB = "Scanner Setup";
@@ -3802,6 +3868,16 @@ function buildGateProgressSteps({
 function isQmdGatewayReady(gatewayStatus: RealLiveGatewayStatusPayload | null) {
   const qmdStatus = gatewayStatus?.qmd_gateway && typeof gatewayStatus.qmd_gateway === "object" ? gatewayStatus.qmd_gateway as Record<string, unknown> : null;
   return Boolean(qmdStatus && ["running", "ready"].includes(stringValue(qmdStatus, "status")));
+}
+
+function isQmdObservationReady(gatewayStatus: RealLiveGatewayStatusPayload | null) {
+  const qmdStatus = gatewayStatus?.qmd_gateway && typeof gatewayStatus.qmd_gateway === "object" ? gatewayStatus.qmd_gateway as Record<string, unknown> : null;
+  // Observation is non-authorizing: let the operator enter the monitor while
+  // startup probes recover, but disable it when QMD explicitly reports a hard
+  // stop. Containers retain their own loading, stale, and unavailable states.
+  if (!qmdStatus) return true;
+  const status = stringValue(qmdStatus, "status").toLowerCase();
+  return !["blocked", "failed", "not_started", "stopped", "unavailable"].includes(status);
 }
 
 function progressStepFromBackend(step: RealLiveProgressStep, label = step.label): GateProgressStep {
