@@ -1204,6 +1204,16 @@ AND toUInt32OrZero(sequence_number) > 0
 
 
 def flatfile_trade_correction_filter_sql(args: argparse.Namespace) -> str:
+    # BarGPT historical-authority note (accepted limitation): ``correction``
+    # is a separate NYSE trade-correction namespace, not one of the five
+    # entries in the ``conditions`` array encoded below as condition_token_1
+    # through condition_token_5.  The existing events_YYYY schema does not
+    # retain correction, trade ID, or source sequence, so historical 01/12
+    # pairs cannot be reconstructed exactly after compaction and are accepted
+    # with the finalized source semantics.  A future event-schema migration
+    # should preserve a dedicated correction code plus pairing identity (or
+    # materialize the causal correction overlay here during ingestion); it
+    # must not consume or overload one of the five condition-token slots.
     codes = parse_trade_correction_codes(getattr(args, "drop_trade_correction_codes", ""))
     if not codes:
         return ""

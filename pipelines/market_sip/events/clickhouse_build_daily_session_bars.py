@@ -28,6 +28,10 @@ from pipelines.market_sip.events.session_bar_contract import (  # noqa: E402
     SESSION_BAR_FEATURE_VERSION,
     SESSION_BAR_SCHEMA_VERSION,
 )
+from pipelines.market_sip.events.clickhouse_build_intraday_base_bars import (  # noqa: E402
+    condition_event_select_sql,
+    condition_token_array_aliases_sql,
+)
 from pipelines.market_sip.validation.clickhouse_delete_compact_audit_rows import (  # noqa: E402
     default_clickhouse_url_with_network_fallback,
 )
@@ -44,13 +48,16 @@ from research.mlops.env import load_env_files  # noqa: E402
 
 
 BUILD_VERSION = "sip_daily_sessions_v1"
-BAR_GPT_BUILD_VERSION = "bar_gpt_daily_condition_eligibility_v2"
+BAR_GPT_BUILD_VERSION = "bar_gpt_daily_causal_corrections_condition_eligibility_v3"
 DEFAULT_DATABASE = "market_sip_compact"
 DEFAULT_EVENTS_TABLE_BASE = "events"
 DEFAULT_IDENTITY_DATABASE = "q_live"
 DEFAULT_RUNTIME_ROOT = Path(r"D:\TradingML\runtimes\market_sip\daily_session_bars_v1")
 SESSION_TIMEZONE = "America/New_York"
 DEFAULT_CONDITION_REFERENCE_TABLE = "event_condition_token_reference"
+DEFAULT_CORRECTION_OVERLAY_TABLE = "bar_gpt_trade_correction_overlay_v1"
+DEFAULT_CORRECTION_RECORD_MANIFEST_TABLE = "bar_gpt_trade_correction_record_manifest_v1"
+CORRECTION_OVERLAY_BUILD_VERSION = "bar_gpt_trade_correction_causal_overlay_v1"
 DEFAULT_MAX_QUOTE_SPREAD_BPS = 1_000.0
 
 
@@ -90,13 +97,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--database", default=DEFAULT_DATABASE)
     parser.add_argument("--events-table-base", default=DEFAULT_EVENTS_TABLE_BASE)
     parser.add_argument("--index-table", default="events_ticker_day_index")
+    parser.add_argument("--source-day-stats-table", default="events_source_day_stats")
     parser.add_argument("--condition-reference-table", default=DEFAULT_CONDITION_REFERENCE_TABLE)
+    parser.add_argument("--correction-overlay-table", default=DEFAULT_CORRECTION_OVERLAY_TABLE)
+    parser.add_argument("--correction-record-manifest-table", default=DEFAULT_CORRECTION_RECORD_MANIFEST_TABLE)
     parser.add_argument("--tickers", default="", help="Optional comma-separated source-ticker restriction.")
     parser.add_argument("--target-table", default=DEFAULT_DAILY_SESSION_BARS_TABLE)
     parser.add_argument("--manifest-table", default=DEFAULT_DAILY_SESSION_MANIFEST_TABLE)
     parser.add_argument("--bar-gpt-condition-eligibility", action="store_true")
-    parser.add_argument("--schema-version", type=int, default=SESSION_BAR_SCHEMA_VERSION)
-    parser.add_argument("--feature-version", default=SESSION_BAR_FEATURE_VERSION)
+    parser.add_argument("--schema-version", type=int, default=None)
+    parser.add_argument("--feature-version", default=None)
     parser.add_argument("--max-quote-spread-bps", type=float, default=DEFAULT_MAX_QUOTE_SPREAD_BPS)
     parser.add_argument("--identity-database", default=DEFAULT_IDENTITY_DATABASE)
     parser.add_argument("--symbol-interval-table", default="id_symbol_interval_v1")
@@ -119,7 +129,20 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--clickhouse-password", default=default_clickhouse_password())
     parser.add_argument("--runtime-root", type=Path, default=DEFAULT_RUNTIME_ROOT)
     parser.add_argument("--progress-layout", choices=("auto", "rich", "text", "none"), default="auto")
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+    if args.bar_gpt_condition_eligibility:
+        from research.bar_gpt.v1.schema import FEATURE_VERSION, SCHEMA_VERSION
+        args.schema_version = SCHEMA_VERSION if args.schema_version is None else int(args.schema_version)
+        args.feature_version = FEATURE_VERSION if args.feature_version is None else str(args.feature_version)
+        if args.schema_version != SCHEMA_VERSION or args.feature_version != FEATURE_VERSION:
+            raise ValueError(
+                "--bar-gpt-condition-eligibility requires the current BarGPT "
+                f"schema/feature contract {SCHEMA_VERSION}/{FEATURE_VERSION}"
+            )
+    else:
+        args.schema_version = SESSION_BAR_SCHEMA_VERSION if args.schema_version is None else int(args.schema_version)
+        args.feature_version = SESSION_BAR_FEATURE_VERSION if args.feature_version is None else str(args.feature_version)
+    return args
 
 
 def _size_literal(value: str) -> int:
@@ -265,11 +288,26 @@ def insert_session_bars_sql(args: argparse.Namespace, start: dt.date, end: dt.da
         *_relation_aggregates("midpoint", "midpoint", pair_valid),
         *_relation_aggregates("microprice", "microprice", pair_valid),
         *_relation_aggregates("queue_imbalance", "queue_imbalance", pair_valid),
-        "toUInt64(countIf(event_type = 0 AND bid_price = ask_price AND bid_price > 0)) AS locked_quote_count",
-        "toUInt64(countIf(event_type = 0 AND bid_price > ask_price AND ask_price > 0)) AS crossed_quote_count",
+        f"toUInt64(countIf({pair_valid} AND bid_price = ask_price)) AS locked_quote_count",
+        f"toUInt64(countIf({pair_valid} AND bid_price > ask_price)) AS crossed_quote_count",
         ("toUInt64(sumIf(toUInt8(condition_token_1 > 0) + toUInt8(condition_token_2 > 0) + toUInt8(condition_token_3 > 0) + toUInt8(condition_token_4 > 0) + toUInt8(condition_token_5 > 0), event_retained)) AS condition_nonzero_count" if use_eligibility else "toUInt64(sum(toUInt8(condition_token_1 > 0) + toUInt8(condition_token_2 > 0) + toUInt8(condition_token_3 > 0) + toUInt8(condition_token_4 > 0) + toUInt8(condition_token_5 > 0))) AS condition_nonzero_count"),
-        ("toUInt64(countIf(origin_event_eligible)) AS source_event_count" if use_eligibility else "toUInt64(count()) AS source_event_count"),
-        *(["toFloat64(sumIf(trade_size, trade_volume_eligible AND trade_origin_eligible)) AS trade_price_eligible_size_sum"] if use_eligibility else []),
+        ("toUInt64(countIf(event_retained)) AS source_event_count" if use_eligibility else "toUInt64(count()) AS source_event_count"),
+        *([ 
+            "toFloat64(sumIf(trade_size, trade_volume_eligible AND trade_origin_eligible)) AS trade_price_eligible_size_sum",
+            "toUInt8(countIf(origin_event_eligible) > 0) AS context_eligible",
+            "toUInt8(countIf(origin_event_eligible) > 0) AS origin_eligible",
+            "toUInt64(countIf(origin_event_eligible)) AS origin_event_count",
+            "toUInt64(countIf(trade_origin_eligible)) AS eligible_trade_event_count",
+            "toUInt64(countIf(quote_origin_eligible)) AS eligible_quote_event_count",
+            "toUInt64(countIf(event_type = 1 AND NOT event_retained)) AS rejected_trade_event_count",
+            "toUInt64(countIf(event_type = 0 AND NOT quote_origin_eligible)) AS rejected_quote_event_count",
+            "toUInt64(countIf(trade_condition_unknown OR quote_condition_unknown)) AS unknown_condition_event_count",
+            "toUInt64(countIf(event_retained AND condition_halt_pause_flag_event > 0)) AS condition_halt_pause_count",
+            "toUInt64(countIf(event_retained AND condition_resume_flag_event > 0)) AS condition_resume_count",
+            "toUInt64(countIf(event_retained AND condition_news_risk_flag_event > 0)) AS condition_news_risk_count",
+            "toUInt64(countIf(event_retained AND condition_luld_limit_state_flag_event > 0)) AS condition_luld_limit_state_count",
+            "toUInt64(countIf(event_retained AND (condition_halt_pause_flag_event > 0 OR condition_resume_flag_event > 0 OR condition_news_risk_flag_event > 0 OR condition_luld_limit_state_flag_event > 0))) AS condition_event_count",
+        ] if use_eligibility else []),
     ]
     aggregate_sql = ",\n        ".join(aggregates)
     feature_select = ",\n    ".join(f"a.{quote_ident(name)}" for name, _kind in _feature_contract(args))
@@ -277,15 +315,64 @@ def insert_session_bars_sql(args: argparse.Namespace, start: dt.date, end: dt.da
     identity_db = quote_ident(args.identity_database)
     requested = tuple(sorted({item.strip().upper() for item in str(getattr(args, "tickers", "")).split(",") if item.strip()}))
     ticker_filter = "" if not requested else " AND upper(ticker) IN (" + ", ".join(sql_string(item) for item in requested) + ")"
+    if use_eligibility:
+        overlay = f"{quote_ident(args.database)}.{quote_ident(args.correction_overlay_table)}"
+        event_source = f"""
+(
+    SELECT
+        e.ticker,
+        e.ordinal,
+        if(o.overlay_present=1,o.replacement_event_meta,e.event_meta) AS event_meta,
+        e.sip_timestamp_us,
+        if(o.overlay_present=1,o.replacement_price_primary_int,e.price_primary_int) AS price_primary_int,
+        e.price_secondary_int,
+        if(o.overlay_present=1,o.replacement_size_primary,e.size_primary) AS size_primary,
+        e.size_secondary,
+        if(o.overlay_present=1,o.replacement_exchange_primary,e.exchange_primary) AS exchange_primary,
+        e.exchange_secondary,
+        if(o.overlay_present=1,o.replacement_condition_token_1,e.condition_token_1) AS condition_token_1,
+        if(o.overlay_present=1,o.replacement_condition_token_2,e.condition_token_2) AS condition_token_2,
+        if(o.overlay_present=1,o.replacement_condition_token_3,e.condition_token_3) AS condition_token_3,
+        if(o.overlay_present=1,o.replacement_condition_token_4,e.condition_token_4) AS condition_token_4,
+        if(o.overlay_present=1,o.replacement_condition_token_5,e.condition_token_5) AS condition_token_5,
+        e.event_date
+    FROM {source} AS e
+    LEFT JOIN
+    (
+        SELECT *, toUInt8(1) AS overlay_present
+        FROM {overlay} FINAL
+        WHERE source_date >= toDate({sql_string(start.isoformat())})
+          AND source_date <= toDate({sql_string(end.isoformat())})
+    ) AS o ON o.source_date=e.event_date AND o.ticker=e.ticker AND o.ordinal=e.ordinal
+    PREWHERE e.event_date >= toDate({sql_string(start.isoformat())})
+      AND e.event_date <= toDate({sql_string(end.isoformat())})
+)
+"""
+    else:
+        event_source = source
+    source_contract = "causal_trade_correction_overlay_v1" if use_eligibility else "ordered_sip_events_unadjusted"
+    condition_args = argparse.Namespace(
+        database=args.database,
+        condition_token_reference_table=args.condition_reference_table,
+    )
+    future_condition_token_aliases = condition_token_array_aliases_sql(condition_args) if use_eligibility else ""
+    future_condition_event_aliases = condition_event_select_sql() if use_eligibility else ""
     condition_arrays = f"""
 (SELECT groupArray(toUInt8(token_id)) FROM {quote_ident(args.database)}.{quote_ident(args.condition_reference_table)} WHERE source_family = 'trade_conditions' AND is_join_canonical = 1 AND update_last = 1) AS update_last_tokens,
 (SELECT groupArray(toUInt8(token_id)) FROM {quote_ident(args.database)}.{quote_ident(args.condition_reference_table)} WHERE source_family = 'trade_conditions' AND is_join_canonical = 1 AND update_high_low = 1) AS update_high_low_tokens,
 (SELECT groupArray(toUInt8(token_id)) FROM {quote_ident(args.database)}.{quote_ident(args.condition_reference_table)} WHERE source_family = 'trade_conditions' AND is_join_canonical = 1 AND update_volume = 1) AS update_volume_tokens,
-(SELECT groupArray(toUInt8(token_id)) FROM {quote_ident(args.database)}.{quote_ident(args.condition_reference_table)} WHERE source_family = 'quote_conditions' AND is_join_canonical = 1 AND modifier_int IN (-1, 15, 19, 20, 80, 83, 84)) AS quote_origin_ineligible_tokens,
+(SELECT groupArray(toUInt8(token_id)) FROM {quote_ident(args.database)}.{quote_ident(args.condition_reference_table)} WHERE source_family = 'trade_conditions' AND is_join_canonical = 1) AS all_trade_tokens,
+(SELECT groupArray(toUInt8(token_id)) FROM {quote_ident(args.database)}.{quote_ident(args.condition_reference_table)} WHERE source_family = 'quote_conditions' AND is_join_canonical = 1) AS all_quote_tokens,
+(SELECT groupArray(toUInt8(token_id)) FROM {quote_ident(args.database)}.{quote_ident(args.condition_reference_table)} WHERE source_family = 'trade_conditions' AND is_join_canonical = 1 AND modifier_int = 12) AS trade_model_ineligible_tokens,
+(SELECT groupArray(toUInt8(token_id)) FROM {quote_ident(args.database)}.{quote_ident(args.condition_reference_table)} WHERE source_family = 'quote_conditions' AND is_join_canonical = 1 AND modifier_int IN (-1, 12, 15, 19, 20, 80, 83, 84)) AS quote_origin_ineligible_tokens,
+{future_condition_token_aliases},
 """ if use_eligibility else """
 [] AS update_last_tokens,
 [] AS update_high_low_tokens,
 [] AS update_volume_tokens,
+[] AS all_trade_tokens,
+[] AS all_quote_tokens,
+[] AS trade_model_ineligible_tokens,
 [] AS quote_origin_ineligible_tokens,
 """
     eligible_cte = "" if not use_eligibility else """,
@@ -334,21 +421,25 @@ events AS
         if(ask_size + bid_size > 0, (ask_price * bid_size + bid_price * ask_size) / (ask_size + bid_size), 0.0) AS microprice,
         if(ask_size + bid_size > 0, (bid_size - ask_size) / (bid_size + ask_size), 0.0) AS queue_imbalance,
         arrayFilter(token -> token != 0, [condition_token_1, condition_token_2, condition_token_3, condition_token_4, condition_token_5]) AS condition_tokens,
+        {future_condition_event_aliases + ',' if use_eligibility else ''}
         arrayFilter(token -> token != 0, [condition_token_1, condition_token_2, condition_token_3, condition_token_4]) AS quote_condition_tokens,
         event_type = 1 AND trade_price > 0 AND trade_size > 0 AS trade_structurally_valid,
-        trade_structurally_valid AND notEmpty(condition_tokens) AND arrayAll(token -> has(update_last_tokens, token), condition_tokens) AS trade_last_eligible,
-        trade_structurally_valid AND notEmpty(condition_tokens) AND arrayAll(token -> has(update_high_low_tokens, token), condition_tokens) AS trade_high_low_eligible,
-        trade_structurally_valid AND notEmpty(condition_tokens) AND arrayAll(token -> has(update_volume_tokens, token), condition_tokens) AS trade_volume_eligible,
+        event_type = 1 AND arrayExists(token -> has(trade_model_ineligible_tokens, token), condition_tokens) AS trade_model_ineligible,
+        trade_structurally_valid AND NOT trade_model_ineligible AND notEmpty(condition_tokens) AND arrayAll(token -> has(update_last_tokens, token), condition_tokens) AS trade_last_eligible,
+        trade_structurally_valid AND NOT trade_model_ineligible AND notEmpty(condition_tokens) AND arrayAll(token -> has(update_high_low_tokens, token), condition_tokens) AS trade_high_low_eligible,
+        trade_structurally_valid AND NOT trade_model_ineligible AND notEmpty(condition_tokens) AND arrayAll(token -> has(update_volume_tokens, token), condition_tokens) AS trade_volume_eligible,
+        trade_structurally_valid AND (empty(condition_tokens) OR arrayExists(token -> NOT has(all_trade_tokens, token), condition_tokens)) AS trade_condition_unknown,
         trade_last_eligible OR trade_high_low_eligible AS trade_origin_eligible,
         event_type = 0 AND bid_price > 0 AND ask_price > 0 AND bid_size > 0 AND ask_size > 0 AND bid_price <= ask_price AS quote_structurally_valid,
         if(quote_structurally_valid, (ask_price - bid_price) / ((ask_price + bid_price) / 2.0) * 10000.0, 1e100) AS quote_spread_bps,
         quote_structurally_valid AND notEmpty(quote_condition_tokens) AND quote_spread_bps <= {float(args.max_quote_spread_bps):.12g} AND arrayAll(token -> NOT has(quote_origin_ineligible_tokens, token), quote_condition_tokens) AS quote_origin_eligible,
+        quote_structurally_valid AND (empty(quote_condition_tokens) OR arrayExists(token -> NOT has(all_quote_tokens, token), quote_condition_tokens)) AS quote_condition_unknown,
         trade_origin_eligible OR quote_origin_eligible AS origin_event_eligible,
         trade_origin_eligible OR trade_volume_eligible OR quote_origin_eligible AS event_retained
-    FROM {source}
-    PREWHERE event_date >= toDate({sql_string(start.isoformat())})
+    FROM {event_source}
+    WHERE event_date >= toDate({sql_string(start.isoformat())})
       AND event_date <= toDate({sql_string(end.isoformat())})
-    WHERE ticker != '' AND sip_timestamp_us > 0{ticker_filter}
+      AND ticker != '' AND sip_timestamp_us > 0{ticker_filter}
       AND session_date >= toDate({sql_string(start.isoformat())})
       AND session_date < toDate({sql_string(end.isoformat())})
       AND local_second >= 14400 AND local_second < 72000
@@ -423,7 +514,7 @@ SELECT
     if(m.match_count=1, nullIf(m.security_id, ''), CAST(NULL, 'Nullable(String)')) AS security_id,
     if(m.match_count=1, nullIf(m.listing_id, ''), CAST(NULL, 'Nullable(String)')) AS listing_id,
     multiIf(m.match_count=0, 'unmapped_source_ticker', m.match_count=1, 'mapped', 'ambiguous_source_ticker') AS identity_status,
-    'ordered_sip_events_unadjusted' AS source_contract,
+    {sql_string(source_contract)} AS source_contract,
     toUInt8(0) AS adjusted,
     CAST(NULL, 'Nullable(Date)') AS adjustment_asof_date,
     CAST(NULL, 'Nullable(String)') AS split_schedule_sha256,
@@ -452,6 +543,10 @@ def _query_rows(client: ClickHouseHttpClient, sql: str) -> list[list[str]]:
 
 
 def validate_preflight(client: ClickHouseHttpClient, args: argparse.Namespace) -> None:
+    if args.bar_gpt_condition_eligibility and args.verify_source_count:
+        raise ValueError(
+            "--verify-source-count compares raw events and is not valid for the filtered BarGPT source-event count"
+        )
     if not args.storage_policy and not args.allow_empty_storage_policy:
         raise RuntimeError("CLICKHOUSE_LIVE_STORAGE_POLICY/--storage-policy is required")
     required = (
@@ -460,7 +555,13 @@ def validate_preflight(client: ClickHouseHttpClient, args: argparse.Namespace) -
         (args.identity_database, args.ticker_entity_table),
     )
     if args.bar_gpt_condition_eligibility:
-        required = (*required, (args.database, args.condition_reference_table))
+        required = (
+            *required,
+            (args.database, args.condition_reference_table),
+            (args.database, args.source_day_stats_table),
+            (args.database, args.correction_overlay_table),
+            (args.database, args.correction_record_manifest_table),
+        )
     for database, table in required:
         rows = _query_rows(client, f"SELECT count() FROM system.tables WHERE database={sql_string(database)} AND name={sql_string(table)}")
         if not rows or int(rows[0][0]) != 1:
@@ -491,6 +592,49 @@ def resolve_range(client: ClickHouseHttpClient, args: argparse.Namespace) -> tup
     if end <= start:
         raise ValueError("end-date must be later than start-date")
     return start, end
+
+
+def validate_correction_overlay_coverage(
+    client: ClickHouseHttpClient,
+    args: argparse.Namespace,
+    start: dt.date,
+    end: dt.date,
+) -> None:
+    if not args.bar_gpt_condition_eligibility:
+        return
+    rows = _query_rows(
+        client,
+        f"""
+SELECT count(), countIf(
+    ifNull(m.status, '') != 'complete'
+    OR ifNull(m.build_version, '') != {sql_string(CORRECTION_OVERLAY_BUILD_VERSION)}
+    OR ifNull(m.source_file_size, 0) != s.trade_file_size
+    OR ifNull(m.source_file_mtime_ns, 0) != s.trade_file_mtime_ns
+)
+FROM
+(
+    SELECT source_date,
+           argMax(trade_file_size, updated_at) AS trade_file_size,
+           argMax(trade_file_mtime_ns, updated_at) AS trade_file_mtime_ns
+    FROM {quote_ident(args.database)}.{quote_ident(args.source_day_stats_table)}
+    WHERE source_date >= toDate({sql_string(start.isoformat())})
+      AND source_date <= toDate({sql_string(end.isoformat())})
+      AND trade_file_size > 0
+    GROUP BY source_date
+) AS s
+LEFT JOIN
+(
+    SELECT source_date, status, build_version, source_file_size, source_file_mtime_ns
+    FROM {quote_ident(args.database)}.{quote_ident(args.correction_record_manifest_table)} FINAL
+) AS m USING source_date
+""",
+    )
+    total, invalid = (int(rows[0][0]), int(rows[0][1])) if rows else (0, 0)
+    if total == 0 or invalid:
+        raise RuntimeError(
+            "BarGPT causal trade-correction overlay coverage is incomplete for daily context: "
+            f"source_days={total} invalid_or_missing={invalid}. Build the v3 one-second authority first."
+        )
 
 
 def date_chunks(start: dt.date, end: dt.date, days: int) -> list[tuple[dt.date, dt.date]]:
@@ -729,6 +873,7 @@ def main(argv: list[str] | None = None) -> int:
     client = ClickHouseHttpClient(args.clickhouse_url, args.clickhouse_user, args.clickhouse_password)
     validate_preflight(client, args)
     start, end = resolve_range(client, args)
+    validate_correction_overlay_coverage(client, args, start, end)
     chunks = date_chunks(start, end, args.chunk_days)
     if not args.execute:
         insert_sql = insert_session_bars_sql(args, chunks[0][0], chunks[0][1])

@@ -53,7 +53,7 @@ DEFAULT_CONDITION_TOKEN_REFERENCE_TABLE = "event_condition_token_reference"
 # values after a code-01 correction.  It is not model-eligible evidence.  Keep
 # the corrected code-01 record and reject every cancel/error/original-invalid
 # record before the compact event authority discards the raw correction field.
-DEFAULT_DROP_TRADE_CORRECTION_CODES = "7,8,10,11,12"
+DEFAULT_DROP_TRADE_CORRECTION_CODES = "7,8,10,11"
 CONDITION_TOKEN_SLOTS = 5
 CONDITION_TOKEN_COLUMNS = tuple(f"condition_token_{idx}" for idx in range(1, CONDITION_TOKEN_SLOTS + 1))
 
