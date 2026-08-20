@@ -6,6 +6,7 @@ import os
 import shutil
 import subprocess
 import sys
+import threading
 from pathlib import Path
 
 sys.dont_write_bytecode = True
@@ -27,6 +28,7 @@ SYNCED_FILES = (
     "vite.config.ts",
 )
 LOCK_MARKER = ".package-lock.sha256"
+DEV_SYNC_INTERVAL_SECONDS = 0.35
 
 
 def parse_args() -> argparse.Namespace:
@@ -70,6 +72,93 @@ def sync_frontend(runtime_root: Path) -> None:
         if target.exists():
             shutil.rmtree(target)
         shutil.copytree(SOURCE_ROOT / name, target)
+
+
+def _files_match(source: Path, target: Path) -> bool:
+    if not target.is_file():
+        return False
+    source_stat = source.stat()
+    target_stat = target.stat()
+    return (
+        source_stat.st_size == target_stat.st_size
+        and source_stat.st_mtime_ns == target_stat.st_mtime_ns
+    )
+
+
+def _sync_file_if_changed(source: Path, target: Path) -> bool:
+    if _files_match(source, target):
+        return False
+    target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(source, target)
+    return True
+
+
+def _sync_directory_incrementally(source_root: Path, target_root: Path) -> int:
+    copied = 0
+    source_files = {
+        source.relative_to(source_root)
+        for source in source_root.rglob("*")
+        if source.is_file()
+    }
+    target_files = {
+        target.relative_to(target_root)
+        for target in target_root.rglob("*")
+        if target.is_file()
+    } if target_root.is_dir() else set()
+
+    for relative_path in sorted(target_files - source_files, reverse=True):
+        (target_root / relative_path).unlink()
+    for relative_path in sorted(source_files):
+        copied += int(
+            _sync_file_if_changed(
+                source_root / relative_path,
+                target_root / relative_path,
+            )
+        )
+    if target_root.is_dir():
+        for directory in sorted(
+            (path for path in target_root.rglob("*") if path.is_dir()),
+            key=lambda path: len(path.parts),
+            reverse=True,
+        ):
+            try:
+                directory.rmdir()
+            except OSError:
+                pass
+    return copied + len(target_files - source_files)
+
+
+def sync_frontend_incrementally(runtime_root: Path) -> int:
+    """Mirror source changes without disturbing external dependencies or Vite state."""
+    changed = 0
+    for name in SYNCED_FILES:
+        changed += int(
+            _sync_file_if_changed(SOURCE_ROOT / name, runtime_root / name)
+        )
+    for name in SYNCED_DIRECTORIES:
+        changed += _sync_directory_incrementally(
+            SOURCE_ROOT / name,
+            runtime_root / name,
+        )
+    return changed
+
+
+def mirror_frontend_source(runtime_root: Path, stop_event: threading.Event) -> None:
+    while not stop_event.wait(DEV_SYNC_INTERVAL_SECONDS):
+        try:
+            changed = sync_frontend_incrementally(runtime_root)
+        except OSError as exc:
+            print(
+                f"Frontend source mirror failed; retrying: {exc}",
+                file=sys.stderr,
+                flush=True,
+            )
+            continue
+        if changed:
+            print(
+                f"Frontend source mirror refreshed {changed} path(s).",
+                flush=True,
+            )
 
 
 def lock_digest() -> str:
@@ -154,12 +243,27 @@ def main() -> int:
     if command_args:
         command.extend(["--", *command_args])
     print("Running:", subprocess.list2cmdline(command))
-    return subprocess.run(
-        command,
-        cwd=runtime_root,
-        env=environment,
-        check=False,
-    ).returncode
+    mirror_stop = threading.Event()
+    mirror_thread: threading.Thread | None = None
+    if args.command == "dev":
+        mirror_thread = threading.Thread(
+            target=mirror_frontend_source,
+            args=(runtime_root, mirror_stop),
+            daemon=True,
+            name="frontend-source-mirror",
+        )
+        mirror_thread.start()
+    try:
+        return subprocess.run(
+            command,
+            cwd=runtime_root,
+            env=environment,
+            check=False,
+        ).returncode
+    finally:
+        mirror_stop.set()
+        if mirror_thread is not None:
+            mirror_thread.join(timeout=2.0)
 
 
 if __name__ == "__main__":

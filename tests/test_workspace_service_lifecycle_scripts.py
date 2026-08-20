@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import importlib.util
+import threading
+import time
 from pathlib import Path
 
 
@@ -196,6 +198,58 @@ def test_frontend_invokes_npm_without_the_windows_batch_wrapper() -> None:
     assert Path(command[1]).name.lower() == "npm-cli.js"
     assert all(Path(part).suffix.lower() not in {".cmd", ".bat"} for part in command)
     assert module.sys.dont_write_bytecode is True
+
+
+def test_frontend_dev_mirror_refreshes_external_source_without_touching_dependencies(
+    tmp_path: Path,
+) -> None:
+    module_path = SCRIPTS / "run_frontend.py"
+    spec = importlib.util.spec_from_file_location("run_frontend_mirror_under_test", module_path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    source_root = tmp_path / "source"
+    runtime_root = tmp_path / "runtime"
+    for name in module.SYNCED_DIRECTORIES:
+        (source_root / name).mkdir(parents=True)
+        (source_root / name / f"{name}.txt").write_text("initial", encoding="utf-8")
+    for name in module.SYNCED_FILES:
+        (source_root / name).write_text(f"initial:{name}", encoding="utf-8")
+    dependency_sentinel = runtime_root / "node_modules" / "sentinel.txt"
+    dependency_sentinel.parent.mkdir(parents=True)
+    dependency_sentinel.write_text("preserve", encoding="utf-8")
+
+    module.SOURCE_ROOT = source_root
+    module.DEV_SYNC_INTERVAL_SECONDS = 0.01
+    module.sync_frontend(runtime_root)
+    stop_event = threading.Event()
+    mirror = threading.Thread(
+        target=module.mirror_frontend_source,
+        args=(runtime_root, stop_event),
+        daemon=True,
+    )
+    mirror.start()
+    source_file = source_root / "src" / "src.txt"
+    runtime_file = runtime_root / "src" / "src.txt"
+    try:
+        source_file.write_text("updated typography", encoding="utf-8")
+        deadline = time.monotonic() + 2.0
+        while runtime_file.read_text(encoding="utf-8") != "updated typography":
+            assert time.monotonic() < deadline
+            time.sleep(0.01)
+
+        source_file.unlink()
+        deadline = time.monotonic() + 2.0
+        while runtime_file.exists():
+            assert time.monotonic() < deadline
+            time.sleep(0.01)
+    finally:
+        stop_event.set()
+        mirror.join(timeout=1.0)
+
+    assert not mirror.is_alive()
+    assert dependency_sentinel.read_text(encoding="utf-8") == "preserve"
 
 
 def test_git_maintenance_backs_up_before_pruning_unreachable_objects() -> None:
