@@ -93,6 +93,21 @@ class TradingConfigurationServiceTests(unittest.TestCase):
         self.assertEqual(halt_stream["trigger_policy"], "false_to_true")
         self.assertEqual(halt_stream["rearm_policy"], "after_false")
 
+        signal_context_columns = {
+            "float_category",
+            "short_pressure",
+            "short_interest",
+            "short_interest_pct",
+            "days_to_cover",
+            "short_volume",
+            "short_volume_pct",
+            "liquidity_rank",
+            "liquidity_score",
+        }
+        for stream in draft["market_discovery"]["signal_streams"]:
+            with self.subTest(signal_stream=stream["signal_stream_id"]):
+                self.assertTrue(signal_context_columns.issubset(stream["columns"]))
+
     def test_rule_definition_rejects_incomplete_operands(self) -> None:
         base = {
             "name": "Malformed",

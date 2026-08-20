@@ -220,6 +220,18 @@ const FIELD_CATALOG: FieldDefinition[] = [
 
 const QMD_SCANNER_PRESET = "Core Scan";
 
+const SIGNAL_STREAM_CONTEXT_COLUMNS = [
+  "float_category",
+  "short_pressure",
+  "short_interest",
+  "short_interest_pct",
+  "days_to_cover",
+  "short_volume",
+  "short_volume_pct",
+  "liquidity_rank",
+  "liquidity_score",
+];
+
 function useDiscoveryPresentation() {
   const [configuration, setConfiguration] = useState<WatchUniverseCatalogResponse | null>(null);
   useEffect(() => {
@@ -488,7 +500,8 @@ export function SignalStreamContainer({ asOf, live, onSettingsChange, onTickerSe
             ? `${sourceLabel} currently contains no eligible tickers.`
         : `No ticker from ${sourceLabel} has transitioned into this signal state since 04:00 ET.`;
   const displayAsOf = runtime?.as_of ?? asOf;
-  const columns = canonicalDiscoveryColumns(["event_time", "symbol", ...(stream?.columns ?? []), ...settings.columns]);
+  const streamColumns = canonicalDiscoveryColumns([...(stream?.columns ?? []), ...SIGNAL_STREAM_CONTEXT_COLUMNS]);
+  const columns = canonicalDiscoveryColumns(["event_time", "symbol", ...streamColumns, ...settings.columns]);
   const selectStream = (signalStreamId: string) => onSettingsChange({ columns: [], signalStreamId });
   const addStream = (signalStreamId: string) => {
     if (!signalStreamId) return;
@@ -517,7 +530,7 @@ export function SignalStreamContainer({ asOf, live, onSettingsChange, onTickerSe
     </nav>
     {addingStream ? <div className="watchlist-tab-lookup"><InventoryFilterSelect ariaLabel="Signal Stream to add" className="watchlist-add-lookup" onChange={addStream} options={availableStreams.map((row) => ({ description: row.description, label: row.name, value: row.signal_stream_id }))} searchable showAllOnOpen value="" /><button onClick={() => { window.location.hash = "market-discovery-configuration"; }} type="button">Configure Signal Stream <ArrowRight size={13} /></button></div> : null}
     <div className="watch-universe-context"><div><span>Source</span><strong>{sourceLabel} · 04:00–20:00 ET</strong></div><button onClick={() => { window.location.hash = "market-discovery-configuration"; }} type="button">Configure in Market Discovery <ArrowRight size={13} /></button></div>
-    <MarketListTable catalog={catalog} chronological columns={columns} customColumns={settings.customColumns} empty={emptyMessage} limit={Math.min(settings.limit, stream?.maximum_events ?? settings.limit)} liveRecency={live} lockedColumns={canonicalDiscoveryColumns(["event_time", "symbol", ...(stream?.columns ?? [])])} onColumnsChange={(columns) => onSettingsChange({ columns })} onCustomColumnsChange={(customColumns) => onSettingsChange({ customColumns })} onTickerSelect={onTickerSelect} recencyRail rows={rows} title={stream?.name ?? "Signal Stream"} />
+    <MarketListTable catalog={catalog} chronological columns={columns} customColumns={settings.customColumns} empty={emptyMessage} limit={Math.min(settings.limit, stream?.maximum_events ?? settings.limit)} liveRecency={live} lockedColumns={canonicalDiscoveryColumns(["event_time", "symbol", ...streamColumns])} onColumnsChange={(columns) => onSettingsChange({ columns })} onCustomColumnsChange={(customColumns) => onSettingsChange({ customColumns })} onTickerSelect={onTickerSelect} recencyRail rows={rows} title={stream?.name ?? "Signal Stream"} />
   </section>;
 }
 

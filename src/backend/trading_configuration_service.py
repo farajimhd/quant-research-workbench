@@ -3025,6 +3025,25 @@ def _default_signal_streams(
         for row in column_catalog
         if str(row.get("source_id") or "") and str(row.get("column_id") or "")
     }
+    context_sources = [
+        "classification.float",
+        "classification.short_pressure",
+        "reference.short_interest",
+        "reference.short_interest_pct",
+        "reference.days_to_cover",
+        "reference.short_volume",
+        "reference.short_volume_pct",
+        "market.liquidity_rank",
+        "market.liquidity_score",
+    ]
+
+    def columns_for_sources(sources: list[str]) -> list[str]:
+        return list(dict.fromkeys(
+            columns_by_source[source_id]
+            for source_id in [*sources, *context_sources]
+            if source_id in columns_by_source
+        ))
+
     evidence_sources = [
         "identity.symbol",
         "identity.company_name",
@@ -3037,12 +3056,8 @@ def _default_signal_streams(
         "signal.squeeze_anchor_price",
         "signal.squeeze_high_water_pct",
         "signal.squeeze_episode_expires_at",
-        "market.liquidity_score",
-        "market.liquidity_rank",
         "reference.float_shares",
         "reference.market_cap",
-        "reference.short_interest_pct",
-        "reference.days_to_cover",
         "trade_count_change",
         "volume_change",
         "buy_sell_volume_delta",
@@ -3052,11 +3067,7 @@ def _default_signal_streams(
         "market.volume",
         "market.session_phase",
     ]
-    columns = [
-        columns_by_source[source_id]
-        for source_id in evidence_sources
-        if source_id in columns_by_source
-    ]
+    columns = columns_for_sources(evidence_sources)
     intervals = {
         columns_by_source[source_id]: normalize_interval_spec(interval)
         for source_id, interval in {
@@ -3087,11 +3098,7 @@ def _default_signal_streams(
         "news.canonical_news_id",
         "news.published_at",
     ]
-    news_columns = [
-        columns_by_source[source_id]
-        for source_id in news_sources
-        if source_id in columns_by_source
-    ]
+    news_columns = columns_for_sources(news_sources)
     halt_sources = [
         "identity.symbol",
         "market.is_halted",
@@ -3102,11 +3109,7 @@ def _default_signal_streams(
         "market.event_at",
         "clock.session_phase",
     ]
-    halt_columns = [
-        columns_by_source[source_id]
-        for source_id in halt_sources
-        if source_id in columns_by_source
-    ]
+    halt_columns = columns_for_sources(halt_sources)
     return [
         {
             "signal_stream_id": "price-squeeze-early",
