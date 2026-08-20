@@ -28714,7 +28714,7 @@ button {
   display: inline-flex;
   font-family: var(--font-badge);
   font-size: 9.5px;
-  font-weight: 520;
+  font-weight: 400;
   gap: 5px;
   letter-spacing: .006em;
   line-height: 1.2;
@@ -28733,14 +28733,14 @@ button {
   background: color-mix(in oklab, var(--table-badge-tone) 8%, var(--surface));
   border-color: color-mix(in oklab, var(--table-badge-tone) 34%, var(--border));
   color: color-mix(in oklab, var(--table-badge-tone) 76%, var(--foreground));
-  font-weight: 560;
+  font-weight: 400;
   min-height: 22px;
 }
 .table-category-badge[data-emphasis="strong"] {
   background: color-mix(in oklab, var(--table-badge-tone) 15%, var(--surface));
   border-color: color-mix(in oklab, var(--table-badge-tone) 70%, var(--border));
   color: color-mix(in oklab, var(--table-badge-tone) 90%, var(--foreground));
-  font-weight: 600;
+  font-weight: 450;
   min-height: 23px;
   padding: 4px 11px;
 }
