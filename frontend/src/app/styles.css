@@ -28634,44 +28634,35 @@ button {
 .data-table-category-badge {
   --table-badge-tone: var(--muted-foreground);
   align-items: center;
-  background: linear-gradient(118deg,
-    color-mix(in oklab, var(--table-badge-tone) 17%, var(--surface)) 0%,
-    color-mix(in oklab, var(--table-badge-tone) 8%, var(--surface)) 58%,
-    color-mix(in oklab, var(--table-badge-tone) 3%, var(--surface)) 100%);
-  border: 1px solid color-mix(in oklab, var(--table-badge-tone) 27%, var(--border));
-  border-radius: 6px;
-  box-shadow:
-    inset 0 1px 0 color-mix(in oklab, var(--surface) 72%, transparent),
-    0 1px 2px color-mix(in oklab, var(--table-badge-tone) 11%, transparent);
-  color: color-mix(in oklab, var(--table-badge-tone) 67%, var(--foreground));
+  background: color-mix(in oklab, var(--table-badge-tone) 11%, var(--surface));
+  border: 1px solid color-mix(in oklab, var(--table-badge-tone) 26%, var(--border));
+  border-radius: 3px 7px 3px 7px;
+  color: color-mix(in oklab, var(--table-badge-tone) 70%, var(--foreground));
   display: inline-flex;
   font-family: var(--font-body);
   font-size: 9px;
-  font-weight: 660;
-  isolation: isolate;
-  letter-spacing: .012em;
+  font-weight: 650;
+  gap: 6px;
+  letter-spacing: .01em;
   line-height: 1.1;
   max-width: 160px;
-  min-height: 19px;
+  min-height: 18px;
   overflow: hidden;
-  padding: 3px 8px;
-  position: relative;
+  padding: 3px 8px 3px 7px;
   text-overflow: ellipsis;
   text-transform: capitalize;
   white-space: nowrap;
 }
-.table-category-badge::after,
-.data-table-category-badge::after {
-  background: color-mix(in oklab, var(--table-badge-tone) 72%, transparent);
-  bottom: 0;
-  clip-path: polygon(100% 0, 100% 100%, 0 100%);
+.table-category-badge::before,
+.data-table-category-badge::before {
+  background: var(--table-badge-tone);
+  border-radius: 2px;
   content: "";
-  height: 7px;
-  opacity: .3;
-  pointer-events: none;
-  position: absolute;
-  right: 0;
-  width: 7px;
+  flex: 0 0 auto;
+  height: 10px;
+  opacity: .72;
+  transform: skewX(-14deg);
+  width: 2px;
 }
 .table-category-badge[data-tone="positive"] { --table-badge-tone: var(--semantic-positive, var(--success)); }
 .table-category-badge[data-tone="negative"],

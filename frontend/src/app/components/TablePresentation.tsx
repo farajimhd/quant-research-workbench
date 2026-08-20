@@ -18,11 +18,13 @@ export type TableColumnPresentation = {
 export function presentationForColumn(column: string, override?: TableColumnPresentation): Required<TableColumnPresentation> {
   const key = column.toLowerCase();
   const importance = override?.importance ?? (isImportantColumn(key) ? "strong" : "normal");
-  if (override?.presentationValueType) return { importance, label: override.label ?? labelForColumn(column), presentationValueType: override.presentationValueType, semanticTone: override.semanticTone ?? "neutral" };
+  const categorical = isCategoricalColumn(key);
+  if (override?.presentationValueType && !categorical) return { importance, label: override.label ?? labelForColumn(column), presentationValueType: override.presentationValueType, semanticTone: override.semanticTone ?? "neutral" };
   const directional = /(^|_)(change|return|pnl|gain|growth|margin|momentum|imbalance|net_flow)(_|$)/.test(key);
   const inverse = /(^|_)(dilution|drawdown|spread|debt)(_|$)/.test(key);
   let presentationValueType: PresentationValueType = "text";
-  if (key === "time" || key.endsWith("_time") || key.endsWith("_at") || key.endsWith("_at_utc") || key.includes("timestamp")) presentationValueType = "datetime";
+  if (categorical) presentationValueType = "category";
+  else if (key === "time" || key.endsWith("_time") || key.endsWith("_at") || key.endsWith("_at_utc") || key.includes("timestamp")) presentationValueType = "datetime";
   else if (key.endsWith("_date") || key === "date") presentationValueType = "date";
   else if (key.includes("pct") || key.includes("percent") || key.includes("return")) presentationValueType = "percent";
   else if (key.includes("bps")) presentationValueType = "basis_points";
@@ -31,7 +33,6 @@ export function presentationForColumn(column: string, override?: TableColumnPres
   else if (/(^|_)(volume|shares|size|count|quantity|qty)(_|$)/.test(key)) presentationValueType = "quantity";
   else if (/(^|_)(score|confidence)(_|$)/.test(key)) presentationValueType = "score";
   else if (/(^|_)(ratio|multiple|rate)(_|$)/.test(key)) presentationValueType = "ratio";
-  else if (/(^|_)(status|state|phase|direction|side|type|category|class|role|origin|source|exchange|sector|currency)(_|$)/.test(key)) presentationValueType = "category";
   else if (/(^|_)(id|symbol|ticker|account|cik|accession)(_|$)/.test(key)) presentationValueType = "identifier";
   return { importance, label: override?.label ?? labelForColumn(column), presentationValueType, semanticTone: override?.semanticTone ?? (inverse ? "inverse-directional" : directional ? "directional" : "neutral") };
 }
@@ -121,11 +122,11 @@ function numericTone(value: number, semantic: Required<TableColumnPresentation>[
 function categoryTone(column: string, value: string) {
   const field = column.toLowerCase();
   const key = value.toLowerCase();
-  if (field === "float_category") {
-    if (key === "tiny" || key === "extra small") return "negative";
-    if (key === "small" || key === "medium") return "warning";
-    if (key === "medium+" || key === "large") return "info";
-    if (key === "extra large" || key === "broad float") return "positive";
+  if (/(^|_)(float_category|float_profile)$/.test(field)) {
+    if (/tiny|micro|extra small|small|low/.test(key)) return "positive";
+    if (/medium\+?|mid/.test(key)) return "info";
+    if (/extra large|large/.test(key)) return "warning";
+    if (/broad/.test(key)) return "negative";
   }
   if (/(phase|session|exchange|sector|industry|country|currency|source|origin|role|type|category|class)/.test(field)) return "neutral";
   if (/(direction|side|action|sentiment|bias|outlook)/.test(field)) {
@@ -140,6 +141,10 @@ function categoryTone(column: string, value: string) {
     if (/pending|warning|partial|stale|degraded/.test(key)) return "warning";
   }
   return "neutral";
+}
+function isCategoricalColumn(column: string) {
+  if (/(^|_)(id|identifier|accession|cik)(_|$)/.test(column)) return false;
+  return /(^|_)(status|state|phase|direction|side|type|category|class|role|origin|source|provider|exchange|sector|industry|country|currency|quality|coverage|sentiment|bias|outlook)(_|$)/.test(column);
 }
 function formatNumber(value: number, type: PresentationValueType, semantic: Required<TableColumnPresentation>["semanticTone"]) {
   if (type === "percent") return `${semantic !== "neutral" && value > 0 ? "+" : ""}${value.toFixed(Math.abs(value) < 1 ? 2 : 1)}%`;
