@@ -288,7 +288,13 @@ class HistoricalScannerServiceTest(unittest.TestCase):
                 self.calls.append(sql)
                 return '{"ticker":"AAPL","company_name":"APPLE INC","country":"US","sector":"Technology","market_cap":4374000000000,"shares_outstanding":14687000000,"float_shares":14400000000,"float_source":"massive","float_quality":"reported","short_pressure":"moderate","short_interest":144248000,"short_crowding_pct":1.0017,"short_interest_pct":1.0017,"days_to_cover":2.76,"short_volume":12000000,"short_volume_pct":41.2,"fails_to_deliver":120000,"ftd_value":24000000,"reg_sho_threshold":1,"borrow_status":"shortable","borrow_shares":3000000,"borrow_fee":0.25,"ipo_days_to_event":12,"split_days_to_event":-3,"logo_relative_path":"branding/logo/aapl.svg"}\n'
 
-        with patch("src.backend.historical_scanner_service.ClickHouseHttpClient", ReferenceClient):
+        with (
+            patch("src.backend.historical_scanner_service.ClickHouseHttpClient", ReferenceClient),
+            patch(
+                "src.backend.historical_scanner_service.logo_asset_url",
+                return_value="/api/real-live-trading/logo?path=branding%2Flogo%2Faapl.svg",
+            ),
+        ):
             rows = historical_scanner_reference_projection(datetime(2026, 7, 17, 13, 45, tzinfo=UTC))
 
         self.assertEqual(rows["AAPL"]["company_name"], "APPLE INC")
@@ -311,7 +317,10 @@ class HistoricalScannerServiceTest(unittest.TestCase):
         self.assertIn("FROM `q_live`.market_stock_split_v1 FINAL", query)
         self.assertIn("if(empty(ipo.symbol_id), NULL, dateDiff('day', cutoff_date, ipo.listing_date))", query)
         self.assertIn("if(empty(split.symbol_id), NULL, dateDiff('day', cutoff_date, split.execution_date))", query)
-        self.assertIn("coalesce(scanner.logo_asset_id, current_branding.logo_asset_id, i.logo_asset_id)", query)
+        self.assertIn(
+            "coalesce(presentation_selection.asset_id, scanner.logo_asset_id, current_branding.logo_asset_id, i.logo_asset_id)",
+            query,
+        )
         self.assertNotIn("ticker IN", query)
 
     def test_fundamental_projection_reuses_canonical_scores_in_one_causal_query(self) -> None:

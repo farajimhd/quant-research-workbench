@@ -21,6 +21,7 @@ const presentationCache = new Map<string, TickerPresentation | null>();
 const presentationFetchedAt = new Map<string, number>();
 const pendingPresentationRequests = new Map<string, Promise<void>>();
 const presentationListeners = new Set<() => void>();
+const failedLogoUrls = new Set<string>();
 const PRESENTATION_REQUEST_BATCH_SIZE = 200;
 const LIVE_RECENCY_TTL_MS = 30_000;
 type TickerChange = { absolute_change: number | null; as_of: string; current_price: number | null; percent_change: number | null; previous_close: number | null; previous_session_date: string; ticker: string };
@@ -156,19 +157,24 @@ export function TickerLogo({ logoUrl, showLogoPlaceholder = false, ticker }: { l
 }
 
 function TickerLogoImage({ className, fallbackText = "", logoUrl, title }: { className?: string; fallbackText?: string; logoUrl?: string; title?: string }) {
-  const [loadedUrl, setLoadedUrl] = useState("");
-  useEffect(() => {
-    let active = true;
-    setLoadedUrl("");
-    if (!logoUrl) return () => { active = false; };
-    const probe = new Image();
-    probe.onload = () => { if (active) setLoadedUrl(logoUrl); };
-    probe.onerror = () => { if (active) setLoadedUrl(""); };
-    probe.src = logoUrl;
-    return () => { active = false; };
-  }, [logoUrl]);
-  if (!logoUrl || loadedUrl !== logoUrl) return fallbackText ? <span aria-hidden="true" className={`${className ? `${className} ` : ""}ticker-logo-fallback`} title={title}>{fallbackText}</span> : null;
-  return <img alt="" aria-hidden="true" className={className} src={logoUrl} title={title} />;
+  const [failedUrl, setFailedUrl] = useState("");
+  const failed = logoUrl ? failedUrl === logoUrl || failedLogoUrls.has(logoUrl) : false;
+  if (!logoUrl || failed) return fallbackText ? <span aria-hidden="true" className={`${className ? `${className} ` : ""}ticker-logo-fallback`} title={title}>{fallbackText}</span> : null;
+  return <img
+    alt=""
+    aria-hidden="true"
+    className={className}
+    decoding="async"
+    draggable={false}
+    fetchPriority="low"
+    loading="lazy"
+    onError={() => {
+      failedLogoUrls.add(logoUrl);
+      setFailedUrl(logoUrl);
+    }}
+    src={logoUrl}
+    title={title}
+  />;
 }
 
 function normalizeTickers(tickers: string[]) {

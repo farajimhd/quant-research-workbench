@@ -19,6 +19,7 @@ from src.backend.query_plans.canvas_context_v1 import (
     scanner_sec_filings,
     ticker_news_recency,
 )
+from src.backend.real_live_market_data.config import market_gateway_config
 from src.request_context import ContextThreadPoolExecutor as ThreadPoolExecutor
 from src.backend.real_live_market_data.startup import logo_asset_url
 
@@ -74,6 +75,7 @@ def ticker_presentation_payload(
         str(row.get("ticker") or "").strip().upper(): row for row in sec_rows
     }
     presentations: dict[str, dict[str, Any]] = {}
+    logo_artifact_root = market_gateway_config().logo_artifact_root
     for row in rows:
         ticker = str(row.get("ticker") or "").strip().upper()
         if ticker not in normalized:
@@ -82,7 +84,7 @@ def ticker_presentation_payload(
         presentations[ticker] = {
             "country": str(row.get("country") or "").strip().upper(),
             "issuer_name": str(row.get("issuer_name") or "").strip(),
-            "logo_url": logo_asset_url(relative_path),
+            "logo_url": logo_asset_url(relative_path, artifact_root=logo_artifact_root),
             "logo_source": str(row.get("logo_source") or "").strip(),
             "logo_kind": str(row.get("logo_kind") or "").strip(),
             "logo_selection_revision": str(row.get("logo_selection_revision") or "").strip(),

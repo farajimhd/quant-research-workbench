@@ -4439,6 +4439,7 @@ def real_live_market_gateway_universe_preview(
 
 @app.get("/api/real-live-trading/logo")
 def real_live_trading_logo(path: str = Query(default="")) -> FileResponse:
+    immutable_cache_headers = {"Cache-Control": "public, max-age=31536000, immutable"}
     root = Path(market_gateway_config().logo_artifact_root)
     relative = path.replace("\\", "/").lstrip("/")
     target = (root / relative).resolve()
@@ -4447,8 +4448,12 @@ def real_live_trading_logo(path: str = Query(default="")) -> FileResponse:
     except ValueError as exc:
         raise HTTPException(status_code=400, detail="Logo path is outside the configured artifact root.") from exc
     if not target.exists() or not target.is_file():
-        raise HTTPException(status_code=404, detail="Logo asset not found.")
-    return FileResponse(target)
+        raise HTTPException(
+            status_code=404,
+            detail="Logo asset not found.",
+            headers={"Cache-Control": "public, max-age=60"},
+        )
+    return FileResponse(target, headers=immutable_cache_headers)
 
 
 @app.get("/api/real-live-trading/market-gateway/bars")

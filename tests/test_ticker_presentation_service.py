@@ -29,7 +29,11 @@ class TickerPresentationServiceTests(unittest.TestCase):
     @patch("src.backend.ticker_presentation_service._clickhouse_rows")
     def test_payload_converts_storage_path_to_existing_logo_endpoint(self, rows_mock) -> None:
         rows_mock.return_value = [{"ticker": "AAPL", "issuer_name": "Apple", "country": "US", "logo_relative_path": "logos/aapl.svg", "logo_source": "massive", "logo_kind": "massive_icon", "logo_selection_revision": "selection:1", "logo_quality_class": "compact_mark"}]
-        payload = ticker_presentation_payload(["AAPL"])
+        with patch(
+            "src.backend.ticker_presentation_service.logo_asset_url",
+            return_value="/api/real-live-trading/logo?path=logos%2Faapl.svg",
+        ):
+            payload = ticker_presentation_payload(["AAPL"])
         self.assertEqual(payload["presentations"]["AAPL"]["logo_url"], "/api/real-live-trading/logo?path=logos%2Faapl.svg")
         self.assertEqual(payload["presentations"]["AAPL"]["issuer_name"], "Apple")
         self.assertEqual(payload["presentations"]["AAPL"]["country"], "US")

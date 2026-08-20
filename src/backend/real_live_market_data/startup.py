@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from concurrent.futures import as_completed
 from datetime import datetime, timezone
+from functools import lru_cache
+from pathlib import Path
 from time import perf_counter
 from typing import Any
 from urllib.parse import quote
@@ -13,7 +15,7 @@ import polars as pl
 from src.request_context import ContextThreadPoolExecutor as ThreadPoolExecutor
 
 from src.backend.real_live_market_data.clickhouse import ClickHouseHttpClient, ensure_replay_tables
-from src.backend.real_live_market_data.config import MarketGatewayConfig
+from src.backend.real_live_market_data.config import MarketGatewayConfig, market_gateway_config
 from src.backend.real_live_market_data.massive_rest import fetch_massive_scanner_enrichment_frame, fetch_massive_stock_snapshot_frame
 from src.backend.real_live_market_data.universe import default_universe_sql
 
@@ -132,7 +134,7 @@ def build_universe_snapshot_payload(
                 errors.append(error)
     progress_steps.extend(step for step in (resolved_steps.get("reference_query"), resolved_steps.get("massive_snapshot")) if step)
     if not reference_frame.is_empty():
-        reference_frame = add_logo_columns(reference_frame)
+        reference_frame = add_logo_columns(reference_frame, artifact_root=config.logo_artifact_root)
 
     if not reference_frame.is_empty() and not massive_snapshot_frame.is_empty():
         started = perf_counter()
@@ -238,23 +240,40 @@ def join_reference_with_snapshot(reference_frame: pl.DataFrame, snapshot_frame: 
     )
 
 
-def add_logo_columns(frame: pl.DataFrame) -> pl.DataFrame:
+def add_logo_columns(frame: pl.DataFrame, *, artifact_root: str | Path | None = None) -> pl.DataFrame:
     if frame.is_empty():
         return frame
     rows: list[dict[str, Any]] = []
     for row in frame.to_dicts():
         relative_path = text_value(row.get("logo_relative_path"))
         row["logo"] = relative_path
-        row["logo_url"] = logo_asset_url(relative_path)
+        row["logo_url"] = logo_asset_url(relative_path, artifact_root=artifact_root)
         rows.append(row)
     return pl.DataFrame(rows, infer_schema_length=None)
 
 
-def logo_asset_url(relative_path: str) -> str:
+def logo_asset_url(relative_path: str, *, artifact_root: str | Path | None = None) -> str:
     path = relative_path.strip().replace("\\", "/")
     if not path:
         return ""
+    root = Path(artifact_root or market_gateway_config().logo_artifact_root).resolve()
+    if not cached_logo_asset_exists(str(root), path):
+        return ""
     return f"/api/real-live-trading/logo?path={quote(path, safe='')}"
+
+
+@lru_cache(maxsize=32_768)
+def cached_logo_asset_exists(root_value: str, relative_path: str) -> bool:
+    root = Path(root_value)
+    target = (root / relative_path).resolve()
+    try:
+        target.relative_to(root)
+    except ValueError:
+        return False
+    try:
+        return target.is_file()
+    except OSError:
+        return False
 
 
 def progress_step(step_id: str, label: str, status: str, started: float | None, detail: str) -> dict[str, Any]:

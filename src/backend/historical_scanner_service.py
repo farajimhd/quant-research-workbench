@@ -46,6 +46,7 @@ from src.backend.query_plans.reference_scanner_asof_v1 import (
     scanner_reference_projection,
 )
 from src.backend.query_plans.sec_fundamentals_asof_v1 import scanner_fundamentals
+from src.backend.real_live_market_data.config import market_gateway_config
 from src.backend.real_live_market_data.startup import logo_asset_url
 from src.backend.qmd_gateway_client import (
     historical_market_clock_projection,
@@ -581,6 +582,7 @@ def historical_scanner_reference_projection(
     rows = _json_rows(
         active_client.execute(scanner_reference_projection(cutoff, "q_live", tickers=tickers))
     )
+    logo_artifact_root = market_gateway_config().logo_artifact_root
     projection: dict[str, dict[str, Any]] = {}
     for row in rows:
         ticker = str(row.get("ticker") or "").upper()
@@ -591,7 +593,10 @@ def historical_scanner_reference_projection(
             for field in SCANNER_REFERENCE_FIELDS
             if row.get(field) not in (None, "")
         }
-        logo_url = logo_asset_url(str(row.get("logo_relative_path") or ""))
+        logo_url = logo_asset_url(
+            str(row.get("logo_relative_path") or ""),
+            artifact_root=logo_artifact_root,
+        )
         if logo_url:
             values["logo_url"] = logo_url
         projection[ticker] = values
