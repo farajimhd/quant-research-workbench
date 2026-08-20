@@ -1665,16 +1665,31 @@ function RealLiveTradingGate({
 function ensureLiveObservationCanvas() {
   const registry = readCanvasRegistry();
   const existing = readCanvasWorkspaceState(LIVE_OBSERVATION_CANVAS_ID) ?? registry.workspaceStates?.[LIVE_OBSERVATION_CANVAS_ID];
-  const requiredIds = ["scanner", "signal_stream", "news"] as const;
-  const openIds = existing
-    ? [...existing.openIds, ...requiredIds.filter((id) => !existing.openIds.some((instanceId) => instanceId === id || instanceId.startsWith(`${id}-`)))]
-    : [...requiredIds];
+  const requiredInstances = {
+    "live-monitor-news": "news",
+    "live-monitor-scanner": "scanner",
+    "live-monitor-signal-stream": "signal_stream",
+  } as const;
+  const legacyIds: Record<string, keyof typeof requiredInstances> = {
+    news: "live-monitor-news",
+    scanner: "live-monitor-scanner",
+    signal_stream: "live-monitor-signal-stream",
+  };
+  const migrateId = (instanceId: string) => legacyIds[instanceId] ?? instanceId;
+  const requiredIds = Object.keys(requiredInstances);
+  const openIds = [...new Set([...(existing?.openIds ?? []).map(migrateId), ...requiredIds])];
   const fallbackLayouts = createFocusLayouts(openIds);
+  const migratedLayouts = Object.fromEntries(
+    Object.entries(existing?.layouts ?? {}).map(([instanceId, layout]) => [migrateId(instanceId), layout]),
+  );
+  const migratedInstances = Object.fromEntries(
+    Object.entries(existing?.instances ?? {}).map(([instanceId, kind]) => [migrateId(instanceId), kind]),
+  );
   const state: CanvasWorkspaceState = {
     groups: existing?.groups ?? {},
-    instances: { scanner: "scanner", signal_stream: "signal_stream", news: "news", ...(existing?.instances ?? {}) },
+    instances: { ...migratedInstances, ...requiredInstances },
     layoutVersion: TRADING_WORKSPACE_LAYOUT_VERSION,
-    layouts: { ...fallbackLayouts, ...(existing?.layouts ?? {}) },
+    layouts: { ...fallbackLayouts, ...migratedLayouts },
     openIds,
   };
   const canvases = registry.canvases.some((canvas) => canvas.id === LIVE_OBSERVATION_CANVAS_ID)
@@ -1684,6 +1699,13 @@ function ensureLiveObservationCanvas() {
   writeCanvasRegistry({
     ...registry,
     canvases,
+    instanceSettings: {
+      ...registry.instanceSettings,
+      "live-monitor-news": registry.instanceSettings["live-monitor-news"] ?? {
+        news: { content: "all", endDate: "", kind: "all", limit: 100, lookbackHours: 6, rangeMode: "preset", startDate: "", ticker: "" },
+        version: 28,
+      },
+    },
     workspaceStates: { ...(registry.workspaceStates ?? {}), [LIVE_OBSERVATION_CANVAS_ID]: state },
   });
   window.dispatchEvent(new CustomEvent(CANVAS_REGISTRY_UPDATED_EVENT));

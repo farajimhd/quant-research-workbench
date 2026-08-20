@@ -276,7 +276,11 @@ def market_discovery_runtime_configuration() -> dict[str, Any]:
         )
         if isinstance(section, dict):
             base["market_discovery"] = deepcopy(section)
-        _MARKET_DISCOVERY_RUNTIME_CACHE = (now + 30.0, deepcopy(base))
+        # Materialization explicitly invalidates this cache above. Keeping the
+        # immutable runtime configuration until that event prevents every
+        # Canvas poll wave from re-reading the shared journal and contending
+        # with live signal writes at a fixed 30-second cadence.
+        _MARKET_DISCOVERY_RUNTIME_CACHE = (float("inf"), deepcopy(base))
         return base
 
 

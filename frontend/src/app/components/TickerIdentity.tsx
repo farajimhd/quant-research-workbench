@@ -6,7 +6,9 @@ import { api, query } from "../../api/client";
 export type TickerPresentation = {
   country: string;
   issuer_name: string;
+  live_news_recency?: "hot" | "cold" | "old" | "none";
   logo_url: string;
+  sec_recency?: "hot" | "cold" | "old" | "none";
   ticker: string;
 };
 
@@ -16,16 +18,19 @@ type TickerPresentationPayload = {
 };
 
 const presentationCache = new Map<string, TickerPresentation | null>();
+const presentationFetchedAt = new Map<string, number>();
 const pendingPresentationRequests = new Map<string, Promise<void>>();
 const presentationListeners = new Set<() => void>();
 const PRESENTATION_REQUEST_BATCH_SIZE = 200;
+const LIVE_RECENCY_TTL_MS = 30_000;
 type TickerChange = { absolute_change: number | null; as_of: string; current_price: number | null; percent_change: number | null; previous_close: number | null; previous_session_date: string; ticker: string };
 const changeCache = new Map<string, TickerChange | null>();
 const pendingChangeRequests = new Map<string, Promise<void>>();
 
-export function useTickerPresentations(tickers: string[]) {
+export function useTickerPresentations(tickers: string[], { includeRecency = false }: { includeRecency?: boolean } = {}) {
   const tickerKey = useMemo(() => normalizeTickers(tickers).join(","), [tickers]);
   const [revision, setRevision] = useState(0);
+  const cachePrefix = includeRecency ? "live:" : "base:";
 
   useEffect(() => {
     const listener = () => setRevision((value) => value + 1);
@@ -34,45 +39,63 @@ export function useTickerPresentations(tickers: string[]) {
   }, []);
 
   useEffect(() => {
+    if (!includeRecency) return undefined;
+    const timer = window.setInterval(() => setRevision((value) => value + 1), LIVE_RECENCY_TTL_MS);
+    return () => window.clearInterval(timer);
+  }, [includeRecency]);
+
+  useEffect(() => {
     const normalized = tickerKey ? tickerKey.split(",") : [];
-    const missing = normalized.filter((ticker) => !presentationCache.has(ticker));
+    const now = Date.now();
+    const missing = normalized.filter((ticker) => {
+      const cacheKey = `${cachePrefix}${ticker}`;
+      return !presentationCache.has(cacheKey)
+        || (includeRecency && now - (presentationFetchedAt.get(cacheKey) ?? 0) >= LIVE_RECENCY_TTL_MS);
+    });
     if (!missing.length) return;
     const requests = new Set<Promise<void>>();
     missing.forEach((ticker) => {
-      const pending = pendingPresentationRequests.get(ticker);
+      const pending = pendingPresentationRequests.get(`${cachePrefix}${ticker}`);
       if (pending) requests.add(pending);
     });
-    const fresh = missing.filter((ticker) => !pendingPresentationRequests.has(ticker));
-    chunkTickers(fresh, PRESENTATION_REQUEST_BATCH_SIZE).forEach((batch) => requests.add(requestTickerPresentationBatch(batch)));
+    const fresh = missing.filter((ticker) => !pendingPresentationRequests.has(`${cachePrefix}${ticker}`));
+    chunkTickers(fresh, PRESENTATION_REQUEST_BATCH_SIZE).forEach((batch) => requests.add(requestTickerPresentationBatch(batch, includeRecency)));
     const request = Promise.all(requests);
     let active = true;
     let retryTimer: ReturnType<typeof setTimeout> | undefined;
     request
       .catch(() => { if (active) retryTimer = setTimeout(() => setRevision((value) => value + 1), 5000); });
     return () => { active = false; if (retryTimer) clearTimeout(retryTimer); };
-  }, [revision, tickerKey]);
+  }, [cachePrefix, includeRecency, revision, tickerKey]);
 
   return useMemo(() => Object.fromEntries(
     (tickerKey ? tickerKey.split(",") : []).flatMap((ticker) => {
-      const presentation = presentationCache.get(ticker);
+      const presentation = presentationCache.get(`${cachePrefix}${ticker}`);
       return presentation ? [[ticker, presentation]] : [];
     }),
-  ) as Record<string, TickerPresentation>, [revision, tickerKey]);
+  ) as Record<string, TickerPresentation>, [cachePrefix, revision, tickerKey]);
 }
 
-function requestTickerPresentationBatch(tickers: string[]) {
+function requestTickerPresentationBatch(tickers: string[], includeRecency: boolean) {
   if (!tickers.length) return Promise.resolve();
   const requestKey = tickers.join(",");
-  const request = api<TickerPresentationPayload>(`/api/trading/ticker-presentations${query({ tickers: requestKey })}`, { timeoutMs: 15000 })
+  const cachePrefix = includeRecency ? "live:" : "base:";
+  const request = api<TickerPresentationPayload>(`/api/trading/ticker-presentations${query({ include_recency: includeRecency || undefined, tickers: requestKey })}`, { timeoutMs: 15000 })
     .then((payload) => {
       if (payload.status === "unavailable") throw new Error("Ticker presentations are temporarily unavailable.");
-      tickers.forEach((ticker) => presentationCache.set(ticker, payload.presentations[ticker] ?? null));
+      const fetchedAt = Date.now();
+      tickers.forEach((ticker) => {
+        const cacheKey = `${cachePrefix}${ticker}`;
+        presentationCache.set(cacheKey, payload.presentations[ticker] ?? null);
+        presentationFetchedAt.set(cacheKey, fetchedAt);
+      });
       presentationListeners.forEach((listener) => listener());
     })
     .finally(() => tickers.forEach((ticker) => {
-      if (pendingPresentationRequests.get(ticker) === request) pendingPresentationRequests.delete(ticker);
+      const cacheKey = `${cachePrefix}${ticker}`;
+      if (pendingPresentationRequests.get(cacheKey) === request) pendingPresentationRequests.delete(cacheKey);
     }));
-  tickers.forEach((ticker) => pendingPresentationRequests.set(ticker, request));
+  tickers.forEach((ticker) => pendingPresentationRequests.set(`${cachePrefix}${ticker}`, request));
   return request;
 }
 

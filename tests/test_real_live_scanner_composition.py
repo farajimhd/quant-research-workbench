@@ -9,6 +9,19 @@ from src.backend import real_live_trading_service as service
 
 
 class RealLiveScannerCompositionTests(unittest.TestCase):
+    def test_interval_demand_prefers_qmd_source_names_over_projection_names(self) -> None:
+        selected = service.qmd_interval_runtime_field(
+            {"field_ref": "data.price_change@1:value", "aggregation": ""},
+            {
+                "data.price_change@1:value": {
+                    "source_id": "price_change_1_bar_pct",
+                    "runtime_field": "field__price__change__1__bar__pct",
+                },
+            },
+        )
+
+        self.assertEqual(selected, "price_change_1_bar_pct")
+
     def test_interval_sources_load_concurrently_and_preserve_configuration_order(self) -> None:
         barrier = threading.Barrier(3, timeout=1)
 

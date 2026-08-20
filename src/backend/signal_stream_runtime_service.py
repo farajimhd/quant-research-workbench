@@ -49,6 +49,7 @@ class SignalStreamRuntime:
         self._session_key = ""
         self._hydrated = False
         self._snapshot_cache: dict[tuple[str, str, int, str], tuple[float, dict[str, Any]]] = {}
+        self._live_occurrences: tuple[str, list[dict[str, Any]]] | None = None
 
     def seed_computation_targets(
         self,
@@ -361,6 +362,15 @@ class SignalStreamRuntime:
                         limit=10_000,
                     )
                 ]
+                # The live evaluator already paid the durable journal read.
+                # Publish that immutable session view for Canvas snapshots so
+                # UI polling never queues behind the next writer transaction.
+                with self._snapshot_lock:
+                    self._live_occurrences = (
+                        str(session["session_key"]),
+                        [dict(row) for row in occurrences],
+                    )
+                    self._snapshot_cache.clear()
             return {
                 "schema_version": SIGNAL_STREAM_SCHEMA_VERSION,
                 "as_of": as_of.isoformat(),
@@ -498,12 +508,25 @@ class SignalStreamRuntime:
         # read behind the full-universe transition evaluation protected by the
         # runtime state lock; diagnostics may be one cycle stale while resolve
         # is active, but immutable occurrences remain authoritative.
-        records = journal.signal_stream_records(
-            signal_stream_id=signal_stream_id,
-            from_time=session["start_at"] if session["active"] else cutoff,
-            as_of=cutoff,
-            limit=limit,
-        ) if session["active"] else []
+        cached_occurrences: list[dict[str, Any]] | None = None
+        if as_of is None and session["active"]:
+            with self._snapshot_lock:
+                if self._live_occurrences and self._live_occurrences[0] == str(session["session_key"]):
+                    cached_occurrences = [
+                        dict(row)
+                        for row in self._live_occurrences[1]
+                        if not signal_stream_id or str(row.get("signal_stream_id") or "") == signal_stream_id
+                    ][:limit]
+        if cached_occurrences is None:
+            records = journal.signal_stream_records(
+                signal_stream_id=signal_stream_id,
+                from_time=session["start_at"] if session["active"] else cutoff,
+                as_of=cutoff,
+                limit=limit,
+            ) if session["active"] else []
+            occurrences = [record.payload for record in records]
+        else:
+            occurrences = cached_occurrences
         diagnostics: dict[str, dict[str, Any]] = {}
         if self._lock.acquire(blocking=False):
             try:
@@ -528,8 +551,8 @@ class SignalStreamRuntime:
             "status": "ready",
             "session": _session_payload(session),
             "signal_streams": definitions,
-            "occurrence_count": len(records),
-            "occurrences": [record.payload for record in records],
+            "occurrence_count": len(occurrences),
+            "occurrences": occurrences,
         }
         if as_of is None:
             with self._snapshot_lock:

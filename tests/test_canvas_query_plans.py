@@ -36,6 +36,30 @@ class CanvasContextQueryPlanTests(unittest.TestCase):
         self.assertIn("valid_to_date_exclusive", sec)
         self.assertIn("GROUP BY ticker", sec)
 
+    def test_scanner_recency_plans_can_be_bounded_to_visible_tickers(self) -> None:
+        news = canvas_context_v1.scanner_company_news(
+            self.cutoff,
+            engine_version="engine-v1",
+            synthesis_table="news_synthesis_v1",
+            tickers=["msft", "AAPL", "MSFT"],
+        )
+        sec = canvas_context_v1.scanner_sec_filings(
+            self.cutoff,
+            tickers=["msft", "AAPL", "MSFT"],
+        )
+
+        self.assertIn("ticker IN ('AAPL', 'MSFT')", news)
+        self.assertIn("upperUTF8(trimBoth(b.ticker)) IN ('AAPL', 'MSFT')", sec)
+
+        ticker_news = canvas_context_v1.ticker_news_recency(
+            self.cutoff,
+            tickers=["msft", "AAPL", "MSFT"],
+        )
+        self.assertIn("ticker IN ('AAPL', 'MSFT')", ticker_news)
+        self.assertNotIn("is_company_news", ticker_news)
+        self.assertIn("benzinga_news_event_v2", ticker_news)
+        self.assertIn("hasAny", ticker_news)
+
     def test_sec_identity_plan_quotes_and_deduplicates_ciks(self) -> None:
         query = canvas_context_v1.sec_ticker_identities(
             ["0000320193", "0000789019", "0000320193"]

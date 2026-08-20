@@ -195,9 +195,16 @@ def evaluate_rule_sets_frame(
             ) >= required
         else:
             combined = pl.all_horizontal(expressions)
+        # ``select`` preserves scalar expressions as a one-row result.  A
+        # missing operand intentionally compiles to a scalar false expression,
+        # so selecting it caused a one-element mask to be indexed across the
+        # full scanner population.  ``with_columns`` broadcasts scalar results
+        # to the frame height while retaining vectorized expressions unchanged.
         masks[rule_id] = [
             bool(value)
-            for value in frame.select(combined.fill_null(False).alias("matches"))["matches"].to_list()
+            for value in frame.with_columns(
+                combined.fill_null(False).alias("matches")
+            )["matches"].to_list()
         ]
     return masks
 

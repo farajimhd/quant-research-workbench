@@ -49,8 +49,21 @@ def sec_filings(cutoff: datetime) -> str:
     """
 
 
-def scanner_company_news(cutoff: datetime, *, engine_version: str, synthesis_table: str) -> str:
+def scanner_company_news(
+    cutoff: datetime,
+    *,
+    engine_version: str,
+    synthesis_table: str,
+    tickers: Iterable[str] = (),
+) -> str:
     start = cutoff - timedelta(days=3)
+    ticker_values = tuple(
+        sorted({str(value).strip().upper() for value in tickers if str(value).strip()})
+    )
+    ticker_filter = (
+        f" AND ticker IN ({', '.join(sql_string(value) for value in ticker_values)})"
+        if ticker_values else ""
+    )
     return f"""
         SELECT
             ticker,
@@ -72,13 +85,58 @@ def scanner_company_news(cutoff: datetime, *, engine_version: str, synthesis_tab
             WHERE n.published_at_utc BETWEEN toDateTime64({_utc_sql(start)}, 3, 'UTC')
                 AND toDateTime64({_utc_sql(cutoff)}, 3, 'UTC')
         )
-        WHERE is_company_news AND notEmpty(ticker)
+        WHERE is_company_news AND notEmpty(ticker){ticker_filter}
         GROUP BY ticker
     """
 
 
-def scanner_sec_filings(cutoff: datetime) -> str:
+def ticker_news_recency(
+    cutoff: datetime,
+    *,
+    tickers: Iterable[str],
+) -> str:
+    """Return recency for any authoritative news item linked to each ticker."""
+
+    start = cutoff - timedelta(days=3)
+    ticker_values = tuple(
+        sorted({str(value).strip().upper() for value in tickers if str(value).strip()})
+    )
+    if not ticker_values:
+        raise ValueError("Ticker news recency requires at least one ticker")
+    return f"""
+        SELECT
+            ticker,
+            uniqExact(canonical_news_id) AS live_news_count,
+            formatDateTime(max(published_at_utc), '%Y-%m-%dT%H:%i:%S.%fZ', 'UTC') AS latest_news_at
+        FROM
+        (
+            SELECT
+                canonical_news_id,
+                published_at_utc,
+                arrayJoin(arrayMap(value -> upperUTF8(trimBoth(value)), tickers)) AS ticker
+            FROM q_live.benzinga_news_event_v2 FINAL
+            PREWHERE published_date BETWEEN toDate({_utc_sql(start)}) AND toDate({_utc_sql(cutoff)})
+            WHERE published_at_utc BETWEEN toDateTime64({_utc_sql(start)}, 3, 'UTC')
+                AND toDateTime64({_utc_sql(cutoff)}, 3, 'UTC')
+                AND hasAny(
+                    arrayMap(value -> upperUTF8(trimBoth(value)), tickers),
+                    [{', '.join(sql_string(value) for value in ticker_values)}]
+                )
+        )
+        WHERE ticker IN ({', '.join(sql_string(value) for value in ticker_values)})
+        GROUP BY ticker
+    """
+
+
+def scanner_sec_filings(cutoff: datetime, *, tickers: Iterable[str] = ()) -> str:
     start = cutoff - timedelta(days=45)
+    ticker_values = tuple(
+        sorted({str(value).strip().upper() for value in tickers if str(value).strip()})
+    )
+    ticker_filter = (
+        f" AND upperUTF8(trimBoth(b.ticker)) IN ({', '.join(sql_string(value) for value in ticker_values)})"
+        if ticker_values else ""
+    )
     return f"""
         SELECT
             upperUTF8(trimBoth(b.ticker)) AS ticker,
@@ -93,6 +151,7 @@ def scanner_sec_filings(cutoff: datetime) -> str:
         WHERE f.accepted_at_utc BETWEEN toDateTime64({_utc_sql(start)}, 3, 'UTC')
             AND toDateTime64({_utc_sql(cutoff)}, 3, 'UTC')
             AND notEmpty(b.ticker)
+            {ticker_filter}
         GROUP BY ticker
     """
 

@@ -506,14 +506,7 @@ def _compose_real_live_scanner_snapshot(*, allow_provider_fallback: bool = True)
                 ]
                 output_index = data_field_output_index(data_fields)
                 interval_runtime_fields = {
-                    str(
-                        dict(output_index.get(str(instance.get("field_ref") or ""), {}))
-                        .get("aggregation_runtime_fields", {})
-                        .get(str(instance.get("aggregation") or ""))
-                        or output_index.get(str(instance.get("field_ref") or ""), {}).get("runtime_field")
-                        or output_index.get(str(instance.get("field_ref") or ""), {}).get("source_id")
-                        or ""
-                    )
+                    qmd_interval_runtime_field(instance, output_index)
                     for instance in interval_field_instances
                 }
                 interval_runtime_fields.discard("")
@@ -776,6 +769,27 @@ def load_discovery_interval_sources(
     with ThreadPoolExecutor(max_workers=min(len(ordered), 6)) as executor:
         futures = {interval: executor.submit(load, interval) for interval in ordered}
         return [(interval, futures[interval].result()) for interval in ordered]
+
+
+def qmd_interval_runtime_field(
+    instance: dict[str, Any],
+    output_index: dict[str, dict[str, Any]],
+) -> str:
+    """Resolve a Data Field instance to QMD's producer output name."""
+
+    output = dict(output_index.get(str(instance.get("field_ref") or ""), {}))
+    aggregation_field = dict(output.get("aggregation_runtime_fields") or {}).get(
+        str(instance.get("aggregation") or "")
+    )
+    # QMD's field-filter contract uses producer output names. Registry
+    # ``runtime_field`` identities are application projection keys and must not
+    # be sent to QMD when the producer source is available.
+    return str(
+        aggregation_field
+        or output.get("source_id")
+        or output.get("runtime_field")
+        or ""
+    )
 
 
 def refresh_live_market_discovery() -> dict[str, Any]:

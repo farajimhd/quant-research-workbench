@@ -354,7 +354,7 @@ function readableGroup(value: unknown) {
   return text ? `${text.charAt(0).toUpperCase()}${text.slice(1)}` : "QMD";
 }
 
-export function MarketScannerContainer({ asOf, meta, onSettingsChange, onTickerSelect, rows, settings }: { asOf: string; meta?: ScannerSnapshotMeta; onSettingsChange: (patch: Partial<MarketScannerSettings>) => void; onTickerSelect: (ticker: string) => void; rows: ScreenerRow[]; settings: MarketScannerSettings }) {
+export function MarketScannerContainer({ asOf, live = false, meta, onSettingsChange, onTickerSelect, rows, settings }: { asOf: string; live?: boolean; meta?: ScannerSnapshotMeta; onSettingsChange: (patch: Partial<MarketScannerSettings>) => void; onTickerSelect: (ticker: string) => void; rows: ScreenerRow[]; settings: MarketScannerSettings }) {
   const normalizedRows = useMemo(() => normalizeScannerRows(rows), [rows]);
   const { catalog, coreColumns } = useDiscoveryPresentation();
   const columns = canonicalDiscoveryColumns([...(coreColumns.length ? coreColumns : ["symbol", "last_price", "change_pct", "volume"]), ...settings.columns]);
@@ -373,6 +373,7 @@ export function MarketScannerContainer({ asOf, meta, onSettingsChange, onTickerS
     eyebrow="Market snapshot"
     fieldCoverage={meta?.field_coverage}
     limit={settings.limit}
+    liveRecency={live}
     lockedColumns={canonicalDiscoveryColumns(coreColumns.length ? coreColumns : ["symbol"])}
     onColumnsChange={(columns) => onSettingsChange({ columns })}
     onCustomColumnsChange={(customColumns) => onSettingsChange({ customColumns })}
@@ -627,6 +628,7 @@ function MarketListSurface({
   fieldCoverage,
   guide,
   limit,
+  liveRecency = false,
   lockedColumns = [],
   onColumnsChange,
   onCustomColumnsChange,
@@ -648,6 +650,7 @@ function MarketListSurface({
   fieldCoverage?: Record<string, number>;
   guide?: ReactNode;
   limit: number;
+  liveRecency?: boolean;
   lockedColumns?: string[];
   onColumnsChange: (columns: string[]) => void;
   onCustomColumnsChange: (columns: ScannerCustomColumn[]) => void;
@@ -667,7 +670,7 @@ function MarketListSurface({
     </header>
     {guide}
     {presets.length > 1 ? <nav className="market-list-presets" aria-label={`${title} views`}>{presets.map((item) => <button aria-pressed={preset === item} className={preset === item ? "active" : undefined} key={item} onClick={() => onPresetChange(item)} type="button">{item}</button>)}</nav> : null}
-    <MarketListTable catalog={catalog} columns={columns} customColumns={customColumns} empty={empty} fieldCoverage={fieldCoverage} limit={limit} lockedColumns={lockedColumns} onColumnsChange={onColumnsChange} onCustomColumnsChange={onCustomColumnsChange} onTickerSelect={onTickerSelect} rows={rows} sortColumn={sortColumn} title={title} />
+    <MarketListTable catalog={catalog} columns={columns} customColumns={customColumns} empty={empty} fieldCoverage={fieldCoverage} limit={limit} liveRecency={liveRecency} lockedColumns={lockedColumns} onColumnsChange={onColumnsChange} onCustomColumnsChange={onCustomColumnsChange} onTickerSelect={onTickerSelect} rows={rows} sortColumn={sortColumn} title={title} />
   </section>;
 }
 
@@ -679,6 +682,7 @@ function MarketListTable({
   empty,
   fieldCoverage,
   limit,
+  liveRecency = false,
   lockedColumns = [],
   mergeCompanyWithIdentity = true,
   onColumnsChange,
@@ -696,6 +700,7 @@ function MarketListTable({
   empty: string;
   fieldCoverage?: Record<string, number>;
   limit: number;
+  liveRecency?: boolean;
   lockedColumns?: string[];
   mergeCompanyWithIdentity?: boolean;
   onColumnsChange: (columns: string[]) => void;
@@ -739,10 +744,10 @@ function MarketListTable({
     return true;
   }).sort((left, right) => compareValues(left[sort.column], right[sort.column]) * (sort.direction === "asc" ? 1 : -1)).slice(0, limit), [deferredQuery, filterMode, limit, rows, sort]);
   const tickers = visibleRows
-    .filter((row) => !String(row.logo_url ?? "").trim() || (companyInIdentity && !String(row.company_name ?? "").trim()))
+    .filter((row) => liveRecency || !String(row.logo_url ?? "").trim() || (companyInIdentity && !String(row.company_name ?? "").trim()))
     .map((row) => String(row.ticker ?? row.symbol ?? ""))
     .filter(Boolean);
-  const presentations = useTickerPresentations(tickers);
+  const presentations = useTickerPresentations(tickers, { includeRecency: liveRecency });
   useEffect(() => {
     if (!headerMenuColumn) return;
     const dismiss = (event: PointerEvent) => {
@@ -915,7 +920,7 @@ function renderMarketCell(row: ScreenerRow, column: string, presentations: Retur
   const ticker = String(row.ticker ?? row.symbol ?? "").trim().toUpperCase();
   if (column === "ticker" || column === "symbol") {
     const companyName = companyInIdentity ? String(row.company_name ?? presentations[ticker]?.issuer_name ?? "").trim() : "";
-    return <SecurityIdentityCell companyName={companyName} country={String(row.country ?? presentations[ticker]?.country ?? "")} logoUrl={String(row.logo_url ?? presentations[ticker]?.logo_url ?? "")} newsRecency={row.live_news_recency} secRecency={row.sec_recency} ticker={ticker} />;
+    return <SecurityIdentityCell companyName={companyName} country={String(row.country ?? presentations[ticker]?.country ?? "")} logoUrl={String(row.logo_url ?? presentations[ticker]?.logo_url ?? "")} newsRecency={row.live_news_recency ?? presentations[ticker]?.live_news_recency} secRecency={row.sec_recency ?? presentations[ticker]?.sec_recency} ticker={ticker} />;
   }
   if (column === "event_time") return value ? <MarketTime includeSeconds value={String(value)} /> : "—";
   if (["direction", "source"].includes(column)) return <CategoryBadge column={column} value={value} />;

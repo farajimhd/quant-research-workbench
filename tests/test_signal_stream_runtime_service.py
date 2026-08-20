@@ -270,6 +270,34 @@ class SignalStreamRuntimeTests(unittest.TestCase):
         self.assertIs(first, second)
         records.assert_called_once()
 
+    def test_live_snapshot_reuses_occurrences_loaded_by_evaluator(self) -> None:
+        runtime = SignalStreamRuntime()
+        at = datetime(2026, 8, 17, 15, 0, tzinfo=UTC)
+        session = signal_stream_session(at)
+        runtime.resolve(
+            self.configuration,
+            [{"ticker": "AAA", "change_pct": 4.5, "market_cap": 500_000_000}],
+            as_of=at,
+            journal=self.journal,
+        )
+
+        with patch(
+            "src.backend.signal_stream_runtime_service.signal_stream_session",
+            return_value=session,
+        ), patch.object(
+            self.journal,
+            "signal_stream_records",
+            side_effect=AssertionError("Canvas must not re-read the live journal"),
+        ):
+            snapshot = runtime.snapshot(
+                self.journal,
+                signal_stream_id="positive-move-signals",
+                configuration=self.configuration,
+            )
+
+        self.assertEqual(snapshot["occurrence_count"], 1)
+        self.assertEqual(snapshot["occurrences"][0]["ticker"], "AAA")
+
     def test_snapshot_does_not_wait_for_full_universe_evaluation_lock(self) -> None:
         runtime = SignalStreamRuntime()
         lock_held = threading.Event()

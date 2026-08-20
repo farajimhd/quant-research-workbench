@@ -149,7 +149,12 @@ export function AllNewsContainer({ asOf, live = false, onSettingsChange, setting
   const customReady = settings.rangeMode === "custom" && settings.startDate && settings.endDate;
   const state = useNewsQuery({ asOf, content: settings.content, direction, eligibilityFilters, endDate: customReady ? settings.endDate : "", hours: settings.lookbackHours, kind: settings.kind, labelState, limit: settings.limit, live, origin, refreshKey, role, search: committedSearch, startDate: customReady ? settings.startDate : "", ticker: settings.ticker });
   const presentations = useTickerPresentations(state.rows.flatMap((row) => row.ticker_link_sample ?? []));
-  const displayRows = useMemo(() => sortRowsBySentimentScore(state.rows, (row) => synthesisScore(row.news_synthesis_summary), sentimentSort), [sentimentSort, state.rows]);
+  const displayRows = useMemo(
+    () => sentimentSort === "none"
+      ? [...state.rows].sort(compareNewsRecency)
+      : sortRowsBySentimentScore(state.rows, (row) => synthesisScore(row.news_synthesis_summary), sentimentSort),
+    [sentimentSort, state.rows],
+  );
   const tickerOptions = useMemo<InventoryFilterOption[]>(() => {
     const values = new Set(state.tickerOptions);
     if (settings.ticker) values.add(settings.ticker);
@@ -198,7 +203,7 @@ export function AllNewsContainer({ asOf, live = false, onSettingsChange, setting
     </form>
     <div className="news-table-wrap intelligence-feed-scroll">
       <div className="intelligence-feed news-intelligence-feed" role="list">
-        <div className="intelligence-feed-header news-intelligence-grid" role="row"><span>Time</span><span>Ticker</span><span>Headline &amp; context</span><span>Purpose</span><span>Origin</span><SentimentSortButton onChange={setSentimentSort} order={sentimentSort} /><span>Forecast</span><span>Reaction</span><span>History</span><span>Analyst</span><span>Text</span></div>
+        <div className="intelligence-feed-header news-intelligence-grid" role="row"><span title="Sorted newest to earliest">Time ↓</span><span>Ticker</span><span>Headline &amp; context</span><span>Purpose</span><span>Origin</span><SentimentSortButton onChange={setSentimentSort} order={sentimentSort} /><span>Forecast</span><span>Reaction</span><span>History</span><span>Analyst</span><span>Text</span></div>
         {displayRows.map((row) => {
           const tone = newsTemperature(row.published_at_utc, wallClockMs);
           const directionValue = normalizeSemanticDirection(row.news_synthesis_summary?.composite_sentiment);

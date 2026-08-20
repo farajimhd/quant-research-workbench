@@ -238,6 +238,27 @@ class WatchlistResolverTest(unittest.TestCase):
         ])
         self.assertEqual(masks["relative-and-status"], [True, False])
 
+    def test_vectorized_missing_operand_fails_closed_for_every_row(self) -> None:
+        rules = [{
+            "rule_set_id": "missing-interval-field",
+            "enabled": True,
+            "operator": "all",
+            "conditions": [{
+                "enabled": True,
+                "left_field_ref": "data.price_change_1_bar_pct@1:value",
+                "left_interval": {"value": 5, "unit": "minutes"},
+                "comparator": "greater_or_equal",
+                "value": 5.0,
+            }],
+        }]
+
+        masks = evaluate_rule_sets_frame(
+            rules,
+            [{"ticker": "AAPL"}, {"ticker": "MSFT"}, {"ticker": "NVDA"}],
+        )
+
+        self.assertEqual(masks["missing-interval-field"], [False, False, False])
+
     def test_only_pending_integration_templates_are_disabled_and_fail_closed(self) -> None:
         for watchlist_id in {
             "sec-bullish-sentiment",
