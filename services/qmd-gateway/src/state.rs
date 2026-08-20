@@ -7,10 +7,24 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 
 const SCANNER_STALE_AFTER_MS: u64 = 60_000;
+const LIQUIDITY_RANK_CACHE_MS: i64 = 1_000;
 
 #[derive(Clone)]
 pub struct SharedMarketState {
     inner: Arc<RwLock<MarketState>>,
+    liquidity: Arc<RwLock<LiquidityRankCache>>,
+}
+
+#[derive(Default)]
+struct LiquidityRankCache {
+    as_of: Option<DateTime<Utc>>,
+    by_ticker: HashMap<String, LiquidityRankValue>,
+}
+
+#[derive(Clone, Copy, Debug, Default, Serialize)]
+pub struct LiquidityRankValue {
+    pub liquidity_rank: u32,
+    pub liquidity_score: f64,
 }
 
 #[derive(Default)]
@@ -57,6 +71,8 @@ pub struct SymbolSnapshot {
     pub event_age_ms: Option<u64>,
     pub last_event_ts: Option<DateTime<Utc>>,
     pub last_price: f64,
+    pub liquidity_rank: u32,
+    pub liquidity_score: f64,
     pub quality_flags: Vec<String>,
     pub quality_state: String,
     pub spread: f64,
@@ -98,6 +114,7 @@ impl SharedMarketState {
     pub fn new() -> Self {
         Self {
             inner: Arc::new(RwLock::new(MarketState::default())),
+            liquidity: Arc::new(RwLock::new(LiquidityRankCache::default())),
         }
     }
 
@@ -130,11 +147,16 @@ impl SharedMarketState {
             .get(&ticker)
             .and_then(|symbol| symbol.last_event_ts)
             .unwrap_or_else(Utc::now);
-        let row = state
+        let mut row = state
             .symbols
             .get(&ticker)
             .expect("the applied market event creates its symbol state")
             .snapshot(&ticker, as_of);
+        drop(state);
+        if let Some(liquidity) = self.liquidity.read().await.by_ticker.get(&ticker).copied() {
+            row.liquidity_rank = liquidity.liquidity_rank;
+            row.liquidity_score = liquidity.liquidity_score;
+        }
         ScannerRowDelta {
             as_of,
             row,
@@ -156,32 +178,74 @@ impl SharedMarketState {
         self.scanner_snapshot_at(Utc::now(), limit).await
     }
 
-    pub async fn scanner_snapshot_at(
-        &self,
-        as_of: DateTime<Utc>,
-        limit: usize,
-    ) -> ScannerSnapshot {
+    pub async fn scanner_snapshot_at(&self, as_of: DateTime<Utc>, limit: usize) -> ScannerSnapshot {
         let state = self.inner.read().await;
         let mut rows: Vec<_> = state
             .symbols
             .iter()
             .map(|(ticker, symbol)| symbol.snapshot(ticker, as_of))
             .collect();
+        let sequence = state.scanner_sequence;
+        drop(state);
+        apply_liquidity_ranking(&mut rows);
         rows.sort_by(|left, right| {
-            right
-                .day_dollar_volume
-                .partial_cmp(&left.day_dollar_volume)
-                .unwrap_or(std::cmp::Ordering::Equal)
+            left.liquidity_rank
+                .cmp(&right.liquidity_rank)
+                .then_with(|| left.ticker.cmp(&right.ticker))
         });
         let total_symbols = rows.len();
+        {
+            let mut cache = self.liquidity.write().await;
+            cache.as_of = Some(as_of);
+            cache.by_ticker = rows
+                .iter()
+                .map(|row| {
+                    (
+                        row.ticker.clone(),
+                        LiquidityRankValue {
+                            liquidity_rank: row.liquidity_rank,
+                            liquidity_score: row.liquidity_score,
+                        },
+                    )
+                })
+                .collect();
+        }
         rows.truncate(limit);
         ScannerSnapshot {
             as_of,
             row_count: rows.len(),
             rows,
-            sequence: state.scanner_sequence,
+            sequence,
             total_symbols,
         }
+    }
+
+    pub async fn liquidity_rank_at(
+        &self,
+        ticker: &str,
+        as_of: DateTime<Utc>,
+    ) -> LiquidityRankValue {
+        let normalized = ticker.trim().to_ascii_uppercase();
+        let fresh = {
+            let cache = self.liquidity.read().await;
+            cache.as_of.is_some_and(|cached_at| {
+                as_of
+                    .signed_duration_since(cached_at)
+                    .num_milliseconds()
+                    .abs()
+                    <= LIQUIDITY_RANK_CACHE_MS
+            })
+        };
+        if !fresh {
+            let _ = self.scanner_snapshot_at(as_of, usize::MAX).await;
+        }
+        self.liquidity
+            .read()
+            .await
+            .by_ticker
+            .get(&normalized)
+            .copied()
+            .unwrap_or_default()
     }
 
     pub async fn ticker_snapshot(&self, ticker: &str) -> Option<SymbolSnapshot> {
@@ -195,20 +259,34 @@ impl SharedMarketState {
     ) -> Option<SymbolSnapshot> {
         let state = self.inner.read().await;
         let normalized = ticker.to_ascii_uppercase();
-        state
+        let mut row = state
             .symbols
             .get(&normalized)
-            .map(|symbol| symbol.snapshot(&normalized, as_of))
+            .map(|symbol| symbol.snapshot(&normalized, as_of));
+        drop(state);
+        if let Some(row) = row.as_mut() {
+            let liquidity = self.liquidity_rank_at(&normalized, as_of).await;
+            row.liquidity_rank = liquidity.liquidity_rank;
+            row.liquidity_score = liquidity.liquidity_score;
+        }
+        row
     }
 
     pub async fn ticker_state_snapshot(&self, ticker: &str) -> TickerStateSnapshot {
         let state = self.inner.read().await;
         let normalized = ticker.trim().to_ascii_uppercase();
         let as_of = Utc::now();
-        let row = state
+        let mut row = state
             .symbols
             .get(&normalized)
             .map(|symbol| symbol.snapshot(&normalized, as_of));
+        let sequence = state.scanner_sequence;
+        drop(state);
+        if let Some(row) = row.as_mut() {
+            let liquidity = self.liquidity_rank_at(&normalized, as_of).await;
+            row.liquidity_rank = liquidity.liquidity_rank;
+            row.liquidity_score = liquidity.liquidity_score;
+        }
         let age_ms = row.as_ref().and_then(|snapshot| {
             snapshot.last_event_ts.map(|last_event| {
                 as_of
@@ -225,7 +303,7 @@ impl SharedMarketState {
             state: if row.is_some() { "ready" } else { "missing" },
             row,
             schema_version: 1,
-            sequence: state.scanner_sequence,
+            sequence,
             ticker: normalized,
         }
     }
@@ -335,16 +413,35 @@ impl SymbolState {
             })
             .unwrap_or((0.0, 0, 0.0, 0));
         let event_age_ms = self.last_event_ts.map(|last_event| {
-            as_of.signed_duration_since(last_event).num_milliseconds().max(0) as u64
+            as_of
+                .signed_duration_since(last_event)
+                .num_milliseconds()
+                .max(0) as u64
         });
         let (quality_state, quality_flags, degradation_reason) = if self.last_event_ts.is_none() {
-            ("unavailable", vec!["missing_market_event"], Some("No accepted market event is available."))
+            (
+                "unavailable",
+                vec!["missing_market_event"],
+                Some("No accepted market event is available."),
+            )
         } else if bid > 0.0 && ask > 0.0 && bid > ask {
-            ("crossed", vec!["crossed_nbbo"], Some("Best bid exceeds best ask."))
+            (
+                "crossed",
+                vec!["crossed_nbbo"],
+                Some("Best bid exceeds best ask."),
+            )
         } else if bid > 0.0 && ask > 0.0 && bid == ask {
-            ("locked", vec!["locked_nbbo"], Some("Best bid equals best ask."))
+            (
+                "locked",
+                vec!["locked_nbbo"],
+                Some("Best bid equals best ask."),
+            )
         } else if event_age_ms.unwrap_or_default() > SCANNER_STALE_AFTER_MS {
-            ("stale", vec!["stale_market_event"], Some("Latest accepted market event exceeds the QMD freshness threshold."))
+            (
+                "stale",
+                vec!["stale_market_event"],
+                Some("Latest accepted market event exceeds the QMD freshness threshold."),
+            )
         } else {
             ("ready", Vec::new(), None)
         };
@@ -360,6 +457,8 @@ impl SymbolState {
             event_age_ms,
             last_event_ts: self.last_event_ts,
             last_price: self.last_price,
+            liquidity_rank: 0,
+            liquidity_score: 0.0,
             quality_flags: quality_flags.into_iter().map(str::to_string).collect(),
             quality_state: quality_state.to_string(),
             spread: if bid > 0.0 && ask > 0.0 {
@@ -388,9 +487,95 @@ impl SymbolState {
     }
 }
 
+fn apply_liquidity_ranking(rows: &mut [SymbolSnapshot]) {
+    if rows.is_empty() {
+        return;
+    }
+    let dollar_volume = sorted_finite(rows.iter().map(|row| row.day_dollar_volume.max(0.0)));
+    let trade_rate = sorted_finite(rows.iter().map(|row| row.trade_rate_10s.max(0.0)));
+    let quoted_depth = sorted_finite(
+        rows.iter()
+            .map(|row| f64::from(row.bid_size) + f64::from(row.ask_size)),
+    );
+    let valid_spreads = sorted_finite(rows.iter().filter_map(|row| {
+        (row.last_price > 0.0 && row.bid > 0.0 && row.ask > row.bid)
+            .then_some((row.ask - row.bid) / row.last_price * 10_000.0)
+    }));
+
+    for row in rows.iter_mut() {
+        let spread_quality = if row.last_price > 0.0 && row.bid > 0.0 && row.ask > row.bid {
+            descending_percentile(
+                (row.ask - row.bid) / row.last_price * 10_000.0,
+                &valid_spreads,
+            )
+        } else {
+            0.0
+        };
+        row.liquidity_score = round2(
+            0.45 * ascending_percentile(row.day_dollar_volume.max(0.0), &dollar_volume)
+                + 0.30 * ascending_percentile(row.trade_rate_10s.max(0.0), &trade_rate)
+                + 0.15 * spread_quality
+                + 0.10
+                    * ascending_percentile(
+                        f64::from(row.bid_size) + f64::from(row.ask_size),
+                        &quoted_depth,
+                    ),
+        )
+        .clamp(0.0, 100.0);
+    }
+    rows.sort_by(|left, right| {
+        right
+            .liquidity_score
+            .partial_cmp(&left.liquidity_score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| {
+                right
+                    .day_dollar_volume
+                    .partial_cmp(&left.day_dollar_volume)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .then_with(|| {
+                right
+                    .trade_rate_10s
+                    .partial_cmp(&left.trade_rate_10s)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .then_with(|| left.ticker.cmp(&right.ticker))
+    });
+    for (index, row) in rows.iter_mut().enumerate() {
+        row.liquidity_rank = index as u32 + 1;
+    }
+}
+
+fn sorted_finite(values: impl Iterator<Item = f64>) -> Vec<f64> {
+    let mut values = values.filter(|value| value.is_finite()).collect::<Vec<_>>();
+    values.sort_by(|left, right| left.partial_cmp(right).unwrap_or(std::cmp::Ordering::Equal));
+    values
+}
+
+fn ascending_percentile(value: f64, sorted: &[f64]) -> f64 {
+    if sorted.is_empty() || !value.is_finite() || value <= 0.0 {
+        return 0.0;
+    }
+    let upper = sorted.partition_point(|candidate| *candidate <= value);
+    upper as f64 / sorted.len() as f64 * 100.0
+}
+
+fn descending_percentile(value: f64, sorted: &[f64]) -> f64 {
+    if sorted.is_empty() || !value.is_finite() {
+        return 0.0;
+    }
+    let lower = sorted.partition_point(|candidate| *candidate < value);
+    (sorted.len() - lower) as f64 / sorted.len() as f64 * 100.0
+}
+
+fn round2(value: f64) -> f64 {
+    (value * 100.0).round() / 100.0
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{SharedMarketState, SymbolState};
+    use super::{apply_liquidity_ranking, SharedMarketState, SymbolSnapshot, SymbolState};
     use crate::event::{MarketEvent, TradeEvent};
     use chrono::{DateTime, Utc};
     use serde_json::Value;
@@ -413,6 +598,60 @@ mod tests {
             trf_ts: None,
             ts: timestamp,
         }
+    }
+
+    fn liquidity_row(
+        ticker: &str,
+        dollar_volume: f64,
+        trade_rate: f64,
+        spread: f64,
+        depth: u32,
+    ) -> SymbolSnapshot {
+        SymbolSnapshot {
+            ask: 10.0 + spread,
+            ask_size: depth,
+            bid: 10.0,
+            bid_size: depth,
+            day_dollar_volume: dollar_volume,
+            day_trade_count: 0,
+            day_volume: 0.0,
+            degradation_reason: None,
+            event_age_ms: Some(0),
+            last_event_ts: None,
+            last_price: 10.0,
+            liquidity_rank: 0,
+            liquidity_score: 0.0,
+            quality_flags: Vec::new(),
+            quality_state: "ready".to_string(),
+            spread,
+            ticker: ticker.to_string(),
+            trade_rate_10s: trade_rate,
+            trade_rate_60s: trade_rate,
+        }
+    }
+
+    #[test]
+    fn liquidity_score_is_bounded_and_rank_one_is_best_market_row() {
+        let mut rows = vec![
+            liquidity_row("NONE", 0.0, 0.0, 0.0, 0),
+            liquidity_row("LOW", 1_000.0, 1.0, 0.20, 10),
+            liquidity_row("HIGH", 1_000_000.0, 100.0, 0.01, 1_000),
+            liquidity_row("MID", 50_000.0, 10.0, 0.05, 100),
+        ];
+        apply_liquidity_ranking(&mut rows);
+
+        assert_eq!(rows[0].ticker, "HIGH");
+        assert_eq!(rows[0].liquidity_rank, 1);
+        assert_eq!(rows[1].liquidity_rank, 2);
+        assert_eq!(rows[2].liquidity_rank, 3);
+        assert_eq!(rows[3].liquidity_rank, 4);
+        assert_eq!(rows[3].liquidity_score, 0.0);
+        assert!(rows
+            .iter()
+            .all(|row| (0.0..=100.0).contains(&row.liquidity_score)));
+        assert!(rows[0].liquidity_score > rows[1].liquidity_score);
+        assert!(rows[1].liquidity_score > rows[2].liquidity_score);
+        assert!(rows[2].liquidity_score > rows[3].liquidity_score);
     }
 
     #[test]

@@ -2,6 +2,8 @@ use crate::bars::BarRow;
 use crate::indicators::IndicatorRow;
 use crate::market_signal::{MarketSignalEngine, MarketSignalEvent};
 use crate::metrics::SharedMetrics;
+use crate::signal_stream::SharedSignalStreamStore;
+use crate::state::SharedMarketState;
 use chrono::{DateTime, Utc};
 use serde::Serialize;
 use std::collections::{HashMap, VecDeque};
@@ -202,6 +204,8 @@ pub fn spawn_scanner_primitive_engine(
     channel_capacity: usize,
     metrics: SharedMetrics,
     signal_sender: broadcast::Sender<MarketSignalDelta>,
+    signal_streams: SharedSignalStreamStore,
+    market: SharedMarketState,
 ) -> ScannerPrimitiveRouter {
     let (sender, receiver) = mpsc::channel::<ScannerObservation>(channel_capacity.max(1));
     tokio::spawn(run_scanner_primitive_engine(
@@ -209,6 +213,8 @@ pub fn spawn_scanner_primitive_engine(
         receiver,
         metrics,
         signal_sender,
+        signal_streams,
+        market,
     ));
     ScannerPrimitiveRouter { sender }
 }
@@ -218,10 +224,18 @@ async fn run_scanner_primitive_engine(
     mut receiver: mpsc::Receiver<ScannerObservation>,
     metrics: SharedMetrics,
     signal_sender: broadcast::Sender<MarketSignalDelta>,
+    signal_streams: SharedSignalStreamStore,
+    market: SharedMarketState,
 ) {
     let mut engine = MarketSignalEngine::default();
     while let Some(observation) = receiver.recv().await {
         let signals = engine.update_with_indicator(&observation.bar, Some(&observation.indicator));
+        if let Err(error) = signal_streams
+            .observe_squeeze(&observation.bar, &observation.indicator, &market)
+            .await
+        {
+            eprintln!("QMD event-time squeeze observation failed: {error}");
+        }
         if signals.is_empty() {
             continue;
         }

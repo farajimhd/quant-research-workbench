@@ -14,6 +14,7 @@ from src.backend.watchlist_runtime_service import (
     WatchlistRuntime,
     clear_computation_target_publication_cache,
     enrich_core_scanner_rows,
+    enrich_signal_stream_snapshot,
     focused_target_contract,
     live_market_reference_projection,
     normalize_watchlist_candidate,
@@ -77,6 +78,27 @@ class WatchlistRuntimeServiceTests(unittest.TestCase):
             ]
         )
 
+    def test_signal_presentation_adds_reference_fields_without_overwriting_trigger_evidence(self) -> None:
+        payload = enrich_signal_stream_snapshot(
+            {
+                "occurrences": [{"ticker": "ABC", "last_price": 12.5}],
+                "new_occurrences": [],
+            },
+            {
+                "ABC": {
+                    "last_price": 99.0,
+                    "float_shares": 8_000_000,
+                    "short_interest_pct": 18.4,
+                }
+            },
+        )
+
+        row = payload["occurrences"][0]
+        self.assertEqual(row["last_price"], 12.5)
+        self.assertEqual(row["float_shares"], 8_000_000)
+        self.assertEqual(row["short_interest_pct"], 18.4)
+        self.assertTrue(payload["reference_enrichment"]["trigger_evidence_preserved"])
+
     def test_normalizes_core_scanner_contract_for_watchlist_rules(self) -> None:
         row = normalize_watchlist_candidate(
             {
@@ -85,6 +107,7 @@ class WatchlistRuntimeServiceTests(unittest.TestCase):
                 "previous_close": 100,
                 "last_day_volume_so_far": 50_000,
                 "live_priority": 9,
+                "liquidity_rank": 9,
             }
         )
         self.assertEqual(row["ticker"], "AAPL")
@@ -92,6 +115,7 @@ class WatchlistRuntimeServiceTests(unittest.TestCase):
         self.assertAlmostEqual(row["change_pct"], 10)
         self.assertEqual(row["volume"], 50_000)
         self.assertEqual(row["liquidity_rank"], 9)
+        self.assertEqual(row["liquidity_score"], 9)
 
     def test_live_reference_enrichment_materializes_aligned_relative_volume(self) -> None:
         rows = enrich_core_scanner_rows(

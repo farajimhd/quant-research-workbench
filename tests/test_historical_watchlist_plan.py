@@ -13,7 +13,7 @@ from src.backend.trading_configuration_service import _default_draft
 
 
 class HistoricalWatchlistPlanTests(unittest.TestCase):
-    def test_signal_recovery_compiles_rule_and_trigger_time_projection_sources(self) -> None:
+    def test_event_native_signal_recovery_uses_persisted_qmd_occurrences(self) -> None:
         templates = compile_signal_stream_recovery_templates(
             _default_draft(),
             start=datetime(2026, 8, 7, 8, 0, tzinfo=UTC),
@@ -23,15 +23,11 @@ class HistoricalWatchlistPlanTests(unittest.TestCase):
         squeeze = next(
             row for row in templates if row["signal_stream_id"] == "price-squeeze-5m"
         )
-        self.assertEqual(squeeze["recovery_kind"], "qmd_history_timeline")
-        plan = squeeze["plan"]
-        self.assertEqual(plan["output_mode"], "signal_transitions_only")
-        self.assertEqual(plan["maximum_size"], 5_000)
-        self.assertIn("price_change_1_bar_pct@@5m", plan["qmd_sources"])
-        self.assertIn("volume_rate_ratio@@1s", plan["qmd_sources"])
-        self.assertIn("quote.bid_price@@100ms##last", plan["qmd_sources"])
-        self.assertIn("quote.ask_price@@100ms##last", plan["qmd_sources"])
-        self.assertTrue(plan["plan_hash"].startswith("sha256:"))
+        early = next(
+            row for row in templates if row["signal_stream_id"] == "price-squeeze-early"
+        )
+        self.assertEqual(squeeze["recovery_kind"], "source_native")
+        self.assertEqual(early["recovery_kind"], "source_native")
 
         halt = next(row for row in templates if row["signal_stream_id"] == "market-halts")
         news = next(row for row in templates if row["signal_stream_id"] == "bullish-news-v1")
@@ -58,7 +54,7 @@ class HistoricalWatchlistPlanTests(unittest.TestCase):
         self.assertEqual(plan["plan_hash"], repeated["plan_hash"])
         self.assertEqual(
             plan["plan_hash"],
-            "sha256:2a801e7316a02548d9618cefd87afde00fdee61d87c60be5facaa1246940d05c",
+            "sha256:d61d219d61a6ec4c00d776f0ef2e5e79d03b8c8de9a0470f0f356b4e2b327341",
         )
         self.assertEqual(plan["qmd_sources"], ["market.liquidity_rank"])
         self.assertEqual(
@@ -91,7 +87,7 @@ class HistoricalWatchlistPlanTests(unittest.TestCase):
                 end=datetime(2026, 8, 7, 20, 0, tzinfo=UTC),
             )
 
-    def test_compiles_exact_interval_field_instance_for_qmd_history(self) -> None:
+    def test_episode_only_field_is_not_misrepresented_as_historical_bar_input(self) -> None:
         configuration = _default_draft()
         watchlist = next(
             row
@@ -99,22 +95,13 @@ class HistoricalWatchlistPlanTests(unittest.TestCase):
             if row["watchlist_id"] == "core-candidates"
         )
         watchlist["inclusion_rule_sets"] = ["signal-price-squeeze-5m"]
-        plan = compile_historical_watchlist_plan(
-            configuration,
-            "core-candidates",
-            start=datetime(2026, 8, 7, 13, 30, tzinfo=UTC),
-            end=datetime(2026, 8, 7, 20, 0, tzinfo=UTC),
-        )
-
-        self.assertIn("price_change_1_bar_pct@@5m", plan["qmd_sources"])
-        condition = plan["rule_sets"][0]["conditions"][0]
-        self.assertEqual(condition["left_instance_id"], "price_change_1_bar_pct@@5m")
-        spec = next(
-            row
-            for row in plan["qmd_source_specs"]
-            if row["instance_id"] == "price_change_1_bar_pct@@5m"
-        )
-        self.assertEqual(spec["interval"], "5m")
+        with self.assertRaises(ValueError):
+            compile_historical_watchlist_plan(
+                configuration,
+                "core-candidates",
+                start=datetime(2026, 8, 7, 13, 30, tzinfo=UTC),
+                end=datetime(2026, 8, 7, 20, 0, tzinfo=UTC),
+            )
 
     def test_rejects_deferred_intelligence_source(self) -> None:
         configuration = _default_draft()

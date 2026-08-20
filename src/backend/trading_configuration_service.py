@@ -69,7 +69,7 @@ from src.trading_runtime.strategy_campaign import validate_campaign_policy
 from src.trading_runtime.taxonomy import StrategyTaxonomy
 
 
-CONFIGURATION_SCHEMA_VERSION = 38
+CONFIGURATION_SCHEMA_VERSION = 39
 MARKET_DISCOVERY_MATERIALIZATION_RUN_ID = "market-discovery:materialized-configuration"
 _CONFIGURATION_BASE_CACHE_LOCK = threading.RLock()
 _CONFIGURATION_BASE_CACHE: tuple[str, float, dict[str, Any] | None] = ("", 0.0, None)
@@ -2632,15 +2632,14 @@ def _default_watchlist_rule_sets() -> list[dict[str, Any]]:
         ),
         _watchlist_rule(
             "signal-price-squeeze-5m",
-            "Five-minute price squeeze",
-            "Triggers immediately when the live five-minute bar reaches at least 5% above the preceding completed five-minute close; it does not wait for the current bar to close.",
+            "Exact 5% squeeze milestone",
+            "Triggers when an active bullish squeeze episode reaches 5% above its event-time anchor. Five minutes is the episode expiry, not the measurement bar.",
             [
                 _watchlist_condition(
-                    "price-squeeze-five-minute-change",
-                    "price_change_1_bar_pct",
+                    "price-squeeze-move-from-anchor",
+                    "signal.squeeze_move_pct",
                     "greater_or_equal",
                     5.0,
-                    interval="5m",
                 ),
             ],
         ),
@@ -2993,7 +2992,7 @@ def _bind_discovery_scanner_columns(
 
 
 def _default_watchlist_templates(symbols: list[str], calculation_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    common_columns = ["symbol", "company_name", "last_price", "change_pct", "volume", "relative_volume", "market_cap", "market_cap_category", "float_shares", "float_category", "short_interest_pct"]
+    common_columns = ["symbol", "company_name", "last_price", "change_pct", "volume", "liquidity_score", "liquidity_rank", "relative_volume", "market_cap", "market_cap_category", "float_shares", "float_category", "short_interest_pct"]
     def template(identifier: str, name: str, description: str, rules: list[str], ranking: str, *, direction: str = "descending", refresh: int = 1000, enabled: bool = True, columns: list[str] | None = None, availability: str = "available", availability_detail: str = "") -> dict[str, Any]:
         return {"watchlist_id": identifier, "name": name, "description": description, "enabled": enabled, "origin": "system", "template": True, "availability": availability, "availability_detail": availability_detail, "source_scan_id": "qmd-core-scan", "inclusion_rule_sets": rules, "inclusion_operator": "all", "exclusion_rule_sets": [], "ranking_field": ranking, "ranking_direction": direction, "maximum_size": 10, "refresh_interval_ms": refresh, "membership_expiry": "end_of_trading_day", "membership_ttl_ms": 300000, "manual_inclusions": [], "manual_exclusions": [], "columns": columns or common_columns, "membership_history": []}
     gainers = []
@@ -3001,7 +3000,7 @@ def _default_watchlist_templates(symbols: list[str], calculation_rows: list[dict
         gainers.append(template(f"top-{slug}-gainers", f"Top {label} Gainers", f"Top positive session performers in the {label.lower()} category, ranked by percentage change.", [category_rule, "watchlist-positive-gainer"], "market.change_pct"))
         gainers.append(template(f"top-{slug}-volume-gainers", f"Top {label} Volume Gainers", f"Most unusually active {label.lower()} instruments, ranked by aligned relative volume.", [category_rule, "watchlist-relative-volume-gainer"], "market.relative_volume"))
     return [
-        {"watchlist_id": "core-candidates", "name": "Core candidates", "description": "Candidate instruments produced from the Core Scan for strategy evaluation.", "enabled": True, "origin": "system", "template": False, "availability": "available", "availability_detail": "", "source_scan_id": "qmd-core-scan", "inclusion_rule_sets": [], "inclusion_operator": "all", "exclusion_rule_sets": [], "ranking_field": "market.liquidity_rank", "ranking_direction": "descending", "maximum_size": 250, "refresh_interval_ms": 1000, "membership_expiry": "end_of_trading_day", "membership_ttl_ms": 300000, "manual_inclusions": symbols, "manual_exclusions": [], "columns": common_columns, "membership_history": []},
+        {"watchlist_id": "core-candidates", "name": "Core candidates", "description": "Candidate instruments produced from the Core Scan for strategy evaluation.", "enabled": True, "origin": "system", "template": False, "availability": "available", "availability_detail": "", "source_scan_id": "qmd-core-scan", "inclusion_rule_sets": [], "inclusion_operator": "all", "exclusion_rule_sets": [], "ranking_field": "market.liquidity_rank", "ranking_direction": "ascending", "maximum_size": 250, "refresh_interval_ms": 1000, "membership_expiry": "end_of_trading_day", "membership_ttl_ms": 300000, "manual_inclusions": symbols, "manual_exclusions": [], "columns": common_columns, "membership_history": []},
         *gainers,
         template("price-or-volume-squeeze", "Session Price or Volume Expansion", "Symbols with at least 5% session price expansion or 3x aligned 20-session relative volume.", ["watchlist-price-or-volume-squeeze"], "market.relative_volume"),
         template("vwap-breakout", "VWAP Breakout", "Symbols trading at least 5 basis points above causal session VWAP.", ["watchlist-vwap-breakout"], "market.change_pct"),
@@ -3028,10 +3027,26 @@ def _default_signal_streams(
     }
     evidence_sources = [
         "identity.symbol",
+        "identity.company_name",
         "market.last_price",
+        "market.change_pct",
+        "market.relative_volume",
         "quote.bid_price",
         "quote.ask_price",
-        "price_change_1_bar_pct",
+        "signal.squeeze_move_pct",
+        "signal.squeeze_anchor_price",
+        "signal.squeeze_high_water_pct",
+        "signal.squeeze_episode_expires_at",
+        "market.liquidity_score",
+        "market.liquidity_rank",
+        "reference.float_shares",
+        "reference.market_cap",
+        "reference.short_interest_pct",
+        "reference.days_to_cover",
+        "trade_count_change",
+        "volume_change",
+        "buy_sell_volume_delta",
+        "depth_imbalance_proxy",
         "volume_rate_ratio",
         "market.spread_bps",
         "market.volume",
@@ -3050,7 +3065,10 @@ def _default_signal_streams(
             # spread rather than an unrelated slower bar.
             "quote.bid_price": "100ms",
             "quote.ask_price": "100ms",
-            "price_change_1_bar_pct": "5m",
+            "trade_count_change": "100ms",
+            "volume_change": "100ms",
+            "buy_sell_volume_delta": "100ms",
+            "depth_imbalance_proxy": "100ms",
             "volume_rate_ratio": "1s",
         }.items()
         if source_id in columns_by_source
@@ -3091,21 +3109,49 @@ def _default_signal_streams(
     ]
     return [
         {
-            "signal_stream_id": "price-squeeze-5m",
+            "signal_stream_id": "price-squeeze-early",
             "revision": 1,
-            "name": "Price Squeeze · 5 minutes",
-            "description": "Append-only occurrence stream emitted as soon as the live five-minute bar reaches a 5% price squeeze. Trigger-time price, volume-attraction, and spread evidence is frozen for Strategy evaluation.",
+            "name": "Early Squeeze Move",
+            "description": "Emits on the first qualifying 100 ms bullish price, trade-count, and volume impulse. The event opens a five-minute move episode immediately; five minutes is only the expiry window.",
             "enabled": True,
             "origin": "system",
             "protected": True,
             "source_type": "core_scan",
             "source_id": "qmd-core-scan",
             "source_scan_id": "qmd-core-scan",
+            "occurrence_source": "qmd_squeeze_episode",
+            "episode_role": "start",
+            "episode_ttl_ms": 300000,
+            "inclusion_rule_sets": ["watchlist-squeeze-early-impulse-100ms"],
+            "inclusion_operator": "all",
+            "columns": columns,
+            "column_intervals": intervals,
+            "refresh_interval_ms": 100,
+            "trigger_policy": "false_to_true",
+            "rearm_policy": "after_false",
+            "cooldown_ms": 0,
+            "maximum_events": 5000,
+            "watchlist_routes": [],
+        },
+        {
+            "signal_stream_id": "price-squeeze-5m",
+            "revision": 2,
+            "name": "Exact 5% Squeeze",
+            "description": "Emits at the first event-time observation at or above 5% from the active move anchor. It never waits for a five-minute bar; the five-minute value only expires the episode.",
+            "enabled": True,
+            "origin": "system",
+            "protected": True,
+            "source_type": "core_scan",
+            "source_id": "qmd-core-scan",
+            "source_scan_id": "qmd-core-scan",
+            "occurrence_source": "qmd_squeeze_episode",
+            "episode_role": "milestone",
+            "episode_ttl_ms": 300000,
             "inclusion_rule_sets": ["signal-price-squeeze-5m"],
             "inclusion_operator": "all",
             "columns": columns,
             "column_intervals": intervals,
-            "refresh_interval_ms": 250,
+            "refresh_interval_ms": 100,
             "trigger_policy": "false_to_true",
             "rearm_policy": "after_false",
             "cooldown_ms": 0,
@@ -3313,7 +3359,7 @@ def _default_market_discovery(
             "ranking_field_ref": str(
                 output_index.get("market.liquidity_rank", {}).get("field_ref") or ""
             ),
-            "ranking_direction": "descending",
+            "ranking_direction": "ascending",
             "maximum_size": 250,
             "columns": default_columns,
         },
@@ -3528,8 +3574,8 @@ def _default_draft() -> dict[str, Any]:
     ]
     system_profiles[0]["name"] = "Long Momentum · Squeeze"
     system_profiles[0]["description"] = (
-        "Extended-hours long momentum strategy activated by the five-minute "
-        "Price Squeeze Signal Stream and confirmed by volume attraction and spread quality."
+        "Extended-hours long momentum strategy activated by the Exact 5% Squeeze "
+        "event-time milestone and confirmed by volume attraction and spread quality."
     )
     squeeze_lifecycle = system_profiles[0]["lifecycle"]
     squeeze_lifecycle["trading_behavior"]["eligible_sessions"] = [
@@ -3699,7 +3745,7 @@ def _default_draft() -> dict[str, Any]:
         {
             "run_plan_id": f"long-momentum-squeeze-{binding['account_key']}",
             "name": f"Long Momentum · Price Squeeze · {str(binding['account_key']).title()}",
-            "description": "Session-enabled extended-hours momentum execution activated by the earliest configured five-minute Price Squeeze occurrence.",
+            "description": "Session-enabled extended-hours momentum execution activated by the first Exact 5% Squeeze event-time milestone.",
             "profile_id": "long-momentum-balanced",
             "oms_profile_id": "adaptive-regular",
             "universe_id": "price-squeeze-signal-universe",
@@ -4274,6 +4320,7 @@ def _validate_market_discovery(
         if str(stream.get("occurrence_source") or "rule_evaluator") not in {
             "rule_evaluator",
             "qmd_live_market_state",
+            "qmd_squeeze_episode",
         }:
             raise ValueError(f"Signal Stream {stream_name} has an unknown occurrence source")
         if str(stream.get("rearm_policy") or "after_false") not in {"after_false", "after_cooldown"}:
@@ -5514,7 +5561,7 @@ def _migrate_draft(raw: dict[str, Any]) -> dict[str, Any]:
                 for key in (
                     "name", "description", "origin", "protected",
                     "source_type", "source_id", "source_scan_id",
-                    "occurrence_source",
+                    "occurrence_source", "episode_role", "episode_ttl_ms",
                     "inclusion_rule_sets", "inclusion_operator",
                     "columns", "column_intervals", "column_aggregations",
                     "refresh_interval_ms", "trigger_policy", "rearm_policy",
@@ -5532,6 +5579,12 @@ def _migrate_draft(raw: dict[str, Any]) -> dict[str, Any]:
             str(row.get("column_id") or "")
             for row in result["market_discovery"].get("column_catalog") or []
         }
+        if source_schema_version < 39:
+            core_columns = list(core_scan.get("columns") or [])
+            for column_id in ("liquidity_score", "liquidity_rank"):
+                if column_id in column_ids and column_id not in core_columns:
+                    core_columns.append(column_id)
+            core_scan["columns"] = core_columns
         for watchlist in result["market_discovery"].get("watchlists") or []:
             watchlist.setdefault("membership_expiry", "end_of_trading_day")
             watchlist.setdefault("inclusion_operator", "all")
@@ -5561,6 +5614,17 @@ def _migrate_draft(raw: dict[str, Any]) -> dict[str, Any]:
             }
             if str(watchlist.get("ranking_field") or "") not in field_source_ids:
                 watchlist["ranking_field"] = "market.liquidity_rank"
+            if source_schema_version < 39:
+                for column_id in ("liquidity_score", "liquidity_rank"):
+                    if column_id in column_ids and column_id not in watchlist["columns"]:
+                        watchlist["columns"].append(column_id)
+                if str(watchlist.get("ranking_field") or "") == "market.liquidity_rank":
+                    watchlist["ranking_direction"] = "ascending"
+        if (
+            source_schema_version < 39
+            and str(core_scan.get("ranking_field") or "") == "market.liquidity_rank"
+        ):
+            core_scan["ranking_direction"] = "ascending"
         for stream in result["market_discovery"].get("signal_streams") or []:
             stream.setdefault("revision", 1)
             stream.setdefault("enabled", True)

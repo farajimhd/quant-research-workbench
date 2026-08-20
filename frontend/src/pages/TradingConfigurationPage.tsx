@@ -497,6 +497,9 @@ type SignalStreamConfig = {
   source_id: string;
   source_scan_id: string;
   source_type: "core_scan" | "watchlist" | "news_events";
+  occurrence_source?: "rule_evaluator" | "qmd_live_market_state" | "qmd_squeeze_episode";
+  episode_role?: "start" | "milestone";
+  episode_ttl_ms?: number;
   inclusion_rule_sets: string[];
   inclusion_operator: "all" | "any";
   columns: string[];
@@ -961,7 +964,8 @@ function normalizeDraft(payload: any): Draft {
         inclusion_rule_sets: marketDiscovery.core_scan?.inclusion_rule_sets ?? [],
         inclusion_operator: marketDiscovery.core_scan?.inclusion_operator ?? "all",
         ranking_field: marketDiscovery.core_scan?.ranking_field === "liquidity-rank" ? "market.liquidity_rank" : marketDiscovery.core_scan?.ranking_field ?? "market.liquidity_rank",
-        ranking_direction: marketDiscovery.core_scan?.ranking_direction ?? "descending",
+        ranking_direction: marketDiscovery.core_scan?.ranking_direction
+          ?? ((marketDiscovery.core_scan?.ranking_field ?? "market.liquidity_rank") === "market.liquidity_rank" ? "ascending" : "descending"),
         maximum_size: marketDiscovery.core_scan?.maximum_size ?? 250,
         columns: marketDiscovery.core_scan?.columns ?? [],
       },

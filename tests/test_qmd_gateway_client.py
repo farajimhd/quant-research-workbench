@@ -55,6 +55,20 @@ class QmdGatewayClientTests(unittest.TestCase):
         self.assertEqual(row["volume"], 2_000.0)
         self.assertEqual(row["vwap"], 99.0)
 
+    def test_symbol_snapshot_preserves_qmd_score_and_ordinal_rank_as_distinct_fields(self) -> None:
+        row = normalize_qmd_symbol_snapshot({
+            "ticker": "AAPL",
+            "last_price": 100.0,
+            "day_volume": 2_000.0,
+            "day_dollar_volume": 198_000.0,
+            "liquidity_score": 87.25,
+            "liquidity_rank": 3,
+        })
+
+        self.assertEqual(row["liquidity_score"], 87.25)
+        self.assertEqual(row["liquidity_rank"], 3)
+        self.assertEqual(row["live_priority"], 87.25)
+
     def test_scanner_payload_projects_authoritative_market_clock_into_rows(self) -> None:
         clock = {
             "observed_at": "2026-08-14T14:00:00Z",

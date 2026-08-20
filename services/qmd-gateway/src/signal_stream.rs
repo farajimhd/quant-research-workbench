@@ -1,4 +1,7 @@
+use crate::bars::BarRow;
 use crate::config::GatewayConfig;
+use crate::indicators::IndicatorRow;
+use crate::state::SharedMarketState;
 use chrono::{DateTime, Utc};
 use reqwest::Client;
 use ring::digest::{digest, SHA256};
@@ -118,6 +121,19 @@ struct SignalStreamStore {
     event_ids: HashSet<String>,
     last_sequence: u64,
     hydrated_session_key: String,
+    pending_delivery: VecDeque<Value>,
+    squeeze_episodes: HashMap<String, SqueezeEpisode>,
+    squeeze_last_prices: HashMap<String, f64>,
+}
+
+#[derive(Clone, Debug)]
+struct SqueezeEpisode {
+    episode_id: String,
+    started_at: DateTime<Utc>,
+    expires_at: DateTime<Utc>,
+    anchor_price: f64,
+    high_water_pct: f64,
+    milestone_emitted: bool,
 }
 
 impl SharedSignalStreamStore {
@@ -166,6 +182,9 @@ impl SharedSignalStreamStore {
             store.occurrences.clear();
             store.event_ids.clear();
             store.last_sequence = 0;
+            store.pending_delivery.clear();
+            store.squeeze_episodes.clear();
+            store.squeeze_last_prices.clear();
             for occurrence in hydrated {
                 hydrate_occurrence(&mut store, occurrence);
             }
@@ -179,6 +198,8 @@ impl SharedSignalStreamStore {
         if revision_changed {
             store.states.clear();
             store.diagnostics.clear();
+            store.squeeze_episodes.clear();
+            store.squeeze_last_prices.clear();
         }
         store.configuration = Some(request);
         drop(store);
@@ -364,6 +385,8 @@ impl SharedSignalStreamStore {
         for occurrence in &pending {
             append_occurrence(&mut store, occurrence.clone());
         }
+        let mut delivered = store.pending_delivery.drain(..).collect::<Vec<_>>();
+        delivered.extend(pending.iter().cloned());
         Ok(snapshot_locked(
             &store,
             None,
@@ -372,7 +395,185 @@ impl SharedSignalStreamStore {
             0,
             recovery_snapshot,
         )
-        .with_new_occurrences(pending))
+        .with_new_occurrences(delivered))
+    }
+
+    /// Observe the fastest canonical QMD bar and emit squeeze episode events
+    /// without waiting for the slower application scanner-composition loop.
+    pub async fn observe_squeeze(
+        &self,
+        bar: &BarRow,
+        indicator: &IndicatorRow,
+        market: &SharedMarketState,
+    ) -> Result<Vec<Value>, String> {
+        if bar.timeframe != "100ms" || !bar.close.is_finite() || bar.close <= 0.0 {
+            return Ok(Vec::new());
+        }
+        let at = bar.last_event_ts.unwrap_or(bar.bar_end);
+        let ticker = bar.sym.trim().to_ascii_uppercase();
+        if ticker.is_empty() {
+            return Ok(Vec::new());
+        }
+        let _mutation = self.mutation.lock().await;
+        let mut store = self.inner.lock().await;
+        let Some(configuration) = store.configuration.clone() else {
+            return Ok(Vec::new());
+        };
+        if at < configuration.session_start_utc || at > configuration.session_end_utc {
+            return Ok(Vec::new());
+        }
+        let rules = configuration
+            .rule_sets
+            .iter()
+            .filter_map(|rule| Some((string(rule, "rule_set_id")?.to_string(), rule.clone())))
+            .collect::<HashMap<_, _>>();
+        let episode_streams = configuration
+            .streams
+            .iter()
+            .filter(|stream| {
+                stream.get("enabled").and_then(Value::as_bool) != Some(false)
+                    && string(stream, "occurrence_source") == Some("qmd_squeeze_episode")
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        if episode_streams.is_empty() {
+            store.squeeze_last_prices.insert(ticker, bar.close);
+            return Ok(Vec::new());
+        }
+
+        let mut row = serde_json::to_value(bar).unwrap_or_else(|_| json!({}));
+        if let (Some(target), Some(source)) = (
+            row.as_object_mut(),
+            serde_json::to_value(indicator)
+                .ok()
+                .and_then(|value| value.as_object().cloned()),
+        ) {
+            target.extend(source);
+            target.insert("ticker".to_string(), json!(ticker));
+            target.insert("symbol".to_string(), json!(ticker));
+            target.insert("last_price".to_string(), json!(bar.close));
+        }
+        let previous_price = store.squeeze_last_prices.insert(ticker.clone(), bar.close);
+        if store
+            .squeeze_episodes
+            .get(&ticker)
+            .is_some_and(|episode| at >= episode.expires_at)
+        {
+            store.squeeze_episodes.remove(&ticker);
+        }
+
+        let start_stream = episode_streams
+            .iter()
+            .find(|stream| string(stream, "episode_role") == Some("start"));
+        let start_matches = start_stream.is_some_and(|stream| stream_matches(stream, &rules, &row));
+        let mut emit_roles = Vec::<(&str, Value)>::new();
+        if !store.squeeze_episodes.contains_key(&ticker) && start_matches {
+            let stream = start_stream.expect("start stream exists when its rules match");
+            let anchor_price = previous_price
+                .filter(|price| *price > 0.0)
+                .unwrap_or(bar.open);
+            let ttl_ms = stream
+                .get("episode_ttl_ms")
+                .and_then(Value::as_i64)
+                .unwrap_or(300_000)
+                .max(1);
+            let episode_id = sha256_hex(&format!(
+                "squeeze|{}|{}|{}",
+                ticker,
+                at.to_rfc3339(),
+                anchor_price
+            ));
+            store.squeeze_episodes.insert(
+                ticker.clone(),
+                SqueezeEpisode {
+                    episode_id,
+                    started_at: at,
+                    expires_at: at + chrono::Duration::milliseconds(ttl_ms),
+                    anchor_price,
+                    high_water_pct: 0.0,
+                    milestone_emitted: false,
+                },
+            );
+            emit_roles.push(("start", stream.clone()));
+        }
+
+        let mut episode = match store.squeeze_episodes.get(&ticker).cloned() {
+            Some(value) => value,
+            None => return Ok(Vec::new()),
+        };
+        let move_pct = (bar.close / episode.anchor_price - 1.0) * 100.0;
+        episode.high_water_pct = episode.high_water_pct.max(move_pct);
+        if !episode.milestone_emitted {
+            if let Some(stream) = episode_streams
+                .iter()
+                .find(|stream| string(stream, "episode_role") == Some("milestone"))
+            {
+                let mut milestone_row = row.clone();
+                milestone_row["squeeze_move_pct"] = json!(move_pct);
+                milestone_row["signal.squeeze_move_pct"] = json!(move_pct);
+                if stream_matches(stream, &rules, &milestone_row) {
+                    episode.milestone_emitted = true;
+                    emit_roles.push(("milestone", stream.clone()));
+                }
+            }
+        }
+        store
+            .squeeze_episodes
+            .insert(ticker.clone(), episode.clone());
+        if emit_roles.is_empty() {
+            return Ok(Vec::new());
+        }
+        drop(store);
+
+        if let Some(snapshot) = market.ticker_snapshot_at(&ticker, at).await {
+            if let (Some(target), Ok(Value::Object(source))) =
+                (row.as_object_mut(), serde_json::to_value(snapshot))
+            {
+                target.extend(source);
+            }
+        }
+        row["ticker"] = json!(ticker);
+        row["symbol"] = json!(ticker);
+        row["squeeze_episode_id"] = json!(episode.episode_id);
+        row["squeeze_episode_started_at"] = json!(episode.started_at.to_rfc3339());
+        row["squeeze_episode_expires_at"] = json!(episode.expires_at.to_rfc3339());
+        row["squeeze_anchor_price"] = json!(episode.anchor_price);
+        row["squeeze_move_pct"] = json!(move_pct);
+        row["squeeze_high_water_pct"] = json!(episode.high_water_pct);
+        project_occurrence_columns(&mut row, &configuration.column_catalog);
+
+        let mut pending = Vec::new();
+        for (role, stream) in emit_roles {
+            let selected_rules = stream
+                .get("inclusion_rule_sets")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+                .collect::<Vec<_>>();
+            let revision = definition_revision(&stream, &rules, &selected_rules);
+            let mut event = occurrence(
+                &stream,
+                &row,
+                at,
+                &configuration,
+                &revision,
+                "qmd_event_time_squeeze_episode",
+            );
+            event["squeeze_episode_id"] = row["squeeze_episode_id"].clone();
+            event["squeeze_episode_role"] = json!(role);
+            pending.push(event);
+        }
+        let store = self.inner.lock().await;
+        let pending = assign_sequences(&store, pending);
+        drop(store);
+        self.writer.insert(&pending).await?;
+        let mut store = self.inner.lock().await;
+        for event in &pending {
+            append_occurrence(&mut store, event.clone());
+            store.pending_delivery.push_back(event.clone());
+        }
+        Ok(pending)
     }
 
     pub async fn append_external(
@@ -978,6 +1179,53 @@ fn rule_matches(rule: Option<&Value>, values: &Value) -> bool {
     }
 }
 
+fn stream_matches(stream: &Value, rules: &HashMap<String, Value>, values: &Value) -> bool {
+    let results = stream
+        .get("inclusion_rule_sets")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .map(|rule_id| rule_matches(rules.get(rule_id), values))
+        .collect::<Vec<_>>();
+    !results.is_empty()
+        && if string(stream, "inclusion_operator").unwrap_or("all") == "any" {
+            results.iter().any(|value| *value)
+        } else {
+            results.iter().all(|value| *value)
+        }
+}
+
+fn project_occurrence_columns(row: &mut Value, column_catalog: &[Value]) {
+    let Some(object) = row.as_object_mut() else {
+        return;
+    };
+    for column in column_catalog {
+        let Some(column_id) = string(column, "column_id") else {
+            continue;
+        };
+        if object.contains_key(column_id) {
+            continue;
+        }
+        let source_id = string(column, "source_id").unwrap_or("");
+        let runtime_key = source_id.rsplit('.').next().unwrap_or(source_id);
+        let value = object
+            .get(source_id)
+            .or_else(|| object.get(runtime_key))
+            .or_else(|| match source_id {
+                "identity.symbol" => object.get("ticker").or_else(|| object.get("sym")),
+                "quote.bid_price" => object.get("bid"),
+                "quote.ask_price" => object.get("ask"),
+                "market.volume" => object.get("day_volume").or_else(|| object.get("volume")),
+                _ => None,
+            })
+            .cloned();
+        if let Some(value) = value {
+            object.insert(column_id.to_string(), value);
+        }
+    }
+}
+
 fn condition_matches(condition: &Map<String, Value>, values: &Value) -> bool {
     let left_instance = operand_instance(condition, "left");
     let Some(left_source) = map_string(condition, "left_instance_id")
@@ -1213,7 +1461,40 @@ fn hydrate_occurrence(store: &mut SignalStreamStore, occurrence: Value) {
     let definition = string(&occurrence, "definition_revision")
         .unwrap_or("")
         .to_string();
+    let squeeze_role = string(&occurrence, "squeeze_episode_role").unwrap_or("");
+    let squeeze_episode = if !symbol.is_empty() && !squeeze_role.is_empty() {
+        Some(SqueezeEpisode {
+            episode_id: string(&occurrence, "squeeze_episode_id")
+                .unwrap_or("")
+                .to_string(),
+            started_at: datetime_value(&occurrence, "squeeze_episode_started_at")
+                .or(at)
+                .unwrap_or_else(Utc::now),
+            expires_at: datetime_value(&occurrence, "squeeze_episode_expires_at")
+                .or_else(|| at.map(|value| value + chrono::Duration::minutes(5)))
+                .unwrap_or_else(Utc::now),
+            anchor_price: occurrence
+                .get("squeeze_anchor_price")
+                .and_then(Value::as_f64)
+                .unwrap_or(0.0),
+            high_water_pct: occurrence
+                .get("squeeze_high_water_pct")
+                .and_then(Value::as_f64)
+                .unwrap_or(0.0),
+            milestone_emitted: squeeze_role == "milestone",
+        })
+    } else {
+        None
+    };
     append_occurrence(store, occurrence);
+    if let Some(episode) = squeeze_episode {
+        let current = store
+            .squeeze_episodes
+            .entry(symbol.clone())
+            .or_insert(episode.clone());
+        current.high_water_pct = current.high_water_pct.max(episode.high_water_pct);
+        current.milestone_emitted |= episode.milestone_emitted;
+    }
     if !stream_id.is_empty() && !symbol.is_empty() {
         store.states.insert(
             (stream_id, symbol),
@@ -1636,6 +1917,91 @@ mod tests {
             {"left_source_id":"session_phase","comparator":"equals","value":"REGULAR"}
         ]});
         assert!(rule_matches(Some(&rule), &row));
+    }
+
+    #[test]
+    fn squeeze_rules_distinguish_early_impulse_from_exact_five_percent_milestone() {
+        let rules = HashMap::from([
+            (
+                "early".to_string(),
+                json!({"operator":"all","conditions":[
+                    {"left_source_id":"price_change_1_bar_pct","comparator":"greater_or_equal","value":0.05},
+                    {"left_source_id":"trade_count_change","comparator":"greater_than","value":0},
+                    {"left_source_id":"volume_change","comparator":"greater_than","value":0}
+                ]}),
+            ),
+            (
+                "exact".to_string(),
+                json!({"operator":"all","conditions":[
+                    {"left_source_id":"signal.squeeze_move_pct","comparator":"greater_or_equal","value":5.0}
+                ]}),
+            ),
+        ]);
+        let early = json!({"inclusion_rule_sets":["early"],"inclusion_operator":"all"});
+        let exact = json!({"inclusion_rule_sets":["exact"],"inclusion_operator":"all"});
+
+        assert!(stream_matches(
+            &early,
+            &rules,
+            &json!({"price_change_1_bar_pct":0.08,"trade_count_change":2,"volume_change":500})
+        ));
+        assert!(!stream_matches(
+            &exact,
+            &rules,
+            &json!({"signal.squeeze_move_pct":4.99})
+        ));
+        assert!(stream_matches(
+            &exact,
+            &rules,
+            &json!({"signal.squeeze_move_pct":5.0})
+        ));
+    }
+
+    #[test]
+    fn hydrated_squeeze_occurrences_restore_episode_and_milestone_state() {
+        let mut store = SignalStreamStore::default();
+        hydrate_occurrence(
+            &mut store,
+            json!({
+                "event_id":"exact-1",
+                "signal_stream_id":"price-squeeze-5m",
+                "ticker":"ABC",
+                "event_time":"2026-08-17T15:01:00Z",
+                "sequence":1,
+                "squeeze_episode_id":"episode-1",
+                "squeeze_episode_role":"milestone",
+                "squeeze_episode_expires_at":"2026-08-17T15:05:00Z",
+                "squeeze_anchor_price":10.0,
+                "squeeze_high_water_pct":5.2
+            }),
+        );
+
+        let episode = store.squeeze_episodes.get("ABC").unwrap();
+        assert_eq!(episode.episode_id, "episode-1");
+        assert!(episode.milestone_emitted);
+        assert_eq!(episode.high_water_pct, 5.2);
+    }
+
+    #[test]
+    fn event_time_rows_project_catalog_column_ids_before_freezing_occurrence() {
+        let mut row = json!({
+            "ticker":"ABC",
+            "bid":10.0,
+            "trade_count_change":4.0,
+            "squeeze_move_pct":1.25
+        });
+        project_occurrence_columns(
+            &mut row,
+            &[
+                json!({"column_id":"event_quote_bid_price","source_id":"quote.bid_price"}),
+                json!({"column_id":"field__trade__count__change","source_id":"trade_count_change"}),
+                json!({"column_id":"squeeze_move_pct","source_id":"signal.squeeze_move_pct"}),
+            ],
+        );
+
+        assert_eq!(row["event_quote_bid_price"], 10.0);
+        assert_eq!(row["field__trade__count__change"], 4.0);
+        assert_eq!(row["squeeze_move_pct"], 1.25);
     }
 
     #[test]

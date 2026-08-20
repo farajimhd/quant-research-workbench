@@ -30,11 +30,11 @@ class RealLiveScannerCompositionTests(unittest.TestCase):
         }
         self.assertEqual(
             recovery["price-squeeze-5m"]["recovery_kind"],
-            "qmd_history_timeline",
+            "source_native",
         )
         self.assertEqual(
-            recovery["price-squeeze-5m"]["plan"]["output_mode"],
-            "signal_transitions_only",
+            recovery["price-squeeze-early"]["recovery_kind"],
+            "source_native",
         )
         self.assertEqual(recovery["market-halts"]["recovery_kind"], "source_native")
         self.assertTrue(payload["configuration_revision"].startswith("sha256:"))

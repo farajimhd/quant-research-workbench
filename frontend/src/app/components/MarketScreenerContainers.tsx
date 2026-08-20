@@ -339,7 +339,7 @@ function discoveryField(column: DiscoveryColumn): FieldDefinition {
   const valueType = String(column.value_type ?? "").toLowerCase();
   const format: FieldDefinition["format"] = unit === "currency" ? "money"
     : unit === "percent" ? "percent"
-      : unit === "shares" || unit === "milliseconds" ? "integer"
+      : unit === "shares" || unit === "milliseconds" || unit === "rank" ? "integer"
         : unit === "multiple" ? "multiple"
           : unit === "score" ? "score"
             : unit === "timestamp" ? "date"
@@ -419,7 +419,7 @@ export function SignalStreamContainer({ asOf, live, onSettingsChange, onTickerSe
     let active = true;
     let controller: AbortController | null = null;
     const load = () => {
-      controller?.abort();
+      if (controller) return;
       controller = new AbortController();
       const query = new URLSearchParams({
         limit: String(Math.min(settings.limit, stream.maximum_events ?? settings.limit)),
@@ -444,12 +444,13 @@ export function SignalStreamContainer({ asOf, live, onSettingsChange, onTickerSe
           });
           setRuntimeUnavailable(false);
         } })
-        .catch((error) => { if (active && (error as Error).name !== "AbortError") setRuntimeUnavailable(true); });
+        .catch((error) => { if (active && (error as Error).name !== "AbortError") setRuntimeUnavailable(true); })
+        .finally(() => { controller = null; });
     };
     lastSequence.current = 0;
     sessionKey.current = "";
     load();
-    const timer = live ? window.setInterval(load, Math.max(1000, stream.refresh_interval_ms ?? 5000)) : null;
+    const timer = live ? window.setInterval(load, Math.max(100, stream.refresh_interval_ms ?? 5000)) : null;
     return () => { active = false; controller?.abort(); if (timer !== null) window.clearInterval(timer); };
   }, [live, runId, settings.limit, stream?.signal_stream_id, live ? "" : asOf]);
   const rows = useMemo(() => {
@@ -752,7 +753,7 @@ function MarketListTable({
   const companyInIdentity = mergeCompanyWithIdentity;
   const tableColumns = useMemo(() => selectedColumns.filter((column) => column !== "logo" && !(companyInIdentity && column === "company_name")), [companyInIdentity, selectedColumns]);
   useEffect(() => {
-    if (sortColumn) setSort({ column: sortColumn, direction: "desc" });
+    if (sortColumn) setSort({ column: sortColumn, direction: sortColumn === "liquidity_rank" ? "asc" : "desc" });
   }, [sortColumn]);
   const labelFilters = useMemo(() => ({
     news: collectLabels(rows, "news_labels"),

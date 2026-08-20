@@ -421,6 +421,33 @@ class TradingConfigurationServiceTests(unittest.TestCase):
         self.assertEqual(migrated_squeeze["name"], "Session Price or Volume Expansion")
         self.assertIn("20-session relative volume", migrated_squeeze["description"])
 
+    def test_schema_v38_adds_liquidity_columns_rank_direction_and_early_stream(self) -> None:
+        legacy = self._draft()
+        legacy["schema_version"] = 38
+        discovery = legacy["market_discovery"]
+        discovery["core_scan"]["columns"] = ["symbol", "last_price"]
+        discovery["core_scan"]["ranking_direction"] = "descending"
+        for watchlist in discovery["watchlists"]:
+            watchlist["columns"] = ["symbol", "last_price"]
+            if watchlist["ranking_field"] == "market.liquidity_rank":
+                watchlist["ranking_direction"] = "descending"
+        discovery["signal_streams"] = [
+            row for row in discovery["signal_streams"]
+            if row["signal_stream_id"] != "price-squeeze-early"
+        ]
+
+        migrated = _migrate_draft(legacy)
+        discovery = migrated["market_discovery"]
+        self.assertEqual(discovery["core_scan"]["ranking_direction"], "ascending")
+        self.assertIn("liquidity_score", discovery["core_scan"]["columns"])
+        self.assertIn("liquidity_rank", discovery["core_scan"]["columns"])
+        self.assertTrue(all("liquidity_score" in row["columns"] for row in discovery["watchlists"]))
+        self.assertTrue(all("liquidity_rank" in row["columns"] for row in discovery["watchlists"]))
+        self.assertIn(
+            "price-squeeze-early",
+            {row["signal_stream_id"] for row in discovery["signal_streams"]},
+        )
+
     def test_schema_v27_migrates_generic_timeframes_to_field_dimensions(self) -> None:
         legacy = self._draft()
         legacy["schema_version"] = 27

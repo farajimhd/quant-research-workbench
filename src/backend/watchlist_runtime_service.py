@@ -428,8 +428,8 @@ class WatchlistRuntime:
             [normalize_watchlist_candidate(row) for row in candidates],
         )
         normalized.sort(
-            key=lambda row: numeric_value(row, "liquidity_rank") or float("-inf"),
-            reverse=True,
+            key=lambda row: numeric_value(row, "liquidity_rank") or float("inf"),
+            reverse=False,
         )
         seeded: list[dict[str, Any]] = []
         with self._lock:
@@ -803,7 +803,8 @@ def normalize_watchlist_candidate(row: dict[str, Any]) -> dict[str, Any]:
             "ticker": ticker,
             "last_price": last_price,
             "volume": numeric_value(row, "volume", "last_day_volume_so_far", "day_volume"),
-            "liquidity_rank": numeric_value(row, "liquidity_rank", "live_priority"),
+            "liquidity_rank": numeric_value(row, "liquidity_rank"),
+            "liquidity_score": numeric_value(row, "liquidity_score", "live_priority"),
             "vwap": numeric_value(row, "vwap", "last_vwap"),
         }
     )
@@ -1376,6 +1377,64 @@ def enrich_core_scanner_rows(
             )
         enriched.append(normalize_watchlist_candidate(merged))
     return enriched
+
+
+def enrich_signal_stream_snapshot(
+    payload: dict[str, Any],
+    reference_projection: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
+    """Add the latest causal reference snapshot to occurrence presentation.
+
+    Trigger-time market and move evidence remains authoritative because the
+    occurrence is applied after the reference row. Reference values such as
+    float and short interest are explicitly view-time enrichments.
+    """
+    result = dict(payload)
+    enriched_at = datetime.now(UTC).isoformat()
+
+    def enrich(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        output: list[dict[str, Any]] = []
+        for row in rows:
+            ticker = str(row.get("ticker") or row.get("symbol") or "").upper()
+            reference = reference_projection.get(ticker, {})
+            merged = {
+                **reference,
+                **row,
+            }
+            session_volume = numeric_value(merged, "volume", "day_volume")
+            average_daily_volume = numeric_value(merged, "average_daily_volume")
+            observed_at = parse_datetime(
+                merged.get("event_time") or merged.get("reference_available_at")
+            )
+            if (
+                merged.get("relative_volume") is None
+                and session_volume is not None
+                and average_daily_volume is not None
+                and average_daily_volume > 0
+                and observed_at is not None
+            ):
+                local = observed_at.astimezone(NEW_YORK)
+                session_start = datetime.combine(local.date(), time(4, 0), NEW_YORK)
+                elapsed_seconds = min(
+                    16 * 60 * 60,
+                    max(1.0, (local - session_start).total_seconds()),
+                )
+                merged["relative_volume"] = session_volume / (
+                    average_daily_volume * elapsed_seconds / (16 * 60 * 60)
+                )
+            normalized = normalize_watchlist_candidate(merged)
+            normalized["reference_enriched_at"] = enriched_at if reference else ""
+            output.append(normalized)
+        return output
+
+    result["occurrences"] = enrich(list(payload.get("occurrences") or []))
+    result["new_occurrences"] = enrich(list(payload.get("new_occurrences") or []))
+    result["reference_enrichment"] = {
+        "authority": "point_in_time_reference_projection",
+        "as_of": enriched_at,
+        "trigger_evidence_preserved": True,
+    }
+    return result
 
 
 def numeric_value(row: dict[str, Any], *keys: str) -> float | None:

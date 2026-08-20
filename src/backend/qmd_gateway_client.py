@@ -1824,6 +1824,8 @@ def normalize_qmd_symbol_snapshot(row: dict[str, Any]) -> dict[str, Any]:
     trade_rate_60s = float_value(row.get("trade_rate_60s"))
     day_dollar_volume = float_value(row.get("day_dollar_volume"))
     day_volume = float_value(row.get("day_volume"))
+    liquidity_score = float_value(row.get("liquidity_score"))
+    liquidity_rank = int(float_value(row.get("liquidity_rank"))) or None
     previous_close = optional_float(row.get("previous_close"))
     return {
         "ticker": ticker,
@@ -1847,7 +1849,7 @@ def normalize_qmd_symbol_snapshot(row: dict[str, Any]) -> dict[str, Any]:
         "trade_rate_60s": trade_rate_60s,
         "trade_accel_10s_60s": trade_rate_10s - trade_rate_60s,
         "provider": "qmd-gateway",
-        "live_priority": day_dollar_volume / 1_000_000 + trade_rate_10s * 100,
+        "live_priority": liquidity_score,
         "last_price": last_price,
         "previous_close": previous_close,
         "change_pct": (
@@ -1857,8 +1859,8 @@ def normalize_qmd_symbol_snapshot(row: dict[str, Any]) -> dict[str, Any]:
         ),
         "volume": day_volume,
         "vwap": day_dollar_volume / day_volume if day_volume > 0 else None,
-        "liquidity_rank": day_dollar_volume / 1_000_000 + trade_rate_10s * 100,
-        "liquidity_score": day_dollar_volume / 1_000_000 + trade_rate_10s * 100,
+        "liquidity_rank": liquidity_rank,
+        "liquidity_score": liquidity_score,
     }
 
 

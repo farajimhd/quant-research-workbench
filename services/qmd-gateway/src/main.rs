@@ -169,6 +169,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     );
     let reference_refresh_indicators = indicators.clone();
     let scanner = SharedScannerStore::new(config.scanner_primitive_history_limit);
+    let signal_streams = SharedSignalStreamStore::new(config.clone())
+        .await
+        .map_err(|error| {
+            startup_error(format!("qmd-gateway Signal Stream store failed: {error}"))
+        })?;
     let live_market_state = SharedLiveMarketStateStore::new(config.live_market_state_history_limit);
     let maintenance = SharedMaintenanceState::new();
     let market_calendar = MarketCalendarClient::new(config.clone());
@@ -306,6 +311,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         config.scanner_primitive_channel_capacity,
         metrics.clone(),
         scanner_sender.clone(),
+        signal_streams.clone(),
+        market.clone(),
     );
     let indicator_router = spawn_indicator_engines(
         indicators.clone(),
@@ -399,11 +406,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let structure_focus_reclaimer = structure_focus.clone();
     let structure_focus_advancer = structure_focus.clone();
     let structure_focus_targets = computation_targets.clone();
-    let signal_streams = SharedSignalStreamStore::new(config.clone())
-        .await
-        .map_err(|error| {
-            startup_error(format!("qmd-gateway Signal Stream store failed: {error}"))
-        })?;
     let app = app(AppState {
         bars,
         compact_event_decoder,
