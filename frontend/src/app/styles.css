@@ -28636,19 +28636,19 @@ button {
   align-items: center;
   background: color-mix(in oklab, var(--table-badge-tone) 4%, var(--surface));
   border: 1px solid color-mix(in oklab, var(--table-badge-tone) 16%, var(--border));
-  border-radius: 999px;
-  color: color-mix(in oklab, var(--table-badge-tone) 54%, var(--foreground));
+  border-radius: 6px;
+  color: color-mix(in oklab, var(--table-badge-tone) 62%, var(--foreground));
   display: inline-flex;
   font-family: var(--font-body);
   font-size: 9px;
   font-weight: 590;
-  gap: 4px;
+  gap: 5px;
   letter-spacing: .006em;
   line-height: 1.1;
   max-width: 160px;
   min-height: 18px;
   overflow: hidden;
-  padding: 3px 7px;
+  padding: 3px 9px;
   text-overflow: ellipsis;
   text-transform: capitalize;
   white-space: nowrap;
@@ -28659,20 +28659,17 @@ button {
 .table-category-badge[data-emphasis="medium"] {
   background: color-mix(in oklab, var(--table-badge-tone) 8%, var(--surface));
   border-color: color-mix(in oklab, var(--table-badge-tone) 34%, var(--border));
-  color: color-mix(in oklab, var(--table-badge-tone) 68%, var(--foreground));
+  color: color-mix(in oklab, var(--table-badge-tone) 76%, var(--foreground));
   font-weight: 630;
   min-height: 19px;
 }
 .table-category-badge[data-emphasis="strong"] {
-  background: color-mix(in oklab, var(--table-badge-tone) 17%, var(--surface));
-  border-color: color-mix(in oklab, var(--table-badge-tone) 62%, var(--border));
-  box-shadow:
-    inset 0 0 0 1px color-mix(in oklab, var(--table-badge-tone) 10%, transparent),
-    0 0 8px color-mix(in oklab, var(--table-badge-tone) 18%, transparent);
-  color: color-mix(in oklab, var(--table-badge-tone) 82%, var(--foreground));
+  background: color-mix(in oklab, var(--table-badge-tone) 15%, var(--surface));
+  border-color: color-mix(in oklab, var(--table-badge-tone) 70%, var(--border));
+  color: color-mix(in oklab, var(--table-badge-tone) 90%, var(--foreground));
   font-weight: 700;
   min-height: 20px;
-  padding-inline: 8px;
+  padding-inline: 10px;
 }
 .table-category-badge[data-tone="positive"] { --table-badge-tone: var(--semantic-positive, var(--success)); }
 .table-category-badge[data-tone="negative"],
