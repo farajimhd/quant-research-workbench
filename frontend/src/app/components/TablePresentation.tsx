@@ -1,4 +1,4 @@
-import { FileCheck2, Flame } from "lucide-react";
+import { FileCheck2, Flame, Snowflake } from "lucide-react";
 import type { ReactNode } from "react";
 
 import { MarketTime } from "./MarketTime";
@@ -79,9 +79,10 @@ type RecencyState = "hot" | "cold" | "old" | "none" | "unavailable";
 function SecurityRecencyIcon({ kind, state }: { kind: "news" | "sec"; state: RecencyState }) {
   if (!isRecentRecency(state)) return null;
   const source = kind === "news" ? "News" : "SEC filing";
-  const Icon = kind === "news" ? Flame : FileCheck2;
+  const Icon = kind === "news" ? state === "hot" ? Flame : Snowflake : FileCheck2;
   const description = `${state} ${source.toLowerCase()}`;
-  return <span aria-label={description} className="table-security-recency-icon" data-source={kind} data-state={state} title={description}><Icon aria-hidden="true" fill={kind === "news" ? "currentColor" : "none"} size={14} /></span>;
+  const hot = state === "hot";
+  return <span aria-label={description} className="table-security-recency-icon" data-source={kind} data-state={state} title={description}><Icon aria-hidden="true" size={hot ? 16 : 15} strokeWidth={hot ? 1.5 : 1.8} /></span>;
 }
 
 function normalizedRecency(value: unknown): RecencyState {

@@ -56,6 +56,8 @@ type AppThemeTokenMap = {
   newsHot: string;
   newsHotFill: string;
   newsOld: string;
+  secCold: string;
+  secHot: string;
   semanticMixed: string;
   semanticMixedBackground: string;
   semanticNegative: string;
@@ -356,6 +358,8 @@ export function applyThemeDefinition(target: HTMLElement, themeId: AppThemeId = 
     "--news-hot": tokens.newsHot,
     "--news-hot-fill": tokens.newsHotFill,
     "--news-old": tokens.newsOld,
+    "--sec-cold": tokens.secCold,
+    "--sec-hot": tokens.secHot,
     "--semantic-mixed": tokens.semanticMixed,
     "--semantic-mixed-bg": tokens.semanticMixedBackground,
     "--semantic-negative": tokens.semanticNegative,
@@ -497,6 +501,8 @@ function buildTheme({
       newsHot: tone === "light" ? "#ff1744" : "#ff3b5c",
       newsHotFill: tone === "light" ? "#fb923c" : "#ff9a46",
       newsOld: palette.mutedForeground,
+      secCold: tone === "light" ? "#008f79" : "#27ffd3",
+      secHot: tone === "light" ? "#9b16d4" : "#ee5cff",
       semanticMixed: tone === "light" ? "#a85a12" : "#e0a45b",
       semanticMixedBackground: tone === "light" ? "#fffbeb" : "#34250f",
       semanticNegative: tone === "light" ? "#e0003a" : "#ff5b82",

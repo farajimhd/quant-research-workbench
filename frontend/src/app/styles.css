@@ -28644,12 +28644,15 @@ button {
 .table-security-recency-icon {
   align-items: center;
   display: inline-flex;
-  height: 16px;
+  height: 18px;
   justify-content: center;
-  width: 16px;
+  width: 18px;
 }
-.table-security-recency-icon[data-state="hot"] { color: color-mix(in oklab, var(--danger) 86%, var(--foreground)); }
-.table-security-recency-icon[data-state="cold"] { color: color-mix(in oklab, var(--info) 82%, var(--foreground)); }
+.table-security-recency-icon[data-source="news"][data-state="hot"] { color: var(--news-hot); }
+.table-security-recency-icon[data-source="news"][data-state="hot"] svg { fill: var(--news-hot-fill); }
+.table-security-recency-icon[data-source="news"][data-state="cold"] { color: var(--news-cold); }
+.table-security-recency-icon[data-source="sec"][data-state="hot"] { color: var(--sec-hot); filter: drop-shadow(0 0 3px color-mix(in oklab, var(--sec-hot) 42%, transparent)); }
+.table-security-recency-icon[data-source="sec"][data-state="cold"] { color: var(--sec-cold); filter: drop-shadow(0 0 3px color-mix(in oklab, var(--sec-cold) 38%, transparent)); }
 .table-number { color: color-mix(in oklab, var(--foreground) 90%, var(--muted-foreground)); display: inline-block; font-family: var(--font-body); font-size: 11.5px; font-variant-numeric: lining-nums tabular-nums; font-weight: 500; letter-spacing: -.008em; min-width: 100%; text-align: right; }
 .table-number[data-importance="strong"] { color: var(--foreground); font-weight: 640; }
 .table-number[data-tone="positive"] { color: color-mix(in oklab, var(--semantic-positive, var(--success)) 72%, var(--foreground)); }

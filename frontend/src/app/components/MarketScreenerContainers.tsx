@@ -487,11 +487,11 @@ export function SignalStreamContainer({ asOf, live, onSettingsChange, onTickerSe
     </nav>
     {addingStream ? <div className="watchlist-tab-lookup"><InventoryFilterSelect ariaLabel="Signal Stream to add" className="watchlist-add-lookup" onChange={addStream} options={availableStreams.map((row) => ({ description: row.description, label: row.name, value: row.signal_stream_id }))} searchable showAllOnOpen value="" /><button onClick={() => { window.location.hash = "market-discovery-configuration"; }} type="button">Configure Signal Stream <ArrowRight size={13} /></button></div> : null}
     <div className="watch-universe-context"><div><span>Source</span><strong>{sourceLabel} · 04:00–20:00 ET</strong></div><button onClick={() => { window.location.hash = "market-discovery-configuration"; }} type="button">Configure in Market Discovery <ArrowRight size={13} /></button></div>
-    <MarketListTable catalog={catalog} chronological columns={columns} customColumns={settings.customColumns} empty={emptyMessage} limit={Math.min(settings.limit, stream?.maximum_events ?? settings.limit)} lockedColumns={canonicalDiscoveryColumns(["event_time", "symbol", ...(stream?.columns ?? [])])} onColumnsChange={(columns) => onSettingsChange({ columns })} onCustomColumnsChange={(customColumns) => onSettingsChange({ customColumns })} onTickerSelect={onTickerSelect} rows={rows} title={stream?.name ?? "Signal Stream"} />
+    <MarketListTable catalog={catalog} chronological columns={columns} customColumns={settings.customColumns} empty={emptyMessage} limit={Math.min(settings.limit, stream?.maximum_events ?? settings.limit)} liveRecency={live} lockedColumns={canonicalDiscoveryColumns(["event_time", "symbol", ...(stream?.columns ?? [])])} onColumnsChange={(columns) => onSettingsChange({ columns })} onCustomColumnsChange={(customColumns) => onSettingsChange({ customColumns })} onTickerSelect={onTickerSelect} rows={rows} title={stream?.name ?? "Signal Stream"} />
   </section>;
 }
 
-export function WatchUniverseContainer({ asOf, onSettingsChange, onTickerSelect, runtime, scannerRows, settings }: { asOf: string; onSettingsChange: (update: Partial<WatchUniverseSettings> | ((current: WatchUniverseSettings) => Partial<WatchUniverseSettings>)) => void; onTickerSelect: (ticker: string) => void; runtime: WatchlistRuntimeResponse | null; scannerRows: ScreenerRow[]; settings: WatchUniverseSettings }) {
+export function WatchUniverseContainer({ asOf, live = false, onSettingsChange, onTickerSelect, runtime, scannerRows, settings }: { asOf: string; live?: boolean; onSettingsChange: (update: Partial<WatchUniverseSettings> | ((current: WatchUniverseSettings) => Partial<WatchUniverseSettings>)) => void; onTickerSelect: (ticker: string) => void; runtime: WatchlistRuntimeResponse | null; scannerRows: ScreenerRow[]; settings: WatchUniverseSettings }) {
   const { catalog: fieldCatalog, configuration, discovery } = useDiscoveryPresentation();
   const [addingWatchlist, setAddingWatchlist] = useState(false);
   const watchlists = discovery?.watchlists ?? [];
@@ -568,6 +568,7 @@ export function WatchUniverseContainer({ asOf, onSettingsChange, onTickerSelect,
       customColumns={settings.customColumns}
       empty={!watchlist ? "No Watchlist tabs are open. Use Add to choose one." : resolved ? "This QMD Watchlist currently has no members." : "No resolved membership is available."}
       limit={settings.limit}
+      liveRecency={live}
       lockedColumns={canonicalDiscoveryColumns(watchlist?.columns ?? ["symbol"])}
       mergeCompanyWithIdentity
       onColumnsChange={(columns) => onSettingsChange({ columns })}
@@ -920,7 +921,7 @@ function renderMarketCell(row: ScreenerRow, column: string, presentations: Retur
   const ticker = String(row.ticker ?? row.symbol ?? "").trim().toUpperCase();
   if (column === "ticker" || column === "symbol") {
     const companyName = companyInIdentity ? String(row.company_name ?? presentations[ticker]?.issuer_name ?? "").trim() : "";
-    return <SecurityIdentityCell companyName={companyName} country={String(row.country ?? presentations[ticker]?.country ?? "")} logoUrl={String(row.logo_url ?? presentations[ticker]?.logo_url ?? "")} newsRecency={row.live_news_recency ?? presentations[ticker]?.live_news_recency} secRecency={row.sec_recency ?? presentations[ticker]?.sec_recency} ticker={ticker} />;
+    return <SecurityIdentityCell companyName={companyName} country={String(row.country ?? presentations[ticker]?.country ?? "")} logoUrl={String(row.logo_url ?? presentations[ticker]?.logo_url ?? "")} newsRecency={preferRecentRecency(row.live_news_recency, presentations[ticker]?.live_news_recency)} secRecency={preferRecentRecency(row.sec_recency, presentations[ticker]?.sec_recency)} ticker={ticker} />;
   }
   if (column === "event_time") return value ? <MarketTime includeSeconds value={String(value)} /> : "—";
   if (["direction", "source"].includes(column)) return <CategoryBadge column={column} value={value} />;
@@ -941,6 +942,11 @@ function renderMarketCell(row: ScreenerRow, column: string, presentations: Retur
   if (definition.format === "number") return marketNumber(formatDecimal(numeric), numeric, definition, semanticTone);
   if (definition.format === "score") return marketNumber(formatDecimal(numeric, 0), numeric, definition, semanticTone);
   return <PresentedValue column={column} presentation={{ presentationValueType: definition.presentationValueType }} value={value} />;
+}
+
+function preferRecentRecency(frozenValue: unknown, liveValue: unknown) {
+  const frozen = String(frozenValue ?? "").trim().toLowerCase();
+  return frozen === "hot" || frozen === "cold" ? frozenValue : liveValue ?? frozenValue;
 }
 
 function marketNumber(display: string, value: number, definition: FieldDefinition, tone = "") {
