@@ -483,6 +483,7 @@ class SignalStreamRuntime:
         journal: TradingJournal,
         *,
         signal_stream_id: str = "",
+        run_id: str = "",
         as_of: datetime | None = None,
         limit: int = 5000,
         configuration: dict[str, Any] | None = None,
@@ -525,6 +526,7 @@ class SignalStreamRuntime:
                     ][:limit]
         if cached_occurrences is None:
             records = journal.signal_stream_records(
+                run_id=run_id,
                 signal_stream_id=signal_stream_id,
                 from_time=session["start_at"] if session["active"] else cutoff,
                 as_of=cutoff,

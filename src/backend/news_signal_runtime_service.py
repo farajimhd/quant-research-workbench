@@ -13,7 +13,8 @@ from research.mlops.clickhouse import (
 )
 from research.text_intelligence.news_synthesis_v1.engine import ENGINE_VERSION
 from src.backend.discovery_projection import discovery_runtime_field
-from src.backend.signal_stream_runtime_service import SIGNAL_STREAM_RUNTIME, signal_stream_session
+from src.backend.qmd_gateway_client import qmd_append_signal_stream_rows
+from src.backend.signal_stream_runtime_service import signal_stream_session
 from src.trading_runtime.journal import TradingJournal
 
 
@@ -120,9 +121,11 @@ class NewsSignalRuntime:
         self,
         *,
         loader: Callable[..., list[dict[str, Any]]] = all_news_synthesis_events,
+        publisher: Callable[[str, list[dict[str, Any]]], dict[str, Any]] = qmd_append_signal_stream_rows,
         live_activation_age: timedelta = timedelta(seconds=60),
     ) -> None:
         self._loader = loader
+        self._publisher = publisher
         self._live_activation_age = live_activation_age
 
     def refresh(
@@ -168,11 +171,11 @@ class NewsSignalRuntime:
                     available_at=available_at,
                 )
             )
-        inserted = SIGNAL_STREAM_RUNTIME.append_external_event_rows(
-            configuration,
-            signal_stream_id=NEWS_SIGNAL_STREAM_ID,
-            rows=event_rows,
-            journal=journal,
+        inserted = list(
+            self._publisher(NEWS_SIGNAL_STREAM_ID, event_rows).get(
+                "new_occurrences"
+            )
+            or []
         )
         if latest_cursor is not None:
             journal.save_checkpoint(

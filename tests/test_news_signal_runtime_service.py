@@ -137,7 +137,10 @@ class NewsSignalRuntimeTests(unittest.TestCase):
 
     def test_fresh_bullish_issuer_event_is_frozen_and_dispatchable(self) -> None:
         now = datetime(2026, 8, 17, 15, 0, tzinfo=UTC)
-        runtime = NewsSignalRuntime(loader=lambda **_: [source_row("2026-08-17T14:59:50+00:00")])
+        runtime = NewsSignalRuntime(
+            loader=lambda **_: [source_row("2026-08-17T14:59:50+00:00")],
+            publisher=lambda _stream_id, rows: {"new_occurrences": rows},
+        )
         with tempfile.TemporaryDirectory() as directory:
             journal = TradingJournal(Path(directory) / "journal.sqlite3")
             result = runtime.refresh(
@@ -157,7 +160,10 @@ class NewsSignalRuntimeTests(unittest.TestCase):
 
     def test_stale_bootstrap_event_is_visible_but_not_live_dispatchable(self) -> None:
         now = datetime(2026, 8, 17, 15, 0, tzinfo=UTC)
-        runtime = NewsSignalRuntime(loader=lambda **_: [source_row("2026-08-17T14:00:00+00:00")])
+        runtime = NewsSignalRuntime(
+            loader=lambda **_: [source_row("2026-08-17T14:00:00+00:00")],
+            publisher=lambda _stream_id, rows: {"new_occurrences": rows},
+        )
         with tempfile.TemporaryDirectory() as directory:
             journal = TradingJournal(Path(directory) / "journal.sqlite3")
             result = runtime.refresh(

@@ -715,6 +715,69 @@ def qmd_put_json(path: str, payload: dict[str, Any], *, timeout: int = 3) -> Any
     return _qmd_decode_json(text, service_label="QMD", operation="PUT", path=path)
 
 
+def qmd_post_json(path: str, payload: dict[str, Any], *, timeout: int = 3) -> Any:
+    if not qmd_enabled():
+        raise _qmd_disabled_error("POST", path)
+    url = f"{qmd_base_url().rstrip('/')}/{path.lstrip('/')}"
+    request = urllib.request.Request(
+        url,
+        data=json.dumps(payload, separators=(",", ":"), default=str).encode("utf-8"),
+        method="POST",
+        headers={"Accept": "application/json", "Content-Type": "application/json", **current_request_headers()},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            text = response.read().decode("utf-8")
+    except urllib.error.HTTPError as exc:
+        raise _qmd_http_error("QMD", "POST", path, url, exc) from exc
+    except (urllib.error.URLError, TimeoutError) as exc:
+        raise _qmd_transport_error("QMD", "POST", path, url, exc, timeout=timeout) from exc
+    return _qmd_decode_json(text, service_label="QMD", operation="POST", path=path)
+
+
+def qmd_configure_signal_streams(payload: dict[str, Any]) -> dict[str, Any]:
+    response = qmd_put_json("/signal-streams/configuration", payload, timeout=10)
+    if not isinstance(response, dict):
+        raise RuntimeError("QMD returned an invalid Signal Stream configuration response")
+    return response
+
+
+def qmd_evaluate_signal_streams(payload: dict[str, Any]) -> dict[str, Any]:
+    response = qmd_post_json("/signal-streams/evaluate", payload, timeout=30)
+    if not isinstance(response, dict):
+        raise RuntimeError("QMD returned an invalid Signal Stream evaluation response")
+    return response
+
+
+def qmd_append_signal_stream_rows(signal_stream_id: str, rows: list[dict[str, Any]]) -> dict[str, Any]:
+    response = qmd_post_json(
+        "/signal-streams/external",
+        {"signal_stream_id": signal_stream_id, "rows": rows},
+        timeout=30,
+    )
+    if not isinstance(response, dict):
+        raise RuntimeError("QMD returned an invalid external Signal Stream response")
+    return response
+
+
+def qmd_signal_stream_snapshot(
+    *, signal_stream_id: str = "", as_of: str = "", after_sequence: int | None = None, limit: int = 5000
+) -> dict[str, Any]:
+    payload = qmd_get_json(
+        "/snapshot/signal-streams",
+        {
+            "signal_stream_id": signal_stream_id or None,
+            "as_of": as_of or None,
+            "after_sequence": after_sequence,
+            "limit": max(1, min(int(limit), 50_000)),
+        },
+        timeout=5,
+    )
+    if not isinstance(payload, dict):
+        raise RuntimeError("QMD returned an invalid Signal Stream snapshot")
+    return payload
+
+
 def qmd_delete_json(path: str, *, timeout: int = 3) -> Any:
     if not qmd_enabled():
         raise _qmd_disabled_error("DELETE", path)

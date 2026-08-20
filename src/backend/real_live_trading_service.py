@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import re
 import ssl
@@ -21,6 +22,9 @@ from src.request_context import ContextThreadPoolExecutor as ThreadPoolExecutor
 from dotenv import load_dotenv
 
 from src.backend.qmd_gateway_client import (
+    qmd_append_signal_stream_rows,
+    qmd_configure_signal_streams,
+    qmd_evaluate_signal_streams,
     qmd_live_market_state_history,
     qmd_scanner_snapshot,
     qmd_status,
@@ -65,7 +69,7 @@ def hydrate_native_signal_streams(
 ) -> dict[str, Any]:
     """Reconstruct event-native Signal Streams from their durable session authority."""
 
-    from src.backend.signal_stream_runtime_service import SIGNAL_STREAM_RUNTIME, signal_stream_session
+    from src.backend.signal_stream_runtime_service import signal_stream_session
 
     session = signal_stream_session(as_of)
     streams = [
@@ -100,15 +104,10 @@ def hydrate_native_signal_streams(
     occurrence_rows = [row for row in occurrence_rows if row.get("ticker") and row.get("available_at")]
     inserted: list[dict[str, Any]] = []
     for stream in streams:
-        inserted.extend(
-            SIGNAL_STREAM_RUNTIME.append_external_event_rows(
-                configuration,
-                signal_stream_id=str(stream.get("signal_stream_id") or ""),
-                rows=occurrence_rows,
-                journal=journal,
-                event_run_id="market-discovery:signal-stream:qmd-live-market-state",
-            )
+        response = qmd_append_signal_stream_rows(
+            str(stream.get("signal_stream_id") or ""), occurrence_rows
         )
+        inserted.extend(list(response.get("new_occurrences") or []))
     return {
         "status": "ready",
         "new_occurrences": inserted,
@@ -116,6 +115,105 @@ def hydrate_native_signal_streams(
         "inserted_count": len(inserted),
         "session_key": session["session_key"],
     }
+
+
+def materialize_qmd_signal_stream_configuration(
+    configuration: dict[str, Any], *, as_of: datetime
+) -> dict[str, Any]:
+    """Publish the materialized Data Field -> Rule Set -> Signal Stream graph to QMD."""
+
+    from src.backend.signal_stream_runtime_service import signal_stream_session
+
+    discovery = dict(configuration.get("market_discovery") or {})
+    session = signal_stream_session(as_of)
+    streams = [dict(row) for row in discovery.get("signal_streams") or []]
+    selected_rule_ids = {
+        str(rule_id)
+        for stream in streams
+        for rule_id in stream.get("inclusion_rule_sets") or []
+        if str(rule_id)
+    }
+    rule_sets = [
+        dict(row)
+        for row in discovery.get("rule_sets") or []
+        if str(row.get("rule_set_id") or "") in selected_rule_ids
+    ]
+    selected_column_ids = {
+        str(column_id)
+        for stream in streams
+        for column_id in stream.get("columns") or []
+        if str(column_id)
+    }
+    catalog = [
+        dict(row)
+        for row in discovery.get("column_catalog") or []
+        if str(row.get("column_id") or "") in selected_column_ids
+    ]
+    revision_payload = {
+        "streams": streams,
+        "rule_sets": rule_sets,
+        "column_catalog": catalog,
+    }
+    revision = hashlib.sha256(
+        json.dumps(revision_payload, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
+    ).hexdigest()
+    return qmd_configure_signal_streams(
+        {
+            "configuration_revision": f"sha256:{revision}",
+            "session_key": str(session["session_key"]),
+            "session_start_utc": session["start_at"].isoformat(),
+            "session_end_utc": session["end_at"].isoformat(),
+            "streams": streams,
+            "rule_sets": rule_sets,
+            "column_catalog": catalog,
+        }
+    )
+
+
+def qmd_signal_stream_candidates(
+    discovery: dict[str, Any], rows: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """Project only fields reachable from materialized Signal Streams."""
+
+    from src.backend.data_field_contracts import field_instance_ref
+
+    fixed = {
+        "ticker", "symbol", "conid", "company_name", "logo_url", "country",
+        "news_recency", "live_news_recency", "sec_recency", "market_is_halted",
+        "market_event_at", "session_phase",
+    }
+    rule_index = {
+        str(rule.get("rule_set_id") or ""): dict(rule)
+        for rule in discovery.get("rule_sets") or []
+    }
+    required = set(fixed)
+    aliases: dict[str, str] = {}
+    for stream in discovery.get("signal_streams") or []:
+        required.update(str(value) for value in stream.get("columns") or [] if str(value))
+        for rule_id in stream.get("inclusion_rule_sets") or []:
+            for condition in rule_index.get(str(rule_id), {}).get("conditions") or []:
+                for side in ("left", "right"):
+                    source_id = str(condition.get(f"{side}_source_id") or "")
+                    field_ref = str(condition.get(f"{side}_field_ref") or "")
+                    instance = field_instance_ref(
+                        field_ref,
+                        condition.get(f"{side}_interval"),
+                        condition.get(f"{side}_aggregation"),
+                    ) if field_ref else ""
+                    if source_id:
+                        required.add(source_id)
+                    if instance:
+                        required.add(instance)
+                        if source_id:
+                            aliases[source_id] = instance
+    compact: list[dict[str, Any]] = []
+    for row in rows:
+        projected = {key: row.get(key) for key in required if key in row}
+        for alias, instance in aliases.items():
+            if alias not in projected and instance in row:
+                projected[alias] = row.get(instance)
+        compact.append(projected)
+    return compact
 
 
 def _halt_occurrence_row(row: dict[str, Any]) -> dict[str, Any]:
@@ -142,6 +240,7 @@ def _halt_occurrence_row(row: dict[str, Any]) -> dict[str, Any]:
         parsed = parsed.astimezone(UTC) if parsed.tzinfo else parsed.replace(tzinfo=UTC)
     except ValueError:
         parsed = None
+    normalized_available_at = parsed.isoformat() if parsed is not None else available_at
     phase = ""
     if parsed is not None:
         local = parsed.astimezone(NEW_YORK)
@@ -149,17 +248,17 @@ def _halt_occurrence_row(row: dict[str, Any]) -> dict[str, Any]:
         phase = "premarket" if 240 <= minute < 570 else "regular" if minute < 960 else "after_hours" if minute < 1200 else "closed"
     return {
         "ticker": str(row.get("ticker") or "").upper(),
-        "available_at": available_at,
+        "available_at": normalized_available_at,
         "source_event_id": str(row.get("event_id") or ""),
         "market_is_halted": True,
         "trading_status": "halted",
         "halt_reason": str(row.get("block_reason") or "condition_halt"),
-        "halt_started_at": str(row.get("event_start_utc") or available_at),
-        "halt_source_at": available_at,
+        "halt_started_at": normalized_available_at,
+        "halt_source_at": normalized_available_at,
         "halt_source_conditions": list(row.get("source_conditions") or []),
         "halt_source_indicators": list(row.get("source_indicators") or []),
-        "market_event_at": available_at,
-        "last_market_event_at": available_at,
+        "market_event_at": normalized_available_at,
+        "last_market_event_at": normalized_available_at,
         "price": evidence.get("price"),
         "last_price": evidence.get("price"),
         "bid": bid,
@@ -757,6 +856,9 @@ def _compose_real_live_scanner_snapshot(*, allow_provider_fallback: bool = True)
                     rows,
                     watchlist_runtime=watchlist_runtime,
                 ) or signal_target_seeds
+                materialize_qmd_signal_stream_configuration(
+                    configuration, as_of=cycle_as_of
+                )
                 native_hydration: dict[str, Any] = {"status": "not_required", "new_occurrences": []}
                 try:
                     native_hydration = hydrate_native_signal_streams(
@@ -771,14 +873,21 @@ def _compose_real_live_scanner_snapshot(*, allow_provider_fallback: bool = True)
                         "new_occurrences": [],
                     }
                 try:
-                    signal_stream_runtime = SIGNAL_STREAM_RUNTIME.resolve(
-                        configuration,
-                        rows,
-                        as_of=cycle_as_of,
-                        journal=trading_journal(),
-                        watchlist_runtime=watchlist_runtime,
-                        include_occurrences=False,
-                        data_fields_projected=True,
+                    watchlist_members = {
+                        str(snapshot.get("watchlist_id") or ""): [
+                            str(member.get("ticker") or member.get("symbol") or "").upper()
+                            for member in snapshot.get("members") or []
+                            if str(member.get("ticker") or member.get("symbol") or "").strip()
+                        ]
+                        for snapshot in active_watchlists
+                        if str(snapshot.get("watchlist_id") or "")
+                    }
+                    signal_stream_runtime = qmd_evaluate_signal_streams(
+                        {
+                            "as_of": cycle_as_of.isoformat(),
+                            "candidates": qmd_signal_stream_candidates(discovery, rows),
+                            "watchlist_members": watchlist_members,
+                        }
                     )
                     signal_stream_runtime["new_occurrences"] = [
                         *list(native_hydration.get("new_occurrences") or []),

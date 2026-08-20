@@ -46,7 +46,7 @@ type DiscoveryCapability = { enabled?: boolean; execution_scope?: string; scanne
 type DiscoveryColumn = { column_id: string; description?: string; name: string; presentation_value_type?: PresentationValueType; provenance?: string; semantic_type?: string; source_id?: string; source_kind?: "data_definition" | "rule_set" | string; unit?: string; value_type?: string };
 type DiscoveryWatchlist = { availability?: string; columns?: string[]; description?: string; enabled?: boolean; name: string; origin?: string; watchlist_id: string };
 type DiscoverySignalStream = { column_aggregations?: Record<string, string>; column_intervals?: Record<string, unknown>; columns?: string[]; description?: string; enabled?: boolean; maximum_events?: number; name: string; origin?: string; refresh_interval_ms?: number; signal_stream_id: string; source_id?: string; source_scan_id?: string; source_type?: "core_scan" | "watchlist" | "news_events" };
-type SignalStreamRuntimeResponse = { as_of: string; occurrence_count: number; occurrences: ScreenerRow[]; session?: { active?: boolean; end_at?: string; retention?: string; session_date?: string; start_at?: string; timezone?: string }; signal_streams?: Array<{ candidate_count?: number; configured?: boolean; enabled?: boolean; signal_stream_id: string; source_id?: string; source_type?: string; status?: string }>; status: string };
+type SignalStreamRuntimeResponse = { as_of: string; last_sequence?: number; new_occurrences?: ScreenerRow[]; occurrence_count: number; occurrences: ScreenerRow[]; session?: { active?: boolean; end_at?: string; retention?: string; session_date?: string; session_key?: string; start_at?: string; timezone?: string }; signal_streams?: Array<{ candidate_count?: number; configured?: boolean; enabled?: boolean; signal_stream_id: string; source_id?: string; source_type?: string; status?: string }>; status: string };
 export type WatchUniverseDefinition = {
   description?: string;
   enabled?: boolean;
@@ -400,7 +400,7 @@ export function normalizeMarketScannerPreset(value: unknown): string {
   return QMD_SCANNER_PRESET;
 }
 
-export function SignalStreamContainer({ asOf, live, onSettingsChange, onTickerSelect, settings }: { asOf: string; live: boolean; onSettingsChange: (patch: Partial<SignalStreamSettings>) => void; onTickerSelect: (ticker: string) => void; settings: SignalStreamSettings }) {
+export function SignalStreamContainer({ asOf, live, onSettingsChange, onTickerSelect, runId, settings }: { asOf: string; live: boolean; onSettingsChange: (patch: Partial<SignalStreamSettings>) => void; onTickerSelect: (ticker: string) => void; runId?: string; settings: SignalStreamSettings }) {
   const { catalog, discovery } = useDiscoveryPresentation();
   const [addingStream, setAddingStream] = useState(false);
   const streams = (discovery?.signal_streams ?? []).filter((row) => row.enabled !== false);
@@ -411,6 +411,8 @@ export function SignalStreamContainer({ asOf, live, onSettingsChange, onTickerSe
   const stream = visibleStreams.find((row) => row.signal_stream_id === settings.signalStreamId) ?? visibleStreams[0];
   const availableStreams = streams.filter((row) => hiddenIds.has(row.signal_stream_id));
   const [runtime, setRuntime] = useState<SignalStreamRuntimeResponse | null>(null);
+  const lastSequence = useRef(0);
+  const sessionKey = useRef("");
   const [runtimeUnavailable, setRuntimeUnavailable] = useState(false);
   useEffect(() => {
     if (!stream) { setRuntime(null); setRuntimeUnavailable(false); return undefined; }
@@ -423,15 +425,33 @@ export function SignalStreamContainer({ asOf, live, onSettingsChange, onTickerSe
         limit: String(Math.min(settings.limit, stream.maximum_events ?? settings.limit)),
         signal_stream_id: stream.signal_stream_id,
       });
-      if (!live) query.set("as_of", asOf);
+      if (live && lastSequence.current > 0) query.set("after_sequence", String(lastSequence.current));
+      if (!live) {
+        query.set("as_of", asOf);
+        if (runId) query.set("run_id", runId);
+      }
       api<SignalStreamRuntimeResponse>(`/api/market-discovery/signal-stream/runtime?${query}`, { signal: controller.signal, timeoutMs: 10000 })
-        .then((payload) => { if (active) { setRuntime(payload); setRuntimeUnavailable(false); } })
+        .then((payload) => { if (active) {
+          setRuntime((current) => {
+            const nextSessionKey = String(payload.session?.session_key ?? payload.session?.session_date ?? "");
+            const incremental = live && lastSequence.current > 0 && payload.occurrences.length === 0 && (!sessionKey.current || sessionKey.current === nextSessionKey);
+            sessionKey.current = nextSessionKey;
+            lastSequence.current = Math.max(lastSequence.current, Number(payload.last_sequence ?? 0));
+            if (!incremental || !current) return payload;
+            const additions = payload.new_occurrences ?? [];
+            const seen = new Set(additions.map((row) => String(row["event_id"] ?? row["signal_id"] ?? "")));
+            return { ...payload, occurrences: [...additions, ...current.occurrences.filter((row) => !seen.has(String(row["event_id"] ?? row["signal_id"] ?? "")))] };
+          });
+          setRuntimeUnavailable(false);
+        } })
         .catch((error) => { if (active && (error as Error).name !== "AbortError") setRuntimeUnavailable(true); });
     };
+    lastSequence.current = 0;
+    sessionKey.current = "";
     load();
     const timer = live ? window.setInterval(load, Math.max(1000, stream.refresh_interval_ms ?? 5000)) : null;
     return () => { active = false; controller?.abort(); if (timer !== null) window.clearInterval(timer); };
-  }, [asOf, live, settings.limit, stream]);
+  }, [live, runId, settings.limit, stream?.signal_stream_id, live ? "" : asOf]);
   const rows = useMemo(() => {
     const normalized: ScreenerRow[] = normalizeScannerRows(runtime?.occurrences ?? []);
     return normalized.filter((row) => String(row["signal_stream_id"] ?? "") === String(stream?.signal_stream_id ?? "")).sort((left, right) => String(right["event_time"] ?? "").localeCompare(String(left["event_time"] ?? "")));
@@ -897,15 +917,17 @@ function ColumnPicker({
 function normalizeScannerRows(rows: ScreenerRow[]) {
   return rows.map((row) => {
     const ticker = String(row.ticker ?? row.symbol ?? "").trim().toUpperCase();
-    const last = numberValue(row.last_price ?? row.last ?? row.snapshot_last_price ?? row.close);
-    const volume = numberValue(row.volume ?? row.day_volume ?? row.last_day_volume_so_far);
+    const lastSource = row.last_price ?? row.last ?? row.snapshot_last_price ?? row.close;
+    const volumeSource = row.volume ?? row.day_volume ?? row.last_day_volume_so_far;
+    const last = numberValue(lastSource);
+    const volume = numberValue(volumeSource);
     return {
       ...row,
       symbol: ticker,
-      last_price: row.last_price ?? last,
+      last_price: lastSource,
       market_event_at: row.market_event_at ?? row.last_event_ts ?? row.bar_end ?? row.bar_time_market,
       spread_bps: row.spread_bps ?? row.spread_bps_abs,
-      volume,
+      volume: volumeSource,
       dollar_volume: row.dollar_volume ?? (last > 0 && volume > 0 ? last * volume : undefined),
       microstructure_unified_confidence_pct: numberValue(row.microstructure_unified_confidence) * 100,
       flow_structure_composite_confidence_pct: numberValue(row.flow_structure_composite_confidence) * 100,

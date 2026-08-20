@@ -28,6 +28,7 @@ use qmd_core::market_products::{
 use qmd_core::massive::{run_canonical_event_fanout, run_massive_ingest, MarketEventFanout};
 use qmd_core::metrics::SharedMetrics;
 use qmd_core::scanner::{spawn_scanner_primitive_engine, MarketSignalDelta, SharedScannerStore};
+use qmd_core::signal_stream::SharedSignalStreamStore;
 use qmd_core::state::{ScannerRowDelta, SharedMarketState};
 use qmd_core::structure_focus::StructureFocusCoordinator;
 use std::collections::HashMap;
@@ -398,6 +399,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let structure_focus_reclaimer = structure_focus.clone();
     let structure_focus_advancer = structure_focus.clone();
     let structure_focus_targets = computation_targets.clone();
+    let signal_streams = SharedSignalStreamStore::new(config.clone())
+        .await
+        .map_err(|error| {
+            startup_error(format!("qmd-gateway Signal Stream store failed: {error}"))
+        })?;
     let app = app(AppState {
         bars,
         compact_event_decoder,
@@ -418,6 +424,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         scanner,
         scanner_deltas: scanner_delta_sender,
         scanner_events: scanner_sender,
+        signal_streams,
         structure_focus,
         shutdown: shutdown_sender,
         trade_aggregation_rules,

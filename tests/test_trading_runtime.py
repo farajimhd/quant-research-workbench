@@ -154,6 +154,26 @@ class SimulatedBrokerTests(unittest.IsolatedAsyncioTestCase):
 
 
 class JournalTests(unittest.TestCase):
+    def test_historical_signal_stream_records_are_scoped_to_run(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            journal = TradingJournal(Path(directory) / "journal.sqlite3")
+            for run_id, entity_id in (("replay-a", "a"), ("replay-b", "b")):
+                journal.append(
+                    run_id=run_id,
+                    category="market_discovery_signal",
+                    entity_type="signal_occurrence",
+                    entity_id=entity_id,
+                    event_time=TS,
+                    payload={"signal_stream_id": "squeeze", "ticker": "AAPL"},
+                )
+
+            rows = journal.signal_stream_records(
+                run_id="replay-b", signal_stream_id="squeeze"
+            )
+
+            self.assertEqual([row.entity_id for row in rows], ["b"])
+            journal.close()
+
     def test_shared_connection_reads_wait_for_active_journal_transaction(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             journal = TradingJournal(Path(directory) / "journal.sqlite3")

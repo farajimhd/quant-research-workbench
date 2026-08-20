@@ -7,10 +7,20 @@ The market-screening package contains three related Canvas containers that share
 | Container | Job | State authority |
 | --- | --- | --- |
 | Scanner | Cross-sectional state of the available market universe | Canonical market, reference, news, SEC, facts, and derived-score sources |
-| Watch Universe | Versioned eligible ticker membership used by one or more Run Plans | Run Plan configuration and its registered universe resolver |
+| Watch Universe | Versioned eligible ticker membership used by one or more Run Plans | Materialized Market Discovery configuration and its registered universe resolver |
+| Signal Stream | Newest-first immutable rule occurrences from the current exchange session | QMD Live hot cache plus durable QMD occurrence table; QMD History run materialization for Replay, Backtest, and Debug |
 | Strategy Activity | Newest-first signals, decisions, and campaign changes for Strategy Runs | Durable trading journal records owned by the strategy runtime |
 
 The table rows never own copies of market facts. Every displayed market value is projected at the active Canvas clock. This keeps historical replay, backtests, paper trading, and live trading on the same field semantics.
+
+Opening a Canvas container is never a computation trigger. Market Discovery
+publishes the materialized Data Field -> Rule Set -> Signal Stream graph to
+QMD. QMD Live continuously evaluates it, persists each false-to-true
+occurrence, and serves the current 04:00-20:00 ET session from its in-memory
+snapshot. Canvas initially reads that complete snapshot and thereafter requests
+only newer sequence values. Replay, Backtest, and Debug use the corresponding
+QMD History materialization, filtered by run identity and virtual clock, so
+occurrences from different runs cannot mix.
 
 ## Shared field catalog
 

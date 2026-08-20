@@ -165,6 +165,7 @@ pub struct GatewayConfig {
     pub scanner_primitive_channel_capacity: usize,
     pub scanner_primitive_history_limit: usize,
     pub scanner_broadcast_ms: u64,
+    pub signal_stream_table: String,
     pub subscribe_all_symbols: bool,
     pub subscribe_quotes: bool,
     pub subscribe_trades: bool,
@@ -448,6 +449,10 @@ impl GatewayConfig {
                 10_000,
             ),
             scanner_broadcast_ms: env_u64("QMD_SCANNER_BROADCAST_MS", 1_000),
+            signal_stream_table: env_string(
+                "QMD_SIGNAL_STREAM_TABLE",
+                "signal_stream_occurrence_v1",
+            ),
             subscribe_all_symbols: env_bool("QMD_SUBSCRIBE_ALL_SYMBOLS", true),
             subscribe_quotes: env_bool("QMD_SUBSCRIBE_QUOTES", true),
             subscribe_trades: env_bool("QMD_SUBSCRIBE_TRADES", true),

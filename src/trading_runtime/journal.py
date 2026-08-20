@@ -875,6 +875,7 @@ class TradingJournal:
     def signal_stream_records(
         self,
         *,
+        run_id: str = "",
         signal_stream_id: str = "",
         from_time: datetime | None = None,
         as_of: datetime | None = None,
@@ -882,6 +883,9 @@ class TradingJournal:
     ) -> list[JournalRecord]:
         clauses = ["category = 'market_discovery_signal'", "entity_type = 'signal_occurrence'"]
         values: list[Any] = []
+        if run_id:
+            clauses.append("run_id = ?")
+            values.append(run_id)
         if signal_stream_id:
             clauses.append("json_extract(payload_json, '$.signal_stream_id') = ?")
             values.append(signal_stream_id)

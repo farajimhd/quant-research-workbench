@@ -4251,9 +4251,12 @@ def market_discovery_watchlist_runtime(
 def market_discovery_signal_stream_runtime(
     signal_stream_id: str = "",
     as_of: str = "",
+    run_id: str = "",
+    after_sequence: int | None = Query(default=None, ge=0),
     limit: int = Query(default=5000, ge=1, le=50_000),
 ) -> dict[str, Any]:
     from src.backend.signal_stream_runtime_service import SIGNAL_STREAM_RUNTIME
+    from src.backend.qmd_gateway_client import qmd_signal_stream_snapshot
     from src.backend.trading_runtime_service import trading_journal
 
     cutoff = None
@@ -4261,9 +4264,18 @@ def market_discovery_signal_stream_runtime(
         cutoff = datetime.fromisoformat(as_of.strip().replace("Z", "+00:00"))
         if cutoff.tzinfo is None:
             raise HTTPException(status_code=422, detail="Signal Stream as_of must include a timezone.")
+    if not as_of.strip() and not run_id.strip():
+        return qmd_signal_stream_snapshot(
+            signal_stream_id=signal_stream_id,
+            after_sequence=after_sequence,
+            limit=limit,
+        )
+    if not run_id.strip():
+        raise HTTPException(status_code=422, detail="Historical Signal Stream reads require run_id.")
     return SIGNAL_STREAM_RUNTIME.snapshot(
         trading_journal(),
         signal_stream_id=signal_stream_id,
+        run_id=run_id.strip(),
         as_of=cutoff,
         limit=limit,
         configuration=market_discovery_runtime_configuration(),

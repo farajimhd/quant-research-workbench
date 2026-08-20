@@ -31,6 +31,10 @@ use crate::scanner::{
 };
 use crate::session::session_phase;
 use crate::signal_catalog::{signal_taxonomy_catalog, SignalTaxonomyEntry};
+use crate::signal_stream::{
+    SharedSignalStreamStore, SignalStreamConfigurationRequest, SignalStreamEvaluateRequest,
+    SignalStreamExternalRequest, SignalStreamSnapshot, SignalStreamSnapshotQuery,
+};
 use crate::state::{
     ScannerRowDelta, SharedMarketState, StatusMetrics, SymbolSnapshot, TickerStateSnapshot,
 };
@@ -75,6 +79,7 @@ pub struct AppState {
     pub scanner: SharedScannerStore,
     pub scanner_deltas: broadcast::Sender<ScannerRowDelta>,
     pub scanner_events: broadcast::Sender<MarketSignalDelta>,
+    pub signal_streams: SharedSignalStreamStore,
     pub structure_focus: StructureFocusCoordinator,
     pub shutdown: watch::Sender<bool>,
     pub trade_aggregation_rules: TradeAggregationRules,
@@ -211,6 +216,16 @@ pub fn app(state: AppState) -> Router {
         .route("/signal-catalog", get(signal_catalog_snapshot))
         .route("/snapshot/signals", get(market_signal_snapshot))
         .route("/snapshot/signal-events", get(market_signal_event_snapshot))
+        .route("/snapshot/signal-streams", get(signal_stream_snapshot))
+        .route(
+            "/signal-streams/configuration",
+            axum::routing::put(configure_signal_streams),
+        )
+        .route("/signal-streams/evaluate", post(evaluate_signal_streams))
+        .route(
+            "/signal-streams/external",
+            post(append_external_signal_stream_rows),
+        )
         .route("/snapshot/scanner", get(scanner_snapshot))
         .route(
             "/snapshot/scanner-indicators",
@@ -287,6 +302,49 @@ pub fn app(state: AppState) -> Router {
             crate::request_identity::preserve_request_identity,
         ))
         .with_state(Arc::new(state))
+}
+
+async fn signal_stream_snapshot(
+    State(state): State<Arc<AppState>>,
+    Query(query): Query<SignalStreamSnapshotQuery>,
+) -> Json<SignalStreamSnapshot> {
+    Json(state.signal_streams.snapshot(query).await)
+}
+
+async fn configure_signal_streams(
+    State(state): State<Arc<AppState>>,
+    Json(request): Json<SignalStreamConfigurationRequest>,
+) -> Result<Json<SignalStreamSnapshot>, (StatusCode, Json<Value>)> {
+    state
+        .signal_streams
+        .configure(request)
+        .await
+        .map(Json)
+        .map_err(|error| (StatusCode::BAD_REQUEST, Json(json!({ "error": error }))))
+}
+
+async fn evaluate_signal_streams(
+    State(state): State<Arc<AppState>>,
+    Json(request): Json<SignalStreamEvaluateRequest>,
+) -> Result<Json<SignalStreamSnapshot>, (StatusCode, Json<Value>)> {
+    state
+        .signal_streams
+        .evaluate(request)
+        .await
+        .map(Json)
+        .map_err(|error| (StatusCode::BAD_GATEWAY, Json(json!({ "error": error }))))
+}
+
+async fn append_external_signal_stream_rows(
+    State(state): State<Arc<AppState>>,
+    Json(request): Json<SignalStreamExternalRequest>,
+) -> Result<Json<SignalStreamSnapshot>, (StatusCode, Json<Value>)> {
+    state
+        .signal_streams
+        .append_external(request)
+        .await
+        .map(Json)
+        .map_err(|error| (StatusCode::BAD_GATEWAY, Json(json!({ "error": error }))))
 }
 
 async fn computation_target_snapshot(
