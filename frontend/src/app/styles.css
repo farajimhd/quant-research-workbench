@@ -28653,6 +28653,15 @@ button {
 .table-security-recency-icon[data-source="news"][data-state="cold"] { color: var(--news-cold); }
 .table-security-recency-icon[data-source="sec"][data-state="hot"] { color: var(--sec-hot); filter: drop-shadow(0 0 3px color-mix(in oklab, var(--sec-hot) 42%, transparent)); }
 .table-security-recency-icon[data-source="sec"][data-state="cold"] { color: var(--sec-cold); filter: drop-shadow(0 0 3px color-mix(in oklab, var(--sec-cold) 38%, transparent)); }
+.table-security-status-icon {
+  align-items: center;
+  color: var(--tape-bid);
+  display: inline-flex;
+  height: 18px;
+  justify-content: center;
+  width: 18px;
+}
+.table-security-status-icon[data-status="halted"] { filter: drop-shadow(0 0 3px color-mix(in oklab, var(--tape-bid) 34%, transparent)); }
 .table-number { color: color-mix(in oklab, var(--foreground) 90%, var(--muted-foreground)); display: inline-block; font-family: var(--font-body); font-size: 11.5px; font-variant-numeric: lining-nums tabular-nums; font-weight: 500; letter-spacing: -.008em; min-width: 100%; text-align: right; }
 .table-number[data-importance="strong"] { color: var(--foreground); font-weight: 640; }
 .table-number[data-tone="positive"] { color: color-mix(in oklab, var(--semantic-positive, var(--success)) 72%, var(--foreground)); }

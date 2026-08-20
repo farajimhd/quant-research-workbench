@@ -2795,7 +2795,7 @@ function renderCell(row: DataRow, column: string) {
   const ticker = value === "-" ? "" : value;
   const companyName = stringValue(row.company_name) || stringValue(row.issuer_name) || stringValue(row.name);
   const country = stringValue(row.country) || stringValue(row.company_country_code) || stringValue(row.domicile_country_code);
-  return <SecurityIdentityCell companyName={companyName} country={country} logoUrl={stringValue(row.logo_url)} newsRecency={row.live_news_recency} secRecency={row.sec_recency} ticker={ticker} />;
+  return <SecurityIdentityCell companyName={companyName} country={country} halted={row.market_is_halted ?? row.is_halted ?? row.trading_status} logoUrl={stringValue(row.logo_url)} newsRecency={row.live_news_recency} secRecency={row.sec_recency} ticker={ticker} />;
 }
 
 function renderCategoricalCell(value: unknown, column: string) {

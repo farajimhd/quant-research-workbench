@@ -197,6 +197,10 @@ class ApplicationRegistryTests(unittest.TestCase):
         self.assertEqual(rows["market.previous_close"].column_id, "previous_close")
         self.assertEqual(rows["market.quality_state"].column_id, "market_quality_state")
         self.assertEqual(rows["market.liquidity_rank"].column_id, "liquidity_rank")
+        self.assertEqual(rows["market.is_halted"].column_id, "market_is_halted")
+        self.assertIn("is_true", rows["market.is_halted"].filter_operators)
+        fields = {row.field_id: row for row in FIELD_DEFINITIONS}
+        self.assertEqual(fields["market.is_halted"].status, "implemented")
         self.assertIn("greater_or_equal", rows["market.last_price"].filter_operators)
         self.assertEqual(
             rows["signal.company_news.score"].field_id,

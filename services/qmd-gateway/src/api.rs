@@ -82,6 +82,7 @@ pub struct AppState {
 
 #[derive(Debug, Deserialize)]
 struct LimitQuery {
+    include_recent: Option<bool>,
     limit: Option<usize>,
 }
 
@@ -865,12 +866,14 @@ async fn live_market_state_snapshot(
     State(state): State<Arc<AppState>>,
     Query(query): Query<LimitQuery>,
 ) -> Json<LiveMarketStateSnapshot> {
-    Json(
-        state
-            .live_market_state
-            .snapshot(query.limit.unwrap_or(250).min(5_000))
-            .await,
-    )
+    let mut snapshot = state
+        .live_market_state
+        .snapshot(query.limit.unwrap_or(250).min(5_000))
+        .await;
+    if query.include_recent == Some(false) {
+        snapshot.recent.clear();
+    }
+    Json(snapshot)
 }
 
 async fn ticker_live_market_state_snapshot(

@@ -76,6 +76,23 @@ class TradingConfigurationServiceTests(unittest.TestCase):
         self.assertTrue(all(row["enabled"] for row in squeeze_rules))
         self.assertTrue(all(row["protected"] for row in squeeze_rules))
 
+        halt_rule = next(
+            row for row in rule_sets if row["rule_set_id"] == "signal-market-halt"
+        )
+        self.assertEqual(halt_rule["conditions"][0]["left_source_id"], "market.is_halted")
+        self.assertEqual(halt_rule["conditions"][0]["comparator"], "is_true")
+
+        halt_stream = next(
+            row
+            for row in draft["market_discovery"]["signal_streams"]
+            if row["signal_stream_id"] == "market-halts"
+        )
+        self.assertEqual(halt_stream["source_type"], "core_scan")
+        self.assertEqual(halt_stream["inclusion_rule_sets"], ["signal-market-halt"])
+        self.assertIn("market_is_halted", halt_stream["columns"])
+        self.assertEqual(halt_stream["trigger_policy"], "false_to_true")
+        self.assertEqual(halt_stream["rearm_policy"], "after_false")
+
     def test_rule_definition_rejects_incomplete_operands(self) -> None:
         base = {
             "name": "Malformed",

@@ -712,6 +712,8 @@ class QmdGatewayClientTests(unittest.TestCase):
                     ],
                     "as_of": "2026-07-17T13:45:01Z",
                 }
+            if path == "/snapshot/live-market-state":
+                return {"active": []}
             if path == "/snapshot/signals":
                 return {
                     "rows": [
@@ -800,20 +802,66 @@ class QmdGatewayClientTests(unittest.TestCase):
 
     @patch("src.backend.qmd_gateway_client.qmd_get_json")
     def test_core_scanner_does_not_fetch_watchlist_computations(self, get_json) -> None:
-        get_json.return_value = {
-            "rows": [{"ticker": "AAPL", "price": 315.0}],
-            "as_of": "2026-07-17T13:45:01Z",
-        }
+        get_json.side_effect = lambda path, params, timeout: (
+            {"active": []}
+            if path == "/snapshot/live-market-state"
+            else {
+                "rows": [{"ticker": "AAPL", "price": 315.0}],
+                "as_of": "2026-07-17T13:45:01Z",
+            }
+        )
 
         payload = qmd_scanner_snapshot(row_limit=25)
 
-        get_json.assert_called_once_with(
-            "/snapshot/scanner", {"limit": 25}, timeout=3
+        self.assertCountEqual(
+            get_json.call_args_list,
+            [
+                unittest.mock.call("/snapshot/scanner", {"limit": 25}, timeout=3),
+                unittest.mock.call(
+                    "/snapshot/live-market-state",
+                    {"include_recent": "false", "limit": 5_000},
+                    timeout=3,
+                ),
+            ],
         )
         self.assertEqual(payload["computation_scope"], "core_scan")
         self.assertEqual(payload["included_enrichments"], [])
         self.assertEqual(payload["signal_rows"], [])
         self.assertNotIn("indicator_type", payload["rows"][0])
+        self.assertIs(payload["rows"][0]["market_is_halted"], False)
+
+    @patch("src.backend.qmd_gateway_client.qmd_get_json")
+    def test_core_scanner_projects_only_active_exchange_halts(self, get_json) -> None:
+        def response(path, _params, timeout):
+            self.assertEqual(timeout, 3)
+            if path == "/snapshot/scanner":
+                return {"rows": [{"ticker": "HALT"}, {"ticker": "LOCK"}]}
+            if path == "/snapshot/live-market-state":
+                return {"active": [
+                    {
+                        "ticker": "HALT",
+                        "event_type": "condition_halt",
+                        "event_start_utc": "2026-08-20T14:00:00Z",
+                        "source_event_ts_utc": "2026-08-20T14:00:00Z",
+                        "source_conditions": [7],
+                        "block_reason": "trade_condition_halt",
+                    },
+                    {
+                        "ticker": "LOCK",
+                        "event_type": "locked_crossed_quote",
+                        "is_live_tradability_blocking": True,
+                    },
+                ]}
+            self.fail(f"Unexpected QMD route: {path}")
+
+        get_json.side_effect = response
+        rows = qmd_scanner_snapshot(row_limit=25)["rows"]
+
+        self.assertIs(rows[0]["market_is_halted"], True)
+        self.assertEqual(rows[0]["trading_status"], "halted")
+        self.assertEqual(rows[0]["halt_reason"], "trade_condition_halt")
+        self.assertEqual(rows[0]["halt_source_conditions"], [7])
+        self.assertIs(rows[1]["market_is_halted"], False)
 
     def test_scanner_rejects_unknown_enrichment_scope(self) -> None:
         with self.assertRaisesRegex(ValueError, "Unsupported QMD scanner enrichment"):

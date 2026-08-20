@@ -1709,7 +1709,7 @@ def _fields() -> tuple[FieldDefinition, ...]:
                 else "derived"
             ),
             coverage_query_plan="qmd.scanner.snapshot.v1",
-            status="integration_pending" if field_id == "market.is_halted" else "implemented",
+            status="implemented",
         ))
 
     # Decoded compact SIP event members are first-class source observations.
@@ -2011,6 +2011,7 @@ DISCOVERY_FIELD_PRESENTATIONS = (
     DiscoveryFieldPresentation("clock.session_phase", "clock.session_phase", "session_phase", "Session phase", "Canonical QMD premarket, regular, aftermarket, or maintenance phase.", "clock", True, True, True, ("equals",), ("event",)),
     DiscoveryFieldPresentation("market.status", "market.status", "market_status", "Market status", "Canonical QMD active or closed market-calendar status.", "clock", True, True, True, ("equals",), ("event",)),
     DiscoveryFieldPresentation("market.is_open", "market.is_open", "market_is_open", "Market open", "Whether the QMD market calendar admits active collection at the evaluation clock.", "clock", False, True, True, ("is_true", "equals"), ("event",)),
+    DiscoveryFieldPresentation("market.is_halted", "market.is_halted", "market_is_halted", "Trading halted", "Whether QMD has an active exchange halt condition for this security at the evaluation clock.", "market_data", False, True, True, ("is_true", "equals"), ("event",)),
     DiscoveryFieldPresentation("clock.is_trading_day", "clock.is_trading_day", "is_trading_day", "Trading day", "Whether the evaluation date is a QMD-authorized trading session.", "clock", False, True, True, ("is_true", "equals"), ("event",)),
     DiscoveryFieldPresentation("clock.minutes_since_open", "clock.minutes_since_open", "minutes_since_open", "Minutes since open", "Elapsed minutes since the canonical regular-session open; unavailable outside an applicable session.", "clock", False, True, True, ("greater_or_equal", "greater_than", "less_or_equal", "less_than", "equals"), ("event",)),
     DiscoveryFieldPresentation("clock.minutes_until_close", "clock.minutes_until_close", "minutes_until_close", "Minutes until close", "Remaining minutes until the canonical regular-session close; unavailable after close.", "clock", False, True, True, ("greater_or_equal", "greater_than", "less_or_equal", "less_than", "equals"), ("event",)),

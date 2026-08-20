@@ -126,6 +126,44 @@ class SignalStreamRuntimeTests(unittest.TestCase):
             journal=self.journal,
         )
         self.assertEqual(rearmed["signal_streams"][0]["emitted_count"], 1)
+
+    def test_default_halt_stream_emits_once_and_rearms_after_resume(self) -> None:
+        configuration = _default_draft()
+        halt_stream = next(
+            stream
+            for stream in configuration["market_discovery"]["signal_streams"]
+            if stream["signal_stream_id"] == "market-halts"
+        )
+        configuration["market_discovery"]["signal_streams"] = [halt_stream]
+        runtime = SignalStreamRuntime()
+        start = datetime(2026, 8, 17, 15, 0, tzinfo=UTC)
+        halted = {"ticker": "HALT", "market_is_halted": True, "last_price": 12.34}
+
+        first = runtime.resolve(configuration, [halted], as_of=start, journal=self.journal)
+        repeated = runtime.resolve(
+            configuration,
+            [halted],
+            as_of=start + timedelta(seconds=1),
+            journal=self.journal,
+        )
+        runtime.resolve(
+            configuration,
+            [{**halted, "market_is_halted": False}],
+            as_of=start + timedelta(seconds=2),
+            journal=self.journal,
+        )
+        rearmed = runtime.resolve(
+            configuration,
+            [halted],
+            as_of=start + timedelta(seconds=3),
+            journal=self.journal,
+        )
+
+        self.assertEqual(first["signal_streams"][0]["emitted_count"], 1)
+        self.assertEqual(repeated["signal_streams"][0]["emitted_count"], 0)
+        self.assertEqual(first["new_occurrences"][0]["signal_stream_id"], "market-halts")
+        self.assertIs(first["new_occurrences"][0]["market_is_halted"], True)
+        self.assertEqual(rearmed["signal_streams"][0]["emitted_count"], 1)
         self.assertEqual(rearmed["occurrence_count"], 2)
 
     def test_signal_route_admits_without_mutating_occurrence(self) -> None:

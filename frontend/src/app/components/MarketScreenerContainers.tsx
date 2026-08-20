@@ -921,7 +921,7 @@ function renderMarketCell(row: ScreenerRow, column: string, presentations: Retur
   const ticker = String(row.ticker ?? row.symbol ?? "").trim().toUpperCase();
   if (column === "ticker" || column === "symbol") {
     const companyName = companyInIdentity ? String(row.company_name ?? presentations[ticker]?.issuer_name ?? "").trim() : "";
-    return <SecurityIdentityCell companyName={companyName} country={String(row.country ?? presentations[ticker]?.country ?? "")} logoUrl={String(row.logo_url ?? presentations[ticker]?.logo_url ?? "")} newsRecency={preferRecentRecency(row.live_news_recency, presentations[ticker]?.live_news_recency)} secRecency={preferRecentRecency(row.sec_recency, presentations[ticker]?.sec_recency)} ticker={ticker} />;
+    return <SecurityIdentityCell companyName={companyName} country={String(row.country ?? presentations[ticker]?.country ?? "")} halted={row.market_is_halted ?? row.is_halted ?? row.trading_status} logoUrl={String(row.logo_url ?? presentations[ticker]?.logo_url ?? "")} newsRecency={preferRecentRecency(row.live_news_recency, presentations[ticker]?.live_news_recency)} secRecency={preferRecentRecency(row.sec_recency, presentations[ticker]?.sec_recency)} ticker={ticker} />;
   }
   if (column === "event_time") return value ? <MarketTime includeSeconds value={String(value)} /> : "—";
   if (["direction", "source"].includes(column)) return <CategoryBadge column={column} value={value} />;

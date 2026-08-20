@@ -1030,6 +1030,12 @@ def qmd_scanner_snapshot(
     scanner_limit = max(1, min(int(row_limit or 250), 25_000))
     requests: dict[str, tuple[str, dict[str, Any]]] = {
         "scanner": ("/snapshot/scanner", {"limit": scanner_limit}),
+        # Abnormal market state is sparse and joined once per scanner snapshot.
+        # Excluding transition history keeps this all-symbol projection bounded.
+        "market_state": (
+            "/snapshot/live-market-state",
+            {"include_recent": "false", "limit": 5_000},
+        ),
     }
     if "signals" in requested:
         requests["signals"] = ("/snapshot/signals", {"limit": cross_section_limit})
@@ -1047,6 +1053,7 @@ def qmd_scanner_snapshot(
         }
         responses = {key: future.result() for key, future in futures.items()}
     snapshot_payload = responses["scanner"]
+    market_state_payload = responses.get("market_state", {})
     active_signal_payload = responses.get("signals", {})
     signal_event_payload = responses.get("signal_events", {})
     indicator_payload = responses.get("indicators", {})
@@ -1088,11 +1095,19 @@ def qmd_scanner_snapshot(
         )
         if isinstance(row, dict) and str(row.get("sym") or "").strip()
     }
+    halt_by_ticker = _active_halts_by_ticker(market_state_payload)
     rows = [
         {
             **row,
             **indicator_by_ticker.get(str(row.get("ticker") or ""), {}),
             **strongest_by_ticker.get(str(row.get("ticker") or ""), {}),
+            **halt_by_ticker.get(
+                str(row.get("ticker") or ""),
+                {
+                    "market_is_halted": False,
+                    "trading_status": "trading",
+                },
+            ),
             "active_signal_count": active_counts.get(str(row.get("ticker") or ""), 0),
             "signal_rank_score": float_value(
                 strongest_by_ticker.get(str(row.get("ticker") or ""), {}).get(
@@ -1121,6 +1136,33 @@ def qmd_scanner_snapshot(
     payload["computation_scope"] = "core_scan"
     payload["included_enrichments"] = sorted(requested)
     return payload
+
+
+def _active_halts_by_ticker(payload: Any) -> dict[str, dict[str, Any]]:
+    """Project only exchange halt conditions, not broader tradability warnings."""
+
+    if not isinstance(payload, dict):
+        return {}
+    result: dict[str, dict[str, Any]] = {}
+    for event in payload.get("active") or []:
+        if not isinstance(event, dict) or str(event.get("event_type") or "") != "condition_halt":
+            continue
+        ticker = str(event.get("ticker") or "").strip().upper()
+        if not ticker:
+            continue
+        current = result.get(ticker)
+        source_at = str(event.get("source_event_ts_utc") or "")
+        if current is not None and str(current.get("halt_source_at") or "") >= source_at:
+            continue
+        result[ticker] = {
+            "market_is_halted": True,
+            "trading_status": "halted",
+            "halt_reason": str(event.get("block_reason") or "condition_halt"),
+            "halt_started_at": event.get("event_start_utc"),
+            "halt_source_at": event.get("source_event_ts_utc"),
+            "halt_source_conditions": list(event.get("source_conditions") or []),
+        }
+    return result
 
 
 def qmd_historical_scanner_snapshot(

@@ -1,4 +1,4 @@
-import { FileCheck2, Flame, Snowflake } from "lucide-react";
+import { FileCheck2, Flame, ShieldAlert, Snowflake } from "lucide-react";
 import type { ReactNode } from "react";
 
 import { MarketTime } from "./MarketTime";
@@ -56,17 +56,19 @@ export function CategoryBadge({ column = "", value }: { column?: string; value: 
   return <span className="table-category-badge" data-tone={categoryTone(column, label)}>{label}</span>;
 }
 
-export function SecurityIdentityCell({ companyName = "", country = "", logoUrl = "", newsRecency, secRecency, ticker, trailing }: { companyName?: string; country?: string; logoUrl?: string; newsRecency?: unknown; secRecency?: unknown; ticker: string; trailing?: ReactNode }) {
+export function SecurityIdentityCell({ companyName = "", country = "", halted, logoUrl = "", newsRecency, secRecency, ticker, trailing }: { companyName?: string; country?: string; halted?: unknown; logoUrl?: string; newsRecency?: unknown; secRecency?: unknown; ticker: string; trailing?: ReactNode }) {
   const symbol = ticker.trim().toUpperCase();
   const countryName = formatCountry(country);
   const newsState = normalizedRecency(newsRecency);
   const secState = normalizedRecency(secRecency);
-  const hasTrailing = isRecentRecency(newsState) || isRecentRecency(secState) || Boolean(trailing);
+  const isHalted = normalizedBoolean(halted);
+  const hasTrailing = isHalted || isRecentRecency(newsState) || isRecentRecency(secState) || Boolean(trailing);
   return <span className="table-security-card" data-has-trailing={hasTrailing} title={[symbol, companyName, countryName].filter(Boolean).join(" · ")}>
     <TickerLogo logoUrl={logoUrl} showLogoPlaceholder ticker={symbol} />
     <span className="table-security-copy"><strong>{symbol || "—"}</strong>{companyName ? <small>{companyName}</small> : null}</span>
     {countryName ? <span className="table-security-country">{countryName}</span> : null}
     {hasTrailing ? <span className="table-security-trailing">
+      {isHalted ? <span aria-label="Trading halted" className="table-security-status-icon" data-status="halted" title="Trading halted"><ShieldAlert aria-hidden="true" size={17} strokeWidth={1.8} /></span> : null}
       <SecurityRecencyIcon kind="news" state={newsState} />
       <SecurityRecencyIcon kind="sec" state={secState} />
       {trailing}
@@ -93,6 +95,11 @@ function normalizedRecency(value: unknown): RecencyState {
 }
 
 function isRecentRecency(state: RecencyState) { return state === "hot" || state === "cold"; }
+function normalizedBoolean(value: unknown) {
+  if (value === true || value === 1) return true;
+  if (typeof value !== "string") return false;
+  return ["true", "1", "yes", "halted"].includes(value.trim().toLowerCase());
+}
 
 export function tableCellClass(column: string, presentation?: TableColumnPresentation) {
   const resolved = presentationForColumn(column, presentation);

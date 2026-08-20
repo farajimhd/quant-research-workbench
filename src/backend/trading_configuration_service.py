@@ -2638,6 +2638,12 @@ def _default_watchlist_rule_sets() -> list[dict[str, Any]]:
             ],
         ),
         _watchlist_rule(
+            "signal-market-halt",
+            "Trading halt opened",
+            "Triggers once when QMD observes an active exchange halt condition for a security and rearms after trading resumes.",
+            [_watchlist_condition("market-halt-active", "market.is_halted", "is_true", True)],
+        ),
+        _watchlist_rule(
             "strategy-squeeze-volume-spread-quality",
             "Squeeze volume and spread quality",
             "Confirms an entry only when one-second share-volume activity is at least 1.5 times its preceding bar and the latest one-second spread is no wider than 50 basis points.",
@@ -3061,6 +3067,21 @@ def _default_signal_streams(
         for source_id in news_sources
         if source_id in columns_by_source
     ]
+    halt_sources = [
+        "identity.symbol",
+        "market.is_halted",
+        "market.last_price",
+        "quote.bid_price",
+        "quote.ask_price",
+        "market.spread_bps",
+        "market.event_at",
+        "clock.session_phase",
+    ]
+    halt_columns = [
+        columns_by_source[source_id]
+        for source_id in halt_sources
+        if source_id in columns_by_source
+    ]
     return [
         {
             "signal_stream_id": "price-squeeze-5m",
@@ -3077,6 +3098,32 @@ def _default_signal_streams(
             "inclusion_operator": "all",
             "columns": columns,
             "column_intervals": intervals,
+            "refresh_interval_ms": 250,
+            "trigger_policy": "false_to_true",
+            "rearm_policy": "after_false",
+            "cooldown_ms": 0,
+            "maximum_events": 5000,
+            "watchlist_routes": [],
+        },
+        {
+            "signal_stream_id": "market-halts",
+            "revision": 1,
+            "name": "Trading Halts",
+            "description": "Append-only occurrences emitted when an exchange halt condition opens. The stream rearms after QMD observes the resume condition.",
+            "enabled": True,
+            "origin": "system",
+            "protected": True,
+            "source_type": "core_scan",
+            "source_id": "qmd-core-scan",
+            "source_scan_id": "qmd-core-scan",
+            "inclusion_rule_sets": ["signal-market-halt"],
+            "inclusion_operator": "all",
+            "columns": halt_columns,
+            "column_intervals": {
+                columns_by_source[source_id]: normalize_interval_spec("100ms")
+                for source_id in ("quote.bid_price", "quote.ask_price")
+                if source_id in columns_by_source
+            },
             "refresh_interval_ms": 250,
             "trigger_policy": "false_to_true",
             "rearm_policy": "after_false",
