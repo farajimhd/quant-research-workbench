@@ -1039,6 +1039,28 @@ function serializeDraft(draft: Draft) {
   return { ...rest, strategy: { ...rest.strategy, profile_templates: profileTemplates, profiles }, run_plans: { plans: assignments.deployments, universes: assignments.universes } };
 }
 
+function serializeSessionDraft(draft: Draft) {
+  const serialized = serializeDraft(draft);
+  const {
+    atomic_fields: _atomicFields,
+    calculation_catalog: _calculationCatalog,
+    classifications: _classifications,
+    column_catalog: _columnCatalog,
+    data_field_plan: _dataFieldPlan,
+    data_fields: _dataFields,
+    field_catalog: _fieldCatalog,
+    security_universe: _securityUniverse,
+    ...editableMarketDiscovery
+  } = serialized.market_discovery;
+  const {
+    capability_catalog: _capabilityCatalog,
+    definitions: _definitions,
+    input_catalog: _inputCatalog,
+    ...editableStrategy
+  } = serialized.strategy;
+  return { ...serialized, market_discovery: editableMarketDiscovery, strategy: editableStrategy };
+}
+
 function deduplicateRuleSets(ruleSets: RuleSetDefinition[]): RuleSetDefinition[] {
   const byId = new Map<string, RuleSetDefinition>();
   ruleSets.forEach((ruleSet) => {
@@ -1233,7 +1255,9 @@ function readSessionConfiguration(base: Draft): Draft {
 }
 
 function writeSessionConfiguration(draft: Draft) {
-  writeConfigurationSession(serializeDraft(draft));
+  // Backend/QMD catalogs are restored by readSessionConfiguration and must not
+  // consume the browser's limited session storage on every draft edit.
+  writeConfigurationSession(serializeSessionDraft(draft));
 }
 
 type ConfigurationExperience = "guided" | "expert";
@@ -1414,12 +1438,17 @@ export function TradingConfigurationPage({ section }: { section: TradingConfigur
   }, [draft, section]);
 
   function updateDraft<K extends keyof Draft>(key: K, value: Draft[K]) {
-    setDraft((current) => {
-      if (!current) return current;
-      const next = { ...current, [key]: value };
+    if (!draft) return;
+    const next = { ...draft, [key]: value };
+    try {
       writeSessionConfiguration(next);
-      return next;
-    });
+    } catch (reason) {
+      setMessageTone("error");
+      setMessage(`This draft could not be saved in the browser session: ${reason instanceof Error ? reason.message : String(reason)}`);
+      setStatus("error");
+      return;
+    }
+    setDraft(next);
     setMessage("");
     setStatus("ready");
   }
