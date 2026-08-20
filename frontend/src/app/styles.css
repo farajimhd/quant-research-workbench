@@ -8,8 +8,8 @@
   --font-size-panel: 15px;
   /* Typography authority lives in theme.ts. Public Sans is the interface and
      numeric family; JetBrains Mono is only for machine-facing identifiers. */
-  --font-body: "Public Sans", sans-serif;
-  --font-display: "Public Sans", sans-serif;
+  --font-body: "Public Sans Variable", "Public Sans", sans-serif;
+  --font-display: "Public Sans Variable", "Public Sans", sans-serif;
   --font-mono: "JetBrains Mono", monospace;
   --background: #ffffff;
   --foreground: #030213;

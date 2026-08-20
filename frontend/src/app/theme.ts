@@ -105,7 +105,7 @@ export type AppThemeDefinition = {
  * source paths, payload keys, contracts, and code. Components must consume
  * --font-body, --font-display, or --font-mono instead of naming a font family.
  */
-const BODY_FONT_STACK = "\"Public Sans\", sans-serif";
+const BODY_FONT_STACK = "\"Public Sans Variable\", \"Public Sans\", sans-serif";
 const DISPLAY_FONT_STACK = BODY_FONT_STACK;
 const MONO_FONT_STACK = "\"JetBrains Mono\", monospace";
 

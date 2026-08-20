@@ -18,6 +18,7 @@
     "ui:review:full": "python scripts/ui_review.py --mode full"
   },
   "dependencies": {
+    "@fontsource-variable/public-sans": "5.3.0",
     "@vitejs/plugin-react": "5.2.0",
     "katex": "^0.16.45",
     "lightweight-charts": "5.2.0",
