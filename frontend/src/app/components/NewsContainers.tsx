@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } 
 
 import { api, query } from "../../api/client";
 import { NEWS_READER_CANVAS_ID, ensureNewsReaderCanvas, focusCanvasUrl } from "../canvasWorkspace";
+import { timeRecency, type TimeRecency } from "../timeRecency";
 import { FilterOverflowMenu } from "./FilterOverflowMenu";
 import { InventoryFilterSelect, inventoryEligibilityOptions, type InventoryFilterOption } from "./InventoryFilterSelect";
 import { MarketTime } from "./MarketTime";
@@ -94,7 +95,7 @@ type NewsSynthesisSummary = {
   engine_version: string;
   quality_flags: string[];
 };
-type NewsTemperature = "cold" | "hot" | "old";
+type NewsTemperature = TimeRecency;
 type AllNewsSettings = { content: string; endDate: string; kind: string; limit: number; lookbackHours: number; rangeMode: "custom" | "preset"; startDate: string; ticker: string };
 type EligibilityQuery = { analyst: string; forecast: string; reaction: string; history: string };
 const EMPTY_ELIGIBILITY_QUERY: EligibilityQuery = { analyst: "", forecast: "", reaction: "", history: "" };
@@ -136,8 +137,6 @@ type NewsSelection = { newsId: string; publishedAt: string; queryId: string };
 
 // Product-wide contract: hot is neon red (<= 4h), cold is neon blue (<= 24h),
 // and old is neutral gray. Never substitute success/danger/info semantic colors.
-const NEWS_HOT_MINUTES = 4 * 60;
-const NEWS_COLD_MINUTES = 24 * 60;
 
 export function AllNewsContainer({ asOf, live = false, onSettingsChange, settings }: { asOf: string; live?: boolean; onSettingsChange: (patch: Partial<AllNewsSettings>) => void; settings: AllNewsSettings }) {
   const [search, setSearch] = useState("");
@@ -496,7 +495,7 @@ function eligibilityText(summary: Pick<NewsSynthesisSummary, "analyst_evaluation
 function synthesisScore(summary?: NewsSynthesisSummary | null): number | null { return summary ? summary.positive_strength - summary.negative_strength : null; }
 function MarketNumberText({ text }: { text: string }) { const matches = Array.from(text.matchAll(MARKET_NUMBER_PATTERN)); if (!matches.length) return text; const parts: Array<string | ReactElement> = []; let cursor = 0; matches.forEach((match, index) => { const start = match.index; if (start > cursor) parts.push(text.slice(cursor, start)); const value = match[0]; const kind = /%|percent|basis|bps/i.test(value) ? "rate" : "price"; parts.push(<span className="market-number" data-market-number={kind} key={`${start}-${index}`}>{value}</span>); cursor = start + value.length; }); if (cursor < text.length) parts.push(text.slice(cursor)); return <>{parts}</>; }
 function NewsTemperatureTag({ tone }: { tone: NewsTemperature }) { const value = newsTemperaturePresentation(tone); return <span className="news-temperature" data-tone={tone}><value.Icon size={tone === "hot" ? 16 : 15} strokeWidth={tone === "hot" ? 1.5 : tone === "cold" ? 1.8 : 1.7} /><em>{value.label}</em></span>; }
-function newsTemperature(publishedAt: string, asOfMs: number): NewsTemperature { const publishedMs = Date.parse(publishedAt); const ageMinutes = Number.isFinite(publishedMs) && Number.isFinite(asOfMs) ? Math.max(0, (asOfMs - publishedMs) / 60_000) : Number.POSITIVE_INFINITY; return ageMinutes <= NEWS_HOT_MINUTES ? "hot" : ageMinutes <= NEWS_COLD_MINUTES ? "cold" : "old"; }
+function newsTemperature(publishedAt: string, asOfMs: number): NewsTemperature { return timeRecency(publishedAt, asOfMs); }
 function newsTemperaturePresentation(tone: NewsTemperature) { return tone === "hot" ? { Icon: Flame, label: "Hot" } : tone === "cold" ? { Icon: Snowflake, label: "Cold" } : { Icon: Clock3, label: "Old" }; }
 function isNewsKind(value: unknown): value is NewsKindValue { return ["ai", "analyst", "company", "editorial", "insights", "market", "multi", "regulatory", "why_moving"].includes(String(value)); }
 function classificationFromRow(row: NewsRow): NewsClassification { if (row.classification) return row.classification; const kind = isNewsKind(row.news_kind) ? row.news_kind : "market"; return { confidence: row.classification_confidence ?? 0, evidence: row.classification_evidence ?? ["news_synthesis_pending"], format: row.news_format ?? "general", is_company_news: row.is_company_news ?? false, kind, origin: row.news_origin ?? "unknown", scope: row.news_scope ?? ((row.ticker_link_sample?.length ?? 0) === 1 ? "single_ticker" : (row.ticker_link_sample?.length ?? 0) > 1 ? "multi_ticker" : "market_wide"), topics: row.news_topics ?? [], version: row.news_synthesis_summary?.engine_version ?? "pending" }; }

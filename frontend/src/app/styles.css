@@ -28703,6 +28703,38 @@ button {
 .market-list-table .market-list-time-column .market-time { line-height: 1.05; }
 .signal-stream-surface .market-list-time-column .market-time-primary strong { font-size: 12px; font-weight: 600; }
 .signal-stream-surface .market-list-time-column .market-time-secondary { font-size: 8.5px; }
+.signal-stream-surface { --signal-stream-time-column-width: 108px; }
+.signal-stream-surface .market-list-table tr > .market-list-time-column:first-child {
+  background: var(--surface);
+  box-sizing: border-box;
+  left: 0;
+  max-width: var(--signal-stream-time-column-width);
+  min-width: var(--signal-stream-time-column-width);
+  position: sticky;
+  width: var(--signal-stream-time-column-width);
+  z-index: 4;
+}
+.signal-stream-surface .market-list-table th.market-list-time-column:first-child { z-index: 6; }
+.signal-stream-surface .market-list-table .market-list-symbol-column {
+  left: var(--signal-stream-time-column-width);
+  z-index: 4;
+}
+.signal-stream-surface .market-list-table th.market-list-symbol-column { z-index: 6; }
+.signal-stream-surface .market-list-table tbody tr[data-recency] { --signal-recency-rail: color-mix(in oklab, var(--muted-foreground) 42%, transparent); }
+.signal-stream-surface .market-list-table tbody tr[data-recency="hot"] { --signal-recency-rail: var(--news-hot); }
+.signal-stream-surface .market-list-table tbody tr[data-recency="cold"] { --signal-recency-rail: var(--news-cold); }
+.signal-stream-surface .market-list-table tbody tr[data-recency="old"] { --signal-recency-rail: var(--news-old); }
+.signal-stream-surface .market-list-table tbody tr[data-recency] > .market-list-time-column:first-child {
+  box-shadow: inset 4px 0 0 var(--signal-recency-rail);
+  padding-left: 13px;
+}
+.signal-stream-surface .market-list-table tbody tr:hover > .market-list-time-column:first-child,
+.signal-stream-surface .market-list-table tbody tr:hover > .market-list-symbol-column {
+  background: color-mix(in oklab, var(--primary) 2.5%, var(--surface));
+}
+.signal-stream-surface .market-list-table .market-list-symbol-column {
+  box-shadow: inset -1px 0 color-mix(in oklab, var(--border) 72%, transparent);
+}
 .market-list-table .market-list-symbol-column { left: 0; max-width: 204px; min-width: 188px; width: 196px; }
 .market-list-table .market-list-symbol-column > button { max-width: 184px; }
 .market-list-table .market-list-symbol-column .table-security-card { min-width: 172px; width: 100%; }
