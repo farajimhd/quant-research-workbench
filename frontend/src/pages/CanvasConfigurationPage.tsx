@@ -62,6 +62,7 @@ import type { WorkspaceWindowLayout, WorkspaceWindowMeta, WorkspaceWindowStatus 
 import { TRADING_WORKSPACE_CONTAINERS, containerSupportsCanvasLink, containerSupportsSymbolLink, type WorkspaceContainerDefinition, type WorkspaceContainerId } from "../app/tradingWorkspace";
 import type { TradingWorkspaceMode } from "../app/tradingWorkspace";
 import { DEFAULT_STRATEGY_CHART_PRESENTATION, strategyInvalidationZones, strategyPresentationMarkers, type StrategyAction, type StrategyChartPresentation, type StrategyDecisionEvent } from "../app/strategyPresentation";
+import { acquireBarGptScope, canvasBarGptScopeId } from "../features/charts/barGptScopeLease";
 
 type HistoricalBar = { bar_end?: string; bar_start: string; close: number; high: number; is_closed?: boolean; last_event_ts?: string; low: number; open: number; volume: number };
 const EMPTY_STRATEGY_DECISIONS: StrategyDecisionEvent[] = [];
@@ -829,8 +830,10 @@ function useCanvasHistoricalChart(symbol: string, timeframe: CanvasChartTimefram
         setState((current) => ({ ...current, historyError: reason instanceof Error ? reason.message : String(reason) }));
       })
       .finally(() => {
-        historyRequestRef.current = false;
-        if (historyAbortRef.current === controller) historyAbortRef.current = null;
+        if (historyAbortRef.current === controller) {
+          historyAbortRef.current = null;
+          historyRequestRef.current = false;
+        }
         if (requestKeyRef.current === requestKey) setState((current) => ({ ...current, loadingEarlier: false }));
       });
   }, [cutoffMs, enabled, indicatorColumns, rowBudget, symbol, timeframe]);
@@ -921,8 +924,10 @@ function useCanvasHistoricalChart(symbol: string, timeframe: CanvasChartTimefram
           setState((current) => ({ ...current, historyError: reason instanceof Error ? reason.message : String(reason), historyNotice: "", loading: false }));
         })
         .finally(() => {
-          historyRequestRef.current = false;
-          if (historyAbortRef.current === historyController) historyAbortRef.current = null;
+          if (historyAbortRef.current === historyController) {
+            historyAbortRef.current = null;
+            historyRequestRef.current = false;
+          }
         });
     };
 
@@ -1038,7 +1043,7 @@ function useCanvasHistoricalChart(symbol: string, timeframe: CanvasChartTimefram
       if (timer !== null) window.clearTimeout(timer);
       document.removeEventListener("visibilitychange", resume);
     };
-  }, [enabled, liveTail, rowBudget, symbol, timeframe]);
+  }, [enabled, indicatorColumns, liveTail, rowBudget, symbol, timeframe]);
 
   const currentRequestKey = `${symbol.trim().toUpperCase()}:${timeframe}:${indicatorColumns}`;
   return { ...state, loadEarlier, ready: enabled && readyKey === currentRequestKey };
@@ -2617,9 +2622,9 @@ function ContainerPreview({ canvasId, chartCutoffMs, definition, instanceId, lin
     {linkOpen ? <div className="canvas-container-settings" aria-label={`${definition.title} link configuration`} data-canvas-link-popover={instanceId}><div className="canvas-link-guide"><strong>Link color</strong><small>Same color = linked</small></div><LinkColorPicker containerTitle={definition.title} onChange={onLinkChange} value={linkGroup} /><LinkedContainerList containerTitle={definition.title} containers={linkedContainers} /></div> : null}
     {settingsOpen ? <div className="canvas-container-settings" aria-label={`${definition.title} settings`}>{containerFields(definition.id, settings, linkContext, updateSettings, onLinkContextChange)}</div> : null}
     <div className={overlayOpen ? "canvas-container-content configuration-open" : "canvas-container-content"}>{definition.id === "chart"
-        ? <ChartContainerPreview cutoffMs={chartCutoffMs} instanceId={instanceId} linkContext={linkContext} linkGroup={linkGroup} liveMode={liveMode} onLinkContextChange={onLinkContextChange} previewContext={previewContext} readOnly={readOnly} settings={settings} strategy={preview?.strategy} symbolEditable={symbolEditable} trading={preview?.trading} updateSettings={updateSettings} />
+        ? <ChartContainerPreview canvasId={canvasId} cutoffMs={chartCutoffMs} instanceId={instanceId} linkContext={linkContext} linkGroup={linkGroup} liveMode={liveMode} onLinkContextChange={onLinkContextChange} previewContext={previewContext} readOnly={readOnly} settings={settings} strategy={preview?.strategy} symbolEditable={symbolEditable} trading={preview?.trading} updateSettings={updateSettings} />
       : definition.id === "charts_quotes"
-        ? <ChartsQuotesContainerPreview cutoffMs={chartCutoffMs} instanceId={instanceId} linkContext={linkContext} liveMode={liveMode} onLinkContextChange={onLinkContextChange} previewContext={previewContext} readOnly={readOnly} settings={settings} strategy={preview?.strategy} symbolEditable={symbolEditable} trading={preview?.trading} updateSettings={updateSettings} />
+        ? <ChartsQuotesContainerPreview canvasId={canvasId} cutoffMs={chartCutoffMs} instanceId={instanceId} linkContext={linkContext} liveMode={liveMode} onLinkContextChange={onLinkContextChange} previewContext={previewContext} readOnly={readOnly} settings={settings} strategy={preview?.strategy} symbolEditable={symbolEditable} trading={preview?.trading} updateSettings={updateSettings} />
       : definition.id === "microstructure"
         ? <QuotesTapeContainer end={liveMode ? undefined : new Date(chartCutoffMs).toISOString()} onSymbolChange={symbolEditable ? (symbol) => onLinkContextChange({ symbol }) : undefined} settings={settings.microstructure} start={liveMode ? undefined : dateInTimeZone(previewContext.sessionDate, "04:00", "America/New_York").toISOString()} symbol={linkContext.symbol} />
       : definition.id === "facts"
@@ -2697,6 +2702,7 @@ function renderPreview(id: WorkspaceContainerId, preview: CanvasPreview | null, 
 }
 
 type ChartContainerPreviewProps = {
+  canvasId: string;
   cutoffMs: number;
   instanceId: string;
   linkContext: CanvasLinkContext;
@@ -2712,15 +2718,15 @@ type ChartContainerPreviewProps = {
   updateSettings: SettingsUpdater;
 };
 
-const ChartContainerPreview = memo(function ChartContainerPreview({ cutoffMs, instanceId, linkContext, liveMode, onLinkContextChange, previewContext, settings, strategy, symbolEditable, trading, updateSettings }: ChartContainerPreviewProps) {
+const ChartContainerPreview = memo(function ChartContainerPreview({ canvasId, cutoffMs, instanceId, linkContext, liveMode, onLinkContextChange, previewContext, settings, strategy, symbolEditable, trading, updateSettings }: ChartContainerPreviewProps) {
   const liveChart = useCanvasHistoricalChart(linkContext.symbol, settings.chart.timeframe, cutoffMs, previewContext.sessionDate, settings.chart.visibleIndicators, liveMode);
   const presentations = useTickerPresentations([linkContext.symbol]);
   const strategyDecisions = useMemo(() => strategyDecisionEvents(strategy), [strategy]);
   const strategyPresentation = useMemo(() => resolvedStrategyPresentation(strategy), [strategy]);
-  return <ChartPreview changeAsOf={new Date(cutoffMs).toISOString()} chartSettings={settings.chart} instanceId={instanceId} linkContext={linkContext} liveChart={liveChart} logoUrl={presentations[linkContext.symbol]?.logo_url} onChartSettingsChange={(next) => updateSettings((current) => ({ ...current, chart: next }))} onLinkContextChange={onLinkContextChange} strategyDecisions={strategyDecisions} strategyPresentation={strategyPresentation} symbolEditable={symbolEditable} trading={trading} />;
+  return <ChartPreview canvasId={canvasId} changeAsOf={new Date(cutoffMs).toISOString()} chartSettings={settings.chart} instanceId={instanceId} linkContext={linkContext} liveChart={liveChart} logoUrl={presentations[linkContext.symbol]?.logo_url} onChartSettingsChange={(next) => updateSettings((current) => ({ ...current, chart: next }))} onLinkContextChange={onLinkContextChange} strategyDecisions={strategyDecisions} strategyPresentation={strategyPresentation} symbolEditable={symbolEditable} trading={trading} />;
 }, chartContainerPreviewPropsEqual);
 
-function ChartsQuotesContainerPreview({ cutoffMs, instanceId, linkContext, liveMode, onLinkContextChange, previewContext, readOnly, settings, strategy, symbolEditable, trading, updateSettings }: Omit<ChartContainerPreviewProps, "linkGroup">) {
+function ChartsQuotesContainerPreview({ canvasId, cutoffMs, instanceId, linkContext, liveMode, onLinkContextChange, previewContext, readOnly, settings, strategy, symbolEditable, trading, updateSettings }: Omit<ChartContainerPreviewProps, "linkGroup">) {
   const main = useCanvasHistoricalChart(linkContext.symbol, settings.charts_quotes.main.timeframe, cutoffMs, previewContext.sessionDate, settings.charts_quotes.main.visibleIndicators, liveMode);
   const macroChartsEnabled = main.ready;
   const month = useCanvasHistoricalChart(linkContext.symbol, settings.charts_quotes.month.timeframe, cutoffMs, previewContext.sessionDate, settings.charts_quotes.month.visibleIndicators, liveMode, macroChartsEnabled);
@@ -2744,11 +2750,11 @@ function ChartsQuotesContainerPreview({ cutoffMs, instanceId, linkContext, liveM
   } : null;
   const chartProps = { changeAsOf, linkContext, logoUrl, onLinkContextChange, strategyDecisions, strategyPresentation, symbolEditable: false, toolbarVariant: "compact" as const, trading };
   return <ChartsQuotesMarketLayout
-    dailyChart={<ChartPreview {...chartProps} baseHeight={255} chartSettings={settings.charts_quotes.daily} fillHeight instanceId={`${instanceId}.daily`} liveChart={daily} onChartSettingsChange={(next) => updateSlot("daily", { ...next, timeframe: "1d" })} timeframes={["1d"]} />}
+    dailyChart={<ChartPreview {...chartProps} baseHeight={255} canvasId={canvasId} chartSettings={settings.charts_quotes.daily} fillHeight instanceId={`${instanceId}.daily`} liveChart={daily} onChartSettingsChange={(next) => updateSlot("daily", { ...next, timeframe: "1d" })} timeframes={["1d"]} />}
     end={liveMode ? undefined : changeAsOf}
     layout={settings.charts_quotes.layout}
-    mainChart={<ChartPreview {...chartProps} baseHeight={460} chartSettings={settings.charts_quotes.main} fillHeight instanceId={`${instanceId}.main`} liveChart={main} onChartSettingsChange={(next) => updateSlot("main", next)} timeframes={HISTORICAL_TIMEFRAMES} />}
-    monthChart={<ChartPreview {...chartProps} baseHeight={255} chartSettings={settings.charts_quotes.month} fillHeight instanceId={`${instanceId}.month`} liveChart={month} onChartSettingsChange={(next) => updateSlot("month", { ...next, timeframe: "1mo" })} timeframes={["1mo"]} />}
+    mainChart={<ChartPreview {...chartProps} baseHeight={460} canvasId={canvasId} chartSettings={settings.charts_quotes.main} fillHeight instanceId={`${instanceId}.main`} liveChart={main} onChartSettingsChange={(next) => updateSlot("main", next)} timeframes={HISTORICAL_TIMEFRAMES} />}
+    monthChart={<ChartPreview {...chartProps} baseHeight={255} canvasId={canvasId} chartSettings={settings.charts_quotes.month} fillHeight instanceId={`${instanceId}.month`} liveChart={month} onChartSettingsChange={(next) => updateSlot("month", { ...next, timeframe: "1mo" })} timeframes={["1mo"]} />}
     onLayoutChange={(layout) => updateSettings((current) => ({ ...current, charts_quotes: { ...current.charts_quotes, layout } }))}
     onSymbolChange={symbolEditable ? (symbol) => onLinkContextChange({ symbol }) : undefined}
     start={liveMode ? undefined : dateInTimeZone(previewContext.sessionDate, "04:00", "America/New_York").toISOString()}
@@ -2760,7 +2766,8 @@ function ChartsQuotesContainerPreview({ cutoffMs, instanceId, linkContext, liveM
 function chartContainerPreviewPropsEqual(previous: ChartContainerPreviewProps, next: ChartContainerPreviewProps) {
   const previousChart = previous.settings.chart;
   const nextChart = next.settings.chart;
-  return previous.instanceId === next.instanceId
+  return previous.canvasId === next.canvasId
+    && previous.instanceId === next.instanceId
     && previous.cutoffMs === next.cutoffMs
     && previous.liveMode === next.liveMode
     && previous.readOnly === next.readOnly
@@ -2843,6 +2850,7 @@ function stringArraysEqual(previous: readonly string[], next: readonly string[])
 
 function ChartPreview({
   baseHeight,
+  canvasId,
   changeAsOf,
   chartSettings,
   instanceId,
@@ -2860,6 +2868,7 @@ function ChartPreview({
   trading,
 }: {
   baseHeight?: number;
+  canvasId: string;
   changeAsOf: string;
   chartSettings: CanvasChartSettings;
   instanceId: string;
@@ -2894,7 +2903,11 @@ function ChartPreview({
   const barGptQuantile = chartSettings.barGptQuantile;
   const barGptHorizon = chartSettings.barGptHorizon;
   const barGptTriggerMode = chartSettings.barGptTriggerMode;
-  const barGptScopeId = `canvas:${instanceId}`;
+  const barGptScopeId = canvasBarGptScopeId(canvasId, instanceId);
+  useEffect(() => {
+    if (!showBarGpt) return;
+    return acquireBarGptScope(barGptScopeId);
+  }, [barGptScopeId, showBarGpt]);
   useEffect(() => {
     if (!showBarGpt) {
       setBarGptForecasts([]);
@@ -2904,7 +2917,10 @@ function ChartPreview({
     }
     let cancelled = false;
     let timer = 0;
+    let requestController: AbortController | null = null;
     const refresh = async () => {
+      const controller = new AbortController();
+      requestController = controller;
       try {
         const scope = await api<BarGptScopePayload>(`/api/bar-gpt/scopes/${encodeURIComponent(barGptScopeId)}`, {
           method: "PUT",
@@ -2918,10 +2934,11 @@ function ChartPreview({
             ttl_ms: 10_000,
             source: "canvas.chart",
           }),
+          signal: controller.signal,
           timeoutMs: 2500,
         });
         if (!cancelled) setBarGptScope(scope);
-        const forecasts = await api<BarGptForecastPayload>(`/api/model-features/chart/${encodeURIComponent(linkContext.symbol)}?model_version=${encodeURIComponent(barGptVersion)}&quantile=${encodeURIComponent(barGptQuantile)}&scope_id=${encodeURIComponent(barGptScopeId)}`, { timeoutMs: 2500 });
+        const forecasts = await api<BarGptForecastPayload>(`/api/model-features/chart/${encodeURIComponent(linkContext.symbol)}?model_version=${encodeURIComponent(barGptVersion)}&quantile=${encodeURIComponent(barGptQuantile)}&scope_id=${encodeURIComponent(barGptScopeId)}`, { signal: controller.signal, timeoutMs: 2500 });
         if (!cancelled) {
           const rows = latestForecastsByHorizon(forecasts.rows);
           setBarGptForecasts(barGptHorizon === "all" ? rows : rows.filter((row) => row.horizon === barGptHorizon));
@@ -2932,6 +2949,8 @@ function ChartPreview({
           setBarGptForecasts([]);
           setBarGptError(error instanceof Error ? error.message : "BarGPT forecast refresh failed.");
         }
+      } finally {
+        if (requestController === controller) requestController = null;
       }
       if (!cancelled) timer = window.setTimeout(refresh, 1_000);
     };
@@ -2939,9 +2958,9 @@ function ChartPreview({
     return () => {
       cancelled = true;
       window.clearTimeout(timer);
-      void api(`/api/bar-gpt/scopes/${encodeURIComponent(barGptScopeId)}`, { method: "DELETE", timeoutMs: 1000 }).catch(() => undefined);
+      requestController?.abort();
     };
-  }, [barGptClockUs, barGptHorizon, barGptQuantile, barGptScopeId, barGptTriggerMode, barGptVersion, forecastLineComponents.join("|"), linkContext.symbol, liveChart.pointInTime, showBarGpt]);
+  }, [barGptClockUs, barGptHorizon, barGptQuantile, barGptScopeId, barGptTriggerMode, barGptVersion, linkContext.symbol, liveChart.pointInTime, showBarGpt]);
   const payload = useMemo<ChartPayload>(() => {
     const marketSignalMarkers = qmdMarketSignalChartMarkers(
       liveChart.marketSignalEvents,

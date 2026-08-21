@@ -8,7 +8,7 @@ This launcher never installs packages or browser binaries.
 from __future__ import annotations
 
 import argparse
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import json
 import os
 from pathlib import Path
@@ -46,6 +46,63 @@ VIEWPORTS = {
 REPRESENTATIVE_PAGES = ("real-live-trading", "replay-trading", "backtest-trading", "backtest-debug", "research-workspace", "canvas-configuration", "data-catalog-configuration", "rule-set-configuration", "market-discovery-configuration", "portfolio-configuration", "oms-configuration", "account-configuration", "revision-configuration", "canvas-focus", "services-dashboard")
 REPRESENTATIVE_THEMES = ("light", "dark")
 TARGETED_SCALES = (0.8, 1.0, 1.25)
+
+
+def chart_history_fixture(session_date: str, symbol: str = "AAPL") -> dict[str, Any]:
+    start = datetime.fromisoformat(f"{session_date}T10:00:00+00:00")
+    history: list[dict[str, Any]] = []
+    indicators: list[dict[str, Any]] = []
+    previous_close = 100.0
+    for index in range(220):
+        bar_start = start + timedelta(minutes=index)
+        bar_end = bar_start + timedelta(minutes=1)
+        direction = 1 if index % 7 not in {0, 1} else -1
+        open_price = previous_close
+        close_price = open_price + direction * (0.04 + (index % 5) * 0.01)
+        high = max(open_price, close_price) + 0.05
+        low = min(open_price, close_price) - 0.04
+        history.append({
+            "bar_start": bar_start.isoformat(),
+            "bar_end": bar_end.isoformat(),
+            "open": round(open_price, 4),
+            "high": round(high, 4),
+            "low": round(low, 4),
+            "close": round(close_price, 4),
+            "volume": 1000 + index * 13,
+            "is_closed": True,
+            "session_date": session_date,
+        })
+        indicators.append({
+            "bar_start": bar_start.isoformat(),
+            "vwap": round(100 + index * 0.002, 4),
+            "macd_line": round((index % 17 - 8) * 0.01, 4),
+            "macd_signal": round((index % 13 - 6) * 0.008, 4),
+            "macd_histogram": round((index % 9 - 4) * 0.006, 4),
+        })
+        previous_close = close_price
+    return {
+        "as_of": history[-1]["bar_end"],
+        "earliest_session_date": session_date,
+        "has_more": False,
+        "has_more_in_session": False,
+        "history": history,
+        "indicator_provenance": {
+            "as_of": history[-1]["bar_end"],
+            "complete": True,
+            "engine_version": "ui-review-fixture-v1",
+            "source": {"tiers": ["deterministic_ui_fixture"]},
+        },
+        "indicators": indicators,
+        "indicators_available": True,
+        "market_signal_events": [],
+        "next_before": "",
+        "previous_session_before": "",
+        "stage": "full",
+        "structure_events": [],
+        "structure_level_history": [],
+        "ticker": symbol,
+        "timeframe": "1m",
+    }
 
 
 def ensure_playwright() -> None:
@@ -567,8 +624,9 @@ def validate_canvas_interactions(
                 chart.get_by_text("Loading chart data...", exact=True).wait_for(state="hidden", timeout=120_000)
                 price_pane = chart.locator(".chart-price").first
                 price_pane.locator(".chart-pane-canvas canvas").first.wait_for(state="visible", timeout=30_000)
-                validate_price_zone_legend(page, chart, issues, interaction_screenshot)
-                validate_native_pane_resize(page, chart, issues)
+                if not chart_stress_only:
+                    validate_price_zone_legend(page, chart, issues, interaction_screenshot)
+                    validate_native_pane_resize(page, chart, issues)
                 price_box = price_pane.bounding_box()
                 if price_box:
                     center_x = price_box["x"] + price_box["width"] * 0.55
@@ -1542,6 +1600,15 @@ def capture(args: argparse.Namespace) -> int:
                             }),
                         ),
                     )
+                if args.stub_chart_history:
+                    fixture_date = args.canvas_session_date or "2026-08-20"
+                    page.route(
+                        "**/api/trading/canvas-chart/history**",
+                        lambda route: route.fulfill(
+                            content_type="application/json",
+                            body=json.dumps(chart_history_fixture(fixture_date)),
+                        ),
+                    )
                 console_errors: list[str] = []
                 page_errors: list[str] = []
                 page_crashes: list[str] = []
@@ -1742,6 +1809,7 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--chart-stress-cycles", type=int, default=24, help="mixed pan, zoom, and axis-scale cycles in the Canvas interaction stress")
     result.add_argument("--chart-stress-pattern", choices=("mixed", "pathological", "left-paging"), default="mixed", help="alternate gestures, accumulate them in one direction, or force left-edge history paging")
     result.add_argument("--chart-stress-only", action="store_true", help="stop the Canvas interaction review after chart stress")
+    result.add_argument("--stub-chart-history", action="store_true", help="use deterministic chart history for frontend-only renderer and interaction QA")
     result.add_argument("--watchlist-close-only", action="store_true", help="stop after the Watch Universe close and persistence regression")
     result.add_argument("--seed-core-containers", action="store_true", help="seed portfolio and scanner containers for child-canvas review")
     result.add_argument("--mode", choices=("targeted", "full"), default="targeted")
