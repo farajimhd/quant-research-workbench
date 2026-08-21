@@ -1948,6 +1948,10 @@ def capture(args: argparse.Namespace) -> int:
                             f"document overflows horizontally ({metrics['documentWidth']} > "
                             f"{metrics['viewportWidth']})"
                         )
+                    if (
+                        scenario["page"] == "services-dashboard" or scenario["page"].startswith("service-")
+                    ) and page.locator(".services-page-loading-overlay").count():
+                        issues.append("service page remained behind its blocking loading overlay")
                     interaction_screenshot = screenshot_path.with_name(
                         f"{screenshot_path.stem}__link-config.png"
                     ) if (
