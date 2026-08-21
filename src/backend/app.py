@@ -18,7 +18,7 @@ from functools import lru_cache
 from dataclasses import asdict
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
-from typing import Annotated, Any
+from typing import Annotated, Any, Callable
 from zoneinfo import ZoneInfo
 
 import polars as pl
@@ -3298,12 +3298,22 @@ def service_table_preview(service_id: str, database: str, table: str, limit: int
 
 @app.get("/api/services/news/histogram")
 def news_service_histogram() -> dict[str, Any]:
-    return service_news_histogram()
+    return news_service_read(service_news_histogram)
 
 
 @app.get("/api/services/news/today")
 def news_service_today(limit: int = 250, sort: str = "desc") -> dict[str, Any]:
-    return service_news_today_rows(limit, sort)
+    return news_service_read(lambda: service_news_today_rows(limit, sort))
+
+
+def news_service_read(reader: Callable[[], dict[str, Any]]) -> dict[str, Any]:
+    try:
+        return reader()
+    except (ConnectionError, TimeoutError, urllib.error.URLError) as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=f"News service ClickHouse dependency unavailable: {exc}",
+        ) from exc
 
 
 @app.get("/api/services/news/detail/{canonical_news_id}")
