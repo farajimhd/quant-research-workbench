@@ -13,6 +13,7 @@ import urllib.request
 import uuid
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -25,11 +26,12 @@ from src.backend.qmd_gateway_client import (
     qmd_append_signal_stream_rows,
     qmd_configure_signal_streams,
     qmd_evaluate_signal_streams,
+    qmd_intraday_bar_history,
     qmd_live_market_state_history,
     qmd_scanner_snapshot,
     qmd_status,
 )
-from src.backend.bounded_cache import BoundedSingleFlightTtlCache
+from src.backend.bounded_cache import BoundedSingleFlightTtlCache, BoundedTtlCache
 from src.backend.feature_projection import compact_feature_projection
 from src.backend.historical_watchlist_plan import compile_signal_stream_recovery_templates
 from src.backend.query_plans.market_tradable_universe_v1 import tradable_symbol_lookup
@@ -50,6 +52,17 @@ SCANNER_COMPOSITION_CACHE = BoundedSingleFlightTtlCache[str, dict[str, Any]](
     contract_revision="real-live-scanner-composition.v2",
     wait_timeout_seconds=30.0,
 )
+HALT_OCCURRENCE_CONTEXT_CACHE = BoundedTtlCache[str, dict[str, Any]](
+    max_entries=10_000,
+    ttl_seconds=6 * 60 * 60,
+    contract_revision="halt-occurrence-context.v1",
+)
+HALT_OCCURRENCE_CONTEXT_MISS_CACHE = BoundedTtlCache[str, bool](
+    max_entries=10_000,
+    ttl_seconds=30.0,
+    contract_revision="halt-occurrence-context-miss.v1",
+)
+HALT_OCCURRENCE_CONTEXT_LOCK = threading.RLock()
 SCANNER_SNAPSHOT_LOCK = threading.RLock()
 SCANNER_LATEST_COMPLETE: dict[str, Any] | None = None
 SCANNER_REFRESH_ERROR = ""
@@ -356,18 +369,42 @@ def _halt_direction(value: Any) -> str:
     return "Up" if numeric > 0 else "Down" if numeric < 0 else "Flat"
 
 
-def _halt_category(row: dict[str, Any]) -> str:
-    from src.backend.trading_runtime_service import market_event_references
+@lru_cache(maxsize=1)
+def _halt_reference_names() -> dict[str, dict[int, str]]:
+    from pipelines.reference_data.clickhouse_load_market_references import (
+        build_condition_token_rows,
+    )
+    from src.backend.trading_runtime_service import MARKET_REFERENCE_DIR
 
-    references = market_event_references().get("conditions") or {}
-    tokens = [
-        *list(row.get("source_indicators") or []),
-        *list(row.get("source_conditions") or []),
-    ]
+    names: dict[str, dict[int, str]] = {}
+    for row in build_condition_token_rows(MARKET_REFERENCE_DIR):
+        if not bool(row.get("is_join_canonical")):
+            continue
+        family = str(row.get("source_family") or "")
+        modifier = row.get("modifier_int")
+        name = str(row.get("condition") or "").strip()
+        if family and isinstance(modifier, int) and modifier >= 0 and name:
+            names.setdefault(family, {})[modifier] = name
+    return names
+
+
+def _halt_category(row: dict[str, Any]) -> str:
+    references = _halt_reference_names()
     names = [
-        str(dict(references.get(str(token)) or {}).get("name") or "").strip()
-        for token in tokens
+        references.get("luld_indicators", {}).get(int(token), "")
+        for token in row.get("source_indicators") or []
+        if str(token).isdigit()
     ]
+    source_family = {
+        "quote": "quote_conditions",
+        "trade": "trade_conditions",
+    }.get(str(row.get("source_event_type") or "").lower(), "")
+    if source_family:
+        names.extend(
+            references.get(source_family, {}).get(int(token), "")
+            for token in row.get("source_conditions") or []
+            if str(token).isdigit()
+        )
     names = [name for name in names if name and name.lower() != "unknown condition"]
     priority = (
         "luld", "volatility", "news pending", "news dissemination",
@@ -379,6 +416,146 @@ def _halt_category(row: dict[str, Any]) -> str:
         names[0] if names else str(row.get("block_reason") or "Trading halt"),
     )
     return re.sub(r"(?<=[a-z])(?=[A-Z])", " ", selected).replace("_", " ").strip()
+
+
+def _halt_occurrence_bar_context(
+    row: dict[str, Any],
+    *,
+    history_loader: Any = qmd_intraday_bar_history,
+) -> dict[str, Any]:
+    ticker = str(row.get("ticker") or row.get("symbol") or "").strip().upper()
+    event_value = str(row.get("event_time") or row.get("available_at") or "")
+    if not ticker or not event_value:
+        return {}
+    try:
+        event_at = datetime.fromisoformat(event_value.replace("Z", "+00:00"))
+        event_at = event_at.astimezone(UTC) if event_at.tzinfo else event_at.replace(tzinfo=UTC)
+    except ValueError:
+        return {}
+    event_us = int(event_at.timestamp() * 1_000_000)
+    payload = history_loader(
+        ticker,
+        timeframe="1m",
+        start_date=event_at.astimezone(NEW_YORK).date().isoformat(),
+        end_date=event_at.astimezone(NEW_YORK).date().isoformat(),
+        before_event_timestamp_us=event_us,
+        row_limit=500,
+    )
+    bars = [
+        item for item in payload.get("bars") or []
+        if isinstance(item, dict)
+        and float(item.get("close") or 0) > 0
+        and int(item.get("last_event_timestamp_us") or item.get("last_event_ts") or 0) <= event_us
+    ]
+    bars.sort(key=lambda item: int(item.get("last_event_timestamp_us") or item.get("last_event_ts") or 0))
+    if not bars:
+        return {}
+    latest = bars[-1]
+    latest_price = float(latest["close"])
+    baseline_cutoff_us = event_us - 5 * 60 * 1_000_000
+    baseline = next(
+        (
+            item for item in reversed(bars)
+            if int(item.get("last_event_timestamp_us") or item.get("last_event_ts") or 0)
+            <= baseline_cutoff_us
+        ),
+        None,
+    )
+    baseline_price = float((baseline or {}).get("close") or 0)
+    change_5m_pct = (
+        (latest_price / baseline_price - 1.0) * 100.0
+        if baseline_price > 0
+        else None
+    )
+    return {
+        "last_price": latest_price,
+        "change_5m_pct": change_5m_pct,
+        "source": "qmd_live_intraday_family_bars_v2",
+    }
+
+
+def enrich_halt_signal_stream_snapshot(
+    payload: dict[str, Any],
+    *,
+    history_loader: Any = qmd_intraday_bar_history,
+) -> dict[str, Any]:
+    """Recover missing halt price context causally without mutating occurrences."""
+
+    result = dict(payload)
+
+    def latest_revision(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        selected: dict[tuple[str, str], dict[str, Any]] = {}
+        order: list[tuple[str, str]] = []
+        passthrough: list[dict[str, Any]] = []
+        for source in rows:
+            row = dict(source)
+            if str(row.get("signal_stream_id") or "") != "market-halts":
+                passthrough.append(row)
+                continue
+            key = (
+                str(row.get("ticker") or row.get("symbol") or "").upper(),
+                str(row.get("event_time") or row.get("available_at") or ""),
+            )
+            if key not in selected:
+                order.append(key)
+                selected[key] = row
+                continue
+            if int(row.get("sequence") or 0) > int(selected[key].get("sequence") or 0):
+                selected[key] = row
+        return [selected[key] for key in order] + passthrough
+
+    def enrich(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        output: list[dict[str, Any]] = []
+        for source in rows:
+            row = dict(source)
+            if str(row.get("signal_stream_id") or "") != "market-halts":
+                output.append(row)
+                continue
+            if str(row.get("halt_category") or "").strip().lower() == "closed":
+                row["halt_category"] = _halt_reference_names().get("luld_indicators", {}).get(
+                    17, "Suspended Halt Pause"
+                )
+            needs_price = row.get("last_price") is None
+            change_column = "field__price__change__5__bar__pct"
+            needs_change = row.get(change_column) is None
+            if needs_price or needs_change:
+                cache_key = "|".join((
+                    str(row.get("ticker") or row.get("symbol") or "").upper(),
+                    str(row.get("event_time") or row.get("available_at") or ""),
+                ))
+                context = HALT_OCCURRENCE_CONTEXT_CACHE.get(cache_key)
+                if context is None and HALT_OCCURRENCE_CONTEXT_MISS_CACHE.get(cache_key):
+                    context = {}
+                if context is None:
+                    with HALT_OCCURRENCE_CONTEXT_LOCK:
+                        context = HALT_OCCURRENCE_CONTEXT_CACHE.get(cache_key)
+                        if context is None and HALT_OCCURRENCE_CONTEXT_MISS_CACHE.get(cache_key):
+                            context = {}
+                        if context is None:
+                            try:
+                                context = _halt_occurrence_bar_context(
+                                    row, history_loader=history_loader
+                                )
+                            except (OSError, RuntimeError, TimeoutError, TypeError, ValueError):
+                                context = {}
+                            if context:
+                                HALT_OCCURRENCE_CONTEXT_CACHE.set(cache_key, context)
+                            else:
+                                HALT_OCCURRENCE_CONTEXT_MISS_CACHE.set(cache_key, True)
+                if needs_price and context.get("last_price") is not None:
+                    row["last_price"] = context["last_price"]
+                if needs_change and context.get("change_5m_pct") is not None:
+                    row[change_column] = context["change_5m_pct"]
+                    row["halt_direction"] = _halt_direction(context["change_5m_pct"])
+                if context:
+                    row["halt_market_context_authority"] = context.get("source")
+                    row["halt_market_context_recovered"] = True
+            output.append(row)
+        return output
+
+    result["occurrences"] = enrich(latest_revision(list(payload.get("occurrences") or [])))
+    result["new_occurrences"] = enrich(latest_revision(list(payload.get("new_occurrences") or [])))
+    return result
 
 
 def _project_native_market_state_columns(

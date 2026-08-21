@@ -4296,18 +4296,23 @@ def market_discovery_signal_stream_runtime(
         if cutoff.tzinfo is None:
             raise HTTPException(status_code=422, detail="Signal Stream as_of must include a timezone.")
     if not as_of.strip() and not run_id.strip():
+        from src.backend.real_live_trading_service import (
+            enrich_halt_signal_stream_snapshot,
+        )
         from src.backend.watchlist_runtime_service import (
             enrich_signal_stream_snapshot,
             live_market_reference_projection,
         )
 
-        return enrich_signal_stream_snapshot(
-            qmd_signal_stream_snapshot(
-                signal_stream_id=signal_stream_id,
-                after_sequence=after_sequence,
-                limit=limit,
-            ),
-            live_market_reference_projection(),
+        return enrich_halt_signal_stream_snapshot(
+            enrich_signal_stream_snapshot(
+                qmd_signal_stream_snapshot(
+                    signal_stream_id=signal_stream_id,
+                    after_sequence=after_sequence,
+                    limit=limit,
+                ),
+                live_market_reference_projection(),
+            )
         )
     if not run_id.strip():
         raise HTTPException(status_code=422, detail="Historical Signal Stream reads require run_id.")

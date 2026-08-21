@@ -322,9 +322,6 @@ function overlaySessionDiscovery(base: WatchUniverseCatalogResponse): WatchUnive
           return {
             ...row,
             enabled: saved.enabled,
-            columns: saved.columns?.length ? saved.columns : row.columns,
-            column_intervals: saved.column_intervals ?? row.column_intervals,
-            column_aggregations: saved.column_aggregations ?? row.column_aggregations,
           };
         }
         return { ...row, ...saved };

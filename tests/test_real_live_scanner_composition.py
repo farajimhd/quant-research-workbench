@@ -56,7 +56,7 @@ class RealLiveScannerCompositionTests(unittest.TestCase):
                 "source_event_ts_utc": "2026-08-20T14:15:00+00:00",
                 "source_event_type": "quote",
                 "event_status": "opened",
-                "source_conditions": [45],
+                "source_conditions": [43],
                 "source_indicators": [],
                 "block_reason": "quote_condition_halt",
                 "evidence_json": '{"bid": 10.0, "ask": 10.1}',
@@ -68,7 +68,7 @@ class RealLiveScannerCompositionTests(unittest.TestCase):
                 "source_event_ts_utc": "2026-08-20T14:15:01+00:00",
                 "source_event_type": "quote",
                 "event_status": "updated",
-                "source_conditions": [45],
+                "source_conditions": [43],
                 "source_indicators": [],
                 "block_reason": "quote_condition_halt",
                 "evidence_json": '{"bid": 9.9, "ask": 10.0}',
@@ -128,6 +128,66 @@ class RealLiveScannerCompositionTests(unittest.TestCase):
         self.assertEqual(first["new_occurrences"][1]["bid_price"], 9.9)
         self.assertEqual(service._halt_occurrence_row(source["rows"][0])["bid"], 10.0)
         self.assertEqual(second["inserted_count"], 0)
+
+    def test_halt_category_decodes_raw_codes_with_their_source_family(self) -> None:
+        luld = service._halt_category({
+            "source_event_type": "luld",
+            "source_indicators": [17],
+            "source_conditions": [],
+        })
+        quote = service._halt_category({
+            "source_event_type": "quote",
+            "source_indicators": [],
+            "source_conditions": [17],
+        })
+
+        self.assertEqual(luld, "Suspended Halt Pause")
+        self.assertEqual(quote, "Fast Trading")
+
+    def test_live_halt_snapshot_recovers_causal_price_and_five_minute_change(self) -> None:
+        calls = 0
+
+        def history_loader(*_args, **_kwargs) -> dict:
+            nonlocal calls
+            calls += 1
+            return {
+                "bars": [
+                    {
+                        "close": 10.0,
+                        "last_event_timestamp_us": 1_787_324_400_000_000,
+                    },
+                    {
+                        "close": 9.0,
+                        "last_event_timestamp_us": 1_787_324_690_000_000,
+                    },
+                ]
+            }
+
+        row = {
+            "event_id": "legacy-halt-without-market-context",
+            "event_time": "2026-08-21T15:05:00+00:00",
+            "halt_category": "Closed",
+            "halt_direction": "Unavailable",
+            "last_price": None,
+            "field__price__change__5__bar__pct": None,
+            "signal_stream_id": "market-halts",
+            "sequence": 2,
+            "ticker": "HALTCTX",
+        }
+        stale_revision = {**row, "halt_category": None, "sequence": 1}
+        result = service.enrich_halt_signal_stream_snapshot(
+            {"occurrences": [stale_revision, row], "new_occurrences": [row]},
+            history_loader=history_loader,
+        )
+
+        occurrence = result["occurrences"][0]
+        self.assertEqual(len(result["occurrences"]), 1)
+        self.assertEqual(calls, 1)
+        self.assertEqual(occurrence["last_price"], 9.0)
+        self.assertAlmostEqual(occurrence["field__price__change__5__bar__pct"], -10.0)
+        self.assertEqual(occurrence["halt_direction"], "Down")
+        self.assertEqual(occurrence["halt_category"], "Suspended Halt Pause")
+        self.assertTrue(occurrence["halt_market_context_recovered"])
 
     def test_native_halt_evidence_precedes_later_scanner_fallback(self) -> None:
         occurrence = service._halt_occurrence_row(
