@@ -21,13 +21,32 @@ import type {
   WorkloadBudgetPayload,
 } from "../features/services/contracts";
 import { ServicePanel as Panel } from "../features/services/ServicePanel";
-import { formatServiceTime as formatTime, parseServiceTimestamp } from "../features/services/time";
+import {
+  EXCHANGE_TIME_ZONE,
+  VANCOUVER_TIME_ZONE,
+  exchangeDateParts,
+  formatLogTime,
+  formatNewsTableDate,
+  formatReadableDateTime,
+  formatServiceTime as formatTime,
+  formatTableZoneDate,
+  formatTableZoneTime,
+  formatUtcDateTime,
+  formatZoneDate,
+  formatZoneDateTime,
+  formatZoneTime,
+  nextCalendarDate,
+  parseLogTime,
+  parseServiceTimestamp,
+  tableRowRecencyClass,
+  tableTimeTitle,
+  tableTimestampMs,
+  zonedDateTimeToUtc,
+} from "../features/services/time";
 import "./ServicesOverview.css";
 
 export type { ServiceId, ServicePageMode } from "../app/routes";
 
-const EXCHANGE_TIME_ZONE = "America/New_York";
-const VANCOUVER_TIME_ZONE = "America/Vancouver";
 const LazyBarGptOperationalConfigurationPanel = lazy(() => import("../features/services/BarGptOperationalConfigurationPanel").then((module) => ({ default: module.BarGptOperationalConfigurationPanel })));
 
 function BarGptOperationalConfigurationPanel() {
@@ -5469,43 +5488,6 @@ function secHistogramFullWindowRows(rows: SecDailyHistogramDatum[], windowStartU
   });
 }
 
-function nextCalendarDate(year: number, month: number, day: number) {
-  const value = new Date(Date.UTC(year, month - 1, day + 1));
-  return { day: value.getUTCDate(), month: value.getUTCMonth() + 1, year: value.getUTCFullYear() };
-}
-
-function exchangeDateParts(value: Date) {
-  const parts = new Intl.DateTimeFormat("en-US", {
-    day: "2-digit",
-    month: "2-digit",
-    timeZone: EXCHANGE_TIME_ZONE,
-    year: "numeric",
-  }).formatToParts(value);
-  const part = (type: string) => Number(parts.find((item) => item.type === type)?.value || "0");
-  return { day: part("day"), month: part("month"), year: part("year") };
-}
-
-function zonedDateTimeToUtc(year: number, month: number, day: number, hour: number, minute: number, timeZone: string) {
-  const target = Date.UTC(year, month - 1, day, hour, minute, 0, 0);
-  let utc = target;
-  for (let index = 0; index < 3; index += 1) {
-    const parts = new Intl.DateTimeFormat("en-US", {
-      day: "2-digit",
-      hour: "2-digit",
-      hourCycle: "h23",
-      minute: "2-digit",
-      month: "2-digit",
-      second: "2-digit",
-      timeZone,
-      year: "numeric",
-    }).formatToParts(new Date(utc));
-    const part = (type: string) => Number(parts.find((item) => item.type === type)?.value || "0");
-    const asUtc = Date.UTC(part("year"), part("month") - 1, part("day"), part("hour"), part("minute"), part("second"), 0);
-    utc += target - asUtc;
-  }
-  return new Date(utc);
-}
-
 function WorkPlanSummaryItem({ label, title = "", tone = "", value }: { label: string; title?: string; tone?: string; value: string }) {
   return (
     <div className={tone ? `service-work-plan-summary-item ${tone}` : "service-work-plan-summary-item"} title={title || label}>
@@ -7108,92 +7090,6 @@ function responsibilityStatusLabel(group: ServiceWorkGroup) {
   if (group.activeCount) return group.activeCount === 1 ? "1 active" : `${group.activeCount} active`;
   if (group.completedCount === group.rows.length) return "cycle complete";
   return displayName(group.status || "waiting");
-}
-
-function formatLogTime(value: string) {
-  const parsed = parseServiceTimestamp(value);
-  if (!Number.isFinite(parsed)) return value;
-  return new Intl.DateTimeFormat(undefined, { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit" }).format(new Date(parsed));
-}
-
-function formatNewsTableDate(value: string) {
-  const parsed = parseServiceTimestamp(value);
-  if (!Number.isFinite(parsed)) return value || "-";
-  return new Intl.DateTimeFormat(undefined, { month: "2-digit", day: "2-digit", year: "numeric" }).format(new Date(parsed));
-}
-
-function parseLogTime(value: string) {
-  const parsed = parseServiceTimestamp(value);
-  return Number.isFinite(parsed) ? parsed : undefined;
-}
-
-function tableTimestampMs(value: string, explicitMs?: number) {
-  if (Number.isFinite(explicitMs)) return Number(explicitMs);
-  return parseServiceTimestamp(value);
-}
-
-function tableRowRecencyClass(value: string | number | undefined) {
-  const timestamp = typeof value === "number" ? value : tableTimestampMs(String(value || ""));
-  if (!Number.isFinite(timestamp)) return "row-age-unknown";
-  const ageMinutes = (Date.now() - timestamp) / 60000;
-  if (ageMinutes < -1) return "row-age-future";
-  if (ageMinutes <= 1) return "row-age-now";
-  if (ageMinutes <= 5) return "row-age-1m";
-  if (ageMinutes <= 10) return "row-age-5m";
-  if (ageMinutes <= 15) return "row-age-10m";
-  if (ageMinutes <= 30) return "row-age-15m";
-  if (ageMinutes <= 60) return "row-age-30m";
-  return "row-age-old";
-}
-
-function tableTimeTitle(value: string, timestamp: number) {
-  if (!Number.isFinite(timestamp)) return value || "-";
-  return [
-    `ET ${formatReadableDateTime(new Date(timestamp).toISOString(), EXCHANGE_TIME_ZONE)}`,
-    `VAN ${formatReadableDateTime(new Date(timestamp).toISOString(), VANCOUVER_TIME_ZONE)}`,
-  ].join(" | ");
-}
-
-function formatTableZoneTime(timestamp: number, timeZone: string) {
-  return new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit", second: "2-digit", timeZone }).format(new Date(timestamp));
-}
-
-function formatTableZoneDate(timestamp: number, timeZone: string) {
-  return new Intl.DateTimeFormat(undefined, { month: "2-digit", day: "2-digit", year: "numeric", timeZone }).format(new Date(timestamp));
-}
-
-function formatZoneTime(value: Date, timeZone: string) {
-  return new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false, timeZone }).format(value);
-}
-
-function formatZoneDate(value: Date, timeZone: string) {
-  return new Intl.DateTimeFormat(undefined, { month: "short", day: "2-digit", year: "numeric", timeZone }).format(value);
-}
-
-function formatZoneDateTime(value: Date, timeZone: string) {
-  return new Intl.DateTimeFormat(undefined, { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false, timeZone }).format(value);
-}
-
-function formatReadableDateTime(value: string, timeZone: string) {
-  const parsed = parseServiceTimestamp(value);
-  if (!Number.isFinite(parsed)) return value || "-";
-  return new Intl.DateTimeFormat(undefined, {
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    month: "short",
-    second: "2-digit",
-    timeZone,
-    timeZoneName: "short",
-    weekday: "short",
-    year: "numeric",
-  }).format(new Date(parsed));
-}
-
-function formatUtcDateTime(value: string) {
-  const parsed = parseServiceTimestamp(value);
-  if (!Number.isFinite(parsed)) return value || "-";
-  return new Intl.DateTimeFormat(undefined, { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false, timeZone: "UTC" }).format(new Date(parsed));
 }
 
 function fleetMarketStatus(services: ServiceStatusPayload[]) {
