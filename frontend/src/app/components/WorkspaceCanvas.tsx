@@ -22,6 +22,8 @@ import type {
 } from "react";
 import { useEffect, useRef, useState } from "react";
 
+import "./WorkspaceCanvas.css";
+
 export type WorkspaceWindowId = string;
 
 export type WorkspaceWindowLayout = {
