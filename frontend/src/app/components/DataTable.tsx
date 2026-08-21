@@ -20,6 +20,7 @@ import {
 import { type DragEvent, type MouseEvent, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
+import "./DataTable.css";
 import { displayName, formatCell } from "../format";
 import { Modal } from "./Modal";
 import { CategoryBadge, PresentedValue, SecurityIdentityCell, tableCellClass } from "./TablePresentation";
