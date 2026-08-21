@@ -56,6 +56,18 @@ import type {
   SignalRow,
 } from "../features/live-trading/contracts";
 import {
+  buildClosedTrade,
+  buildLiveEntryLine,
+  positionExposure,
+  realizedPnlFromTrades,
+  reducePosition,
+  upsertPosition,
+  type OrderRow,
+  type PositionRow,
+  type StageOrderContext,
+  type TradeRow,
+} from "../features/live-trading/portfolio";
+import {
   buildMarketStateRow,
   buildMarketStateRows,
   emptyScannerQuery,
@@ -161,58 +173,6 @@ type SavedCanvasLayout = {
 type LiveClockMode = "idle" | "loading_data" | "ready" | "seeking" | "running" | "paused" | "complete";
 
 type DecisionState = "approved" | "skipped" | "watching";
-
-type OrderRow = {
-  id: string;
-  limit: number;
-  quantity: number;
-  side: "BUY" | "SELL";
-  status: string;
-  stop: number;
-  symbol: string;
-  timestamp: string;
-  type: string;
-};
-
-type PositionRow = {
-  avg_price: number;
-  entry_session_date?: string;
-  entry_time?: string;
-  mark: number;
-  quantity: number;
-  stop: number;
-  symbol: string;
-  unrealized_pnl: number;
-  unrealized_pnl_pct: number;
-};
-
-type TradeRow = {
-  entry_price: number;
-  entry_session_date?: string;
-  entry_time?: string;
-  exit_order_id?: string;
-  exit_price: number;
-  exit_session_date: string;
-  exit_time: string;
-  gross_pnl: number;
-  gross_pnl_pct: number;
-  id: string;
-  quantity: number;
-  side: "LONG";
-  symbol: string;
-};
-
-type StageOrderContext = {
-  limit: number;
-  mark: number;
-  quantity: number;
-  row: Record<string, unknown> | null;
-  side: "BUY" | "SELL";
-  status: string;
-  stop: number;
-  symbol: string;
-  type: string;
-};
 
 const LIVE_SESSION_STORAGE_KEY = "quant-research-workbench.live-trading.session";
 const LIVE_LAYOUT_STORAGE_KEY = "quant-research-workbench.live-trading.layout";
@@ -2672,78 +2632,6 @@ function sizeModeLabel(mode: string) {
   if (mode === "cash_pct") return "% Cash";
   if (mode === "shares") return "Shares";
   return "% Risk";
-}
-
-function buildLiveEntryLine(position: PositionRow | undefined, currentBid: number): LiveEntryLine | null {
-  if (!position || !position.quantity || !position.avg_price) return null;
-  const pnl = (currentBid - position.avg_price) * position.quantity;
-  return {
-    color: "#2563eb",
-    pnl,
-    price: position.avg_price,
-    quantity: position.quantity,
-  };
-}
-
-function upsertPosition(rows: PositionRow[], symbol: string, quantity: number, price: number, stop: number, mark: number, entrySessionDate?: string, entryTime?: string): PositionRow[] {
-  const existing = rows.find((row) => row.symbol === symbol);
-  const nextQuantity = (existing?.quantity ?? 0) + quantity;
-  const avgPrice = existing ? ((existing.avg_price * existing.quantity) + (price * quantity)) / Math.max(1, nextQuantity) : price;
-  const row = {
-    avg_price: avgPrice,
-    entry_session_date: existing?.entry_session_date ?? entrySessionDate,
-    entry_time: existing?.entry_time ?? entryTime,
-    mark,
-    quantity: nextQuantity,
-    stop,
-    symbol,
-    unrealized_pnl: (mark - avgPrice) * nextQuantity,
-    unrealized_pnl_pct: avgPrice > 0 ? (mark / avgPrice) - 1 : 0,
-  };
-  return [row, ...rows.filter((item) => item.symbol !== symbol)];
-}
-
-function reducePosition(rows: PositionRow[], symbol: string, quantity: number, mark: number): PositionRow[] {
-  return rows.flatMap((row) => {
-    if (row.symbol !== symbol) return [row];
-    const nextQuantity = Math.max(0, row.quantity - quantity);
-    if (nextQuantity <= 0) return [];
-    return [{
-      ...row,
-      mark,
-      quantity: nextQuantity,
-      unrealized_pnl: (mark - row.avg_price) * nextQuantity,
-      unrealized_pnl_pct: row.avg_price > 0 ? (mark / row.avg_price) - 1 : 0,
-    }];
-  });
-}
-
-function buildClosedTrade(position: PositionRow, quantity: number, exitPrice: number, exitSessionDate: string, exitTime: string, exitOrderId: string): TradeRow {
-  const closedQuantity = Math.max(0, Math.min(quantity, position.quantity));
-  const grossPnl = (exitPrice - position.avg_price) * closedQuantity;
-  return {
-    entry_price: position.avg_price,
-    entry_session_date: position.entry_session_date,
-    entry_time: position.entry_time,
-    exit_order_id: exitOrderId,
-    exit_price: exitPrice,
-    exit_session_date: exitSessionDate,
-    exit_time: exitTime,
-    gross_pnl: grossPnl,
-    gross_pnl_pct: position.avg_price > 0 ? (exitPrice / position.avg_price) - 1 : 0,
-    id: `${exitOrderId}-trade`,
-    quantity: closedQuantity,
-    side: "LONG",
-    symbol: position.symbol,
-  };
-}
-
-function realizedPnlFromTrades(trades: TradeRow[]) {
-  return trades.reduce((total, row) => total + row.gross_pnl, 0);
-}
-
-function positionExposure(positions: PositionRow[]) {
-  return positions.reduce((total, row) => total + row.mark * row.quantity, 0);
 }
 
 function openPositionCost(positions: PositionRow[]) {
