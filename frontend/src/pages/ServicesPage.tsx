@@ -11,7 +11,6 @@ import { displayName, formatBytes, formatCell, formatCompactNumber, formatDurati
 import { usePollingTask } from "../app/hooks/usePollingTask";
 import type { ServiceId, ServicePageMode } from "../app/routes";
 import type {
-  ServiceDatabaseTableRow,
   ServiceReadinessDimension,
   ServiceRuntimeLogRow,
   ServiceStatusPayload,
@@ -23,6 +22,26 @@ import { ServicePageApiFailure, WorkloadBudgetPanel } from "../features/services
 import { DebugObjectBlock } from "../features/services/DebugObjectBlock";
 import { ServiceDependenciesPanel } from "../features/services/ServiceDependenciesPanel";
 import { ServiceErrorLogPanel } from "../features/services/ServiceErrorLogPanel";
+import {
+  arrayRecords,
+  arrayValueLabel,
+  differenceLabel,
+  hasRemaining,
+  metricStatus,
+  numericMetric,
+  numericMetricOptional,
+  optionalNumber,
+  optionalNumberOrNull,
+  remainingLabel,
+  serviceMetricsRecord,
+  statusIsHealthy,
+  stringArrayMetric,
+  stringMetric,
+  sumTableCounts,
+  tableTimestamp,
+  textEmbedCoverageTotals,
+  uniqueStringSample,
+} from "../features/services/metrics";
 import {
   runtimeLogRows,
 } from "../features/services/diagnostics";
@@ -5067,137 +5086,6 @@ function serviceFleetDatabaseSummary(service: ServiceStatusPayload): ServiceFlee
     today: today === null ? "—" : formatCompactNumber(today),
     tone: healthy === rows.length ? "good" : "neutral",
   };
-}
-
-function textEmbedCoverageTotals(metrics: Record<string, unknown>) {
-  const reports = isRecord(metrics.source_reports) ? metrics.source_reports : {};
-  let detected = 0;
-  let completed = 0;
-  let remaining = 0;
-  let found = false;
-  for (const mode of Object.values(reports)) {
-    if (!isRecord(mode)) continue;
-    for (const report of Object.values(mode)) {
-      if (!isRecord(report)) continue;
-      found = true;
-      detected += optionalNumber(report.source_detected) + optionalNumber(report.embedding_detected) + optionalNumber(report.context_detected);
-      completed += optionalNumber(report.source_completed) + optionalNumber(report.embedding_completed) + optionalNumber(report.context_completed);
-      remaining += optionalNumber(report.source_remaining) + optionalNumber(report.embedding_remaining) + optionalNumber(report.context_remaining) + optionalNumber(report.context_blocked);
-    }
-  }
-  return { completed: found ? completed : null, detected: found ? detected : null, remaining: found ? remaining : null };
-}
-
-function arrayRecords(value: unknown) {
-  return Array.isArray(value) ? value.filter(isRecord) : [];
-}
-
-function metricStatus(record: Record<string, unknown>, keys: string[]) {
-  const value = stringMetric(record, keys);
-  return value ? displayName(value) : "—";
-}
-
-function hasRemaining(completed: number | null, total: number | null) {
-  return completed !== null && total !== null && completed < total;
-}
-
-function remainingLabel(completed: number | null, total: number | null, unit: string) {
-  if (completed === null || total === null) return "not reported";
-  const remaining = Math.max(0, total - completed);
-  return remaining ? `${formatCompactNumber(remaining)} ${unit} remaining` : "caught up";
-}
-
-function differenceLabel(completed: number | null, total: number | null, label: string) {
-  if (completed === null || total === null) return "not reported";
-  return `${formatCompactNumber(Math.max(0, total - completed))} ${label}`;
-}
-
-function numericMetricOptional(record: Record<string, unknown>, keys: string[]) {
-  for (const key of keys) {
-    if (record[key] === undefined || record[key] === null || record[key] === "") continue;
-    const value = Number(record[key]);
-    if (Number.isFinite(value)) return value;
-  }
-  return null;
-}
-
-function optionalNumber(value: unknown) {
-  const parsed = Number(value);
-  return Number.isFinite(parsed) ? parsed : 0;
-}
-
-function optionalNumberOrNull(value: unknown) {
-  if (value === undefined || value === null || value === "") return null;
-  const parsed = Number(value);
-  return Number.isFinite(parsed) ? parsed : null;
-}
-
-function sumTableCounts(rows: ServiceDatabaseTableRow[], key: "rows" | "rows_today") {
-  let found = false;
-  const total = rows.reduce((sum, row) => {
-    const raw = row[key];
-    if (!raw || raw === "-") return sum;
-    const value = Number(raw.replaceAll(",", ""));
-    if (!Number.isFinite(value)) return sum;
-    found = true;
-    return sum + value;
-  }, 0);
-  return found ? total : null;
-}
-
-function tableTimestamp(value: string | undefined) {
-  if (!value || value === "-") return 0;
-  const normalized = value.includes("T") ? value : `${value.replace(" ", "T")}Z`;
-  const parsed = new Date(normalized).getTime();
-  return Number.isFinite(parsed) ? parsed : 0;
-}
-
-function statusIsHealthy(value: string) {
-  return /^(ok|ready|healthy|completed|success|running|allowed)$/i.test(value.trim());
-}
-
-function serviceMetricsRecord(service: ServiceStatusPayload) {
-  const serviceSpecific = service.snapshot?.service_specific;
-  const runtime = service.snapshot?.runtime;
-  return {
-    ...(isRecord(runtime) ? runtime : {}),
-    ...(isRecord(service.metrics) ? service.metrics : {}),
-    ...(isRecord(serviceSpecific) ? serviceSpecific : {}),
-  };
-}
-
-function numericMetric(record: Record<string, unknown>, keys: string[]) {
-  for (const key of keys) {
-    const value = Number(record[key]);
-    if (Number.isFinite(value)) return value;
-  }
-  return 0;
-}
-
-function stringMetric(record: Record<string, unknown>, keys: string[]) {
-  for (const key of keys) {
-    const value = record[key];
-    if (value !== undefined && value !== null && String(value).trim()) return String(value);
-  }
-  return "";
-}
-
-function stringArrayMetric(record: Record<string, unknown>, keys: string[]) {
-  for (const key of keys) {
-    const value = record[key];
-    if (Array.isArray(value)) return value.map((item) => String(item || "").trim()).filter(Boolean);
-    if (value !== undefined && value !== null && String(value).trim()) return [String(value).trim()];
-  }
-  return [];
-}
-
-function arrayValueLabel(value: unknown) {
-  if (!Array.isArray(value)) return "";
-  return value.map((item) => String(item || "").trim()).filter(Boolean).join(", ");
-}
-
-function uniqueStringSample(values: string[], limit: number) {
-  return Array.from(new Set(values.map((value) => value.trim()).filter(Boolean))).slice(0, limit);
 }
 
 function newsHistogramBarHeight(totalRows: number, maxRows: number) {
