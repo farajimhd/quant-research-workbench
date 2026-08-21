@@ -30,7 +30,7 @@ import {
 import type { Time } from "lightweight-charts";
 
 import { api, query } from "../api/client";
-import { ChartPanel, type ChartCatalogItem, type ChartDisplayItem, type ChartPayload, type LiveEntryLine } from "../app/components/ChartPanel";
+import { ChartPanel, type ChartPayload, type LiveEntryLine } from "../app/components/ChartPanel";
 import { liveMarketStatus, type MarketStatus } from "../app/components/MarketStatusBadge";
 import { DataTable, type BackendQueryPreset, type BackendTableQuery } from "../app/components/DataTable";
 import { MetricRatio } from "../app/components/MetricRatio";
@@ -48,6 +48,31 @@ import {
 } from "../app/canvasWorkspace";
 import { TRADING_WORKSPACE_LAYOUT_VERSION, createFocusLayouts } from "../app/components/TradingWorkspace";
 import { usePollingTask } from "../app/hooks/usePollingTask";
+import {
+  normalizePreflightPayload,
+  normalizeUniversePreviewPayload,
+  objectValue,
+  optionalRecord,
+  recordValues,
+  stringValues,
+  type CatalogPayload,
+  type RealLiveAccountConfig,
+  type RealLiveAccountKey,
+  type RealLiveAccountsPayload,
+  type RealLiveGatewayStatusPayload,
+  type RealLivePortfolioPayload,
+  type RealLivePreflightCheck,
+  type RealLivePreflightPayload,
+  type RealLiveProgressStep,
+  type RealLiveScannerPayload,
+  type RealLiveSessionBaselineStatus,
+  type RealLiveUniversePreviewPayload,
+  type RecordRow,
+  type ReviewPayload,
+  type ScannerSnapshot,
+  type Scope,
+  type SignalRow,
+} from "../features/live-trading/contracts";
 import { ApprovedCanvasRuntimePage, CanvasWorkspaceSurface } from "./CanvasConfigurationPage";
 import {
   WorkspaceCanvasManager,
@@ -61,235 +86,6 @@ import {
   type WorkspaceWindowLayout as WindowLayout,
 } from "../app/components/WorkspaceCanvas";
 
-type Scope = {
-  processed_root: string;
-  raw_root: string;
-  spread_root: string;
-  start_date: string;
-  end_date: string;
-};
-
-type RecordRow = {
-  columns: string[];
-  exists: boolean;
-  group: string;
-  key: string;
-  path: string;
-  session_date: string;
-  timeframe: string;
-};
-
-type ReviewPayload = {
-  records: RecordRow[];
-};
-
-type CatalogPayload = {
-  columns: ChartCatalogItem[];
-  displayItems?: ChartDisplayItem[];
-};
-
-type ScannerSnapshot = {
-  bar_time: string;
-  columns: string[];
-  feature_groups: string[];
-  reason?: string;
-  row_count: number;
-  rows: Record<string, unknown>[];
-  session_date: string;
-  timeframe: string;
-};
-
-type SignalRow = Record<string, unknown>;
-
-type ScannerSnapshotPayload = {
-  snapshot: ScannerSnapshot;
-};
-
-type RealLiveAccountKey = string;
-
-type RealLiveAccountConfig = {
-  account_class: string;
-  account_id: string;
-  account_key: RealLiveAccountKey;
-  configured: boolean;
-  label: string;
-  trading_mode: "paper" | "live" | string;
-};
-
-type RealLiveAccountsPayload = {
-  accounts: RealLiveAccountConfig[];
-};
-
-type RealLivePreflightCheck = {
-  action?: { hash?: string; label?: string };
-  details?: Record<string, unknown>;
-  id: string;
-  label: string;
-  message?: string;
-  required?: boolean;
-  status: "ready" | "blocked" | string;
-};
-
-type RealLivePreflightPayload = {
-  account_id: string;
-  account_type: string;
-  accounts: RealLiveAccountConfig[];
-  broker?: { base_url?: string; name?: string };
-  checks: RealLivePreflightCheck[];
-  data_provider?: { base_url?: string; name?: string };
-  ready: boolean;
-  selected_account_keys: string[];
-  selected_accounts: RealLiveAccountConfig[];
-};
-
-type RealLiveScannerPayload = {
-  gateway_error?: string;
-  market_row_count?: number;
-  market_rows?: Record<string, unknown>[];
-  market_time: string;
-  provider: string;
-  row_count: number;
-  rows: Record<string, unknown>[];
-  session_date: string;
-  status?: Record<string, unknown>;
-};
-
-type RealLiveUniversePreviewPayload = {
-  can_query_universe: boolean;
-  columns: Record<string, unknown>[];
-  errors: Record<string, unknown>[];
-  filters: Record<string, unknown>;
-  joined_snapshot_row_count?: number;
-  massive_snapshot_row_count?: number;
-  persistence?: Record<string, unknown>;
-  preview_columns: string[];
-  progress_steps?: RealLiveProgressStep[];
-  pulled_at_utc?: string;
-  read_database: string;
-  read_url: string;
-  reference_columns?: string[];
-  reference_row_count?: number;
-  reference_rows?: Record<string, unknown>[];
-  row_count: number;
-  rows: Record<string, unknown>[];
-  run_id?: string;
-  scanner_row_count?: number;
-  session_date?: string;
-  snapshot_columns?: string[];
-  snapshot_rows?: Record<string, unknown>[];
-  startup_enrichment?: Record<string, unknown>;
-  tables: Record<string, unknown>[];
-  universe_query: string;
-  write_database: string;
-  write_url: string;
-};
-
-function normalizePreflightPayload(value: unknown): RealLivePreflightPayload {
-  const payload = objectValue(value);
-  const normalizeAccounts = (candidate: unknown): RealLiveAccountConfig[] => recordValues(candidate).map((account) => ({
-    account_class: stringValue(account, "account_class"),
-    account_id: stringValue(account, "account_id"),
-    account_key: stringValue(account, "account_key"),
-    configured: account.configured === true,
-    label: stringValue(account, "label"),
-    trading_mode: stringValue(account, "trading_mode"),
-  })).filter((account) => account.account_key.length > 0);
-  const normalizeService = (candidate: unknown) => {
-    const service = optionalRecord(candidate);
-    return service ? { base_url: stringValue(service, "base_url") || undefined, name: stringValue(service, "name") || undefined } : undefined;
-  };
-  return {
-    account_id: stringValue(payload, "account_id"),
-    account_type: stringValue(payload, "account_type"),
-    accounts: normalizeAccounts(payload.accounts),
-    broker: normalizeService(payload.broker),
-    checks: recordValues(payload.checks).map((check) => ({
-      action: optionalRecord(check.action) ? {
-        hash: stringValue(objectValue(check.action), "hash") || undefined,
-        label: stringValue(objectValue(check.action), "label") || undefined,
-      } : undefined,
-      details: optionalRecord(check.details),
-      id: stringValue(check, "id") || stringValue(check, "name"),
-      label: stringValue(check, "label") || stringValue(check, "name").replaceAll("_", " "),
-      message: stringValue(check, "message") || stringValue(check, "detail") || undefined,
-      required: check.required !== false,
-      status: stringValue(check, "status") || "blocked",
-    })).filter((check) => check.id.length > 0),
-    data_provider: normalizeService(payload.data_provider),
-    ready: payload.ready === true,
-    selected_account_keys: stringValues(payload.selected_account_keys),
-    selected_accounts: normalizeAccounts(payload.selected_accounts),
-  };
-}
-
-type RealLiveProgressStep = {
-  detail?: string;
-  duration_ms?: number | null;
-  id: string;
-  label: string;
-  status: string;
-};
-
-function normalizeUniversePreviewPayload(value: unknown): RealLiveUniversePreviewPayload {
-  const payload = objectValue(value);
-  const optionalNumber = (key: string) => {
-    const candidate = payload[key];
-    return typeof candidate === "number" && Number.isFinite(candidate) ? candidate : undefined;
-  };
-  const optionalString = (key: string) => typeof payload[key] === "string" ? payload[key] as string : undefined;
-  return {
-    can_query_universe: payload.can_query_universe === true,
-    columns: recordValues(payload.columns),
-    errors: recordValues(payload.errors),
-    filters: objectValue(payload.filters),
-    joined_snapshot_row_count: optionalNumber("joined_snapshot_row_count"),
-    massive_snapshot_row_count: optionalNumber("massive_snapshot_row_count"),
-    persistence: optionalRecord(payload.persistence),
-    preview_columns: stringValues(payload.preview_columns),
-    progress_steps: recordValues(payload.progress_steps).map((step) => ({
-      detail: typeof step.detail === "string" ? step.detail : undefined,
-      duration_ms: typeof step.duration_ms === "number" && Number.isFinite(step.duration_ms) ? step.duration_ms : null,
-      id: typeof step.id === "string" ? step.id : "",
-      label: typeof step.label === "string" ? step.label : "",
-      status: typeof step.status === "string" ? step.status : "waiting",
-    })).filter((step) => step.id.length > 0),
-    pulled_at_utc: optionalString("pulled_at_utc"),
-    read_database: stringValue(payload, "read_database"),
-    read_url: stringValue(payload, "read_url"),
-    reference_columns: stringValues(payload.reference_columns),
-    reference_row_count: optionalNumber("reference_row_count"),
-    reference_rows: recordValues(payload.reference_rows),
-    row_count: numberValue(payload, "row_count"),
-    rows: recordValues(payload.rows),
-    run_id: optionalString("run_id"),
-    scanner_row_count: optionalNumber("scanner_row_count"),
-    session_date: optionalString("session_date"),
-    snapshot_columns: stringValues(payload.snapshot_columns),
-    snapshot_rows: recordValues(payload.snapshot_rows),
-    startup_enrichment: optionalRecord(payload.startup_enrichment),
-    tables: recordValues(payload.tables),
-    universe_query: stringValue(payload, "universe_query"),
-    write_database: stringValue(payload, "write_database"),
-    write_url: stringValue(payload, "write_url"),
-  };
-}
-
-function objectValue(value: unknown): Record<string, unknown> {
-  return value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
-}
-
-function optionalRecord(value: unknown): Record<string, unknown> | undefined {
-  return value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
-}
-
-function recordValues(value: unknown): Record<string, unknown>[] {
-  return Array.isArray(value) ? value.map(objectValue).filter((item) => Object.keys(item).length > 0) : [];
-}
-
-function stringValues(value: unknown): string[] {
-  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
-}
-
 type GateProgressStep = {
   detail: string;
   duration?: string;
@@ -300,46 +96,6 @@ type GateProgressStep = {
   status: string;
   statusLabel: string;
   tone: "danger" | "info" | "muted" | "success" | "warning";
-};
-
-type RealLiveSessionBaselineStatus = {
-  enabled?: boolean;
-  error?: string;
-  errors?: Record<string, unknown>[];
-  joined_snapshot_row_count?: number;
-  massive_snapshot_row_count?: number;
-  pulled_at_utc?: string;
-  reference_row_count?: number;
-  scanner_row_count?: number;
-  scanner_rows_written?: number;
-  started_at_utc?: string;
-  status?: string;
-  trading_session_id?: string;
-};
-
-type RealLiveGatewayStatusPayload = {
-  session_baseline?: RealLiveSessionBaselineStatus;
-  trading_session_id?: string;
-  [key: string]: unknown;
-};
-
-type RealLivePortfolioPayload = {
-  as_of?: string;
-  account_id: string;
-  account_type: string;
-  accounts: RealLiveAccountConfig[];
-  balances?: Record<string, unknown>[];
-  connection?: Record<string, string>;
-  errors?: Record<string, unknown>[];
-  executions?: Record<string, unknown>[];
-  ledger?: Record<string, unknown>;
-  orders: Record<string, unknown>[];
-  pnl?: Record<string, unknown>[];
-  portfolios?: Record<string, unknown>[];
-  positions: Record<string, unknown>[];
-  selected_account_keys?: string[];
-  source?: string;
-  summary?: Record<string, unknown>;
 };
 
 type LiveNewsArticle = {
