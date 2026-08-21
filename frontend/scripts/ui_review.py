@@ -47,6 +47,76 @@ REPRESENTATIVE_PAGES = ("real-live-trading", "replay-trading", "backtest-trading
 REPRESENTATIVE_THEMES = ("light", "dark")
 TARGETED_SCALES = (0.8, 1.0, 1.25)
 
+SERVICE_REVIEW_LABELS = {
+    "bar-gpt": ("BarGPT", "model gateway"),
+    "ibkr": ("IBKR", "broker gateway"),
+    "model-gateway": ("Model Gateway", "model gateway"),
+    "news": ("News", "news gateway"),
+    "news-hypothesis": ("News Hypothesis", "model gateway"),
+    "qmd": ("QMD Live", "market data gateway"),
+    "qmd-history": ("QMD History", "historical gateway"),
+    "reference": ("Reference", "reference gateway"),
+    "sec": ("SEC", "filing gateway"),
+    "text-embed": ("Text Embed", "embedding gateway"),
+    "text-intelligence": ("Text Intelligence", "semantic gateway"),
+}
+
+
+def service_status_fixture(service_id: str) -> dict[str, Any]:
+    label, kind = SERVICE_REVIEW_LABELS[service_id]
+    recent_rows = {
+        "qmd": [
+            {"ts_utc": "2026-08-21T21:58:00Z", "status": "active", "ticker": "AAPL", "primitive_key": "breakout", "rows": 128, "detail": "Live event accepted and persisted"},
+            {"ts_utc": "2026-08-21T21:57:30Z", "status": "rejected", "ticker": "MSFT", "primitive_key": "liquidity", "reject_reason": "Spread outside configured threshold"},
+        ],
+        "reference": [
+            {"ts_utc": "2026-08-21T21:58:00Z", "status": "completed", "provider": "SEC", "table": "issuer_identity", "rows": 42, "detail": "Canonical identities reconciled"},
+            {"ts_utc": "2026-08-21T21:57:30Z", "status": "warning", "provider": "FIGI", "issue_type": "mapping", "detail": "One mapping deferred for review"},
+        ],
+        "text-embed": [
+            {"ts_utc": "2026-08-21T21:58:00Z", "status": "completed", "source": "news", "stage": "embedding", "embedding_rows_written": 256, "detail": "Embedding batch committed"},
+            {"ts_utc": "2026-08-21T21:57:30Z", "status": "running", "source": "sec", "stage": "tokenization", "tokens_written": 4096, "detail": "Token batch in progress"},
+        ],
+        "ibkr": [
+            {"ts_utc": "2026-08-21T21:58:00Z", "status": "completed", "event": "account_check", "account_id": "DU123456", "detail": "Account routing readiness verified"},
+            {"ts_utc": "2026-08-21T21:57:30Z", "status": "completed", "event": "keepalive", "endpoint": "tickle", "detail": "Gateway session refreshed"},
+        ],
+    }.get(service_id, [
+        {"ts_utc": "2026-08-21T21:58:00Z", "status": "completed", "event": "review_activity", "rows": 24, "detail": "Deterministic service activity fixture"},
+    ])
+    return {
+        "checked_at_utc": "2026-08-21T22:00:00Z",
+        "current_operation": {"phase": "serving", "status": "running", "rows": 128, "detail": "Serving deterministic review workload"},
+        "database_tables": {"rows": [{"database": "review", "table": f"{service_id.replace('-', '_')}_events", "role": "live events", "rows": "12,480", "rows_today": "128", "latest_update": "2026-08-21 21:58:00", "status": "ok"}]},
+        "errors": {},
+        "header": {"service": service_id},
+        "health": {"running": True, "source": "review_fixture", "host_role": "live"},
+        "logs": {"rows": [{"ts_utc": "2026-08-21T21:56:00Z", "level": "info", "event": "review_log", "title": "Review log", "detail": "Structured runtime log fixture", "source": service_id}]},
+        "metrics": {"activity_status": "running", "processed": 128, "queued": 2, "filtered": 4, "failed": 0, "ingest_events": 128, "trades_per_sec": 42, "quotes_per_sec": 96, "bar_events": 18, "gap_count": 0, "poll_runs": 12, "gateway_status": "ready", "auth_status": "ready", "keepalive_status": "ready"},
+        "online": True,
+        "operations": {},
+        "readiness": {
+            "schema_version": 1,
+            "liveness": {"status": "ready", "evidence": "Fixture heartbeat", "source": "ui_review"},
+            "dependencies": {"status": "ready", "evidence": "Fixture dependencies", "source": "ui_review"},
+            "data": {"status": "ready", "evidence": "Fixture database", "source": "ui_review"},
+            "execution": {"status": "ready", "evidence": "Fixture execution", "source": "ui_review"},
+        },
+        "recent": recent_rows,
+        "registry": {"base_url": "http://ui-review.invalid", "description": "Deterministic browser-review service contract.", "id": service_id, "kind": kind, "label": label},
+        "snapshot": {
+            "tasks": [{"name": "live processing", "kind": "processing", "status": "running", "rows": 128, "last_at": "2026-08-21T21:58:00Z", "detail": "Bounded live processing"}],
+            "dependencies": [{"name": "review dependency", "status": "ready", "detail": "Deterministic dependency fixture"}],
+        },
+        "status": "running",
+    }
+
+
+def fulfill_json(body: str):
+    def handler(route: Any) -> None:
+        route.fulfill(content_type="application/json", body=body)
+    return handler
+
 
 def chart_history_fixture(session_date: str, symbol: str = "AAPL") -> dict[str, Any]:
     start = datetime.fromisoformat(f"{session_date}T10:00:00+00:00")
@@ -1546,6 +1616,34 @@ def validate_canvas_interactions(
     return issues
 
 
+def validate_service_interactions(page: Any, scenario: dict[str, Any], interaction_screenshot: Path | None) -> list[str]:
+    issues: list[str] = []
+    if not scenario["page"].startswith("service-") or scenario["page"] == "services-dashboard":
+        return issues
+    activity = page.locator(".service-activity-table")
+    if activity.count() != 1:
+        return ["service detail does not expose exactly one activity table"]
+    rows = activity.locator("tbody tr")
+    if not rows.count():
+        return ["service activity table has no reviewable rows"]
+    rows.first.click()
+    modal = page.get_by_role("dialog", name=re.compile(r"Activity Detail$"))
+    try:
+        modal.wait_for(state="visible", timeout=5000)
+    except Exception:
+        return ["service activity row does not open its detail dialog"]
+    if modal.get_by_text("Raw Service Activity Row", exact=True).count() != 1:
+        issues.append("service activity detail omits the raw source evidence")
+    if interaction_screenshot:
+        page.screenshot(path=str(interaction_screenshot), full_page=True)
+    page.keyboard.press("Escape")
+    try:
+        modal.wait_for(state="hidden", timeout=5000)
+    except Exception:
+        issues.append("Escape does not close the service activity detail dialog")
+    return issues
+
+
 def capture(args: argparse.Namespace) -> int:
     from playwright.sync_api import sync_playwright
 
@@ -1680,6 +1778,24 @@ def capture(args: argparse.Namespace) -> int:
                         "localStorage.setItem(" + json.dumps(f"{storage_prefix}.{args.canvas_id}") + ", " + json.dumps(json.dumps(storage_payload)) + ");"
                     )
                 page = context.new_page()
+                if args.stub_service_status and scenario["page"].startswith("service-") and scenario["page"] != "services-dashboard":
+                    service_id = scenario["page"].removeprefix("service-")
+                    service_fixture = service_status_fixture(service_id)
+                    detail_body = json.dumps(service_fixture)
+                    fleet_body = json.dumps({"checked_at_utc": service_fixture["checked_at_utc"], "services": [service_fixture]})
+                    budget_body = json.dumps({"schema_version": 1, "wait_timeout_seconds": 5, "lanes": {}})
+                    page.route(
+                        f"**/api/services/{service_id}/status?**",
+                        fulfill_json(detail_body),
+                    )
+                    page.route(
+                        "**/api/services/status?**",
+                        fulfill_json(fleet_body),
+                    )
+                    page.route(
+                        "**/api/system/workload-budgets",
+                        fulfill_json(budget_body),
+                    )
                 if args.canvas_session_date:
                     page.route(
                         "**/api/trading/canvas-context",
@@ -1844,6 +1960,14 @@ def capture(args: argparse.Namespace) -> int:
                     ) if (
                         scenario["page"] == "canvas-focus"
                         and "indicator.qmd_generic_structure" in str(args.canvas_visible_indicators or "")
+                    ) else screenshot_path.with_name(
+                        f"{screenshot_path.stem}__activity-detail.png"
+                    ) if (
+                        args.stub_service_status
+                        and scenario["page"] == "service-qmd"
+                        and scenario["theme"] == "light"
+                        and scenario["scale"] == 1.0
+                        and scenario["viewport_name"] == "normal"
                     ) else None
                     issues.extend(validate_canvas_interactions(
                         page, scenario, interaction_screenshot,
@@ -1851,6 +1975,8 @@ def capture(args: argparse.Namespace) -> int:
                         args.chart_stress_pattern, args.chart_stress_only,
                         args.watchlist_close_only,
                     ))
+                    if args.stub_service_status:
+                        issues.extend(validate_service_interactions(page, scenario, interaction_screenshot))
                     objective_issues += len(issues)
                     result.update({
                         "status": "captured",
@@ -1910,6 +2036,7 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--chart-stress-pattern", choices=("mixed", "pathological", "left-paging"), default="mixed", help="alternate gestures, accumulate them in one direction, or force left-edge history paging")
     result.add_argument("--chart-stress-only", action="store_true", help="stop the Canvas interaction review after chart stress")
     result.add_argument("--stub-chart-history", action="store_true", help="use deterministic chart history for frontend-only renderer and interaction QA")
+    result.add_argument("--stub-service-status", action="store_true", help="use deterministic service contracts for frontend-only Services detail QA")
     result.add_argument("--watchlist-close-only", action="store_true", help="stop after the Watch Universe close and persistence regression")
     result.add_argument("--seed-core-containers", action="store_true", help="seed portfolio and scanner containers for child-canvas review")
     result.add_argument("--mode", choices=("targeted", "full"), default="targeted")
