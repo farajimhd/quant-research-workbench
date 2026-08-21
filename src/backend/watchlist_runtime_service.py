@@ -18,6 +18,7 @@ from research.mlops.clickhouse import (
 )
 from src.backend.query_plans.market_daily_bars_v1 import (
     daily_market_reference_projection,
+    live_intraday_previous_close_projection,
 )
 from src.backend.bounded_cache import BoundedTtlCache
 from src.backend.qmd_gateway_client import qmd_delete_json, qmd_put_json
@@ -1324,6 +1325,17 @@ def _load_market_reference_projection(cutoff: datetime) -> dict[str, dict[str, A
         default_clickhouse_password(),
     )
     daily_rows = client.execute(daily_query)
+    live_database = os.environ.get("QMD_CLICKHOUSE_DATABASE", "q_live").strip()
+    live_table = os.environ.get(
+        "QMD_INTRADAY_BAR_TABLE", "intraday_family_bars_v2"
+    ).strip()
+    intraday_rows = client.execute(
+        live_intraday_previous_close_projection(
+            database=live_database,
+            before_date=cutoff.astimezone(NEW_YORK).date(),
+            table=live_table,
+        )
+    )
     import json
 
     for line in daily_rows.splitlines():
@@ -1337,6 +1349,22 @@ def _load_market_reference_projection(cutoff: datetime) -> dict[str, dict[str, A
                     "previous_close": row.get("previous_close"),
                     "previous_session_date": row.get("previous_session_date"),
                     "average_daily_volume": row.get("average_daily_volume"),
+                    "reference_available_at": cutoff.isoformat(),
+                }
+            )
+    for line in intraday_rows.splitlines():
+        if not line.strip():
+            continue
+        row = json.loads(line)
+        ticker = str(row.get("ticker") or "").upper()
+        session_date = str(row.get("previous_session_date") or "")
+        current = projection.setdefault(ticker, {}) if ticker else {}
+        if ticker and session_date > str(current.get("previous_session_date") or ""):
+            current.update(
+                {
+                    "previous_close": row.get("previous_close"),
+                    "previous_session_date": session_date,
+                    "previous_close_source": "qmd_live_intraday_family_bars_v2",
                     "reference_available_at": cutoff.isoformat(),
                 }
             )

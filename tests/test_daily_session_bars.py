@@ -7,6 +7,7 @@ from src.backend.daily_session_bars import daily_session_trade_bars_relation_sql
 from src.backend.query_plans.market_daily_bars_v1 import (
     daily_market_reference_projection,
     daily_session_trade_bars,
+    live_intraday_previous_close_projection,
 )
 
 
@@ -53,3 +54,18 @@ class DailySessionBarsTests(unittest.TestCase):
         self.assertIn("avg(size_sum) AS average_daily_volume", sql)
         self.assertIn("available_at_us <=", sql)
         self.assertIn("identity_status != 'ambiguous_source_ticker'", sql)
+
+    def test_live_previous_close_uses_latest_durable_trade_bar(self) -> None:
+        sql = live_intraday_previous_close_projection(
+            database="q_live",
+            before_date=date(2026, 8, 21),
+        )
+
+        self.assertIn("`q_live`.`intraday_family_bars_v2`", sql)
+        self.assertIn("local_date < toDate('2026-08-21')", sql)
+        self.assertIn("label_resolution_us = 60000000", sql)
+        self.assertIn("bar_family = 'trade'", sql)
+        self.assertIn(
+            "argMax(close, tuple(local_date, bucket_index, updated_at_utc))",
+            sql,
+        )

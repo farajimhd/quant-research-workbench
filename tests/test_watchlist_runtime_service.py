@@ -681,6 +681,33 @@ class WatchlistRuntimeServiceTests(unittest.TestCase):
         )
         self.assertEqual(historical_projection.call_count, 2)
 
+    @patch("src.backend.watchlist_runtime_service.ClickHouseHttpClient")
+    @patch(
+        "src.backend.historical_scanner_service.historical_scanner_reference_projection"
+    )
+    def test_live_intraday_close_replaces_stale_daily_reference(
+        self,
+        historical_projection,
+        clickhouse_client,
+    ) -> None:
+        historical_projection.return_value = {}
+        clickhouse_client.return_value.execute.side_effect = [
+            '{"ticker":"AAPL","previous_close":200,"previous_session_date":"2026-07-31","average_daily_volume":1000}\n',
+            '{"ticker":"AAPL","previous_close":230,"previous_session_date":"2026-08-20"}\n',
+        ]
+
+        projection = watchlist_runtime_service._load_market_reference_projection(
+            datetime(2026, 8, 21, 16, tzinfo=UTC)
+        )
+
+        self.assertEqual(projection["AAPL"]["previous_close"], 230)
+        self.assertEqual(projection["AAPL"]["previous_session_date"], "2026-08-20")
+        self.assertEqual(projection["AAPL"]["average_daily_volume"], 1000)
+        self.assertEqual(
+            projection["AAPL"]["previous_close_source"],
+            "qmd_live_intraday_family_bars_v2",
+        )
+
     @patch("src.backend.watchlist_runtime_service.threading.Thread")
     @patch("src.backend.watchlist_runtime_service._load_market_reference_projection")
     def test_live_reference_expiry_returns_stale_and_single_flights_refresh(

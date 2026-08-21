@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 
 from research.mlops.clickhouse import quote_ident, sql_string
 
@@ -104,3 +104,28 @@ def daily_market_reference_projection(
 # Compatibility name for existing service callers. The registered plan entry
 # points at ``daily_session_trade_bars`` and new callers should use that name.
 daily_session_trade_bars_relation_sql = daily_session_trade_bars
+
+
+def live_intraday_previous_close_projection(
+    *,
+    database: str,
+    before_date: date,
+    table: str = "intraday_family_bars_v2",
+) -> str:
+    """Project the latest durable 1-minute trade close before a live session."""
+
+    start_date = before_date - timedelta(days=14)
+    rank = "tuple(local_date, bucket_index, updated_at_utc)"
+    return f"""
+        SELECT
+            upper(ticker) AS ticker,
+            argMax(close, {rank}) AS previous_close,
+            argMax(local_date, {rank}) AS previous_session_date
+        FROM {quote_ident(database)}.{quote_ident(table)}
+        PREWHERE local_date >= toDate({sql_string(start_date.isoformat())})
+          AND local_date < toDate({sql_string(before_date.isoformat())})
+          AND label_resolution_us = 60000000
+          AND bar_family = 'trade'
+        GROUP BY ticker
+        FORMAT JSONEachRow
+    """
