@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 
 import { api } from "../api/client";
 import { TradingModeLaunch } from "../app/components/TradingModeLaunch";
+import { usePollingTask } from "../app/hooks/usePollingTask";
 import type { CanvasReplayRun } from "../app/replayRun";
 import { CanvasWorkspaceSurface } from "./CanvasConfigurationPage";
 
@@ -114,15 +115,16 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
     };
   }, [anchorDate, mode, refreshKey, runPlanId, sessionCount]);
 
-  useEffect(() => {
-    if (!run || ["completed", "stopped", "failed"].includes(run.status)) return;
-    const timer = window.setInterval(() => {
-      api<BacktestRun>(`/api/trading/backtest/runs/${encodeURIComponent(run.run_id)}`, { timeoutMs: 20_000 })
-        .then(setRun)
-        .catch((reason) => setError(reason instanceof Error ? reason.message : String(reason)));
-    }, 1_000);
-    return () => window.clearInterval(timer);
-  }, [run]);
+  usePollingTask({
+    enabled: Boolean(run && !["completed", "stopped", "failed"].includes(run.status)),
+    intervalMs: 1_000,
+    onError: (reason) => setError(reason instanceof Error ? reason.message : String(reason)),
+    restartKey: run?.run_id,
+    task: async (signal) => {
+      if (!run) return;
+      setRun(await api<BacktestRun>(`/api/trading/backtest/runs/${encodeURIComponent(run.run_id)}`, { signal, timeoutMs: 20_000 }));
+    },
+  });
 
   useEffect(() => {
     if (!run || !["completed", "stopped", "failed"].includes(run.status)) return;

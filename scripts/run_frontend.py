@@ -71,7 +71,10 @@ def sync_frontend(runtime_root: Path) -> None:
         target = runtime_root / name
         if target.exists():
             shutil.rmtree(target)
-        shutil.copytree(SOURCE_ROOT / name, target)
+        # A running Vite watcher can observe the removal and recreate a nested
+        # directory before copytree reaches it. The old tree was already
+        # removed, so merging here is race-safe and cannot retain stale source.
+        shutil.copytree(SOURCE_ROOT / name, target, dirs_exist_ok=True)
 
 
 def _files_match(source: Path, target: Path) -> bool:

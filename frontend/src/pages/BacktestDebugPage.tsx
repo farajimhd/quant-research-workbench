@@ -3,6 +3,7 @@ import { useEffect, useMemo, useState } from "react";
 
 import { api } from "../api/client";
 import { TradingModeLaunch } from "../app/components/TradingModeLaunch";
+import { usePollingTask } from "../app/hooks/usePollingTask";
 import type { CanvasReplayRun } from "../app/replayRun";
 import { CanvasWorkspaceSurface } from "./CanvasConfigurationPage";
 
@@ -79,15 +80,16 @@ export function BacktestDebugPage() {
     return () => { cancelled = true; window.clearTimeout(timer); };
   }, [runPlanId, sessionDate, startTime, symbol]);
 
-  useEffect(() => {
-    if (!run || terminal(run.status)) return;
-    const timer = window.setInterval(() => {
-      api<DebugRun>(`/api/trading/backtest_debug/runs/${encodeURIComponent(run.run_id)}`, { timeoutMs: 20_000 })
-        .then(setRun)
-        .catch((reason) => setError(message(reason)));
-    }, 750);
-    return () => window.clearInterval(timer);
-  }, [run]);
+  usePollingTask({
+    enabled: Boolean(run && !terminal(run.status)),
+    intervalMs: 750,
+    onError: (reason) => setError(message(reason)),
+    restartKey: run?.run_id,
+    task: async (signal) => {
+      if (!run) return;
+      setRun(await api<DebugRun>(`/api/trading/backtest_debug/runs/${encodeURIComponent(run.run_id)}`, { signal, timeoutMs: 20_000 }));
+    },
+  });
 
   function updateTemplate(nextDate: string, nextSymbol: string) {
     setSessionDate(nextDate);
