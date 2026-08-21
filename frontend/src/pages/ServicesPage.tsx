@@ -1,5 +1,5 @@
 import { Activity, CheckCircle2, Clock3, Layers3, Loader2, RadioTower, RefreshCcw, Search, Settings2, X } from "lucide-react";
-import { lazy, Suspense, useEffect, useMemo, useState, type CSSProperties } from "react";
+import { lazy, Suspense, useEffect, useMemo, useState } from "react";
 
 import { api } from "../api/client";
 import { Button } from "../app/components/Button";
@@ -28,18 +28,19 @@ import {
 import { ServiceFleetCard } from "../features/services/ServiceFleetCard";
 import { ServiceMetadataTable } from "../features/services/ServiceMetadataTable";
 import type { NewsTodayRowsState, NewsTodaySort } from "../features/services/newsContracts";
+import { NewsDailyHistogram } from "../features/services/NewsDailyHistogram";
 import { NewsTodayRowsPanel } from "../features/services/NewsTodayRowsPanel";
+import { SecDailyHistogram } from "../features/services/SecDailyHistogram";
 import { SecTodayRowsPanel } from "../features/services/SecTodayRowsPanel";
 import { ServiceOperationalAuthorityPanel } from "../features/services/ServiceOperationalAuthorityPanel";
 import type {
-  SecDailyHistogramDatum,
   SecDailyHistogramState,
   SecLiveFeedRow,
   SecTodayRowsState,
   SecTodaySort,
 } from "../features/services/secContracts";
-import { defaultSecHistogramWindow, elapsedSecHistogramRows, useSecTodayRows } from "../features/services/useSecTodayRows";
-import { secHistogramFullWindowRows, secHistogramHover, secHistogramSummary, secLiveFeedRows } from "../features/services/secHistogramPresentation";
+import { defaultSecHistogramWindow, useSecTodayRows } from "../features/services/useSecTodayRows";
+import { secHistogramSummary, secLiveFeedRows } from "../features/services/secHistogramPresentation";
 import {
   arrayRecords,
   arrayValueLabel,
@@ -83,6 +84,7 @@ import {
   statusInfo,
 } from "../features/services/statusPresentation";
 import { useServicesStatus } from "../features/services/useServicesStatus";
+import { useNewsDailyHistogram } from "../features/services/useNewsDailyHistogram";
 import { useNewsTodayRows } from "../features/services/useNewsTodayRows";
 import {
   arrayRows,
@@ -99,24 +101,17 @@ import {
 } from "../features/services/workPresentation";
 import {
   EXCHANGE_TIME_ZONE,
-  VANCOUVER_TIME_ZONE,
-  exchangeDateParts,
   formatLogTime,
   formatNewsTableDate,
   formatReadableDateTime,
   formatServiceTime as formatTime,
   formatTableZoneDate,
   formatTableZoneTime,
-  formatUtcDateTime,
   formatZoneDate,
-  formatZoneDateTime,
   formatZoneTime,
-  nextCalendarDate,
   parseServiceTimestamp,
-  tableRowRecencyClass,
   tableTimeTitle,
   tableTimestampMs,
-  zonedDateTimeToUtc,
 } from "../features/services/time";
 import "./ServicesOverview.css";
 
@@ -412,38 +407,6 @@ type NewsCoverageHistoryRow = {
   window: string;
 };
 
-type NewsDailyHistogramDatum = {
-  broadOrNoneRows: number;
-  bucketUtc: string;
-  singleTickerRows: number;
-  totalRows: number;
-};
-
-type NewsDailyHistogramState = {
-  binSeconds: number;
-  error: string;
-  rows: NewsDailyHistogramDatum[];
-  windowEndUtc: string;
-  windowStartUtc: string;
-};
-
-type NewsHistogramPayload = {
-  bin_seconds: number;
-  error?: string;
-  market_timezone?: string;
-  rows: Array<{
-    broad_or_none_rows?: number;
-    bucket_utc?: string;
-    single_ticker_rows?: number;
-    total_rows?: number;
-  }>;
-  source?: string;
-  window_end_et?: string;
-  window_end_utc?: string;
-  window_start_et?: string;
-  window_start_utc?: string;
-};
-
 function NewsServiceWorkAndRows({ service }: { service: ServiceStatusPayload }) {
   const [todaySort, setTodaySort] = useState<NewsTodaySort>("desc");
   const todayNews = useNewsTodayRows(service.registry.id === "news", todaySort);
@@ -668,82 +631,6 @@ function NewsCoverageGapCard({ group, service }: { group: ServiceWorkGroup; serv
   );
 }
 
-function NewsDailyHistogram({
-  binSeconds,
-  data,
-  error,
-  windowEndUtc,
-  windowStartUtc,
-}: {
-  binSeconds: number;
-  data: NewsDailyHistogramDatum[];
-  error: string;
-  windowEndUtc: string;
-  windowStartUtc: string;
-}) {
-  const defaultWindow = useMemo(() => defaultNewsHistogramWindow(binSeconds), [binSeconds]);
-  const effectiveWindowStartUtc = windowStartUtc || defaultWindow.windowStartUtc;
-  const effectiveWindowEndUtc = windowEndUtc || defaultWindow.windowEndUtc;
-  const effectiveData = useMemo(
-    () => data.length ? elapsedNewsHistogramRows(data, effectiveWindowStartUtc, effectiveWindowEndUtc, binSeconds) : defaultWindow.rows,
-    [binSeconds, data, defaultWindow.rows, effectiveWindowEndUtc, effectiveWindowStartUtc],
-  );
-  const displayData = useMemo(
-    () => newsHistogramFullWindowRows(effectiveData, effectiveWindowStartUtc, effectiveWindowEndUtc, binSeconds),
-    [binSeconds, effectiveData, effectiveWindowEndUtc, effectiveWindowStartUtc],
-  );
-  const [hover, setHover] = useState<{ broad: number; et: string; single: number; utc: string; van: string } | null>(null);
-  const maxTotal = useMemo(() => Math.max(1, ...displayData.map((row) => row.totalRows)), [displayData]);
-
-  const singleTotal = effectiveData.reduce((sum, row) => sum + row.singleTickerRows, 0);
-  const broadTotal = effectiveData.reduce((sum, row) => sum + row.broadOrNoneRows, 0);
-  const total = singleTotal + broadTotal;
-  return (
-    <div className="news-live-histogram">
-      <div className="news-live-histogram-label">
-        <span>Today from DB / {formatNewsBinDuration(binSeconds)} bins</span>
-        <div className="news-live-histogram-legend">
-          <span className="single">1 ticker <strong>{formatCompactNumber(singleTotal)}</strong></span>
-          <span className="broad">0 or 2+ tickers <strong>{formatCompactNumber(broadTotal)}</strong></span>
-          <span>total <strong>{formatCompactNumber(total)}</strong></span>
-        </div>
-      </div>
-      {hover ? (
-        <div className="news-live-histogram-hover">
-          <strong>{hover.et}</strong>
-          <span>VAN {hover.van}</span>
-          <span>UTC {hover.utc}</span>
-          <span>1 ticker {formatCompactNumber(hover.single)}</span>
-          <span>0 or 2+ {formatCompactNumber(hover.broad)}</span>
-        </div>
-      ) : null}
-      {error ? <div className="news-live-histogram-error">{error}</div> : null}
-      <div
-        className="news-live-histogram-chart"
-        onMouseLeave={() => setHover(null)}
-        style={{ "--histogram-bin-count": displayData.length } as CSSProperties}
-      >
-        {displayData.map((row) => (
-          <div
-            aria-label={`${formatZoneDateTime(new Date(Date.parse(row.bucketUtc)), EXCHANGE_TIME_ZONE)}: ${row.singleTickerRows} one-ticker, ${row.broadOrNoneRows} broad`}
-            className={row.totalRows > 0 ? "news-live-histogram-bin has-data" : "news-live-histogram-bin"}
-            key={row.bucketUtc}
-            onMouseEnter={() => setHover(newsHistogramHover(row))}
-            style={{ "--bar-height": `${newsHistogramBarHeight(row.totalRows, maxTotal)}%` } as CSSProperties}
-          >
-            {row.totalRows > 0 ? (
-              <span className="news-live-histogram-stack">
-                <span className="news-live-histogram-segment broad" style={{ height: `${(row.broadOrNoneRows / row.totalRows) * 100}%` }} />
-                <span className="news-live-histogram-segment single" style={{ height: `${(row.singleTickerRows / row.totalRows) * 100}%` }} />
-              </span>
-            ) : null}
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
-
 function SecLiveFeedCard({ group, histogram, service }: { group: ServiceWorkGroup; histogram: SecDailyHistogramState; service: ServiceStatusPayload }) {
   const metrics = serviceMetricsRecord(service);
   const rows = secLiveFeedRows(service);
@@ -776,85 +663,6 @@ function SecLiveFeedCard({ group, histogram, service }: { group: ServiceWorkGrou
       </div>
       <SecLiveFeedTable rows={rows} />
     </section>
-  );
-}
-
-function SecDailyHistogram({
-  binSeconds,
-  data,
-  error,
-  windowEndUtc,
-  windowStartUtc,
-}: {
-  binSeconds: number;
-  data: SecDailyHistogramDatum[];
-  error: string;
-  windowEndUtc: string;
-  windowStartUtc: string;
-}) {
-  const defaultWindow = useMemo(() => defaultSecHistogramWindow(binSeconds), [binSeconds]);
-  const effectiveWindowStartUtc = windowStartUtc || defaultWindow.windowStartUtc;
-  const effectiveWindowEndUtc = windowEndUtc || defaultWindow.windowEndUtc;
-  const effectiveData = useMemo(
-    () => data.length ? elapsedSecHistogramRows(data, effectiveWindowStartUtc, effectiveWindowEndUtc, binSeconds) : defaultWindow.rows,
-    [binSeconds, data, defaultWindow.rows, effectiveWindowEndUtc, effectiveWindowStartUtc],
-  );
-  const displayData = useMemo(
-    () => secHistogramFullWindowRows(effectiveData, effectiveWindowStartUtc, effectiveWindowEndUtc, binSeconds),
-    [binSeconds, effectiveData, effectiveWindowEndUtc, effectiveWindowStartUtc],
-  );
-  const [hover, setHover] = useState<ReturnType<typeof secHistogramHover> | null>(null);
-  const maxTotal = useMemo(() => Math.max(1, ...displayData.map((row) => row.totalRows)), [displayData]);
-  const summary = secHistogramSummary(effectiveData);
-  return (
-    <div className="news-live-histogram sec-live-histogram">
-      <div className="news-live-histogram-label">
-        <span>Today from DB / {formatNewsBinDuration(binSeconds)} bins</span>
-        <div className="news-live-histogram-legend sec-live-histogram-legend">
-          <span className="xbrl">XBRL <strong>{formatCompactNumber(summary.xbrl)}</strong></span>
-          <span className="text">text <strong>{formatCompactNumber(summary.text)}</strong></span>
-          <span className="documents">docs <strong>{formatCompactNumber(summary.documents)}</strong></span>
-          <span className="filing">filing only <strong>{formatCompactNumber(summary.filingOnly)}</strong></span>
-          <span>total <strong>{formatCompactNumber(summary.total)}</strong></span>
-        </div>
-      </div>
-      {hover ? (
-        <div className="news-live-histogram-hover sec-live-histogram-hover">
-          <strong>{hover.et}</strong>
-          <span>VAN {hover.van}</span>
-          <span>UTC {hover.utc}</span>
-          <span>XBRL {formatCompactNumber(hover.xbrl)}</span>
-          <span>text {formatCompactNumber(hover.text)}</span>
-          <span>docs {formatCompactNumber(hover.documents)}</span>
-          <span>filing only {formatCompactNumber(hover.filingOnly)}</span>
-        </div>
-      ) : null}
-      {error ? <div className="news-live-histogram-error">{error}</div> : null}
-      <div
-        className="news-live-histogram-chart"
-        onMouseLeave={() => setHover(null)}
-        style={{ "--histogram-bin-count": displayData.length } as CSSProperties}
-      >
-        {displayData.map((row) => (
-          <div
-            aria-label={`${formatZoneDateTime(new Date(Date.parse(row.bucketUtc)), EXCHANGE_TIME_ZONE)}: ${row.totalRows} SEC filings`}
-            className={row.totalRows > 0 ? "news-live-histogram-bin has-data" : "news-live-histogram-bin"}
-            key={row.bucketUtc}
-            onMouseEnter={() => setHover(secHistogramHover(row))}
-            style={{ "--bar-height": `${newsHistogramBarHeight(row.totalRows, maxTotal)}%` } as CSSProperties}
-          >
-            {row.totalRows > 0 ? (
-              <span className="news-live-histogram-stack">
-                <span className="news-live-histogram-segment filing" style={{ height: `${(row.filingOnlyRows / row.totalRows) * 100}%` }} />
-                <span className="news-live-histogram-segment documents" style={{ height: `${(row.documentRows / row.totalRows) * 100}%` }} />
-                <span className="news-live-histogram-segment text" style={{ height: `${(row.textRows / row.totalRows) * 100}%` }} />
-                <span className="news-live-histogram-segment xbrl" style={{ height: `${(row.xbrlRows / row.totalRows) * 100}%` }} />
-              </span>
-            ) : null}
-          </div>
-        ))}
-      </div>
-    </div>
   );
 }
 
@@ -2140,50 +1948,6 @@ function historiesEqual(left: NewsPollHistoryRow[], right: NewsPollHistoryRow[])
   return left.every((row, index) => row.signature === right[index]?.signature);
 }
 
-function useNewsDailyHistogram(enabled: boolean) {
-  const [payload, setPayload] = useState<NewsDailyHistogramState>(() => defaultNewsHistogramWindow(900));
-  useEffect(() => {
-    if (!enabled) setPayload(defaultNewsHistogramWindow(900));
-  }, [enabled]);
-  usePollingTask({
-    enabled,
-    initialDelayMs: 0,
-    intervalMs: 30_000,
-    task: async (signal) => {
-      try {
-        const response = await api<NewsHistogramPayload>("/api/services/news/histogram", { signal });
-        const binSeconds = Number(response.bin_seconds || 900);
-        const defaultWindow = defaultNewsHistogramWindow(binSeconds);
-        const windowStartUtc = response.window_start_utc || defaultWindow.windowStartUtc;
-        const windowEndUtc = response.window_end_utc || defaultWindow.windowEndUtc;
-        setPayload({
-          binSeconds,
-          error: response.error || "",
-          rows: elapsedNewsHistogramRows(
-            (response.rows || [])
-              .map((row) => ({
-                broadOrNoneRows: Number(row.broad_or_none_rows || 0),
-                bucketUtc: String(row.bucket_utc || ""),
-                singleTickerRows: Number(row.single_ticker_rows || 0),
-                totalRows: Number(row.total_rows || 0),
-              }))
-              .filter((row) => row.bucketUtc),
-            windowStartUtc,
-            windowEndUtc,
-            binSeconds,
-          ),
-          windowEndUtc,
-          windowStartUtc,
-        });
-      } catch (exc) {
-        if (signal.aborted) return;
-        setPayload({ ...defaultNewsHistogramWindow(900), error: exc instanceof Error ? exc.message : String(exc) });
-      }
-    },
-  });
-  return payload;
-}
-
 function orderedServiceWorkGroups(groups: ServiceWorkGroup[], serviceId: ServiceId) {
   if (serviceId !== "news") return groups;
   const order = new Map([
@@ -2313,85 +2077,10 @@ function newsPollHistoryRow(service: ServiceStatusPayload): NewsPollHistoryRow |
   };
 }
 
-function newsHistogramBarHeight(totalRows: number, maxRows: number) {
-  if (totalRows <= 0 || maxRows <= 0) return 0;
-  return Math.max(4, (totalRows / maxRows) * 100);
-}
-
-function newsHistogramHover(row: NewsDailyHistogramDatum) {
-  const bucketDate = new Date(Date.parse(row.bucketUtc));
-  return {
-    broad: row.broadOrNoneRows,
-    et: formatZoneDateTime(bucketDate, EXCHANGE_TIME_ZONE),
-    single: row.singleTickerRows,
-    utc: formatUtcDateTime(row.bucketUtc),
-    van: formatZoneDateTime(bucketDate, VANCOUVER_TIME_ZONE),
-  };
-}
-
-function formatNewsBinDuration(binSeconds: number) {
-  if (binSeconds > 0 && binSeconds % 60 === 0) {
-    const minutes = binSeconds / 60;
-    return `${formatCompactNumber(minutes)} minute${minutes === 1 ? "" : "s"}`;
-  }
-  return `${formatCompactNumber(binSeconds)} second${binSeconds === 1 ? "" : "s"}`;
-}
-
 function formatSeconds(seconds: number) {
   if (!Number.isFinite(seconds) || seconds <= 0) return "-";
   if (seconds < 10) return `${seconds.toFixed(1)}s`;
   return `${Math.round(seconds)}s`;
-}
-
-function defaultNewsHistogramWindow(binSeconds: number): NewsDailyHistogramState {
-  const { day, month, year } = exchangeDateParts(new Date());
-  const start = zonedDateTimeToUtc(year, month, day, 0, 0, EXCHANGE_TIME_ZONE);
-  const nextDay = nextCalendarDate(year, month, day);
-  const end = zonedDateTimeToUtc(nextDay.year, nextDay.month, nextDay.day, 0, 0, EXCHANGE_TIME_ZONE);
-  const totalBins = Math.max(0, Math.ceil((end.getTime() - start.getTime()) / (binSeconds * 1000)) + 1);
-  const elapsedBins = Math.max(0, Math.min(totalBins, Math.ceil((Date.now() - start.getTime()) / (binSeconds * 1000)) + 1));
-  const rows = Array.from({ length: elapsedBins }, (_, index) => {
-    const bucketUtc = new Date(start.getTime() + index * binSeconds * 1000).toISOString();
-    return { broadOrNoneRows: 0, bucketUtc, singleTickerRows: 0, totalRows: 0 };
-  });
-  return {
-    binSeconds,
-    error: "",
-    rows,
-    windowEndUtc: end.toISOString(),
-    windowStartUtc: start.toISOString(),
-  };
-}
-
-function elapsedNewsHistogramRows(rows: NewsDailyHistogramDatum[], windowStartUtc: string, windowEndUtc: string, binSeconds: number) {
-  const start = Date.parse(windowStartUtc);
-  const end = Date.parse(windowEndUtc);
-  const cutoff = Math.min(Number.isFinite(end) ? end : Date.now(), Date.now());
-  const halfBinMs = Math.max(0, binSeconds * 500);
-  return rows.filter((row) => {
-    const bucket = Date.parse(row.bucketUtc);
-    if (!Number.isFinite(bucket)) return false;
-    if (Number.isFinite(start) && bucket < start) return false;
-    if (Number.isFinite(end) && bucket >= end) return false;
-    if (bucket - halfBinMs >= cutoff) return false;
-    return row.totalRows > 0 || row.singleTickerRows > 0 || row.broadOrNoneRows > 0;
-  });
-}
-
-function newsHistogramFullWindowRows(rows: NewsDailyHistogramDatum[], windowStartUtc: string, windowEndUtc: string, binSeconds: number) {
-  const start = Date.parse(windowStartUtc);
-  const end = Date.parse(windowEndUtc);
-  if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start || binSeconds <= 0) return rows;
-  const byTime = new Map<number, NewsDailyHistogramDatum>();
-  for (const row of rows) {
-    const timestamp = Date.parse(row.bucketUtc);
-    if (Number.isFinite(timestamp)) byTime.set(timestamp, row);
-  }
-  const totalBins = Math.max(1, Math.ceil((end - start) / (binSeconds * 1000)) + 1);
-  return Array.from({ length: totalBins }, (_, index) => {
-    const timestamp = start + index * binSeconds * 1000;
-    return byTime.get(timestamp) ?? { broadOrNoneRows: 0, bucketUtc: new Date(timestamp).toISOString(), singleTickerRows: 0, totalRows: 0 };
-  });
 }
 
 function WorkPlanSummaryItem({ label, title = "", tone = "", value }: { label: string; title?: string; tone?: string; value: string }) {

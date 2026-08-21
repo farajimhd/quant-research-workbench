@@ -1,4 +1,5 @@
 import type { ServiceStatusPayload } from "./contracts";
+import { fillHistogramWindow } from "./histogramWindow";
 import type { SecDailyHistogramDatum, SecLiveFeedRow } from "./secContracts";
 import { serviceRecentSourceRows } from "./ServiceActivityPanel";
 import { EXCHANGE_TIME_ZONE, VANCOUVER_TIME_ZONE, formatUtcDateTime, formatZoneDateTime } from "./time";
@@ -40,19 +41,13 @@ export function secHistogramHover(row: SecDailyHistogramDatum) {
 }
 
 export function secHistogramFullWindowRows(rows: SecDailyHistogramDatum[], windowStartUtc: string, windowEndUtc: string, binSeconds: number) {
-  const start = Date.parse(windowStartUtc);
-  const end = Date.parse(windowEndUtc);
-  if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start || binSeconds <= 0) return rows;
-  const byTime = new Map<number, SecDailyHistogramDatum>();
-  for (const row of rows) {
-    const timestamp = Date.parse(row.bucketUtc);
-    if (Number.isFinite(timestamp)) byTime.set(timestamp, row);
-  }
-  const totalBins = Math.max(1, Math.ceil((end - start) / (binSeconds * 1000)) + 1);
-  return Array.from({ length: totalBins }, (_, index) => {
-    const timestamp = start + index * binSeconds * 1000;
-    return byTime.get(timestamp) ?? { bucketUtc: new Date(timestamp).toISOString(), documentRows: 0, filingOnlyRows: 0, textRows: 0, totalRows: 0, xbrlRows: 0 };
-  });
+  return fillHistogramWindow(
+    rows,
+    windowStartUtc,
+    windowEndUtc,
+    binSeconds,
+    (bucketUtc) => ({ bucketUtc, documentRows: 0, filingOnlyRows: 0, textRows: 0, totalRows: 0, xbrlRows: 0 }),
+  );
 }
 
 function secLiveFeedRow(row: Record<string, unknown>): SecLiveFeedRow | null {

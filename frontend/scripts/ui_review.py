@@ -1753,6 +1753,14 @@ def validate_service_interactions(page: Any, scenario: dict[str, Any], interacti
         issues.append("service detail does not expose exactly one operational authority panel")
     elif authority_panel.locator(".service-operational-authority-metric").count() != 6:
         issues.append("service operational authority does not expose all six contract metrics")
+    if scenario["page"] in {"service-news", "service-sec"}:
+        histogram_bins = page.locator(".service-histogram-bin.has-data")
+        if not histogram_bins.count():
+            issues.append("service histogram has no reviewable populated bin")
+        else:
+            histogram_bins.first.focus()
+            if not page.locator(".service-histogram-hover").is_visible():
+                issues.append("service histogram does not expose bin detail to keyboard focus")
     if scenario["page"] == "service-news":
         rows = page.locator(".news-today-table tbody tr")
         if not rows.count():

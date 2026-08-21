@@ -72,3 +72,35 @@ export type NewsTodaySummary = {
   totalRows: number;
   withTicker: number;
 };
+
+export type NewsDailyHistogramDatum = {
+  broadOrNoneRows: number;
+  bucketUtc: string;
+  singleTickerRows: number;
+  totalRows: number;
+};
+
+export type NewsDailyHistogramState = {
+  binSeconds: number;
+  error: string;
+  rows: NewsDailyHistogramDatum[];
+  windowEndUtc: string;
+  windowStartUtc: string;
+};
+
+export type NewsHistogramPayload = {
+  bin_seconds: number;
+  error?: string;
+  market_timezone?: string;
+  rows: Array<{
+    broad_or_none_rows?: number;
+    bucket_utc?: string;
+    single_ticker_rows?: number;
+    total_rows?: number;
+  }>;
+  source?: string;
+  window_end_et?: string;
+  window_end_utc?: string;
+  window_start_et?: string;
+  window_start_utc?: string;
+};

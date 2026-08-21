@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 
 import { api } from "../../api/client";
 import { usePollingTask } from "../../app/hooks/usePollingTask";
+import { defaultMarketDayHistogramWindow, elapsedHistogramRows } from "./histogramWindow";
 import type {
   SecDailyHistogramDatum,
   SecDailyHistogramState,
@@ -12,13 +13,7 @@ import type {
   SecTodaySummary,
 } from "./secContracts";
 import { numericMetric, stringArrayMetric, stringMetric } from "./metrics";
-import {
-  EXCHANGE_TIME_ZONE,
-  exchangeDateParts,
-  nextCalendarDate,
-  parseServiceTimestamp,
-  zonedDateTimeToUtc,
-} from "./time";
+import { parseServiceTimestamp } from "./time";
 import { isRecord } from "./workPresentation";
 
 export function useSecTodayRows(enabled: boolean, sort: SecTodaySort): SecTodayRowsState {
@@ -83,36 +78,21 @@ export function defaultSecTodayRowsState(sort: SecTodaySort): SecTodayRowsState 
 }
 
 export function defaultSecHistogramWindow(binSeconds: number): SecDailyHistogramState {
-  const { day, month, year } = exchangeDateParts(new Date());
-  const start = zonedDateTimeToUtc(year, month, day, 0, 0, EXCHANGE_TIME_ZONE);
-  const nextDay = nextCalendarDate(year, month, day);
-  const end = zonedDateTimeToUtc(nextDay.year, nextDay.month, nextDay.day, 0, 0, EXCHANGE_TIME_ZONE);
-  const totalBins = Math.max(0, Math.ceil((end.getTime() - start.getTime()) / (binSeconds * 1000)) + 1);
-  const elapsedBins = Math.max(0, Math.min(totalBins, Math.ceil((Date.now() - start.getTime()) / (binSeconds * 1000)) + 1));
-  const rows = Array.from({ length: elapsedBins }, (_, index) => ({
-    bucketUtc: new Date(start.getTime() + index * binSeconds * 1000).toISOString(),
-    documentRows: 0,
-    filingOnlyRows: 0,
-    textRows: 0,
-    totalRows: 0,
-    xbrlRows: 0,
-  }));
-  return { binSeconds, error: "", rows, windowEndUtc: end.toISOString(), windowStartUtc: start.toISOString() };
+  return defaultMarketDayHistogramWindow(binSeconds, emptySecHistogramRow);
 }
 
 export function elapsedSecHistogramRows(rows: SecDailyHistogramDatum[], windowStartUtc: string, windowEndUtc: string, binSeconds: number) {
-  const start = Date.parse(windowStartUtc);
-  const end = Date.parse(windowEndUtc);
-  const cutoff = Math.min(Number.isFinite(end) ? end : Date.now(), Date.now());
-  const halfBinMs = Math.max(0, binSeconds * 500);
-  return rows.filter((row) => {
-    const bucket = Date.parse(row.bucketUtc);
-    if (!Number.isFinite(bucket)) return false;
-    if (Number.isFinite(start) && bucket < start) return false;
-    if (Number.isFinite(end) && bucket >= end) return false;
-    if (bucket - halfBinMs >= cutoff) return false;
-    return row.totalRows > 0 || row.filingOnlyRows > 0 || row.documentRows > 0 || row.textRows > 0 || row.xbrlRows > 0;
-  });
+  return elapsedHistogramRows(
+    rows,
+    windowStartUtc,
+    windowEndUtc,
+    binSeconds,
+    (row) => row.totalRows > 0 || row.filingOnlyRows > 0 || row.documentRows > 0 || row.textRows > 0 || row.xbrlRows > 0,
+  );
+}
+
+function emptySecHistogramRow(bucketUtc: string): SecDailyHistogramDatum {
+  return { bucketUtc, documentRows: 0, filingOnlyRows: 0, textRows: 0, totalRows: 0, xbrlRows: 0 };
 }
 
 function secHistogramFromPayload(payload: SecTodayRowsPayload["histogram"]): SecDailyHistogramState {
