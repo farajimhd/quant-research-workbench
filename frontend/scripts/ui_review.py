@@ -118,6 +118,64 @@ def fulfill_json(body: str):
     return handler
 
 
+def news_today_fixture() -> dict[str, Any]:
+    row = {
+        "article_url": "https://example.invalid/review-article",
+        "author": "Review Desk",
+        "body_chars": 420,
+        "canonical_news_id": "review-news-001",
+        "channels": ["markets", "technology"],
+        "content_quality_flags": [],
+        "downloaded_at_utc": "2026-08-21T21:59:05Z",
+        "external_chars": 0,
+        "external_fetch_status": "not_required",
+        "full_text_chars": 420,
+        "has_body": 1,
+        "has_external_text": 0,
+        "has_pdf": 0,
+        "is_title_only": 0,
+        "normalized_title": "AAPL expands deterministic research platform",
+        "pdf_chars": 0,
+        "pdf_extract_status": "not_required",
+        "provider_article_id": "review-provider-001",
+        "provider_tags": ["earnings", "platform"],
+        "published_at_utc": "2026-08-21T21:58:00Z",
+        "text_preview": "The company expanded its research platform with deterministic controls.",
+        "ticker_link_count": 1,
+        "ticker_link_sample": ["AAPL"],
+        "tickers": ["AAPL"],
+        "title": "AAPL expands deterministic research platform",
+        "url_domain": "example.invalid",
+    }
+    return {
+        "database": "review",
+        "normalized_table": "normalized_news",
+        "rows": [row],
+        "sort": "desc",
+        "summary": {"external_text": 0, "latest": row["published_at_utc"], "loaded_rows": 1, "multi_ticker_rows": 0, "no_ticker_rows": 0, "one_ticker_rows": 1, "pdf_rows": 0, "total_rows": 1, "with_ticker": 1},
+        "ticker_table": "news_tickers",
+        "window_end_utc": "2026-08-21T22:00:00Z",
+        "window_start_utc": "2026-08-21T13:30:00Z",
+    }
+
+
+def news_detail_fixture() -> dict[str, Any]:
+    row = news_today_fixture()["rows"][0] | {
+        "body_text": "<p>AAPL expands deterministic research platform</p><p>The company expanded its research platform with deterministic controls. The update keeps source authority explicit &amp; preserves audit evidence.</p><p>KEY POINTS:</p><ul><li>One canonical contract</li><li>Bounded live processing</li></ul>",
+        "normalizer_version": "ui-review-v1",
+        "raw_artifact_path": "runtime://ui-review/news/review-news-001.json",
+        "teaser": "The company expanded its research platform with deterministic controls.",
+    }
+    return {
+        "canonical_news_id": "review-news-001",
+        "database": "review",
+        "normalized_table": "normalized_news",
+        "row": row,
+        "ticker_rows": [{"canonical_news_id": "review-news-001", "ticker": "AAPL"}],
+        "ticker_table": "news_tickers",
+    }
+
+
 def chart_history_fixture(session_date: str, symbol: str = "AAPL") -> dict[str, Any]:
     start = datetime.fromisoformat(f"{session_date}T10:00:00+00:00")
     history: list[dict[str, Any]] = []
@@ -1620,6 +1678,32 @@ def validate_service_interactions(page: Any, scenario: dict[str, Any], interacti
     issues: list[str] = []
     if not scenario["page"].startswith("service-") or scenario["page"] == "services-dashboard":
         return issues
+    if scenario["page"] == "service-news":
+        rows = page.locator(".news-today-table tbody tr")
+        if not rows.count():
+            return ["inserted News table has no reviewable rows"]
+        rows.first.focus()
+        rows.first.press("Enter")
+        modal = page.get_by_role("dialog", name="Inserted News Detail")
+        try:
+            modal.wait_for(state="visible", timeout=5000)
+        except Exception:
+            return ["inserted News row does not open its detail dialog"]
+        readable_body = modal.locator(".news-full-readable-body")
+        if readable_body.count() != 1 or "One canonical contract" not in readable_body.inner_text():
+            issues.append("News detail does not render the normalized readable article body")
+        technical = modal.locator(".news-full-technical-section")
+        technical.locator(":scope > summary").click()
+        if modal.get_by_text("Actual Database Values", exact=True).count() != 1 or modal.locator(".news-full-metadata-table").count() != 1:
+            issues.append("News technical detail omits the shared metadata table")
+        if interaction_screenshot:
+            page.screenshot(path=str(interaction_screenshot), full_page=True)
+        page.keyboard.press("Escape")
+        try:
+            modal.wait_for(state="hidden", timeout=5000)
+        except Exception:
+            issues.append("Escape does not close the inserted News detail dialog")
+        return issues
     activity = page.locator(".service-activity-table")
     if activity.count() != 1:
         return ["service detail does not expose exactly one activity table"]
@@ -1796,6 +1880,18 @@ def capture(args: argparse.Namespace) -> int:
                         "**/api/system/workload-budgets",
                         fulfill_json(budget_body),
                     )
+                    if service_id == "news":
+                        page.route("**/api/services/news/today?**", fulfill_json(json.dumps(news_today_fixture())))
+                        page.route("**/api/services/news/detail/**", fulfill_json(json.dumps(news_detail_fixture())))
+                        page.route(
+                            "**/api/services/news/histogram",
+                            fulfill_json(json.dumps({
+                                "bin_seconds": 900,
+                                "rows": [{"bucket_utc": "2026-08-21T21:45:00Z", "broad_or_none_rows": 0, "single_ticker_rows": 1, "total_rows": 1}],
+                                "window_end_utc": "2026-08-21T22:00:00Z",
+                                "window_start_utc": "2026-08-21T13:30:00Z",
+                            })),
+                        )
                 if args.canvas_session_date:
                     page.route(
                         "**/api/trading/canvas-context",
@@ -1965,10 +2061,10 @@ def capture(args: argparse.Namespace) -> int:
                         scenario["page"] == "canvas-focus"
                         and "indicator.qmd_generic_structure" in str(args.canvas_visible_indicators or "")
                     ) else screenshot_path.with_name(
-                        f"{screenshot_path.stem}__activity-detail.png"
+                        f"{screenshot_path.stem}__service-detail.png"
                     ) if (
                         args.stub_service_status
-                        and scenario["page"] == "service-qmd"
+                        and scenario["page"] in {"service-news", "service-qmd"}
                         and scenario["theme"] == "light"
                         and scenario["scale"] == 1.0
                         and scenario["viewport_name"] == "normal"

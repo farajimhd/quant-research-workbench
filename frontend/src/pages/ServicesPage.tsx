@@ -26,6 +26,8 @@ import {
   fleetDatabaseSummary,
 } from "../features/services/fleetPresentation";
 import { ServiceFleetCard } from "../features/services/ServiceFleetCard";
+import { ServiceMetadataTable } from "../features/services/ServiceMetadataTable";
+import { cleanNewsArticleText, newsArticleBlocks } from "../features/services/newsArticlePresentation";
 import {
   arrayRecords,
   arrayValueLabel,
@@ -1191,7 +1193,7 @@ function NewsTodayDetailModal({ detail, error, loading, row }: { detail: NewsDet
               ) : null}
               <section className="news-full-table-section">
                 <h4>Actual Database Values</h4>
-                <NewsMetadataTable rows={remainingRows} />
+                <ServiceMetadataTable rows={remainingRows} />
               </section>
             </div>
           </details>
@@ -1541,7 +1543,7 @@ function SecFilingDetailModal({ detail, error, loading, row }: { detail: SecDeta
           </details>
           <details>
             <summary><span>Filing Parent Row</span><strong>{formatCompactNumber(filingFacts.length)}</strong></summary>
-            <NewsMetadataTable rows={Object.entries(filingRow).map(([key, value]) => ({ key, value: formatValue(key, value) }))} />
+            <ServiceMetadataTable rows={Object.entries(filingRow).map(([key, value]) => ({ key, value: formatValue(key, value) }))} />
           </details>
         </section>
       </div>
@@ -1696,150 +1698,6 @@ function newsDetailTextCandidates(dbRow: Record<string, unknown>, row: NewsToday
   return candidates
     .map((candidate) => ({ ...candidate, value: cleanNewsArticleText(candidate.value) }))
     .filter((candidate, index, all) => candidate.value && all.findIndex((item) => item.value === candidate.value) === index);
-}
-
-function cleanNewsArticleText(value: string) {
-  const normalizedMarkup = value
-    .replace(/<\s*br\s*\/?>/gi, "\n")
-    .replace(/<\/\s*p\s*>/gi, "\n\n")
-    .replace(/<\s*li\s*>/gi, "\n- ")
-    .replace(/<\/\s*li\s*>/gi, "\n")
-    .replace(/<[^>]+>/g, " ");
-  return decodeNewsHtmlEntities(normalizedMarkup)
-    .replace(/\r\n/g, "\n")
-    .replace(/\t/g, " ")
-    .replace(/[ \u00a0]{2,}/g, " ")
-    .replace(/\n{3,}/g, "\n\n")
-    .trim();
-}
-
-type NewsArticleBlock = { items: string[]; kind: "list"; text?: never } | { items?: never; kind: "lead" | "paragraph" | "subhead"; text: string };
-
-function newsArticleBlocks(value: string, title = "", teaser = ""): NewsArticleBlock[] {
-  const cleaned = dedupeNewsBodySentences(stripNewsBodyLeadNoise(cleanNewsArticleText(value), title, teaser));
-  if (!cleaned) return [{ kind: "paragraph", text: "No readable body text was returned for this news row." }];
-  const paragraphBlocks = cleaned.split(/\n{2,}/).map((item) => item.trim()).filter(Boolean);
-  const blocks = paragraphBlocks.length > 1 ? paragraphBlocks : splitLongNewsParagraph(cleaned);
-  return blocks.slice(0, 48).map((block, index) => {
-    const listItems = newsListItems(block);
-    if (listItems.length >= 2) return { items: listItems, kind: "list" };
-    if (index === 0 && block.length > 80) return { kind: "lead", text: block };
-    if (isNewsSubhead(block)) return { kind: "subhead", text: block.replace(/:$/, "") };
-    return { kind: "paragraph", text: block };
-  });
-}
-
-function stripNewsBodyLeadNoise(value: string, title: string, teaser: string) {
-  let stripped = value.trim();
-  for (const candidate of [title, teaser].map(cleanNewsArticleText).filter((item) => item.length > 8).sort((a, b) => b.length - a.length)) {
-    const escaped = escapeRegExp(candidate);
-    stripped = stripped.replace(new RegExp(`^${escaped}[\\s:.-]*`, "i"), "").trim();
-  }
-  return stripped;
-}
-
-function dedupeNewsBodySentences(value: string) {
-  return value
-    .split(/\n{2,}/)
-    .map((paragraph) => {
-      const seen = new Set<string>();
-      const sentences = paragraph.split(/(?<=[.!?])\s+(?=[A-Z0-9"'])/).map((item) => item.trim()).filter(Boolean);
-      const deduped = sentences.filter((sentence) => {
-        const key = sentence.toLowerCase().replace(/[^a-z0-9]+/g, "");
-        if (key.length < 48) return true;
-        if (seen.has(key)) return false;
-        seen.add(key);
-        return true;
-      });
-      return deduped.join(" ");
-    })
-    .join("\n\n")
-    .trim();
-}
-
-function escapeRegExp(value: string) {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
-function splitLongNewsParagraph(value: string) {
-  const sentences = value.split(/(?<=[.!?])\s+(?=[A-Z0-9"'])/).map((item) => item.trim()).filter(Boolean);
-  if (sentences.length <= 1) return [value];
-  const chunks: string[] = [];
-  let current = "";
-  for (const sentence of sentences) {
-    if (current && `${current} ${sentence}`.length > 720) {
-      chunks.push(current);
-      current = sentence;
-    } else {
-      current = current ? `${current} ${sentence}` : sentence;
-    }
-  }
-  if (current) chunks.push(current);
-  return chunks;
-}
-
-function newsListItems(value: string) {
-  const lines = value.split("\n").map((line) => line.trim()).filter(Boolean);
-  const items = lines
-    .map((line) => line.match(/^[-*]\s+(.+)$/)?.[1]?.trim() ?? "")
-    .filter(Boolean);
-  return items.length === lines.length ? items : [];
-}
-
-function isNewsSubhead(value: string) {
-  const trimmed = value.trim();
-  if (trimmed.length > 96) return false;
-  if (trimmed.endsWith(":")) return true;
-  const letters = trimmed.replace(/[^A-Za-z]/g, "");
-  if (letters.length < 6) return false;
-  const uppercase = letters.replace(/[^A-Z]/g, "").length;
-  return uppercase / letters.length > 0.72;
-}
-
-function decodeNewsHtmlEntities(value: string) {
-  if (!value.includes("&")) return value;
-  const named: Record<string, string> = {
-    amp: "&",
-    apos: "'",
-    gt: ">",
-    ldquo: "\"",
-    lsquo: "'",
-    lt: "<",
-    mdash: "-",
-    nbsp: " ",
-    ndash: "-",
-    quot: "\"",
-    rdquo: "\"",
-    rsquo: "'",
-  };
-  return value
-    .replace(/&#(\d+);/g, (_, code) => String.fromCharCode(Number(code)))
-    .replace(/&#x([0-9a-f]+);/gi, (_, code) => String.fromCharCode(Number.parseInt(code, 16)))
-    .replace(/&([a-z]+);/gi, (match, name) => named[String(name).toLowerCase()] ?? match);
-}
-
-function NewsMetadataTable({ rows }: { rows: Array<{ key: string; value: string }> }) {
-  const visibleRows = rows.length ? rows : [{ key: "metadata", value: "No complete database row has been loaded yet." }];
-  return (
-    <div className="news-full-metadata-wrap">
-      <table className="news-full-metadata-table">
-        <thead>
-          <tr>
-            <th>Field</th>
-            <th>Value</th>
-          </tr>
-        </thead>
-        <tbody>
-          {visibleRows.map((row) => (
-            <tr key={row.key}>
-              <td><code>{row.key}</code></td>
-              <td><pre>{row.value}</pre></td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-  );
 }
 
 function ServiceWorkPlanPanel({ secToday, service }: { secToday?: SecTodayRowsState; service: ServiceStatusPayload }) {
