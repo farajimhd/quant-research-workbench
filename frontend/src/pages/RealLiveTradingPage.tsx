@@ -47,6 +47,7 @@ import {
   type CanvasWorkspaceState,
 } from "../app/canvasWorkspace";
 import { TRADING_WORKSPACE_LAYOUT_VERSION, createFocusLayouts } from "../app/components/TradingWorkspace";
+import { usePollingTask } from "../app/hooks/usePollingTask";
 import { ApprovedCanvasRuntimePage, CanvasWorkspaceSurface } from "./CanvasConfigurationPage";
 import {
   WorkspaceCanvasManager,
@@ -722,28 +723,24 @@ export function RealLiveTradingPage({ onMarketStatusChange, onTopbarCenterChange
   }, [liveClockMode]);
 
   useEffect(() => {
-    let active = true;
-    api<Scope>("/api/market-data/scope").then((payload) => {
-      if (!active) return;
-      setScope(payload);
-    });
+    const controller = new AbortController();
+    api<Scope>("/api/market-data/scope", { signal: controller.signal }).then(setScope).catch(() => undefined);
     return () => {
-      active = false;
+      controller.abort();
     };
   }, []);
 
   useEffect(() => {
-    let active = true;
-    api<RealLiveAccountsPayload>("/api/real-live-trading/accounts").then((payload) => {
-      if (!active) return;
+    const controller = new AbortController();
+    api<RealLiveAccountsPayload>("/api/real-live-trading/accounts", { signal: controller.signal }).then((payload) => {
       const accounts = payload.accounts?.length ? payload.accounts : defaultRealLiveAccounts();
       setAvailableAccounts(accounts);
       setSelectedAccountKeys((current) => ensureSelectedAccountKeys(accounts, current));
     }).catch(() => {
-      if (active) setAvailableAccounts(defaultRealLiveAccounts());
+      if (!controller.signal.aborted) setAvailableAccounts(defaultRealLiveAccounts());
     });
     return () => {
-      active = false;
+      controller.abort();
     };
   }, []);
 
@@ -793,8 +790,8 @@ export function RealLiveTradingPage({ onMarketStatusChange, onTopbarCenterChange
     }
   }, [scannerSetupPreset, scannerSetupRowLimit]);
 
-  const loadGatewayStatus = useCallback(async () => {
-    const payload = await api<RealLiveGatewayStatusPayload>("/api/real-live-trading/market-gateway/status");
+  const loadGatewayStatus = useCallback(async (signal?: AbortSignal) => {
+    const payload = await api<RealLiveGatewayStatusPayload>("/api/real-live-trading/market-gateway/status", { signal });
     setGatewayStatus(payload);
     if (payload.session_baseline) setSessionBaseline(payload.session_baseline);
     return payload;
@@ -805,16 +802,17 @@ export function RealLiveTradingPage({ onMarketStatusChange, onTopbarCenterChange
     onMarketStatusChange?.(liveMarketStatus(serviceCore && typeof serviceCore === "object" ? serviceCore as Record<string, unknown> : null));
   }, [gatewayStatus, onMarketStatusChange]);
 
-  useEffect(() => {
-    if (!onMarketStatusChange) return;
-    const timer = window.setInterval(() => void loadGatewayStatus().catch(() => onMarketStatusChange(liveMarketStatus(null))), 10_000);
-    return () => window.clearInterval(timer);
-  }, [loadGatewayStatus, onMarketStatusChange]);
-
-  useEffect(() => {
-    if (started || isChildCanvas) return;
-    void loadGatewayStatus().catch(() => undefined);
-  }, [isChildCanvas, loadGatewayStatus, started]);
+  const sessionBaselinePolling = started && !["written", "written_with_errors", "failed", "disabled", "cancelled"].includes(sessionBaseline.status || "");
+  usePollingTask({
+    enabled: !isChildCanvas,
+    initialDelayMs: 0,
+    intervalMs: sessionBaselinePolling ? 5_000 : 10_000,
+    onError: () => onMarketStatusChange?.(liveMarketStatus(null)),
+    restartKey: sessionBaselinePolling ? "baseline-active" : "baseline-settled",
+    task: async (signal) => {
+      await loadGatewayStatus(signal);
+    },
+  });
 
   useEffect(() => {
     if (started || isChildCanvas || autoPreflightRequestedRef.current || !availableAccounts.length) return;
@@ -824,16 +822,11 @@ export function RealLiveTradingPage({ onMarketStatusChange, onTopbarCenterChange
 
   useEffect(() => {
     if (!scope) return;
-    let active = true;
-    api<ReviewPayload>(`/api/market-data/review${query({ processed_root: scope.processed_root, start_date: scope.start_date, end_date: scope.end_date })}`).then((payload) => {
-      if (!active) return;
-      setReview(payload);
-    });
-    api<CatalogPayload>(`/api/market-data/catalog${query({ processed_root: scope.processed_root })}`).then((payload) => {
-      if (active) setCatalog(payload);
-    });
+    const controller = new AbortController();
+    api<ReviewPayload>(`/api/market-data/review${query({ processed_root: scope.processed_root, start_date: scope.start_date, end_date: scope.end_date })}`, { signal: controller.signal }).then(setReview).catch(() => undefined);
+    api<CatalogPayload>(`/api/market-data/catalog${query({ processed_root: scope.processed_root })}`, { signal: controller.signal }).then(setCatalog).catch(() => undefined);
     return () => {
-      active = false;
+      controller.abort();
     };
   }, [scope]);
 
@@ -994,46 +987,15 @@ export function RealLiveTradingPage({ onMarketStatusChange, onTopbarCenterChange
     setPreflightStatus((current) => (current && sameAccountKeySet(current.selected_account_keys, selectedAccountKeys) ? current : null));
   }, [selectedAccountKeys]);
 
-  useEffect(() => {
-    if (!started || isChildCanvas) return;
-    let canceled = false;
-    const refresh = async () => {
-      if (canceled) return;
-      await refreshLiveWorkspace({ warmCharts: false });
-    };
-    void refresh();
-    const timer = window.setInterval(() => {
-      void refresh();
-    }, 15000);
-    return () => {
-      canceled = true;
-      window.clearInterval(timer);
-    };
-  }, [isChildCanvas, scannerQueryKey, selectedAccountKeys, started]);
-
-  useEffect(() => {
-    if (!started || isChildCanvas) return;
-    let canceled = false;
-    const poll = async () => {
-      try {
-        const payload = await loadGatewayStatus();
-        const status = payload.session_baseline?.status || "";
-        if (!canceled && ["written", "written_with_errors", "failed", "disabled", "cancelled"].includes(status)) {
-          window.clearInterval(timer);
-        }
-      } catch {
-        if (!canceled) setSessionBaseline((current) => ({ ...current, status: current.status || "unknown" }));
-      }
-    };
-    void poll();
-    const timer = window.setInterval(() => {
-      void poll();
-    }, 5000);
-    return () => {
-      canceled = true;
-      window.clearInterval(timer);
-    };
-  }, [isChildCanvas, loadGatewayStatus, started]);
+  usePollingTask({
+    enabled: started && !isChildCanvas,
+    initialDelayMs: 0,
+    intervalMs: 15_000,
+    restartKey: `${scannerQueryKey}:${selectedAccountKeys.join(",")}`,
+    task: async (signal) => {
+      await refreshLiveWorkspace({ signal, warmCharts: false });
+    },
+  });
 
   async function checkConnections(keys = selectedAccountKeys) {
     const accountKeys = ensureSelectedAccountKeys(availableAccounts, keys);
@@ -1093,19 +1055,19 @@ export function RealLiveTradingPage({ onMarketStatusChange, onTopbarCenterChange
     setObserving(true);
   }
 
-  async function refreshLiveWorkspace(options: { warmCharts?: boolean } = {}) {
-    await Promise.all([loadScannerAt(session.barTime, options), loadBrokerPortfolio()]);
+  async function refreshLiveWorkspace(options: { signal?: AbortSignal; warmCharts?: boolean } = {}) {
+    await Promise.all([loadScannerAt(session.barTime, options), loadBrokerPortfolio(options.signal)]);
   }
 
   function refreshCurrentBar() {
     void refreshLiveWorkspace({ warmCharts: false });
   }
 
-  async function loadScannerAt(barTime: string, options: { warmCharts?: boolean } = {}) {
+  async function loadScannerAt(barTime: string, options: { signal?: AbortSignal; warmCharts?: boolean } = {}) {
     setLoading(true);
     setError("");
     try {
-      const scannerPayload = await api<RealLiveScannerPayload>("/api/real-live-trading/scanner?row_limit=500");
+      const scannerPayload = await api<RealLiveScannerPayload>("/api/real-live-trading/scanner?row_limit=500", { signal: options.signal });
       const exchangeSession = { barTime: scannerPayload.market_time || barTime || session.barTime, sessionDate: scannerPayload.session_date || session.sessionDate };
       const liveRows = scannerPayload.rows.map((row) => normalizeRealLiveScannerRow(row, exchangeSession));
       const rawMarketRows = scannerPayload.market_rows?.length ? scannerPayload.market_rows : scannerPayload.rows;
@@ -1143,6 +1105,7 @@ export function RealLiveTradingPage({ onMarketStatusChange, onTopbarCenterChange
       setLiveClockMessage(scannerPayload.gateway_error ? `Live scanner used REST fallback at ${exchangeSession.barTime} ET. ${scannerPayload.gateway_error}` : `Live scanner refreshed from ${scannerPayload.provider} at ${exchangeSession.barTime} ET.`);
       return { firstRow, marketSnapshot: marketStateSnapshot, snapshot: enrichedSnapshot };
     } catch (requestError) {
+      if (options.signal?.aborted) return null;
       setSnapshot(null);
       setMarketSnapshot(null);
       setSelectedRow(null);
@@ -1150,19 +1113,20 @@ export function RealLiveTradingPage({ onMarketStatusChange, onTopbarCenterChange
       setError(requestError instanceof Error ? requestError.message : "Live scanner request failed.");
       return null;
     } finally {
-      setLoading(false);
+      if (!options.signal?.aborted) setLoading(false);
     }
   }
 
-  async function loadBrokerPortfolio() {
+  async function loadBrokerPortfolio(signal?: AbortSignal) {
     try {
       const accountKeys = ensureSelectedAccountKeys(availableAccounts, selectedAccountKeys);
-      const payload = await api<RealLivePortfolioPayload>(`/api/real-live-trading/portfolio${query({ account_keys: accountKeys.join(","), account_type: accountKeys[0] || "paper" })}`);
+      const payload = await api<RealLivePortfolioPayload>(`/api/real-live-trading/portfolio${query({ account_keys: accountKeys.join(","), account_type: accountKeys[0] || "paper" })}`, { signal });
       setPortfolioSnapshot(payload);
       setPositions(payload.positions.map(normalizeRealLivePosition).filter((position) => position.symbol && position.quantity !== 0));
       setOrders(payload.orders.map(normalizeRealLiveOrder).filter((order) => order.symbol));
       setTrades((payload.executions ?? []).map(normalizeRealLiveExecution).filter((trade) => trade.symbol || trade.execution_id));
     } catch (requestError) {
+      if (signal?.aborted) return;
       setError((current) => current || (requestError instanceof Error ? requestError.message : "IBKR portfolio request failed."));
     }
   }
