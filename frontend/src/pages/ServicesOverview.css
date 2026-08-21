@@ -5278,6 +5278,14 @@
     grid-template-columns: minmax(0, 1fr);
   }
 
+  .news-service-work-and-rows-grid .news-today-panel {
+    height: auto;
+  }
+
+  .news-service-work-and-rows-grid .news-today-table-wrap {
+    flex: 0 1 auto;
+  }
+
   .news-live-summary,
   .service-activity-summary {
     grid-template-columns: repeat(3, minmax(0, 1fr));

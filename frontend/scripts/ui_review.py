@@ -1757,6 +1757,9 @@ def validate_service_interactions(page: Any, scenario: dict[str, Any], interacti
         rows = page.locator(".news-today-table tbody tr")
         if not rows.count():
             return ["inserted News table has no reviewable rows"]
+        first_row_box = rows.first.bounding_box()
+        if not first_row_box or first_row_box["height"] < 1:
+            issues.append("inserted News table rows collapse out of the visible layout")
         rows.first.focus()
         rows.first.press("Enter")
         modal = page.get_by_role("dialog", name="Inserted News Detail")
