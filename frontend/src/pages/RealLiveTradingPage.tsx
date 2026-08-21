@@ -92,6 +92,18 @@ import {
   type StageOrderContext,
   type TradeRow,
 } from "../features/live-trading/portfolio";
+import {
+  addClockMinutes,
+  clockTimestampSeconds,
+  currentExchangeSession,
+  dateOffset,
+  formatExchangeClock,
+  formatLocalClock,
+  isAfterClock,
+  previousSessionDate,
+  rowTimestampSeconds,
+  type TradingSession,
+} from "../features/live-trading/time";
 import { ApprovedCanvasRuntimePage, CanvasWorkspaceSurface } from "./CanvasConfigurationPage";
 import {
   WorkspaceCanvasManager,
@@ -147,11 +159,6 @@ type LiveNewsPayload = {
   bar_time: string;
   by_ticker: Record<string, LiveNewsSummary>;
   session_date: string;
-};
-
-type TradingSession = {
-  barTime: string;
-  sessionDate: string;
 };
 
 type ScannerQueryGroup = {
@@ -3596,54 +3603,6 @@ function stableScannerQueryId(name: string) {
   return name.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || `query-${Date.now()}`;
 }
 
-function previousSessionDate(sessions: string[], sessionDate: string, countBack: number) {
-  const index = sessions.indexOf(sessionDate);
-  if (index < 0) return dateOffset(sessionDate, -countBack);
-  return sessions[Math.max(0, index - countBack)] ?? sessionDate;
-}
-
-function dateOffset(value: string, days: number) {
-  const parsed = new Date(`${value}T00:00:00`);
-  parsed.setDate(parsed.getDate() + days);
-  return parsed.toISOString().slice(0, 10);
-}
-
-function addClockMinutes(clock: string, minutes: number) {
-  const [hourText, minuteText] = clock.split(":");
-  const hour = Number(hourText);
-  const minute = Number(minuteText);
-  if (!Number.isFinite(hour) || !Number.isFinite(minute)) return "";
-  const total = hour * 60 + minute + minutes;
-  const nextHour = Math.floor(total / 60);
-  const nextMinute = total % 60;
-  if (nextHour < 0 || nextHour > 23) return "";
-  return `${String(nextHour).padStart(2, "0")}:${String(nextMinute).padStart(2, "0")}`;
-}
-
-function isAfterClock(clock: string, cutoff: string) {
-  return clockToMinutes(clock) > clockToMinutes(cutoff);
-}
-
-function clockToMinutes(clock: string) {
-  const [hourText, minuteText] = clock.split(":");
-  const hour = Number(hourText);
-  const minute = Number(minuteText);
-  if (!Number.isFinite(hour) || !Number.isFinite(minute)) return 0;
-  return hour * 60 + minute;
-}
-
-function rowTimestampSeconds(row: Record<string, unknown>, sessionDate: string, fallbackClock: string) {
-  const raw = stringValue(row, "bar_time_market") || `${sessionDate}T${fallbackClock}:00-04:00`;
-  const parsed = Date.parse(raw);
-  return Number.isFinite(parsed) ? Math.floor(parsed / 1000) : null;
-}
-
-function clockTimestampSeconds(sessionDate: string, clock: string) {
-  if (!sessionDate || !clock) return null;
-  const parsed = Date.parse(`${sessionDate}T${clock}:00-04:00`);
-  return Number.isFinite(parsed) ? Math.floor(parsed / 1000) : null;
-}
-
 function chartOpenAtTime(payload: ChartPayload | null, timestamp: number | null) {
   if (!payload || !timestamp) return 0;
   const candle = payload.candles.find((item) => item.time === timestamp);
@@ -3676,47 +3635,6 @@ function readStoredAccountKeys(): string[] {
   } catch {
     return ["paper"];
   }
-}
-
-function currentExchangeSession(now = new Date()): TradingSession {
-  const parts = exchangeDateParts(now);
-  return { barTime: `${parts.hour}:${parts.minute}`, sessionDate: `${parts.year}-${parts.month}-${parts.day}` };
-}
-
-function formatExchangeClock(now = new Date()) {
-  const parts = exchangeDateParts(now);
-  return `${parts.hour}:${parts.minute}:${parts.second} ET`;
-}
-
-function formatLocalClock(now = new Date()) {
-  return new Intl.DateTimeFormat(undefined, {
-    hour: "2-digit",
-    hour12: false,
-    minute: "2-digit",
-    second: "2-digit",
-  }).format(now);
-}
-
-function exchangeDateParts(now: Date) {
-  const parts = new Intl.DateTimeFormat("en-CA", {
-    day: "2-digit",
-    hour: "2-digit",
-    hour12: false,
-    minute: "2-digit",
-    month: "2-digit",
-    second: "2-digit",
-    timeZone: "America/New_York",
-    year: "numeric",
-  }).formatToParts(now);
-  const value = (type: string) => parts.find((part) => part.type === type)?.value || "00";
-  return {
-    day: value("day"),
-    hour: value("hour") === "24" ? "00" : value("hour"),
-    minute: value("minute"),
-    month: value("month"),
-    second: value("second"),
-    year: value("year"),
-  };
 }
 
 function splitList(value: unknown) {
