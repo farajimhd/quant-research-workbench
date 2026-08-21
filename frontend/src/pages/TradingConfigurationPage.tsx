@@ -36,6 +36,7 @@ import { useEffect, useId, useMemo, useRef, useState, type ReactElement, type Re
 import { createPortal } from "react-dom";
 
 import { api, apiCached, invalidateApiCache } from "../api/client";
+import "../app/configurationVisuals.css";
 import { clearConfigurationSession } from "../app/configurationSession";
 import { AbstractionCard } from "../app/components/AbstractionCard";
 import { DefinitionRegistryProvider, type InformationRegistry } from "../app/components/DefinitionRegistry";

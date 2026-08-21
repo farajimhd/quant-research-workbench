@@ -6,7 +6,6 @@ import "@fontsource-variable/public-sans/wght-italic.css";
 
 import { App } from "./App";
 import "./app/styles.css";
-import "./app/configurationVisuals.css";
 
 class ApplicationErrorBoundary extends Component<{ children: ReactNode }, { error: string; retryKey: number }> {
   state = { error: "", retryKey: 0 };
