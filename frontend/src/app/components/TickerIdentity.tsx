@@ -2,6 +2,7 @@ import { type FormEvent, useEffect, useMemo, useState } from "react";
 import { ArrowDownRight, ArrowRight, ArrowUpRight } from "lucide-react";
 
 import { api, query } from "../../api/client";
+import { useWallClock } from "./useWallClock";
 
 export type TickerPresentation = {
   country: string;
@@ -34,6 +35,7 @@ export function useTickerPresentations(tickers: string[], { includeMarketState =
   const tickerKey = useMemo(() => normalizeTickers(tickers).join(","), [tickers]);
   const [revision, setRevision] = useState(0);
   const livePresentation = includeMarketState || includeRecency;
+  const wallClockMs = useWallClock(LIVE_RECENCY_TTL_MS, livePresentation);
   const cachePrefix = `${includeRecency ? "recency" : "base"}:${includeMarketState ? "state" : "base"}:`;
 
   useEffect(() => {
@@ -41,12 +43,6 @@ export function useTickerPresentations(tickers: string[], { includeMarketState =
     presentationListeners.add(listener);
     return () => { presentationListeners.delete(listener); };
   }, []);
-
-  useEffect(() => {
-    if (!livePresentation) return undefined;
-    const timer = window.setInterval(() => setRevision((value) => value + 1), LIVE_RECENCY_TTL_MS);
-    return () => window.clearInterval(timer);
-  }, [livePresentation]);
 
   useEffect(() => {
     const normalized = tickerKey ? tickerKey.split(",") : [];
@@ -70,7 +66,7 @@ export function useTickerPresentations(tickers: string[], { includeMarketState =
     request
       .catch(() => { if (active) retryTimer = setTimeout(() => setRevision((value) => value + 1), 5000); });
     return () => { active = false; if (retryTimer) clearTimeout(retryTimer); };
-  }, [cachePrefix, includeMarketState, includeRecency, livePresentation, revision, tickerKey]);
+  }, [cachePrefix, includeMarketState, includeRecency, livePresentation, revision, tickerKey, wallClockMs]);
 
   return useMemo(() => Object.fromEntries(
     (tickerKey ? tickerKey.split(",") : []).flatMap((ticker) => {

@@ -6,6 +6,7 @@ import { Button } from "../app/components/Button";
 import { DataTable } from "../app/components/DataTable";
 import { MetricRatio } from "../app/components/MetricRatio";
 import { Modal } from "../app/components/Modal";
+import { useWallClock } from "../app/components/useWallClock";
 import { displayName, formatBytes, formatCell, formatCompactNumber, formatDuration } from "../app/format";
 import { usePollingTask } from "../app/hooks/usePollingTask";
 import { SERVICE_IDS, type ServiceId, type ServicePageMode } from "../app/routes";
@@ -63,18 +64,14 @@ export function ServicesPage({ mode, onNavigate }: { mode: ServicePageMode; onNa
   const [error, setError] = useState("");
   const [workloadBudgets, setWorkloadBudgets] = useState<WorkloadBudgetPayload | null>(null);
   const [workloadBudgetError, setWorkloadBudgetError] = useState("");
-  const [now, setNow] = useState(() => new Date());
+  const wallClockMs = useWallClock(1_000);
+  const now = useMemo(() => new Date(wallClockMs), [wallClockMs]);
   const payloadRef = useRef<ServicesStatusPayload | null>(null);
   const serviceId = mode === "dashboard" ? null : mode;
 
   useEffect(() => {
     payloadRef.current = payload;
   }, [payload]);
-
-  useEffect(() => {
-    const timer = window.setInterval(() => setNow(new Date()), 1000);
-    return () => window.clearInterval(timer);
-  }, []);
 
   usePollingTask({
     initialDelayMs: 0,

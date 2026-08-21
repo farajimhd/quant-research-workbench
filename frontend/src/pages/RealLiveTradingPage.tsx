@@ -37,6 +37,7 @@ import { MetricRatio } from "../app/components/MetricRatio";
 import { PageIntro } from "../app/components/PageIntro";
 import { Tabs } from "../app/components/Tabs";
 import { TradingModeLaunch, type TradingLaunchCheck } from "../app/components/TradingModeLaunch";
+import { useWallClock } from "../app/components/useWallClock";
 import {
   CANVAS_REGISTRY_UPDATED_EVENT,
   LIVE_OBSERVATION_CANVAS_ID,
@@ -365,6 +366,7 @@ export function RealLiveTradingPage({ onMarketStatusChange, onTopbarCenterChange
   const [session, setSession] = useState<TradingSession>(() => readStoredSession() ?? currentExchangeSession());
   const [localClock, setLocalClock] = useState(() => formatLocalClock(new Date()));
   const [exchangeClock, setExchangeClock] = useState(() => formatExchangeClock(new Date()));
+  const wallClockMs = useWallClock(1_000);
   const [started, setStarted] = useState(isChildCanvas);
   const [observing, setObserving] = useState(false);
   const [scannerQueryGroups, setScannerQueryGroups] = useState<ScannerQueryGroup[]>(readStoredScannerQueryGroups);
@@ -666,18 +668,13 @@ export function RealLiveTradingPage({ onMarketStatusChange, onTopbarCenterChange
   }, [canvasId, isChildCanvas]);
 
   useEffect(() => {
-    const updateClocks = () => {
-      const now = new Date();
-      const exchangeSession = currentExchangeSession(now);
-      setLocalClock(formatLocalClock(now));
-      setExchangeClock(formatExchangeClock(now));
-      setSession(exchangeSession);
-      window.localStorage.setItem(LIVE_SESSION_STORAGE_KEY, JSON.stringify(exchangeSession));
-    };
-    updateClocks();
-    const timer = window.setInterval(updateClocks, 1000);
-    return () => window.clearInterval(timer);
-  }, []);
+    const now = new Date(wallClockMs);
+    const exchangeSession = currentExchangeSession(now);
+    setLocalClock(formatLocalClock(now));
+    setExchangeClock(formatExchangeClock(now));
+    setSession(exchangeSession);
+    window.localStorage.setItem(LIVE_SESSION_STORAGE_KEY, JSON.stringify(exchangeSession));
+  }, [wallClockMs]);
 
   useEffect(() => {
     window.localStorage.setItem(LIVE_ACCOUNT_KEYS_STORAGE_KEY, JSON.stringify(selectedAccountKeys));

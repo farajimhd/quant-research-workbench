@@ -53,6 +53,7 @@ import { ChartsQuotesMarketLayout, QuotesTapeContainer, type ChartsQuotesLayoutS
 import { MarketScannerContainer, SCANNER_TIMEFRAMES, SignalStreamContainer, StrategyActivityContainer, WatchUniverseContainer, type StrategyActivitySettings } from "../app/components/MarketScreenerContainers";
 import { StockFactsContainer } from "../app/components/StockFactsContainer";
 import { XbrlAnalysisContainer, type XbrlAnalysisSettings } from "../app/components/XbrlAnalysisContainer";
+import { useWallClock } from "../app/components/useWallClock";
 import { TickerIdentity, useTickerPresentations } from "../app/components/TickerIdentity";
 import { TRADING_WORKSPACE_LAYOUT_VERSION, TradingWorkspace, createFocusLayouts } from "../app/components/TradingWorkspace";
 import type { WorkspaceWindowLayout, WorkspaceWindowMeta, WorkspaceWindowStatus } from "../app/components/WorkspaceCanvas";
@@ -486,7 +487,8 @@ export function CanvasWorkspaceSurface({ accountKeys, approvedCanvas, canvasId, 
     ? readCanvasRuntimeRegistry(runtimeBase, runtimeRegistryStorageKey)
     : readCanvasRegistry());
   const [previewContext, setPreviewContext] = useState<CanvasPreviewContext>(() => replayRun ? replayPreviewContext(replayRun) : liveMode ? currentLivePreviewContext() : readPreviewContext());
-  const [liveClockInstant, setLiveClockInstant] = useState(() => Date.now());
+  const liveClockInstant = useWallClock(1_000, liveMode);
+  const livePreviewRefreshMs = useWallClock(15_000, liveMode);
   const [preview, setPreview] = useState<CanvasPreview | null>(null);
   const [contextReady, setContextReady] = useState(Boolean(replayRun || liveMode));
   const [contextError, setContextError] = useState("");
@@ -658,19 +660,8 @@ export function CanvasWorkspaceSurface({ accountKeys, approvedCanvas, canvasId, 
 
   useEffect(() => {
     if (!liveMode) return;
-    const update = () => setPreviewContext(currentLivePreviewContext());
-    update();
-    const timer = window.setInterval(update, 15_000);
-    return () => window.clearInterval(timer);
-  }, [liveMode]);
-
-  useEffect(() => {
-    if (!liveMode) return undefined;
-    const update = () => setLiveClockInstant(Date.now());
-    update();
-    const timer = window.setInterval(update, 1_000);
-    return () => window.clearInterval(timer);
-  }, [liveMode]);
+    setPreviewContext(currentLivePreviewContext());
+  }, [liveMode, livePreviewRefreshMs]);
 
   useEffect(() => {
     if (!replayRun) return;
