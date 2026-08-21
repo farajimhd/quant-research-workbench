@@ -17,6 +17,7 @@ from research.mlops.clickhouse import (
     default_clickhouse_url,
     default_clickhouse_user,
 )
+from services.reference_gateway.sec_company_profiles import normalize_country
 from src.backend.query_plans.market_daily_bars_v1 import (
     DEFAULT_DAILY_SESSION_BARS_TABLE,
 )
@@ -156,20 +157,10 @@ FUNDAMENTAL_CHANGE_DIRECTION: dict[str, str] = {
     "Stock-based compensation": "lower_is_stronger", "Common-stock issuance": "lower_is_stronger",
     "Weighted average basic shares": "lower_is_stronger", "Weighted average diluted shares": "lower_is_stronger",
 }
-SEC_INCORPORATION_COUNTRY_CODES = {
-    # SEC EDGAR jurisdiction code used by foreign private issuers. Keep this
-    # separate from ISO country codes and from the exchange/listing country.
-    "L2": "IE",
-}
 LOGGER = logging.getLogger(__name__)
 HISTORY_LIMIT = 10_000
 MAIN_HISTORY_DAYS = 520
 XBRL_HISTORY_START = datetime(2019, 1, 1, tzinfo=UTC)
-US_INCORPORATION_CODES = frozenset({
-    "AK", "AL", "AR", "AS", "AZ", "CA", "CO", "CT", "DC", "DE", "FL", "GA", "GU", "HI", "IA", "ID", "IL", "IN", "KS", "KY", "LA", "MA", "MD", "ME", "MI", "MN", "MO", "MP", "MS", "MT", "NC", "ND", "NE", "NH", "NJ", "NM", "NV", "NY", "OH", "OK", "OR", "PA", "PR", "RI", "SC", "SD", "TN", "TX", "UT", "VA", "VI", "VT", "WA", "WI", "WV", "WY",
-})
-
-
 def ticker_facts_payload(symbol: str, *, as_of: str | None = None, database: str = "q_live") -> dict[str, Any]:
     """Return the point-in-time snapshot plus prior-publication comparisons."""
     ticker = normalize_ticker(symbol)
@@ -222,6 +213,7 @@ def ticker_facts_payload(symbol: str, *, as_of: str | None = None, database: str
                 results[name] = []
                 errors[name] = f"{name.replace('_', ' ').title()} source is unavailable."
                 LOGGER.warning("Ticker facts source %s failed: %s", name, error)
+    results["company_profile"] = [anchor] if anchor.get("company_profile_source_kind") else []
 
     market_rows = results.get("market", [])
     market = first(market_rows)
@@ -283,6 +275,7 @@ def ticker_facts_payload(symbol: str, *, as_of: str | None = None, database: str
                 "cik": context["cik"] or None,
                 "company_country_code": company_country_code(anchor),
                 "company_country_source": company_country_source(anchor),
+                "is_foreign_issuer_on_us_listing": is_foreign_issuer_on_us_listing(anchor),
             },
             "market": market,
             "reg_sho": first(results.get("reg_sho")),
@@ -1658,24 +1651,36 @@ def numeric_value(value: Any) -> float | None:
 
 
 def company_country_code(identity: dict[str, Any]) -> str | None:
+    business = str(identity.get("issuer_business_country_code") or "").strip().upper()
+    if business:
+        return business
+    legal = str(identity.get("issuer_legal_country_code") or "").strip().upper()
+    if legal:
+        return legal
     domicile = str(identity.get("domicile_country_code") or "").strip().upper()
     if domicile:
         return domicile
     incorporation = str(identity.get("state_of_incorporation") or "").strip().upper()
-    if incorporation in US_INCORPORATION_CODES:
-        return "US"
-    return SEC_INCORPORATION_COUNTRY_CODES.get(incorporation)
+    return normalize_country(incorporation)
 
 
 def company_country_source(identity: dict[str, Any]) -> str | None:
+    if str(identity.get("issuer_business_country_code") or "").strip():
+        return "SEC filing business country" if identity.get("business_country_source_kind") == "sec_filing_dei" else "SEC submissions business country"
+    if str(identity.get("issuer_legal_country_code") or "").strip():
+        return "SEC filing incorporation country" if identity.get("legal_country_source_kind") == "sec_filing_dei" else "SEC submissions incorporation country"
     if str(identity.get("domicile_country_code") or "").strip():
         return "issuer domicile"
     incorporation = str(identity.get("state_of_incorporation") or "").strip().upper()
-    if incorporation in US_INCORPORATION_CODES:
-        return "SEC incorporation state"
-    if incorporation in SEC_INCORPORATION_COUNTRY_CODES:
+    if normalize_country(incorporation):
         return "SEC incorporation jurisdiction"
     return None
+
+
+def is_foreign_issuer_on_us_listing(identity: dict[str, Any]) -> bool:
+    listing = str(identity.get("listing_country_code") or "").strip().upper()
+    company = company_country_code(identity)
+    return listing == "US" and bool(company) and company != "US"
 
 
 def freshness_status(as_of: datetime, available_at: Any) -> dict[str, Any] | None:
@@ -1741,6 +1746,7 @@ def source_inventory(results: dict[str, list[dict[str, Any]]]) -> list[dict[str,
     authorities = {
         "borrow": ("IBKR borrow", "q_live.market_security_borrow_v1"),
         "classifications": ("Reference classification", "q_live.market_security_classification_v1"),
+        "company_profile": ("SEC company profile", "q_live.market_issuer_company_profile_v1"),
         "corporate": ("Corporate actions", "q_live.market_stock_split_v1 / market_cash_dividend_v1"),
         "fails_to_deliver": ("SEC fails to deliver", "q_live.market_fails_to_deliver_v1"),
         "float": ("Massive float", "q_live.market_security_float_v1"),

@@ -121,8 +121,11 @@ export function StockFactsContainer({ asOf, onSymbolChange, symbol }: StockFacts
   const health = payload?.synthesis?.health;
   const fundamentalAnalysis = payload?.fundamental_analysis;
   const primaryDerivedFundamentals = selectPrimaryDerivedFundamentals(fundamentalAnalysis?.metrics ?? []);
-  const companyName = text(identity.branding_name, identity.issuer_name, identity.legal_name, identity.security_name) || presentations[symbol]?.issuer_name || symbol;
+  const companyName = text(identity.branding_name, identity.sec_issuer_name, identity.issuer_name, identity.legal_name, identity.security_name) || presentations[symbol]?.issuer_name || symbol;
   const companyCountry = countryName(identity.company_country_code);
+  const listingCountry = countryName(identity.listing_country_code);
+  const foreignIssuerOnUsListing = text(identity.listing_country_code).toUpperCase() === "US" && Boolean(text(identity.company_country_code)) && text(identity.company_country_code).toUpperCase() !== "US";
+  const companyIdentityLabel = [companyName, companyCountry, foreignIssuerOnUsListing ? "U.S.-listed foreign issuer" : ""].filter(Boolean).join(" · ");
   const sharesOutstanding = number(float.shares_outstanding, market.share_class_shares_outstanding, market.weighted_shares_outstanding);
   const freeFloat = number(float.free_float);
   const shortPercent = number(shortInterest.percent_of_float) ?? number(shortInterest.percent_of_outstanding);
@@ -140,7 +143,7 @@ export function StockFactsContainer({ asOf, onSymbolChange, symbol }: StockFacts
     <header className="facts-header">
       <div className="facts-header-identity">
         <TickerIdentityWithChange asOf={asOf} inputAriaLabel="Facts ticker" logoUrl={presentations[symbol]?.logo_url} onTickerChange={onSymbolChange} ticker={symbol} />
-        <span><strong title={[companyName, companyCountry].filter(Boolean).join(" · ")}><span>{companyName}</span>{companyCountry ? <em>· {companyCountry}</em> : null}</strong><small>{identityDescription(identity)}</small></span>
+        <span><strong title={companyIdentityLabel}><span>{companyName}</span>{companyCountry ? <em>· {companyCountry}{foreignIssuerOnUsListing ? " · U.S.-listed foreign issuer" : ""}</em> : null}</strong><small>{identityDescription(identity)}</small></span>
       </div>
       <div className="facts-header-actions">
         <span className="facts-clock"><CalendarDays size={12} />{formatAsOf(asOf)}</span>
@@ -179,12 +182,14 @@ export function StockFactsContainer({ asOf, onSymbolChange, symbol }: StockFacts
               </FactSection>
               <FactSection className="facts-company-section" icon={Building2} onGuide={() => setSectionGuide("company")} subtitle="Issuer, security, listing, and corporate-action context" title="Company & listing">
                 <div className="facts-detail-grid company-fact-grid">
-                  <FactDatum className="company-primary-datum" label="Issuer" value={text(identity.legal_name, identity.issuer_name)} />
+                  <FactDatum className="company-primary-datum" label="Issuer" value={text(identity.sec_issuer_name, identity.legal_name, identity.issuer_name)} />
                   <FactDatum className="company-primary-datum" label="Security" value={text(identity.security_name, identity.security_type)} />
                   <FactDatum className="company-wide-datum" label="Classification" value={text(identity.sic_description, identity.industry, identity.sector)} />
                   <FactDatum label="SIC" value={text(identity.sic_code)} />
-                  <FactDatum label="Entity / incorporation" value={[text(identity.entity_type), text(identity.state_of_incorporation)].filter(Boolean).join(" · ") || "—"} />
-                  <FactDatum label="Country" meta={text(identity.company_country_source) || "Issuer country not published"} value={countryLabel(identity.company_country_code)} />
+                  <FactDatum label="Entity / incorporation" value={[text(identity.entity_type), text(identity.sec_incorporation_jurisdiction, identity.state_of_incorporation)].filter(Boolean).join(" · ") || "—"} />
+                  <FactDatum label="Company country" meta={text(identity.company_country_source) || "Issuer country not published"} value={countryLabel(identity.company_country_code)} />
+                  <FactDatum label="Listing country" meta={foreignIssuerOnUsListing ? "Foreign issuer trading on a U.S. venue" : "Canonical listing venue"} value={listingCountry || "—"} />
+                  <FactDatum className="company-wide-datum" label="SEC business address" meta={text(identity.business_address_source_kind) === "sec_filing_dei" ? `Filing ${text(identity.business_address_accession_number)}` : text(identity.business_address_source_kind) === "sec_submissions_current" ? "SEC submissions business address" : "No SEC business address published"} value={companyBusinessAddress(identity)} />
                   <FactDatum label="Product taxonomy" meta="Provider classifications" value={classificationSummary(classifications)} />
                   <FactDatum label="Exchange / currency" value={[text(identity.exchange_code), text(identity.currency_code)].filter(Boolean).join(" · ") || "—"} />
                   <FactDatum label="Listed" value={text(identity.list_date) || "—"} />
@@ -658,6 +663,10 @@ function formatHealthAxisDate(value: string) { const date = new Date(value.lengt
 function formatHistoryValue(value: number, unit: string) { if (!Number.isFinite(value)) return "—"; const normalized = unit.toLowerCase(); if (normalized === "usd") return formatMoney(value); if (normalized === "shares") return formatCount(value); if (normalized === "percent") return `${value.toFixed(Math.abs(value) < 10 ? 2 : 1)}%`; if (normalized === "multiple") return `${value.toFixed(2)}×`; if (normalized === "days") return `${value.toFixed(2)} d`; if (normalized === "score") return `${Math.round(value)}/100`; if (normalized.includes("share")) return `$${formatNumber(value, 3)}`; return formatCount(value); }
 function countryName(value: unknown) { const code = text(value).toUpperCase(); if (!code) return ""; try { return new Intl.DisplayNames(["en"], { type: "region" }).of(code) || code; } catch { return code; } }
 function countryLabel(value: unknown) { const code = text(value).toUpperCase(); if (!code) return "—"; const display = countryName(code); return display && display !== code ? `${display} · ${code}` : code; }
+function companyBusinessAddress(row: FactRecord) {
+  const locality = [text(row.business_address_city), text(row.business_address_state_or_province), text(row.business_address_postal_code)].filter(Boolean).join(", ");
+  return [text(row.business_address_line1), text(row.business_address_line2), text(row.business_address_line3), locality, countryName(row.issuer_business_country_code)].filter(Boolean).join(" · ") || "—";
+}
 function identityDescription(row: FactRecord) { return [text(row.exchange_code), text(row.security_type, row.instrument_type), text(row.currency_code)].filter(Boolean).join(" · ") || "Canonical security identity"; }
 function splitValue(row: FactRecord) { const from = number(row.last_split_from); const to = number(row.last_split_to); return from == null || to == null || from <= 0 || to <= 0 ? "—" : `${formatNumber(to)}-for-${formatNumber(from)}`; }
 function dividendValue(row: FactRecord) { const amount = number(row.last_dividend_amount); if (amount == null) return "—"; const currency = text(row.dividend_currency); const prefix = currency === "USD" ? "$" : currency ? `${currency} ` : "$"; return `${prefix}${amount.toFixed(4).replace(/0+$/, "").replace(/\.$/, "")}`; }

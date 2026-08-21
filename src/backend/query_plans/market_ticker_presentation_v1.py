@@ -67,8 +67,8 @@ def ticker_presentation(
         (
             SELECT
                 upper(u.ticker) AS ticker,
-                coalesce(nullIf(issuer.branding_name, ''), issuer.issuer_name, '') AS issuer_name,
-                coalesce(nullIf(country.effective_country_code, ''), nullIf(issuer.domicile_country_code, ''), '') AS country,
+                coalesce(nullIf(issuer.branding_name, ''), nullIf(profile.issuer_name, ''), issuer.issuer_name, '') AS issuer_name,
+                coalesce(nullIf(profile.issuer_business_country_code, ''), nullIf(profile.issuer_legal_country_code, ''), nullIf(country.effective_country_code, ''), nullIf(issuer.domicile_country_code, ''), nullIf(country.listing_country_code, ''), '') AS country,
                 ifNull(resolved_asset.relative_path, '') AS resolved_relative_path,
                 ifNull(selection.source_system, '') AS resolved_source_system,
                 ifNull(selection.source_kind, '') AS resolved_source_kind,
@@ -83,8 +83,19 @@ def ticker_presentation(
             LEFT JOIN
             (
                 SELECT
+                    issuer_id,
+                    argMaxIf(issuer_name, tuple(available_at_utc, inserted_at), ifNull(issuer_name, '') != '') AS issuer_name,
+                    argMaxIf(issuer_legal_country_code, tuple(available_at_utc, inserted_at), ifNull(issuer_legal_country_code, '') != '') AS issuer_legal_country_code,
+                    argMaxIf(issuer_business_country_code, tuple(available_at_utc, inserted_at), ifNull(issuer_business_country_code, '') != '') AS issuer_business_country_code
+                FROM {database_name}.market_issuer_company_profile_v1 FINAL
+                GROUP BY issuer_id
+            ) AS profile ON profile.issuer_id = u.issuer_id
+            LEFT JOIN
+            (
+                SELECT
                     symbol_id,
-                    argMax(effective_country_code, tuple(assertion_date, inserted_at)) AS effective_country_code
+                    argMax(effective_country_code, tuple(available_at_utc, inserted_at)) AS effective_country_code,
+                    argMax(listing_country_code, tuple(available_at_utc, inserted_at)) AS listing_country_code
                 FROM {database_name}.market_security_country_v1 FINAL
                 WHERE symbol_id IN
                 (
@@ -93,6 +104,7 @@ def ticker_presentation(
                     WHERE universe_date = latest_universe_date
                       AND ticker IN ({ticker_clause})
                 )
+                  AND startsWith(source_evidence_ref, 'id_listing_v1/ref_exchange_v1:')
                 GROUP BY symbol_id
             ) AS country
                 ON country.symbol_id = u.symbol_id

@@ -6,7 +6,7 @@ from research.mlops.clickhouse import quote_ident, sql_string
 
 
 QUERY_PLAN_ID = "watchlist.external_feature_intervals.v1"
-QUERY_PLAN_VERSION = 1
+QUERY_PLAN_VERSION = 2
 MAX_CHANGE_CLOCKS = 512
 
 
@@ -42,7 +42,8 @@ def feature_change_clocks(
             )
         selects.extend(
             (
-                f"SELECT greatest(toDateTime64(assertion_date, 3, 'UTC'), inserted_at) AS raw_available_at FROM {db}.market_security_country_v1 FINAL",
+                f"SELECT available_at_utc AS raw_available_at FROM {db}.market_security_country_v1 FINAL",
+                f"SELECT available_at_utc AS raw_available_at FROM {db}.market_issuer_company_profile_v1 FINAL",
                 f"SELECT greatest(observed_at_utc, inserted_at) AS raw_available_at FROM {db}.market_security_market_snapshot_v1 FINAL",
                 f"SELECT greatest(toDateTime64(effective_date, 3, 'UTC'), inserted_at) AS raw_available_at FROM {db}.market_security_float_v1 FINAL",
                 f"SELECT greatest(coalesce(published_at_utc, toDateTime64(publication_date, 3, 'UTC'), toDateTime64(settlement_date, 3, 'UTC')), inserted_at) AS raw_available_at FROM {db}.market_short_interest_v1 FINAL",

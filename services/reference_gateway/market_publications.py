@@ -13,6 +13,7 @@ from research.mlops.clickhouse import ClickHouseHttpClient, quote_ident, sql_str
 SCHEMA_QUERY_MAX_ATTEMPTS = 3
 SCHEMA_QUERY_RETRY_BASE_SECONDS = 1.0
 TRANSIENT_SCHEMA_ERROR_MARKERS = ("QUERY_WAS_CANCELLED", "TOO_MANY_SIMULTANEOUS_QUERIES")
+SEC_COMPANY_COUNTRY_COVERAGE_KIND = "sec_company_country_v2"
 
 
 PUBLICATION_SOURCE_KINDS: tuple[str, ...] = (
@@ -41,6 +42,7 @@ IMPLEMENTED_PUBLICATION_COVERAGE_KINDS: tuple[str, ...] = (
     "massive_ticker_details",
     "ibkr_borrow_availability",
     "sec_country_assertions",
+    SEC_COMPANY_COUNTRY_COVERAGE_KIND,
 )
 
 IMPLEMENTED_PUBLICATION_TABLES: frozenset[str] = frozenset(
@@ -58,6 +60,7 @@ IMPLEMENTED_PUBLICATION_TABLES: frozenset[str] = frozenset(
         "market_fails_to_deliver_v1",
         "market_reg_sho_threshold_v1",
         "market_security_borrow_v1",
+        "market_issuer_company_profile_v1",
         "market_security_country_v1",
         "market_reference_publication_coverage_v1",
     }
@@ -84,7 +87,8 @@ MARKET_PUBLICATION_AUDIT_SPECS: tuple[tuple[str, str, bool], ...] = (
     ("market_fails_to_deliver_v1", "settlement_date", True),
     ("market_reg_sho_threshold_v1", "threshold_date", True),
     ("market_security_borrow_v1", "observed_at_utc", True),
-    ("market_security_country_v1", "assertion_date", True),
+    ("market_issuer_company_profile_v1", "available_at_utc", True),
+    ("market_security_country_v1", "available_at_utc", True),
     ("market_reference_publication_coverage_v1", "coverage_start_date", True),
 )
 
@@ -224,6 +228,47 @@ SETTINGS {settings}
     execute_idempotent_schema_query(
         client,
         f"""
+CREATE TABLE IF NOT EXISTS {table(database, 'market_issuer_company_profile_v1')}
+(
+    profile_id String,
+    issuer_id String,
+    cik String,
+    available_at_utc DateTime64(9, 'UTC'),
+    profile_date Date,
+    issuer_name Nullable(String),
+    incorporation_jurisdiction Nullable(String),
+    issuer_legal_country_code Nullable(String),
+    business_address_line1 Nullable(String),
+    business_address_line2 Nullable(String),
+    business_address_line3 Nullable(String),
+    business_address_city Nullable(String),
+    business_address_state_or_province Nullable(String),
+    business_address_postal_code Nullable(String),
+    issuer_business_country_code Nullable(String),
+    mailing_address_line1 Nullable(String),
+    mailing_address_line2 Nullable(String),
+    mailing_address_city Nullable(String),
+    mailing_address_state_or_province Nullable(String),
+    mailing_address_postal_code Nullable(String),
+    issuer_mailing_country_code Nullable(String),
+    source_kind LowCardinality(String),
+    source_accession_number Nullable(String),
+    source_document_id Nullable(String),
+    source_evidence_ref String,
+    parser_version LowCardinality(String),
+    source_run_id String,
+    source_content_sha256 String,
+    inserted_at DateTime64(3, 'UTC')
+)
+ENGINE = ReplacingMergeTree(inserted_at)
+PARTITION BY toYYYYMM(profile_date)
+ORDER BY (issuer_id, available_at_utc, source_kind, profile_id)
+SETTINGS {settings}
+""".strip()
+    )
+    execute_idempotent_schema_query(
+        client,
+        f"""
 CREATE TABLE IF NOT EXISTS {table(database, 'market_security_country_v1')}
 (
     country_assertion_id String,
@@ -244,13 +289,18 @@ CREATE TABLE IF NOT EXISTS {table(database, 'market_security_country_v1')}
     source_evidence_ref String,
     source_run_id String,
     source_content_sha256 String,
-    inserted_at DateTime64(3, 'UTC')
+    inserted_at DateTime64(3, 'UTC'),
+    available_at_utc DateTime64(9, 'UTC') DEFAULT greatest(toDateTime64(assertion_date, 9, 'UTC'), toDateTime64(inserted_at, 9, 'UTC'))
 )
 ENGINE = ReplacingMergeTree(inserted_at)
 PARTITION BY toYYYYMM(assertion_date)
 ORDER BY (ifNull(symbol_id, ''), assertion_date, source_system, country_assertion_id)
 SETTINGS {settings}
 """.strip()
+    )
+    execute_idempotent_schema_query(
+        client,
+        f"ALTER TABLE {table(database, 'market_security_country_v1')} ADD COLUMN IF NOT EXISTS available_at_utc DateTime64(9, 'UTC') DEFAULT greatest(toDateTime64(assertion_date, 9, 'UTC'), toDateTime64(inserted_at, 9, 'UTC'))",
     )
     execute_idempotent_schema_query(
         client,

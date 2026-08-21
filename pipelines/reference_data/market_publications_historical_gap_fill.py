@@ -34,11 +34,13 @@ from research.mlops.clickhouse import (  # noqa: E402
 )
 from research.mlops.env import discover_env_files, load_env_files, secret_status  # noqa: E402
 from services.reference_gateway.market_publications import (  # noqa: E402
+    SEC_COMPANY_COUNTRY_COVERAGE_KIND,
     ensure_market_publication_schema,
     find_publication_gaps,
     insert_publication_coverage,
     table_exists,
 )
+from services.reference_gateway.sec_company_profiles import materialize_sec_company_profiles, monthly_windows  # noqa: E402
 
 
 FINRA_SHORT_VOLUME_SOURCES = {
@@ -150,6 +152,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--user", default=default_clickhouse_user())
     parser.add_argument("--password", default=default_clickhouse_password())
     parser.add_argument("--storage-policy", default=os.environ.get("CLICKHOUSE_LIVE_STORAGE_POLICY") or "")
+    parser.add_argument("--sec-database", default=os.environ.get("REFERENCE_SEC_CLICKHOUSE_DATABASE") or os.environ.get("SEC_CLICKHOUSE_DATABASE") or "sec_core")
     parser.add_argument("--output-root-win", default=os.environ.get("REFERENCE_PUBLICATION_OUTPUT_ROOT_WIN") or str(default_output_root()))
     parser.add_argument(
         "--sources",
@@ -649,27 +652,24 @@ def run_sec_country_assertions(
     start_date: date,
     end_date: date,
 ) -> list[SourceResult]:
-    today = datetime.now(UTC).date()
-    target_start = max(start_date, today)
-    target_end = min(end_date, today + timedelta(days=1))
-    if target_start >= target_end:
-        return [
-            SourceResult(
-                "sec_country_assertions",
-                "sec_country_assertions",
-                start_date,
-                end_date,
-                0,
-                0,
-                0,
-                "source_not_historical",
-                {"message": "Country assertions are current-state derivations from reference tables."},
+    target_start = start_date
+    target_end = end_date
+    chunks = list(monthly_windows(target_start, target_end))
+    if len(chunks) > 1:
+        results: list[SourceResult] = []
+        for chunk_index, (chunk_start, chunk_end) in enumerate(chunks, start=1):
+            print(
+                "sec_country_assertions "
+                f"active_month={chunk_index}/{len(chunks)} "
+                f"window={chunk_start.isoformat()}->{chunk_end.isoformat()}",
+                flush=True,
             )
-        ]
+            results.extend(run_sec_country_assertions(client, args, run_id, chunk_start, chunk_end))
+        return results
     gaps = find_publication_gaps(
         client,
         database=args.write_database,
-        coverage_kind="sec_country_assertions",
+        coverage_kind=SEC_COMPANY_COUNTRY_COVERAGE_KIND,
         source_system="reference_gateway",
         start_date=target_start,
         end_date=target_end,
@@ -678,44 +678,138 @@ def run_sec_country_assertions(
         return []
     started = datetime.now(UTC)
     inserted_at = started.strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+    profile_result = None
     if args.execute:
+        required = (
+            "id_symbol_interval_v1", "id_symbol_v1", "id_listing_v1", "id_security_v1", "ref_exchange_v1",
+            "id_sec_market_bridge_v3", "sec_filing_v3", "sec_filing_text_v3",
+        )
+        missing = [name for name in required if not table_exists(client, args.read_database, name)]
+        if missing:
+            raise RuntimeError("SEC company/country historical fill missing source tables: " + ", ".join(missing))
+        profile_result = materialize_sec_company_profiles(
+            client,
+            read_database=args.read_database,
+            write_database=args.write_database,
+            sec_database=args.sec_database,
+            start_date=target_start,
+            end_date=target_end,
+            run_id=run_id,
+            include_current_submissions=target_start <= datetime.now(UTC).date() < target_end,
+            batch_size=max(1, min(args.batch_size, 2_000)),
+        )
         client.execute(
             f"""
 INSERT INTO {qtable(args.write_database, 'market_security_country_v1')}
-(country_assertion_id, symbol_id, listing_id, security_id, issuer_id, provider_ticker, assertion_date, listing_country_code, issuer_legal_country_code, issuer_hq_country_code, security_issue_country_code, effective_country_code, confidence_score, source_system, source_event_key, source_evidence_ref, source_run_id, source_content_sha256, inserted_at)
+(country_assertion_id, symbol_id, listing_id, security_id, issuer_id, provider_ticker, assertion_date, listing_country_code, issuer_legal_country_code, issuer_hq_country_code, security_issue_country_code, effective_country_code, confidence_score, source_system, source_event_key, source_evidence_ref, source_run_id, source_content_sha256, inserted_at, available_at_utc)
 WITH
-    today() AS assertion_date,
     {sql_string(run_id)} AS source_run_id,
-    toDateTime64({sql_string(inserted_at)}, 3, 'UTC') AS inserted_at
+    toDateTime64({sql_string(inserted_at)}, 3, 'UTC') AS write_inserted_at,
+    toDate({sql_string(target_start.isoformat())}) AS range_start,
+    toDate({sql_string(target_end.isoformat())}) AS range_end,
+    intervals AS
+    (
+        SELECT *
+        FROM {qtable(args.read_database, 'id_symbol_interval_v1')} FINAL
+        WHERE mapping_status = 'mapped' AND is_deleted = 0
+          AND valid_from_date < range_end
+          AND (valid_to_date_exclusive IS NULL OR valid_to_date_exclusive > range_start)
+    ),
+    symbols AS
+    (
+        SELECT listing_id, ticker_normalized, argMax(symbol_id, inserted_at) AS symbol_id
+        FROM {qtable(args.read_database, 'id_symbol_v1')} FINAL
+        GROUP BY listing_id, ticker_normalized
+    ),
+    security AS
+    (
+        SELECT security_id, argMax(issuer_id, inserted_at) AS issuer_id
+        FROM {qtable(args.read_database, 'id_security_v1')} FINAL
+        GROUP BY security_id
+    ),
+    exchanges AS
+    (
+        SELECT
+            exchange_code,
+            if(uniqExactIf(upper(iso_country_code), ifNull(iso_country_code, '') != '') = 1,
+               anyIf(upper(iso_country_code), ifNull(iso_country_code, '') != ''),
+               CAST(NULL, 'Nullable(String)')) AS iso_country_code
+        FROM {qtable(args.read_database, 'ref_exchange_v1')} FINAL
+        GROUP BY exchange_code
+    ),
+    events AS
+    (
+        SELECT
+            greatest(interval.valid_from_date, range_start) AS assertion_date,
+            toDateTime64(greatest(interval.valid_from_date, range_start), 9, 'UTC') AS available_at_utc,
+            symbol.symbol_id AS event_symbol_id,
+            interval.listing_id AS event_listing_id,
+            interval.security_id AS event_security_id,
+            security.issuer_id AS event_issuer_id,
+            interval.ticker AS provider_ticker
+        FROM intervals AS interval
+        INNER JOIN symbols AS symbol ON symbol.listing_id = interval.listing_id AND symbol.ticker_normalized = interval.ticker_normalized
+        INNER JOIN security USING (security_id)
+        UNION DISTINCT
+        SELECT
+            profile.profile_date AS assertion_date,
+            profile.available_at_utc,
+            symbol.symbol_id AS event_symbol_id,
+            interval.listing_id AS event_listing_id,
+            interval.security_id AS event_security_id,
+            security.issuer_id AS event_issuer_id,
+            interval.ticker AS provider_ticker
+        FROM {qtable(args.write_database, 'market_issuer_company_profile_v1')} AS profile FINAL
+        INNER JOIN security ON security.issuer_id = profile.issuer_id
+        INNER JOIN intervals AS interval ON interval.security_id = security.security_id
+            AND interval.valid_from_date <= profile.profile_date
+            AND (interval.valid_to_date_exclusive IS NULL OR interval.valid_to_date_exclusive > profile.profile_date)
+        INNER JOIN symbols AS symbol ON symbol.listing_id = interval.listing_id AND symbol.ticker_normalized = interval.ticker_normalized
+        WHERE profile.profile_date >= range_start AND profile.profile_date < range_end
+    ),
+    event_profiles AS
+    (
+        SELECT
+            event.assertion_date,
+            event.available_at_utc,
+            event.event_symbol_id AS symbol_id,
+            event.event_listing_id AS listing_id,
+            event.event_security_id AS security_id,
+            event.event_issuer_id AS issuer_id,
+            event.provider_ticker,
+            argMaxIf(profile.issuer_legal_country_code, tuple(profile.available_at_utc, profile.inserted_at), ifNull(profile.issuer_legal_country_code, '') != '') AS issuer_legal_country_code,
+            argMaxIf(profile.issuer_business_country_code, tuple(profile.available_at_utc, profile.inserted_at), ifNull(profile.issuer_business_country_code, '') != '') AS issuer_business_country_code
+        FROM events AS event
+        LEFT JOIN {qtable(args.write_database, 'market_issuer_company_profile_v1')} AS profile FINAL
+            ON profile.issuer_id = event.event_issuer_id
+           AND profile.available_at_utc <= event.available_at_utc
+        GROUP BY event.assertion_date, event.available_at_utc, event.event_symbol_id, event.event_listing_id, event.event_security_id, event.event_issuer_id, event.provider_ticker
+    )
 SELECT
-    concat('country:', u.symbol_id, ':', toString(assertion_date), ':', lower(hex(MD5(concat(u.symbol_id, ':', ifNull(ex.iso_country_code, '')))))) AS country_assertion_id,
-    u.symbol_id,
-    u.listing_id,
-    u.security_id,
-    u.issuer_id,
-    upper(u.ticker) AS provider_ticker,
-    assertion_date,
+    concat('country:', event.symbol_id, ':', toString(event.available_at_utc), ':', lower(hex(MD5(concat(event.symbol_id, ':', ifNull(ex.iso_country_code, ''), ':', ifNull(event.issuer_legal_country_code, ''), ':', ifNull(event.issuer_business_country_code, '')))))) AS country_assertion_id,
+    event.symbol_id,
+    event.listing_id,
+    event.security_id,
+    event.issuer_id,
+    upper(event.provider_ticker) AS provider_ticker,
+    event.assertion_date,
     nullIf(upper(ifNull(ex.iso_country_code, '')), '') AS listing_country_code,
-    CAST(NULL, 'Nullable(String)') AS issuer_legal_country_code,
-    CAST(NULL, 'Nullable(String)') AS issuer_hq_country_code,
+    nullIf(upper(ifNull(event.issuer_legal_country_code, '')), '') AS issuer_legal_country_code,
+    nullIf(upper(ifNull(event.issuer_business_country_code, '')), '') AS issuer_hq_country_code,
     CAST(NULL, 'Nullable(String)') AS security_issue_country_code,
-    nullIf(upper(ifNull(ex.iso_country_code, '')), '') AS effective_country_code,
-    if(upper(ifNull(ex.iso_country_code, '')) = 'US', 0.85, 0.65) AS confidence_score,
+    coalesce(nullIf(upper(ifNull(event.issuer_business_country_code, '')), ''), nullIf(upper(ifNull(event.issuer_legal_country_code, '')), ''), nullIf(upper(ifNull(ex.iso_country_code, '')), '')) AS effective_country_code,
+    multiIf(ifNull(event.issuer_business_country_code, '') != '', 0.95, ifNull(event.issuer_legal_country_code, '') != '', 0.90, ifNull(ex.iso_country_code, '') != '', 0.80, 0.0) AS confidence_score,
     'reference_gateway' AS source_system,
-    concat('feature_tradable_universe_v1:', toString(u.universe_date), ':', u.symbol_id) AS source_event_key,
-    concat('ref_exchange_v1:', ifNull(u.exchange_code, '')) AS source_evidence_ref,
+    concat('id_symbol_interval_v1:', event.symbol_id, ':', toString(event.assertion_date)) AS source_event_key,
+    concat('id_listing_v1/ref_exchange_v1:', ifNull(listing.exchange_code, ''), ';market_issuer_company_profile_v1:', event.issuer_id) AS source_evidence_ref,
     source_run_id,
-    lower(hex(MD5(concat(u.symbol_id, ':', ifNull(u.exchange_code, ''), ':', ifNull(ex.iso_country_code, ''))))) AS source_content_sha256,
-    inserted_at
-FROM
-(
-    SELECT *
-    FROM {qtable(args.read_database, 'feature_tradable_universe_v1')} FINAL
-    WHERE universe_date = (SELECT max(universe_date) FROM {qtable(args.read_database, 'feature_tradable_universe_v1')} FINAL)
-) AS u
-LEFT JOIN {qtable(args.read_database, 'ref_exchange_v1')} AS ex FINAL ON ex.exchange_code = u.exchange_code
-WHERE u.symbol_id != ''
-  AND ifNull(u.exchange_code, '') != ''
+    lower(hex(MD5(concat(event.symbol_id, ':', ifNull(listing.exchange_code, ''), ':', ifNull(ex.iso_country_code, ''), ':', ifNull(event.issuer_legal_country_code, ''), ':', ifNull(event.issuer_business_country_code, ''))))) AS source_content_sha256,
+    write_inserted_at AS inserted_at,
+    event.available_at_utc
+FROM event_profiles AS event
+LEFT JOIN {qtable(args.read_database, 'id_listing_v1')} AS listing FINAL ON listing.listing_id = event.listing_id
+LEFT JOIN exchanges AS ex ON ex.exchange_code = listing.exchange_code
+WHERE event.symbol_id != '' AND event.assertion_date >= range_start AND event.assertion_date < range_end
 """.strip()
         )
         rows = int(
@@ -724,6 +818,8 @@ WHERE u.symbol_id != ''
                 SELECT count()
                 FROM {qtable(args.write_database, 'market_security_country_v1')} FINAL
                 WHERE source_run_id = {sql_string(run_id)}
+                  AND assertion_date >= toDate({sql_string(target_start.isoformat())})
+                  AND assertion_date < toDate({sql_string(target_end.isoformat())})
                 """
             ).strip()
             or "0"
@@ -731,15 +827,24 @@ WHERE u.symbol_id != ''
     else:
         rows = 0
     finished = datetime.now(UTC)
-    details = {"target_table": "market_security_country_v1", "reason": "latest_tradable_universe_exchange_country"}
+    details = {
+        "target_table": "market_security_country_v1",
+        "profile_table": "market_issuer_company_profile_v1",
+        "reason": "point_in_time_sec_company_profile_and_canonical_listing_country",
+        "submissions_profiles": profile_result.submissions_rows if profile_result else 0,
+        "filing_profiles_read": profile_result.filing_rows_read if profile_result else 0,
+        "filing_profiles_written": profile_result.filing_rows_written if profile_result else 0,
+        "filing_profiles_rejected": profile_result.filing_rows_rejected if profile_result else 0,
+        "filing_profiles_skipped": profile_result.filing_rows_skipped if profile_result else 0,
+    }
     if args.execute:
         insert_publication_coverage(
             client,
             database=args.write_database,
             coverage_id=f"{run_id}:sec_country_assertions:{target_start.isoformat()}:{target_end.isoformat()}",
-            coverage_kind="sec_country_assertions",
+            coverage_kind=SEC_COMPANY_COUNTRY_COVERAGE_KIND,
             source_system="reference_gateway",
-            source_object="feature_tradable_universe_v1/ref_exchange_v1",
+            source_object="sec_filing_text_v3/market_issuer_company_profile_v1/id_symbol_interval_v1/id_listing_v1/ref_exchange_v1",
             start_date=target_start,
             end_date=target_end,
             status="completed",

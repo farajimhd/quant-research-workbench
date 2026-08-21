@@ -542,42 +542,6 @@ def main() -> None:
             rows=borrow_sync.written,
             seconds=borrow_sync.wall_seconds,
         )
-        country_schedule = schedule_decision(
-            schedule_client,
-            config,
-            source_name="country_assertions",
-            frequency_seconds=config.country_assertion_frequency_seconds,
-        )
-        if country_schedule.should_run:
-            country_started = time.perf_counter()
-            update_latest_operation(SOURCE_SYNC_OPERATION_NAMES["country_assertions"], "running", "Writing country assertions from canonical exchange evidence.", seconds=0.0)
-            country_result = write_country_assertions(config, reason="source_sync")
-            record_source_schedule(
-                schedule_client,
-                config,
-                source_name="country_assertions",
-                status=country_result.status,
-                rows_written=country_result.rows_written,
-                details=asdict(country_result) | {"schedule_reason": country_schedule.reason},
-                frequency_seconds=config.country_assertion_frequency_seconds,
-            )
-            update_latest_operation(
-                SOURCE_SYNC_OPERATION_NAMES["country_assertions"],
-                country_result.status,
-                country_result.reason,
-                rows=country_result.rows_written,
-                seconds=time.perf_counter() - country_started,
-            )
-        else:
-            update_latest_operation(
-                SOURCE_SYNC_OPERATION_NAMES["country_assertions"],
-                "skipped",
-                f"{country_schedule.reason}; next_due={country_schedule.next_due_at_utc or '-'}",
-                rows=0,
-                seconds=0.0,
-            )
-            country_result = None
-
         bridge_started = time.perf_counter()
         graph_inserted_rows = int(getattr(graph_write, "inserted_rows", 0) or 0)
         bridge_force = config.maintenance_mode == "force" or graph_inserted_rows > 0
@@ -632,6 +596,57 @@ def main() -> None:
             status=getattr(bridge_rebuild, "status", "skipped"),
             schedule_reason=bridge_schedule.reason,
         )
+
+        # Company profiles depend on the SEC-to-market bridge. Run Method A/B
+        # only after the bridge refresh so newly accepted live listings receive
+        # their company and country evidence in the same source-sync cycle.
+        country_schedule = schedule_decision(
+            schedule_client,
+            config,
+            source_name="country_assertions",
+            frequency_seconds=config.country_assertion_frequency_seconds,
+            force=bridge_schedule.should_run and bridge_status == "completed",
+        )
+        bridge_allows_country = not bridge_schedule.should_run or bridge_status == "completed"
+        if country_schedule.should_run and bridge_allows_country:
+            country_started = time.perf_counter()
+            update_latest_operation(
+                SOURCE_SYNC_OPERATION_NAMES["country_assertions"],
+                "running",
+                "Writing SEC company profiles and canonical listing-country assertions.",
+                seconds=0.0,
+            )
+            country_result = write_country_assertions(config, reason="source_sync_after_sec_bridge")
+            record_source_schedule(
+                schedule_client,
+                config,
+                source_name="country_assertions",
+                status=country_result.status,
+                rows_written=country_result.rows_written,
+                details=asdict(country_result) | {"schedule_reason": country_schedule.reason},
+                frequency_seconds=config.country_assertion_frequency_seconds,
+            )
+            update_latest_operation(
+                SOURCE_SYNC_OPERATION_NAMES["country_assertions"],
+                country_result.status,
+                country_result.reason,
+                rows=country_result.rows_written,
+                seconds=time.perf_counter() - country_started,
+            )
+        else:
+            country_skip_reason = (
+                f"sec_market_bridge_{bridge_status}"
+                if not bridge_allows_country
+                else f"{country_schedule.reason}; next_due={country_schedule.next_due_at_utc or '-'}"
+            )
+            update_latest_operation(
+                SOURCE_SYNC_OPERATION_NAMES["country_assertions"],
+                "skipped",
+                country_skip_reason,
+                rows=0,
+                seconds=0.0,
+            )
+            country_result = None
 
         presentation_started = time.perf_counter()
 

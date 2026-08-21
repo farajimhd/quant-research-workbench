@@ -148,8 +148,9 @@ Allowed during market hours:
 - accepted canonical graph rows for safe new ticker observations
 - current Massive snapshot/float rows for newly accepted tickers
 - IBKR borrow/shortability snapshot writes to `market_security_borrow_v1`
-- country assertion writes to `market_security_country_v1` from canonical
-  listing/exchange evidence
+- current SEC company-profile writes to `market_issuer_company_profile_v1`
+  from the observed submissions snapshot, followed by listing and issuer
+  country assertions in `market_security_country_v1`
 - issuer-relationship sync to `id_issuer_relationship_v1`
 - SEC CIK-to-market bridge sync to `id_sec_market_bridge_v3`
 - writing new mapping issues

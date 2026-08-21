@@ -273,6 +273,16 @@ for Massive short interest, Reg SHO threshold, and presentation assets.
 Bootstrap coverage records that existing rows were inspected; it
 does not fabricate provider rows.
 
+SEC company/country maintenance uses two explicit authorities. Method A maps a
+listing to CIK through `id_sec_market_bridge_v3`, stores current submissions
+company/address data and filing-time DEI facts in
+`market_issuer_company_profile_v1`, and applies each historical filing only at
+its SEC acceptance timestamp. Method B derives listing country from the
+canonical listing and an unambiguous exchange-country mapping. The resulting
+`market_security_country_v1` row retains listing, legal-issuer, disclosed
+business-address, and effective country separately; unknown or conflicting
+exchange/jurisdiction mappings remain null rather than being guessed.
+
 Maintenance and historical gap fill can still write Massive ticker-detail rows
 for broader windows when coverage requires it. That path writes the downstream
 current-state tables together:

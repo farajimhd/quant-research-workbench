@@ -995,7 +995,7 @@ def _country_text_sql(database: str, code: str, column: str) -> str:
     select = _base_text_select(
         code=code,
         value_expr=f"m.{column}",
-        observed_expr="toDateTime64(m.assertion_date, 6)",
+        observed_expr="m.available_at_utc",
         period_expr="m.assertion_date",
         source_event_expr="m.source_event_key",
         source_priority=70,
@@ -1005,6 +1005,7 @@ def _country_text_sql(database: str, code: str, column: str) -> str:
 FROM {q(database)}.market_security_country_v1 AS m FINAL
 INNER JOIN target_context AS ctx ON ctx.security_id = m.security_id
 WHERE m.{column} != ''
+  AND startsWith(m.source_evidence_ref, 'id_listing_v1/ref_exchange_v1:')
 """.strip()
 
 
@@ -1013,7 +1014,7 @@ def _country_numeric_sql(database: str) -> str:
         code="country_confidence",
         value_expr="m.confidence_score",
         unit="score",
-        observed_expr="toDateTime64(m.assertion_date, 6)",
+        observed_expr="m.available_at_utc",
         period_expr="m.assertion_date",
         source_event_expr="m.source_event_key",
         source_priority=70,
@@ -1023,6 +1024,7 @@ def _country_numeric_sql(database: str) -> str:
 FROM {q(database)}.market_security_country_v1 AS m FINAL
 INNER JOIN target_context AS ctx ON ctx.security_id = m.security_id
 WHERE isNotNull(m.confidence_score)
+  AND startsWith(m.source_evidence_ref, 'id_listing_v1/ref_exchange_v1:')
 """.strip()
 
 

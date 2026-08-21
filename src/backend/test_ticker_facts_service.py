@@ -133,7 +133,8 @@ class TickerFactsServiceTest(unittest.TestCase):
         self.assertEqual(company_country_code({"domicile_country_code": "gb", "state_of_incorporation": "CA"}), "GB")
         self.assertEqual(company_country_code({"domicile_country_code": None, "state_of_incorporation": "CA"}), "US")
         self.assertEqual(company_country_code({"domicile_country_code": None, "state_of_incorporation": "L2"}), "IE")
-        self.assertIsNone(company_country_code({"domicile_country_code": None, "state_of_incorporation": "E9"}))
+        self.assertEqual(company_country_code({"domicile_country_code": None, "state_of_incorporation": "E9"}), "KY")
+        self.assertEqual(company_country_code({"issuer_business_country_code": "NL", "state_of_incorporation": "DE"}), "NL")
 
     def test_ifrs_fundamentals_produce_auditable_strength_metrics(self) -> None:
         rows = [

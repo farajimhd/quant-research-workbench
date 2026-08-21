@@ -109,6 +109,7 @@ REFERENCE_TABLE_GROUPS: tuple[ReferenceTableGroup, ...] = (
             "market_fails_to_deliver_v1",
             "market_reg_sho_threshold_v1",
             "market_security_borrow_v1",
+            "market_issuer_company_profile_v1",
             "market_security_country_v1",
             "market_ticker_event_entity_v1",
             "market_ticker_event_v1",

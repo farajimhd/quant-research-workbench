@@ -8,7 +8,7 @@ from research.mlops.clickhouse import quote_ident, sql_string
 
 
 QUERY_PLAN_ID = "reference.scanner_asof.v1"
-QUERY_PLAN_VERSION = 2
+QUERY_PLAN_VERSION = 3
 NEW_YORK = ZoneInfo("America/New_York")
 
 
@@ -44,8 +44,12 @@ def scanner_reference_projection(cutoff: datetime, database: str = "q_live", *, 
             u.issuer_id AS issuer_id,
             u.listing_id AS listing_id,
             u.exchange_code AS exchange,
-            coalesce(nullIf(s.security_name, ''), nullIf(i.legal_name, ''), nullIf(i.issuer_name, '')) AS company_name,
-            coalesce(nullIf(c.effective_country_code, ''), nullIf(i.domicile_country_code, '')) AS country,
+            coalesce(nullIf(p.issuer_name, ''), nullIf(s.security_name, ''), nullIf(i.legal_name, ''), nullIf(i.issuer_name, '')) AS company_name,
+            coalesce(nullIf(p.issuer_business_country_code, ''), nullIf(p.issuer_legal_country_code, ''), nullIf(i.domicile_country_code, ''), nullIf(c.listing_country_code, '')) AS country,
+            nullIf(c.listing_country_code, '') AS listing_country,
+            nullIf(p.issuer_legal_country_code, '') AS issuer_legal_country,
+            nullIf(p.issuer_business_country_code, '') AS issuer_business_country,
+            if(c.listing_country_code = 'US' AND coalesce(nullIf(p.issuer_business_country_code, ''), nullIf(p.issuer_legal_country_code, '')) != 'US', 1, 0) AS is_foreign_issuer_on_us_listing,
             coalesce(nullIf(i.sector, ''), nullIf(i.industry, ''), nullIf(i.sic_description, '')) AS sector,
             nullIf(i.industry, '') AS industry,
             coalesce(m.market_cap, scanner.market_cap) AS market_cap,
@@ -121,6 +125,17 @@ def scanner_reference_projection(cutoff: datetime, database: str = "q_live", *, 
         ) AS i ON i.issuer_id = u.issuer_id
         LEFT JOIN
         (
+            SELECT
+                issuer_id,
+                argMaxIf(issuer_name, tuple(available_at_utc, inserted_at), ifNull(issuer_name, '') != '') AS issuer_name,
+                argMaxIf(issuer_legal_country_code, tuple(available_at_utc, inserted_at), ifNull(issuer_legal_country_code, '') != '') AS issuer_legal_country_code,
+                argMaxIf(issuer_business_country_code, tuple(available_at_utc, inserted_at), ifNull(issuer_business_country_code, '') != '') AS issuer_business_country_code
+            FROM {db}.market_issuer_company_profile_v1 FINAL
+            WHERE available_at_utc <= cutoff
+            GROUP BY issuer_id
+        ) AS p ON p.issuer_id = u.issuer_id
+        LEFT JOIN
+        (
             SELECT symbol_id, listing_id,
                 argMax(logo_asset_id, inserted_at) AS logo_asset_id,
                 argMax(free_float, inserted_at) AS free_float,
@@ -157,10 +172,11 @@ def scanner_reference_projection(cutoff: datetime, database: str = "q_live", *, 
         LEFT JOIN
         (
             SELECT symbol_id,
-                argMax(effective_country_code, tuple(assertion_date, inserted_at)) AS effective_country_code
+                argMax(effective_country_code, tuple(available_at_utc, inserted_at)) AS effective_country_code,
+                argMax(listing_country_code, tuple(available_at_utc, inserted_at)) AS listing_country_code
             FROM {db}.market_security_country_v1 FINAL
-            WHERE assertion_date <= cutoff_date
-              AND inserted_at <= cutoff
+            WHERE available_at_utc <= cutoff
+              AND startsWith(source_evidence_ref, 'id_listing_v1/ref_exchange_v1:')
               AND symbol_id IS NOT NULL
             GROUP BY symbol_id
         ) AS c ON c.symbol_id = u.symbol_id

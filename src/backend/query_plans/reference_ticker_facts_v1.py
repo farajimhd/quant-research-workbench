@@ -37,7 +37,31 @@ def identity_anchor(ticker: str, cutoff: datetime, database: str) -> str:
             issuer.sic_description AS sic_description, issuer.sector AS sector,
             issuer.industry AS industry, issuer.industry_group AS industry_group,
             issuer.website_url AS website_url, issuer.investor_website_url AS investor_website_url,
-            issuer.last_verified_at_utc AS last_verified_at_utc
+            issuer.last_verified_at_utc AS last_verified_at_utc,
+            profile.latest_issuer_name AS sec_issuer_name,
+            profile.latest_incorporation_jurisdiction AS sec_incorporation_jurisdiction,
+            profile.latest_issuer_legal_country_code AS issuer_legal_country_code,
+            profile.latest_issuer_business_country_code AS issuer_business_country_code,
+            profile.latest_business_address_line1 AS business_address_line1,
+            profile.latest_business_address_line2 AS business_address_line2,
+            profile.latest_business_address_line3 AS business_address_line3,
+            profile.latest_business_address_city AS business_address_city,
+            profile.latest_business_address_state_or_province AS business_address_state_or_province,
+            profile.latest_business_address_postal_code AS business_address_postal_code,
+            profile.latest_source_kind AS company_profile_source_kind,
+            profile.latest_source_accession_number AS company_profile_accession_number,
+            profile.profile_available_at_utc AS company_profile_available_at_utc,
+            profile.business_address_source_kind AS business_address_source_kind,
+            profile.business_address_accession_number AS business_address_accession_number,
+            profile.business_address_available_at_utc AS business_address_available_at_utc,
+            profile.business_country_source_kind AS business_country_source_kind,
+            profile.business_country_accession_number AS business_country_accession_number,
+            profile.business_country_available_at_utc AS business_country_available_at_utc,
+            profile.legal_country_source_kind AS legal_country_source_kind,
+            profile.legal_country_accession_number AS legal_country_accession_number,
+            profile.legal_country_available_at_utc AS legal_country_available_at_utc,
+            country.latest_listing_country_code AS listing_country_code,
+            country.latest_effective_country_code AS effective_country_code
         FROM {db}.feature_tradable_universe_v1 AS u FINAL
         LEFT JOIN {db}.id_symbol_v1 AS s FINAL
             ON s.symbol_id = u.symbol_id AND s.first_seen_at_utc <= parseDateTime64BestEffort({instant})
@@ -47,6 +71,47 @@ def identity_anchor(ticker: str, cutoff: datetime, database: str) -> str:
             ON sec.security_id = u.security_id AND sec.first_seen_at_utc <= parseDateTime64BestEffort({instant})
         LEFT JOIN {db}.id_issuer_v1 AS issuer FINAL
             ON issuer.issuer_id = u.issuer_id AND issuer.first_seen_at_utc <= parseDateTime64BestEffort({instant})
+        LEFT JOIN
+        (
+            SELECT
+                issuer_id,
+                argMaxIf(issuer_name, tuple(available_at_utc, inserted_at), ifNull(issuer_name, '') != '') AS latest_issuer_name,
+                argMaxIf(incorporation_jurisdiction, tuple(available_at_utc, inserted_at), ifNull(incorporation_jurisdiction, '') != '') AS latest_incorporation_jurisdiction,
+                argMaxIf(issuer_legal_country_code, tuple(available_at_utc, inserted_at), ifNull(issuer_legal_country_code, '') != '') AS latest_issuer_legal_country_code,
+                argMaxIf(issuer_business_country_code, tuple(available_at_utc, inserted_at), ifNull(issuer_business_country_code, '') != '') AS latest_issuer_business_country_code,
+                argMaxIf(business_address_line1, tuple(available_at_utc, inserted_at), ifNull(business_address_line1, '') != '') AS latest_business_address_line1,
+                argMaxIf(business_address_line2, tuple(available_at_utc, inserted_at), ifNull(business_address_line2, '') != '') AS latest_business_address_line2,
+                argMaxIf(business_address_line3, tuple(available_at_utc, inserted_at), ifNull(business_address_line3, '') != '') AS latest_business_address_line3,
+                argMaxIf(business_address_city, tuple(available_at_utc, inserted_at), ifNull(business_address_city, '') != '') AS latest_business_address_city,
+                argMaxIf(business_address_state_or_province, tuple(available_at_utc, inserted_at), ifNull(business_address_state_or_province, '') != '') AS latest_business_address_state_or_province,
+                argMaxIf(business_address_postal_code, tuple(available_at_utc, inserted_at), ifNull(business_address_postal_code, '') != '') AS latest_business_address_postal_code,
+                argMax(source_kind, tuple(available_at_utc, inserted_at)) AS latest_source_kind,
+                argMax(source_accession_number, tuple(available_at_utc, inserted_at)) AS latest_source_accession_number,
+                max(available_at_utc) AS profile_available_at_utc,
+                argMaxIf(source_kind, tuple(available_at_utc, inserted_at), ifNull(business_address_line1, '') != '' OR ifNull(business_address_city, '') != '' OR ifNull(issuer_business_country_code, '') != '') AS business_address_source_kind,
+                argMaxIf(source_accession_number, tuple(available_at_utc, inserted_at), ifNull(business_address_line1, '') != '' OR ifNull(business_address_city, '') != '' OR ifNull(issuer_business_country_code, '') != '') AS business_address_accession_number,
+                maxIf(available_at_utc, ifNull(business_address_line1, '') != '' OR ifNull(business_address_city, '') != '' OR ifNull(issuer_business_country_code, '') != '') AS business_address_available_at_utc,
+                argMaxIf(source_kind, tuple(available_at_utc, inserted_at), ifNull(issuer_business_country_code, '') != '') AS business_country_source_kind,
+                argMaxIf(source_accession_number, tuple(available_at_utc, inserted_at), ifNull(issuer_business_country_code, '') != '') AS business_country_accession_number,
+                maxIf(available_at_utc, ifNull(issuer_business_country_code, '') != '') AS business_country_available_at_utc,
+                argMaxIf(source_kind, tuple(available_at_utc, inserted_at), ifNull(issuer_legal_country_code, '') != '') AS legal_country_source_kind,
+                argMaxIf(source_accession_number, tuple(available_at_utc, inserted_at), ifNull(issuer_legal_country_code, '') != '') AS legal_country_accession_number,
+                maxIf(available_at_utc, ifNull(issuer_legal_country_code, '') != '') AS legal_country_available_at_utc
+            FROM {db}.market_issuer_company_profile_v1 FINAL
+            WHERE available_at_utc <= parseDateTime64BestEffort({instant})
+            GROUP BY issuer_id
+        ) AS profile ON profile.issuer_id = u.issuer_id
+        LEFT JOIN
+        (
+            SELECT
+                symbol_id,
+                argMax(listing_country_code, tuple(available_at_utc, inserted_at)) AS latest_listing_country_code,
+                argMax(effective_country_code, tuple(available_at_utc, inserted_at)) AS latest_effective_country_code
+            FROM {db}.market_security_country_v1 FINAL
+            WHERE available_at_utc <= parseDateTime64BestEffort({instant})
+              AND startsWith(source_evidence_ref, 'id_listing_v1/ref_exchange_v1:')
+            GROUP BY symbol_id
+        ) AS country ON country.symbol_id = u.symbol_id
         WHERE u.universe_date = latest_date AND upper(u.ticker) = {symbol}
         ORDER BY u.is_tradable DESC, u.currency_code = 'USD' DESC, u.product_type = 'STK' DESC, u.exchange_code ASC
         LIMIT 1
