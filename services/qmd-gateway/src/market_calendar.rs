@@ -200,6 +200,13 @@ impl MarketCalendarClient {
         out
     }
 
+    pub fn previous_session(&self, anchor: NaiveDate) -> Option<NaiveDate> {
+        self.prior_sessions(anchor, 2)
+            .into_iter()
+            .rev()
+            .find(|date| *date < anchor)
+    }
+
     pub fn collection_window_utc(
         &self,
         date: NaiveDate,
@@ -425,6 +432,16 @@ mod tests {
                 NaiveDate::from_ymd_opt(2026, 7, 2).unwrap(),
                 monday,
             ]
+        );
+    }
+
+    #[test]
+    fn previous_session_selects_the_most_recent_prior_market_day() {
+        let client = MarketCalendarClient::new(GatewayConfig::from_env());
+        let friday = NaiveDate::from_ymd_opt(2026, 8, 21).unwrap();
+        assert_eq!(
+            client.previous_session(friday),
+            NaiveDate::from_ymd_opt(2026, 8, 20)
         );
     }
 }
