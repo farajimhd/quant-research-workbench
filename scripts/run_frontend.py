@@ -65,16 +65,12 @@ def validate_runtime_root(runtime_root: Path) -> Path:
 
 def sync_frontend(runtime_root: Path) -> None:
     runtime_root.mkdir(parents=True, exist_ok=True)
-    for name in SYNCED_FILES:
-        shutil.copy2(SOURCE_ROOT / name, runtime_root / name)
-    for name in SYNCED_DIRECTORIES:
-        target = runtime_root / name
-        if target.exists():
-            shutil.rmtree(target)
-        # A running Vite watcher can observe the removal and recreate a nested
-        # directory before copytree reaches it. The old tree was already
-        # removed, so merging here is race-safe and cannot retain stale source.
-        shutil.copytree(SOURCE_ROOT / name, target, dirs_exist_ok=True)
+    # The runtime can be watched by a managed Vite process. Mirror only changed
+    # paths so a build or QA launch does not tear down files that watcher is
+    # actively reading. The incremental mirror still removes paths absent from
+    # source, so it preserves exact source authority rather than accumulating
+    # stale runtime copies.
+    sync_frontend_incrementally(runtime_root)
 
 
 def _files_match(source: Path, target: Path) -> bool:
