@@ -1791,9 +1791,16 @@ def validate_service_interactions(page: Any, scenario: dict[str, Any], interacti
         except Exception:
             return ["SEC filing row does not open its detail dialog"]
         readable_body = modal.locator(".sec-filing-readable-body")
-        if readable_body.count() != 1 or "deterministic filing text" not in readable_body.inner_text().lower():
+        try:
+            readable_body.get_by_text(re.compile(r"deterministic filing text", re.IGNORECASE)).wait_for(state="visible", timeout=5000)
+        except Exception:
             issues.append("SEC detail does not render the normalized readable filing body")
-        if modal.locator(".sec-filing-document-card").count() != 1:
+        document_cards = modal.locator(".sec-filing-document-card")
+        try:
+            document_cards.first.wait_for(state="visible", timeout=5000)
+        except Exception:
+            pass
+        if document_cards.count() != 1:
             issues.append("SEC detail does not reconcile its filing document with readable text")
         filing_parent = modal.locator(".sec-filing-data-sections details").filter(has_text="Filing Parent Row")
         if filing_parent.count() != 1:
