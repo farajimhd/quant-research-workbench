@@ -5,6 +5,8 @@ import json
 from dataclasses import dataclass
 from typing import Any, Mapping, Sequence
 
+from .provider_context import ROUTER_VERSION, ROUTES
+
 
 CONTRACT_VERSION = "news_synthesis_v1"
 MIGRATION_VERSION = "news_synthesis_v1_gold_migration_v1"
@@ -63,6 +65,19 @@ def validate_document(document: Mapping[str, Any]) -> ValidationResult:
     _decision_value(envelope, "information_origin", INFORMATION_ORIGINS, issues)
     _decision_value(envelope, "production_method", PRODUCTION_METHODS, issues)
     _decision_value(envelope, "text_availability", TEXT_AVAILABILITY, issues)
+    provider_context = envelope.get("provider_context")
+    if provider_context is not None:
+        if not isinstance(provider_context, Mapping):
+            issues.append("invalid:provider_context")
+        else:
+            if provider_context.get("router_version") != ROUTER_VERSION:
+                issues.append("invalid:provider_context_router_version")
+            if provider_context.get("route") not in ROUTES:
+                issues.append("invalid:provider_context_route")
+            if not str(provider_context.get("content_family") or ""):
+                issues.append("invalid:provider_context_family")
+            if not isinstance(provider_context.get("reason_codes"), list):
+                issues.append("invalid:provider_context_reason_codes")
 
     entities = {row.get("entity_id"): row for row in _rows(document, "entities", issues)}
     statement_rows = _rows(document, "statements", issues)

@@ -6,5 +6,9 @@ imports; importing this package exposes only the active V1 contract and engine.
 
 from .contracts import CONTRACT_VERSION
 from .engine import ENGINE_VERSION, NewsSynthesisEngine
+from .provider_context import ROUTER_VERSION, classify_provider_context
 
-__all__ = ["CONTRACT_VERSION", "ENGINE_VERSION", "NewsSynthesisEngine"]
+__all__ = [
+    "CONTRACT_VERSION", "ENGINE_VERSION", "NewsSynthesisEngine", "ROUTER_VERSION",
+    "classify_provider_context",
+]

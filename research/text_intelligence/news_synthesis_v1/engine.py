@@ -9,11 +9,12 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
 from .contracts import CONTRACT_VERSION, PRODUCTION_VERSION, validate_document
+from .provider_context import classify_provider_context
 from .facts import extract_regulatory_decision_facts, extract_typed_facts
 from .synthesis import derive_eligibility, derive_issuer_views, derive_synthesis
 
 
-ENGINE_VERSION = "news_synthesis_engine_v48"
+ENGINE_VERSION = "news_synthesis_engine_v49"
 EXCHANGE_TICKER_RE = re.compile(
     r"\b(?P<exchange>NASDAQ|NYSE|NYSE\s+AMERICAN|NYSEAMERICAN|AMEX|"
     r"OTC(?:QX|QB)?|TSX|TSXV|CSE)\s*[:\-]\s*"
@@ -882,6 +883,7 @@ def _envelope(
     source: Mapping[str, Any],
 ) -> dict[str, Any]:
     combined = f"{title}\n{text}"
+    provider_context = classify_provider_context(source)
     metadata = " ".join(str(x) for name in ("channels", "provider_tags") for x in source.get(name) or ())
     author = str(source.get("author") or "").strip().casefold()
     article_url = str(source.get("article_url") or source.get("url_domain") or "").casefold()
@@ -1065,6 +1067,7 @@ def _envelope(
         "evidence": evidence,
     }
     return {
+        "provider_context": provider_context,
         "document_structure": decision(structure, "envelope.structure.v1"),
         "communication_purpose": decision(
             purpose,

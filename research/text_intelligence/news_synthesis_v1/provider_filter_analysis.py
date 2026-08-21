@@ -315,10 +315,19 @@ def odds_ratio(
 def _expected_input_paths(authority_root: Path, metadata_root: Path) -> InputPaths:
     manifest_path = authority_root / "LOAD_MANIFEST.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    source_manifest = manifest
+    if "external_source_text_authority" not in source_manifest:
+        parent = str(manifest.get("parent_authority") or "").strip()
+        if not parent:
+            raise ValueError("authority manifest has no external source-text authority or parent authority")
+        parent_manifest_path = Path(parent) / "LOAD_MANIFEST.json"
+        source_manifest = json.loads(parent_manifest_path.read_text(encoding="utf-8"))
+    if "external_source_text_authority" not in source_manifest:
+        raise ValueError("parent authority manifest has no external source-text authority")
     return InputPaths(
         labels=Path(manifest["primary_tables"]["article_forecast_eligibility"]["path"]),
         metadata=metadata_root / "article_metadata_labels.jsonl",
-        rendered_texts=Path(manifest["external_source_text_authority"]["path"]),
+        rendered_texts=Path(source_manifest["external_source_text_authority"]["path"]),
         authority_manifest=manifest_path,
         authority_hash_manifest=authority_root / "HASH_MANIFEST.json",
         metadata_hash_manifest=metadata_root / "HASH_MANIFEST.json",
@@ -327,9 +336,15 @@ def _expected_input_paths(authority_root: Path, metadata_root: Path) -> InputPat
 
 def verify_inputs(paths: InputPaths) -> dict[str, Any]:
     authority_manifest = json.loads(paths.authority_manifest.read_text(encoding="utf-8"))
+    source_manifest = authority_manifest
+    if "external_source_text_authority" not in source_manifest:
+        parent = str(authority_manifest.get("parent_authority") or "").strip()
+        if not parent:
+            raise ValueError("authority manifest has no external source-text authority or parent authority")
+        source_manifest = json.loads((Path(parent) / "LOAD_MANIFEST.json").read_text(encoding="utf-8"))
     authority_hashes = json.loads(paths.authority_hash_manifest.read_text(encoding="utf-8"))
     metadata_hashes = json.loads(paths.metadata_hash_manifest.read_text(encoding="utf-8"))
-    expected_rendered = authority_manifest["external_source_text_authority"]["sha256"]
+    expected_rendered = source_manifest["external_source_text_authority"]["sha256"]
     expected_metadata = metadata_hashes["outputs"]["article_metadata_labels.jsonl"]["sha256"]
     expected_labels = None
     for section in ("outputs", "files", "artifacts"):
