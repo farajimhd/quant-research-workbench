@@ -1,23 +1,29 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { lazy, Suspense, useEffect, useState, type Dispatch, type ReactNode, type SetStateAction } from "react";
 
-import { Layout, type PageKey } from "./app/components/Layout";
+import { Layout } from "./app/components/Layout";
 import { MarketStatusBadge, liveMarketStatus, type MarketStatus } from "./app/components/MarketStatusBadge";
-import { CanvasConfigurationPage, CanvasFocusPage } from "./pages/CanvasConfigurationPage";
-import { BacktestDebugPage } from "./pages/BacktestDebugPage";
-import { HistoricalTradingPage } from "./pages/HistoricalTradingPage";
-import { RealLiveTradingPage } from "./pages/RealLiveTradingPage";
-import { ResearchWorkspacePage } from "./pages/ResearchWorkspacePage";
-import { ReplayTradingPage } from "./pages/ReplayTradingPage";
-import { ServicesPage, type ServicePageMode } from "./pages/ServicesPage";
-import { TradingConfigurationPage, type TradingConfigurationSection } from "./pages/TradingConfigurationPage";
-import { TypographyPublicSansPage } from "./pages/TypographySystemPage";
+import {
+  configurationSectionForPage,
+  isCompactContentPage,
+  pageForServiceMode,
+  pageFromHash,
+  servicePageModeForPage,
+  type PageKey,
+} from "./app/routes";
 
-const validPages: PageKey[] = ["real-live-trading", "replay-trading", "backtest-trading", "backtest-debug", "research-workspace", "canvas-configuration", "data-catalog-configuration", "rule-set-configuration", "market-discovery-configuration", "typography-public-sans", "trading-action-configuration", "strategy-configuration", "assignment-configuration", "portfolio-configuration", "oms-configuration", "account-configuration", "revision-configuration", "canvas-focus", "services-dashboard", "service-bar-gpt", "service-qmd", "service-qmd-history", "service-news", "service-sec", "service-text-embed", "service-reference", "service-ibkr"];
+const BacktestDebugPage = lazy(() => import("./pages/BacktestDebugPage").then((module) => ({ default: module.BacktestDebugPage })));
+const CanvasConfigurationPage = lazy(() => import("./pages/CanvasConfigurationPage").then((module) => ({ default: module.CanvasConfigurationPage })));
+const CanvasFocusPage = lazy(() => import("./pages/CanvasConfigurationPage").then((module) => ({ default: module.CanvasFocusPage })));
+const HistoricalTradingPage = lazy(() => import("./pages/HistoricalTradingPage").then((module) => ({ default: module.HistoricalTradingPage })));
+const RealLiveTradingPage = lazy(() => import("./pages/RealLiveTradingPage").then((module) => ({ default: module.RealLiveTradingPage })));
+const ReplayTradingPage = lazy(() => import("./pages/ReplayTradingPage").then((module) => ({ default: module.ReplayTradingPage })));
+const ResearchWorkspacePage = lazy(() => import("./pages/ResearchWorkspacePage").then((module) => ({ default: module.ResearchWorkspacePage })));
+const ServicesPage = lazy(() => import("./pages/ServicesPage").then((module) => ({ default: module.ServicesPage })));
+const TradingConfigurationPage = lazy(() => import("./pages/TradingConfigurationPage").then((module) => ({ default: module.TradingConfigurationPage })));
+const TypographyPublicSansPage = lazy(() => import("./pages/TypographySystemPage").then((module) => ({ default: module.TypographyPublicSansPage })));
 
 export function App() {
-  const [page, setPage] = useState<PageKey>(() => {
-    return pageFromHash(window.location.hash) ?? "real-live-trading";
-  });
+  const [page, setPage] = useState<PageKey>(() => pageFromHash(window.location.hash) ?? "real-live-trading");
   const [topbarCenter, setTopbarCenter] = useState<ReactNode>(null);
   const [liveStatus, setLiveStatus] = useState<MarketStatus>(() => liveMarketStatus(null));
 
@@ -32,75 +38,59 @@ export function App() {
 
   useEffect(() => {
     if (pageFromHash(window.location.hash) !== page) window.location.hash = page;
-    if (page !== "real-live-trading") {
-      setTopbarCenter(null);
-    }
+    if (page !== "real-live-trading") setTopbarCenter(null);
   }, [page]);
 
   if (page === "canvas-focus") {
-    return <Layout chromeless page={page} onPageChange={setPage}><CanvasFocusPage /></Layout>;
+    return <Layout chromeless page={page} onPageChange={setPage}><PageSuspense><CanvasFocusPage /></PageSuspense></Layout>;
   }
 
   return (
-    <Layout compactContent={page === "canvas-configuration" || page === "replay-trading"} page={page} onPageChange={setPage} topbarCenter={topbarCenter} topbarStatus={page === "real-live-trading" ? <MarketStatusBadge value={liveStatus} /> : null}>
-      {page === "real-live-trading" ? <div className="page-cache-panel active"><RealLiveTradingPage onMarketStatusChange={setLiveStatus} onTopbarCenterChange={setTopbarCenter} /></div> : null}
-      {page === "replay-trading" ? <div className="page-cache-panel active"><ReplayTradingPage /></div> : null}
-      {page === "backtest-trading" ? <div className="page-cache-panel active"><HistoricalTradingPage mode="backtest" /></div> : null}
-      {page === "backtest-debug" ? <div className="page-cache-panel active"><BacktestDebugPage /></div> : null}
-      {page === "research-workspace" ? <div className="page-cache-panel active"><ResearchWorkspacePage /></div> : null}
-      {page === "canvas-configuration" ? <div className="page-cache-panel active"><CanvasConfigurationPage /></div> : null}
-      {configurationSection(page) ? (
-        <div className="page-cache-panel active">
-          <TradingConfigurationPage section={configurationSection(page) ?? "strategy"} />
-        </div>
-      ) : null}
-      {page === "typography-public-sans" ? (
-        <div className="page-cache-panel active">
-          <TypographyPublicSansPage />
-        </div>
-      ) : null}
-      {servicePageMode(page) ? (
-        <div className="page-cache-panel active">
-          <ServicesPage mode={servicePageMode(page) ?? "dashboard"} onNavigate={(mode) => setPage(pageForServiceMode(mode))} />
-        </div>
-      ) : null}
+    <Layout
+      compactContent={isCompactContentPage(page)}
+      page={page}
+      onPageChange={setPage}
+      topbarCenter={topbarCenter}
+      topbarStatus={page === "real-live-trading" ? <MarketStatusBadge value={liveStatus} /> : null}
+    >
+      <PageSuspense>
+        <RouteContent
+          page={page}
+          onMarketStatusChange={setLiveStatus}
+          onPageChange={setPage}
+          onTopbarCenterChange={setTopbarCenter}
+        />
+      </PageSuspense>
     </Layout>
   );
 }
 
-function pageFromHash(hash: string): PageKey | null {
-  const hashPage = hash.replace(/^#/, "").split("?", 1)[0] as PageKey;
-  return validPages.includes(hashPage) ? hashPage : null;
+function PageSuspense({ children }: { children: ReactNode }) {
+  return <Suspense fallback={<div aria-live="polite" className="page-route-loading" role="status">Loading workspace…</div>}>{children}</Suspense>;
 }
 
-function configurationSection(page: PageKey): TradingConfigurationSection | null {
-  if (page === "data-catalog-configuration") return "data_catalog";
-  if (page === "rule-set-configuration") return "rule_sets";
-  if (page === "market-discovery-configuration") return "discovery";
-  if (page === "trading-action-configuration") return "actions";
-  if (page === "strategy-configuration") return "strategy";
-  if (page === "assignment-configuration") return "assignments";
-  if (page === "portfolio-configuration") return "portfolio";
-  if (page === "oms-configuration") return "oms";
-  if (page === "account-configuration") return "accounts";
-  if (page === "revision-configuration") return "revisions";
+function RouteContent({ onMarketStatusChange, onPageChange, onTopbarCenterChange, page }: {
+  onMarketStatusChange: Dispatch<SetStateAction<MarketStatus>>;
+  onPageChange: (page: PageKey) => void;
+  onTopbarCenterChange: Dispatch<SetStateAction<ReactNode>>;
+  page: PageKey;
+}) {
+  if (page === "real-live-trading") return <ActivePage><RealLiveTradingPage onMarketStatusChange={onMarketStatusChange} onTopbarCenterChange={onTopbarCenterChange} /></ActivePage>;
+  if (page === "replay-trading") return <ActivePage><ReplayTradingPage /></ActivePage>;
+  if (page === "backtest-trading") return <ActivePage><HistoricalTradingPage mode="backtest" /></ActivePage>;
+  if (page === "backtest-debug") return <ActivePage><BacktestDebugPage /></ActivePage>;
+  if (page === "research-workspace") return <ActivePage><ResearchWorkspacePage /></ActivePage>;
+  if (page === "canvas-configuration") return <ActivePage><CanvasConfigurationPage /></ActivePage>;
+
+  const configurationSection = configurationSectionForPage(page);
+  if (configurationSection) return <ActivePage><TradingConfigurationPage section={configurationSection} /></ActivePage>;
+  if (page === "typography-public-sans") return <ActivePage><TypographyPublicSansPage /></ActivePage>;
+
+  const serviceMode = servicePageModeForPage(page);
+  if (serviceMode) return <ActivePage><ServicesPage mode={serviceMode} onNavigate={(mode) => onPageChange(pageForServiceMode(mode))} /></ActivePage>;
   return null;
 }
 
-function servicePageMode(page: PageKey): ServicePageMode | null {
-  if (page === "services-dashboard") return "dashboard";
-  if (page === "service-bar-gpt") return "bar-gpt";
-  if (page === "service-qmd") return "qmd";
-  if (page === "service-qmd-history") return "qmd-history";
-  if (page === "service-news") return "news";
-  if (page === "service-sec") return "sec";
-  if (page === "service-text-embed") return "text-embed";
-  if (page === "service-reference") return "reference";
-  if (page === "service-ibkr") return "ibkr";
-  return null;
-}
-
-function pageForServiceMode(mode: ServicePageMode): PageKey {
-  if (mode === "dashboard") return "services-dashboard";
-  return `service-${mode}` as PageKey;
+function ActivePage({ children }: { children: ReactNode }) {
+  return <div className="page-cache-panel active">{children}</div>;
 }

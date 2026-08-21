@@ -24,41 +24,21 @@ THEMES = (
     "dark", "forest", "graphite", "ember", "amethyst",
 )
 SCALES = (0.8, 0.9, 1.0, 1.1, 1.25)
-PAGES = (
-    "real-live-trading",
-    "replay-trading",
-    "backtest-trading",
-    "backtest-debug",
-    "research-workspace",
-    "canvas-configuration",
-    "data-catalog-configuration",
-    "rule-set-configuration",
-    "market-discovery-configuration",
-    "typography-noto-sans",
-    "typography-open-sans",
-    "typography-lato",
-    "typography-figtree",
-    "typography-work-sans",
-    "typography-roboto",
-    "typography-lexend",
-    "typography-public-sans",
-    "strategy-configuration",
-    "assignment-configuration",
-    "portfolio-configuration",
-    "oms-configuration",
-    "account-configuration",
-    "revision-configuration",
-    "canvas-focus",
-    "services-dashboard",
-    "service-bar-gpt",
-    "service-qmd",
-    "service-qmd-history",
-    "service-news",
-    "service-sec",
-    "service-text-embed",
-    "service-reference",
-    "service-ibkr",
-)
+
+
+def registered_pages() -> tuple[str, ...]:
+    registry_path = Path(__file__).resolve().parents[1] / "src" / "app" / "routes.ts"
+    source = registry_path.read_text(encoding="utf-8")
+    match = re.search(r"export const PAGE_KEYS = \[(.*?)\] as const;", source, re.DOTALL)
+    if not match:
+        raise RuntimeError(f"PAGE_KEYS could not be read from {registry_path}")
+    pages = tuple(re.findall(r'"([a-z0-9-]+)"', match.group(1)))
+    if not pages or len(pages) != len(set(pages)):
+        raise RuntimeError(f"PAGE_KEYS is empty or contains duplicates in {registry_path}")
+    return pages
+
+
+PAGES = registered_pages()
 VIEWPORTS = {
     "normal": {"width": 1600, "height": 1000},
     "compact": {"width": 1280, "height": 720},
@@ -1598,7 +1578,7 @@ def capture(args: argparse.Namespace) -> int:
                 if args.canvas_id and scenario["page"] == "real-live-trading":
                     canvas_query = f"?liveCanvas={args.canvas_id}"
                 elif scenario["page"] == "canvas-focus":
-                    canvas_query = f"?canvas={args.canvas_id or 'review-focus'}"
+                    canvas_query = f"?canvas={args.canvas_id or 'review-focus'}&canvas_profile=draft"
                 elif args.seed_core_containers and scenario["page"] == "replay-trading":
                     canvas_query = "?historicalWorkspace=replay"
                 elif args.seed_core_containers and scenario["page"] == "backtest-trading":

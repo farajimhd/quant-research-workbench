@@ -239,6 +239,7 @@ def main() -> int:
         command_args = command_args[1:]
     environment = os.environ.copy()
     environment.setdefault("QW_FRONTEND_REVIEW_ROOT", str(frontend_review_root()))
+    environment["QW_FRONTEND_PYTHON"] = str(Path(sys.executable).resolve())
     command = [*npm_command(), "run", args.command]
     if command_args:
         command.extend(["--", *command_args])

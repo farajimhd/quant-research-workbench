@@ -7,10 +7,10 @@ import { DataTable } from "../app/components/DataTable";
 import { MetricRatio } from "../app/components/MetricRatio";
 import { Modal } from "../app/components/Modal";
 import { displayName, formatBytes, formatCell, formatCompactNumber, formatDuration } from "../app/format";
+import { SERVICE_IDS, type ServiceId, type ServicePageMode } from "../app/routes";
 import "./ServicesOverview.css";
 
-export type ServicePageMode = "dashboard" | ServiceId;
-export type ServiceId = "bar-gpt" | "ibkr" | "model-gateway" | "news" | "news-hypothesis" | "qmd" | "qmd-history" | "reference" | "sec" | "text-embed" | "text-intelligence";
+export type { ServiceId, ServicePageMode } from "../app/routes";
 
 type ServiceRegistry = {
   base_url: string;
@@ -162,7 +162,6 @@ type BarGptOperationalConfiguration = {
   };
 };
 
-const SERVICE_IDS: ServiceId[] = ["qmd", "qmd-history", "bar-gpt", "news", "text-intelligence", "news-hypothesis", "model-gateway", "sec", "text-embed", "reference", "ibkr"];
 const EXCHANGE_TIME_ZONE = "America/New_York";
 const VANCOUVER_TIME_ZONE = "America/Vancouver";
 

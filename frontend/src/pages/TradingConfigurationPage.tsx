@@ -42,21 +42,12 @@ import { AbstractionCard, type AbstractionKind } from "../app/components/Abstrac
 import { DefinitionRegistryProvider, type InformationRegistry } from "../app/components/DefinitionRegistry";
 import { InventoryFilterSelect } from "../app/components/InventoryFilterSelect";
 import { formatSemanticNumber } from "../app/format";
+import type { TradingConfigurationSection } from "../app/routes";
 import { DataCatalogPage, RuleSetLibraryPage, dataFieldRuleDefinitions, type AtomicField, type DataFieldDefinition, type DataRuleSet } from "./DataConfigurationPages";
 import { MarketDiscoveryComposer, type MarketDiscoveryConfiguration } from "./MarketDiscoveryComposer";
 import { TradingActionsPage, type ActionPolicyDefinition, type TradingActionDefinition, type TradingActionsConfiguration } from "./TradingActionsPage";
 
-export type TradingConfigurationSection =
-  | "data_catalog"
-  | "rule_sets"
-  | "actions"
-  | "strategy"
-  | "discovery"
-  | "assignments"
-  | "portfolio"
-  | "oms"
-  | "accounts"
-  | "revisions";
+export type { TradingConfigurationSection } from "../app/routes";
 
 type StrategyAuthoringStage = "identity" | "overview" | "entry" | "position" | "reentry" | "exit" | "handoff";
 

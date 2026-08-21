@@ -1,11 +1,11 @@
 import type { ReactNode } from "react";
-import { Activity, BadgeCheck, BookOpenCheck, BriefcaseBusiness, Bug, Check, ChevronLeft, ChevronRight, Database, FlaskConical, GitBranch, History, Microscope, Network, PanelsTopLeft, Palette, ScanSearch, Send, ServerCog, ShieldCheck, Type, UsersRound, Wifi } from "lucide-react";
+import { Activity, BadgeCheck, BriefcaseBusiness, Bug, Check, ChevronLeft, ChevronRight, Database, FlaskConical, GitBranch, History, Microscope, Network, PanelsTopLeft, Palette, ScanSearch, Send, ServerCog, ShieldCheck, Type, UsersRound, Wifi } from "lucide-react";
 import { useEffect, useState } from "react";
 
 import { buildMenuItemButtonClassName, buildThemeMenuItemButtonClassName } from "../selectionStyles";
+import { configurationToneForPage, NAVIGATION_GROUPS, type NavigationIcon, type PageKey } from "../routes";
 import { APP_THEMES, DEFAULT_THEME_ID, applyThemeDefinition, isAppThemeId, type AppThemeDefinition, type AppThemeId } from "../theme";
 
-export type PageKey = "real-live-trading" | "replay-trading" | "backtest-trading" | "backtest-debug" | "research-workspace" | "canvas-configuration" | "data-catalog-configuration" | "rule-set-configuration" | "market-discovery-configuration" | "typography-public-sans" | "trading-action-configuration" | "strategy-configuration" | "assignment-configuration" | "portfolio-configuration" | "oms-configuration" | "account-configuration" | "revision-configuration" | "canvas-focus" | "services-dashboard" | "service-bar-gpt" | "service-qmd" | "service-qmd-history" | "service-news" | "service-sec" | "service-text-embed" | "service-reference" | "service-ibkr";
 export type UiScale = 0.8 | 0.9 | 1 | 1.1 | 1.25;
 
 type LayoutProps = {
@@ -18,56 +18,25 @@ type LayoutProps = {
   topbarStatus?: ReactNode;
 };
 
-const navGroups = [
-  {
-    label: "Trading Workspaces",
-    items: [
-      { key: "real-live-trading" as PageKey, label: "Live", icon: Wifi },
-      { key: "replay-trading" as PageKey, label: "Replay", icon: History },
-      { key: "backtest-trading" as PageKey, label: "Backtest", icon: FlaskConical },
-      { key: "backtest-debug" as PageKey, label: "Debug", icon: Bug },
-      { key: "research-workspace" as PageKey, label: "Research", icon: Microscope }
-    ]
-  },
-  {
-    label: "Canvas Configuration",
-    items: [
-      { key: "canvas-configuration" as PageKey, label: "Canvas", icon: PanelsTopLeft }
-    ]
-  },
-  {
-    label: "Data Configuration",
-    items: [
-      { key: "data-catalog-configuration" as PageKey, label: "Data Catalog", icon: Database },
-      { key: "rule-set-configuration" as PageKey, label: "Rule Sets", icon: BookOpenCheck },
-      { key: "market-discovery-configuration" as PageKey, label: "Market Discovery", icon: ScanSearch },
-    ]
-  },
-  {
-    label: "System Configuration",
-    items: [
-      { key: "trading-action-configuration" as PageKey, label: "Trading Actions", icon: Send },
-      { key: "strategy-configuration" as PageKey, label: "Strategy Studio", icon: GitBranch },
-      { key: "assignment-configuration" as PageKey, label: "Run Plans", icon: Network },
-      { key: "portfolio-configuration" as PageKey, label: "Portfolio & Risk", icon: BriefcaseBusiness },
-      { key: "oms-configuration" as PageKey, label: "OMS & Protection", icon: ShieldCheck },
-      { key: "account-configuration" as PageKey, label: "Accounts & Sessions", icon: UsersRound },
-      { key: "revision-configuration" as PageKey, label: "Approved Releases", icon: BadgeCheck }
-    ]
-  },
-  {
-    label: "System",
-    items: [
-      { key: "services-dashboard" as PageKey, label: "Service Health", icon: ServerCog }
-    ]
-  },
-  {
-    label: "Typography System",
-    items: [
-      { key: "typography-public-sans" as PageKey, label: "Public Sans Roles", icon: Type }
-    ]
-  }
-];
+const NAVIGATION_ICONS = {
+  accounts: UsersRound,
+  backtest: FlaskConical,
+  canvas: PanelsTopLeft,
+  data: Database,
+  debug: Bug,
+  live: Wifi,
+  "market-discovery": ScanSearch,
+  oms: ShieldCheck,
+  portfolio: BriefcaseBusiness,
+  releases: BadgeCheck,
+  replay: History,
+  research: Microscope,
+  "run-plans": Network,
+  services: ServerCog,
+  strategy: GitBranch,
+  "trading-actions": Send,
+  typography: Type,
+} satisfies Record<NavigationIcon, typeof Activity>;
 
 const THEME_STORAGE_KEY = "quant-research-workbench.theme";
 const UI_SCALE_STORAGE_KEY = "quant-research-workbench.ui-scale";
@@ -185,12 +154,12 @@ export function Layout({
             {collapsed ? <ChevronRight size={16} /> : <ChevronLeft size={16} />}
           </button>
           <nav className="sidebar-nav">
-            {navGroups.map((group) => (
+            {NAVIGATION_GROUPS.map((group) => (
               <div className="nav-group" key={group.label}>
                 {!collapsed ? <div className="nav-group-label">{group.label}</div> : null}
                 <div className="nav-group-items">
                   {group.items.map((item) => {
-                    const Icon = item.icon;
+                    const Icon = NAVIGATION_ICONS[item.icon];
                     return (
                       <a
                         aria-current={page === item.key ? "page" : undefined}
@@ -220,21 +189,6 @@ export function Layout({
       </div>
     </div>
   );
-}
-
-function configurationToneForPage(page: PageKey) {
-  if (page === "canvas-configuration") return "canvas";
-  if (page === "data-catalog-configuration" || page === "rule-set-configuration") return "discovery";
-  if (page === "market-discovery-configuration") return "discovery";
-  if (page === "trading-action-configuration") return "strategy";
-  if (page.startsWith("typography-")) return "discovery";
-  if (page === "strategy-configuration") return "strategy";
-  if (page === "assignment-configuration") return "assignments";
-  if (page === "portfolio-configuration") return "portfolio";
-  if (page === "oms-configuration") return "oms";
-  if (page === "account-configuration") return "accounts";
-  if (page === "revision-configuration") return "revisions";
-  return undefined;
 }
 
 function readStoredUiScale() {
