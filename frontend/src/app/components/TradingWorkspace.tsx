@@ -24,6 +24,7 @@ import {
 import { Component, useEffect, useLayoutEffect, useMemo, useRef, useState, type ErrorInfo, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 
+import "./TradingWorkspace.css";
 import { api } from "../../api/client";
 import { migrateLegacyMicrostructureState, type CanvasWorkspaceState } from "../canvasWorkspace";
 import {
