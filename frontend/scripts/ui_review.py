@@ -84,6 +84,72 @@ def service_status_fixture(service_id: str) -> dict[str, Any]:
     }.get(service_id, [
         {"ts_utc": "2026-08-21T21:58:00Z", "status": "completed", "event": "review_activity", "rows": 24, "detail": "Deterministic service activity fixture"},
     ])
+    log_rows = [
+        {"ts_utc": "2026-08-21T21:56:00Z", "level": "info", "event": "review_log", "title": "Review log", "detail": "Structured runtime log fixture", "source": service_id},
+    ]
+    if service_id == "news":
+        log_rows.extend([
+            {
+                "ts_utc": "2026-08-21T21:59:40Z",
+                "level": "info",
+                "event": "publish_completed",
+                "fields": {
+                    "coverage_mode": "live",
+                    "poll_id": "review-poll-12",
+                    "items": [{
+                        "canonical_news_id": "review-news-001",
+                        "inserted_rows": 1,
+                        "provider_article_id": "review-provider-001",
+                        "publish_status": "inserted",
+                        "published_at_utc": "2026-08-21T21:58:00Z",
+                        "quality_flags": [],
+                        "skipped_rows": 0,
+                        "tickers": ["AAPL"],
+                        "title": "AAPL expands deterministic research platform",
+                    }],
+                },
+            },
+            {
+                "ts_utc": "2026-08-21T21:59:30Z",
+                "level": "info",
+                "event": "background_batch_completed",
+                "fields": {
+                    "article_count": 1,
+                    "coverage_mode": "live_background",
+                    "enriched_urls": 1,
+                    "fetch_task_count": 1,
+                    "poll_id": "review-poll-12",
+                    "queue_size": 0,
+                    "wall_seconds": 0.8,
+                    "items": [{
+                        "canonical_news_id": "review-news-001",
+                        "domain_sample": ["example.invalid"],
+                        "external_fetch_status": "downloaded",
+                        "provider_article_id": "review-provider-001",
+                        "requires_enrichment": True,
+                        "tickers": ["AAPL"],
+                        "title": "AAPL expands deterministic research platform",
+                        "url_count": 1,
+                        "url_sample": ["https://example.invalid/review-article"],
+                    }],
+                },
+            },
+            {
+                "ts_utc": "2026-08-21T21:59:20Z",
+                "level": "info",
+                "event": "gap_fill_finished",
+                "fields": {
+                    "chunks": 2,
+                    "coverage_id": "review-coverage-001",
+                    "end_utc": "2026-08-21T21:45:00Z",
+                    "flushed": 2,
+                    "start_utc": "2026-08-21T21:15:00Z",
+                    "status": "completed",
+                    "total_chunks": 2,
+                    "written_rows": 24,
+                },
+            },
+        ])
     return {
         "checked_at_utc": "2026-08-21T22:00:00Z",
         "current_operation": {"phase": "serving", "status": "running", "rows": 128, "detail": "Serving deterministic review workload"},
@@ -91,7 +157,7 @@ def service_status_fixture(service_id: str) -> dict[str, Any]:
         "errors": {},
         "header": {"service": service_id},
         "health": {"running": True, "source": "review_fixture", "host_role": "live"},
-        "logs": {"rows": [{"ts_utc": "2026-08-21T21:56:00Z", "level": "info", "event": "review_log", "title": "Review log", "detail": "Structured runtime log fixture", "source": service_id}]},
+        "logs": {"rows": log_rows},
         "metrics": {"activity_status": "running", "processed": 128, "queued": 2, "filtered": 4, "failed": 0, "ingest_events": 128, "trades_per_sec": 42, "quotes_per_sec": 96, "bar_events": 18, "gap_count": 0, "poll_runs": 12, "gateway_status": "ready", "auth_status": "ready", "keepalive_status": "ready"},
         "online": True,
         "operations": {},
@@ -1791,6 +1857,48 @@ def validate_service_interactions(page: Any, scenario: dict[str, Any], interacti
             modal.wait_for(state="hidden", timeout=5000)
         except Exception:
             issues.append("Escape does not close the inserted News detail dialog")
+        history_dialogs = (
+            (
+                ".news-publish-card:not(.news-enrichment-card):not(.news-coverage-card) .news-publish-history-table tbody tr",
+                "News Publish Detail",
+                "publish",
+            ),
+            (
+                ".news-enrichment-card .news-enrichment-history-table tbody tr",
+                "News Enrichment Detail",
+                "enrichment",
+            ),
+            (
+                ".news-coverage-card .news-coverage-history-table tbody tr",
+                "Coverage / Gap Fill Detail",
+                "coverage",
+            ),
+        )
+        for selector, dialog_name, evidence_name in history_dialogs:
+            history_rows = page.locator(selector)
+            if not history_rows.count():
+                issues.append(f"News {evidence_name} history has no reviewable rows")
+                continue
+            history_rows.first.focus()
+            history_rows.first.press("Enter")
+            history_modal = page.get_by_role("dialog", name=dialog_name)
+            try:
+                history_modal.wait_for(state="visible", timeout=5000)
+            except Exception:
+                issues.append(f"News {evidence_name} row does not open its detail dialog")
+                continue
+            if interaction_screenshot:
+                page.screenshot(
+                    path=str(interaction_screenshot.with_name(
+                        interaction_screenshot.stem + f"__{evidence_name}.png"
+                    )),
+                    full_page=True,
+                )
+            page.keyboard.press("Escape")
+            try:
+                history_modal.wait_for(state="hidden", timeout=5000)
+            except Exception:
+                issues.append(f"Escape does not close the News {evidence_name} detail dialog")
         return issues
     if scenario["page"] == "service-sec":
         rows = page.locator(".news-today-table tbody tr")
