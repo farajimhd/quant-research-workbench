@@ -15,7 +15,6 @@ import type {
   ServiceReadinessDimension,
   ServiceRuntimeLogRow,
   ServiceStatusPayload,
-  ServiceStatusTone,
   WorkloadBudgetPayload,
 } from "../features/services/contracts";
 import { ServiceConfigurationPanel } from "../features/services/ServiceConfigurationPanel";
@@ -44,6 +43,19 @@ import {
   statusInfo,
 } from "../features/services/statusPresentation";
 import { useServicesStatus } from "../features/services/useServicesStatus";
+import {
+  arrayRows,
+  compactJson,
+  compactWorkDetail,
+  firstString,
+  firstTimestamp,
+  formatValue,
+  isRecord,
+  normalizeRow,
+  normalizedStatus,
+  workStatusClass,
+  workStatusRank,
+} from "../features/services/workPresentation";
 import {
   EXCHANGE_TIME_ZONE,
   VANCOUVER_TIME_ZONE,
@@ -6049,23 +6061,6 @@ function latestWorkTimestamp(rows: ServiceWorkRow[]) {
   return latest?.label ?? "";
 }
 
-function firstTimestamp(row: Record<string, unknown>) {
-  const raw = firstString(row, ["updated_at_utc", "last_seen_at_utc", "last_run_at_utc", "completed_at_utc", "started_at_utc", "last_poll_at_utc", "checked_at_utc", "ts_utc", "time_utc", "updated_at", "last_seen", "last_run", "completed_at", "started_at", "last_poll_at", "checked_at", "time", "since"]);
-  if (!raw || raw === "-") return { label: "-", value: undefined };
-  const parsed = parseServiceTimestamp(raw);
-  if (!Number.isFinite(parsed)) return { label: raw.length > 28 ? `${raw.slice(0, 25)}...` : raw, value: undefined };
-  return { label: formatLogTime(raw), value: parsed };
-}
-
-function firstString(row: Record<string, unknown>, keys: string[]) {
-  for (const key of keys) {
-    const value = row[key];
-    if (value === undefined || value === null || value === "") continue;
-    return formatValue(key, value);
-  }
-  return "";
-}
-
 function workProgressText(row: Record<string, unknown>) {
   const progress = row.progress ?? row.percent ?? row.progress_pct ?? row.completion_pct;
   if (progress !== undefined && progress !== null && progress !== "") {
@@ -6078,15 +6073,6 @@ function workProgressText(row: Record<string, unknown>) {
   return "-";
 }
 
-function compactWorkDetail(row: Record<string, unknown>) {
-  const omitted = new Set(["area", "category", "completed", "completion_pct", "count", "database", "done", "expected", "finished", "interval", "item", "kind", "label", "name", "next", "next_poll", "next_run", "percent", "phase", "processed", "processed_rows", "progress", "progress_pct", "result", "role", "row_count", "rows", "schedule", "sink", "source", "state", "status", "table", "target", "targets", "task", "total", "type", "window", "work", "written_rows"]);
-  const parts = Object.entries(row)
-    .filter(([key, value]) => !omitted.has(key) && value !== undefined && value !== null && value !== "")
-    .slice(0, 4)
-    .map(([key, value]) => `${displayName(key)} ${formatValue(key, value)}`);
-  return parts.length ? parts.join("; ") : "-";
-}
-
 function dedupeWorkRows(rows: ServiceWorkRow[]) {
   const seen = new Set<string>();
   const output: ServiceWorkRow[] = [];
@@ -6097,61 +6083,6 @@ function dedupeWorkRows(rows: ServiceWorkRow[]) {
     output.push(row);
   }
   return output;
-}
-
-function normalizedStatus(status: string) {
-  return String(status || "").toLowerCase().replace(/[^a-z0-9]+/g, "_");
-}
-
-function workStatusClass(status: string): ServiceStatusTone {
-  const normalized = normalizedStatus(status);
-  if (/failed|error|blocked|critical|offline|not_started|unreachable/.test(normalized)) return "error";
-  if (/warn|degraded|retry|queued|pending|waiting|attention/.test(normalized)) return "warn";
-  if (/running|working|active|loading|polling|publishing|processing|ingesting|syncing|repairing|catching_up|preflight|starting/.test(normalized)) return "active";
-  if (/complete|completed|ok|ready|success|healthy|observed/.test(normalized)) return "ok";
-  if (/idle|noop|no_op|not_reported/.test(normalized)) return "idle";
-  return "waiting";
-}
-
-function workStatusRank(status: string) {
-  const className = workStatusClass(status);
-  if (className === "error") return 0;
-  if (className === "warn") return 1;
-  if (className === "active") return 2;
-  if (className === "waiting") return 3;
-  if (className === "idle") return 4;
-  return 4;
-}
-
-function arrayRows(value: unknown) {
-  if (!Array.isArray(value)) return [];
-  return value.filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === "object" && !Array.isArray(item)).map(normalizeRow);
-}
-
-function normalizeRow(row: Record<string, unknown>) {
-  const normalized: Record<string, unknown> = {};
-  for (const [key, value] of Object.entries(row)) {
-    normalized[key] = typeof value === "object" && value !== null ? compactJson(value) : value;
-  }
-  return normalized;
-}
-
-function compactJson(value: unknown) {
-  try {
-    return JSON.stringify(value);
-  } catch {
-    return String(value);
-  }
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
-}
-
-function formatValue(key: string, value: unknown) {
-  if (typeof value === "number") return formatCell(key, value);
-  if (typeof value === "string") return value || "-";
-  return compactJson(value);
 }
 
 function debugObjectValue(value: unknown) {
