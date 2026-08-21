@@ -19,6 +19,8 @@ import type {
 } from "../features/services/contracts";
 import { ServiceConfigurationPanel } from "../features/services/ServiceConfigurationPanel";
 import { ServiceDatabaseTableState } from "../features/services/ServiceDatabaseTableState";
+import { DebugObjectBlock } from "../features/services/DebugObjectBlock";
+import { ServiceDependenciesPanel } from "../features/services/ServiceDependenciesPanel";
 import { ServiceErrorLogPanel } from "../features/services/ServiceErrorLogPanel";
 import {
   runtimeLogRows,
@@ -337,7 +339,7 @@ function ServiceDetail({ pageError, service }: { pageError: string; service: Ser
       ) : null}
       {dependenciesOpen ? (
         <Modal className="service-dependencies-modal-panel" onClose={() => setDependenciesOpen(false)} title={`${service.registry.label} Dependencies`}>
-          <ServiceDependenciesPanel service={service} />
+          <ServiceDependenciesPanel service={service} setupRows={serviceSetupRows(service)} />
         </Modal>
       ) : null}
       {service.registry.id === "news" ? (
@@ -2916,24 +2918,6 @@ function NewsEnrichmentArticleDebugCard({ item }: { item: NewsEnrichmentArticleR
   );
 }
 
-function DebugObjectBlock({ title, value }: { title: string; value: Record<string, unknown> }) {
-  const rows = Object.entries(value || {});
-  if (!rows.length) return null;
-  return (
-    <section className="debug-object-block">
-      <h4>{title}</h4>
-      <dl className="debug-object-grid">
-        {rows.map(([key, item]) => (
-          <div className={debugObjectValueWide(item) ? "wide" : ""} key={key}>
-            <dt>{displayName(key)}</dt>
-            <dd>{debugObjectValue(item)}</dd>
-          </div>
-        ))}
-      </dl>
-    </section>
-  );
-}
-
 function NewsCoverageDetailModal({ row }: { row: NewsCoverageHistoryRow }) {
   const statusClass = workStatusClass(row.status);
   return (
@@ -5408,214 +5392,6 @@ function WorkPlanSummaryItem({ label, title = "", tone = "", value }: { label: s
   );
 }
 
-function ServiceDependenciesPanel({ service }: { service: ServiceStatusPayload }) {
-  const [selectedRow, setSelectedRow] = useState<ServiceDependencyDisplayRow | null>(null);
-  const snapshot = service.snapshot ?? {};
-  const dependencyRows = arrayRows(snapshot.dependencies);
-  const queueRows = arrayRows(snapshot.queues);
-  const sourceRows = arrayRows(snapshot.sources_sinks);
-  const configuredTableRows = arrayRows(snapshot.configured_tables);
-  const setupRows = serviceSetupRows(service).map((row) => ({
-    detail: row.detail,
-    last: row.lastAt,
-    name: row.name,
-    progress: row.progress,
-    rows: row.rows,
-    status: displayName(row.status),
-    type: displayName(row.kind),
-  }));
-  const sections: ServiceDependencySectionPayload[] = [
-    {
-      description: "Provider credentials, storage paths, ClickHouse access, market calendar, and other startup checks.",
-      empty: "No dependency checks reported.",
-      id: "dependency",
-      rows: dependencyRows.map((row) => dependencyDisplayRow(row, "dependency")),
-      title: "Dependency Checks",
-    },
-    {
-      description: "Configured tables and contracts the service expects before live or background work starts.",
-      empty: "No setup or contract rows reported.",
-      id: "setup",
-      rows: setupRows.map((row) => dependencyDisplayRow(row, "setup")),
-      title: "Setup Contracts",
-    },
-    {
-      description: "Internal queue depth, active workers, pending work, and drain state.",
-      empty: "No queues reported.",
-      id: "queue",
-      rows: queueRows.map((row) => dependencyDisplayRow(row, "queue")),
-      title: "Queues",
-    },
-    {
-      description: "External providers, input sources, output sinks, and their last reported state.",
-      empty: "No sources or sinks reported.",
-      id: "source",
-      rows: sourceRows.map((row) => dependencyDisplayRow(row, "source")),
-      title: "Sources And Sinks",
-    },
-    {
-      description: "Database tables this service reads, writes, validates, or publishes.",
-      empty: "No configured tables reported.",
-      id: "table",
-      rows: configuredTableRows.map((row) => dependencyDisplayRow(row, "table")),
-      title: "Configured Tables",
-    },
-  ];
-  const issueCount = sections.reduce((total, section) => total + section.rows.filter((row) => ["error", "warn"].includes(workStatusClass(row.status))).length, 0);
-  const healthyCount = sections.reduce((total, section) => total + section.rows.filter((row) => ["ok", "active"].includes(workStatusClass(row.status))).length, 0);
-  const rowCount = sections.reduce((total, section) => total + section.rows.length, 0);
-  return (
-    <div className="service-dependencies-panel">
-      <div className="service-dependencies-hero">
-        <div>
-          <span className="service-dependencies-kicker">Dependency Readiness</span>
-          <h3>{service.registry.label}</h3>
-          <p>Operational checks that determine whether this gateway can safely reach providers, storage, and database tables.</p>
-        </div>
-        <ServiceStatusBadge online={service.online} status={issueCount ? "degraded" : "running"} />
-      </div>
-      <div className="service-dependencies-summary">
-        <DependencySummaryItem label="Sections" value={String(sections.length)} />
-        <DependencySummaryItem label="Rows" value={formatCompactNumber(rowCount)} />
-        <DependencySummaryItem label="Healthy" tone="ok" value={formatCompactNumber(healthyCount)} />
-        <DependencySummaryItem label="Issues" tone={issueCount ? "warn" : "ok"} value={formatCompactNumber(issueCount)} />
-      </div>
-      <div className="service-dependencies-sections">
-        {sections.map((section) => (
-          <ServiceDependencySection key={section.id} onSelect={setSelectedRow} section={section} />
-        ))}
-      </div>
-      {selectedRow ? (
-        <Modal className="service-dependency-detail-modal-panel" onClose={() => setSelectedRow(null)} title="Dependency Row Detail">
-          <ServiceDependencyDetail row={selectedRow} />
-        </Modal>
-      ) : null}
-    </div>
-  );
-}
-
-type ServiceDependencyDisplayRow = {
-  detail: string;
-  kind: string;
-  last: string;
-  metric: string;
-  name: string;
-  raw: Record<string, unknown>;
-  status: string;
-};
-
-type ServiceDependencySectionPayload = {
-  description: string;
-  empty: string;
-  id: string;
-  rows: ServiceDependencyDisplayRow[];
-  title: string;
-};
-
-function ServiceDependencySection({ onSelect, section }: { onSelect: (row: ServiceDependencyDisplayRow) => void; section: ServiceDependencySectionPayload }) {
-  const issueCount = section.rows.filter((row) => ["error", "warn"].includes(workStatusClass(row.status))).length;
-  const status = issueCount ? "warning" : section.rows.length ? "ok" : "not reported";
-  return (
-    <section className={`service-dependencies-section ${workStatusClass(status)}`}>
-      <div className="service-dependencies-section-header">
-        <div>
-          <h3>{section.title}</h3>
-          <p>{section.description}</p>
-        </div>
-        <div className="service-dependencies-section-badges">
-          <span className={`service-work-status ${workStatusClass(status)}`}>{displayName(status)}</span>
-          <span>{section.rows.length} row{section.rows.length === 1 ? "" : "s"}</span>
-        </div>
-      </div>
-      <div className="service-dependency-row-list">
-        {section.rows.length ? section.rows.map((row, index) => (
-          <button className={`service-dependency-row ${workStatusClass(row.status)}`} key={`${section.id}-${row.name}-${index}`} onClick={() => onSelect(row)} type="button">
-            <div>
-              <strong title={row.name}>{row.name}</strong>
-              <span>{displayName(row.kind)}</span>
-            </div>
-            <span className={`service-work-status ${workStatusClass(row.status)}`}>{displayName(row.status)}</span>
-            <span title={row.metric}>{row.metric}</span>
-            <span title={row.last}>{row.last}</span>
-            <p title={row.detail}>{row.detail}</p>
-          </button>
-        )) : (
-          <div className="service-dependency-empty">{section.empty}</div>
-        )}
-      </div>
-    </section>
-  );
-}
-
-function ServiceDependencyDetail({ row }: { row: ServiceDependencyDisplayRow }) {
-  const statusClass = workStatusClass(row.status);
-  return (
-    <div className="service-dependency-detail">
-      <div className={`service-dependency-detail-heading ${statusClass}`}>
-        <div>
-          <span>{displayName(row.kind)}</span>
-          <strong>{row.name}</strong>
-        </div>
-        <span className={`service-work-status ${statusClass}`}>{displayName(row.status)}</span>
-      </div>
-      <dl className="service-log-detail-grid">
-        <div>
-          <dt>Status</dt>
-          <dd>{displayName(row.status)}</dd>
-        </div>
-        <div>
-          <dt>Metric</dt>
-          <dd>{row.metric}</dd>
-        </div>
-        <div>
-          <dt>Last</dt>
-          <dd>{row.last}</dd>
-        </div>
-        <div className="wide">
-          <dt>Detail</dt>
-          <dd>{row.detail}</dd>
-        </div>
-      </dl>
-      <DebugObjectBlock title="Raw Dependency Payload" value={row.raw} />
-    </div>
-  );
-}
-
-function DependencySummaryItem({ label, tone = "", value }: { label: string; tone?: string; value: string }) {
-  return (
-    <div className={tone ? `service-dependencies-summary-item ${tone}` : "service-dependencies-summary-item"}>
-      <span>{label}</span>
-      <strong title={value}>{value || "-"}</strong>
-    </div>
-  );
-}
-
-function dependencyDisplayRow(row: Record<string, unknown>, fallbackKind: string): ServiceDependencyDisplayRow {
-  const status = firstString(row, ["status", "state", "result", "level"]) || (dependencyModalRowHasIssue(row) ? "warning" : "ok");
-  const timestamp = firstTimestamp(row);
-  return {
-    detail: humanizeWorkDetail(firstString(row, ["message", "detail", "details", "description", "notes", "last", "latest"]) || compactWorkDetail(row)),
-    kind: firstString(row, ["kind", "type", "category", "role"]) || fallbackKind,
-    last: timestamp.label,
-    metric: dependencyMetric(row),
-    name: firstString(row, ["name", "task", "work", "item", "source", "sink", "table", "database", "label", "area", "queue_worker"]) || fallbackKind,
-    raw: row,
-    status,
-  };
-}
-
-function dependencyMetric(row: Record<string, unknown>) {
-  const metric = firstString(row, ["wall_seconds", "seconds", "depth", "active", "pending", "progress", "rows", "row_count", "count"]);
-  return metric || "-";
-}
-
-function dependencyModalRowHasIssue(row: Record<string, unknown>) {
-  return ["status", "state", "result", "level"].some((key) => {
-    const value = normalizedStatus(String(row[key] || ""));
-    return /failed|error|warn|degraded|blocked|unreachable/.test(value);
-  });
-}
-
 function serviceWorkRows(service: ServiceStatusPayload): ServiceWorkRow[] {
   const snapshot = service.snapshot ?? {};
   const rows: ServiceWorkRow[] = [];
@@ -6083,22 +5859,6 @@ function dedupeWorkRows(rows: ServiceWorkRow[]) {
     output.push(row);
   }
   return output;
-}
-
-function debugObjectValue(value: unknown) {
-  if (Array.isArray(value)) {
-    if (!value.length) return "-";
-    if (value.every((item) => typeof item !== "object" || item === null)) return value.map(String).join(", ");
-    return JSON.stringify(value, null, 2);
-  }
-  if (isRecord(value)) return JSON.stringify(value, null, 2);
-  if (value === undefined || value === null || value === "") return "-";
-  return String(value);
-}
-
-function debugObjectValueWide(value: unknown) {
-  if (Array.isArray(value) || isRecord(value)) return true;
-  return String(value ?? "").length > 100;
 }
 
 function fleetWorkSummary(services: ServiceStatusPayload[]) {
