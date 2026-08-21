@@ -176,6 +176,76 @@ def news_detail_fixture() -> dict[str, Any]:
     }
 
 
+def sec_today_fixture() -> dict[str, Any]:
+    row = {
+        "accepted_at_utc": "2026-08-21T21:57:00Z",
+        "acceptance_datetime_raw": "20260821175700",
+        "accession_number": "0000320193-26-000001",
+        "accession_number_compact": "000032019326000001",
+        "activity_status": "filing",
+        "cik": "0000320193",
+        "company_name": "Apple Inc.",
+        "document_rows": 1,
+        "document_text_ready_rows": 1,
+        "feed_status": "completed",
+        "filing_date": "2026-08-21",
+        "filing_detail_url": "https://example.invalid/sec/filing",
+        "filing_id": "review-filing-001",
+        "form_type": "8-K",
+        "identity_bridge_count": 1,
+        "identity_tickers": ["AAPL"],
+        "issuer_name": "Apple Inc.",
+        "primary_currency_code": "USD",
+        "primary_document": "review-8k.htm",
+        "primary_document_rows": 1,
+        "primary_document_url": "https://example.invalid/sec/review-8k.htm",
+        "primary_exchange_code": "NASDAQ",
+        "primary_ticker": "AAPL",
+        "report_date": "2026-08-21",
+        "text_chars": 260,
+        "text_rows": 1,
+        "text_status": "ready",
+        "xbrl_fact_rows": 1,
+        "xbrl_frame_rows": 0,
+    }
+    return {
+        "database": "review",
+        "filing_table": "sec_filings",
+        "document_table": "sec_filing_document_v2",
+        "text_table": "sec_filing_text_v2",
+        "rows": [row],
+        "sort": "desc",
+        "summary": {"document_rows": 1, "latest": row["accepted_at_utc"], "loaded_rows": 1, "text_rows": 1, "total_filings": 1, "with_documents": 1, "with_text": 1, "with_xbrl": 1, "xbrl_fact_rows": 1, "xbrl_frame_rows": 0},
+        "histogram": {"bin_seconds": 900, "rows": [{"bucket_utc": "2026-08-21T21:45:00Z", "document_rows": 1, "filing_only_rows": 0, "text_rows": 1, "total_rows": 1, "xbrl_rows": 1}], "window_end_utc": "2026-08-21T22:00:00Z", "window_start_utc": "2026-08-21T13:30:00Z"},
+        "window_end_utc": "2026-08-21T22:00:00Z",
+        "window_start_utc": "2026-08-21T13:30:00Z",
+    }
+
+
+def sec_detail_fixture() -> dict[str, Any]:
+    filing_row = sec_today_fixture()["rows"][0] | {"accepted_at_source": "SEC submissions", "source_file_name": "review-submission.json"}
+    return {
+        "accession_number": filing_row["accession_number"],
+        "cik": filing_row["cik"],
+        "database": "review",
+        "filing_row": filing_row,
+        "document_rows": [{
+            "byte_size": 4096, "content_format": "html", "description": "Current report", "document_id": "review-document-001",
+            "document_name": "review-8k.htm", "document_role": "primary", "document_type": "8-K", "document_url": filing_row["primary_document_url"],
+            "extraction_status": "completed", "file_extension": "htm", "filing_id": filing_row["filing_id"], "has_normalized_text": 1,
+            "mime_type": "text/html", "normalizer_version": "ui-review-v1", "payload_char_count": 320, "sequence_number": 1,
+        }],
+        "text_rows": [{
+            "document_id": "review-document-001", "source_archive_member": "review-8k.htm", "text": "ITEM 8.01 OTHER EVENTS\n\nThis deterministic filing text preserves canonical source evidence and document lineage.\n\nThe review fixture verifies readable SEC presentation.",
+            "text_char_count": 156, "text_kind": "primary_document", "text_sha256": "review-text-sha256",
+        }],
+        "company_fact_rows": [{"tag": "EntityCommonStockSharesOutstanding", "value": 1000}],
+        "frame_rows": [],
+        "identity_rows": [{"cik": filing_row["cik"], "ticker": "AAPL", "exchange_code": "NASDAQ"}],
+        "identity_summary": {"identity_bridge_count": 1, "issuer_name": "Apple Inc.", "primary_currency_code": "USD", "primary_exchange_code": "NASDAQ", "primary_ticker": "AAPL"},
+    }
+
+
 def chart_history_fixture(session_date: str, symbol: str = "AAPL") -> dict[str, Any]:
     start = datetime.fromisoformat(f"{session_date}T10:00:00+00:00")
     history: list[dict[str, Any]] = []
@@ -1704,6 +1774,37 @@ def validate_service_interactions(page: Any, scenario: dict[str, Any], interacti
         except Exception:
             issues.append("Escape does not close the inserted News detail dialog")
         return issues
+    if scenario["page"] == "service-sec":
+        rows = page.locator(".news-today-table tbody tr")
+        if not rows.count():
+            return ["SEC filings table has no reviewable rows"]
+        rows.first.focus()
+        rows.first.press("Enter")
+        modal = page.get_by_role("dialog", name="SEC Filing Detail")
+        try:
+            modal.wait_for(state="visible", timeout=5000)
+        except Exception:
+            return ["SEC filing row does not open its detail dialog"]
+        readable_body = modal.locator(".sec-filing-readable-body")
+        if readable_body.count() != 1 or "deterministic filing text" not in readable_body.inner_text().lower():
+            issues.append("SEC detail does not render the normalized readable filing body")
+        if modal.locator(".sec-filing-document-card").count() != 1:
+            issues.append("SEC detail does not reconcile its filing document with readable text")
+        filing_parent = modal.locator(".sec-filing-data-sections details").filter(has_text="Filing Parent Row")
+        if filing_parent.count() != 1:
+            issues.append("SEC detail omits its filing parent source row")
+        else:
+            filing_parent.evaluate("element => { element.open = true; }")
+            if filing_parent.locator(".news-full-metadata-table").count() != 1:
+                issues.append("SEC filing parent detail omits the shared metadata table")
+        if interaction_screenshot:
+            page.screenshot(path=str(interaction_screenshot), full_page=True)
+        page.keyboard.press("Escape")
+        try:
+            modal.wait_for(state="hidden", timeout=5000)
+        except Exception:
+            issues.append("Escape does not close the SEC filing detail dialog")
+        return issues
     activity = page.locator(".service-activity-table")
     if activity.count() != 1:
         return ["service detail does not expose exactly one activity table"]
@@ -1892,6 +1993,9 @@ def capture(args: argparse.Namespace) -> int:
                                 "window_start_utc": "2026-08-21T13:30:00Z",
                             })),
                         )
+                    if service_id == "sec":
+                        page.route("**/api/services/sec/today?**", fulfill_json(json.dumps(sec_today_fixture())))
+                        page.route("**/api/services/sec/detail/**", fulfill_json(json.dumps(sec_detail_fixture())))
                 if args.canvas_session_date:
                     page.route(
                         "**/api/trading/canvas-context",
@@ -2064,7 +2168,7 @@ def capture(args: argparse.Namespace) -> int:
                         f"{screenshot_path.stem}__service-detail.png"
                     ) if (
                         args.stub_service_status
-                        and scenario["page"] in {"service-news", "service-qmd"}
+                        and scenario["page"] in {"service-news", "service-qmd", "service-sec"}
                         and scenario["theme"] == "light"
                         and scenario["scale"] == 1.0
                         and scenario["viewport_name"] == "normal"
