@@ -205,10 +205,14 @@ export function latestLiveChartRow(chart: { row: Record<string, unknown>; ticker
   return { ...chart.row, ...(scannerRows.find(matchesTicker) ?? {}), ...(marketRows.find(matchesTicker) ?? {}) };
 }
 
-export function quoteFromRow(row: Record<string, unknown>, fallbackOpen: number) {
+export function quoteFromRow(
+  row: Record<string, unknown>,
+  fallbackOpen: number,
+  { preferMarketQuote = true }: { preferMarketQuote?: boolean } = {},
+) {
   const last = fallbackOpen || numberField(row, "current_open") || numberField(row, "open") || numberField(row, "last_close");
-  const ask = numberField(row, "ask") || last;
-  const bid = numberField(row, "bid") || Math.max(0, ask - 0.01);
+  const ask = preferMarketQuote ? numberField(row, "ask") || last : last;
+  const bid = preferMarketQuote ? numberField(row, "bid") || Math.max(0, ask - 0.01) : Math.max(0, ask - 0.01);
   return {
     ask,
     bid,

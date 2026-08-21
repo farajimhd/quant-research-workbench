@@ -31,7 +31,7 @@ import {
 import type { Time } from "lightweight-charts";
 
 import { api, query } from "../api/client";
-import { ChartPanel, type ChartCatalogItem, type ChartDisplayItem, type ChartPayload, type LiveEntryLine } from "../app/components/ChartPanel";
+import { ChartPanel, type ChartPayload, type LiveEntryLine } from "../app/components/ChartPanel";
 import { DataTable, type BackendQueryPreset, type BackendTableQuery } from "../app/components/DataTable";
 import { PageIntro } from "../app/components/PageIntro";
 import { Tabs } from "../app/components/Tabs";
@@ -46,50 +46,37 @@ import {
   type WorkspaceWindowId as WindowId,
   type WorkspaceWindowLayout as WindowLayout,
 } from "../app/components/WorkspaceCanvas";
-
-type Scope = {
-  processed_root: string;
-  raw_root: string;
-  spread_root: string;
-  start_date: string;
-  end_date: string;
-};
-
-type RecordRow = {
-  columns: string[];
-  exists: boolean;
-  group: string;
-  key: string;
-  path: string;
-  session_date: string;
-  timeframe: string;
-};
-
-type ReviewPayload = {
-  records: RecordRow[];
-};
-
-type CatalogPayload = {
-  columns: ChartCatalogItem[];
-  displayItems?: ChartDisplayItem[];
-};
-
-type ScannerSnapshot = {
-  bar_time: string;
-  columns: string[];
-  feature_groups: string[];
-  reason?: string;
-  row_count: number;
-  rows: Record<string, unknown>[];
-  session_date: string;
-  timeframe: string;
-};
-
-type SignalRow = Record<string, unknown>;
-
-type ScannerSnapshotPayload = {
-  snapshot: ScannerSnapshot;
-};
+import type {
+  CatalogPayload,
+  RecordRow,
+  ReviewPayload,
+  ScannerSnapshot,
+  ScannerSnapshotPayload,
+  Scope,
+  SignalRow,
+} from "../features/live-trading/contracts";
+import {
+  buildMarketStateRow,
+  buildMarketStateRows,
+  emptyScannerQuery,
+  enrichLiveCandidate,
+  latestLiveChartRow,
+  marketStateTableColumns,
+  normalizeLiveScannerQuery,
+  quoteFromRow,
+  rowMatchesBackendQuery,
+  scannerQueryFromConditions,
+} from "../features/live-trading/scanner";
+import {
+  addClockMinutes,
+  clockTimestampSeconds,
+  clockToMinutes,
+  dateOffset,
+  isAfterClock,
+  previousSessionDate,
+  rowTimestampSeconds,
+  type TradingSession,
+} from "../features/live-trading/time";
 
 type LivePreloadCheck = {
   expected_sessions: number;
@@ -149,11 +136,6 @@ type LiveNewsPayload = {
   bar_time: string;
   by_ticker: Record<string, LiveNewsSummary>;
   session_date: string;
-};
-
-type TradingSession = {
-  barTime: string;
-  sessionDate: string;
 };
 
 type ScannerQueryGroup = {
@@ -1710,7 +1692,7 @@ function LiveChartWindow({
     chartOpenAtTime(mainPayload, selectedTime) ||
     numberValue(liveRow, "current_open") ||
     numberValue(liveRow, "open");
-  const quote = quoteFromRow(liveRow, selectedOpen);
+  const quote = quoteFromRow(liveRow, selectedOpen, { preferMarketQuote: false });
   const position = positions.find((row) => row.symbol === chart.ticker);
   const availableCash = availableCashFromState(positions, trades);
   const liveEntryLine = buildLiveEntryLine(position, quote.bid);
@@ -2497,108 +2479,6 @@ function startPreloadProgress(preloadStatus: LivePreloadPayload | null) {
   };
 }
 
-function scannerQueryFromConditions(conditions: BackendTableQuery["conditions"]): BackendTableQuery {
-  return {
-    conditions,
-    matchMode: "all",
-    sortColumn: "last_return_5",
-    sortDirection: "desc",
-  };
-}
-
-function emptyScannerQuery(): BackendTableQuery {
-  return { conditions: [], matchMode: "all", sortDirection: "asc" };
-}
-
-function normalizeLiveScannerQuery(query: BackendTableQuery | null): BackendTableQuery | null {
-  if (!query) return null;
-  return {
-    ...query,
-    conditions: (query.conditions ?? []).map((condition) => ({
-      ...condition,
-      column: condition.column === "last_5m_return" ? "last_return_5" : condition.column,
-    })),
-    sortColumn: query.sortColumn === "last_5m_return" ? "last_return_5" : query.sortColumn,
-  };
-}
-
-function rowMatchesBackendQuery(row: Record<string, unknown>, query: BackendTableQuery | null) {
-  const conditions = query?.conditions ?? [];
-  if (!conditions.length) return true;
-  const results = conditions.map((condition) => rowMatchesBackendCondition(row, condition));
-  return (query?.matchMode ?? "all") === "any" ? results.some(Boolean) : results.every(Boolean);
-}
-
-function rowMatchesBackendCondition(row: Record<string, unknown>, condition: BackendTableQuery["conditions"][number]) {
-  const column = condition.column === "last_5m_return" ? "last_return_5" : condition.column;
-  const value = row[column];
-  const operator = condition.operator ?? "contains";
-  if (operator === "is_null") return isBlankLiveValue(value);
-  if (operator === "is_not_null") return !isBlankLiveValue(value);
-  if (isBlankLiveValue(value)) return false;
-  if (operator === "contains" || operator === "starts_with" || operator === "ends_with") {
-    const left = String(value).toLowerCase();
-    const right = String(condition.value ?? "").toLowerCase();
-    if (!right) return false;
-    if (operator === "contains") return left.includes(right);
-    if (operator === "starts_with") return left.startsWith(right);
-    return left.endsWith(right);
-  }
-  const leftNumber = Number(value);
-  const rightNumber = Number(condition.value);
-  if (Number.isFinite(leftNumber) && Number.isFinite(rightNumber)) {
-    if (operator === "eq") return leftNumber === rightNumber;
-    if (operator === "ne") return leftNumber !== rightNumber;
-    if (operator === "gt") return leftNumber > rightNumber;
-    if (operator === "gte") return leftNumber >= rightNumber;
-    if (operator === "lt") return leftNumber < rightNumber;
-    if (operator === "lte") return leftNumber <= rightNumber;
-    if (operator === "between") {
-      const secondaryNumber = Number(condition.valueSecondary);
-      if (!Number.isFinite(secondaryNumber)) return false;
-      const lower = Math.min(rightNumber, secondaryNumber);
-      const upper = Math.max(rightNumber, secondaryNumber);
-      return leftNumber >= lower && leftNumber <= upper;
-    }
-  }
-  const leftText = String(value);
-  const rightText = String(condition.value ?? "");
-  if (operator === "eq") return leftText === rightText;
-  if (operator === "ne") return leftText !== rightText;
-  return false;
-}
-
-function isBlankLiveValue(value: unknown) {
-  return value === null || value === undefined || value === "" || (typeof value === "number" && !Number.isFinite(value));
-}
-
-function buildMarketStateRows(rows: Record<string, unknown>[]): Record<string, unknown>[] {
-  const marketRows = rows.map(buildMarketStateRow);
-  const transactionValues = sortedPositiveValues(marketRows.map((row) => numberValue(row, "last_transactions")));
-  const dollarVolumeValues = sortedPositiveValues(marketRows.map((row) => numberValue(row, "last_bar_dollar_volume")));
-  return marketRows
-    .map((row) => ({
-      ...row,
-      last_dollar_volume_market_strength: percentileRank(numberValue(row, "last_bar_dollar_volume"), dollarVolumeValues),
-      last_transactions_market_strength: percentileRank(numberValue(row, "last_transactions"), transactionValues),
-    }))
-    .sort((a, b) => numberValue(b, "last_day_volume_so_far") - numberValue(a, "last_day_volume_so_far"));
-}
-
-function buildMarketStateRow(row: Record<string, unknown>): Record<string, unknown> {
-  const dayOpen = numberValue(row, "last_day_open");
-  const dayHigh = numberValue(row, "last_day_high_so_far");
-  const currentOpen = numberValue(row, "current_open") || numberValue(row, "open");
-  const lastClose = numberValue(row, "last_close");
-  const currentReference = currentOpen || lastClose;
-  return {
-    ...row,
-    last_bar_dollar_volume: currentReference > 0 ? numberValue(row, "last_volume") * currentReference : null,
-    last_day_current_change_pct: dayOpen > 0 && currentReference > 0 ? (currentReference / dayOpen) - 1 : null,
-    last_day_max_change_pct: dayOpen > 0 && dayHigh > 0 ? (dayHigh / dayOpen) - 1 : null,
-  };
-}
-
 function appendNewsColumns(columns: string[]) {
   const newsColumns = ["live_news_recency", "live_news_count", "live_news_latest_title"];
   return [...columns, ...newsColumns.filter((column) => !columns.includes(column))];
@@ -2626,55 +2506,6 @@ function mergeLiveNews(row: Record<string, unknown>, payload: LiveNewsPayload | 
     live_news_latest_title: summary.live_news_latest_title ?? "",
     live_news_recency: summary.live_news_recency ?? "none",
     live_news_recent: Boolean(summary.live_news_recent),
-  };
-}
-
-function enrichLiveCandidate(row: Record<string, unknown>, queryName: string): Record<string, unknown> {
-  const currentOpen = numberValue(row, "current_open") || numberValue(row, "open");
-  const lastVwap = numberValue(row, "last_vwap");
-  const lastClose = numberValue(row, "last_close");
-  const lastOpen = numberValue(row, "last_open");
-  const dayHigh = numberValue(row, "last_day_high_so_far");
-  const lastLow = numberValue(row, "last_low");
-  const last5mReturn = numberValue(row, "last_return_5") || numberValue(row, "last_5m_return");
-  const transactions = numberValue(row, "last_transactions");
-  const txRatio = numberValue(row, "last_transactions_vs_prior_3");
-  const bvd = numberValue(row, "last_bearish_volume_divergence_score");
-  const aboveVwap = lastVwap > 0 && currentOpen > lastVwap;
-  const breakingBody = Boolean(row.current_open_above_last_2_body_high);
-  const nearDayHigh = dayHigh > 0 && currentOpen >= dayHigh * 0.995;
-  const lastRed = lastClose > 0 && lastOpen > 0 && lastClose < lastOpen;
-  const extendedVwap = lastVwap > 0 ? (currentOpen / lastVwap) - 1 : 0;
-  const reasons = [
-    queryName || "Query match",
-    `5m ${percent(last5mReturn)}`,
-    `${integer(transactions)} tx`,
-    `${number(txRatio, 1)}x tx`,
-    aboveVwap ? `open > VWAP by ${percent(extendedVwap)}` : "",
-    breakingBody ? "body break" : "",
-    nearDayHigh ? "near day high" : "",
-  ].filter(Boolean);
-  const risks = [
-    !aboveVwap ? "below VWAP" : "",
-    lastRed ? "last candle red" : "",
-    bvd > 50 ? `BVD ${number(bvd, 0)}` : "",
-    extendedVwap > 0.12 ? `extended ${percent(extendedVwap)} from VWAP` : "",
-  ].filter(Boolean);
-  const priority = 100 + last5mReturn * 100 + Math.min(25, txRatio) + (aboveVwap ? 10 : 0) + (breakingBody ? 8 : 0) - risks.length * 8;
-  const bias = risks.length >= 2 ? "Risk" : aboveVwap && !lastRed ? "Ready" : "Watch";
-  const stopBase = lastVwap > 0 ? lastVwap * 0.99 : Math.min(lastLow || currentOpen * 0.98, currentOpen * 0.98);
-  return {
-    ...buildMarketStateRow(row),
-    body_break_open: breakingBody,
-    day_high_pressure: nearDayHigh,
-    live_bias: bias,
-    live_priority: priority,
-    live_reasons: reasons.join(" | "),
-    live_risks: risks.join(" | "),
-    live_setup_group: queryName || "Query Match",
-    open_vs_vwap_pct: extendedVwap,
-    suggested_entry: currentOpen || lastClose,
-    suggested_stop: stopBase,
   };
 }
 
@@ -2760,63 +2591,6 @@ function dayOpenOnlyChartPayload(payload: ChartPayload | null, sessionDate: stri
   };
 }
 
-function marketStateTableColumns(snapshotColumns: string[]) {
-  const hiddenColumns = new Set(["live_news_count", "live_news_latest_title", "live_news_latest_time"]);
-  const importantColumns = [
-    "ticker",
-    "live_news_recency",
-    "current_open",
-    "last_volume",
-    "last_day_volume_so_far",
-    "last_recent_volume_5",
-    "last_return_5",
-    "last_gap_pct",
-    "last_day_max_change_pct",
-    "last_day_current_change_pct",
-    "last_close",
-    "last_transactions",
-    "last_transactions_vs_prior_3",
-    "last_day_dollar_volume_so_far",
-    "last_day_open",
-    "last_day_high_so_far",
-    "last_day_low_so_far",
-    "last_vwap",
-    "last_bearish_volume_divergence_score",
-    "last_double_timeframe_bearish_volume_divergence_score",
-    "spread_bps_abs",
-  ];
-  return [
-    ...importantColumns,
-    ...snapshotColumns.filter((column) => !importantColumns.includes(column) && !hiddenColumns.has(column)),
-  ];
-}
-
-function latestLiveChartRow(chart: ChartWindow, marketRows: Record<string, unknown>[], scannerRows: Record<string, unknown>[]) {
-  const ticker = chart.ticker.trim().toUpperCase();
-  const matchesTicker = (row: Record<string, unknown>) => stringValue(row, "ticker").trim().toUpperCase() === ticker;
-  const marketRow = marketRows.find(matchesTicker);
-  const scannerRow = scannerRows.find(matchesTicker);
-  return {
-    ...chart.row,
-    ...(scannerRow ?? {}),
-    ...(marketRow ?? {}),
-  };
-}
-
-function quoteFromRow(row: Record<string, unknown>, fallbackOpen: number) {
-  const ask = fallbackOpen || numberValue(row, "current_open") || numberValue(row, "open") || numberValue(row, "last_close");
-  const bid = Math.max(0, ask - 0.01);
-  return {
-    ask,
-    bid,
-    spread: Math.max(0, ask - bid),
-    transactions: numberValue(row, "last_transactions"),
-    transactionsMarketStrength: numberValue(row, "last_transactions_market_strength"),
-    volume: numberValue(row, "last_volume"),
-    volumeMarketStrength: numberValue(row, "last_dollar_volume_market_strength"),
-  };
-}
-
 function liveNewsItems(row: Record<string, unknown>, session: TradingSession): LiveNewsArticle[] {
   const value = row.live_news_items;
   if (!Array.isArray(value)) return [];
@@ -2866,22 +2640,6 @@ function newsTickerCount(item: LiveNewsArticle) {
 function marketStrengthStyle(value: number): CSSProperties {
   const strength = Math.max(0, Math.min(1, Number.isFinite(value) ? value : 0));
   return { "--strength": `${Math.round(strength * 100)}%` } as CSSProperties;
-}
-
-function sortedPositiveValues(values: number[]) {
-  return values.filter((value) => Number.isFinite(value) && value > 0).sort((left, right) => left - right);
-}
-
-function percentileRank(value: number, sortedValues: number[]) {
-  if (!Number.isFinite(value) || value <= 0 || !sortedValues.length) return 0;
-  let low = 0;
-  let high = sortedValues.length;
-  while (low < high) {
-    const mid = Math.floor((low + high) / 2);
-    if (sortedValues[mid] <= value) low = mid + 1;
-    else high = mid;
-  }
-  return low / sortedValues.length;
 }
 
 function calculateLiveOrderQuantity({
@@ -3287,54 +3045,6 @@ function readStoredLiveChartVisibility() {
 
 function stableScannerQueryId(name: string) {
   return name.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || `query-${Date.now()}`;
-}
-
-function previousSessionDate(sessions: string[], sessionDate: string, countBack: number) {
-  const index = sessions.indexOf(sessionDate);
-  if (index < 0) return dateOffset(sessionDate, -countBack);
-  return sessions[Math.max(0, index - countBack)] ?? sessionDate;
-}
-
-function dateOffset(value: string, days: number) {
-  const parsed = new Date(`${value}T00:00:00`);
-  parsed.setDate(parsed.getDate() + days);
-  return parsed.toISOString().slice(0, 10);
-}
-
-function addClockMinutes(clock: string, minutes: number) {
-  const [hourText, minuteText] = clock.split(":");
-  const hour = Number(hourText);
-  const minute = Number(minuteText);
-  if (!Number.isFinite(hour) || !Number.isFinite(minute)) return "";
-  const total = hour * 60 + minute + minutes;
-  const nextHour = Math.floor(total / 60);
-  const nextMinute = total % 60;
-  if (nextHour < 0 || nextHour > 23) return "";
-  return `${String(nextHour).padStart(2, "0")}:${String(nextMinute).padStart(2, "0")}`;
-}
-
-function isAfterClock(clock: string, cutoff: string) {
-  return clockToMinutes(clock) > clockToMinutes(cutoff);
-}
-
-function clockToMinutes(clock: string) {
-  const [hourText, minuteText] = clock.split(":");
-  const hour = Number(hourText);
-  const minute = Number(minuteText);
-  if (!Number.isFinite(hour) || !Number.isFinite(minute)) return 0;
-  return hour * 60 + minute;
-}
-
-function rowTimestampSeconds(row: Record<string, unknown>, sessionDate: string, fallbackClock: string) {
-  const raw = stringValue(row, "bar_time_market") || `${sessionDate}T${fallbackClock}:00-04:00`;
-  const parsed = Date.parse(raw);
-  return Number.isFinite(parsed) ? Math.floor(parsed / 1000) : null;
-}
-
-function clockTimestampSeconds(sessionDate: string, clock: string) {
-  if (!sessionDate || !clock) return null;
-  const parsed = Date.parse(`${sessionDate}T${clock}:00-04:00`);
-  return Number.isFinite(parsed) ? Math.floor(parsed / 1000) : null;
 }
 
 function chartOpenAtTime(payload: ChartPayload | null, timestamp: number | null) {
