@@ -10,6 +10,7 @@ import { ProgressMeter, type Stage } from "../app/components/Progress";
 import { SemanticBadge, toneForStatus } from "../app/components/SemanticBadge";
 import { CachedTabPanel, Tabs, useCachedTabState } from "../app/components/Tabs";
 import { formatBytes, formatDuration, formatNumber } from "../app/format";
+import { usePollingTask } from "../app/hooks/usePollingTask";
 import { useViewportFillPanel } from "../app/hooks/useViewportFillPanel";
 
 type Scope = {
@@ -112,37 +113,50 @@ export function MarketDataBuildPage() {
   const [startMode, setStartMode] = useState<BuildStartMode>("normal");
 
   useEffect(() => {
-    loadScope();
+    const controller = new AbortController();
+    void loadScope(controller.signal).catch((requestError) => {
+      if (!controller.signal.aborted) setError(requestError instanceof Error ? requestError.message : String(requestError));
+    });
+    return () => controller.abort();
   }, []);
 
   useEffect(() => {
     if (!scope) return;
-    loadJobs(scope);
+    const controller = new AbortController();
+    void loadJobs(scope, controller.signal).catch((requestError) => {
+      if (!controller.signal.aborted) setError(requestError instanceof Error ? requestError.message : String(requestError));
+    });
+    return () => controller.abort();
   }, [scope]);
 
-  useEffect(() => {
-    if (!scope || !jobs.some((item) => isActiveBuildStatus(item.status))) return;
-    const timer = window.setInterval(() => loadJobs(scope), 3000);
-    return () => window.clearInterval(timer);
-  }, [scope, jobs]);
+  const hasActiveJob = jobs.some((item) => isActiveBuildStatus(item.status));
+  usePollingTask({
+    enabled: Boolean(scope) && hasActiveJob,
+    intervalMs: 3_000,
+    restartKey: scope?.processed_root ?? "",
+    task: async (signal) => {
+      if (scope) await loadJobs(scope, signal);
+    },
+  });
 
-  useEffect(() => {
-    if (!scope || !job) return;
-    const jobActive = isActiveBuildStatus(job.status);
-    const progressActive = isActiveBuildStatus(job.progress?.metrics?.status);
-    if (!jobActive && !progressActive) return;
-    const timer = window.setInterval(() => loadJob(scope, job.job_id), 1000);
-    return () => window.clearInterval(timer);
-  }, [scope, job?.job_id, job?.status, job?.progress?.metrics?.status]);
+  const selectedJobActive = Boolean(job) && (isActiveBuildStatus(job?.status) || isActiveBuildStatus(job?.progress?.metrics?.status));
+  usePollingTask({
+    enabled: Boolean(scope && job) && selectedJobActive,
+    intervalMs: 1_000,
+    restartKey: job?.job_id ?? "",
+    task: async (signal) => {
+      if (scope && job) await loadJob(scope, job.job_id, signal);
+    },
+  });
 
-  async function loadScope() {
-    const payload = await api<Scope>("/api/market-data/scope");
+  async function loadScope(signal?: AbortSignal) {
+    const payload = await api<Scope>("/api/market-data/scope", { signal });
     setScope(payload);
     setDraft(payload);
   }
 
-  async function loadJobs(currentScope: Scope) {
-    const payload = await api<{ jobs: BuildJob[] }>(`/api/market-data/build/jobs${query({ processed_root: currentScope.processed_root })}`);
+  async function loadJobs(currentScope: Scope, signal?: AbortSignal) {
+    const payload = await api<{ jobs: BuildJob[] }>(`/api/market-data/build/jobs${query({ processed_root: currentScope.processed_root })}`, { signal });
     setJobs(payload.jobs);
     if (job) {
       const current = payload.jobs.find((item) => item.job_id === job.job_id);
@@ -150,7 +164,7 @@ export function MarketDataBuildPage() {
         const currentTerminal = !isActiveBuildStatus(current.status);
         const selectedLooksActive = isActiveBuildStatus(job.status) || isActiveBuildStatus(job.progress?.metrics?.status);
         if (currentTerminal && selectedLooksActive) {
-          await loadJob(currentScope, current.job_id);
+          await loadJob(currentScope, current.job_id, signal);
           return;
         }
         setJob((value) => {
@@ -166,9 +180,10 @@ export function MarketDataBuildPage() {
     }
   }
 
-  async function loadJob(currentScope: Scope, jobId: string) {
+  async function loadJob(currentScope: Scope, jobId: string, signal?: AbortSignal) {
     const payload = await api<BuildJob>(
-      `/api/market-data/build/jobs/${jobId}${query({ processed_root: currentScope.processed_root, raw_root: currentScope.raw_root })}`
+      `/api/market-data/build/jobs/${jobId}${query({ processed_root: currentScope.processed_root, raw_root: currentScope.raw_root })}`,
+      { signal },
     );
     setJob(payload);
   }
