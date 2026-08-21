@@ -1988,16 +1988,17 @@ def capture(args: argparse.Namespace) -> int:
                         "localStorage.setItem(" + json.dumps(f"{storage_prefix}.{args.canvas_id}") + ", " + json.dumps(json.dumps(storage_payload)) + ");"
                     )
                 page = context.new_page()
-                if args.stub_service_status and scenario["page"].startswith("service-") and scenario["page"] != "services-dashboard":
-                    service_id = scenario["page"].removeprefix("service-")
-                    service_fixture = service_status_fixture(service_id)
-                    detail_body = json.dumps(service_fixture)
-                    fleet_body = json.dumps({"checked_at_utc": service_fixture["checked_at_utc"], "services": [service_fixture]})
+                if args.stub_service_status and (scenario["page"] == "services-dashboard" or scenario["page"].startswith("service-")):
+                    service_id = None if scenario["page"] == "services-dashboard" else scenario["page"].removeprefix("service-")
+                    fleet = [service_status_fixture(item) for item in SERVICE_REVIEW_LABELS] if service_id is None else [service_status_fixture(service_id)]
+                    service_fixture = fleet[0]
+                    fleet_body = json.dumps({"checked_at_utc": service_fixture["checked_at_utc"], "services": fleet})
                     budget_body = json.dumps({"schema_version": 1, "wait_timeout_seconds": 5, "lanes": {}})
-                    page.route(
-                        f"**/api/services/{service_id}/status?**",
-                        fulfill_json(detail_body),
-                    )
+                    if service_id is not None:
+                        page.route(
+                            f"**/api/services/{service_id}/status?**",
+                            fulfill_json(json.dumps(service_fixture)),
+                        )
                     page.route(
                         "**/api/services/status?**",
                         fulfill_json(fleet_body),
