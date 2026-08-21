@@ -563,33 +563,26 @@ function BarGptOperationalConfigurationPanel() {
   const dirtyRef = useRef(dirty);
   dirtyRef.current = dirty;
 
-  async function load(showLoading = false) {
+  async function load(showLoading = false, signal?: AbortSignal) {
     if (showLoading) setLoading(true);
     try {
-      const next = await api<BarGptOperationalConfiguration>("/api/bar-gpt/configuration", { timeoutMs: 5000 });
+      const next = await api<BarGptOperationalConfiguration>("/api/bar-gpt/configuration", { signal, timeoutMs: 5000 });
       setPayload(next);
       if (!dirtyRef.current) setDraft(structuredClone(next.desired));
       setError("");
     } catch (exc) {
+      if (signal?.aborted) return;
       setError(exc instanceof Error ? exc.message : String(exc));
     } finally {
-      if (showLoading) setLoading(false);
+      setLoading(false);
     }
   }
 
-  useEffect(() => {
-    let cancelled = false;
-    const refresh = async (showLoading = false) => {
-      if (cancelled) return;
-      await load(showLoading);
-    };
-    void refresh(true);
-    const timer = window.setInterval(() => void refresh(false), 5000);
-    return () => {
-      cancelled = true;
-      window.clearInterval(timer);
-    };
-  }, []);
+  usePollingTask({
+    initialDelayMs: 0,
+    intervalMs: 5_000,
+    task: (signal) => load(false, signal),
+  });
 
   function replaceSetting<K extends keyof BarGptOperationalSettings>(key: K, value: BarGptOperationalSettings[K]) {
     setDraft((current) => current ? { ...current, [key]: value } : current);
@@ -4146,15 +4139,15 @@ function historiesEqual(left: NewsPollHistoryRow[], right: NewsPollHistoryRow[])
 function useNewsDailyHistogram(enabled: boolean) {
   const [payload, setPayload] = useState<NewsDailyHistogramState>(() => defaultNewsHistogramWindow(900));
   useEffect(() => {
-    if (!enabled) {
-      setPayload(defaultNewsHistogramWindow(900));
-      return undefined;
-    }
-    let cancelled = false;
-    async function load() {
+    if (!enabled) setPayload(defaultNewsHistogramWindow(900));
+  }, [enabled]);
+  usePollingTask({
+    enabled,
+    initialDelayMs: 0,
+    intervalMs: 30_000,
+    task: async (signal) => {
       try {
-        const response = await api<NewsHistogramPayload>("/api/services/news/histogram");
-        if (cancelled) return;
+        const response = await api<NewsHistogramPayload>("/api/services/news/histogram", { signal });
         const binSeconds = Number(response.bin_seconds || 900);
         const defaultWindow = defaultNewsHistogramWindow(binSeconds);
         const windowStartUtc = response.window_start_utc || defaultWindow.windowStartUtc;
@@ -4179,71 +4172,61 @@ function useNewsDailyHistogram(enabled: boolean) {
           windowStartUtc,
         });
       } catch (exc) {
-        if (cancelled) return;
+        if (signal.aborted) return;
         setPayload({ ...defaultNewsHistogramWindow(900), error: exc instanceof Error ? exc.message : String(exc) });
       }
-    }
-    void load();
-    const timer = window.setInterval(() => void load(), 30_000);
-    return () => {
-      cancelled = true;
-      window.clearInterval(timer);
-    };
-  }, [enabled]);
+    },
+  });
   return payload;
 }
 
 function useNewsTodayRows(enabled: boolean, sort: NewsTodaySort): NewsTodayRowsState {
   const [payload, setPayload] = useState<NewsTodayRowsState>(() => defaultNewsTodayRowsState(sort));
   useEffect(() => {
-    if (!enabled) {
-      setPayload(defaultNewsTodayRowsState(sort));
-      return undefined;
-    }
-    let cancelled = false;
-    async function load() {
+    if (!enabled) setPayload(defaultNewsTodayRowsState(sort));
+  }, [enabled, sort]);
+  usePollingTask({
+    enabled,
+    initialDelayMs: 0,
+    intervalMs: 30_000,
+    restartKey: sort,
+    task: async (signal) => {
       setPayload((current) => ({ ...current, loading: true }));
       try {
-        const response = await api<NewsTodayRowsPayload>(`/api/services/news/today?limit=5000&sort=${sort}`);
-        if (cancelled) return;
+        const response = await api<NewsTodayRowsPayload>(`/api/services/news/today?limit=5000&sort=${sort}`, { signal });
         const rows = (response.rows || []).filter(isRecord).map(newsTodayRowFromPayload);
         setPayload({
           error: response.error || "",
           loading: false,
           rows,
-          sort: (response.sort === "asc" ? "asc" : "desc"),
+          sort: response.sort === "asc" ? "asc" : "desc",
           summary: newsTodaySummaryFromPayload(response.summary, rows),
           windowEndUtc: response.window_end_utc || "",
           windowStartUtc: response.window_start_utc || "",
         });
       } catch (exc) {
-        if (cancelled) return;
+        if (signal.aborted) return;
         setPayload((current) => ({ ...current, error: exc instanceof Error ? exc.message : String(exc), loading: false }));
       }
-    }
-    void load();
-    const timer = window.setInterval(() => void load(), 30_000);
-    return () => {
-      cancelled = true;
-      window.clearInterval(timer);
-    };
-  }, [enabled, sort]);
+    },
+  });
   return payload;
 }
 
 function useSecTodayRows(enabled: boolean, sort: NewsTodaySort): SecTodayRowsState {
   const [payload, setPayload] = useState<SecTodayRowsState>(() => defaultSecTodayRowsState(sort));
   useEffect(() => {
-    if (!enabled) {
-      setPayload(defaultSecTodayRowsState(sort));
-      return undefined;
-    }
-    let cancelled = false;
-    async function load() {
+    if (!enabled) setPayload(defaultSecTodayRowsState(sort));
+  }, [enabled, sort]);
+  usePollingTask({
+    enabled,
+    initialDelayMs: 0,
+    intervalMs: 30_000,
+    restartKey: sort,
+    task: async (signal) => {
       setPayload((current) => ({ ...current, loading: true }));
       try {
-        const response = await api<SecTodayRowsPayload>(`/api/services/sec/today?limit=5000&sort=${sort}`);
-        if (cancelled) return;
+        const response = await api<SecTodayRowsPayload>(`/api/services/sec/today?limit=5000&sort=${sort}`, { signal });
         const rows = (response.rows || []).filter(isRecord).map(secTodayRowFromPayload);
         setPayload({
           error: "",
@@ -4256,17 +4239,11 @@ function useSecTodayRows(enabled: boolean, sort: NewsTodaySort): SecTodayRowsSta
           windowStartUtc: response.window_start_utc || "",
         });
       } catch (exc) {
-        if (cancelled) return;
+        if (signal.aborted) return;
         setPayload((current) => ({ ...current, error: exc instanceof Error ? exc.message : String(exc), loading: false }));
       }
-    }
-    void load();
-    const timer = window.setInterval(() => void load(), 30_000);
-    return () => {
-      cancelled = true;
-      window.clearInterval(timer);
-    };
-  }, [enabled, sort]);
+    },
+  });
   return payload;
 }
 
