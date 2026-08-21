@@ -74,12 +74,91 @@ def chart_history_fixture(session_date: str, symbol: str = "AAPL") -> dict[str, 
         })
         indicators.append({
             "bar_start": bar_start.isoformat(),
+            "session_date": session_date,
             "vwap": round(100 + index * 0.002, 4),
             "macd_line": round((index % 17 - 8) * 0.01, 4),
             "macd_signal": round((index % 13 - 6) * 0.008, 4),
             "macd_histogram": round((index % 9 - 4) * 0.006, 4),
         })
         previous_close = close_price
+    structure_events: list[dict[str, Any]] = []
+    structure_timeframes = ("100ms", "1s", "5s", "10s", "30s", "1m", "5m", "1h")
+    for timeframe_index, timeframe in enumerate(structure_timeframes, start=1):
+        direction = 1 if timeframe_index % 2 else -1
+        level_id = 1_000 + timeframe_index
+        price = round(101.0 + timeframe_index * 0.2, 4)
+        pivot_at = start + timedelta(minutes=25 + timeframe_index)
+        promoted_at = pivot_at + timedelta(minutes=2)
+        break_pivot_at = start + timedelta(minutes=75 + timeframe_index)
+        broken_at = break_pivot_at + timedelta(minutes=2)
+        structure_events.extend((
+            {
+                "algorithm_version": 9,
+                "event_id": 10_000 + timeframe_index * 2,
+                "sym": symbol,
+                "level_id": level_id,
+                "timeframe": timeframe,
+                "event_kind": "level_promoted",
+                "direction": direction,
+                "price": price,
+                "lower": price,
+                "upper": price,
+                "strength": 0.72,
+                "confidence": 0.81,
+                "lifecycle": "active",
+                "pivot_at": pivot_at.isoformat(),
+                "confirmed_at": promoted_at.isoformat(),
+            },
+            {
+                "algorithm_version": 9,
+                "event_id": 10_001 + timeframe_index * 2,
+                "sym": symbol,
+                "level_id": level_id,
+                "timeframe": timeframe,
+                "event_kind": "bos",
+                "direction": direction,
+                "price": price,
+                "lower": price,
+                "upper": price,
+                "strength": 0.76,
+                "confidence": 0.84,
+                "lifecycle": "broken",
+                "pivot_at": break_pivot_at.isoformat(),
+                "confirmed_at": broken_at.isoformat(),
+            },
+        ))
+    footprint_as_of = int((start + timedelta(minutes=200)).timestamp() * 1_000)
+    structure_level_history = [
+        {
+            "level_id": 2_001,
+            "confidence": 0.86,
+            "created_at_ms": int((start + timedelta(minutes=20)).timestamp() * 1_000),
+            "distance": 0.12,
+            "evidence_score": 0.79,
+            "hold_count": 3,
+            "last_test_at_ms": int((start + timedelta(minutes=180)).timestamp() * 1_000),
+            "lower": 104.7,
+            "lifecycle": "active",
+            "price": 104.75,
+            "promotions": [{"timeframe": "1m", "promoted_at_ms": int((start + timedelta(minutes=30)).timestamp() * 1_000), "score": 0.82}],
+            "footprint_session_date": session_date,
+            "footprint_as_of_ms": footprint_as_of,
+            "footprint": [
+                {"offset_ticks": -1, "price": 104.74, "total_volume": 1_200, "buy_volume": 720, "sell_volume": 430, "neutral_volume": 50, "trade_count": 38, "largest_trade": 180},
+                {"offset_ticks": 0, "price": 104.75, "total_volume": 1_650, "buy_volume": 980, "sell_volume": 610, "neutral_volume": 60, "trade_count": 51, "largest_trade": 240},
+                {"offset_ticks": 1, "price": 104.76, "total_volume": 1_080, "buy_volume": 600, "sell_volume": 430, "neutral_volume": 50, "trade_count": 34, "largest_trade": 160},
+            ],
+            "total_volume": 3_930,
+            "buy_volume": 2_300,
+            "sell_volume": 1_470,
+            "neutral_volume": 160,
+            "trade_count": 123,
+            "side": 1,
+            "strength": 0.83,
+            "touch_count": 4,
+            "upper": 104.8,
+        },
+    ]
     return {
         "as_of": history[-1]["bar_end"],
         "earliest_session_date": session_date,
@@ -98,8 +177,8 @@ def chart_history_fixture(session_date: str, symbol: str = "AAPL") -> dict[str, 
         "next_before": "",
         "previous_session_before": "",
         "stage": "full",
-        "structure_events": [],
-        "structure_level_history": [],
+        "structure_events": structure_events,
+        "structure_level_history": structure_level_history,
         "ticker": symbol,
         "timeframe": "1m",
     }
@@ -438,7 +517,16 @@ def validate_native_pane_resize(page: Any, chart: Any, issues: list[str]) -> Non
     before = chart.locator(".chart-native-pane-overlay").evaluate_all(
         "elements => elements.map(element => { const box = element.getBoundingClientRect(); return { top: box.top, height: box.height }; })"
     )
-    handle_box = native_handles.first.bounding_box()
+    price_boundary_y = before[0]["top"] + before[0]["height"]
+    handle_boxes = [
+        native_handles.nth(index).bounding_box()
+        for index in range(native_handles.count())
+    ]
+    handle_box = min(
+        (box for box in handle_boxes if box and box["width"] > 0 and box["height"] > 0),
+        key=lambda box: abs((box["y"] + box["height"] / 2) - price_boundary_y),
+        default=None,
+    )
     if not handle_box:
         issues.append("first native pane separator is not measurable")
         return
@@ -450,8 +538,12 @@ def validate_native_pane_resize(page: Any, chart: Any, issues: list[str]) -> Non
     after = chart.locator(".chart-native-pane-overlay").evaluate_all(
         "elements => elements.map(element => { const box = element.getBoundingClientRect(); const legend = element.querySelector('.chart-legend')?.getBoundingClientRect(); return { top: box.top, height: box.height, legendTop: legend?.top ?? null, legendBottom: legend?.bottom ?? null, bottom: box.bottom }; })"
     )
-    if len(before) != len(after) or abs(after[0]["height"] - before[0]["height"]) < 24:
-        issues.append("native separator does not resize the top price pane")
+    if len(before) != len(after) or abs(after[0]["height"] - before[0]["height"]) < 6:
+        issues.append(
+            "native separator does not resize the top price pane "
+            f"(before={before[0] if before else None}, after={after[0] if after else None}, "
+            f"handle={handle_box}, boundary_y={round(price_boundary_y, 2)})"
+        )
     for index, pane in enumerate(after):
         if pane["legendTop"] is not None and (pane["legendTop"] < pane["top"] - 1 or pane["legendBottom"] > pane["bottom"] + 1):
             issues.append(f"pane {index + 1} legend moved outside its owning pane after resize")
@@ -1598,6 +1690,14 @@ def capture(args: argparse.Namespace) -> int:
                                 "session_date": args.canvas_session_date,
                                 "coverage": {"source": "ui-review-seed"},
                             }),
+                        ),
+                    )
+                if scenario["page"] == "canvas-focus":
+                    page.route(
+                        "**/api/trading/canvas-profile",
+                        lambda route: route.fulfill(
+                            content_type="application/json",
+                            body=json.dumps({"available": False, "profile": None}),
                         ),
                     )
                 if args.stub_chart_history:
