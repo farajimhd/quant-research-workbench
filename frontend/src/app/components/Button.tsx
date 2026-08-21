@@ -1,6 +1,6 @@
 import type { ButtonHTMLAttributes, ReactNode } from "react";
 
-type ButtonVariant = "default" | "destructive" | "ghost" | "primary" | "secondary";
+export type ButtonVariant = "default" | "destructive" | "ghost" | "primary" | "secondary";
 
 type ButtonProps = ButtonHTMLAttributes<HTMLButtonElement> & {
   children?: ReactNode;
@@ -20,9 +20,8 @@ export function Button({ children, className = "", iconOnly = false, variant = "
     .filter(Boolean)
     .join(" ");
   return (
-    <button className={classes} type="button" {...props}>
+    <button className={classes} data-button-variant={variant} type="button" {...props}>
       {children}
     </button>
   );
 }
-
