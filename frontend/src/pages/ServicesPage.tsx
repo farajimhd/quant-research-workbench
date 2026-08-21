@@ -36,11 +36,10 @@ import type {
   SecDetailPayload,
   SecLiveFeedRow,
   SecTodayRow,
-  SecTodayRowsPayload,
   SecTodayRowsState,
   SecTodaySort,
-  SecTodaySummary,
 } from "../features/services/secContracts";
+import { defaultSecHistogramWindow, elapsedSecHistogramRows, useSecTodayRows } from "../features/services/useSecTodayRows";
 import {
   arrayRecords,
   arrayValueLabel,
@@ -3099,40 +3098,6 @@ function useNewsTodayRows(enabled: boolean, sort: NewsTodaySort): NewsTodayRowsS
   return payload;
 }
 
-function useSecTodayRows(enabled: boolean, sort: SecTodaySort): SecTodayRowsState {
-  const [payload, setPayload] = useState<SecTodayRowsState>(() => defaultSecTodayRowsState(sort));
-  useEffect(() => {
-    if (!enabled) setPayload(defaultSecTodayRowsState(sort));
-  }, [enabled, sort]);
-  usePollingTask({
-    enabled,
-    initialDelayMs: 0,
-    intervalMs: 30_000,
-    restartKey: sort,
-    task: async (signal) => {
-      setPayload((current) => ({ ...current, loading: true }));
-      try {
-        const response = await api<SecTodayRowsPayload>(`/api/services/sec/today?limit=5000&sort=${sort}`, { signal });
-        const rows = (response.rows || []).filter(isRecord).map(secTodayRowFromPayload);
-        setPayload({
-          error: "",
-          histogram: secHistogramFromPayload(response.histogram),
-          loading: false,
-          rows,
-          sort: response.sort === "asc" ? "asc" : "desc",
-          summary: secTodaySummaryFromPayload(response.summary, rows),
-          windowEndUtc: response.window_end_utc || "",
-          windowStartUtc: response.window_start_utc || "",
-        });
-      } catch (exc) {
-        if (signal.aborted) return;
-        setPayload((current) => ({ ...current, error: exc instanceof Error ? exc.message : String(exc), loading: false }));
-      }
-    },
-  });
-  return payload;
-}
-
 function defaultNewsTodayRowsState(sort: NewsTodaySort): NewsTodayRowsState {
   return {
     error: "",
@@ -3152,61 +3117,6 @@ function defaultNewsTodayRowsState(sort: NewsTodaySort): NewsTodayRowsState {
     },
     windowEndUtc: "",
     windowStartUtc: "",
-  };
-}
-
-function defaultSecTodayRowsState(sort: SecTodaySort): SecTodayRowsState {
-  return {
-    error: "",
-    histogram: defaultSecHistogramWindow(900),
-    loading: false,
-    rows: [],
-    sort,
-    summary: {
-      documentRows: 0,
-      feedParticipantRows: 0,
-      feedRecentError: "",
-      feedRecentRows: 0,
-      latest: "",
-      loadedRows: 0,
-      textRows: 0,
-      totalFilings: 0,
-      withDocuments: 0,
-      withText: 0,
-      withXbrl: 0,
-      xbrlFactRows: 0,
-      xbrlFrameRows: 0,
-    },
-    windowEndUtc: "",
-    windowStartUtc: "",
-  };
-}
-
-function secHistogramFromPayload(payload: SecTodayRowsPayload["histogram"]): SecDailyHistogramState {
-  const binSeconds = Number(payload?.bin_seconds || 900);
-  const defaultWindow = defaultSecHistogramWindow(binSeconds);
-  const windowStartUtc = payload?.window_start_utc || defaultWindow.windowStartUtc;
-  const windowEndUtc = payload?.window_end_utc || defaultWindow.windowEndUtc;
-  return {
-    binSeconds,
-    error: String(payload?.error || ""),
-    rows: elapsedSecHistogramRows(
-      (payload?.rows || [])
-        .map((row) => ({
-          bucketUtc: String(row.bucket_utc || ""),
-          documentRows: Number(row.document_rows || 0),
-          filingOnlyRows: Number(row.filing_only_rows || 0),
-          textRows: Number(row.text_rows || 0),
-          totalRows: Number(row.total_rows || 0),
-          xbrlRows: Number(row.xbrl_rows || 0),
-        }))
-        .filter((row) => row.bucketUtc),
-      windowStartUtc,
-      windowEndUtc,
-      binSeconds,
-    ),
-    windowEndUtc,
-    windowStartUtc,
   };
 }
 
@@ -3238,140 +3148,6 @@ function newsTodayRowFromPayload(row: Record<string, unknown>): NewsTodayRow {
     tickers: stringArrayMetric(row, ["tickers"]),
     title: stringMetric(row, ["title"]),
     urlDomain: stringMetric(row, ["url_domain"]),
-  };
-}
-
-function secTodayRowFromPayload(row: Record<string, unknown>): SecTodayRow {
-  return {
-    acceptedAtUtc: stringMetric(row, ["accepted_at_utc"]),
-    acceptanceDatetimeRaw: stringMetric(row, ["acceptance_datetime_raw"]),
-    accessionNumber: stringMetric(row, ["accession_number"]),
-    accessionNumberCompact: stringMetric(row, ["accession_number_compact"]),
-    activityStatus: stringMetric(row, ["activity_status"]) || "filing",
-    ambiguityStatusSample: stringArrayMetric(row, ["ambiguity_status_sample"]),
-    bridgeIdSample: stringArrayMetric(row, ["bridge_id_sample"]),
-    cik: stringMetric(row, ["cik"]),
-    companyName: stringMetric(row, ["company_name"]),
-    documentIssueRows: numericMetric(row, ["document_issue_rows"]),
-    documentRows: numericMetric(row, ["document_rows"]),
-    documentTextReadyRows: numericMetric(row, ["document_text_ready_rows"]),
-    documentTypeSample: stringArrayMetric(row, ["document_type_sample"]),
-    exchangeCodeSample: stringArrayMetric(row, ["exchange_code_sample"]),
-    feedDocuments: numericMetric(row, ["feed_documents"]),
-    feedSkips: numericMetric(row, ["feed_skips"]),
-    feedStatus: stringMetric(row, ["feed_status"]),
-    feedTexts: numericMetric(row, ["feed_texts"]),
-    feedTitle: stringMetric(row, ["feed_title"]),
-    feedUpdatedAtUtc: stringMetric(row, ["feed_updated_at_utc"]),
-    feedXbrlFacts: numericMetric(row, ["feed_xbrl_facts"]),
-    fileExtensionSample: stringArrayMetric(row, ["file_extension_sample"]),
-    filingParentCik: stringMetric(row, ["filing_parent_cik"]),
-    filingDate: stringMetric(row, ["filing_date"]),
-    filingDetailUrl: stringMetric(row, ["filing_detail_url"]),
-    filingId: stringMetric(row, ["filing_id"]),
-    filingSize: numericMetric(row, ["filing_size"]),
-    formType: stringMetric(row, ["form_type"]),
-    identityBridgeCount: numericMetric(row, ["identity_bridge_count"]),
-    identityTickers: stringArrayMetric(row, ["identity_tickers"]),
-    items: stringArrayMetric(row, ["items"]),
-    issuerId: stringMetric(row, ["issuer_id"]),
-    issuerDomicileCountryCode: stringMetric(row, ["issuer_domicile_country_code"]),
-    issuerEntityType: stringMetric(row, ["issuer_entity_type"]),
-    issuerIndustry: stringMetric(row, ["issuer_industry"]),
-    issuerIndustryGroup: stringMetric(row, ["issuer_industry_group"]),
-    issuerLegalName: stringMetric(row, ["issuer_legal_name"]),
-    issuerName: stringMetric(row, ["issuer_name"]),
-    issuerSector: stringMetric(row, ["issuer_sector"]),
-    issuerSicCode: stringMetric(row, ["issuer_sic_code"]),
-    issuerSicDescription: stringMetric(row, ["issuer_sic_description"]),
-    issuerStateOfIncorporation: stringMetric(row, ["issuer_state_of_incorporation"]),
-    issuerStatus: stringMetric(row, ["issuer_status"]),
-    issuerWebsiteUrl: stringMetric(row, ["issuer_website_url"]),
-    listingIdSample: stringArrayMetric(row, ["listing_id_sample"]),
-    listingStatusSample: stringArrayMetric(row, ["listing_status_sample"]),
-    mappingStatusSample: stringArrayMetric(row, ["mapping_status_sample"]),
-    maxMappingConfidence: numericMetric(row, ["max_mapping_confidence"]),
-    primaryCurrencyCode: stringMetric(row, ["primary_currency_code"]),
-    primaryDocument: stringMetric(row, ["primary_document"]),
-    primaryDocumentRows: numericMetric(row, ["primary_document_rows"]),
-    primaryDocumentUrl: stringMetric(row, ["primary_document_url"]),
-    primaryExchangeCode: stringMetric(row, ["primary_exchange_code"]),
-    primaryIbkrConid: stringMetric(row, ["primary_ibkr_conid"]),
-    primaryTicker: stringMetric(row, ["primary_ticker"]),
-    qualityFlagSample: stringArrayMetric(row, ["quality_flag_sample"]),
-    reportDate: stringMetric(row, ["report_date"]),
-    securityAssetClass: stringMetric(row, ["security_asset_class"]),
-    securityIdSample: stringArrayMetric(row, ["security_id_sample"]),
-    securityInstrumentType: stringMetric(row, ["security_instrument_type"]),
-    securityName: stringMetric(row, ["security_name"]),
-    securityProductType: stringMetric(row, ["security_product_type"]),
-    securityStatus: stringMetric(row, ["security_status"]),
-    securityType: stringMetric(row, ["security_type"]),
-    sourceFileName: stringMetric(row, ["source_file_name"]),
-    symbolIdSample: stringArrayMetric(row, ["symbol_id_sample"]),
-    symbolSourceSample: stringArrayMetric(row, ["symbol_source_sample"]),
-    rowOrigin: stringMetric(row, ["row_origin"]) || "canonical_parent",
-    textChars: numericMetric(row, ["text_chars"]),
-    textKindSample: stringArrayMetric(row, ["text_kind_sample"]),
-    textRows: numericMetric(row, ["text_rows"]),
-    textStatus: stringMetric(row, ["text_status"]),
-    xbrlFactRows: numericMetric(row, ["xbrl_fact_rows"]),
-    xbrlFactTagSample: stringArrayMetric(row, ["xbrl_fact_tag_sample"]),
-    xbrlFactTags: numericMetric(row, ["xbrl_fact_tags"]),
-    xbrlFrameRows: numericMetric(row, ["xbrl_frame_rows"]),
-    xbrlFrameTagSample: stringArrayMetric(row, ["xbrl_frame_tag_sample"]),
-    xbrlFrameTags: numericMetric(row, ["xbrl_frame_tags"]),
-  };
-}
-
-function secTodaySummaryFromPayload(summaryPayload: unknown, rows: SecTodayRow[]): SecTodaySummary {
-  const fallback = rows.reduce(
-    (summary, row) => ({
-      documentRows: summary.documentRows + row.documentRows,
-      feedParticipantRows: summary.feedParticipantRows + (row.rowOrigin === "sec_gateway_feed_participant" ? 1 : 0),
-      feedRecentError: summary.feedRecentError,
-      feedRecentRows: summary.feedRecentRows,
-      latest: !summary.latest || parseServiceTimestamp(row.acceptedAtUtc) > parseServiceTimestamp(summary.latest) ? row.acceptedAtUtc : summary.latest,
-      loadedRows: rows.length,
-      textRows: summary.textRows + row.textRows,
-      totalFilings: rows.length,
-      withDocuments: summary.withDocuments + (row.documentRows > 0 ? 1 : 0),
-      withText: summary.withText + (row.textRows > 0 ? 1 : 0),
-      withXbrl: summary.withXbrl + (row.xbrlFactRows + row.xbrlFrameRows > 0 ? 1 : 0),
-      xbrlFactRows: summary.xbrlFactRows + row.xbrlFactRows,
-      xbrlFrameRows: summary.xbrlFrameRows + row.xbrlFrameRows,
-    }),
-    {
-      documentRows: 0,
-      feedParticipantRows: 0,
-      feedRecentError: "",
-      feedRecentRows: 0,
-      latest: "",
-      loadedRows: rows.length,
-      textRows: 0,
-      totalFilings: rows.length,
-      withDocuments: 0,
-      withText: 0,
-      withXbrl: 0,
-      xbrlFactRows: 0,
-      xbrlFrameRows: 0,
-    },
-  );
-  if (!isRecord(summaryPayload)) return fallback;
-  return {
-    documentRows: numericMetric(summaryPayload, ["document_rows"]) || fallback.documentRows,
-    feedParticipantRows: numericMetric(summaryPayload, ["feed_participant_rows"]) || fallback.feedParticipantRows,
-    feedRecentError: stringMetric(summaryPayload, ["feed_recent_error"]) || fallback.feedRecentError,
-    feedRecentRows: numericMetric(summaryPayload, ["feed_recent_rows"]) || fallback.feedRecentRows,
-    latest: stringMetric(summaryPayload, ["latest_accepted_at_utc"]) || fallback.latest,
-    loadedRows: numericMetric(summaryPayload, ["loaded_rows"]) || rows.length,
-    textRows: numericMetric(summaryPayload, ["text_rows"]) || fallback.textRows,
-    totalFilings: numericMetric(summaryPayload, ["total_filings"]) || fallback.totalFilings,
-    withDocuments: numericMetric(summaryPayload, ["with_documents"]) || fallback.withDocuments,
-    withText: numericMetric(summaryPayload, ["with_text"]) || fallback.withText,
-    withXbrl: numericMetric(summaryPayload, ["with_xbrl"]) || fallback.withXbrl,
-    xbrlFactRows: numericMetric(summaryPayload, ["xbrl_fact_rows"]) || fallback.xbrlFactRows,
-    xbrlFrameRows: numericMetric(summaryPayload, ["xbrl_frame_rows"]) || fallback.xbrlFrameRows,
   };
 }
 
@@ -3886,26 +3662,6 @@ function defaultNewsHistogramWindow(binSeconds: number): NewsDailyHistogramState
   };
 }
 
-function defaultSecHistogramWindow(binSeconds: number): SecDailyHistogramState {
-  const { day, month, year } = exchangeDateParts(new Date());
-  const start = zonedDateTimeToUtc(year, month, day, 0, 0, EXCHANGE_TIME_ZONE);
-  const nextDay = nextCalendarDate(year, month, day);
-  const end = zonedDateTimeToUtc(nextDay.year, nextDay.month, nextDay.day, 0, 0, EXCHANGE_TIME_ZONE);
-  const totalBins = Math.max(0, Math.ceil((end.getTime() - start.getTime()) / (binSeconds * 1000)) + 1);
-  const elapsedBins = Math.max(0, Math.min(totalBins, Math.ceil((Date.now() - start.getTime()) / (binSeconds * 1000)) + 1));
-  const rows = Array.from({ length: elapsedBins }, (_, index) => {
-    const bucketUtc = new Date(start.getTime() + index * binSeconds * 1000).toISOString();
-    return { bucketUtc, documentRows: 0, filingOnlyRows: 0, textRows: 0, totalRows: 0, xbrlRows: 0 };
-  });
-  return {
-    binSeconds,
-    error: "",
-    rows,
-    windowEndUtc: end.toISOString(),
-    windowStartUtc: start.toISOString(),
-  };
-}
-
 function elapsedNewsHistogramRows(rows: NewsDailyHistogramDatum[], windowStartUtc: string, windowEndUtc: string, binSeconds: number) {
   const start = Date.parse(windowStartUtc);
   const end = Date.parse(windowEndUtc);
@@ -3918,21 +3674,6 @@ function elapsedNewsHistogramRows(rows: NewsDailyHistogramDatum[], windowStartUt
     if (Number.isFinite(end) && bucket >= end) return false;
     if (bucket - halfBinMs >= cutoff) return false;
     return row.totalRows > 0 || row.singleTickerRows > 0 || row.broadOrNoneRows > 0;
-  });
-}
-
-function elapsedSecHistogramRows(rows: SecDailyHistogramDatum[], windowStartUtc: string, windowEndUtc: string, binSeconds: number) {
-  const start = Date.parse(windowStartUtc);
-  const end = Date.parse(windowEndUtc);
-  const cutoff = Math.min(Number.isFinite(end) ? end : Date.now(), Date.now());
-  const halfBinMs = Math.max(0, binSeconds * 500);
-  return rows.filter((row) => {
-    const bucket = Date.parse(row.bucketUtc);
-    if (!Number.isFinite(bucket)) return false;
-    if (Number.isFinite(start) && bucket < start) return false;
-    if (Number.isFinite(end) && bucket >= end) return false;
-    if (bucket - halfBinMs >= cutoff) return false;
-    return row.totalRows > 0 || row.filingOnlyRows > 0 || row.documentRows > 0 || row.textRows > 0 || row.xbrlRows > 0;
   });
 }
 
