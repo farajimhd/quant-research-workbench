@@ -972,6 +972,25 @@ def qmd_live_market_state(ticker: str) -> dict[str, Any]:
     return payload
 
 
+def qmd_active_halts_by_ticker(tickers: Collection[str] = ()) -> dict[str, dict[str, Any]]:
+    """Return the current exchange-halt state for the requested ticker set."""
+
+    requested = {
+        str(ticker or "").strip().upper()
+        for ticker in tickers
+        if str(ticker or "").strip()
+    }
+    payload = qmd_get_json(
+        "/snapshot/live-market-state",
+        {"include_recent": "false", "limit": 5_000},
+        timeout=3,
+    )
+    active = _active_halts_by_ticker(payload)
+    if not requested:
+        return active
+    return {ticker: state for ticker, state in active.items() if ticker in requested}
+
+
 def qmd_live_market_state_history(
     *,
     start: datetime,

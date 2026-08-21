@@ -22,6 +22,7 @@ from src.backend.query_plans.canvas_context_v1 import (
 from src.backend.real_live_market_data.config import market_gateway_config
 from src.request_context import ContextThreadPoolExecutor as ThreadPoolExecutor
 from src.backend.real_live_market_data.startup import logo_asset_url
+from src.backend.qmd_gateway_client import qmd_active_halts_by_ticker
 
 
 MAX_PRESENTATION_TICKERS = 200
@@ -32,33 +33,39 @@ def ticker_presentation_payload(
     tickers: Iterable[str],
     *,
     database: str = "q_live",
+    include_market_state: bool = False,
     include_recency: bool = False,
 ) -> dict[str, Any]:
     normalized = normalize_tickers(tickers)
     if not normalized:
         return {"presentations": {}, "source": f"{database}.market_issuer_presentation_selection_v1", "status": "ready"}
+    branding_available = True
+    market_state_available = not include_market_state
+    halt_by_ticker: dict[str, dict[str, Any]] = {}
     try:
-        if include_recency:
+        if include_recency or include_market_state:
             cutoff = datetime.now(UTC)
-            with ThreadPoolExecutor(max_workers=3) as executor:
+            with ThreadPoolExecutor(max_workers=4) as executor:
                 presentation_future = executor.submit(
                     _clickhouse_rows,
                     ticker_presentation_sql(normalized, database=database),
                 )
-                news_future = executor.submit(
-                    _clickhouse_rows,
-                    ticker_news_recency(
-                        cutoff,
-                        tickers=normalized,
-                    ),
-                )
-                sec_future = executor.submit(
-                    _clickhouse_rows,
-                    scanner_sec_filings(cutoff, tickers=normalized),
-                )
-                rows = presentation_future.result()
-                news_rows = _optional_rows(news_future)
-                sec_rows = _optional_rows(sec_future)
+                news_future = executor.submit(_clickhouse_rows, ticker_news_recency(cutoff, tickers=normalized)) if include_recency else None
+                sec_future = executor.submit(_clickhouse_rows, scanner_sec_filings(cutoff, tickers=normalized)) if include_recency else None
+                market_state_future = executor.submit(qmd_active_halts_by_ticker, normalized) if include_market_state else None
+                try:
+                    rows = presentation_future.result()
+                except (RuntimeError, TimeoutError, urllib.error.URLError):
+                    rows = []
+                    branding_available = False
+                news_rows = _optional_rows(news_future) if news_future else []
+                sec_rows = _optional_rows(sec_future) if sec_future else []
+                if market_state_future:
+                    try:
+                        halt_by_ticker = market_state_future.result()
+                        market_state_available = True
+                    except (RuntimeError, TimeoutError, urllib.error.URLError):
+                        market_state_available = False
         else:
             cutoff = datetime.now(UTC)
             rows = _clickhouse_rows(ticker_presentation_sql(normalized, database=database))
@@ -68,20 +75,25 @@ def ticker_presentation_payload(
         # Branding is optional presentation data. Database pressure must not make
         # the ticker identity or its containing Canvas surface unavailable.
         return {"presentations": {}, "source": f"{database}.market_issuer_presentation_selection_v1", "status": "unavailable"}
+    if not branding_available and not market_state_available:
+        return {"presentations": {}, "source": f"{database}.market_issuer_presentation_selection_v1", "status": "unavailable"}
     news_by_ticker = {
         str(row.get("ticker") or "").strip().upper(): row for row in news_rows
     }
     sec_by_ticker = {
         str(row.get("ticker") or "").strip().upper(): row for row in sec_rows
     }
+    rows_by_ticker = {
+        str(row.get("ticker") or "").strip().upper(): row
+        for row in rows
+        if str(row.get("ticker") or "").strip().upper() in normalized
+    }
     presentations: dict[str, dict[str, Any]] = {}
     logo_artifact_root = market_gateway_config().logo_artifact_root
-    for row in rows:
-        ticker = str(row.get("ticker") or "").strip().upper()
-        if ticker not in normalized:
-            continue
+    for ticker in normalized:
+        row = rows_by_ticker.get(ticker, {})
         relative_path = str(row.get("logo_relative_path") or "").strip()
-        presentations[ticker] = {
+        presentation = {
             "country": str(row.get("country") or "").strip().upper(),
             "issuer_name": str(row.get("issuer_name") or "").strip(),
             "logo_url": logo_asset_url(relative_path, artifact_root=logo_artifact_root),
@@ -97,7 +109,12 @@ def ticker_presentation_payload(
             ),
             "ticker": ticker,
         }
-    return {"presentations": presentations, "source": f"{database}.market_issuer_presentation_selection_v1", "status": "ready"}
+        if market_state_available:
+            halt_state = halt_by_ticker.get(ticker, {})
+            presentation["market_is_halted"] = bool(halt_state.get("market_is_halted"))
+            presentation["trading_status"] = str(halt_state.get("trading_status") or "trading")
+        presentations[ticker] = presentation
+    return {"presentations": presentations, "source": f"{database}.market_issuer_presentation_selection_v1", "status": "ready" if branding_available else "partial"}
 
 
 def normalize_tickers(tickers: Iterable[str]) -> list[str]:

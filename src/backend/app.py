@@ -3377,10 +3377,10 @@ async def trading_news_stream(websocket: WebSocket) -> None:
 
 @app.get("/api/trading/ticker-presentations")
 def trading_ticker_presentations(
-    tickers: str = "", include_recency: bool = False
+    tickers: str = "", include_market_state: bool = False, include_recency: bool = False
 ) -> dict[str, Any]:
     return ticker_presentation_payload(
-        parse_csv_list(tickers), include_recency=include_recency
+        parse_csv_list(tickers), include_market_state=include_market_state, include_recency=include_recency
     )
 
 

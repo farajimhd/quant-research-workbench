@@ -60,6 +60,47 @@ class TickerPresentationServiceTest(unittest.TestCase):
         self.assertEqual(payload["presentations"]["AAPL"]["issuer_name"], "Apple Inc.")
         self.assertEqual(payload["presentations"]["AAPL"]["live_news_recency"], "none")
 
+    def test_live_market_state_marks_only_currently_halted_tickers(self) -> None:
+        with (
+            patch(
+                "src.backend.ticker_presentation_service._clickhouse_rows",
+                return_value=[
+                    {"ticker": "AAPL", "issuer_name": "Apple Inc.", "country": "US", "logo_relative_path": ""},
+                    {"ticker": "MSFT", "issuer_name": "Microsoft Corp.", "country": "US", "logo_relative_path": ""},
+                ],
+            ),
+            patch(
+                "src.backend.ticker_presentation_service.qmd_active_halts_by_ticker",
+                return_value={"AAPL": {"market_is_halted": True, "trading_status": "halted"}},
+            ) as halt_mock,
+        ):
+            payload = ticker_presentation_payload(
+                ["AAPL", "MSFT"], include_market_state=True
+            )
+
+        halt_mock.assert_called_once_with(["AAPL", "MSFT"])
+        self.assertTrue(payload["presentations"]["AAPL"]["market_is_halted"])
+        self.assertEqual(payload["presentations"]["AAPL"]["trading_status"], "halted")
+        self.assertFalse(payload["presentations"]["MSFT"]["market_is_halted"])
+        self.assertEqual(payload["presentations"]["MSFT"]["trading_status"], "trading")
+
+    def test_halt_state_survives_optional_branding_failure(self) -> None:
+        with (
+            patch(
+                "src.backend.ticker_presentation_service._clickhouse_rows",
+                side_effect=urllib.error.URLError("database offline"),
+            ),
+            patch(
+                "src.backend.ticker_presentation_service.qmd_active_halts_by_ticker",
+                return_value={"AAPL": {"market_is_halted": True, "trading_status": "halted"}},
+            ),
+        ):
+            payload = ticker_presentation_payload(["AAPL"], include_market_state=True)
+
+        self.assertEqual(payload["status"], "partial")
+        self.assertEqual(payload["presentations"]["AAPL"]["issuer_name"], "")
+        self.assertTrue(payload["presentations"]["AAPL"]["market_is_halted"])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -2631,7 +2631,7 @@ function ContainerPreview({ canvasId, chartCutoffMs, definition, instanceId, lin
       : definition.id === "news_detail"
         ? <NewsDetailContainer asOf={new Date(chartCutoffMs).toISOString()} canvasId={canvasId} requestedNewsId={requestedNewsId} />
       : definition.id === "sec"
-        ? <AllSecContainer asOf={new Date(chartCutoffMs).toISOString()} onSettingsChange={(patch) => updateSettings((state) => ({ ...state, sec: { ...state.sec, ...patch } }))} settings={settings.sec} />
+        ? <AllSecContainer asOf={new Date(chartCutoffMs).toISOString()} live={liveMode} onSettingsChange={(patch) => updateSettings((state) => ({ ...state, sec: { ...state.sec, ...patch } }))} settings={settings.sec} />
       : definition.id === "ticker_sec"
         ? <TickerSecContainer asOf={new Date(chartCutoffMs).toISOString()} onSymbolChange={symbolEditable ? (symbol) => onLinkContextChange({ symbol }) : undefined} settings={settings.ticker_sec} symbol={linkContext.symbol} />
       : definition.id === "sec_detail"
@@ -4042,7 +4042,7 @@ function compareTradingValues(left: unknown, right: unknown) {
 function PreviewCell({ column, onSymbolSelect, presentations, row }: { column: string; onSymbolSelect?: (symbol: string) => void; presentations: ReturnType<typeof useTickerPresentations>; row: PreviewRow }) {
   if (isPreviewTickerColumn(column)) {
     const ticker = String(row[column] || "").trim().toUpperCase();
-    const identity = <SecurityIdentityCell companyName={String(row.company_name ?? row.issuer_name ?? presentations[ticker]?.issuer_name ?? "")} country={String(row.country ?? row.company_country_code ?? presentations[ticker]?.country ?? "")} logoUrl={String(row.logo_url ?? presentations[ticker]?.logo_url ?? "")} newsRecency={row.live_news_recency} secRecency={row.sec_recency} ticker={ticker} />;
+    const identity = <SecurityIdentityCell companyName={String(row.company_name ?? row.issuer_name ?? presentations[ticker]?.issuer_name ?? "")} country={String(row.country ?? row.company_country_code ?? presentations[ticker]?.country ?? "")} halted={row.market_is_halted ?? row.is_halted ?? row.trading_status} logoUrl={String(row.logo_url ?? presentations[ticker]?.logo_url ?? "")} newsRecency={row.live_news_recency} secRecency={row.sec_recency} ticker={ticker} />;
     return column === "symbol" && onSymbolSelect ? <button className="canvas-symbol-link" onClick={() => onSymbolSelect(ticker)} type="button">{identity}</button> : identity;
   }
   if (isPreviewTimeColumn(column)) return <MarketTime includeSeconds value={String(row[column] || "")} />;
