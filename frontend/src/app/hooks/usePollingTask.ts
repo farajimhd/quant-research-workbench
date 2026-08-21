@@ -6,6 +6,7 @@ type PollingTaskOptions = {
   intervalMs: number;
   onError?: (error: unknown) => void;
   pauseWhenHidden?: boolean;
+  repeat?: boolean;
   restartKey?: string | number;
   task: (signal: AbortSignal) => Promise<void>;
 };
@@ -20,6 +21,7 @@ export function usePollingTask({
   intervalMs,
   onError,
   pauseWhenHidden = true,
+  repeat = true,
   restartKey = "",
   task,
 }: PollingTaskOptions) {
@@ -32,6 +34,7 @@ export function usePollingTask({
     if (!enabled) return;
 
     let activeController: AbortController | null = null;
+    let completed = false;
     let stopped = false;
     let timer: number | null = null;
 
@@ -42,7 +45,7 @@ export function usePollingTask({
     };
     const schedule = (delayMs: number) => {
       clearTimer();
-      if (!stopped) timer = window.setTimeout(run, Math.max(0, delayMs));
+      if (!stopped && !(completed && !repeat)) timer = window.setTimeout(run, Math.max(0, delayMs));
     };
     const run = async () => {
       timer = null;
@@ -57,7 +60,8 @@ export function usePollingTask({
         if (!controller.signal.aborted && !stopped) errorRef.current?.(error);
       } finally {
         if (activeController === controller) activeController = null;
-        if (!stopped) schedule(intervalMs);
+        if (!repeat) completed = true;
+        else if (!stopped) schedule(intervalMs);
       }
     };
     const handleVisibilityChange = () => {
@@ -65,7 +69,7 @@ export function usePollingTask({
       if (document.visibilityState === "hidden") {
         clearTimer();
         activeController?.abort();
-      } else if (!activeController) {
+      } else if (!activeController && !(completed && !repeat)) {
         schedule(0);
       }
     };
@@ -78,5 +82,5 @@ export function usePollingTask({
       activeController?.abort();
       if (pauseWhenHidden) document.removeEventListener("visibilitychange", handleVisibilityChange);
     };
-  }, [enabled, initialDelayMs, intervalMs, pauseWhenHidden, restartKey]);
+  }, [enabled, initialDelayMs, intervalMs, pauseWhenHidden, repeat, restartKey]);
 }

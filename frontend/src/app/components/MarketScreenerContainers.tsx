@@ -3,6 +3,7 @@ import { forwardRef, useDeferredValue, useEffect, useMemo, useRef, useState, typ
 
 import { api, apiCached, invalidateApiCache } from "../../api/client";
 import { CONFIGURATION_SESSION_CHANGED_EVENT, readConfigurationSession } from "../configurationSession";
+import { usePollingTask } from "../hooks/usePollingTask";
 import { timeRecency } from "../timeRecency";
 import { InventoryFilterSelect } from "./InventoryFilterSelect";
 import { MarketTime } from "./MarketTime";
@@ -439,13 +440,14 @@ export function SignalStreamContainer({ asOf, live, onSettingsChange, onTickerSe
   const runtimeScopeKey = stream ? `${live ? "live" : `${runId ?? ""}:${asOf}`}|${stream.signal_stream_id}` : "";
   const runtime = runtimeScopeKey ? runtimeCache[runtimeScopeKey] ?? null : null;
   const runtimeUnavailable = runtimeScopeKey ? runtimeUnavailableKeys.has(runtimeScopeKey) : false;
-  useEffect(() => {
-    if (!stream || !runtimeScopeKey) return undefined;
-    let active = true;
-    let controller: AbortController | null = null;
-    const load = () => {
-      if (controller) return;
-      controller = new AbortController();
+  usePollingTask({
+    enabled: Boolean(stream && runtimeScopeKey),
+    initialDelayMs: 0,
+    intervalMs: Math.max(100, stream?.refresh_interval_ms ?? 5000),
+    repeat: live,
+    restartKey: `${runtimeScopeKey}:${settings.limit}:${stream?.maximum_events ?? ""}:${live ? "live" : asOf}`,
+    task: async (signal) => {
+      if (!stream || !runtimeScopeKey) return;
       const query = new URLSearchParams({
         limit: String(Math.min(settings.limit, stream.maximum_events ?? settings.limit)),
         signal_stream_id: stream.signal_stream_id,
@@ -456,33 +458,30 @@ export function SignalStreamContainer({ asOf, live, onSettingsChange, onTickerSe
         query.set("as_of", asOf);
         if (runId) query.set("run_id", runId);
       }
-      api<SignalStreamRuntimeResponse>(`/api/market-discovery/signal-stream/runtime?${query}`, { signal: controller.signal, timeoutMs: 10000 })
-        .then((payload) => { if (active) {
-          setRuntimeCache((current) => {
-            const currentRuntime = current[runtimeScopeKey];
-            const nextSessionKey = String(payload.session?.session_key ?? payload.session?.session_date ?? "");
-            const incremental = live && previousSequence > 0 && payload.occurrences.length === 0 && (!sessionKey.current[runtimeScopeKey] || sessionKey.current[runtimeScopeKey] === nextSessionKey);
-            sessionKey.current[runtimeScopeKey] = nextSessionKey;
-            lastSequence.current[runtimeScopeKey] = Math.max(previousSequence, Number(payload.last_sequence ?? 0));
-            if (!incremental || !currentRuntime) return { ...current, [runtimeScopeKey]: payload };
-            const additions = payload.new_occurrences ?? [];
-            const seen = new Set(additions.map((row) => String(row["event_id"] ?? row["signal_id"] ?? "")));
-            return { ...current, [runtimeScopeKey]: { ...payload, occurrences: [...additions, ...currentRuntime.occurrences.filter((row) => !seen.has(String(row["event_id"] ?? row["signal_id"] ?? "")))] } };
-          });
-          setRuntimeUnavailableKeys((current) => {
-            if (!current.has(runtimeScopeKey)) return current;
-            const next = new Set(current);
-            next.delete(runtimeScopeKey);
-            return next;
-          });
-        } })
-        .catch((error) => { if (active && (error as Error).name !== "AbortError") setRuntimeUnavailableKeys((current) => new Set(current).add(runtimeScopeKey)); })
-        .finally(() => { controller = null; });
-    };
-    load();
-    const timer = live ? window.setInterval(load, Math.max(100, stream.refresh_interval_ms ?? 5000)) : null;
-    return () => { active = false; controller?.abort(); if (timer !== null) window.clearInterval(timer); };
-  }, [live, runId, runtimeScopeKey, settings.limit, stream?.maximum_events, stream?.refresh_interval_ms, stream?.signal_stream_id, live ? "" : asOf]);
+      try {
+        const payload = await api<SignalStreamRuntimeResponse>(`/api/market-discovery/signal-stream/runtime?${query}`, { signal, timeoutMs: 10000 });
+        setRuntimeCache((current) => {
+          const currentRuntime = current[runtimeScopeKey];
+          const nextSessionKey = String(payload.session?.session_key ?? payload.session?.session_date ?? "");
+          const incremental = live && previousSequence > 0 && payload.occurrences.length === 0 && (!sessionKey.current[runtimeScopeKey] || sessionKey.current[runtimeScopeKey] === nextSessionKey);
+          sessionKey.current[runtimeScopeKey] = nextSessionKey;
+          lastSequence.current[runtimeScopeKey] = Math.max(previousSequence, Number(payload.last_sequence ?? 0));
+          if (!incremental || !currentRuntime) return { ...current, [runtimeScopeKey]: payload };
+          const additions = payload.new_occurrences ?? [];
+          const seen = new Set(additions.map((row) => String(row["event_id"] ?? row["signal_id"] ?? "")));
+          return { ...current, [runtimeScopeKey]: { ...payload, occurrences: [...additions, ...currentRuntime.occurrences.filter((row) => !seen.has(String(row["event_id"] ?? row["signal_id"] ?? "")))] } };
+        });
+        setRuntimeUnavailableKeys((current) => {
+          if (!current.has(runtimeScopeKey)) return current;
+          const next = new Set(current);
+          next.delete(runtimeScopeKey);
+          return next;
+        });
+      } catch (error) {
+        if (!signal.aborted) setRuntimeUnavailableKeys((current) => new Set(current).add(runtimeScopeKey));
+      }
+    },
+  });
   const rows = useMemo(() => {
     const normalized: ScreenerRow[] = normalizeScannerRows(runtime?.occurrences ?? []);
     return normalized.filter((row) => String(row["signal_stream_id"] ?? "") === String(stream?.signal_stream_id ?? "")).sort((left, right) => String(right["event_time"] ?? "").localeCompare(String(left["event_time"] ?? "")));

@@ -2,6 +2,7 @@ import { Activity, BookOpen, ChevronRight, CircleHelp, Radio, ShieldAlert, WifiO
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 
 import { api, query } from "../../api/client";
+import { usePollingTask } from "../hooks/usePollingTask";
 import { CompactTapeQuoteCharts, QuoteChartGallery, TapeChartGallery } from "./MarketMicrostructureChartGallery";
 import { Modal } from "./Modal";
 import { TickerIdentityWithChange, useTickerPresentations } from "./TickerIdentity";
@@ -573,13 +574,30 @@ function useMarketEvents(symbol: string, start?: string, end?: string) {
     pumpHistorical();
   }, [end, pumpHistorical, start, symbol]);
 
+  const liveTicker = symbol.trim().toUpperCase();
+  usePollingTask({
+    enabled: !start && !end,
+    initialDelayMs: 0,
+    intervalMs: 2_000,
+    restartKey: liveTicker,
+    task: async (signal) => {
+      try {
+        const payload = await api<MarketState>(`/api/trading/canvas-market-state/${encodeURIComponent(liveTicker)}`, { signal, timeoutMs: 10_000 });
+        setMarketState(payload);
+      } catch {
+        if (!signal.aborted) setMarketState(null);
+      }
+    },
+  });
+
   useEffect(() => {
     if (start && end) return;
     let active = true;
     let socket: WebSocket | null = null;
+    const snapshotController = new AbortController();
     let retryTimer: number | undefined;
     let retryAttempt = 0;
-    const ticker = symbol.trim().toUpperCase();
+    const ticker = liveTicker;
     setEvents([]);
     setConnected("connecting");
     setError("");
@@ -591,14 +609,9 @@ function useMarketEvents(symbol: string, start?: string, end?: string) {
       return [...rows.values()].sort(compareEvents).slice(-MARKET_EVENT_SOURCE_LIMIT);
     });
 
-    const loadMarketState = () => api<MarketState>(`/api/trading/canvas-market-state/${encodeURIComponent(ticker)}`, { timeoutMs: 10000 })
-      .then((payload) => { if (active) setMarketState(payload); })
-      .catch(() => { if (active) setMarketState(null); });
-    void loadMarketState();
-    api<MarketEventsPayload>(`/api/trading/canvas-market-events/${encodeURIComponent(ticker)}${query({ row_limit: MARKET_EVENT_SOURCE_LIMIT })}`, { timeoutMs: 10000 })
+    api<MarketEventsPayload>(`/api/trading/canvas-market-events/${encodeURIComponent(ticker)}${query({ row_limit: MARKET_EVENT_SOURCE_LIMIT })}`, { signal: snapshotController.signal, timeoutMs: 10000 })
       .then((payload) => { if (active) { merge(payload.events); setReferences(payload.references ?? EMPTY_REFERENCES); } })
-      .catch(() => { if (active) setError(MARKET_EVENTS_UNAVAILABLE); });
-    const marketStateTimer = window.setInterval(loadMarketState, 2_000);
+      .catch(() => { if (active && !snapshotController.signal.aborted) setError(MARKET_EVENTS_UNAVAILABLE); });
 
     const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
     const connect = () => {
@@ -607,7 +620,15 @@ function useMarketEvents(symbol: string, start?: string, end?: string) {
       socket.onopen = () => { if (active) setConnected("connecting"); };
       socket.onmessage = (message) => {
         if (!active) return;
-        const payload = JSON.parse(String(message.data)) as MarketEventStreamPayload;
+        let payload: MarketEventStreamPayload;
+        try {
+          payload = JSON.parse(String(message.data)) as MarketEventStreamPayload;
+        } catch {
+          setConnected("reconnecting");
+          setError(MARKET_EVENTS_UNAVAILABLE);
+          socket?.close();
+          return;
+        }
         if (payload.error) setError(MARKET_EVENTS_UNAVAILABLE);
         else if (payload.type === "stream_gap" || payload.action === "resnapshot_required") {
           setConnected("reconnecting");
@@ -633,8 +654,8 @@ function useMarketEvents(symbol: string, start?: string, end?: string) {
       };
     };
     connect();
-    return () => { active = false; window.clearInterval(marketStateTimer); if (retryTimer) window.clearTimeout(retryTimer); socket?.close(); };
-  }, [end, start, symbol]);
+    return () => { active = false; snapshotController.abort(); if (retryTimer) window.clearTimeout(retryTimer); socket?.close(); };
+  }, [end, liveTicker, start]);
 
   return { connected, error, events, marketState, references };
 }
