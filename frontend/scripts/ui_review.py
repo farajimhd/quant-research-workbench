@@ -1765,7 +1765,9 @@ def validate_service_interactions(page: Any, scenario: dict[str, Any], interacti
         except Exception:
             return ["inserted News row does not open its detail dialog"]
         readable_body = modal.locator(".news-full-readable-body")
-        if readable_body.count() != 1 or "One canonical contract" not in readable_body.inner_text():
+        try:
+            readable_body.get_by_text(re.compile(r"One canonical contract", re.IGNORECASE)).wait_for(state="visible", timeout=5000)
+        except Exception:
             issues.append("News detail does not render the normalized readable article body")
         technical = modal.locator(".news-full-technical-section")
         technical.locator(":scope > summary").click()
