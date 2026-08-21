@@ -2,6 +2,7 @@ import { ArrowLeft, Bug, CheckCircle2, CircleStop, Pause, Play, Save, Square, Tr
 import { useEffect, useMemo, useState } from "react";
 
 import { api } from "../api/client";
+import "./HistoricalWorkspace.css";
 import { TradingModeLaunch } from "../app/components/TradingModeLaunch";
 import { usePollingTask } from "../app/hooks/usePollingTask";
 import type { CanvasReplayRun } from "../app/replayRun";

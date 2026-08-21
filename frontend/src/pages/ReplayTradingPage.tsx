@@ -18,6 +18,7 @@ import {
 import { useEffect, useState } from "react";
 
 import { api } from "../api/client";
+import "./HistoricalWorkspace.css";
 import { MAIN_CANVAS_ID } from "../app/canvasWorkspace";
 import { TradingModeLaunch } from "../app/components/TradingModeLaunch";
 import { isTerminalReplayStatus, latestReplayRun, useReplayRunEvents, type CanvasReplayRun } from "../app/replayRun";

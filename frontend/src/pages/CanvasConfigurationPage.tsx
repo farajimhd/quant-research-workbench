@@ -2,6 +2,7 @@ import { Activity, BadgeDollarSign, BriefcaseBusiness, Check, CircleDollarSign, 
 import { lazy, memo, Suspense, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type MutableRefObject, type ReactNode } from "react";
 
 import { api, apiCached, query, type ApiError } from "../api/client";
+import "./HistoricalWorkspace.css";
 import "../app/configurationVisuals.css";
 import {
   CANVAS_PREVIEW_CONTEXT_STORAGE_KEY,

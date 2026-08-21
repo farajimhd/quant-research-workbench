@@ -2,6 +2,7 @@ import { Microscope, TriangleAlert } from "lucide-react";
 import { useEffect, useState } from "react";
 
 import { api } from "../api/client";
+import "./HistoricalWorkspace.css";
 import { CanvasWorkspaceSurface, type ApprovedCanvasProfile } from "./CanvasConfigurationPage";
 
 export function ResearchWorkspacePage() {
