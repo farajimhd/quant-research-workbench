@@ -364,9 +364,10 @@ export function RealLiveTradingPage({ onMarketStatusChange, onTopbarCenterChange
   const [review, setReview] = useState<ReviewPayload | null>(null);
   const [catalog, setCatalog] = useState<CatalogPayload | null>(null);
   const [session, setSession] = useState<TradingSession>(() => readStoredSession() ?? currentExchangeSession());
-  const [localClock, setLocalClock] = useState(() => formatLocalClock(new Date()));
-  const [exchangeClock, setExchangeClock] = useState(() => formatExchangeClock(new Date()));
   const wallClockMs = useWallClock(1_000);
+  const wallClock = useMemo(() => new Date(wallClockMs), [wallClockMs]);
+  const localClock = useMemo(() => formatLocalClock(wallClock), [wallClock]);
+  const exchangeClock = useMemo(() => formatExchangeClock(wallClock), [wallClock]);
   const [started, setStarted] = useState(isChildCanvas);
   const [observing, setObserving] = useState(false);
   const [scannerQueryGroups, setScannerQueryGroups] = useState<ScannerQueryGroup[]>(readStoredScannerQueryGroups);
@@ -668,13 +669,13 @@ export function RealLiveTradingPage({ onMarketStatusChange, onTopbarCenterChange
   }, [canvasId, isChildCanvas]);
 
   useEffect(() => {
-    const now = new Date(wallClockMs);
-    const exchangeSession = currentExchangeSession(now);
-    setLocalClock(formatLocalClock(now));
-    setExchangeClock(formatExchangeClock(now));
-    setSession(exchangeSession);
-    window.localStorage.setItem(LIVE_SESSION_STORAGE_KEY, JSON.stringify(exchangeSession));
-  }, [wallClockMs]);
+    const exchangeSession = currentExchangeSession(wallClock);
+    setSession((current) => {
+      if (current.barTime === exchangeSession.barTime && current.sessionDate === exchangeSession.sessionDate) return current;
+      window.localStorage.setItem(LIVE_SESSION_STORAGE_KEY, JSON.stringify(exchangeSession));
+      return exchangeSession;
+    });
+  }, [wallClock]);
 
   useEffect(() => {
     window.localStorage.setItem(LIVE_ACCOUNT_KEYS_STORAGE_KEY, JSON.stringify(selectedAccountKeys));
