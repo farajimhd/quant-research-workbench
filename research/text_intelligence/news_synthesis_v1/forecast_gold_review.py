@@ -74,6 +74,7 @@ def prepare_full_source_review(
             "provider_tickers": tickers,
             "author": article.get("author") or "",
             "provider_domain": article.get("url_domain") or "",
+            "provider": article.get("provider") or "",
             "channels": article.get("channels") or [],
             "provider_tags": article.get("provider_tags") or [],
             "title": article.get("title") or "",

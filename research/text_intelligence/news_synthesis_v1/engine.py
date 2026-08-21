@@ -14,7 +14,7 @@ from .facts import extract_regulatory_decision_facts, extract_typed_facts
 from .synthesis import derive_eligibility, derive_issuer_views, derive_synthesis
 
 
-ENGINE_VERSION = "news_synthesis_engine_v49"
+ENGINE_VERSION = "news_synthesis_engine_v53"
 EXCHANGE_TICKER_RE = re.compile(
     r"\b(?P<exchange>NASDAQ|NYSE|NYSE\s+AMERICAN|NYSEAMERICAN|AMEX|"
     r"OTC(?:QX|QB)?|TSX|TSXV|CSE)\s*[:\-]\s*"
@@ -363,11 +363,17 @@ class NewsSynthesisEngine:
         source_field = "rendered_text" if body and body != title else "title"
         if not source_id or not timestamp or not text:
             raise ValueError("source_id, source_timestamp, and source text are required")
-        tickers = tuple(str(value) for value in source.get("tickers") or source.get("entity_terms") or () if value)
+        tickers = tuple(dict.fromkeys(
+            _normalize_ticker_identifier(value)
+            for value in source.get("tickers") or source.get("entity_terms") or ()
+            if _normalize_ticker_identifier(value)
+        ))
         evaluation_tickers = tuple(
             str(value) for value in source.get("evaluation_target_tickers") or () if value
         )
-        entities = self.identity_index.resolve(text=identity_text, candidates=tickers, timestamp=timestamp)
+        entities = _dedupe_entities_by_id(
+            self.identity_index.resolve(text=identity_text, candidates=tickers, timestamp=timestamp)
+        )
         if _has_issuer_scoped_rule(identity_text, self.rules) or _has_issuer_event_assertion(identity_text):
             entity_ids = {str(entity["entity_id"]) for entity in entities}
             for candidate in self.identity_index.supported_candidates(
@@ -4813,6 +4819,22 @@ def _normalize_ticker_identifier(value: Any) -> str:
     if canadian:
         return f"{canadian.group('exchange').upper()}:{canadian.group('ticker').upper()}"
     return EXCHANGE_PREFIX_RE.sub("", raw)
+
+
+def _dedupe_entities_by_id(rows: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """Collapse multiple point-in-time symbols that resolve to one security."""
+    by_id: dict[str, dict[str, Any]] = {}
+    for source in sorted(rows, key=lambda row: (str(row.get("ticker") or ""), str(row.get("entity_id") or ""))):
+        entity_id = str(source.get("entity_id") or "")
+        if entity_id not in by_id:
+            by_id[entity_id] = dict(source)
+            continue
+        current = by_id[entity_id]
+        current["identity_evidence"] = sorted({
+            *(str(value) for value in current.get("identity_evidence") or ()),
+            *(str(value) for value in source.get("identity_evidence") or ()),
+        })
+    return sorted(by_id.values(), key=lambda row: (str(row.get("ticker") or ""), str(row["entity_id"])))
 
 
 def _exchange_qualified_ticker_identifier(exchange: str, ticker: str) -> str:

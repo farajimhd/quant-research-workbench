@@ -4,7 +4,7 @@ import re
 from typing import Any, Iterable, Mapping
 
 
-ROUTER_VERSION = "news_synthesis_provider_context_router_v1"
+ROUTER_VERSION = "news_synthesis_provider_context_router_v3"
 ROUTES = frozenset(("forecast_candidate", "context_only", "semantic_rescue_required"))
 
 # These exact Benzinga template tags had no eligible examples in each available
@@ -21,6 +21,15 @@ CONTEXT_ONLY_TAG_FAMILIES: dict[str, str] = {
     "top downgrades": "analyst_rating_roundup",
     "analysts forecasts": "analyst_forecast_roundup",
     "bzi-ep": "scheduled_earnings_preview",
+    "bzi-aar": "automated_analyst_action_roundup",
+    "bzi-shorthist": "short_interest_history",
+    "bzi-uoa": "automated_unusual_options_activity",
+    "bzi-pe": "scheduled_earnings_preview",
+    "rsi": "technical_indicator_screen",
+    "$500 dividend": "hypothetical_dividend_screen",
+    "bzi-ipopreview": "scheduled_ipo_preview",
+    "overbought stocks": "technical_indicator_screen",
+    "oversold stocks": "technical_indicator_screen",
 }
 
 # These families contain both material issuer events and contextual/noise rows.
@@ -32,6 +41,20 @@ RESCUE_TAG_FAMILIES: dict[str, str] = {
     "mid morning market update": "market_update",
     "mid day market update": "market_update",
     "mid day movers": "mover_roundup",
+    "most accurate analysts": "analyst_forecast_roundup",
+}
+
+_EXACT_CONTEXT_CHANNEL_SETS: dict[frozenset[str], str] = {
+    frozenset(("options",)): "options_market_activity",
+    frozenset(("analyst ratings", "news", "price target")): "analyst_rating_roundup",
+    frozenset(("analyst ratings", "hot", "news", "price target")): "analyst_rating_roundup",
+    frozenset(("analyst ratings", "news", "price target", "reiteration")): "analyst_rating_roundup",
+    frozenset(("analyst ratings", "initiation", "news", "price target")): "analyst_rating_roundup",
+    frozenset(("analyst ratings", "news", "price target", "upgrades")): "analyst_rating_roundup",
+    frozenset(("analyst ratings", "downgrades", "news", "price target")): "analyst_rating_roundup",
+}
+_RESCUE_CHANNEL_SETS: dict[frozenset[str], str] = {
+    frozenset(("movers",)): "mover_roundup",
 }
 
 _MATERIAL_EVENT_RE = re.compile(
@@ -113,16 +136,20 @@ def classify_provider_context(source: Mapping[str, Any]) -> dict[str, Any]:
     matched_context = tuple(
         tag for tag in tags if provider == "benzinga" and tag in CONTEXT_ONLY_TAG_FAMILIES
     )
+    exact_context_channel_family = _EXACT_CONTEXT_CHANNEL_SETS.get(frozenset(channels)) if provider == "benzinga" else None
+    rescue_channel_family = _RESCUE_CHANNEL_SETS.get(frozenset(channels)) if provider == "benzinga" else None
     reason_codes: list[str] = []
 
-    if matched_rescue:
+    if matched_rescue or rescue_channel_family:
         route = "semantic_rescue_required"
-        family = RESCUE_TAG_FAMILIES[matched_rescue[0]]
-        reason_codes.extend(("mixed_provider_template", f"provider_tag:{matched_rescue[0]}"))
-    elif matched_context:
+        family = RESCUE_TAG_FAMILIES[matched_rescue[0]] if matched_rescue else str(rescue_channel_family)
+        evidence_code = f"provider_tag:{matched_rescue[0]}" if matched_rescue else f"channel_set:{'|'.join(channels)}"
+        reason_codes.extend(("mixed_provider_template", evidence_code))
+    elif matched_context or exact_context_channel_family:
         route = "context_only"
-        family = CONTEXT_ONLY_TAG_FAMILIES[matched_context[0]]
-        reason_codes.extend(("validated_context_template", f"provider_tag:{matched_context[0]}"))
+        family = CONTEXT_ONLY_TAG_FAMILIES[matched_context[0]] if matched_context else str(exact_context_channel_family)
+        evidence_code = f"provider_tag:{matched_context[0]}" if matched_context else f"channel_set:{'|'.join(channels)}"
+        reason_codes.extend(("validated_context_template", evidence_code))
         if material_language:
             reason_codes.append("material_language_not_authoritative_for_validated_template")
     elif material_language:
@@ -157,13 +184,15 @@ def classify_provider_context(source: Mapping[str, Any]) -> dict[str, Any]:
             "channels": list(channels),
             "matched_context_tags": list(matched_context),
             "matched_rescue_tags": list(matched_rescue),
+            "matched_exact_channel_family": exact_context_channel_family or "",
+            "matched_rescue_channel_family": rescue_channel_family or "",
         },
         "temporal_novelty": {
             "available": novelty_available,
             "any_ticker_first_session": first_session,
             "min_ticker_session_ordinal": min_ordinal,
             "min_seconds_since_previous_ticker_news": seconds_previous,
-            "decision_role": "trace_only_v1",
+            "decision_role": "trace_only_v3",
         },
     }
     if route not in ROUTES:  # defensive invariant for callers outside this package

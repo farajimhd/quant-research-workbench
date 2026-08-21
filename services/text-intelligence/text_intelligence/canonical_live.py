@@ -40,11 +40,13 @@ from research.text_intelligence.news_synthesis_v1.engine import (
     ENGINE_VERSION as NEWS_SYNTHESIS_ENGINE_VERSION,
     NewsSynthesisEngine,
 )
+from research.text_intelligence.news_synthesis_v1.funnel import NewsSynthesisFunnel
 from research.text_intelligence.news_synthesis_v1.storage import (
     SYNTHESIS_TABLE,
     create_tables as create_news_synthesis_tables,
     load_identity_index,
     persist_documents,
+    persist_funnel_results,
 )
 
 from .live import LiveCandidate, LiveNewsRuntime, PreparedNewsCandidate, SynthesisLiveLabel
@@ -384,15 +386,20 @@ class CanonicalTextRuntime:
             self.metrics["deterministic_skipped_current"] = int(self.metrics["deterministic_skipped_current"]) + 1
             return "skipped_current"
         self._set_worker_stage(worker_index, "synthesizing")
-        documents = [self.news_engine.synthesize(row) for row in loaded.rows]
+        results = [NewsSynthesisFunnel(self.news_engine).process(row) for row in loaded.rows]
+        documents = [row["synthesis_document"] for row in results if row["synthesis_document"] is not None]
         if not current:
             self._set_worker_stage(worker_index, "writing_synthesis")
             persist_documents(self.client, self.database, documents)
+            persist_funnel_results(self.client, self.database, results)
             self._write_status(notice, loaded.source_hash, "complete", len(documents), 0, "")
             self.metrics["news_synthesis_documents"] = int(self.metrics["news_synthesis_documents"]) + len(documents)
             self.metrics["deterministic_completed"] = int(self.metrics["deterministic_completed"]) + 1
         if self.live_news.enabled:
-            for source_row, document in zip(loaded.rows, documents):
+            for source_row, result in zip(loaded.rows, results):
+                document = result["synthesis_document"]
+                if document is None or result["final"]["forecast_eligibility"] != "eligible":
+                    continue
                 item = PreparedNewsCandidate(
                     candidate=_live_candidate(source_row),
                     synthesis_labels=_live_synthesis_labels(document),
@@ -522,7 +529,7 @@ class CanonicalTextRuntime:
 SELECT
  e.canonical_news_id AS source_id,
  toString(e.published_at_utc) AS source_timestamp,
- e.title, if(empty(r.rendered_text),e.title,r.rendered_text) AS text, e.tickers AS entity_terms, e.tickers,
+ e.provider, e.title, if(empty(r.rendered_text),e.title,r.rendered_text) AS text, e.tickers AS entity_terms, e.tickers,
  e.channels, e.provider_tags, e.links, e.author, e.url_domain, e.article_url,
  e.content_quality_flags, r.renderer_version, r.text_contract,
  r.quality_flags, multiIf(empty(r.canonical_news_id),'unrendered',r.source_count=0,'title_only','rendered') render_status,
@@ -549,7 +556,7 @@ FORMAT JSONEachRow
 """))
         if not rows:
             return LoadedSource(notice, (), "", "not_ready")
-        source_hash = str(rows[0].get("rendered_text_hash") or "")
+        source_hash = _news_source_hash(rows[0])
         return LoadedSource(notice, tuple(rows), source_hash)
 
     def _load_sec(self, notice: TextDocumentNotice) -> LoadedSource:
@@ -800,10 +807,8 @@ LEFT JOIN
  AND r.source_revision_key=e.source_revision_key
 LEFT JOIN complete_status s
  ON s.corpus='news' AND s.source_id=e.canonical_news_id
- AND s.source_hash=if(empty(r.rendered_text_hash),hex(SHA256(e.title)),r.rendered_text_hash)
  AND s.authority_version={sql_string(NEWS_SYNTHESIS_ENGINE_VERSION)}
 WHERE empty(s.source_id)
-   OR s.source_hash != if(empty(r.rendered_text_hash),hex(SHA256(e.title)),r.rendered_text_hash)
    OR greatest(e.updated_at_utc,r.updated_at_utc) > s.updated_at_utc
 UNION ALL
 SELECT 'sec' corpus,f.source_id,toString(f.source_timestamp) source_timestamp,
@@ -986,6 +991,20 @@ def _sec_document_set_hash(documents: list[dict[str, Any]]) -> str:
         for row in sorted(documents, key=lambda item: str(item["source_id"]))
     )
     return hashlib.sha256(material.encode()).hexdigest()
+
+
+def _news_source_hash(row: dict[str, Any]) -> str:
+    """Hash every live field that can alter the router or semantic result."""
+    fields = (
+        "source_id", "source_timestamp", "provider", "title", "text", "tickers",
+        "channels", "provider_tags", "author", "url_domain", "article_url",
+        "content_quality_flags", "quality_flags", "render_status", "rendered_text_hash",
+        "renderer_version", "text_contract",
+    )
+    material = {field: row.get(field) for field in fields}
+    return hashlib.sha256(
+        json.dumps(material, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
 
 
 def _ineligible_sec_hash(

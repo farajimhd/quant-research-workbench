@@ -56,6 +56,7 @@ def article_source(
         "author": publication.get("author", ""),
         "article_url": publication.get("article_url", ""),
         "url_domain": publication.get("url_domain", ""),
+        "provider": publication.get("provider", ""),
         "text": rendered.get("text", ""),
         "tickers": list(dict.fromkeys(
             str(value) for value in publication.get("provider_tickers", []) if value

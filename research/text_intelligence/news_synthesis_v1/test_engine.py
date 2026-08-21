@@ -53,6 +53,30 @@ class NewsSynthesisEngineTests(unittest.TestCase):
         self.assertEqual(document["entities"], [])
         self.assertIn("unresolved_identity", document["quality_flags"])
 
+    def test_duplicate_provider_tickers_are_canonicalized_once(self) -> None:
+        document = self.engine.synthesize({
+            "source_id": "news-duplicate-ticker", "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": "Alpha Therapeutics wins a contract",
+            "text": "Alpha Therapeutics Inc (NASDAQ:AAA) won a new supply contract.",
+            "tickers": ["AAA", "aaa", "NASDAQ:AAA"],
+        })
+        self.assertTrue(validate_document(document).valid)
+        self.assertEqual([row["ticker"] for row in document["entities"]], ["AAA"])
+
+    def test_multiple_symbols_for_one_security_emit_one_entity(self) -> None:
+        engine = NewsSynthesisEngine(IssuerIdentityIndex((
+            IssuerIdentity("OLD", "issuer:same", "Same Company", ("Same Company",), security_id="security:same"),
+            IssuerIdentity("NEW", "issuer:same", "Same Company", ("Same Company",), security_id="security:same"),
+        )))
+        document = engine.synthesize({
+            "source_id": "news-symbol-transition", "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": "Same Company wins contract",
+            "text": "Same Company (NASDAQ:OLD, NASDAQ:NEW) won a new supply contract.",
+            "tickers": ["OLD", "NEW"],
+        })
+        self.assertTrue(validate_document(document).valid)
+        self.assertEqual(len(document["entities"]), 1)
+
     def test_provider_candidate_without_local_identity_remains_fail_closed(self) -> None:
         document = self.engine.synthesize({
             "source_id": "news-provider-fallback",

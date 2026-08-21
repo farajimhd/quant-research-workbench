@@ -8,10 +8,12 @@ from research.mlops.clickhouse import ClickHouseHttpClient, insert_json_each_row
 
 from .contracts import canonical_json
 from .engine import ENGINE_VERSION, IssuerIdentity, IssuerIdentityIndex
+from .funnel import FUNNEL_VERSION
 
 
 SYNTHESIS_TABLE = "news_synthesis_v1"
 STATUS_TABLE = "news_synthesis_build_status_v1"
+FUNNEL_TABLE = "news_synthesis_funnel_v1"
 LIVE_SEMANTIC_TABLE = "news_live_semantic_v3"
 LIVE_SEMANTIC_CONTRACT = "gpt_oss_news_semantics_v1"
 
@@ -54,6 +56,25 @@ updated_at_utc DateTime64(6,'UTC')
 ) ENGINE=ReplacingMergeTree(updated_at_utc)
 ORDER BY (published_date,engine_version)""")
     client.execute(f"ALTER TABLE `{database}`.`{STATUS_TABLE}` ADD COLUMN IF NOT EXISTS source_revision FixedString(64) AFTER failed_rows")
+    client.execute(f"""CREATE TABLE IF NOT EXISTS `{database}`.`{FUNNEL_TABLE}` (
+canonical_news_id String,
+published_at_utc DateTime64(9,'UTC'),
+source_text_sha256 FixedString(64),
+funnel_version LowCardinality(String),
+router_version LowCardinality(String),
+route LowCardinality(String),
+content_family LowCardinality(String),
+final_lane LowCardinality(String),
+forecast_eligibility LowCardinality(String),
+analysis_depth LowCardinality(String),
+context_preserved Bool,
+reason_codes Array(LowCardinality(String)),
+ticker_labels_json String,
+funnel_json String,
+updated_at_utc DateTime64(6,'UTC')
+) ENGINE=ReplacingMergeTree(updated_at_utc)
+PARTITION BY toYYYYMM(published_at_utc)
+ORDER BY (published_at_utc,canonical_news_id,funnel_version)""")
 
 
 def persistence_row(document: Mapping[str, Any]) -> dict[str, Any]:
@@ -85,6 +106,35 @@ def persist_documents(client: ClickHouseHttpClient, database: str, documents: It
     rows = [persistence_row(document) for document in documents]
     if rows:
         insert_json_each_row(client, database, SYNTHESIS_TABLE, list(rows[0]), rows)
+    return len(rows)
+
+
+def funnel_persistence_row(result: Mapping[str, Any]) -> dict[str, Any]:
+    final = result["final"]
+    prefilter = result.get("prefilter") or {}
+    return {
+        "canonical_news_id": result["source_id"],
+        "published_at_utc": result["source_timestamp"],
+        "source_text_sha256": result["source_text_sha256"],
+        "funnel_version": FUNNEL_VERSION,
+        "router_version": str(prefilter.get("router_version") or "not_run"),
+        "route": str(prefilter.get("route") or "insufficient_information"),
+        "content_family": str(final["context_class"]),
+        "final_lane": str(final["lane"]),
+        "forecast_eligibility": str(final["forecast_eligibility"]),
+        "analysis_depth": str(final["analysis_depth"]),
+        "context_preserved": bool(final["context_preserved"]),
+        "reason_codes": list(final["reason_codes"]),
+        "ticker_labels_json": canonical_json(result["ticker_labels"]),
+        "funnel_json": canonical_json(result),
+        "updated_at_utc": datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S.%f"),
+    }
+
+
+def persist_funnel_results(client: ClickHouseHttpClient, database: str, results: Iterable[Mapping[str, Any]]) -> int:
+    rows = [funnel_persistence_row(result) for result in results]
+    if rows:
+        insert_json_each_row(client, database, FUNNEL_TABLE, list(rows[0]), rows)
     return len(rows)
 
 

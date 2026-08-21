@@ -9,7 +9,14 @@ from datetime import date, timedelta
 from research.mlops.clickhouse import ClickHouseHttpClient, default_clickhouse_password, default_clickhouse_url, default_clickhouse_user, sql_string
 
 from .engine import ENGINE_VERSION, NewsSynthesisEngine
-from .storage import create_tables, load_identity_index, persist_documents, write_status
+from .funnel import NewsSynthesisFunnel
+from .storage import (
+    create_tables,
+    load_identity_index,
+    persist_documents,
+    persist_funnel_results,
+    write_status,
+)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -23,13 +30,13 @@ def main(argv: list[str] | None = None) -> int:
     client = _client()
     if args.execute:
         create_tables(client, args.database)
-    engine = NewsSynthesisEngine(load_identity_index(client, args.database))
+    funnel = NewsSynthesisFunnel(NewsSynthesisEngine(load_identity_index(client, args.database)))
     client.close()
     days = [start + timedelta(days=i) for i in range((end - start).days)]
     print(f"NEWS SYNTHESIS V1 | days={len(days):,} workers={args.workers} execute={args.execute}")
     failures = 0
     with ThreadPoolExecutor(max_workers=max(1, min(32, args.workers))) as pool:
-        futures = {pool.submit(_build_day, day, args.database, engine, args.execute): day for day in days}
+        futures = {pool.submit(_build_day, day, args.database, funnel, args.execute): day for day in days}
         for index, future in enumerate(as_completed(futures), 1):
             day = futures[future]
             try: total, completed = future.result(); print(f"[{index:,}/{len(days):,}] {day} rows={total:,} completed={completed:,}", flush=True)
@@ -37,10 +44,10 @@ def main(argv: list[str] | None = None) -> int:
     return 1 if failures else 0
 
 
-def _build_day(day: date, database: str, engine: NewsSynthesisEngine, execute: bool) -> tuple[int, int]:
+def _build_day(day: date, database: str, funnel: NewsSynthesisFunnel, execute: bool) -> tuple[int, int]:
     client = _client(); day_text = day.isoformat()
     try:
-        rows = list(client.iter_json_each_row(f"""SELECT e.canonical_news_id source_id,toString(e.published_at_utc) source_timestamp,e.title,e.author,e.article_url,e.url_domain,
+        rows = list(client.iter_json_each_row(f"""SELECT e.canonical_news_id source_id,toString(e.published_at_utc) source_timestamp,e.provider,e.title,e.author,e.article_url,e.url_domain,
 if(empty(r.rendered_text),e.title,r.rendered_text) text,e.tickers,e.channels,e.provider_tags,e.content_quality_flags,r.quality_flags,e.source_revision_key,
 multiIf(empty(r.canonical_news_id),'unrendered',r.source_count=0,'title_only','rendered') render_status,
 if(empty(r.rendered_text_hash),hex(SHA256(e.title)),r.rendered_text_hash) rendered_text_hash
@@ -50,8 +57,13 @@ PREWHERE e.published_date=toDate({sql_string(day_text)}) FORMAT JSONEachRow"""))
         source_revision = _source_revision(rows)
         current = int(client.execute(f"SELECT count() FROM `{database}`.`news_synthesis_build_status_v1` FINAL WHERE published_date=toDate({sql_string(day_text)}) AND engine_version={sql_string(ENGINE_VERSION)} AND source_rows={len(rows)} AND source_revision={sql_string(source_revision)} AND status='complete'").strip() or "0") if execute else 0
         if current: return len(rows), len(rows)
-        documents = [engine.synthesize(row) for row in rows]
-        completed = persist_documents(client, database, documents) if execute else len(documents)
+        results = [funnel.process(row) for row in rows]
+        documents = [row["synthesis_document"] for row in results if row["synthesis_document"] is not None]
+        if execute:
+            persist_documents(client, database, documents)
+            completed = persist_funnel_results(client, database, results)
+        else:
+            completed = len(results)
         if execute: write_status(client, database, published_date=day_text, source_rows=len(rows), completed_rows=completed, failed_rows=0, source_revision=source_revision, status="complete")
         return len(rows), completed
     except Exception as exc:
@@ -67,7 +79,7 @@ def _client() -> ClickHouseHttpClient:
 def _source_revision(rows: list[dict[str, object]]) -> str:
     """Hash every source field that can change synthesis, not merely row count."""
     fields = (
-        "source_id", "source_timestamp", "source_revision_key", "rendered_text_hash",
+        "source_id", "source_timestamp", "source_revision_key", "rendered_text_hash", "provider",
         "title", "author", "article_url", "url_domain", "tickers", "channels", "provider_tags", "content_quality_flags",
         "quality_flags", "render_status",
     )

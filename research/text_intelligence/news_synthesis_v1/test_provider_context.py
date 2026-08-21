@@ -71,7 +71,30 @@ class ProviderContextTests(unittest.TestCase):
         })
         self.assertEqual(result["route"], "forecast_candidate")
         self.assertTrue(result["temporal_novelty"]["available"])
-        self.assertEqual(result["temporal_novelty"]["decision_role"], "trace_only_v1")
+        self.assertEqual(result["temporal_novelty"]["decision_role"], "trace_only_v3")
+
+    def test_v2_zero_exception_tag_routes_context_only(self) -> None:
+        result = classify_provider_context({
+            "provider": "benzinga", "provider_tags": ["bzi-shorthist"],
+            "title": "Short interest history",
+        })
+        self.assertEqual(result["route"], "context_only")
+        self.assertEqual(result["content_family"], "short_interest_history")
+
+    def test_v2_options_only_channel_routes_context_only(self) -> None:
+        result = classify_provider_context({
+            "provider": "benzinga", "channels": ["Options"],
+            "title": "Unusual option activity",
+        })
+        self.assertEqual(result["route"], "context_only")
+        self.assertEqual(result["content_family"], "options_market_activity")
+
+    def test_v2_movers_only_channel_requires_semantic_rescue(self) -> None:
+        result = classify_provider_context({
+            "provider": "benzinga", "channels": ["Movers"],
+            "title": "Why shares are moving",
+        })
+        self.assertEqual(result["route"], "semantic_rescue_required")
 
     def test_provider_tag_without_benzinga_authority_fails_open(self) -> None:
         result = classify_provider_context({
