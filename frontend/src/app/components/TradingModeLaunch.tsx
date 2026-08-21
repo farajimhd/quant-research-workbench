@@ -1,6 +1,8 @@
 import { CheckCircle2, CircleStop, RefreshCcw, TriangleAlert, type LucideIcon } from "lucide-react";
 import type { ReactNode } from "react";
 
+import "./TradingModeLaunch.css";
+
 export type TradingLaunchCheck = {
   action?: { hash?: string; label?: string };
   evidence?: string;
