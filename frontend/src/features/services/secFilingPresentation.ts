@@ -1,5 +1,91 @@
 import { displayName, formatCompactNumber } from "../../app/format";
-import { numericMetric, stringMetric, uniqueStringSample } from "./metrics";
+import type { SecTodayRow } from "./secContracts";
+import { numericMetric, stringArrayMetric, stringMetric, uniqueStringSample } from "./metrics";
+
+export function secTodayFilteredRows(rows: SecTodayRow[], query: string) {
+  const terms = query.toLowerCase().split(/\s+/).map((term) => term.trim()).filter(Boolean);
+  if (!terms.length) return rows;
+  return rows.filter((row) => {
+    const haystack = [
+      row.acceptedAtUtc, row.accessionNumber, row.accessionNumberCompact, row.activityStatus,
+      row.feedStatus, row.feedTitle, row.feedUpdatedAtUtc, row.filingParentCik, row.primaryTicker,
+      row.identityTickers.join(" "), row.primaryExchangeCode, row.primaryIbkrConid, row.cik,
+      row.companyName, row.issuerName, row.issuerLegalName, row.issuerSector, row.issuerIndustry,
+      row.securityName, row.filingDate, row.filingDetailUrl, row.formType, row.primaryDocument,
+      row.primaryDocumentUrl, row.reportDate, row.sourceFileName, row.textStatus,
+      row.documentTypeSample.join(" "), row.exchangeCodeSample.join(" "), row.fileExtensionSample.join(" "),
+      row.items.join(" "), row.listingStatusSample.join(" "), row.mappingStatusSample.join(" "),
+      row.qualityFlagSample.join(" "), row.textKindSample.join(" "), row.xbrlFactTagSample.join(" "),
+      row.xbrlFrameTagSample.join(" "),
+    ].join(" ").toLowerCase();
+    return terms.every((term) => haystack.includes(term));
+  });
+}
+
+export function secDocumentTextLabel(row: SecTodayRow) {
+  const parts = [
+    row.documentRows ? `${formatCompactNumber(row.documentRows)} docs` : "",
+    row.textRows ? `${formatCompactNumber(row.textRows)} text` : "",
+    row.textChars ? `${formatCompactNumber(row.textChars)} chars` : "",
+  ].filter(Boolean);
+  return parts.length ? parts.join(" / ") : "-";
+}
+
+export function secXbrlLabel(row: SecTodayRow) {
+  const parts = [
+    row.xbrlFactRows ? `${formatCompactNumber(row.xbrlFactRows)} facts` : "",
+    row.xbrlFrameRows ? `${formatCompactNumber(row.xbrlFrameRows)} frames` : "",
+  ].filter(Boolean);
+  return parts.length ? parts.join(" / ") : "-";
+}
+
+export function secTickerTitle(row: SecTodayRow) {
+  return [
+    row.rowOrigin === "sec_gateway_feed_participant" ? `Gateway feed participant for parent CIK ${row.filingParentCik || "-"}` : "",
+    row.identityTickers.length ? `Tickers: ${row.identityTickers.join(", ")}` : "No linked ticker",
+    row.primaryExchangeCode ? `Exchange: ${row.primaryExchangeCode}` : "",
+    row.primaryIbkrConid ? `IBKR: ${row.primaryIbkrConid}` : "",
+    row.identityBridgeCount ? `Bridge rows: ${formatCompactNumber(row.identityBridgeCount)}` : "",
+  ].filter(Boolean).join(" | ");
+}
+
+export function secTickerSubLabel(row: SecTodayRow) {
+  const extra = row.identityTickers.length > 1 ? `+${row.identityTickers.length - 1}` : "";
+  return [row.primaryExchangeCode || row.exchangeCodeSample[0] || "", row.primaryCurrencyCode || "", extra].filter(Boolean).join(" / ") || "No market bridge";
+}
+
+export function secIdentityTickers(identitySummary: Record<string, unknown>, row: SecTodayRow, identityRows: Record<string, unknown>[]) {
+  return uniqueStringSample([
+    ...stringArrayMetric(identitySummary, ["identity_tickers"]),
+    row.primaryTicker,
+    ...row.identityTickers,
+    ...identityRows.map((item) => stringMetric(item, ["ticker"])),
+  ], 48);
+}
+
+export function secMappingConfidenceLabel(value: number) {
+  if (!value) return "-";
+  return value <= 1 ? `${Math.round(value * 100)}%` : formatCompactNumber(value);
+}
+
+export function secActivityStatus(row: SecTodayRow) {
+  if (row.feedStatus === "failed") return "error";
+  if (row.documentIssueRows > 0) return "warn";
+  if (row.xbrlFactRows + row.xbrlFrameRows > 0 || row.textRows > 0) return "ok";
+  if (row.documentRows > 0) return "active";
+  return "waiting";
+}
+
+export function secDisplayStatus(row: SecTodayRow) {
+  return row.feedStatus || row.activityStatus;
+}
+
+export function secTodayRowTone(row: SecTodayRow) {
+  if (row.documentIssueRows > 0) return "sec-row-warn";
+  if (row.xbrlFactRows + row.xbrlFrameRows > 0) return "sec-row-xbrl";
+  if (row.textRows > 0) return "sec-row-text";
+  return "sec-row-filing";
+}
 
 export function secReadableTextRows(rows: Record<string, unknown>[]) {
   return [...rows].sort((left, right) => {

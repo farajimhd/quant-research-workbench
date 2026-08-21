@@ -29,7 +29,22 @@ import { ServiceFleetCard } from "../features/services/ServiceFleetCard";
 import { ServiceMetadataTable } from "../features/services/ServiceMetadataTable";
 import { ServiceOperationalAuthorityPanel } from "../features/services/ServiceOperationalAuthorityPanel";
 import { cleanNewsArticleText, newsArticleBlocks } from "../features/services/newsArticlePresentation";
-import { secReadableDocumentRows, secReadableTextRows, secTextCharCount, secTextMetadataRow } from "../features/services/secFilingPresentation";
+import {
+  secActivityStatus,
+  secDisplayStatus,
+  secDocumentTextLabel,
+  secIdentityTickers,
+  secMappingConfidenceLabel,
+  secReadableDocumentRows,
+  secReadableTextRows,
+  secTextCharCount,
+  secTextMetadataRow,
+  secTickerSubLabel,
+  secTickerTitle,
+  secTodayFilteredRows,
+  secTodayRowTone,
+  secXbrlLabel,
+} from "../features/services/secFilingPresentation";
 import type {
   SecDailyHistogramDatum,
   SecDailyHistogramState,
@@ -3149,131 +3164,6 @@ function newsTodayRowFromPayload(row: Record<string, unknown>): NewsTodayRow {
     title: stringMetric(row, ["title"]),
     urlDomain: stringMetric(row, ["url_domain"]),
   };
-}
-
-function secTodayFilteredRows(rows: SecTodayRow[], query: string) {
-  const terms = query.toLowerCase().split(/\s+/).map((term) => term.trim()).filter(Boolean);
-  if (!terms.length) return rows;
-  return rows.filter((row) => {
-    const haystack = secTodaySearchText(row);
-    return terms.every((term) => haystack.includes(term));
-  });
-}
-
-function secTodaySearchText(row: SecTodayRow) {
-  return [
-    row.acceptedAtUtc,
-    row.accessionNumber,
-    row.accessionNumberCompact,
-    row.activityStatus,
-    row.feedStatus,
-    row.feedTitle,
-    row.feedUpdatedAtUtc,
-    row.filingParentCik,
-    row.primaryTicker,
-    row.identityTickers.join(" "),
-    row.primaryExchangeCode,
-    row.primaryIbkrConid,
-    row.cik,
-    row.companyName,
-    row.issuerName,
-    row.issuerLegalName,
-    row.issuerSector,
-    row.issuerIndustry,
-    row.securityName,
-    row.filingDate,
-    row.filingDetailUrl,
-    row.formType,
-    row.primaryDocument,
-    row.primaryDocumentUrl,
-    row.reportDate,
-    row.sourceFileName,
-    row.textStatus,
-    row.documentTypeSample.join(" "),
-    row.exchangeCodeSample.join(" "),
-    row.fileExtensionSample.join(" "),
-    row.items.join(" "),
-    row.listingStatusSample.join(" "),
-    row.mappingStatusSample.join(" "),
-    row.qualityFlagSample.join(" "),
-    row.textKindSample.join(" "),
-    row.xbrlFactTagSample.join(" "),
-    row.xbrlFrameTagSample.join(" "),
-  ].join(" ").toLowerCase();
-}
-
-function secDocumentTextLabel(row: SecTodayRow) {
-  const parts = [
-    row.documentRows ? `${formatCompactNumber(row.documentRows)} docs` : "",
-    row.textRows ? `${formatCompactNumber(row.textRows)} text` : "",
-    row.textChars ? `${formatCompactNumber(row.textChars)} chars` : "",
-  ].filter(Boolean);
-  return parts.length ? parts.join(" / ") : "-";
-}
-
-function secXbrlLabel(row: SecTodayRow) {
-  const factRows = row.xbrlFactRows;
-  const frameRows = row.xbrlFrameRows;
-  const parts = [
-    factRows ? `${formatCompactNumber(factRows)} facts` : "",
-    frameRows ? `${formatCompactNumber(frameRows)} frames` : "",
-  ].filter(Boolean);
-  return parts.length ? parts.join(" / ") : "-";
-}
-
-function secTickerTitle(row: SecTodayRow) {
-  const parts = [
-    row.rowOrigin === "sec_gateway_feed_participant" ? `Gateway feed participant for parent CIK ${row.filingParentCik || "-"}` : "",
-    row.identityTickers.length ? `Tickers: ${row.identityTickers.join(", ")}` : "No linked ticker",
-    row.primaryExchangeCode ? `Exchange: ${row.primaryExchangeCode}` : "",
-    row.primaryIbkrConid ? `IBKR: ${row.primaryIbkrConid}` : "",
-    row.identityBridgeCount ? `Bridge rows: ${formatCompactNumber(row.identityBridgeCount)}` : "",
-  ].filter(Boolean);
-  return parts.join(" | ");
-}
-
-function secTickerSubLabel(row: SecTodayRow) {
-  const extra = row.identityTickers.length > 1 ? `+${row.identityTickers.length - 1}` : "";
-  const exchange = row.primaryExchangeCode || row.exchangeCodeSample[0] || "";
-  const currency = row.primaryCurrencyCode || "";
-  return [exchange, currency, extra].filter(Boolean).join(" / ") || "No market bridge";
-}
-
-function secIdentityTickers(identitySummary: Record<string, unknown>, row: SecTodayRow, identityRows: Record<string, unknown>[]) {
-  return uniqueStringSample(
-    [
-      ...stringArrayMetric(identitySummary, ["identity_tickers"]),
-      row.primaryTicker,
-      ...row.identityTickers,
-      ...identityRows.map((item) => stringMetric(item, ["ticker"])),
-    ],
-    48,
-  );
-}
-
-function secMappingConfidenceLabel(value: number) {
-  if (!value) return "-";
-  if (value <= 1) return `${Math.round(value * 100)}%`;
-  return formatCompactNumber(value);
-}
-
-function secActivityStatus(row: SecTodayRow) {
-  if (row.feedStatus === "failed") return "error";
-  if (row.documentIssueRows > 0) return "warn";
-  if (row.xbrlFactRows + row.xbrlFrameRows > 0 || row.textRows > 0) return "ok";
-  if (row.documentRows > 0) return "active";
-  return "waiting";
-}
-
-function secDisplayStatus(row: SecTodayRow) {
-  return row.feedStatus || row.activityStatus;
-}
-
-function secTodayRowTone(row: SecTodayRow) {
-  if (row.documentIssueRows > 0) return "sec-row-warn";
-  if (row.xbrlFactRows + row.xbrlFrameRows > 0) return "sec-row-xbrl";
-  if (row.textRows > 0) return "sec-row-text";
-  return "sec-row-filing";
 }
 
 function newsTodayFilteredRows(rows: NewsTodayRow[], query: string) {
