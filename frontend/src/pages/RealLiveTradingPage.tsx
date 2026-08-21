@@ -73,6 +73,25 @@ import {
   type Scope,
   type SignalRow,
 } from "../features/live-trading/contracts";
+import {
+  brokerAvailableFunds,
+  brokerPnlRows,
+  buildClosedTrade,
+  buildLiveEntryLine,
+  buildProfitLossRows,
+  normalizeRealLiveExecution,
+  normalizeRealLiveOrder,
+  normalizeRealLivePosition,
+  portfolioBalanceRows,
+  positionExposure,
+  realizedPnlFromTrades,
+  reducePosition,
+  upsertPosition,
+  type OrderRow,
+  type PositionRow,
+  type StageOrderContext,
+  type TradeRow,
+} from "../features/live-trading/portfolio";
 import { ApprovedCanvasRuntimePage, CanvasWorkspaceSurface } from "./CanvasConfigurationPage";
 import {
   WorkspaceCanvasManager,
@@ -158,88 +177,6 @@ type SavedCanvasLayout = {
 type LiveClockMode = "idle" | "loading_data" | "ready" | "seeking" | "running" | "paused" | "complete";
 
 type DecisionState = "approved" | "skipped" | "watching";
-
-type OrderRow = {
-  account_class?: string;
-  account_id?: string;
-  account_key?: string;
-  account_label?: string;
-  account_type?: string;
-  account_keys?: string[];
-  avg_fill_price?: number | null;
-  broker_order_id?: string;
-  client_order_id?: string;
-  conid?: string;
-  filled_quantity?: number;
-  id: string;
-  last_fill_price?: number | null;
-  limit: number;
-  quantity: number;
-  remaining_quantity?: number;
-  side: "BUY" | "SELL";
-  status: string;
-  stop: number;
-  symbol: string;
-  timestamp: string;
-  type: string;
-};
-
-type PositionRow = {
-  account_class?: string;
-  account_id?: string;
-  account_key?: string;
-  account_label?: string;
-  asset_class?: string;
-  conid?: string;
-  currency?: string;
-  market_value?: number;
-  realized_pnl?: number | null;
-  avg_price: number;
-  entry_session_date?: string;
-  entry_time?: string;
-  mark: number;
-  quantity: number;
-  stop: number;
-  symbol: string;
-  unrealized_pnl: number;
-  unrealized_pnl_pct: number;
-};
-
-type TradeRow = {
-  account_class?: string;
-  account_id?: string;
-  account_key?: string;
-  account_label?: string;
-  broker_order_id?: string;
-  commission?: number | null;
-  conid?: string;
-  entry_price: number;
-  entry_session_date?: string;
-  entry_time?: string;
-  execution_id?: string;
-  exit_order_id?: string;
-  exit_price: number;
-  exit_session_date: string;
-  exit_time: string;
-  gross_pnl: number;
-  gross_pnl_pct: number;
-  id: string;
-  quantity: number;
-  side: "LONG";
-  symbol: string;
-};
-
-type StageOrderContext = {
-  limit: number;
-  mark: number;
-  quantity: number;
-  row: Record<string, unknown> | null;
-  side: "BUY" | "SELL";
-  status: string;
-  stop: number;
-  symbol: string;
-  type: string;
-};
 
 const LIVE_SESSION_STORAGE_KEY = "quant-research-workbench.real-live-trading.session";
 const LIVE_LAYOUT_STORAGE_KEY = "quant-research-workbench.real-live-trading.layout";
@@ -2770,90 +2707,6 @@ function normalizeRealLiveScannerRow(row: Record<string, unknown>, session: Trad
   };
 }
 
-function normalizeRealLivePosition(row: Record<string, unknown>): PositionRow {
-  const symbol = stringValue(row, "symbol");
-  const quantity = numberValue(row, "quantity");
-  const avgPrice = numberValue(row, "avg_price");
-  const mark = numberValue(row, "mark_price") || avgPrice;
-  const unrealizedPnl = numberValue(row, "unrealized_pnl") || (mark - avgPrice) * quantity;
-  return {
-    account_class: stringValue(row, "account_class"),
-    account_id: stringValue(row, "account_id"),
-    account_key: stringValue(row, "account_key"),
-    account_label: stringValue(row, "account_label"),
-    asset_class: stringValue(row, "asset_class"),
-    avg_price: avgPrice,
-    conid: stringValue(row, "conid"),
-    currency: stringValue(row, "currency"),
-    mark,
-    market_value: optionalNumber(row, "market_value") ?? mark * quantity,
-    quantity,
-    realized_pnl: optionalNumber(row, "realized_pnl"),
-    stop: 0,
-    symbol,
-    unrealized_pnl: unrealizedPnl,
-    unrealized_pnl_pct: avgPrice > 0 ? unrealizedPnl / (avgPrice * Math.abs(quantity || 1)) : 0,
-  };
-}
-
-function normalizeRealLiveOrder(row: Record<string, unknown>): OrderRow {
-  const quantity = numberValue(row, "quantity");
-  const filled = numberValue(row, "filled_quantity");
-  const brokerOrderId = stringValue(row, "broker_order_id");
-  return {
-    account_class: stringValue(row, "account_class"),
-    account_id: stringValue(row, "account_id"),
-    account_key: stringValue(row, "account_key"),
-    account_label: stringValue(row, "account_label"),
-    account_type: stringValue(row, "account_key"),
-    avg_fill_price: optionalNumber(row, "avg_fill_price"),
-    broker_order_id: brokerOrderId,
-    client_order_id: stringValue(row, "client_order_id"),
-    conid: stringValue(row, "conid"),
-    filled_quantity: filled,
-    id: `${stringValue(row, "account_key") || "account"}-${brokerOrderId || stringValue(row, "client_order_id") || `${stringValue(row, "symbol")}-${stringValue(row, "submitted_at")}`}`,
-    last_fill_price: optionalNumber(row, "last_fill_price"),
-    limit: numberValue(row, "limit_price"),
-    quantity,
-    remaining_quantity: numberValue(row, "remaining_quantity") || Math.max(0, quantity - filled),
-    side: stringValue(row, "side") === "SELL" ? "SELL" : "BUY",
-    status: stringValue(row, "status") || "UNKNOWN",
-    stop: 0,
-    symbol: stringValue(row, "symbol"),
-    timestamp: stringValue(row, "submitted_at"),
-    type: stringValue(row, "order_type"),
-  };
-}
-
-function normalizeRealLiveExecution(row: Record<string, unknown>): TradeRow {
-  const fillPrice = numberValue(row, "fill_price");
-  const quantity = numberValue(row, "filled_quantity");
-  const timestamp = stringValue(row, "timestamp");
-  const sideText = stringValue(row, "side");
-  return {
-    account_class: stringValue(row, "account_class"),
-    account_id: stringValue(row, "account_id"),
-    account_key: stringValue(row, "account_key"),
-    account_label: stringValue(row, "account_label"),
-    broker_order_id: stringValue(row, "broker_order_id"),
-    commission: optionalNumber(row, "commission"),
-    conid: stringValue(row, "conid"),
-    entry_price: sideText === "BUY" ? fillPrice : 0,
-    entry_time: timestamp,
-    execution_id: stringValue(row, "execution_id"),
-    exit_order_id: stringValue(row, "broker_order_id"),
-    exit_price: sideText === "SELL" ? fillPrice : 0,
-    exit_session_date: timestamp.split(" ")[0] || "",
-    exit_time: timestamp,
-    gross_pnl: numberValue(row, "gross_amount"),
-    gross_pnl_pct: 0,
-    id: `${stringValue(row, "account_key") || "account"}-${stringValue(row, "execution_id") || stringValue(row, "broker_order_id") || `${stringValue(row, "symbol")}-${timestamp}`}`,
-    quantity,
-    side: "LONG",
-    symbol: stringValue(row, "symbol"),
-  };
-}
-
 function scannerQueryFromConditions(conditions: BackendTableQuery["conditions"]): BackendTableQuery {
   return {
     conditions,
@@ -3274,105 +3127,6 @@ function sizeModeLabel(mode: string) {
   return "% Risk";
 }
 
-function buildLiveEntryLine(position: PositionRow | undefined, currentBid: number): LiveEntryLine | null {
-  if (!position || !position.quantity || !position.avg_price) return null;
-  const pnl = (currentBid - position.avg_price) * position.quantity;
-  return {
-    color: "#2563eb",
-    pnl,
-    price: position.avg_price,
-    quantity: position.quantity,
-  };
-}
-
-function upsertPosition(rows: PositionRow[], symbol: string, quantity: number, price: number, stop: number, mark: number, entrySessionDate?: string, entryTime?: string): PositionRow[] {
-  const existing = rows.find((row) => row.symbol === symbol);
-  const nextQuantity = (existing?.quantity ?? 0) + quantity;
-  const avgPrice = existing ? ((existing.avg_price * existing.quantity) + (price * quantity)) / Math.max(1, nextQuantity) : price;
-  const row = {
-    avg_price: avgPrice,
-    entry_session_date: existing?.entry_session_date ?? entrySessionDate,
-    entry_time: existing?.entry_time ?? entryTime,
-    mark,
-    quantity: nextQuantity,
-    stop,
-    symbol,
-    unrealized_pnl: (mark - avgPrice) * nextQuantity,
-    unrealized_pnl_pct: avgPrice > 0 ? (mark / avgPrice) - 1 : 0,
-  };
-  return [row, ...rows.filter((item) => item.symbol !== symbol)];
-}
-
-function reducePosition(rows: PositionRow[], symbol: string, quantity: number, mark: number): PositionRow[] {
-  return rows.flatMap((row) => {
-    if (row.symbol !== symbol) return [row];
-    const nextQuantity = Math.max(0, row.quantity - quantity);
-    if (nextQuantity <= 0) return [];
-    return [{
-      ...row,
-      mark,
-      quantity: nextQuantity,
-      unrealized_pnl: (mark - row.avg_price) * nextQuantity,
-      unrealized_pnl_pct: row.avg_price > 0 ? (mark / row.avg_price) - 1 : 0,
-    }];
-  });
-}
-
-function buildClosedTrade(position: PositionRow, quantity: number, exitPrice: number, exitSessionDate: string, exitTime: string, exitOrderId: string): TradeRow {
-  const closedQuantity = Math.max(0, Math.min(quantity, position.quantity));
-  const grossPnl = (exitPrice - position.avg_price) * closedQuantity;
-  return {
-    entry_price: position.avg_price,
-    entry_session_date: position.entry_session_date,
-    entry_time: position.entry_time,
-    exit_order_id: exitOrderId,
-    exit_price: exitPrice,
-    exit_session_date: exitSessionDate,
-    exit_time: exitTime,
-    gross_pnl: grossPnl,
-    gross_pnl_pct: position.avg_price > 0 ? (exitPrice / position.avg_price) - 1 : 0,
-    id: `${exitOrderId}-trade`,
-    quantity: closedQuantity,
-    side: "LONG",
-    symbol: position.symbol,
-  };
-}
-
-function realizedPnlFromTrades(trades: TradeRow[]) {
-  return trades.reduce((total, row) => total + row.gross_pnl, 0);
-}
-
-function positionExposure(positions: PositionRow[]) {
-  return positions.reduce((total, row) => total + (row.market_value ?? row.mark * row.quantity), 0);
-}
-
-function buildProfitLossRows(positions: PositionRow[], trades: TradeRow[], snapshot: RealLivePortfolioPayload | null) {
-  const brokerPnl = brokerPnlRows(snapshot);
-  return [
-    ...brokerPnl,
-    ...positions.map((row) => ({
-      account: row.account_label,
-      avg_price: row.avg_price,
-      mark: row.mark,
-      pnl: row.unrealized_pnl,
-      pnl_pct: row.unrealized_pnl_pct,
-      quantity: row.quantity,
-      status: "OPEN",
-      symbol: row.symbol,
-    })),
-    ...trades.map((row) => ({
-      account: row.account_label,
-      entry_price: row.entry_price,
-      exit_price: row.exit_price,
-      pnl: row.gross_pnl,
-      pnl_pct: row.gross_pnl_pct,
-      quantity: row.quantity,
-      status: "CLOSED",
-      symbol: row.symbol,
-    })),
-  ];
-}
-
 function buildPortfolioMetrics({ orders, positions, snapshot, trades }: { orders: OrderRow[]; positions: PositionRow[]; snapshot: RealLivePortfolioPayload | null; trades: TradeRow[] }) {
   const brokerPnl = brokerPnlRows(snapshot);
   const realized = positions.reduce((total, row) => total + (row.realized_pnl ?? 0), 0);
@@ -3407,21 +3161,6 @@ function buildPortfolioMetrics({ orders, positions, snapshot, trades }: { orders
       { icon: <ShieldAlert size={14} />, label: "Broker Errors", tone: errors ? "danger" : "muted", value: integer(errors) },
     ],
   };
-}
-
-function portfolioBalanceRows(snapshot: RealLivePortfolioPayload | null): Record<string, unknown>[] {
-  return (snapshot?.balances ?? []).filter((row) => row && typeof row === "object");
-}
-
-function brokerPnlRows(snapshot: RealLivePortfolioPayload | null): Record<string, unknown>[] {
-  return (snapshot?.pnl ?? []).filter((row) => row && typeof row === "object").map((row) => ({ ...row, status: "BROKER_PNL" }));
-}
-
-function brokerAvailableFunds(snapshot: RealLivePortfolioPayload | null) {
-  const balances = portfolioBalanceRows(snapshot);
-  const available = balances.reduce((total, row) => total + numberValue(row, "available_funds"), 0);
-  if (available > 0) return available;
-  return balances.reduce((total, row) => total + numberValue(row, "cash"), 0);
 }
 
 function buildGlobalLiveMetrics({
