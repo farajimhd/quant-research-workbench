@@ -1,4 +1,4 @@
-import { ArrowDown, ArrowLeft, ArrowRight, ArrowUp, ArrowUpDown, Check, ChevronDown, ChevronLeft, Columns3, FileCheck2, Filter, Flame, ListFilter, Plus, Search, Star, Trash2, X } from "lucide-react";
+import { ArrowDown, ArrowLeft, ArrowRight, ArrowUp, ArrowUpDown, Check, ChevronDown, ChevronLeft, Columns3, FileCheck2, Flame, ListFilter, Plus, Search, Star, Trash2, X } from "lucide-react";
 import { forwardRef, useDeferredValue, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
 import { api, apiCached, invalidateApiCache } from "../../api/client";
@@ -6,6 +6,7 @@ import { CONFIGURATION_SESSION_CHANGED_EVENT, readConfigurationSession } from ".
 import { timeRecency } from "../timeRecency";
 import { InventoryFilterSelect } from "./InventoryFilterSelect";
 import { MarketTime } from "./MarketTime";
+import { filterRowsByConditions, TableActiveFilterBar, TableColumnFilterControl, type TableFilterColumn, type TableFilterCondition, type TableFilterMatchMode } from "./TableColumnFilters";
 import { useTickerPresentations } from "./TickerIdentity";
 import { CategoryBadge, PresentedValue, SecurityIdentityCell, presentationForColumn, tableCellClass, type PresentationValueType } from "./TablePresentation";
 import { useWallClock } from "./useWallClock";
@@ -758,7 +759,9 @@ function MarketListTable({
   title: string;
 }) {
   const [columnPickerOpen, setColumnPickerOpen] = useState(false);
-  const [filterMode, setFilterMode] = useState("all");
+  const [columnFilters, setColumnFilters] = useState<TableFilterCondition[]>([]);
+  const [filterMatchMode, setFilterMatchMode] = useState<TableFilterMatchMode>("all");
+  const [filterPanelOpen, setFilterPanelOpen] = useState(false);
   const [headerMenuColumn, setHeaderMenuColumn] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   const [sort, setSort] = useState<{ column: string; direction: "asc" | "desc" }>({ column: chronological ? "event_time" : "change_pct", direction: "desc" });
@@ -770,26 +773,26 @@ function MarketListTable({
   const selectedColumns = useMemo(() => withLockedColumns(columns, effectiveLockedColumns), [columns, effectiveLockedColumns]);
   const companyInIdentity = mergeCompanyWithIdentity;
   const tableColumns = useMemo(() => selectedColumns.filter((column) => column !== "logo" && !(companyInIdentity && column === "company_name")), [companyInIdentity, selectedColumns]);
+  const filterColumns = useMemo<TableFilterColumn[]>(() => tableColumns.map((column) => tableFilterColumn(catalogField(column, customColumns, catalog))), [catalog, customColumns, tableColumns]);
+  const filterColumnKey = filterColumns.map((column) => column.key).join("\u0000");
+  const filterScopeRef = useRef(title);
+  useEffect(() => {
+    if (filterScopeRef.current === title) return;
+    filterScopeRef.current = title;
+    setColumnFilters([]);
+    setFilterPanelOpen(false);
+  }, [title]);
+  useEffect(() => {
+    const visible = new Set(filterColumns.map((column) => column.key));
+    setColumnFilters((current) => current.some((condition) => !visible.has(condition.column)) ? current.filter((condition) => visible.has(condition.column)) : current);
+  }, [filterColumnKey]);
   useEffect(() => {
     if (sortColumn) setSort({ column: sortColumn, direction: sortColumn === "liquidity_rank" ? "asc" : "desc" });
   }, [sortColumn]);
-  const labelFilters = useMemo(() => ({
-    news: collectLabels(rows, "news_labels"),
-    sec: collectLabels(rows, "sec_labels"),
-  }), [rows]);
-  const visibleRows = useMemo(() => rows.filter((row) => {
+  const visibleRows = useMemo(() => filterRowsByConditions(rows, columnFilters, filterColumns, filterMatchMode).filter((row) => {
     if (deferredQuery && !Object.values(row).some((value) => String(value ?? "").toLowerCase().includes(deferredQuery))) return false;
-    const change = numberValue(row.change_pct);
-    if (filterMode === "advancing" && !(change > 0)) return false;
-    if (filterMode === "declining" && !(change < 0)) return false;
-    if (filterMode === "news_hot" && String(row.live_news_recency ?? "").toLowerCase() !== "hot") return false;
-    if (filterMode === "news_cold" && String(row.live_news_recency ?? "").toLowerCase() !== "cold") return false;
-    if (filterMode === "sec_hot" && String(row.sec_recency ?? "").toLowerCase() !== "hot") return false;
-    if (filterMode === "sec_cold" && String(row.sec_recency ?? "").toLowerCase() !== "cold") return false;
-    if (filterMode.startsWith("news_label:") && !rowLabels(row.news_labels).some((labelValue) => normalizeLabel(labelValue) === filterMode.slice(11))) return false;
-    if (filterMode.startsWith("sec_label:") && !rowLabels(row.sec_labels).some((labelValue) => normalizeLabel(labelValue) === filterMode.slice(10))) return false;
     return true;
-  }).sort((left, right) => compareValues(left[sort.column], right[sort.column]) * (sort.direction === "asc" ? 1 : -1)).slice(0, limit), [deferredQuery, filterMode, limit, rows, sort]);
+  }).sort((left, right) => compareValues(left[sort.column], right[sort.column]) * (sort.direction === "asc" ? 1 : -1)).slice(0, limit), [columnFilters, deferredQuery, filterColumns, filterMatchMode, limit, rows, sort]);
   const tickers = visibleRows
     .filter((row) => liveRecency || !String(row.logo_url ?? "").trim() || (companyInIdentity && !String(row.company_name ?? "").trim()))
     .map((row) => String(row.ticker ?? row.symbol ?? ""))
@@ -867,12 +870,12 @@ function MarketListTable({
     setHeaderMenuColumn(key);
   }
   return <div className="market-list-table-shell">
-    <div className="market-list-toolbar">
+    <div className="market-list-toolbar-stack"><div className="market-list-toolbar">
       <label className="market-list-search"><Search size={14} /><input aria-label={`Search ${title}`} onChange={(event) => setQuery(event.target.value)} placeholder="Search symbols and values" value={query} /></label>
-      <label className="market-list-filter"><Filter size={13} /><select aria-label={`Filter ${title}`} onChange={(event) => setFilterMode(event.target.value)} value={filterMode}><option value="all">All rows</option><option value="advancing">Advancing</option><option value="declining">Declining</option><option value="news_hot">Hot news</option><option value="news_cold">Cold news</option><option value="sec_hot">Hot SEC</option><option value="sec_cold">Cold SEC</option>{labelFilters.news.length ? <optgroup label="News labels">{labelFilters.news.map((labelValue) => <option key={`news:${labelValue}`} value={`news_label:${normalizeLabel(labelValue)}`}>{labelValue}</option>)}</optgroup> : null}{labelFilters.sec.length ? <optgroup label="SEC labels">{labelFilters.sec.map((labelValue) => <option key={`sec:${labelValue}`} value={`sec_label:${normalizeLabel(labelValue)}`}>{labelValue}</option>)}</optgroup> : null}</select></label>
+      <TableColumnFilterControl columns={filterColumns} conditions={columnFilters} matchMode={filterMatchMode} onChange={setColumnFilters} onMatchModeChange={setFilterMatchMode} onOpenChange={setFilterPanelOpen} open={filterPanelOpen} rows={rows} title={title} />
       <span>{visibleRows.length} of {rows.length}</span>
       <button aria-expanded={columnPickerOpen} className="market-list-columns-button" onClick={() => setColumnPickerOpen((open) => !open)} type="button"><Columns3 size={14} /> Columns <b>{selectedColumns.length}</b></button>
-    </div>
+    </div><TableActiveFilterBar columns={filterColumns} conditions={columnFilters} onChange={setColumnFilters} /></div>
     <div className="market-list-table-scroll"><table className={`market-list-table${companyInIdentity ? " with-company-identity" : ""}`}><thead><tr>{tableColumns.map((column) => { const definition = catalogField(column, customColumns, catalog); const sorted = sort.column === column; const className = columnClass(column, definition); const menuOpen = headerMenuColumn === column; return column === "logo" ? <th aria-label="Ticker logo" className={className} key={column} /> : <th aria-sort={sorted ? (sort.direction === "asc" ? "ascending" : "descending") : "none"} className={className} data-menu-open={menuOpen ? "true" : undefined} key={column}><button aria-expanded={menuOpen} aria-label={`Configure ${definition.label} column`} onClick={() => setHeaderMenuColumn((current) => current === column ? null : column)} title={`Configure ${definition.label}`} type="button"><span>{definition.label}</span>{sorted ? sort.direction === "asc" ? <ArrowUp size={13} /> : <ArrowDown size={13} /> : <ChevronDown size={13} />}</button>{menuOpen ? <ColumnHeaderMenu column={column} definition={definition} locked={effectiveLockedColumns.includes(column)} onAnchorChange={(value) => changeTechnicalAnchor(column, value)} onMove={(target) => moveColumn(column, target)} onRemove={() => removeColumn(column)} onSort={(direction) => changeSort(column, direction)} onSourceChange={(value) => changeTechnicalSource(column, value)} onTimeframeChange={(value) => changeTechnicalTimeframe(column, value)} ref={headerMenuRef} /> : null}</th>; })}{rowAction ? <th aria-label="Row actions" /> : null}</tr></thead><tbody>{visibleRows.length ? visibleRows.map((row, index) => { const ticker = String(row.ticker ?? row.symbol ?? "").trim().toUpperCase(); const selectable = Boolean(ticker && onTickerSelect); const select = () => { if (selectable) onTickerSelect?.(ticker); }; return <tr aria-label={selectable ? `Open ${ticker} Charts & Quotes` : undefined} data-recency={recencyRail ? eventRecency(row.event_time, wallClockMs) : undefined} data-selectable={selectable ? "true" : undefined} key={`${ticker || "row"}:${row.event_time ?? index}:${index}`} onClick={(event) => { if (!(event.target as HTMLElement).closest("button, input, select, a")) select(); }} onKeyDown={(event) => { if (selectable && (event.key === "Enter" || event.key === " ")) { event.preventDefault(); select(); } }} tabIndex={selectable ? 0 : undefined}>{tableColumns.map((column) => { const definition = catalogField(column, customColumns, catalog); return <td className={`${toneClass(row[column], column, customColumns, catalog)} ${columnClass(column, definition)}`.trim()} key={column}>{renderMarketCell(row, column, presentations, customColumns, catalog, companyInIdentity)}</td>; })}{rowAction ? <td className="market-list-row-action">{rowAction(row)}</td> : null}</tr>; }) : <tr><td className="market-list-empty" colSpan={tableColumns.length + (rowAction ? 1 : 0)}>{empty}</td></tr>}</tbody></table></div>
     {columnPickerOpen ? <ColumnPicker catalog={catalog} columns={selectedColumns} customColumns={customColumns} fieldCoverage={fieldCoverage} lockedColumns={effectiveLockedColumns} onAddTechnical={addTechnicalColumn} onChange={onColumnsChange} onClose={() => setColumnPickerOpen(false)} /> : null}
   </div>;
@@ -1032,6 +1035,19 @@ function catalogField(key: string, customColumns: ScannerCustomColumn[] = [], ca
 function canonicalDiscoveryColumns(columns: string[]) {
   return [...new Set(columns.map((column) => column === "ticker" ? "symbol" : column === "last" ? "last_price" : column))];
 }
+function tableFilterColumn(definition: FieldDefinition): TableFilterColumn {
+  const presentation = definition.presentationValueType ?? presentationForColumn(definition.key).presentationValueType;
+  const numeric = ["integer", "money", "multiple", "number", "percent", "percentPlain", "score"].includes(definition.format)
+    || ["basis_points", "integer", "money", "percent", "price", "quantity", "ratio", "score"].includes(presentation);
+  const temporal = definition.format === "date" || ["date", "datetime", "time"].includes(presentation);
+  return {
+    description: definition.description,
+    key: definition.key,
+    kind: numeric ? "number" : temporal ? "datetime" : presentation === "boolean" ? "boolean" : presentation === "category" ? "category" : "text",
+    label: definition.label,
+    temporalUnit: presentation === "date" ? "date" : "datetime",
+  };
+}
 
 function eventRecency(value: unknown, asOfMs: number) {
   const timestamp = String(value ?? "");
@@ -1047,8 +1063,6 @@ function columnClass(column: string, definition = catalogField(column)) {
   return `${identityClass} ${numericClass} ${timeClass} ${tableCellClass(column, { presentationValueType: definition.presentationValueType })}`.trim();
 }
 function rowLabels(value: unknown) { return [...new Set(String(value ?? "").split(",").map((item) => item.trim()).filter(Boolean))]; }
-function collectLabels(rows: ScreenerRow[], column: "news_labels" | "sec_labels") { return [...new Set(rows.flatMap((row) => rowLabels(row[column])))].sort((left, right) => left.localeCompare(right)); }
-function normalizeLabel(value: string) { return value.trim().toLowerCase(); }
 function field(key: string, labelValue: string, group: string, kind: FieldKind, format: FieldDefinition["format"], description: string): FieldDefinition { return { description, format, group, key, kind, label: labelValue }; }
 function technicalMetric(metric: TechnicalMetric, labelValue: string, format: FieldDefinition["format"], description: string, scope: FieldDefinition["scope"]) {
   return { description, format, group: "Technicals", kind: "derived" as const, label: labelValue, metric, scope };
