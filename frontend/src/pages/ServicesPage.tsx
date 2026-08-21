@@ -55,6 +55,7 @@ import type {
   SecTodaySort,
 } from "../features/services/secContracts";
 import { defaultSecHistogramWindow, elapsedSecHistogramRows, useSecTodayRows } from "../features/services/useSecTodayRows";
+import { secHistogramFullWindowRows, secHistogramHover, secHistogramSummary, secLiveFeedRows } from "../features/services/secHistogramPresentation";
 import {
   arrayRecords,
   arrayValueLabel,
@@ -3386,66 +3387,6 @@ function serviceWorkPlanSummary(groups: ServiceWorkGroup[]) {
   );
 }
 
-function secHistogramSummary(rows: SecDailyHistogramDatum[]) {
-  return rows.reduce(
-    (summary, row) => {
-      summary.documents += row.documentRows;
-      summary.filingOnly += row.filingOnlyRows;
-      summary.text += row.textRows;
-      summary.total += row.totalRows;
-      summary.xbrl += row.xbrlRows;
-      return summary;
-    },
-    { documents: 0, filingOnly: 0, text: 0, total: 0, xbrl: 0 },
-  );
-}
-
-function secLiveFeedRows(service: ServiceStatusPayload): SecLiveFeedRow[] {
-  const rows = serviceRecentSourceRows(service)
-    .map((row) => secLiveFeedRow(row))
-    .filter((row): row is SecLiveFeedRow => Boolean(row));
-  const byKey = new Map<string, SecLiveFeedRow>();
-  for (const row of rows) {
-    const key = [row.accession || row.title, row.time, row.status].join("|");
-    if (!byKey.has(key)) byKey.set(key, row);
-  }
-  return Array.from(byKey.values())
-    .sort((left, right) => (right.timeMs ?? 0) - (left.timeMs ?? 0))
-    .slice(0, 50);
-}
-
-function secLiveFeedRow(row: Record<string, unknown>): SecLiveFeedRow | null {
-  const accession = firstString(row, ["accession_number", "accession", "accessionNumber"]);
-  const cik = firstString(row, ["cik", "central_index_key"]);
-  const form = firstString(row, ["form_type", "form", "type"]);
-  const title = firstString(row, ["title", "company_name", "issuer_name", "filer_name"]);
-  if (!accession && !cik && !form && !title) return null;
-  const timestamp = firstTimestamp(row);
-  const documentRows = firstString(row, ["documents", "document_rows", "docs"]);
-  const textRows = firstString(row, ["texts", "text_rows", "text_count"]);
-  const factRows = firstString(row, ["xbrl_facts", "xbrl_fact_rows", "facts_written"]);
-  const frameRows = firstString(row, ["xbrl_frames", "xbrl_frame_rows", "frames_written"]);
-  return {
-    accession,
-    cik,
-    company: firstString(row, ["company_name", "issuer_name", "filer_name"]),
-    documents: [
-      documentRows ? `${documentRows} docs` : "",
-      textRows ? `${textRows} text` : "",
-    ].filter(Boolean).join(" / "),
-    form,
-    raw: row,
-    status: firstString(row, ["status", "state", "result", "level"]) || "observed",
-    time: timestamp.label,
-    timeMs: timestamp.value,
-    title,
-    xbrl: [
-      factRows ? `${factRows} facts` : "",
-      frameRows ? `${frameRows} frames` : "",
-    ].filter(Boolean).join(" / "),
-  };
-}
-
 function newsPollHistoryRow(service: ServiceStatusPayload): NewsPollHistoryRow | null {
   const metrics = serviceMetricsRecord(service);
   const pollRun = numericMetric(metrics, ["poll_runs"]);
@@ -3501,20 +3442,6 @@ function newsHistogramHover(row: NewsDailyHistogramDatum) {
     single: row.singleTickerRows,
     utc: formatUtcDateTime(row.bucketUtc),
     van: formatZoneDateTime(bucketDate, VANCOUVER_TIME_ZONE),
-  };
-}
-
-function secHistogramHover(row: SecDailyHistogramDatum) {
-  const bucketDate = new Date(Date.parse(row.bucketUtc));
-  return {
-    documents: row.documentRows,
-    et: formatZoneDateTime(bucketDate, EXCHANGE_TIME_ZONE),
-    filingOnly: row.filingOnlyRows,
-    text: row.textRows,
-    total: row.totalRows,
-    utc: formatUtcDateTime(row.bucketUtc),
-    van: formatZoneDateTime(bucketDate, VANCOUVER_TIME_ZONE),
-    xbrl: row.xbrlRows,
   };
 }
 
@@ -3580,22 +3507,6 @@ function newsHistogramFullWindowRows(rows: NewsDailyHistogramDatum[], windowStar
   return Array.from({ length: totalBins }, (_, index) => {
     const timestamp = start + index * binSeconds * 1000;
     return byTime.get(timestamp) ?? { broadOrNoneRows: 0, bucketUtc: new Date(timestamp).toISOString(), singleTickerRows: 0, totalRows: 0 };
-  });
-}
-
-function secHistogramFullWindowRows(rows: SecDailyHistogramDatum[], windowStartUtc: string, windowEndUtc: string, binSeconds: number) {
-  const start = Date.parse(windowStartUtc);
-  const end = Date.parse(windowEndUtc);
-  if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start || binSeconds <= 0) return rows;
-  const byTime = new Map<number, SecDailyHistogramDatum>();
-  for (const row of rows) {
-    const timestamp = Date.parse(row.bucketUtc);
-    if (Number.isFinite(timestamp)) byTime.set(timestamp, row);
-  }
-  const totalBins = Math.max(1, Math.ceil((end - start) / (binSeconds * 1000)) + 1);
-  return Array.from({ length: totalBins }, (_, index) => {
-    const timestamp = start + index * binSeconds * 1000;
-    return byTime.get(timestamp) ?? { bucketUtc: new Date(timestamp).toISOString(), documentRows: 0, filingOnlyRows: 0, textRows: 0, totalRows: 0, xbrlRows: 0 };
   });
 }
 
