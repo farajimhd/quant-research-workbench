@@ -66,6 +66,40 @@ struct LiveMarketStateStore {
     history_limit: usize,
 }
 
+#[derive(Default)]
+struct HaltMarketContext {
+    last_eligible_trade_price: HashMap<String, f64>,
+    five_minute_change_pct: HashMap<String, f64>,
+}
+
+impl HaltMarketContext {
+    fn observe_bar(&mut self, row: &BarRow) {
+        if row.timeframe == "1s" && row.trade_count > 0 && row.close.is_finite() && row.close > 0.0
+        {
+            self.last_eligible_trade_price
+                .insert(row.sym.clone(), row.close);
+        }
+        if row.timeframe == "1m" {
+            match row.price_change_5_bar_pct.filter(|value| value.is_finite()) {
+                Some(value) => {
+                    self.five_minute_change_pct.insert(row.sym.clone(), value);
+                }
+                None => {
+                    self.five_minute_change_pct.remove(&row.sym);
+                }
+            }
+        }
+    }
+
+    fn last_price(&self, ticker: &str) -> Option<f64> {
+        self.last_eligible_trade_price.get(ticker).copied()
+    }
+
+    fn change_5m_pct(&self, ticker: &str) -> Option<f64> {
+        self.five_minute_change_pct.get(ticker).copied()
+    }
+}
+
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 struct StateKey {
     ticker: String,
@@ -136,9 +170,6 @@ impl SharedLiveMarketStateStore {
                 store.active.remove(&key);
             }
             _ => {}
-        }
-        if event.event_status == "updated" {
-            return;
         }
         store.history.push_back(event);
         while store.history.len() > store.history_limit {
@@ -246,6 +277,7 @@ async fn run_live_market_state_service(
         "Abnormal market-state writer initialized; normal state is intentionally sparse.",
     );
     let mut active = HashMap::<StateKey, LiveSymbolMarketStateEvent>::new();
+    let mut halt_market_context = HaltMarketContext::default();
     let mut batch = Vec::<LiveSymbolMarketStateEvent>::new();
     let mut flush_interval = interval(Duration::from_millis(config.flush_interval_ms));
     loop {
@@ -253,12 +285,14 @@ async fn run_live_market_state_service(
             input = receiver.recv() => {
                 match input {
                     Some(input) => {
-                        let transitions = evaluate_input(&config, &mut active, input);
+                        let transitions = evaluate_input(
+                            &config,
+                            &mut active,
+                            &mut halt_market_context,
+                            input,
+                        );
                         for transition in transitions {
                             store.apply(transition.clone()).await;
-                            if transition.event_status == "updated" {
-                                continue;
-                            }
                             if event_sender.send(transition.clone()).is_err() {
                                 metrics.inc_live_market_state_broadcast_dropped();
                             }
@@ -320,18 +354,27 @@ async fn flush_live_market_state_batch(
 fn evaluate_input(
     config: &GatewayConfig,
     active: &mut HashMap<StateKey, LiveSymbolMarketStateEvent>,
+    halt_market_context: &mut HaltMarketContext,
     input: LiveMarketStateInput,
 ) -> Vec<LiveSymbolMarketStateEvent> {
     match input {
-        LiveMarketStateInput::Event(event) => evaluate_market_event(config, active, event),
-        LiveMarketStateInput::Luld(event) => evaluate_luld_event(config, active, event),
-        LiveMarketStateInput::Bar(row) => evaluate_bar_row(config, active, row),
+        LiveMarketStateInput::Event(event) => {
+            evaluate_market_event(config, active, halt_market_context, event)
+        }
+        LiveMarketStateInput::Luld(event) => {
+            evaluate_luld_event(config, active, halt_market_context, event)
+        }
+        LiveMarketStateInput::Bar(row) => {
+            halt_market_context.observe_bar(&row);
+            evaluate_bar_row(config, active, row)
+        }
     }
 }
 
 fn evaluate_luld_event(
     config: &GatewayConfig,
     active: &mut HashMap<StateKey, LiveSymbolMarketStateEvent>,
+    halt_market_context: &HaltMarketContext,
     event: LuldEvent,
 ) -> Vec<LiveSymbolMarketStateEvent> {
     let evidence = Evidence::new(
@@ -346,6 +389,8 @@ fn evaluate_luld_event(
         "low_price": event.low_price,
         "sequence": event.sequence,
         "tape": event.tape,
+        "last_price": halt_market_context.last_price(&event.ticker),
+        "change_5m_pct": halt_market_context.change_5m_pct(&event.ticker),
     }));
     if event.indicators.contains(&17) {
         open_or_update(
@@ -364,6 +409,7 @@ fn evaluate_luld_event(
 fn evaluate_market_event(
     config: &GatewayConfig,
     active: &mut HashMap<StateKey, LiveSymbolMarketStateEvent>,
+    halt_market_context: &HaltMarketContext,
     event: MarketEvent,
 ) -> Vec<LiveSymbolMarketStateEvent> {
     match event {
@@ -378,7 +424,13 @@ fn evaluate_market_event(
                     active,
                     EventSpec::blocking("condition_halt", "critical", "trade_condition_halt"),
                     Evidence::new(ticker.clone(), "trade", ts, conditions.clone(), Vec::new())
-                        .with_json(json!({"trade_id": trade.trade_id, "price": trade.price, "size": trade.size})),
+                        .with_json(json!({
+                            "trade_id": trade.trade_id,
+                            "source_trade_price": trade.price,
+                            "size": trade.size,
+                            "last_price": halt_market_context.last_price(&ticker),
+                            "change_5m_pct": halt_market_context.change_5m_pct(&ticker),
+                        })),
                 ));
             }
             if intersects(
@@ -402,7 +454,33 @@ fn evaluate_market_event(
             let ticker = quote.ticker.clone();
             let ts = quote.ts;
             let mut out = Vec::new();
-            if intersects(&conditions, &config.live_market_state_quote_halt_conditions) {
+            let key = StateKey {
+                ticker: ticker.clone(),
+                event_type: "condition_halt".to_string(),
+            };
+            let previous = active.get(&key).cloned();
+            let resumes = intersects(
+                &conditions,
+                &config.live_market_state_quote_resume_conditions,
+            );
+            let opens = intersects(&conditions, &config.live_market_state_quote_halt_conditions);
+            if opens || (previous.is_some() && !resumes) {
+                let category_conditions = if opens || previous.is_none() {
+                    conditions.clone()
+                } else {
+                    previous
+                        .as_ref()
+                        .map(|event| event.source_conditions.clone())
+                        .unwrap_or_default()
+                };
+                let category_indicators = if indicators.is_empty() {
+                    previous
+                        .as_ref()
+                        .map(|event| event.source_indicators.clone())
+                        .unwrap_or_default()
+                } else {
+                    indicators.clone()
+                };
                 out.extend(open_or_update(
                     config,
                     active,
@@ -411,16 +489,18 @@ fn evaluate_market_event(
                         ticker.clone(),
                         "quote",
                         ts,
-                        conditions.clone(),
-                        indicators.clone(),
+                        category_conditions,
+                        category_indicators,
                     )
-                    .with_json(json!({"bid": quote.bid_price, "ask": quote.ask_price})),
+                    .with_json(json!({
+                        "bid": quote.bid_price,
+                        "ask": quote.ask_price,
+                        "last_price": halt_market_context.last_price(&ticker),
+                        "change_5m_pct": halt_market_context.change_5m_pct(&ticker),
+                    })),
                 ));
             }
-            if intersects(
-                &conditions,
-                &config.live_market_state_quote_resume_conditions,
-            ) {
+            if resumes {
                 out.extend(close_state(
                     config,
                     active,
@@ -577,6 +657,15 @@ fn open_or_update(
     };
     let now = Utc::now();
     let already_active = active.contains_key(&key);
+    if let Some(previous) = active.get(&key) {
+        if previous.source_event_type == evidence.source_event_type
+            && previous.source_conditions == evidence.source_conditions
+            && previous.source_indicators == evidence.source_indicators
+            && previous.evidence_json == evidence.evidence_json.to_string()
+        {
+            return Vec::new();
+        }
+    }
     let status = if already_active { "updated" } else { "opened" };
     let event_start_utc = active
         .get(&key)
@@ -884,13 +973,41 @@ fn merge_tree_settings(storage_policy: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::event::QuoteEvent;
     use chrono::TimeZone;
 
     fn config() -> GatewayConfig {
         let mut config = GatewayConfig::from_env();
         config.qmd_run_id = "test_run".to_string();
         config.live_market_state_enabled = false;
+        config.live_market_state_quote_halt_conditions = vec![45];
+        config.live_market_state_quote_resume_conditions = vec![18];
         config
+    }
+
+    fn quote(
+        ts: DateTime<Utc>,
+        sequence: u64,
+        bid: f64,
+        ask: f64,
+        conditions: Vec<u16>,
+    ) -> MarketEvent {
+        MarketEvent::Quote(QuoteEvent {
+            ask_exchange: 1,
+            ask_price: ask,
+            ask_size: 100,
+            bid_exchange: 1,
+            bid_price: bid,
+            bid_size: 100,
+            conditions,
+            indicators: Vec::new(),
+            ingest_ts: ts,
+            raw: json!({}),
+            sequence,
+            tape: 3,
+            ticker: "HALT".to_string(),
+            ts,
+        })
     }
 
     #[test]
@@ -918,11 +1035,19 @@ mod tests {
             Evidence::new("AAPL".to_string(), "trade", ts, vec![1], Vec::new()),
         );
         assert_eq!(opened[0].event_status, "opened");
-        let updated = open_or_update(
+        let unchanged = open_or_update(
             &config,
             &mut active,
             EventSpec::blocking("condition_halt", "critical", "condition_halt"),
             Evidence::new("AAPL".to_string(), "trade", ts, vec![1], Vec::new()),
+        );
+        assert!(unchanged.is_empty());
+        let updated = open_or_update(
+            &config,
+            &mut active,
+            EventSpec::blocking("condition_halt", "critical", "condition_halt"),
+            Evidence::new("AAPL".to_string(), "trade", ts, vec![1], Vec::new())
+                .with_json(json!({"price": 10.1})),
         );
         assert_eq!(updated[0].event_status, "updated");
         let closed = close_state(
@@ -940,6 +1065,7 @@ mod tests {
     fn luld_indicator_seventeen_opens_and_eighteen_closes_halt() {
         let config = config();
         let mut active = HashMap::new();
+        let halt_market_context = HaltMarketContext::default();
         let ts = Utc.with_ymd_and_hms(2026, 8, 20, 15, 0, 0).unwrap();
         let event = |indicator| LuldEvent {
             high_price: 10.5,
@@ -952,13 +1078,97 @@ mod tests {
             ts,
         };
 
-        let opened = evaluate_luld_event(&config, &mut active, event(17));
-        let closed = evaluate_luld_event(&config, &mut active, event(18));
+        let opened = evaluate_luld_event(&config, &mut active, &halt_market_context, event(17));
+        let closed = evaluate_luld_event(&config, &mut active, &halt_market_context, event(18));
 
         assert_eq!(opened[0].event_status, "opened");
         assert_eq!(opened[0].source_event_type, "luld");
         assert_eq!(opened[0].block_reason.as_deref(), Some("luld_indicator_17"));
         assert_eq!(closed[0].event_status, "closed");
         assert!(active.is_empty());
+    }
+
+    #[test]
+    fn changed_quotes_emit_updates_while_halt_remains_active() {
+        let config = config();
+        let mut active = HashMap::new();
+        let mut halt_market_context = HaltMarketContext::default();
+        halt_market_context
+            .last_eligible_trade_price
+            .insert("HALT".to_string(), 9.8);
+        halt_market_context
+            .five_minute_change_pct
+            .insert("HALT".to_string(), -2.5);
+        let ts = Utc.with_ymd_and_hms(2026, 8, 20, 15, 0, 0).unwrap();
+
+        let opened = evaluate_market_event(
+            &config,
+            &mut active,
+            &halt_market_context,
+            quote(ts, 1, 10.0, 10.1, vec![45]),
+        );
+        let updated = evaluate_market_event(
+            &config,
+            &mut active,
+            &halt_market_context,
+            quote(ts + chrono::Duration::seconds(1), 2, 9.9, 10.0, Vec::new()),
+        );
+        let unchanged = evaluate_market_event(
+            &config,
+            &mut active,
+            &halt_market_context,
+            quote(ts + chrono::Duration::seconds(2), 3, 9.9, 10.0, Vec::new()),
+        );
+        let closed = evaluate_market_event(
+            &config,
+            &mut active,
+            &halt_market_context,
+            quote(ts + chrono::Duration::seconds(3), 4, 10.0, 10.1, vec![18]),
+        );
+
+        assert_eq!(opened[0].event_status, "opened");
+        assert!(opened[0].evidence_json.contains("\"last_price\":9.8"));
+        assert!(opened[0].evidence_json.contains("\"change_5m_pct\":-2.5"));
+        assert_eq!(updated[0].event_status, "updated");
+        assert_eq!(updated[0].source_conditions, vec![45]);
+        assert!(unchanged.is_empty());
+        assert_eq!(closed[0].event_status, "closed");
+        assert!(active.is_empty());
+    }
+
+    #[tokio::test]
+    async fn store_retains_updated_transitions_in_recent_history() {
+        let config = config();
+        let mut active = HashMap::new();
+        let store = SharedLiveMarketStateStore::new(10);
+        let ts = Utc.with_ymd_and_hms(2026, 8, 20, 15, 0, 0).unwrap();
+        let opened = open_or_update(
+            &config,
+            &mut active,
+            EventSpec::blocking("condition_halt", "critical", "condition_halt"),
+            Evidence::new("HALT".to_string(), "quote", ts, vec![45], Vec::new())
+                .with_json(json!({"bid": 10.0, "ask": 10.1})),
+        );
+        let updated = open_or_update(
+            &config,
+            &mut active,
+            EventSpec::blocking("condition_halt", "critical", "condition_halt"),
+            Evidence::new(
+                "HALT".to_string(),
+                "quote",
+                ts + chrono::Duration::seconds(1),
+                vec![45],
+                Vec::new(),
+            )
+            .with_json(json!({"bid": 9.9, "ask": 10.0})),
+        );
+
+        store.apply(opened[0].clone()).await;
+        store.apply(updated[0].clone()).await;
+        let snapshot = store.snapshot(10).await;
+
+        assert_eq!(snapshot.active_count, 1);
+        assert_eq!(snapshot.history_count, 2);
+        assert_eq!(snapshot.recent[0].event_status, "updated");
     }
 }

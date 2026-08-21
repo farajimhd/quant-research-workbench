@@ -55,10 +55,23 @@ class RealLiveScannerCompositionTests(unittest.TestCase):
                 "event_start_utc": "2026-08-20T14:15:00+00:00",
                 "source_event_ts_utc": "2026-08-20T14:15:00+00:00",
                 "source_event_type": "quote",
-                "source_conditions": [7],
+                "event_status": "opened",
+                "source_conditions": [45],
                 "source_indicators": [],
                 "block_reason": "quote_condition_halt",
                 "evidence_json": '{"bid": 10.0, "ask": 10.1}',
+                "source_run_id": "qmd-live-1",
+            }, {
+                "event_id": "qmd-halt-update-1",
+                "ticker": "HALT",
+                "event_start_utc": "2026-08-20T14:15:00+00:00",
+                "source_event_ts_utc": "2026-08-20T14:15:01+00:00",
+                "source_event_type": "quote",
+                "event_status": "updated",
+                "source_conditions": [45],
+                "source_indicators": [],
+                "block_reason": "quote_condition_halt",
+                "evidence_json": '{"bid": 9.9, "ask": 10.0}',
                 "source_run_id": "qmd-live-1",
             }],
         }
@@ -88,6 +101,11 @@ class RealLiveScannerCompositionTests(unittest.TestCase):
                         as_of=at,
                         journal=journal,
                         history_loader=lambda **_: source,
+                        scanner_rows=[{
+                            "ticker": "HALT",
+                            "last_price": 9.8,
+                            "data.price_change_5_bar_pct@1:value@@1m": -2.5,
+                        }],
                         force=True,
                     )
                     second = service.hydrate_native_signal_streams(
@@ -100,11 +118,35 @@ class RealLiveScannerCompositionTests(unittest.TestCase):
             finally:
                 journal.close()
 
-        self.assertEqual(first["source_row_count"], 1)
-        self.assertEqual(first["inserted_count"], 1)
+        self.assertEqual(first["source_row_count"], 2)
+        self.assertEqual(first["inserted_count"], 2)
         self.assertEqual(first["new_occurrences"][0]["ticker"], "HALT")
+        occurrence = first["new_occurrences"][0]
+        self.assertEqual(occurrence["last_price"], 9.8)
+        self.assertEqual(occurrence["halt_direction"], "Down")
+        self.assertIn("LULD", occurrence["halt_category"])
+        self.assertEqual(first["new_occurrences"][1]["bid_price"], 9.9)
         self.assertEqual(service._halt_occurrence_row(source["rows"][0])["bid"], 10.0)
         self.assertEqual(second["inserted_count"], 0)
+
+    def test_native_halt_evidence_precedes_later_scanner_fallback(self) -> None:
+        occurrence = service._halt_occurrence_row(
+            {
+                "event_id": "qmd-halt-open-durable",
+                "ticker": "HALT",
+                "source_event_ts_utc": "2026-08-20T14:15:00+00:00",
+                "source_conditions": [45],
+                "evidence_json": '{"last_price": 9.8, "change_5m_pct": -2.5}',
+            },
+            scanner_row={
+                "last_price": 11.0,
+                "price_change_5_bar_pct": 4.0,
+            },
+        )
+
+        self.assertEqual(occurrence["last_price"], 9.8)
+        self.assertEqual(occurrence["halt_change_5m_pct"], -2.5)
+        self.assertEqual(occurrence["halt_direction"], "Down")
 
     def test_interval_demand_prefers_qmd_source_names_over_projection_names(self) -> None:
         selected = service.qmd_interval_runtime_field(

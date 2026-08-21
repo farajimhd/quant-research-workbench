@@ -3102,11 +3102,13 @@ def _default_signal_streams(
     news_columns = columns_for_sources(news_sources)
     halt_sources = [
         "identity.symbol",
-        "market.is_halted",
         "market.last_price",
         "quote.bid_price",
         "quote.ask_price",
         "market.spread_bps",
+        "price_change_5_bar_pct",
+        "market.halt_direction",
+        "market.halt_category",
         "market.event_at",
         "clock.session_phase",
     ]
@@ -3164,9 +3166,9 @@ def _default_signal_streams(
         },
         {
             "signal_stream_id": "market-halts",
-            "revision": 1,
+            "revision": 2,
             "name": "Trading Halts",
-            "description": "Append-only occurrences emitted when an exchange halt condition opens. The stream rearms after QMD observes the resume condition.",
+            "description": "Append-only occurrences emitted when an exchange halt opens and whenever its quote state changes. The stream rearms after QMD observes the resume condition.",
             "enabled": True,
             "origin": "system",
             "protected": True,
@@ -3177,9 +3179,14 @@ def _default_signal_streams(
             "inclusion_rule_sets": ["signal-market-halt"],
             "inclusion_operator": "all",
             "columns": halt_columns,
+            "column_labels": {
+                columns_by_source["price_change_5_bar_pct"]: "Last 5 min"
+            } if "price_change_5_bar_pct" in columns_by_source else {},
             "column_intervals": {
-                columns_by_source[source_id]: normalize_interval_spec("100ms")
-                for source_id in ("quote.bid_price", "quote.ask_price")
+                columns_by_source[source_id]: normalize_interval_spec(
+                    "1m" if source_id == "price_change_5_bar_pct" else "100ms"
+                )
+                for source_id in ("quote.bid_price", "quote.ask_price", "price_change_5_bar_pct")
                 if source_id in columns_by_source
             },
             "refresh_interval_ms": 250,
@@ -5563,11 +5570,11 @@ def _migrate_draft(raw: dict[str, Any]) -> dict[str, Any]:
             merged = {**default_stream, **current_stream}
             if bool(default_stream.get("protected")):
                 for key in (
-                    "name", "description", "origin", "protected",
+                    "revision", "name", "description", "origin", "protected",
                     "source_type", "source_id", "source_scan_id",
                     "occurrence_source", "episode_role", "episode_ttl_ms",
                     "inclusion_rule_sets", "inclusion_operator",
-                    "columns", "column_intervals", "column_aggregations",
+                    "columns", "column_labels", "column_intervals", "column_aggregations",
                     "refresh_interval_ms", "trigger_policy", "rearm_policy",
                     "cooldown_ms", "maximum_events", "watchlist_routes",
                 ):

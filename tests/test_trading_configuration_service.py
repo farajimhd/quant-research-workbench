@@ -89,7 +89,20 @@ class TradingConfigurationServiceTests(unittest.TestCase):
         )
         self.assertEqual(halt_stream["source_type"], "core_scan")
         self.assertEqual(halt_stream["inclusion_rule_sets"], ["signal-market-halt"])
-        self.assertIn("market_is_halted", halt_stream["columns"])
+        self.assertNotIn("market_is_halted", halt_stream["columns"])
+        self.assertIn("halt_category", halt_stream["columns"])
+        self.assertIn("halt_direction", halt_stream["columns"])
+        five_minute_column = next(
+            row["column_id"]
+            for row in draft["market_discovery"]["column_catalog"]
+            if row.get("source_id") == "price_change_5_bar_pct"
+        )
+        self.assertIn(five_minute_column, halt_stream["columns"])
+        self.assertEqual(halt_stream["column_labels"][five_minute_column], "Last 5 min")
+        self.assertEqual(
+            halt_stream["column_intervals"][five_minute_column],
+            {"value": 1, "unit": "minutes"},
+        )
         self.assertEqual(halt_stream["trigger_policy"], "false_to_true")
         self.assertEqual(halt_stream["rearm_policy"], "after_false")
 
@@ -858,6 +871,13 @@ class TradingConfigurationServiceTests(unittest.TestCase):
                 for row in runtime["market_discovery"]["signal_streams"]
             },
         )
+        runtime_halt_stream = next(
+            row
+            for row in runtime["market_discovery"]["signal_streams"]
+            if row["signal_stream_id"] == "market-halts"
+        )
+        self.assertEqual(runtime_halt_stream["revision"], 2)
+        self.assertIn("Last 5 min", runtime_halt_stream["column_labels"].values())
         self.assertEqual(runtime["strategy"], base["strategy"])
         self.assertEqual(
             first_materialization["materialized_at"],

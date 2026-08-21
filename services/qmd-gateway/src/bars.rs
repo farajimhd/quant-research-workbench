@@ -1985,7 +1985,7 @@ async fn send_finalized_bars(
                 }
             }
         }
-        if row.timeframe == "1s" {
+        if row.timeframe == "1s" || row.timeframe == "1m" {
             if let Some(sender) = live_market_state_sender {
                 if sender.send_bar(row.clone()).await.is_err() {
                     eprintln!("Live market state receiver closed; shard {shard_id} could not route one finalized bar.");

@@ -18,6 +18,9 @@ export type TableColumnPresentation = {
 export function presentationForColumn(column: string, override?: TableColumnPresentation): Required<TableColumnPresentation> {
   const key = column.toLowerCase();
   const importance = override?.importance ?? (isImportantColumn(key) ? "strong" : "normal");
+  if (override?.presentationValueType === "boolean") {
+    return { importance, label: override.label ?? labelForColumn(column), presentationValueType: "boolean", semanticTone: override.semanticTone ?? "neutral" };
+  }
   const categorical = isCategoricalColumn(key);
   if (override?.presentationValueType && !categorical) return { importance, label: override.label ?? labelForColumn(column), presentationValueType: override.presentationValueType, semanticTone: override.semanticTone ?? "neutral" };
   const directional = /(^|_)(change|return|pnl|gain|growth|margin|momentum|imbalance|net_flow)(_|$)/.test(key);
@@ -42,7 +45,8 @@ export function PresentedValue({ column, presentation, value }: { column: string
   if (value === null || value === undefined || value === "") return <span className="table-value-unavailable">—</span>;
   if (resolved.presentationValueType === "datetime") return <MarketTime includeSeconds value={String(value)} />;
   if (resolved.presentationValueType === "date") return <DateOnlyValue value={String(value)} />;
-  if (resolved.presentationValueType === "category" || resolved.presentationValueType === "boolean") return <CategoryBadge column={column} value={value} />;
+  if (resolved.presentationValueType === "boolean") return <CategoryBadge booleanMode column={column} value={value} />;
+  if (resolved.presentationValueType === "category") return <CategoryBadge column={column} value={value} />;
   const numeric = Number(value);
   if (Number.isFinite(numeric) && isNumericPresentation(resolved.presentationValueType)) {
     const tone = numericTone(numeric, resolved.semanticTone);
@@ -51,15 +55,26 @@ export function PresentedValue({ column, presentation, value }: { column: string
   return <span className={resolved.presentationValueType === "identifier" ? "table-identifier" : "table-text"}>{String(value)}</span>;
 }
 
-export function CategoryBadge({ column = "", value }: { column?: string; value: unknown }) {
-  const label = String(value).replaceAll("_", " ").trim();
+export function CategoryBadge({ booleanMode = false, column = "", value }: { booleanMode?: boolean; column?: string; value: unknown }) {
+  const boolean = booleanMode ? booleanBadge(value) : null;
+  const label = boolean?.label ?? String(value).replaceAll("_", " ").trim();
   if (!label) return <span className="table-value-unavailable">—</span>;
-  const tone = categoryTone(column, label);
-  const Icon = categoryIcon(column, tone);
-  return <span className="table-category-badge" data-emphasis={categoryEmphasis(column)} data-tone={tone} title={label}>
+  const tone = boolean?.tone ?? categoryTone(column, label);
+  const Icon = boolean ? boolean.icon : categoryIcon(column, tone);
+  return <span className="table-category-badge" data-emphasis={boolean ? "strong" : categoryEmphasis(column)} data-tone={tone} title={label}>
     {Icon ? <Icon aria-hidden="true" className="table-category-badge-icon" size={11} strokeWidth={2} /> : null}
     <span>{label}</span>
   </span>;
+}
+
+function booleanBadge(value: unknown): { icon: typeof CheckCircle2; label: string; tone: "neutral" | "positive" } | null {
+  if (value === true || value === 1 || (typeof value === "string" && ["true", "1", "yes", "on"].includes(value.trim().toLowerCase()))) {
+    return { icon: CheckCircle2, label: "On", tone: "positive" };
+  }
+  if (value === false || value === 0 || (typeof value === "string" && ["false", "0", "no", "off"].includes(value.trim().toLowerCase()))) {
+    return { icon: Minus, label: "Off", tone: "neutral" };
+  }
+  return null;
 }
 
 export function SecurityIdentityCell({ companyName = "", country = "", halted, logoUrl = "", newsRecency, secRecency, ticker, trailing }: { companyName?: string; country?: string; halted?: unknown; logoUrl?: string; newsRecency?: unknown; secRecency?: unknown; ticker: string; trailing?: ReactNode }) {
@@ -127,6 +142,18 @@ function numericTone(value: number, semantic: Required<TableColumnPresentation>[
 function categoryTone(column: string, value: string) {
   const field = column.toLowerCase();
   const key = value.toLowerCase();
+  if (/(^|_)halt_direction$/.test(field)) {
+    if (/^up$/.test(key)) return "positive";
+    if (/^down$/.test(key)) return "negative";
+    return "neutral";
+  }
+  if (/(^|_)halt_category$/.test(field)) {
+    if (/regulatory|suspension|noncompliance|sec/.test(key)) return "negative";
+    if (/luld|volatility|pause/.test(key)) return "warning";
+    if (/news|information/.test(key)) return "info";
+    if (/corporate action|order imbalance/.test(key)) return "highlight";
+    return "neutral";
+  }
   if (/(^|_)(float_category|float_profile)$/.test(field)) {
     if (/tiny|micro|extra small|small|low/.test(key)) return "positive";
     if (/medium\+?|mid/.test(key)) return "info";
@@ -172,6 +199,7 @@ function categoryEmphasis(column: string) {
 }
 function categoryIcon(column: string, tone: ReturnType<typeof categoryTone>) {
   const field = column.toLowerCase();
+  if (/(^|_)halt_category$/.test(field)) return ShieldAlert;
   if (/(float_category|float_profile)/.test(field)) return Gauge;
   if (/(cap_category|market_cap_category)/.test(field)) return Building2;
   if (/(session_phase|market_phase)/.test(field)) return Clock3;

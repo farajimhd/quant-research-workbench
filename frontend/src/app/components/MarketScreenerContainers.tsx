@@ -48,7 +48,7 @@ type DiscoveryScannerColumn = { column_id: string; name: string; source_id: stri
 type DiscoveryCapability = { enabled?: boolean; execution_scope?: string; scanner_columns?: DiscoveryScannerColumn[]; system_required?: boolean };
 type DiscoveryColumn = { column_id: string; description?: string; name: string; presentation_value_type?: PresentationValueType; provenance?: string; semantic_type?: string; source_id?: string; source_kind?: "data_definition" | "rule_set" | string; unit?: string; value_type?: string };
 type DiscoveryWatchlist = { availability?: string; columns?: string[]; description?: string; enabled?: boolean; name: string; origin?: string; watchlist_id: string };
-type DiscoverySignalStream = { column_aggregations?: Record<string, string>; column_intervals?: Record<string, unknown>; columns?: string[]; description?: string; enabled?: boolean; maximum_events?: number; name: string; origin?: string; refresh_interval_ms?: number; signal_stream_id: string; source_id?: string; source_scan_id?: string; source_type?: "core_scan" | "watchlist" | "news_events" };
+type DiscoverySignalStream = { column_aggregations?: Record<string, string>; column_intervals?: Record<string, unknown>; column_labels?: Record<string, string>; columns?: string[]; description?: string; enabled?: boolean; maximum_events?: number; name: string; origin?: string; refresh_interval_ms?: number; signal_stream_id: string; source_id?: string; source_scan_id?: string; source_type?: "core_scan" | "watchlist" | "news_events" };
 type SignalStreamRuntimeResponse = { as_of: string; last_sequence?: number; new_occurrences?: ScreenerRow[]; occurrence_count: number; occurrences: ScreenerRow[]; recovery?: { active?: boolean; recovered_count?: number; recovery_through?: string; status?: "complete" | "coverage_incomplete" | "not_started" | "recovering" | "retryable_error" | "source_native" }; session?: { active?: boolean; end_at?: string; retention?: string; session_date?: string; session_key?: string; start_at?: string; timezone?: string }; signal_streams?: Array<{ candidate_count?: number; configured?: boolean; enabled?: boolean; recovery_kind?: "coverage_unavailable" | "qmd_history_timeline" | "source_native"; recovery_status?: "complete" | "coverage_incomplete" | "not_started" | "recovering" | "retryable_error" | "source_native"; signal_stream_id: string; source_id?: string; source_type?: string; status?: string }>; status: string };
 export type WatchUniverseDefinition = {
   description?: string;
@@ -519,6 +519,10 @@ export function SignalStreamContainer({ asOf, live, onSettingsChange, onTickerSe
             ? `${sourceLabel} currently contains no eligible tickers.`
         : `No ticker from ${sourceLabel} has transitioned into this signal state since 04:00 ET.`;
   const displayAsOf = runtime?.as_of ?? asOf;
+  const streamCatalog = catalog.map((definition) => ({
+    ...definition,
+    label: stream?.column_labels?.[definition.key] ?? definition.label,
+  }));
   const streamColumns = canonicalDiscoveryColumns([...(stream?.columns ?? []), ...SIGNAL_STREAM_CONTEXT_COLUMNS]);
   const columns = canonicalDiscoveryColumns(["event_time", "symbol", ...streamColumns, ...settings.columns]);
   const selectStream = (signalStreamId: string) => onSettingsChange({ columns: [], signalStreamId });
@@ -549,7 +553,7 @@ export function SignalStreamContainer({ asOf, live, onSettingsChange, onTickerSe
     </nav>
     {addingStream ? <div className="watchlist-tab-lookup"><InventoryFilterSelect ariaLabel="Signal Stream to add" className="watchlist-add-lookup" onChange={addStream} options={availableStreams.map((row) => ({ description: row.description, label: row.name, value: row.signal_stream_id }))} searchable showAllOnOpen value="" /><button onClick={() => { window.location.hash = "market-discovery-configuration"; }} type="button">Configure Signal Stream <ArrowRight size={13} /></button></div> : null}
     <div className="watch-universe-context"><div><span>Source</span><strong>{sourceLabel} · 04:00–20:00 ET</strong></div><button onClick={() => { window.location.hash = "market-discovery-configuration"; }} type="button">Configure in Market Discovery <ArrowRight size={13} /></button></div>
-    <MarketListTable key={runtimeScopeKey || "signal-stream"} catalog={catalog} chronological columns={columns} customColumns={settings.customColumns} empty={emptyMessage} limit={Math.min(settings.limit, stream?.maximum_events ?? settings.limit)} liveRecency={live} lockedColumns={canonicalDiscoveryColumns(["event_time", "symbol", ...streamColumns])} onColumnsChange={(columns) => onSettingsChange({ columns })} onCustomColumnsChange={(customColumns) => onSettingsChange({ customColumns })} onTickerSelect={onTickerSelect} recencyRail rows={rows} title={stream?.name ?? "Signal Stream"} viewStateKey={`signal-stream:${stream?.signal_stream_id ?? "none"}`} />
+    <MarketListTable key={runtimeScopeKey || "signal-stream"} catalog={streamCatalog} chronological columns={columns} customColumns={settings.customColumns} empty={emptyMessage} limit={Math.min(settings.limit, stream?.maximum_events ?? settings.limit)} liveRecency={live} lockedColumns={canonicalDiscoveryColumns(["event_time", "symbol", ...streamColumns])} onColumnsChange={(columns) => onSettingsChange({ columns })} onCustomColumnsChange={(customColumns) => onSettingsChange({ customColumns })} onTickerSelect={onTickerSelect} recencyRail rows={rows} title={stream?.name ?? "Signal Stream"} viewStateKey={`signal-stream:${stream?.signal_stream_id ?? "none"}`} />
   </section>;
 }
 

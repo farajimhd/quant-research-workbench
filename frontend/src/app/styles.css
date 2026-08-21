@@ -28677,17 +28677,17 @@ button {
   border-bottom: 1px solid var(--border);
   color: var(--muted-foreground);
   font-family: var(--font-body);
-  font-size: calc(8.75px * var(--app-readable-scale, 1));
+  font-size: calc(8.25px * var(--app-readable-scale, 1));
   font-weight: 650;
-  height: calc(32px * var(--app-readable-scale, 1));
-  letter-spacing: .035em;
+  height: calc(30px * var(--app-readable-scale, 1));
+  letter-spacing: .025em;
   line-height: 1.2;
   text-transform: uppercase;
 }
 
 .market-list-table th > button {
   letter-spacing: inherit;
-  min-height: calc((32px * var(--app-readable-scale, 1)) - .5px);
+  min-height: calc((30px * var(--app-readable-scale, 1)) - .5px);
   padding: 0 calc(10px * var(--app-readable-scale, 1));
   text-transform: inherit;
 }

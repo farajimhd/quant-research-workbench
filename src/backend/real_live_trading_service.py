@@ -66,6 +66,7 @@ def hydrate_native_signal_streams(
     as_of: datetime,
     journal: Any,
     history_loader: Any = qmd_live_market_state_history,
+    scanner_rows: list[dict[str, Any]] | None = None,
     force: bool = False,
 ) -> dict[str, Any]:
     """Reconstruct event-native Signal Streams from their durable session authority."""
@@ -94,12 +95,39 @@ def hydrate_native_signal_streams(
         start=session["start_at"],
         end=as_of,
         event_type="condition_halt",
-        event_status="opened",
+        event_status="",
         limit=5_000,
     )
-    source_rows = [dict(row) for row in payload.get("rows") or [] if isinstance(row, dict)]
+    source_rows = [
+        dict(row)
+        for row in payload.get("rows") or []
+        if isinstance(row, dict)
+        and str(row.get("event_status") or "opened") in {"opened", "updated"}
+    ]
+    projected_scanner_rows = list(scanner_rows or [])
+    if projected_scanner_rows:
+        from src.backend.data_field_contracts import project_composition_data_field_columns
+
+        for stream in streams:
+            projected_scanner_rows = project_composition_data_field_columns(
+                projected_scanner_rows,
+                stream,
+                dict(configuration.get("market_discovery") or {}).get("column_catalog") or [],
+            )
+    scanner_by_ticker = {
+        str(item.get("ticker") or item.get("symbol") or "").upper(): item
+        for item in projected_scanner_rows
+        if str(item.get("ticker") or item.get("symbol") or "").strip()
+    }
     occurrence_rows = [
-        _project_native_market_state_columns(configuration, _halt_occurrence_row(row))
+        _project_native_market_state_columns(
+            configuration,
+            _halt_occurrence_row(
+                row,
+                scanner_row=scanner_by_ticker.get(str(row.get("ticker") or "").upper()),
+                configuration=configuration,
+            ),
+        )
         for row in source_rows
     ]
     occurrence_rows = [row for row in occurrence_rows if row.get("ticker") and row.get("available_at")]
@@ -236,7 +264,12 @@ def qmd_signal_stream_candidates(
     return compact
 
 
-def _halt_occurrence_row(row: dict[str, Any]) -> dict[str, Any]:
+def _halt_occurrence_row(
+    row: dict[str, Any],
+    *,
+    scanner_row: dict[str, Any] | None = None,
+    configuration: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     try:
         evidence = json.loads(str(row.get("evidence_json") or "{}"))
     except (TypeError, ValueError, json.JSONDecodeError):
@@ -244,8 +277,15 @@ def _halt_occurrence_row(row: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(evidence, dict):
         evidence = {}
     available_at = str(row.get("source_event_ts_utc") or row.get("event_start_utc") or "")
-    bid = evidence.get("bid")
-    ask = evidence.get("ask")
+    scanner_row = scanner_row or {}
+    bid = evidence.get("bid") if evidence.get("bid") is not None else scanner_row.get("bid_price")
+    ask = evidence.get("ask") if evidence.get("ask") is not None else scanner_row.get("ask_price")
+    last_price = evidence.get("last_price")
+    if last_price is None:
+        last_price = scanner_row.get("last_price", scanner_row.get("price"))
+    five_minute_change = evidence.get("change_5m_pct")
+    if five_minute_change is None:
+        five_minute_change = _halt_five_minute_change(scanner_row, configuration)
     spread_bps = None
     spread_value = None
     try:
@@ -279,18 +319,66 @@ def _halt_occurrence_row(row: dict[str, Any]) -> dict[str, Any]:
         "halt_source_indicators": list(row.get("source_indicators") or []),
         "market_event_at": normalized_available_at,
         "last_market_event_at": normalized_available_at,
-        "price": evidence.get("price"),
-        "last_price": evidence.get("price"),
+        "price": last_price,
+        "last_price": last_price,
         "bid": bid,
         "bid_price": bid,
         "ask": ask,
         "ask_price": ask,
         "spread": spread_value,
         "spread_bps": spread_bps,
+        "halt_change_5m_pct": five_minute_change,
+        "halt_direction": _halt_direction(five_minute_change),
+        "halt_category": _halt_category(row),
         "session_phase": phase,
         "source_event_type": str(row.get("source_event_type") or ""),
         "source_run_id": str(row.get("source_run_id") or ""),
     }
+
+
+def _halt_five_minute_change(
+    scanner_row: dict[str, Any], configuration: dict[str, Any] | None
+) -> Any:
+    discovery = dict((configuration or {}).get("market_discovery") or {})
+    for column in discovery.get("column_catalog") or []:
+        if str(column.get("source_id") or "") == "price_change_5_bar_pct":
+            value = scanner_row.get(str(column.get("column_id") or ""))
+            if value is not None:
+                return value
+    return scanner_row.get("price_change_5_bar_pct")
+
+
+def _halt_direction(value: Any) -> str:
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return "Unavailable"
+    return "Up" if numeric > 0 else "Down" if numeric < 0 else "Flat"
+
+
+def _halt_category(row: dict[str, Any]) -> str:
+    from src.backend.trading_runtime_service import market_event_references
+
+    references = market_event_references().get("conditions") or {}
+    tokens = [
+        *list(row.get("source_indicators") or []),
+        *list(row.get("source_conditions") or []),
+    ]
+    names = [
+        str(dict(references.get(str(token)) or {}).get("name") or "").strip()
+        for token in tokens
+    ]
+    names = [name for name in names if name and name.lower() != "unknown condition"]
+    priority = (
+        "luld", "volatility", "news pending", "news dissemination",
+        "regulatory", "suspension", "information requested", "noncompliance",
+        "filing", "corporate action", "order imbalance", "quotes only", "halt", "pause",
+    )
+    selected = next(
+        (name for marker in priority for name in names if marker in name.lower()),
+        names[0] if names else str(row.get("block_reason") or "Trading halt"),
+    )
+    return re.sub(r"(?<=[a-z])(?=[A-Z])", " ", selected).replace("_", " ").strip()
 
 
 def _project_native_market_state_columns(
@@ -304,6 +392,9 @@ def _project_native_market_state_columns(
         "quote.bid_price": row.get("bid_price"),
         "quote.ask_price": row.get("ask_price"),
         "market.spread_bps": row.get("spread_bps"),
+        "price_change_5_bar_pct": row.get("halt_change_5m_pct"),
+        "market.halt_category": row.get("halt_category"),
+        "market.halt_direction": row.get("halt_direction"),
         "market.event_at": row.get("market_event_at"),
         "clock.session_phase": row.get("session_phase"),
     }
@@ -885,6 +976,7 @@ def _compose_real_live_scanner_snapshot(*, allow_provider_fallback: bool = True)
                         configuration,
                         as_of=cycle_as_of,
                         journal=trading_journal(),
+                        scanner_rows=rows,
                     )
                 except Exception as exc:
                     native_hydration = {
