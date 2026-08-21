@@ -7,6 +7,7 @@ import { DataTable } from "../app/components/DataTable";
 import { MetricRatio } from "../app/components/MetricRatio";
 import { Modal } from "../app/components/Modal";
 import { displayName, formatBytes, formatCell, formatCompactNumber, formatDuration } from "../app/format";
+import { usePollingTask } from "../app/hooks/usePollingTask";
 import { SERVICE_IDS, type ServiceId, type ServicePageMode } from "../app/routes";
 import "./ServicesOverview.css";
 
@@ -186,66 +187,47 @@ export function ServicesPage({ mode, onNavigate }: { mode: ServicePageMode; onNa
     return () => window.clearInterval(timer);
   }, []);
 
-  useEffect(() => {
-    let cancelled = false;
-    async function loadBudgets() {
-      try {
-        const next = await api<WorkloadBudgetPayload>("/api/system/workload-budgets", { timeoutMs: 5000 });
-        if (!cancelled) {
-          setWorkloadBudgets(next);
-          setWorkloadBudgetError("");
-        }
-      } catch (exc) {
-        if (!cancelled) setWorkloadBudgetError(exc instanceof Error ? exc.message : String(exc));
-      }
-    }
-    void loadBudgets();
-    const timer = window.setInterval(() => void loadBudgets(), 5000);
-    return () => {
-      cancelled = true;
-      window.clearInterval(timer);
-    };
-  }, []);
+  usePollingTask({
+    initialDelayMs: 0,
+    intervalMs: 5_000,
+    onError: (exc) => setWorkloadBudgetError(exc instanceof Error ? exc.message : String(exc)),
+    task: async (signal) => {
+      const next = await api<WorkloadBudgetPayload>("/api/system/workload-budgets", { signal, timeoutMs: 5_000 });
+      setWorkloadBudgets(next);
+      setWorkloadBudgetError("");
+    },
+  });
 
-  useEffect(() => {
-    let cancelled = false;
-    let fastInFlight = false;
-    let fullInFlight = false;
-    async function load(full: boolean) {
-      if (full ? fullInFlight : fastInFlight) return;
-      if (full) fullInFlight = true;
-      else fastInFlight = true;
-      try {
-        setError("");
-        const query = full ? "include_database_tables=true" : "include_database_tables=false";
-        const next = await api<ServicesStatusPayload>(`/api/services/status?${query}`, { timeoutMs: full ? 30000 : 15000 });
-        if (cancelled) return;
-        setPayload((current) => mergeServicesPayload(next, current, full));
-        setLoading(false);
-      } catch (exc) {
-        if (cancelled) return;
-        setError(exc instanceof Error ? exc.message : String(exc));
-        setLoading(false);
-      } finally {
-        if (full) fullInFlight = false;
-        else fastInFlight = false;
-      }
-    }
-    // Paint liveness and readiness first. Database inspection is useful
-    // enrichment, but it must not hold the whole operational dashboard behind
-    // a blocking loader.
-    void (async () => {
-      await load(false);
-      if (!cancelled) void load(true);
-    })();
-    const fastTimer = window.setInterval(() => void load(false), 5000);
-    const fullTimer = window.setInterval(() => void load(true), 30000);
-    return () => {
-      cancelled = true;
-      window.clearInterval(fastTimer);
-      window.clearInterval(fullTimer);
-    };
-  }, []);
+  // Paint liveness and readiness first. Database inspection is useful
+  // enrichment, but it must not hold the operational dashboard behind a
+  // blocking loader. Both cadences merge through the same payload authority.
+  usePollingTask({
+    initialDelayMs: 0,
+    intervalMs: 5_000,
+    onError: (exc) => {
+      setError(exc instanceof Error ? exc.message : String(exc));
+      setLoading(false);
+    },
+    task: async (signal) => {
+      setError("");
+      const next = await api<ServicesStatusPayload>("/api/services/status?include_database_tables=false", { signal, timeoutMs: 15_000 });
+      setPayload((current) => mergeServicesPayload(next, current, false));
+      setLoading(false);
+    },
+  });
+  usePollingTask({
+    initialDelayMs: 0,
+    intervalMs: 30_000,
+    onError: (exc) => {
+      setError(exc instanceof Error ? exc.message : String(exc));
+      setLoading(false);
+    },
+    task: async (signal) => {
+      const next = await api<ServicesStatusPayload>("/api/services/status?include_database_tables=true", { signal, timeoutMs: 30_000 });
+      setPayload((current) => mergeServicesPayload(next, current, true));
+      setLoading(false);
+    },
+  });
 
   useEffect(() => {
     if (!serviceId) {
@@ -253,42 +235,42 @@ export function ServicesPage({ mode, onNavigate }: { mode: ServicePageMode; onNa
       setDetailLoading(false);
       return;
     }
-    let cancelled = false;
-    let fastInFlight = false;
-    let fullInFlight = false;
-    async function loadDetail(options: { full: boolean; showLoading?: boolean }) {
-      if (options.full ? fullInFlight : fastInFlight) return;
-      if (options.full) fullInFlight = true;
-      else fastInFlight = true;
-      if (options.showLoading) setDetailLoading(true);
-      try {
-        const query = options.full
-          ? "include_database_tables=true&include_recent=true&include_logs=true"
-          : "include_database_tables=false&include_recent=false&include_logs=false";
-        const next = await api<ServiceStatusPayload>(`/api/services/${serviceId}/status?${query}`, { timeoutMs: options.full ? 30000 : 10000 });
-        if (!cancelled) {
-          setSelectedPayload((current) => mergeServiceDetailPayload(next, current, options.full));
-        }
-      } catch (exc) {
-        if (!cancelled) {
-          const fallback = payloadRef.current?.services.find((service) => service.registry.id === serviceId) ?? null;
-          setSelectedPayload(fallback ? { ...fallback, errors: { ...fallback.errors, detail: exc instanceof Error ? exc.message : String(exc) } } : null);
-        }
-      } finally {
-        if (options.full) fullInFlight = false;
-        else fastInFlight = false;
-        if (!cancelled && options.showLoading) setDetailLoading(false);
-      }
-    }
-    void loadDetail({ full: true, showLoading: true });
-    const fastTimer = window.setInterval(() => void loadDetail({ full: false }), 5000);
-    const fullTimer = window.setInterval(() => void loadDetail({ full: true }), 30000);
-    return () => {
-      cancelled = true;
-      window.clearInterval(fastTimer);
-      window.clearInterval(fullTimer);
-    };
+    setDetailLoading(true);
   }, [serviceId]);
+
+  const setDetailError = (exc: unknown) => {
+    if (!serviceId) return;
+    const fallback = payloadRef.current?.services.find((service) => service.registry.id === serviceId) ?? null;
+    setSelectedPayload(fallback ? { ...fallback, errors: { ...fallback.errors, detail: exc instanceof Error ? exc.message : String(exc) } } : null);
+  };
+  usePollingTask({
+    enabled: Boolean(serviceId),
+    initialDelayMs: 5_000,
+    intervalMs: 5_000,
+    onError: setDetailError,
+    restartKey: serviceId ?? "",
+    task: async (signal) => {
+      if (!serviceId) return;
+      const next = await api<ServiceStatusPayload>(`/api/services/${serviceId}/status?include_database_tables=false&include_recent=false&include_logs=false`, { signal, timeoutMs: 10_000 });
+      setSelectedPayload((current) => mergeServiceDetailPayload(next, current, false));
+    },
+  });
+  usePollingTask({
+    enabled: Boolean(serviceId),
+    initialDelayMs: 0,
+    intervalMs: 30_000,
+    onError: (exc) => {
+      setDetailError(exc);
+      setDetailLoading(false);
+    },
+    restartKey: serviceId ?? "",
+    task: async (signal) => {
+      if (!serviceId) return;
+      const next = await api<ServiceStatusPayload>(`/api/services/${serviceId}/status?include_database_tables=true&include_recent=true&include_logs=true`, { signal, timeoutMs: 30_000 });
+      setSelectedPayload((current) => mergeServiceDetailPayload(next, current, true));
+      setDetailLoading(false);
+    },
+  });
 
   const services = useMemo(() => sortServices(payload?.services ?? []), [payload]);
   const selectedPayloadForMode = selectedPayload?.registry.id === serviceId ? selectedPayload : null;
