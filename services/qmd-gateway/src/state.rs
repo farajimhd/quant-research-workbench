@@ -503,6 +503,12 @@ fn apply_liquidity_ranking(rows: &mut [SymbolSnapshot]) {
     }));
 
     for row in rows.iter_mut() {
+        let has_executed_liquidity =
+            row.day_trade_count > 0 && row.day_dollar_volume > 0.0 && row.day_volume > 0.0;
+        if !has_executed_liquidity {
+            row.liquidity_score = 0.0;
+            continue;
+        }
         let spread_quality = if row.last_price > 0.0 && row.bid > 0.0 && row.ask > row.bid {
             descending_percentile(
                 (row.ask - row.bid) / row.last_price * 10_000.0,
@@ -607,14 +613,19 @@ mod tests {
         spread: f64,
         depth: u32,
     ) -> SymbolSnapshot {
+        let executed = dollar_volume > 0.0;
         SymbolSnapshot {
             ask: 10.0 + spread,
             ask_size: depth,
             bid: 10.0,
             bid_size: depth,
             day_dollar_volume: dollar_volume,
-            day_trade_count: 0,
-            day_volume: 0.0,
+            day_trade_count: u64::from(executed),
+            day_volume: if executed {
+                (dollar_volume / 10.0).max(1.0)
+            } else {
+                0.0
+            },
             degradation_reason: None,
             event_age_ms: Some(0),
             last_event_ts: None,
@@ -652,6 +663,24 @@ mod tests {
         assert!(rows[0].liquidity_score > rows[1].liquidity_score);
         assert!(rows[1].liquidity_score > rows[2].liquidity_score);
         assert!(rows[2].liquidity_score > rows[3].liquidity_score);
+    }
+
+    #[test]
+    fn quote_only_rows_cannot_outrank_executed_liquidity() {
+        let mut quote_only = liquidity_row("QUOTE", 0.0, 100.0, 0.001, 50_000);
+        quote_only.day_trade_count = 0;
+        quote_only.day_volume = 0.0;
+        let mut traded = liquidity_row("TRADE", 100.0, 0.1, 0.20, 1);
+        traded.day_trade_count = 1;
+        traded.day_volume = 10.0;
+        let mut rows = vec![quote_only, traded];
+
+        apply_liquidity_ranking(&mut rows);
+
+        assert_eq!(rows[0].ticker, "TRADE");
+        assert_eq!(rows[0].liquidity_rank, 1);
+        assert_eq!(rows[1].ticker, "QUOTE");
+        assert_eq!(rows[1].liquidity_score, 0.0);
     }
 
     #[test]

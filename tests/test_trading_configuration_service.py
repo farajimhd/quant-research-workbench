@@ -310,6 +310,7 @@ class TradingConfigurationServiceTests(unittest.TestCase):
                     "source_kind": "data_field",
                     "semantic_type": "price",
                     "value_type": "number",
+                    "presentation_value_type": "price",
                     "unit": "USD",
                     "provenance": {"authority": "qmd"},
                     "query_expression": "must not be sent to Canvas",
@@ -344,6 +345,7 @@ class TradingConfigurationServiceTests(unittest.TestCase):
         self.assertNotIn("data_fields", discovery)
         self.assertNotIn("data_field_plan", discovery)
         self.assertNotIn("query_expression", discovery["column_catalog"][0])
+        self.assertEqual(discovery["column_catalog"][0]["presentation_value_type"], "price")
         self.assertNotIn("query_expression", discovery["core_scan"]["calculations"][0])
         self.assertEqual(discovery["watchlists"], [{"watchlist_id": "leaders"}])
         self.assertEqual(discovery["signal_streams"], [{"signal_stream_id": "squeezes"}])

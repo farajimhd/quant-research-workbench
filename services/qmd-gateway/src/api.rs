@@ -1275,6 +1275,11 @@ async fn scanner_snapshot(
     let session_close_at = calendar.session_close_at.or(regular_close_at);
     let trading_day = !matches!(local.weekday(), chrono::Weekday::Sat | chrono::Weekday::Sun)
         && !calendar.reason.starts_with("holiday_closed:");
+    let previous_session_date = state
+        .market_calendar
+        .prior_sessions(local.date_naive(), 8)
+        .into_iter()
+        .find(|date| *date < local.date_naive());
     let mut payload = serde_json::to_value(snapshot).unwrap_or_else(|_| json!({}));
     payload["market_clock"] = json!({
         "observed_at": now.to_rfc3339(),
@@ -1286,6 +1291,7 @@ async fn scanner_snapshot(
         "timezone": "America/New_York",
         "weekday": local.format("%A").to_string(),
         "session_id": local.format("%Y-%m-%d").to_string(),
+        "previous_session_date": previous_session_date.map(|date| date.format("%Y-%m-%d").to_string()),
         "session_phase": format!("{:?}", session_phase(now)).to_ascii_lowercase(),
         "session_open_at": format!("{}T09:30:00", local.format("%Y-%m-%d")),
         "session_close_at": session_close_at.map(|value| value.to_rfc3339()),

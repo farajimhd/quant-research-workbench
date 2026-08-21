@@ -1721,6 +1721,7 @@ def market_clock_projection(clock: dict[str, Any]) -> dict[str, Any]:
         "market_timezone": clock.get("timezone"),
         "market_weekday": clock.get("weekday"),
         "session_id": clock.get("session_id"),
+        "expected_previous_session_date": clock.get("previous_session_date"),
         "session_phase": clock.get("session_phase"),
         "session_open_at": clock.get("session_open_at"),
         "session_close_at": clock.get("session_close_at"),

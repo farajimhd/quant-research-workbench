@@ -144,6 +144,12 @@ function categoryTone(column: string, value: string) {
     if (/after/.test(key)) return "highlight";
     if (/maintenance|closed/.test(key)) return "warning";
   }
+  if (/(^|_)short_pressure$/.test(field)) {
+    if (/crowded/.test(key)) return "negative";
+    if (/elevated/.test(key)) return "warning";
+    if (/normal/.test(key)) return "positive";
+    return "neutral";
+  }
   if (/(phase|session|exchange|sector|industry|country|currency|source|origin|role|type|category|class)/.test(field)) return "neutral";
   if (/(direction|side|action|sentiment|bias|outlook)/.test(field)) {
     if (/bull|buy|long|positive/.test(key)) return "positive";
@@ -160,7 +166,7 @@ function categoryTone(column: string, value: string) {
 }
 function categoryEmphasis(column: string) {
   const field = column.toLowerCase();
-  if (/(float_category|float_profile|status|state|quality|health|eligib|valid|direction|side|action|sentiment|bias|outlook|signal)/.test(field)) return "strong";
+  if (/(float_category|float_profile|short_pressure|status|state|quality|health|eligib|valid|direction|side|action|sentiment|bias|outlook|signal)/.test(field)) return "strong";
   if (/(cap_category|market_cap_category|phase|type|class|coverage)/.test(field)) return "medium";
   return "subtle";
 }
@@ -169,6 +175,7 @@ function categoryIcon(column: string, tone: ReturnType<typeof categoryTone>) {
   if (/(float_category|float_profile)/.test(field)) return Gauge;
   if (/(cap_category|market_cap_category)/.test(field)) return Building2;
   if (/(session_phase|market_phase)/.test(field)) return Clock3;
+  if (/(^|_)short_pressure$/.test(field)) return Gauge;
   if (/(direction|side|sentiment|bias|outlook)/.test(field)) return tone === "positive" ? TrendingUp : tone === "negative" ? TrendingDown : Minus;
   if (/(signal|action)/.test(field)) return Zap;
   if (/(status|state|quality|health|eligib|valid)/.test(field)) return tone === "positive" ? CheckCircle2 : tone === "negative" || tone === "warning" ? CircleAlert : Info;
@@ -176,7 +183,7 @@ function categoryIcon(column: string, tone: ReturnType<typeof categoryTone>) {
 }
 function isCategoricalColumn(column: string) {
   if (/(^|_)(id|identifier|accession|cik)(_|$)/.test(column)) return false;
-  return /(^|_)(status|state|phase|direction|side|type|category|class|role|origin|source|provider|exchange|sector|industry|country|currency|quality|coverage|sentiment|bias|outlook)(_|$)/.test(column);
+  return /(^|_)(status|state|phase|direction|side|type|category|class|role|origin|source|provider|exchange|sector|industry|country|currency|quality|coverage|sentiment|bias|outlook|pressure)(_|$)/.test(column);
 }
 function formatNumber(value: number, type: PresentationValueType, semantic: Required<TableColumnPresentation>["semanticTone"]) {
   if (type === "percent") return `${semantic !== "neutral" && value > 0 ? "+" : ""}${value.toFixed(Math.abs(value) < 1 ? 2 : 1)}%`;

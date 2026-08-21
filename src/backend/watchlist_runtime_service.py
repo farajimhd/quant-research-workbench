@@ -1335,6 +1335,7 @@ def _load_market_reference_projection(cutoff: datetime) -> dict[str, dict[str, A
             projection.setdefault(ticker, {}).update(
                 {
                     "previous_close": row.get("previous_close"),
+                    "previous_session_date": row.get("previous_session_date"),
                     "average_daily_volume": row.get("average_daily_volume"),
                     "reference_available_at": cutoff.isoformat(),
                 }
@@ -1352,6 +1353,35 @@ def enrich_core_scanner_rows(
             **row,
             **reference_projection.get(str(row.get("ticker") or "").upper(), {}),
         }
+        expected_previous_session_date = str(
+            row.get("expected_previous_session_date") or ""
+        )
+        reference_session_date = str(merged.get("previous_session_date") or "")
+        if not expected_previous_session_date:
+            merged.update(
+                {
+                    "previous_close": None,
+                    "change_pct": None,
+                    "change_actual": None,
+                    "previous_close__null_reason": "previous_session_authority_unavailable",
+                    "previous_close_reference_status": "unavailable",
+                }
+            )
+        elif (
+            expected_previous_session_date
+            and reference_session_date != expected_previous_session_date
+        ):
+            merged.update(
+                {
+                    "previous_close": None,
+                    "change_pct": None,
+                    "change_actual": None,
+                    "previous_close__null_reason": "stale_previous_session_reference",
+                    "previous_close_reference_status": "stale",
+                }
+            )
+        elif expected_previous_session_date:
+            merged["previous_close_reference_status"] = "ready"
         session_volume = numeric_value(merged, "volume", "day_volume", "last_day_volume_so_far")
         average_daily_volume = numeric_value(merged, "average_daily_volume")
         observed_at = parse_datetime(

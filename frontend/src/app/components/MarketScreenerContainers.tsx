@@ -92,6 +92,16 @@ type FieldDefinition = {
   timeframes?: ScannerTimeframe[];
 };
 
+type MarketListViewState = {
+  columnFilters: TableFilterCondition[];
+  filterMatchMode: TableFilterMatchMode;
+  filterPanelOpen: boolean;
+  query: string;
+  sort: { column: string; direction: "asc" | "desc" };
+};
+
+const MARKET_LIST_VIEW_STATE = new Map<string, MarketListViewState>();
+
 export const SCANNER_TIMEFRAMES: ScannerTimeframe[] = ["100ms", "1s", "5s", "10s", "30s", "1m", "5m", "15m", "30m", "1h", "1d"];
 const DEFAULT_SCANNER_TECHNICAL_TIMEFRAME: ScannerTimeframe = "15m";
 const TECHNICAL_METRICS: Array<Omit<FieldDefinition, "key" | "timeframe"> & { metric: TechnicalMetric }> = [
@@ -425,12 +435,15 @@ export function SignalStreamContainer({ asOf, live, onSettingsChange, onTickerSe
   const visibleStreams = visibleIds.map((id) => streams.find((row) => row.signal_stream_id === id)).filter((row): row is DiscoverySignalStream => Boolean(row));
   const stream = visibleStreams.find((row) => row.signal_stream_id === settings.signalStreamId) ?? visibleStreams[0];
   const availableStreams = streams.filter((row) => hiddenIds.has(row.signal_stream_id));
-  const [runtime, setRuntime] = useState<SignalStreamRuntimeResponse | null>(null);
-  const lastSequence = useRef(0);
-  const sessionKey = useRef("");
-  const [runtimeUnavailable, setRuntimeUnavailable] = useState(false);
+  const [runtimeCache, setRuntimeCache] = useState<Record<string, SignalStreamRuntimeResponse>>({});
+  const lastSequence = useRef<Record<string, number>>({});
+  const sessionKey = useRef<Record<string, string>>({});
+  const [runtimeUnavailableKeys, setRuntimeUnavailableKeys] = useState<Set<string>>(() => new Set());
+  const runtimeScopeKey = stream ? `${live ? "live" : `${runId ?? ""}:${asOf}`}|${stream.signal_stream_id}` : "";
+  const runtime = runtimeScopeKey ? runtimeCache[runtimeScopeKey] ?? null : null;
+  const runtimeUnavailable = runtimeScopeKey ? runtimeUnavailableKeys.has(runtimeScopeKey) : false;
   useEffect(() => {
-    if (!stream) { setRuntime(null); setRuntimeUnavailable(false); return undefined; }
+    if (!stream || !runtimeScopeKey) return undefined;
     let active = true;
     let controller: AbortController | null = null;
     const load = () => {
@@ -440,34 +453,39 @@ export function SignalStreamContainer({ asOf, live, onSettingsChange, onTickerSe
         limit: String(Math.min(settings.limit, stream.maximum_events ?? settings.limit)),
         signal_stream_id: stream.signal_stream_id,
       });
-      if (live && lastSequence.current > 0) query.set("after_sequence", String(lastSequence.current));
+      const previousSequence = lastSequence.current[runtimeScopeKey] ?? 0;
+      if (live && previousSequence > 0) query.set("after_sequence", String(previousSequence));
       if (!live) {
         query.set("as_of", asOf);
         if (runId) query.set("run_id", runId);
       }
       api<SignalStreamRuntimeResponse>(`/api/market-discovery/signal-stream/runtime?${query}`, { signal: controller.signal, timeoutMs: 10000 })
         .then((payload) => { if (active) {
-          setRuntime((current) => {
+          setRuntimeCache((current) => {
+            const currentRuntime = current[runtimeScopeKey];
             const nextSessionKey = String(payload.session?.session_key ?? payload.session?.session_date ?? "");
-            const incremental = live && lastSequence.current > 0 && payload.occurrences.length === 0 && (!sessionKey.current || sessionKey.current === nextSessionKey);
-            sessionKey.current = nextSessionKey;
-            lastSequence.current = Math.max(lastSequence.current, Number(payload.last_sequence ?? 0));
-            if (!incremental || !current) return payload;
+            const incremental = live && previousSequence > 0 && payload.occurrences.length === 0 && (!sessionKey.current[runtimeScopeKey] || sessionKey.current[runtimeScopeKey] === nextSessionKey);
+            sessionKey.current[runtimeScopeKey] = nextSessionKey;
+            lastSequence.current[runtimeScopeKey] = Math.max(previousSequence, Number(payload.last_sequence ?? 0));
+            if (!incremental || !currentRuntime) return { ...current, [runtimeScopeKey]: payload };
             const additions = payload.new_occurrences ?? [];
             const seen = new Set(additions.map((row) => String(row["event_id"] ?? row["signal_id"] ?? "")));
-            return { ...payload, occurrences: [...additions, ...current.occurrences.filter((row) => !seen.has(String(row["event_id"] ?? row["signal_id"] ?? "")))] };
+            return { ...current, [runtimeScopeKey]: { ...payload, occurrences: [...additions, ...currentRuntime.occurrences.filter((row) => !seen.has(String(row["event_id"] ?? row["signal_id"] ?? "")))] } };
           });
-          setRuntimeUnavailable(false);
+          setRuntimeUnavailableKeys((current) => {
+            if (!current.has(runtimeScopeKey)) return current;
+            const next = new Set(current);
+            next.delete(runtimeScopeKey);
+            return next;
+          });
         } })
-        .catch((error) => { if (active && (error as Error).name !== "AbortError") setRuntimeUnavailable(true); })
+        .catch((error) => { if (active && (error as Error).name !== "AbortError") setRuntimeUnavailableKeys((current) => new Set(current).add(runtimeScopeKey)); })
         .finally(() => { controller = null; });
     };
-    lastSequence.current = 0;
-    sessionKey.current = "";
     load();
     const timer = live ? window.setInterval(load, Math.max(100, stream.refresh_interval_ms ?? 5000)) : null;
     return () => { active = false; controller?.abort(); if (timer !== null) window.clearInterval(timer); };
-  }, [live, runId, settings.limit, stream?.signal_stream_id, live ? "" : asOf]);
+  }, [live, runId, runtimeScopeKey, settings.limit, stream?.maximum_events, stream?.refresh_interval_ms, stream?.signal_stream_id, live ? "" : asOf]);
   const rows = useMemo(() => {
     const normalized: ScreenerRow[] = normalizeScannerRows(runtime?.occurrences ?? []);
     return normalized.filter((row) => String(row["signal_stream_id"] ?? "") === String(stream?.signal_stream_id ?? "")).sort((left, right) => String(right["event_time"] ?? "").localeCompare(String(left["event_time"] ?? "")));
@@ -531,7 +549,7 @@ export function SignalStreamContainer({ asOf, live, onSettingsChange, onTickerSe
     </nav>
     {addingStream ? <div className="watchlist-tab-lookup"><InventoryFilterSelect ariaLabel="Signal Stream to add" className="watchlist-add-lookup" onChange={addStream} options={availableStreams.map((row) => ({ description: row.description, label: row.name, value: row.signal_stream_id }))} searchable showAllOnOpen value="" /><button onClick={() => { window.location.hash = "market-discovery-configuration"; }} type="button">Configure Signal Stream <ArrowRight size={13} /></button></div> : null}
     <div className="watch-universe-context"><div><span>Source</span><strong>{sourceLabel} · 04:00–20:00 ET</strong></div><button onClick={() => { window.location.hash = "market-discovery-configuration"; }} type="button">Configure in Market Discovery <ArrowRight size={13} /></button></div>
-    <MarketListTable catalog={catalog} chronological columns={columns} customColumns={settings.customColumns} empty={emptyMessage} limit={Math.min(settings.limit, stream?.maximum_events ?? settings.limit)} liveRecency={live} lockedColumns={canonicalDiscoveryColumns(["event_time", "symbol", ...streamColumns])} onColumnsChange={(columns) => onSettingsChange({ columns })} onCustomColumnsChange={(customColumns) => onSettingsChange({ customColumns })} onTickerSelect={onTickerSelect} recencyRail rows={rows} title={stream?.name ?? "Signal Stream"} />
+    <MarketListTable key={runtimeScopeKey || "signal-stream"} catalog={catalog} chronological columns={columns} customColumns={settings.customColumns} empty={emptyMessage} limit={Math.min(settings.limit, stream?.maximum_events ?? settings.limit)} liveRecency={live} lockedColumns={canonicalDiscoveryColumns(["event_time", "symbol", ...streamColumns])} onColumnsChange={(columns) => onSettingsChange({ columns })} onCustomColumnsChange={(customColumns) => onSettingsChange({ customColumns })} onTickerSelect={onTickerSelect} recencyRail rows={rows} title={stream?.name ?? "Signal Stream"} viewStateKey={`signal-stream:${stream?.signal_stream_id ?? "none"}`} />
   </section>;
 }
 
@@ -607,6 +625,7 @@ export function WatchUniverseContainer({ asOf, live = false, onSettingsChange, o
     {watchlist && !resolved ? <div className="watch-universe-warning" data-error={!resolving ? "true" : "false"} role="status">{resolving ? <span className="loading-spinner" aria-hidden="true" /> : null}<span><strong>{resolving ? "Resolving membership" : "Membership unavailable"}</strong><small>{unresolvedDetail}</small></span></div> : null}
     {watchlist && resolved && runtime?.status === "degraded" ? <div className="watch-universe-warning" data-error="true" role="status"><span><strong>Membership resolved with publication warnings</strong><small>{runtime.target_errors?.[0]?.error || "The member list is available, but a downstream QMD computation target could not be updated."}</small></span></div> : null}
     <MarketListTable
+      key={watchlist?.watchlist_id ?? "watchlist"}
       catalog={fieldCatalog}
       columns={columns}
       customColumns={settings.customColumns}
@@ -620,6 +639,7 @@ export function WatchUniverseContainer({ asOf, live = false, onSettingsChange, o
       onTickerSelect={onTickerSelect}
       rows={rows}
       title={`${watchlist?.name ?? "Watchlist"} watchlist`}
+      viewStateKey={`watchlist:${watchlist?.watchlist_id ?? "none"}`}
     />
   </section>;
 }
@@ -738,6 +758,7 @@ function MarketListTable({
   rows,
   sortColumn,
   title,
+  viewStateKey,
 }: {
   catalog?: FieldDefinition[];
   chronological?: boolean;
@@ -757,14 +778,17 @@ function MarketListTable({
   rows: ScreenerRow[];
   sortColumn?: string;
   title: string;
+  viewStateKey?: string;
 }) {
+  const resolvedViewStateKey = viewStateKey ?? `market-list:${title}`;
+  const cachedViewState = MARKET_LIST_VIEW_STATE.get(resolvedViewStateKey);
   const [columnPickerOpen, setColumnPickerOpen] = useState(false);
-  const [columnFilters, setColumnFilters] = useState<TableFilterCondition[]>([]);
-  const [filterMatchMode, setFilterMatchMode] = useState<TableFilterMatchMode>("all");
-  const [filterPanelOpen, setFilterPanelOpen] = useState(false);
+  const [columnFilters, setColumnFilters] = useState<TableFilterCondition[]>(() => cachedViewState?.columnFilters ?? []);
+  const [filterMatchMode, setFilterMatchMode] = useState<TableFilterMatchMode>(() => cachedViewState?.filterMatchMode ?? "all");
+  const [filterPanelOpen, setFilterPanelOpen] = useState(() => cachedViewState?.filterPanelOpen ?? false);
   const [headerMenuColumn, setHeaderMenuColumn] = useState<string | null>(null);
-  const [query, setQuery] = useState("");
-  const [sort, setSort] = useState<{ column: string; direction: "asc" | "desc" }>({ column: chronological ? "event_time" : "change_pct", direction: "desc" });
+  const [query, setQuery] = useState(() => cachedViewState?.query ?? "");
+  const [sort, setSort] = useState<{ column: string; direction: "asc" | "desc" }>(() => cachedViewState?.sort ?? { column: chronological ? "event_time" : "change_pct", direction: "desc" });
   const wallClockMs = useWallClock();
   const headerMenuRef = useRef<HTMLDivElement | null>(null);
   const deferredQuery = useDeferredValue(query.trim().toLowerCase());
@@ -775,13 +799,9 @@ function MarketListTable({
   const tableColumns = useMemo(() => selectedColumns.filter((column) => column !== "logo" && !(companyInIdentity && column === "company_name")), [companyInIdentity, selectedColumns]);
   const filterColumns = useMemo<TableFilterColumn[]>(() => tableColumns.map((column) => tableFilterColumn(catalogField(column, customColumns, catalog))), [catalog, customColumns, tableColumns]);
   const filterColumnKey = filterColumns.map((column) => column.key).join("\u0000");
-  const filterScopeRef = useRef(title);
   useEffect(() => {
-    if (filterScopeRef.current === title) return;
-    filterScopeRef.current = title;
-    setColumnFilters([]);
-    setFilterPanelOpen(false);
-  }, [title]);
+    MARKET_LIST_VIEW_STATE.set(resolvedViewStateKey, { columnFilters, filterMatchMode, filterPanelOpen, query, sort });
+  }, [columnFilters, filterMatchMode, filterPanelOpen, query, resolvedViewStateKey, sort]);
   useEffect(() => {
     const visible = new Set(filterColumns.map((column) => column.key));
     setColumnFilters((current) => current.some((condition) => !visible.has(condition.column)) ? current.filter((condition) => visible.has(condition.column)) : current);
@@ -975,12 +995,13 @@ function renderMarketCell(row: ScreenerRow, column: string, presentations: Retur
     return <SecurityIdentityCell companyName={companyName} country={String(row.country ?? presentations[ticker]?.country ?? "")} halted={row.market_is_halted ?? row.is_halted ?? row.trading_status} logoUrl={String(row.logo_url ?? presentations[ticker]?.logo_url ?? "")} newsRecency={preferRecentRecency(row.live_news_recency, presentations[ticker]?.live_news_recency)} secRecency={preferRecentRecency(row.sec_recency, presentations[ticker]?.sec_recency)} ticker={ticker} />;
   }
   if (column === "event_time") return value ? <MarketTime includeSeconds value={String(value)} /> : "—";
-  if (["direction", "source"].includes(column)) return <CategoryBadge column={column} value={value} />;
+  const definition = catalogField(column, customColumns, catalog);
+  const presentationValueType = definition.presentationValueType ?? presentationForColumn(column).presentationValueType;
+  if (presentationValueType === "category" || presentationValueType === "boolean" || ["direction", "source"].includes(column)) return <CategoryBadge column={column} value={value} />;
   if (column === "news_labels" || column === "sec_labels") {
     const labels = rowLabels(value);
     return labels.length ? <span className="market-list-label-badges" data-source={column === "news_labels" ? "news" : "sec"} title={labels.join(", ")}>{labels.slice(0, 1).map((labelValue) => <span key={labelValue}>{labelValue}</span>)}{labels.length > 1 ? <span className="market-list-label-overflow">+{labels.length - 1}</span> : null}</span> : <span className="market-list-unavailable">—</span>;
   }
-  const definition = catalogField(column, customColumns, catalog);
   if (value === null || value === undefined || value === "") return <span className="market-list-unavailable" title={`${definition.label} is not available from the active source at this clock.`}>—</span>;
   if (definition.presentationValueType === "date") return <PresentedValue column={column} presentation={{ presentationValueType: "date" }} value={value} />;
   if (definition.presentationValueType === "datetime" || definition.format === "date") return <MarketTime includeDate value={String(value)} />;

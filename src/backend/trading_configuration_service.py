@@ -327,6 +327,7 @@ def market_discovery_presentation_configuration() -> dict[str, Any]:
                     "column_id",
                     "description",
                     "name",
+                    "presentation_value_type",
                     "provenance",
                     "semantic_type",
                     "source_id",

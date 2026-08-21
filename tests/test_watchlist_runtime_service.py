@@ -132,6 +132,70 @@ class WatchlistRuntimeServiceTests(unittest.TestCase):
         # 12:00 ET is halfway through the 04:00-20:00 extended session.
         self.assertEqual(rows[0]["relative_volume"], 1.0)
 
+    def test_live_reference_enrichment_rejects_stale_previous_session_close(self) -> None:
+        rows = enrich_core_scanner_rows(
+            [
+                {
+                    "ticker": "P",
+                    "last_price": 111.0,
+                    "expected_previous_session_date": "2026-08-20",
+                }
+            ],
+            {
+                "P": {
+                    "previous_close": 74.1,
+                    "previous_session_date": "2026-07-31",
+                }
+            },
+        )
+
+        self.assertIsNone(rows[0]["previous_close"])
+        self.assertIsNone(rows[0]["change_pct"])
+        self.assertEqual(rows[0]["previous_close_reference_status"], "stale")
+        self.assertEqual(
+            rows[0]["previous_close__null_reason"],
+            "stale_previous_session_reference",
+        )
+
+    def test_live_reference_enrichment_requires_previous_session_authority(self) -> None:
+        rows = enrich_core_scanner_rows(
+            [{"ticker": "P", "last_price": 111.0}],
+            {
+                "P": {
+                    "previous_close": 74.1,
+                    "previous_session_date": "2026-07-31",
+                }
+            },
+        )
+
+        self.assertIsNone(rows[0]["previous_close"])
+        self.assertIsNone(rows[0]["change_pct"])
+        self.assertEqual(rows[0]["previous_close_reference_status"], "unavailable")
+        self.assertEqual(
+            rows[0]["previous_close__null_reason"],
+            "previous_session_authority_unavailable",
+        )
+
+    def test_live_reference_enrichment_accepts_exact_previous_session_close(self) -> None:
+        rows = enrich_core_scanner_rows(
+            [
+                {
+                    "ticker": "AAA",
+                    "last_price": 110.0,
+                    "expected_previous_session_date": "2026-08-20",
+                }
+            ],
+            {
+                "AAA": {
+                    "previous_close": 100.0,
+                    "previous_session_date": "2026-08-20",
+                }
+            },
+        )
+
+        self.assertAlmostEqual(rows[0]["change_pct"], 10.0)
+        self.assertEqual(rows[0]["previous_close_reference_status"], "ready")
+
     def test_projects_selected_rule_set_results_as_boolean_columns(self) -> None:
         discovery = self.configuration["market_discovery"]
         discovery["rule_sets"].append({

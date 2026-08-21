@@ -1740,6 +1740,7 @@ export function CanvasWorkspaceSurface({ accountKeys, approvedCanvas, canvasId, 
     ? readCanvasRuntimeRegistry(runtimeBase, runtimeRegistryStorageKey)
     : readCanvasRegistry());
   const [previewContext, setPreviewContext] = useState<CanvasPreviewContext>(() => replayRun ? replayPreviewContext(replayRun) : liveMode ? currentLivePreviewContext() : readPreviewContext());
+  const [liveClockInstant, setLiveClockInstant] = useState(() => Date.now());
   const [preview, setPreview] = useState<CanvasPreview | null>(null);
   const [contextReady, setContextReady] = useState(Boolean(replayRun || liveMode));
   const [contextError, setContextError] = useState("");
@@ -1792,7 +1793,7 @@ export function CanvasWorkspaceSurface({ accountKeys, approvedCanvas, canvasId, 
   });
   const liveScanner = useCanvasLiveScannerSnapshot(Boolean(scannerContainerKey) && contextReady && liveMode);
   const { error: scannerError, loading: scannerLoading, snapshot: scannerSnapshot } = liveMode ? liveScanner : historicalScanner;
-  const previewClocks = useMemo(() => previewClockReadings(previewContext), [previewContext]);
+  const previewClocks = useMemo(() => previewClockReadings(previewContext, liveMode ? new Date(liveClockInstant) : undefined), [liveClockInstant, liveMode, previewContext]);
   const clockIcons = [Clock3, MapPin];
   const marketStatus = useMemo(() => historicalMarketStatus(previewContext.sessionDate, previewContext.previewTime), [previewContext]);
   const livePerformance = useLivePerformanceState(!readOnly && !replayRun, liveMode ? resolvedAccountKeys : undefined);
@@ -1914,6 +1915,14 @@ export function CanvasWorkspaceSurface({ accountKeys, approvedCanvas, canvasId, 
     const update = () => setPreviewContext(currentLivePreviewContext());
     update();
     const timer = window.setInterval(update, 15_000);
+    return () => window.clearInterval(timer);
+  }, [liveMode]);
+
+  useEffect(() => {
+    if (!liveMode) return undefined;
+    const update = () => setLiveClockInstant(Date.now());
+    update();
+    const timer = window.setInterval(update, 1_000);
     return () => window.clearInterval(timer);
   }, [liveMode]);
 
@@ -5153,8 +5162,8 @@ function replayPreviewContext(run: CanvasReplayRun): CanvasPreviewContext {
   return { previewTime, sessionDate: run.session_date };
 }
 function previousWeekdayIsoDate() { const value = new Date(); value.setDate(value.getDate() - 1); while (value.getDay() === 0 || value.getDay() === 6) value.setDate(value.getDate() - 1); const local = new Date(value.getTime() - value.getTimezoneOffset() * 60_000); return local.toISOString().slice(0, 10); }
-function previewClockReadings(context: CanvasPreviewContext) {
-  const instant = dateInTimeZone(context.sessionDate, context.previewTime, "America/New_York");
+function previewClockReadings(context: CanvasPreviewContext, liveInstant?: Date) {
+  const instant = liveInstant ?? dateInTimeZone(context.sessionDate, context.previewTime, "America/New_York");
   const format = (timeZone: string, includeDate: boolean) => {
     const detail = includeDate ? new Intl.DateTimeFormat("en-US", { day: "2-digit", month: "short", timeZone, year: "numeric" }).format(instant) : "";
     const value = new Intl.DateTimeFormat("en-US", { hour: "2-digit", hour12: false, minute: "2-digit", second: "2-digit", timeZone }).format(instant);

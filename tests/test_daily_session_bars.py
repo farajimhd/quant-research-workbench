@@ -49,6 +49,7 @@ class DailySessionBarsTests(unittest.TestCase):
         )
 
         self.assertIn("argMax(close, session_date) AS previous_close", sql)
+        self.assertIn("argMax(session_date, session_date) AS previous_session_date", sql)
         self.assertIn("avg(size_sum) AS average_daily_volume", sql)
         self.assertIn("available_at_us <=", sql)
         self.assertIn("identity_status != 'ambiguous_source_ticker'", sql)

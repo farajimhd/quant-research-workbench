@@ -93,6 +93,7 @@ def daily_market_reference_projection(
         SELECT
             upper(sym) AS ticker,
             argMax(close, session_date) AS previous_close,
+            argMax(session_date, session_date) AS previous_session_date,
             avg(size_sum) AS average_daily_volume
         FROM ({relation})
         GROUP BY ticker

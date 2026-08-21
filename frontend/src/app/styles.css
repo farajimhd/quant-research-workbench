@@ -28677,17 +28677,17 @@ button {
   border-bottom: 1px solid var(--border);
   color: var(--muted-foreground);
   font-family: var(--font-body);
-  font-size: calc(9.5px * var(--app-readable-scale, 1));
+  font-size: calc(8.75px * var(--app-readable-scale, 1));
   font-weight: 650;
-  height: calc(34px * var(--app-readable-scale, 1));
-  letter-spacing: .045em;
+  height: calc(32px * var(--app-readable-scale, 1));
+  letter-spacing: .035em;
   line-height: 1.2;
   text-transform: uppercase;
 }
 
 .market-list-table th > button {
   letter-spacing: inherit;
-  min-height: calc((34px * var(--app-readable-scale, 1)) - .5px);
+  min-height: calc((32px * var(--app-readable-scale, 1)) - .5px);
   padding: 0 calc(10px * var(--app-readable-scale, 1));
   text-transform: inherit;
 }
@@ -28905,6 +28905,12 @@ button {
 .market-list-table.with-company-identity .market-list-symbol-column > button {
   max-width: 186px;
 }
+
+.application-error-boundary { align-items: center; background: var(--background); color: var(--foreground); display: flex; justify-content: center; min-height: 100vh; padding: 24px; }
+.application-error-boundary > div { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; box-shadow: var(--shadow-lg); display: grid; gap: 12px; max-width: 560px; padding: 24px; }
+.application-error-boundary strong { font-size: 16px; }
+.application-error-boundary span { color: var(--muted-foreground); line-height: 1.5; overflow-wrap: anywhere; }
+.application-error-boundary .button { justify-self: start; }
 
 .market-list-ticker-cell.company-card {
   background: color-mix(in oklab, var(--surface-alt) 62%, var(--surface));

@@ -75,6 +75,7 @@ class QmdGatewayClientTests(unittest.TestCase):
             "exchange_date": "2026-08-14",
             "exchange_time": "10:00:00",
             "trading_date": "2026-08-14",
+            "previous_session_date": "2026-08-13",
             "session_phase": "regular",
             "market_status": "active",
             "market_is_open": True,
@@ -87,6 +88,9 @@ class QmdGatewayClientTests(unittest.TestCase):
         )
         self.assertEqual(payload["market_clock"], clock)
         self.assertEqual(payload["rows"][0]["trading_date"], "2026-08-14")
+        self.assertEqual(
+            payload["rows"][0]["expected_previous_session_date"], "2026-08-13"
+        )
         self.assertEqual(payload["rows"][0]["market_time"], "10:00:00")
         self.assertEqual(payload["rows"][0]["session_phase"], "regular")
         self.assertTrue(payload["rows"][0]["market_is_open"])
