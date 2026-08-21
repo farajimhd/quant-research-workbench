@@ -3014,10 +3014,11 @@ def service_readiness_payload(
         dependency_evidence = "Dependency state cannot be trusted while the service is offline."
     elif bool(error_state.get("active")) or dependency_failures:
         dependency_status = "degraded"
+        first_dependency_failure = dependency_failures[0] if dependency_failures else {}
         dependency_evidence = str(
             error_state.get("message")
-            or dependency_failures[0].get("message")
-            or dependency_failures[0].get("detail")
+            or first_dependency_failure.get("message")
+            or first_dependency_failure.get("detail")
             or "The service declared dependency attention."
         )
     elif snapshot:

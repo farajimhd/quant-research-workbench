@@ -140,6 +140,20 @@ class ServiceReadinessTests(unittest.TestCase):
         self.assertIn("archive handoff", payload["dependencies"]["evidence"])
         self.assertEqual(payload["data"]["status"], "degraded")
 
+    def test_active_error_state_without_attention_preserves_declared_evidence(self) -> None:
+        payload = readiness(
+            snapshot={
+                "attention": [],
+                "error_state": {"active": True, "message": "live lane requires operator action"},
+            },
+        )
+
+        self.assertEqual(payload["dependencies"]["status"], "degraded")
+        self.assertEqual(
+            payload["dependencies"]["evidence"],
+            "live lane requires operator action",
+        )
+
     def test_ibkr_execution_requires_explicit_auth_and_account_evidence(self) -> None:
         unknown = readiness(service_id="ibkr")
         ready = readiness(service_id="ibkr", metrics={"auth_status": "authenticated", "account_status": "matched"})
