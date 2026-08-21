@@ -1748,6 +1748,11 @@ def validate_service_interactions(page: Any, scenario: dict[str, Any], interacti
     issues: list[str] = []
     if not scenario["page"].startswith("service-") or scenario["page"] == "services-dashboard":
         return issues
+    authority_panel = page.locator(".service-operational-authority-panel")
+    if authority_panel.count() != 1:
+        issues.append("service detail does not expose exactly one operational authority panel")
+    elif authority_panel.locator(".service-operational-authority-metric").count() != 6:
+        issues.append("service operational authority does not expose all six contract metrics")
     if scenario["page"] == "service-news":
         rows = page.locator(".news-today-table tbody tr")
         if not rows.count():
