@@ -123,14 +123,22 @@ import {
 } from "../features/live-trading/LiveNewsPanel";
 import { ChartTradePanel, LiveField, LiveSelect } from "../features/live-trading/LiveChartTradePanel";
 import { integer, money, numberValue, percent, stringValue } from "../features/live-trading/liveTradingFormat";
+import { MetricsDock } from "../features/live-trading/LiveMetricsDock";
+import type { ChartWindow, DecisionState, LiveClockMode, SavedCanvasLayout, ScannerQueryGroup } from "../features/live-trading/liveWorkspaceContracts";
+import {
+  CORE_WINDOW_IDS,
+  buildDefaultCanvasLayout,
+  buildLiveWindowSummaries,
+  chartOpenAtTime,
+  coreWindowTitle,
+  liveWorkspaceMinHeight,
+  signedMetricTone,
+} from "../features/live-trading/liveWorkspacePresentation";
 import { ApprovedCanvasRuntimePage, CanvasWorkspaceSurface } from "./CanvasConfigurationPage";
 import {
   WorkspaceCanvasManager,
   WorkspaceWindow,
   WorkspaceWindowManager,
-  buildSplitWorkspaceLayouts,
-  buildWorkspaceWindowSummaries,
-  workspaceMinHeight as calculateWorkspaceMinHeight,
   type WorkspaceCanvasTarget as LiveCanvasTarget,
   type WorkspaceWindowId as WindowId,
   type WorkspaceWindowLayout as WindowLayout,
@@ -148,29 +156,10 @@ type GateProgressStep = {
   tone: "danger" | "info" | "muted" | "success" | "warning";
 };
 
-type ScannerQueryGroup = {
-  id: string;
-  name: string;
-  query: BackendTableQuery;
-};
 
-type ChartWindow = {
-  id: WindowId;
-  row: Record<string, unknown>;
-  ticker: string;
-};
 
-type SavedCanvasLayout = {
-  chartWindows: ChartWindow[];
-  layouts: Record<WindowId, WindowLayout>;
-  layoutVersion?: number;
-  name: string;
-  windows: WindowId[];
-};
 
-type LiveClockMode = "idle" | "loading_data" | "ready" | "seeking" | "running" | "paused" | "complete";
 
-type DecisionState = "approved" | "skipped" | "watching";
 
 const LIVE_SESSION_STORAGE_KEY = "quant-research-workbench.real-live-trading.session";
 const LIVE_LAYOUT_STORAGE_KEY = "quant-research-workbench.real-live-trading.layout";
@@ -182,8 +171,6 @@ const LIVE_SCANNER_QUERY_STORAGE_KEY = "quant-research-workbench.real-live-tradi
 const LIVE_CHART_VISIBILITY_STORAGE_KEY = "quant-research-workbench.real-live-trading.chart-visibility.v1";
 const LIVE_ACCOUNT_KEYS_STORAGE_KEY = "quant-research-workbench.real-live-trading.account-keys";
 const LIVE_FEATURE_GROUPS = ["core", "session", "momentum", "volume_liquidity", "price_action", "shock", "market_structure"];
-const LIVE_METRICS_DOCK_HEIGHT = 86;
-const LIVE_PORTFOLIO_DEFAULT_HEIGHT = 210;
 const LIVE_PORTFOLIO_EXPANDED_HEIGHT = 360;
 const MAIN_DISPLAY_ITEMS = ["indicator.vwap", "indicator.tema_trend", "indicator.macd"];
 const LOWER_DISPLAY_ITEMS = ["indicator.vwap"];
@@ -315,7 +302,6 @@ const REAL_LIVE_MARKET_COLUMNS = [
   "live_news_recency",
 ];
 
-const CORE_WINDOW_IDS: WindowId[] = ["portfolio", "scanner"];
 
 const DEFAULT_SCANNER_QUERY_GROUPS: ScannerQueryGroup[] = [
   {
@@ -330,10 +316,6 @@ const DEFAULT_SCANNER_QUERY_GROUPS: ScannerQueryGroup[] = [
   },
 ];
 
-function buildDefaultCanvasLayout(childCanvas: boolean): { chartWindows: ChartWindow[]; layouts: Record<WindowId, WindowLayout>; windows: WindowId[] } {
-  const layouts = buildSplitWorkspaceLayouts({ bottomId: "scanner", primaryId: "chart", topHeight: LIVE_PORTFOLIO_DEFAULT_HEIGHT, topId: "portfolio", topInset: LIVE_METRICS_DOCK_HEIGHT, viewportHeight: window.innerHeight, viewportWidth: window.innerWidth });
-  return { chartWindows: [], layouts, windows: childCanvas ? [] : [...CORE_WINDOW_IDS] };
-}
 
 export function RealLiveTradingPage({ onMarketStatusChange, onTopbarCenterChange }: { onMarketStatusChange?: Dispatch<SetStateAction<MarketStatus>>; onTopbarCenterChange?: Dispatch<SetStateAction<ReactNode>> }) {
   const canvasId = useMemo(() => new URLSearchParams(window.location.search).get("liveCanvas") || "main", []);
@@ -1679,21 +1661,6 @@ function ScannerContainer({
   );
 }
 
-function MetricsDock({ metrics }: { metrics: ReturnType<typeof buildPortfolioMetrics> }) {
-  return (
-    <section className="live-metrics-dock" aria-label="Portfolio metrics">
-      <div className="live-debug-metric-strip" style={{ gridTemplateColumns: `repeat(${Math.max(metrics.items.length, 1)}, minmax(106px, 1fr))` }}>
-        {metrics.items.map((item) => (
-          <article className="live-debug-metric-card" data-tone={item.tone} key={item.label}>
-            <span className="live-debug-metric-icon">{item.icon}</span>
-            <span className="live-debug-metric-label">{item.label}</span>
-            <strong>{item.value}</strong>
-          </article>
-        ))}
-      </div>
-    </section>
-  );
-}
 
 function PortfolioPositions({ positions }: { positions: PositionRow[] }) {
   return (
@@ -2555,28 +2522,9 @@ function gateToneFromStatus(status: string): GateProgressStep["tone"] {
   return "info";
 }
 
-function buildLiveWindowSummaries(openWindows: WindowId[], chartWindows: ChartWindow[], layouts: Record<WindowId, WindowLayout>) {
-  return buildWorkspaceWindowSummaries(openWindows, layouts, (id) => {
-    const chart = chartWindows.find((item) => item.id === id);
-    return { kind: chart ? "chart" : "core", title: chart?.ticker ?? coreWindowTitle(id) };
-  });
-}
 
-function liveWorkspaceMinHeight(openWindows: WindowId[], layouts: Record<WindowId, WindowLayout>, compact: boolean) {
-  return calculateWorkspaceMinHeight(openWindows, layouts, compact);
-}
 
-function coreWindowTitle(id: WindowId) {
-  if (id === "portfolio") return "Portfolio";
-  if (id === "scanner") return "Scanner";
-  return id;
-}
 
-function signedMetricTone(value: number) {
-  if (value > 0) return "success";
-  if (value < 0) return "danger";
-  return "muted";
-}
 
 function readStoredSession(): TradingSession | null {
   try {
@@ -2748,11 +2696,6 @@ function stableScannerQueryId(name: string) {
   return name.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || `query-${Date.now()}`;
 }
 
-function chartOpenAtTime(payload: ChartPayload | null, timestamp: number | null) {
-  if (!payload || !timestamp) return 0;
-  const candle = payload.candles.find((item) => item.time === timestamp);
-  return candle?.open ?? 0;
-}
 
 function optionalNumber(row: Record<string, unknown> | null | undefined, key: string) {
   const value = row?.[key];
