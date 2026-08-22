@@ -28,7 +28,7 @@ import type { Time } from "lightweight-charts";
 import { api, query } from "../api/client";
 import type { ChartPayload, LiveEntryLine } from "../app/components/ChartPanel";
 import { liveMarketStatus, type MarketStatus } from "../app/components/MarketStatusBadge";
-import { DataTable, type BackendQueryPreset, type BackendTableQuery } from "../app/components/DataTable";
+import { DataTable, type BackendTableQuery } from "../app/components/DataTable";
 import { MetricRatio } from "../app/components/MetricRatio";
 import { PageIntro } from "../app/components/PageIntro";
 import { Tabs } from "../app/components/Tabs";
@@ -95,7 +95,6 @@ import {
   emptyScannerQuery,
   enrichLiveCandidate,
   latestLiveChartRow,
-  marketStateTableColumns,
   normalizeLiveScannerQuery,
   normalizeRealLiveScannerRow,
   quoteFromRow,
@@ -127,6 +126,7 @@ import {
   LOWER_DISPLAY_ITEMS,
   MAIN_DISPLAY_ITEMS,
 } from "../features/live-trading/LiveChartsContainer";
+import { LiveScannerContainer } from "../features/live-trading/LiveScannerContainer";
 import { integer, money, numberValue, percent, stringValue } from "../features/live-trading/liveTradingFormat";
 import { MetricsDock } from "../features/live-trading/LiveMetricsDock";
 import {
@@ -178,74 +178,6 @@ type GateProgressStep = {
 
 const LIVE_ACCOUNT_KEYS_STORAGE_KEY = "quant-research-workbench.real-live-trading.account-keys";
 const LIVE_PORTFOLIO_EXPANDED_HEIGHT = 360;
-const LIVE_SCANNER_COLUMNS = [
-  "ticker",
-  "bar_time_market",
-  "minute_of_day",
-  "current_open",
-  "last_close",
-  "last_open",
-  "last_high",
-  "last_low",
-  "last_vwap",
-  "last_day_high_so_far",
-  "last_day_low_so_far",
-  "last_day_volume_so_far",
-  "last_day_dollar_volume_so_far",
-  "last_day_open",
-  "last_gap_pct",
-  "last_return_5",
-  "last_volume",
-  "last_recent_volume_5",
-  "last_transactions",
-  "last_transactions_vs_prior_3",
-  "last_bearish_volume_divergence_score",
-  "last_double_timeframe_bearish_volume_divergence_score",
-  "current_open_above_last_2_body_high",
-  "spread_bps_abs",
-];
-
-const LIVE_SIGNAL_COLUMNS = [
-  "ticker",
-  "live_news_recency",
-  "bar_time_market",
-  "live_signal_time",
-  "current_open",
-  "last_volume",
-  "last_return_5",
-  "last_transactions",
-  "last_transactions_vs_prior_3",
-  "live_signal_query",
-  "last_close",
-  "last_day_volume_so_far",
-  "last_day_max_change_pct",
-  "last_day_current_change_pct",
-  "last_vwap",
-  "live_bias",
-  "live_reasons",
-  "live_risks",
-];
-
-const LIVE_MARKET_STATE_COLUMNS = [
-  "ticker",
-  "live_news_recency",
-  "current_open",
-  "last_volume",
-  "last_day_volume_so_far",
-  "last_recent_volume_5",
-  "last_return_5",
-  "last_gap_pct",
-  "last_day_max_change_pct",
-  "last_day_current_change_pct",
-  "last_close",
-  "last_transactions",
-  "last_transactions_vs_prior_3",
-  "last_day_dollar_volume_so_far",
-  "last_day_open",
-  "last_day_high_so_far",
-  "last_vwap",
-  "last_bearish_volume_divergence_score",
-];
 
 const REAL_LIVE_SCANNER_COLUMNS = [
   "ticker",
@@ -1199,8 +1131,9 @@ export function RealLiveTradingPage({ onMarketStatusChange, onTopbarCenterChange
           if (windowId === "scanner") {
             return (
               <WorkspaceWindow key={windowId} canvasTargets={canvasTargets} id={windowId} layout={layout} title="Scanner" icon={<TrendingUp size={15} />} onClose={closeWindow} onFocus={bringWindowForward} onLayoutChange={updateLayout} onMoveToCanvas={moveWindowToCanvas} onPopOut={createChildCanvas}>
-                <ScannerContainer
+                <LiveScannerContainer
                   loading={loading}
+                  marketEmptyMessage="Market state will load from the live scanner."
                   marketRows={marketRows}
                   marketSnapshot={marketSnapshot}
                   query={scannerQuery}
@@ -1619,83 +1552,6 @@ function LiveCheckCard({ check }: { check: RealLivePreflightCheck }) {
   );
 }
 
-function ScannerContainer({
-  loading,
-  marketRows,
-  marketSnapshot,
-  onDeleteQueryGroup,
-  onQueryChange,
-  onQueryNameChange,
-  onRowSelect,
-  onSaveQueryGroup,
-  query,
-  queryGroups,
-  queryName,
-  rows,
-  selectedTicker,
-  signalRows,
-  snapshot,
-}: {
-  loading: boolean;
-  marketRows: Record<string, unknown>[];
-  marketSnapshot: ScannerSnapshot | null;
-  query: BackendTableQuery;
-  queryGroups: ScannerQueryGroup[];
-  queryName: string;
-  rows: Record<string, unknown>[];
-  selectedTicker: string;
-  signalRows: SignalRow[];
-  snapshot: ScannerSnapshot | null;
-  onDeleteQueryGroup: (id: string) => void;
-  onQueryChange: (query: BackendTableQuery) => void;
-  onQueryNameChange: (value: string) => void;
-  onRowSelect: (row: Record<string, unknown>) => void;
-  onSaveQueryGroup: (name: string, query: BackendTableQuery) => void;
-}) {
-  const queryPresets: BackendQueryPreset[] = queryGroups.map((group) => ({ id: group.id, label: group.name, query: group.query }));
-  return (
-    <div className="live-scanner-stack">
-      <section className="live-scanner-table live-scanner-signals">
-        <DataTable
-          backendQuery={{
-            columns: snapshot?.columns?.length ? snapshot.columns : LIVE_SCANNER_COLUMNS,
-            loading,
-            onChange: onQueryChange,
-            onDeletePreset: onDeleteQueryGroup,
-            onNameChange: onQueryNameChange,
-            onSavePreset: onSaveQueryGroup,
-            presets: queryPresets,
-            queryName,
-            value: query,
-          }}
-          columns={LIVE_SIGNAL_COLUMNS}
-          defaultSort={{ column: "live_signal_time", direction: "desc" }}
-          empty={loading ? "Loading scanner..." : "No scanner signals detected yet."}
-          fitToContent
-          isRowSelected={(row) => stringValue(row, "ticker") === selectedTicker}
-          onRowClick={onRowSelect}
-          preserveFiltersOnDataChange
-          rows={signalRows}
-          title={`Signals${rows.length ? ` (${rows.length} current)` : ""}`}
-          transposeHelper
-        />
-      </section>
-      <section className="live-scanner-table live-scanner-market">
-        <DataTable
-          columns={marketStateTableColumns(marketSnapshot?.columns ?? [])}
-          defaultSort={{ column: "last_day_volume_so_far", direction: "desc" }}
-          empty={loading ? "Loading market state..." : "Market state will load from the live scanner."}
-          isRowSelected={(row) => stringValue(row, "ticker") === selectedTicker}
-          onRowClick={onRowSelect}
-          preserveFiltersOnDataChange
-          rows={marketRows}
-          title="Market State"
-          transposeHelper
-        />
-      </section>
-    </div>
-  );
-}
 
 
 function PortfolioPositions({ positions }: { positions: PositionRow[] }) {
