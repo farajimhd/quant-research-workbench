@@ -1,25 +1,16 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type Dispatch, type ReactNode, type SetStateAction } from "react";
 import {
-  Activity,
   BarChart3,
-  Banknote,
   ChevronDown,
   ChevronUp,
-  CheckCircle2,
-  CircleDollarSign,
-  ClipboardList,
-  Clock3,
   FolderOpen,
   LayoutGrid,
   PauseCircle,
   Play,
   RefreshCw,
   Save,
-  ShieldAlert,
   SkipForward,
   StepForward,
-  TableProperties,
-  Target,
   TrendingUp,
   WalletCards,
   X,
@@ -48,7 +39,6 @@ import type {
 } from "../features/live-trading/contracts";
 import {
   buildClosedTrade,
-  positionExposure,
   realizedPnlFromTrades,
   reducePosition,
   upsertPosition,
@@ -88,7 +78,11 @@ import {
 import { LiveChartWindow } from "../features/live-trading/LiveChartWindow";
 import { LiveScannerContainer, LIVE_SCANNER_COLUMNS } from "../features/live-trading/LiveScannerContainer";
 import { LivePortfolioContainer } from "../features/live-trading/LivePortfolioContainer";
-import { integer, money, numberValue, percent, stringValue } from "../features/live-trading/liveTradingFormat";
+import {
+  buildSimulationGlobalLiveMetrics,
+  buildSimulationPortfolioMetrics,
+} from "../features/live-trading/liveMetrics";
+import { numberValue, stringValue } from "../features/live-trading/liveTradingFormat";
 import { MetricsDock } from "../features/live-trading/LiveMetricsDock";
 import {
   LIVE_FEATURE_GROUPS,
@@ -102,7 +96,6 @@ import {
   buildLiveWindowSummaries,
   coreWindowTitle,
   liveWorkspaceMinHeight,
-  signedMetricTone,
 } from "../features/live-trading/liveWorkspacePresentation";
 import { createLiveWorkspaceStorage } from "../features/live-trading/liveWorkspaceStorage";
 
@@ -331,11 +324,11 @@ export function LiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterChange
     [marketSnapshot]
   );
   const portfolioMetrics = useMemo(
-    () => buildPortfolioMetrics({ orders, positions, trades }),
+    () => buildSimulationPortfolioMetrics({ orders, positions, startingCash: LIVE_STARTING_CASH, trades }),
     [orders, positions, trades]
   );
   const globalMetrics = useMemo(
-    () => buildGlobalLiveMetrics({ decisions, lastActionTime, liveClockMode, preloadStatus, scannerRows: signalRows, secondsPerMinute, session, snapshot }),
+    () => buildSimulationGlobalLiveMetrics({ decisions, lastActionTime, liveClockMode, preloadProgress: preloadStatus?.progress, scannerRows: signalRows, secondsPerMinute, session, snapshot }),
     [decisions, lastActionTime, liveClockMode, preloadStatus, secondsPerMinute, session, signalRows, snapshot]
   );
   const liveWindowSummaries = useMemo(
@@ -1422,82 +1415,4 @@ function openPositionCost(positions: PositionRow[]) {
 
 function availableCashFromState(positions: PositionRow[], trades: TradeRow[]) {
   return Math.max(0, LIVE_STARTING_CASH + realizedPnlFromTrades(trades) - openPositionCost(positions));
-}
-
-
-function buildPortfolioMetrics({ orders, positions, trades }: { orders: OrderRow[]; positions: PositionRow[]; trades: TradeRow[] }) {
-  const realized = realizedPnlFromTrades(trades);
-  const unrealized = positions.reduce((total, row) => total + row.unrealized_pnl, 0);
-  const exposure = positionExposure(positions);
-  const cash = availableCashFromState(positions, trades);
-  const stagedOrders = orders.filter((order) => order.status === "STAGED").length;
-  const fills = orders.filter((order) => order.status === "FILLED").length;
-  const wins = trades.filter((trade) => trade.gross_pnl > 0).length;
-  const winRate = trades.length ? wins / trades.length : 0;
-  return {
-    items: [
-      { icon: <Banknote size={14} />, label: "Total P/L", tone: signedMetricTone(realized + unrealized), value: money(realized + unrealized) },
-      { icon: <CircleDollarSign size={14} />, label: "Realized P/L", tone: signedMetricTone(realized), value: money(realized) },
-      { icon: <Activity size={14} />, label: "Unrealized P/L", tone: signedMetricTone(unrealized), value: money(unrealized) },
-      { icon: <Banknote size={14} />, label: "Cash", tone: cash > LIVE_STARTING_CASH ? "success" : cash < LIVE_STARTING_CASH ? "warning" : "muted", value: money(cash) },
-      { icon: <Banknote size={14} />, label: "Equity", tone: signedMetricTone(realized + unrealized), value: money(LIVE_STARTING_CASH + realized + unrealized) },
-      { icon: <BarChart3 size={14} />, label: "Exposure", tone: exposure ? "info" : "muted", value: money(exposure) },
-      { icon: <WalletCards size={14} />, label: "Open Positions", tone: positions.length ? "info" : "muted", value: integer(positions.length) },
-      { icon: <ClipboardList size={14} />, label: "Orders", tone: orders.length ? "info" : "muted", value: integer(orders.length) },
-      { icon: <CheckCircle2 size={14} />, label: "Trades", tone: trades.length ? "success" : "muted", value: integer(trades.length) },
-      { icon: <Save size={14} />, label: "Staged", tone: stagedOrders ? "warning" : "muted", value: integer(stagedOrders) },
-      { icon: <CheckCircle2 size={14} />, label: "Fills", tone: fills ? "success" : "muted", value: integer(fills) },
-      { icon: <ShieldAlert size={14} />, label: "Win Rate", tone: trades.length ? signedMetricTone(winRate - 0.5) : "muted", value: percent(winRate) },
-    ],
-  };
-}
-
-function buildGlobalLiveMetrics({
-  decisions,
-  lastActionTime,
-  liveClockMode,
-  preloadStatus,
-  scannerRows,
-  secondsPerMinute,
-  session,
-  snapshot,
-}: {
-  decisions: Record<string, DecisionState>;
-  lastActionTime: string;
-  liveClockMode: LiveClockMode;
-  preloadStatus: LivePreloadPayload | null;
-  scannerRows: Record<string, unknown>[];
-  secondsPerMinute: string;
-  session: TradingSession;
-  snapshot: ScannerSnapshot | null;
-}) {
-  const decisionsCount = Object.keys(decisions).length;
-  const preloadProgress = preloadStatus ? preloadStatus.progress : liveClockMode === "loading_data" ? 0.45 : 0;
-  const modeValue = (
-    <span className="live-mode-value">
-      <span>{formatLiveMode(liveClockMode)}</span>
-      {liveClockMode === "loading_data" ? (
-        <span className="live-mode-progress" aria-label="Loading data">
-          <span style={{ width: `${Math.max(8, Math.round(preloadProgress * 100))}%` }} />
-        </span>
-      ) : null}
-    </span>
-  );
-  return {
-    items: [
-      { icon: <Clock3 size={14} />, label: "Date", tone: "info", value: session.sessionDate || "-" },
-      { icon: <Clock3 size={14} />, label: "Clock", tone: liveClockMode === "running" ? "success" : liveClockMode === "seeking" ? "warning" : "muted", value: `${session.barTime} ET` },
-      { icon: <Activity size={14} />, label: "Mode", tone: liveClockMode === "running" ? "success" : liveClockMode === "seeking" || liveClockMode === "loading_data" ? "warning" : "muted", value: modeValue },
-      { icon: <TableProperties size={14} />, label: "Raw Scanner Rows", tone: snapshot?.row_count ? "info" : "muted", value: integer(snapshot?.row_count ?? 0) },
-      { icon: <TrendingUp size={14} />, label: "Signals", tone: scannerRows.length ? "success" : "muted", value: integer(scannerRows.length) },
-      { icon: <Target size={14} />, label: "Decisions", tone: decisionsCount ? "info" : "muted", value: integer(decisionsCount) },
-      { icon: <SkipForward size={14} />, label: "Replay Pace", tone: "info", value: `${Math.max(1, Number(secondsPerMinute) || 10)}s / 1m` },
-      { icon: <CheckCircle2 size={14} />, label: "Last Signal", tone: lastActionTime ? "success" : "muted", value: lastActionTime || "-" },
-    ],
-  };
-}
-
-function formatLiveMode(mode: LiveClockMode) {
-  if (mode === "loading_data") return "loading data";
-  return mode;
 }

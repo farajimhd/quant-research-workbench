@@ -2,13 +2,9 @@ import { useCallback, useEffect, useMemo, useRef, useState, type Dispatch, type 
 import {
   Activity,
   BarChart3,
-  Banknote,
   ChevronDown,
   ChevronUp,
   CheckCircle2,
-  CircleDollarSign,
-  ClipboardList,
-  Clock3,
   Eye,
   FolderOpen,
   Info,
@@ -16,9 +12,6 @@ import {
   Play,
   RefreshCw,
   Save,
-  ShieldAlert,
-  TableProperties,
-  Target,
   TrendingUp,
   WalletCards,
   X,
@@ -71,14 +64,10 @@ import {
 } from "../features/live-trading/contracts";
 import {
   brokerAvailableFunds,
-  brokerPnlRows,
   buildClosedTrade,
   normalizeRealLiveExecution,
   normalizeRealLiveOrder,
   normalizeRealLivePosition,
-  portfolioBalanceRows,
-  positionExposure,
-  realizedPnlFromTrades,
   reducePosition,
   upsertPosition,
   type OrderRow,
@@ -120,7 +109,11 @@ import {
 import { LiveChartWindow } from "../features/live-trading/LiveChartWindow";
 import { LiveScannerContainer } from "../features/live-trading/LiveScannerContainer";
 import { LivePortfolioContainer } from "../features/live-trading/LivePortfolioContainer";
-import { integer, money, numberValue, percent, stringValue } from "../features/live-trading/liveTradingFormat";
+import {
+  buildBrokerGlobalLiveMetrics,
+  buildBrokerPortfolioMetrics,
+} from "../features/live-trading/liveMetrics";
+import { integer, numberValue, stringValue } from "../features/live-trading/liveTradingFormat";
 import { MetricsDock } from "../features/live-trading/LiveMetricsDock";
 import {
   LIVE_FEATURE_GROUPS,
@@ -134,7 +127,6 @@ import {
   buildLiveWindowSummaries,
   coreWindowTitle,
   liveWorkspaceMinHeight,
-  signedMetricTone,
 } from "../features/live-trading/liveWorkspacePresentation";
 import { createLiveWorkspaceStorage } from "../features/live-trading/liveWorkspaceStorage";
 import { ApprovedCanvasRuntimePage, CanvasWorkspaceSurface } from "./CanvasConfigurationPage";
@@ -489,14 +481,14 @@ export function RealLiveTradingPage({ onMarketStatusChange, onTopbarCenterChange
     [marketSnapshot]
   );
   const portfolioMetrics = useMemo(
-    () => buildPortfolioMetrics({ orders, positions, snapshot: portfolioSnapshot, trades }),
+    () => buildBrokerPortfolioMetrics({ orders, positions, snapshot: portfolioSnapshot, trades }),
     [orders, portfolioSnapshot, positions, trades]
   );
   const availableBrokerCash = useMemo(() => brokerAvailableFunds(portfolioSnapshot), [portfolioSnapshot]);
   const selectedAccounts = useMemo(() => selectedAccountList(availableAccounts, selectedAccountKeys), [availableAccounts, selectedAccountKeys]);
   const primaryAccountKey = selectedAccountKeys[0] || "paper";
   const globalMetrics = useMemo(
-    () => buildGlobalLiveMetrics({ decisions, exchangeClock, lastActionTime, liveClockMode, localClock, scannerRows: signalRows, selectedAccounts, session, sessionBaseline, snapshot }),
+    () => buildBrokerGlobalLiveMetrics({ decisions, exchangeClock, lastActionTime, liveClockMode, localClock, scannerRows: signalRows, selectedAccounts, session, sessionBaseline, snapshot }),
     [decisions, exchangeClock, lastActionTime, liveClockMode, localClock, selectedAccounts, session, sessionBaseline, signalRows, snapshot]
   );
   const liveWindowSummaries = useMemo(
@@ -1608,97 +1600,8 @@ function toggleSelectedAccount(accountKey: string, accounts: RealLiveAccountConf
 
 
 
-function buildPortfolioMetrics({ orders, positions, snapshot, trades }: { orders: OrderRow[]; positions: PositionRow[]; snapshot: RealLivePortfolioPayload | null; trades: TradeRow[] }) {
-  const brokerPnl = brokerPnlRows(snapshot);
-  const realized = positions.reduce((total, row) => total + (row.realized_pnl ?? 0), 0);
-  const unrealized = brokerPnl.length ? brokerPnl.reduce((total, row) => total + numberValue(row, "unrealized_pnl"), 0) : positions.reduce((total, row) => total + row.unrealized_pnl, 0);
-  const exposure = positionExposure(positions);
-  const balances = portfolioBalanceRows(snapshot);
-  const cash = brokerAvailableFunds(snapshot);
-  const equity = balances.reduce((total, row) => total + numberValue(row, "net_liquidation"), 0);
-  const connection = snapshot?.connection ?? {};
-  const stagedOrders = orders.filter((order) => order.status === "STAGED").length;
-  const fills = orders.filter((order) => order.status === "FILLED").length;
-  const wins = trades.filter((trade) => trade.gross_pnl > 0).length;
-  const winRate = trades.length ? wins / trades.length : 0;
-  const errors = snapshot?.errors?.length ?? 0;
-  return {
-    items: [
-      { icon: <WalletCards size={14} />, label: "Source", tone: snapshot ? "success" : "muted", value: snapshot?.source?.toUpperCase() || "IBKR" },
-      { icon: <Activity size={14} />, label: "Portfolio Conn", tone: connection.portfolio === "blocked" ? "danger" : connection.portfolio ? "success" : "muted", value: connection.portfolio || "waiting" },
-      { icon: <ClipboardList size={14} />, label: "Order Conn", tone: connection.iserver === "blocked" ? "danger" : connection.iserver ? "success" : "muted", value: connection.iserver || "waiting" },
-      { icon: <Banknote size={14} />, label: "Total P/L", tone: signedMetricTone(realized + unrealized), value: money(realized + unrealized) },
-      { icon: <CircleDollarSign size={14} />, label: "Realized P/L", tone: signedMetricTone(realized), value: money(realized) },
-      { icon: <Activity size={14} />, label: "Unrealized P/L", tone: signedMetricTone(unrealized), value: money(unrealized) },
-      { icon: <Banknote size={14} />, label: "Available", tone: cash ? "info" : "muted", value: money(cash) },
-      { icon: <Banknote size={14} />, label: "Net Liq", tone: equity ? "info" : "muted", value: money(equity) },
-      { icon: <BarChart3 size={14} />, label: "Exposure", tone: exposure ? "info" : "muted", value: money(exposure) },
-      { icon: <WalletCards size={14} />, label: "Open Positions", tone: positions.length ? "info" : "muted", value: integer(positions.length) },
-      { icon: <ClipboardList size={14} />, label: "Orders", tone: orders.length ? "info" : "muted", value: integer(orders.length) },
-      { icon: <CheckCircle2 size={14} />, label: "Fills", tone: trades.length ? "success" : "muted", value: integer(trades.length) },
-      { icon: <Save size={14} />, label: "Staged", tone: stagedOrders ? "warning" : "muted", value: integer(stagedOrders) },
-      { icon: <CheckCircle2 size={14} />, label: "Filled Orders", tone: fills ? "success" : "muted", value: integer(fills) },
-      { icon: <ShieldAlert size={14} />, label: "Win Rate", tone: trades.length ? signedMetricTone(winRate - 0.5) : "muted", value: percent(winRate) },
-      { icon: <ShieldAlert size={14} />, label: "Broker Errors", tone: errors ? "danger" : "muted", value: integer(errors) },
-    ],
-  };
-}
 
-function buildGlobalLiveMetrics({
-  decisions,
-  exchangeClock,
-  lastActionTime,
-  liveClockMode,
-  localClock,
-  scannerRows,
-  selectedAccounts,
-  session,
-  sessionBaseline,
-  snapshot,
-}: {
-  decisions: Record<string, DecisionState>;
-  exchangeClock: string;
-  lastActionTime: string;
-  liveClockMode: LiveClockMode;
-  localClock: string;
-  scannerRows: Record<string, unknown>[];
-  selectedAccounts: RealLiveAccountConfig[];
-  session: TradingSession;
-  sessionBaseline: RealLiveSessionBaselineStatus;
-  snapshot: ScannerSnapshot | null;
-}) {
-  const decisionsCount = Object.keys(decisions).length;
-  const accountLabel = selectedAccounts.length > 1 ? `${selectedAccounts.length} mirrored` : selectedAccounts[0]?.label || "Paper";
-  const accountTone = selectedAccounts.some((account) => account.trading_mode !== "paper") ? "warning" : "info";
-  const baselineStatus = sessionBaseline.status || "not_started";
-  const baselineTone = baselineStatus === "written" || baselineStatus === "written_with_errors" ? "success" : baselineStatus === "pending" ? "warning" : baselineStatus === "failed" ? "danger" : "muted";
-  const baselineValue = baselineStatus === "written" || baselineStatus === "written_with_errors"
-    ? `${integer(sessionBaseline.scanner_rows_written ?? sessionBaseline.scanner_row_count ?? 0)} rows`
-    : baselineStatus;
-  const modeValue = (
-    <span className="live-mode-value">
-      <span>{formatLiveMode(liveClockMode)}</span>
-    </span>
-  );
-  return {
-    items: [
-      { icon: <Banknote size={14} />, label: "Accounts", tone: accountTone, value: accountLabel },
-      { icon: <Clock3 size={14} />, label: "Exchange", tone: "info", value: exchangeClock || `${session.barTime} ET` },
-      { icon: <Clock3 size={14} />, label: "Local", tone: "info", value: localClock || "-" },
-      { icon: <Activity size={14} />, label: "Mode", tone: liveClockMode === "running" ? "success" : liveClockMode === "loading_data" ? "warning" : "muted", value: modeValue },
-      { icon: <TableProperties size={14} />, label: "Scanner Rows", tone: snapshot?.row_count ? "info" : "muted", value: integer(snapshot?.row_count ?? 0) },
-      { icon: <TrendingUp size={14} />, label: "Signals", tone: scannerRows.length ? "success" : "muted", value: integer(scannerRows.length) },
-      { icon: <Save size={14} />, label: "Baseline", tone: baselineTone, value: baselineValue },
-      { icon: <Target size={14} />, label: "Decisions", tone: decisionsCount ? "info" : "muted", value: integer(decisionsCount) },
-      { icon: <CheckCircle2 size={14} />, label: "Last Refresh", tone: lastActionTime ? "success" : "muted", value: lastActionTime || "-" },
-    ],
-  };
-}
 
-function formatLiveMode(mode: LiveClockMode) {
-  if (mode === "loading_data") return "loading data";
-  return mode;
-}
 
 function buildGateProgressSteps({
   gatewayStatus,
