@@ -10259,7 +10259,7 @@ button {
 .canvas-clock-zones {
   display: grid;
   flex: 1 1 auto;
-  grid-template-columns: repeat(2, max-content);
+  grid-template-columns: repeat(3, max-content);
   min-width: 0;
   width: auto;
 }
@@ -10273,7 +10273,7 @@ button {
   display: grid;
   grid-template-columns: 18px minmax(0, 1fr);
   gap: 7px;
-  min-width: 138px;
+  min-width: 124px;
   padding: 5px 12px;
 }
 
@@ -10511,7 +10511,7 @@ button {
 
 .canvas-config-page {
   gap: 2px;
-  grid-template-rows: auto minmax(0, 1fr);
+  grid-template-rows: auto auto minmax(0, 1fr);
   height: 100%;
   max-width: 100%;
   min-width: 0;
@@ -10519,7 +10519,7 @@ button {
 }
 
 .canvas-focus-page {
-  grid-template-rows: auto minmax(0, 1fr);
+  grid-template-rows: auto auto minmax(0, 1fr);
   height: 100%;
   min-height: 0;
   width: 100%;
@@ -10764,6 +10764,25 @@ button {
 .canvas-config-page .trading-workspace-canvas[data-has-fullscreen="true"] {
   min-height: 0;
   overflow: hidden;
+}
+
+.canvas-config-page > .canvas-config-toolbar { grid-row: 1; }
+
+.canvas-status-stack {
+  display: grid;
+  gap: 2px;
+  grid-row: 2;
+  min-height: 0;
+}
+
+.canvas-config-page > .trading-workspace-shell {
+  grid-row: 3;
+  min-height: 0;
+}
+
+.canvas-config-page .trading-workspace-canvas[data-has-fullscreen="true"] .trading-workspace-plane {
+  height: 100%;
+  min-height: 100% !important;
 }
 
 .canvas-config-page .trading-workspace-shell[data-management-open="true"] .workspace-management-scrim {

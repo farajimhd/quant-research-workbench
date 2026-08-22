@@ -1,4 +1,4 @@
-import { Activity, BadgeDollarSign, BriefcaseBusiness, Check, CircleDollarSign, Clock3, ExternalLink, Landmark, Link2, MapPin, PanelRightOpen, Plus, RefreshCcw, Search, Save, Settings2, ShieldCheck, Trash2, TriangleAlert, Unlink, WalletCards } from "lucide-react";
+import { Activity, BadgeDollarSign, BriefcaseBusiness, Check, CircleDollarSign, Clock3, ExternalLink, Globe2, Landmark, Link2, MapPin, PanelRightOpen, Plus, RefreshCcw, Search, Save, Settings2, ShieldCheck, Trash2, TriangleAlert, Unlink, WalletCards } from "lucide-react";
 import { lazy, memo, Suspense, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type MutableRefObject, type ReactNode } from "react";
 
 import { api, apiCached, query, type ApiError } from "../api/client";
@@ -543,7 +543,7 @@ export function CanvasWorkspaceSurface({ accountKeys, approvedCanvas, canvasId, 
   const liveScanner = useCanvasLiveScannerSnapshot(Boolean(scannerContainerKey) && contextReady && liveMode);
   const { error: scannerError, loading: scannerLoading, snapshot: scannerSnapshot } = liveMode ? liveScanner : historicalScanner;
   const previewClocks = useMemo(() => previewClockReadings(previewContext, liveMode ? new Date(liveClockInstant) : undefined), [liveClockInstant, liveMode, previewContext]);
-  const clockIcons = [Clock3, MapPin];
+  const clockIcons = [Clock3, MapPin, Globe2];
   const marketStatus = useMemo(() => historicalMarketStatus(previewContext.sessionDate, previewContext.previewTime), [previewContext]);
   const livePerformance = useLivePerformanceState(!readOnly && !replayRun, liveMode ? resolvedAccountKeys : undefined);
   const performanceState: LivePerformanceState = replayRun
@@ -890,7 +890,9 @@ export function CanvasWorkspaceSurface({ accountKeys, approvedCanvas, canvasId, 
       const linkAssignments = { ...current.linkAssignments, [instanceId]: group };
       const linkOwners = { ...current.linkOwners };
       if (previousGroup !== "none" && previousGroup !== group && linkOwners[previousGroup] === instanceId) {
-        const nextOwner = Object.keys(linkAssignments).find((candidateId) => candidateId !== instanceId && linkAssignments[candidateId] === previousGroup);
+        const currentCanvasIds = workspaceState?.openIds ?? [];
+        const nextOwner = currentCanvasIds.find((candidateId) => candidateId !== instanceId && linkAssignments[candidateId] === previousGroup)
+          ?? Object.keys(linkAssignments).find((candidateId) => candidateId !== instanceId && linkAssignments[candidateId] === previousGroup);
         if (nextOwner) linkOwners[previousGroup] = nextOwner;
         else delete linkOwners[previousGroup];
       }
@@ -1156,8 +1158,10 @@ export function CanvasWorkspaceSurface({ accountKeys, approvedCanvas, canvasId, 
         {managementEnabled ? <div className="canvas-toolbar-actions">{manager ? <button className="button secondary compact canvas-set-default" disabled={!workspaceState} onClick={saveDefaultLayout} type="button"><Save size={13} /> {defaultSaved ? "Default saved" : "Set default"}</button> : null}<button aria-expanded={managementOpen} aria-label="Canvas management" className="button secondary compact canvas-management-toggle" onClick={() => setManagementOpen((open) => !open)} type="button"><PanelRightOpen size={13} /> Manage</button></div> : null}
       </header>
 
-      {contextError && replayRun ? <div aria-live="assertive" className="canvas-inline-error replay-runtime-error"><TriangleAlert aria-hidden="true" size={15} /><div><strong>{runtimeMode === "backtest_debug" ? "Backtest Debug" : runtimeMode === "backtest" ? "Backtest" : "Replay"} stopped</strong><span>{contextError}</span></div></div> : null}
-      {error ? <div className="canvas-inline-error">{error}</div> : null}
+      {(contextError && replayRun) || error ? <div className="canvas-status-stack">
+        {contextError && replayRun ? <div aria-live="assertive" className="canvas-inline-error replay-runtime-error"><TriangleAlert aria-hidden="true" size={15} /><div><strong>{runtimeMode === "backtest_debug" ? "Backtest Debug" : runtimeMode === "backtest" ? "Backtest" : "Replay"} stopped</strong><span>{contextError}</span></div></div> : null}
+        {error ? <div className="canvas-inline-error">{error}</div> : null}
+      </div> : null}
 
       <TradingWorkspace
         key={`${workspaceStorageKey}:${overlayEpoch}`}
@@ -1626,14 +1630,16 @@ function replayPreviewContext(run: CanvasReplayRun): CanvasPreviewContext {
 function previousWeekdayIsoDate() { const value = new Date(); value.setDate(value.getDate() - 1); while (value.getDay() === 0 || value.getDay() === 6) value.setDate(value.getDate() - 1); const local = new Date(value.getTime() - value.getTimezoneOffset() * 60_000); return local.toISOString().slice(0, 10); }
 function previewClockReadings(context: CanvasPreviewContext, liveInstant?: Date) {
   const instant = liveInstant ?? dateInTimeZone(context.sessionDate, context.previewTime, "America/New_York");
-  const format = (timeZone: string, includeDate: boolean) => {
+  const format = (timeZone: string | undefined, includeDate: boolean) => {
     const detail = includeDate ? new Intl.DateTimeFormat("en-US", { day: "2-digit", month: "short", timeZone, year: "numeric" }).format(instant) : "";
     const value = new Intl.DateTimeFormat("en-US", { hour: "2-digit", hour12: false, minute: "2-digit", second: "2-digit", timeZone }).format(instant);
     return { detail, value };
   };
+  const localTimeZone = Intl.DateTimeFormat().resolvedOptions().timeZone || undefined;
   return [
     { label: "ET", ...format("America/New_York", true) },
-    { label: "VAN", ...format("America/Vancouver", true) },
+    { label: "Local", ...format(localTimeZone, true) },
+    { label: "UTC", ...format("UTC", true) },
   ];
 }
 function formatChartTimeframe(value: string) {

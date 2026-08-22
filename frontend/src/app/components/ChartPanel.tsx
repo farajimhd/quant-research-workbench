@@ -1341,15 +1341,19 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
     const root = priceRef.current;
     if (!chart || !root) return;
     const rootRect = root.getBoundingClientRect();
+    // DOM rectangles are post-zoom, but absolute child coordinates are
+    // pre-zoom. Normalize them so overlays follow their native chart panes.
+    const scaleX = root.offsetWidth > 0 ? rootRect.width / root.offsetWidth : 1;
+    const scaleY = root.offsetHeight > 0 ? rootRect.height / root.offsetHeight : 1;
     const position = (overlay: HTMLElement | null, paneIndex: number) => {
       const paneElement = chart.panes()[paneIndex]?.getHTMLElement();
       if (!overlay || !paneElement) return;
       paneResizeObserverRef.current?.observe(paneElement);
       const paneRect = paneElement.getBoundingClientRect();
-      overlay.style.left = `${paneRect.left - rootRect.left}px`;
-      overlay.style.top = `${paneRect.top - rootRect.top}px`;
-      overlay.style.width = `${paneRect.width}px`;
-      overlay.style.height = `${paneRect.height}px`;
+      overlay.style.left = `${(paneRect.left - rootRect.left) / scaleX}px`;
+      overlay.style.top = `${(paneRect.top - rootRect.top) / scaleY}px`;
+      overlay.style.width = `${paneRect.width / scaleX}px`;
+      overlay.style.height = `${paneRect.height / scaleY}px`;
     };
     position(pricePaneOverlayRef.current, 0);
     oscillatorPaneRuntimesRef.current.forEach((runtime, key) => position(oscillatorPaneRefs.current.get(key) ?? null, runtime.paneIndex));

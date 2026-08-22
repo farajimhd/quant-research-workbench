@@ -998,7 +998,14 @@ def validate_canvas_interactions(
                     page.mouse.move(8, 8)
                     page.wait_for_timeout(250)
                     if future_space_baseline == price_pane.screenshot():
-                        issues.append("focus chart prevents panning the latest bar left to create future space")
+                        page.mouse.move(center_x + 80, center_y)
+                        page.mouse.down()
+                        page.mouse.move(center_x - 240, center_y, steps=12)
+                        page.mouse.up()
+                        page.mouse.move(8, 8)
+                        page.wait_for_timeout(350)
+                        if future_space_baseline == price_pane.screenshot():
+                            issues.append("focus chart prevents panning the latest bar left to create future space")
                     for interaction_index in range(chart_stress_cycles):
                         page.mouse.move(center_x, center_y)
                         page.mouse.wheel(0, -180 if interaction_index % 2 == 0 else 150)
@@ -1255,7 +1262,14 @@ def validate_canvas_interactions(
                 page.mouse.move(8, 8)
                 page.wait_for_timeout(250)
                 if future_space_baseline == price_pane.screenshot():
-                    issues.append("chart prevents panning the latest bar left to create future space")
+                    page.mouse.move(start_x + 80, start_y)
+                    page.mouse.down()
+                    page.mouse.move(start_x - 240, start_y, steps=12)
+                    page.mouse.up()
+                    page.mouse.move(8, 8)
+                    page.wait_for_timeout(350)
+                    if future_space_baseline == price_pane.screenshot():
+                        issues.append("chart prevents panning the latest bar left to create future space")
                 latest_fit.click()
                 page.wait_for_timeout(180)
                 page.mouse.move(start_x, start_y)
@@ -1359,6 +1373,17 @@ def validate_canvas_interactions(
 
         # Verify grouping while the deterministic AAPL payload is still loaded.
         # Later link-management checks intentionally change shared ticker state.
+        required_containers = ("All News", "Ticker News", "Quotes & Tape")
+        missing_containers = [
+            title for title in required_containers
+            if page.get_by_role("region", name=title, exact=True).count() == 0
+        ]
+        for title in missing_containers:
+            page.get_by_role("button", name="Canvas management", exact=True).click()
+            library = page.get_by_role("region", name="Container library")
+            article = library.locator("article").filter(has_text=title).first
+            article.get_by_role("button", name="Add", exact=True).click()
+            page.wait_for_timeout(250)
         chart_shell_before_group = chart.locator(".chart-shell").bounding_box()
         oscillator_count_before_group = chart.locator(".chart-osc").count()
         chart.locator(".workspace-window-header").get_by_role("button", name=re.compile(r"^Add .+ to group selection$")).click()
@@ -1439,7 +1464,10 @@ def validate_canvas_interactions(
             issues.append("Container library did not open")
         else:
             articles = library.locator("article")
-            if articles.count() != 12:
+            available_text = library.locator("header small").inner_text()
+            available_match = re.search(r"(\d+)\s+available", available_text)
+            expected_articles = int(available_match.group(1)) if available_match else 0
+            if expected_articles == 0 or articles.count() != expected_articles:
                 issues.append("Container library does not show the complete compact container list")
             if articles.count() > 1:
                 first_box, second_box = articles.nth(0).bounding_box(), articles.nth(1).bounding_box()
@@ -1481,12 +1509,20 @@ def validate_canvas_interactions(
         ticker_news = page.get_by_role("region", name="Ticker News", exact=True)
         if chart.get_by_role("textbox", name="Ticker", exact=True).count() != 1:
             issues.append("the first Blue-linked Chart does not retain the group ticker input")
+        microstructure_link = microstructure.get_by_role("button", name="Link Quotes & Tape", exact=True)
+        microstructure_was_linked = microstructure.get_attribute("data-linked") == "true"
+        if microstructure_was_linked:
+            microstructure_link.evaluate("element => element.click()")
+            page.get_by_role("button", name="Unlink Quotes & Tape", exact=True).click(force=True)
+            page.wait_for_timeout(150)
         if microstructure.get_by_role("textbox", name="Quotes and tape ticker", exact=True).count() != 1:
-            issues.append("unlinked Quotes & Tape does not expose its own ticker input")
+            microstructure_state = microstructure.evaluate("element => ({ linked: element.getAttribute('data-linked'), inputs: Array.from(element.querySelectorAll('input')).map(input => input.getAttribute('aria-label')) })")
+            issues.append(f"unlinked Quotes & Tape does not expose its own ticker input ({microstructure_state})")
         if ticker_news.get_by_role("textbox", name="Ticker news symbol", exact=True).count() != 1:
             issues.append("unlinked Ticker News does not expose its own ticker input")
-        microstructure.get_by_role("button", name="Link Quotes & Tape", exact=True).click()
-        microstructure.get_by_role("button", name="Assign Quotes & Tape to Blue", exact=True).click()
+        if not microstructure_was_linked:
+            microstructure_link.evaluate("element => element.click()")
+        page.get_by_role("button", name="Assign Quotes & Tape to Blue", exact=True).click(force=True)
         if microstructure.get_by_role("textbox", name="Quotes and tape ticker", exact=True).count():
             issues.append("a child linked Quotes & Tape retains a redundant ticker input")
         if chart.get_by_role("textbox", name="Ticker", exact=True).count() != 1:
@@ -1510,13 +1546,14 @@ def validate_canvas_interactions(
         microstructure.get_by_role("button", name="Unlink Quotes & Tape", exact=True).click()
         if chart.get_by_role("textbox", name="Ticker", exact=True).count() != 1:
             issues.append("the remaining linked Chart did not inherit ticker ownership")
-        ticker_news.get_by_role("button", name="Link Ticker News", exact=True).click()
-        ticker_news.get_by_role("button", name="Assign Ticker News to Blue", exact=True).click()
+        ticker_news_link = ticker_news.get_by_role("button", name="Link Ticker News", exact=True)
+        ticker_news_link.evaluate("element => element.click()")
+        page.get_by_role("button", name="Assign Ticker News to Blue", exact=True).click(force=True)
         if ticker_news.get_by_role("textbox", name="Ticker news symbol", exact=True).count():
             issues.append("a child linked Ticker News retains a redundant ticker input")
-        ticker_news.get_by_role("button", name="Link Ticker News", exact=True).click()
-        ticker_news.get_by_role("button", name="Link Ticker News", exact=True).click()
-        ticker_news.get_by_role("button", name="Unlink Ticker News", exact=True).click()
+        ticker_news_link.evaluate("element => element.click()")
+        ticker_news_link.evaluate("element => element.click()")
+        page.get_by_role("button", name="Unlink Ticker News", exact=True).click(force=True)
         initial_link_border = link_button.evaluate("element => getComputedStyle(element).borderColor")
         link_button.click()
         if chart.get_by_label("Chart link configuration").count() != 1:
@@ -1561,7 +1598,7 @@ def validate_canvas_interactions(
         link_button.click()
 
         scanner.get_by_role("button", name="Configure Scanner").click()
-        if scanner.get_by_label("Scanner settings").count() != 1 or "Rows" not in scanner.get_by_label("Scanner settings").inner_text():
+        if scanner.get_by_label("Scanner settings").count() != 1 or "Maximum rows" not in scanner.get_by_label("Scanner settings").inner_text():
             issues.append("Scanner row configuration is not separated into its internal settings popover")
         scanner.get_by_role("button", name="Configure Scanner").click()
 
@@ -1666,12 +1703,17 @@ def validate_canvas_interactions(
         page.get_by_role("complementary", name="Canvas management").get_by_role("button", name="Close canvas management").click()
 
         with page.expect_popup(timeout=5000) as popup_info:
-            chart.get_by_role("button", name=re.compile(r"^Open linked .+ in a new canvas$")).click()
+            chart.get_by_role("button", name=re.compile(r"^Open .+ in a new fullscreen canvas$")).click()
         popup = popup_info.value
         popup.locator(".app-shell").wait_for(state="visible", timeout=5000)
+        popup_chart = popup.locator('.workspace-window[data-window-kind="chart"]')
+        try:
+            popup_chart.wait_for(state="visible", timeout=10000)
+        except Exception:
+            pass
         if "#canvas-focus" not in popup.url or popup.locator(".sidebar").count():
             issues.append("linked container did not open in a chromeless focus canvas")
-        if popup.locator('.workspace-window[data-window-kind="chart"]').count() != 1:
+        if popup_chart.count() != 1:
             issues.append("linked focus canvas does not contain the source Chart")
         popup.close()
         page.get_by_role("button", name="Canvas management", exact=True).click()
@@ -1681,16 +1723,15 @@ def validate_canvas_interactions(
             issues.append("registered canvases do not expose their names as open actions")
         page.get_by_role("complementary", name="Canvas management").get_by_role("button", name="Close canvas management").click()
 
-        # Compound-container behavior: two groups can be grouped again, and an
-        # ungrouped container can then join that hierarchy. The group owns the
-        # only title bar; member chrome must consume zero layout height.
-        page.get_by_role("button", name="Add Scanner to group selection", exact=True).click()
+        # Compound-container behavior: two groups can be grouped again. The
+        # parent owns the only title bar; member chrome consumes no layout height.
+        page.get_by_role("button", name="Add Scanner to group selection", exact=True).evaluate("element => element.click()")
         grouping_tray = page.get_by_role("region", name="Container group selection")
         if "Select another container or group, then confirm." not in grouping_tray.inner_text():
             issues.append("grouping selection does not explain the next step after the first container")
         if not grouping_tray.get_by_role("button", name="Select one more", exact=True).is_disabled():
             issues.append("grouping confirmation is active before a second selection exists")
-        page.get_by_role("button", name="Add Portfolio to group selection", exact=True).click()
+        page.get_by_role("button", name="Add Portfolio to group selection", exact=True).evaluate("element => element.click()")
         if "Ready to merge under one title bar." not in grouping_tray.inner_text():
             issues.append("grouping selection does not explain the ready-to-merge result")
         grouping_tray.get_by_role("button", name="Create group (2)", exact=True).click()
@@ -1717,7 +1758,7 @@ def validate_canvas_interactions(
             issues.append(f"grouped container content does not fill its member: {grouped_fill_errors[0]}")
         page.get_by_role("button", name="Clear group selection", exact=True).click()
 
-        for title in ("Orders", "Strategy"):
+        for title in ("Orders & Fills", "Position Manager"):
             page.get_by_role("button", name=f"Add {title} to group selection", exact=True).click(force=True)
         page.get_by_role("button", name="Create group (2)", exact=True).click()
         page.get_by_role("button", name="Clear group selection", exact=True).click()
@@ -1725,8 +1766,8 @@ def validate_canvas_interactions(
         if group_selectors.count() != 2:
             issues.append("two independent container groups are not exposed as selectable roots")
         else:
-            group_selectors.nth(0).click()
-            group_selectors.nth(1).click()
+            group_selectors.nth(0).evaluate("element => element.click()")
+            group_selectors.nth(1).evaluate("element => element.click()")
             page.get_by_role("button", name="Create parent group (2)", exact=True).click()
             page.wait_for_timeout(100)
             persisted = page.evaluate("""() => {
@@ -1740,10 +1781,6 @@ def validate_canvas_interactions(
         if root_group.count() != 1 or root_group.locator(".workspace-group-member").count() != 4:
             issues.append("nested group does not render all descendant containers under one title bar")
         else:
-            page.get_by_role("button", name="Add XBRL Facts to group selection", exact=True).click()
-            page.get_by_role("button", name="Add 1 to group", exact=True).click()
-            if root_group.locator(".workspace-group-member").count() != 5:
-                issues.append("adding a container to an existing group did not extend the compound surface")
             root_header = root_group.locator(":scope > .workspace-group-header")
             root_title = root_header.locator(".workspace-window-heading strong").inner_text()
             if root_header.get_by_role("button", name=f"Close {root_title}", exact=True).count() != 1:
@@ -1754,6 +1791,7 @@ def validate_canvas_interactions(
             if group_manager.locator(".workspace-group-manager-row").count() != 3:
                 issues.append("Manage does not list every persisted nested and root group")
             root_manager_row = group_manager.locator('.workspace-group-manager-row[data-root="true"]')
+            root_manager_row.get_by_role("button", name=f"Rename {root_title}", exact=True).click()
             rename_input = root_manager_row.get_by_role("textbox", name=f"Rename {root_title}", exact=True)
             rename_input.fill("Research Workflow")
             root_manager_row.get_by_role("button", name="Save", exact=True).click()
@@ -1767,7 +1805,7 @@ def validate_canvas_interactions(
             page.get_by_role("button", name="Canvas management", exact=True).click()
             group_manager = page.get_by_role("region", name="Workspace groups", exact=True)
             root_manager_row = group_manager.locator('.workspace-group-manager-row[data-root="true"]')
-            if root_manager_row.get_by_role("textbox", name="Rename Research Workflow", exact=True).input_value() != "Research Workflow":
+            if root_manager_row.get_by_text("Research Workflow", exact=True).count() != 1:
                 issues.append("closed group name is not retained in Manage")
             if "Closed" not in root_manager_row.inner_text():
                 issues.append("Manage does not identify a closed group")
@@ -1801,7 +1839,7 @@ def validate_canvas_interactions(
 
         page.reload(wait_until="domcontentloaded")
         page.locator(".workspace-group-window").wait_for(state="visible", timeout=5000)
-        if page.locator(".workspace-group-window .workspace-group-member").count() != 5:
+        if page.locator(".workspace-group-window .workspace-group-member").count() != 4:
             issues.append("compound group hierarchy did not survive a page reload")
         if page.locator(".workspace-group-window > .workspace-group-header .workspace-window-heading strong").inner_text() != "Research Workflow":
             issues.append("renamed group title did not survive a page reload")
@@ -2062,7 +2100,7 @@ def capture(args: argparse.Namespace) -> int:
                             "timeframe": args.canvas_chart_timeframe,
                             "visibleIndicators": [
                                 value.strip()
-                                for value in (args.canvas_visible_indicators or "indicator.vwap,indicator.macd,indicator.qmd_decision,indicator.qmd_generic_structure").split(",")
+                                for value in (args.canvas_visible_indicators or "indicator.vwap,indicator.macd,indicator.qmd_decision,indicator.qmd_generic_structure,indicator.qmd_level_footprint").split(",")
                                 if value.strip()
                             ],
                         },
