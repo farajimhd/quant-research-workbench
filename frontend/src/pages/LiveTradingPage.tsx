@@ -28,9 +28,8 @@ import type { Time } from "lightweight-charts";
 
 import { api, query } from "../api/client";
 import type { ChartPayload, LiveEntryLine } from "../app/components/ChartPanel";
-import { DataTable, type BackendTableQuery } from "../app/components/DataTable";
+import type { BackendTableQuery } from "../app/components/DataTable";
 import { PageIntro } from "../app/components/PageIntro";
-import { Tabs } from "../app/components/Tabs";
 import {
   WorkspaceCanvasManager,
   WorkspaceWindow,
@@ -95,6 +94,7 @@ import {
   MAIN_DISPLAY_ITEMS,
 } from "../features/live-trading/LiveChartsContainer";
 import { LiveScannerContainer, LIVE_SCANNER_COLUMNS } from "../features/live-trading/LiveScannerContainer";
+import { LivePortfolioContainer } from "../features/live-trading/LivePortfolioContainer";
 import { integer, money, numberValue, percent, stringValue } from "../features/live-trading/liveTradingFormat";
 import { MetricsDock } from "../features/live-trading/LiveMetricsDock";
 import {
@@ -1238,8 +1238,9 @@ export function LiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterChange
           if (windowId === "portfolio") {
             return (
               <WorkspaceWindow key={windowId} canvasTargets={canvasTargets} id={windowId} layout={layout} title="Portfolio" icon={<WalletCards size={15} />} onClose={closeWindow} onFocus={bringWindowForward} onLayoutChange={updateLayout} onMoveToCanvas={moveWindowToCanvas} onPopOut={createChildCanvas}>
-                <PortfolioContainer
+                <LivePortfolioContainer
                   detailsOpen={portfolioDetailsOpen}
+                  mode="simulation"
                   orders={orders}
                   positions={positions}
                   selectedTab={portfolioTab}
@@ -1356,84 +1357,7 @@ function LiveStartProgress({ label, progress, status }: { label: string; progres
 
 
 
-function PortfolioPositions({ positions }: { positions: PositionRow[] }) {
-  return (
-    <section className="live-portfolio-positions" aria-label="Open positions">
-      <div className="live-portfolio-positions-header">
-        <span>Open Positions</span>
-        <strong>{positions.length}</strong>
-      </div>
-      {positions.length ? (
-        <div className="live-portfolio-position-list">
-          {positions.map((position) => {
-            const pnlTone = position.unrealized_pnl >= 0 ? "positive" : "negative";
-            return (
-              <article className={`live-portfolio-position-card ${pnlTone}`} key={position.symbol}>
-                <div className="live-portfolio-position-main">
-                  <strong>{position.symbol}</strong>
-                  <span>{integer(position.quantity)} sh</span>
-                </div>
-                <div>
-                  <span>Avg</span>
-                  <strong>{money(position.avg_price)}</strong>
-                </div>
-                <div>
-                  <span>Mark</span>
-                  <strong>{money(position.mark)}</strong>
-                </div>
-                <div>
-                  <span>P/L</span>
-                  <strong>{money(position.unrealized_pnl)}</strong>
-                  <small>{percent(position.unrealized_pnl_pct)}</small>
-                </div>
-              </article>
-            );
-          })}
-        </div>
-      ) : (
-        <div className="live-empty-positions">No open positions.</div>
-      )}
-    </section>
-  );
-}
 
-function PortfolioContainer({
-  detailsOpen,
-  onToggleDetails,
-  onTabChange,
-  orders,
-  positions,
-  selectedTab,
-  trades,
-}: {
-  detailsOpen: boolean;
-  onToggleDetails: () => void;
-  onTabChange: (tab: string) => void;
-  orders: OrderRow[];
-  positions: PositionRow[];
-  selectedTab: string;
-  trades: TradeRow[];
-}) {
-  const tabs = ["Open Positions", "P/L", "Trades", "Orders"];
-  const activeTab = tabs.includes(selectedTab) ? selectedTab : tabs[0];
-  return (
-    <div className={detailsOpen ? "live-container-stack portfolio-expanded" : "live-container-stack"}>
-      <PortfolioPositions positions={positions} />
-      <button className="live-portfolio-expand-button" onClick={onToggleDetails} title={detailsOpen ? "Hide tabs" : "Show tabs"} type="button">
-        {detailsOpen ? <ChevronUp size={15} /> : <ChevronDown size={15} />}
-      </button>
-      {detailsOpen ? (
-        <>
-          <Tabs tabs={tabs} active={activeTab} onChange={onTabChange} />
-          {activeTab === "Open Positions" ? <DataTable rows={positions} empty="No open positions." /> : null}
-          {activeTab === "P/L" ? <DataTable rows={buildProfitLossRows(positions, trades)} empty="No P/L rows." /> : null}
-          {activeTab === "Trades" ? <DataTable rows={trades} empty="No completed trades yet." /> : null}
-          {activeTab === "Orders" ? <DataTable rows={orders} empty="No staged orders." /> : null}
-        </>
-      ) : null}
-    </div>
-  );
-}
 
 function LiveChartWindow({
   catalog,
@@ -1689,28 +1613,6 @@ function availableCashFromState(positions: PositionRow[], trades: TradeRow[]) {
   return Math.max(0, LIVE_STARTING_CASH + realizedPnlFromTrades(trades) - openPositionCost(positions));
 }
 
-function buildProfitLossRows(positions: PositionRow[], trades: TradeRow[]) {
-  return [
-    ...positions.map((row) => ({
-      avg_price: row.avg_price,
-      mark: row.mark,
-      pnl: row.unrealized_pnl,
-      pnl_pct: row.unrealized_pnl_pct,
-      quantity: row.quantity,
-      status: "OPEN",
-      symbol: row.symbol,
-    })),
-    ...trades.map((row) => ({
-      entry_price: row.entry_price,
-      exit_price: row.exit_price,
-      pnl: row.gross_pnl,
-      pnl_pct: row.gross_pnl_pct,
-      quantity: row.quantity,
-      status: "CLOSED",
-      symbol: row.symbol,
-    })),
-  ];
-}
 
 function buildPortfolioMetrics({ orders, positions, trades }: { orders: OrderRow[]; positions: PositionRow[]; trades: TradeRow[] }) {
   const realized = realizedPnlFromTrades(trades);
