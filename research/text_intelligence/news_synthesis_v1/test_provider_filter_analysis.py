@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import json
+import tempfile
 import unittest
 from datetime import UTC, datetime
+from pathlib import Path
 
 from .provider_filter_analysis import (
+    _resolve_source_manifest,
     analysis_split,
     attach_ticker_history,
     candidate_grade,
@@ -18,6 +22,30 @@ from .provider_filter_analysis import (
 
 
 class ProviderFilterAnalysisTests(unittest.TestCase):
+    def test_source_manifest_resolves_across_successor_chain(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "source"
+            middle = root / "middle"
+            successor = root / "successor"
+            for path in (source, middle, successor):
+                path.mkdir()
+            (source / "LOAD_MANIFEST.json").write_text(json.dumps({
+                "external_source_text_authority": {"path": "source.jsonl", "sha256": "abc"},
+            }), encoding="utf-8")
+            (middle / "LOAD_MANIFEST.json").write_text(json.dumps({
+                "parent_authority": str(source),
+            }), encoding="utf-8")
+            successor_manifest = successor / "LOAD_MANIFEST.json"
+            successor_manifest.write_text(json.dumps({
+                "parent_authority": str(middle),
+            }), encoding="utf-8")
+
+            resolved_path, manifest = _resolve_source_manifest(successor_manifest)
+
+            self.assertEqual(resolved_path, (source / "LOAD_MANIFEST.json").resolve())
+            self.assertEqual(manifest["external_source_text_authority"]["sha256"], "abc")
+
     def test_temporal_split_and_session_are_explicit(self) -> None:
         self.assertEqual(analysis_split(datetime(2025, 12, 1, tzinfo=UTC)), "discovery_2025")
         self.assertEqual(analysis_split(datetime(2026, 4, 30, tzinfo=UTC)), "validation_2026_jan_apr")

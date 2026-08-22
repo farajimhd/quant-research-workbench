@@ -135,6 +135,24 @@ class InputPaths:
     metadata_hash_manifest: Path
 
 
+def _resolve_source_manifest(manifest_path: Path) -> tuple[Path, dict[str, Any]]:
+    current = manifest_path.resolve(strict=True)
+    visited: set[Path] = set()
+    while True:
+        if current in visited:
+            raise ValueError(f"authority parent cycle while resolving source text: {current}")
+        visited.add(current)
+        manifest = json.loads(current.read_text(encoding="utf-8"))
+        if "external_source_text_authority" in manifest:
+            return current, manifest
+        parent = str(manifest.get("parent_authority") or "").strip()
+        if not parent:
+            raise ValueError(
+                f"authority manifest chain has no external source-text authority: {current}"
+            )
+        current = (Path(parent) / "LOAD_MANIFEST.json").resolve(strict=True)
+
+
 def iter_jsonl(path: Path) -> Iterator[dict[str, Any]]:
     with path.open("r", encoding="utf-8") as handle:
         for line_number, line in enumerate(handle, 1):
@@ -315,15 +333,7 @@ def odds_ratio(
 def _expected_input_paths(authority_root: Path, metadata_root: Path) -> InputPaths:
     manifest_path = authority_root / "LOAD_MANIFEST.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    source_manifest = manifest
-    if "external_source_text_authority" not in source_manifest:
-        parent = str(manifest.get("parent_authority") or "").strip()
-        if not parent:
-            raise ValueError("authority manifest has no external source-text authority or parent authority")
-        parent_manifest_path = Path(parent) / "LOAD_MANIFEST.json"
-        source_manifest = json.loads(parent_manifest_path.read_text(encoding="utf-8"))
-    if "external_source_text_authority" not in source_manifest:
-        raise ValueError("parent authority manifest has no external source-text authority")
+    _source_manifest_path, source_manifest = _resolve_source_manifest(manifest_path)
     return InputPaths(
         labels=Path(manifest["primary_tables"]["article_forecast_eligibility"]["path"]),
         metadata=metadata_root / "article_metadata_labels.jsonl",
@@ -335,13 +345,7 @@ def _expected_input_paths(authority_root: Path, metadata_root: Path) -> InputPat
 
 
 def verify_inputs(paths: InputPaths) -> dict[str, Any]:
-    authority_manifest = json.loads(paths.authority_manifest.read_text(encoding="utf-8"))
-    source_manifest = authority_manifest
-    if "external_source_text_authority" not in source_manifest:
-        parent = str(authority_manifest.get("parent_authority") or "").strip()
-        if not parent:
-            raise ValueError("authority manifest has no external source-text authority or parent authority")
-        source_manifest = json.loads((Path(parent) / "LOAD_MANIFEST.json").read_text(encoding="utf-8"))
+    _source_manifest_path, source_manifest = _resolve_source_manifest(paths.authority_manifest)
     authority_hashes = json.loads(paths.authority_hash_manifest.read_text(encoding="utf-8"))
     metadata_hashes = json.loads(paths.metadata_hash_manifest.read_text(encoding="utf-8"))
     expected_rendered = source_manifest["external_source_text_authority"]["sha256"]
