@@ -71,7 +71,7 @@ class ProviderContextTests(unittest.TestCase):
         })
         self.assertEqual(result["route"], "forecast_candidate")
         self.assertTrue(result["temporal_novelty"]["available"])
-        self.assertEqual(result["temporal_novelty"]["decision_role"], "trace_only_v4")
+        self.assertEqual(result["temporal_novelty"]["decision_role"], "trace_only_v5")
 
     def test_v2_zero_exception_tag_routes_context_only(self) -> None:
         result = classify_provider_context({
@@ -153,3 +153,47 @@ class ProviderContextTests(unittest.TestCase):
         self.assertEqual(result["route"], "forecast_candidate")
         self.assertEqual(result["content_family"], "merger_acquisition_event_prior")
         self.assertTrue(result["metadata_evidence"]["matched_event_prior"])
+
+    def test_v5_small_issuer_mover_rule_routes_context_only(self) -> None:
+        result = classify_provider_context({
+            "source_timestamp": "2026-08-20T15:00:00+00:00",
+            "provider": "benzinga",
+            "channels": ["Movers"],
+            "tickers": ["NANO", "MICR", "SMAL"],
+            "title": "Three Stocks Moving Today",
+            "market_cap_tickers": [
+                {"ticker": "NANO", "market_cap": 40_000_000, "market_cap_bucket": "nano_lt_50m", "market_cap_source": "provider_snapshot", "market_cap_available_at_utc": "2026-08-20T14:00:00+00:00"},
+                {"ticker": "MICR", "market_cap": 100_000_000, "market_cap_bucket": "micro_50m_300m", "market_cap_source": "provider_snapshot", "market_cap_available_at_utc": "2026-08-20T14:00:00+00:00"},
+                {"ticker": "SMAL", "market_cap": 500_000_000, "market_cap_bucket": "small_300m_2b", "market_cap_source": "provider_snapshot", "market_cap_available_at_utc": "2026-08-20T14:00:00+00:00"},
+            ],
+        })
+        self.assertEqual(result["route"], "context_only")
+        self.assertEqual(result["content_family"], "small_issuer_multi_band_mover")
+
+    def test_v5_many_micro_cap_tickers_route_context_only(self) -> None:
+        result = classify_provider_context({
+            "source_timestamp": "2026-08-20T15:00:00+00:00",
+            "provider": "benzinga",
+            "tickers": [f"T{index}" for index in range(11)],
+            "title": "Stocks To Watch",
+            "market_cap_tickers": [
+                {"ticker": f"T{index}", "market_cap": 100_000_000, "market_cap_bucket": "micro_50m_300m", "market_cap_source": "provider_snapshot", "market_cap_available_at_utc": "2026-08-20T14:00:00+00:00"}
+                for index in range(11)
+            ],
+        })
+        self.assertEqual(result["route"], "context_only")
+        self.assertEqual(result["content_family"], "micro_cap_many_ticker_list")
+
+    def test_v5_noncausal_market_cap_fails_open(self) -> None:
+        result = classify_provider_context({
+            "source_timestamp": "2026-08-20T15:00:00+00:00",
+            "provider": "benzinga",
+            "channels": ["Movers"],
+            "tickers": ["NANO", "MICR", "SMAL"],
+            "title": "Three Stocks Moving Today",
+            "market_cap_tickers": [
+                {"ticker": "NANO", "market_cap": 40_000_000, "market_cap_bucket": "nano_lt_50m", "market_cap_source": "provider_snapshot", "market_cap_available_at_utc": "2026-08-20T16:00:00+00:00"},
+            ],
+        })
+        self.assertNotEqual(result["route"], "context_only")
+        self.assertFalse(result["metadata_evidence"]["market_cap"]["causal"])

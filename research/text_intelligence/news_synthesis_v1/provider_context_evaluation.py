@@ -24,14 +24,18 @@ from .provider_filter_analysis import (
 )
 
 
-EVALUATION_VERSION = "news_synthesis_provider_context_evaluation_v4"
+EVALUATION_VERSION = "news_synthesis_provider_context_evaluation_v5"
 DEFAULT_CORRECTED_AUTHORITY_ROOT = Path(
     r"D:\TradingML\runtimes\text_intelligence\llm_issuer_labeling_v4"
     r"\forecast_eligibility_sentiment_authority_provider_path_exceptions_v2"
 )
 DEFAULT_OUTPUT_ROOT = Path(
     r"D:\TradingML\runtimes\text_intelligence\news_synthesis_v1"
-    r"\provider_context_router_evaluation_v4"
+    r"\provider_context_router_evaluation_v5_final"
+)
+DEFAULT_MARKET_CAP_FEATURES = Path(
+    r"D:\TradingML\runtimes\text_intelligence\news_synthesis_v1"
+    r"\provider_market_cap_context_analysis_v3\ARTICLE_MARKET_CAP_FEATURES.jsonl"
 )
 
 
@@ -149,6 +153,7 @@ def run_evaluation(
     authority_root: Path = DEFAULT_CORRECTED_AUTHORITY_ROOT,
     metadata_root: Path = DEFAULT_METADATA_ROOT,
     output_root: Path = DEFAULT_OUTPUT_ROOT,
+    market_cap_features: Path = DEFAULT_MARKET_CAP_FEATURES,
 ) -> dict[str, Any]:
     paths = _expected_input_paths(authority_root, metadata_root)
     verification = verify_inputs(paths)
@@ -156,6 +161,20 @@ def run_evaluation(
     rows, load_summary = load_analysis_rows(paths.metadata, labels)
     history_summary = attach_ticker_history(rows)
     by_id = {str(row["source_id"]): row for row in rows}
+    market_cap_seen: set[str] = set()
+    for cap_row in iter_jsonl(market_cap_features):
+        source_id = str(cap_row["source_id"])
+        row = by_id.get(source_id)
+        if row is None:
+            continue
+        if str(cap_row["label"]) != str(row["label"]):
+            raise ValueError(f"market-cap/current-label mismatch: {source_id}")
+        row["market_cap_tickers"] = list(cap_row.get("market_cap_tickers") or ())
+        market_cap_seen.add(source_id)
+    if market_cap_seen != set(by_id):
+        raise ValueError(
+            f"market-cap feature membership mismatch: {len(market_cap_seen)} != {len(by_id)}"
+        )
 
     rendered_seen = 0
     routed = 0
@@ -211,6 +230,8 @@ def run_evaluation(
             "rendered_texts": str(paths.rendered_texts),
             "verification": verification,
             "authority_label_counts": dict(authority_counts),
+            "market_cap_features": str(market_cap_features),
+            "market_cap_features_sha256": sha256_path(market_cap_features),
         },
         "load_summary": load_summary,
         "causal_ticker_history": history_summary,

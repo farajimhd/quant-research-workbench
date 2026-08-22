@@ -87,3 +87,9 @@ Important files are:
 ## Required next gate
 
 Blindly review the 26 currently eligible exceptions in the high-precision candidate union using metadata, title, teaser, and first three sentences, escalating to full text only when compact evidence is insufficient. Collapse logically equivalent paths before routing changes. After review, freeze the accepted generic rules and evaluate them on a newly sampled, independently reviewed holdout rather than the previously observed 1,000 articles.
+
+## Gate result
+
+The blind audit completed with 52 compact votes and 10 full-text votes. Twenty-one exceptions were independently preserved from compact evidence; two full-text readers disagreed on all five escalations, so the fail-safe policy preserved their eligible labels. No supervision label changed.
+
+Funnel V5 consequently promoted only the two pre-audit zero-exception rules: the exact nano+micro+small mover composition and the more-than-10-ticker list whose maximum observed cap is micro. Development hard-context routing increased by 1,889 articles with zero eligible conflicts. The observed 1,000-row holdout routed seven additional, correctly ineligible articles to fast context without changing accuracy. See `docs/codex/NEWS_SYNTHESIS_FUNNEL_V5.md`.

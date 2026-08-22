@@ -14,10 +14,15 @@ from .funnel_holdout import HOLDOUT_VERSION
 from .funnel_holdout_review import REVIEW_VERSION
 from .provider_context import ROUTER_VERSION
 from .provider_filter_analysis import canonical_json, iter_jsonl, sha256_path
+from .provider_market_cap_analysis import cap_bucket, load_provider_snapshot_indexes, parse_utc
 from .storage import load_identity_index
 
 
-EVALUATION_VERSION = "news_synthesis_funnel_fresh_holdout_evaluation_v2"
+EVALUATION_VERSION = "news_synthesis_funnel_holdout_regression_evaluation_v3"
+DEFAULT_MARKET_CAP_FEATURES = Path(
+    r"D:\TradingML\runtimes\text_intelligence\news_synthesis_v1"
+    r"\provider_market_cap_context_analysis_v3\ARTICLE_MARKET_CAP_FEATURES.jsonl"
+)
 
 
 def _source(row: Mapping[str, Any]) -> dict[str, Any]:
@@ -29,6 +34,7 @@ def _source(row: Mapping[str, Any]) -> dict[str, Any]:
         "quality_flags": row["renderer_quality_flags"],
         "render_status": "title_only" if int(row.get("source_count") or 0) == 0 else "rendered",
         "rendered_text_hash": row["rendered_text_hash"], "source_revision_key": row["source_revision_key"],
+        "market_cap_tickers": row.get("market_cap_tickers") or [],
     }
 
 
@@ -52,7 +58,8 @@ def run_final_evaluation(
     root: Path,
     client: ClickHouseHttpClient,
     database: str = "q_live",
-    output_name: str = "final_evaluation_v2",
+    output_name: str = "final_evaluation_v5_market_cap_regression",
+    market_cap_features: Path = DEFAULT_MARKET_CAP_FEATURES,
 ) -> dict[str, Any]:
     holdout_manifest = json.loads((root / "MANIFEST.json").read_text(encoding="utf-8"))
     gold_manifest = json.loads((root / "gold_review_v1" / "GOLD_MANIFEST.json").read_text(encoding="utf-8"))
@@ -68,12 +75,59 @@ def run_final_evaluation(
     gold = list(iter_jsonl(gold_path))
     if [str(row["source_id"]) for row in sample] != [str(row["source_id"]) for row in gold]:
         raise RuntimeError("sample/gold identity or order mismatch")
+    sample_by_id = {str(row["source_id"]): row for row in sample}
+    cap_seen: set[str] = set()
+    for cap_row in iter_jsonl(market_cap_features):
+        source_id = str(cap_row["source_id"])
+        target = sample_by_id.get(source_id)
+        if target is None:
+            continue
+        target["market_cap_tickers"] = list(cap_row.get("market_cap_tickers") or ())
+        cap_seen.add(source_id)
+    missing = [row for row in sample if str(row["source_id"]) not in cap_seen]
+    provider_context_articles = 0
+    if missing:
+        tickers = {
+            str(ticker).strip().upper()
+            for row in missing for ticker in row.get("tickers") or () if str(ticker).strip()
+        }
+        end = max(parse_utc(row["published_at_utc"]) for row in missing)
+        indexes = load_provider_snapshot_indexes(
+            client, database=database, table="market_security_market_snapshot_v1",
+            tickers=tickers, end=end,
+        )
+        for row in missing:
+            published = parse_utc(row["published_at_utc"])
+            contexts = []
+            known = 0
+            for raw_ticker in row.get("tickers") or ():
+                ticker = str(raw_ticker).strip().upper()
+                index = indexes.get(f"ticker:{ticker}")
+                value = index.before(published) if index else None
+                known += int(value is not None)
+                contexts.append({
+                    "ticker": ticker,
+                    "market_cap": value.value if value else None,
+                    "market_cap_bucket": cap_bucket(value.value if value else None),
+                    "market_cap_source": "provider_snapshot_ticker_fallback" if value else "missing",
+                    "market_cap_available_at_utc": value.available_at.isoformat() if value else None,
+                })
+            row["market_cap_tickers"] = contexts
+            provider_context_articles += int(known > 0)
 
     if not output_name or Path(output_name).name != output_name or output_name in {".", ".."}:
         raise ValueError("output_name must be one safe directory name")
     output_root = root / output_name
     funnel = NewsSynthesisFunnel(NewsSynthesisEngine(load_identity_index(client, database)))
     output_root.mkdir()
+    market_cap_context_path = output_root / "MARKET_CAP_CONTEXT.jsonl"
+    with market_cap_context_path.open("x", encoding="utf-8", newline="\n") as handle:
+        for row in sample:
+            handle.write(canonical_json({
+                "source_id": row["source_id"],
+                "published_at_utc": row["published_at_utc"],
+                "market_cap_tickers": row.get("market_cap_tickers") or [],
+            }) + "\n")
     prediction_path = output_root / "PREDICTIONS.jsonl"
     predictions = []
     with prediction_path.open("x", encoding="utf-8", newline="\n") as handle:
@@ -147,7 +201,9 @@ def run_final_evaluation(
         "eligible_ticker_sentiment_accuracy_given_predicted_eligible": _safe_div(sentiment_correct, ticker_confusion[("eligible", "eligible")]),
         "eligible_ticker_end_to_end_sentiment_accuracy": _safe_div(end_to_end_sentiment_correct, sentiment_total),
         "errors": len(error_rows),
-        "lineage": {"sample_sha256": sha256_path(sample_path), "gold_sha256": sha256_path(gold_path), "predictions_sha256": sha256_path(prediction_path)},
+        "evaluation_role": "observed_holdout_regression_only_not_fresh_accuracy",
+        "market_cap_feature_coverage": {"precomputed_matched": len(cap_seen), "provider_context_articles": provider_context_articles, "sample": len(sample)},
+        "lineage": {"sample_sha256": sha256_path(sample_path), "gold_sha256": sha256_path(gold_path), "market_cap_features_sha256": sha256_path(market_cap_features), "market_cap_context_sha256": sha256_path(market_cap_context_path), "predictions_sha256": sha256_path(prediction_path)},
     }
     report_path = output_root / "REPORT.json"
     report_path.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")

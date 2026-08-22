@@ -338,7 +338,7 @@ identity, and otherwise uses an explicitly marked SEC-shares-times-prior-close
 estimate. Missingness, source, and observation age remain visible. It evaluates
 market-cap bands together with metadata, rendered length, ticker count, session
 timing, session ordinal, and time since prior ticker news; it does not modify
-the deterministic funnel or claim accuracy on an already observed holdout.
+supervision labels or claim accuracy on an already observed holdout.
 
 ```powershell
 $env:PYTHONDONTWRITEBYTECODE='1'
@@ -347,3 +347,17 @@ python -m research.text_intelligence.news_synthesis_v1.run_provider_market_cap_a
 
 All bulk article and path artifacts are written only under
 `D:\TradingML\runtimes\text_intelligence\news_synthesis_v1\provider_market_cap_context_analysis_v3`.
+
+### Market-cap promotion and Funnel V5
+
+The 26 eligible exceptions in the high-precision union received two blinded
+compact reviews and selective two-reader full-text adjudication. No label change
+was confirmed. Router V5 therefore promotes only two all-split, zero-exception
+rules: nano+micro+small mover lists, and more-than-10-ticker lists whose maximum
+known cap is micro. Market-cap values must be positive, use known buckets, and
+be available strictly before publication; missing or invalid evidence fails
+open. Historical backfill attaches bounded point-in-time provider snapshots.
+
+Development routing and the observed holdout regression are documented in
+`docs/codex/NEWS_SYNTHESIS_FUNNEL_V5.md`. The observed holdout is regression-only
+and is not a fresh accuracy authority.

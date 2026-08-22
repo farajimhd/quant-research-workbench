@@ -252,14 +252,44 @@ def load_provider_snapshot_indexes(
     table: str,
     tickers: Iterable[str],
     end: datetime,
+    start: datetime | None = None,
 ) -> dict[str, TimeIndex]:
     db = quote_ident(database)
-    rows = _json_rows(client, f"""
+    if start is None:
+        source_sql = f"""
 SELECT upper(provider_ticker) AS ticker, symbol_id, market_cap, observed_at_utc, inserted_at,
   greatest(observed_at_utc, inserted_at) AS available_at
 FROM {db}.{quote_ident(table)} FINAL
 WHERE upper(provider_ticker) IN ({_in(tickers)}) AND market_cap > 0
   AND greatest(observed_at_utc, inserted_at) < parseDateTime64BestEffort({sql_string(end.isoformat())})
+"""
+    else:
+        source_sql = f"""
+SELECT ticker, selected_symbol_id AS symbol_id, selected_market_cap AS market_cap,
+  selected_observed_at_utc AS observed_at_utc, selected_inserted_at AS inserted_at, available_at FROM (
+  SELECT upper(provider_ticker) AS ticker,
+    argMax(symbol_id, tuple(greatest(observed_at_utc, inserted_at), observed_at_utc, inserted_at)) AS selected_symbol_id,
+    argMax(market_cap, tuple(greatest(observed_at_utc, inserted_at), observed_at_utc, inserted_at)) AS selected_market_cap,
+    argMax(observed_at_utc, tuple(greatest(observed_at_utc, inserted_at), observed_at_utc, inserted_at)) AS selected_observed_at_utc,
+    argMax(inserted_at, tuple(greatest(observed_at_utc, inserted_at), observed_at_utc, inserted_at)) AS selected_inserted_at,
+    max(greatest(observed_at_utc, inserted_at)) AS available_at
+  FROM {db}.{quote_ident(table)} FINAL
+  WHERE upper(provider_ticker) IN ({_in(tickers)}) AND market_cap > 0
+    AND greatest(observed_at_utc, inserted_at) < parseDateTime64BestEffort({sql_string(start.isoformat())})
+  GROUP BY ticker
+  UNION ALL
+  SELECT upper(provider_ticker) AS ticker, symbol_id AS selected_symbol_id,
+    market_cap AS selected_market_cap, observed_at_utc AS selected_observed_at_utc,
+    inserted_at AS selected_inserted_at,
+    greatest(observed_at_utc, inserted_at) AS available_at
+  FROM {db}.{quote_ident(table)} FINAL
+  WHERE upper(provider_ticker) IN ({_in(tickers)}) AND market_cap > 0
+    AND greatest(observed_at_utc, inserted_at) >= parseDateTime64BestEffort({sql_string(start.isoformat())})
+    AND greatest(observed_at_utc, inserted_at) < parseDateTime64BestEffort({sql_string(end.isoformat())})
+)
+"""
+    rows = _json_rows(client, f"""
+{source_sql}
 ORDER BY ticker, available_at, observed_at_utc
 FORMAT JSONEachRow
 """)
