@@ -1,5 +1,8 @@
 # Deterministic News Synthesis Funnel V3
 
+> Superseded by `NEWS_SYNTHESIS_FUNNEL_V4.md`, which incorporates the completed
+> provider-path exception audit and reevaluates the frozen fresh holdout.
+
 ## Outcome
 
 `news_synthesis_funnel_v3` is the production orchestration contract around `news_synthesis_provider_context_router_v3` and `news_synthesis_engine_v53`. It provides an explicit final decision for every source:

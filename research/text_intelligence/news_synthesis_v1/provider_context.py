@@ -4,7 +4,7 @@ import re
 from typing import Any, Iterable, Mapping
 
 
-ROUTER_VERSION = "news_synthesis_provider_context_router_v3"
+ROUTER_VERSION = "news_synthesis_provider_context_router_v4"
 ROUTES = frozenset(("forecast_candidate", "context_only", "semantic_rescue_required"))
 
 # These exact Benzinga template tags had no eligible examples in each available
@@ -53,9 +53,25 @@ _EXACT_CONTEXT_CHANNEL_SETS: dict[frozenset[str], str] = {
     frozenset(("analyst ratings", "news", "price target", "upgrades")): "analyst_rating_roundup",
     frozenset(("analyst ratings", "downgrades", "news", "price target")): "analyst_rating_roundup",
 }
+# These audited channel pairs are subset predicates: additional channels are
+# allowed. Each has more than 10,000 corrected development examples, support in
+# all three temporal partitions, zero eligible examples, and no unreviewed
+# stable-path exception under the v2 label authority.
+_CONTEXT_CHANNEL_SUBSETS: dict[frozenset[str], str] = {
+    frozenset(("analyst ratings", "hot")): "analyst_rating_roundup",
+    frozenset(("hot", "price target")): "analyst_rating_roundup",
+}
 _RESCUE_CHANNEL_SETS: dict[frozenset[str], str] = {
     frozenset(("movers",)): "mover_roundup",
 }
+# This pair is noise-dominant but retains 35 reviewed eligible articles in the
+# corrected development authority. It is therefore an explicit semantic-rescue
+# family, never a hard context rejection.
+_RESCUE_CHANNEL_SUBSETS: dict[frozenset[str], str] = {
+    frozenset(("long ideas", "markets")): "investment_idea_or_issuer_event",
+}
+
+_M_AND_A_EVENT_CHANNELS = frozenset(("m&a", "news"))
 
 _MATERIAL_EVENT_RE = re.compile(
     r"\b(?:acquir(?:e|es|ed|ing)|merger|definitive agreement|financing|offering|"
@@ -138,20 +154,75 @@ def classify_provider_context(source: Mapping[str, Any]) -> dict[str, Any]:
     )
     exact_context_channel_family = _EXACT_CONTEXT_CHANNEL_SETS.get(frozenset(channels)) if provider == "benzinga" else None
     rescue_channel_family = _RESCUE_CHANNEL_SETS.get(frozenset(channels)) if provider == "benzinga" else None
+    channel_set = frozenset(channels)
+    context_channel_subset = next(
+        (
+            (subset, family)
+            for subset, family in _CONTEXT_CHANNEL_SUBSETS.items()
+            if provider == "benzinga" and subset.issubset(channel_set)
+        ),
+        None,
+    )
+    rescue_channel_subset = next(
+        (
+            (subset, family)
+            for subset, family in _RESCUE_CHANNEL_SUBSETS.items()
+            if provider == "benzinga" and subset.issubset(channel_set)
+        ),
+        None,
+    )
+    ticker_count = len(_normalized(source.get("tickers") or source.get("entity_terms") or ()))
+    event_prior = (
+        provider == "benzinga"
+        and channel_set == _M_AND_A_EVENT_CHANNELS
+        and not tags
+        and ticker_count == 2
+    )
     reason_codes: list[str] = []
 
-    if matched_rescue or rescue_channel_family:
+    if matched_rescue or rescue_channel_family or rescue_channel_subset:
         route = "semantic_rescue_required"
-        family = RESCUE_TAG_FAMILIES[matched_rescue[0]] if matched_rescue else str(rescue_channel_family)
-        evidence_code = f"provider_tag:{matched_rescue[0]}" if matched_rescue else f"channel_set:{'|'.join(channels)}"
+        family = (
+            RESCUE_TAG_FAMILIES[matched_rescue[0]]
+            if matched_rescue
+            else str(rescue_channel_family)
+            if rescue_channel_family
+            else str(rescue_channel_subset[1])
+        )
+        evidence_code = (
+            f"provider_tag:{matched_rescue[0]}"
+            if matched_rescue
+            else f"channel_set:{'|'.join(channels)}"
+            if rescue_channel_family
+            else f"channel_subset:{'|'.join(sorted(rescue_channel_subset[0]))}"
+        )
         reason_codes.extend(("mixed_provider_template", evidence_code))
-    elif matched_context or exact_context_channel_family:
+    elif matched_context or exact_context_channel_family or context_channel_subset:
         route = "context_only"
-        family = CONTEXT_ONLY_TAG_FAMILIES[matched_context[0]] if matched_context else str(exact_context_channel_family)
-        evidence_code = f"provider_tag:{matched_context[0]}" if matched_context else f"channel_set:{'|'.join(channels)}"
+        family = (
+            CONTEXT_ONLY_TAG_FAMILIES[matched_context[0]]
+            if matched_context
+            else str(exact_context_channel_family)
+            if exact_context_channel_family
+            else str(context_channel_subset[1])
+        )
+        evidence_code = (
+            f"provider_tag:{matched_context[0]}"
+            if matched_context
+            else f"channel_set:{'|'.join(channels)}"
+            if exact_context_channel_family
+            else f"channel_subset:{'|'.join(sorted(context_channel_subset[0]))}"
+        )
         reason_codes.extend(("validated_context_template", evidence_code))
         if material_language:
             reason_codes.append("material_language_not_authoritative_for_validated_template")
+    elif event_prior:
+        route = "forecast_candidate"
+        family = "merger_acquisition_event_prior"
+        reason_codes.extend((
+            "audited_event_prior_requires_semantic_confirmation",
+            "metadata_signature:m&a|news:no_tags:ticker_count_2",
+        ))
     elif material_language:
         route = "forecast_candidate"
         family = "material_issuer_event"
@@ -186,13 +257,20 @@ def classify_provider_context(source: Mapping[str, Any]) -> dict[str, Any]:
             "matched_rescue_tags": list(matched_rescue),
             "matched_exact_channel_family": exact_context_channel_family or "",
             "matched_rescue_channel_family": rescue_channel_family or "",
+            "matched_context_channel_subset": (
+                sorted(context_channel_subset[0]) if context_channel_subset else []
+            ),
+            "matched_rescue_channel_subset": (
+                sorted(rescue_channel_subset[0]) if rescue_channel_subset else []
+            ),
+            "matched_event_prior": event_prior,
         },
         "temporal_novelty": {
             "available": novelty_available,
             "any_ticker_first_session": first_session,
             "min_ticker_session_ordinal": min_ordinal,
             "min_seconds_since_previous_ticker_news": seconds_previous,
-            "decision_role": "trace_only_v3",
+            "decision_role": "trace_only_v4",
         },
     }
     if route not in ROUTES:  # defensive invariant for callers outside this package

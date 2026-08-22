@@ -12,10 +12,16 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="One-time final News Synthesis funnel holdout evaluation")
     parser.add_argument("--root", type=Path, required=True)
     parser.add_argument("--database", default="q_live")
+    parser.add_argument("--output-name", default="final_evaluation_v2")
     args = parser.parse_args(argv)
     client = clickhouse_client()
     try:
-        report = run_final_evaluation(root=args.root, client=client, database=args.database)
+        report = run_final_evaluation(
+            root=args.root,
+            client=client,
+            database=args.database,
+            output_name=args.output_name,
+        )
     finally:
         client.close()
     print(report)

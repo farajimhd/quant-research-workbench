@@ -17,7 +17,7 @@ from .provider_filter_analysis import canonical_json, iter_jsonl, sha256_path
 from .storage import load_identity_index
 
 
-EVALUATION_VERSION = "news_synthesis_funnel_fresh_holdout_evaluation_v1"
+EVALUATION_VERSION = "news_synthesis_funnel_fresh_holdout_evaluation_v2"
 
 
 def _source(row: Mapping[str, Any]) -> dict[str, Any]:
@@ -48,7 +48,11 @@ def _safe_div(numerator: int, denominator: int) -> float | None:
 
 
 def run_final_evaluation(
-    *, root: Path, client: ClickHouseHttpClient, database: str = "q_live"
+    *,
+    root: Path,
+    client: ClickHouseHttpClient,
+    database: str = "q_live",
+    output_name: str = "final_evaluation_v2",
 ) -> dict[str, Any]:
     holdout_manifest = json.loads((root / "MANIFEST.json").read_text(encoding="utf-8"))
     gold_manifest = json.loads((root / "gold_review_v1" / "GOLD_MANIFEST.json").read_text(encoding="utf-8"))
@@ -65,8 +69,10 @@ def run_final_evaluation(
     if [str(row["source_id"]) for row in sample] != [str(row["source_id"]) for row in gold]:
         raise RuntimeError("sample/gold identity or order mismatch")
 
+    if not output_name or Path(output_name).name != output_name or output_name in {".", ".."}:
+        raise ValueError("output_name must be one safe directory name")
+    output_root = root / output_name
     funnel = NewsSynthesisFunnel(NewsSynthesisEngine(load_identity_index(client, database)))
-    output_root = root / "final_evaluation_v1"
     output_root.mkdir()
     prediction_path = output_root / "PREDICTIONS.jsonl"
     predictions = []

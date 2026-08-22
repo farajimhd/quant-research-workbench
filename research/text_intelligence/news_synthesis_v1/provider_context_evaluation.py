@@ -24,14 +24,14 @@ from .provider_filter_analysis import (
 )
 
 
-EVALUATION_VERSION = "news_synthesis_provider_context_evaluation_v3"
+EVALUATION_VERSION = "news_synthesis_provider_context_evaluation_v4"
 DEFAULT_CORRECTED_AUTHORITY_ROOT = Path(
     r"D:\TradingML\runtimes\text_intelligence\llm_issuer_labeling_v4"
-    r"\forecast_eligibility_sentiment_authority_provider_filter_v1"
+    r"\forecast_eligibility_sentiment_authority_provider_path_exceptions_v2"
 )
 DEFAULT_OUTPUT_ROOT = Path(
     r"D:\TradingML\runtimes\text_intelligence\news_synthesis_v1"
-    r"\provider_context_router_evaluation_v3"
+    r"\provider_context_router_evaluation_v4"
 )
 
 
@@ -138,7 +138,7 @@ def _markdown(report: Mapping[str, Any]) -> str:
         "- `context_only` means excluded from issuer-forecast synthesis, not deleted; these rows remain inputs to the future market-context lane.",
         "- Mixed templates and text-only roundup detection require semantic rescue and are not rejected by metadata.",
         "- Generic material-language regexes cannot override an exact validated context family; mixed provider families always require semantic rescue.",
-        "- Temporal novelty is calculated causally and stored in the decision trace, but is trace-only in v3 because it is not sufficiently precise alone.",
+        "- Temporal novelty is calculated causally and stored in the decision trace, but is trace-only in v4 because it is not sufficiently precise alone.",
         "- This is an in-period development evaluation on corrected 2025-August 2026 authority, not a fresh post-August holdout or available-time live certification.",
         "",
     ))

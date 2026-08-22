@@ -1,5 +1,8 @@
 # News Synthesis Provider-Context Router V1
 
+> Historical baseline. The current implementation and evaluation are documented
+> in `NEWS_SYNTHESIS_FUNNEL_V4.md`.
+
 ## Outcome
 
 `news_synthesis_provider_context_router_v1` is the cheap, deterministic front door for the News Synthesis funnel. It returns one of three routes before issuer identity resolution and semantic extraction:

@@ -14,7 +14,7 @@ from .facts import extract_regulatory_decision_facts, extract_typed_facts
 from .synthesis import derive_eligibility, derive_issuer_views, derive_synthesis
 
 
-ENGINE_VERSION = "news_synthesis_engine_v53"
+ENGINE_VERSION = "news_synthesis_engine_v54"
 EXCHANGE_TICKER_RE = re.compile(
     r"\b(?P<exchange>NASDAQ|NYSE|NYSE\s+AMERICAN|NYSEAMERICAN|AMEX|"
     r"OTC(?:QX|QB)?|TSX|TSXV|CSE)\s*[:\-]\s*"

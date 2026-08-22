@@ -8,7 +8,7 @@ from .engine import NewsSynthesisEngine
 from .provider_context import classify_provider_context
 
 
-FUNNEL_VERSION = "news_synthesis_funnel_v3"
+FUNNEL_VERSION = "news_synthesis_funnel_v4"
 FINAL_LANES = frozenset(("forecast_event", "context_only", "insufficient_information"))
 FORECAST_LABELS = frozenset(("eligible", "ineligible", "insufficient_information"))
 
