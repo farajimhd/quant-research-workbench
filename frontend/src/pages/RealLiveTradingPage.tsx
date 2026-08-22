@@ -143,6 +143,7 @@ import {
   liveWorkspaceMinHeight,
   signedMetricTone,
 } from "../features/live-trading/liveWorkspacePresentation";
+import { createLiveWorkspaceStorage } from "../features/live-trading/liveWorkspaceStorage";
 import { ApprovedCanvasRuntimePage, CanvasWorkspaceSurface } from "./CanvasConfigurationPage";
 import {
   WorkspaceCanvasManager,
@@ -170,14 +171,6 @@ type GateProgressStep = {
 
 
 
-const LIVE_SESSION_STORAGE_KEY = "quant-research-workbench.real-live-trading.session";
-const LIVE_LAYOUT_STORAGE_KEY = "quant-research-workbench.real-live-trading.layout";
-const LIVE_LAYOUT_VERSION = 4;
-const LIVE_LAYOUTS_STORAGE_KEY = "quant-research-workbench.real-live-trading.named-layouts";
-const LIVE_SHARED_STATE_STORAGE_KEY = "quant-research-workbench.real-live-trading.shared-state";
-const LIVE_SETUP_STORAGE_KEY = "quant-research-workbench.real-live-trading.scanner-queries.v2";
-const LIVE_SCANNER_QUERY_STORAGE_KEY = "quant-research-workbench.real-live-trading.scanner-query.v2";
-const LIVE_CHART_VISIBILITY_STORAGE_KEY = "quant-research-workbench.real-live-trading.chart-visibility.v1";
 const LIVE_ACCOUNT_KEYS_STORAGE_KEY = "quant-research-workbench.real-live-trading.account-keys";
 const LIVE_PORTFOLIO_EXPANDED_HEIGHT = 360;
 const MAIN_DISPLAY_ITEMS = ["indicator.vwap", "indicator.tema_trend", "indicator.macd"];
@@ -323,6 +316,38 @@ const DEFAULT_SCANNER_QUERY_GROUPS: ScannerQueryGroup[] = [
     ]),
   },
 ];
+
+const {
+  canvasStorageKey,
+  canvasTransferKey,
+  keys: {
+    chartVisibility: LIVE_CHART_VISIBILITY_STORAGE_KEY,
+    layout: LIVE_LAYOUT_STORAGE_KEY,
+    namedLayouts: LIVE_LAYOUTS_STORAGE_KEY,
+    scannerQuery: LIVE_SCANNER_QUERY_STORAGE_KEY,
+    session: LIVE_SESSION_STORAGE_KEY,
+    setup: LIVE_SETUP_STORAGE_KEY,
+    sharedState: LIVE_SHARED_STATE_STORAGE_KEY,
+  },
+  layoutVersion: LIVE_LAYOUT_VERSION,
+  listKnownLiveCanvases,
+  readCanvasLayoutState,
+  readCanvasTransfer,
+  readSavedCanvasLayouts,
+  readSharedTradingState,
+  readStoredCanvas,
+  readStoredLiveChartVisibility,
+  readStoredScannerQuery,
+  readStoredScannerQueryGroups,
+  readStoredScannerQueryName,
+  readStoredSession,
+  stableScannerQueryId,
+  writeCanvasState,
+} = createLiveWorkspaceStorage({
+  defaultScannerQueryGroups: DEFAULT_SCANNER_QUERY_GROUPS,
+  normalizeScannerQuery: normalizeLiveScannerQuery,
+  prefix: "quant-research-workbench.real-live-trading",
+});
 
 
 export function RealLiveTradingPage({ onMarketStatusChange, onTopbarCenterChange }: { onMarketStatusChange?: Dispatch<SetStateAction<MarketStatus>>; onTopbarCenterChange?: Dispatch<SetStateAction<ReactNode>> }) {
@@ -2453,176 +2478,6 @@ function gateToneFromStatus(status: string): GateProgressStep["tone"] {
 
 
 
-
-function readStoredSession(): TradingSession | null {
-  try {
-    const value = JSON.parse(window.localStorage.getItem(LIVE_SESSION_STORAGE_KEY) || "null");
-    return value?.sessionDate ? value : null;
-  } catch {
-    return null;
-  }
-}
-
-function canvasStorageKey(canvasId: string) {
-  return `${LIVE_LAYOUT_STORAGE_KEY}.${canvasId}`;
-}
-
-function canvasTransferKey(canvasId: string) {
-  return `${LIVE_LAYOUT_STORAGE_KEY}.transfer.${canvasId}`;
-}
-
-function writeCanvasState(canvasId: string, state: { chartWindows: ChartWindow[]; layouts: Record<WindowId, WindowLayout>; windows: WindowId[] }) {
-  window.localStorage.setItem(canvasStorageKey(canvasId), JSON.stringify({ ...state, layoutVersion: LIVE_LAYOUT_VERSION }));
-}
-
-function readCanvasLayoutState(canvasId: string): { chartWindows: ChartWindow[]; layouts: Record<WindowId, WindowLayout>; windows: WindowId[] } {
-  const defaults = buildDefaultCanvasLayout(canvasId !== "main");
-  try {
-    const parsed = JSON.parse(window.localStorage.getItem(canvasStorageKey(canvasId)) || "null") as Partial<{ chartWindows: ChartWindow[]; layoutVersion: number; layouts: Record<WindowId, WindowLayout>; windows: WindowId[] }> | null;
-    if (!parsed || parsed.layoutVersion !== LIVE_LAYOUT_VERSION) return defaults;
-    return {
-      chartWindows: Array.isArray(parsed.chartWindows) ? parsed.chartWindows : defaults.chartWindows,
-      layouts: { ...defaults.layouts, ...(parsed.layouts ?? {}) },
-      windows: Array.isArray(parsed.windows) ? parsed.windows : defaults.windows,
-    };
-  } catch {
-    return defaults;
-  }
-}
-
-function listKnownLiveCanvases(currentCanvasId: string): LiveCanvasTarget[] {
-  const colors = ["#2563eb", "#16a34a", "#f97316", "#9333ea", "#0891b2", "#dc2626", "#4f46e5"];
-  try {
-    const canvasIds = new Set<string>(["main", currentCanvasId]);
-    const prefix = `${LIVE_LAYOUT_STORAGE_KEY}.`;
-    for (let index = 0; index < window.localStorage.length; index += 1) {
-      const key = window.localStorage.key(index);
-      if (!key?.startsWith(prefix)) continue;
-      const suffix = key.slice(prefix.length);
-      if (!suffix) continue;
-      canvasIds.add(suffix.startsWith("transfer.") ? suffix.slice("transfer.".length) : suffix);
-    }
-    return Array.from(canvasIds)
-      .sort((a, b) => (a === "main" ? -1 : b === "main" ? 1 : a.localeCompare(b)))
-      .map((id, index) => ({
-        color: colors[index % colors.length],
-        id,
-        isCurrent: id === currentCanvasId,
-        label: id === "main" ? "Main" : `Canvas ${index}`,
-      }));
-  } catch {
-    return [{ color: colors[0], id: currentCanvasId, isCurrent: true, label: currentCanvasId === "main" ? "Main" : "Canvas 1" }];
-  }
-}
-
-function readStoredCanvas(canvasId: string, isChildCanvas: boolean): { chartWindows: ChartWindow[]; layouts: Record<WindowId, WindowLayout>; windows: WindowId[] } {
-  const defaults = buildDefaultCanvasLayout(isChildCanvas);
-  const transfer = readCanvasTransfer(canvasId);
-  if (transfer) {
-    const chartWindows = transfer.chartWindows.filter((chart) => chart.id === transfer.windowId);
-    return {
-      chartWindows,
-      layouts: { ...defaults.layouts, [transfer.windowId]: transfer.layout ?? defaults.layouts.chart },
-      windows: [transfer.windowId],
-    };
-  }
-  try {
-    const parsed = JSON.parse(window.localStorage.getItem(canvasStorageKey(canvasId)) || "null") as Partial<{ chartWindows: ChartWindow[]; layoutVersion: number; layouts: Record<WindowId, WindowLayout>; windows: WindowId[] }> | null;
-    if (!parsed) return defaults;
-    if (parsed.layoutVersion !== LIVE_LAYOUT_VERSION) return defaults;
-    return {
-      chartWindows: Array.isArray(parsed.chartWindows) ? parsed.chartWindows : defaults.chartWindows,
-      layouts: { ...defaults.layouts, ...(parsed.layouts ?? {}) },
-      windows: Array.isArray(parsed.windows) ? parsed.windows : defaults.windows,
-    };
-  } catch {
-    return defaults;
-  }
-}
-
-function readCanvasTransfer(canvasId: string): { chartWindows: ChartWindow[]; layout?: WindowLayout; windowId: WindowId } | null {
-  try {
-    const key = canvasTransferKey(canvasId);
-    const parsed = JSON.parse(window.localStorage.getItem(key) || "null");
-    window.localStorage.removeItem(key);
-    return parsed?.windowId ? parsed : null;
-  } catch {
-    return null;
-  }
-}
-
-function readSavedCanvasLayouts(): SavedCanvasLayout[] {
-  try {
-    const parsed = JSON.parse(window.localStorage.getItem(LIVE_LAYOUTS_STORAGE_KEY) || "[]");
-    return Array.isArray(parsed) ? parsed.filter((layout) => layout?.layoutVersion === LIVE_LAYOUT_VERSION) : [];
-  } catch {
-    return [];
-  }
-}
-
-function readSharedTradingState(): { decisions: Record<string, DecisionState>; orders: OrderRow[]; positions: PositionRow[]; trades: TradeRow[] } {
-  try {
-    const parsed = JSON.parse(window.localStorage.getItem(LIVE_SHARED_STATE_STORAGE_KEY) || "null");
-    return {
-      decisions: parsed?.decisions ?? {},
-      orders: Array.isArray(parsed?.orders) ? parsed.orders : [],
-      positions: Array.isArray(parsed?.positions) ? parsed.positions : [],
-      trades: Array.isArray(parsed?.trades) ? parsed.trades : [],
-    };
-  } catch {
-    return { decisions: {}, orders: [], positions: [], trades: [] };
-  }
-}
-
-function readStoredScannerQueryGroups(): ScannerQueryGroup[] {
-  try {
-    const defaultGroupById = new Map(DEFAULT_SCANNER_QUERY_GROUPS.map((group) => [group.id, group]));
-    const parsed = JSON.parse(window.localStorage.getItem(LIVE_SETUP_STORAGE_KEY) || "[]");
-    return Array.isArray(parsed) && parsed.length
-      ? parsed
-          .filter((item): item is ScannerQueryGroup => Boolean(item?.id && item?.name && item?.query?.conditions))
-          .map((item) => defaultGroupById.get(item.id) ?? { ...item, query: normalizeLiveScannerQuery(item.query) ?? item.query })
-      : DEFAULT_SCANNER_QUERY_GROUPS;
-  } catch {
-    return DEFAULT_SCANNER_QUERY_GROUPS;
-  }
-}
-
-function readStoredScannerQuery(): BackendTableQuery | null {
-  try {
-    const storedName = readStoredScannerQueryName();
-    const defaultGroup = DEFAULT_SCANNER_QUERY_GROUPS.find((group) => group.name === storedName);
-    if (defaultGroup) return defaultGroup.query;
-    const parsed = JSON.parse(window.localStorage.getItem(LIVE_SCANNER_QUERY_STORAGE_KEY) || "null");
-    return parsed?.conditions ? parsed : null;
-  } catch {
-    return null;
-  }
-}
-
-function readStoredScannerQueryName() {
-  try {
-    return window.localStorage.getItem(`${LIVE_SCANNER_QUERY_STORAGE_KEY}.name`) || "";
-  } catch {
-    return "";
-  }
-}
-
-function readStoredLiveChartVisibility() {
-  try {
-    const parsed = JSON.parse(window.localStorage.getItem(LIVE_CHART_VISIBILITY_STORAGE_KEY) || "null") as Partial<{ day: boolean; fiveMinute: boolean }> | null;
-    return {
-      day: typeof parsed?.day === "boolean" ? parsed.day : true,
-      fiveMinute: typeof parsed?.fiveMinute === "boolean" ? parsed.fiveMinute : true,
-    };
-  } catch {
-    return { day: true, fiveMinute: true };
-  }
-}
-
-function stableScannerQueryId(name: string) {
-  return name.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || `query-${Date.now()}`;
-}
 
 
 function optionalNumber(row: Record<string, unknown> | null | undefined, key: string) {
