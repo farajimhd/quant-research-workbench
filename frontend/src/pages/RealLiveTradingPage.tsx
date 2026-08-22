@@ -26,7 +26,6 @@ import {
 import type { Time } from "lightweight-charts";
 
 import { api, query } from "../api/client";
-import type { ChartPayload, LiveEntryLine } from "../app/components/ChartPanel";
 import { liveMarketStatus, type MarketStatus } from "../app/components/MarketStatusBadge";
 import { DataTable, type BackendTableQuery } from "../app/components/DataTable";
 import { MetricRatio } from "../app/components/MetricRatio";
@@ -74,7 +73,6 @@ import {
   brokerAvailableFunds,
   brokerPnlRows,
   buildClosedTrade,
-  buildLiveEntryLine,
   normalizeRealLiveExecution,
   normalizeRealLiveOrder,
   normalizeRealLivePosition,
@@ -93,22 +91,17 @@ import {
   buildMarketStateRows,
   emptyScannerQuery,
   enrichLiveCandidate,
-  latestLiveChartRow,
   normalizeLiveScannerQuery,
   normalizeRealLiveScannerRow,
-  quoteFromRow,
   rowMatchesBackendQuery,
   scannerQueryFromConditions,
 } from "../features/live-trading/scanner";
 import {
   addClockMinutes,
-  clockTimestampSeconds,
   currentExchangeSession,
-  dateOffset,
   formatExchangeClock,
   formatLocalClock,
   isAfterClock,
-  previousSessionDate,
   rowTimestampSeconds,
   type TradingSession,
 } from "../features/live-trading/time";
@@ -121,10 +114,10 @@ import {
 } from "../features/live-trading/LiveNewsPanel";
 import { LiveField, LiveSelect } from "../features/live-trading/LiveChartTradePanel";
 import {
-  LiveChartsContainer,
   LOWER_DISPLAY_ITEMS,
   MAIN_DISPLAY_ITEMS,
 } from "../features/live-trading/LiveChartsContainer";
+import { LiveChartWindow } from "../features/live-trading/LiveChartWindow";
 import { LiveScannerContainer } from "../features/live-trading/LiveScannerContainer";
 import { LivePortfolioContainer } from "../features/live-trading/LivePortfolioContainer";
 import { integer, money, numberValue, percent, stringValue } from "../features/live-trading/liveTradingFormat";
@@ -132,10 +125,6 @@ import { MetricsDock } from "../features/live-trading/LiveMetricsDock";
 import {
   LIVE_FEATURE_GROUPS,
   availableSessionDates,
-  castOpenChartPayload,
-  dayOpenOnlyChartPayload,
-  loadChart,
-  openOnlyChartPayload,
   trimChartPayload,
 } from "../features/live-trading/liveChartData";
 import type { ChartWindow, DecisionState, LiveClockMode, SavedCanvasLayout, ScannerQueryGroup } from "../features/live-trading/liveWorkspaceContracts";
@@ -143,7 +132,6 @@ import {
   CORE_WINDOW_IDS,
   buildDefaultCanvasLayout,
   buildLiveWindowSummaries,
-  chartOpenAtTime,
   coreWindowTitle,
   liveWorkspaceMinHeight,
   signedMetricTone,
@@ -1184,13 +1172,13 @@ export function RealLiveTradingPage({ onMarketStatusChange, onTopbarCenterChange
                 marketRows={marketRows}
                 orders={orders}
                 positions={positions}
+                preferMarketQuote
                 scannerRows={scannerRows}
                 scope={scope}
                 session={session}
                 sessions={sessions}
                 showDayChart={showDayChart}
                 showFiveMinuteChart={showFiveMinuteChart}
-                trades={trades}
                 onDraftChange={setTradeDraft}
                 onMainTimeframeChange={setMainTimeframe}
                 onMainVisibleColumnsChange={setMainVisibleColumns}
@@ -1557,180 +1545,6 @@ function LiveCheckCard({ check }: { check: RealLivePreflightCheck }) {
 
 
 
-function LiveChartWindow({
-  availableCash,
-  catalog,
-  chart,
-  compactVisibleColumns,
-  draft,
-  mainTimeframe,
-  mainVisibleColumns,
-  marketRows,
-  onCompactVisibleColumnsChange,
-  onDraftChange,
-  onMainTimeframeChange,
-  onMainVisibleColumnsChange,
-  onStage,
-  onToggleDayChart,
-  onToggleFiveMinuteChart,
-  orders,
-  positions,
-  scannerRows,
-  scope,
-  session,
-  sessions,
-  showDayChart,
-  showFiveMinuteChart,
-  trades,
-}: {
-  availableCash: number;
-  catalog: CatalogPayload | null;
-  chart: ChartWindow;
-  compactVisibleColumns: string[];
-  draft: { limit: string; quantity: string; side: "BUY" | "SELL"; stop: string; type: string };
-  mainTimeframe: string;
-  mainVisibleColumns: string[];
-  marketRows: Record<string, unknown>[];
-  orders: OrderRow[];
-  positions: PositionRow[];
-  scannerRows: Record<string, unknown>[];
-  scope: Scope;
-  session: TradingSession;
-  sessions: string[];
-  showDayChart: boolean;
-  showFiveMinuteChart: boolean;
-  trades: TradeRow[];
-  onCompactVisibleColumnsChange: (columns: string[]) => void;
-  onDraftChange: (draft: { limit: string; quantity: string; side: "BUY" | "SELL"; stop: string; type: string }) => void;
-  onMainTimeframeChange: (timeframe: string) => void;
-  onMainVisibleColumnsChange: (columns: string[]) => void;
-  onStage: (side?: "BUY" | "SELL", status?: string, context?: Partial<StageOrderContext>) => void;
-  onToggleDayChart: () => void;
-  onToggleFiveMinuteChart: () => void;
-}) {
-  const [mainPayload, setMainPayload] = useState<ChartPayload | null>(null);
-  const [dayPayload, setDayPayload] = useState<ChartPayload | null>(null);
-  const [fiveMinutePayload, setFiveMinutePayload] = useState<ChartPayload | null>(null);
-  const [chartLoading, setChartLoading] = useState(false);
-  const [dayChartLoading, setDayChartLoading] = useState(false);
-  const [fiveMinuteChartLoading, setFiveMinuteChartLoading] = useState(false);
-  const [chartErrors, setChartErrors] = useState({ day: "", fiveMinute: "", main: "" });
-  const chartError = [chartErrors.main, showDayChart ? chartErrors.day : "", showFiveMinuteChart ? chartErrors.fiveMinute : ""].filter(Boolean).join(" ");
-  const liveRow = latestLiveChartRow(chart, marketRows, scannerRows);
-  const selectedTime = clockTimestampSeconds(session.sessionDate, session.barTime) ?? rowTimestampSeconds(chart.row, session.sessionDate, session.barTime);
-  const selectedOpen =
-    chartOpenAtTime(mainPayload, selectedTime) ||
-    numberValue(liveRow, "current_open") ||
-    numberValue(liveRow, "open");
-  const quote = quoteFromRow(liveRow, selectedOpen);
-  const position = positions.find((row) => row.symbol === chart.ticker);
-  const liveEntryLine = buildLiveEntryLine(position, quote.bid);
-  function closeLivePosition() {
-    if (!position || position.quantity <= 0) return;
-    onStage("SELL", "STAGED", {
-      limit: quote.bid,
-      mark: quote.bid,
-      quantity: position.quantity,
-      row: liveRow,
-      side: "SELL",
-      status: "STAGED",
-      stop: position.stop,
-      symbol: chart.ticker,
-      type: "LIMIT",
-    });
-  }
-  const mainOpenOnlyPayload = useMemo(() => {
-    if (mainTimeframe === "1d") return dayOpenOnlyChartPayload(mainPayload, session.sessionDate, selectedOpen, selectedTime);
-    if (mainTimeframe === "5m") return castOpenChartPayload(mainPayload, selectedTime, selectedOpen);
-    return openOnlyChartPayload(mainPayload, selectedTime, selectedOpen);
-  }, [mainPayload, mainTimeframe, selectedOpen, selectedTime, session.sessionDate]);
-  const dayOpenOnlyPayload = useMemo(
-    () => dayOpenOnlyChartPayload(dayPayload, session.sessionDate, selectedOpen, selectedTime),
-    [dayPayload, selectedOpen, selectedTime, session.sessionDate]
-  );
-  const fiveMinuteOpenOnlyPayload = useMemo(
-    () => castOpenChartPayload(fiveMinutePayload, selectedTime, selectedOpen),
-    [fiveMinutePayload, selectedOpen, selectedTime]
-  );
-
-  useEffect(() => {
-    let active = true;
-    setChartLoading(true);
-    setMainPayload(null);
-    setChartErrors((current) => ({ ...current, main: "" }));
-    loadChart(scope.processed_root, session.sessionDate, session.sessionDate, mainTimeframe, chart.ticker, mainVisibleColumns)
-      .then((payload) => { if (active) setMainPayload(payload); })
-      .catch((reason) => { if (active) setChartErrors((current) => ({ ...current, main: reason instanceof Error ? reason.message : "Main chart failed to load." })); })
-      .finally(() => {
-        if (active) setChartLoading(false);
-      });
-    return () => {
-      active = false;
-    };
-  }, [chart.ticker, mainTimeframe, mainVisibleColumns, scope.processed_root, session.sessionDate]);
-
-  useEffect(() => {
-    if (!showDayChart) return;
-    let active = true;
-    setDayChartLoading(true);
-    setDayPayload(null);
-    setChartErrors((current) => ({ ...current, day: "" }));
-    loadChart(scope.processed_root, dateOffset(session.sessionDate, -60), session.sessionDate, "1d", chart.ticker, [])
-      .then((payload) => { if (active) setDayPayload(payload); })
-      .catch((reason) => { if (active) setChartErrors((current) => ({ ...current, day: reason instanceof Error ? reason.message : "Daily chart failed to load." })); })
-      .finally(() => { if (active) setDayChartLoading(false); });
-    return () => { active = false; };
-  }, [chart.ticker, scope.processed_root, session.sessionDate, showDayChart]);
-
-  useEffect(() => {
-    if (!showFiveMinuteChart) return;
-    let active = true;
-    setFiveMinuteChartLoading(true);
-    setFiveMinutePayload(null);
-    setChartErrors((current) => ({ ...current, fiveMinute: "" }));
-    const start = previousSessionDate(sessions, session.sessionDate, 2);
-    loadChart(scope.processed_root, start, session.sessionDate, "5m", chart.ticker, compactVisibleColumns)
-      .then((payload) => { if (active) setFiveMinutePayload(payload); })
-      .catch((reason) => { if (active) setChartErrors((current) => ({ ...current, fiveMinute: reason instanceof Error ? reason.message : "Five-minute chart failed to load." })); })
-      .finally(() => { if (active) setFiveMinuteChartLoading(false); });
-    return () => { active = false; };
-  }, [chart.ticker, compactVisibleColumns, scope.processed_root, session.sessionDate, sessions, showFiveMinuteChart]);
-
-  return (
-    <LiveChartsContainer
-      catalog={catalog}
-      chartError={chartError}
-      chartLoading={chartLoading}
-      dayChartLoading={dayChartLoading}
-      compactVisibleColumns={compactVisibleColumns}
-      dayPayload={dayOpenOnlyPayload}
-      fiveMinutePayload={fiveMinuteOpenOnlyPayload}
-      fiveMinuteChartLoading={fiveMinuteChartLoading}
-      mainPayload={mainOpenOnlyPayload}
-      mainTimeframe={mainTimeframe}
-      mainVisibleColumns={mainVisibleColumns}
-      position={position}
-      quote={quote}
-      availableCash={availableCash}
-      draft={draft}
-      orders={orders}
-      row={liveRow}
-      selectedTicker={chart.ticker}
-      session={session}
-      showDayChart={showDayChart}
-      showFiveMinuteChart={showFiveMinuteChart}
-      liveEntryLine={liveEntryLine}
-      onCompactVisibleColumnsChange={onCompactVisibleColumnsChange}
-      onDraftChange={onDraftChange}
-      onLiveEntryClose={closeLivePosition}
-      onMainTimeframeChange={onMainTimeframeChange}
-      onMainVisibleColumnsChange={onMainVisibleColumnsChange}
-      onStage={onStage}
-      onToggleDayChart={onToggleDayChart}
-      onToggleFiveMinuteChart={onToggleFiveMinuteChart}
-    />
-  );
-}
 
 
 
