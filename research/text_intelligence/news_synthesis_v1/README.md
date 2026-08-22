@@ -328,3 +328,22 @@ python -m research.text_intelligence.news_synthesis_v1.run_tfidf_supervision_v7
 Generated data, source authority, vocabulary, checkpoint, evaluation, and the
 V6/V7 comparison are written only beneath
 `D:\TradingML\runtimes\text_intelligence\news_synthesis_v1\tfidf_supervision_v7`.
+
+### Causal market-cap context analysis
+
+The market-cap context analyzer joins the decisive provider-filter article
+features to point-in-time capitalization. It prefers provider snapshots whose
+observation and insertion times precede publication, resolved by security
+identity, and otherwise uses an explicitly marked SEC-shares-times-prior-close
+estimate. Missingness, source, and observation age remain visible. It evaluates
+market-cap bands together with metadata, rendered length, ticker count, session
+timing, session ordinal, and time since prior ticker news; it does not modify
+the deterministic funnel or claim accuracy on an already observed holdout.
+
+```powershell
+$env:PYTHONDONTWRITEBYTECODE='1'
+python -m research.text_intelligence.news_synthesis_v1.run_provider_market_cap_analysis
+```
+
+All bulk article and path artifacts are written only under
+`D:\TradingML\runtimes\text_intelligence\news_synthesis_v1\provider_market_cap_context_analysis_v3`.
