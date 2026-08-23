@@ -13,6 +13,8 @@ articles remain explicitly unresolved and are excluded from metrics.
 | Train 2025, threshold 0.45 | 83.02% | 83.83% | 72.72% | 86.97% | 79.21% | 91.45% |
 | Train 2026, threshold 0.40 | 82.56% | 84.55% | 70.17% | 92.34% | 79.74% | 93.22% |
 | Train 2025-Aug. 13, 2026, threshold 0.44 | **84.14%** | **85.25%** | 73.56% | 89.55% | **80.77%** | 93.19% |
+| Structured + TF-IDF RF, threshold 0.48 | **84.88%** | 85.08% | **76.39%** | 85.88% | **80.86%** | **93.27%** |
+| Structured + TF-IDF MLP, threshold 0.45 | 83.84% | **85.35%** | 72.45% | **91.24%** | 80.77% | 93.15% |
 
 The 2025-trained model produced TN/FP/FN/TP of 2,490/596/238/1,589. The
 2026-trained model produced 2,369/717/140/1,687. Therefore the 2025 model is
@@ -51,8 +53,39 @@ training accuracy.
 These are deliberately labeled resubstitution metrics, not validation results.
 The gap from 210 training mismatches to 779 holdout mismatches at threshold
 0.44 (and from three to 725 at threshold 0.50) demonstrates that the forest
-fits the training labels almost perfectly while being materially less accurate on
-new articles. The sealed holdout remains the generalization authority.
+fits the training labels almost perfectly while being materially less accurate
+on new articles. The sealed holdout remains the generalization authority.
+
+## TF-IDF and neural challengers
+
+The TF-IDF challenger adds a 75,000-column word unigram/bigram vocabulary to
+the frozen 11,434 structured dimensions. The vocabulary is learned only from
+the 346,103 pre-boundary articles. The forest configuration is held fixed from
+the structured-only experiment, while its 0.48 threshold is selected on the
+same 34,671-row July-August 13 internal validation slice. This isolates the
+lexical feature contribution without a post-holdout parameter search.
+
+The resulting 86,434-feature Random Forest achieved 84.88% accuracy and 743
+mismatches: TN/FP/FN/TP 2,601/485/258/1,569. Compared with structured-only, it
+corrected a net 36 holdout decisions and improved accuracy by 0.73 percentage
+points, eligible precision by 2.83 points, and eligible F1 by 0.09 points, but
+eligible recall declined by 3.67 points.
+
+A single precommitted sparse-input neural challenger consumed the identical
+86,434 features after training-derived max-absolute scaling. Its architecture
+was 256 and 128 hidden units with GELU, layer normalization, 15% dropout,
+AdamW, and positive-class-weighted binary cross-entropy. Epoch count and
+threshold were selected only on the internal validation slice; epoch one and
+threshold 0.45 won before the final model was refit for one epoch on all
+346,103 training articles.
+
+The MLP achieved 83.84% accuracy and 794 mismatches: TN/FP/FN/TP
+2,452/634/160/1,667. It delivered the best eligible recall among the combined
+models at 91.24%, but the extra 149 false eligible decisions relative to the
+TF-IDF forest reduced accuracy and precision. The TF-IDF Random Forest is the
+best overall classifier from this controlled comparison; the MLP is useful
+only if the operating objective values eligible recall more than false-positive
+compute cost.
 
 ## Population and blindness
 
