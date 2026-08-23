@@ -130,7 +130,7 @@ Environment variables:
 - `QMD_FLATFILE_COVERAGE_TABLE`, default `qmd_flatfile_coverage_v2`
 - `QMD_GAP_FILL_SYMBOL_UNIVERSE_TABLE`, default `qmd_gap_fill_symbol_universe_v1`
 - `QMD_GAP_FILL_UNIVERSE_MARKET_DAYS`, default `5`
-- `QMD_HOST_ROLE`, default `auto`; use `workstation` or `laptop` to override
+- `QMD_HOST_ROLE`, default `laptop`; `workstation` is an explicit opt-in that permits historical flatfile autorun
 - `QMD_HISTORICAL_CLICKHOUSE_DATABASE`, default `market_sip_compact`
 - `QMD_HISTORICAL_DAILY_SESSION_BARS_TABLE`, default
   `daily_session_bars_by_symbol_time_v1`; supplies causal historical reference
@@ -139,6 +139,8 @@ Environment variables:
 - `QMD_HISTORICAL_FLATFILE_AUTORUN`, default `true`; effective only on the
   workstation after the active collection window closes
 - `QMD_HISTORICAL_PIPELINE_CODE_ROOT`, default `D:\TradingML\codes\quant_research_workbench_pipelines`
+- `QMD_HISTORICAL_PIPELINE_PYTHON`, set by the managed launcher to its resolved Python executable
+- `QMD_HISTORICAL_UPDATE_RUNTIME_ROOT`, default `D:\TradingML\runtimes\qmd_gateway\historical_flatfile_update`
 - `QMD_MARKET_STATUS_ENABLED`, default `true`
 - `QMD_MARKET_STATUS_URL`, default Massive `/v1/marketstatus/now`
 - `QMD_MARKET_HOLIDAYS_URL`, default Massive `/v1/marketstatus/upcoming`
@@ -597,6 +599,13 @@ cargo --version
 .\scripts\run_qmd_gateway.ps1
 ```
 
+The direct and managed launchers default to `-HostRole Laptop`. Historical
+flatfile autorun is workstation-only and must be selected explicitly:
+
+```powershell
+.\scripts\start_qmd_live_gateway.ps1 -HostRole Workstation
+```
+
 This is the command for both first startup and continuation. On the first
 startup after this cutover, QMD creates, validates, and when necessary
 bootstraps `q_live.intraday_family_bars_v2` from rolling `q_live.events`; it then drops
@@ -607,7 +616,8 @@ configuration but does not perform the database migration.
 The launcher creates a per-run shutdown token. Exiting the monitor sends a
 token-protected local shutdown request, stops live producers, and gives writer
 queues up to 15 seconds to drain before the launcher applies its 20-second
-forced-stop fallback. Gateway stdout/stderr remain under `.tmp/qmd-gateway/`.
+forced-stop fallback. Gateway stdout/stderr remain under
+`D:\TradingML\runtimes\qmd_gateway\logs`.
 Failed final batches continue retrying within that drain window; they are never
 cleared merely because shutdown was requested.
 

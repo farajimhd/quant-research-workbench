@@ -8,7 +8,7 @@ use qmd_core::compact_event::{
     CompactEventClickHouseWriter, CompactEventReferences, LiveCompactEvent, SharedCompactEventStore,
 };
 use qmd_core::computation_targets::SharedComputationTargets;
-use qmd_core::config::{load_env_files, GatewayConfig};
+use qmd_core::config::{is_valid_qmd_host_role, load_env_files, GatewayConfig};
 use qmd_core::event::MarketEvent;
 use qmd_core::gapfill::{run_gap_fill_service, run_startup_maintenance, GapFillService};
 use qmd_core::indicators::{
@@ -33,6 +33,7 @@ use qmd_core::state::{ScannerRowDelta, SharedMarketState};
 use qmd_core::structure_focus::StructureFocusCoordinator;
 use std::collections::HashMap;
 use std::net::SocketAddr;
+use std::path::Path;
 use std::{error::Error, io};
 use tokio::sync::{broadcast, mpsc, watch};
 use tokio::time::{sleep, timeout, Duration};
@@ -41,7 +42,7 @@ use tokio::time::{sleep, timeout, Duration};
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let loaded_env_files = load_env_files();
     if !loaded_env_files.is_empty() {
-        eprintln!(
+        println!(
             "Loaded .env files: {}",
             loaded_env_files
                 .iter()
@@ -229,7 +230,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         writer_handles.push(tokio::spawn(writer.run(writer_receiver)));
     } else {
         drop(writer_receiver);
-        eprintln!(
+        println!(
             "Raw quote/trade ClickHouse persistence is disabled. Set QMD_PERSIST_RAW_EVENTS=true to enable it."
         );
     }
@@ -433,7 +434,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     });
 
     let listener = tokio::net::TcpListener::bind(bind).await?;
-    eprintln!("qmd-gateway API listening on {bind}; startup maintenance may still be running.");
+    println!("qmd-gateway API listening on {bind}; startup maintenance may still be running.");
     let server = tokio::spawn(async move {
         axum::serve(listener, app)
             .with_graceful_shutdown(async move {
@@ -592,6 +593,12 @@ async fn run_market_structure_reference_refresh(
 }
 
 fn preflight_config(config: &GatewayConfig) -> Result<(), String> {
+    if !is_valid_qmd_host_role(&config.qmd_host_role) {
+        return Err(format!(
+            "QMD_HOST_ROLE must be 'laptop' or 'workstation'; received '{}'",
+            config.qmd_host_role
+        ));
+    }
     if config.massive_api_key.trim().is_empty() {
         return Err("MASSIVE_API_KEY is required before qmd-gateway starts".to_string());
     }
@@ -622,6 +629,40 @@ fn preflight_config(config: &GatewayConfig) -> Result<(), String> {
             "focused Generic Structure continuity requires QMD_PERSIST_STRUCTURE_EVENTS=true"
                 .to_string(),
         );
+    }
+    if config.permits_historical_flatfile_autorun() {
+        let python = Path::new(&config.historical_pipeline_python);
+        if !python.is_file() {
+            return Err(format!(
+                "workstation historical flatfile autorun requires QMD_HISTORICAL_PIPELINE_PYTHON to name an existing executable; received '{}'",
+                config.historical_pipeline_python
+            ));
+        }
+        let updater = config.historical_update_script_path();
+        if !updater.is_file() {
+            return Err(format!(
+                "workstation historical flatfile autorun requires the updater script at {}",
+                updater.display()
+            ));
+        }
+        let updater_runtime = Path::new(&config.historical_update_runtime_root);
+        if config.historical_update_runtime_root.trim().is_empty() || !updater_runtime.is_absolute()
+        {
+            return Err(
+                "QMD_HISTORICAL_UPDATE_RUNTIME_ROOT must be an absolute external path for workstation historical flatfile autorun"
+                    .to_string(),
+            );
+        }
+        let repository_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .and_then(Path::parent)
+            .expect("qmd-gateway manifest has a repository parent");
+        if updater_runtime.starts_with(repository_root) {
+            return Err(format!(
+                "QMD_HISTORICAL_UPDATE_RUNTIME_ROOT must remain outside the repository: {}",
+                updater_runtime.display()
+            ));
+        }
     }
     Ok(())
 }

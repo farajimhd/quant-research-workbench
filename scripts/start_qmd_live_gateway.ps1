@@ -1,6 +1,8 @@
 [CmdletBinding(SupportsShouldProcess)]
 param(
     [string]$HostName = "127.0.0.1",
+    [ValidateSet("Laptop", "Workstation")]
+    [string]$HostRole = "Laptop",
     [ValidateRange(1, 65535)]
     [int]$QmdLivePort = 8795,
     [string]$PythonExe = "",
@@ -209,6 +211,7 @@ $qmdLiveBind = "$HostName`:$QmdLivePort"
 $qmdLiveCommand = $pathAssignment +
     "& " + (ConvertTo-PowerShellLiteral -Value $qmdLiveLauncher) +
     " -Bind " + (ConvertTo-PowerShellLiteral -Value $qmdLiveBind) +
+    " -HostRole " + (ConvertTo-PowerShellLiteral -Value $HostRole) +
     " -PythonExe " + (ConvertTo-PowerShellLiteral -Value $resolvedPython) +
     " -TerminalNoScreen"
 
@@ -297,5 +300,6 @@ Write-Host "Opened an independent QMD Live PowerShell tab in $($usedTerminalWind
 Write-Host "This starter exits after handing the service to its registered tab host."
 Write-Host "A successful graceful stop exits the tab host cleanly so Windows Terminal closes the service tab."
 Write-Host "QMD Live:   http://$HostName`:$QmdLivePort"
+Write-Host "Host role:  $($HostRole.ToLowerInvariant())"
 Write-Host "Ownership:  $qmdLiveInstanceRoot"
 Write-Host "Stop only launcher-owned QMD Live instances with scripts\stop_qmd_live_gateway.ps1."

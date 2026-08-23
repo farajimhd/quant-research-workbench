@@ -137,7 +137,7 @@ persistence. `QMD_INTRADAY_BAR_TIMEFRAMES` defaults to
 | `QMD_GAP_FILL_UNIVERSE_MARKET_DAYS` | `5` | Number of latest historical market sessions used to seed the symbol universe when the queue is empty. | Keeps startup repair broad without depending on broker/reference tables. |
 | `QMD_RUN_ID` | generated | Optional stable id for one gateway run. | Normally leave generated; used as the live coverage row id suffix. |
 | `QMD_RUN_STARTED_AT_UTC` | generated | Optional run start timestamp. | Normally leave generated; used to open the live coverage row. |
-| `QMD_HOST_ROLE` | `auto` | Host role for historical update planning. | Override with `workstation` or `laptop` if auto-detection is wrong. |
+| `QMD_HOST_ROLE` | `laptop` | Explicit host authority for historical update planning. | Accepts only `laptop` or `workstation`; workstation-only historical autorun is never inferred from paths or machine names. |
 | `QMD_HISTORICAL_CLICKHOUSE_DATABASE` | `market_sip_compact` | Read-only historical event database name. | QMD never writes live rows into this database. |
 | `QMD_HISTORICAL_DAILY_SESSION_BARS_TABLE` | `daily_session_bars_by_symbol_time_v1` | Three-session SIP daily-bar authority for historical reference levels. | Only fully available premarket, regular, and after-hours session sets are aggregated. |
 | `QMD_HISTORICAL_CLICKHOUSE_URL` | falls back to q_live ClickHouse URL | Historical ClickHouse endpoint. | Use when historical data is on a different endpoint. |
@@ -150,6 +150,8 @@ persistence. `QMD_INTRADAY_BAR_TIMEFRAMES` defaults to
 | `QMD_FLATFILE_ENDPOINT_URL` | `https://files.massive.com` | Massive S3-compatible flatfile endpoint. | Signed metadata discovery starts after 08:00 ET. |
 | `QMD_FLATFILE_ACCESS_KEY_ID` / `QMD_FLATFILE_SECRET_ACCESS_KEY` | shared AWS env fallbacks | Credentials for metadata-only remote discovery. | Secret values are never serialized by `/config`. |
 | `QMD_HISTORICAL_PIPELINE_CODE_ROOT` | `D:\TradingML\codes\quant_research_workbench_pipelines` | Workstation path used to build the flatfile update command. | Must point to the synced pipeline code that updates read-only historical `events_YYYY`. |
+| `QMD_HISTORICAL_PIPELINE_PYTHON` | empty | Exact Python executable used by workstation historical autorun. | The managed launcher sets this to its resolved Python path; workstation autorun fails preflight if it is missing. |
+| `QMD_HISTORICAL_UPDATE_RUNTIME_ROOT` | `D:\TradingML\runtimes\qmd_gateway\historical_flatfile_update` | Runtime-owned updater state and stdout/stderr logs. | Must remain outside the repository. |
 
 Recent live repair converts Massive REST rows to the same normalized
 `MarketEvent` type used by the websocket path, then feeds the same state,

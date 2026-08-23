@@ -5,6 +5,12 @@ use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+pub const DEFAULT_QMD_HOST_ROLE: &str = "laptop";
+
+pub fn is_valid_qmd_host_role(value: &str) -> bool {
+    matches!(value, "laptop" | "workstation")
+}
+
 #[derive(Clone, Debug)]
 pub struct HistoricalClickHouseConnection {
     pub database: String,
@@ -119,6 +125,8 @@ pub struct GatewayConfig {
     pub historical_flatfile_autorun: bool,
     pub historical_flatfile_update_enabled: bool,
     pub historical_pipeline_code_root: String,
+    pub historical_pipeline_python: String,
+    pub historical_update_runtime_root: String,
     pub indicator_bar_channel_capacity: usize,
     pub indicator_channel_capacity: usize,
     pub indicator_history_by_timeframe: HashMap<String, usize>,
@@ -347,6 +355,11 @@ impl GatewayConfig {
                 "QMD_HISTORICAL_PIPELINE_CODE_ROOT",
                 "D:\\TradingML\\codes\\quant_research_workbench_pipelines",
             ),
+            historical_pipeline_python: env_string("QMD_HISTORICAL_PIPELINE_PYTHON", ""),
+            historical_update_runtime_root: env_string(
+                "QMD_HISTORICAL_UPDATE_RUNTIME_ROOT",
+                "D:\\TradingML\\runtimes\\qmd_gateway\\historical_flatfile_update",
+            ),
             indicator_bar_channel_capacity: env_usize(
                 "QMD_INDICATOR_BAR_CHANNEL_CAPACITY",
                 250_000,
@@ -409,7 +422,7 @@ impl GatewayConfig {
                 "qmd_gap_fill_symbol_universe_v1",
             ),
             qmd_gap_fill_universe_market_days: env_usize("QMD_GAP_FILL_UNIVERSE_MARKET_DAYS", 5),
-            qmd_host_role: env_string("QMD_HOST_ROLE", "auto").to_ascii_lowercase(),
+            qmd_host_role: env_string("QMD_HOST_ROLE", DEFAULT_QMD_HOST_ROLE).to_ascii_lowercase(),
             qmd_live_event_coverage_table: env_string(
                 "QMD_LIVE_EVENT_COVERAGE_TABLE",
                 "qmd_live_event_coverage_v1",
@@ -477,25 +490,21 @@ impl GatewayConfig {
     }
 
     pub fn resolved_host_role(&self) -> String {
-        if self.qmd_host_role != "auto" {
-            return self.qmd_host_role.clone();
-        }
-        let computer = env::var("COMPUTERNAME")
-            .or_else(|_| env::var("HOSTNAME"))
-            .unwrap_or_default()
-            .to_ascii_uppercase();
-        let pipeline_root_exists = Path::new(&self.historical_pipeline_code_root).exists();
-        if computer.contains("DESKTOP-SAAI85T")
-            || (pipeline_root_exists
-                && self
-                    .historical_pipeline_code_root
-                    .to_ascii_lowercase()
-                    .starts_with("d:\\tradingml"))
-        {
-            "workstation".to_string()
-        } else {
-            "laptop".to_string()
-        }
+        self.qmd_host_role.clone()
+    }
+
+    pub fn historical_update_script_path(&self) -> PathBuf {
+        Path::new(&self.historical_pipeline_code_root)
+            .join("pipelines")
+            .join("market_sip")
+            .join("flatfiles")
+            .join("download_update_events.py")
+    }
+
+    pub fn permits_historical_flatfile_autorun(&self) -> bool {
+        self.qmd_host_role == "workstation"
+            && self.historical_flatfile_update_enabled
+            && self.historical_flatfile_autorun
     }
 
     pub fn clickhouse_password(&self) -> String {
@@ -700,4 +709,18 @@ fn env_timeframe_limit_map(name: &str, default: &[(&str, usize)]) -> HashMap<Str
         }
     }
     values
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn qmd_host_role_defaults_to_laptop_and_rejects_inference_mode() {
+        assert_eq!(DEFAULT_QMD_HOST_ROLE, "laptop");
+        assert!(is_valid_qmd_host_role("laptop"));
+        assert!(is_valid_qmd_host_role("workstation"));
+        assert!(!is_valid_qmd_host_role("auto"));
+        assert!(!is_valid_qmd_host_role(""));
+    }
 }

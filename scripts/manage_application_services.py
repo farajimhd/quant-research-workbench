@@ -83,6 +83,20 @@ def _http_ready(url: str, timeout: float = 2.0) -> tuple[bool, str]:
         return False, str(error.reason if isinstance(error, URLError) else error)
 
 
+def _http_json(url: str, timeout: float = 2.0) -> dict[str, object]:
+    request = Request(url, headers={"User-Agent": "workspace-service-manager/1"})
+    try:
+        with urlopen(request, timeout=timeout) as response:
+            if not 200 <= response.status < 400:
+                raise RuntimeError(f"{url} returned HTTP {response.status}")
+            payload = json.loads(response.read().decode("utf-8"))
+    except (HTTPError, URLError, TimeoutError, OSError, json.JSONDecodeError) as error:
+        raise RuntimeError(f"cannot read service identity from {url}: {error}") from error
+    if not isinstance(payload, dict):
+        raise RuntimeError(f"service identity at {url} is not a JSON object")
+    return payload
+
+
 def _wait_ready(names: set[str], timeout_seconds: int) -> None:
     pending = {name: url for name, _, url in SERVICES if name in names}
     deadline = time.monotonic() + timeout_seconds
@@ -166,6 +180,7 @@ def start(
     release_manifest: Path,
     timeout_seconds: int,
     terminal_target: str,
+    qmd_live_host_role: str,
     checkpoint_root: Path | None = None,
     python_exe: Path | None = None,
 ) -> None:
@@ -176,12 +191,22 @@ def start(
     try:
         qmd_ready, _ = _http_ready(SERVICES[0][2]) if _port_open(8795) else (False, "")
         if qmd_ready:
+            qmd_health = _http_json(SERVICES[0][2])
+            effective_role = str(qmd_health.get("host_role", "")).lower()
+            if effective_role != qmd_live_host_role.lower():
+                raise RuntimeError(
+                    "QMD Live is healthy but its effective host role does not match the request: "
+                    f"requested={qmd_live_host_role.lower()} effective={effective_role or 'missing'}"
+                )
             print("[active]  QMD Live is already healthy; preserving its stream.")
         elif _port_open(8795):
             raise RuntimeError("QMD Live port 8795 is occupied but /health is not ready")
         else:
             print("[start]   QMD Live")
-            _run_script("start_qmd_live_gateway.ps1", ["-TerminalTarget", terminal_target])
+            _run_script(
+                "start_qmd_live_gateway.ps1",
+                ["-HostRole", qmd_live_host_role, "-TerminalTarget", terminal_target],
+            )
             qmd_started_here = True
             _wait_ready({"QMD Live"}, timeout_seconds)
 
@@ -250,6 +275,12 @@ def main() -> int:
     parser.add_argument("--timeout-seconds", type=int, default=600)
     parser.add_argument("--terminal-target", choices=("Auto", "Caller", "Named"), default="Named")
     parser.add_argument(
+        "--qmd-live-host-role",
+        choices=("Laptop", "Workstation"),
+        default="Laptop",
+        help="QMD Live execution authority; workstation-only historical ingestion is opt-in.",
+    )
+    parser.add_argument(
         "--keep-qmd-live",
         action="store_true",
         help="On stop, preserve QMD Live. Restart preserves a healthy QMD Live by default.",
@@ -262,13 +293,27 @@ def main() -> int:
             stop(keep_qmd_live=args.keep_qmd_live)
             return 0
         if args.action == "start":
-            start(args.release_manifest, args.timeout_seconds, args.terminal_target, args.checkpoint_root, args.python_exe)
+            start(
+                args.release_manifest,
+                args.timeout_seconds,
+                args.terminal_target,
+                args.qmd_live_host_role,
+                args.checkpoint_root,
+                args.python_exe,
+            )
             return 0
         if args.action == "restart":
             _prepare_manifest_if_needed(args.release_manifest, args.checkpoint_root)
             _validate_manifest(args.release_manifest)
             stop(keep_qmd_live=True)
-            start(args.release_manifest, args.timeout_seconds, args.terminal_target, args.checkpoint_root, args.python_exe)
+            start(
+                args.release_manifest,
+                args.timeout_seconds,
+                args.terminal_target,
+                args.qmd_live_host_role,
+                args.checkpoint_root,
+                args.python_exe,
+            )
         return 0
     except (RuntimeError, ValueError) as error:
         print(f"[failed]  {error}", file=sys.stderr)

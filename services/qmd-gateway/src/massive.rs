@@ -78,7 +78,7 @@ pub async fn run_massive_ingest(config: GatewayConfig, fanout: MarketEventFanout
                     match message {
                         Ok(Message::Text(text)) => {
                             if let Some(status) = massive_status_message(&text) {
-                                eprintln!("Massive status: {status}");
+                                println!("Massive status: {status}");
                             }
                             if text.contains("\"LULD\"") {
                                 match parse_massive_luld_payload(&text) {

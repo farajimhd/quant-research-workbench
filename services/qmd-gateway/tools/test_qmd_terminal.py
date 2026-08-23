@@ -268,6 +268,22 @@ class QmdTerminalTests(unittest.TestCase):
         rows = qmd.attention_rows(state)
         self.assertTrue(any("Run on workstation" in str(row.get("action")) for row in rows))
 
+    def test_laptop_historical_dependency_is_a_workstation_action(self) -> None:
+        state = representative_state()
+        state.coverage["rows"].append(
+            {
+                "coverage_kind": "historical_flatfile_events",
+                "status": "workstation_action_required",
+                "command": "python updater.py --start-date 2026-08-21",
+            }
+        )
+        rows = qmd.attention_rows(state)
+        self.assertTrue(any("Run on workstation" in str(row.get("action")) for row in rows))
+        self.assertEqual(
+            qmd.source_status({"status": "remote_ready/workstation_action_required"}),
+            "action required",
+        )
+
     def test_missing_required_recent_sessions_are_not_reported_all_clear(self) -> None:
         rows = qmd.attention_rows(representative_state())
         self.assertTrue(any(row.get("area") == "Recent live coverage" for row in rows))

@@ -1,5 +1,7 @@
 param(
     [string]$Bind = "",
+    [ValidateSet("Laptop", "Workstation")]
+    [string]$HostRole = "Laptop",
     [string]$CondaEnv = "ml4t",
     [string]$PythonExe = "",
     [string]$TerminalWatch = "AAPL,NVDA,TSLA",
@@ -76,24 +78,7 @@ if (-not (Get-Command cargo -ErrorAction SilentlyContinue)) {
 if ($Bind.Trim()) {
     $env:QMD_GATEWAY_BIND = $Bind.Trim()
 }
-
-if ($CheckOnly) {
-    if ($DebugBuild) {
-        cargo check --manifest-path $manifest
-    } else {
-        cargo check --release --manifest-path $manifest
-    }
-    exit $LASTEXITCODE
-}
-
-if ($NoTerminal) {
-    if ($DebugBuild) {
-        cargo run --manifest-path $manifest
-    } else {
-        cargo run --release --manifest-path $manifest
-    }
-    exit $LASTEXITCODE
-}
+$env:QMD_HOST_ROLE = $HostRole.ToLowerInvariant()
 
 function Resolve-CondaEnvPython {
     param(
@@ -125,7 +110,11 @@ function Resolve-QmdTerminalPython {
     }
 
     if ($env:CONDA_DEFAULT_ENV -and $env:CONDA_DEFAULT_ENV.Trim().ToLowerInvariant() -eq $CondaEnv.Trim().ToLowerInvariant()) {
-        return "python"
+        $activePython = Get-Command python -ErrorAction SilentlyContinue
+        if ($activePython -and $activePython.Source -and
+            $activePython.Source.IndexOf("\Microsoft\WindowsApps\", [StringComparison]::OrdinalIgnoreCase) -lt 0) {
+            return $activePython.Source
+        }
     }
 
     if (Get-Command conda -ErrorAction SilentlyContinue) {
@@ -135,8 +124,10 @@ function Resolve-QmdTerminalPython {
         }
     }
 
-    if (Get-Command python -ErrorAction SilentlyContinue) {
-        return "python"
+    $pythonCommand = Get-Command python -ErrorAction SilentlyContinue
+    if ($pythonCommand -and $pythonCommand.Source -and
+        $pythonCommand.Source.IndexOf("\Microsoft\WindowsApps\", [StringComparison]::OrdinalIgnoreCase) -lt 0) {
+        return $pythonCommand.Source
     }
 
     throw "python was not found. Activate the $CondaEnv environment first or pass -PythonExe <path-to-python>."
@@ -191,6 +182,52 @@ if ($resolvedRuntimeRoot.Equals($resolvedRepo, [StringComparison]::OrdinalIgnore
     throw "QMD runtime output must be outside the repository: $resolvedRuntimeRoot"
 }
 $logRoot = Join-Path $resolvedRuntimeRoot "logs"
+$historicalUpdateRuntimeRoot = Join-Path $resolvedRuntimeRoot "historical_flatfile_update"
+$env:QMD_HISTORICAL_PIPELINE_PYTHON = $python
+$env:QMD_HISTORICAL_UPDATE_RUNTIME_ROOT = $historicalUpdateRuntimeRoot
+
+if ($HostRole -eq "Workstation") {
+    $historicalAutorun = if ($env:QMD_HISTORICAL_FLATFILE_AUTORUN) {
+        $env:QMD_HISTORICAL_FLATFILE_AUTORUN.Trim().ToLowerInvariant() -notin @("0", "false", "no", "off")
+    }
+    else {
+        $true
+    }
+    if ($historicalAutorun) {
+        $historicalPipelineRoot = if ($env:QMD_HISTORICAL_PIPELINE_CODE_ROOT) {
+            $env:QMD_HISTORICAL_PIPELINE_CODE_ROOT.Trim()
+        }
+        else {
+            "D:\TradingML\codes\quant_research_workbench_pipelines"
+        }
+        $historicalUpdater = Join-Path $historicalPipelineRoot "pipelines\market_sip\flatfiles\download_update_events.py"
+        if (-not (Test-Path -LiteralPath $python -PathType Leaf)) {
+            throw "Workstation QMD historical autorun requires an exact Python executable: $python"
+        }
+        if (-not (Test-Path -LiteralPath $historicalUpdater -PathType Leaf)) {
+            throw "Workstation QMD historical autorun requires the updater script: $historicalUpdater"
+        }
+    }
+}
+
+if ($CheckOnly) {
+    if ($DebugBuild) {
+        cargo check --manifest-path $manifest
+    } else {
+        cargo check --release --manifest-path $manifest
+    }
+    exit $LASTEXITCODE
+}
+
+if ($NoTerminal) {
+    if ($DebugBuild) {
+        cargo run --manifest-path $manifest
+    } else {
+        cargo run --release --manifest-path $manifest
+    }
+    exit $LASTEXITCODE
+}
+
 New-Item -ItemType Directory -Force -Path $logRoot | Out-Null
 $runStamp = Get-Date -Format "yyyyMMdd_HHmmss"
 $stdoutLog = Join-Path $logRoot "qmd_gateway_$runStamp.out.log"
@@ -270,6 +307,7 @@ finally {
 }
 
 Write-Host "Starting qmd-gateway at $baseUrl"
+Write-Host "QMD host role: $($HostRole.ToLowerInvariant())"
 Write-Host "Gateway logs:"
 Write-Host "  stdout: $stdoutLog"
 Write-Host "  stderr: $stderrLog"

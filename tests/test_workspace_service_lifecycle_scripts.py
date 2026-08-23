@@ -82,6 +82,11 @@ def test_application_manager_composes_existing_owned_lifecycles() -> None:
     assert 'if args.action == "start"' in source
     assert "prepare_bar_gpt_release_manifest.py" in source
     assert '"-pythonexe"' in source
+    assert '"--qmd-live-host-role"' in source
+    assert 'default="laptop"' in source
+    assert '["-hostrole", qmd_live_host_role, "-terminaltarget", terminal_target]' in source
+    assert "effective host role does not match the request" in source
+    assert 'qmd_health.get("host_role", "")' in source
     assert source.index("_validate_manifest(args.release_manifest)") < source.index("stop(keep_qmd_live=true)")
     assert "qmd live is already healthy; preserving its stream" in source
     assert source.index('"stop_workspace_services.ps1"') < source.index('"stop_qmd_live_gateway.ps1"')
@@ -93,6 +98,9 @@ def test_qmd_live_has_separate_managed_start_and_stop_scripts() -> None:
 
     assert 'join-path $psscriptroot "run_qmd_gateway.ps1"' in start_source
     assert 'role = "qmd_live"' in start_source
+    assert '[validateset("laptop", "workstation")]' in start_source
+    assert '[string]$hostrole = "laptop"' in start_source
+    assert '" -hostrole "' in start_source
     assert '"-servicerole"' in start_source
     assert "startup refuses to adopt an existing port owner" in start_source
     assert '"qmd_live"' in stop_source
@@ -133,6 +141,12 @@ def test_qmd_cargo_output_is_external_and_binary_is_executed_directly() -> None:
     assert "cargo output must be outside the repository" in source
     assert r"d:\tradingml\runtimes\qmd_gateway" in live_source
     assert 'join-path $resolvedruntimeroot "logs"' in live_source
+    assert '$env:qmd_host_role = $hostrole.tolowerinvariant()' in live_source
+    assert '$env:qmd_historical_pipeline_python = $python' in live_source
+    assert '$env:qmd_historical_update_runtime_root = $historicalupdateruntimeroot' in live_source
+    assert "workstation qmd historical autorun requires an exact python executable" in live_source
+    assert "workstation qmd historical autorun requires the updater script" in live_source
+    assert live_source.index("qmd_historical_pipeline_python") < live_source.index("if ($checkonly)")
     assert 'join-path $reporoot ".tmp' not in live_source
 
 

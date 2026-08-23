@@ -553,7 +553,12 @@ def attention_rows(state: PollState) -> list[dict[str, Any]]:
     result = [dict(item) for item in rows if isinstance(item, dict)] if isinstance(rows, list) else []
     for row in coverage_rows(state):
         status = str(row.get("status") or "")
-        if "manual_action_required" in status or "needs_manual_rebuild" in status or "retention_blocked" in status:
+        if (
+            "manual_action_required" in status
+            or "workstation_action_required" in status
+            or "needs_manual_rebuild" in status
+            or "retention_blocked" in status
+        ):
             command = str(row.get("command") or "").strip()
             result.append(
                 {
@@ -661,11 +666,18 @@ def source_status(row: dict[str, Any]) -> str:
     status = str(row.get("status") or "")
     if status == "remote_ready/confirmed":
         return "confirmed"
-    if "manual_action_required" in status:
+    if "manual_action_required" in status or "workstation_action_required" in status:
         return "action required"
     if "missing" in status or "failed" in status:
         return "warning"
-    if status in {"remote_ready/not_confirmed", "remote_changed", "launched", "launch_in_progress"}:
+    if status in {
+        "remote_ready/not_confirmed",
+        "remote_changed",
+        "launched",
+        "launch_in_progress",
+        "running",
+        "completed",
+    }:
         return "waiting"
     return status or "waiting"
 
@@ -675,7 +687,7 @@ def historical_action(quote: dict[str, Any], trade: dict[str, Any]) -> str:
     command = next((str(row.get("command") or "").strip() for row in rows if row.get("command")), "")
     statuses = ", ".join(sorted({str(row.get("status") or "waiting") for row in rows}))
     host = next((str(row.get("host_role") or "") for row in rows if row.get("host_role")), "-")
-    if command and any("manual_action_required" in str(row.get("status")) for row in rows):
+    if command and any("action_required" in str(row.get("status")) for row in rows):
         return f"{host}: run {command}"
     return f"{host}: {statuses or 'waiting'}"
 
@@ -688,7 +700,7 @@ def historical_summary(state: PollState) -> tuple[str, str]:
     unconfirmed = []
     for session, sources in groups.items():
         statuses = [str(row.get("status") or "") for row in sources.values()]
-        if any("manual_action_required" in status for status in statuses):
+        if any("action_required" in status for status in statuses):
             actions.append(session)
         if not statuses or not all(status.endswith("/confirmed") for status in statuses):
             unconfirmed.append(session)

@@ -15,9 +15,13 @@ use chrono::{
 use chrono_tz::America::New_York;
 use futures_util::stream::{self, StreamExt};
 use reqwest::Client;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
-use std::process::Command;
+use std::fs::{self, File};
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+use std::thread;
 use tokio::time::{sleep, Duration};
 
 pub async fn run_startup_maintenance(
@@ -31,7 +35,7 @@ pub async fn run_startup_maintenance(
         return;
     }
     let filler = GapFillService::new(config, fanout, maintenance, live_compact_store, calendar);
-    eprintln!("QMD startup maintenance: checking recent q_live event coverage.");
+    println!("QMD startup maintenance: checking recent q_live event coverage.");
     if let Err(error) = filler.run_startup_maintenance().await {
         filler.fanout.metrics.inc_gap_fill_failure();
         filler
@@ -196,6 +200,33 @@ struct FetchEventsOutcome {
     page_limit_hit: bool,
 }
 
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct HistoricalUpdateProcessState {
+    schema_version: u32,
+    qmd_run_id: String,
+    pid: u32,
+    status: String,
+    start_date: String,
+    end_date: String,
+    started_at_utc: String,
+    finished_at_utc: Option<String>,
+    exit_code: Option<i32>,
+    stdout_log: String,
+    stderr_log: String,
+    error: String,
+}
+
+struct HistoricalUpdateLaunch {
+    newly_launched: bool,
+    state: HistoricalUpdateProcessState,
+}
+
+impl HistoricalUpdateProcessState {
+    fn is_current_request(&self, qmd_run_id: &str, start_date: &str, end_date: &str) -> bool {
+        self.qmd_run_id == qmd_run_id && self.start_date == start_date && self.end_date == end_date
+    }
+}
+
 #[derive(Clone)]
 pub struct GapFillService {
     client: Client,
@@ -293,10 +324,15 @@ impl GapFillService {
             )
             .await;
         let audit = self.audit_recent_live_events().await?;
-        eprintln!(
+        let audit_message = format!(
             "QMD startup q_live audit: rows={} tickers={} duplicate_canonical_events={}",
             audit.recent_rows, audit.ticker_count, audit.duplicate_event_rows,
         );
+        if audit.duplicate_event_rows == 0 {
+            println!("{audit_message}");
+        } else {
+            eprintln!("{audit_message}");
+        }
         let mut status = if audit.duplicate_event_rows == 0 {
             "ok"
         } else {
@@ -1628,7 +1664,11 @@ impl GapFillService {
                         let pending_request = !changed
                             && matches!(
                                 historical_status,
-                                "launched" | "launch_in_progress" | "manual_action_required"
+                                "running"
+                                    | "completed"
+                                    | "failed"
+                                    | "manual_action_required"
+                                    | "workstation_action_required"
                             );
                         if !pending_request {
                             self.record_flatfile_coverage(
@@ -1704,68 +1744,63 @@ impl GapFillService {
         let target_end = *ready_dates.last().expect("ready dates is non-empty");
         let command =
             self.historical_update_command(&start_date.to_string(), &target_end.to_string());
-        eprintln!(
-            "Historical flatfile update needed: {start_date} to {target_end}; command: {command}"
-        );
         let mut status = if snapshot.active_collection_window {
-            "waiting_for_market_close"
+            "waiting_for_market_close".to_string()
+        } else if host_role == "laptop" {
+            "workstation_action_required".to_string()
         } else {
-            "manual_action_required"
+            "manual_action_required".to_string()
         };
-        let recent_request = self.query(&format!(
-            "SELECT count() FROM {} FINAL WHERE session_date >= toDate('{}') AND session_date <= toDate('{}') AND historical_status IN ('launched', 'launch_in_progress', 'manual_action_required') AND updated_at_utc >= now() - INTERVAL 12 HOUR FORMAT TSV",
-            self.config.qmd_flatfile_coverage_table, start_date, target_end,
-        ), true).await?.trim().parse::<u64>().unwrap_or(0) > 0;
-        if host_role == "workstation"
-            && self.config.historical_flatfile_autorun
+        let mut launch_error = String::new();
+        let mut updater_state = Value::Null;
+        if self.config.permits_historical_flatfile_autorun()
             && !snapshot.active_collection_window
             && snapshot.market_closed
         {
-            if recent_request {
-                status = "launch_in_progress";
-            } else {
-                match spawn_command(&command) {
-                    Ok(()) => {
-                        status = "launched";
-                        eprintln!("Historical flatfile update launched asynchronously.");
-                    }
-                    Err(error) => {
-                        status = "launch_failed";
-                        eprintln!("Historical flatfile update launch failed: {error}");
+            match self
+                .ensure_historical_update_process(&start_date.to_string(), &target_end.to_string())
+            {
+                Ok(launch) => {
+                    status = launch.state.status.clone();
+                    updater_state = serde_json::to_value(&launch.state).unwrap_or(Value::Null);
+                    if launch.newly_launched {
+                        println!(
+                            "Historical flatfile update running for {start_date} through {target_end}; pid={} stdout={} stderr={}",
+                            launch.state.pid, launch.state.stdout_log, launch.state.stderr_log
+                        );
                     }
                 }
+                Err(error) => {
+                    status = "failed".to_string();
+                    launch_error = error;
+                    eprintln!("Historical flatfile update launch failed: {launch_error}");
+                }
             }
-        } else if recent_request && !snapshot.active_collection_window {
-            status = "manual_action_required";
         }
 
-        // Keep the original request timestamp stable so confirmation can prove
-        // that historical continuity advanced after the request.
-        if !recent_request || snapshot.active_collection_window {
-            for date in &ready_dates {
-                for kind in ["quote", "trade"] {
-                    if let Some(object) = ready_objects.get(&(*date, kind.to_string())) {
-                        self.record_flatfile_coverage(
-                            *date,
-                            kind,
-                            "remote_ready",
-                            Some(&object),
-                            latest.as_str(),
-                            status,
-                            0,
-                            &host_role,
-                            &command,
-                            "",
-                        )
-                        .await?;
-                    }
+        for date in &ready_dates {
+            for kind in ["quote", "trade"] {
+                if let Some(object) = ready_objects.get(&(*date, kind.to_string())) {
+                    self.record_flatfile_coverage(
+                        *date,
+                        kind,
+                        "remote_ready",
+                        Some(&object),
+                        latest.as_str(),
+                        &status,
+                        0,
+                        &host_role,
+                        &command,
+                        &launch_error,
+                    )
+                    .await?;
                 }
             }
         }
         self.record_coverage_run(
             started_at,
             "historical_flatfile_events",
-            status,
+            &status,
             date_start_utc(start_date),
             date_start_utc(target_end) + ChronoDuration::days(1),
             mode,
@@ -1778,6 +1813,8 @@ impl GapFillService {
                 "autorun": self.config.historical_flatfile_autorun,
                 "calendar_source": snapshot.source,
                 "calendar_reason": snapshot.reason,
+                "updater_state": updater_state,
+                "error": launch_error,
             }),
         )
         .await
@@ -2556,14 +2593,143 @@ impl GapFillService {
         }
     }
 
-    fn historical_update_command(&self, start_date: &str, end_date: &str) -> String {
-        let script = format!(
-            "{}\\pipelines\\market_sip\\flatfiles\\download_update_events.py",
-            self.config.historical_pipeline_code_root
+    fn ensure_historical_update_process(
+        &self,
+        start_date: &str,
+        end_date: &str,
+    ) -> Result<HistoricalUpdateLaunch, String> {
+        let runtime_root = PathBuf::from(&self.config.historical_update_runtime_root);
+        fs::create_dir_all(&runtime_root).map_err(|error| {
+            format!(
+                "could not create historical updater runtime root {}: {error}",
+                runtime_root.display()
+            )
+        })?;
+        let state_path = runtime_root.join("current.json");
+        if let Some(state) = read_historical_update_state(&state_path)? {
+            if state.is_current_request(&self.config.qmd_run_id, start_date, end_date)
+                && matches!(state.status.as_str(), "running" | "completed" | "failed")
+            {
+                return Ok(HistoricalUpdateLaunch {
+                    newly_launched: false,
+                    state,
+                });
+            }
+        }
+
+        let python = PathBuf::from(&self.config.historical_pipeline_python);
+        if !python.is_file() {
+            return Err(format!(
+                "configured Python executable is missing: {}",
+                python.display()
+            ));
+        }
+        let script = self.config.historical_update_script_path();
+        if !script.is_file() {
+            return Err(format!(
+                "configured historical updater script is missing: {}",
+                script.display()
+            ));
+        }
+
+        let run_token = sanitize_runtime_token(&self.config.qmd_run_id);
+        let request_token = format!(
+            "{}_{}_{}",
+            run_token,
+            start_date.replace('-', ""),
+            end_date.replace('-', "")
         );
+        let stdout_path = runtime_root.join(format!("{request_token}.out.log"));
+        let stderr_path = runtime_root.join(format!("{request_token}.err.log"));
+        let stdout = File::create(&stdout_path).map_err(|error| {
+            format!(
+                "could not create updater stdout log {}: {error}",
+                stdout_path.display()
+            )
+        })?;
+        let stderr = File::create(&stderr_path).map_err(|error| {
+            format!(
+                "could not create updater stderr log {}: {error}",
+                stderr_path.display()
+            )
+        })?;
+        let mut child = Command::new(&python)
+            .arg(&script)
+            .args([
+                "--database",
+                self.config.historical_clickhouse_database.as_str(),
+                "--events-table",
+                "events",
+                "--daily-session-bars-table",
+                self.config.historical_daily_session_bars_table.as_str(),
+                "--skip-legacy-macro-bars",
+                "--start-date",
+                start_date,
+                "--end-date",
+                end_date,
+            ])
+            .current_dir(&self.config.historical_pipeline_code_root)
+            .stdout(Stdio::from(stdout))
+            .stderr(Stdio::from(stderr))
+            .spawn()
+            .map_err(|error| format!("could not start historical updater: {error}"))?;
+
+        let mut state = HistoricalUpdateProcessState {
+            schema_version: 1,
+            qmd_run_id: self.config.qmd_run_id.clone(),
+            pid: child.id(),
+            status: "running".to_string(),
+            start_date: start_date.to_string(),
+            end_date: end_date.to_string(),
+            started_at_utc: Utc::now().to_rfc3339(),
+            finished_at_utc: None,
+            exit_code: None,
+            stdout_log: stdout_path.display().to_string(),
+            stderr_log: stderr_path.display().to_string(),
+            error: String::new(),
+        };
+        if let Err(error) = write_historical_update_state(&state_path, &state) {
+            let _ = child.kill();
+            return Err(error);
+        }
+
+        let monitor_state_path = state_path.clone();
+        thread::spawn(move || {
+            match child.wait() {
+                Ok(exit) => {
+                    state.exit_code = exit.code();
+                    if exit.success() {
+                        state.status = "completed".to_string();
+                    } else {
+                        state.status = "failed".to_string();
+                        state.error = format!("historical updater exited with status {exit}");
+                    }
+                }
+                Err(error) => {
+                    state.status = "failed".to_string();
+                    state.error = format!("historical updater wait failed: {error}");
+                }
+            }
+            state.finished_at_utc = Some(Utc::now().to_rfc3339());
+            if let Err(error) = write_historical_update_state(&monitor_state_path, &state) {
+                eprintln!("Historical updater state persistence failed: {error}");
+            }
+        });
+
+        let state = read_historical_update_state(&state_path)?
+            .ok_or("historical updater state disappeared immediately after launch")?;
+        Ok(HistoricalUpdateLaunch {
+            newly_launched: true,
+            state,
+        })
+    }
+
+    fn historical_update_command(&self, start_date: &str, end_date: &str) -> String {
+        let script = self.config.historical_update_script_path();
         format!(
-            "python {} --database {} --events-table events --daily-session-bars-table {} --skip-legacy-macro-bars --start-date {} --end-date {}",
-            shell_arg(&script),
+            "{} {} --database {} --events-table events --daily-session-bars-table {} --skip-legacy-macro-bars --start-date {} --end-date {}",
+            shell_arg(&self.config.historical_pipeline_python),
+            shell_arg(&script.display().to_string()),
             shell_arg(&self.config.historical_clickhouse_database),
             shell_arg(&self.config.historical_daily_session_bars_table),
             start_date,
@@ -2861,6 +3027,43 @@ mod tests {
         assert_eq!(materialize_confirmed_live_coverage(&rows).len(), 1);
         assert_eq!(run_suffix(&rows[0].coverage_id, "compact_"), "run-1");
     }
+
+    #[test]
+    fn historical_updater_state_round_trip_preserves_truthful_lifecycle() {
+        let root = std::env::temp_dir().join(format!(
+            "qmd_historical_update_state_{}_{}",
+            std::process::id(),
+            Utc::now().timestamp_nanos_opt().unwrap_or_default()
+        ));
+        let path = root.join("current.json");
+        let state = HistoricalUpdateProcessState {
+            schema_version: 1,
+            qmd_run_id: "qmd-test-run".to_string(),
+            pid: 42,
+            status: "running".to_string(),
+            start_date: "2026-08-20".to_string(),
+            end_date: "2026-08-21".to_string(),
+            started_at_utc: "2026-08-23T13:00:00Z".to_string(),
+            finished_at_utc: None,
+            exit_code: None,
+            stdout_log: root.join("run.out.log").display().to_string(),
+            stderr_log: root.join("run.err.log").display().to_string(),
+            error: String::new(),
+        };
+
+        write_historical_update_state(&path, &state).unwrap();
+        let restored = read_historical_update_state(&path).unwrap().unwrap();
+        assert_eq!(restored.status, "running");
+        assert!(restored.is_current_request("qmd-test-run", "2026-08-20", "2026-08-21"));
+        assert!(!restored.is_current_request("qmd-new-run", "2026-08-20", "2026-08-21"));
+
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn runtime_tokens_cannot_escape_the_runtime_directory() {
+        assert_eq!(sanitize_runtime_token("qmd/../run:1"), "qmd____run_1");
+    }
 }
 
 fn live_event_table_expr(
@@ -2953,15 +3156,68 @@ fn parse_symbol_lines(text: &str) -> Vec<String> {
         .collect()
 }
 
-fn spawn_command(command: &str) -> Result<(), String> {
-    let status = if cfg!(windows) {
-        Command::new("cmd")
-            .args(["/C", "start", "", "cmd", "/C", command])
-            .spawn()
-    } else {
-        Command::new("sh").arg("-lc").arg(command).spawn()
-    };
-    status.map(|_| ()).map_err(|error| error.to_string())
+fn read_historical_update_state(
+    path: &Path,
+) -> Result<Option<HistoricalUpdateProcessState>, String> {
+    if !path.is_file() {
+        return Ok(None);
+    }
+    let bytes = fs::read(path)
+        .map_err(|error| format!("could not read updater state {}: {error}", path.display()))?;
+    serde_json::from_slice(&bytes)
+        .map(Some)
+        .map_err(|error| format!("invalid updater state {}: {error}", path.display()))
+}
+
+fn write_historical_update_state(
+    path: &Path,
+    state: &HistoricalUpdateProcessState,
+) -> Result<(), String> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| format!("updater state path has no parent: {}", path.display()))?;
+    fs::create_dir_all(parent).map_err(|error| {
+        format!(
+            "could not create updater state directory {}: {error}",
+            parent.display()
+        )
+    })?;
+    let temporary = parent.join(format!("current.{}.tmp", state.pid));
+    let payload = serde_json::to_vec_pretty(state)
+        .map_err(|error| format!("could not serialize updater state: {error}"))?;
+    fs::write(&temporary, payload).map_err(|error| {
+        format!(
+            "could not write updater state temporary file {}: {error}",
+            temporary.display()
+        )
+    })?;
+    if path.exists() {
+        fs::remove_file(path).map_err(|error| {
+            format!(
+                "could not replace prior updater state {}: {error}",
+                path.display()
+            )
+        })?;
+    }
+    fs::rename(&temporary, path).map_err(|error| {
+        format!(
+            "could not publish updater state {}: {error}",
+            path.display()
+        )
+    })
+}
+
+fn sanitize_runtime_token(value: &str) -> String {
+    value
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || matches!(character, '-' | '_') {
+                character
+            } else {
+                '_'
+            }
+        })
+        .collect()
 }
 
 fn shell_arg(value: &str) -> String {
