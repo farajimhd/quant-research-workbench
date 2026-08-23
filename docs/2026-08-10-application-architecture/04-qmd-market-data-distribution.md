@@ -117,7 +117,7 @@ flowchart TD
 | Tier | Normal range | Authority | Purpose |
 | --- | --- | --- | --- |
 | Current | after the newest durable QMD watermark through now | `qmd-gateway` memory plus canonical Massive tail | Partial bars, newest events, lowest-latency live state |
-| Recent | current session plus configured three prior market sessions | `q_live.events` and `q_live.intraday_family_bars_v2` | Restart, warm-up, recent charts, recent repair |
+| Recent | current session plus configured three prior market sessions | `q_live.events`, `q_live.intraday_family_bars_v3`, `q_live.qmd_indicator_rows_v1`, and durable Signal Stream occurrences | Restart, warm-up, low-latency Live charts, recent repair |
 | Historical | normally complete through the archive publication watermark, often day-before-yesterday or earlier | `market_sip_compact.events_YYYY` and completed bar tables | Long-range charts, Replay, Backtest, research |
 | Scheduled closed | known weekend and 20:00-04:00 New York extended-session closure | QMD market-calendar rule | Covered-empty continuity without a database or live query |
 

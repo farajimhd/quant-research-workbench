@@ -146,8 +146,10 @@ Environment variables:
 - `QMD_MARKET_HOLIDAYS_URL`, default Massive `/v1/marketstatus/upcoming`
 - `QMD_FLATFILE_ENDPOINT_URL`, `QMD_FLATFILE_BUCKET`, and `QMD_FLATFILE_REGION`
 - `QMD_INTRADAY_BAR_CHANNEL_CAPACITY`, default `250000`
+- `QMD_INTRADAY_BAR_BOOTSTRAP_ON_START`, default `false`; one-time operator opt-in for an empty v3 table
+- `QMD_INTRADAY_BAR_BOOTSTRAP_SYMBOL_BATCH`, default `128`; bounded ticker count per restart-safe migration batch
 - `QMD_INTRADAY_BAR_SHARD_COUNT`, default `8`
-- `QMD_INTRADAY_BAR_TABLE`, default `intraday_family_bars_v2`
+- `QMD_INTRADAY_BAR_TABLE`, default `intraday_family_bars_v3`
 - `QMD_INTRADAY_BAR_TIMEFRAMES`, default `100ms,1s,5s,10s,30s,1m,5m,1h`
 - `QMD_INDICATOR_CHANNEL_CAPACITY`, default `250000`
 - `QMD_INDICATOR_BAR_CHANNEL_CAPACITY`, default `250000`
@@ -155,7 +157,8 @@ Environment variables:
 - `QMD_INDICATOR_HISTORY_BY_TIMEFRAME`, default `1s:900,10s:360,30s:480,1m:960,5m:192,1h:32`
 - `QMD_INDICATOR_SHARD_COUNT`, default `8`
 - `QMD_TICK_INDICATOR_WINDOW_SECONDS`, default `300`
-- `QMD_PERSIST_INDICATORS`, default `false`
+- `QMD_INDICATOR_TABLE`, default `qmd_indicator_rows_v1`
+- `QMD_PERSIST_INDICATORS`, default `true`
 - `QMD_PERSIST_STRUCTURE_EVENTS`, default `true`; persists causal generic-structure events and the full versioned engine checkpoint even when full bar-indicator persistence is disabled
 - `QMD_SCANNER_PRIMITIVE_CHANNEL_CAPACITY`, default `250000`
 - `QMD_SCANNER_PRIMITIVE_HISTORY_LIMIT`, default `10000`
@@ -165,8 +168,9 @@ The service writes to:
 - `events`
 - `live_massive_trades`, only when `QMD_PERSIST_RAW_EVENTS=true`
 - `live_massive_quotes`, only when `QMD_PERSIST_RAW_EVENTS=true`
-- `intraday_family_bars_v2`
-- `live_market_indicators`, only when `QMD_PERSIST_INDICATORS=true`
+- `intraday_family_bars_v3`
+- `qmd_intraday_bar_bootstrap_v1`, only as the restart checkpoint for an explicit bar migration
+- `qmd_indicator_rows_v1`, when `QMD_PERSIST_INDICATORS=true`
 - `qmd_structure_events_v2`, when `QMD_PERSIST_STRUCTURE_EVENTS=true`; immutable immediate-level and timeframe-local swing, crossing, acceptance, BoS/CHoCH, retest, and role-reversal events with exact trade pivots and volume evidence
 - `qmd_structure_state_v2`, when `QMD_PERSIST_STRUCTURE_EVENTS=true`; latest compact restart-safe immediate level books, independent timeframe-local swing states, and session footprints, coalesced once per changed symbol per writer flush
 - `qmd_gap_fill_runs`
@@ -228,7 +232,7 @@ The QMD maintenance source of truth for historical event availability is
 QMD owns its own coverage checks, recent REST repair, historical flatfile
 planning, and retention cleanup. It intentionally does not copy historical rows
 directly into `q_live`. Recent `q_live` event gaps must be repaired through the
-QMD replay/fanout path so `events` and `intraday_family_bars_v2` remain consistent.
+QMD replay/fanout path so `events` and `intraday_family_bars_v3` remain consistent.
 
 During active streaming hours, recent q_live REST repair starts from symbols
 kept in the durable gap-fill symbol universe. If the universe is empty, QMD
@@ -243,9 +247,11 @@ active instead of waiting for the normal after-hours interval.
 
 ## Live Bars
 
-`q_live.intraday_family_bars_v2` is the durable live three-family bar table and is always
+`q_live.intraday_family_bars_v3` is the durable live three-family bar table and is always
 enabled. It consumes the same sanitized compact events written to
-`q_live.events`. Every valid event contributes to a sparse long-form `trade`,
+`q_live.events`. Trade rows use the same condition-aware `TradeAggregationRules`
+as QMD's in-memory bars; price, high/low, and volume eligibility remain distinct.
+Every eligible event contributes to a sparse long-form `trade`,
 `quote_bid`, or `quote_ask` family row; QMD does not fabricate empty family rows.
 The base bars are aligned to the 04:00-20:00 America/New_York session grid at
 `100ms`. Closed base bars incrementally roll up to `1s`, `5s`, `10s`, `30s`,
@@ -261,9 +267,16 @@ an already closed bucket, QMD does not append a partial replacement: it rebuilds
 that 100ms bucket from `q_live.events FINAL` and then rebuilds each affected parent
 from the corrected base bars.
 
-At first startup, QMD creates and validates `intraday_family_bars_v2`. If the table is
-empty while rolling compact events already exist, it bootstraps 100ms rows from
-those events and derives the higher resolutions from the base rows. Only after
+At first startup, QMD creates and validates `intraday_family_bars_v3`. Normal
+startup never blocks on a historical rebuild. For a one-time empty-table migration,
+stop QMD Live and run `scripts\start_qmd_live_gateway.ps1 -BootstrapBars`; the
+gateway groups retained events into bounded date/ticker batches, checkpoints
+each exact ticker-set fingerprint, builds 100ms rows, and derives higher
+resolutions before becoming healthy. Bootstrap is limited to the newest
+configured Live session window even if archive-verification has temporarily
+blocked deletion of older event partitions. A failed run resumes completed batches;
+keep `QMD_INTRADAY_BAR_BOOTSTRAP_SYMBOL_BATCH` at its default throughout one
+migration. Only after
 the new table passes readiness validation does QMD drop the obsolete
 `live_market_bars`, `bars_by_symbol_time`, `bars_by_time_symbol`, and
 `live_model_microbars` tables. No active Rust or Python writer recreates them.
@@ -282,6 +295,15 @@ future quote matching are currently recorded as close/VWAP or spread proxies,
 so the schema is stable while delayed post-trade refinement can be added later.
 
 ## Live Indicators And Signals
+
+Closed scoped indicator rows are persisted by default in
+`q_live.qmd_indicator_rows_v1` with calculation/source revisions and a complete
+flag. `/snapshot/persisted-indicators/{ticker}` is the bounded fast-read surface
+for Live chart hydration; `/snapshot/indicators/{ticker}` and the websocket remain
+the advancing in-memory tail. Signal Stream occurrences are already durable in
+their configured table. Events, v3 bars, indicator rows, and signal occurrences
+share the configured recent-session retention boundary and are deleted only
+after the historical event handoff is verified.
 
 Indicators are also built as streaming state, not by rescanning stored rows.
 The indicator layer has its own ticker-hash shards and receives two inputs:
@@ -579,7 +601,7 @@ On trading days, historical coverage is required only through T-2 because the
 current session and T-1 remain authoritative in `q_live.events`.
 
 Retention keeps the current session plus three prior market sessions in the
-daily-partitioned `q_live.events` and `q_live.intraday_family_bars_v2` tables. Deletion occurs only after
+daily-partitioned `q_live.events` and `q_live.intraday_family_bars_v3` tables, plus scoped indicator and signal rows. Deletion occurs only after
 confirmed quote/trade handoff row totals exactly match the archive count and
 schema. Verified sessions are deleted independently; an unverified date records
 `retention_blocked_historical_gap` without blocking cleanup of other dates.
@@ -587,13 +609,12 @@ Legacy `q_live.events_YYYY` tables are no longer read or written. They are left
 untouched for the production cutover audit and may be dropped only after the
 singular table's repaired rolling coverage has been verified.
 
-For a bounded correction of bars affected by older physical replay versions,
-stop QMD Live and run `python scripts/repair_qmd_live_canonical_bars.py
---start-date YYYY-MM-DD --end-date YYYY-MM-DD` to create an external plan. Add
-`--execute` only after reviewing the manifest. The tool rebuilds only affected
-ticker/date ranges and configured rollups from canonical events, validates all
-expected 100 ms buckets, and writes evidence under
-`D:\TradingML\runtimes\qmd_gateway\canonical_bar_repair`.
+Version 3 repairs late or replayed events inside the Rust bar authority from
+`q_live.events FINAL`. `python scripts/repair_qmd_live_canonical_bars.py
+--start-date YYYY-MM-DD --end-date YYYY-MM-DD` is now an audit-only duplicate
+manifest under `D:\TradingML\runtimes\qmd_gateway\canonical_bar_repair`;
+`--execute` fails closed so the old parallel SQL writer cannot corrupt v3.
+Use the managed `-BootstrapBars` migration only for a reviewed full-window rebuild.
 
 Canonical intraday bars stream from `/stream/intraday-bars`. They are part of
 the required QMD persistence contract and do not depend on model readiness or
@@ -633,7 +654,7 @@ flatfile autorun is workstation-only and must be selected explicitly:
 
 This is the command for both first startup and continuation. On the first
 startup after this cutover, QMD creates, validates, and when necessary
-bootstraps `q_live.intraday_family_bars_v2` from rolling `q_live.events`; it then drops
+bootstraps `q_live.intraday_family_bars_v3` from rolling `q_live.events`; it then drops
 the four obsolete bar tables. A later restart detects the populated canonical
 table and continues without rebuilding it. `-CheckOnly` validates launcher
 configuration but does not perform the database migration.

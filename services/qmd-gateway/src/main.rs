@@ -206,13 +206,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         broadcast::channel::<ScannerRowDelta>(10_000);
     let (live_market_state_sender, _live_market_state_receiver) =
         broadcast::channel::<LiveSymbolMarketStateEvent>(10_000);
-    let intraday_bar_service = spawn_intraday_bar_service(config.clone(), metrics.clone())
-        .await
-        .map_err(|error| {
-            startup_error(format!(
-                "qmd-gateway canonical intraday bar preflight failed: {error}"
-            ))
-        })?;
+    let intraday_bar_service = spawn_intraday_bar_service(
+        config.clone(),
+        metrics.clone(),
+        compact_event_decoder.clone(),
+        trade_aggregation_rules.clone(),
+    )
+    .await
+    .map_err(|error| {
+        startup_error(format!(
+            "qmd-gateway canonical intraday bar preflight failed: {error}"
+        ))
+    })?;
 
     let mut writer_handles = Vec::new();
     if config.persist_raw_events {

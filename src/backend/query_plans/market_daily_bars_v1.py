@@ -110,7 +110,7 @@ def live_intraday_previous_close_projection(
     *,
     database: str,
     before_date: date,
-    table: str = "intraday_family_bars_v2",
+    table: str = "intraday_family_bars_v3",
 ) -> str:
     """Project the latest durable 1-minute trade close before a live session."""
 
@@ -126,6 +126,9 @@ def live_intraday_previous_close_projection(
           AND local_date < toDate({sql_string(before_date.isoformat())})
           AND label_resolution_us = 60000000
           AND bar_family = 'trade'
+          AND schema_version = 3
+          AND calculation_revision = 'qmd-family-bars-v3'
+          AND complete = 1
         GROUP BY ticker
         FORMAT JSONEachRow
     """

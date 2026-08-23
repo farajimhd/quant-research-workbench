@@ -95,6 +95,7 @@ struct ChartQuery {
     include_market_signals: Option<bool>,
     include_structure: Option<bool>,
     limit: Option<usize>,
+    mode: Option<String>,
     start: String,
     stage: Option<String>,
     timeframe: Option<String>,
@@ -806,7 +807,8 @@ async fn chart_bar_snapshot(
     let before = query.before.as_deref().map(parse_timestamp).transpose()?;
     let indicator_columns = parse_indicator_projection(query.indicator_columns.as_deref())?;
     let bars_only = parse_chart_stage(query.stage.as_deref())?;
-    if bars_only && query.allow_persisted_bars.unwrap_or(true) {
+    let mode = parse_chart_mode(query.mode.as_deref())?;
+    if bars_only && mode == "live" && query.allow_persisted_bars.unwrap_or(true) {
         if let Some(persisted) = state
             .source
             .persisted_intraday_chart_bars(
@@ -915,6 +917,15 @@ fn parse_chart_stage(raw: Option<&str>) -> Result<bool, ApiError> {
         "full" => Ok(false),
         value => Err(bad_request(format!(
             "invalid chart stage {value}; expected bars or full"
+        ))),
+    }
+}
+
+fn parse_chart_mode(raw: Option<&str>) -> Result<&str, ApiError> {
+    match raw.unwrap_or("live") {
+        value @ ("live" | "replay" | "backtest" | "debug") => Ok(value),
+        value => Err(bad_request(format!(
+            "invalid chart mode {value}; expected live, replay, backtest, or debug"
         ))),
     }
 }
@@ -1928,7 +1939,7 @@ fn event_revision_changed(
 mod tests {
     use super::{
         causal_product_window, event_revision_changed, expected_event_revision, is_loopback_bind,
-        parse_chart_stage, parse_indicator_projection, parse_timestamp, product_resolution,
+        parse_chart_mode, parse_chart_stage, parse_indicator_projection, parse_timestamp, product_resolution,
         stream_gap_frame, validate_timeframe, watchlist_materialization_error, EventRevisionPolicy,
         ProductQuery,
     };
@@ -2087,6 +2098,15 @@ mod tests {
         assert!(parse_chart_stage(Some("bars")).unwrap());
         assert!(!parse_chart_stage(Some("full")).unwrap());
         assert!(parse_chart_stage(Some("indicators")).is_err());
+    }
+
+    #[test]
+    fn chart_mode_defaults_to_live_and_rejects_unknown_values() {
+        assert_eq!(parse_chart_mode(None).unwrap(), "live");
+        for mode in ["live", "replay", "backtest", "debug"] {
+            assert_eq!(parse_chart_mode(Some(mode)).unwrap(), mode);
+        }
+        assert!(parse_chart_mode(Some("historical")).is_err());
     }
 
     #[test]

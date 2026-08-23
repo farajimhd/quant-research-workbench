@@ -23,6 +23,7 @@ from src.backend.qmd_gateway_client import (
     qmd_history_websocket_url as historical_gateway_websocket_url,
     qmd_product_request,
     qmd_intraday_bar_history,
+    qmd_persisted_indicators,
 )
 from src.data_provider.calendar import market_sessions
 from src.trading_runtime.journal import TradingJournal
@@ -1042,6 +1043,34 @@ def _recent_live_bar_history(
     if not bars and session_date != today:
         return None
     bars.sort(key=_bar_start_sort_key)
+    indicators: list[dict[str, Any]] = []
+    indicator_provenance: dict[str, Any] = {}
+    if stage == "full":
+        try:
+            indicator_payload = qmd_persisted_indicators(
+                ticker,
+                timeframe=timeframe,
+                start_date=session_date.isoformat(),
+                end_date=session_date.isoformat(),
+                row_limit=row_limit,
+            )
+        except QmdServiceError:
+            return None
+        indicators = [
+            dict(row)
+            for row in indicator_payload.get("history") or []
+            if isinstance(row, dict)
+        ]
+        bar_times = {str(row.get("bar_start") or "") for row in bars}
+        indicator_times = {str(row.get("bar_start") or "") for row in indicators}
+        if bars and (not indicators or not bar_times.issubset(indicator_times)):
+            return None
+        indicators.sort(key=_bar_start_sort_key)
+        indicator_provenance = {
+            "source": indicator_payload.get("source"),
+            "calculation_revision": indicator_payload.get("calculation_revision"),
+            "complete": bool(indicator_payload.get("complete")),
+        }
     has_more_in_session = bool(payload.get("has_more"))
     # Do not block the fast q_live page on a second authority. The cursor is a
     # lazy handoff token: only a subsequent "load earlier" action asks QMD
@@ -1051,19 +1080,19 @@ def _recent_live_bar_history(
         "ticker": ticker,
         "timeframe": timeframe,
         "history": bars,
-        "indicators": [],
+        "indicators": indicators,
         "market_signal_events": [],
         "structure_events": [],
         "structure_level_history": [],
-        "indicator_provenance": {},
-        "indicators_available": False,
+        "indicator_provenance": indicator_provenance,
+        "indicators_available": bool(indicators),
         "earliest_session_date": session_date.isoformat() if bars else "",
         "has_more": has_more_in_session or bool(previous_session_before),
         "has_more_in_session": has_more_in_session,
         "next_before": str(bars[0].get("bar_start") or "") if has_more_in_session and bars else "",
         "previous_session_before": previous_session_before,
         "as_of": as_of or datetime.now(tz=ZoneInfo("UTC")).isoformat(),
-        "source": "qmd_live_intraday_family_bars_v2",
+        "source": str(payload.get("source") or "qmd_live_intraday_family_bars_v3"),
         "stage": stage,
         "authority": "live",
     }
@@ -1083,11 +1112,14 @@ def historical_bar_history_before(
     include_market_signals: bool = True,
     include_structure: bool = True,
     stage: str = "full",
+    mode: str = "live",
 ) -> dict[str, Any]:
     resolved_ticker = _historical_ticker(ticker)
     resolved_timeframe = _historical_timeframe(timeframe)
     if stage not in {"bars", "full"}:
         raise ValueError("chart stage must be bars or full")
+    if mode not in {"live", "replay", "backtest", "debug"}:
+        raise ValueError("chart mode must be live, replay, backtest, or debug")
     if resolved_timeframe in MACRO_CHART_TIMEFRAMES:
         return historical_macro_bar_history(
             ticker=resolved_ticker,
@@ -1098,10 +1130,10 @@ def historical_bar_history_before(
             row_limit=row_limit,
         )
     requested_session = session_date or before
-    # Recent durable bars are the fast first-paint authority.  The full stage
-    # still goes through QMD History so requested indicators and structure are
-    # calculated from the exact causal event window in the background.
-    if allow_persisted_bars and stage == "bars" and _can_use_recent_live_chart_session(requested_session, as_of):
+    # Recent durable bars are the fast first-paint authority. In Live mode the
+    # full stage can also use matching revisioned indicator rows; absent rows
+    # fail back to causal QMD History instead of presenting partial indicators.
+    if mode == "live" and allow_persisted_bars and _can_use_recent_live_chart_session(requested_session, as_of):
         live_payload = _recent_live_bar_history(
             ticker=resolved_ticker,
             timeframe=resolved_timeframe,
@@ -1191,6 +1223,7 @@ def historical_bar_history_before(
         QmdProductRequest(
             "chart",
             authority="history",
+            mode=mode,
             ticker=resolved_ticker,
             timeframe=resolved_timeframe,
             start=page_start.isoformat(),

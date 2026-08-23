@@ -470,7 +470,7 @@ def _halt_occurrence_bar_context(
     return {
         "last_price": latest_price,
         "change_5m_pct": change_5m_pct,
-        "source": "qmd_live_intraday_family_bars_v2",
+        "source": "qmd_live_intraday_family_bars_v3",
     }
 
 

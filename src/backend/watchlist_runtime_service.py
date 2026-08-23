@@ -1327,7 +1327,7 @@ def _load_market_reference_projection(cutoff: datetime) -> dict[str, dict[str, A
     daily_rows = client.execute(daily_query)
     live_database = os.environ.get("QMD_CLICKHOUSE_DATABASE", "q_live").strip()
     live_table = os.environ.get(
-        "QMD_INTRADAY_BAR_TABLE", "intraday_family_bars_v2"
+        "QMD_INTRADAY_BAR_TABLE", "intraday_family_bars_v3"
     ).strip()
     intraday_rows = client.execute(
         live_intraday_previous_close_projection(
@@ -1364,7 +1364,7 @@ def _load_market_reference_projection(cutoff: datetime) -> dict[str, dict[str, A
                 {
                     "previous_close": row.get("previous_close"),
                     "previous_session_date": session_date,
-                    "previous_close_source": "qmd_live_intraday_family_bars_v2",
+                    "previous_close_source": "qmd_live_intraday_family_bars_v3",
                     "reference_available_at": cutoff.isoformat(),
                 }
             )

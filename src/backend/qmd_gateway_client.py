@@ -31,12 +31,14 @@ MACRO_QMD_TIMEFRAMES = frozenset({"1d", "1w", "1mo", "1y"})
 
 QmdProduct = Literal["chart", "compact_events", "scanner"]
 QmdAuthority = Literal["auto", "live", "history"]
+QmdMode = Literal["live", "replay", "backtest", "debug"]
 
 
 @dataclass(frozen=True, slots=True)
 class QmdProductRequest:
     product: QmdProduct
     authority: QmdAuthority = "auto"
+    mode: QmdMode = "live"
     ticker: str = ""
     timeframe: str = ""
     start: str | None = None
@@ -394,6 +396,8 @@ def _qmd_product_route(
         raise ValueError(f"unsupported QMD product: {request.product}")
     if request.stage not in {"bars", "full"}:
         raise ValueError("QMD chart stage must be bars or full")
+    if request.mode not in {"live", "replay", "backtest", "debug"}:
+        raise ValueError("QMD mode must be live, replay, backtest, or debug")
     limit = max(1, min(int(request.limit), 50_000))
     has_window = bool(request.start or request.end or request.as_of)
     authority: Literal["live", "history"] = (
@@ -465,6 +469,7 @@ def _qmd_product_route(
         "allow_persisted_bars": str(request.allow_persisted_bars).lower(),
         "include_market_signals": str(request.include_market_signals).lower(),
         "include_structure": str(request.include_structure).lower(),
+        "mode": request.mode,
         "stage": request.stage,
         "timeframe": timeframe,
         "limit": limit,
@@ -1474,6 +1479,34 @@ def qmd_intraday_bar_history(
     )
     if not isinstance(payload, dict):
         raise RuntimeError("QMD Live intraday bar history returned an invalid envelope")
+    return payload
+
+
+def qmd_persisted_indicators(
+    symbol: str,
+    *,
+    timeframe: str,
+    start_date: str,
+    end_date: str,
+    row_limit: int = 20_000,
+) -> dict[str, Any]:
+    """Read certified recent closed-bar indicators without activating computation."""
+
+    ticker = symbol.strip().upper()
+    if not ticker:
+        raise ValueError("symbol is required for persisted QMD indicators.")
+    payload = qmd_get_json(
+        f"/snapshot/persisted-indicators/{urllib.parse.quote(ticker)}",
+        {
+            "timeframe": timeframe,
+            "start_date": start_date,
+            "end_date": end_date,
+            "limit": max(1, min(int(row_limit), 50_000)),
+        },
+        timeout=15,
+    )
+    if not isinstance(payload, dict):
+        raise RuntimeError("QMD Live persisted indicators returned an invalid envelope")
     return payload
 
 

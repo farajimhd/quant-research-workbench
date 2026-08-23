@@ -25,6 +25,7 @@ use tokio::time::{interval, sleep, Duration, MissedTickBehavior};
 const STRUCTURE_CHECKPOINT_BATCH_LIMIT: usize = 256;
 
 pub const INDICATOR_SCHEMA_VERSION: u16 = 19;
+pub const INDICATOR_CALCULATION_REVISION: &str = "qmd-indicators-v19";
 const MICROSTRUCTURE_AGGREGATE_TIMEFRAMES: [&str; 7] = ["1s", "5s", "10s", "30s", "1m", "5m", "1h"];
 const INDICATOR_STATE_RECLAIM_INTERVAL_SECONDS: u64 = 30;
 const PREMARKET_SESSION_START_SECONDS: u32 = 4 * 60 * 60;
@@ -2318,6 +2319,15 @@ impl IndicatorClickHouseWriter {
     }
 
     pub async fn initialize(&self) -> Result<(), String> {
+        if self.config.indicator_table.is_empty()
+            || !self
+                .config
+                .indicator_table
+                .chars()
+                .all(|character| character.is_ascii_alphanumeric() || character == '_')
+        {
+            return Err("QMD_INDICATOR_TABLE must be a ClickHouse identifier".to_string());
+        }
         self.execute(
             &format!(
                 "CREATE DATABASE IF NOT EXISTS `{}`",
@@ -2327,8 +2337,9 @@ impl IndicatorClickHouseWriter {
         )
         .await?;
         self.execute(
-            r#"
-            CREATE TABLE IF NOT EXISTS live_market_indicators
+            &format!(
+                r#"
+            CREATE TABLE IF NOT EXISTS {table}
             (
                 session_date Date,
                 schema_version UInt16,
@@ -2421,22 +2432,39 @@ impl IndicatorClickHouseWriter {
                 structure_52_week_low Float64,
                 structure_prior_month_high Float64,
                 structure_prior_month_low Float64,
-                structure_prior_month_close Float64
+                structure_prior_month_close Float64,
+                calculation_revision LowCardinality(String),
+                source_revision String,
+                complete UInt8,
+                updated_at_utc DateTime64(3, 'UTC')
             )
-            ENGINE = ReplacingMergeTree
+            ENGINE = ReplacingMergeTree(updated_at_utc)
             PARTITION BY session_date
             ORDER BY (session_date, timeframe, sym, bar_start)
             "#,
+                table = self.config.indicator_table
+            ),
             true,
         )
         .await?;
         self.execute(
-            "ALTER TABLE live_market_indicators ADD COLUMN IF NOT EXISTS schema_version UInt16 AFTER session_date",
+            &format!(
+                "ALTER TABLE {} ADD COLUMN IF NOT EXISTS schema_version UInt16 AFTER session_date",
+                self.config.indicator_table
+            ),
             true,
         )
         .await?;
         self.execute(
-            r#"ALTER TABLE live_market_indicators
+            &format!(
+                "ALTER TABLE {} ADD COLUMN IF NOT EXISTS calculation_revision LowCardinality(String), ADD COLUMN IF NOT EXISTS source_revision String, ADD COLUMN IF NOT EXISTS complete UInt8, ADD COLUMN IF NOT EXISTS updated_at_utc DateTime64(3, 'UTC') DEFAULT now64(3)",
+                self.config.indicator_table
+            ),
+            true,
+        )
+        .await?;
+        self.execute(
+            &r#"ALTER TABLE live_market_indicators
                 ADD COLUMN IF NOT EXISTS microstructure_unified_signal Float64,
                 ADD COLUMN IF NOT EXISTS microstructure_unified_confidence Float64,
                 ADD COLUMN IF NOT EXISTS microstructure_unified_action LowCardinality(String),
@@ -2501,12 +2529,12 @@ impl IndicatorClickHouseWriter {
                 ADD COLUMN IF NOT EXISTS structure_52_week_low Float64,
                 ADD COLUMN IF NOT EXISTS structure_prior_month_high Float64,
                 ADD COLUMN IF NOT EXISTS structure_prior_month_low Float64,
-                ADD COLUMN IF NOT EXISTS structure_prior_month_close Float64"#,
+                ADD COLUMN IF NOT EXISTS structure_prior_month_close Float64"#.replace("live_market_indicators", &self.config.indicator_table),
             true,
         )
         .await?;
         self.execute(
-            r#"ALTER TABLE live_market_indicators
+            &r#"ALTER TABLE live_market_indicators
                 ADD COLUMN IF NOT EXISTS qmd_structure_algorithm_version UInt16,
                 ADD COLUMN IF NOT EXISTS qmd_structure_reference_price Float64,
                 ADD COLUMN IF NOT EXISTS qmd_structure_direction Int8,
@@ -2593,7 +2621,8 @@ impl IndicatorClickHouseWriter {
                 ADD COLUMN IF NOT EXISTS qmd_structure_developing_high Float64,
                 ADD COLUMN IF NOT EXISTS qmd_structure_developing_low Float64,
                 ADD COLUMN IF NOT EXISTS qmd_structure_developing_direction Int8,
-                ADD COLUMN IF NOT EXISTS qmd_structure_event_timeframe LowCardinality(String)"#,
+                ADD COLUMN IF NOT EXISTS qmd_structure_event_timeframe LowCardinality(String)"#
+                .replace("live_market_indicators", &self.config.indicator_table),
             true,
         )
         .await?;
@@ -3039,16 +3068,32 @@ impl IndicatorClickHouseWriter {
     }
 
     async fn insert_indicators(&self, rows: &[IndicatorRow]) -> Result<(), String> {
+        let updated_at = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
         let body = rows
             .iter()
             .map(|row| {
-                serde_json::to_string(&indicator_insert_row(row))
-                    .unwrap_or_else(|_| "{}".to_string())
+                let mut value = indicator_insert_row(row);
+                if let Some(object) = value.as_object_mut() {
+                    object.insert(
+                        "calculation_revision".to_string(),
+                        json!(INDICATOR_CALCULATION_REVISION),
+                    );
+                    object.insert(
+                        "source_revision".to_string(),
+                        json!(self.config.qmd_run_id.as_str()),
+                    );
+                    object.insert("complete".to_string(), json!(1u8));
+                    object.insert("updated_at_utc".to_string(), json!(updated_at.as_str()));
+                }
+                serde_json::to_string(&value).unwrap_or_else(|_| "{}".to_string())
             })
             .collect::<Vec<_>>()
             .join("\n");
         self.query_with_body(
-            "INSERT INTO live_market_indicators FORMAT JSONEachRow",
+            &format!(
+                "INSERT INTO {} FORMAT JSONEachRow",
+                self.config.indicator_table
+            ),
             body,
         )
         .await

@@ -148,7 +148,7 @@ export function useCanvasHistoricalChart(symbol: string, timeframe: CanvasChartT
 
     const fetchHistoricalPage = () => {
       historyRequestRef.current = true;
-      const requestParams = { allow_persisted_bars: liveTail, as_of: new Date(cutoffMs).toISOString(), include_market_signals: auxiliaryProjection.includeMarketSignals, include_structure: auxiliaryProjection.includeStructure, row_limit: chartInitialPageSize(timeframe), session_date: sessionDate, symbol: ticker, timeframe };
+      const requestParams = { allow_persisted_bars: liveTail, as_of: new Date(cutoffMs).toISOString(), include_market_signals: auxiliaryProjection.includeMarketSignals, include_structure: auxiliaryProjection.includeStructure, mode: liveTail ? "live" : "replay", row_limit: chartInitialPageSize(timeframe), session_date: sessionDate, symbol: ticker, timeframe };
       const progressive = ENRICHED_QMD_TIMEFRAMES.has(timeframe);
       const barsRequest = progressive
         ? api<QmdBarHistory>(`/api/trading/canvas-chart/history${query({ ...requestParams, row_limit: chartInitialPageSize(timeframe), stage: "bars" })}`, { signal: historyController.signal, timeoutMs: 120000 })
@@ -156,10 +156,39 @@ export function useCanvasHistoricalChart(symbol: string, timeframe: CanvasChartT
       // Start the authoritative indicator waiter against the same QMD History
       // cache entry immediately. The accurate bar phase can paint first while
       // indicator completion continues without a second serial round trip.
-      const fullRequest = progressive && !liveTail
+      const fullRequest = progressive
         ? api<QmdBarHistory>(`/api/trading/canvas-chart/history${query({ ...requestParams, indicator_columns: indicatorColumns, stage: "full" })}`, { signal: historyController.signal, timeoutMs: 120000 })
         : null;
       void fullRequest?.catch(() => undefined);
+      // Live bars and closed indicators come from the recent materializations.
+      // Signal/structure history remains causal QMD History work and advances
+      // independently so it cannot delay the chart or indicator first paint.
+      const auxiliaryRequest = progressive && liveTail && (auxiliaryProjection.includeMarketSignals || auxiliaryProjection.includeStructure)
+        ? api<QmdBarHistory>(`/api/trading/canvas-chart/history${query({ ...requestParams, allow_persisted_bars: false, mode: "replay", indicator_columns: indicatorColumns, stage: "full" })}`, { signal: historyController.signal, timeoutMs: 120000 })
+        : null;
+      void auxiliaryRequest
+        ?.then((payload) => {
+          if (!active || requestKeyRef.current !== requestKey) return;
+          const aligned = alignHistoricalChartRows(
+            closedRowsAtCutoff(payload.history, timeframe, cutoffMs),
+            closedRowsAtCutoff(payload.indicators, timeframe, cutoffMs),
+            payload.indicators_available,
+          );
+          setState((current) => {
+            const merged = mergeHistoricalChartPage(current.bars, current.indicators, aligned.bars, aligned.indicators, rowBudget);
+            return {
+              ...current,
+              bars: merged.bars,
+              indicators: merged.indicators,
+              indicatorsAvailable: payload.indicators_available,
+              indicatorProvenance: payload.indicator_provenance ?? current.indicatorProvenance,
+              marketSignalEvents: mergeMarketSignalEvents(current.marketSignalEvents, payload.market_signal_events),
+              structureEvents: mergeStructureEvents(current.structureEvents, payload.structure_events),
+              structureLevelHistory: mergeStructureLevelHistory(current.structureLevelHistory, payload.structure_level_history),
+            };
+          });
+        })
+        .catch(() => undefined);
       barsRequest
         .then((payload) => {
           if (!active || requestKeyRef.current !== requestKey) return;
@@ -188,7 +217,7 @@ export function useCanvasHistoricalChart(symbol: string, timeframe: CanvasChartT
               loading: false,
             };
           });
-          if (!progressive || liveTail) {
+          if (!progressive) {
             return null;
           }
           return fullRequest;
@@ -250,7 +279,7 @@ export function useCanvasHistoricalChart(symbol: string, timeframe: CanvasChartT
     const replacingRewind = cutoffMs < loadedCutoffRef.current;
     loadedCutoffRef.current = cutoffMs;
     const controller = new AbortController();
-    api<QmdBarHistory>(`/api/trading/canvas-chart/history${query({ as_of: new Date(cutoffMs).toISOString(), include_market_signals: auxiliaryProjection.includeMarketSignals, include_structure: auxiliaryProjection.includeStructure, indicator_columns: indicatorColumns, row_limit: chartInitialPageSize(timeframe), session_date: sessionDate, symbol: ticker, timeframe })}`, {
+    api<QmdBarHistory>(`/api/trading/canvas-chart/history${query({ as_of: new Date(cutoffMs).toISOString(), include_market_signals: auxiliaryProjection.includeMarketSignals, include_structure: auxiliaryProjection.includeStructure, indicator_columns: indicatorColumns, mode: "replay", row_limit: chartInitialPageSize(timeframe), session_date: sessionDate, symbol: ticker, timeframe })}`, {
       signal: controller.signal,
       timeoutMs: 120000,
     })
@@ -595,8 +624,8 @@ export function earlierChartHistoryRequest(
 ): { key: string; params: Record<string, string | number | undefined> } | null {
   if (!cursor || (!cursor.nextBefore && !cursor.previousSessionBefore)) return null;
   const params = cursor.nextBefore
-    ? { as_of: cursor.asOf, before_bar: cursor.nextBefore, indicator_columns: indicatorColumns, row_limit: chartPageSize(timeframe), session_date: cursor.sessionDate, symbol: ticker, timeframe }
-    : { before: cursor.previousSessionBefore, indicator_columns: indicatorColumns, row_limit: chartPageSize(timeframe), symbol: ticker, timeframe };
+    ? { as_of: cursor.asOf, before_bar: cursor.nextBefore, indicator_columns: indicatorColumns, mode: "replay", row_limit: chartPageSize(timeframe), session_date: cursor.sessionDate, symbol: ticker, timeframe }
+    : { before: cursor.previousSessionBefore, indicator_columns: indicatorColumns, mode: "replay", row_limit: chartPageSize(timeframe), symbol: ticker, timeframe };
   return {
     key: [ticker, timeframe, indicatorColumns, cursor.asOf, cursor.sessionDate, cursor.nextBefore, cursor.previousSessionBefore].join("|"),
     params,

@@ -474,6 +474,7 @@ class HistoricalContractTests(unittest.TestCase):
         self.assertEqual(params["allow_persisted_bars"], "true")
         self.assertEqual(params["include_market_signals"], "true")
         self.assertEqual(params["include_structure"], "true")
+        self.assertEqual(params["mode"], "live")
         self.assertEqual(params["stage"], "full")
         self.assertEqual(result["next_before"], "2026-07-10T13:44:00+00:00")
         self.assertTrue(result["has_more_in_session"])
@@ -569,6 +570,66 @@ class HistoricalContractTests(unittest.TestCase):
         self.assertTrue(result["has_more"])
         self.assertFalse(result["has_more_in_session"])
         self.assertEqual(result["previous_session_before"], "2026-07-14")
+        gateway_get.assert_not_called()
+
+    @patch("src.backend.trading_runtime_service._is_recent_live_chart_session", return_value=True)
+    @patch("src.backend.trading_runtime_service.qmd_intraday_bar_history")
+    @patch("src.backend.trading_runtime_service._historical_gateway_get")
+    def test_replay_chart_never_reads_live_materializations(
+        self, gateway_get, live_history, _is_recent
+    ) -> None:
+        gateway_get.return_value = {
+            "bars": [{"bar_start": "2026-07-14T13:44:00+00:00", "close": 315.0}],
+            "has_more": False,
+            "indicators": [],
+            "indicators_available": False,
+        }
+
+        result = historical_bar_history_before(
+            before=date(2026, 7, 15),
+            session_date=date(2026, 7, 14),
+            ticker="AAPL",
+            timeframe="1m",
+            stage="bars",
+            mode="replay",
+        )
+
+        live_history.assert_not_called()
+        _, params = gateway_get.call_args_list[0].args[:2]
+        self.assertEqual(params["mode"], "replay")
+        self.assertEqual(len(result["history"]), 1)
+
+    @patch("src.backend.trading_runtime_service._is_recent_live_chart_session", return_value=True)
+    @patch("src.backend.trading_runtime_service.qmd_persisted_indicators")
+    @patch("src.backend.trading_runtime_service.qmd_intraday_bar_history")
+    @patch("src.backend.trading_runtime_service._historical_gateway_get")
+    def test_recent_live_full_chart_uses_matching_durable_indicators(
+        self, gateway_get, live_history, persisted_indicators, _is_recent
+    ) -> None:
+        live_history.return_value = {
+            "bars": [{"bar_start": "2026-07-14T13:44:00+00:00", "close": 315.0}],
+            "has_more": False,
+            "source": "qmd_live_intraday_family_bars_v3",
+        }
+        persisted_indicators.return_value = {
+            "history": [{"bar_start": "2026-07-14T13:44:00+00:00", "ema_20": 314.5}],
+            "source": "qmd_live_qmd_indicator_rows_v1",
+            "calculation_revision": "qmd-indicators-v19",
+            "complete": True,
+        }
+
+        result = historical_bar_history_before(
+            before=date(2026, 7, 15),
+            session_date=date(2026, 7, 14),
+            ticker="AAPL",
+            timeframe="1m",
+            stage="full",
+            mode="live",
+        )
+
+        self.assertEqual(result["source"], "qmd_live_intraday_family_bars_v3")
+        self.assertEqual(result["indicators"][0]["ema_20"], 314.5)
+        self.assertTrue(result["indicators_available"])
         gateway_get.assert_not_called()
 
     @patch("src.backend.trading_runtime_service._historical_gateway_get")

@@ -48,7 +48,7 @@ The gateway outputs market-data primitives. The app backend combines those primi
 | `compact_event.rs` | Historical-parity live encoding, ring buffers, bounded reorder, batched persistence/audits | Market events, ClickHouse references | `/stream/compact-events`, `/snapshot/compact-events/{ticker}`, `q_live.events` | Encoder chunk construction |
 | `market_calendar.rs` | Cached Rust Massive status/holiday authority | Massive status and upcoming-holiday APIs | Session and close decisions | Live event processing |
 | `flatfile.rs` | Signed remote flatfile discovery | Massive S3 metadata | Quote/trade readiness | Historical ingestion |
-| `intraday_bars.rs` | Required canonical intraday bars | Sanitized compact events | `/stream/intraday-bars`, `intraday_family_bars_v2` | Enriched scanner calculations |
+| `intraday_bars.rs` | Required canonical intraday bars | Sanitized compact events plus shared trade-condition rules | `/stream/intraday-bars`, `intraday_family_bars_v3` | Enriched scanner calculations |
 | `clickhouse.rs` | Optional raw Massive persistence | Market events | `live_massive_trades`, `live_massive_quotes` | Primary ML surface |
 | `gapfill.rs` | Startup live coverage audit, Massive REST tail repair, historical flatfile planning | Live compact event rows, Massive REST, historical continuity rows | Same event fan-out as websocket, gap-fill audit rows, coarse coverage manifest | Deep historical row generation |
 | `metrics.rs` | Operational counters | Hot-path observations | `/metrics` payload | External monitoring service |
@@ -130,7 +130,7 @@ sanitized LiveCompactEvent
   -> shard by ticker
   -> aggregate sparse 100ms trade/quote-family bars
   -> roll closed 100ms bars into configured parent resolutions
-  -> persist only to q_live.intraday_family_bars_v2
+  -> persist only to q_live.intraday_family_bars_v3
   -> publish /stream/intraday-bars
 ```
 
@@ -201,9 +201,9 @@ Default durable writes:
 | `events` | `compact_event.rs` | yes | Live ML-serving event stream/table |
 | `live_massive_trades` | `clickhouse.rs` | no | Optional raw trade replay/debug source |
 | `live_massive_quotes` | `clickhouse.rs` | no | Optional raw quote replay/debug source |
-| `intraday_family_bars_v2` | `intraday_bars.rs` | yes | Rolling sparse family bars from 100ms through 1h |
+| `intraday_family_bars_v3` | `intraday_bars.rs` | yes | Condition-aware, revisioned rolling sparse family bars from 100ms through 1h |
 | `live_symbol_market_event_v1` | `live_market_state.rs` | yes | Abnormal live market-state transition audit |
-| `live_market_indicators` | `indicators.rs` | no | Optional materialized bar-level indicator rows |
+| `qmd_indicator_rows_v1` | `indicators.rs` | yes | Scoped closed-bar indicator rows for fast Live hydration |
 | `qmd_structure_events_v2` | `indicators.rs` | yes | Immediate trade-level creation plus independent timeframe-local trade-extrema swings, crossing, acceptance, BoS/CHoCH, retest, role-reversal, and footprint history |
 | `qmd_structure_state_v2` | `indicators.rs` | yes | Full versioned per-symbol level-book, timeframe state, and session-footprint checkpoint |
 | `qmd_gap_fill_runs` | `gapfill.rs` | yes | Gap-fill audit log |
@@ -250,7 +250,14 @@ exact command on laptops or launches the unchanged updater asynchronously on
 the workstation after collection closes. Live events are never merged into the
 historical `events_YYYY` tables.
 
-`QMD_PERSIST_INDICATORS` defaults to `false` because bar-level indicators can be recomputed from compact events and `intraday_family_bars_v2`. Generic structure is computed once per ordered symbol event, independently of chart timeframe, before bars sample it. `QMD_PERSIST_STRUCTURE_EVENTS` therefore defaults to `true`: confirmed event history and one full versioned engine checkpoint per changed symbol are durable strategy/restart state, not a materialized copy for every timeframe. Checkpoints are cloned and written only at the bounded writer flush after an engine watermark advances, rather than on every event or bar.
+`QMD_PERSIST_INDICATORS` defaults to `true` so Live charts can hydrate scoped,
+closed indicators without a cold QMD History reconstruction. Replay, Backtest,
+and Debug remain causal QMD History consumers. Generic structure is computed
+once per ordered symbol event, independently of chart timeframe, before bars
+sample it. `QMD_PERSIST_STRUCTURE_EVENTS` also defaults to `true`: confirmed
+event history and one full versioned engine checkpoint per changed symbol are
+durable strategy/restart state. Checkpoints are cloned and written only at the
+bounded writer flush after an engine watermark advances.
 
 ## Replay Flow
 

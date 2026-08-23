@@ -253,9 +253,9 @@ mod taxonomy_tests {
                 "missing implemented change field {field}"
             );
         }
-        assert!(indicator_catalog().iter().any(|entry| {
-            entry.fields.contains(&"buy_sell_volume_delta_change")
-        }));
+        assert!(indicator_catalog()
+            .iter()
+            .any(|entry| { entry.fields.contains(&"buy_sell_volume_delta_change") }));
     }
 }
 
@@ -403,7 +403,7 @@ const INDICATOR_CATALOG: &[IndicatorCatalogEntry] = &[
             "gap_from_previous_close_pct",
         ],
         typical_timeframes: SESSION_TFS,
-        storage_target: "live_market_indicators_if_enabled,scanner_signal_snapshots",
+        storage_target: "qmd_indicator_rows_v1,scanner_signal_snapshots",
         rationale: "Scanner rules need session awareness, but durable writes should happen only when a signal contract requires it.",
     },
     IndicatorCatalogEntry {
@@ -426,7 +426,7 @@ const INDICATOR_CATALOG: &[IndicatorCatalogEntry] = &[
             "opening_range_position_pct",
         ],
         typical_timeframes: SESSION_TFS,
-        storage_target: "live_market_indicators",
+        storage_target: "qmd_indicator_rows_v1",
         rationale: "High-value intraday setup family already used in older ORB strategies.",
     },
     IndicatorCatalogEntry {
@@ -518,7 +518,7 @@ const INDICATOR_CATALOG: &[IndicatorCatalogEntry] = &[
             "microstructure_regime_reliability",
         ],
         typical_timeframes: ENRICHED_QMD_TFS,
-        storage_target: "memory_enriched_bars,live_market_indicators_if_enabled",
+        storage_target: "memory_enriched_bars,qmd_indicator_rows_v1",
         rationale: "Combines causal flow and structural context with confidence-weighted evidence. The 100 ms composite is canonical; higher timeframes summarize those non-overlapping observations without embedding entry or exit decisions.",
     },
     IndicatorCatalogEntry {
@@ -587,7 +587,7 @@ const INDICATOR_CATALOG: &[IndicatorCatalogEntry] = &[
             "volume_vs_recent_3",
         ],
         typical_timeframes: BAR_TFS,
-        storage_target: "live_market_indicators",
+        storage_target: "qmd_indicator_rows_v1",
         rationale: "High priority for scanner ranking and tradability checks.",
     },
     IndicatorCatalogEntry {
@@ -601,7 +601,7 @@ const INDICATOR_CATALOG: &[IndicatorCatalogEntry] = &[
         inputs: &["bars"],
         fields: &["obv", "ad", "adosc", "cmf", "mfi", "pvt", "nvi", "pvi", "eom", "kvo", "force_index"],
         typical_timeframes: BAR_TFS,
-        storage_target: "live_market_indicators",
+        storage_target: "qmd_indicator_rows_v1",
         rationale: "Useful for divergence and confirmation, but not all variants need default persistence.",
     },
     IndicatorCatalogEntry {
@@ -615,7 +615,7 @@ const INDICATOR_CATALOG: &[IndicatorCatalogEntry] = &[
         inputs: &["bars"],
         fields: &["rsi_14", "macd_line", "macd_signal", "macd_histogram", "price_vs_vwap_pct"],
         typical_timeframes: BAR_TFS,
-        storage_target: "live_market_indicators",
+        storage_target: "qmd_indicator_rows_v1",
         rationale: "Small set of high-signal indicators used by existing momentum-style strategies.",
     },
     IndicatorCatalogEntry {
@@ -646,7 +646,7 @@ const INDICATOR_CATALOG: &[IndicatorCatalogEntry] = &[
             "ultimate_oscillator",
         ],
         typical_timeframes: BAR_TFS,
-        storage_target: "live_market_indicators_if_enabled",
+        storage_target: "qmd_indicator_rows_v1",
         rationale: "Broad TA coverage, but many fields are redundant unless a strategy explicitly consumes them.",
     },
     IndicatorCatalogEntry {
@@ -675,7 +675,7 @@ const INDICATOR_CATALOG: &[IndicatorCatalogEntry] = &[
             "ma_ribbon",
         ],
         typical_timeframes: BAR_TFS,
-        storage_target: "live_market_indicators",
+        storage_target: "qmd_indicator_rows_v1",
         rationale: "Trend regime and scanner confirmation are central to live momentum filters.",
     },
     IndicatorCatalogEntry {
@@ -689,7 +689,7 @@ const INDICATOR_CATALOG: &[IndicatorCatalogEntry] = &[
         inputs: &["bars"],
         fields: &["adx", "plus_di", "minus_di", "plus_dm", "minus_dm", "supertrend", "psar", "ichimoku"],
         typical_timeframes: BAR_TFS,
-        storage_target: "live_market_indicators_if_enabled",
+        storage_target: "qmd_indicator_rows_v1",
         rationale: "Good for trend confirmation; persist only when part of a signal contract.",
     },
     IndicatorCatalogEntry {
@@ -712,7 +712,7 @@ const INDICATOR_CATALOG: &[IndicatorCatalogEntry] = &[
             "realized_volatility",
         ],
         typical_timeframes: BAR_TFS,
-        storage_target: "memory_enriched_bars,live_market_indicators",
+        storage_target: "memory_enriched_bars,qmd_indicator_rows_v1",
         rationale: "Needed for risk, stop buffers, volatility filters, and breakout quality.",
     },
     IndicatorCatalogEntry {
@@ -735,7 +735,7 @@ const INDICATOR_CATALOG: &[IndicatorCatalogEntry] = &[
             "chop_index",
         ],
         typical_timeframes: BAR_TFS,
-        storage_target: "live_market_indicators_if_enabled",
+        storage_target: "qmd_indicator_rows_v1",
         rationale: "Useful for specialized strategies, but not required for every scanner row.",
     },
     IndicatorCatalogEntry {
@@ -761,7 +761,7 @@ const INDICATOR_CATALOG: &[IndicatorCatalogEntry] = &[
             "lower_low",
         ],
         typical_timeframes: BAR_TFS,
-        storage_target: "live_market_indicators_if_enabled",
+        storage_target: "qmd_indicator_rows_v1",
         rationale: "Reusable scanner state for breakouts, pullbacks, and exhaustion filters.",
     },
     IndicatorCatalogEntry {
@@ -821,7 +821,7 @@ const INDICATOR_CATALOG: &[IndicatorCatalogEntry] = &[
         ],
         typical_timeframes: ENRICHED_QMD_TFS,
         storage_target:
-            "qmd_structure_events_v2,qmd_structure_state_v2,live_market_indicators",
+            "qmd_structure_events_v2,qmd_structure_state_v2,qmd_indicator_rows_v1",
         rationale: "One causal eligible-trade authority updates exact developing extrema and the 04:00-20:00 New York extended-session high/low immediately, freezes active levels on the first opposing trade, promotes the same level book independently by chart timeframe, and persists break lifecycle plus executed-volume footprints for live, historical, chart, and strategy consumers.",
     },
     IndicatorCatalogEntry {
@@ -846,7 +846,7 @@ const INDICATOR_CATALOG: &[IndicatorCatalogEntry] = &[
             "price_volume_shock",
         ],
         typical_timeframes: SHORT_TFS,
-        storage_target: "scanner_signal_snapshots,live_market_indicators_if_enabled",
+        storage_target: "scanner_signal_snapshots,qmd_indicator_rows_v1",
         rationale: "High-priority scanner family for early unusual activity; store the decision context, not every transient z-score.",
     },
     IndicatorCatalogEntry {

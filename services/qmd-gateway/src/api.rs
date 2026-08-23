@@ -13,8 +13,13 @@ use crate::config::GatewayConfig;
 use crate::definition_catalog::{definition_catalog, QmdDefinitionCatalog};
 use crate::event::MarketEvent;
 use crate::indicator_catalog::{indicator_taxonomy_catalog, IndicatorTaxonomyEntry};
-use crate::indicators::{IndicatorScannerSnapshot, IndicatorSnapshot, SharedIndicatorStore};
-use crate::intraday_bars::IntradayBarRow;
+use crate::indicators::{
+    IndicatorScannerSnapshot, IndicatorSnapshot, SharedIndicatorStore,
+    INDICATOR_CALCULATION_REVISION, INDICATOR_SCHEMA_VERSION,
+};
+use crate::intraday_bars::{
+    IntradayBarRow, INTRADAY_BAR_CALCULATION_REVISION, INTRADAY_BAR_SCHEMA_VERSION,
+};
 use crate::live_market_state::{
     LiveMarketStateSnapshot, LiveSymbolMarketStateEvent, SharedLiveMarketStateStore,
     TickerLiveMarketStateSnapshot,
@@ -147,6 +152,14 @@ struct IntradayBarHistoryQuery {
 }
 
 #[derive(Debug, Deserialize)]
+struct PersistedIndicatorQuery {
+    end_date: Option<String>,
+    limit: Option<usize>,
+    start_date: Option<String>,
+    timeframe: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
 struct ProductQuery {
     emit: Option<String>,
     family: Option<String>,
@@ -269,6 +282,10 @@ pub fn app(state: AppState) -> Router {
             get(compact_event_market_page_snapshot),
         )
         .route("/snapshot/indicators/{ticker}", get(indicator_snapshot))
+        .route(
+            "/snapshot/persisted-indicators/{ticker}",
+            get(persisted_indicator_snapshot),
+        )
         .route(
             "/snapshot/live-market-state",
             get(live_market_state_snapshot),
@@ -1600,6 +1617,11 @@ async fn intraday_bar_history_snapshot(
     let has_more = rows.len() > limit;
     rows.truncate(limit);
     rows.reverse();
+    let snapshot_revision = rows
+        .iter()
+        .filter_map(|row| row.get("updated_at_utc").and_then(Value::as_str))
+        .max()
+        .map(str::to_string);
     let bars = rows
         .into_iter()
         .filter_map(|row| intraday_row_to_chart_bar(row, &ticker, &timeframe, resolution_us))
@@ -1609,13 +1631,16 @@ async fn intraday_bar_history_snapshot(
         .and_then(|row| row.get("first_event_timestamp_us"))
         .and_then(Value::as_u64);
     Ok(Json(json!({
-        "schema_version": 1,
+        "schema_version": INTRADAY_BAR_SCHEMA_VERSION,
         "ticker": ticker,
         "timeframe": timeframe,
         "bars": bars,
         "has_more": has_more,
         "next_before_event_timestamp_us": next_before_event_timestamp_us,
-        "source": "qmd_live_intraday_family_bars_v2",
+        "source": format!("qmd_live_{}", state.config.intraday_bar_table),
+        "calculation_revision": INTRADAY_BAR_CALCULATION_REVISION,
+        "snapshot_revision": snapshot_revision,
+        "complete": true,
     })))
 }
 
@@ -1648,7 +1673,7 @@ fn intraday_bar_history_sql(
     format!(
         r#"SELECT local_date, open, high, low, close, size_sum, event_count,
             first_event_timestamp_us, last_event_timestamp_us,
-            bar_start_session_us, bar_end_session_us
+            bar_start_session_us, bar_end_session_us, updated_at_utc
         FROM (
             SELECT local_date, bucket_index,
                 argMax(open, updated_at_utc) AS open,
@@ -1660,17 +1685,25 @@ fn intraday_bar_history_sql(
                 argMax(first_event_timestamp_us, updated_at_utc) AS first_event_timestamp_us,
                 argMax(last_event_timestamp_us, updated_at_utc) AS last_event_timestamp_us,
                 argMax(bar_start_session_us, updated_at_utc) AS bar_start_session_us,
-                argMax(bar_end_session_us, updated_at_utc) AS bar_end_session_us
+                argMax(bar_end_session_us, updated_at_utc) AS bar_end_session_us,
+                argMax(calculation_revision, updated_at_utc) AS calculation_revision,
+                argMax(complete, updated_at_utc) AS complete,
+                max(updated_at_utc) AS updated_at_utc
             FROM {table}
             WHERE ticker = '{ticker}' AND label_resolution_us = {resolution_us}
               AND bar_family = 'trade' AND local_date >= toDate('{start_date}')
               AND local_date <= toDate('{end_date}')
+              AND schema_version = {schema_version}
+              AND calculation_revision = '{calculation_revision}'
             GROUP BY local_date, bucket_index
+            HAVING complete = 1 AND calculation_revision = '{calculation_revision}'
         )
         WHERE 1 = 1{before_filter}
         ORDER BY local_date DESC, bucket_index DESC
         LIMIT {limit}
-        FORMAT JSONEachRow"#
+        FORMAT JSONEachRow"#,
+        schema_version = INTRADAY_BAR_SCHEMA_VERSION,
+        calculation_revision = INTRADAY_BAR_CALCULATION_REVISION,
     )
 }
 
@@ -1693,6 +1726,15 @@ fn intraday_row_to_chart_bar(
     let high = object.get("high")?.as_f64()?;
     let low = object.get("low")?.as_f64()?;
     let close = object.get("close")?.as_f64()?;
+    if ![open, high, low, close]
+        .into_iter()
+        .all(|value| value.is_finite() && value > 0.0)
+        || high < open.max(close)
+        || low > open.min(close)
+        || high < low
+    {
+        return None;
+    }
     let volume = object
         .get("size_sum")
         .and_then(Value::as_f64)
@@ -1702,7 +1744,7 @@ fn intraday_row_to_chart_bar(
         .and_then(Value::as_u64)
         .unwrap_or(0);
     Some(json!({
-        "schema_version": 2,
+        "schema_version": INTRADAY_BAR_SCHEMA_VERSION,
         "session_date": local_date.to_string(),
         "timeframe": timeframe,
         "sym": ticker,
@@ -1724,7 +1766,7 @@ fn intraday_row_to_chart_bar(
         "price_change_pct": if open > 0.0 { (close / open - 1.0) * 100.0 } else { 0.0 },
         "high_low_range": high - low,
         "high_low_range_pct": if open > 0.0 { (high - low) / open * 100.0 } else { 0.0 },
-        "source": "qmd_live_intraday_family_bars_v2",
+        "source": "qmd_live_intraday_family_bars_v3",
     }))
 }
 
@@ -1921,6 +1963,74 @@ async fn indicator_snapshot(
         )
         .await;
     Ok(Json(project_indicator_snapshot(snapshot, fields.as_ref())))
+}
+
+async fn persisted_indicator_snapshot(
+    State(state): State<Arc<AppState>>,
+    Path(raw_ticker): Path<String>,
+    Query(query): Query<PersistedIndicatorQuery>,
+) -> Result<Json<Value>, (StatusCode, String)> {
+    if !state.config.persist_indicators {
+        return Err((
+            StatusCode::NOT_FOUND,
+            "durable indicators are disabled".to_string(),
+        ));
+    }
+    let ticker = raw_ticker.trim().to_ascii_uppercase();
+    if !valid_ticker(&ticker) {
+        return Err((StatusCode::BAD_REQUEST, "invalid ticker".to_string()));
+    }
+    let timeframe = query
+        .timeframe
+        .unwrap_or_else(|| "1m".to_string())
+        .trim()
+        .to_ascii_lowercase();
+    if parse_resolution_us(&timeframe).is_none() {
+        return Err((StatusCode::BAD_REQUEST, "invalid timeframe".to_string()));
+    }
+    let today = Utc::now().with_timezone(&New_York).date_naive();
+    let start_date = parse_iso_date(query.start_date.as_deref()).unwrap_or(today);
+    let end_date = parse_iso_date(query.end_date.as_deref()).unwrap_or(today);
+    if start_date > end_date {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "start_date must not follow end_date".to_string(),
+        ));
+    }
+    let limit = query.limit.unwrap_or(20_000).clamp(1, 50_000);
+    let sql = format!(
+        r#"SELECT * EXCEPT (calculation_revision, source_revision, complete, updated_at_utc)
+        FROM {table} FINAL
+        WHERE sym = '{ticker}' AND timeframe = '{timeframe}'
+          AND session_date BETWEEN toDate('{start_date}') AND toDate('{end_date}')
+          AND schema_version = {schema_version}
+          AND calculation_revision = '{calculation_revision}' AND complete = 1
+        ORDER BY bar_start DESC LIMIT {limit} FORMAT JSONEachRow"#,
+        table = state.config.indicator_table,
+        schema_version = INDICATOR_SCHEMA_VERSION,
+        calculation_revision = INDICATOR_CALCULATION_REVISION,
+    );
+    let text = clickhouse_query(&state.config, &sql, true)
+        .await
+        .map_err(|error| (StatusCode::BAD_GATEWAY, error))?;
+    let mut history = text
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| serde_json::from_str::<Value>(line).map_err(|error| error.to_string()))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| (StatusCode::BAD_GATEWAY, error))?;
+    history.reverse();
+    Ok(Json(json!({
+        "schema_version": INDICATOR_SCHEMA_VERSION,
+        "ticker": ticker,
+        "timeframe": timeframe,
+        "tick": null,
+        "current": null,
+        "history": history,
+        "source": format!("qmd_live_{}", state.config.indicator_table),
+        "calculation_revision": INDICATOR_CALCULATION_REVISION,
+        "complete": true,
+    })))
 }
 
 async fn scanner_stream(

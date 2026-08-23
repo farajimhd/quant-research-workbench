@@ -98,14 +98,16 @@ surface until production callers are proven absent.
 
 ## Canonical Intraday Bars
 
-`/stream/intraday-bars` and required table `intraday_family_bars_v2` expose the
+`/stream/intraday-bars` and required table `intraday_family_bars_v3` expose the
 long-form families used by `research/mlops/packed_market`: `trade`,
 `quote_bid`, and `quote_ask`. Rows use New York 04:00-20:00 local-session
 buckets and contain `schema_version`, `ticker`, `local_date`,
 `label_resolution_us`, `bucket_index`, `bar_family`, price OHLC, size
 sum/open/close/high/low, event count, first/last event timestamps, and session
 bar bounds. Invalid zeroed prices do not enter a family bar, and empty family
-rows are not fabricated.
+rows are not fabricated. Version 3 adds `calculation_revision`,
+`source_revision`, and `complete`, and applies the shared condition-aware trade
+kernel used by in-memory QMD bars.
 
 The base resolution is 100,000 microseconds (`100ms`). Every higher resolution
 is rolled up from closed base bars: first open, last close, maximum high,
@@ -291,7 +293,7 @@ Table: `live_massive_quotes`
 The scanner, indicator, LULD-estimate, and `/snapshot/bars/{ticker}` path keeps
 an enriched `BarRow` in memory. It is built directly from Massive events for
 configured operational timeframes and is not persisted. The only durable bar
-contract is `intraday_family_bars_v2` above. The fields below document the richer
+contract is `intraday_family_bars_v3` above. The fields below document the richer
 operational row consumed inside QMD.
 
 ### Identity And Time
@@ -469,7 +471,12 @@ The retained sample window defaults to 300 seconds. Fixed-horizon fields still u
 
 ## Bar Indicator Contract
 
-Table: `live_market_indicators`, only when `QMD_PERSIST_INDICATORS=true`.
+Table: `qmd_indicator_rows_v1`, written when `QMD_PERSIST_INDICATORS=true`.
+
+`GET /snapshot/persisted-indicators/{ticker}` reads only rows whose indicator
+schema, calculation revision, and `complete=1` match the running gateway. It is
+the Live first-page history contract. `GET /snapshot/indicators/{ticker}` and
+`/stream/indicators/{ticker}` remain the in-memory snapshot and advancing tail.
 
 | Field | Formula | Streaming Method |
 |---|---|---|
@@ -524,7 +531,11 @@ confirmed rows before its requested window, but never from future events.
 
 ## Indicator Persistence Policy
 
-Tick indicators are memory-first and are not persisted continuously. Closed bar-level indicators are also memory-first by default because the current set can be recomputed from compact events and `intraday_family_bars_v2`. Set `QMD_PERSIST_INDICATORS=true` only when a run needs a materialized indicator table for chart-load speed or audit. Generic-structure event/state persistence is the exception: it defaults on because it is the durable strategy and restart contract rather than a duplicate bar cache.
+Tick indicators remain memory-first. Closed scoped bar-level indicators persist
+by default in `qmd_indicator_rows_v1` so Live chart hydration does not require a
+cold reconstruction. Each row carries calculation/source revision and a
+complete flag. Generic-structure event/state persistence remains the separate
+durable strategy and restart contract rather than a per-chart duplicate.
 
 ## Indicator Catalog Summary
 

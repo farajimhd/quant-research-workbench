@@ -66,7 +66,10 @@ Changing all sizes to unsigned integers requires a representative source-data
 integrality audit and one versioned event/bar/model cutover. Aggregated sizes
 use `Float64` to avoid accumulated `Float32` precision loss.
 
-Live durable family rows use `q_live.intraday_family_bars_v2`. Version 2 changes
+Live durable family rows use `q_live.intraday_family_bars_v3`. Version 3 keeps
+price, high/low, and volume eligibility independent under QMD's shared
+condition-aware trade rules and adds explicit calculation/source revision and
+completeness metadata. It also retains the version 2 change that
 size aggregates to `Float64`, counts and event timestamps to `UInt64`, and keeps
 the same three-family key. `intraday_bars_v1` is not the new default.
 

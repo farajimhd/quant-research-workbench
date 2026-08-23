@@ -455,7 +455,7 @@ the bounded historical chart contract and merges historical batches with live
 updates.
 
 Closed bar indicators are memory-first. They are written to
-`live_market_indicators` only when `QMD_PERSIST_INDICATORS=true`.
+`qmd_indicator_rows_v1` when `QMD_PERSIST_INDICATORS=true`.
 `qmd_structure_events_v2` and `qmd_structure_state_v2` persist the immutable
 level lifecycle and versioned engine checkpoints when
 `QMD_PERSIST_STRUCTURE_EVENTS=true` (default). The state restores developing

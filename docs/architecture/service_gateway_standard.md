@@ -217,7 +217,7 @@ their implementation spreads into separate conventions.
 
 | Service | Type | Primary sources | Primary sinks | Cadence | Canonical responsibility |
 | --- | --- | --- | --- | --- | --- |
-| QMD Gateway | high-rate Rust streaming gateway | Massive stock websocket `T.*`, `Q.*`; Massive REST repair; historical `market_sip_compact.events_<year>` coverage | `q_live.events`, `q_live.intraday_family_bars_v2`, sparse abnormal market-state rows, QMD coverage tables, local streams | continuous websocket plus startup/after-hours repair | Lossless live market-event capture, training-aligned rolling intraday bars, compact streams, and reusable causal market signals. |
+| QMD Gateway | high-rate Rust streaming gateway | Massive stock websocket `T.*`, `Q.*`; Massive REST repair; historical `market_sip_compact.events_<year>` coverage | `q_live.events`, condition-aware `q_live.intraday_family_bars_v3`, scoped `q_live.qmd_indicator_rows_v1`, durable signal occurrences, sparse abnormal market-state rows, QMD coverage tables, local streams | continuous websocket plus startup/after-hours repair | Lossless live market-event capture, revisioned rolling intraday bars, compact streams, and reusable causal market signals. |
 | News Gateway | Python REST/text gateway | Massive-served Benzinga REST, approved external URL/PDF artifacts | `q_live.benzinga_news_normalized_v1`, `q_live.benzinga_news_ticker_v1`, coverage manifest, raw artifacts | market-aware polling | Canonical Benzinga news rows and ticker links with async enrichment. |
 | SEC Gateway | Python SEC filing gateway | SEC current Atom feed, submissions JSON, companyfacts JSON, daily archives | `q_live.sec_filing_v2`, `sec_filing_document_v2`, `sec_filing_text_v2`, SEC XBRL tables, SEC coverage | market-aware polling plus historical gap fill | Canonical SEC filing/text/XBRL rows. |
 | Reference Gateway | Python low-frequency reference reconciler | Massive reference endpoints, q_live identity tables, IBKR Client Portal, FINRA/SEC/Massive publications | identity graph, source mappings, issues, tradable/scanner publications, market reference publications, reference alerts | daemon cycles and after-hours maintenance | Keep market reference identity, conid/routing evidence, tradability publications, and slow reference publications coherent. |
@@ -264,7 +264,7 @@ fundamentals, issuer identity, strategy decisions, or order intent.
   table may need to be recreated from a clean slate. Historical data should be
   recovered from `market_sip_compact.events_<year>` plus the recent q_live
   retention window, not by keeping stale encoded q_live rows forever.
-- `q_live.intraday_family_bars_v2`: rolling sparse family bars from 100ms through 1h,
+- `q_live.intraday_family_bars_v3`: condition-aware revisioned sparse family bars from 100ms through 1h,
   derived from the same sanitized compact events as `q_live.events`. Closed
   100ms bars are the base for every higher resolution; this is the single
   durable q_live bar contract.
@@ -282,11 +282,11 @@ fundamentals, issuer identity, strategy decisions, or order intent.
 - `q_live.qmd_gap_fill_symbol_universe_v1`: durable ticker queue for recent
   live repair.
 - `q_live.qmd_gap_fill_runs`: repair audit log.
-- Stale/non-standard tables `live_massive_trades`, `live_massive_quotes`, and
-  `live_market_indicators` must not be part of the standard QMD persistence
-  path. QMD should not persist raw quotes, raw trades, or materialized
-  indicators in q_live. Indicators are computed from events/bars in memory or
-  on demand from persisted bars/events.
+- `q_live.qmd_indicator_rows_v1` is the standard scoped closed-indicator
+  persistence path for low-latency Live hydration. It does not replace the
+  advancing in-memory tail or causal QMD History reconstruction.
+- Raw compatibility tables `live_massive_trades` and `live_massive_quotes`
+  remain disabled by default; compact `events` is the source authority.
 
 **Hot path policy:**
 
@@ -1599,7 +1599,7 @@ Examples:
 
 ```text
 q_live.events | write | running | 1.2M | - | 42k/s | - | latest=2026-07-06 09:34:12
-q_live.intraday_family_bars_v2 | write | waiting | 0 | - | - | - | next 100ms close
+q_live.intraday_family_bars_v3 | write | waiting | 0 | - | - | - | next 100ms close
 q_live.benzinga_news_normalized_v1 | publish | completed | 18 | 18 | - | - | skipped=422
 market_sip_compact.sec_filing_text_embeddings | embed | running | 4,096 | 12,800 | 310/s | 28s | gpu ok
 ```

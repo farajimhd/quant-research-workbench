@@ -9,6 +9,7 @@ param(
     [int]$TerminalEventLimit = 6,
     [string]$CargoTargetDir = "",
     [string]$RuntimeRoot = "",
+    [switch]$BootstrapBars,
     [switch]$CheckOnly,
     [switch]$DebugBuild,
     [switch]$NoTerminal,
@@ -79,6 +80,7 @@ if ($Bind.Trim()) {
     $env:QMD_GATEWAY_BIND = $Bind.Trim()
 }
 $env:QMD_HOST_ROLE = $HostRole.ToLowerInvariant()
+$env:QMD_INTRADAY_BAR_BOOTSTRAP_ON_START = if ($BootstrapBars) { "true" } else { "false" }
 
 function Resolve-CondaEnvPython {
     param(

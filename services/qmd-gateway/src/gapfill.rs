@@ -2138,11 +2138,62 @@ impl GapFillService {
                 true,
             )
             .await?;
+        let old_indicator_sessions = if self.config.persist_indicators {
+            self.query(
+                &format!(
+                    "SELECT toString(session_date), count() FROM {} WHERE session_date < toDate('{}') GROUP BY session_date ORDER BY session_date FORMAT TSV",
+                    self.config.indicator_table, cutoff,
+                ),
+                true,
+            )
+            .await?
+        } else {
+            String::new()
+        };
+        let old_signal_sessions = self
+            .query(
+                &format!(
+                    "SELECT toString(toDate(toTimeZone(event_time, 'America/New_York'))), count() FROM {} WHERE toDate(toTimeZone(event_time, 'America/New_York')) < toDate('{}') GROUP BY toDate(toTimeZone(event_time, 'America/New_York')) ORDER BY toDate(toTimeZone(event_time, 'America/New_York')) FORMAT TSV",
+                    self.config.signal_stream_table, cutoff,
+                ),
+                true,
+            )
+            .await?;
         let mut session_counts = BTreeMap::<NaiveDate, u64>::new();
         for (date, count) in event_session_rows {
             session_counts.insert(date, count);
         }
         for line in old_bar_sessions.lines() {
+            let Some((date, count)) = line.split_once('\t') else {
+                continue;
+            };
+            let (Ok(date), Ok(count)) = (
+                NaiveDate::parse_from_str(date, "%Y-%m-%d"),
+                count.parse::<u64>(),
+            ) else {
+                continue;
+            };
+            session_counts
+                .entry(date)
+                .and_modify(|value| *value = value.saturating_add(count))
+                .or_insert(count);
+        }
+        for line in old_indicator_sessions.lines() {
+            let Some((date, count)) = line.split_once('\t') else {
+                continue;
+            };
+            let (Ok(date), Ok(count)) = (
+                NaiveDate::parse_from_str(date, "%Y-%m-%d"),
+                count.parse::<u64>(),
+            ) else {
+                continue;
+            };
+            session_counts
+                .entry(date)
+                .and_modify(|value| *value = value.saturating_add(count))
+                .or_insert(count);
+        }
+        for line in old_signal_sessions.lines() {
             let Some((date, count)) = line.split_once('\t') else {
                 continue;
             };
@@ -2179,6 +2230,24 @@ impl GapFillService {
                     &format!(
                         "ALTER TABLE {} DELETE WHERE toDate(toTimeZone(fromUnixTimestamp64Micro(toInt64(sip_timestamp_us)), 'America/New_York')) = toDate('{}')",
                         self.config.compact_event_table, date
+                    ),
+                    true,
+                )
+                .await?;
+                if self.config.persist_indicators {
+                    self.query(
+                        &format!(
+                            "ALTER TABLE {} DELETE WHERE session_date = toDate('{}')",
+                            self.config.indicator_table, date
+                        ),
+                        true,
+                    )
+                    .await?;
+                }
+                self.query(
+                    &format!(
+                        "ALTER TABLE {} DELETE WHERE toDate(toTimeZone(event_time, 'America/New_York')) = toDate('{}')",
+                        self.config.signal_stream_table, date
                     ),
                     true,
                 )

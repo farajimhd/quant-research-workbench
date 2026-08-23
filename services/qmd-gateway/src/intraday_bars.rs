@@ -1,5 +1,7 @@
-use crate::compact_event::LiveCompactEvent;
+use crate::bars::{TradeAggregationRules, TradeUpdateRule};
+use crate::compact_event::{CompactEventDecoder, LiveCompactEvent};
 use crate::config::GatewayConfig;
+use crate::event::MarketEvent;
 use crate::metrics::SharedMetrics;
 use crate::timefmt::clickhouse_datetime64;
 use chrono::{Datelike, Timelike, Utc};
@@ -15,7 +17,8 @@ use tokio::sync::{broadcast, mpsc, Mutex};
 use tokio::task::JoinHandle;
 use tokio::time::{interval, sleep, timeout, Duration, Instant};
 
-pub const INTRADAY_BAR_SCHEMA_VERSION: u16 = 2;
+pub const INTRADAY_BAR_SCHEMA_VERSION: u16 = 3;
+pub const INTRADAY_BAR_CALCULATION_REVISION: &str = "qmd-family-bars-v3";
 pub const BASE_RESOLUTION_US: i64 = 100_000;
 const SESSION_START_US: i64 = 4 * 60 * 60 * 1_000_000;
 const SESSION_END_US: i64 = 20 * 60 * 60 * 1_000_000;
@@ -25,6 +28,7 @@ const OBSOLETE_BAR_TABLES: &[&str] = &[
     "bars_by_time_symbol",
     "live_model_microbars",
 ];
+const BOOTSTRAP_STATE_TABLE: &str = "qmd_intraday_bar_bootstrap_v1";
 
 type BarKey = (String, String, i64, i64, &'static str);
 type FinalizedSeries = (String, String, &'static str);
@@ -158,6 +162,7 @@ struct EventPoint {
     family: &'static str,
     price: f32,
     size: f64,
+    rule: TradeUpdateRule,
 }
 
 #[derive(Clone, Eq, Hash, PartialEq)]
@@ -198,9 +203,17 @@ pub struct IntradayBarRow {
     bar_start_session_us: i64,
     bar_end_session_us: i64,
     #[serde(skip)]
-    first_key: SortKey,
+    first_event_key: SortKey,
     #[serde(skip)]
-    last_key: SortKey,
+    last_event_key: SortKey,
+    #[serde(skip)]
+    first_price_key: Option<SortKey>,
+    #[serde(skip)]
+    last_price_key: Option<SortKey>,
+    #[serde(skip)]
+    first_size_key: Option<SortKey>,
+    #[serde(skip)]
+    last_size_key: Option<SortKey>,
 }
 
 impl IntradayBarRow {
@@ -211,6 +224,12 @@ impl IntradayBarRow {
         local_date: String,
     ) -> Self {
         let key = sort_key(event);
+        let include_price = point.family != "trade" || point.rule.update_last;
+        let include_high_low = point.family != "trade" || point.rule.update_high_low;
+        let include_size = point.family != "trade" || point.rule.update_volume;
+        let price = if include_price { point.price } else { 0.0 };
+        let extreme = if include_high_low { point.price } else { 0.0 };
+        let size = if include_size { point.size } else { 0.0 };
         Self {
             schema_version: INTRADAY_BAR_SCHEMA_VERSION,
             ticker: event.ticker.clone(),
@@ -218,45 +237,74 @@ impl IntradayBarRow {
             label_resolution_us: BASE_RESOLUTION_US,
             bucket_index: bucket,
             bar_family: point.family,
-            open: point.price,
-            close: point.price,
-            high: point.price,
-            low: point.price,
-            size_sum: point.size,
-            size_open: point.size,
-            size_close: point.size,
-            size_high: point.size,
-            size_low: point.size,
-            event_count: 1,
+            open: price,
+            close: price,
+            high: extreme,
+            low: extreme,
+            size_sum: size,
+            size_open: size,
+            size_close: size,
+            size_high: size,
+            size_low: size,
+            event_count: if point.family != "trade" || point.rule.update_volume {
+                1
+            } else {
+                0
+            },
             first_event_timestamp_us: event.sip_timestamp_us,
             last_event_timestamp_us: event.sip_timestamp_us,
             bar_start_session_us: bucket * BASE_RESOLUTION_US,
             bar_end_session_us: (bucket + 1) * BASE_RESOLUTION_US,
-            first_key: key,
-            last_key: key,
+            first_event_key: key,
+            last_event_key: key,
+            first_price_key: include_price.then_some(key),
+            last_price_key: include_price.then_some(key),
+            first_size_key: include_size.then_some(key),
+            last_size_key: include_size.then_some(key),
         }
     }
 
     fn update_event(&mut self, event: &LiveCompactEvent, point: &EventPoint) {
         let key = sort_key(event);
-        if key < self.first_key {
-            self.first_key = key;
+        let include_price = point.family != "trade" || point.rule.update_last;
+        let include_high_low = point.family != "trade" || point.rule.update_high_low;
+        let include_size = point.family != "trade" || point.rule.update_volume;
+        if include_price && self.first_price_key.is_none_or(|current| key < current) {
+            self.first_price_key = Some(key);
             self.open = point.price;
-            self.size_open = point.size;
+        }
+        if include_price && self.last_price_key.is_none_or(|current| key >= current) {
+            self.last_price_key = Some(key);
+            self.close = point.price;
+        }
+        if include_high_low {
+            self.high = self.high.max(point.price);
+            self.low = positive_min_f32(self.low, point.price);
+        }
+        if include_size {
+            self.size_sum += point.size;
+            if self.first_size_key.is_none_or(|current| key < current) {
+                self.first_size_key = Some(key);
+                self.size_open = point.size;
+            }
+            if self.last_size_key.is_none_or(|current| key >= current) {
+                self.last_size_key = Some(key);
+                self.size_close = point.size;
+            }
+            self.size_high = self.size_high.max(point.size);
+            self.size_low = positive_min_f64(self.size_low, point.size);
+        }
+        if key < self.first_event_key {
+            self.first_event_key = key;
             self.first_event_timestamp_us = event.sip_timestamp_us;
         }
-        if key >= self.last_key {
-            self.last_key = key;
-            self.close = point.price;
-            self.size_close = point.size;
+        if key >= self.last_event_key {
+            self.last_event_key = key;
             self.last_event_timestamp_us = event.sip_timestamp_us;
         }
-        self.high = self.high.max(point.price);
-        self.low = self.low.min(point.price);
-        self.size_sum += point.size;
-        self.size_high = self.size_high.max(point.size);
-        self.size_low = self.size_low.min(point.size);
-        self.event_count = self.event_count.saturating_add(1);
+        if point.family != "trade" || point.rule.update_volume {
+            self.event_count = self.event_count.saturating_add(1);
+        }
     }
 
     fn from_base(base: &Self, resolution_us: i64) -> Self {
@@ -270,23 +318,51 @@ impl IntradayBarRow {
     }
 
     fn update_base(&mut self, base: &Self) {
-        if base.first_key < self.first_key {
-            self.first_key = base.first_key;
+        if base.first_price_key.is_some()
+            && self
+                .first_price_key
+                .is_none_or(|current| base.first_price_key < Some(current))
+        {
+            self.first_price_key = base.first_price_key;
             self.open = base.open;
+        }
+        if base.first_size_key.is_some()
+            && self
+                .first_size_key
+                .is_none_or(|current| base.first_size_key < Some(current))
+        {
+            self.first_size_key = base.first_size_key;
             self.size_open = base.size_open;
+        }
+        if base.first_event_key < self.first_event_key {
+            self.first_event_key = base.first_event_key;
             self.first_event_timestamp_us = base.first_event_timestamp_us;
         }
-        if base.last_key >= self.last_key {
-            self.last_key = base.last_key;
+        if base.last_price_key.is_some()
+            && self
+                .last_price_key
+                .is_none_or(|current| base.last_price_key >= Some(current))
+        {
+            self.last_price_key = base.last_price_key;
             self.close = base.close;
+        }
+        if base.last_size_key.is_some()
+            && self
+                .last_size_key
+                .is_none_or(|current| base.last_size_key >= Some(current))
+        {
+            self.last_size_key = base.last_size_key;
             self.size_close = base.size_close;
+        }
+        if base.last_event_key >= self.last_event_key {
+            self.last_event_key = base.last_event_key;
             self.last_event_timestamp_us = base.last_event_timestamp_us;
         }
         self.high = self.high.max(base.high);
-        self.low = self.low.min(base.low);
+        self.low = positive_min_f32(self.low, base.low);
         self.size_sum += base.size_sum;
         self.size_high = self.size_high.max(base.size_high);
-        self.size_low = self.size_low.min(base.size_low);
+        self.size_low = positive_min_f64(self.size_low, base.size_low);
         self.event_count = self.event_count.saturating_add(base.event_count);
     }
 }
@@ -294,6 +370,8 @@ impl IntradayBarRow {
 pub async fn spawn_intraday_bar_service(
     config: GatewayConfig,
     metrics: SharedMetrics,
+    decoder: CompactEventDecoder,
+    trade_rules: TradeAggregationRules,
 ) -> Result<IntradayBarService, String> {
     let mut resolutions = config
         .intraday_bar_timeframes
@@ -338,6 +416,8 @@ pub async fn spawn_intraday_bar_service(
         let live_rows = broadcast_sender.clone();
         let shard_resolutions = resolutions.clone();
         let shard_metrics = metrics.clone();
+        let shard_decoder = decoder.clone();
+        let shard_trade_rules = trade_rules.clone();
         tasks.push(tokio::spawn(async move {
             let mut base_bars: BTreeMap<BarKey, IntradayBarRow> = BTreeMap::new();
             let mut base_seen: HashMap<BarKey, HashSet<EventIdentity>> = HashMap::new();
@@ -381,7 +461,7 @@ pub async fn spawn_intraday_bar_service(
                     .and_modify(|value| *value = (*value).max(local_session_us))
                     .or_insert(local_session_us);
                 let bucket = local_session_us.div_euclid(BASE_RESOLUTION_US);
-                for point in event_points(&event) {
+                for point in event_points(&event, &shard_decoder, &shard_trade_rules) {
                     let finalized = finalized_through
                         .get(&(event.ticker.clone(), local_date.clone(), point.family))
                         .copied()
@@ -665,6 +745,9 @@ impl IntradayBarWriter {
                 last_event_timestamp_us UInt64,
                 bar_start_session_us Int64,
                 bar_end_session_us Int64,
+                calculation_revision LowCardinality(String),
+                source_revision String,
+                complete UInt8,
                 updated_at_utc DateTime64(3, 'UTC') DEFAULT now64(3)
             ) ENGINE = ReplacingMergeTree(updated_at_utc)
             PARTITION BY local_date
@@ -675,7 +758,9 @@ impl IntradayBarWriter {
         ))
         .await?;
         self.validate_schema().await?;
-        self.bootstrap_if_empty().await?;
+        if self.config.intraday_bar_bootstrap_on_start {
+            self.bootstrap_if_empty().await?;
+        }
         self.drop_obsolete_tables().await
     }
 
@@ -714,6 +799,9 @@ impl IntradayBarWriter {
             ("last_event_timestamp_us", "UInt64"),
             ("bar_start_session_us", "Int64"),
             ("bar_end_session_us", "Int64"),
+            ("calculation_revision", "LowCardinality(String)"),
+            ("source_revision", "String"),
+            ("complete", "UInt8"),
             ("updated_at_utc", "DateTime64(3, 'UTC')"),
         ];
         let mismatches = expected
@@ -784,40 +872,137 @@ impl IntradayBarWriter {
         if source_rows == 0 {
             return Ok(());
         }
-        for resolution_us in &self.resolutions {
-            let resolution_rows = parse_count(
-                &self
-                    .query(&format!(
-                        "SELECT count() FROM {} WHERE label_resolution_us = {} FORMAT TabSeparated",
-                        self.config.intraday_bar_table, resolution_us
-                    ))
-                    .await?,
-            )?;
-            if resolution_rows > 0 {
+        self.query(&format!(
+            r#"CREATE TABLE IF NOT EXISTS {BOOTSTRAP_STATE_TABLE} (
+                calculation_revision LowCardinality(String), local_date Date,
+                batch_id UInt32, batch_fingerprint String,
+                ticker_count UInt32, base_row_count UInt64,
+                status LowCardinality(String), updated_at_utc DateTime64(3, 'UTC')
+            ) ENGINE = ReplacingMergeTree(updated_at_utc)
+            PARTITION BY local_date
+            ORDER BY (calculation_revision, local_date, batch_id)"#
+        ))
+        .await?;
+        self.query(&format!(
+            "ALTER TABLE {BOOTSTRAP_STATE_TABLE} ADD COLUMN IF NOT EXISTS batch_fingerprint String DEFAULT '' AFTER batch_id"
+        ))
+        .await?;
+        let discovered = self
+            .query(&format!(
+                r#"SELECT
+                    toString(toDate(toTimeZone(fromUnixTimestamp64Micro(toInt64(sip_timestamp_us)), 'America/New_York'))) AS local_date,
+                    ticker
+                FROM {source}
+                WHERE ticker != ''
+                GROUP BY local_date, ticker
+                ORDER BY local_date, ticker
+                FORMAT TSV"#,
+                source = self.config.compact_event_table,
+            ))
+            .await?;
+        let mut by_date = BTreeMap::<String, Vec<String>>::new();
+        for line in discovered.lines() {
+            let Some((local_date, ticker)) = line.split_once('\t') else {
                 continue;
-            }
-            if *resolution_us == BASE_RESOLUTION_US {
-                self.query(&self.bootstrap_base_sql(None)).await?;
-            } else {
-                self.query(&self.bootstrap_rollup_sql(*resolution_us, None))
-                    .await?;
+            };
+            by_date
+                .entry(local_date.to_string())
+                .or_default()
+                .push(ticker.to_string());
+        }
+        let retained_date_count = self
+            .config
+            .recent_live_prior_market_days
+            .max(0)
+            .saturating_add(1) as usize;
+        let first_retained_date = by_date
+            .keys()
+            .rev()
+            .nth(retained_date_count.saturating_sub(1))
+            .cloned();
+        if let Some(first_retained_date) = first_retained_date {
+            by_date.retain(|local_date, _| local_date >= &first_retained_date);
+        }
+        let mut planned_batches = 0_u64;
+        let mut completed_batches = 0_u64;
+        for (local_date, tickers) in by_date {
+            let parsed_date = chrono::NaiveDate::parse_from_str(&local_date, "%Y-%m-%d")
+                .map_err(|error| format!("invalid bootstrap local date {local_date}: {error}"))?;
+            for (batch_index, ticker_batch) in tickers
+                .chunks(self.config.intraday_bar_bootstrap_symbol_batch)
+                .enumerate()
+            {
+                planned_batches = planned_batches.saturating_add(1);
+                let batch_id = u32::try_from(batch_index)
+                    .map_err(|_| "too many intraday bootstrap batches".to_string())?;
+                let batch_fingerprint =
+                    format!("{:016x}", stable_hash(&ticker_batch.join("\u{1f}")));
+                let already_complete = parse_count(
+                    &self
+                        .query(&format!(
+                            "SELECT count() FROM {BOOTSTRAP_STATE_TABLE} FINAL WHERE calculation_revision = '{revision}' AND local_date = toDate('{local_date}') AND batch_id = {batch_id} AND batch_fingerprint = '{batch_fingerprint}' AND status = 'complete' FORMAT TabSeparated",
+                            revision = INTRADAY_BAR_CALCULATION_REVISION,
+                        ))
+                        .await?,
+                )? > 0;
+                if already_complete {
+                    completed_batches = completed_batches.saturating_add(1);
+                    continue;
+                }
+                let ticker_list = ticker_batch
+                    .iter()
+                    .map(|ticker| format!("'{}'", escape_sql_string(ticker)))
+                    .collect::<Vec<_>>()
+                    .join(",");
+                let source_start = parsed_date - chrono::Duration::days(1);
+                let source_end = parsed_date + chrono::Duration::days(1);
+                let base_filter = format!(
+                    " AND local_date_value = toDate('{local_date}') AND ticker IN ({ticker_list})"
+                );
+                let source_filter = format!(
+                    " AND event_date BETWEEN toDate('{source_start}') AND toDate('{source_end}') AND ticker IN ({ticker_list})"
+                );
+                let base_sql = self.bootstrap_base_sql_with_filter(&base_filter, &source_filter);
+                self.query(&format!("EXPLAIN SYNTAX {base_sql}")).await?;
+                self.query(&base_sql).await?;
+                let rollup_filter = format!(
+                    " AND local_date = toDate('{local_date}') AND ticker IN ({ticker_list})"
+                );
+                if let Some(rollup_sql) = self.bootstrap_all_rollups_sql_with_filter(&rollup_filter)
+                {
+                    self.query(&format!("EXPLAIN SYNTAX {rollup_sql}")).await?;
+                    self.query(&rollup_sql).await?;
+                }
+                let base_row_count = parse_count(
+                    &self
+                        .query(&format!(
+                            "SELECT count() FROM {} FINAL WHERE calculation_revision = '{}' AND complete = 1 AND local_date = toDate('{}') AND label_resolution_us = {} AND ticker IN ({}) FORMAT TabSeparated",
+                            self.config.intraday_bar_table,
+                            INTRADAY_BAR_CALCULATION_REVISION,
+                            local_date,
+                            BASE_RESOLUTION_US,
+                            ticker_list,
+                        ))
+                        .await?,
+                )?;
+                if base_row_count == 0 {
+                    return Err(format!(
+                        "bounded intraday bootstrap produced zero base rows for {local_date} batch {batch_id}"
+                    ));
+                }
+                self.query(&format!(
+                    "INSERT INTO {BOOTSTRAP_STATE_TABLE} (calculation_revision, local_date, batch_id, batch_fingerprint, ticker_count, base_row_count, status, updated_at_utc) VALUES ('{revision}', toDate('{local_date}'), {batch_id}, '{batch_fingerprint}', {ticker_count}, {base_row_count}, 'complete', now64(3))",
+                    revision = INTRADAY_BAR_CALCULATION_REVISION,
+                    ticker_count = ticker_batch.len(),
+                ))
+                .await?;
+                completed_batches = completed_batches.saturating_add(1);
             }
         }
-        for resolution_us in &self.resolutions {
-            let resolution_rows = parse_count(
-                &self
-                    .query(&format!(
-                        "SELECT count() FROM {} WHERE label_resolution_us = {} FORMAT TabSeparated",
-                        self.config.intraday_bar_table, resolution_us
-                    ))
-                    .await?,
-            )?;
-            if resolution_rows == 0 {
-                return Err(format!(
-                    "{} bootstrap produced zero {}us bars from {source_rows} compact events; obsolete tables were not dropped",
-                    self.config.intraday_bar_table, resolution_us
-                ));
-            }
+        if planned_batches == 0 || completed_batches != planned_batches {
+            return Err(format!(
+                "bounded intraday bootstrap incomplete: planned={planned_batches}, completed={completed_batches}, source_rows={source_rows}"
+            ));
         }
         Ok(())
     }
@@ -833,12 +1018,16 @@ impl IntradayBarWriter {
                 )
             })
             .unwrap_or_default();
+        self.bootstrap_base_sql_with_filter(&filter, "")
+    }
+
+    fn bootstrap_base_sql_with_filter(&self, filter: &str, source_filter: &str) -> String {
         format!(
             r#"INSERT INTO {target}
             (schema_version, ticker, local_date, label_resolution_us, bucket_index, bar_family,
              open, close, high, low, size_sum, size_open, size_close, size_high, size_low,
             event_count, first_event_timestamp_us, last_event_timestamp_us,
-             bar_start_session_us, bar_end_session_us)
+             bar_start_session_us, bar_end_session_us, calculation_revision, source_revision, complete)
             WITH
               fromUnixTimestamp64Micro(toInt64(sip_timestamp_us)) AS event_ts_utc,
               toTimeZone(event_ts_utc, 'America/New_York') AS event_ts_local,
@@ -846,41 +1035,71 @@ impl IntradayBarWriter {
               toInt64(sip_timestamp_us)
                 - toUnixTimestamp64Micro(toDateTime64(toStartOfDay(event_ts_local), 6, 'America/New_York')) AS session_us,
               intDiv(session_us, {base}) AS bucket,
-              tuple(sip_timestamp_us, source_sequence, bitAnd(event_meta, 1), arrival_sequence) AS event_order
+              tuple(sip_timestamp_us, source_sequence, bitAnd(event_meta, 1), arrival_sequence) AS event_order,
+              (SELECT groupArray(toUInt16(token_id)) FROM {reference_db}.event_condition_token_reference
+                WHERE source_family = 'trade_conditions' AND is_join_canonical = 1) AS known_tokens,
+              (SELECT groupArray(toUInt16(token_id)) FROM {reference_db}.event_condition_token_reference
+                WHERE source_family = 'trade_conditions' AND is_join_canonical = 1 AND update_high_low = 1) AS high_low_tokens,
+              (SELECT groupArray(toUInt16(token_id)) FROM {reference_db}.event_condition_token_reference
+                WHERE source_family = 'trade_conditions' AND is_join_canonical = 1 AND update_last = 1) AS last_tokens,
+              (SELECT groupArray(toUInt16(token_id)) FROM {reference_db}.event_condition_token_reference
+                WHERE source_family = 'trade_conditions' AND is_join_canonical = 1 AND update_volume = 1) AS volume_tokens,
+              (SELECT groupArray(toUInt16(token_id)) FROM {reference_db}.event_condition_token_reference
+                WHERE source_family = 'trade_conditions' AND is_join_canonical = 1 AND modifier_int = 12) AS form_t_tokens
             SELECT
               {schema_version}, ticker, local_date_value, {base}, bucket, bar_family,
-              toFloat32(argMin(price, event_order)), toFloat32(argMax(price, event_order)),
-              toFloat32(max(price)), toFloat32(min(price)), toFloat32(sum(size)),
-              toFloat32(argMin(size, event_order)), toFloat32(argMax(size, event_order)),
-              toFloat32(max(size)), toFloat32(min(size)), toUInt32(count()),
+              toFloat32(argMinIf(price, event_order, price_eligible)),
+              toFloat32(argMaxIf(price, event_order, price_eligible)),
+              toFloat32(maxIf(price, high_low_eligible)),
+              toFloat32(minIf(price, high_low_eligible)),
+              toFloat64(sumIf(size, volume_eligible)),
+              toFloat64(argMinIf(size, event_order, volume_eligible)),
+              toFloat64(argMaxIf(size, event_order, volume_eligible)),
+              toFloat64(maxIf(size, volume_eligible)),
+              toFloat64(minIf(size, volume_eligible)),
+              toUInt64(countIf(bar_family != 'trade' OR volume_eligible)),
               toInt64(min(sip_timestamp_us)), toInt64(max(sip_timestamp_us)),
-              bucket * {base}, (bucket + 1) * {base}
+              bucket * {base}, (bucket + 1) * {base}, '{calculation_revision}', '{source_revision}', 1
             FROM
             (
               SELECT *, 'trade' AS bar_family,
                 toFloat64(price_primary_int) / if(bitAnd(event_meta, 2) != 0, 10000., 100.) AS price,
-                toFloat64(size_primary) AS size
-              FROM {source} FINAL WHERE bitAnd(event_meta, 1) = 1
+                toFloat64(size_primary) AS size,
+                arrayFilter(token -> token > 0, [toUInt16(condition_token_1), toUInt16(condition_token_2), toUInt16(condition_token_3), toUInt16(condition_token_4), toUInt16(condition_token_5)]) AS condition_tokens,
+                (toHour(event_ts_local) < 9 OR (toHour(event_ts_local) = 9 AND toMinute(event_ts_local) < 30) OR toHour(event_ts_local) >= 16)
+                  AND arrayExists(token -> has(form_t_tokens, token), condition_tokens)
+                  AND arrayAll(token -> has(form_t_tokens, token) OR (has(high_low_tokens, token) AND has(last_tokens, token)), condition_tokens) AS form_t_price_eligible,
+                empty(condition_tokens) OR arrayAll(token -> has(known_tokens, token) AND (has(high_low_tokens, token) OR (has(form_t_tokens, token) AND form_t_price_eligible)), condition_tokens) AS high_low_eligible,
+                empty(condition_tokens) OR arrayAll(token -> has(known_tokens, token) AND (has(last_tokens, token) OR (has(form_t_tokens, token) AND form_t_price_eligible)), condition_tokens) AS last_eligible,
+                empty(condition_tokens) OR arrayAll(token -> has(known_tokens, token) AND (has(volume_tokens, token) OR (has(form_t_tokens, token) AND form_t_price_eligible)), condition_tokens) AS volume_eligible,
+                last_eligible AS price_eligible
+              FROM {source} FINAL WHERE bitAnd(event_meta, 1) = 1{source_filter}
               UNION ALL
               SELECT *, 'quote_bid' AS bar_family,
                 toFloat64(price_secondary_int) / if(bitAnd(event_meta, 4) != 0, 10000., 100.) AS price,
-                toFloat64(size_secondary) AS size
-              FROM {source} FINAL WHERE bitAnd(event_meta, 1) = 0
+                toFloat64(size_secondary) AS size, [], false, true, true, true, true
+              FROM {source} FINAL WHERE bitAnd(event_meta, 1) = 0{source_filter}
               UNION ALL
               SELECT *, 'quote_ask' AS bar_family,
                 toFloat64(price_primary_int) / if(bitAnd(event_meta, 2) != 0, 10000., 100.) AS price,
-                toFloat64(size_primary) AS size
-              FROM {source} FINAL WHERE bitAnd(event_meta, 1) = 0
+                toFloat64(size_primary) AS size, [], false, true, true, true, true
+              FROM {source} FINAL WHERE bitAnd(event_meta, 1) = 0{source_filter}
             )
-            WHERE price > 0 AND session_us >= {session_start} AND session_us < {session_end}{filter}
+            WHERE price > 0 AND size > 0
+              AND (bar_family != 'trade' OR price_eligible OR volume_eligible)
+              AND session_us >= {session_start} AND session_us < {session_end}{filter}
             GROUP BY ticker, local_date_value, bucket, bar_family"#,
             target = self.config.intraday_bar_table,
             source = self.config.compact_event_table,
+            reference_db = self.config.historical_clickhouse_database,
             schema_version = INTRADAY_BAR_SCHEMA_VERSION,
             base = BASE_RESOLUTION_US,
             session_start = SESSION_START_US,
             session_end = SESSION_END_US,
             filter = filter,
+            source_filter = source_filter,
+            calculation_revision = INTRADAY_BAR_CALCULATION_REVISION,
+            source_revision = escape_sql_string(&self.config.qmd_run_id),
         )
     }
 
@@ -896,28 +1115,83 @@ impl IntradayBarWriter {
                 )
             })
             .unwrap_or_default();
+        self.bootstrap_rollup_sql_with_filter(resolution_us, &filter)
+    }
+
+    fn bootstrap_rollup_sql_with_filter(&self, resolution_us: i64, filter: &str) -> String {
         format!(
             r#"INSERT INTO {table}
             (schema_version, ticker, local_date, label_resolution_us, bucket_index, bar_family,
              open, close, high, low, size_sum, size_open, size_close, size_high, size_low,
              event_count, first_event_timestamp_us, last_event_timestamp_us,
-             bar_start_session_us, bar_end_session_us)
+             bar_start_session_us, bar_end_session_us, calculation_revision, source_revision, complete)
             SELECT
               {schema_version}, ticker, local_date, {resolution},
               intDiv(bar_start_session_us, {resolution}) AS bucket, bar_family,
-              argMin(open, bucket_index), argMax(close, bucket_index), max(high), min(low), sum(size_sum),
-              argMin(size_open, bucket_index), argMax(size_close, bucket_index), max(size_high), min(size_low),
+              argMinIf(open, bucket_index, open > 0), argMaxIf(close, bucket_index, close > 0),
+              max(high), minIf(low, low > 0), sum(size_sum),
+              argMinIf(size_open, bucket_index, size_open > 0),
+              argMaxIf(size_close, bucket_index, size_close > 0),
+              max(size_high), minIf(size_low, size_low > 0),
               toUInt64(sum(event_count)), min(first_event_timestamp_us), max(last_event_timestamp_us),
-              bucket * {resolution}, (bucket + 1) * {resolution}
+              bucket * {resolution}, (bucket + 1) * {resolution}, '{calculation_revision}', '{source_revision}', 1
             FROM {table} FINAL
-            WHERE label_resolution_us = {base}{filter}
+            WHERE schema_version = {schema_version}
+              AND calculation_revision = '{calculation_revision}' AND complete = 1
+              AND label_resolution_us = {base}{filter}
             GROUP BY ticker, local_date, bucket, bar_family"#,
             table = self.config.intraday_bar_table,
             schema_version = INTRADAY_BAR_SCHEMA_VERSION,
             resolution = resolution_us,
             base = BASE_RESOLUTION_US,
             filter = filter,
+            calculation_revision = INTRADAY_BAR_CALCULATION_REVISION,
+            source_revision = escape_sql_string(&self.config.qmd_run_id),
         )
+    }
+
+    fn bootstrap_all_rollups_sql_with_filter(&self, filter: &str) -> Option<String> {
+        let resolutions = self
+            .resolutions
+            .iter()
+            .copied()
+            .filter(|value| *value > BASE_RESOLUTION_US)
+            .map(|value| value.to_string())
+            .collect::<Vec<_>>();
+        if resolutions.is_empty() {
+            return None;
+        }
+        Some(format!(
+            r#"INSERT INTO {table}
+            (schema_version, ticker, local_date, label_resolution_us, bucket_index, bar_family,
+             open, close, high, low, size_sum, size_open, size_close, size_high, size_low,
+             event_count, first_event_timestamp_us, last_event_timestamp_us,
+             bar_start_session_us, bar_end_session_us, calculation_revision, source_revision, complete)
+            SELECT
+              {schema_version}, ticker, local_date, target_resolution_us,
+              intDiv(bar_start_session_us, target_resolution_us) AS bucket, bar_family,
+              argMinIf(open, bucket_index, open > 0), argMaxIf(close, bucket_index, close > 0),
+              max(high), minIf(low, low > 0), sum(size_sum),
+              argMinIf(size_open, bucket_index, size_open > 0),
+              argMaxIf(size_close, bucket_index, size_close > 0),
+              max(size_high), minIf(size_low, size_low > 0),
+              toUInt64(sum(event_count)), min(first_event_timestamp_us), max(last_event_timestamp_us),
+              bucket * target_resolution_us, (bucket + 1) * target_resolution_us,
+              '{calculation_revision}', '{source_revision}', 1
+            FROM {table} FINAL
+            ARRAY JOIN [{resolutions}] AS target_resolution_us
+            WHERE schema_version = {schema_version}
+              AND calculation_revision = '{calculation_revision}' AND complete = 1
+              AND label_resolution_us = {base}{filter}
+            GROUP BY ticker, local_date, target_resolution_us, bucket, bar_family"#,
+            table = self.config.intraday_bar_table,
+            schema_version = INTRADAY_BAR_SCHEMA_VERSION,
+            resolutions = resolutions.join(","),
+            base = BASE_RESOLUTION_US,
+            filter = filter,
+            calculation_revision = INTRADAY_BAR_CALCULATION_REVISION,
+            source_revision = escape_sql_string(&self.config.qmd_run_id),
+        ))
     }
 
     async fn drop_obsolete_tables(&self) -> Result<(), String> {
@@ -1088,6 +1362,9 @@ impl IntradayBarWriter {
                     "last_event_timestamp_us": row.last_event_timestamp_us,
                     "bar_start_session_us": row.bar_start_session_us,
                     "bar_end_session_us": row.bar_end_session_us,
+                    "calculation_revision": INTRADAY_BAR_CALCULATION_REVISION,
+                    "source_revision": self.config.qmd_run_id,
+                    "complete": 1u8,
                 })
                 .to_string()
             })
@@ -1208,46 +1485,66 @@ impl IntradayBarWriter {
     }
 }
 
-fn event_points(event: &LiveCompactEvent) -> Vec<EventPoint> {
-    let primary_scale = if event.event_meta & 0x02 != 0 {
-        10_000.0
+fn event_points(
+    event: &LiveCompactEvent,
+    decoder: &CompactEventDecoder,
+    trade_rules: &TradeAggregationRules,
+) -> Vec<EventPoint> {
+    match decoder.decode(event) {
+        MarketEvent::Trade(trade) if trade.price > 0.0 && trade.size > 0.0 => {
+            let rule = trade_rules.resolve(&trade.conditions, trade.ts);
+            (rule.update_high_low || rule.update_last || rule.update_volume)
+                .then_some(EventPoint {
+                    family: "trade",
+                    price: trade.price as f32,
+                    size: trade.size,
+                    rule,
+                })
+                .into_iter()
+                .collect()
+        }
+        MarketEvent::Quote(quote) => {
+            let mut out = Vec::with_capacity(2);
+            if quote.bid_price > 0.0 && quote.bid_size > 0 {
+                out.push(EventPoint {
+                    family: "quote_bid",
+                    price: quote.bid_price as f32,
+                    size: f64::from(quote.bid_size),
+                    rule: TradeUpdateRule::regular(),
+                });
+            }
+            if quote.ask_price > 0.0 && quote.ask_size > 0 {
+                out.push(EventPoint {
+                    family: "quote_ask",
+                    price: quote.ask_price as f32,
+                    size: f64::from(quote.ask_size),
+                    rule: TradeUpdateRule::regular(),
+                });
+            }
+            out
+        }
+        _ => Vec::new(),
+    }
+}
+
+fn positive_min_f32(current: f32, candidate: f32) -> f32 {
+    if current <= 0.0 {
+        candidate
+    } else if candidate <= 0.0 {
+        current
     } else {
-        100.0
-    };
-    let secondary_scale = if event.event_meta & 0x04 != 0 {
-        10_000.0
+        current.min(candidate)
+    }
+}
+
+fn positive_min_f64(current: f64, candidate: f64) -> f64 {
+    if current <= 0.0 {
+        candidate
+    } else if candidate <= 0.0 {
+        current
     } else {
-        100.0
-    };
-    if event.event_meta & 1 == 1 {
-        let price = event.price_primary_int as f32 / primary_scale;
-        return (price > 0.0)
-            .then_some(EventPoint {
-                family: "trade",
-                price,
-                size: f64::from(event.size_primary),
-            })
-            .into_iter()
-            .collect();
+        current.min(candidate)
     }
-    let mut out = Vec::new();
-    let bid = event.price_secondary_int as f32 / secondary_scale;
-    let ask = event.price_primary_int as f32 / primary_scale;
-    if bid > 0.0 {
-        out.push(EventPoint {
-            family: "quote_bid",
-            price: bid,
-            size: f64::from(event.size_secondary),
-        });
-    }
-    if ask > 0.0 {
-        out.push(EventPoint {
-            family: "quote_ask",
-            price: ask,
-            size: f64::from(event.size_primary),
-        });
-    }
-    out
 }
 
 fn local_coordinates(sip_timestamp_us: u64) -> Option<(String, i64)> {
@@ -1385,6 +1682,14 @@ mod tests {
     use super::*;
     use chrono::{TimeZone, Utc};
 
+    fn points(event: &LiveCompactEvent) -> Vec<EventPoint> {
+        event_points(
+            event,
+            &CompactEventDecoder::default(),
+            &TradeAggregationRules::new([(0, TradeUpdateRule::regular())]).unwrap(),
+        )
+    }
+
     fn quote_event(timestamp_us: u64, sequence: u64, bid: u32, ask: u32) -> LiveCompactEvent {
         LiveCompactEvent {
             arrival_sequence: sequence,
@@ -1414,8 +1719,8 @@ mod tests {
     fn coverage_groups_only_base_rows_by_session_partition() {
         let first_event = quote_event(1_752_400_000_010_000, 1, 100_000, 101_000);
         let second_event = quote_event(1_752_486_400_010_000, 2, 102_000, 103_000);
-        let first_point = event_points(&first_event).remove(0);
-        let second_point = event_points(&second_event).remove(0);
+        let first_point = points(&first_event).remove(0);
+        let second_point = points(&second_event).remove(0);
         let first =
             IntradayBarRow::from_event(&first_event, &first_point, 144_000, "2026-07-13".into());
         let second =
@@ -1431,7 +1736,7 @@ mod tests {
 
     #[test]
     fn quote_points_match_training_families_and_scales() {
-        let points = event_points(&quote_event(1_752_400_000_000_000, 2, 101_200, 101_234));
+        let points = points(&quote_event(1_752_400_000_000_000, 2, 101_200, 101_234));
         assert_eq!(points.len(), 2);
         assert_eq!(points[0].family, "quote_bid");
         assert!((points[0].price - 10.12).abs() < 0.0001);
@@ -1439,16 +1744,93 @@ mod tests {
     }
 
     #[test]
+    fn trade_conditions_keep_price_and_volume_ordering_independent() {
+        let mut first = quote_event(1_752_400_000_010_000, 1, 100_000, 101_000);
+        first.event_meta = 0x03;
+        first.price_primary_int = 100_000;
+        first.size_primary = 10.0;
+        let mut volume_only = first.clone();
+        volume_only.arrival_sequence = 2;
+        volume_only.source_sequence = 2;
+        volume_only.sip_timestamp_us += 10_000;
+        volume_only.price_primary_int = 200_000;
+        volume_only.size_primary = 25.0;
+        volume_only.condition_token_1 = 21;
+        let decoder = CompactEventDecoder::new([], [(21, 2)], [], []);
+        let rules = TradeAggregationRules::new([
+            (0, TradeUpdateRule::regular()),
+            (
+                2,
+                TradeUpdateRule {
+                    update_high_low: false,
+                    update_last: false,
+                    update_volume: true,
+                },
+            ),
+        ])
+        .unwrap();
+        let first_point = event_points(&first, &decoder, &rules).remove(0);
+        let volume_point = event_points(&volume_only, &decoder, &rules).remove(0);
+        let mut row =
+            IntradayBarRow::from_event(&first, &first_point, 144_000, "2026-07-13".into());
+        row.update_event(&volume_only, &volume_point);
+        assert_eq!(row.open, 10.0);
+        assert_eq!(row.close, 10.0);
+        assert_eq!(row.high, 10.0);
+        assert_eq!(row.low, 10.0);
+        assert_eq!(row.size_sum, 35.0);
+        assert_eq!(row.size_close, 25.0);
+        assert_eq!(row.event_count, 2);
+    }
+
+    #[test]
+    fn high_low_only_trade_does_not_change_open_or_close() {
+        let mut regular = quote_event(1_752_400_000_010_000, 1, 100_000, 101_000);
+        regular.event_meta = 0x03;
+        regular.price_primary_int = 100_000;
+        let mut high_low_only = regular.clone();
+        high_low_only.arrival_sequence = 2;
+        high_low_only.source_sequence = 2;
+        high_low_only.sip_timestamp_us += 10_000;
+        high_low_only.price_primary_int = 110_000;
+        high_low_only.condition_token_1 = 22;
+        let decoder = CompactEventDecoder::new([], [(22, 3)], [], []);
+        let rules = TradeAggregationRules::new([
+            (0, TradeUpdateRule::regular()),
+            (
+                3,
+                TradeUpdateRule {
+                    update_high_low: true,
+                    update_last: false,
+                    update_volume: false,
+                },
+            ),
+        ])
+        .unwrap();
+        let regular_point = event_points(&regular, &decoder, &rules).remove(0);
+        let high_low_point = event_points(&high_low_only, &decoder, &rules).remove(0);
+        let mut row =
+            IntradayBarRow::from_event(&regular, &regular_point, 144_000, "2026-07-13".into());
+        row.update_event(&high_low_only, &high_low_point);
+        assert_eq!(row.open, 10.0);
+        assert_eq!(row.close, 10.0);
+        assert_eq!(row.high, 11.0);
+        assert_eq!(row.low, 10.0);
+        assert_eq!(row.size_sum, 10.0);
+        assert_eq!(row.event_count, 1);
+    }
+
+    #[test]
     fn parent_rollup_uses_closed_base_bar_algebra() {
         let first = quote_event(1_752_400_000_010_000, 1, 100_000, 101_000);
         let second = quote_event(1_752_400_000_090_000, 2, 99_000, 102_000);
-        let point1 = event_points(&first).remove(0);
-        let point2 = event_points(&second).remove(0);
+        let point1 = points(&first).remove(0);
+        let point2 = points(&second).remove(0);
         let mut base = IntradayBarRow::from_event(&first, &point1, 144_000, "2026-07-13".into());
         base.update_event(&second, &point2);
         let mut parent = IntradayBarRow::from_base(&base, 1_000_000);
         let third = quote_event(1_752_400_000_110_000, 3, 103_000, 104_000);
-        let point3 = event_points(&third).remove(0);
+        let point3 = points(&third).remove(0);
         let next = IntradayBarRow::from_event(&third, &point3, 144_001, "2026-07-13".into());
         parent.update_base(&next);
         assert_eq!(parent.event_count, 3);
@@ -1461,7 +1843,7 @@ mod tests {
     #[tokio::test]
     async fn sparse_parent_closes_without_another_base_event() {
         let event = quote_event(1_752_400_000_010_000, 1, 100_000, 101_000);
-        let point = event_points(&event).remove(0);
+        let point = points(&event).remove(0);
         let base = IntradayBarRow::from_event(&event, &point, 144_000, "2026-07-13".into());
         let key = (
             base.ticker.clone(),

@@ -11,6 +11,7 @@ param(
     [string]$TerminalTarget = "Auto",
     [string]$TerminalWindowName = "quant-research-workbench-qmd-live",
     [string]$QmdLiveServiceRuntimeRoot = "",
+    [switch]$BootstrapBars,
     [ValidateRange(0.01, 100.0)]
     [double]$MaxGitDirectoryGB = 2.0
 )
@@ -214,6 +215,9 @@ $qmdLiveCommand = $pathAssignment +
     " -HostRole " + (ConvertTo-PowerShellLiteral -Value $HostRole) +
     " -PythonExe " + (ConvertTo-PowerShellLiteral -Value $resolvedPython) +
     " -TerminalNoScreen"
+if ($BootstrapBars) {
+    $qmdLiveCommand += " -BootstrapBars"
+}
 
 function Open-ServiceTabs {
     param([object[]]$Tabs)

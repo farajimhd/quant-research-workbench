@@ -705,7 +705,7 @@ class WatchlistRuntimeServiceTests(unittest.TestCase):
         self.assertEqual(projection["AAPL"]["average_daily_volume"], 1000)
         self.assertEqual(
             projection["AAPL"]["previous_close_source"],
-            "qmd_live_intraday_family_bars_v2",
+            "qmd_live_intraday_family_bars_v3",
         )
 
     @patch("src.backend.watchlist_runtime_service.threading.Thread")

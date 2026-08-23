@@ -5845,6 +5845,7 @@ def trading_canvas_live_chart_history(
     include_market_signals: bool = True,
     include_structure: bool = True,
     stage: str = Query(default="full", pattern="^(bars|full)$"),
+    mode: str = Query(default="live", pattern="^(live|replay|backtest|debug)$"),
     days: int = Query(default=1, ge=1, le=1),
     row_limit: int = Query(default=20_000, ge=1, le=50_000),
 ) -> dict[str, Any]:
@@ -5867,7 +5868,7 @@ def trading_canvas_live_chart_history(
         cache_key = (
             ticker, timeframe, before or "", session_date or "", as_of or "",
             before_bar or "", tuple(projected_columns or ()), allow_persisted_bars, include_market_signals,
-            include_structure, stage, row_limit,
+            include_structure, stage, mode, row_limit,
         )
         return _CANVAS_CHART_HISTORY_CACHE.get_or_load(
             cache_key,
@@ -5883,6 +5884,7 @@ def trading_canvas_live_chart_history(
                 include_market_signals=include_market_signals,
                 include_structure=include_structure,
                 stage=stage,
+                mode=mode,
                 row_limit=row_limit,
             ),
         )
@@ -5905,6 +5907,7 @@ def _canvas_live_chart_history(
     include_market_signals: bool,
     include_structure: bool,
     stage: str,
+    mode: str,
     row_limit: int,
 ) -> dict[str, Any]:
     before_date = date.fromisoformat(before) if before else datetime.now(ZoneInfo(EXCHANGE_TIME_ZONE)).date()
@@ -5921,6 +5924,7 @@ def _canvas_live_chart_history(
         include_market_signals=include_market_signals,
         include_structure=include_structure,
         stage=stage,
+        mode=mode,
     )
 
 

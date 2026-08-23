@@ -92,8 +92,14 @@ are live-tradability blocking until their close transition is observed.
 Canonical intraday bars are always enabled and require compact-event
 persistence. `QMD_INTRADAY_BAR_TIMEFRAMES` defaults to
 `100ms,1s,5s,10s,30s,1m,5m,1h`, `QMD_INTRADAY_BAR_TABLE` defaults to
-`intraday_family_bars_v2`, and the channel/shard controls are
+`intraday_family_bars_v3`, and the channel/shard controls are
 `QMD_INTRADAY_BAR_CHANNEL_CAPACITY` and `QMD_INTRADAY_BAR_SHARD_COUNT`.
+`QMD_INTRADAY_BAR_BOOTSTRAP_ON_START` defaults to `false`; use the managed
+launcher `-BootstrapBars` only for the reviewed one-time v3 migration.
+`QMD_INTRADAY_BAR_BOOTSTRAP_SYMBOL_BATCH` defaults to `128` and bounds each
+restart-safe date/ticker batch. Keep it unchanged until an active migration
+finishes; the checkpoint also fingerprints the exact ordered ticker set so
+source-universe changes cannot make a different batch look complete.
 
 ## Indicators
 
@@ -103,7 +109,8 @@ persistence. `QMD_INTRADAY_BAR_TIMEFRAMES` defaults to
 | `QMD_INDICATOR_HISTORY_BY_TIMEFRAME` | `1s:900,10s:360,30s:480,1m:960,5m:192,1h:32` | Closed indicator rows retained per ticker/timeframe. | If a timeframe is missing, fallback is `QMD_INDICATOR_HISTORY_LIMIT`. |
 | `QMD_INDICATOR_HISTORY_LIMIT` | `1000` | Fallback indicator history limit. | Used only for unlisted timeframes. |
 | `QMD_INDICATOR_SHARD_COUNT` | `8` | Number of indicator worker shards. | Increase if indicator latency rises. |
-| `QMD_PERSIST_INDICATORS` | `false` | Persist closed bar-level indicator rows to ClickHouse. | Keep false by default because these indicators can be recomputed from compact events and `intraday_family_bars_v2`. |
+| `QMD_INDICATOR_TABLE` | `qmd_indicator_rows_v1` | Versioned durable closed-bar indicator table. | Change only as a coordinated schema migration. |
+| `QMD_PERSIST_INDICATORS` | `true` | Persist closed scoped bar-level indicator rows to ClickHouse. | Required for low-latency Live chart hydration; Replay/Backtest/Debug still use QMD History. |
 | `QMD_PERSIST_STRUCTURE_EVENTS` | `true` | Persist confirmed generic-structure events plus the latest full versioned engine checkpoint. | Keep enabled for strategy history and exact restart continuity; changed symbols are coalesced per writer flush and this does not require full bar-indicator persistence. |
 
 ## ClickHouse Batch Writes

@@ -325,9 +325,10 @@ but only live QMD owns Massive connectivity and `q_live` persistence.
 | `events` | yes | Durable live compact event source for ML-serving and live replay. |
 | `live_massive_trades` | optional | Raw trade source for replay/debug when `QMD_PERSIST_RAW_EVENTS=true`. |
 | `live_massive_quotes` | optional | Raw quote source for replay/debug when `QMD_PERSIST_RAW_EVENTS=true`. |
-| `intraday_family_bars_v2` | yes | Single rolling sparse family-bar table from 100ms through 1h. |
+| `intraday_family_bars_v3` | yes | Condition-aware, revisioned rolling sparse family-bar table from 100ms through 1h. |
+| `qmd_intraday_bar_bootstrap_v1` | migration only | Restart checkpoint for exact date/ticker batches during an operator-requested v3 bootstrap. |
 | `live_symbol_market_event_v1` | yes | Sparse abnormal live market-state transition audit; normal state is not persisted. |
-| `live_market_indicators` | optional | Materialized closed bar-level indicators when `QMD_PERSIST_INDICATORS=true`. |
+| `qmd_indicator_rows_v1` | yes | Scoped, versioned closed bar-level indicators for Live hydration. |
 | `qmd_gap_fill_runs` | yes if gap fill enabled | Audit trail for gap-fill attempts. |
 | `qmd_market_coverage_manifest_v1` | yes if startup maintenance or historical planning is enabled | Coarse run-level live repair and historical flatfile planning manifest. |
 | `qmd_live_event_coverage_v1` | yes | Fine-grained recent q_live event coverage confirmations and repair intervals. |
@@ -346,8 +347,12 @@ Before live use:
 5. `/metrics` shows rising `ingest_trades` and `ingest_quotes` during active market data.
 6. Drop counters stay at zero or remain explainable during bursts.
 7. `events` receives rows or `/stream/compact-events` emits rows.
-8. `intraday_family_bars_v2` receives closed 100ms bars and their derived rollups.
-9. `/snapshot/live-market-state` is reachable and `live_symbol_market_event_v1` exists.
+8. `intraday_family_bars_v3` receives condition-aware closed 100ms bars and their derived rollups.
+9. `qmd_indicator_rows_v1` receives closed rows only for active computation
+   targets; Signal Stream decisions persist independently in their occurrence
+   table. All three derived products follow the same recent-session retention
+   boundary after archive verification.
+10. `/snapshot/live-market-state` is reachable and `live_symbol_market_event_v1` exists.
 
 ## Failure Triage
 
@@ -367,7 +372,7 @@ Before live use:
 | Gap fill records `no_symbols_available` | Outside streaming hours, no q_live or latest historical compact-event symbols were available for REST repair. |
 | Gap fill keeps fetching many rows | Compare `provider_rows_fetched`, `canonical_rows_replayed`, and `novel_rows_enqueued`. Replayed rows must be filtered before fan-out; repeated novel rows indicate a true coverage or checkpoint gap. |
 | Startup fails during compact-event preflight | The table engine, partition, columns, or full-payload sorting key is incompatible. Apply a reviewed schema migration; do not reinterpret provider timestamp/sequence collisions as duplicate events. |
-| Bars predate the canonical replay fix | Stop QMD Live, plan with `python scripts/repair_qmd_live_canonical_bars.py --start-date YYYY-MM-DD --end-date YYYY-MM-DD`, review the external manifest, then rerun with `--execute`. |
+| Bars predate v3 | Stop QMD Live and use the managed `-BootstrapBars` migration. `repair_qmd_live_canonical_bars.py` is audit-only; direct SQL execution is retired. |
 
 ## Security Notes
 
