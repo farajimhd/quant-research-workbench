@@ -383,25 +383,26 @@ and comparability limits are documented in
 `docs/codex/NEWS_STRUCTURED_METADATA_RF_V1.md`. Bulk outputs remain under
 `D:\TradingML\runtimes\text_intelligence\news_synthesis_v1\structured_metadata_rf_v1`.
 
-### Reverse structured metadata RF diagnostic
+### Finalized-label structured metadata RF diagnostics
 
-The reverse-role diagnostic reuses the exact frozen V1 matrices and 11,434
-structured dimensions, replaces both targets from the latest correction-grade
-authority, selects configuration and threshold wholly inside 2026, refits on
-all decisive 2026 rows, and evaluates revised 2025 labels once.
+The forward and reverse diagnostics reuse the exact frozen V1 matrices and
+11,434 structured dimensions and replace both targets from the finalized
+correction-grade authority. Selection stays within the training year before
+the final model evaluates the other year.
 
 ```powershell
 $env:PYTHONDONTWRITEBYTECODE='1'
+python -m research.text_intelligence.news_synthesis_v1.run_structured_metadata_rf_forward train-evaluate
+python -m research.text_intelligence.news_synthesis_v1.run_structured_metadata_rf_forward validate
 python -m research.text_intelligence.news_synthesis_v1.run_structured_metadata_rf_reverse train-evaluate
 python -m research.text_intelligence.news_synthesis_v1.run_structured_metadata_rf_reverse validate
 ```
 
-This is a backward-transfer diagnostic, not forward release evidence. The
-frozen dictionary was originally constructed using 2025 category support, so
-the 2025 evaluation is not feature-contract-blind. Results and limitations are
-documented in `docs/codex/NEWS_STRUCTURED_METADATA_RF_REVERSE_2026_TO_2025_V1.md`.
-Bulk output remains under
-`D:\TradingML\runtimes\text_intelligence\news_synthesis_v1\structured_metadata_rf_reverse_2026_to_2025_v1`.
+These are finalized-label agreement diagnostics, not release evidence, because
+both test-year label populations were corrected after model-disagreement
+selection. Results and limitations are documented in
+`docs/codex/NEWS_STRUCTURED_RF_FINAL_BIDIRECTIONAL_EVALUATION_V1.md`. Bulk
+outputs remain under `D:\TradingML\runtimes\text_intelligence\news_synthesis_v1`.
 
 ### Structured RF disagreement blind audit V1
 
