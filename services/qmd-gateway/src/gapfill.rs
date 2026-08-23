@@ -432,7 +432,7 @@ impl GapFillService {
             .start(
                 "startup_maintenance",
                 "startup_recent_repair",
-                "Auditing q_live event structure and coverage before websocket ingest.",
+                "Auditing q_live event structure and coverage before REST repair.",
                 Some(window_start),
                 Some(window_end),
             )
