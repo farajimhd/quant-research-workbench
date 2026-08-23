@@ -435,6 +435,7 @@ untouched tail without using it for parameter or threshold selection:
 $env:PYTHONDONTWRITEBYTECODE='1'
 python -m research.text_intelligence.news_synthesis_v1.run_structured_metadata_rf_pre_holdout train-evaluate
 python -m research.text_intelligence.news_synthesis_v1.run_structured_metadata_rf_pre_holdout validate
+python -m research.text_intelligence.news_synthesis_v1.run_structured_metadata_rf_pre_holdout evaluate-training
 ```
 
 The frozen population, review funnel, immutable-model metrics, and limits are

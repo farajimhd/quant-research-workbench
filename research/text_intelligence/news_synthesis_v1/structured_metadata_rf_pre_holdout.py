@@ -303,3 +303,102 @@ def validate_artifacts(*, output_root: Path) -> dict[str, Any]:
         },
     })
     return validation
+
+
+def evaluate_training(
+    *, parent_root: Path, authority_root: Path, model_root: Path,
+    output_root: Path,
+) -> dict[str, Any]:
+    if output_root.exists():
+        raise FileExistsError(output_root)
+    _verify_manifest(parent_root)
+    _verify_manifest(authority_root)
+    _verify_manifest(model_root)
+    model_report = json.loads((model_root / "REPORT.json").read_text(encoding="utf-8"))
+    if model_report.get("experiment_version") != EXPERIMENT_VERSION:
+        raise ValueError("unexpected model experiment")
+    threshold = float(model_report["selected_threshold"])
+    train_index = (
+        list(iter_jsonl(parent_root / "ROWS_2025_TRAIN.jsonl"))
+        + list(iter_jsonl(parent_root / "ROWS_2026_TEST.jsonl"))
+    )
+    x_train = sparse.vstack(
+        (
+            sparse.load_npz(parent_root / "X_2025_TRAIN.npz"),
+            sparse.load_npz(parent_root / "X_2026_TEST.npz"),
+        ),
+        format="csr",
+    )
+    if len(train_index) != EXPECTED_TRAIN_ARTICLES or x_train.shape[0] != len(train_index):
+        raise ValueError("training population changed")
+    if max(str(row["published_at_utc"]) for row in train_index) != TRAIN_END_UTC:
+        raise ValueError("training boundary changed")
+    source_ids = {str(row["source_id"]) for row in train_index}
+    if len(source_ids) != len(train_index):
+        raise ValueError("duplicate training source IDs")
+    labels = _latest_labels(authority_root, source_ids)
+    truth = _labels_for(train_index, labels)
+    model = joblib.load(model_root / "RANDOM_FOREST.joblib")
+    probability = model.predict_proba(x_train)[:, 1]
+
+    evaluations = {}
+    for name, cutoff in (("selected_threshold", threshold), ("threshold_0_5", 0.5)):
+        predicted = (probability >= cutoff).astype(np.int8)
+        mismatch = predicted != truth
+        evaluations[name] = {
+            "metrics": binary_metrics(truth, probability, cutoff),
+            "mismatches": int(mismatch.sum()),
+            "mismatch_share": float(mismatch.mean()),
+            "false_eligible": int(((predicted == 1) & (truth == 0)).sum()),
+            "false_ineligible": int(((predicted == 0) & (truth == 1)).sum()),
+        }
+    report = {
+        "experiment_version": f"{EXPERIMENT_VERSION}_training_resubstitution_v1",
+        "status": "complete",
+        "created_at_utc": datetime.now(UTC).isoformat(),
+        "evaluation_role": "training-set resubstitution diagnostic; not generalization evidence",
+        "training_articles": len(train_index),
+        "training_eligible": int(truth.sum()),
+        "training_ineligible": int(len(truth) - truth.sum()),
+        "evaluations": evaluations,
+        "inputs": {
+            "parent_hash_manifest_sha256": sha256_path(parent_root / "HASH_MANIFEST.json"),
+            "authority_hash_manifest_sha256": sha256_path(authority_root / "HASH_MANIFEST.json"),
+            "model_hash_manifest_sha256": sha256_path(model_root / "HASH_MANIFEST.json"),
+        },
+        "limitations": [
+            "The same rows were used to fit the forest, so these metrics are optimistically biased.",
+            "Use the sealed post-August-13 holdout for generalization accuracy.",
+        ],
+    }
+    output_root.mkdir(parents=True)
+    _write_json_new(output_root / "REPORT.json", report)
+    validation = {
+        "status": "passed",
+        "checks": {
+            "training_rows": len(train_index) == EXPECTED_TRAIN_ARTICLES,
+            "counts_reconcile": int(truth.sum()) + int(len(truth) - truth.sum()) == len(train_index),
+            "selected_mismatches_reconcile": (
+                evaluations["selected_threshold"]["false_eligible"]
+                + evaluations["selected_threshold"]["false_ineligible"]
+                == evaluations["selected_threshold"]["mismatches"]
+            ),
+            "half_mismatches_reconcile": (
+                evaluations["threshold_0_5"]["false_eligible"]
+                + evaluations["threshold_0_5"]["false_ineligible"]
+                == evaluations["threshold_0_5"]["mismatches"]
+            ),
+        },
+    }
+    if not all(validation["checks"].values()):
+        raise ValueError(f"training evaluation validation failed: {validation}")
+    _write_json_new(output_root / "VALIDATION.json", validation)
+    _write_json_new(output_root / "HASH_MANIFEST.json", {
+        "experiment_version": report["experiment_version"],
+        "files": {
+            path.name: {"bytes": path.stat().st_size, "sha256": sha256_path(path)}
+            for path in sorted(output_root.iterdir())
+            if path.is_file() and path.name != "HASH_MANIFEST.json"
+        },
+    })
+    return report

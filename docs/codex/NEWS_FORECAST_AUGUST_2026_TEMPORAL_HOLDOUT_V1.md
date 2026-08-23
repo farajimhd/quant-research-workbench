@@ -40,6 +40,20 @@ candidate and threshold policy was fixed without holdout feedback. Compared
 with either single-year model, combining all pre-boundary supervision improves
 accuracy and eligible F1, but it still misses 191 of 1,827 eligible articles.
 
+### Training-set resubstitution diagnostic
+
+Scoring the final fitted forest on the same 346,103 articles used for fitting
+produced 210 mismatches at threshold 0.44: 210 false eligible and zero false
+ineligible, or 99.9393% training accuracy. At threshold 0.50 it produced only
+three mismatches—two false eligible and one false ineligible—or 99.9991%
+training accuracy.
+
+These are deliberately labeled resubstitution metrics, not validation results.
+The gap from 210 training mismatches to 779 holdout mismatches at threshold
+0.44 (and from three to 725 at threshold 0.50) demonstrates that the forest
+fits the training labels almost perfectly while being materially less accurate on
+new articles. The sealed holdout remains the generalization authority.
+
 ## Population and blindness
 
 - Frozen population: 5,044 articles, 2026-08-13 21:04:39 through
