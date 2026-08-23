@@ -44,6 +44,9 @@ class QmdProductRequest:
     as_of: str | None = None
     before: str | None = None
     indicator_columns: tuple[str, ...] = ()
+    allow_persisted_bars: bool = True
+    include_market_signals: bool = True
+    include_structure: bool = True
     stage: str = "full"
     limit: int = 500
     tail: bool = False
@@ -459,6 +462,9 @@ def _qmd_product_route(
         "as_of": request.as_of or request.end,
         "before": request.before,
         "indicator_columns": ",".join(dict.fromkeys(request.indicator_columns)) or None,
+        "allow_persisted_bars": str(request.allow_persisted_bars).lower(),
+        "include_market_signals": str(request.include_market_signals).lower(),
+        "include_structure": str(request.include_structure).lower(),
         "stage": request.stage,
         "timeframe": timeframe,
         "limit": limit,

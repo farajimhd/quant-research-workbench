@@ -2070,8 +2070,8 @@ it does not imply all application work is complete.
      stopped after measurement.
 
 180. Repaired the shared Canvas chart delivery path across Live, Replay,
-     Backtest, and Debug. All modes now bootstrap from the same causal QMD
-     History request, keep the Lightweight Charts renderer mounted during
+     Backtest, and Debug. All modes now share one mode-aware chart hook and
+     causal data contract, keep the Lightweight Charts renderer mounted during
      loading/empty transitions, reuse a bounded exact chart snapshot for fast
      remounts, establish a nonzero measured fill height before renderer
      creation, and load main/daily/monthly panels concurrently. The measured
@@ -2087,6 +2087,28 @@ it does not imply all application work is complete.
      Macro history honors the caller's page budget instead of requesting a
      fixed 50,000-row multi-year range. Historical derived storage-version
      invalidation remains explicit open work.
+
+181. Corrected the remaining Canvas first-load accuracy and indicator-latency
+     defects. The persisted-bar page was previously merged with a duplicate
+     filter, so an overlapping causally rebuilt row could never replace its
+     first-painted OHLC/volume values. A representative AAPL 10-second bucket
+     reported volume 53 from that shortcut versus about 31,365 from causal QMD
+     reconstruction, with OHLC differences as well. Replay/Backtest/Debug now
+     release the accurate derived bars from the same QMD History cache entry
+     that continues building indicators; both readiness waiters start together
+     so indicator delivery does not incur another serial request. Incoming authoritative rows replace
+     the same timestamp, and only completed full snapshots enter the bounded
+     browser cache.
+
+     Replay/Backtest/Debug now reconstruct only the initial visible page before
+     older history is demand-loaded. Live/Paper skip that historical indicator
+     reconstruction: one focused QMD Live snapshot registers the requested
+     computation target and WebSockets carry subsequent revisions. QMD History
+     also projects market-signal, structure-event, and structure-level payloads
+     by the selected chart features. A representative 90-bar MACD response had
+     previously included 330 signal events, 3,270 structure events, and 722
+     structure-level rows even though none were visible; those collections are
+     now omitted for that projection while the indicator authority remains QMD.
 
 ---
 

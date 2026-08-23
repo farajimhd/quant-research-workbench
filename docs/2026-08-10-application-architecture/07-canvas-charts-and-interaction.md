@@ -159,15 +159,21 @@ Live, Paper, Replay, and Backtest workspaces must be visually explicit and canno
   compared through a three-way base/overlay/new-base merge. The UI reports
   conflicting leaf paths and requires an explicit choice to apply the
   overlay-preferred rebase or keep the new approved default.
-- Intraday historical charts now request a QMD `bars` stage first and render it
-  before requesting the `full` indicator, signal, and structure stage from the
-  same single-flight cache entry. Archive/recent source selection remains owned
+- Intraday historical charts request a small QMD `bars` page first, then replace
+  overlapping rows with the causally rebuilt `full` page. Replay/Backtest/Debug
+  require that first page from the same QMD History derived-cache entry as the
+  indicators; the uncertified persisted-bar shortcut is reserved for Live's
+  current authority. They do not append conflicting OHLC revisions or cache an
+  incomplete page as if it were complete. Archive/recent source selection remains owned
   by QMD History. Indicator responses now carry engine/schema versions,
   effective parameters, response warm-up state, source-plan hash and tiers,
   source revision, completeness and stale reason through the backend to a
   compact Canvas notice. The browser retains a bounded two-minute cache of the
-  most recent exact symbol/timeframe/session projection so a remount can paint
-  immediately, but always refreshes it from QMD. The renderer remains mounted
+  most recent complete symbol/timeframe/session/feature projection so a remount
+  can paint immediately, but always refreshes it from QMD. The initial full
+  request is bounded to the visible page; older pages remain demand-loaded.
+  QMD History transfers market-signal and structure collections only when the
+  selected chart features consume them. The renderer remains mounted
   while a request is pending or temporarily empty; a status overlay replaces
   destructive renderer teardown. Fill-height Canvas panels establish a
   measured runtime height before Lightweight Charts is created and observe the
@@ -177,12 +183,13 @@ Live, Paper, Replay, and Backtest workspaces must be visually explicit and canno
   requested visible-row budget rather than scanning a fixed
   multi-year/50,000-row window.
 
-  Every mode uses the same QMD History bootstrap. Replay, Backtest, and Debug
-  remain bounded by their causal run clock, including clock rewinds. Live/Paper
-  alone add QMD Live WebSocket bars and requested indicator fields, merge bar
-  revisions by timestamp, retain the last complete chart across disconnects,
-  and use the bounded REST snapshot only for initial reconciliation or an
-  explicit `stream_gap`/`resnapshot_required` frame. The former repeated full
+  Replay, Backtest, and Debug use the bounded QMD History bootstrap and remain
+  bounded by their causal run clock, including clock rewinds. Live/Paper render
+  the fast base bars, register the focused QMD Live computation target through
+  one coherent bars-plus-indicators snapshot, then use WebSocket revisions.
+  They merge bar revisions by timestamp, retain the last complete chart across
+  disconnects, and resnapshot only for an explicit
+  `stream_gap`/`resnapshot_required` frame. The former repeated full
   REST polling path and the stale claim of automatic adjacent-page prefetch are
   removed. Older pages remain demand-loaded when the operator pans left. The
   remaining chart-workspace drift is storage-version invalidation for derived

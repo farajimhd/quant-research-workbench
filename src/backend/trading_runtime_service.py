@@ -1079,6 +1079,9 @@ def historical_bar_history_before(
     as_of: str | None = None,
     before_bar: str | None = None,
     indicator_columns: list[str] | None = None,
+    allow_persisted_bars: bool = True,
+    include_market_signals: bool = True,
+    include_structure: bool = True,
     stage: str = "full",
 ) -> dict[str, Any]:
     resolved_ticker = _historical_ticker(ticker)
@@ -1098,7 +1101,7 @@ def historical_bar_history_before(
     # Recent durable bars are the fast first-paint authority.  The full stage
     # still goes through QMD History so requested indicators and structure are
     # calculated from the exact causal event window in the background.
-    if stage == "bars" and _can_use_recent_live_chart_session(requested_session, as_of):
+    if allow_persisted_bars and stage == "bars" and _can_use_recent_live_chart_session(requested_session, as_of):
         live_payload = _recent_live_bar_history(
             ticker=resolved_ticker,
             timeframe=resolved_timeframe,
@@ -1195,6 +1198,9 @@ def historical_bar_history_before(
             as_of=page_end.isoformat(),
             before=None,
             indicator_columns=tuple(indicator_columns or ()),
+            allow_persisted_bars=allow_persisted_bars,
+            include_market_signals=include_market_signals,
+            include_structure=include_structure,
             stage=stage,
             limit=row_limit,
             timeout_seconds=90,

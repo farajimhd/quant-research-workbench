@@ -41,6 +41,8 @@ const CHART_SNAPSHOT_CACHE_LIMIT = 48;
 export function useCanvasHistoricalChart(symbol: string, timeframe: CanvasChartTimeframe, cutoffMs: number, sessionDate: string, visibleIndicatorIds: string[], liveTail = false, enabled = true): CanvasLiveChartState {
   const pointInTime = !liveTail;
   const indicatorColumns = useMemo(() => requestedIndicatorColumns(visibleIndicatorIds), [visibleIndicatorIds]);
+  const auxiliaryProjection = useMemo(() => requestedChartAuxiliary(visibleIndicatorIds), [visibleIndicatorIds]);
+  const projectionKey = `${indicatorColumns}|signals=${auxiliaryProjection.includeMarketSignals}|structure=${auxiliaryProjection.includeStructure}`;
   const rowBudget = useMemo(() => chartRowBudget(indicatorColumns), [indicatorColumns]);
   const [state, setState] = useState<Omit<CanvasLiveChartState, "loadEarlier" | "ready">>({ bars: [], canLoadEarlier: false, connected: false, error: "", historyError: "", historyNotice: "", indicators: [], indicatorsAvailable: ENRICHED_QMD_TIMEFRAMES.has(timeframe), lastUpdateAt: "", loading: true, loadingEarlier: false, marketSignalEvents: [], pointInTime, structureEvents: [], structureLevelHistory: [] });
   const [readyKey, setReadyKey] = useState("");
@@ -53,7 +55,7 @@ export function useCanvasHistoricalChart(symbol: string, timeframe: CanvasChartT
   const loadEarlier = useCallback(() => {
     if (!enabled) return;
     const ticker = symbol.trim().toUpperCase();
-    const requestKey = chartRequestKey(ticker, timeframe, indicatorColumns, sessionDate);
+    const requestKey = chartRequestKey(ticker, timeframe, projectionKey, sessionDate);
     const cursor = historyCursorRef.current;
     if (!cursor || historyRequestRef.current || requestKeyRef.current !== requestKey) return;
     if (!cursor.nextBefore && !cursor.previousSessionBefore) return;
@@ -63,7 +65,7 @@ export function useCanvasHistoricalChart(symbol: string, timeframe: CanvasChartT
     historyAbortRef.current = controller;
     historyRequestRef.current = true;
     setState((current) => ({ ...current, historyError: "", loadingEarlier: true }));
-    const page = api<QmdBarHistory>(`/api/trading/canvas-chart/history${query(request.params)}`, { signal: controller.signal, timeoutMs: 120000 });
+    const page = api<QmdBarHistory>(`/api/trading/canvas-chart/history${query({ ...request.params, include_market_signals: auxiliaryProjection.includeMarketSignals, include_structure: auxiliaryProjection.includeStructure })}`, { signal: controller.signal, timeoutMs: 120000 });
     page
       .then((payload) => {
         if (requestKeyRef.current !== requestKey) return;
@@ -102,14 +104,14 @@ export function useCanvasHistoricalChart(symbol: string, timeframe: CanvasChartT
         }
         if (requestKeyRef.current === requestKey) setState((current) => ({ ...current, loadingEarlier: false }));
       });
-  }, [cutoffMs, enabled, indicatorColumns, rowBudget, sessionDate, symbol, timeframe]);
+  }, [auxiliaryProjection.includeMarketSignals, auxiliaryProjection.includeStructure, cutoffMs, enabled, indicatorColumns, projectionKey, rowBudget, sessionDate, symbol, timeframe]);
 
   useEffect(() => {
     if (!enabled) return;
     let active = true;
     const historyController = new AbortController();
     const ticker = symbol.trim().toUpperCase();
-    const requestKey = chartRequestKey(ticker, timeframe, indicatorColumns, sessionDate);
+    const requestKey = chartRequestKey(ticker, timeframe, projectionKey, sessionDate);
     historyAbortRef.current?.abort();
     historyAbortRef.current = historyController;
     requestKeyRef.current = requestKey;
@@ -146,15 +148,22 @@ export function useCanvasHistoricalChart(symbol: string, timeframe: CanvasChartT
 
     const fetchHistoricalPage = () => {
       historyRequestRef.current = true;
-      const requestParams = { as_of: new Date(cutoffMs).toISOString(), row_limit: chartPageSize(timeframe), session_date: sessionDate, symbol: ticker, timeframe };
+      const requestParams = { allow_persisted_bars: liveTail, as_of: new Date(cutoffMs).toISOString(), include_market_signals: auxiliaryProjection.includeMarketSignals, include_structure: auxiliaryProjection.includeStructure, row_limit: chartInitialPageSize(timeframe), session_date: sessionDate, symbol: ticker, timeframe };
       const progressive = ENRICHED_QMD_TIMEFRAMES.has(timeframe);
       const barsRequest = progressive
         ? api<QmdBarHistory>(`/api/trading/canvas-chart/history${query({ ...requestParams, row_limit: chartInitialPageSize(timeframe), stage: "bars" })}`, { signal: historyController.signal, timeoutMs: 120000 })
         : api<QmdBarHistory>(`/api/trading/canvas-chart/history${query({ ...requestParams, indicator_columns: indicatorColumns, stage: "full" })}`, { signal: historyController.signal, timeoutMs: 120000 });
+      // Start the authoritative indicator waiter against the same QMD History
+      // cache entry immediately. The accurate bar phase can paint first while
+      // indicator completion continues without a second serial round trip.
+      const fullRequest = progressive && !liveTail
+        ? api<QmdBarHistory>(`/api/trading/canvas-chart/history${query({ ...requestParams, indicator_columns: indicatorColumns, stage: "full" })}`, { signal: historyController.signal, timeoutMs: 120000 })
+        : null;
+      void fullRequest?.catch(() => undefined);
       barsRequest
         .then((payload) => {
           if (!active || requestKeyRef.current !== requestKey) return;
-          rememberChartSnapshot(requestKey, payload);
+          if (!progressive) rememberChartSnapshot(requestKey, payload);
           setReadyKey(requestKey);
           updateHistoryCursor(historyCursorRef, payload);
           const aligned = alignHistoricalChartRows(
@@ -170,7 +179,7 @@ export function useCanvasHistoricalChart(symbol: string, timeframe: CanvasChartT
               canLoadEarlier: payload.has_more && !merged.atCapacity,
               marketSignalEvents: mergeMarketSignalEvents(current.marketSignalEvents, payload.market_signal_events),
               historyError: "",
-              historyNotice: merged.atCapacity ? chartHistoryLimitNotice(rowBudget) : progressive ? "Loading requested indicators..." : liveTail ? "Historical base loaded; connecting the QMD live tail..." : "",
+              historyNotice: merged.atCapacity ? chartHistoryLimitNotice(rowBudget) : progressive ? liveTail ? "Loading current QMD indicators..." : "Loading requested indicators..." : liveTail ? "Historical base loaded; connecting the QMD live tail..." : "",
               indicators: merged.indicators,
               indicatorsAvailable: progressive ? current.indicatorsAvailable : payload.indicators_available,
               indicatorProvenance: payload.indicator_provenance ?? current.indicatorProvenance,
@@ -179,10 +188,10 @@ export function useCanvasHistoricalChart(symbol: string, timeframe: CanvasChartT
               loading: false,
             };
           });
-          if (!progressive) {
+          if (!progressive || liveTail) {
             return null;
           }
-          return api<QmdBarHistory>(`/api/trading/canvas-chart/history${query({ ...requestParams, indicator_columns: indicatorColumns, stage: "full" })}`, { signal: historyController.signal, timeoutMs: 120000 });
+          return fullRequest;
         })
         .then((payload) => {
           if (!payload || !active || requestKeyRef.current !== requestKey) return;
@@ -231,17 +240,17 @@ export function useCanvasHistoricalChart(symbol: string, timeframe: CanvasChartT
       if (requestKeyRef.current === requestKey) requestKeyRef.current = "";
       historyController.abort();
     };
-  }, [enabled, indicatorColumns, pointInTime, rowBudget, sessionDate, symbol, timeframe]);
+  }, [auxiliaryProjection.includeMarketSignals, auxiliaryProjection.includeStructure, enabled, indicatorColumns, pointInTime, projectionKey, rowBudget, sessionDate, symbol, timeframe]);
 
   useEffect(() => {
     if (!enabled || liveTail) return;
     const ticker = symbol.trim().toUpperCase();
-    const requestKey = chartRequestKey(ticker, timeframe, indicatorColumns, sessionDate);
+    const requestKey = chartRequestKey(ticker, timeframe, projectionKey, sessionDate);
     if (!ticker || cutoffMs === loadedCutoffRef.current || requestKeyRef.current !== requestKey) return;
     const replacingRewind = cutoffMs < loadedCutoffRef.current;
     loadedCutoffRef.current = cutoffMs;
     const controller = new AbortController();
-    api<QmdBarHistory>(`/api/trading/canvas-chart/history${query({ as_of: new Date(cutoffMs).toISOString(), indicator_columns: indicatorColumns, row_limit: chartPageSize(timeframe), session_date: sessionDate, symbol: ticker, timeframe })}`, {
+    api<QmdBarHistory>(`/api/trading/canvas-chart/history${query({ as_of: new Date(cutoffMs).toISOString(), include_market_signals: auxiliaryProjection.includeMarketSignals, include_structure: auxiliaryProjection.includeStructure, indicator_columns: indicatorColumns, row_limit: chartInitialPageSize(timeframe), session_date: sessionDate, symbol: ticker, timeframe })}`, {
       signal: controller.signal,
       timeoutMs: 120000,
     })
@@ -278,7 +287,7 @@ export function useCanvasHistoricalChart(symbol: string, timeframe: CanvasChartT
         }
       });
     return () => controller.abort();
-  }, [cutoffMs, enabled, indicatorColumns, liveTail, rowBudget, sessionDate, symbol, timeframe]);
+  }, [auxiliaryProjection.includeMarketSignals, auxiliaryProjection.includeStructure, cutoffMs, enabled, indicatorColumns, liveTail, projectionKey, rowBudget, sessionDate, symbol, timeframe]);
 
   useEffect(() => {
     if (!enabled || !liveTail) return;
@@ -378,6 +387,8 @@ export function useCanvasHistoricalChart(symbol: string, timeframe: CanvasChartT
 
     connect("bars");
     if (ENRICHED_QMD_TIMEFRAMES.has(timeframe)) connect("indicators");
+    // Register the focused QMD computation target and capture one coherent
+    // live bars+indicators snapshot. WebSockets then carry only revisions.
     resnapshot();
     const handleVisibilityChange = () => {
       if (!active) return;
@@ -402,7 +413,7 @@ export function useCanvasHistoricalChart(symbol: string, timeframe: CanvasChartT
     };
   }, [enabled, indicatorColumns, liveTail, rowBudget, symbol, timeframe]);
 
-  const currentRequestKey = chartRequestKey(symbol.trim().toUpperCase(), timeframe, indicatorColumns, sessionDate);
+  const currentRequestKey = chartRequestKey(symbol.trim().toUpperCase(), timeframe, projectionKey, sessionDate);
   const causalBars = pointInTime ? closedRowsAtCutoff(state.bars, timeframe, cutoffMs) : state.bars;
   const causalTimes = pointInTime ? new Set(causalBars.map(barStartTime)) : null;
   const causalIndicators = causalTimes ? state.indicators.filter((row) => causalTimes.has(barStartTime(row))) : state.indicators;
@@ -544,6 +555,14 @@ export function requestedIndicatorColumns(visibleIndicatorIds: string[]): string
   return [...columns].sort().join(",");
 }
 
+export function requestedChartAuxiliary(visibleIndicatorIds: string[]) {
+  const selected = new Set(visibleIndicatorIds.map((value) => value.toLowerCase()));
+  return {
+    includeMarketSignals: selected.has("indicator.qmd_market_signals"),
+    includeStructure: selected.has("indicator.qmd_generic_structure") || selected.has("indicator.qmd_level_footprint"),
+  };
+}
+
 export function alignHistoricalChartRows(
   bars: QmdLiveBar[],
   indicators: HistoricalIndicator[],
@@ -653,9 +672,12 @@ export function mergeHistoricalChartPage(
 ) {
   const existingTimes = new Set(currentBars.map(barStartTime));
   const availableSlots = Math.max(0, rowBudget - currentBars.length);
+  const replacementBars = incomingBars.filter((row) => existingTimes.has(barStartTime(row)));
   const newBars = incomingBars.filter((row) => !existingTimes.has(barStartTime(row)));
   const admittedBars = availableSlots < newBars.length ? newBars.slice(newBars.length - availableSlots) : newBars;
-  const bars = limitRowsToLatest(mergeRowsByTime(currentBars, admittedBars), rowBudget);
+  // Later authority revisions must replace matching timestamps; filtering
+  // duplicates here would leave the first OHLC/volume values on screen.
+  const bars = limitRowsToLatest(mergeRowsByTime(currentBars, [...replacementBars, ...admittedBars]), rowBudget);
   const admittedTimes = new Set(bars.map(barStartTime));
   const indicators = limitRowsToLatest(
     mergeRowsByTime(currentIndicators, incomingIndicators.filter((row) => admittedTimes.has(barStartTime(row)))),

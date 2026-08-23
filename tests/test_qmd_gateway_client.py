@@ -314,8 +314,34 @@ class QmdGatewayClientTests(unittest.TestCase):
         params = get_json.call_args_list[0].args[1]
         self.assertEqual(params["stage"], "bars")
         self.assertEqual(params["as_of"], "2026-08-08T12:00:00-04:00")
+        self.assertEqual(params["allow_persisted_bars"], "true")
+        self.assertEqual(params["include_market_signals"], "true")
+        self.assertEqual(params["include_structure"], "true")
         self.assertEqual(get_json.call_args_list[0].kwargs["timeout"], 12)
         self.assertEqual(get_json.call_args_list[1].args[0], "/source-plan")
+
+    @patch("src.backend.qmd_gateway_client.qmd_history_get_json")
+    def test_chart_history_projects_unrequested_auxiliary_payloads(self, get_json) -> None:
+        get_json.return_value = {"bars": [], "complete": True}
+
+        qmd_product_request(
+            QmdProductRequest(
+                "chart",
+                authority="history",
+                ticker="AAPL",
+                timeframe="10s",
+                start="2026-08-08T13:30:00+00:00",
+                end="2026-08-08T13:45:00+00:00",
+                allow_persisted_bars=False,
+                include_market_signals=False,
+                include_structure=False,
+            )
+        )
+
+        params = get_json.call_args_list[0].args[1]
+        self.assertEqual(params["allow_persisted_bars"], "false")
+        self.assertEqual(params["include_market_signals"], "false")
+        self.assertEqual(params["include_structure"], "false")
 
     @patch("src.backend.qmd_gateway_client.urllib.request.urlopen")
     @patch("src.backend.qmd_gateway_client.qmd_enabled", return_value=True)

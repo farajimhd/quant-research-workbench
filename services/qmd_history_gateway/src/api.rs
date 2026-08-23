@@ -87,10 +87,13 @@ struct BarsQuery {
 
 #[derive(Debug, Deserialize)]
 struct ChartQuery {
+    allow_persisted_bars: Option<bool>,
     as_of: Option<String>,
     before: Option<String>,
     end: String,
     indicator_columns: Option<String>,
+    include_market_signals: Option<bool>,
+    include_structure: Option<bool>,
     limit: Option<usize>,
     start: String,
     stage: Option<String>,
@@ -803,7 +806,7 @@ async fn chart_bar_snapshot(
     let before = query.before.as_deref().map(parse_timestamp).transpose()?;
     let indicator_columns = parse_indicator_projection(query.indicator_columns.as_deref())?;
     let bars_only = parse_chart_stage(query.stage.as_deref())?;
-    if bars_only {
+    if bars_only && query.allow_persisted_bars.unwrap_or(true) {
         if let Some(persisted) = state
             .source
             .persisted_intraday_chart_bars(
@@ -897,7 +900,13 @@ async fn chart_bar_snapshot(
         )
         .await
         .map_err(service_error)?;
-    project_chart_snapshot(snapshot, indicator_columns.as_ref()).map(Json)
+    project_chart_snapshot(
+        snapshot,
+        indicator_columns.as_ref(),
+        query.include_market_signals.unwrap_or(true),
+        query.include_structure.unwrap_or(true),
+    )
+    .map(Json)
 }
 
 fn parse_chart_stage(raw: Option<&str>) -> Result<bool, ApiError> {
@@ -938,6 +947,8 @@ fn parse_indicator_projection(raw: Option<&str>) -> Result<Option<BTreeSet<Strin
 fn project_chart_snapshot(
     snapshot: ChartSnapshot,
     columns: Option<&BTreeSet<String>>,
+    include_market_signals: bool,
+    include_structure: bool,
 ) -> Result<Value, ApiError> {
     let provenance = chart_indicator_provenance(&snapshot, columns);
     let Some(columns) = columns else {
@@ -946,6 +957,13 @@ fn project_chart_snapshot(
         })?;
         if let Some(object) = value.as_object_mut() {
             object.insert("indicator_provenance".to_string(), provenance);
+            if !include_market_signals {
+                object.insert("market_signal_events".to_string(), json!([]));
+            }
+            if !include_structure {
+                object.insert("structure_events".to_string(), json!([]));
+                object.insert("structure_level_history".to_string(), json!([]));
+            }
         }
         return Ok(value);
     };
@@ -976,10 +994,10 @@ fn project_chart_snapshot(
         "indicators": indicators,
         "indicators_available": snapshot.indicators_available,
         "indicator_provenance": provenance,
-        "market_signal_events": snapshot.market_signal_events,
+        "market_signal_events": if include_market_signals { snapshot.market_signal_events } else { Vec::new() },
         "next_before": snapshot.next_before,
-        "structure_events": snapshot.structure_events,
-        "structure_level_history": snapshot.structure_level_history,
+        "structure_events": if include_structure { snapshot.structure_events } else { Vec::new() },
+        "structure_level_history": if include_structure { snapshot.structure_level_history } else { Vec::new() },
         "ticker": snapshot.ticker,
         "timeframe": snapshot.timeframe,
     }))
