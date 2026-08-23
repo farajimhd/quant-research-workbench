@@ -212,8 +212,10 @@ Default durable writes:
 | `qmd_flatfile_coverage_v2` | `gapfill.rs` | yes | Per-session, per-source remote and historical coverage |
 | `qmd_compact_event_issue_v1` | `compact_event.rs` | yes | Full-identity overflow/unknown condition or tape audits |
 
-Startup maintenance audits recent `q_live.events` rows for
-duplicate canonical identities before websocket ingest begins. It does not infer
+Startup maintenance validates the live table engine/key contract and audits
+recent `q_live.events FINAL` rows for conflicting payloads under one provider
+source identity before websocket ingest begins. Physical replay versions are
+measured separately and are not canonical corruption. It does not infer
 missing time coverage from min/max timestamps. Recent time gaps are detected
 from `qmd_live_event_coverage_v1`. Live streaming writes one compact-event
 confirmation row and one bar confirmation row per run. A time range is treated
@@ -229,6 +231,13 @@ websocket first and repairs tickers only after they are discovered from live
 compact events. Outside streaming hours, it uses latest q_live symbols, then the
 latest historical `market_sip_compact.events_YYYY` symbols if q_live is empty.
 Intervals without a discovered ticker set remain open and are not marked clean.
+
+Before fan-out, repair removes identities already present in canonical q_live
+and duplicates inside the fetched response. Focused repair intervals have
+stable durable IDs and focus activations share a serialized repair boundary.
+Focused and whole-market completion require overlapping compact and canonical-
+bar writer confirmations; enqueue completion or elapsed time alone is not a
+durability boundary. Compact retry batches have deterministic tokens.
 Canonical identity corruption is recorded in the manifest and left for explicit
 rebuild; QMD does not rewrite committed historical rows silently.
 

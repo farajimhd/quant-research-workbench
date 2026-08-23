@@ -120,10 +120,10 @@ Environment variables:
 - `QMD_GAP_FILL_MODE`, default `auto`; allowed values are `auto`, `session_catch_up`, `after_hours`, `repair`, or `session`
 - `QMD_GAP_FILL_INTERVAL_MS`, default `300000`
 - `QMD_GAP_FILL_AWAITING_SYMBOLS_RETRY_MS`, default `10000`
-- `QMD_GAP_FILL_LOOKBACK_MINUTES`, default `120`
-- `QMD_GAP_FILL_MAX_LOOKBACK_DAYS`, default `3`
 - `QMD_GAP_FILL_MIN_GAP_SECONDS`, default `1`
-- `QMD_GAP_FILL_MAX_PAGES_PER_SYMBOL`, default `5`
+- `QMD_RECENT_LIVE_MAX_PAGES_PER_INTERVAL`, default `1000`
+- `QMD_RECENT_LIVE_PRIOR_MARKET_DAYS`, default `3`
+- `QMD_RECENT_LIVE_REPAIR_CONCURRENCY`, default `8`
 - `QMD_STARTUP_MAINTENANCE_ENABLED`, default `true`
 - `QMD_COVERAGE_TABLE`, default `qmd_market_coverage_manifest_v1`
 - `QMD_LIVE_EVENT_COVERAGE_TABLE`, default `qmd_live_event_coverage_v1`
@@ -258,7 +258,7 @@ The canonical identity is
 `(local_date, ticker, label_resolution_us, bucket_index, bar_family)`. A bounded
 event-time watermark closes buckets. If REST repair later supplies an event for
 an already closed bucket, QMD does not append a partial replacement: it rebuilds
-that 100ms bucket from `q_live.events` and then rebuilds each affected parent
+that 100ms bucket from `q_live.events FINAL` and then rebuilds each affected parent
 from the corrected base bars.
 
 At first startup, QMD creates and validates `intraday_family_bars_v2`. If the table is
@@ -527,18 +527,32 @@ Deeper historical event history should be read from the read-only
 year-specific `market_sip_compact.events_YYYY` tables, which are maintained only
 by `download_update_events.py`.
 
-At startup, when `QMD_STARTUP_MAINTENANCE_ENABLED=true`, the gateway audits the
-recent `q_live.events` rows directly for structural event-table
-problems. The audit checks duplicate canonical event identities after `FINAL`.
+At startup, when `QMD_STARTUP_MAINTENANCE_ENABLED=true`, the gateway validates
+the exact `ReplacingMergeTree`, partition, and canonical sorting-key contract,
+then audits `q_live.events FINAL` for conflicting payloads that share the same
+provider source identity `(ticker, sip_timestamp_us, source_sequence,
+event_type)`. Physical replay versions are not canonical corruption and do not
+request a rebuild.
 Time coverage is then read from
 `qmd_live_event_coverage_v1`, not inferred from event-table min/max timestamps.
 If recent rows are structurally sound, the gateway runs bounded Massive REST
 coverage repair before opening the websocket. Startup repair uses the same
 current-plus-prior-session window as recurring repair.
-If committed rows have duplicate canonical identities, the gateway records
-`needs_manual_rebuild` in the coverage manifest and does not silently rewrite
-existing rows. Durable live ordinals do not exist; live reads order by
+If conflicting payloads remain for one provider identity after `FINAL`, the
+gateway records `needs_manual_rebuild` under the separate
+`q_live_structure_audit` concern and does not silently choose a payload.
+Durable live ordinals do not exist; live reads order by
 `(sip_timestamp_us, source_sequence, event_type, arrival_sequence)`.
+
+REST repair is replay-safe before derived fan-out. QMD reads existing canonical
+source identities for the bounded ticker/interval, drops provider and in-batch
+replays, and records provider-fetched, replayed, and novel counts. Focused
+repairs are serialized across concurrent activations, use stable ticker/interval
+coverage IDs across restarts, and require the same durable compact/bar evidence.
+A general repair interval is also marked complete only after compact-event and
+100 ms bar writer confirmations overlap durably. Compact inserts use
+deterministic retry tokens with a bounded non-replicated ClickHouse
+deduplication window.
 
 The legacy `qmd_market_coverage_manifest_v1` table is coarse and run-scoped. It
 records startup audits, repair summaries, and historical flatfile update plans.
@@ -564,11 +578,20 @@ current session and T-1 remain authoritative in `q_live.events`.
 
 Retention keeps the current session plus three prior market sessions in the
 daily-partitioned `q_live.events` and `q_live.intraday_family_bars_v2` tables. Deletion occurs only after
-historical continuity confirms the older session; otherwise QMD records
-`retention_blocked_historical_gap` and temporarily retains the rows.
+confirmed quote/trade handoff row totals exactly match the archive count and
+schema. Verified sessions are deleted independently; an unverified date records
+`retention_blocked_historical_gap` without blocking cleanup of other dates.
 Legacy `q_live.events_YYYY` tables are no longer read or written. They are left
 untouched for the production cutover audit and may be dropped only after the
 singular table's repaired rolling coverage has been verified.
+
+For a bounded correction of bars affected by older physical replay versions,
+stop QMD Live and run `python scripts/repair_qmd_live_canonical_bars.py
+--start-date YYYY-MM-DD --end-date YYYY-MM-DD` to create an external plan. Add
+`--execute` only after reviewing the manifest. The tool rebuilds only affected
+ticker/date ranges and configured rollups from canonical events, validates all
+expected 100 ms buckets, and writes evidence under
+`D:\TradingML\runtimes\qmd_gateway\canonical_bar_repair`.
 
 Canonical intraday bars stream from `/stream/intraday-bars`. They are part of
 the required QMD persistence contract and do not depend on model readiness or

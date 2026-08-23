@@ -551,7 +551,7 @@ def pipeline_rows(state: PollState) -> list[dict[str, str]]:
 def attention_rows(state: PollState) -> list[dict[str, Any]]:
     rows = state.status.get("attention")
     result = [dict(item) for item in rows if isinstance(item, dict)] if isinstance(rows, list) else []
-    for row in coverage_rows(state):
+    for row in authoritative_attention_coverage_rows(coverage_rows(state)):
         status = str(row.get("status") or "")
         if (
             "manual_action_required" in status
@@ -590,6 +590,41 @@ def attention_rows(state: PollState) -> list[dict[str, Any]]:
             }
         )
     return dedupe_attention(result)
+
+
+def authoritative_attention_coverage_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Select the newest durable revision for each operator-action concern."""
+    latest: dict[tuple[str, ...], dict[str, Any]] = {}
+    for row in rows:
+        status = str(row.get("status") or "")
+        coverage_kind = str(row.get("coverage_kind") or "")
+        if coverage_kind == "q_live_structure_audit" or (
+            coverage_kind == "q_live_recent_events" and "rebuild" in status
+        ):
+            key = ("q_live_structure_audit",)
+        elif coverage_kind == "q_live_retention" or "retention" in status:
+            key = ("q_live_retention",)
+        elif coverage_kind == "historical_flatfile_events" or "workstation_action" in status:
+            key = ("historical_flatfile_events",)
+        else:
+            key = (
+                coverage_kind,
+                str(row.get("action") or ""),
+                str(row.get("start_ts_utc") or ""),
+                str(row.get("end_ts_utc") or ""),
+            )
+        revision = max(
+            str(row.get("finished_at") or ""),
+            str(row.get("started_at") or ""),
+            str(row.get("updated_at_utc") or ""),
+        )
+        current = latest.get(key)
+        current_revision = "" if current is None else str(current.get("_attention_revision") or "")
+        if revision >= current_revision:
+            selected = dict(row)
+            selected["_attention_revision"] = revision
+            latest[key] = selected
+    return list(latest.values())
 
 
 def dedupe_attention(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:

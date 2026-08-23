@@ -122,10 +122,7 @@ persistence. `QMD_INTRADAY_BAR_TIMEFRAMES` defaults to
 | `QMD_GAP_FILL_MODE` | `auto` | Gap-fill mode: `auto`, `session`, `session_catch_up`, `after_hours`, or `repair`. | `auto` does startup catch-up during streaming and repair after hours. |
 | `QMD_GAP_FILL_INTERVAL_MS` | `300000` | After-hours repair interval. | Default is 5 minutes. |
 | `QMD_GAP_FILL_AWAITING_SYMBOLS_RETRY_MS` | `10000` | Short retry interval while streaming is active and repair is waiting for live websocket symbols. | Lets a clean-slate run start REST repair quickly as soon as websocket symbols arrive. |
-| `QMD_GAP_FILL_LOOKBACK_MINUTES` | `120` | Legacy warmup lookback for focused tests. | Recent live repair now uses market-day coverage. |
-| `QMD_GAP_FILL_MAX_LOOKBACK_DAYS` | `3` | Recent structural audit lookback in calendar days. | The REST repair window is controlled by `QMD_RECENT_LIVE_PRIOR_MARKET_DAYS`. |
 | `QMD_GAP_FILL_MIN_GAP_SECONDS` | `1` | Ignore gaps shorter than this. | Keep at `1` for no intentional market-session holes. |
-| `QMD_GAP_FILL_MAX_PAGES_PER_SYMBOL` | `5` | Legacy REST page cap for focused/manual repair paths. | Recent live coverage repair uses `QMD_RECENT_LIVE_MAX_PAGES_PER_INTERVAL`. |
 | `QMD_RECENT_LIVE_MAX_PAGES_PER_INTERVAL` | `1000` | Max Massive REST pages per ticker/kind/repair interval for current-day plus 3-day q_live coverage repair. | Keep high enough that liquid tickers do not stop at `partial_page_limit`. |
 | `QMD_RECENT_LIVE_PRIOR_MARKET_DAYS` | `3` | Number of prior US market sessions, plus the current market day, that q_live REST repair must keep covered. | Skips weekends and common US equity market holidays. |
 | `QMD_RECENT_LIVE_REPAIR_CONCURRENCY` | `8` | Max concurrent ticker repair workers for recent q_live REST repair. | Keeps full-market session-head repair from crawling symbol by symbol. |
@@ -157,6 +154,12 @@ Recent live repair converts Massive REST rows to the same normalized
 `MarketEvent` type used by the websocket path, then feeds the same state,
 stream, bar, indicator, and compact-event queues. Raw `live_massive_trades` and
 `live_massive_quotes` are not part of the default repair contract. The repair
+filters canonical and in-response source-identity replays before fan-out,
+serializes concurrent focused activations, and records completion only after
+compact-event and 100 ms bar coverage overlap durably. The startup structural
+audit reads `q_live.events FINAL`; physical ReplacingMergeTree versions are not
+canonical conflicts.
+The repair
 loads `qmd_live_event_coverage_v1`, materializes covered intervals from the
 intersection of `compact_persisted` and `intraday_bars_persisted` rows plus explicit
 `repair_completed` rows, subtracts those intervals from the current New York

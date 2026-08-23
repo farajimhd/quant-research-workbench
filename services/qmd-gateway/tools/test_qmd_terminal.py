@@ -284,6 +284,27 @@ class QmdTerminalTests(unittest.TestCase):
             "action required",
         )
 
+    def test_resolved_structure_audit_supersedes_stale_rebuild_attention(self) -> None:
+        state = representative_state()
+        state.coverage["rows"].extend(
+            [
+                {
+                    "coverage_kind": "q_live_recent_events",
+                    "status": "needs_manual_rebuild",
+                    "action": "startup_maintenance",
+                    "finished_at": "2026-08-23 14:05:49.023",
+                },
+                {
+                    "coverage_kind": "q_live_structure_audit",
+                    "status": "canonical_clean",
+                    "action": "startup_maintenance",
+                    "finished_at": "2026-08-23 15:05:49.023",
+                },
+            ]
+        )
+        rows = qmd.attention_rows(state)
+        self.assertFalse(any("rebuild" in str(row.get("message")) for row in rows))
+
     def test_missing_required_recent_sessions_are_not_reported_all_clear(self) -> None:
         rows = qmd.attention_rows(representative_state())
         self.assertTrue(any(row.get("area") == "Recent live coverage" for row in rows))

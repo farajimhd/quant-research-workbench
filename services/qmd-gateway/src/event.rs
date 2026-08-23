@@ -58,6 +58,20 @@ pub struct LuldEvent {
 }
 
 impl MarketEvent {
+    pub fn event_type(&self) -> u8 {
+        match self {
+            MarketEvent::Trade(_) => 1,
+            MarketEvent::Quote(_) => 0,
+        }
+    }
+
+    pub fn source_sequence(&self) -> u64 {
+        match self {
+            MarketEvent::Trade(event) => event.sequence,
+            MarketEvent::Quote(event) => event.sequence,
+        }
+    }
+
     pub fn ticker(&self) -> &str {
         match self {
             MarketEvent::Trade(event) => &event.ticker,

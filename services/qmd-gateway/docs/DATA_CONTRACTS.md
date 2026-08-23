@@ -123,12 +123,12 @@ fine-grained source of truth for live time gaps.
 |---|---|
 | `started_at` | Maintenance run start time. |
 | `finished_at` | Maintenance run finish or plan record time. |
-| `coverage_kind` | `q_live_recent_events` or `historical_flatfile_events`. |
-| `status` | Recent-live statuses include `up_to_date`, `awaiting_live_symbols`, `no_symbols_available`, `repair_completed`, `partial_page_limit`, `partial_failed`, `repair_failed`, and `needs_manual_rebuild`. Historical statuses include `up_to_date`, `planned`, `launched`, and `launch_failed`. |
+| `coverage_kind` | `q_live_structure_audit`, `q_live_recent_events`, `q_live_retention`, or `historical_flatfile_events`. Structural, time-coverage, retention, and historical-handoff states are separate concerns. |
+| `status` | Structural statuses are `canonical_clean` or `needs_manual_rebuild`; recent-live statuses include `up_to_date`, `awaiting_live_symbols`, `no_symbols_available`, `repair_completed`, `partial_page_limit`, `partial_failed`, and `repair_failed`; retention uses `retention_delete_submitted` or `retention_blocked_historical_gap`. Historical statuses include `up_to_date`, `workstation_action_required`, `running`, `completed`, and `failed`. |
 | `start_ts_utc` | UTC start of the audited or planned coverage range. |
 | `end_ts_utc` | UTC end of the audited or planned coverage range. |
 | `action` | Startup or periodic action that wrote the row. |
-| `rows_written` | Rows routed through recent REST repair when applicable. The compact-event DB writer persists them asynchronously after fan-out. |
+| `rows_written` | Novel rows admitted by recent REST repair. Provider-fetched and replay-filtered counts are separate metadata fields. |
 | `host_role` | `workstation` or `laptop` after host-role resolution. |
 | `command` | Historical flatfile update command when one is planned. |
 | `summary_json` | JSON summary of audit counts, command planning, and messages. |
@@ -145,8 +145,11 @@ cannot merge two different evidence boundaries. Coverage is materialized as:
 - `compact_persisted` intervals from `events` inserts.
 - `intraday_bars_persisted` intervals from closed 100ms bar inserts.
 - the intersection of compact and bar intervals for the same run id.
-- explicit `repair_completed` intervals after REST repair routes events through
-  the same fan-out and verifies bar persistence for that interval.
+- explicit `repair_completed` intervals only after REST repair filters existing
+  canonical identities and durable compact/bar confirmations cover the interval.
+- `focused_q_live_events` rows keyed by stable ticker/start/end IDs for
+  restart-safe focused Structure repair; these do not imply whole-market time
+  coverage.
 - the `coverage_bootstrap` rows used only for bootstrapped historical contracts.
 
 Rows with `failed`, `partial_failed`, `partial_page_limit`, or `running` are
@@ -155,14 +158,14 @@ insert failure or bar insert failure from hiding a q_live time gap.
 
 | Field | Meaning |
 |---|---|
-| `coverage_kind` | `q_live_events` for live compact/bar coverage or `flatfile_events` in the flatfile table. |
+| `coverage_kind` | `q_live_events` for whole-market live compact/bar coverage, `focused_q_live_events` for ticker-bounded focused repair evidence, or `flatfile_events` in the flatfile table. |
 | `coverage_id` | Stable id for the row. Compact confirmations use `compact_<run_id>::<event_partition>::<market_session_date>`; intraday confirmations use `intraday_<run_id>::<local_date>`. The `::` suffix preserves run-level compact/bar intersection while distinguishing evidence boundaries. REST repair rows use `repair_<run_id>_<started_ms>_<interval_index>`. |
 | `source` | Writer or repair source, such as `qmd_compact_event_writer`, `qmd_intraday_bar_writer`, or `massive_rest_gap_repair`. |
 | `status` | `compact_persisted`, `intraday_bars_persisted`, `repair_completed`, or diagnostic statuses. |
 | `coverage_start_utc`, `coverage_end_utc` | UTC interval covered or diagnosed. |
 | `rows_written`, `event_rows`, `bar_rows` | Writer-specific row counts. Repair rows store per-interval counts, not one repeated global count. |
 | `error_count` | Nonzero when a diagnostic row records a failed or partial interval. |
-| `metadata_json` | Per-run metadata including compact-event partition, New York market-session date, intraday local-date partition, excluded raw tables, and repair interval details. |
+| `metadata_json` | Per-run metadata including compact-event partition, New York market-session date, intraday local-date partition, provider rows fetched, canonical rows replayed, novel rows enqueued, durable compact/bar confirmation, excluded raw tables, and repair interval details. |
 
 ## Live Abnormal Market-State Event Row
 

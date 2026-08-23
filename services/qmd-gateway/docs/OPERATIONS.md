@@ -249,9 +249,12 @@ and common US equity market holidays. Older history should be read from
 Startup maintenance is enabled by default with
 `QMD_STARTUP_MAINTENANCE_ENABLED=true`. It runs before the Massive websocket
 task starts. The gateway audits recent rows in the actual
-`q_live.events` table and checks:
+`q_live.events FINAL` table and checks:
 
-- duplicate canonical event identities after `FINAL`
+- conflicting canonical payloads for the same provider source identity after
+  `FINAL`
+- the exact `ReplacingMergeTree`, `event_date` partition, and canonical sorting
+  key required to reconcile at-least-once physical inserts
 
 The structural audit is separate from time coverage. Recent time coverage is
 read from `qmd_live_event_coverage_v1`. Streaming writes are counted as covered
@@ -265,9 +268,14 @@ way as live websocket rows. The startup repair and recurring repair both use
 the current market day plus configured prior market sessions, then fill missing
 04:00-20:00 ET intervals. If Massive pagination reaches
 `QMD_RECENT_LIVE_MAX_PAGES_PER_INTERVAL`, the symbol is recorded as
-`partial_page_limit` instead of being marked clean. If the audit finds duplicate
-canonical identities, the gateway records `needs_manual_rebuild` and refuses to
-silently rewrite existing rows. Live events have no durable ordinal; reads use
+`partial_page_limit` instead of being marked clean. Repair filters existing
+canonical and in-batch provider identities before derived fan-out and records
+fetched, replayed, and novel counts. Concurrent focus activations share one
+serialized repair boundary. Both focused and whole-market paths record
+`repair_completed` only after durable compact/bar coverage confirmation. If the structural audit finds
+conflicting payloads after `FINAL`, the gateway records `needs_manual_rebuild`
+under `q_live_structure_audit` and refuses to choose one silently. Live events
+have no durable ordinal; reads use
 timestamp, sequence, event type, and arrival sequence.
 
 `qmd_market_coverage_manifest_v1` is a coarse per-run manifest. It records
@@ -293,13 +301,13 @@ them.
 
 Retention is fail-closed per market session. Before QMD deletes either the
 singular recent event partition or its derived intraday-family bars, both quote
-and trade flatfile handoffs must be `confirmed`. QMD then compares the live and
-archive event sets using exact row and ticker counts, SIP timestamp bounds, the
-compact schema version, and independent sum/XOR aggregates of the complete
-stable event identity. A missing handoff, empty live event set, count/bound
-drift, schema drift, or identity drift records
-`retention_blocked_historical_gap` with both fingerprints and preserves all
-QMD-owned rows for that session.
+and trade flatfile handoffs must be `confirmed`, their recorded historical row
+totals must sum exactly to the archive event count, and the archive schema must
+match the current compact contract. A partial q_live session is not expected to
+equal the complete flatfile archive. Verified sessions receive their own
+bounded delete mutations even when a different old session remains blocked. A
+missing handoff, archive row-count drift, or schema drift records
+`retention_blocked_historical_gap` and preserves only the unverified session.
 
 ## Historical runtime
 
@@ -355,8 +363,9 @@ Before live use:
 | Gap fill does not run | Check `QMD_GAP_FILL_ENABLED`, `MASSIVE_API_KEY`, `QMD_GAP_FILL_MODE`, and whether the current phase allows repair. |
 | Gap fill records `awaiting_live_symbols` | The durable symbol universe is empty and no websocket compact symbols have arrived yet. Once websocket symbols arrive, repair should add them to `qmd_gap_fill_symbol_universe_v1` and retry on `QMD_GAP_FILL_AWAITING_SYMBOLS_RETRY_MS`. |
 | Gap fill records `no_symbols_available` | Outside streaming hours, no q_live or latest historical compact-event symbols were available for REST repair. |
-| Gap fill keeps writing many rows | Live ingest may be dropping compact events, or the gateway was offline for longer than expected. |
-| Startup maintenance records `needs_manual_rebuild` | Recent `q_live` canonical identities are inconsistent. Inspect/rebuild the affected live event range. |
+| Gap fill keeps fetching many rows | Compare `provider_rows_fetched`, `canonical_rows_replayed`, and `novel_rows_enqueued`. Replayed rows must be filtered before fan-out; repeated novel rows indicate a true coverage or checkpoint gap. |
+| Startup maintenance records `needs_manual_rebuild` | Conflicting payloads remain for the same source identity after `FINAL`, or the table engine/key contract failed. Physical replay versions alone are not a rebuild reason. |
+| Bars predate the canonical replay fix | Stop QMD Live, plan with `python scripts/repair_qmd_live_canonical_bars.py --start-date YYYY-MM-DD --end-date YYYY-MM-DD`, review the external manifest, then rerun with `--execute`. |
 
 ## Security Notes
 

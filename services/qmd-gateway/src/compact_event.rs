@@ -8,6 +8,7 @@ use crate::timefmt::clickhouse_datetime64;
 use chrono::{DateTime, TimeZone, Utc};
 use chrono_tz::America::New_York;
 use reqwest::Client;
+use ring::digest::{digest, SHA256};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::{BTreeMap, HashMap, VecDeque};
@@ -996,6 +997,14 @@ impl CompactEventClickHouseWriter {
         )
         .await?;
         self.ensure_compact_event_table().await?;
+        self.execute(
+            &format!(
+                "ALTER TABLE {} MODIFY SETTING non_replicated_deduplication_window = 1000",
+                self.config.compact_event_table
+            ),
+            true,
+        )
+        .await?;
         self.execute("DROP TABLE IF EXISTS live_event_ordinal_continuity", true)
             .await?;
         self.execute(&self.create_issue_table_sql(), true).await?;
@@ -1367,10 +1376,15 @@ impl CompactEventClickHouseWriter {
             })
             .collect::<Vec<_>>()
             .join("\n");
+        let batch_token = digest(&SHA256, body.as_bytes())
+            .as_ref()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
         self.query_with_body(
             &format!(
-                "INSERT INTO {} FORMAT JSONEachRow",
-                self.config.compact_event_table
+                "INSERT INTO {} SETTINGS insert_deduplication_token = '{}' FORMAT JSONEachRow",
+                self.config.compact_event_table, batch_token
             ),
             body,
         )
@@ -1439,6 +1453,27 @@ impl CompactEventClickHouseWriter {
             return Err(format!(
                 "{}.{} is not the singular ordinal-free live event schema; use a validated cutover before starting QMD (mismatches={mismatches:?})",
                 self.config.clickhouse_database, self.config.compact_event_table
+            ));
+        }
+        let table_contract = self
+            .query(
+                &format!(
+                    "SELECT engine, partition_key, sorting_key FROM system.tables WHERE database = currentDatabase() AND name = '{}' FORMAT TabSeparatedRaw",
+                    escape_sql_string(&self.config.compact_event_table)
+                ),
+                true,
+            )
+            .await?;
+        let fields = table_contract.trim().split('\t').collect::<Vec<_>>();
+        let expected_sorting_key = "ticker, sip_timestamp_us, source_sequence, bitAnd(event_meta, 1), event_meta, price_primary_int, price_secondary_int, size_primary, size_secondary, exchange_primary, exchange_secondary, condition_token_1, condition_token_2, condition_token_3, condition_token_4, condition_token_5";
+        if fields.len() != 3
+            || fields[0] != "ReplacingMergeTree"
+            || fields[1] != "event_date"
+            || fields[2] != expected_sorting_key
+        {
+            return Err(format!(
+                "{}.{} does not satisfy the canonical live-event engine contract; expected ReplacingMergeTree partitioned by event_date with the exact canonical sorting key, received {:?}",
+                self.config.clickhouse_database, self.config.compact_event_table, fields
             ));
         }
         Ok(())

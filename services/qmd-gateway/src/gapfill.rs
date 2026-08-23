@@ -17,7 +17,7 @@ use futures_util::stream::{self, StreamExt};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fs::{self, File};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -97,7 +97,7 @@ pub async fn run_gap_fill_service(
 
 #[derive(Default)]
 struct LiveEventAudit {
-    duplicate_event_rows: u64,
+    canonical_conflict_rows: u64,
     recent_rows: u64,
     ticker_count: u64,
 }
@@ -171,8 +171,10 @@ struct SymbolRepairOutcome {
 #[derive(Clone, Debug, Default)]
 struct IntervalRepairRecord {
     errors: u64,
+    fetched_rows: u64,
     index: usize,
     page_limit_hit: bool,
+    replayed_rows: u64,
     rows: u64,
     symbol_had_rows: bool,
 }
@@ -182,16 +184,37 @@ struct IntervalRepairStats {
     bar_rows_after: u64,
     bar_rows_before: u64,
     errors: u64,
+    fetched_rows: u64,
     page_limit_symbols: u64,
     rows: u64,
+    replayed_rows: u64,
     symbols_attempted: u64,
     symbols_with_rows: u64,
 }
 
 #[derive(Default)]
 struct IntervalFillOutcome {
+    fetched_rows: u64,
     page_limit_hit: bool,
+    replayed_rows: u64,
     rows: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+struct SourceEventIdentity {
+    event_type: u8,
+    sip_timestamp_us: u64,
+    source_sequence: u64,
+}
+
+impl SourceEventIdentity {
+    fn from_event(event: &MarketEvent) -> Self {
+        Self {
+            event_type: event.event_type(),
+            sip_timestamp_us: event.ts().timestamp_micros().max(0) as u64,
+            source_sequence: event.source_sequence(),
+        }
+    }
 }
 
 #[derive(Default)]
@@ -236,6 +259,7 @@ pub struct GapFillService {
     maintenance: SharedMaintenanceState,
     calendar: MarketCalendarClient,
     flatfiles: FlatfileDiscovery,
+    focused_repair_lock: std::sync::Arc<tokio::sync::Mutex<()>>,
 }
 
 impl GapFillService {
@@ -255,6 +279,7 @@ impl GapFillService {
             maintenance,
             calendar,
             flatfiles,
+            focused_repair_lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),
         }
     }
 
@@ -275,8 +300,13 @@ impl GapFillService {
         {
             return Err("invalid focused QMD repair ticker or interval bounds".to_string());
         }
+        // Focus activations can overlap for one process. Serialize their
+        // read-filter-enqueue boundary so a second request observes the first
+        // request's durable compact rows instead of replaying an in-flight
+        // provider response into every derived consumer.
+        let _focused_repair_guard = self.focused_repair_lock.lock().await;
         let started_at = Utc::now();
-        let repairs = intervals
+        let mut repairs = intervals
             .iter()
             .map(|(start, end)| RepairInterval {
                 start: *start,
@@ -284,13 +314,25 @@ impl GapFillService {
                 reason: "focused_structure_activation_gap",
             })
             .collect::<Vec<_>>();
+        let mut pending = Vec::with_capacity(repairs.len());
+        for interval in repairs.drain(..) {
+            if !self
+                .focused_repair_is_complete(&symbol, interval.start, interval.end)
+                .await?
+            {
+                pending.push(interval);
+            }
+        }
+        if pending.is_empty() {
+            return Ok(0);
+        }
         let outcome = self
             .repair_symbol_intervals(
                 started_at,
                 "focused_structure_activation",
                 &format!("{:?}", session_phase(started_at)),
-                symbol,
-                repairs,
+                symbol.clone(),
+                pending.clone(),
                 false,
             )
             .await?;
@@ -304,7 +346,79 @@ impl GapFillService {
             self.config.flush_interval_ms.saturating_mul(2).max(1_000),
         ))
         .await;
+        let durable_coverage = self
+            .live_event_coverage_intervals(
+                pending
+                    .iter()
+                    .map(|interval| interval.start)
+                    .min()
+                    .unwrap_or(started_at),
+                pending
+                    .iter()
+                    .map(|interval| interval.end)
+                    .max()
+                    .unwrap_or(started_at),
+            )
+            .await?;
+        for (index, interval) in pending.iter().enumerate() {
+            let record = outcome
+                .interval_records
+                .get(index)
+                .cloned()
+                .unwrap_or_default();
+            let durable_confirmed =
+                interval_is_covered(&durable_coverage, interval.start, interval.end);
+            self.record_event_coverage_snapshot(
+                &self.config.qmd_live_event_coverage_table,
+                "focused_q_live_events",
+                &focused_repair_coverage_id(&symbol, interval.start, interval.end),
+                "focused_structure_activation",
+                if record.errors == 0 && !record.page_limit_hit && durable_confirmed {
+                    "repair_completed"
+                } else {
+                    "partial_failed"
+                },
+                interval.start,
+                interval.end,
+                record.rows,
+                record.fetched_rows,
+                0,
+                record.errors,
+                started_at,
+                Some(Utc::now()),
+                &json!({
+                    "symbol": symbol,
+                    "reason": interval.reason,
+                    "provider_rows_fetched": record.fetched_rows,
+                    "canonical_rows_replayed": record.replayed_rows,
+                    "novel_rows_enqueued": record.rows,
+                    "durable_compact_bar_coverage_confirmed": durable_confirmed,
+                }),
+            )
+            .await?;
+        }
         Ok(outcome.rows)
+    }
+
+    async fn focused_repair_is_complete(
+        &self,
+        symbol: &str,
+        start: DateTime<Utc>,
+        end: DateTime<Utc>,
+    ) -> Result<bool, String> {
+        let coverage_id = focused_repair_coverage_id(symbol, start, end);
+        let sql = format!(
+            "SELECT count() FROM {} FINAL WHERE coverage_kind = 'focused_q_live_events' AND coverage_id = '{}' AND status = 'repair_completed' FORMAT TSV",
+            self.config.qmd_live_event_coverage_table,
+            escape_sql_string(&coverage_id),
+        );
+        Ok(self
+            .query(&sql, true)
+            .await?
+            .trim()
+            .parse::<u64>()
+            .unwrap_or(0)
+            > 0)
     }
 
     async fn run_startup_maintenance(&self) -> Result<(), String> {
@@ -325,23 +439,20 @@ impl GapFillService {
             .await;
         let audit = self.audit_recent_live_events().await?;
         let audit_message = format!(
-            "QMD startup q_live audit: rows={} tickers={} duplicate_canonical_events={}",
-            audit.recent_rows, audit.ticker_count, audit.duplicate_event_rows,
+            "QMD startup q_live canonical audit: rows={} tickers={} conflicting_source_identities={}",
+            audit.recent_rows, audit.ticker_count, audit.canonical_conflict_rows,
         );
-        if audit.duplicate_event_rows == 0 {
+        if audit.canonical_conflict_rows == 0 {
             println!("{audit_message}");
         } else {
             eprintln!("{audit_message}");
         }
-        let mut status = if audit.duplicate_event_rows == 0 {
-            "ok"
-        } else {
-            "needs_manual_rebuild"
-        };
+        let structure_status = canonical_structure_status(audit.canonical_conflict_rows);
+        let mut status = structure_status;
         let mut rows_written = 0u64;
         let mut message = String::new();
         let mut repair = RecentLiveRepair::default();
-        if status == "ok" {
+        if structure_status == "canonical_clean" {
             repair = self
                 .repair_recent_live_coverage(started_at, "startup_recent_repair")
                 .await
@@ -359,34 +470,51 @@ impl GapFillService {
             } else if !repair.status.is_empty() {
                 status = repair.status.as_str();
             }
-        } else {
-            message = "Recent q_live event table has duplicate canonical event identities; a validated rebuild is required.".to_string();
         }
         self.record_coverage_run(
             started_at,
-            "q_live_recent_events",
-            status,
+            "q_live_structure_audit",
+            structure_status,
             window_start,
             window_end,
             "startup_maintenance",
-            rows_written,
+            0,
             &host_role,
             "",
             &json!({
                 "phase": phase,
                 "recent_rows": audit.recent_rows,
                 "ticker_count": audit.ticker_count,
-                "duplicate_event_rows": audit.duplicate_event_rows,
-                "message": message,
-                "symbols_checked": repair.symbols_checked,
-                "symbols_repaired": repair.symbols_repaired,
-                "intervals_checked": repair.intervals_checked,
-                "intervals_repaired": repair.intervals_repaired,
-                "page_limited_symbols": repair.page_limited_symbols,
-                "repair_errors": repair.errors,
+                "canonical_conflict_rows": audit.canonical_conflict_rows,
+                "canonical_read": "q_live.events FINAL",
+                "message": audit_message,
             }),
         )
         .await?;
+        if structure_status == "canonical_clean" {
+            self.record_coverage_run(
+                started_at,
+                "q_live_recent_events",
+                status,
+                window_start,
+                window_end,
+                "startup_recent_repair",
+                rows_written,
+                &host_role,
+                "",
+                &json!({
+                    "phase": phase,
+                    "symbols_checked": repair.symbols_checked,
+                    "symbols_repaired": repair.symbols_repaired,
+                    "intervals_checked": repair.intervals_checked,
+                    "intervals_repaired": repair.intervals_repaired,
+                    "page_limited_symbols": repair.page_limited_symbols,
+                    "repair_errors": repair.errors,
+                    "message": message,
+                }),
+            )
+            .await?;
+        }
         if self.config.historical_flatfile_update_enabled {
             self.maintenance
                 .set_message(
@@ -546,15 +674,61 @@ impl GapFillService {
             (event.ts(), tie_breaker)
         });
 
-        let mut count = 0u64;
+        let fetched_rows = events.len() as u64;
+        let seen = self
+            .existing_source_event_identities(symbol, start, end)
+            .await?;
+        let (events, replayed_rows) = filter_novel_repair_events(events, seen);
+        let count = events.len() as u64;
         for event in events {
             fanout_repair_market_event(event, &self.fanout).await;
-            count += 1;
         }
         Ok(IntervalFillOutcome {
+            fetched_rows,
             page_limit_hit: trades.page_limit_hit || quotes.page_limit_hit,
+            replayed_rows,
             rows: count,
         })
+    }
+
+    async fn existing_source_event_identities(
+        &self,
+        symbol: &str,
+        start: DateTime<Utc>,
+        end: DateTime<Utc>,
+    ) -> Result<HashSet<SourceEventIdentity>, String> {
+        let sql = format!(
+            r#"
+            SELECT sip_timestamp_us, source_sequence, bitAnd(event_meta, 1)
+            FROM {table} FINAL
+            WHERE ticker = '{symbol}'
+              AND sip_timestamp_us >= {start_us}
+              AND sip_timestamp_us < {end_us}
+            FORMAT TSV
+            "#,
+            table = self.config.compact_event_table,
+            symbol = escape_sql_string(symbol),
+            start_us = start.timestamp_micros(),
+            end_us = end.timestamp_micros(),
+        );
+        let text = self.query(&sql, true).await?;
+        let mut identities = HashSet::new();
+        for line in text.lines().filter(|line| !line.trim().is_empty()) {
+            let fields = line.split('\t').collect::<Vec<_>>();
+            if fields.len() != 3 {
+                return Err(format!("invalid q_live source identity row: {line}"));
+            }
+            identities.insert(SourceEventIdentity {
+                sip_timestamp_us: fields[0]
+                    .parse::<u64>()
+                    .map_err(|error| error.to_string())?,
+                source_sequence: fields[1]
+                    .parse::<u64>()
+                    .map_err(|error| error.to_string())?,
+                event_type: fields[2].parse::<u8>().map_err(|error| error.to_string())?,
+            });
+        }
+        Ok(identities)
     }
 
     async fn fetch_events(
@@ -756,6 +930,8 @@ impl GapFillService {
                     for record in outcome.interval_records {
                         if let Some(stats) = interval_stats.get_mut(record.index) {
                             stats.rows += record.rows;
+                            stats.fetched_rows += record.fetched_rows;
+                            stats.replayed_rows += record.replayed_rows;
                             stats.errors += record.errors;
                             stats.symbols_attempted += 1;
                             if record.symbol_had_rows {
@@ -844,6 +1020,8 @@ impl GapFillService {
         )
         .await?;
         let mut symbol_rows = 0u64;
+        let mut symbol_fetched_rows = 0u64;
+        let mut symbol_replayed_rows = 0u64;
         let mut symbol_errors = 0u64;
         let mut symbol_partial = false;
         let mut intervals_attempted = 0u64;
@@ -867,6 +1045,8 @@ impl GapFillService {
             {
                 Ok(outcome) => {
                     symbol_rows += outcome.rows;
+                    symbol_fetched_rows += outcome.fetched_rows;
+                    symbol_replayed_rows += outcome.replayed_rows;
                     intervals_attempted += 1;
                     self.fanout.metrics.inc_gap_fill_rows(outcome.rows);
                     if report_maintenance {
@@ -879,8 +1059,10 @@ impl GapFillService {
                     }
                     interval_records.push(IntervalRepairRecord {
                         errors: 0,
+                        fetched_rows: outcome.fetched_rows,
                         index,
                         page_limit_hit: outcome.page_limit_hit,
+                        replayed_rows: outcome.replayed_rows,
                         rows: outcome.rows,
                         symbol_had_rows: outcome.rows > 0,
                     });
@@ -894,8 +1076,10 @@ impl GapFillService {
                     eprintln!("QMD recent q_live repair failed for {symbol}: {error}");
                     interval_records.push(IntervalRepairRecord {
                         errors: 1,
+                        fetched_rows: 0,
                         index,
                         page_limit_hit: false,
+                        replayed_rows: 0,
                         rows: 0,
                         symbol_had_rows: false,
                     });
@@ -943,6 +1127,9 @@ impl GapFillService {
             json!({
                 "phase": phase,
                 "intervals_attempted": intervals_attempted,
+                "provider_rows_fetched": symbol_fetched_rows,
+                "canonical_rows_replayed": symbol_replayed_rows,
+                "novel_rows_enqueued": symbol_rows,
                 "page_limit_hit": symbol_partial,
                 "message": if symbol_partial {
                     "Massive REST page limit was reached for at least one interval"
@@ -1396,10 +1583,28 @@ impl GapFillService {
         intervals: &[RepairInterval],
         interval_stats: &[IntervalRepairStats],
     ) -> Result<(), String> {
+        let durable_coverage = self
+            .live_event_coverage_intervals(
+                intervals
+                    .iter()
+                    .map(|interval| interval.start)
+                    .min()
+                    .unwrap_or(started_at),
+                intervals
+                    .iter()
+                    .map(|interval| interval.end)
+                    .max()
+                    .unwrap_or(started_at),
+            )
+            .await?;
         for (index, interval) in intervals.iter().enumerate() {
             let stats = interval_stats.get(index).cloned().unwrap_or_default();
             let bar_rows_added = stats.bar_rows_after.saturating_sub(stats.bar_rows_before);
-            let status = if stats.errors > 0 || (stats.rows > 0 && bar_rows_added == 0) {
+            let durable_confirmed =
+                interval_is_covered(&durable_coverage, interval.start, interval.end);
+            let status = if stats.errors > 0
+                || (stats.rows > 0 && (bar_rows_added == 0 || !durable_confirmed))
+            {
                 "partial_failed"
             } else {
                 "repair_completed"
@@ -1434,8 +1639,12 @@ impl GapFillService {
                     "symbols_with_rows": stats.symbols_with_rows,
                     "page_limit_symbols": stats.page_limit_symbols,
                     "repair_errors": stats.errors,
+                    "provider_rows_fetched": stats.fetched_rows,
+                    "canonical_rows_replayed": stats.replayed_rows,
+                    "novel_rows_enqueued": stats.rows,
                     "bar_rows_before": stats.bar_rows_before,
                     "bar_rows_after": stats.bar_rows_after,
+                    "durable_compact_bar_coverage_confirmed": durable_confirmed,
                     "excluded_tables": [
                         "q_live.live_massive_trades",
                         "q_live.live_massive_quotes",
@@ -1523,7 +1732,7 @@ impl GapFillService {
                     condition_token_3,
                     condition_token_4,
                     condition_token_5
-                FROM {table}
+                FROM {table} FINAL
                 WHERE event_date >= toDate('{start_date}')
                   AND sip_timestamp_us >= {start_us}
                   AND ticker != ''
@@ -1535,20 +1744,8 @@ impl GapFillService {
                     ticker,
                     sip_timestamp_us,
                     source_sequence,
-                    event_type,
-                    event_meta,
-                    price_primary_int,
-                    price_secondary_int,
-                    size_primary,
-                    size_secondary,
-                    exchange_primary,
-                    exchange_secondary,
-                    condition_token_1,
-                    condition_token_2,
-                    condition_token_3,
-                    condition_token_4,
-                    condition_token_5
-                )) FROM recent) AS duplicate_event_rows
+                    event_type
+                )) FROM recent) AS canonical_conflict_rows
             FORMAT JSONEachRow
             "#,
             table = self.config.compact_event_table,
@@ -1561,8 +1758,8 @@ impl GapFillService {
         };
         let value: Value = serde_json::from_str(line).map_err(|error| error.to_string())?;
         Ok(LiveEventAudit {
-            duplicate_event_rows: value
-                .get("duplicate_event_rows")
+            canonical_conflict_rows: value
+                .get("canonical_conflict_rows")
                 .and_then(json_u64)
                 .unwrap_or(0),
             recent_rows: value.get("recent_rows").and_then(json_u64).unwrap_or(0),
@@ -1883,12 +2080,17 @@ impl GapFillService {
         .await;
         let mut flatfile_evidence = serde_json::Map::new();
         let mut flatfile_confirmed = true;
+        let mut expected_archive_rows = 0u64;
         for (kind, state) in ["quote", "trade"].into_iter().zip(flatfile_states) {
             let state = state?;
             let confirmed = state
                 .as_ref()
                 .is_some_and(|row| row.historical_status == "confirmed");
             flatfile_confirmed &= confirmed;
+            if confirmed {
+                expected_archive_rows = expected_archive_rows
+                    .saturating_add(state.as_ref().map(|row| row.historical_rows).unwrap_or(0));
+            }
             flatfile_evidence.insert(
                 kind.to_string(),
                 json!({
@@ -1907,60 +2109,17 @@ impl GapFillService {
                 json!({"reason": "flatfile_handoff_unconfirmed", "flatfiles": flatfile_evidence}),
             ));
         }
-        let (live, archive) = tokio::try_join!(
-            self.event_coverage_fingerprint(date, false),
-            self.event_coverage_fingerprint(date, true),
-        )?;
-        if live.event_count == 0 {
-            if let Some(recorded) = self.recorded_archive_handoff(date).await? {
-                let current_archive = event_coverage_fingerprint_json(&archive);
-                if recorded_handoff_matches(&recorded, &flatfile_evidence, &current_archive) {
-                    return Ok((
-                        true,
-                        json!({
-                            "reason": "recorded_equivalent",
-                            "flatfiles": flatfile_evidence,
-                            "live": event_coverage_fingerprint_json(&live),
-                            "archive": current_archive,
-                            "recorded_at": recorded.get("recorded_at"),
-                        }),
-                    ));
-                }
-            }
-        }
-        let equivalent = live.event_count > 0 && live == archive;
+        let archive = self.event_coverage_fingerprint(date, true).await?;
+        let archive_complete = archive_handoff_is_complete(expected_archive_rows, &archive);
         Ok((
-            equivalent,
+            archive_complete,
             json!({
-                "reason": if equivalent { "equivalent" } else { "event_fingerprint_mismatch" },
+                "reason": if archive_complete { "archive_authoritative" } else { "archive_row_count_mismatch" },
                 "flatfiles": flatfile_evidence,
-                "live": event_coverage_fingerprint_json(&live),
+                "expected_archive_rows": expected_archive_rows,
                 "archive": event_coverage_fingerprint_json(&archive),
             }),
         ))
-    }
-
-    async fn recorded_archive_handoff(&self, date: NaiveDate) -> Result<Option<Value>, String> {
-        let start = date_start_utc(date);
-        let end = date_start_utc(date + ChronoDuration::days(1));
-        let sql = format!(
-            "SELECT summary_json FROM {} WHERE coverage_kind = 'q_live_archive_handoff' AND status = 'verified' AND start_ts_utc = toDateTime64('{}', 3, 'UTC') AND end_ts_utc = toDateTime64('{}', 3, 'UTC') ORDER BY finished_at DESC LIMIT 1 FORMAT JSONEachRow",
-            self.config.qmd_coverage_table,
-            clickhouse_datetime64(&start),
-            clickhouse_datetime64(&end),
-        );
-        let body = self.query(&sql, true).await?;
-        let Some(line) = body.lines().find(|line| !line.trim().is_empty()) else {
-            return Ok(None);
-        };
-        let row: Value = serde_json::from_str(line)
-            .map_err(|error| format!("invalid archive handoff row: {error}"))?;
-        let Some(summary) = row.get("summary_json").and_then(Value::as_str) else {
-            return Err("archive handoff row is missing summary_json".to_string());
-        };
-        serde_json::from_str(summary)
-            .map(Some)
-            .map_err(|error| format!("invalid archive handoff summary: {error}"))
     }
 
     async fn record_archive_handoff(
@@ -2058,38 +2217,42 @@ impl GapFillService {
         }
         let mut blocked_rows = 0u64;
         let mut blocked_sessions = Vec::new();
+        let mut submitted_rows = 0u64;
+        let mut submitted_sessions = Vec::new();
         for (date, count) in &session_rows {
             let (verified, evidence) = self.verified_archive_handoff(*date).await?;
             if !verified {
                 blocked_rows = blocked_rows.saturating_add(*count);
                 blocked_sessions
                     .push(json!({"session_date": date.to_string(), "evidence": evidence}));
-            } else if evidence.get("reason").and_then(Value::as_str) == Some("equivalent") {
+            } else {
                 self.record_archive_handoff(started_at, *date, &evidence)
                     .await?;
+                self.query(
+                    &format!(
+                        "ALTER TABLE {} DELETE WHERE toDate(toTimeZone(fromUnixTimestamp64Micro(toInt64(sip_timestamp_us)), 'America/New_York')) = toDate('{}')",
+                        self.config.compact_event_table, date
+                    ),
+                    true,
+                )
+                .await?;
+                self.query(
+                    &format!(
+                        "ALTER TABLE {} DELETE WHERE local_date = toDate('{}')",
+                        self.config.intraday_bar_table, date
+                    ),
+                    true,
+                )
+                .await?;
+                submitted_rows = submitted_rows.saturating_add(*count);
+                submitted_sessions.push(date.to_string());
             }
         }
         if blocked_rows > 0 {
-            self.record_coverage_run(started_at, "q_live_retention", "retention_blocked_historical_gap", date_start_utc(cutoff), Utc::now(), "retention", 0, &self.host_role(), "", &json!({"cutoff": cutoff.to_string(), "latest_historical": latest, "blocked_rows": blocked_rows, "blocked_sessions": blocked_sessions})).await?;
+            self.record_coverage_run(started_at, "q_live_retention", "retention_blocked_historical_gap", date_start_utc(cutoff), Utc::now(), "retention", submitted_rows, &self.host_role(), "", &json!({"cutoff": cutoff.to_string(), "latest_historical": latest, "blocked_rows": blocked_rows, "blocked_sessions": blocked_sessions, "delete_submitted_rows": submitted_rows, "delete_submitted_sessions": submitted_sessions})).await?;
             return Ok(());
         }
-        self.query(
-            &format!(
-                "ALTER TABLE {} DELETE WHERE toDate(toTimeZone(fromUnixTimestamp64Micro(toInt64(sip_timestamp_us)), 'America/New_York')) < toDate('{}')",
-                self.config.compact_event_table, cutoff
-            ),
-            true,
-        )
-        .await?;
-        self.query(
-            &format!(
-                "ALTER TABLE {} DELETE WHERE local_date < toDate('{}')",
-                self.config.intraday_bar_table, cutoff
-            ),
-            true,
-        )
-        .await?;
-        self.record_coverage_run(started_at, "q_live_retention", "retention_applied", date_start_utc(cutoff), Utc::now(), "retention", 0, &self.host_role(), "", &json!({"retained_sessions": sessions.iter().map(ToString::to_string).collect::<Vec<_>>(), "historical_confirmed_through": latest})).await
+        self.record_coverage_run(started_at, "q_live_retention", "retention_delete_submitted", date_start_utc(cutoff), Utc::now(), "retention", submitted_rows, &self.host_role(), "", &json!({"retained_sessions": sessions.iter().map(ToString::to_string).collect::<Vec<_>>(), "historical_confirmed_through": latest, "delete_submitted_sessions": submitted_sessions})).await
     }
 
     async fn confirm_flatfile_coverage(&self, latest: &str) -> Result<(), String> {
@@ -2869,13 +3032,38 @@ fn event_coverage_fingerprint_json(value: &EventCoverageFingerprint) -> Value {
     })
 }
 
-fn recorded_handoff_matches(
-    recorded: &Value,
-    current_flatfiles: &serde_json::Map<String, Value>,
-    current_archive: &Value,
+fn archive_handoff_is_complete(
+    expected_archive_rows: u64,
+    archive: &EventCoverageFingerprint,
 ) -> bool {
-    recorded.get("flatfiles") == Some(&Value::Object(current_flatfiles.clone()))
-        && recorded.get("archive") == Some(current_archive)
+    expected_archive_rows > 0
+        && archive.event_count == expected_archive_rows
+        && archive.schema_version_min == LIVE_COMPACT_EVENT_SCHEMA_VERSION as u64
+        && archive.schema_version_max == LIVE_COMPACT_EVENT_SCHEMA_VERSION as u64
+}
+
+fn filter_novel_repair_events(
+    events: Vec<MarketEvent>,
+    mut seen: HashSet<SourceEventIdentity>,
+) -> (Vec<MarketEvent>, u64) {
+    let mut novel = Vec::with_capacity(events.len());
+    let mut replayed = 0u64;
+    for event in events {
+        if seen.insert(SourceEventIdentity::from_event(&event)) {
+            novel.push(event);
+        } else {
+            replayed = replayed.saturating_add(1);
+        }
+    }
+    (novel, replayed)
+}
+
+fn canonical_structure_status(canonical_conflict_rows: u64) -> &'static str {
+    if canonical_conflict_rows == 0 {
+        "canonical_clean"
+    } else {
+        "needs_manual_rebuild"
+    }
 }
 
 #[cfg(test)]
@@ -2917,6 +3105,31 @@ mod tests {
     }
 
     #[test]
+    fn repair_filter_rejects_existing_and_in_batch_source_identity_replays() {
+        let event = rest_trade_event(
+            "AAPL",
+            json!({
+                "sip_timestamp": 1_787_157_098_071_817_u64 * 1_000,
+                "sequence_number": 42,
+                "price": 100.0,
+                "size": 10,
+                "exchange": 4,
+            }),
+        )
+        .unwrap();
+        let existing = HashSet::from([SourceEventIdentity::from_event(&event)]);
+        let (novel, replayed) = filter_novel_repair_events(vec![event.clone(), event], existing);
+        assert!(novel.is_empty());
+        assert_eq!(replayed, 2);
+    }
+
+    #[test]
+    fn canonical_structure_audit_status_is_independent_of_time_coverage() {
+        assert_eq!(canonical_structure_status(0), "canonical_clean");
+        assert_eq!(canonical_structure_status(1), "needs_manual_rebuild");
+    }
+
+    #[test]
     fn event_fingerprint_parser_preserves_uint64_identity_aggregates() {
         let row = r#"{"event_count":"12","ticker_count":2,"first_sip_timestamp_us":"100","last_sip_timestamp_us":"200","schema_version_min":1,"schema_version_max":1,"identity_hash_sum":"18446744073709551615","identity_hash_xor":"99"}"#;
         let parsed = parse_event_coverage_fingerprint(row).unwrap();
@@ -2927,7 +3140,7 @@ mod tests {
     }
 
     #[test]
-    fn event_fingerprint_equality_rejects_count_bound_or_identity_drift() {
+    fn event_fingerprint_preserves_identity_drift_evidence() {
         let expected = EventCoverageFingerprint {
             event_count: 10,
             ticker_count: 2,
@@ -2944,57 +3157,17 @@ mod tests {
     }
 
     #[test]
-    fn recorded_handoff_requires_identical_remote_and_archive_evidence() {
-        let archive = json!({
-            "event_count": 10,
-            "identity_hash_sum": 300,
-            "identity_hash_xor": 400,
-        });
-        let mut flatfiles = serde_json::Map::new();
-        flatfiles.insert(
-            "quote".to_string(),
-            json!({
-                "confirmed": true,
-                "historical_rows": 6,
-                "remote_key": "quotes.csv.gz",
-                "remote_etag": "etag-a",
-                "remote_last_modified": "yesterday",
-                "remote_content_length": 100,
-            }),
-        );
-        let recorded = json!({
-            "flatfiles": flatfiles.clone(),
-            "archive": archive.clone(),
-            "recorded_at": "2026-08-11T00:00:00Z",
-        });
-
-        assert!(recorded_handoff_matches(&recorded, &flatfiles, &archive));
-
-        let mut changed_flatfiles = flatfiles.clone();
-        changed_flatfiles
-            .get_mut("quote")
-            .and_then(Value::as_object_mut)
-            .unwrap()
-            .insert(
-                "remote_etag".to_string(),
-                Value::String("etag-b".to_string()),
-            );
-        assert!(!recorded_handoff_matches(
-            &recorded,
-            &changed_flatfiles,
-            &archive
-        ));
-
-        let changed_archive = json!({
-            "event_count": 10,
-            "identity_hash_sum": 301,
-            "identity_hash_xor": 400,
-        });
-        assert!(!recorded_handoff_matches(
-            &recorded,
-            &flatfiles,
-            &changed_archive
-        ));
+    fn archive_handoff_requires_exact_confirmed_row_total_and_schema() {
+        let mut archive = EventCoverageFingerprint {
+            event_count: 10,
+            schema_version_min: LIVE_COMPACT_EVENT_SCHEMA_VERSION as u64,
+            schema_version_max: LIVE_COMPACT_EVENT_SCHEMA_VERSION as u64,
+            ..EventCoverageFingerprint::default()
+        };
+        assert!(archive_handoff_is_complete(10, &archive));
+        assert!(!archive_handoff_is_complete(9, &archive));
+        archive.schema_version_max += 1;
+        assert!(!archive_handoff_is_complete(10, &archive));
     }
 
     #[test]
@@ -3076,6 +3249,25 @@ fn live_event_table_expr(
 
 fn escape_sql_string(value: &str) -> String {
     value.replace('\\', "\\\\").replace('\'', "\\'")
+}
+
+fn focused_repair_coverage_id(symbol: &str, start: DateTime<Utc>, end: DateTime<Utc>) -> String {
+    format!(
+        "focused_{}_{}_{}",
+        symbol.trim().to_ascii_uppercase(),
+        start.timestamp_micros(),
+        end.timestamp_micros()
+    )
+}
+
+fn interval_is_covered(
+    coverage: &[CoverageInterval],
+    start: DateTime<Utc>,
+    end: DateTime<Utc>,
+) -> bool {
+    coverage
+        .iter()
+        .any(|interval| interval.start <= start && interval.end >= end)
 }
 
 fn merge_tree_settings(storage_policy: &str) -> String {
