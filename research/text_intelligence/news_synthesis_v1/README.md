@@ -404,6 +404,35 @@ selection. Results and limitations are documented in
 `docs/codex/NEWS_STRUCTURED_RF_FINAL_BIDIRECTIONAL_EVALUATION_V1.md`. Bulk
 outputs remain under `D:\TradingML\runtimes\text_intelligence\news_synthesis_v1`.
 
+### August 2026 temporal holdout
+
+The post-August-13 population is frozen and reviewed without supervision-label
+or model exposure before either immutable structured Random Forest is scored.
+The runner supports restart-safe packet preparation, collection, reconciliation,
+model scoring, and artifact validation:
+
+```powershell
+$env:PYTHONDONTWRITEBYTECODE='1'
+python -m research.text_intelligence.news_synthesis_v1.run_forecast_holdout_audit freeze
+python -m research.text_intelligence.news_synthesis_v1.run_forecast_holdout_audit collect-compact
+python -m research.text_intelligence.news_synthesis_v1.run_forecast_holdout_audit prepare-full-primary
+python -m research.text_intelligence.news_synthesis_v1.run_forecast_holdout_audit collect-full-primary
+python -m research.text_intelligence.news_synthesis_v1.run_forecast_holdout_audit prepare-full-expansion
+python -m research.text_intelligence.news_synthesis_v1.run_forecast_holdout_audit collect-full-expansion
+python -m research.text_intelligence.news_synthesis_v1.run_forecast_holdout_audit prepare-full-secondary
+python -m research.text_intelligence.news_synthesis_v1.run_forecast_holdout_audit finalize-labels
+python -m research.text_intelligence.news_synthesis_v1.run_forecast_holdout_audit prepare-full-tertiary
+python -m research.text_intelligence.news_synthesis_v1.run_forecast_holdout_audit finalize-tertiary
+python -m research.text_intelligence.news_synthesis_v1.run_forecast_holdout_audit score-models
+python -m research.text_intelligence.news_synthesis_v1.run_forecast_holdout_audit validate
+```
+
+The frozen population, review funnel, immutable-model metrics, and limits are
+documented in
+`docs/codex/NEWS_FORECAST_AUGUST_2026_TEMPORAL_HOLDOUT_V1.md`. Bulk artifacts
+remain under
+`D:\TradingML\runtimes\text_intelligence\news_synthesis_v1\forecast_eligibility_august_2026_temporal_holdout_v1`.
+
 ### Structured RF disagreement blind audit V1
 
 The disagreement audit draws a 1,000-article, 335-stratum weighted sample from
