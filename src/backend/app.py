@@ -184,16 +184,15 @@ from src.backend.query_plans.sec_operations_v1 import (
     today_summary as sec_today_summary_query,
 )
 from src.backend.real_live_trading_service import (
-    apply_tradable_filter_to_scanner_payload,
     configured_real_live_accounts,
     public_account,
     real_live_portfolio,
     real_live_preflight,
     real_live_scanner_snapshot,
+    real_live_signal_stream_snapshot,
 )
 from src.backend.real_live_market_data import (
     market_gateway_bars,
-    market_gateway_snapshot,
     market_gateway_start,
     market_gateway_status,
     market_gateway_stop,
@@ -4261,12 +4260,11 @@ def real_live_trading_accounts() -> dict[str, Any]:
 def real_live_trading_scanner(row_limit: int = Query(default=250, ge=1, le=1000)) -> dict[str, Any]:
     try:
         return real_live_scanner_snapshot(row_limit=row_limit)
-    except Exception as scanner_exc:
-        scanner_error = str(scanner_exc)
-    try:
-        return apply_tradable_filter_to_scanner_payload(market_gateway_snapshot(row_limit=row_limit))
     except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"Filtered live scanner failed: {scanner_error}; Python gateway failed: {exc}") from exc
+        raise HTTPException(
+            status_code=502,
+            detail=f"QMD live scanner and durable observation snapshot are unavailable: {exc}",
+        ) from exc
 
 
 @app.get("/api/market-discovery/watchlists/runtime")
@@ -4298,7 +4296,6 @@ def market_discovery_signal_stream_runtime(
     limit: int = Query(default=5000, ge=1, le=50_000),
 ) -> dict[str, Any]:
     from src.backend.signal_stream_runtime_service import SIGNAL_STREAM_RUNTIME
-    from src.backend.qmd_gateway_client import qmd_signal_stream_snapshot
     from src.backend.trading_runtime_service import trading_journal
 
     cutoff = None
@@ -4317,7 +4314,7 @@ def market_discovery_signal_stream_runtime(
 
         return enrich_halt_signal_stream_snapshot(
             enrich_signal_stream_snapshot(
-                qmd_signal_stream_snapshot(
+                real_live_signal_stream_snapshot(
                     signal_stream_id=signal_stream_id,
                     after_sequence=after_sequence,
                     limit=limit,

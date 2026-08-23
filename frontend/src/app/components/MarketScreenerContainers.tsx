@@ -20,6 +20,9 @@ export type ScannerSnapshotMeta = {
   field_coverage?: Record<string, number>;
   lookback_minutes?: number;
   materialized?: boolean;
+  observation_mode?: "current_session_recovery" | "last_completed_session";
+  observation_session_date?: string;
+  observed_at?: string;
   qmd_derived_error?: string;
   qmd_derived_status?: "building" | "error" | "ready";
   qmd_indicator_row_count?: number;
@@ -50,7 +53,7 @@ type DiscoveryCapability = { enabled?: boolean; execution_scope?: string; scanne
 type DiscoveryColumn = { column_id: string; description?: string; name: string; presentation_value_type?: PresentationValueType; provenance?: string; semantic_type?: string; source_id?: string; source_kind?: "data_definition" | "rule_set" | string; unit?: string; value_type?: string };
 type DiscoveryWatchlist = { availability?: string; columns?: string[]; description?: string; enabled?: boolean; name: string; origin?: string; watchlist_id: string };
 type DiscoverySignalStream = { column_aggregations?: Record<string, string>; column_intervals?: Record<string, unknown>; column_labels?: Record<string, string>; columns?: string[]; description?: string; enabled?: boolean; maximum_events?: number; name: string; origin?: string; refresh_interval_ms?: number; signal_stream_id: string; source_id?: string; source_scan_id?: string; source_type?: "core_scan" | "watchlist" | "news_events" };
-type SignalStreamRuntimeResponse = { as_of: string; last_sequence?: number; new_occurrences?: ScreenerRow[]; occurrence_count: number; occurrences: ScreenerRow[]; recovery?: { active?: boolean; recovered_count?: number; recovery_through?: string; status?: "complete" | "coverage_incomplete" | "not_started" | "recovering" | "retryable_error" | "source_native" }; session?: { active?: boolean; end_at?: string; retention?: string; session_date?: string; session_key?: string; start_at?: string; timezone?: string }; signal_streams?: Array<{ candidate_count?: number; configured?: boolean; enabled?: boolean; recovery_kind?: "coverage_unavailable" | "qmd_history_timeline" | "source_native"; recovery_status?: "complete" | "coverage_incomplete" | "not_started" | "recovering" | "retryable_error" | "source_native"; signal_stream_id: string; source_id?: string; source_type?: string; status?: string }>; status: string };
+type SignalStreamRuntimeResponse = { as_of: string; last_sequence?: number; new_occurrences?: ScreenerRow[]; occurrence_count: number; occurrences: ScreenerRow[]; recovery?: { active?: boolean; recovered_count?: number; recovery_through?: string; status?: "complete" | "coverage_incomplete" | "not_started" | "recovering" | "retryable_error" | "source_native" }; session?: { active?: boolean; end_at?: string; observed_at?: string; presentation_mode?: "current_session_recovery" | "last_completed_session"; retention?: string; session_date?: string; session_key?: string; start_at?: string; timezone?: string }; signal_streams?: Array<{ candidate_count?: number; configured?: boolean; enabled?: boolean; recovery_kind?: "coverage_unavailable" | "qmd_history_timeline" | "source_native"; recovery_status?: "complete" | "coverage_incomplete" | "not_started" | "recovering" | "retryable_error" | "source_native"; signal_stream_id: string; source_id?: string; source_type?: string; status?: string }>; status: string };
 export type WatchUniverseDefinition = {
   description?: string;
   enabled?: boolean;
@@ -70,6 +73,7 @@ type ConfigurationSessionSnapshot = { market_discovery?: WatchUniverseCatalogRes
 export type WatchlistRuntimeResponse = {
   as_of?: string;
   error?: string;
+  observation?: { mode?: "current_session_recovery" | "last_completed_session"; observed_at?: string; session_date?: string };
   status?: "awaiting_first_resolution" | "degraded" | "ready" | string;
   target_errors?: Array<{ error?: string; watchlist_id?: string }>;
   watchlists?: Array<{ member_count?: number; members?: ScreenerRow[]; status?: string; watchlist_id: string }>;
@@ -382,8 +386,14 @@ export function MarketScannerContainer({ asOf, live = false, meta, onSettingsCha
   const { catalog, coreColumns } = useDiscoveryPresentation();
   const columns = canonicalDiscoveryColumns([...(coreColumns.length ? coreColumns : ["symbol", "last_price", "change_pct", "volume"]), ...settings.columns]);
   const refreshing = meta?.status === "refreshing";
+  const lastSession = meta?.observation_mode === "last_completed_session";
+  const recoveringSession = meta?.observation_mode === "current_session_recovery";
   const subtitle = meta?.complete_universe
-    ? `QMD Core Scan · full eligible universe${refreshing ? " · refreshing projection" : ""}`
+    ? lastSession
+      ? `QMD History · last completed session ${meta?.observation_session_date ?? ""}`
+      : recoveringSession
+        ? `QMD History · current-session recovery ${meta?.observation_session_date ?? ""}`
+        : `QMD Core Scan · full eligible universe${refreshing ? " · refreshing projection" : ""}`
     : meta?.status === "building"
       ? "QMD Core Scan is building its first complete eligible-universe snapshot"
       : "QMD Core Scan universe unavailable or incomplete";
@@ -396,7 +406,7 @@ export function MarketScannerContainer({ asOf, live = false, meta, onSettingsCha
     eyebrow="Market snapshot"
     fieldCoverage={meta?.field_coverage}
     limit={settings.limit}
-    liveRecency={live}
+    liveRecency={live && !lastSession && !recoveringSession}
     lockedColumns={canonicalDiscoveryColumns(coreColumns.length ? coreColumns : ["symbol"])}
     onColumnsChange={(columns) => onSettingsChange({ columns })}
     onCustomColumnsChange={(customColumns) => onSettingsChange({ customColumns })}
@@ -490,6 +500,8 @@ export function SignalStreamContainer({ asOf, live, onSettingsChange, onTickerSe
   const sourceType = stream?.source_type ?? "core_scan";
   const sourceId = stream?.source_id ?? stream?.source_scan_id ?? discovery?.core_scan?.scan_id ?? "";
   const recoveryStatus = runtimeDefinition?.recovery_status;
+  const lastSession = runtime?.session?.presentation_mode === "last_completed_session";
+  const recoveringSession = runtime?.session?.presentation_mode === "current_session_recovery";
   const recoveryActive = recoveryStatus === "recovering";
   const recoveryPending = recoveryActive || recoveryStatus === "coverage_incomplete" || recoveryStatus === "retryable_error";
   const sourceLabel = sourceType === "watchlist"
@@ -505,7 +517,7 @@ export function SignalStreamContainer({ asOf, live, onSettingsChange, onTickerSe
       ? recoveryActive
         ? "Earlier session signals are catching up in the background. New live signals remain available."
         : "Earlier session signals are waiting for complete historical source coverage. New live signals remain available."
-    : runtime?.session?.active === false
+    : runtime?.session?.active === false && !lastSession && !recoveringSession
       ? "Signal Stream is cleared outside the 04:00–20:00 ET trading-day window."
       : runtimeDefinition?.configured === false
         ? "Select at least one Signal Rule in Market Discovery before this stream can emit."
@@ -542,14 +554,14 @@ export function SignalStreamContainer({ asOf, live, onSettingsChange, onTickerSe
     });
   };
   return <section className="market-list-surface watchlist-surface signal-stream-surface" aria-label={`${stream?.name ?? "Signal Stream"} signal stream`}>
-    <header className="market-list-heading"><div><span className="market-list-eyebrow"><Flame size={12} /> Today’s immutable occurrences</span><h3>{stream?.name ?? "No Signal Stream open"}</h3><p>{stream ? recoveryPending ? `${rows.length} cached · earlier session catch-up ${recoveryActive ? "in progress" : "waiting for complete source coverage"} · through ` : `${rows.length} captured since 04:00 ET · newest first · through ` : "Create or add a configured Signal Stream"}{stream ? <MarketTime value={displayAsOf} /> : null}</p></div><span className="market-list-owner strategy">Market Discovery</span></header>
+    <header className="market-list-heading"><div><span className="market-list-eyebrow"><Flame size={12} /> {lastSession ? "Last session’s immutable occurrences" : recoveringSession ? "Current-session recovery" : "Today’s immutable occurrences"}</span><h3>{stream?.name ?? "No Signal Stream open"}</h3><p>{stream ? lastSession ? `${rows.length} persisted occurrences from ${runtime?.session?.session_key ?? runtime?.session?.session_date ?? "the last session"} · newest first · through ` : recoveryPending ? `${rows.length} cached · earlier session catch-up ${recoveryActive ? "in progress" : "waiting for complete source coverage"} · through ` : `${rows.length} captured since 04:00 ET · newest first · through ` : "Create or add a configured Signal Stream"}{stream ? <MarketTime value={displayAsOf} /> : null}</p></div><span className="market-list-owner strategy">Market Discovery</span></header>
     <nav aria-label="Signal Streams" className="watchlist-tabs" role="tablist">
       {visibleStreams.map((row) => { const selected = row.signal_stream_id === stream?.signal_stream_id; return <span className={selected ? "active" : undefined} key={row.signal_stream_id}><button aria-selected={selected} onClick={() => selectStream(row.signal_stream_id)} role="tab" title={row.description || row.name} type="button">{row.name}</button><button aria-label={`Remove ${row.name} tab`} className="watchlist-tab-remove" onClick={() => removeStream(row.signal_stream_id)} type="button"><X size={10} /></button></span>; })}
       <button aria-expanded={addingStream} aria-label="Add Signal Stream tab" className="watchlist-tab-add" disabled={!availableStreams.length} onClick={() => setAddingStream((open) => !open)} role="tab" type="button"><Plus size={12} /><span>Add</span></button>
     </nav>
     {addingStream ? <div className="watchlist-tab-lookup"><InventoryFilterSelect ariaLabel="Signal Stream to add" className="watchlist-add-lookup" onChange={addStream} options={availableStreams.map((row) => ({ description: row.description, label: row.name, value: row.signal_stream_id }))} searchable showAllOnOpen value="" /><button onClick={() => { window.location.hash = "market-discovery-configuration"; }} type="button">Configure Signal Stream <ArrowRight size={13} /></button></div> : null}
     <div className="watch-universe-context"><div><span>Source</span><strong>{sourceLabel} · 04:00–20:00 ET</strong></div><button onClick={() => { window.location.hash = "market-discovery-configuration"; }} type="button">Configure in Market Discovery <ArrowRight size={13} /></button></div>
-    <MarketListTable key={runtimeScopeKey || "signal-stream"} catalog={streamCatalog} chronological columns={columns} customColumns={settings.customColumns} empty={emptyMessage} limit={Math.min(settings.limit, stream?.maximum_events ?? settings.limit)} liveRecency={live} lockedColumns={canonicalDiscoveryColumns(["event_time", "symbol", ...streamColumns])} onColumnsChange={(columns) => onSettingsChange({ columns })} onCustomColumnsChange={(customColumns) => onSettingsChange({ customColumns })} onTickerSelect={onTickerSelect} recencyRail rows={rows} title={stream?.name ?? "Signal Stream"} viewStateKey={`signal-stream:${stream?.signal_stream_id ?? "none"}`} />
+    <MarketListTable key={runtimeScopeKey || "signal-stream"} catalog={streamCatalog} chronological columns={columns} customColumns={settings.customColumns} empty={emptyMessage} limit={Math.min(settings.limit, stream?.maximum_events ?? settings.limit)} liveRecency={live && !lastSession && !recoveringSession} lockedColumns={canonicalDiscoveryColumns(["event_time", "symbol", ...streamColumns])} onColumnsChange={(columns) => onSettingsChange({ columns })} onCustomColumnsChange={(customColumns) => onSettingsChange({ customColumns })} onTickerSelect={onTickerSelect} recencyRail rows={rows} title={stream?.name ?? "Signal Stream"} viewStateKey={`signal-stream:${stream?.signal_stream_id ?? "none"}`} />
   </section>;
 }
 
@@ -580,6 +592,7 @@ export function WatchUniverseContainer({ asOf, live = false, onSettingsChange, o
   const linkedPlans = runPlans.filter((plan) => linkedUniverseIds.includes(plan.universe_id));
   const resolved = !watchlist || runtimeReady;
   const resolutionClock = runtime?.as_of ?? asOf;
+  const historicalObservation = runtime?.observation?.mode === "last_completed_session" || runtime?.observation?.mode === "current_session_recovery";
   const resolving = ["awaiting_first_resolution", "building", "partial", "refreshing"].includes(runtimeWatchlist?.status ?? runtime?.status ?? "");
   const runtimeError = runtime?.status === "error" ? runtime.error || "The scanner did not return a Watchlist membership projection." : "";
   const unresolvedDetail = runtimeError
@@ -606,7 +619,7 @@ export function WatchUniverseContainer({ asOf, live = false, onSettingsChange, o
   };
   return <section className="market-list-surface watchlist-surface" aria-label={`${watchlist?.name ?? "Watchlist"} watchlist`}>
     <header className="market-list-heading">
-      <div><span className="market-list-eyebrow"><Star size={12} /> QMD Watchlist</span><h3>{watchlist?.name ?? "No Watchlist open"}</h3><p>{watchlist ? resolved ? `${rows.length} eligible securities` : "Dynamic membership awaits its causal resolver" : "Add a configured QMD Watchlist to this container"}{watchlist ? <> · state at <MarketTime value={resolutionClock} /></> : null}</p></div>
+      <div><span className="market-list-eyebrow"><Star size={12} /> QMD Watchlist{historicalObservation ? " · retained session" : ""}</span><h3>{watchlist?.name ?? "No Watchlist open"}</h3><p>{watchlist ? resolved ? `${rows.length} eligible securities` : "Dynamic membership awaits its causal resolver" : "Add a configured QMD Watchlist to this container"}{watchlist ? <> · state at <MarketTime value={resolutionClock} /></> : null}</p></div>
       <span className="market-list-owner strategy">QMD</span>
     </header>
     <nav aria-label="QMD Watchlists" className="watchlist-tabs" role="tablist">
@@ -631,7 +644,7 @@ export function WatchUniverseContainer({ asOf, live = false, onSettingsChange, o
       customColumns={settings.customColumns}
       empty={!watchlist ? "No Watchlist tabs are open. Use Add to choose one." : resolved ? "This QMD Watchlist currently has no members." : "No resolved membership is available."}
       limit={settings.limit}
-      liveRecency={live}
+      liveRecency={live && !historicalObservation}
       lockedColumns={canonicalDiscoveryColumns(watchlist?.columns ?? ["symbol"])}
       mergeCompanyWithIdentity
       onColumnsChange={(columns) => onSettingsChange({ columns })}

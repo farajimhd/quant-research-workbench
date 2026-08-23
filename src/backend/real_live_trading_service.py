@@ -12,7 +12,7 @@ import urllib.parse
 import urllib.request
 import uuid
 from dataclasses import asdict, dataclass
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime, time as wall_time
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -29,6 +29,7 @@ from src.backend.qmd_gateway_client import (
     qmd_intraday_bar_history,
     qmd_live_market_state_history,
     qmd_scanner_snapshot,
+    qmd_signal_stream_snapshot,
     qmd_status,
 )
 from src.backend.bounded_cache import BoundedSingleFlightTtlCache, BoundedTtlCache
@@ -50,6 +51,18 @@ SCANNER_COMPOSITION_CACHE = BoundedSingleFlightTtlCache[str, dict[str, Any]](
     max_entries=2,
     ttl_seconds=1.0,
     contract_revision="real-live-scanner-composition.v2",
+    wait_timeout_seconds=30.0,
+)
+CLOSED_SESSION_SCANNER_CACHE = BoundedSingleFlightTtlCache[str, dict[str, Any]](
+    max_entries=4,
+    ttl_seconds=60.0,
+    contract_revision="closed-session-scanner.v1",
+    wait_timeout_seconds=120.0,
+)
+CLOSED_SESSION_SIGNAL_HYDRATION_CACHE = BoundedSingleFlightTtlCache[str, dict[str, Any]](
+    max_entries=4,
+    ttl_seconds=60.0,
+    contract_revision="closed-session-signal-hydration.v1",
     wait_timeout_seconds=30.0,
 )
 HALT_OCCURRENCE_CONTEXT_CACHE = BoundedTtlCache[str, dict[str, Any]](
@@ -870,6 +883,97 @@ def real_live_scanner_snapshot(row_limit: int = 250) -> dict[str, Any]:
     return result
 
 
+def live_observation_context(scanner_payload: dict[str, Any]) -> dict[str, Any] | None:
+    """Resolve the durable session Canvas may observe when live memory is empty."""
+
+    if int(scanner_payload.get("row_count") or 0) > 0:
+        return None
+    clock = dict(scanner_payload.get("market_clock") or {})
+    exchange_date = str(clock.get("exchange_date") or "")
+    previous_session_date = str(clock.get("previous_session_date") or "")
+    exchange_time = str(clock.get("exchange_time") or "00:00:00")
+    is_trading_day = bool(clock.get("is_trading_day"))
+    market_is_open = bool(clock.get("market_is_open"))
+    if market_is_open and exchange_date:
+        session_date = exchange_date
+        mode = "current_session_recovery"
+        try:
+            local_as_of = datetime.fromisoformat(
+                f"{exchange_date}T{exchange_time}"
+            ).replace(tzinfo=NEW_YORK)
+        except ValueError:
+            local_as_of = datetime.now(NEW_YORK)
+    elif is_trading_day and exchange_date and exchange_time >= "20:00:00":
+        session_date = exchange_date
+        mode = "last_completed_session"
+        local_as_of = datetime.combine(
+            date.fromisoformat(session_date), wall_time(19, 59, 59), NEW_YORK
+        )
+    elif previous_session_date:
+        session_date = previous_session_date
+        mode = "last_completed_session"
+        local_as_of = datetime.combine(
+            date.fromisoformat(session_date), wall_time(19, 59, 59), NEW_YORK
+        )
+    else:
+        return None
+    return {
+        "mode": mode,
+        "session_date": session_date,
+        "as_of": local_as_of.astimezone(UTC),
+        "observed_at": datetime.now(UTC).isoformat(),
+        "reason": "qmd_live_memory_empty",
+    }
+
+
+def real_live_signal_stream_snapshot(
+    *,
+    signal_stream_id: str = "",
+    after_sequence: int | None = None,
+    limit: int = 5000,
+) -> dict[str, Any]:
+    """Serve current QMD signals, or its persisted effective-session snapshot."""
+
+    scanner_payload = qmd_scanner_snapshot(row_limit=1)
+    observation = live_observation_context(scanner_payload)
+    if observation is None:
+        return qmd_signal_stream_snapshot(
+            signal_stream_id=signal_stream_id,
+            after_sequence=after_sequence,
+            limit=limit,
+        )
+    from src.backend.trading_configuration_service import (
+        market_discovery_runtime_configuration,
+    )
+
+    session_date = str(observation["session_date"])
+    CLOSED_SESSION_SIGNAL_HYDRATION_CACHE.get_or_load(
+        session_date,
+        lambda: materialize_qmd_signal_stream_configuration(
+            market_discovery_runtime_configuration(),
+            as_of=observation["as_of"],
+        ),
+    )
+    payload = qmd_signal_stream_snapshot(
+        signal_stream_id=signal_stream_id,
+        as_of=observation["as_of"].isoformat(),
+        after_sequence=after_sequence,
+        limit=limit,
+    )
+    payload["as_of"] = observation["as_of"].isoformat()
+    payload["observation"] = {
+        key: value.isoformat() if isinstance(value, datetime) else value
+        for key, value in observation.items()
+    }
+    payload["session"] = {
+        **dict(payload.get("session") or {}),
+        "active": False,
+        "presentation_mode": observation["mode"],
+        "observed_at": observation["observed_at"],
+    }
+    return payload
+
+
 def clear_real_live_scanner_snapshot_cache() -> None:
     """Invalidate the presentation snapshot when discovery configuration changes."""
 
@@ -1233,6 +1337,12 @@ def _compose_real_live_scanner_snapshot(*, allow_provider_fallback: bool = True)
             if reference_error:
                 filtered["reference_enrichment_error"] = reference_error
             return filtered
+        observation = live_observation_context(payload)
+        if observation is not None:
+            return CLOSED_SESSION_SCANNER_CACHE.get_or_load(
+                str(observation["session_date"]),
+                lambda: _closed_session_scanner_snapshot(observation, payload),
+            )
     except Exception as exc:
         qmd_error = str(exc)
     else:
@@ -1370,6 +1480,7 @@ def refresh_live_market_discovery() -> dict[str, Any]:
     payload = _load_scanner_composition(_scanner_configuration_generation())
     return {
         "as_of": payload.get("as_of") or payload.get("snapshot_at_utc"),
+        "observation": payload.get("observation") or {},
         "core_population_count": int(payload.get("core_population_count") or payload.get("row_count") or 0),
         # The coordinator immediately narrows this complete vectorized frame to
         # activated Strategy tickers; it is not serialized to Canvas clients.
@@ -2253,6 +2364,54 @@ def apply_tradable_filter_to_scanner_payload(payload: dict[str, Any]) -> dict[st
     status["tradable_filter"] = metadata
     filtered["status"] = status
     return filtered
+
+
+def _closed_session_scanner_snapshot(
+    observation: dict[str, Any], live_payload: dict[str, Any]
+) -> dict[str, Any]:
+    """Build the read-only Live presentation from canonical QMD History."""
+
+    from src.backend.canvas_preview_service import scanner_snapshot_payload
+
+    historical = scanner_snapshot_payload(
+        as_of=observation["as_of"],
+        enrichment_scope="full",
+        materialize_discovery=True,
+        lookback_minutes=15,
+        row_limit=2_000,
+    )
+    rows = list(historical.get("rows") or [])
+    if not rows:
+        raise RuntimeError(
+            f"QMD History returned no scanner rows for effective session {observation['session_date']}."
+        )
+    meta = dict(historical.get("meta") or {})
+    observation_payload = {
+        key: value.isoformat() if isinstance(value, datetime) else value
+        for key, value in observation.items()
+    }
+    watchlist_runtime = {
+        **dict(historical.get("watchlist_runtime") or {}),
+        "observation": observation_payload,
+    }
+    return {
+        "schema_version": str(meta.get("schema_version") or "canvas_historical_scanner_v1"),
+        "provider": "qmd-history-gateway",
+        "source_revision": str(meta.get("source_revision") or ""),
+        "session_date": str(observation["session_date"]),
+        "market_time": observation["as_of"].astimezone(NEW_YORK).strftime("%H:%M:%S"),
+        "as_of": str(historical.get("as_of") or observation["as_of"].isoformat()),
+        "rows": rows,
+        "row_count": len(rows),
+        "core_population_count": int(meta.get("total_row_count") or len(rows)),
+        "watchlist_runtime": watchlist_runtime,
+        "signal_stream_runtime": dict(historical.get("signal_stream_runtime") or {}),
+        "signal_rows": [],
+        "market_clock": dict(live_payload.get("market_clock") or {}),
+        "observation": observation_payload,
+        "historical_meta": meta,
+        "stage_durations_ms": {"closed_session_snapshot": 0.0},
+    }
 
 
 def filter_tradable_rows(rows: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], dict[str, Any]]:

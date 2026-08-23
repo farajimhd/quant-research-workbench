@@ -14,6 +14,127 @@ from src.trading_runtime.journal import TradingJournal
 
 
 class RealLiveScannerCompositionTests(unittest.TestCase):
+    def test_closed_weekend_observes_immediate_previous_session(self) -> None:
+        context = service.live_observation_context({
+            "row_count": 0,
+            "market_clock": {
+                "exchange_date": "2026-08-23",
+                "exchange_time": "18:30:00",
+                "is_trading_day": False,
+                "market_is_open": False,
+                "previous_session_date": "2026-08-21",
+            },
+        })
+
+        self.assertIsNotNone(context)
+        assert context is not None
+        self.assertEqual(context["mode"], "last_completed_session")
+        self.assertEqual(context["session_date"], "2026-08-21")
+        self.assertEqual(context["as_of"].isoformat(), "2026-08-21T23:59:59+00:00")
+
+    def test_closed_trading_day_after_20_observes_that_completed_session(self) -> None:
+        context = service.live_observation_context({
+            "row_count": 0,
+            "market_clock": {
+                "exchange_date": "2026-08-21",
+                "exchange_time": "20:15:00",
+                "is_trading_day": True,
+                "market_is_open": False,
+                "previous_session_date": "2026-08-20",
+            },
+        })
+
+        self.assertIsNotNone(context)
+        assert context is not None
+        self.assertEqual(context["session_date"], "2026-08-21")
+
+    def test_nonempty_live_scanner_never_uses_historical_observation(self) -> None:
+        self.assertIsNone(service.live_observation_context({"row_count": 1}))
+
+    def test_closed_signal_snapshot_hydrates_qmd_persisted_session(self) -> None:
+        cache = BoundedSingleFlightTtlCache[str, dict](
+            max_entries=1,
+            ttl_seconds=60,
+            contract_revision="closed-signal.test",
+        )
+        scanner = {
+            "row_count": 0,
+            "market_clock": {
+                "exchange_date": "2026-08-23",
+                "exchange_time": "18:30:00",
+                "is_trading_day": False,
+                "market_is_open": False,
+                "previous_session_date": "2026-08-21",
+            },
+        }
+        with (
+            patch.object(service, "CLOSED_SESSION_SIGNAL_HYDRATION_CACHE", cache),
+            patch.object(service, "qmd_scanner_snapshot", return_value=scanner),
+            patch.object(
+                service,
+                "materialize_qmd_signal_stream_configuration",
+                return_value={"status": "ready"},
+            ) as configure,
+            patch.object(
+                service,
+                "qmd_signal_stream_snapshot",
+                return_value={
+                    "as_of": "2026-08-21T23:59:59+00:00",
+                    "occurrence_count": 1,
+                    "occurrences": [{"event_id": "signal-1"}],
+                    "session": {"session_key": "2026-08-21", "active": True},
+                    "status": "ready",
+                },
+            ) as snapshot,
+        ):
+            payload = service.real_live_signal_stream_snapshot(
+                signal_stream_id="price-squeeze-5m", limit=50
+            )
+
+        self.assertEqual(payload["observation"]["session_date"], "2026-08-21")
+        self.assertEqual(payload["session"]["presentation_mode"], "last_completed_session")
+        self.assertFalse(payload["session"]["active"])
+        self.assertEqual(configure.call_args.kwargs["as_of"].isoformat(), "2026-08-21T23:59:59+00:00")
+        self.assertEqual(snapshot.call_args.kwargs["as_of"], "2026-08-21T23:59:59+00:00")
+
+    def test_closed_scanner_snapshot_preserves_historical_discovery_authority(self) -> None:
+        observation = {
+            "mode": "last_completed_session",
+            "session_date": "2026-08-21",
+            "as_of": datetime(2026, 8, 21, 23, 59, 59, tzinfo=UTC),
+            "observed_at": "2026-08-23T22:00:00+00:00",
+            "reason": "qmd_live_memory_empty",
+        }
+        historical = {
+            "as_of": "2026-08-21T23:59:00+00:00",
+            "meta": {
+                "complete_universe": True,
+                "schema_version": "canvas_historical_scanner_v1",
+                "source_revision": "source-1",
+                "total_row_count": 2,
+            },
+            "rows": [{"ticker": "AAPL"}, {"ticker": "MSFT"}],
+            "watchlist_runtime": {
+                "status": "ready",
+                "watchlists": [{"watchlist_id": "top-large-cap-gainers", "members": [{"ticker": "AAPL"}]}],
+            },
+        }
+        with patch(
+            "src.backend.canvas_preview_service.scanner_snapshot_payload",
+            return_value=historical,
+        ):
+            payload = service._closed_session_scanner_snapshot(
+                observation, {"market_clock": {"market_status": "closed"}}
+            )
+
+        self.assertEqual(payload["provider"], "qmd-history-gateway")
+        self.assertEqual(payload["core_population_count"], 2)
+        self.assertEqual(payload["observation"]["session_date"], "2026-08-21")
+        self.assertEqual(
+            payload["watchlist_runtime"]["observation"]["mode"],
+            "last_completed_session",
+        )
+
     def test_signal_stream_materialization_publishes_qmd_recovery_graph(self) -> None:
         configuration = _default_draft()
         at = datetime(2026, 8, 20, 15, 0, tzinfo=UTC)

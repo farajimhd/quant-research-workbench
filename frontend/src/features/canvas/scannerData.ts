@@ -158,7 +158,7 @@ export function useCanvasLiveScannerSnapshot(enabled: boolean) {
       controller = request;
       let retryMs = 15_000;
       try {
-        const payload = await api<{ composition_status?: string; core_population_count?: number; market_time?: string; provider?: string; rows?: Record<string, unknown>[]; session_date?: string; signal_rows?: Record<string, unknown>[]; watchlist_runtime?: WatchlistRuntimeResponse }>("/api/real-live-trading/scanner?row_limit=500", { signal: request.signal, timeoutMs: 45_000 });
+        const payload = await api<{ composition_status?: string; core_population_count?: number; market_time?: string; observation?: { mode?: "current_session_recovery" | "last_completed_session"; observed_at?: string; session_date?: string }; provider?: string; rows?: Record<string, unknown>[]; session_date?: string; signal_rows?: Record<string, unknown>[]; watchlist_runtime?: WatchlistRuntimeResponse }>("/api/real-live-trading/scanner?row_limit=500", { signal: request.signal, timeoutMs: 45_000 });
         if (cancelled || request.signal.aborted) return;
         const rows = payload.rows ?? [];
         const compositionStatus = payload.composition_status === "building" ? "building" : payload.composition_status === "refreshing" ? "refreshing" : "ready";
@@ -175,6 +175,9 @@ export function useCanvasLiveScannerSnapshot(enabled: boolean) {
             // source universe, not whether a newer projection is in flight or
             // how many ranked rows the Canvas requested for presentation.
             complete_universe: Number(payload.core_population_count ?? 0) > 0,
+            observation_mode: payload.observation?.mode,
+            observation_session_date: payload.observation?.session_date,
+            observed_at: payload.observation?.observed_at,
             row_count: Number(payload.core_population_count ?? rows.length),
             source: payload.provider || "qmd-gateway",
             status: compositionStatus,

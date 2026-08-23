@@ -36,16 +36,24 @@ class MarketDiscoveryRuntimeCoordinatorTests(unittest.TestCase):
 
         self.assertEqual(runtime.refresh_once(), 0.01)
 
-    def test_closed_market_idles_without_refreshing(self) -> None:
+    def test_closed_market_prewarms_observation_once_then_idles(self) -> None:
         calls: list[bool] = []
         runtime = MarketDiscoveryRuntimeCoordinator(
             health_loader=lambda: {"running": True, "status": "closed", "market_calendar": {"active_collection_window": False}},
             configuration_loader=lambda: {"market_discovery": {}},
-            refresh=lambda: calls.append(True) or {},
+            refresh=lambda: calls.append(True) or {
+                "core_population_count": 2530,
+                "observation": {"session_date": "2026-08-21"},
+            },
         )
         runtime.refresh_once()
-        self.assertEqual(calls, [])
-        self.assertEqual(runtime.snapshot()["state"], "market_idle")
+        runtime.refresh_once()
+        snapshot = runtime.snapshot()
+        self.assertEqual(calls, [True])
+        self.assertEqual(snapshot["state"], "market_idle")
+        self.assertEqual(snapshot["closed_observation_state"], "ready")
+        self.assertEqual(snapshot["closed_observation_session"], "2026-08-21")
+        self.assertEqual(snapshot["core_population_count"], 2530)
 
 
 if __name__ == "__main__":

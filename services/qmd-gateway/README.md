@@ -305,6 +305,17 @@ their configured table. Events, v3 bars, indicator rows, and signal occurrences
 share the configured recent-session retention boundary and are deleted only
 after the historical event handoff is verified.
 
+When QMD Live has no in-memory Scanner population during nights, weekends,
+holidays, or a restart, the Observe Live presentation resolves an explicit
+effective session. Scanner and Watchlist rows come from the canonical QMD
+History materialization, while Signal Streams are rehydrated from QMD's
+persisted occurrence table. The response carries retained-session provenance,
+and Canvas disables live-recency styling for those rows. This is a read-only
+presentation fallback: it never seeds Strategy execution or replaces current
+QMD Live state, which takes authority immediately when live Scanner rows exist.
+The legacy Massive gateway payload is not a compatible fallback for this
+contract and is not served by the Observe Live Scanner endpoint.
+
 Indicators are also built as streaming state, not by rescanning stored rows.
 The indicator layer has its own ticker-hash shards and receives two inputs:
 

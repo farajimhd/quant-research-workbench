@@ -23,6 +23,7 @@ class MarketDiscoveryRuntimeCoordinator:
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._lock = threading.RLock()
+        self._closed_observation_warmed = False
         self._status: dict[str, Any] = {
             "running": False,
             "state": "stopped",
@@ -64,6 +65,20 @@ class MarketDiscoveryRuntimeCoordinator:
         calendar = dict(health.get("market_calendar") or {})
         collecting = bool(calendar.get("active_collection_window")) and bool(health.get("running", True))
         if not collecting:
+            if not self._closed_observation_warmed:
+                started = time.perf_counter()
+                payload = (self._refresh or self._default_refresh)()
+                duration_ms = round((time.perf_counter() - started) * 1000, 2)
+                observation = dict(payload.get("observation") or {})
+                with self._lock:
+                    self._closed_observation_warmed = True
+                    self._status.update({
+                        "closed_observation_state": "ready",
+                        "closed_observation_session": observation.get("session_date"),
+                        "core_population_count": int(payload.get("core_population_count") or 0),
+                        "last_duration_ms": duration_ms,
+                        "last_error": "",
+                    })
             with self._lock:
                 self._status.update({
                     "state": "market_idle",
@@ -71,6 +86,7 @@ class MarketDiscoveryRuntimeCoordinator:
                     "refresh_interval_ms": refresh_ms,
                 })
             return max(1.0, min(refresh_ms / 1000, 60.0))
+        self._closed_observation_warmed = False
         started = time.perf_counter()
         payload = (self._refresh or self._default_refresh)()
         duration_ms = round((time.perf_counter() - started) * 1000, 2)
