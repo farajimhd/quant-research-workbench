@@ -679,6 +679,9 @@ def recent_coverage_summary(state: PollState) -> tuple[str, str]:
     states = [(session, *live_session_state(state, session)) for session in sessions[-4:]]
     missing = [session for session, events, bars, _ in states[:-1] if events == "no evidence" or bars == "no evidence"]
     if missing:
+        maintenance_status = str((state.maintenance or {}).get("status") or "")
+        if not maintenance_active(state) and maintenance_status in {"up_to_date", "repair_completed"}:
+            return "healthy", f"Maintenance certified {len(states)} required session(s); the bounded snapshot omits older evidence rows."
         return "warning", f"No confirmed event/bar overlap for {', '.join(missing)}."
     return "healthy", f"{len(states)} required session(s) represented; current session may still be collecting."
 
@@ -763,6 +766,17 @@ def coverage_detail(row: dict[str, Any]) -> str:
         try:
             parsed = json.loads(raw)
             if isinstance(parsed, dict):
+                blocked = parsed.get("blocked_sessions")
+                if isinstance(blocked, list) and blocked:
+                    dates = [
+                        str(item.get("session_date") or "")
+                        for item in blocked
+                        if isinstance(item, dict) and item.get("session_date")
+                    ]
+                    rows = format_int(parsed.get("blocked_rows"))
+                    shown = ", ".join(dates[:8])
+                    suffix = f" (+{len(dates) - 8} more)" if len(dates) > 8 else ""
+                    return f"{rows} rows retained across {len(dates)} unverified session(s): {shown}{suffix}"
                 return str(parsed.get("message") or parsed.get("error") or parsed)
         except json.JSONDecodeError:
             pass

@@ -305,9 +305,25 @@ class QmdTerminalTests(unittest.TestCase):
         rows = qmd.attention_rows(state)
         self.assertFalse(any("rebuild" in str(row.get("message")) for row in rows))
 
-    def test_missing_required_recent_sessions_are_not_reported_all_clear(self) -> None:
+    def test_completed_maintenance_supersedes_bounded_snapshot_omissions(self) -> None:
         rows = qmd.attention_rows(representative_state())
+        self.assertFalse(any(row.get("area") == "Recent live coverage" for row in rows))
+
+    def test_uncertified_missing_required_sessions_remain_attention(self) -> None:
+        state = representative_state()
+        state.maintenance["status"] = "idle"
+        rows = qmd.attention_rows(state)
         self.assertTrue(any(row.get("area") == "Recent live coverage" for row in rows))
+
+    def test_retention_detail_is_bounded_and_operator_readable(self) -> None:
+        detail = qmd.coverage_detail(
+            {
+                "summary_json": '{"blocked_rows":954000196,"blocked_sessions":[{"session_date":"2026-07-09"},{"session_date":"2026-07-10"}]}'
+            }
+        )
+        self.assertIn("954,000,196 rows retained", detail)
+        self.assertIn("2 unverified session(s)", detail)
+        self.assertNotIn("blocked_sessions", detail)
 
 
 if __name__ == "__main__":
