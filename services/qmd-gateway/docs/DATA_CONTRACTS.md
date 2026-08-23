@@ -104,10 +104,12 @@ long-form families used by `research/mlops/packed_market`: `trade`,
 buckets and contain `schema_version`, `ticker`, `local_date`,
 `label_resolution_us`, `bucket_index`, `bar_family`, price OHLC, size
 sum/open/close/high/low, event count, first/last event timestamps, and session
-bar bounds. Invalid zeroed prices do not enter a family bar, and empty family
-rows are not fabricated. Version 3 adds `calculation_revision`,
-`source_revision`, and `complete`, and applies the shared condition-aware trade
-kernel used by in-memory QMD bars.
+bar bounds. Empty family rows are not fabricated. Because trade-condition
+eligibility is independent for last price, high/low, and volume, an evidence-only
+trade row can have zero open/close; price-chart and previous-close consumers
+must require positive OHLC, as the QMD Live chart endpoint does. Version 3 adds
+`calculation_revision`, `source_revision`, and `complete`, and applies the shared
+condition-aware trade kernel used by in-memory QMD bars.
 
 The base resolution is 100,000 microseconds (`100ms`). Every higher resolution
 is rolled up from closed base bars: first open, last close, maximum high,

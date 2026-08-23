@@ -129,6 +129,7 @@ def live_intraday_previous_close_projection(
           AND schema_version = 3
           AND calculation_revision = 'qmd-family-bars-v3'
           AND complete = 1
+          AND close > 0
         GROUP BY ticker
         FORMAT JSONEachRow
     """
