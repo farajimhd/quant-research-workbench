@@ -11,6 +11,7 @@ from .structured_rf_disagreement_audit import (
     finalize,
     prepare,
     prepare_full,
+    promote_successor_authority,
     validate_artifacts,
     validate_review,
 )
@@ -22,6 +23,8 @@ DEFAULT_DISAGREEMENTS = RUNTIME / "news_synthesis_v1" / "structured_metadata_rf_
 DEFAULT_FEATURES = RUNTIME / "news_synthesis_v1" / "provider_filter_feature_audit_v6_provider_path_exceptions_final" / "ARTICLE_FEATURES.jsonl"
 DEFAULT_CAPS = RUNTIME / "news_synthesis_v1" / "provider_market_cap_context_analysis_v3" / "ARTICLE_MARKET_CAP_FEATURES.jsonl"
 DEFAULT_RENDERED = RUNTIME / "llm_issuer_labeling_v4" / "forecast_eligibility_rf_comparison_v1" / "rendered_texts.jsonl"
+DEFAULT_PARENT_AUTHORITY = RUNTIME / "llm_issuer_labeling_v4" / "forecast_eligibility_sentiment_authority_provider_path_exceptions_v2"
+DEFAULT_SUCCESSOR_AUTHORITY = RUNTIME / "llm_issuer_labeling_v4" / "forecast_eligibility_sentiment_authority_structured_rf_audit_v1"
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -45,6 +48,10 @@ def main(argv: list[str] | None = None) -> int:
     seal.add_argument("--output-root", type=Path, default=DEFAULT_OUTPUT)
     population = sub.add_parser("analyze-population")
     population.add_argument("--output-root", type=Path, default=DEFAULT_OUTPUT)
+    promote = sub.add_parser("promote-authority")
+    promote.add_argument("--output-root", type=Path, default=DEFAULT_OUTPUT)
+    promote.add_argument("--parent-authority", type=Path, default=DEFAULT_PARENT_AUTHORITY)
+    promote.add_argument("--successor-authority", type=Path, default=DEFAULT_SUCCESSOR_AUTHORITY)
     args = parser.parse_args(argv)
     if args.command == "prepare":
         result = prepare(
@@ -64,8 +71,13 @@ def main(argv: list[str] | None = None) -> int:
         result = analyze(output_root=args.output_root)
     elif args.command == "validate":
         result = validate_artifacts(output_root=args.output_root)
-    else:
+    elif args.command == "analyze-population":
         result = analyze_population(output_root=args.output_root)
+    else:
+        result = promote_successor_authority(
+            audit_root=args.output_root, parent_authority=args.parent_authority,
+            successor_authority=args.successor_authority,
+        )
     print(json.dumps(result, ensure_ascii=True, sort_keys=True))
     return 0
 

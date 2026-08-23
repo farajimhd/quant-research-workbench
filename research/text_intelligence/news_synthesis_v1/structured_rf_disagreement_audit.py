@@ -4,6 +4,7 @@ import hashlib
 import json
 import math
 import csv
+import shutil
 from collections import Counter, defaultdict
 from datetime import UTC, datetime
 from pathlib import Path
@@ -805,3 +806,137 @@ def validate_artifacts(*, output_root: Path) -> dict[str, Any]:
         },
     })
     return validation
+
+
+def promote_successor_authority(
+    *, audit_root: Path, parent_authority: Path, successor_authority: Path,
+) -> dict[str, Any]:
+    if successor_authority.exists():
+        raise FileExistsError(successor_authority)
+    validation = json.loads((audit_root / "VALIDATION.json").read_text(encoding="utf-8"))
+    if validation.get("status") != "passed":
+        raise ValueError("audit authority is not validated")
+    audit_hashes = json.loads((audit_root / "HASH_MANIFEST.json").read_text(encoding="utf-8"))["files"]
+    for relative, metadata in audit_hashes.items():
+        path = audit_root / relative
+        if sha256_path(path) != str(metadata["sha256"]):
+            raise ValueError(f"audit hash mismatch: {relative}")
+    parent_hashes = json.loads((parent_authority / "HASH_MANIFEST.json").read_text(encoding="utf-8"))["files"]
+    for name, metadata in parent_hashes.items():
+        if sha256_path(parent_authority / name) != str(metadata["sha256"]):
+            raise ValueError(f"parent authority hash mismatch: {name}")
+
+    decisions = {str(row["source_id"]): row for row in iter_jsonl(audit_root / "FINAL_DECISIONS.jsonl")}
+    if len(decisions) != SAMPLE_SIZE:
+        raise ValueError("unexpected audited decision population")
+    parent_labels = parent_authority / "article_forecast_eligibility_labels.jsonl"
+    successor_authority.mkdir(parents=True)
+    labels_path = successor_authority / parent_labels.name
+    ledger_path = successor_authority / "structured_rf_disagreement_audit_ledger.jsonl"
+    ledger_rows = []
+    seen: set[str] = set()
+    rows = label_changes = metadata_upgrades = 0
+    label_counts: Counter[str] = Counter()
+    outcomes: Counter[str] = Counter()
+    with labels_path.open("x", encoding="utf-8", newline="\n") as handle:
+        for row in iter_jsonl(parent_labels):
+            rows += 1
+            source_id = str(row["source_id"])
+            decision = decisions.get(source_id)
+            if decision is not None:
+                seen.add(source_id)
+                original = str(row["forecast_eligibility_label"])
+                if original != str(decision["current_label"]):
+                    raise ValueError(f"audited parent label drifted: {source_id}")
+                outcome = str(decision["audit_outcome"])
+                outcomes[outcome] += 1
+                final = str(decision["final_review_label"])
+                if outcome != "unresolved":
+                    if final not in {"eligible", "ineligible"}:
+                        raise ValueError(f"invalid resolved audit label: {source_id}")
+                    row = dict(row)
+                    row.update({
+                        "authority_class": (
+                            "codex_multi_reader_blind_compact"
+                            if str(decision["decision_path"]) == "two_compact_readers_agree"
+                            else "codex_multi_reader_full_text"
+                        ),
+                        "authority_detail": AUDIT_VERSION,
+                        "certification_level": "codex_adjudicated",
+                        "decisive": True,
+                        "forecast_eligibility_label": final,
+                        "forecast_eligible": final == "eligible",
+                        "human_certified": False,
+                        "usage_policy": "model_development_adjudicated",
+                    })
+                    metadata_upgrades += 1
+                    label_changes += final != original
+                ledger_rows.append({
+                    "source_id": source_id, "review_id": str(decision["review_id"]),
+                    "original_label": original,
+                    "final_label": original if outcome == "unresolved" else final,
+                    "changed": outcome != "unresolved" and final != original,
+                    "audit_outcome": outcome,
+                    "decision_path": str(decision["decision_path"]),
+                    "rendered_text_sha256": str(decision["rendered_text_sha256"]),
+                    "compact_votes": decision["compact_votes"], "full_votes": decision["full_votes"],
+                })
+            label_counts[str(row["forecast_eligibility_label"])] += 1
+            handle.write(canonical_json(row) + "\n")
+    if rows != 361_695 or seen != set(decisions):
+        raise ValueError("successor authority membership mismatch")
+    _write_jsonl_new(ledger_path, sorted(ledger_rows, key=lambda row: str(row["source_id"])))
+
+    inherited_names = [
+        name for name in parent_hashes
+        if name not in {
+            "article_forecast_eligibility_labels.jsonl", "REPORT.json", "VALIDATION.json",
+            "LOAD_MANIFEST.json", "HASH_MANIFEST.json",
+        }
+    ]
+    copied = []
+    for name in sorted(inherited_names):
+        destination = successor_authority / name
+        shutil.copyfile(parent_authority / name, destination)
+        copied.append(destination)
+    sentiment = successor_authority / "gold_issuer_sentiment_labels.jsonl"
+    report = {
+        "status": "scoped_correction_grade_successor",
+        "authority_version": successor_authority.name,
+        "parent_authority": str(parent_authority), "audit_root": str(audit_root),
+        "reviewed_articles": len(decisions), "resolved_articles": metadata_upgrades,
+        "unresolved_articles": outcomes["unresolved"], "label_changes": label_changes,
+        "audit_outcomes": dict(sorted(outcomes.items())),
+        "authority_label_counts": dict(sorted(label_counts.items())),
+        "sentiment_byte_identical": sha256_path(sentiment) == sha256_path(parent_authority / sentiment.name),
+        "limitations": [
+            "Local Codex multi-reader adjudication is not human certification.",
+            "Unresolved audit rows preserve the parent label and authority metadata.",
+        ],
+    }
+    successor_validation = {
+        "status": "passed", "article_rows": rows, "reviewed_rows": len(decisions),
+        "resolved_rows": metadata_upgrades, "unresolved_rows": outcomes["unresolved"],
+        "label_changes": label_changes, "coverage_complete": seen == set(decisions),
+        "sentiment_sha256_equal": report["sentiment_byte_identical"],
+        "parent_authority_unchanged": sha256_path(parent_labels) == str(parent_hashes[parent_labels.name]["sha256"]),
+    }
+    load_manifest = {
+        "dataset_version": successor_authority.name, "status": report["status"],
+        "parent_authority": str(parent_authority), "audit_root": str(audit_root),
+        "primary_tables": {
+            "article_forecast_eligibility": {"path": str(labels_path), "rows": rows, "primary_key": ["source_id"]},
+            "gold_issuer_sentiment": {"path": str(sentiment), "rows": 16_983, "primary_key": ["unit_id"]},
+        },
+        "correction_ledger": str(ledger_path),
+        "inherited_correction_ledgers": [str(path) for path in copied if path.name != sentiment.name],
+    }
+    write_json_new(successor_authority / "REPORT.json", report)
+    write_json_new(successor_authority / "VALIDATION.json", successor_validation)
+    write_json_new(successor_authority / "LOAD_MANIFEST.json", load_manifest)
+    files = [labels_path, ledger_path, *copied, successor_authority / "REPORT.json",
+             successor_authority / "VALIDATION.json", successor_authority / "LOAD_MANIFEST.json"]
+    write_json_new(successor_authority / "HASH_MANIFEST.json", {
+        "files": {path.name: {"bytes": path.stat().st_size, "sha256": sha256_path(path)} for path in files}
+    })
+    return report
