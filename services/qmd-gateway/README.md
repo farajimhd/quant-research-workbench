@@ -528,26 +528,26 @@ year-specific `market_sip_compact.events_YYYY` tables, which are maintained only
 by `download_update_events.py`.
 
 At startup, when `QMD_STARTUP_MAINTENANCE_ENABLED=true`, the gateway validates
-the exact `ReplacingMergeTree`, partition, and canonical sorting-key contract,
-then audits `q_live.events FINAL` for conflicting payloads that share the same
-provider source identity `(ticker, sip_timestamp_us, source_sequence,
-event_type)`. Physical replay versions are not canonical corruption and do not
-request a rebuild. The exact conflict aggregation follows the table's sorting-
-key prefix and runs as one bounded-memory pass.
+the exact `ReplacingMergeTree`, partition, and full-payload canonical sorting-
+key contract. That preflight is the structural audit: exact physical replays
+collapse under `FINAL`, while differing payloads remain distinct canonical
+events. A provider tuple `(ticker, sip_timestamp_us, source_sequence,
+event_type)` is not unique and must never be used alone to reject or rebuild
+rows.
 Time coverage is then read from
 `qmd_live_event_coverage_v1`, not inferred from event-table min/max timestamps.
 If recent rows are structurally sound, the gateway runs bounded Massive REST
 coverage repair. During an active collection window websocket ingest starts
 concurrently; outside collection hours maintenance completes first. Startup
 repair uses the same current-plus-prior-session window as recurring repair.
-If conflicting payloads remain for one provider identity after `FINAL`, the
-gateway records `needs_manual_rebuild` under the separate
-`q_live_structure_audit` concern and does not silently choose a payload.
+The gateway records `canonical_clean` under the separate
+`q_live_structure_audit` concern after the engine/key preflight. An incompatible
+table fails startup instead of emitting a misleading data-rebuild request.
 Durable live ordinals do not exist; live reads order by
 `(sip_timestamp_us, source_sequence, event_type, arrival_sequence)`.
 
-REST repair is replay-safe before derived fan-out. QMD reads existing canonical
-source identities for the bounded ticker/interval, drops provider and in-batch
+REST repair is replay-safe before derived fan-out. QMD reads existing full
+canonical identities for the bounded ticker/interval, drops exact and in-batch
 replays, and records provider-fetched, replayed, and novel counts. Focused
 repairs are serialized across concurrent activations, use stable ticker/interval
 coverage IDs across restarts, and require the same durable compact/bar evidence.

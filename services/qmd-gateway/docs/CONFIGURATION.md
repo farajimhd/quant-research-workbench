@@ -154,11 +154,12 @@ Recent live repair converts Massive REST rows to the same normalized
 `MarketEvent` type used by the websocket path, then feeds the same state,
 stream, bar, indicator, and compact-event queues. Raw `live_massive_trades` and
 `live_massive_quotes` are not part of the default repair contract. The repair
-filters canonical and in-response source-identity replays before fan-out,
+filters full normalized and in-response exact replays before fan-out,
 serializes concurrent focused activations, and records completion only after
 compact-event and 100 ms bar coverage overlap durably. The startup structural
-audit reads `q_live.events FINAL`; physical ReplacingMergeTree versions are not
-canonical conflicts.
+audit validates the exact table engine/key contract; physical
+ReplacingMergeTree versions are not canonical conflicts, and matching provider
+timestamp/sequence tuples with different payloads remain distinct events.
 The repair
 loads `qmd_live_event_coverage_v1`, materializes covered intervals from the
 intersection of `compact_persisted` and `intraday_bars_persisted` rows plus explicit

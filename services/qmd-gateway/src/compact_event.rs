@@ -643,13 +643,52 @@ impl TickerReorderBuffer {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct CompactEventReferences {
     quote_conditions: HashMap<i16, u8>,
     trade_conditions: HashMap<i16, u8>,
     trade_updates: HashMap<i16, TradeUpdateRule>,
     quote_indicators: HashMap<i16, u8>,
     tapes: HashMap<u8, u8>,
+}
+
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub struct CompactEventIdentity {
+    pub ticker: String,
+    pub event_meta: u8,
+    pub sip_timestamp_us: u64,
+    pub price_primary_int: u32,
+    pub price_secondary_int: u32,
+    pub size_primary_bits: u32,
+    pub size_secondary_bits: u32,
+    pub exchange_primary: u8,
+    pub exchange_secondary: u8,
+    pub condition_tokens: [u8; CONDITION_TOKEN_SLOTS],
+    pub source_sequence: u64,
+}
+
+impl From<&LiveCompactEvent> for CompactEventIdentity {
+    fn from(event: &LiveCompactEvent) -> Self {
+        Self {
+            ticker: event.ticker.clone(),
+            event_meta: event.event_meta,
+            sip_timestamp_us: event.sip_timestamp_us,
+            price_primary_int: event.price_primary_int,
+            price_secondary_int: event.price_secondary_int,
+            size_primary_bits: event.size_primary.to_bits(),
+            size_secondary_bits: event.size_secondary.to_bits(),
+            exchange_primary: event.exchange_primary,
+            exchange_secondary: event.exchange_secondary,
+            condition_tokens: [
+                event.condition_token_1,
+                event.condition_token_2,
+                event.condition_token_3,
+                event.condition_token_4,
+                event.condition_token_5,
+            ],
+            source_sequence: event.source_sequence,
+        }
+    }
 }
 
 impl CompactEventReferences {
@@ -1774,6 +1813,14 @@ fn compact_event_from_market_event(
         MarketEvent::Quote(quote) => compact_quote_event(quote, references),
         MarketEvent::Trade(trade) => compact_trade_event(trade, references),
     }
+}
+
+pub fn compact_event_identity_from_market_event(
+    event: &MarketEvent,
+    references: &CompactEventReferences,
+) -> Result<CompactEventIdentity, CompactEventRejectReason> {
+    compact_event_from_market_event(event, references)
+        .map(|conversion| CompactEventIdentity::from(&conversion.event))
 }
 
 #[derive(Clone, Copy, Debug)]

@@ -124,7 +124,7 @@ fine-grained source of truth for live time gaps.
 | `started_at` | Maintenance run start time. |
 | `finished_at` | Maintenance run finish or plan record time. |
 | `coverage_kind` | `q_live_structure_audit`, `q_live_recent_events`, `q_live_retention`, or `historical_flatfile_events`. Structural, time-coverage, retention, and historical-handoff states are separate concerns. |
-| `status` | Structural statuses are `canonical_clean` or `needs_manual_rebuild`; recent-live statuses include `up_to_date`, `awaiting_live_symbols`, `no_symbols_available`, `repair_completed`, `partial_page_limit`, `partial_failed`, and `repair_failed`; retention uses `retention_delete_submitted` or `retention_blocked_historical_gap`. Historical statuses include `up_to_date`, `workstation_action_required`, `running`, `completed`, and `failed`. |
+| `status` | Structural status is `canonical_clean` after exact engine/key preflight; an incompatible table fails startup. Recent-live statuses include `up_to_date`, `awaiting_live_symbols`, `no_symbols_available`, `repair_completed`, `partial_page_limit`, `partial_failed`, and `repair_failed`; retention uses `retention_delete_submitted` or `retention_blocked_historical_gap`. Historical statuses include `up_to_date`, `workstation_action_required`, `running`, `completed`, and `failed`. |
 | `start_ts_utc` | UTC start of the audited or planned coverage range. |
 | `end_ts_utc` | UTC end of the audited or planned coverage range. |
 | `action` | Startup or periodic action that wrote the row. |

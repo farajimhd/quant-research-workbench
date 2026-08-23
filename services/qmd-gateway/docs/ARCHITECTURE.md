@@ -212,11 +212,12 @@ Default durable writes:
 | `qmd_flatfile_coverage_v2` | `gapfill.rs` | yes | Per-session, per-source remote and historical coverage |
 | `qmd_compact_event_issue_v1` | `compact_event.rs` | yes | Full-identity overflow/unknown condition or tape audits |
 
-Startup maintenance validates the live table engine/key contract and audits
-recent `q_live.events FINAL` rows for conflicting payloads under one provider
-source identity before REST repair begins. The exact audit aggregates in
-primary-key order so memory does not scale with every event identity. Physical
-replay versions are measured separately and are not canonical corruption. It does not infer
+Startup maintenance validates the live table engine, partition, and full-
+payload key contract before REST repair begins. Exact physical replay versions
+collapse under `FINAL`; differing payloads remain distinct canonical events
+even when their provider timestamp and sequence match. The gateway therefore
+does not perform a billion-row scan or treat that non-unique provider tuple as
+corruption. It does not infer
 missing time coverage from min/max timestamps. Recent time gaps are detected
 from `qmd_live_event_coverage_v1`. Live streaming writes one compact-event
 confirmation row and one bar confirmation row per run. A time range is treated
@@ -233,14 +234,14 @@ compact events. Outside streaming hours, it uses latest q_live symbols, then the
 latest historical `market_sip_compact.events_YYYY` symbols if q_live is empty.
 Intervals without a discovered ticker set remain open and are not marked clean.
 
-Before fan-out, repair removes identities already present in canonical q_live
-and duplicates inside the fetched response. Focused repair intervals have
+Before fan-out, repair removes full normalized identities already present in
+canonical q_live and exact duplicates inside the fetched response. Focused repair intervals have
 stable durable IDs and focus activations share a serialized repair boundary.
 Focused and whole-market completion require overlapping compact and canonical-
 bar writer confirmations; enqueue completion or elapsed time alone is not a
 durability boundary. Compact retry batches have deterministic tokens.
-Canonical identity corruption is recorded in the manifest and left for explicit
-rebuild; QMD does not rewrite committed historical rows silently.
+An incompatible engine/key contract fails startup; QMD does not rewrite the
+table or committed historical rows silently.
 
 After 08:00 ET, historical planning compares signed remote quote/trade object
 availability with read-only `market_sip_compact.events_ordinal_continuity`.

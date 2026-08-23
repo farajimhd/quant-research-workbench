@@ -237,7 +237,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     if config.compact_events_enabled {
         let compact_writer = CompactEventClickHouseWriter::new(
             config.clone(),
-            compact_references,
+            compact_references.clone(),
             compact_event_sender.clone(),
             compact_event_store.clone(),
             metrics.clone(),
@@ -374,6 +374,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         maintenance.clone(),
         compact_event_store.clone(),
         market_calendar.clone(),
+        compact_references.clone(),
     );
     let structure_focus = StructureFocusCoordinator::new(
         &config,
@@ -501,6 +502,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             maintenance.clone(),
             compact_event_store.clone(),
             market_calendar.clone(),
+            compact_references.clone(),
         )));
     } else {
         run_startup_maintenance(
@@ -509,6 +511,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             maintenance.clone(),
             compact_event_store.clone(),
             market_calendar.clone(),
+            compact_references.clone(),
         )
         .await;
         producer_handles.push(tokio::spawn(run_massive_ingest(
@@ -523,6 +526,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             maintenance.clone(),
             compact_event_store.clone(),
             market_calendar.clone(),
+            compact_references,
         )));
     }
     server.await??;

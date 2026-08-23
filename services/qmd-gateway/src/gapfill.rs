@@ -1,4 +1,7 @@
-use crate::compact_event::{SharedCompactEventStore, LIVE_COMPACT_EVENT_SCHEMA_VERSION};
+use crate::compact_event::{
+    compact_event_identity_from_market_event, CompactEventIdentity, CompactEventReferences,
+    SharedCompactEventStore, LIVE_COMPACT_EVENT_SCHEMA_VERSION,
+};
 use crate::config::GatewayConfig;
 use crate::event::{MarketEvent, QuoteEvent, TradeEvent};
 use crate::flatfile::FlatfileDiscovery;
@@ -30,11 +33,19 @@ pub async fn run_startup_maintenance(
     maintenance: SharedMaintenanceState,
     live_compact_store: SharedCompactEventStore,
     calendar: MarketCalendarClient,
+    compact_references: CompactEventReferences,
 ) {
     if !config.gap_fill_enabled || !config.qmd_startup_maintenance_enabled {
         return;
     }
-    let filler = GapFillService::new(config, fanout, maintenance, live_compact_store, calendar);
+    let filler = GapFillService::new(
+        config,
+        fanout,
+        maintenance,
+        live_compact_store,
+        calendar,
+        compact_references,
+    );
     println!("QMD startup maintenance: checking recent q_live event coverage.");
     if let Err(error) = filler.run_startup_maintenance().await {
         filler.fanout.metrics.inc_gap_fill_failure();
@@ -52,11 +63,19 @@ pub async fn run_gap_fill_service(
     maintenance: SharedMaintenanceState,
     live_compact_store: SharedCompactEventStore,
     calendar: MarketCalendarClient,
+    compact_references: CompactEventReferences,
 ) {
     if !config.gap_fill_enabled {
         return;
     }
-    let filler = GapFillService::new(config, fanout, maintenance, live_compact_store, calendar);
+    let filler = GapFillService::new(
+        config,
+        fanout,
+        maintenance,
+        live_compact_store,
+        calendar,
+        compact_references,
+    );
     let mut delay_ms = filler.next_gap_fill_delay_ms("startup");
     loop {
         sleep(Duration::from_millis(delay_ms)).await;
@@ -93,13 +112,6 @@ pub async fn run_gap_fill_service(
         let status = filler.maintenance.snapshot().await.status;
         delay_ms = filler.next_gap_fill_delay_ms(&status);
     }
-}
-
-#[derive(Default)]
-struct LiveEventAudit {
-    canonical_conflict_rows: u64,
-    recent_rows: u64,
-    ticker_count: u64,
 }
 
 #[derive(Default)]
@@ -200,23 +212,6 @@ struct IntervalFillOutcome {
     rows: u64,
 }
 
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-struct SourceEventIdentity {
-    event_type: u8,
-    sip_timestamp_us: u64,
-    source_sequence: u64,
-}
-
-impl SourceEventIdentity {
-    fn from_event(event: &MarketEvent) -> Self {
-        Self {
-            event_type: event.event_type(),
-            sip_timestamp_us: event.ts().timestamp_micros().max(0) as u64,
-            source_sequence: event.source_sequence(),
-        }
-    }
-}
-
 #[derive(Default)]
 struct FetchEventsOutcome {
     events: Vec<MarketEvent>,
@@ -259,6 +254,7 @@ pub struct GapFillService {
     maintenance: SharedMaintenanceState,
     calendar: MarketCalendarClient,
     flatfiles: FlatfileDiscovery,
+    compact_references: CompactEventReferences,
     focused_repair_lock: std::sync::Arc<tokio::sync::Mutex<()>>,
 }
 
@@ -269,6 +265,7 @@ impl GapFillService {
         maintenance: SharedMaintenanceState,
         live_compact_store: SharedCompactEventStore,
         calendar: MarketCalendarClient,
+        compact_references: CompactEventReferences,
     ) -> Self {
         let flatfiles = FlatfileDiscovery::new(config.clone());
         Self {
@@ -279,6 +276,7 @@ impl GapFillService {
             maintenance,
             calendar,
             flatfiles,
+            compact_references,
             focused_repair_lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),
         }
     }
@@ -437,44 +435,31 @@ impl GapFillService {
                 Some(window_end),
             )
             .await;
-        let audit = self.audit_recent_live_events().await?;
-        let audit_message = format!(
-            "QMD startup q_live canonical audit: rows={} tickers={} conflicting_source_identities={}",
-            audit.recent_rows, audit.ticker_count, audit.canonical_conflict_rows,
-        );
-        if audit.canonical_conflict_rows == 0 {
-            println!("{audit_message}");
-        } else {
-            eprintln!("{audit_message}");
-        }
-        let structure_status = canonical_structure_status(audit.canonical_conflict_rows);
-        let mut status = structure_status;
-        let mut rows_written = 0u64;
+        let audit_message = "QMD startup q_live canonical audit: exact ReplacingMergeTree engine, partition, and full-payload sorting key validated; provider source tuples are not event identities.";
+        println!("{audit_message}");
+        let mut status = "canonical_clean";
         let mut message = String::new();
-        let mut repair = RecentLiveRepair::default();
-        if structure_status == "canonical_clean" {
-            repair = self
-                .repair_recent_live_coverage(started_at, "startup_recent_repair")
-                .await
-                .unwrap_or_else(|error| {
-                    message = error;
-                    RecentLiveRepair {
-                        errors: 1,
-                        status: "repair_failed".to_string(),
-                        ..RecentLiveRepair::default()
-                    }
-                });
-            rows_written = repair.rows_written;
-            if !message.is_empty() {
-                status = "repair_failed";
-            } else if !repair.status.is_empty() {
-                status = repair.status.as_str();
-            }
+        let repair = self
+            .repair_recent_live_coverage(started_at, "startup_recent_repair")
+            .await
+            .unwrap_or_else(|error| {
+                message = error;
+                RecentLiveRepair {
+                    errors: 1,
+                    status: "repair_failed".to_string(),
+                    ..RecentLiveRepair::default()
+                }
+            });
+        let rows_written = repair.rows_written;
+        if !message.is_empty() {
+            status = "repair_failed";
+        } else if !repair.status.is_empty() {
+            status = repair.status.as_str();
         }
         self.record_coverage_run(
             started_at,
             "q_live_structure_audit",
-            structure_status,
+            "canonical_clean",
             window_start,
             window_end,
             "startup_maintenance",
@@ -483,38 +468,35 @@ impl GapFillService {
             "",
             &json!({
                 "phase": phase,
-                "recent_rows": audit.recent_rows,
-                "ticker_count": audit.ticker_count,
-                "canonical_conflict_rows": audit.canonical_conflict_rows,
-                "canonical_read": "q_live.events FINAL",
+                "canonical_identity": "full ReplacingMergeTree sorting key",
+                "provider_tuple_is_identity": false,
+                "physical_versions_reconciled_by": "q_live.events FINAL",
                 "message": audit_message,
             }),
         )
         .await?;
-        if structure_status == "canonical_clean" {
-            self.record_coverage_run(
-                started_at,
-                "q_live_recent_events",
-                status,
-                window_start,
-                window_end,
-                "startup_recent_repair",
-                rows_written,
-                &host_role,
-                "",
-                &json!({
-                    "phase": phase,
-                    "symbols_checked": repair.symbols_checked,
-                    "symbols_repaired": repair.symbols_repaired,
-                    "intervals_checked": repair.intervals_checked,
-                    "intervals_repaired": repair.intervals_repaired,
-                    "page_limited_symbols": repair.page_limited_symbols,
-                    "repair_errors": repair.errors,
-                    "message": message,
-                }),
-            )
-            .await?;
-        }
+        self.record_coverage_run(
+            started_at,
+            "q_live_recent_events",
+            status,
+            window_start,
+            window_end,
+            "startup_recent_repair",
+            rows_written,
+            &host_role,
+            "",
+            &json!({
+                "phase": phase,
+                "symbols_checked": repair.symbols_checked,
+                "symbols_repaired": repair.symbols_repaired,
+                "intervals_checked": repair.intervals_checked,
+                "intervals_repaired": repair.intervals_repaired,
+                "page_limited_symbols": repair.page_limited_symbols,
+                "repair_errors": repair.errors,
+                "message": message,
+            }),
+        )
+        .await?;
         if self.config.historical_flatfile_update_enabled {
             self.maintenance
                 .set_message(
@@ -678,7 +660,8 @@ impl GapFillService {
         let seen = self
             .existing_source_event_identities(symbol, start, end)
             .await?;
-        let (events, replayed_rows) = filter_novel_repair_events(events, seen);
+        let (events, replayed_rows) =
+            filter_novel_repair_events(events, seen, &self.compact_references);
         let count = events.len() as u64;
         for event in events {
             fanout_repair_market_event(event, &self.fanout).await;
@@ -696,15 +679,19 @@ impl GapFillService {
         symbol: &str,
         start: DateTime<Utc>,
         end: DateTime<Utc>,
-    ) -> Result<HashSet<SourceEventIdentity>, String> {
+    ) -> Result<HashSet<CompactEventIdentity>, String> {
         let sql = format!(
             r#"
-            SELECT sip_timestamp_us, source_sequence, bitAnd(event_meta, 1)
+            SELECT ticker, event_meta, sip_timestamp_us,
+                price_primary_int, price_secondary_int, size_primary, size_secondary,
+                exchange_primary, exchange_secondary,
+                condition_token_1, condition_token_2, condition_token_3,
+                condition_token_4, condition_token_5, source_sequence
             FROM {table} FINAL
             WHERE ticker = '{symbol}'
               AND sip_timestamp_us >= {start_us}
               AND sip_timestamp_us < {end_us}
-            FORMAT TSV
+            FORMAT JSONEachRow
             "#,
             table = self.config.compact_event_table,
             symbol = escape_sql_string(symbol),
@@ -714,18 +701,41 @@ impl GapFillService {
         let text = self.query(&sql, true).await?;
         let mut identities = HashSet::new();
         for line in text.lines().filter(|line| !line.trim().is_empty()) {
-            let fields = line.split('\t').collect::<Vec<_>>();
-            if fields.len() != 3 {
-                return Err(format!("invalid q_live source identity row: {line}"));
-            }
-            identities.insert(SourceEventIdentity {
-                sip_timestamp_us: fields[0]
-                    .parse::<u64>()
-                    .map_err(|error| error.to_string())?,
-                source_sequence: fields[1]
-                    .parse::<u64>()
-                    .map_err(|error| error.to_string())?,
-                event_type: fields[2].parse::<u8>().map_err(|error| error.to_string())?,
+            let row: Value = serde_json::from_str(line)
+                .map_err(|error| format!("invalid q_live canonical identity row: {error}"))?;
+            let u64_value = |key: &str| {
+                row.get(key)
+                    .and_then(json_u64)
+                    .ok_or_else(|| format!("q_live canonical identity row is missing {key}"))
+            };
+            let float_bits = |key: &str| {
+                row.get(key)
+                    .and_then(Value::as_f64)
+                    .map(|value| (value as f32).to_bits())
+                    .ok_or_else(|| format!("q_live canonical identity row is missing {key}"))
+            };
+            identities.insert(CompactEventIdentity {
+                ticker: row
+                    .get("ticker")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| "q_live canonical identity row is missing ticker".to_string())?
+                    .to_string(),
+                event_meta: u64_value("event_meta")? as u8,
+                sip_timestamp_us: u64_value("sip_timestamp_us")?,
+                price_primary_int: u64_value("price_primary_int")? as u32,
+                price_secondary_int: u64_value("price_secondary_int")? as u32,
+                size_primary_bits: float_bits("size_primary")?,
+                size_secondary_bits: float_bits("size_secondary")?,
+                exchange_primary: u64_value("exchange_primary")? as u8,
+                exchange_secondary: u64_value("exchange_secondary")? as u8,
+                condition_tokens: [
+                    u64_value("condition_token_1")? as u8,
+                    u64_value("condition_token_2")? as u8,
+                    u64_value("condition_token_3")? as u8,
+                    u64_value("condition_token_4")? as u8,
+                    u64_value("condition_token_5")? as u8,
+                ],
+                source_sequence: u64_value("source_sequence")?,
             });
         }
         Ok(identities)
@@ -1702,55 +1712,6 @@ impl GapFillService {
             })
             .unwrap_or_else(Utc::now);
         (start, now, dates)
-    }
-
-    async fn audit_recent_live_events(&self) -> Result<LiveEventAudit, String> {
-        if !self.config.compact_events_enabled {
-            return Ok(LiveEventAudit::default());
-        }
-        let (window_start, _, _) = self.recent_live_window();
-        let start_date = window_start.date_naive();
-        let start_us = window_start.timestamp_micros();
-        let sql = format!(
-            r#"
-            SELECT
-                sum(identity_rows) AS recent_rows,
-                uniqExact(ticker) AS ticker_count,
-                sum(identity_rows - 1) AS canonical_conflict_rows
-            FROM
-            (
-                SELECT
-                    ticker,
-                    sip_timestamp_us,
-                    source_sequence,
-                    bitAnd(event_meta, 1) AS event_type,
-                    count() AS identity_rows
-                FROM {table} FINAL
-                WHERE event_date >= toDate('{start_date}')
-                  AND sip_timestamp_us >= {start_us}
-                  AND ticker != ''
-                GROUP BY ticker, sip_timestamp_us, source_sequence, event_type
-            )
-            SETTINGS optimize_aggregation_in_order = 1
-            FORMAT JSONEachRow
-            "#,
-            table = self.config.compact_event_table,
-            start_date = start_date,
-            start_us = start_us,
-        );
-        let text = self.query(&sql, true).await?;
-        let Some(line) = text.lines().find(|line| !line.trim().is_empty()) else {
-            return Ok(LiveEventAudit::default());
-        };
-        let value: Value = serde_json::from_str(line).map_err(|error| error.to_string())?;
-        Ok(LiveEventAudit {
-            canonical_conflict_rows: value
-                .get("canonical_conflict_rows")
-                .and_then(json_u64)
-                .unwrap_or(0),
-            recent_rows: value.get("recent_rows").and_then(json_u64).unwrap_or(0),
-            ticker_count: value.get("ticker_count").and_then(json_u64).unwrap_or(0),
-        })
     }
 
     async fn plan_historical_flatfile_update(
@@ -3030,26 +2991,24 @@ fn archive_handoff_is_complete(
 
 fn filter_novel_repair_events(
     events: Vec<MarketEvent>,
-    mut seen: HashSet<SourceEventIdentity>,
+    mut seen: HashSet<CompactEventIdentity>,
+    references: &CompactEventReferences,
 ) -> (Vec<MarketEvent>, u64) {
     let mut novel = Vec::with_capacity(events.len());
     let mut replayed = 0u64;
     for event in events {
-        if seen.insert(SourceEventIdentity::from_event(&event)) {
-            novel.push(event);
-        } else {
-            replayed = replayed.saturating_add(1);
+        match compact_event_identity_from_market_event(&event, references) {
+            Ok(identity) => {
+                if seen.insert(identity) {
+                    novel.push(event);
+                } else {
+                    replayed = replayed.saturating_add(1);
+                }
+            }
+            Err(_) => novel.push(event),
         }
     }
     (novel, replayed)
-}
-
-fn canonical_structure_status(canonical_conflict_rows: u64) -> &'static str {
-    if canonical_conflict_rows == 0 {
-        "canonical_clean"
-    } else {
-        "needs_manual_rebuild"
-    }
 }
 
 #[cfg(test)]
@@ -3103,16 +3062,38 @@ mod tests {
             }),
         )
         .unwrap();
-        let existing = HashSet::from([SourceEventIdentity::from_event(&event)]);
-        let (novel, replayed) = filter_novel_repair_events(vec![event.clone(), event], existing);
+        let references = CompactEventReferences::default();
+        let identity = compact_event_identity_from_market_event(&event, &references).unwrap();
+        let existing = HashSet::from([identity]);
+        let (novel, replayed) =
+            filter_novel_repair_events(vec![event.clone(), event], existing, &references);
         assert!(novel.is_empty());
         assert_eq!(replayed, 2);
     }
 
     #[test]
-    fn canonical_structure_audit_status_is_independent_of_time_coverage() {
-        assert_eq!(canonical_structure_status(0), "canonical_clean");
-        assert_eq!(canonical_structure_status(1), "needs_manual_rebuild");
+    fn repair_filter_preserves_distinct_payloads_with_one_provider_tuple() {
+        let make_event = |size| {
+            rest_trade_event(
+                "AABB",
+                json!({
+                    "sip_timestamp": 1_787_083_062_394_000_u64 * 1_000,
+                    "sequence_number": 382_881,
+                    "price": 1.32,
+                    "size": size,
+                    "exchange": 62,
+                }),
+            )
+            .unwrap()
+        };
+        let references = CompactEventReferences::default();
+        let (novel, replayed) = filter_novel_repair_events(
+            vec![make_event(500), make_event(1_000)],
+            HashSet::new(),
+            &references,
+        );
+        assert_eq!(novel.len(), 2);
+        assert_eq!(replayed, 0);
     }
 
     #[test]
