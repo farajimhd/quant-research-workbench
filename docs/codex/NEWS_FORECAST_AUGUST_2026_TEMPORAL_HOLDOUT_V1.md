@@ -12,11 +12,33 @@ articles remain explicitly unresolved and are excluded from metrics.
 |---|---:|---:|---:|---:|---:|---:|
 | Train 2025, threshold 0.45 | 83.02% | 83.83% | 72.72% | 86.97% | 79.21% | 91.45% |
 | Train 2026, threshold 0.40 | 82.56% | 84.55% | 70.17% | 92.34% | 79.74% | 93.22% |
+| Train 2025-Aug. 13, 2026, threshold 0.44 | **84.14%** | **85.25%** | 73.56% | 89.55% | **80.77%** | 93.19% |
 
 The 2025-trained model produced TN/FP/FN/TP of 2,490/596/238/1,589. The
 2026-trained model produced 2,369/717/140/1,687. Therefore the 2025 model is
 more selective, while the 2026 model is the better high-recall first filter.
 Neither threshold was tuned on this holdout.
+
+## Combined pre-boundary training result
+
+A successor experiment stacked the frozen 203,847-row 2025 matrix and the
+142,256-row January-August 13, 2026 matrix, replacing their targets from the
+finalized correction-grade label authority. Candidate selection and threshold
+selection used only the training population: 311,432 articles before July 1
+for development and 34,671 July 1-August 13 articles for validation. The final
+400-tree model was then refit on all 346,103 pre-boundary articles.
+
+At its internally selected 0.44 threshold, holdout TN/FP/FN/TP was
+2,498/588/191/1,636: **84.14% accuracy**, 85.25% balanced accuracy, and 89.55%
+eligible recall. At the conventional 0.50 cutoff, accuracy was 85.24%, balanced
+accuracy 85.23%, and eligible recall 85.17% (TN/FP/FN/TP
+2,632/454/271/1,556). The 0.50 result is reported as a fixed-cutoff diagnostic;
+it was not selected from the holdout.
+
+The internally selected operating point is the primary result because its
+candidate and threshold policy was fixed without holdout feedback. Compared
+with either single-year model, combining all pre-boundary supervision improves
+accuracy and eligible F1, but it still misses 191 of 1,827 eligible articles.
 
 ## Population and blindness
 

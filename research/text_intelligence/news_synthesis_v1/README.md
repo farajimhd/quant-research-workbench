@@ -427,11 +427,23 @@ python -m research.text_intelligence.news_synthesis_v1.run_forecast_holdout_audi
 python -m research.text_intelligence.news_synthesis_v1.run_forecast_holdout_audit validate
 ```
 
+After the labels are sealed, the combined pre-boundary experiment trains on
+the frozen 2025 and January-August 13, 2026 matrices and evaluates the same
+untouched tail without using it for parameter or threshold selection:
+
+```powershell
+$env:PYTHONDONTWRITEBYTECODE='1'
+python -m research.text_intelligence.news_synthesis_v1.run_structured_metadata_rf_pre_holdout train-evaluate
+python -m research.text_intelligence.news_synthesis_v1.run_structured_metadata_rf_pre_holdout validate
+```
+
 The frozen population, review funnel, immutable-model metrics, and limits are
 documented in
 `docs/codex/NEWS_FORECAST_AUGUST_2026_TEMPORAL_HOLDOUT_V1.md`. Bulk artifacts
 remain under
 `D:\TradingML\runtimes\text_intelligence\news_synthesis_v1\forecast_eligibility_august_2026_temporal_holdout_v1`.
+The combined model and prediction ledger remain under
+`D:\TradingML\runtimes\text_intelligence\news_synthesis_v1\structured_metadata_rf_2025_through_2026_aug13_to_august_holdout_v1`.
 
 ### Structured RF disagreement blind audit V1
 
