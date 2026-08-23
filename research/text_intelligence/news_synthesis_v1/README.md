@@ -382,3 +382,26 @@ The contract, chronological metrics, feature-family importance, calibration,
 and comparability limits are documented in
 `docs/codex/NEWS_STRUCTURED_METADATA_RF_V1.md`. Bulk outputs remain under
 `D:\TradingML\runtimes\text_intelligence\news_synthesis_v1\structured_metadata_rf_v1`.
+
+### Structured RF disagreement blind audit V1
+
+The disagreement audit draws a 1,000-article, 335-stratum weighted sample from
+the 2026 metadata-RF disagreements. Two prediction-blind compact reviewers see
+only metadata, title, teaser, and three opening sentences. Compact disagreement
+or insufficient evidence escalates to two fresh full-text reviewers. Every
+vote is evidence-validated, and full-text disagreement remains unresolved.
+
+```powershell
+$env:PYTHONDONTWRITEBYTECODE='1'
+python -m research.text_intelligence.news_synthesis_v1.run_structured_rf_disagreement_audit prepare
+python -m research.text_intelligence.news_synthesis_v1.run_structured_rf_disagreement_audit prepare-full
+python -m research.text_intelligence.news_synthesis_v1.run_structured_rf_disagreement_audit finalize
+python -m research.text_intelligence.news_synthesis_v1.run_structured_rf_disagreement_audit analyze
+python -m research.text_intelligence.news_synthesis_v1.run_structured_rf_disagreement_audit analyze-population
+python -m research.text_intelligence.news_synthesis_v1.run_structured_rf_disagreement_audit validate
+```
+
+The findings and expansion policy are documented in
+`docs/codex/NEWS_STRUCTURED_RF_DISAGREEMENT_BLIND_AUDIT_V1.md`. Audit artifacts
+remain under
+`D:\TradingML\runtimes\text_intelligence\news_synthesis_v1\structured_rf_disagreement_blind_audit_v1`.
