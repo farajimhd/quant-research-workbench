@@ -671,6 +671,44 @@ mod shutdown_tests {
     }
 
     #[test]
+    fn indicator_projection_applies_to_chart_snapshot_history_and_current_rows() {
+        let requested = parse_indicator_projection_fields(Some("close"))
+            .expect("projection fields are valid")
+            .expect("projection is requested");
+        let mut payload = json!({
+            "ticker": "AAPL",
+            "timeframe": "10s",
+            "history": [{
+                "schema_version": 19,
+                "session_date": "2026-08-19",
+                "timeframe": "10s",
+                "sym": "AAPL",
+                "bar_start": "2026-08-19T13:45:00Z",
+                "bar_end": "2026-08-19T13:45:10Z",
+                "close": 311.70,
+                "rsi_14": 54.0
+            }],
+            "current": {
+                "schema_version": 19,
+                "session_date": "2026-08-19",
+                "timeframe": "10s",
+                "sym": "AAPL",
+                "bar_start": "2026-08-19T13:45:10Z",
+                "bar_end": "2026-08-19T13:45:20Z",
+                "close": 311.76,
+                "rsi_14": 55.0
+            }
+        });
+
+        retain_indicator_projection_fields(&mut payload, &requested);
+
+        assert_eq!(payload["history"][0]["close"], 311.70);
+        assert!(payload["history"][0].get("rsi_14").is_none());
+        assert_eq!(payload["current"]["close"], 311.76);
+        assert!(payload["current"].get("rsi_14").is_none());
+    }
+
+    #[test]
     fn indicator_projection_rejects_unsafe_or_unbounded_fields() {
         assert!(parse_indicator_projection_fields(Some("close,$secret")).is_err());
         let oversized = (0..65)
@@ -1384,12 +1422,36 @@ fn retain_indicator_projection_fields(value: &mut Value, requested: &BTreeSet<St
     ];
     if let Some(rows) = value.get_mut("rows").and_then(Value::as_array_mut) {
         for row in rows {
-            if let Some(object) = row.as_object_mut() {
-                object
-                    .retain(|key, _| mandatory.contains(&key.as_str()) || requested.contains(key));
-            }
+            retain_indicator_row_fields(row, requested, &mandatory);
         }
     }
+    if let Some(rows) = value.get_mut("history").and_then(Value::as_array_mut) {
+        for row in rows {
+            retain_indicator_row_fields(row, requested, &mandatory);
+        }
+    }
+    for field in ["current", "tick"] {
+        if let Some(row) = value.get_mut(field) {
+            retain_indicator_row_fields(row, requested, &mandatory);
+        }
+    }
+}
+
+fn retain_indicator_row_fields(row: &mut Value, requested: &BTreeSet<String>, mandatory: &[&str]) {
+    if let Some(object) = row.as_object_mut() {
+        object.retain(|key, _| mandatory.contains(&key.as_str()) || requested.contains(key));
+    }
+}
+
+fn project_indicator_snapshot(
+    snapshot: IndicatorSnapshot,
+    requested: Option<&BTreeSet<String>>,
+) -> Value {
+    let mut value = serde_json::to_value(snapshot).expect("indicator snapshot is serializable");
+    if let Some(requested) = requested {
+        retain_indicator_projection_fields(&mut value, requested);
+    }
+    value
 }
 
 async fn market_signal_snapshot(
@@ -1844,20 +1906,21 @@ async fn indicator_snapshot(
     State(state): State<Arc<AppState>>,
     Path(ticker): Path<String>,
     Query(query): Query<BarsQuery>,
-) -> Json<IndicatorSnapshot> {
-    Json(
-        state
-            .indicators
-            .snapshot(
-                &ticker,
-                query.timeframe.as_deref().unwrap_or("1m"),
-                query
-                    .limit
-                    .unwrap_or(500)
-                    .min(state.config.indicator_history_limit),
-            )
-            .await,
-    )
+) -> Result<Json<Value>, (StatusCode, String)> {
+    let fields = parse_indicator_projection_fields(query.fields.as_deref())
+        .map_err(|error| (StatusCode::BAD_REQUEST, error))?;
+    let snapshot = state
+        .indicators
+        .snapshot(
+            &ticker,
+            query.timeframe.as_deref().unwrap_or("1m"),
+            query
+                .limit
+                .unwrap_or(500)
+                .min(state.config.indicator_history_limit),
+        )
+        .await;
+    Ok(Json(project_indicator_snapshot(snapshot, fields.as_ref())))
 }
 
 async fn scanner_stream(
@@ -2101,12 +2164,23 @@ async fn indicator_stream(
     Query(query): Query<BarsQuery>,
 ) -> impl IntoResponse {
     ws.on_upgrade(move |socket| async move {
+        let fields = match parse_indicator_projection_fields(query.fields.as_deref()) {
+            Ok(fields) => fields,
+            Err(error) => {
+                let mut socket = socket;
+                let _ = socket
+                    .send(Message::Text(json!({"error": error}).to_string().into()))
+                    .await;
+                return;
+            }
+        };
         stream_indicators(
             socket,
             state,
             ticker.to_ascii_uppercase(),
             query.timeframe.unwrap_or_else(|| "1m".to_string()),
             query.limit.unwrap_or(500),
+            fields,
         )
         .await;
     })
@@ -2607,6 +2681,7 @@ async fn stream_indicators(
     ticker: String,
     timeframe: String,
     limit: usize,
+    fields: Option<BTreeSet<String>>,
 ) {
     let mut timer = interval(Duration::from_millis(state.config.ticker_broadcast_ms));
     loop {
@@ -2619,7 +2694,8 @@ async fn stream_indicators(
                 limit.min(state.config.indicator_history_limit),
             )
             .await;
-        match serde_json::to_string(&snapshot) {
+        let payload = project_indicator_snapshot(snapshot, fields.as_ref());
+        match serde_json::to_string(&payload) {
             Ok(text) => {
                 if socket.send(Message::Text(text.into())).await.is_err() {
                     break;

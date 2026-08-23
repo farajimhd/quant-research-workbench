@@ -5919,6 +5919,7 @@ async def trading_canvas_live_chart_stream(websocket: WebSocket, stream: str, sy
     ticker = symbol.strip().upper()
     timeframe = websocket.query_params.get("timeframe", "1m")
     row_limit_text = websocket.query_params.get("limit", "500")
+    indicator_columns = websocket.query_params.get("indicator_columns", "")
     if stream not in {"bars", "indicators"} or not re.fullmatch(r"[A-Z][A-Z0-9.\-]{0,9}", ticker) or timeframe not in SUPPORTED_HISTORICAL_TIMEFRAMES:
         await websocket.send_json({"error": "Invalid live chart stream request."})
         await websocket.close(code=1008)
@@ -5944,6 +5945,8 @@ async def trading_canvas_live_chart_stream(websocket: WebSocket, stream: str, sy
             if family_bars
             else {"timeframe": timeframe, "limit": row_limit}
         )
+        if stream == "indicators" and indicator_columns:
+            upstream_params["fields"] = indicator_columns
         upstream_url = qmd_websocket_url(upstream_path, upstream_params)
         async with websockets.connect(upstream_url, ping_interval=20, ping_timeout=20, max_size=8 * 1024 * 1024) as upstream:
             async for message in upstream:

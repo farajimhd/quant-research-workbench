@@ -5278,6 +5278,23 @@ button {
   padding: 8px;
 }
 
+.chart-state-overlay {
+  align-items: center;
+  background: color-mix(in oklab, var(--surface) 76%, transparent);
+  color: var(--muted-foreground);
+  display: flex;
+  gap: 8px;
+  inset: 8px;
+  justify-content: center;
+  position: absolute;
+  text-align: center;
+  z-index: 7;
+}
+
+.chart-state-overlay.error {
+  color: var(--danger);
+}
+
 .chart-update-status {
   position: absolute;
   top: 14px;
@@ -10766,6 +10783,24 @@ button {
   overflow: hidden;
 }
 
+.chart-shell.fill-height {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  height: 100%;
+}
+
+.chart-shell.fill-height .chart-canvas-stack {
+  display: grid;
+  grid-template-rows: minmax(0, 1fr);
+  height: auto;
+  min-height: 0;
+}
+
+.chart-shell.fill-height .chart-native-surface {
+  height: var(--chart-runtime-height, auto) !important;
+  min-height: 0;
+}
+
 .canvas-config-page > .canvas-config-toolbar { grid-row: 1; }
 
 .canvas-status-stack {
@@ -13275,6 +13310,21 @@ button {
   background: var(--surface);
 }
 
+.charts-quotes-main-chart,
+.charts-quotes-month-chart,
+.charts-quotes-daily-chart {
+  display: grid;
+  grid-template-rows: minmax(0, 1fr);
+  overflow: hidden;
+}
+
+.charts-quotes-main-chart > .chart-shell,
+.charts-quotes-month-chart > .chart-shell,
+.charts-quotes-daily-chart > .chart-shell {
+  height: auto;
+  min-height: 0;
+}
+
 .charts-quotes-main-chart {
   grid-area: main;
   border-right: 1px solid var(--charts-quotes-rule);
@@ -13525,7 +13575,6 @@ button {
 
 .charts-quotes-layout .chart-shell.fill-height .chart-native-surface {
   flex: 1;
-  height: auto !important;
 }
 
 .charts-quotes-resizer {

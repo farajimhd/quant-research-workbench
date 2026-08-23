@@ -1100,7 +1100,11 @@ class QmdGatewayClientTests(unittest.TestCase):
         self.assertEqual(put_json.call_args.kwargs["timeout"], 70)
         get_json.assert_called_once_with(
             "/snapshot/indicators/AAPL",
-            {"timeframe": "1m", "limit": 50},
+            {
+                "timeframe": "1m",
+                "limit": 50,
+                "fields": "macd_line,macd_signal,atr_14",
+            },
             timeout=3,
         )
 

@@ -38,6 +38,38 @@ class FakeConnect:
 
 
 class QmdCanvasStreamContractTests(unittest.TestCase):
+    def test_chart_indicator_stream_forwards_requested_projection_fields(self) -> None:
+        entered: list[bool] = []
+        upstream = FakeUpstream([
+            {
+                "ticker": "AAPL",
+                "timeframe": "10s",
+                "history": [{"bar_start": "2026-08-19T13:45:00Z", "close": 311.70}],
+                "current": None,
+            }
+        ])
+        with (
+            patch(
+                "src.backend.app.websockets.connect",
+                return_value=FakeConnect(upstream, entered),
+            ),
+            patch(
+                "src.backend.app.qmd_websocket_url",
+                return_value="ws://127.0.0.1:8795/stream/indicators/AAPL",
+            ) as websocket_url,
+            TestClient(app) as client,
+        ):
+            with client.websocket_connect(
+                "/api/trading/canvas-live-chart/stream/indicators/AAPL?timeframe=10s&limit=90&indicator_columns=bar_start%2Cclose"
+            ) as websocket:
+                payload = websocket.receive_json()
+
+        self.assertEqual(payload["history"][0]["close"], 311.70)
+        websocket_url.assert_called_once_with(
+            "/stream/indicators/AAPL",
+            {"timeframe": "10s", "limit": 90, "fields": "bar_start,close"},
+        )
+
     def test_route_subscribes_before_snapshot_and_forwards_gap_control_frame(self) -> None:
         entered: list[bool] = []
 

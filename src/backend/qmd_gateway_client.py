@@ -1657,6 +1657,11 @@ def qmd_indicators(
     if not symbol.strip():
         raise ValueError("symbol is required for QMD indicators.")
     ticker = symbol.strip().upper()
+    requested_fields = (
+        [value.strip() for value in indicator_columns.split(",") if value.strip()]
+        if isinstance(indicator_columns, str)
+        else [str(value).strip() for value in (indicator_columns or ()) if str(value).strip()]
+    )
     target_id = f"chart:{ticker}:{timeframe}"
     capabilities = qmd_indicator_capabilities(indicator_columns)
     parameter_hash = hashlib.sha256(
@@ -1690,7 +1695,15 @@ def qmd_indicators(
         },
         timeout=70,
     )
-    payload = qmd_get_json(f"/snapshot/indicators/{urllib.parse.quote(ticker)}", {"timeframe": timeframe, "limit": row_limit}, timeout=3)
+    payload = qmd_get_json(
+        f"/snapshot/indicators/{urllib.parse.quote(ticker)}",
+        {
+            "timeframe": timeframe,
+            "limit": row_limit,
+            "fields": ",".join(dict.fromkeys(requested_fields)) or None,
+        },
+        timeout=3,
+    )
     return payload if isinstance(payload, dict) else {"ticker": symbol.upper(), "timeframe": timeframe, "history": [], "current": None, "tick": None}
 
 

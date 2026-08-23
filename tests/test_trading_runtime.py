@@ -569,7 +569,7 @@ class HistoricalContractTests(unittest.TestCase):
         gateway_get.assert_not_called()
 
     @patch("src.backend.trading_runtime_service._historical_gateway_get")
-    def test_monthly_chart_history_requests_three_year_macro_window(self, gateway_get) -> None:
+    def test_monthly_chart_history_honors_visible_page_budget(self, gateway_get) -> None:
         gateway_get.return_value = {
             "bars": [
                 {
@@ -595,7 +595,7 @@ class HistoricalContractTests(unittest.TestCase):
             before_bar=None,
             ticker="AAPL",
             timeframe="1mo",
-            row_limit=5_000,
+            row_limit=36,
         )
 
         path, params = self.gateway_call(
@@ -603,14 +603,15 @@ class HistoricalContractTests(unittest.TestCase):
         )
         self.assertEqual(path, "/snapshot/chart-macro-bars/AAPL")
         self.assertEqual(params["timeframe"], "1mo")
-        self.assertEqual(params["start"], "2023-08-01T00:00:00+00:00")
+        self.assertEqual(params["start"], "2023-07-01T00:00:00+00:00")
+        self.assertEqual(params["limit"], 37)
         self.assertEqual(result["history"][0]["volume"], 10_000.0)
         self.assertFalse(result["indicators_available"])
-        self.assertTrue(result["has_more"])
-        self.assertEqual(result["next_before"], "2023-08-01T04:00:00+00:00")
+        self.assertFalse(result["has_more"])
+        self.assertEqual(result["next_before"], "")
 
     @patch("src.backend.trading_runtime_service._historical_gateway_get")
-    def test_daily_chart_history_requests_three_year_macro_window(self, gateway_get) -> None:
+    def test_daily_chart_history_honors_visible_page_budget(self, gateway_get) -> None:
         gateway_get.return_value = {"bars": [], "source": "market_sip_compact.daily_session_bars_by_symbol_time_v1"}
 
         historical_bar_history_before(
@@ -620,7 +621,7 @@ class HistoricalContractTests(unittest.TestCase):
             before_bar=None,
             ticker="AAPL",
             timeframe="1d",
-            row_limit=5_000,
+            row_limit=240,
         )
 
         path, params = self.gateway_call(
@@ -628,7 +629,9 @@ class HistoricalContractTests(unittest.TestCase):
         )
         self.assertEqual(path, "/snapshot/chart-macro-bars/AAPL")
         self.assertEqual(params["timeframe"], "1d")
-        self.assertEqual(params["start"], "2023-07-10T00:00:00+00:00")
+        expected_start = (datetime(2026, 7, 10, 13, 45, tzinfo=timezone.utc) - timedelta(days=408)).replace(hour=0, minute=0, second=0, microsecond=0)
+        self.assertEqual(params["start"], expected_start.isoformat())
+        self.assertEqual(params["limit"], 241)
 
     @patch("src.backend.trading_runtime_service._historical_gateway_get")
     def test_daily_chart_history_pages_backward_from_earliest_bar(self, gateway_get) -> None:
@@ -651,23 +654,25 @@ class HistoricalContractTests(unittest.TestCase):
             before_bar="2023-07-10T08:00:00+00:00",
             ticker="AAPL",
             timeframe="1d",
-            row_limit=5_000,
+            row_limit=240,
         )
 
         path, params = self.gateway_call(gateway_get, "/snapshot/chart-macro-bars/AAPL")
         self.assertEqual(path, "/snapshot/chart-macro-bars/AAPL")
-        self.assertEqual(params["start"], "2020-07-10T00:00:00+00:00")
+        expected_start = (datetime(2023, 7, 10, 8, 0, tzinfo=timezone.utc) - timedelta(days=408)).replace(hour=0, minute=0, second=0, microsecond=0)
+        self.assertEqual(params["start"], expected_start.isoformat())
         self.assertEqual(params["end"], "2023-07-10T08:00:00+00:00")
         self.assertEqual(params["as_of"], "2026-07-10T13:45:00+00:00")
-        self.assertEqual(result["next_before"], "2020-07-09T08:00:00+00:00")
+        self.assertFalse(result["has_more"])
+        self.assertEqual(result["next_before"], "")
 
     @patch("src.backend.trading_runtime_service._historical_gateway_get")
     def test_weekly_and_yearly_chart_history_use_daily_macro_authority(self, gateway_get) -> None:
         gateway_get.return_value = {"bars": [], "source": "market_sip_compact.daily_session_bars_by_symbol_time_v1"}
 
-        for timeframe, expected_start in (
-            ("1w", "2023-07-21T00:00:00+00:00"),
-            ("1y", "2007-01-01T00:00:00+00:00"),
+        for timeframe, row_limit, expected_start in (
+            ("1w", 156, (datetime(2026, 7, 10, 13, 45, tzinfo=timezone.utc) - timedelta(days=1365)).replace(hour=0, minute=0, second=0, microsecond=0).isoformat()),
+            ("1y", 20, "2006-01-01T00:00:00+00:00"),
         ):
             with self.subTest(timeframe=timeframe):
                 historical_bar_history_before(
@@ -677,7 +682,7 @@ class HistoricalContractTests(unittest.TestCase):
                     before_bar=None,
                     ticker="AAPL",
                     timeframe=timeframe,
-                    row_limit=5_000,
+                    row_limit=row_limit,
                 )
                 path, params = self.gateway_call(
                     gateway_get, "/snapshot/chart-macro-bars/AAPL"
@@ -685,6 +690,7 @@ class HistoricalContractTests(unittest.TestCase):
                 self.assertEqual(path, "/snapshot/chart-macro-bars/AAPL")
                 self.assertEqual(params["timeframe"], timeframe)
                 self.assertEqual(params["start"], expected_start)
+                self.assertEqual(params["limit"], row_limit + 1)
 
     def test_live_family_bars_use_the_chart_bar_contract(self) -> None:
         payload = normalize_qmd_family_bar_snapshot(

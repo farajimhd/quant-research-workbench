@@ -165,14 +165,28 @@ Live, Paper, Replay, and Backtest workspaces must be visually explicit and canno
   by QMD History. Indicator responses now carry engine/schema versions,
   effective parameters, response warm-up state, source-plan hash and tiers,
   source revision, completeness and stale reason through the backend to a
-  compact Canvas notice. Canvas also keeps one bounded exact-cursor prefetch for
-  the next earlier page and discards it when navigation changes the request.
-  Live/Paper now start from that causal base and merge bounded QMD Live bar and
-  indicator snapshots by bar timestamp. This replaces a corrected current bar
-  instead of drawing a duplicate, labels historical-to-live transition and
-  partial/stale tail states, and retries from another complete snapshot. The
+  compact Canvas notice. The browser retains a bounded two-minute cache of the
+  most recent exact symbol/timeframe/session projection so a remount can paint
+  immediately, but always refreshes it from QMD. The renderer remains mounted
+  while a request is pending or temporarily empty; a status overlay replaces
+  destructive renderer teardown. Fill-height Canvas panels establish a
+  measured runtime height before Lightweight Charts is created and observe the
+  actual price surface thereafter; this prevents the former two-pixel canvas
+  that had valid bars but painted as a blank panel. Main, daily, and monthly
+  chart bootstrap requests start concurrently, and macro pages honor the
+  requested visible-row budget rather than scanning a fixed
+  multi-year/50,000-row window.
+
+  Every mode uses the same QMD History bootstrap. Replay, Backtest, and Debug
+  remain bounded by their causal run clock, including clock rewinds. Live/Paper
+  alone add QMD Live WebSocket bars and requested indicator fields, merge bar
+  revisions by timestamp, retain the last complete chart across disconnects,
+  and use the bounded REST snapshot only for initial reconciliation or an
+  explicit `stream_gap`/`resnapshot_required` frame. The former repeated full
+  REST polling path and the stale claim of automatic adjacent-page prefetch are
+  removed. Older pages remain demand-loaded when the operator pans left. The
   remaining chart-workspace drift is storage-version invalidation for derived
-  chart caches.
+  historical chart caches.
 - The existing Live/Paper account preflight and gateway-start boundary remains
   authoritative. After the gate, the route resolves the published Canvas,
   obtains scanner/chart/tape state from QMD Live, and obtains broker,

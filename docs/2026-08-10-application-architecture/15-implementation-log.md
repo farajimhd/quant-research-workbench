@@ -2069,6 +2069,25 @@ it does not imply all application work is complete.
      `D:\TradingML\runtimes\qmd_validation`; both validation processes were
      stopped after measurement.
 
+180. Repaired the shared Canvas chart delivery path across Live, Replay,
+     Backtest, and Debug. All modes now bootstrap from the same causal QMD
+     History request, keep the Lightweight Charts renderer mounted during
+     loading/empty transitions, reuse a bounded exact chart snapshot for fast
+     remounts, establish a nonzero measured fill height before renderer
+     creation, and load main/daily/monthly panels concurrently. The measured
+     height closes the observed failure where valid data reached a two-pixel
+     canvas and therefore appeared blank. Point-in-time clock rewinds replace
+     later state rather than retaining future bars.
+
+     Live/Paper no longer poll complete bar and indicator snapshots every
+     second. They subscribe to the existing backend QMD WebSocket bridges,
+     merge revisions by bar timestamp, reconnect with bounded backoff, and use
+     REST resnapshot only for bootstrap or an explicit stream gap. QMD Live now
+     projects requested indicator fields on both REST and WebSocket snapshots.
+     Macro history honors the caller's page budget instead of requesting a
+     fixed 50,000-row multi-year range. Historical derived storage-version
+     invalidation remains explicit open work.
+
 ---
 
 [Top](README.md) · [Previous](14-implementation-backlog.md) · [First](01-product-and-principles.md)

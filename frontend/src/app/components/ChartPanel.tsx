@@ -867,11 +867,13 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
   }, [effectiveChartSettings, themeSignature, timeframe]);
 
   useEffect(() => {
-    if (!hasChartData) {
-      cleanupChartRuntime();
-      return undefined;
-    }
     if (!priceRef.current || priceChartRef.current) return undefined;
+    if (fillHeight) {
+      priceRef.current.parentElement?.style.setProperty(
+        "--chart-runtime-height",
+        `${baseHeight + oscillatorPaneTotalHeight}px`,
+      );
+    }
     const palette = readChartPalette();
     const priceChart = createChart(priceRef.current, chartOptions(priceRef.current.clientWidth, priceRef.current.clientHeight, false, palette, chartSettingsRef.current, timeframe, true, alignLeftPriceScale, reserveRightPriceScale));
     priceChartRef.current = priceChart;
@@ -913,14 +915,16 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
       drawCurrentRegions();
     });
     if (shellRef.current) observer.observe(shellRef.current);
+    observer.observe(priceRef.current);
     resizeObserverRef.current = observer;
     paneResizeObserverRef.current = new ResizeObserver(() => {
       layoutNativePaneOverlays();
       scheduleOverlayRedraw();
     });
     overlayInteractionCleanupRef.current = attachOverlayRedrawListeners(priceRef.current, scheduleOverlayRedraw, scheduleOverlayRedrawBurst);
+    window.requestAnimationFrame(() => resizeCharts());
     return () => cleanupChartRuntime();
-  }, [hasChartData]);
+  }, []);
 
   useEffect(() => {
     payloadRef.current = payload;
@@ -1326,7 +1330,15 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
   function resizeCharts() {
     const price = priceRef.current;
     if (price && priceChartRef.current) {
-      priceChartRef.current.applyOptions({ width: price.clientWidth, height: price.clientHeight });
+      const surface = price.parentElement;
+      if (fillHeight && surface && shellRef.current) {
+        const toolbar = shellRef.current.querySelector<HTMLElement>(":scope > .chart-component-toolbar");
+        const availableHeight = shellRef.current.clientHeight - (toolbar?.clientHeight ?? 0);
+        if (availableHeight >= 48) {
+          surface.style.setProperty("--chart-runtime-height", `${availableHeight}px`);
+        }
+      }
+      priceChartRef.current.applyOptions({ width: price.clientWidth, height: Math.max(2, price.clientHeight) });
     }
     priceChartRef.current?.panes()[0]?.setStretchFactor(paneStretchFactors.price ?? 3.25);
     oscillatorPaneRuntimesRef.current.forEach((runtime, key) => {
@@ -1532,17 +1544,13 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
           settings={chartSettings}
         />
       ) : null}
-      {loading && !hasChartData ? (
-        <div className="empty-state chart-empty-state">
-          <span className="loading-spinner" aria-hidden="true" />
-          Loading chart data...
-        </div>
-      ) : errorMessage && !hasChartData ? (
-        <div className="empty-state chart-empty-state">Chart data request failed: {errorMessage}</div>
-      ) : !hasChartData ? (
-        <div className="empty-state chart-empty-state">{emptyMessage}</div>
-      ) : (
-        <div className="chart-canvas-stack">
+      <div className="chart-canvas-stack">
+        {!hasChartData ? (
+          <div className={`chart-state-overlay${errorMessage ? " error" : ""}`} role={errorMessage ? "alert" : "status"}>
+            {loading ? <span className="loading-spinner" aria-hidden="true" /> : null}
+            {loading ? "Loading chart data..." : errorMessage ? `Chart data request failed: ${errorMessage}` : emptyMessage}
+          </div>
+        ) : null}
           <div className="chart-native-surface chart-price" style={{ height: nativeChartHeight }}>
             <div className="chart-pane-canvas" ref={priceRef} />
             <div className="chart-reference-stack-layer" ref={referenceLayerRef} />
@@ -1583,8 +1591,7 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
             );
           })}
           </div>
-        </div>
-      )}
+      </div>
     </div>
   );
 });

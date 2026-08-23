@@ -1092,6 +1092,7 @@ def historical_bar_history_before(
             session_date=session_date or before,
             as_of=as_of,
             before_bar=before_bar,
+            row_limit=row_limit,
         )
     requested_session = session_date or before
     # Recent durable bars are the fast first-paint authority.  The full stage
@@ -1250,7 +1251,9 @@ def historical_macro_bar_history(
     session_date: date,
     as_of: str | None,
     before_bar: str | None = None,
+    row_limit: int = 240,
 ) -> dict[str, Any]:
+    row_limit = max(1, min(int(row_limit), 5_000))
     resolved_as_of = datetime.fromisoformat(as_of) if as_of else datetime.combine(session_date, time(20, 0), tzinfo=ZoneInfo("America/New_York"))
     if resolved_as_of.tzinfo is None:
         raise ValueError("as_of must include a timezone")
@@ -1261,9 +1264,7 @@ def historical_macro_bar_history(
             raise ValueError("before_bar must include a timezone")
         page_end = min(page_end, resolved_as_of)
     if timeframe == "1mo":
-        # Include the current (possibly partial) month plus the preceding 35
-        # months. Older three-year pages are requested only when the user pans.
-        month_index = page_end.year * 12 + page_end.month - 1 - 35
+        month_index = page_end.year * 12 + page_end.month - 1 - row_limit
         start = page_end.replace(
             year=month_index // 12,
             month=month_index % 12 + 1,
@@ -1274,12 +1275,12 @@ def historical_macro_bar_history(
             microsecond=0,
         )
     elif timeframe == "1w":
-        start = (page_end - timedelta(days=7 * 155)).replace(
+        start = (page_end - timedelta(days=max(14, int(7 * row_limit * 1.25)))).replace(
             hour=0, minute=0, second=0, microsecond=0
         )
     elif timeframe == "1y":
         start = page_end.replace(
-            year=max(1, page_end.year - 19),
+            year=max(1, page_end.year - row_limit),
             month=1,
             day=1,
             hour=0,
@@ -1288,11 +1289,11 @@ def historical_macro_bar_history(
             microsecond=0,
         )
     else:
+        calendar_days = max(14, int(row_limit * 1.7))
         try:
-            start = page_end.replace(year=max(1, page_end.year - 3), hour=0, minute=0, second=0, microsecond=0)
+            start = (page_end - timedelta(days=calendar_days)).replace(hour=0, minute=0, second=0, microsecond=0)
         except ValueError:
-            # February 29 has no counterpart in non-leap years.
-            start = page_end.replace(year=max(1, page_end.year - 3), day=28, hour=0, minute=0, second=0, microsecond=0)
+            start = (page_end - timedelta(days=calendar_days + 1)).replace(hour=0, minute=0, second=0, microsecond=0)
     query_end = page_end if before_bar else resolved_as_of + timedelta(days=1)
     payload = qmd_product_request(
         QmdProductRequest(
@@ -1303,7 +1304,7 @@ def historical_macro_bar_history(
             start=start.isoformat(),
             end=query_end.isoformat(),
             as_of=resolved_as_of.isoformat(),
-            limit=50_000,
+            limit=row_limit + 1,
             timeout_seconds=30,
         ),
         history_get=_historical_gateway_get,
@@ -1328,6 +1329,9 @@ def historical_macro_bar_history(
         if isinstance(row, dict) and row.get("bar_family") == "trade"
     ] if isinstance(payload, dict) else []
     rows.sort(key=_bar_start_sort_key)
+    has_more = len(rows) > row_limit
+    if has_more:
+        rows = rows[-row_limit:]
     next_before = str(rows[0].get("bar_start") or "") if rows else ""
     return {
         "ticker": ticker,
@@ -1339,9 +1343,9 @@ def historical_macro_bar_history(
         "structure_level_history": [],
         "indicators_available": False,
         "earliest_session_date": str(rows[0].get("session_date") or "") if rows else "",
-        "has_more": bool(next_before),
+        "has_more": has_more,
         "has_more_in_session": False,
-        "next_before": next_before,
+        "next_before": next_before if has_more else "",
         "previous_session_before": "",
         "as_of": resolved_as_of.isoformat(),
         "source": payload.get("source", "qmd_history_gateway") if isinstance(payload, dict) else "qmd_history_gateway",
