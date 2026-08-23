@@ -83,9 +83,14 @@ The MLP achieved 83.84% accuracy and 794 mismatches: TN/FP/FN/TP
 2,452/634/160/1,667. It delivered the best eligible recall among the combined
 models at 91.24%, but the extra 149 false eligible decisions relative to the
 TF-IDF forest reduced accuracy and precision. The TF-IDF Random Forest is the
-best overall classifier from this controlled comparison; the MLP is useful
-only if the operating objective values eligible recall more than false-positive
-compute cost.
+best selected-threshold accuracy and eligible F1 from this controlled
+comparison; the MLP is useful only if the operating objective values eligible
+recall more than false-positive compute cost.
+
+At a uniform 0.50 threshold, structured-only RF, structured + TF-IDF RF, and
+MLP accuracy are 85.24%, 84.35%, and 84.25% respectively. Therefore TF-IDF's
+gain is specific to the independently selected operating policy and modestly
+better ranking; it does not improve fixed-0.50 accuracy over structured-only.
 
 ## Population and blindness
 
