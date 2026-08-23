@@ -361,3 +361,24 @@ open. Historical backfill attaches bounded point-in-time provider snapshots.
 Development routing and the observed holdout regression are documented in
 `docs/codex/NEWS_SYNTHESIS_FUNNEL_V5.md`. The observed holdout is regression-only
 and is not a fresh accuracy authority.
+
+### Structured metadata Random Forest V1
+
+The independent structured challenger builds a frozen 2010-2025 provider
+category catalog, learns only 2025-supported dimensions, trains on decisive
+2025 labels, and evaluates chronologically on 2026. It uses sparse provider
+metadata, market time, ticker/article context, point-in-time market cap, and
+bounded lexical flags. It excludes TF-IDF and rendered text, exact ticker and
+source identity, deterministic synthesis outputs, and label provenance.
+
+```powershell
+$env:PYTHONDONTWRITEBYTECODE='1'
+python -m research.text_intelligence.news_synthesis_v1.run_structured_metadata_rf build
+python -m research.text_intelligence.news_synthesis_v1.run_structured_metadata_rf train-evaluate
+python -m research.text_intelligence.news_synthesis_v1.run_structured_metadata_rf validate
+```
+
+The contract, chronological metrics, feature-family importance, calibration,
+and comparability limits are documented in
+`docs/codex/NEWS_STRUCTURED_METADATA_RF_V1.md`. Bulk outputs remain under
+`D:\TradingML\runtimes\text_intelligence\news_synthesis_v1\structured_metadata_rf_v1`.
