@@ -13,6 +13,7 @@ import base64
 import json
 import os
 import sys
+import urllib.error
 import urllib.request
 import urllib.parse
 from dataclasses import asdict, dataclass
@@ -54,8 +55,14 @@ class ClickHouseHttp:
             headers={"Authorization": self.authorization, "Content-Type": "text/plain"},
             method="POST",
         )
-        with urllib.request.urlopen(request, timeout=timeout) as response:
-            return response.read().decode()
+        try:
+            with urllib.request.urlopen(request, timeout=timeout) as response:
+                return response.read().decode()
+        except urllib.error.HTTPError as error:
+            detail = error.read().decode(errors="replace").strip()
+            raise RuntimeError(
+                f"ClickHouse HTTP {error.code}: {detail or error.reason}"
+            ) from error
 
     def json_rows(self, sql: str, timeout: int = 300) -> list[dict[str, Any]]:
         return [json.loads(line) for line in self.query(sql, timeout).splitlines() if line.strip()]
@@ -212,7 +219,7 @@ def base_validation_sql(events_table: str, bars_table: str, item: RepairRange) -
         toTimeZone(event_ts_utc, 'America/New_York') AS event_ts_local,
         toDate(event_ts_local) AS local_date,
         toInt64(sip_timestamp_us) - toUnixTimestamp64Micro(toDateTime64(toStartOfDay(event_ts_local), 6, 'America/New_York')) AS session_us,
-        intDiv(session_us, {BASE_RESOLUTION_US}) AS bucket
+        toUInt64(intDiv(session_us, {BASE_RESOLUTION_US})) AS bucket
       SELECT local_date, bucket, bar_family, count() AS expected_count
       FROM
       (
@@ -333,24 +340,40 @@ def main() -> int:
     if qmd_live_is_running():
         raise RuntimeError("QMD Live is running on port 8795; stop it before executing bar repair")
     validations: list[dict[str, Any]] = []
-    for index, item in enumerate(repairs, start=1):
-        print(f"[{index}/{len(repairs)}] {item.event_date} {item.ticker}: {item.duplicate_rows} replay row(s)")
-        client.query(base_rebuild_sql(args.events_table, args.bars_table, item), timeout=600)
-        for resolution in resolutions:
-            client.query(
-                rollup_rebuild_sql(args.events_table, args.bars_table, item, resolution),
-                timeout=600,
-            )
-        validation = client.json_rows(
-            base_validation_sql(args.events_table, args.bars_table, item), timeout=300
-        )[0]
-        validation.update({"event_date": item.event_date, "ticker": item.ticker})
-        validations.append(validation)
-        if int(validation["mismatched_buckets"]) != 0:
-            raise RuntimeError(
-                f"canonical bar validation failed for {item.event_date} {item.ticker}: {validation}"
-            )
+    manifest["status"] = "executing"
+    manifest["completed_range_count"] = 0
+    manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+    try:
+        for index, item in enumerate(repairs, start=1):
+            manifest["current_range"] = {"event_date": item.event_date, "ticker": item.ticker}
+            manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+            print(f"[{index}/{len(repairs)}] {item.event_date} {item.ticker}: {item.duplicate_rows} replay row(s)")
+            client.query(base_rebuild_sql(args.events_table, args.bars_table, item), timeout=600)
+            for resolution in resolutions:
+                client.query(
+                    rollup_rebuild_sql(args.events_table, args.bars_table, item, resolution),
+                    timeout=600,
+                )
+            validation = client.json_rows(
+                base_validation_sql(args.events_table, args.bars_table, item), timeout=300
+            )[0]
+            validation.update({"event_date": item.event_date, "ticker": item.ticker})
+            validations.append(validation)
+            if int(validation["mismatched_buckets"]) != 0:
+                raise RuntimeError(
+                    f"canonical bar validation failed for {item.event_date} {item.ticker}: {validation}"
+                )
+            manifest["validations"] = validations
+            manifest["completed_range_count"] = index
+            manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+    except Exception as error:
+        manifest["status"] = "failed"
+        manifest["error"] = str(error)
+        manifest["failed_at_utc"] = datetime.now(timezone.utc).isoformat()
+        manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+        raise
     manifest["status"] = "completed"
+    manifest.pop("current_range", None)
     manifest["validations"] = validations
     manifest["completed_at_utc"] = datetime.now(timezone.utc).isoformat()
     manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
