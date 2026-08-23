@@ -532,12 +532,14 @@ the exact `ReplacingMergeTree`, partition, and canonical sorting-key contract,
 then audits `q_live.events FINAL` for conflicting payloads that share the same
 provider source identity `(ticker, sip_timestamp_us, source_sequence,
 event_type)`. Physical replay versions are not canonical corruption and do not
-request a rebuild.
+request a rebuild. The exact conflict aggregation follows the table's sorting-
+key prefix and runs as one bounded-memory pass.
 Time coverage is then read from
 `qmd_live_event_coverage_v1`, not inferred from event-table min/max timestamps.
 If recent rows are structurally sound, the gateway runs bounded Massive REST
-coverage repair before opening the websocket. Startup repair uses the same
-current-plus-prior-session window as recurring repair.
+coverage repair. During an active collection window websocket ingest starts
+concurrently; outside collection hours maintenance completes first. Startup
+repair uses the same current-plus-prior-session window as recurring repair.
 If conflicting payloads remain for one provider identity after `FINAL`, the
 gateway records `needs_manual_rebuild` under the separate
 `q_live_structure_audit` concern and does not silently choose a payload.

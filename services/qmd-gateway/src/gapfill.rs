@@ -1713,39 +1713,25 @@ impl GapFillService {
         let start_us = window_start.timestamp_micros();
         let sql = format!(
             r#"
-            WITH recent AS
+            SELECT
+                sum(identity_rows) AS recent_rows,
+                uniqExact(ticker) AS ticker_count,
+                sum(identity_rows - 1) AS canonical_conflict_rows
+            FROM
             (
                 SELECT
                     ticker,
                     sip_timestamp_us,
                     source_sequence,
                     bitAnd(event_meta, 1) AS event_type,
-                    event_meta,
-                    price_primary_int,
-                    price_secondary_int,
-                    size_primary,
-                    size_secondary,
-                    exchange_primary,
-                    exchange_secondary,
-                    condition_token_1,
-                    condition_token_2,
-                    condition_token_3,
-                    condition_token_4,
-                    condition_token_5
+                    count() AS identity_rows
                 FROM {table} FINAL
                 WHERE event_date >= toDate('{start_date}')
                   AND sip_timestamp_us >= {start_us}
                   AND ticker != ''
+                GROUP BY ticker, sip_timestamp_us, source_sequence, event_type
             )
-            SELECT
-                (SELECT count() FROM recent) AS recent_rows,
-                (SELECT uniqExact(ticker) FROM recent) AS ticker_count,
-                (SELECT count() - uniqExact(tuple(
-                    ticker,
-                    sip_timestamp_us,
-                    source_sequence,
-                    event_type
-                )) FROM recent) AS canonical_conflict_rows
+            SETTINGS optimize_aggregation_in_order = 1
             FORMAT JSONEachRow
             "#,
             table = self.config.compact_event_table,

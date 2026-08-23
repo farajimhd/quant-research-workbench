@@ -214,8 +214,9 @@ Default durable writes:
 
 Startup maintenance validates the live table engine/key contract and audits
 recent `q_live.events FINAL` rows for conflicting payloads under one provider
-source identity before websocket ingest begins. Physical replay versions are
-measured separately and are not canonical corruption. It does not infer
+source identity before REST repair begins. The exact audit aggregates in
+primary-key order so memory does not scale with every event identity. Physical
+replay versions are measured separately and are not canonical corruption. It does not infer
 missing time coverage from min/max timestamps. Recent time gaps are detected
 from `qmd_live_event_coverage_v1`. Live streaming writes one compact-event
 confirmation row and one bar confirmation row per run. A time range is treated

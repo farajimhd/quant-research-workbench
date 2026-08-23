@@ -247,8 +247,9 @@ and common US equity market holidays. Older history should be read from
 ## Startup Maintenance And Coverage
 
 Startup maintenance is enabled by default with
-`QMD_STARTUP_MAINTENANCE_ENABLED=true`. It runs before the Massive websocket
-task starts. The gateway audits recent rows in the actual
+`QMD_STARTUP_MAINTENANCE_ENABLED=true`. During an active collection window the
+Massive websocket starts concurrently; outside collection hours maintenance
+finishes first. The gateway audits recent rows in the actual
 `q_live.events FINAL` table and checks:
 
 - conflicting canonical payloads for the same provider source identity after
@@ -256,15 +257,19 @@ task starts. The gateway audits recent rows in the actual
 - the exact `ReplacingMergeTree`, `event_date` partition, and canonical sorting
   key required to reconcile at-least-once physical inserts
 
+The source-identity aggregation follows that sorting-key prefix with
+`optimize_aggregation_in_order`, keeping the exact audit to one bounded-memory
+pass.
+
 The structural audit is separate from time coverage. Recent time coverage is
 read from `qmd_live_event_coverage_v1`. Streaming writes are counted as covered
 only where `compact_persisted` and `intraday_bars_persisted` intervals for the same run
 overlap. REST repair rows are counted only when they are explicitly recorded as
 `repair_completed` per gap interval. If the recent event table is structurally
 clean, the gateway performs bounded Massive REST repair through the normal
-fan-out path before live ingest starts, so repaired rows update memory, streams,
-bars, indicators, compact persistence, and optional raw persistence in the same
-way as live websocket rows. The startup repair and recurring repair both use
+fan-out path. Repaired rows update memory, streams, bars, indicators, compact
+persistence, and optional raw persistence in the same way as live websocket
+rows. The startup repair and recurring repair both use
 the current market day plus configured prior market sessions, then fill missing
 04:00-20:00 ET intervals. If Massive pagination reaches
 `QMD_RECENT_LIVE_MAX_PAGES_PER_INTERVAL`, the symbol is recorded as
