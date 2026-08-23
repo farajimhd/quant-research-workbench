@@ -449,6 +449,8 @@ python -m research.text_intelligence.news_synthesis_v1.run_structured_tfidf_rf_p
 python -m research.text_intelligence.news_synthesis_v1.run_structured_tfidf_rf_pre_holdout validate
 python -m research.text_intelligence.news_synthesis_v1.run_structured_tfidf_mlp_pre_holdout train-evaluate
 python -m research.text_intelligence.news_synthesis_v1.run_structured_tfidf_mlp_pre_holdout validate
+python -m research.text_intelligence.news_synthesis_v1.run_structured_tfidf_deepfm_pre_holdout train-evaluate
+python -m research.text_intelligence.news_synthesis_v1.run_structured_tfidf_deepfm_pre_holdout validate
 ```
 
 The frozen population, review funnel, immutable-model metrics, and limits are
@@ -461,6 +463,10 @@ The combined model and prediction ledger remain under
 The TF-IDF forest and sparse MLP artifacts remain in sibling runtime directories
 named `structured_tfidf_rf_2025_through_2026_aug13_to_august_holdout_v1` and
 `structured_tfidf_mlp_2025_through_2026_aug13_to_august_holdout_v1`.
+The later DeepFM benchmark remains under
+`structured_tfidf_deepfm_2025_through_2026_aug13_to_august_holdout_v1`; because
+its family was proposed after earlier holdout results were observed, it requires
+confirmation on a later sealed holdout.
 
 ### Structured RF disagreement blind audit V1
 

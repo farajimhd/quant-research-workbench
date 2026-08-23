@@ -15,6 +15,8 @@ articles remain explicitly unresolved and are excluded from metrics.
 | Train 2025-Aug. 13, 2026, threshold 0.44 | **84.14%** | **85.25%** | 73.56% | 89.55% | **80.77%** | 93.19% |
 | Structured + TF-IDF RF, threshold 0.48 | **84.88%** | 85.08% | **76.39%** | 85.88% | **80.86%** | **93.27%** |
 | Structured + TF-IDF MLP, threshold 0.45 | 83.84% | **85.35%** | 72.45% | **91.24%** | 80.77% | 93.15% |
+| Structured + TF-IDF DeepFM, selected threshold 0.38 | 83.33% | 85.06% | 71.48% | 91.79% | 80.37% | 93.88% |
+| Structured + TF-IDF DeepFM, fixed threshold 0.50 | **85.24%** | **86.17%** | 75.30% | 89.76% | **81.90%** | **93.88%** |
 
 The 2025-trained model produced TN/FP/FN/TP of 2,490/596/238/1,589. The
 2026-trained model produced 2,369/717/140/1,687. Therefore the 2025 model is
@@ -89,8 +91,33 @@ recall more than false-positive compute cost.
 
 At a uniform 0.50 threshold, structured-only RF, structured + TF-IDF RF, and
 MLP accuracy are 85.24%, 84.35%, and 84.25% respectively. Therefore TF-IDF's
-gain is specific to the independently selected operating policy and modestly
-better ranking; it does not improve fixed-0.50 accuracy over structured-only.
+forest gain is specific to the independently selected operating policy and
+modestly better ranking; it does not improve fixed-0.50 accuracy over
+structured-only.
+
+### DeepFM challenger
+
+After the preceding holdout results had already been inspected, a DeepFM
+challenger was proposed for the same 86,434 features. It replaces the MLP's
+large dense input projection with a wide linear branch, 32-dimensional learned
+feature embeddings, explicit second-order factorization interactions, and a
+128-unit residual deep branch. It trained for two epochs selected on the same
+pre-boundary validation slice.
+
+The validation-selected threshold of 0.38 transferred poorly to the later
+period: 83.33% accuracy and 819 mismatches, with TN/FP/FN/TP
+2,417/669/150/1,677. The independently predeclared 0.50 cutoff produced 85.24%
+accuracy and 725 mismatches, with TN/FP/FN/TP 2,548/538/187/1,640. At 0.50,
+DeepFM achieved 86.17% balanced accuracy, 89.76% eligible recall, 81.90%
+eligible F1, and 93.88% ROC AUC. It materially outperformed the MLP and provided
+the strongest balanced accuracy, eligible F1, and ranking among the neural
+experiments.
+
+The DeepFM score is not pristine release evidence: its model family was chosen
+after this holdout had been observed for the RF and MLP comparisons. No DeepFM
+parameter or threshold was tuned from its holdout result, and further iteration
+on this population is prohibited. DeepFM requires confirmation on a later
+sealed time-forward holdout before selection for production.
 
 ## Population and blindness
 
