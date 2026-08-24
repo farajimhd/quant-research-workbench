@@ -31,6 +31,7 @@ def health() -> dict[str, object]:
         "service": "news_hypothesis",
         "queue_size": runtime.queue.qsize(),
         "metrics": runtime.metrics,
+        "trigger_mode": runtime.trigger_mode,
         "responsibility": "contextual news hypotheses only; no market-model or order authority",
     }
 

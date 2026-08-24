@@ -33,6 +33,8 @@ $secLauncher = Join-Path $launcherRoot "run_sec_gateway.ps1"
 $referenceLauncher = Join-Path $launcherRoot "run_reference_gateway.ps1"
 $ibkrLauncher = Join-Path $launcherRoot "run_ibkr_gateway_supervisor.ps1"
 $textIntelligenceLauncher = Join-Path $launcherRoot "run_text_intelligence.ps1"
+$modelGatewayLauncher = Join-Path $launcherRoot "run_model_gateway.ps1"
+$newsHypothesisLauncher = Join-Path $launcherRoot "run_news_hypothesis.ps1"
 $serviceTabHost = Join-Path $launcherRoot "run_windows_terminal_service_tab.ps1"
 $terminalWindowTargetHelper = Join-Path $launcherRoot "windows_terminal_window_target.ps1"
 
@@ -180,6 +182,8 @@ Assert-Launcher -Path $secLauncher
 Assert-Launcher -Path $referenceLauncher
 Assert-Launcher -Path $ibkrLauncher
 Assert-Launcher -Path $textIntelligenceLauncher
+Assert-Launcher -Path $modelGatewayLauncher
+Assert-Launcher -Path $newsHypothesisLauncher
 Assert-Launcher -Path $serviceTabHost
 
 Write-Host "Live Gateway code authority: $($codeAuthority.Kind) at $repoRoot"
@@ -285,10 +289,24 @@ $serviceTabs = @(
             -RichEnabledVariable "TEXT_INTELLIGENCE_TERMINAL_RICH_ENABLED" `
             -ScreenEnabledVariable "TEXT_INTELLIGENCE_TERMINAL_SCREEN_ENABLED" `
             -Command (
-                "& " + (ConvertTo-PowerShellLiteral -Value $textIntelligenceLauncher) +
+                "`$env:TEXT_INTELLIGENCE_REVIEW_TRIGGER_MODE = 'manual'; & " + (ConvertTo-PowerShellLiteral -Value $textIntelligenceLauncher) +
                 " -CondaEnv " + (ConvertTo-PowerShellLiteral -Value $CondaEnv) +
                 " -PythonExe $pythonLiteral"
             )
+    },
+    [pscustomobject]@{
+        Title = "Model Gateway"
+        Command = (
+            "& " + (ConvertTo-PowerShellLiteral -Value $modelGatewayLauncher) +
+            " -PythonExe $pythonLiteral"
+        )
+    },
+    [pscustomobject]@{
+        Title = "News Hypothesis"
+        Command = (
+            "`$env:NEWS_HYPOTHESIS_TRIGGER_MODE = 'manual'; & " + (ConvertTo-PowerShellLiteral -Value $newsHypothesisLauncher) +
+            " -PythonExe $pythonLiteral"
+        )
     }
 )
 
@@ -358,12 +376,12 @@ if ($WhatIfPreference) {
 }
 
 Write-Host ""
-Write-Host "Opened five independent PowerShell tabs in $($usedTerminalWindowTarget.Description), in this order:"
+Write-Host "Opened $($serviceTabs.Count) independent PowerShell tabs in $($usedTerminalWindowTarget.Description), in this order:"
 for ($index = 0; $index -lt $serviceTabs.Count; $index++) {
     Write-Host ("  {0}. {1}" -f ($index + 1), $serviceTabs[$index].Title)
 }
-Write-Host "This starter now exits instead of supervising the five launcher processes."
+Write-Host "This starter now exits instead of supervising the launcher processes."
 Write-Host "A successful graceful stop exits each tab host cleanly so Windows Terminal closes the service tabs."
 Write-Host "Reference waits for IBKR Supervisor health, then at least $ReferenceDelaySeconds seconds, then ready/authenticated state."
-Write-Host "Text Intelligence runs deterministic News/SEC V5 labeling only unless Live AI is explicitly enabled."
+Write-Host "Text Intelligence runs the deterministic-plus-DeepFM funnel with manual LLM review by default; automatic review remains disabled unless explicitly enabled."
 Write-Host "Stop all matching instances with scripts\stop_live_gateway_services.ps1."

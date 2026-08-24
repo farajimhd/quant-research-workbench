@@ -5,6 +5,9 @@ rich
 huggingface_hub
 transformers
 torch
+scipy
+scikit-learn
+joblib
 onnxruntime
 optimum[onnxruntime]
 gliner

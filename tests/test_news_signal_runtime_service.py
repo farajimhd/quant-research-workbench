@@ -30,7 +30,10 @@ def configuration() -> dict:
             "rule_sets": [
                 {
                     "rule_set_id": "watchlist-news-bullish",
-                    "conditions": [],
+                    "conditions": [
+                        {"left_field_ref": "news.forecast_trigger_eligible", "comparator": "is_true"},
+                        {"left_field_ref": "news.composite_sentiment", "comparator": "equals", "value": "positive"},
+                    ],
                 }
             ],
             "signal_streams": [
@@ -99,9 +102,9 @@ class NewsSignalRuntimeTests(unittest.TestCase):
             client=client,
         )
 
-        self.assertIn("toString(updated_at_utc) AS updated_at_text", client.sql)
+        self.assertIn("toString(greatest(s.updated_at_utc", client.sql)
         self.assertNotIn("toString(updated_at_utc) AS updated_at_utc", client.sql)
-        self.assertIn("updated_at_utc>=parseDateTime64BestEffort", client.sql)
+        self.assertIn("greatest(s.updated_at_utc", client.sql)
         self.assertEqual(rows[0]["updated_at_utc"], "2026-08-17 15:00:00.000")
         self.assertEqual(rows[0]["published_at_utc"], "2026-08-17 14:59:00.000")
 
@@ -176,6 +179,39 @@ class NewsSignalRuntimeTests(unittest.TestCase):
 
         self.assertEqual(len(result["occurrences"]), 1)
         self.assertEqual(result["new_occurrences"], [])
+
+    def test_manual_llm_review_fields_can_generate_a_signal(self) -> None:
+        now = datetime(2026, 8, 17, 15, 0, tzinfo=UTC)
+        config = configuration()
+        config["market_discovery"]["column_catalog"].append({
+            "column_id": "llm_forecast_eligible",
+            "source_id": "news.llm.forecast_eligible",
+            "field_ref": "news.llm.forecast_eligible",
+        })
+        config["market_discovery"]["rule_sets"][0]["conditions"] = [{
+            "left_field_ref": "news.llm.forecast_eligible",
+            "left_source_id": "news.llm.forecast_eligible",
+            "comparator": "is_true",
+        }]
+        source = {
+            "canonical_news_id": "news-manual-1",
+            "published_at_utc": "2026-08-17T14:59:00+00:00",
+            "updated_at_utc": "2026-08-17T14:59:50+00:00",
+            "event_authority": "llm_review",
+            "issuer_labels_json": json.dumps({"issuers": [{
+                "issuer_name": "Acme", "ticker": "ACME",
+                "forecast_relevance_probability": 0.91,
+                "positive_implication_probability": 0.8,
+                "negative_implication_probability": 0.1,
+            }]}),
+        }
+        runtime = NewsSignalRuntime(loader=lambda **_: [source], publisher=lambda _stream_id, rows: {"new_occurrences": rows})
+        with tempfile.TemporaryDirectory() as directory:
+            journal = TradingJournal(Path(directory) / "journal.sqlite3")
+            result = runtime.refresh(config, [{"ticker": "ACME"}], as_of=now, journal=journal)
+            journal.close()
+        self.assertEqual(len(result["new_occurrences"]), 1)
+        self.assertTrue(result["new_occurrences"][0]["llm_forecast_eligible"])
 
 
 if __name__ == "__main__":

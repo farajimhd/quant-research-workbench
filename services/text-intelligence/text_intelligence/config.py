@@ -16,6 +16,13 @@ class IntelligenceConfig:
     enable_live_ai: bool
     enable_llm: bool
     enable_models: bool
+    forecast_funnel_enabled: bool
+    forecast_release_manifest: Path
+    forecast_model_device: str
+    review_trigger_mode: str
+    review_prompt_path: Path
+    model_gateway_url: str
+    news_hypothesis_url: str
     llm_base_url: str
     llm_min_materiality: float
     llm_min_text_chars: int
@@ -71,6 +78,29 @@ class IntelligenceConfig:
                 False,
                 "NEWS_INTELLIGENCE_ENABLE_MODELS",
             ),
+            forecast_funnel_enabled=env_bool(
+                "TEXT_INTELLIGENCE_FORECAST_FUNNEL_ENABLED", True
+            ),
+            forecast_release_manifest=Path(env_string(
+                "TEXT_INTELLIGENCE_FORECAST_RELEASE_MANIFEST",
+                r"D:\TradingML\runtimes\text_intelligence\serving\news_forecast_funnel_v1\release.json",
+            )),
+            forecast_model_device=env_string(
+                "TEXT_INTELLIGENCE_FORECAST_MODEL_DEVICE", "cpu"
+            ).lower(),
+            review_trigger_mode=env_string(
+                "TEXT_INTELLIGENCE_REVIEW_TRIGGER_MODE", "manual"
+            ).lower(),
+            review_prompt_path=Path(env_string(
+                "TEXT_INTELLIGENCE_REVIEW_PROMPT_PATH",
+                r"D:\TradingML\runtimes\text_intelligence\serving\news_forecast_funnel_v1\issuer_review_system_prompt_v1.txt",
+            )),
+            model_gateway_url=env_string(
+                "TEXT_INTELLIGENCE_MODEL_GATEWAY_URL", "http://127.0.0.1:8802"
+            ).rstrip("/"),
+            news_hypothesis_url=env_string(
+                "TEXT_INTELLIGENCE_NEWS_HYPOTHESIS_URL", "http://127.0.0.1:8803"
+            ).rstrip("/"),
             llm_base_url=env_string(
                 "TEXT_INTELLIGENCE_LLM_BASE_URL",
                 "http://127.0.0.1:8000/v1",

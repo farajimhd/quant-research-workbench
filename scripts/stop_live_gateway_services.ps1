@@ -10,6 +10,10 @@ param(
     [int]$IbkrSupervisorPort = 8800,
     [ValidateRange(1, 65535)]
     [int]$TextIntelligencePort = 8804,
+    [ValidateRange(1, 65535)]
+    [int]$ModelGatewayPort = 8802,
+    [ValidateRange(1, 65535)]
+    [int]$NewsHypothesisPort = 8803,
     [ValidateRange(1, 900)]
     [int]$GracefulTimeoutSeconds = 330,
     [string]$PythonExe = "",
@@ -98,6 +102,14 @@ function Test-LiveGatewayProcess {
         # already-running pre-rename service cleanly during workstation cutover.
         $commandLine.Contains("run_news_intelligence.ps1") -or
         $commandLine.Contains("-m news_intelligence.main")) {
+        return $true
+    }
+    if ($commandLine.Contains("run_model_gateway.ps1") -or
+        $commandLine.Contains("-m services.model_gateway.main")) {
+        return $true
+    }
+    if ($commandLine.Contains("run_news_hypothesis.ps1") -or
+        $commandLine.Contains("news-hypothesis\run_service.py")) {
         return $true
     }
     return $false
@@ -248,13 +260,15 @@ $ports = @(
     $SecPort,
     $ReferencePort,
     $IbkrSupervisorPort,
-    $TextIntelligencePort
+    $TextIntelligencePort,
+    $ModelGatewayPort,
+    $NewsHypothesisPort
 ) | Select-Object -Unique
 $snapshot = Get-ProcessSnapshot
 $targetIds = Get-TargetProcessIds -Snapshot $snapshot -Ports $ports
 
 if ($targetIds.Count -eq 0) {
-    Write-Host "No News, SEC, Reference, IBKR Supervisor, Text Intelligence, Client Portal, or configured-port processes are running."
+    Write-Host "No News, SEC, Reference, IBKR Supervisor, Text Intelligence, Model Gateway, News Hypothesis, Client Portal, or configured-port processes are running."
     return
 }
 

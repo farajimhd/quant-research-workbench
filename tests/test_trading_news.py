@@ -168,7 +168,11 @@ class TradingNewsTests(unittest.TestCase):
             ]),
             json.dumps({"ticker_options": ["AAPL", "MSFT", "NVDA"]}),
             "",
+            "",
+            "",
             json.dumps({"canonical_news_id": "facet-page-1", "published_at_utc": "2026-07-10T13:43:00.000000Z"}),
+            "",
+            "",
             "",
         ]
 
@@ -188,8 +192,8 @@ class TradingNewsTests(unittest.TestCase):
 
         self.assertEqual(first["ticker_options"], ["AAPL", "MSFT", "NVDA"])
         self.assertNotIn("ticker_options", second)
-        self.assertEqual(query_mock.call_count, 5)
-        self.assertNotIn("groupUniqArray(ticker)", query_mock.call_args_list[3].args[0])
+        self.assertEqual(query_mock.call_count, 9)
+        self.assertNotIn("groupUniqArray(ticker)", query_mock.call_args_list[5].args[0])
 
     @patch("src.backend.app.clickhouse_status_query", return_value="")
     def test_custom_date_range_is_bounded_by_market_dates(self, query_mock) -> None:

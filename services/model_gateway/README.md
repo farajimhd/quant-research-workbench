@@ -10,6 +10,7 @@ Default bind: `127.0.0.1:8802`.
 
 Routes:
 
+- `news.issuer_review.v1`
 - `news.semantic_fast.v1`
 - `news.trade_hypothesis.v1`
 - `news.trade_hypothesis.v2`

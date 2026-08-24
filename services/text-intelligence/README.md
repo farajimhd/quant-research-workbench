@@ -57,6 +57,18 @@ next reconciliation cycle rather than misreported as processing failures.
 - `TEXT_INTELLIGENCE_PROMPT_VERSION`, default `news-llm-prompt-v1`
 - `TEXT_INTELLIGENCE_ENABLE_MODELS`, default `false`; set `true` explicitly to
   load the configured optional local sentiment/NER models.
+- `TEXT_INTELLIGENCE_FORECAST_FUNNEL_ENABLED`, default `true`; applies the
+  deterministic final-ineligible gate and then the hash-pinned DeepFM release.
+- `TEXT_INTELLIGENCE_FORECAST_RELEASE_MANIFEST`, default
+  `D:\TradingML\runtimes\text_intelligence\serving\news_forecast_funnel_v1\release.json`.
+- `TEXT_INTELLIGENCE_FORECAST_MODEL_DEVICE`, default `cpu`.
+- `TEXT_INTELLIGENCE_REVIEW_TRIGGER_MODE`, default `manual`. `automatic` enables
+  review enqueueing for DeepFM candidates; the shipped default never makes an
+  automatic LLM call.
+- `TEXT_INTELLIGENCE_REVIEW_PROMPT_PATH`, default to the hash-certified issuer
+  review prompt next to the serving release manifest.
+- `TEXT_INTELLIGENCE_MODEL_GATEWAY_URL`, default `http://127.0.0.1:8802`.
+- `TEXT_INTELLIGENCE_NEWS_HYPOTHESIS_URL`, default `http://127.0.0.1:8803`.
 - `TEXT_INTELLIGENCE_ENABLE_LLM`, default `false`
 - `TEXT_INTELLIGENCE_ENABLE_LIVE_AI`, default `false`; when `true`, eligible
   News during an explicitly active Live session is routed through Model
@@ -208,6 +220,9 @@ GET /health
 GET /models
 POST /classify
 POST /documents
+POST /news-review
+POST /news-reviews
+GET /news-review/{canonical_news_id}
 ```
 
 `POST /documents` accepts a bounded batch of lightweight canonical notices:
@@ -218,3 +233,10 @@ POST /documents
 
 `POST /classify` remains the provider-neutral interactive model API. It is not
 the persistence authority used by the gateways.
+
+`POST /news-review` is the manual production path used by the frontend. Both
+manual and explicitly enabled automatic reviews persist current state to
+`q_live.news_llm_issuer_review_v1` and completed immutable results to
+`q_live.news_llm_issuer_review_history_v1`. The funnel persists separately to
+`q_live.news_forecast_funnel_v1`. Eligible issuer labels are forwarded to News
+Hypothesis; no route places orders or bypasses configured Signal Stream rules.

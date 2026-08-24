@@ -9,6 +9,7 @@ from dataclasses import asdict, is_dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from pydantic import BaseModel, Field
 
@@ -26,6 +27,7 @@ from research.news_labeling.trade_hypothesis_v2.contract import (
     build_messages,
     validate_hypothesis,
 )
+from research.news_labeling.trade_hypothesis_v2.prepare import historical_market_snapshot
 from research.text_intelligence.news_synthesis_v1.storage import LIVE_SEMANTIC_TABLE
 
 
@@ -33,6 +35,7 @@ load_env_files(
     discover_env_files(Path(__file__).resolve().parents[4]),
     verbose=False,
 )
+NEW_YORK = ZoneInfo("America/New_York")
 
 
 class HypothesisRequest(BaseModel):
@@ -62,12 +65,16 @@ class NewsHypothesisRuntime:
         self.workers: list[asyncio.Task[None]] = []
         self.reconcile_task: asyncio.Task[None] | None = None
         self.pending_keys: set[tuple[str, str]] = set()
-        self.metrics = {"queued": 0, "completed": 0, "failed": 0}
+        self.metrics = {"queued": 0, "completed": 0, "failed": 0, "last_error": ""}
         self.client = ClickHouseHttpClient(
             default_clickhouse_url(), default_clickhouse_user(), default_clickhouse_password(), timeout_seconds=20
         )
         self.database = os.environ.get("NEWS_HYPOTHESIS_DATABASE", "q_live")
         self.table = os.environ.get("NEWS_HYPOTHESIS_TABLE", "news_market_hypothesis_v1")
+        self.history_table = os.environ.get("NEWS_HYPOTHESIS_HISTORY_TABLE", "news_market_hypothesis_history_v1")
+        self.trigger_mode = os.environ.get("NEWS_HYPOTHESIS_TRIGGER_MODE", "manual").strip().lower()
+        if self.trigger_mode not in {"manual", "automatic"}:
+            raise ValueError("NEWS_HYPOTHESIS_TRIGGER_MODE must be manual or automatic")
 
     async def start(self) -> None:
         await asyncio.to_thread(self._ensure_table)
@@ -75,7 +82,8 @@ class NewsHypothesisRuntime:
             asyncio.create_task(self._worker())
             for _ in range(max(1, int(os.environ.get("NEWS_HYPOTHESIS_WORKERS", "2"))))
         ]
-        self.reconcile_task = asyncio.create_task(self._reconcile_loop())
+        if self.trigger_mode == "automatic":
+            self.reconcile_task = asyncio.create_task(self._reconcile_loop())
 
     async def stop(self) -> None:
         if self.reconcile_task:
@@ -106,8 +114,9 @@ class NewsHypothesisRuntime:
                 if item is None:
                     return
                 await self._process(item)
-            except Exception:
+            except Exception as exc:
                 self.metrics["failed"] += 1
+                self.metrics["last_error"] = f"{type(exc).__name__}: {exc}"[:1000]
             finally:
                 if item is not None:
                     self.pending_keys.discard((item.canonical_news_id, item.ticker.upper()))
@@ -132,14 +141,16 @@ class NewsHypothesisRuntime:
                 "context_hash": context_hash,
             },
         }
-        response = await asyncio.to_thread(_post_json, f"{self.model_gateway_url}/infer", payload, 35.0)
+        response = await asyncio.to_thread(_post_json, f"{self.model_gateway_url}/infer", payload, 90.0)
         result = response["result"]
         validate_hypothesis(result)
         now = datetime.now(UTC)
         row = {
             "canonical_news_id": item.canonical_news_id,
             "ticker": item.ticker.upper(),
-            "published_at_utc": item.published_at_utc,
+            "published_at_utc": _clickhouse_ts(
+                datetime.fromisoformat(item.published_at_utc.replace("Z", "+00:00"))
+            ),
             "context_as_of_utc": _clickhouse_ts(
                 datetime.fromisoformat(context["context_as_of_utc"].replace("Z", "+00:00"))
             ),
@@ -155,7 +166,17 @@ class NewsHypothesisRuntime:
             "created_at_utc": _clickhouse_ts(now),
         }
         await asyncio.to_thread(insert_json_each_row, self.client, self.database, self.table, list(row), [row])
+        history = {"prediction_id": payload["idempotency_key"], **row}
+        await asyncio.to_thread(
+            insert_json_each_row,
+            self.client,
+            self.database,
+            self.history_table,
+            list(history),
+            [history],
+        )
         self.metrics["completed"] += 1
+        self.metrics["last_error"] = ""
 
     async def _reconcile_loop(self) -> None:
         interval = max(3.0, float(os.environ.get("NEWS_HYPOTHESIS_RECONCILE_SECONDS", "10")))
@@ -175,10 +196,10 @@ class NewsHypothesisRuntime:
         SELECT l.canonical_news_id, l.ticker, toString(l.published_at_utc) AS published_at_utc,
                e.title, r.rendered_text, l.semantic_json, l.qmd_snapshot_json,
                l.market_status_json, l.session_id
-        FROM `{self.database}`.`{LIVE_SEMANTIC_TABLE}` FINAL AS l
-        INNER JOIN `{self.database}`.`benzinga_news_event_v2` FINAL AS e
+        FROM `{self.database}`.`{LIVE_SEMANTIC_TABLE}` AS l FINAL
+        INNER JOIN `{self.database}`.`benzinga_news_event_v2` AS e FINAL
           ON l.canonical_news_id=e.canonical_news_id
-        INNER JOIN `{self.database}`.`benzinga_news_rendered_v2` FINAL AS r
+        INNER JOIN `{self.database}`.`benzinga_news_rendered_v2` AS r FINAL
           ON l.canonical_news_id=r.canonical_news_id
          AND l.rendered_text_hash=r.rendered_text_hash
         LEFT JOIN
@@ -214,17 +235,19 @@ class NewsHypothesisRuntime:
     async def _freeze_context(self, item: HypothesisRequest) -> dict[str, Any]:
         ticker = item.ticker.upper()
         snapshot_task = asyncio.create_task(self._market_snapshot(item, ticker))
+        price_action_task = asyncio.create_task(self._price_action(item, ticker))
         fundamentals_task = asyncio.create_task(self._fundamentals(item, ticker))
         sec_task = asyncio.create_task(self._sec_context(item, ticker))
-        snapshot, fundamentals, sec_context = await asyncio.gather(
-            snapshot_task, fundamentals_task, sec_task
+        snapshot, price_action, fundamentals, sec_context = await asyncio.gather(
+            snapshot_task, price_action_task, fundamentals_task, sec_task
         )
         market_status = dict(item.market_status)
         if not market_status:
             from services.market_hours import get_market_hours_client
 
             status = await asyncio.to_thread(
-                get_market_hours_client("NEWS_HYPOTHESIS").snapshot, datetime.now(UTC)
+                get_market_hours_client("NEWS_HYPOTHESIS").snapshot,
+                datetime.fromisoformat(item.published_at_utc.replace("Z", "+00:00")),
             )
             raw_status = asdict(status) if is_dataclass(status) else dict(status)
             market_status = _json_safe(raw_status)
@@ -239,6 +262,7 @@ class NewsHypothesisRuntime:
             "rendered_text": item.rendered_text,
             "semantic_label": item.semantic_label,
             "qmd_snapshot": snapshot,
+            "price_action": price_action,
             "market_status": market_status,
             "sec_context": sec_context,
             "fundamental_context": fundamentals,
@@ -257,9 +281,44 @@ class NewsHypothesisRuntime:
     ) -> dict[str, Any]:
         if item.point_in_time_snapshot:
             return dict(item.point_in_time_snapshot)
-        return await asyncio.to_thread(
-            _get_json, f"{self.qmd_url}/snapshot/ticker/{ticker}", 2.0
-        )
+        published = datetime.fromisoformat(item.published_at_utc.replace("Z", "+00:00"))
+        if published.tzinfo is None:
+            published = published.replace(tzinfo=UTC)
+        return await asyncio.to_thread(historical_market_snapshot, self.client, ticker, published.astimezone(UTC))
+
+    async def _price_action(self, item: HypothesisRequest, ticker: str) -> dict[str, Any]:
+        published = datetime.fromisoformat(item.published_at_utc.replace("Z", "+00:00"))
+        if published.tzinfo is None:
+            published = published.replace(tzinfo=UTC)
+        published = published.astimezone(UTC)
+        start = (published - timedelta(days=8)).date().isoformat()
+        from src.backend.qmd_gateway_client import QmdServiceError, qmd_intraday_bar_history
+
+        try:
+            payload = await asyncio.to_thread(
+                qmd_intraday_bar_history,
+                ticker,
+                timeframe="1m",
+                start_date=start,
+                end_date=published.date().isoformat(),
+                before_event_timestamp_us=int(published.timestamp() * 1_000_000),
+                row_limit=5000,
+            )
+        except QmdServiceError as exc:
+            return {
+                "contract": "causal_price_action_1m_v1",
+                "strictly_as_of_utc": published.isoformat(),
+                "lookback": "8_calendar_days",
+                "status": "unavailable",
+                "reason": f"qmd_unavailable:{exc.code}",
+                "sessions": [],
+            }
+        return {
+            "contract": "causal_price_action_1m_v1",
+            "strictly_as_of_utc": published.isoformat(),
+            "lookback": "8_calendar_days",
+            "sessions": _summarize_price_action(payload),
+        }
 
     async def _fundamentals(
         self, item: HypothesisRequest, ticker: str
@@ -309,6 +368,17 @@ class NewsHypothesisRuntime:
             PARTITION BY toYYYYMM(published_at_utc)
             ORDER BY (canonical_news_id,ticker,contract_version)"""
         )
+        self.client.execute(
+            f"""CREATE TABLE IF NOT EXISTS `{self.database}`.`{self.history_table}` (
+            prediction_id String,canonical_news_id String, ticker LowCardinality(String),
+            published_at_utc DateTime64(9,'UTC'), context_as_of_utc DateTime64(6,'UTC'),
+            context_hash String, contract_version LowCardinality(String),
+            hypothesis_json String, provider LowCardinality(String), model String,
+            cost_usd Float64, latency_ms UInt32, session_id String,
+            expires_at_utc DateTime64(6,'UTC'), created_at_utc DateTime64(6,'UTC')
+            ) ENGINE=MergeTree PARTITION BY toYYYYMM(published_at_utc)
+            ORDER BY (canonical_news_id,ticker,contract_version,prediction_id,created_at_utc)"""
+        )
 
     def _prior_news_context(
         self, canonical_news_id: str, ticker: str, published_at_utc: str
@@ -348,3 +418,39 @@ def _clickhouse_ts(value: datetime) -> str:
 
 def _json_safe(value: Any) -> Any:
     return json.loads(json.dumps(value, default=str))
+
+
+def _summarize_price_action(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    sessions: dict[str, list[dict[str, Any]]] = {}
+    for raw in payload.get("bars") or []:
+        if not isinstance(raw, dict) or not raw.get("bar_start"):
+            continue
+        stamp = datetime.fromisoformat(str(raw["bar_start"]).replace("Z", "+00:00"))
+        if stamp.tzinfo is None:
+            stamp = stamp.replace(tzinfo=UTC)
+        sessions.setdefault(stamp.astimezone(NEW_YORK).date().isoformat(), []).append(dict(raw))
+    result: list[dict[str, Any]] = []
+    prior_close: float | None = None
+    for session_date, rows in sorted(sessions.items()):
+        rows.sort(key=lambda row: str(row.get("bar_start") or ""))
+        opens = [float(row["open"]) for row in rows if row.get("open") is not None]
+        highs = [float(row["high"]) for row in rows if row.get("high") is not None]
+        lows = [float(row["low"]) for row in rows if row.get("low") is not None]
+        closes = [float(row["close"]) for row in rows if row.get("close") is not None]
+        if not closes:
+            continue
+        opening = opens[0] if opens else closes[0]
+        closing = closes[-1]
+        result.append({
+            "session_date": session_date,
+            "open": opening,
+            "high": max(highs) if highs else max(closes),
+            "low": min(lows) if lows else min(closes),
+            "last": closing,
+            "volume": sum(float(row.get("volume") or 0) for row in rows),
+            "return_from_open": closing / opening - 1.0 if opening else None,
+            "return_from_prior_close": closing / prior_close - 1.0 if prior_close else None,
+            "bar_count": len(rows),
+        })
+        prior_close = closing
+    return result[-6:]

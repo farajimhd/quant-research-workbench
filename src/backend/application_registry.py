@@ -885,6 +885,16 @@ def _query_plans() -> tuple[QueryPlanDefinition, ...]:
             "service://text-intelligence/news-coverage",
         ),
         QueryPlanDefinition(
+            "intelligence.news_llm_review_events.v1",
+            "backend",
+            "src.backend.news_signal_runtime_service:news_llm_review_events",
+            ("q_live.news_forecast_funnel_v1", "q_live.news_llm_issuer_review_v1"),
+            "canonical news ID plus issuer ticker from validated structured LLM output",
+            "published_at_utc",
+            "updated_at_utc",
+            "service://text-intelligence/news-coverage",
+        ),
+        QueryPlanDefinition(
             "intelligence.sec_asof.v1",
             "text_intelligence",
             "service://text-intelligence/sec-synthesis-v1",
@@ -2041,6 +2051,27 @@ def _fields() -> tuple[FieldDefinition, ...]:
             ),
         ))
 
+    for field_id, value_type, unit, source_column in (
+        ("news.funnel.eligible_probability", "number", "probability", "eligible_probability"),
+        ("news.funnel.forecast_eligible", "boolean", "boolean", "forecast_eligibility"),
+        ("news.funnel.stage", "string", "category", "stage"),
+        ("news.llm.review_complete", "boolean", "boolean", "status"),
+        ("news.llm.forecast_relevance_probability", "number", "probability", "forecast_relevance_probability"),
+        ("news.llm.forecast_eligible", "boolean", "boolean", "forecast_relevance_probability"),
+        ("news.llm.positive_implication_probability", "number", "probability", "positive_implication_probability"),
+        ("news.llm.negative_implication_probability", "number", "probability", "negative_implication_probability"),
+        ("news.llm.language_sentiment", "string", "category", "language_sentiment"),
+    ):
+        rows.append(_field(
+            field_id, "news_forecast", "text_intelligence",
+            "q_live.news_forecast_funnel_v1" if field_id.startswith("news.funnel") else "q_live.news_llm_issuer_review_v1",
+            "intelligence.news_llm_review_events.v1", value_type=value_type, unit=unit,
+            entity_grain="issuer_news_event", source_columns=(source_column,), event_at="published_at_utc",
+            available_at="updated_at_utc", ttl_seconds=None, publication_cadence="event_driven",
+            provenance="model_derived", coverage_query_plan="intelligence.news_llm_review_events.v1",
+            timeframes=("event",),
+        ))
+
     sec_names = ("latest_at", "count", "recency", "latest_form", "cik", "accession", "form", "accepted_at", "filed_at", "period_end", "document_id", "document_type", "source_hash", "renderer_version", "topic", "event_type", "direction", "score", "confidence", "impact", "uncertainty", "entity_relationships", "market_bridge_state")
     for name in sec_names:
         semantic = name in {"topic", "event_type", "direction", "score", "confidence", "impact", "uncertainty", "entity_relationships"}
@@ -2167,6 +2198,15 @@ DISCOVERY_FIELD_PRESENTATIONS = (
     DiscoveryFieldPresentation("news.forecast_trigger_eligible", "news.forecast_trigger_eligible", "news_forecast_eligible", "Forecast eligible", "Whether the issuer view is admitted to the certified forecast-trigger product.", "signal", False, True, True, ("is_true", "equals"), ("event",)),
     DiscoveryFieldPresentation("news.canonical_news_id", "news.canonical_news_id", "canonical_news_id", "News ID", "Stable canonical identity of the source news event.", "signal", False, False, True, (), ("event",)),
     DiscoveryFieldPresentation("news.published_at", "news.published_at", "news_published_at", "Published", "Authoritative source publication time in UTC.", "signal", False, False, True, (), ("event",)),
+    DiscoveryFieldPresentation("news.funnel.eligible_probability", "news.funnel.eligible_probability", "news_funnel_probability", "Funnel eligibility probability", "DeepFM forecast-eligibility probability after deterministic routing.", "signal", True, True, True, ("greater_or_equal", "greater_than", "less_or_equal", "less_than"), ("event",)),
+    DiscoveryFieldPresentation("news.funnel.forecast_eligible", "news.funnel.forecast_eligible", "news_funnel_eligible", "Funnel candidate", "Whether the deterministic-to-DeepFM funnel retained the article.", "signal", False, True, True, ("is_true", "equals"), ("event",)),
+    DiscoveryFieldPresentation("news.funnel.stage", "news.funnel.stage", "news_funnel_stage", "Funnel stage", "Deterministic rejection, DeepFM rejection, or DeepFM candidate stage.", "signal", False, True, True, ("equals", "not_equals"), ("event",)),
+    DiscoveryFieldPresentation("news.llm.review_complete", "news.llm.review_complete", "news_llm_reviewed", "LLM reviewed", "Whether a validated issuer-level manual or automatic review is durably available.", "signal", False, True, True, ("is_true", "equals"), ("event",)),
+    DiscoveryFieldPresentation("news.llm.forecast_relevance_probability", "news.llm.forecast_relevance_probability", "news_llm_forecast_probability", "LLM forecast relevance", "Issuer-level forecast relevance probability from a validated LLM review.", "signal", True, True, True, ("greater_or_equal", "greater_than", "less_or_equal", "less_than"), ("event",)),
+    DiscoveryFieldPresentation("news.llm.forecast_eligible", "news.llm.forecast_eligible", "news_llm_forecast_eligible", "LLM forecast eligible", "Issuer-level forecast eligibility at the versioned review threshold.", "signal", False, True, True, ("is_true", "equals"), ("event",)),
+    DiscoveryFieldPresentation("news.llm.positive_implication_probability", "news.llm.positive_implication_probability", "news_llm_positive_probability", "LLM positive implication", "Issuer-specific positive language implication probability.", "signal", True, True, True, ("greater_or_equal", "greater_than", "less_or_equal", "less_than"), ("event",)),
+    DiscoveryFieldPresentation("news.llm.negative_implication_probability", "news.llm.negative_implication_probability", "news_llm_negative_probability", "LLM negative implication", "Issuer-specific negative language implication probability.", "signal", True, True, True, ("greater_or_equal", "greater_than", "less_or_equal", "less_than"), ("event",)),
+    DiscoveryFieldPresentation("news.llm.language_sentiment", "news.llm.language_sentiment", "news_llm_sentiment", "LLM language sentiment", "Positive, negative, mixed, or neutral issuer-language implication.", "signal", False, True, True, ("equals", "not_equals"), ("event",)),
     DiscoveryFieldPresentation("signal.sec_labeled", "signal.sec_labeled", "", "SEC labeled", "Validated point-in-time Text Intelligence SEC-label availability.", "signal", False, True, False, ("is_true",), ("event",)),
     DiscoveryFieldPresentation("signal.sec_filing.score", "sec.score", "sec_sentiment", "SEC sentiment", "Latest validated point-in-time filing score and label.", "signal", False, True, True, ("greater_or_equal", "greater_than", "less_or_equal", "less_than", "equals"), ("event",)),
     DiscoveryFieldPresentation("event.ipo.date", "event.ipo.date", "ipo_event", "IPO date", "Point-in-time past or upcoming IPO event date.", "event", False, False, True, (), ("event",)),

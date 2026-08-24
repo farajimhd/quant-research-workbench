@@ -124,6 +124,7 @@ from src.backend.news_synthesis import (
     load_news_synthesis,
     synthesis_summary,
 )
+from src.backend.news_ai_review_service import load_news_ai_state, request_news_review
 from src.backend.sec_canvas_service import (
     sec_document_text_payload,
     sec_filing_detail_payload,
@@ -1801,6 +1802,10 @@ def trading_news_detail(canonical_news_id: str, *, published_at: str = "", query
     synthesis_payload = synthesis_by_source.get(news_id, {})
     synthesis_fields = synthesis_payload.get("article_fields", {})
     synthesis_document = synthesis_payload.get("document")
+    try:
+        ai_state = load_news_ai_state([news_id], query_rows=clickhouse_json_each_row).get(news_id)
+    except Exception:
+        ai_state = None
     # Product APIs expose only decision-relevant presentation fields. Database,
     # table, storage-path, ingestion-diagnostic, and agent/chat implementation
     # details must never cross into a user-facing response contract.
@@ -1833,6 +1838,7 @@ def trading_news_detail(canonical_news_id: str, *, published_at: str = "", query
             "news_synthesis_summary": synthesis_summary(synthesis_document) if synthesis_document else None,
             "news_synthesis": synthesis_document,
             "intelligence_status": intelligence_status,
+            "ai_state": ai_state,
         },
         "tickers": sorted({str(row.get("ticker") or "").strip().upper() for row in ticker_rows if str(row.get("ticker") or "").strip()}),
     }
@@ -2014,6 +2020,15 @@ def trading_news_rows(
     except Exception:
         synthesis_by_source = {}
         intelligence_status = "unavailable"
+    try:
+        ai_by_source = load_news_ai_state(
+            [str(row.get("canonical_news_id") or "") for row in rows],
+            query_rows=lambda sql: clickhouse_json_each_row(
+                sql, timeout_seconds=NEWS_INTELLIGENCE_TIMEOUT_SECONDS
+            ),
+        )
+    except Exception:
+        ai_by_source = {}
     for row in rows:
         source_id = str(row.get("canonical_news_id") or "")
         synthesis_payload = synthesis_by_source.get(source_id, {})
@@ -2026,6 +2041,7 @@ def trading_news_rows(
         row["news_synthesis"] = synthesis_document
         row.update(synthesis_payload.get("article_fields", {}))
         row["intelligence_status"] = intelligence_status if synthesis_payload else "pending"
+        row["ai_state"] = ai_by_source.get(source_id)
     response = {
         "as_of": cutoff.isoformat().replace("+00:00", "Z"),
         "has_more": has_more,
@@ -3425,6 +3441,32 @@ def trading_news_detail_route(canonical_news_id: str, published_at: str = "", qu
         ) from error
     except RuntimeError as error:
         raise HTTPException(status_code=503, detail=f"News detail is temporarily unavailable: {error}") from error
+
+
+class NewsAiReviewCommand(BaseModel):
+    published_at_utc: str
+    requested_by: str = "operator"
+
+
+@app.post("/api/trading/news/{canonical_news_id}/ai-review", status_code=202)
+def trading_news_ai_review(canonical_news_id: str, command: NewsAiReviewCommand) -> dict[str, Any]:
+    try:
+        return request_news_review(canonical_news_id, command.published_at_utc, command.requested_by)
+    except urllib.error.HTTPError as error:
+        detail = error.read().decode(errors="replace")[:500]
+        raise HTTPException(status_code=error.code, detail=detail or "AI review request failed") from error
+    except (TimeoutError, urllib.error.URLError) as error:
+        raise HTTPException(status_code=503, detail="Text Intelligence is temporarily unavailable") from error
+
+
+@app.get("/api/trading/news/{canonical_news_id}/ai-review")
+def trading_news_ai_review_status(canonical_news_id: str) -> dict[str, Any]:
+    try:
+        return load_news_ai_state([canonical_news_id], query_rows=clickhouse_json_each_row).get(
+            canonical_news_id, {"funnel": None, "review": {"status": "not_reviewed"}}
+        )
+    except Exception as error:
+        raise HTTPException(status_code=503, detail="AI review state is temporarily unavailable") from error
 
 
 @app.get("/api/trading/sec")

@@ -24,19 +24,23 @@ from .canonical_live import (
     TextDocumentNotice,
     TextDocumentNoticeBatch,
 )
+from .forecast_review import ForecastReviewRuntime, ReviewBatch, ReviewRequest
 
 config = IntelligenceConfig.from_env()
 engine = IntelligenceEngine(config)
 live_runtime = LiveNewsRuntime(enabled=config.enable_live_ai)
-canonical_runtime = CanonicalTextRuntime(
-    client=ClickHouseHttpClient(
+shared_client = ClickHouseHttpClient(
         default_clickhouse_url(),
         default_clickhouse_user(),
         default_clickhouse_password(),
         timeout_seconds=30,
-    ),
+    )
+forecast_review_runtime = ForecastReviewRuntime(config, shared_client, live_runtime.database)
+canonical_runtime = CanonicalTextRuntime(
+    client=shared_client,
     database=live_runtime.database,
     live_news=live_runtime,
+    forecast_review=forecast_review_runtime,
 )
 
 
@@ -54,6 +58,7 @@ async def lifespan(_app: FastAPI):
     live_started = False
     canonical_started = False
     try:
+        await forecast_review_runtime.start()
         await live_runtime.start()
         live_started = True
         await canonical_runtime.start()
@@ -67,6 +72,7 @@ async def lifespan(_app: FastAPI):
             await canonical_runtime.stop()
         if live_started:
             await live_runtime.stop()
+        await forecast_review_runtime.stop()
         canonical_runtime.client.close()
 
 
@@ -153,6 +159,24 @@ def enqueue_documents(batch: TextDocumentNoticeBatch) -> dict[str, object]:
     return {"status": "queued", "count": len(batch.documents)}
 
 
+@app.post("/news-review", status_code=202)
+def request_news_review(request: ReviewRequest) -> dict[str, str]:
+    try:
+        return forecast_review_runtime.enqueue(request, trigger_mode="manual")
+    except asyncio.QueueFull as exc:
+        raise HTTPException(status_code=503, detail="news review queue is full") from exc
+
+
+@app.post("/news-reviews", status_code=202)
+def request_news_reviews(batch: ReviewBatch) -> dict[str, object]:
+    return {"results": [forecast_review_runtime.enqueue(item, trigger_mode="manual") for item in batch.requests]}
+
+
+@app.get("/news-review/{canonical_news_id}")
+def news_review_status(canonical_news_id: str) -> dict[str, object]:
+    return forecast_review_runtime.status(canonical_news_id)
+
+
 def _snapshot_metrics() -> dict[str, object]:
     registry = engine.registry.snapshot()
     model_rows = registry.get("models") if isinstance(registry.get("models"), list) else []
@@ -221,6 +245,13 @@ def _snapshot_metrics() -> dict[str, object]:
         "enable_models": config.enable_models,
         "enable_llm": config.enable_llm,
         "enable_live_ai": config.enable_live_ai,
+        "forecast_review_trigger_mode": forecast_review_runtime.trigger_mode,
+        "forecast_funnel_enabled": config.forecast_funnel_enabled,
+        "forecast_review_metrics": {
+            **forecast_review_runtime.metrics,
+            "queue_size": forecast_review_runtime.queue.qsize(),
+            "pending": len(forecast_review_runtime.pending),
+        },
         "stack_version": config.stack_version,
         "taxonomy_version": config.taxonomy_version,
         "models_loaded": loaded,

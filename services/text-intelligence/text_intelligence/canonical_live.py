@@ -50,6 +50,7 @@ from research.text_intelligence.news_synthesis_v1.storage import (
 )
 
 from .live import LiveCandidate, LiveNewsRuntime, PreparedNewsCandidate, SynthesisLiveLabel
+from .forecast_review import ForecastReviewRuntime
 
 
 STATUS_TABLE = "canonical_text_live_status_v1"
@@ -89,10 +90,12 @@ class CanonicalTextRuntime:
         client: ClickHouseHttpClient,
         database: str,
         live_news: LiveNewsRuntime,
+        forecast_review: ForecastReviewRuntime | None = None,
     ) -> None:
         self.client = client
         self.database = database
         self.live_news = live_news
+        self.forecast_review = forecast_review
         self.queue: asyncio.Queue[CanonicalWorkItem | None] = asyncio.Queue(
             maxsize=max(100, int(os.environ.get("TEXT_INTELLIGENCE_QUEUE_MAX", "8192")))
         )
@@ -382,7 +385,14 @@ class CanonicalTextRuntime:
             raise RuntimeError(f"canonical news source or synthesis engine is not ready: {notice.source_id}")
         self._set_worker_stage(worker_index, "checking_status")
         current = self._status_is_current(notice, loaded.source_hash)
-        if current and not forward_current:
+        funnel_required = bool(
+            self.forecast_review and self.forecast_review.config.forecast_funnel_enabled
+        )
+        funnel_current = not funnel_required or bool(
+            self.forecast_review
+            and self.forecast_review.funnel_current(notice.source_id, loaded.source_hash)
+        )
+        if current and funnel_current and not forward_current:
             self.metrics["deterministic_skipped_current"] = int(self.metrics["deterministic_skipped_current"]) + 1
             return "skipped_current"
         self._set_worker_stage(worker_index, "synthesizing")
@@ -395,6 +405,10 @@ class CanonicalTextRuntime:
             self._write_status(notice, loaded.source_hash, "complete", len(documents), 0, "")
             self.metrics["news_synthesis_documents"] = int(self.metrics["news_synthesis_documents"]) + len(documents)
             self.metrics["deterministic_completed"] = int(self.metrics["deterministic_completed"]) + 1
+        if funnel_required and self.forecast_review:
+            self._set_worker_stage(worker_index, "forecast_funnel")
+            for source_row, result in zip(loaded.rows, results):
+                self.forecast_review.process_funnel(source_row, result)
         if self.live_news.enabled:
             for source_row, result in zip(loaded.rows, results):
                 document = result["synthesis_document"]

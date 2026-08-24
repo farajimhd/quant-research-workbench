@@ -40,6 +40,7 @@ type NewsRow = {
   url_domain?: string;
   news_synthesis_summary?: NewsSynthesisSummary | null;
   news_synthesis?: NewsSynthesisDocument | null;
+  ai_state?: NewsAiState | null;
 };
 
 type NewsPayload = {
@@ -68,6 +69,7 @@ type NewsDetailPayload = {
     url_domain: string;
     news_synthesis_summary?: NewsSynthesisSummary | null;
     news_synthesis?: NewsSynthesisDocument | null;
+    ai_state?: NewsAiState | null;
     render_status?: "rendered" | "title_only" | "unrendered";
     intelligence_status?: "ready" | "pending" | "unavailable";
   };
@@ -94,6 +96,12 @@ type NewsSynthesisSummary = {
   issuer_count: number;
   engine_version: string;
   quality_flags: string[];
+};
+type IssuerAiLabel = { issuer_name: string; ticker: string | null; forecast_relevance_probability: number; positive_implication_probability: number; negative_implication_probability: number; event_tags: string[]; issuer_roles: string[]; time_scope: string; claim_source: string };
+type NewsAiState = {
+  funnel?: { stage: string; forecast_eligibility: string; eligible_probability: number; threshold: number; release_id: string; updated_at_utc: string } | null;
+  review?: { status: string; trigger_mode?: string; requested_by?: string; labels?: { issuers: IssuerAiLabel[] } | null; model?: string; cost_usd?: number; latency_ms?: number; error?: string; updated_at_utc?: string };
+  hypotheses?: Array<{ ticker: string; context_as_of_utc: string; prediction: { predictions: Record<string, { upside_probability: number; downside_probability: number; no_action_probability: number; expected_return_pct: number; confidence: number; abstain: boolean }>; regime_compatibility: string; uncertainty: string } }>;
 };
 type NewsTemperature = TimeRecency;
 type AllNewsSettings = { content: string; endDate: string; kind: string; limit: number; lookbackHours: number; rangeMode: "custom" | "preset"; startDate: string; ticker: string };
@@ -211,6 +219,7 @@ export function AllNewsContainer({ asOf, live = false, onSettingsChange, setting
             <div className="intelligence-identity-block"><TickerList presentations={presentations} tickers={row.ticker_link_sample} /></div>
             <div className="intelligence-main-block">
               <button className="news-headline-button" onClick={() => openNewsPage(row, state.queryId)} type="button"><strong><MarketNumberText text={row.title || "Untitled story"} /></strong>{newsTeaser(row) ? <small><MarketNumberText text={newsTeaser(row)} /></small> : null}</button>
+              <NewsAiReviewControl initialState={row.ai_state} newsId={row.canonical_news_id} publishedAt={row.published_at_utc} compact />
             </div>
             <div className="news-label-value"><SynthesisClass summary={row.news_synthesis_summary} /></div>
             <div className="news-label-value">{readableLabel(row.news_synthesis_summary?.information_origin || row.news_origin || "Unknown")}</div>
@@ -329,6 +338,7 @@ export function NewsDetailContainer({ asOf, canvasId, requestedNewsId }: { asOf:
         ? <NewsDetailOverview summary={synthesisSummary} />
         : <div className="news-label-pending">{row.intelligence_status === "unavailable" ? "News Synthesis temporarily unavailable" : "News Synthesis pending"}</div>}
       {tags.length ? <div className="news-reader-tags" aria-label="Source tags">{tags.map((tag) => <span key={tag}>{tag}</span>)}</div> : null}
+      <NewsAiReviewControl initialState={row.ai_state} newsId={newsId} publishedAt={row.published_at_utc} />
     </header>
     <div className="news-reader-evidence-grid">
       {row.news_synthesis ? <NewsSynthesisPanel document={row.news_synthesis} /> : <NewsClassificationPanel classification={classification} />}
@@ -423,6 +433,56 @@ function NewsTextState({ row }: { row: NewsRow }) { const state = row.render_sta
 function NewsKind({ classification }: { classification: NewsClassification }) { const values = { ai: { Icon: Bot, label: "AI" }, analyst: { Icon: TrendingUp, label: "Analyst" }, company: { Icon: Building2, label: classification.format === "earnings_flash" ? "Company earnings" : "Company" }, editorial: { Icon: Newspaper, label: "Editorial" }, insights: { Icon: Lightbulb, label: "Insights" }, market: { Icon: Globe2, label: classification.format === "trading_halt" ? "Trading halt" : "Market" }, multi: { Icon: Layers3, label: "Multi-company" }, regulatory: { Icon: FileCheck2, label: "Regulatory" }, why_moving: { Icon: Megaphone, label: "Why moving" } }; const value = values[classification.kind]; return <span className="news-kind" data-kind={classification.kind} title={`${Math.round(classification.confidence * 100)}% classification confidence`}><value.Icon size={11} />{value.label}</span>; }
 function SynthesisDirection({ compact = false, prominent = false, salient = false, summary }: { compact?: boolean; prominent?: boolean; salient?: boolean; summary?: NewsSynthesisSummary | null }) { return <SemanticDirectionMetric compact={compact} direction={summary?.composite_sentiment} prominent={prominent || salient} score={synthesisScore(summary)} />; }
 function EligibilityCell({ active }: { active?: boolean }) { return <span aria-label={active ? "Eligible" : "Not eligible"} className="eligibility-column-value" data-active={active ? "true" : "false"} title={active ? "Eligible" : "Not eligible"}>{active ? <Check aria-hidden="true" size={12} strokeWidth={2.4} /> : "—"}</span>; }
+
+function NewsAiReviewControl({ compact = false, initialState, newsId, publishedAt }: { compact?: boolean; initialState?: NewsAiState | null; newsId: string; publishedAt: string }) {
+  const [state, setState] = useState<NewsAiState | null>(initialState ?? null);
+  const [error, setError] = useState("");
+  const status = state?.review?.status ?? "not_reviewed";
+  const labels = state?.review?.labels?.issuers ?? [];
+  const hypotheses = state?.hypotheses ?? [];
+  const expectedHypotheses = labels.filter((label) => label.ticker && label.forecast_relevance_probability >= 0.5).length;
+  const awaitingHypotheses = status === "complete" && hypotheses.length < expectedHypotheses;
+  const pending = ["queued", "labeling", "building_context", "predicting"].includes(status) || awaitingHypotheses;
+  const pollCount = useRef(0);
+  useEffect(() => { setState(initialState ?? null); }, [initialState]);
+  useEffect(() => {
+    if (!pending) return;
+    pollCount.current = 0;
+    const timer = window.setInterval(() => {
+      pollCount.current += 1;
+      if (pollCount.current > 30) { window.clearInterval(timer); return; }
+      api<NewsAiState>(`/api/trading/news/${encodeURIComponent(newsId)}/ai-review`, { timeoutMs: 10000 })
+        .then(setState).catch((reason) => setError(reason instanceof Error ? reason.message : String(reason)));
+    }, 2000);
+    return () => window.clearInterval(timer);
+  }, [newsId, pending]);
+  const requestReview = async () => {
+    setError("");
+    setState((current) => ({ ...(current ?? {}), review: { ...(current?.review ?? {}), status: "queued" } }));
+    try {
+      await api(`/api/trading/news/${encodeURIComponent(newsId)}/ai-review`, {
+        method: "POST", body: JSON.stringify({ published_at_utc: publishedAt, requested_by: "frontend-operator" }), timeoutMs: 15000,
+      });
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+      setState((current) => ({ ...(current ?? {}), review: { ...(current?.review ?? {}), status: "failed" } }));
+    }
+  };
+  const funnel = state?.funnel;
+  return <div className={compact ? "news-ai-review compact" : "news-ai-review"} data-status={status}>
+    <div className="news-ai-review-summary">
+      {funnel ? <span className="news-ai-badge" data-tone={funnel.forecast_eligibility === "eligible" ? "candidate" : "filtered"}>{funnel.forecast_eligibility === "eligible" ? `Funnel candidate ${Math.round(funnel.eligible_probability * 100)}%` : readableLabel(funnel.stage)}</span> : <span className="news-ai-badge" data-tone="pending">Funnel pending</span>}
+      {labels.map((label) => <span className="news-ai-badge" data-tone={aiLabelTone(label)} key={`${label.ticker}-${label.issuer_name}`}>{label.ticker || label.issuer_name}: {Math.round(label.forecast_relevance_probability * 100)}% · {readableLabel(aiLanguageSentiment(label))}</span>)}
+      {!labels.length ? <button aria-label="Review this news with AI" className="news-ai-review-button" disabled={pending} onClick={requestReview} type="button"><Bot size={13} />{pending ? "Reviewing…" : status === "failed" ? "Retry AI review" : "Review with AI"}</button> : null}
+    </div>
+    {!compact && labels.length ? <div className="news-ai-review-detail">{labels.map((label) => <div key={`${label.issuer_name}-detail`}><strong>{label.ticker || label.issuer_name}</strong><span>Forecast relevance {Math.round(label.forecast_relevance_probability * 100)}%</span><span>Positive {Math.round(label.positive_implication_probability * 100)}%</span><span>Negative {Math.round(label.negative_implication_probability * 100)}%</span><small>{label.event_tags.map(readableLabel).join(" · ") || "No event tags"}</small></div>)}</div> : null}
+    {!compact && hypotheses.length ? <div className="news-ai-hypotheses">{hypotheses.map((row) => <section key={`${row.ticker}-${row.context_as_of_utc}`}><header><strong>{row.ticker} market hypothesis</strong><span>{readableLabel(row.prediction.regime_compatibility)}</span></header><div>{Object.entries(row.prediction.predictions).map(([horizon, prediction]) => <span data-abstain={prediction.abstain} key={horizon}><b>{horizon}</b><em>Up {Math.round(prediction.upside_probability * 100)}%</em><em>Down {Math.round(prediction.downside_probability * 100)}%</em><em>Expected {prediction.expected_return_pct.toFixed(2)}%</em></span>)}</div><small>{row.prediction.uncertainty}</small></section>)}</div> : null}
+    {error || state?.review?.error ? <small className="news-ai-review-error">{error || state?.review?.error}</small> : null}
+  </div>;
+}
+
+function aiLanguageSentiment(label: IssuerAiLabel) { return label.positive_implication_probability >= 0.5 && label.negative_implication_probability >= 0.5 ? "mixed" : label.positive_implication_probability >= 0.5 ? "positive" : label.negative_implication_probability >= 0.5 ? "negative" : "neutral"; }
+function aiLabelTone(label: IssuerAiLabel) { return label.forecast_relevance_probability < 0.5 ? "filtered" : aiLanguageSentiment(label); }
 function NewsDateRangeFilters({ onSettingsChange, settings }: { onSettingsChange: (patch: Partial<AllNewsSettings>) => void; settings: AllNewsSettings }) { return <><label title="Exchange date in America/New_York"><span>From (ET)</span><input aria-label="News range start date in exchange time" onChange={(event) => onSettingsChange({ startDate: event.target.value })} type="date" value={settings.startDate} /></label><label title="Exchange date in America/New_York"><span>Through (ET)</span><input aria-label="News range end date in exchange time" onChange={(event) => onSettingsChange({ endDate: event.target.value })} type="date" value={settings.endDate} /></label></>; }
 function EligibilityFilters({ filters, onChange, prefix }: { filters: EligibilityQuery; onChange: (next: EligibilityQuery) => void; prefix: string }) { const fields: { key: keyof EligibilityQuery; label: string }[] = [{ key: "forecast", label: "Forecast" }, { key: "reaction", label: "Reaction" }, { key: "history", label: "History" }, { key: "analyst", label: "Analyst" }]; return <>{fields.map(({ key, label }) => <InventoryFilterSelect ariaLabel={`${prefix} ${label} eligibility`} key={key} onChange={(value) => onChange({ ...filters, [key]: value })} options={inventoryEligibilityOptions(label)} value={filters[key]} />)}</>; }
 function SynthesisClass({ summary }: { summary?: NewsSynthesisSummary | null }) { if (!summary) return <span className="news-scoped-class" data-state="pending">Pending</span>; return <span className="news-scoped-class" data-state={summary.forecast_trigger_eligible ? "event" : "context"} title={summary.forecast_trigger_eligible ? "V1 forecast-trigger eligible" : "V1 context"}>{summary.forecast_trigger_eligible ? <CircleDot size={10} /> : <History size={10} />}{readableLabel(summary.communication_purpose || summary.information_origin || "context")}</span>; }

@@ -75,6 +75,14 @@ class GatewayConfig:
             ),
         }
         routes = {
+            "news.issuer_review.v1": RouteProfile(
+                "news.issuer_review.v1",
+                _csv("MODEL_GATEWAY_NEWS_REVIEW_PROVIDERS", "openai-deep"),
+                _float("MODEL_GATEWAY_NEWS_REVIEW_TIMEOUT_SECONDS", 45.0),
+                _int("MODEL_GATEWAY_NEWS_REVIEW_MAX_OUTPUT_TOKENS", 4096),
+                _float("MODEL_GATEWAY_NEWS_REVIEW_DAILY_BUDGET_USD", 20.0),
+                os.environ.get("MODEL_GATEWAY_NEWS_REVIEW_REASONING_EFFORT", "medium"),
+            ),
             "news.semantic_fast.v1": RouteProfile(
                 "news.semantic_fast.v1",
                 _csv("MODEL_GATEWAY_NEWS_FAST_PROVIDERS", "local-vllm,openai-fast"),
@@ -94,7 +102,7 @@ class GatewayConfig:
             "news.trade_hypothesis.v2": RouteProfile(
                 "news.trade_hypothesis.v2",
                 _csv("MODEL_GATEWAY_NEWS_DEEP_PROVIDERS", "openai-deep"),
-                _float("MODEL_GATEWAY_NEWS_DEEP_TIMEOUT_SECONDS", 25.0),
+                _float("MODEL_GATEWAY_NEWS_DEEP_TIMEOUT_SECONDS", 75.0),
                 _int("MODEL_GATEWAY_NEWS_DEEP_MAX_OUTPUT_TOKENS", 3000),
                 _float("MODEL_GATEWAY_NEWS_DEEP_DAILY_BUDGET_USD", 30.0),
                 os.environ.get("MODEL_GATEWAY_NEWS_DEEP_REASONING_EFFORT", "medium"),

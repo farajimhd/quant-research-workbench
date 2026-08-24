@@ -16,6 +16,7 @@ from src.backend.discovery_projection import discovery_runtime_field
 from src.backend.qmd_gateway_client import qmd_append_signal_stream_rows
 from src.backend.signal_stream_runtime_service import signal_stream_session
 from src.trading_runtime.journal import TradingJournal
+from src.trading_runtime.watchlist_resolver import evaluate_rule_sets_frame
 
 
 NEWS_SIGNAL_CHECKPOINT = "market-discovery:news-signal-cursor"
@@ -45,22 +46,27 @@ def news_synthesis_events(
     cursor_clause = ""
     if after_updated_at is not None:
         cursor_clause = f"""
-  AND (updated_at_utc, canonical_news_id) > (
+  AND (greatest(s.updated_at_utc,ifNull(f.created_at_utc,s.updated_at_utc)), s.canonical_news_id) > (
       parseDateTime64BestEffort({sql_string(after_updated_at.astimezone(UTC).isoformat())}),
       {sql_string(after_canonical_id)}
   )"""
     sql = f"""
-SELECT canonical_news_id,
-       toString(published_at_utc) AS published_at_text,
-       engine_version,
-       synthesis_json,
-       toString(updated_at_utc) AS updated_at_text
-FROM `q_live`.`news_synthesis_v1` FINAL
-WHERE engine_version={sql_string(ENGINE_VERSION)}
-  AND updated_at_utc>=parseDateTime64BestEffort({sql_string(start_at.astimezone(UTC).isoformat())})
-  AND updated_at_utc<=parseDateTime64BestEffort({sql_string(as_of.astimezone(UTC).isoformat())})
+SELECT s.canonical_news_id,
+       toString(s.published_at_utc) AS published_at_text,
+       s.engine_version,
+       s.synthesis_json,
+       f.stage AS funnel_stage,
+       f.forecast_eligibility AS funnel_forecast_eligibility,
+       f.eligible_probability AS funnel_eligible_probability,
+       toString(greatest(s.updated_at_utc,ifNull(f.created_at_utc,s.updated_at_utc))) AS updated_at_text
+FROM `q_live`.`news_synthesis_v1` AS s FINAL
+LEFT JOIN `q_live`.`news_forecast_funnel_v1` AS f FINAL
+  ON f.canonical_news_id=s.canonical_news_id
+WHERE s.engine_version={sql_string(ENGINE_VERSION)}
+  AND greatest(s.updated_at_utc,ifNull(f.created_at_utc,s.updated_at_utc))>=parseDateTime64BestEffort({sql_string(start_at.astimezone(UTC).isoformat())})
+  AND greatest(s.updated_at_utc,ifNull(f.created_at_utc,s.updated_at_utc))<=parseDateTime64BestEffort({sql_string(as_of.astimezone(UTC).isoformat())})
 {cursor_clause}
-ORDER BY updated_at_utc,canonical_news_id
+ORDER BY greatest(s.updated_at_utc,ifNull(f.created_at_utc,s.updated_at_utc)),s.canonical_news_id
 LIMIT {max(1, min(int(limit), 10_000))}
 FORMAT JSONEachRow
 """
@@ -114,13 +120,38 @@ def all_news_synthesis_events(
         cursor_time, cursor_id = next_time, next_id
 
 
+def news_llm_review_events(*, start_at: datetime, as_of: datetime, client: ClickHouseHttpClient | None = None) -> list[dict[str, Any]]:
+    owned = client is None
+    active = client or ClickHouseHttpClient(default_clickhouse_url(), default_clickhouse_user(), default_clickhouse_password(), timeout_seconds=10)
+    sql = f"""
+SELECT canonical_news_id,toString(published_at_utc) published_at_utc,
+       issuer_labels_json,toString(updated_at_utc) updated_at_utc
+FROM q_live.news_llm_issuer_review_v1 FINAL
+WHERE status='complete'
+  AND updated_at_utc>=parseDateTime64BestEffort({sql_string(start_at.astimezone(UTC).isoformat())})
+  AND updated_at_utc<=parseDateTime64BestEffort({sql_string(as_of.astimezone(UTC).isoformat())})
+ORDER BY updated_at_utc,canonical_news_id LIMIT 10000 FORMAT JSONEachRow
+"""
+    try:
+        return list(active.iter_json_each_row(sql))
+    finally:
+        if owned:
+            active.close()
+
+
+def all_news_intelligence_events(*, start_at: datetime, as_of: datetime) -> list[dict[str, Any]]:
+    rows = [dict(row, event_authority="deterministic") for row in all_news_synthesis_events(start_at=start_at, as_of=as_of)]
+    rows.extend(dict(row, event_authority="llm_review") for row in news_llm_review_events(start_at=start_at, as_of=as_of))
+    return sorted(rows, key=lambda row: (str(row.get("updated_at_utc") or ""), str(row.get("canonical_news_id") or ""), str(row.get("event_authority") or "")))
+
+
 class NewsSignalRuntime:
     """Materialize causal News Synthesis issuer events into Signal Streams."""
 
     def __init__(
         self,
         *,
-        loader: Callable[..., list[dict[str, Any]]] = all_news_synthesis_events,
+        loader: Callable[..., list[dict[str, Any]]] = all_news_intelligence_events,
         publisher: Callable[[str, list[dict[str, Any]]], dict[str, Any]] = qmd_append_signal_stream_rows,
         live_activation_age: timedelta = timedelta(seconds=60),
     ) -> None:
@@ -161,22 +192,24 @@ class NewsSignalRuntime:
             if cursor is not None and (available_at, canonical_id) <= (cursor, latest_id):
                 continue
             latest_cursor, latest_id = available_at, canonical_id
-            document = _object(source.get("synthesis_json"))
-            event_rows.extend(
-                bullish_news_signal_rows(
-                    configuration,
-                    document,
-                    source=source,
-                    market_rows=by_ticker,
-                    available_at=available_at,
-                )
-            )
-        inserted = list(
-            self._publisher(NEWS_SIGNAL_STREAM_ID, event_rows).get(
-                "new_occurrences"
-            )
-            or []
-        )
+            if source.get("event_authority") == "llm_review":
+                event_rows.extend(llm_review_signal_rows(configuration, source=source, market_rows=by_ticker, available_at=available_at))
+            else:
+                event_rows.extend(news_synthesis_candidate_rows(configuration, _object(source.get("synthesis_json")), source=source, market_rows=by_ticker, available_at=available_at))
+        discovery = dict(configuration.get("market_discovery") or {})
+        rule_sets = {str(row.get("rule_set_id") or ""): row for row in discovery.get("rule_sets") or []}
+        inserted: list[dict[str, Any]] = []
+        for stream in discovery.get("signal_streams") or []:
+            if not bool(stream.get("enabled", True)) or str(stream.get("source_type") or "") != "news_events":
+                continue
+            rule_ids = [str(value) for value in stream.get("inclusion_rule_sets") or [] if str(value)]
+            masks = evaluate_rule_sets_frame((rule_sets[value] for value in rule_ids if value in rule_sets), event_rows)
+            matched = []
+            for index, row in enumerate(event_rows):
+                results = [bool((masks.get(rule_id) or [False] * len(event_rows))[index]) for rule_id in rule_ids]
+                if results and (any(results) if str(stream.get("inclusion_operator") or "all") == "any" else all(results)):
+                    matched.append({**row, "matched_rule_set_ids": rule_ids})
+            inserted.extend(self._publisher(str(stream.get("signal_stream_id") or NEWS_SIGNAL_STREAM_ID), matched).get("new_occurrences") or [])
         if latest_cursor is not None:
             journal.save_checkpoint(
                 NEWS_SIGNAL_CHECKPOINT,
@@ -199,7 +232,7 @@ class NewsSignalRuntime:
         }
 
 
-def bullish_news_signal_rows(
+def news_synthesis_candidate_rows(
     configuration: dict[str, Any],
     document: dict[str, Any],
     *,
@@ -223,8 +256,6 @@ def bullish_news_signal_rows(
     for view in document.get("issuer_views") or []:
         entity_id = str(view.get("entity_id") or "")
         sentiment = str(view.get("composite_sentiment") or "")
-        if entity_id not in eligible or sentiment != "positive":
-            continue
         ticker = str(entities.get(entity_id, {}).get("ticker") or "").strip().upper()
         if not ticker or (require_market_row and ticker not in (market_rows or {})):
             continue
@@ -234,7 +265,10 @@ def bullish_news_signal_rows(
             "news.composite_sentiment": sentiment,
             "news.positive_strength": int(view.get("positive_strength") or 0),
             "news.negative_strength": int(view.get("negative_strength") or 0),
-            "news.forecast_trigger_eligible": True,
+            "news.forecast_trigger_eligible": entity_id in eligible,
+            "news.funnel.forecast_eligible": str(source.get("funnel_forecast_eligibility") or "") == "eligible",
+            "news.funnel.eligible_probability": float(source.get("funnel_eligible_probability") or 0),
+            "news.funnel.stage": str(source.get("funnel_stage") or "missing"),
             "news.canonical_news_id": str(source.get("canonical_news_id") or ""),
             "news.published_at": str(source.get("published_at_utc") or ""),
         }
@@ -256,6 +290,49 @@ def bullish_news_signal_rows(
             "available_at": available_at.isoformat(),
             "source_event_id": str(source.get("canonical_news_id") or ""),
         })
+        result.append(row)
+    return result
+
+
+def bullish_news_signal_rows(*args: Any, **kwargs: Any) -> list[dict[str, Any]]:
+    """Compatibility helper for focused tests and legacy callers."""
+    return [row for row in news_synthesis_candidate_rows(*args, **kwargs) if row.get("news.forecast_trigger_eligible") and row.get("news.composite_sentiment") == "positive"]
+
+
+def llm_review_signal_rows(
+    configuration: dict[str, Any], *, source: dict[str, Any], market_rows: dict[str, dict[str, Any]] | None,
+    available_at: datetime, require_market_row: bool = True,
+) -> list[dict[str, Any]]:
+    payload = _object(source.get("issuer_labels_json"))
+    columns = list(dict(configuration.get("market_discovery") or {}).get("column_catalog") or [])
+    result: list[dict[str, Any]] = []
+    for issuer in payload.get("issuers") or []:
+        ticker = str(issuer.get("ticker") or "").strip().upper()
+        if not ticker or (require_market_row and ticker not in (market_rows or {})):
+            continue
+        positive = float(issuer.get("positive_implication_probability") or 0)
+        negative = float(issuer.get("negative_implication_probability") or 0)
+        sentiment = "mixed" if positive >= .5 and negative >= .5 else "positive" if positive >= .5 else "negative" if negative >= .5 else "neutral"
+        eligible_probability = float(issuer.get("forecast_relevance_probability") or 0)
+        row = dict((market_rows or {}).get(ticker) or {"ticker": ticker, "symbol": ticker})
+        row.update({
+            "ticker": ticker, "symbol": ticker,
+            "news.llm.review_complete": True,
+            "news.llm.forecast_relevance_probability": eligible_probability,
+            "news.llm.forecast_eligible": eligible_probability >= .5,
+            "news.llm.positive_implication_probability": positive,
+            "news.llm.negative_implication_probability": negative,
+            "news.llm.language_sentiment": sentiment,
+            "news.canonical_news_id": str(source.get("canonical_news_id") or ""),
+            "news.published_at": str(source.get("published_at_utc") or ""),
+            "available_at": available_at.isoformat(),
+            "source_event_id": f"{source.get('canonical_news_id')}:{ticker}:llm-review",
+        })
+        for column in columns:
+            source_id = str(column.get("source_id") or "")
+            column_id = str(column.get("column_id") or "")
+            if column_id and source_id in row:
+                row[column_id] = row[source_id]
         result.append(row)
     return result
 
