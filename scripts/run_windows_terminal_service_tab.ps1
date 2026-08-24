@@ -9,7 +9,8 @@ param(
     [ValidateRange(0, 65535)]
     [int]$ServicePort = 0,
     [string]$InstanceId = "",
-    [string]$RepositoryRoot = ""
+    [string]$RepositoryRoot = "",
+    [string]$DesiredFingerprint = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -303,6 +304,7 @@ if (-not `$?) { exit 1 }
             child_started_at_utc = $child.StartTime.ToUniversalTime().ToString("o")
             job_name = $jobName
             terminal_session = [string]$env:WT_SESSION
+            desired_fingerprint = $DesiredFingerprint
             registered_at_utc = [DateTime]::UtcNow.ToString("o")
         }
         $temporaryRegistryPath = "$resolvedRegistryPath.$PID.tmp"

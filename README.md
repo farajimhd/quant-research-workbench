@@ -268,17 +268,29 @@ shutdown authority. Stop only instances registered by this launcher with:
 .\scripts\stop_workspace_services.ps1
 ```
 
-QMD Live is deliberately outside the workspace lifecycle because stopping its
-vendor websocket during routine frontend/backend development can create a live
-data gap. Start and stop it independently with:
+The operator-facing lifecycle authority is the unified service manager. It
+supports Historical and Live profiles, operational layers, individual
+services, and dynamic development selectors:
 
 ```powershell
-.\scripts\start_qmd_live_gateway.ps1
-.\scripts\stop_qmd_live_gateway.ps1
+.\scripts\services.ps1 groups
+.\scripts\services.ps1 validate historical-core
+.\scripts\services.ps1 status all
+.\scripts\services.ps1 start historical
+.\scripts\services.ps1 start live
+.\scripts\services.ps1 plan restart dev
+.\scripts\services.ps1 restart dev
+.\scripts\services.ps1 stop live
 ```
 
-For an explicit full application start, stop, restart, or status check that
-also includes BarGPT, use the composite manager:
+Starting a profile starts only missing services and preserves running ones.
+`restart dev` computes which running services have changed owned source, shared
+contracts, safe configuration, or promoted model artifacts. QMD Live retains
+its explicit host-role and computation-target restoration lifecycle behind the
+unified command. See [Unified Service Management](docs/SERVICE_MANAGEMENT.md)
+for complete setup, profiles, commands, migration, and troubleshooting.
+
+The older composite application manager remains a compatibility interface:
 
 ```powershell
 python .\scripts\manage_application_services.py start
@@ -308,7 +320,7 @@ attempt. The default promoted-release catalog is
 `D:\TradingML\runtimes\bar_gpt_service\configuration\releases.json`; override
 it with `--release-manifest`. Every row must bind model ID, version, checkpoint,
 checkpoint SHA-256, contract hash, and champion/shadow role. The separate
-`start_live_gateway_services.ps1` gateway bundle is unchanged.
+`start_live_gateway_services.ps1` is also retained for compatibility.
 
 Shutdown validates the registered host PID, creation time, repository, and
 launcher identity; sends one Ctrl+C event to each registered tab console; and
@@ -348,7 +360,7 @@ creates a verified hard-linked recovery copy under
 `D:\TradingML\runtimes\repository_maintenance\quant-research-workbench` so the
 10 GiB recovery database leaves the source tree without being discarded.
 
-The live support gateways have a separate ordered launcher:
+The legacy live-support launcher remains available:
 
 ```powershell
 .\scripts\start_live_gateway_services.ps1
@@ -361,11 +373,13 @@ It opens independent PowerShell tabs in this exact order:
 3. Reference Gateway
 4. IBKR Gateway Supervisor
 5. Text Intelligence
+6. Model Gateway
+7. News Hypothesis
 
 It uses the same caller-window behavior as the Workspace starter. Outside
 Windows Terminal its distinct fallback window is
 `quant-research-workbench-gateways`, so the Workspace and Gateway groups cannot
-capture each other's tabs. The five-tab request is atomic.
+capture each other's tabs. The seven-tab request is atomic.
 
 Each tab delegates to the corresponding existing service launcher. Text
 Intelligence runs the continuous deterministic V5 News/SEC classifier and
@@ -380,12 +394,9 @@ until IBKR reports both `gateway_status=ready` and
 `-ReferenceDelaySeconds`; override the supervisor endpoint with
 `-IbkrSupervisorHealthUrl` when its bind is non-default.
 
-Model Gateway becomes required only when
-`TEXT_INTELLIGENCE_ENABLE_LIVE_AI=true`, because eligible live News is then
-sent to the configured fast semantic route. Market AI is the optional deeper
-hypothesis consumer on that path. Start those AI services separately when
-enabling Live AI; they are intentionally excluded from the standard
-deterministic gateway stack.
+Model Gateway and News Hypothesis are included. Text Intelligence and News
+Hypothesis retain manual trigger mode by default. Prefer the unified manager
+when only changed development services should restart.
 Because this launcher always creates interactive Windows Terminal tabs, it
 explicitly enables each gateway's Rich and alternate-screen settings. This
 prevents an inherited `auto` or disabled terminal setting from silently
@@ -400,15 +411,16 @@ Stop this group with:
 .\scripts\stop_live_gateway_services.ps1
 ```
 
-The stop script matches all five service identities at any port plus exact
-owners of the configured HTTP ports 8796, 8797, 8799, 8800, and 8804. It also
+The stop script matches all seven service identities at any port plus exact
+owners of the configured HTTP ports 8796, 8797, 8799, 8800, 8802, 8803, and
+8804. It also
 includes identified Client Portal child processes without treating every
 unrelated process on port 5000 as IBKR. One Ctrl+C is sent per service console.
 The default 330-second grace window respects the News and SEC gateways' own
 300-second drain contracts before surviving processes are force-stopped.
 Reference child cycles and the IBKR Client Portal process remain owned by
 their respective parent services during graceful shutdown. Successful
-stop-triggered exits also close the five service tabs while unrelated launcher
+stop-triggered exits also close the seven service tabs while unrelated launcher
 failures remain visible.
 
 For a production-style local build:

@@ -8,10 +8,11 @@ param(
     [int]$FrontendPort = 5173,
     [ValidateRange(1, 65535)]
     [int]$BarGptPort = 8805,
-    [ValidateRange(1, 60)]
+    [ValidateRange(1, 900)]
     [int]$GracefulTimeoutSeconds = 8,
     [string]$PythonExe = "",
     [string]$WorkspaceRuntimeRoot = "",
+    [string[]]$OnlyServiceRole = @(),
     [switch]$ListOnly
 )
 
@@ -26,6 +27,19 @@ $serviceTabHost = [IO.Path]::GetFullPath(
     (Join-Path $PSScriptRoot "run_windows_terminal_service_tab.ps1")
 )
 $serviceRoles = @("qmd_history", "backend", "frontend", "bar_gpt")
+$allServiceRoles = @(
+    $serviceRoles + @(
+        "news_gateway", "sec_gateway", "ibkr_gateway_supervisor", "reference_gateway",
+        "model_gateway", "news_hypothesis", "text_intelligence"
+    )
+) | Select-Object -Unique
+if ($OnlyServiceRole.Count -gt 0) {
+    $unknownRoles = @($OnlyServiceRole | Where-Object { $_ -notin $allServiceRoles })
+    if ($unknownRoles.Count -gt 0) {
+        throw "Unknown managed service role(s): $($unknownRoles -join ', ')"
+    }
+    $serviceRoles = @($OnlyServiceRole | Select-Object -Unique)
+}
 
 function Resolve-PythonExecutable {
     param([string]$Requested)
@@ -305,7 +319,7 @@ foreach ($registrationPath in $registrationPaths) {
     catch {
         $recordedRole = ""
     }
-    if ($recordedRole -eq "qmd_live") {
+    if ($recordedRole -eq "qmd_live" -or $recordedRole -notin $serviceRoles) {
         Write-Host "Leaving independently managed service ownership record untouched: role=$recordedRole path=$registrationPath"
         continue
     }
@@ -319,8 +333,13 @@ foreach ($registrationPath in $registrationPaths) {
 }
 $ownedIds = Get-OwnedProcessIds -Registrations $registrations -Snapshot $snapshot
 $registeredPorts = @($registrations | ForEach-Object { [int]$_.Record.service_port } | Where-Object { $_ -gt 0 })
-$ports = @(@($QmdHistoryPort, $BackendPort, $FrontendPort, $BarGptPort) + $registeredPorts) |
-    Select-Object -Unique
+$ports = if ($OnlyServiceRole.Count -gt 0) {
+    @($registeredPorts | Select-Object -Unique)
+}
+else {
+    @(@($QmdHistoryPort, $BackendPort, $FrontendPort, $BarGptPort) + $registeredPorts) |
+        Select-Object -Unique
+}
 $portOwners = @(Get-PortOwners -Ports $ports)
 
 if ($registrations.Count -eq 0) {
@@ -403,4 +422,4 @@ if ($remainingOwnedPortOwners.Count -gt 0) {
     )
 }
 
-Write-Host "Stopped all registered workspace service instances. Foreign processes and ports were left untouched."
+Write-Host "Stopped selected registered service instances. Foreign processes and ports were left untouched."
