@@ -147,7 +147,7 @@ export function TickerChangeBadge({ asOf, ticker }: { asOf: string; ticker: stri
   const tone = change.percent_change > 0.0001 ? "up" : change.percent_change < -0.0001 ? "down" : "flat";
   const Icon = tone === "up" ? ArrowUpRight : tone === "down" ? ArrowDownRight : ArrowRight;
   const sign = change.percent_change > 0 ? "+" : "";
-  return <span className="ticker-change-badge" data-tone={tone} title={`Versus ${change.previous_session_date} 20:00 ET close ${formatTickerPrice(change.previous_close)}; current ${formatTickerPrice(change.current_price ?? 0)}.`}><Icon size={13} /><strong>{sign}{change.percent_change.toFixed(2)}%</strong><small>{formatTickerChange(change.absolute_change)}</small></span>;
+  return <span aria-label={`Day change ${sign}${change.percent_change.toFixed(2)} percent`} className="ticker-change-badge" data-tone={tone} title={`Day change at ${change.as_of}. Versus ${change.previous_session_date} previous-session close ${formatTickerPrice(change.previous_close)}; current ${formatTickerPrice(change.current_price ?? 0)}. This is not the scanner squeeze move.`}><Icon size={13} /><em>Day</em><strong>{sign}{change.percent_change.toFixed(2)}%</strong><small>{formatTickerChange(change.absolute_change)}</small></span>;
 }
 
 export function TickerLogo({ logoUrl, showLogoPlaceholder = false, ticker }: { logoUrl?: string; showLogoPlaceholder?: boolean; ticker: string }) {

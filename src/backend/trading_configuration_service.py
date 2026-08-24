@@ -69,7 +69,7 @@ from src.trading_runtime.strategy_campaign import validate_campaign_policy
 from src.trading_runtime.taxonomy import StrategyTaxonomy
 
 
-CONFIGURATION_SCHEMA_VERSION = 39
+CONFIGURATION_SCHEMA_VERSION = 40
 MARKET_DISCOVERY_MATERIALIZATION_RUN_ID = "market-discovery:materialized-configuration"
 _CONFIGURATION_BASE_CACHE_LOCK = threading.RLock()
 _CONFIGURATION_BASE_CACHE: tuple[str, float, dict[str, Any] | None] = ("", 0.0, None)
@@ -2677,8 +2677,8 @@ def _default_watchlist_rule_sets() -> list[dict[str, Any]]:
             [_watchlist_condition("live-spread-quality", "market.spread_bps", "less_or_equal", 50.0)],
         ),
         _watchlist_rule("watchlist-vwap-breakout", "VWAP breakout", "Requires last price to trade at least 5 basis points above current VWAP.", [{**_watchlist_condition("vwap-breakout-price", "market.last_price", "above_by_bps", 5), "right_source_id": "indicator.vwap.value"}]),
-        _watchlist_rule("watchlist-news-bullish", "Bullish news sentiment", "Requires an issuer-specific positive News Synthesis V1 view admitted by the certified forecast-trigger policy.", [_watchlist_condition("news-forecast-eligible", "news.forecast_trigger_eligible", "is_true", True), _watchlist_condition("news-positive-sentiment", "news.composite_sentiment", "equals", "positive")]),
-        _watchlist_rule("watchlist-news-bearish", "Bearish news sentiment", "Requires an issuer-specific negative News Synthesis V1 view admitted by the certified forecast-trigger policy.", [_watchlist_condition("news-forecast-eligible-negative", "news.forecast_trigger_eligible", "is_true", True), _watchlist_condition("news-negative-sentiment", "news.composite_sentiment", "equals", "negative")]),
+        _watchlist_rule("watchlist-news-bullish", "Bullish AI-reviewed news", "Requires a persisted issuer-specific AI review with forecast relevance and positive language implication.", [_watchlist_condition("news-ai-forecast-eligible", "news.llm.forecast_eligible", "is_true", True), _watchlist_condition("news-ai-positive-sentiment", "news.llm.language_sentiment", "equals", "positive")]),
+        _watchlist_rule("watchlist-news-bearish", "Bearish AI-reviewed news", "Requires a persisted issuer-specific AI review with forecast relevance and negative language implication.", [_watchlist_condition("news-ai-forecast-eligible-negative", "news.llm.forecast_eligible", "is_true", True), _watchlist_condition("news-ai-negative-sentiment", "news.llm.language_sentiment", "equals", "negative")]),
         _watchlist_rule("watchlist-sec-bullish", "Bullish SEC sentiment", "Requires a validated SEC label and a positive filing score of at least 0.35.", [_watchlist_condition("sec-labeled-positive", "signal.sec_labeled", "is_true", True), _watchlist_condition("sec-positive-score", "signal.sec_filing.score", "greater_or_equal", 0.35)], enabled=False, implementation_status="integration_pending"),
         _watchlist_rule("watchlist-sec-bearish", "Bearish SEC sentiment", "Requires a validated SEC label and a negative filing score of -0.35 or lower.", [_watchlist_condition("sec-labeled-negative", "signal.sec_labeled", "is_true", True), _watchlist_condition("sec-negative-score", "signal.sec_filing.score", "less_or_equal", -0.35)], enabled=False, implementation_status="integration_pending"),
         _watchlist_rule("watchlist-fundamental-bullish", "Fundamental Bullish", "Requires reliable SEC evidence and a trajectory score of at least 65.", [_watchlist_condition("fundamental-bull-quality", "fundamental.quality_score", "greater_or_equal", 60), _watchlist_condition("fundamental-bull-score", "fundamental.trajectory_score", "greater_or_equal", 65)]),
@@ -3005,8 +3005,8 @@ def _default_watchlist_templates(symbols: list[str], calculation_rows: list[dict
         *gainers,
         template("price-or-volume-squeeze", "Session Price or Volume Expansion", "Symbols with at least 5% session price expansion or 3x aligned 20-session relative volume.", ["watchlist-price-or-volume-squeeze"], "market.relative_volume"),
         template("vwap-breakout", "VWAP Breakout", "Symbols trading at least 5 basis points above causal session VWAP.", ["watchlist-vwap-breakout"], "market.change_pct"),
-        template("news-bullish-sentiment", "News Bullish Sentiment", "Issuers with a forecast-eligible positive News Synthesis V1 event.", ["watchlist-news-bullish"], "news.positive_strength", refresh=1000, columns=[*common_columns, "news_composite_sentiment", "news_positive_strength", "news_published_at"]),
-        template("news-bearish-sentiment", "News Bearish Sentiment", "Issuers with a forecast-eligible negative News Synthesis V1 event.", ["watchlist-news-bearish"], "news.negative_strength", direction="descending", refresh=1000, columns=[*common_columns, "news_composite_sentiment", "news_negative_strength", "news_published_at"]),
+        template("news-bullish-sentiment", "AI Bullish News", "Issuers with a persisted forecast-relevant positive AI review.", ["watchlist-news-bullish"], "news.llm.positive_implication_probability", refresh=1000, columns=[*common_columns, "news_llm_forecast_probability", "news_llm_positive_probability", "news_llm_sentiment", "news_published_at"]),
+        template("news-bearish-sentiment", "AI Bearish News", "Issuers with a persisted forecast-relevant negative AI review.", ["watchlist-news-bearish"], "news.llm.negative_implication_probability", direction="descending", refresh=1000, columns=[*common_columns, "news_llm_forecast_probability", "news_llm_negative_probability", "news_llm_sentiment", "news_published_at"]),
         template("sec-bullish-sentiment", "SEC Bullish Sentiment", "New SEC filing events with a validated positive Text Intelligence label.", ["watchlist-sec-bullish"], "signal.sec_filing.score", refresh=5000, enabled=False, columns=[*common_columns, "sec_sentiment"], availability="integration_pending", availability_detail="Requires validated Text Intelligence SEC-label events."),
         template("sec-bearish-sentiment", "SEC Bearish Sentiment", "New SEC filing events with a validated negative Text Intelligence label.", ["watchlist-sec-bearish"], "signal.sec_filing.score", direction="ascending", refresh=5000, enabled=False, columns=[*common_columns, "sec_sentiment"], availability="integration_pending", availability_detail="Requires validated Text Intelligence SEC-label events."),
         template("fundamental-bullish", "Fundamental Bullish", "Issuers with reliable SEC evidence and a financial trajectory score of at least 65.", ["watchlist-fundamental-bullish"], "fundamental.trajectory_score", refresh=60_000, columns=[*common_columns, "fundamental_trajectory", "fundamental_quality"]),
@@ -3092,10 +3092,13 @@ def _default_signal_streams(
         "quote.ask_price",
         "market.spread_bps",
         "market.session_phase",
-        "news.composite_sentiment",
-        "news.positive_strength",
-        "news.negative_strength",
-        "news.forecast_trigger_eligible",
+        "news.deepfm.eligible_probability",
+        "news.deepfm.forecast_eligible",
+        "news.llm.forecast_relevance_probability",
+        "news.llm.forecast_eligible",
+        "news.llm.positive_implication_probability",
+        "news.llm.negative_implication_probability",
+        "news.llm.language_sentiment",
         "news.canonical_news_id",
         "news.published_at",
     ]
@@ -3199,13 +3202,13 @@ def _default_signal_streams(
         {
             "signal_stream_id": "bullish-news-v1",
             "revision": 1,
-            "name": "Bullish News · News Synthesis V1",
-            "description": "Append-only issuer occurrences emitted from forecast-eligible positive News Synthesis V1 views. Source publication, semantic evidence, and current executable market evidence are frozen together.",
+            "name": "Bullish AI-reviewed News",
+            "description": "Append-only issuer occurrences emitted when a persisted manual or automatic AI review becomes forecast-relevant and positive. Availability time is frozen without backdating to publication.",
             "enabled": True,
             "origin": "system",
             "protected": True,
             "source_type": "news_events",
-            "source_id": "q_live.news_synthesis_v1",
+            "source_id": "q_live.news_intelligence_events_v1",
             "source_scan_id": "qmd-core-scan",
             "inclusion_rule_sets": ["watchlist-news-bullish"],
             "inclusion_operator": "all",
@@ -4320,8 +4323,8 @@ def _validate_market_discovery(
             if source_id not in watchlist_ids:
                 raise ValueError(f"Signal Stream {stream_name} references an unknown Watchlist")
         elif source_type == "news_events":
-            if source_id != "q_live.news_synthesis_v1":
-                raise ValueError(f"Signal Stream {stream_name} references an unknown News Synthesis source")
+            if source_id not in {"q_live.news_intelligence_events_v1", "q_live.news_synthesis_v1"}:
+                raise ValueError(f"Signal Stream {stream_name} references an unknown News Intelligence source")
         else:
             raise ValueError(f"Signal Stream {stream_name} has an unknown source type")
         if str(stream.get("inclusion_operator") or "all") not in {"all", "any"}:
@@ -5413,6 +5416,34 @@ def _migrate_draft(raw: dict[str, Any]) -> dict[str, Any]:
                 atomic=str(rule_set.get("rule_set_id") or "") in default_rule_set_ids,
             )
             _normalize_rule_set_conditions(rule_set)
+        if source_schema_version < 40:
+            synthesis_decision_replacements = {
+                "news.forecast_trigger_eligible": "news.deepfm.forecast_eligible",
+                "news.composite_sentiment": "news.llm.language_sentiment",
+                "news.positive_strength": "news.llm.positive_implication_probability",
+                "news.negative_strength": "news.llm.negative_implication_probability",
+            }
+            for rule_set in result["market_discovery"]["rule_sets"]:
+                if bool(rule_set.get("protected")):
+                    continue
+                migrated = False
+                for condition in rule_set.get("conditions") or []:
+                    for key in ("left_field_ref", "left_source_id", "right_field_ref", "right_source_id"):
+                        previous = str(condition.get(key) or "")
+                        replacement = synthesis_decision_replacements.get(previous)
+                        if replacement:
+                            condition[key] = replacement
+                            migrated = True
+                    previous_left = str(condition.get("left_source_id") or condition.get("left_field_ref") or "")
+                    if previous_left in {
+                        "news.llm.positive_implication_probability",
+                        "news.llm.negative_implication_probability",
+                    } and isinstance(condition.get("value"), (int, float)):
+                        condition["value"] = min(1.0, max(0.0, float(condition["value"]) / 3.0))
+                if migrated:
+                    rule_set["enabled"] = False
+                    rule_set["implementation_status"] = "requires_operator_review"
+                    rule_set["publication_status"] = "draft"
         result["market_discovery"]["column_catalog"] = _watchlist_column_catalog(
             list(result["market_discovery"].get("field_catalog") or []),
             list(result["market_discovery"].get("rule_sets") or []),

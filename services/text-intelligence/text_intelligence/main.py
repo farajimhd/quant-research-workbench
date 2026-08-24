@@ -24,7 +24,7 @@ from .canonical_live import (
     TextDocumentNotice,
     TextDocumentNoticeBatch,
 )
-from .forecast_review import ForecastReviewRuntime, ReviewBatch, ReviewRequest
+from .forecast_review import ForecastReviewRuntime, ReactionRequest, ReviewBatch, ReviewRequest
 
 config = IntelligenceConfig.from_env()
 engine = IntelligenceEngine(config)
@@ -175,6 +175,14 @@ def request_news_reviews(batch: ReviewBatch) -> dict[str, object]:
 @app.get("/news-review/{canonical_news_id}")
 def news_review_status(canonical_news_id: str) -> dict[str, object]:
     return forecast_review_runtime.status(canonical_news_id)
+
+
+@app.post("/news-reaction", status_code=202)
+def request_news_reaction(request: ReactionRequest) -> dict[str, object]:
+    try:
+        return forecast_review_runtime.request_reaction(request)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 def _snapshot_metrics() -> dict[str, object]:

@@ -19,6 +19,7 @@ class IntelligenceConfig:
     forecast_funnel_enabled: bool
     forecast_release_manifest: Path
     forecast_model_device: str
+    forecast_eligibility_threshold: float
     review_trigger_mode: str
     review_prompt_path: Path
     model_gateway_url: str
@@ -88,6 +89,9 @@ class IntelligenceConfig:
             forecast_model_device=env_string(
                 "TEXT_INTELLIGENCE_FORECAST_MODEL_DEVICE", "cpu"
             ).lower(),
+            forecast_eligibility_threshold=env_float(
+                "TEXT_INTELLIGENCE_FORECAST_ELIGIBILITY_THRESHOLD", 0.5
+            ),
             review_trigger_mode=env_string(
                 "TEXT_INTELLIGENCE_REVIEW_TRIGGER_MODE", "manual"
             ).lower(),

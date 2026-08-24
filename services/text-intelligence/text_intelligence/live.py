@@ -229,9 +229,10 @@ class LiveNewsRuntime:
         if not candidate.rendered_text.strip():
             self.metrics["filtered"] += 1
             return
-        eligible = [
-            label for label in item.synthesis_labels if label.forecast_trigger_eligible
-        ]
+        # DeepFM admission happens before this runtime.  News Synthesis supplies
+        # issuer identity and evidence only; its suitability opinion is never a
+        # second decision gate.
+        eligible = [label for label in item.synthesis_labels if label.ticker]
         if not eligible:
             self.metrics["filtered"] += 1
             return

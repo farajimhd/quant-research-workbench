@@ -81,3 +81,24 @@ def request_news_review(canonical_news_id: str, published_at_utc: str, requested
     )
     with urllib.request.urlopen(request, timeout=10.0) as response:
         return json.loads(response.read().decode())
+
+
+def request_news_reaction(
+    canonical_news_id: str,
+    published_at_utc: str,
+    requested_by: str,
+    ticker: str = "",
+) -> dict[str, Any]:
+    base = os.environ.get("TEXT_INTELLIGENCE_URL", "http://127.0.0.1:8804").rstrip("/")
+    payload = {
+        "canonical_news_id": canonical_news_id,
+        "published_at_utc": published_at_utc,
+        "requested_by": requested_by or "operator",
+        "ticker": ticker.strip().upper(),
+    }
+    request = urllib.request.Request(
+        f"{base}/news-reaction", data=json.dumps(payload).encode(),
+        headers={"Content-Type": "application/json"}, method="POST",
+    )
+    with urllib.request.urlopen(request, timeout=15.0) as response:
+        return json.loads(response.read().decode())

@@ -405,14 +405,16 @@ class CanonicalTextRuntime:
             self._write_status(notice, loaded.source_hash, "complete", len(documents), 0, "")
             self.metrics["news_synthesis_documents"] = int(self.metrics["news_synthesis_documents"]) + len(documents)
             self.metrics["deterministic_completed"] = int(self.metrics["deterministic_completed"]) + 1
+        deepfm_by_source: dict[str, dict[str, Any]] = {}
         if funnel_required and self.forecast_review:
             self._set_worker_stage(worker_index, "forecast_funnel")
             for source_row, result in zip(loaded.rows, results):
-                self.forecast_review.process_funnel(source_row, result)
+                deepfm_by_source[str(source_row["source_id"])] = self.forecast_review.process_funnel(source_row, result)
         if self.live_news.enabled:
             for source_row, result in zip(loaded.rows, results):
                 document = result["synthesis_document"]
-                if document is None or result["final"]["forecast_eligibility"] != "eligible":
+                deepfm = deepfm_by_source.get(str(source_row["source_id"]))
+                if document is None or not deepfm or deepfm["forecast_eligibility"] != "eligible":
                     continue
                 item = PreparedNewsCandidate(
                     candidate=_live_candidate(source_row),

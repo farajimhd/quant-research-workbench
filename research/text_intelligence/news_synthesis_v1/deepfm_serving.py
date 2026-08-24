@@ -77,6 +77,7 @@ class DeepFMServingRelease:
         *,
         ticker_history: Mapping[str, Any] | None = None,
         market_cap: Mapping[str, Any] | None = None,
+        threshold: float | None = None,
     ) -> dict[str, Any]:
         row = serving_feature_row(source_row, ticker_history=ticker_history)
         cap = dict(market_cap or {})
@@ -88,13 +89,16 @@ class DeepFMServingRelease:
         combined = sparse.hstack((structured, text), format="csr", dtype=np.float32)
         combined = combined.multiply((1.0 / self.scale).astype(np.float32)).tocsr()
         probability = self._probability(combined)
+        operating_threshold = self.threshold if threshold is None else float(threshold)
+        if not 0.0 < operating_threshold < 1.0:
+            raise ValueError("DeepFM operating threshold must be inside (0,1)")
         return {
             "contract_version": SERVING_CONTRACT_VERSION,
             "release_id": self.release_id,
             "release_hash": self.release_hash,
-            "threshold": self.threshold,
+            "threshold": operating_threshold,
             "eligible_probability": probability,
-            "forecast_eligibility": "eligible" if probability >= self.threshold else "ineligible",
+            "forecast_eligibility": "eligible" if probability >= operating_threshold else "ineligible",
         }
 
     def _probability(self, matrix: sparse.csr_matrix) -> float:

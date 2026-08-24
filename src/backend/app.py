@@ -124,7 +124,7 @@ from src.backend.news_synthesis import (
     load_news_synthesis,
     synthesis_summary,
 )
-from src.backend.news_ai_review_service import load_news_ai_state, request_news_review
+from src.backend.news_ai_review_service import load_news_ai_state, request_news_reaction, request_news_review
 from src.backend.sec_canvas_service import (
     sec_document_text_payload,
     sec_filing_detail_payload,
@@ -3448,6 +3448,10 @@ class NewsAiReviewCommand(BaseModel):
     requested_by: str = "operator"
 
 
+class NewsAiReactionCommand(NewsAiReviewCommand):
+    ticker: str = ""
+
+
 @app.post("/api/trading/news/{canonical_news_id}/ai-review", status_code=202)
 def trading_news_ai_review(canonical_news_id: str, command: NewsAiReviewCommand) -> dict[str, Any]:
     try:
@@ -3467,6 +3471,22 @@ def trading_news_ai_review_status(canonical_news_id: str) -> dict[str, Any]:
         )
     except Exception as error:
         raise HTTPException(status_code=503, detail="AI review state is temporarily unavailable") from error
+
+
+@app.post("/api/trading/news/{canonical_news_id}/ai-reaction", status_code=202)
+def trading_news_ai_reaction(canonical_news_id: str, command: NewsAiReactionCommand) -> dict[str, Any]:
+    try:
+        return request_news_reaction(
+            canonical_news_id,
+            command.published_at_utc,
+            command.requested_by,
+            command.ticker,
+        )
+    except urllib.error.HTTPError as error:
+        detail = error.read().decode(errors="replace")[:500]
+        raise HTTPException(status_code=error.code, detail=detail or "Reaction request failed") from error
+    except (TimeoutError, urllib.error.URLError) as error:
+        raise HTTPException(status_code=503, detail="News Hypothesis is temporarily unavailable") from error
 
 
 @app.get("/api/trading/sec")

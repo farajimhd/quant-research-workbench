@@ -46,6 +46,13 @@ class ReviewBatch(BaseModel):
     requests: list[ReviewRequest] = Field(min_length=1, max_length=25)
 
 
+class ReactionRequest(BaseModel):
+    canonical_news_id: str
+    published_at_utc: str
+    requested_by: str = "operator"
+    ticker: str = ""
+
+
 class ReviewWork(BaseModel):
     request: ReviewRequest
     trigger_mode: str
@@ -69,6 +76,8 @@ class ForecastReviewRuntime:
             "review_queued": 0,
             "review_completed": 0,
             "review_failed": 0,
+            "reaction_queued": 0,
+            "reaction_failed": 0,
             "hypothesis_enqueue_failed": 0,
             "last_error": "",
         }
@@ -95,29 +104,27 @@ class ForecastReviewRuntime:
         self.worker = None
 
     def process_funnel(self, source_row: Mapping[str, Any], deterministic: Mapping[str, Any]) -> dict[str, Any]:
-        final = str((deterministic.get("final") or {}).get("forecast_eligibility") or "")
-        if final != "eligible":
-            result = {
-                "stage": "deterministic_rejected", "forecast_eligibility": "ineligible",
-                "eligible_probability": 0.0, "threshold": 1.0,
-                "model_release_id": "", "model_release_hash": "",
-            }
-        else:
-            if self.release is None:
-                raise RuntimeError("DeepFM serving release is unavailable")
-            scored = self.release.score(
-                source_row,
-                ticker_history=self._ticker_history(source_row),
-                market_cap=self._market_cap_context(source_row),
-            )
-            result = {
-                "stage": "deepfm_candidate" if scored["forecast_eligibility"] == "eligible" else "deepfm_rejected",
-                "forecast_eligibility": scored["forecast_eligibility"],
-                "eligible_probability": scored["eligible_probability"],
-                "threshold": scored["threshold"],
-                "model_release_id": scored["release_id"],
-                "model_release_hash": scored["release_hash"],
-            }
+        """Score every canonical article with DeepFM.
+
+        News Synthesis remains persisted reading context.  Its product-suitability
+        opinion is deliberately not consulted by this live decision authority.
+        """
+        if self.release is None:
+            raise RuntimeError("DeepFM serving release is unavailable")
+        scored = self.release.score(
+            source_row,
+            ticker_history=self._ticker_history(source_row),
+            market_cap=self._market_cap_context(source_row),
+            threshold=self.config.forecast_eligibility_threshold,
+        )
+        result = {
+            "stage": "deepfm_eligible" if scored["forecast_eligibility"] == "eligible" else "deepfm_filtered",
+            "forecast_eligibility": scored["forecast_eligibility"],
+            "eligible_probability": scored["eligible_probability"],
+            "threshold": scored["threshold"],
+            "model_release_id": scored["release_id"],
+            "model_release_hash": scored["release_hash"],
+        }
         now = _timestamp()
         row = {
             "canonical_news_id": str(source_row["source_id"]),
@@ -139,6 +146,45 @@ class ForecastReviewRuntime:
                 requested_by="automatic-funnel",
             ), trigger_mode="automatic")
         return row
+
+    def request_reaction(self, request: ReactionRequest) -> dict[str, Any]:
+        review = self.status(request.canonical_news_id)
+        if str(review.get("status") or "") != "complete":
+            raise ValueError("AI news review must complete before a reaction forecast")
+        labels = json.loads(str(review.get("issuer_labels_json") or "{}"))
+        source = self._load_source(ReviewRequest(
+            canonical_news_id=request.canonical_news_id,
+            published_at_utc=request.published_at_utc,
+            requested_by=request.requested_by,
+        ))
+        requested_ticker = request.ticker.strip().upper()
+        queued: list[str] = []
+        for issuer in labels.get("issuers") or []:
+            ticker = str(issuer.get("ticker") or "").strip().upper()
+            if (
+                not ticker
+                or float(issuer.get("forecast_relevance_probability") or 0) < 0.5
+                or (requested_ticker and ticker != requested_ticker)
+            ):
+                continue
+            _post_json(
+                f"{self.config.news_hypothesis_url}/hypothesize",
+                {
+                    "canonical_news_id": request.canonical_news_id,
+                    "ticker": ticker,
+                    "published_at_utc": str(source["source_timestamp"]),
+                    "title": str(source.get("title") or ""),
+                    "rendered_text": str(source.get("text") or ""),
+                    "semantic_label": issuer,
+                    "session_id": f"{request.requested_by}:{uuid.uuid4().hex[:16]}",
+                },
+                10.0,
+            )
+            queued.append(ticker)
+        if not queued:
+            raise ValueError("No AI-reviewed forecast-eligible issuer is available")
+        self.metrics["reaction_queued"] += len(queued)
+        return {"status": "queued", "canonical_news_id": request.canonical_news_id, "tickers": queued}
 
     def enqueue(self, request: ReviewRequest, *, trigger_mode: str = "manual") -> dict[str, str]:
         if trigger_mode == "automatic" and self.trigger_mode != "automatic":
@@ -214,7 +260,10 @@ WHERE canonical_news_id={sql_string(canonical_news_id)}
                 "prompt_version": PROMPT_VERSION,
             },
         }
-        response = await asyncio.to_thread(_post_json, f"{self.config.model_gateway_url}/infer", payload, 60.0)
+        # Deep reasoning can legitimately exceed the gateway's former 45-second
+        # budget. Keep this caller above the route timeout so the gateway can
+        # return its structured result or its own explicit failure.
+        response = await asyncio.to_thread(_post_json, f"{self.config.model_gateway_url}/infer", payload, 135.0)
         result = canonicalize_output(response["result"])
         errors = validate_output(result, [row["sentence_id"] for row in sample["normalized_sentences"]])
         if errors:
@@ -255,37 +304,20 @@ WHERE canonical_news_id={sql_string(canonical_news_id)}
         insert_json_each_row(self.client, self.database, REVIEW_HISTORY_TABLE, list(persisted), [persisted])
         self.metrics["review_completed"] += 1
         self.metrics["last_error"] = ""
-        delivery_errors: list[str] = []
-        for issuer in result["issuers"]:
-            ticker = str(issuer.get("ticker") or "").upper()
-            if not ticker or float(issuer["forecast_relevance_probability"]) < 0.5:
-                continue
-            hypothesis = {
-                "canonical_news_id": request.canonical_news_id,
-                "ticker": ticker,
-                "published_at_utc": str(source["source_timestamp"]),
-                "title": str(source.get("title") or ""),
-                "rendered_text": str(source.get("text") or ""),
-                "semantic_label": issuer,
-                "session_id": f"review:{idempotency[:16]}",
-            }
+        if work.trigger_mode == "automatic":
             try:
                 await asyncio.to_thread(
-                    _post_json,
-                    f"{self.config.news_hypothesis_url}/hypothesize",
-                    hypothesis,
-                    10.0,
+                    self.request_reaction,
+                    ReactionRequest(
+                        canonical_news_id=request.canonical_news_id,
+                        published_at_utc=request.published_at_utc,
+                        requested_by="automatic-review",
+                    ),
                 )
-            except Exception as exc:  # noqa: BLE001
-                delivery_errors.append(f"{ticker}:{type(exc).__name__}:{exc}")
+            except Exception as exc:  # reaction is an independent persisted stage
+                self.metrics["reaction_failed"] += 1
                 self.metrics["hypothesis_enqueue_failed"] += 1
-        if delivery_errors:
-            # The issuer prediction is already complete and immutable in history.
-            # A downstream enqueue failure must not erase or relabel that result.
-            latest["error"] = ("hypothesis enqueue failed: " + "; ".join(delivery_errors))[:1000]
-            latest["updated_at_utc"] = _timestamp()
-            insert_json_each_row(self.client, self.database, REVIEW_TABLE, list(latest), [latest])
-            self.metrics["last_error"] = latest["error"]
+                self.metrics["last_error"] = f"{type(exc).__name__}: {exc}"[:1000]
 
     def _load_source(self, request: ReviewRequest) -> dict[str, Any]:
         rows = list(self.client.iter_json_each_row(f"""

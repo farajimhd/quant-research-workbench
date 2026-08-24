@@ -895,6 +895,16 @@ def _query_plans() -> tuple[QueryPlanDefinition, ...]:
             "service://text-intelligence/news-coverage",
         ),
         QueryPlanDefinition(
+            "intelligence.news_reaction_events.v1",
+            "backend",
+            "src.backend.news_signal_runtime_service:news_reaction_events",
+            ("q_live.news_market_hypothesis_v1",),
+            "canonical news ID plus issuer ticker from a persisted market hypothesis",
+            "published_at_utc",
+            "created_at_utc",
+            "service://news-hypothesis/hypotheses",
+        ),
+        QueryPlanDefinition(
             "intelligence.sec_asof.v1",
             "text_intelligence",
             "service://text-intelligence/sec-synthesis-v1",
@@ -2052,9 +2062,9 @@ def _fields() -> tuple[FieldDefinition, ...]:
         ))
 
     for field_id, value_type, unit, source_column in (
-        ("news.funnel.eligible_probability", "number", "probability", "eligible_probability"),
-        ("news.funnel.forecast_eligible", "boolean", "boolean", "forecast_eligibility"),
-        ("news.funnel.stage", "string", "category", "stage"),
+        ("news.deepfm.eligible_probability", "number", "probability", "eligible_probability"),
+        ("news.deepfm.forecast_eligible", "boolean", "boolean", "forecast_eligibility"),
+        ("news.deepfm.status", "string", "category", "stage"),
         ("news.llm.review_complete", "boolean", "boolean", "status"),
         ("news.llm.forecast_relevance_probability", "number", "probability", "forecast_relevance_probability"),
         ("news.llm.forecast_eligible", "boolean", "boolean", "forecast_relevance_probability"),
@@ -2064,13 +2074,43 @@ def _fields() -> tuple[FieldDefinition, ...]:
     ):
         rows.append(_field(
             field_id, "news_forecast", "text_intelligence",
-            "q_live.news_forecast_funnel_v1" if field_id.startswith("news.funnel") else "q_live.news_llm_issuer_review_v1",
+            "q_live.news_forecast_funnel_v1" if field_id.startswith("news.deepfm") else "q_live.news_llm_issuer_review_v1",
             "intelligence.news_llm_review_events.v1", value_type=value_type, unit=unit,
             entity_grain="issuer_news_event", source_columns=(source_column,), event_at="published_at_utc",
             available_at="updated_at_utc", ttl_seconds=None, publication_cadence="event_driven",
             provenance="model_derived", coverage_query_plan="intelligence.news_llm_review_events.v1",
             timeframes=("event",),
         ))
+
+    for horizon in ("1m", "5m", "30m", "regular_close", "extended_close"):
+        for metric, value_type, unit in (
+            ("upside_probability", "number", "probability"),
+            ("downside_probability", "number", "probability"),
+            ("no_action_probability", "number", "probability"),
+            ("expected_return_pct", "number", "percent"),
+            ("favorable_excursion_pct", "number", "percent"),
+            ("adverse_excursion_pct", "number", "percent"),
+            ("confidence", "number", "probability"),
+            ("abstain", "boolean", "boolean"),
+        ):
+            rows.append(_field(
+                f"news.reaction.{horizon}.{metric}", "news_reaction", "news_hypothesis",
+                "q_live.news_market_hypothesis_v1", "intelligence.news_reaction_events.v1",
+                value_type=value_type, unit=unit, entity_grain="issuer_news_event",
+                source_columns=(f"predictions.{horizon}.{metric}",), event_at="published_at_utc",
+                available_at="created_at_utc", ttl_seconds=None, publication_cadence="event_driven",
+                provenance="model_derived", coverage_query_plan="intelligence.news_reaction_events.v1",
+                timeframes=("event",),
+            ))
+    rows.append(_field(
+        "news.reaction.regime_compatibility", "news_reaction", "news_hypothesis",
+        "q_live.news_market_hypothesis_v1", "intelligence.news_reaction_events.v1",
+        value_type="string", unit="category", entity_grain="issuer_news_event",
+        source_columns=("regime_compatibility",), event_at="published_at_utc",
+        available_at="created_at_utc", ttl_seconds=None, publication_cadence="event_driven",
+        provenance="model_derived", coverage_query_plan="intelligence.news_reaction_events.v1",
+        timeframes=("event",),
+    ))
 
     sec_names = ("latest_at", "count", "recency", "latest_form", "cik", "accession", "form", "accepted_at", "filed_at", "period_end", "document_id", "document_type", "source_hash", "renderer_version", "topic", "event_type", "direction", "score", "confidence", "impact", "uncertainty", "entity_relationships", "market_bridge_state")
     for name in sec_names:
@@ -2192,15 +2232,15 @@ DISCOVERY_FIELD_PRESENTATIONS = (
     DiscoveryFieldPresentation("fundamental.share_growth_pct", "fundamental.share_growth_pct", "fundamental_share_growth_pct", "Comparable share-count change %", "Comparable basic-share change divided by the absolute prior-period share count.", "reference", False, True, True, ("greater_or_equal", "greater_than", "less_or_equal", "less_than", "equals"), ("filing",)),
     DiscoveryFieldPresentation("signal.news_labeled", "signal.news_labeled", "", "News labeled", "Validated point-in-time Text Intelligence news-label availability.", "signal", False, True, False, ("is_true",), ("event",)),
     DiscoveryFieldPresentation("signal.company_news.score", "news.score", "news_sentiment", "News sentiment", "Latest validated point-in-time company-news score and label.", "signal", False, True, True, ("greater_or_equal", "greater_than", "less_or_equal", "less_than", "equals"), ("event",)),
-    DiscoveryFieldPresentation("news.composite_sentiment", "news.composite_sentiment", "news_composite_sentiment", "News sentiment", "Exact issuer-specific News Synthesis V1 composite sentiment.", "signal", False, True, True, ("equals", "not_equals"), ("event",)),
-    DiscoveryFieldPresentation("news.positive_strength", "news.positive_strength", "news_positive_strength", "Positive evidence", "Issuer-specific positive evidence strength from 0 through 3.", "signal", False, True, True, ("greater_or_equal", "greater_than", "less_or_equal", "less_than", "equals"), ("event",)),
-    DiscoveryFieldPresentation("news.negative_strength", "news.negative_strength", "news_negative_strength", "Negative evidence", "Issuer-specific negative evidence strength from 0 through 3.", "signal", False, True, True, ("greater_or_equal", "greater_than", "less_or_equal", "less_than", "equals"), ("event",)),
-    DiscoveryFieldPresentation("news.forecast_trigger_eligible", "news.forecast_trigger_eligible", "news_forecast_eligible", "Forecast eligible", "Whether the issuer view is admitted to the certified forecast-trigger product.", "signal", False, True, True, ("is_true", "equals"), ("event",)),
+    DiscoveryFieldPresentation("news.composite_sentiment", "news.composite_sentiment", "news_composite_sentiment", "Synthesis direction", "Informational issuer-specific News Synthesis direction; never decision-authorized.", "context", False, False, True, (), ("event",)),
+    DiscoveryFieldPresentation("news.positive_strength", "news.positive_strength", "news_positive_strength", "Synthesis positive", "Informational synthesis evidence strength; never decision-authorized.", "context", False, False, True, (), ("event",)),
+    DiscoveryFieldPresentation("news.negative_strength", "news.negative_strength", "news_negative_strength", "Synthesis negative", "Informational synthesis evidence strength; never decision-authorized.", "context", False, False, True, (), ("event",)),
+    DiscoveryFieldPresentation("news.forecast_trigger_eligible", "news.forecast_trigger_eligible", "news_forecast_eligible", "Synthesis forecast view", "Informational synthesis product-suitability view; never decision-authorized.", "context", False, False, True, (), ("event",)),
     DiscoveryFieldPresentation("news.canonical_news_id", "news.canonical_news_id", "canonical_news_id", "News ID", "Stable canonical identity of the source news event.", "signal", False, False, True, (), ("event",)),
     DiscoveryFieldPresentation("news.published_at", "news.published_at", "news_published_at", "Published", "Authoritative source publication time in UTC.", "signal", False, False, True, (), ("event",)),
-    DiscoveryFieldPresentation("news.funnel.eligible_probability", "news.funnel.eligible_probability", "news_funnel_probability", "Funnel eligibility probability", "DeepFM forecast-eligibility probability after deterministic routing.", "signal", True, True, True, ("greater_or_equal", "greater_than", "less_or_equal", "less_than"), ("event",)),
-    DiscoveryFieldPresentation("news.funnel.forecast_eligible", "news.funnel.forecast_eligible", "news_funnel_eligible", "Funnel candidate", "Whether the deterministic-to-DeepFM funnel retained the article.", "signal", False, True, True, ("is_true", "equals"), ("event",)),
-    DiscoveryFieldPresentation("news.funnel.stage", "news.funnel.stage", "news_funnel_stage", "Funnel stage", "Deterministic rejection, DeepFM rejection, or DeepFM candidate stage.", "signal", False, True, True, ("equals", "not_equals"), ("event",)),
+    DiscoveryFieldPresentation("news.deepfm.eligible_probability", "news.deepfm.eligible_probability", "news_deepfm_probability", "DeepFM probability", "DeepFM forecast-eligibility probability scored for every canonical article.", "signal", True, True, True, ("greater_or_equal", "greater_than", "less_or_equal", "less_than"), ("event",)),
+    DiscoveryFieldPresentation("news.deepfm.forecast_eligible", "news.deepfm.forecast_eligible", "news_deepfm_eligible", "DeepFM eligible", "Whether DeepFM admitted the article at the configured operating threshold.", "signal", False, True, True, ("is_true", "equals"), ("event",)),
+    DiscoveryFieldPresentation("news.deepfm.status", "news.deepfm.status", "news_deepfm_status", "DeepFM status", "DeepFM eligible, filtered, pending, or failed state.", "signal", False, True, True, ("equals", "not_equals"), ("event",)),
     DiscoveryFieldPresentation("news.llm.review_complete", "news.llm.review_complete", "news_llm_reviewed", "LLM reviewed", "Whether a validated issuer-level manual or automatic review is durably available.", "signal", False, True, True, ("is_true", "equals"), ("event",)),
     DiscoveryFieldPresentation("news.llm.forecast_relevance_probability", "news.llm.forecast_relevance_probability", "news_llm_forecast_probability", "LLM forecast relevance", "Issuer-level forecast relevance probability from a validated LLM review.", "signal", True, True, True, ("greater_or_equal", "greater_than", "less_or_equal", "less_than"), ("event",)),
     DiscoveryFieldPresentation("news.llm.forecast_eligible", "news.llm.forecast_eligible", "news_llm_forecast_eligible", "LLM forecast eligible", "Issuer-level forecast eligibility at the versioned review threshold.", "signal", False, True, True, ("is_true", "equals"), ("event",)),
@@ -2214,6 +2254,31 @@ DISCOVERY_FIELD_PRESENTATIONS = (
     DiscoveryFieldPresentation("event.split.execution_date", "event.split.execution_date", "split_event", "Split date", "Latest published stock-split execution date and ratio.", "event", False, False, True, (), ("event",)),
     DiscoveryFieldPresentation("event.split.days_to_event", "event.split.days_to_event", "split_days_to_event", "Split event distance", "Signed calendar days from evaluation to the latest published split execution date.", "event", False, True, True, ("greater_or_equal", "greater_than", "less_or_equal", "less_than", "equals"), ("event",)),
 )
+
+for _reaction_horizon in ("1m", "5m", "30m", "regular_close", "extended_close"):
+    for _reaction_metric, _reaction_label, _reaction_type, _reaction_ops in (
+        ("upside_probability", "Up probability", "probability", ("greater_or_equal", "greater_than", "less_or_equal", "less_than")),
+        ("downside_probability", "Down probability", "probability", ("greater_or_equal", "greater_than", "less_or_equal", "less_than")),
+        ("no_action_probability", "No-action probability", "probability", ("greater_or_equal", "greater_than", "less_or_equal", "less_than")),
+        ("expected_return_pct", "Expected return", "percent", ("greater_or_equal", "greater_than", "less_or_equal", "less_than")),
+        ("favorable_excursion_pct", "Favorable excursion", "percent", ("greater_or_equal", "greater_than", "less_or_equal", "less_than")),
+        ("adverse_excursion_pct", "Adverse excursion", "percent", ("greater_or_equal", "greater_than", "less_or_equal", "less_than")),
+        ("confidence", "Confidence", "probability", ("greater_or_equal", "greater_than", "less_or_equal", "less_than")),
+        ("abstain", "Abstain", "boolean", ("is_true", "equals")),
+    ):
+        DISCOVERY_FIELD_PRESENTATIONS += (DiscoveryFieldPresentation(
+            f"news.reaction.{_reaction_horizon}.{_reaction_metric}",
+            f"news.reaction.{_reaction_horizon}.{_reaction_metric}",
+            f"news_reaction_{_reaction_horizon}_{_reaction_metric}",
+            f"{_reaction_horizon.replace('_', ' ').title()} {_reaction_label}",
+            f"Persisted {_reaction_horizon.replace('_', ' ')} market-reaction {_reaction_label.lower()} available at model completion.",
+            "signal", False, True, True, _reaction_ops, ("event",), _reaction_type,
+        ),)
+DISCOVERY_FIELD_PRESENTATIONS += (DiscoveryFieldPresentation(
+    "news.reaction.regime_compatibility", "news.reaction.regime_compatibility",
+    "news_reaction_regime", "Reaction regime", "Supportive, neutral, hostile, or unknown regime compatibility.",
+    "signal", False, True, True, ("equals", "not_equals"), ("event",),
+),)
 
 DISCOVERY_FIELD_PRESENTATIONS += (
     DiscoveryFieldPresentation("clock.observed_at", "clock.observed_at", "clock_observed_at", "Observed at", "UTC timestamp at which QMD evaluated this market-clock snapshot.", "clock", False, False, True, (), ("event",)),

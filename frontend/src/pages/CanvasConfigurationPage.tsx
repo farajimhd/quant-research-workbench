@@ -378,8 +378,9 @@ export function CanvasFocusPage() {
   const requestedNewsId = params.get("news") || undefined;
   const requestedSecCik = params.get("sec_cik") || undefined;
   const requestedSecAccession = params.get("sec_accession") || undefined;
-  if (params.get("canvas_profile") === "draft") return <CanvasWorkspaceSurface canvasId={canvasId} manager={false} requestedInstanceId={requestedInstanceId} requestedNewsId={requestedNewsId} requestedSecAccession={requestedSecAccession} requestedSecCik={requestedSecCik} />;
-  return <ApprovedCanvasFocusPage canvasId={canvasId} requestedInstanceId={requestedInstanceId} requestedNewsId={requestedNewsId} requestedSecAccession={requestedSecAccession} requestedSecCik={requestedSecCik} />;
+  const runtimeMode = acceptanceRuntimeMode === "live" || acceptanceRuntimeMode === "paper" ? acceptanceRuntimeMode : undefined;
+  if (params.get("canvas_profile") === "draft") return <CanvasWorkspaceSurface canvasId={canvasId} manager={false} requestedInstanceId={requestedInstanceId} requestedNewsId={requestedNewsId} requestedSecAccession={requestedSecAccession} requestedSecCik={requestedSecCik} runtimeMode={runtimeMode} />;
+  return <ApprovedCanvasFocusPage canvasId={canvasId} requestedInstanceId={requestedInstanceId} requestedNewsId={requestedNewsId} requestedSecAccession={requestedSecAccession} requestedSecCik={requestedSecCik} runtimeMode={runtimeMode} />;
 }
 
 function CanvasContainerAcceptancePage({ kind, requestedNewsId, requestedSecAccession, requestedSecCik, runtimeMode }: { kind: WorkspaceContainerId; requestedNewsId?: string; requestedSecAccession?: string; requestedSecCik?: string; runtimeMode?: Extract<CanvasRuntimeMode, "live" | "paper"> }) {
@@ -415,7 +416,7 @@ function CanvasContainerAcceptancePage({ kind, requestedNewsId, requestedSecAcce
   </div>;
 }
 
-function ApprovedCanvasFocusPage({ canvasId, requestedInstanceId, requestedNewsId, requestedSecAccession, requestedSecCik }: { canvasId: string; requestedInstanceId?: string; requestedNewsId?: string; requestedSecAccession?: string; requestedSecCik?: string }) {
+function ApprovedCanvasFocusPage({ canvasId, requestedInstanceId, requestedNewsId, requestedSecAccession, requestedSecCik, runtimeMode }: { canvasId: string; requestedInstanceId?: string; requestedNewsId?: string; requestedSecAccession?: string; requestedSecCik?: string; runtimeMode?: Extract<CanvasRuntimeMode, "live" | "paper"> }) {
   const [approved, setApproved] = useState<ApprovedCanvasProfile | null>(null);
   const [error, setError] = useState("");
   useEffect(() => {
@@ -431,7 +432,7 @@ function ApprovedCanvasFocusPage({ canvasId, requestedInstanceId, requestedNewsI
   }, []);
   if (error) return <div className="canvas-config-page canvas-focus-page"><div className="canvas-inline-error">{error}</div></div>;
   if (!approved) return <div className="canvas-config-page canvas-focus-page"><div aria-live="polite" className="canvas-empty-state is-loading" role="status"><span className="loading-spinner" aria-hidden="true" /><span><strong>Loading approved Canvas</strong><small>Resolving the published default and this workspace's saved overlay.</small></span></div></div>;
-  return <CanvasWorkspaceSurface approvedCanvas={approved} canvasId={canvasId} manager={false} requestedInstanceId={requestedInstanceId} requestedNewsId={requestedNewsId} requestedSecAccession={requestedSecAccession} requestedSecCik={requestedSecCik} />;
+  return <CanvasWorkspaceSurface approvedCanvas={approved} canvasId={canvasId} manager={false} requestedInstanceId={requestedInstanceId} requestedNewsId={requestedNewsId} requestedSecAccession={requestedSecAccession} requestedSecCik={requestedSecCik} runtimeMode={runtimeMode} />;
 }
 
 function ReplayCanvasFocusPage({ focusToken, runId }: { focusToken: string; runId: string }) {
@@ -1371,7 +1372,7 @@ function ContainerPreview({ canvasId, chartCutoffMs, definition, instanceId, lin
       : definition.id === "ticker_news"
         ? <TickerNewsContainer asOf={new Date(chartCutoffMs).toISOString()} live={liveMode} onSymbolChange={symbolEditable ? (symbol) => onLinkContextChange({ symbol }) : undefined} settings={settings.ticker_news} symbol={linkContext.symbol} />
       : definition.id === "news_detail"
-        ? <NewsDetailContainer asOf={new Date(chartCutoffMs).toISOString()} canvasId={canvasId} requestedNewsId={requestedNewsId} />
+        ? <NewsDetailContainer asOf={new Date(chartCutoffMs).toISOString()} canvasId={canvasId} live={liveMode} requestedNewsId={requestedNewsId} />
       : definition.id === "sec"
         ? <AllSecContainer asOf={new Date(chartCutoffMs).toISOString()} live={liveMode} onSettingsChange={(patch) => updateSettings((state) => ({ ...state, sec: { ...state.sec, ...patch } }))} settings={settings.sec} />
       : definition.id === "ticker_sec"

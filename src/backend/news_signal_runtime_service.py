@@ -55,11 +55,14 @@ SELECT s.canonical_news_id,
        toString(s.published_at_utc) AS published_at_text,
        s.engine_version,
        s.synthesis_json,
+       e.tickers AS source_tickers,
        f.stage AS funnel_stage,
        f.forecast_eligibility AS funnel_forecast_eligibility,
        f.eligible_probability AS funnel_eligible_probability,
        toString(greatest(s.updated_at_utc,ifNull(f.created_at_utc,s.updated_at_utc))) AS updated_at_text
 FROM `q_live`.`news_synthesis_v1` AS s FINAL
+LEFT JOIN `q_live`.`benzinga_news_event_v2` AS e FINAL
+  ON e.canonical_news_id=s.canonical_news_id AND e.published_at_utc=s.published_at_utc
 LEFT JOIN `q_live`.`news_forecast_funnel_v1` AS f FINAL
   ON f.canonical_news_id=s.canonical_news_id
 WHERE s.engine_version={sql_string(ENGINE_VERSION)}
@@ -139,9 +142,28 @@ ORDER BY updated_at_utc,canonical_news_id LIMIT 10000 FORMAT JSONEachRow
             active.close()
 
 
+def news_reaction_events(*, start_at: datetime, as_of: datetime, client: ClickHouseHttpClient | None = None) -> list[dict[str, Any]]:
+    owned = client is None
+    active = client or ClickHouseHttpClient(default_clickhouse_url(), default_clickhouse_user(), default_clickhouse_password(), timeout_seconds=10)
+    sql = f"""
+SELECT canonical_news_id,ticker,toString(published_at_utc) published_at_utc,
+       hypothesis_json,toString(created_at_utc) updated_at_utc
+FROM q_live.news_market_hypothesis_v1 FINAL
+WHERE created_at_utc>=parseDateTime64BestEffort({sql_string(start_at.astimezone(UTC).isoformat())})
+  AND created_at_utc<=parseDateTime64BestEffort({sql_string(as_of.astimezone(UTC).isoformat())})
+ORDER BY created_at_utc,canonical_news_id,ticker LIMIT 10000 FORMAT JSONEachRow
+"""
+    try:
+        return list(active.iter_json_each_row(sql))
+    finally:
+        if owned:
+            active.close()
+
+
 def all_news_intelligence_events(*, start_at: datetime, as_of: datetime) -> list[dict[str, Any]]:
-    rows = [dict(row, event_authority="deterministic") for row in all_news_synthesis_events(start_at=start_at, as_of=as_of)]
+    rows = [dict(row, event_authority="deepfm") for row in all_news_synthesis_events(start_at=start_at, as_of=as_of)]
     rows.extend(dict(row, event_authority="llm_review") for row in news_llm_review_events(start_at=start_at, as_of=as_of))
+    rows.extend(dict(row, event_authority="reaction") for row in news_reaction_events(start_at=start_at, as_of=as_of))
     return sorted(rows, key=lambda row: (str(row.get("updated_at_utc") or ""), str(row.get("canonical_news_id") or ""), str(row.get("event_authority") or "")))
 
 
@@ -194,10 +216,16 @@ class NewsSignalRuntime:
             latest_cursor, latest_id = available_at, canonical_id
             if source.get("event_authority") == "llm_review":
                 event_rows.extend(llm_review_signal_rows(configuration, source=source, market_rows=by_ticker, available_at=available_at))
+            elif source.get("event_authority") == "reaction":
+                event_rows.extend(reaction_signal_rows(configuration, source=source, market_rows=by_ticker, available_at=available_at))
             else:
                 event_rows.extend(news_synthesis_candidate_rows(configuration, _object(source.get("synthesis_json")), source=source, market_rows=by_ticker, available_at=available_at))
         discovery = dict(configuration.get("market_discovery") or {})
-        rule_sets = {str(row.get("rule_set_id") or ""): row for row in discovery.get("rule_sets") or []}
+        rule_sets = {
+            str(row.get("rule_set_id") or ""): row
+            for row in discovery.get("rule_sets") or []
+            if not _uses_synthesis_decision_field(row)
+        }
         inserted: list[dict[str, Any]] = []
         for stream in discovery.get("signal_streams") or []:
             if not bool(stream.get("enabled", True)) or str(stream.get("source_type") or "") != "news_events":
@@ -252,13 +280,24 @@ def news_synthesis_candidate_rows(
         and bool(row.get("eligible"))
     }
     columns = list(dict(configuration.get("market_discovery") or {}).get("column_catalog") or [])
-    result: list[dict[str, Any]] = []
+    views_by_ticker: dict[str, tuple[dict[str, Any], str]] = {}
     for view in document.get("issuer_views") or []:
         entity_id = str(view.get("entity_id") or "")
-        sentiment = str(view.get("composite_sentiment") or "")
         ticker = str(entities.get(entity_id, {}).get("ticker") or "").strip().upper()
+        if ticker:
+            views_by_ticker[ticker] = (dict(view), entity_id)
+    source_tickers = {
+        str(value).strip().upper()
+        for value in source.get("source_tickers") or ()
+        if str(value).strip()
+    }
+    tickers = sorted(source_tickers | set(views_by_ticker))
+    result: list[dict[str, Any]] = []
+    for ticker in tickers:
         if not ticker or (require_market_row and ticker not in (market_rows or {})):
             continue
+        view, entity_id = views_by_ticker.get(ticker, ({}, ""))
+        sentiment = str(view.get("composite_sentiment") or "unknown")
         row = dict((market_rows or {}).get(ticker) or {"ticker": ticker, "symbol": ticker})
         values = {
             "identity.symbol": ticker,
@@ -266,9 +305,9 @@ def news_synthesis_candidate_rows(
             "news.positive_strength": int(view.get("positive_strength") or 0),
             "news.negative_strength": int(view.get("negative_strength") or 0),
             "news.forecast_trigger_eligible": entity_id in eligible,
-            "news.funnel.forecast_eligible": str(source.get("funnel_forecast_eligibility") or "") == "eligible",
-            "news.funnel.eligible_probability": float(source.get("funnel_eligible_probability") or 0),
-            "news.funnel.stage": str(source.get("funnel_stage") or "missing"),
+            "news.deepfm.forecast_eligible": str(source.get("funnel_forecast_eligibility") or "") == "eligible",
+            "news.deepfm.eligible_probability": float(source.get("funnel_eligible_probability") or 0),
+            "news.deepfm.status": str(source.get("funnel_stage") or "missing"),
             "news.canonical_news_id": str(source.get("canonical_news_id") or ""),
             "news.published_at": str(source.get("published_at_utc") or ""),
         }
@@ -295,8 +334,8 @@ def news_synthesis_candidate_rows(
 
 
 def bullish_news_signal_rows(*args: Any, **kwargs: Any) -> list[dict[str, Any]]:
-    """Compatibility helper for focused tests and legacy callers."""
-    return [row for row in news_synthesis_candidate_rows(*args, **kwargs) if row.get("news.forecast_trigger_eligible") and row.get("news.composite_sentiment") == "positive"]
+    """Compatibility helper using the DeepFM authority, never synthesis labels."""
+    return [row for row in news_synthesis_candidate_rows(*args, **kwargs) if row.get("news.deepfm.forecast_eligible")]
 
 
 def llm_review_signal_rows(
@@ -337,6 +376,35 @@ def llm_review_signal_rows(
     return result
 
 
+def reaction_signal_rows(
+    configuration: dict[str, Any], *, source: dict[str, Any], market_rows: dict[str, dict[str, Any]] | None,
+    available_at: datetime, require_market_row: bool = True,
+) -> list[dict[str, Any]]:
+    ticker = str(source.get("ticker") or "").strip().upper()
+    if not ticker or (require_market_row and ticker not in (market_rows or {})):
+        return []
+    payload = _object(source.get("hypothesis_json"))
+    row = dict((market_rows or {}).get(ticker) or {"ticker": ticker, "symbol": ticker})
+    for horizon, prediction in dict(payload.get("predictions") or {}).items():
+        for metric, value in dict(prediction or {}).items():
+            row[f"news.reaction.{horizon}.{metric}"] = value
+    row.update({
+        "ticker": ticker,
+        "symbol": ticker,
+        "news.reaction.regime_compatibility": str(payload.get("regime_compatibility") or "unknown"),
+        "news.canonical_news_id": str(source.get("canonical_news_id") or ""),
+        "news.published_at": str(source.get("published_at_utc") or ""),
+        "available_at": available_at.isoformat(),
+        "source_event_id": f"{source.get('canonical_news_id')}:{ticker}:reaction",
+    })
+    for column in list(dict(configuration.get("market_discovery") or {}).get("column_catalog") or []):
+        source_id = str(column.get("source_id") or "")
+        column_id = str(column.get("column_id") or "")
+        if column_id and source_id in row:
+            row[column_id] = row[source_id]
+    return [row]
+
+
 def _object(value: Any) -> dict[str, Any]:
     if isinstance(value, dict):
         return dict(value)
@@ -345,6 +413,23 @@ def _object(value: Any) -> dict[str, Any]:
     except json.JSONDecodeError:
         return {}
     return dict(parsed) if isinstance(parsed, dict) else {}
+
+
+_SYNTHESIS_DECISION_FIELDS = {
+    "news.composite_sentiment",
+    "news.positive_strength",
+    "news.negative_strength",
+    "news.forecast_trigger_eligible",
+}
+
+
+def _uses_synthesis_decision_field(rule_set: dict[str, Any]) -> bool:
+    """Fail closed if an old/custom signal rule attempts to use synthesis opinions."""
+    return any(
+        str(condition.get(key) or "") in _SYNTHESIS_DECISION_FIELDS
+        for condition in rule_set.get("conditions") or []
+        for key in ("left_field_ref", "left_source_id", "right_field_ref", "right_source_id")
+    )
 
 
 def _datetime(value: Any) -> datetime | None:

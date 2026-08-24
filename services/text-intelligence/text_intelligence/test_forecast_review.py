@@ -4,7 +4,7 @@ import unittest
 from types import SimpleNamespace
 from unittest import mock
 
-from .forecast_review import ForecastReviewRuntime, ReviewRequest
+from .forecast_review import ForecastReviewRuntime, ReactionRequest, ReviewRequest
 
 
 class ForecastReviewRuntimeTests(unittest.TestCase):
@@ -14,7 +14,9 @@ class ForecastReviewRuntimeTests(unittest.TestCase):
             forecast_funnel_enabled=False,
             forecast_release_manifest=None,
             forecast_model_device="cpu",
+            forecast_eligibility_threshold=0.5,
             review_prompt_path=None,
+            news_hypothesis_url="http://127.0.0.1:8811",
         )
         client = mock.Mock()
         client.execute.return_value = "0"
@@ -46,14 +48,26 @@ class ForecastReviewRuntimeTests(unittest.TestCase):
         self.assertEqual(insert.call_args.args[2], "news_llm_issuer_review_v1")
 
     @mock.patch("text_intelligence.forecast_review.insert_json_each_row")
-    def test_deterministic_rejection_never_invokes_deepfm(self, insert: mock.Mock) -> None:
+    def test_synthesis_rejection_does_not_block_deepfm(self, insert: mock.Mock) -> None:
         runtime = self.runtime("manual")
+        runtime.release = mock.Mock()
+        runtime.release.score.return_value = {
+            "forecast_eligibility": "eligible",
+            "eligible_probability": 0.91,
+            "threshold": 0.5,
+            "release_id": "release-v1",
+            "release_hash": "release-hash",
+        }
+        runtime._ticker_history = mock.Mock(return_value={})
+        runtime._market_cap_context = mock.Mock(return_value={})
         result = runtime.process_funnel(
             {"source_id": "news-1", "source_timestamp": "2026-08-24T14:00:00Z"},
             {"production": {"engine_version": "engine-v1"}, "final": {"forecast_eligibility": "ineligible"}},
         )
-        self.assertEqual(result["stage"], "deterministic_rejected")
+        self.assertEqual(result["stage"], "deepfm_eligible")
         self.assertEqual(result["deterministic_engine_version"], "engine-v1")
+        runtime.release.score.assert_called_once()
+        self.assertEqual(runtime.release.score.call_args.kwargs["threshold"], 0.5)
         self.assertEqual(insert.call_args.args[2], "news_forecast_funnel_v1")
 
     @mock.patch("text_intelligence.forecast_review.insert_json_each_row")
@@ -63,7 +77,7 @@ class ForecastReviewRuntimeTests(unittest.TestCase):
         runtime.release.score.return_value = {
             "forecast_eligibility": "eligible",
             "eligible_probability": 0.91,
-            "threshold": 0.38,
+            "threshold": 0.5,
             "release_id": "release-v1",
             "release_hash": "release-hash",
         }
@@ -82,12 +96,43 @@ class ForecastReviewRuntimeTests(unittest.TestCase):
             },
         )
 
-        self.assertEqual(result["stage"], "deepfm_candidate")
+        self.assertEqual(result["stage"], "deepfm_eligible")
         self.assertEqual(runtime.queue.qsize(), 1)
         work = runtime.queue.get_nowait()
         self.assertEqual(work.trigger_mode, "automatic")
         self.assertEqual(work.request.requested_by, "automatic-funnel")
         self.assertEqual(insert.call_args_list[-1].args[2], "news_llm_issuer_review_v1")
+
+    @mock.patch("text_intelligence.forecast_review._post_json", return_value={"status": "queued"})
+    def test_manual_reaction_queues_only_reviewed_eligible_issuers(self, post: mock.Mock) -> None:
+        runtime = self.runtime("manual")
+        runtime.status = mock.Mock(return_value={
+            "status": "complete",
+            "issuer_labels_json": '{"issuers":[{"ticker":"ACME","forecast_relevance_probability":0.91},{"ticker":"NOPE","forecast_relevance_probability":0.2}]}',
+        })
+        runtime._load_source = mock.Mock(return_value={
+            "source_timestamp": "2026-08-24T14:00:00Z",
+            "title": "Acme update",
+            "text": "Acme disclosed an update.",
+        })
+        result = runtime.request_reaction(ReactionRequest(
+            canonical_news_id="news-1",
+            published_at_utc="2026-08-24T14:00:00Z",
+        ))
+        self.assertEqual(result["tickers"], ["ACME"])
+        self.assertEqual(post.call_count, 1)
+        self.assertEqual(post.call_args.args[1]["ticker"], "ACME")
+        self.assertTrue(post.call_args.args[1]["session_id"].startswith("operator:"))
+        self.assertEqual(runtime.metrics["reaction_queued"], 1)
+
+    def test_reaction_requires_completed_review(self) -> None:
+        runtime = self.runtime("manual")
+        runtime.status = mock.Mock(return_value={"status": "queued"})
+        with self.assertRaisesRegex(ValueError, "must complete"):
+            runtime.request_reaction(ReactionRequest(
+                canonical_news_id="news-1",
+                published_at_utc="2026-08-24T14:00:00Z",
+            ))
 
     def test_table_contract_includes_append_only_llm_history(self) -> None:
         runtime = self.runtime("manual")

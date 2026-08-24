@@ -15,9 +15,8 @@ def configuration() -> dict:
         ("symbol", "identity.symbol"),
         ("last_price", "market.last_price"),
         ("spread_bps", "market.spread_bps"),
-        ("news_composite_sentiment", "news.composite_sentiment"),
-        ("news_positive_strength", "news.positive_strength"),
-        ("news_forecast_eligible", "news.forecast_trigger_eligible"),
+        ("news_deepfm_probability", "news.deepfm.eligible_probability"),
+        ("news_forecast_eligible", "news.deepfm.forecast_eligible"),
         ("canonical_news_id", "news.canonical_news_id"),
         ("news_published_at", "news.published_at"),
     ]
@@ -31,8 +30,7 @@ def configuration() -> dict:
                 {
                     "rule_set_id": "watchlist-news-bullish",
                     "conditions": [
-                        {"left_field_ref": "news.forecast_trigger_eligible", "comparator": "is_true"},
-                        {"left_field_ref": "news.composite_sentiment", "comparator": "equals", "value": "positive"},
+                        {"left_field_ref": "news.deepfm.forecast_eligible", "comparator": "is_true"},
                     ],
                 }
             ],
@@ -59,6 +57,10 @@ def source_row(updated_at: str) -> dict:
         "canonical_news_id": "news-1",
         "published_at_utc": "2026-08-17T14:59:00+00:00",
         "updated_at_utc": updated_at,
+        "source_tickers": ["ACME"],
+        "funnel_forecast_eligibility": "eligible",
+        "funnel_eligible_probability": 0.91,
+        "funnel_stage": "deepfm_eligible",
         "synthesis_json": json.dumps(
             {
                 "entities": [{"entity_id": "issuer-1", "ticker": "ACME"}],
@@ -158,8 +160,26 @@ class NewsSignalRuntimeTests(unittest.TestCase):
         self.assertEqual(len(result["new_occurrences"]), 1)
         occurrence = result["occurrences"][0]
         self.assertEqual(occurrence["ticker"], "ACME")
-        self.assertEqual(occurrence["news_composite_sentiment"], "positive")
+        self.assertEqual(occurrence["news_deepfm_probability"], 0.91)
         self.assertEqual(occurrence["last_price"], 12.5)
+
+    def test_synthesis_opinion_cannot_generate_a_signal(self) -> None:
+        now = datetime(2026, 8, 17, 15, 0, tzinfo=UTC)
+        config = configuration()
+        config["market_discovery"]["rule_sets"][0]["conditions"] = [{
+            "left_field_ref": "news.composite_sentiment",
+            "comparator": "equals",
+            "value": "positive",
+        }]
+        runtime = NewsSignalRuntime(
+            loader=lambda **_: [source_row("2026-08-17T14:59:50+00:00")],
+            publisher=lambda _stream_id, rows: {"new_occurrences": rows},
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            journal = TradingJournal(Path(directory) / "journal.sqlite3")
+            result = runtime.refresh(config, [{"ticker": "ACME"}], as_of=now, journal=journal)
+            journal.close()
+        self.assertEqual(result["occurrences"], [])
 
     def test_stale_bootstrap_event_is_visible_but_not_live_dispatchable(self) -> None:
         now = datetime(2026, 8, 17, 15, 0, tzinfo=UTC)
@@ -212,6 +232,38 @@ class NewsSignalRuntimeTests(unittest.TestCase):
             journal.close()
         self.assertEqual(len(result["new_occurrences"]), 1)
         self.assertTrue(result["new_occurrences"][0]["llm_forecast_eligible"])
+
+    def test_reaction_fields_can_generate_a_signal(self) -> None:
+        now = datetime(2026, 8, 17, 15, 0, tzinfo=UTC)
+        config = configuration()
+        config["market_discovery"]["column_catalog"].append({
+            "column_id": "reaction_expected_return",
+            "source_id": "news.reaction.5m.expected_return_pct",
+            "field_ref": "news.reaction.5m.expected_return_pct",
+        })
+        config["market_discovery"]["rule_sets"][0]["conditions"] = [{
+            "left_field_ref": "news.reaction.5m.expected_return_pct",
+            "comparator": "greater_than",
+            "value": 1.0,
+        }]
+        source = {
+            "canonical_news_id": "news-reaction-1",
+            "published_at_utc": "2026-08-17T14:59:00+00:00",
+            "updated_at_utc": "2026-08-17T14:59:50+00:00",
+            "event_authority": "reaction",
+            "ticker": "ACME",
+            "hypothesis_json": json.dumps({
+                "regime_compatibility": "supportive",
+                "predictions": {"5m": {"expected_return_pct": 1.4}},
+            }),
+        }
+        runtime = NewsSignalRuntime(loader=lambda **_: [source], publisher=lambda _stream_id, rows: {"new_occurrences": rows})
+        with tempfile.TemporaryDirectory() as directory:
+            journal = TradingJournal(Path(directory) / "journal.sqlite3")
+            result = runtime.refresh(config, [{"ticker": "ACME"}], as_of=now, journal=journal)
+            journal.close()
+        self.assertEqual(len(result["new_occurrences"]), 1)
+        self.assertEqual(result["new_occurrences"][0]["reaction_expected_return"], 1.4)
 
 
 if __name__ == "__main__":
