@@ -150,6 +150,9 @@ Environment variables:
 - `QMD_INTRADAY_BAR_BOOTSTRAP_SYMBOL_BATCH`, default `128`; bounded ticker count per restart-safe migration batch
 - `QMD_INTRADAY_BAR_SHARD_COUNT`, default `8`
 - `QMD_INTRADAY_BAR_TABLE`, default `intraday_family_bars_v3`
+- `QMD_DERIVED_RECONCILIATION_ENABLED`, default `true`
+- `QMD_DERIVED_RECONCILIATION_INTERVAL_MS`, default `300000`
+- `QMD_DERIVED_COVERAGE_TABLE`, default `qmd_derived_coverage_v1`
 - `QMD_INTRADAY_BAR_TIMEFRAMES`, default `100ms,1s,5s,10s,30s,1m,5m,1h`
 - `QMD_INDICATOR_CHANNEL_CAPACITY`, default `250000`
 - `QMD_INDICATOR_BAR_CHANNEL_CAPACITY`, default `250000`
@@ -268,15 +271,15 @@ that 100ms bucket from `q_live.events FINAL` and then rebuilds each affected par
 from the corrected base bars.
 
 At first startup, QMD creates and validates `intraday_family_bars_v3`. Normal
-startup never blocks on a historical rebuild. For a one-time empty-table migration,
-stop QMD Live and run `scripts\start_qmd_live_gateway.ps1 -BootstrapBars`; the
-gateway groups retained events into bounded date/ticker batches, checkpoints
-each exact ticker-set fingerprint, builds 100ms rows, and derives higher
-resolutions before becoming healthy. Bootstrap is limited to the newest
-configured Live session window even if archive-verification has temporarily
-blocked deletion of older event partitions. A failed run resumes completed batches;
-keep `QMD_INTRADAY_BAR_BOOTSTRAP_SYMBOL_BATCH` at its default throughout one
-migration. Only after
+startup never blocks the API or live feed on a historical rebuild. The automatic
+derived reconciler runs primarily outside the collection window, groups retained
+events into bounded date/ticker batches, checkpoints each exact ticker-set
+fingerprint, builds 100ms rows, and derives higher resolutions. A failed run
+resumes completed batches. The managed `-BootstrapBars` switch remains an
+emergency reviewed foreground recovery path; it is no longer required for
+ordinary migration or gap-repair completion. Keep
+`QMD_INTRADAY_BAR_BOOTSTRAP_SYMBOL_BATCH` at its default throughout one
+reconciliation. Only after
 the new table passes readiness validation does QMD drop the obsolete
 `live_market_bars`, `bars_by_symbol_time`, `bars_by_time_symbol`, and
 `live_model_microbars` tables. No active Rust or Python writer recreates them.
@@ -300,10 +303,21 @@ Closed scoped indicator rows are persisted by default in
 `q_live.qmd_indicator_rows_v1` with calculation/source revisions and a complete
 flag. `/snapshot/persisted-indicators/{ticker}` is the bounded fast-read surface
 for Live chart hydration; `/snapshot/indicators/{ticker}` and the websocket remain
-the advancing in-memory tail. Signal Stream occurrences are already durable in
+the advancing in-memory tail. When dates are omitted, persisted bar and indicator
+reads use the retained market-session window rather than the current calendar
+date, so weekends and holidays resolve the latest closed session. Signal Stream occurrences are already durable in
 their configured table. Events, v3 bars, indicator rows, and signal occurrences
 share the configured recent-session retention boundary and are deleted only
 after the historical event handoff is verified.
+
+Indicator coverage is reconciled independently from event and family-bar
+coverage. A newly activated small chart/request scope replays the retained
+canonical `q_live.events` window through the shared Rust bar and indicator
+engines when its in-memory state is cold. Larger Watchlist and strategy leases
+activate without waiting for a full replay and reconcile after the collection
+window closes. Completed bar and indicator repairs are recorded in
+`q_live.qmd_derived_coverage_v1`; event coverage alone never certifies either
+derived product.
 
 When QMD Live has no in-memory Scanner population during nights, weekends,
 holidays, or a restart, the Observe Live presentation resolves an explicit
@@ -553,7 +567,10 @@ sessions, default `3`. Any uncovered interval inside those session windows is
 treated as a gap, except for intervals shorter than
 `QMD_GAP_FILL_MIN_GAP_SECONDS`. Repair rows are converted to the normal fanout
 path so compact events, bars, in-memory state, streams, indicators,
-and scanner primitives see the same data. Raw `live_massive_trades` and
+and scanner primitives see the same data. When canonical events already exist
+but a derived product is missing, the derived reconciler reads retained events
+directly; REST gap fill does not download or re-fan-out exact event replays just
+to repair bars or indicators. Raw `live_massive_trades` and
 `live_massive_quotes` are excluded from this contract unless raw persistence is
 explicitly enabled for a separate debug workflow.
 Deeper historical event history should be read from the read-only
@@ -616,6 +633,8 @@ daily-partitioned `q_live.events` and `q_live.intraday_family_bars_v3` tables, p
 confirmed quote/trade handoff row totals exactly match the archive count and
 schema. Verified sessions are deleted independently; an unverified date records
 `retention_blocked_historical_gap` without blocking cleanup of other dates.
+Derived coverage uses the same market-session boundary and calculation
+revisions; an older calculation revision never certifies a new one.
 Legacy `q_live.events_YYYY` tables are no longer read or written. They are left
 untouched for the production cutover audit and may be dropped only after the
 singular table's repaired rolling coverage has been verified.
@@ -692,6 +711,13 @@ history can be recovered without rewriting its cursor:
 The first command proves the explicit source window is gap-free. The second
 asks QMD Live to orchestrate a fresh bounded replay in QMD History, persist the
 completed checkpoint, and only then clear the blocked focus-registry record.
+The default replay begins seven calendar days before invocation, which covers
+the retained live-session horizon across a weekend without attempting an
+unbounded multi-year event replay. Operators can pass `-StartUtc` for a wider
+reviewed source window when the configured event and timeout limits permit it.
+Both request-time activation and inactive advancement persist a typed blocked
+record when QMD History rejects a checkpoint's source identity, so the same
+reviewed rebuild path is available instead of leaving an unrecoverable 409.
 The operator token is removed whenever the managed QMD Live process exits.
 
 Useful terminal modes:

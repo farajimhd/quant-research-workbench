@@ -81,6 +81,15 @@ if ($Bind.Trim()) {
 }
 $env:QMD_HOST_ROLE = $HostRole.ToLowerInvariant()
 $env:QMD_INTRADAY_BAR_BOOTSTRAP_ON_START = if ($BootstrapBars) { "true" } else { "false" }
+if (-not $env:QMD_DERIVED_RECONCILIATION_ENABLED) {
+    $env:QMD_DERIVED_RECONCILIATION_ENABLED = "true"
+}
+if (-not $env:QMD_DERIVED_RECONCILIATION_INTERVAL_MS) {
+    $env:QMD_DERIVED_RECONCILIATION_INTERVAL_MS = "300000"
+}
+if (-not $env:QMD_DERIVED_COVERAGE_TABLE) {
+    $env:QMD_DERIVED_COVERAGE_TABLE = "qmd_derived_coverage_v1"
+}
 
 function Resolve-CondaEnvPython {
     param(

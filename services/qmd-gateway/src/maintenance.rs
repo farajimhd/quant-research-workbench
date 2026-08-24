@@ -85,6 +85,27 @@ impl SharedMaintenanceState {
         state.updated_at_utc = Some(Utc::now());
     }
 
+    pub async fn configure_job_total(&self, jobs: u64) {
+        let mut state = self.inner.write().await;
+        state.total_jobs = jobs;
+        state.updated_at_utc = Some(Utc::now());
+    }
+
+    pub async fn start_derived_batch(&self, label: &str) {
+        let mut state = self.inner.write().await;
+        state.current_symbol = label.to_string();
+        state.message = format!("Reconciling derived batch {label}.");
+        state.status = "running".to_string();
+        state.updated_at_utc = Some(Utc::now());
+    }
+
+    pub async fn complete_derived_batch(&self, rows: u64) {
+        let mut state = self.inner.write().await;
+        state.completed_jobs = state.completed_jobs.saturating_add(1);
+        state.rows_written = state.rows_written.saturating_add(rows);
+        state.updated_at_utc = Some(Utc::now());
+    }
+
     pub async fn set_message(&self, status: &str, message: &str) {
         let mut state = self.inner.write().await;
         state.status = status.to_string();
@@ -147,5 +168,35 @@ impl SharedMaintenanceState {
         state.message = message.to_string();
         state.status = status.to_string();
         state.updated_at_utc = Some(now);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn derived_batch_progress_advances_only_after_completion() {
+        let state = SharedMaintenanceState::new();
+        state
+            .start(
+                "derived_reconciliation",
+                "after_hours",
+                "starting",
+                None,
+                None,
+            )
+            .await;
+        state.configure_job_total(3).await;
+        state.start_derived_batch("2026-08-21 1/3").await;
+        let active = state.snapshot().await;
+        assert_eq!(active.total_jobs, 3);
+        assert_eq!(active.completed_jobs, 0);
+        assert_eq!(active.current_symbol, "2026-08-21 1/3");
+
+        state.complete_derived_batch(125).await;
+        let completed = state.snapshot().await;
+        assert_eq!(completed.completed_jobs, 1);
+        assert_eq!(completed.rows_written, 125);
     }
 }

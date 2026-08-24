@@ -2,6 +2,8 @@ use crate::bars::{TradeAggregationRules, TradeUpdateRule};
 use crate::compact_event::{CompactEventDecoder, LiveCompactEvent};
 use crate::config::GatewayConfig;
 use crate::event::MarketEvent;
+use crate::maintenance::SharedMaintenanceState;
+use crate::market_calendar::MarketCalendarClient;
 use crate::metrics::SharedMetrics;
 use crate::timefmt::clickhouse_datetime64;
 use chrono::{Datelike, Timelike, Utc};
@@ -112,9 +114,23 @@ pub struct IntradayBarRouter {
 }
 
 pub struct IntradayBarService {
+    pub reconciler: IntradayBarReconciler,
     pub router: IntradayBarRouter,
     pub rows: broadcast::Sender<IntradayBarRow>,
     tasks: Vec<JoinHandle<()>>,
+}
+
+#[derive(Clone)]
+pub struct IntradayBarReconciler {
+    writer: IntradayBarWriter,
+}
+
+#[derive(Clone, Debug, Default, Serialize)]
+pub struct IntradayBarReconciliationSummary {
+    pub completed_batches: u64,
+    pub newly_completed_batches: u64,
+    pub planned_batches: u64,
+    pub source_rows: u64,
 }
 
 #[derive(Clone)]
@@ -145,6 +161,87 @@ impl IntradayWriterPending {
 impl IntradayBarService {
     pub fn into_tasks(self) -> Vec<JoinHandle<()>> {
         self.tasks
+    }
+}
+
+impl IntradayBarReconciler {
+    /// Reconcile the complete retained Live window through the same canonical
+    /// SQL authority used by the reviewed v3 migration. Completed batches are
+    /// restart-safe and skipped; incomplete batches resume automatically.
+    pub async fn reconcile_retained_window(
+        &self,
+        dates: &[chrono::NaiveDate],
+        maintenance: &SharedMaintenanceState,
+    ) -> Result<IntradayBarReconciliationSummary, String> {
+        self.writer
+            .bootstrap_dates(Some(dates), Some(maintenance))
+            .await
+    }
+}
+
+pub async fn run_intraday_bar_reconciliation_service(
+    config: GatewayConfig,
+    reconciler: IntradayBarReconciler,
+    maintenance: SharedMaintenanceState,
+    calendar: MarketCalendarClient,
+) {
+    if !config.derived_reconciliation_enabled {
+        return;
+    }
+    loop {
+        let snapshot = calendar.snapshot(Utc::now());
+        if !snapshot.active_collection_window && !maintenance.snapshot().await.active {
+            let now = Utc::now();
+            let today = now.with_timezone(&New_York).date_naive();
+            let dates = calendar.prior_sessions(
+                today,
+                config
+                    .recent_live_prior_market_days
+                    .max(0)
+                    .saturating_add(1) as usize,
+            );
+            maintenance
+                .start(
+                    "derived_reconciliation",
+                    "after_hours",
+                    "Reconciling retained canonical intraday bars.",
+                    None,
+                    Some(now),
+                )
+                .await;
+            match reconciler
+                .reconcile_retained_window(&dates, &maintenance)
+                .await
+            {
+                Ok(summary) => {
+                    maintenance
+                        .finish(
+                            "up_to_date",
+                            &format!(
+                                "Derived bar reconciliation complete: batches={}/{} newly_completed={} source_rows={}",
+                                summary.completed_batches,
+                                summary.planned_batches,
+                                summary.newly_completed_batches,
+                                summary.source_rows,
+                            ),
+                        )
+                        .await;
+                }
+                Err(error) => {
+                    maintenance
+                        .finish(
+                            "derived_reconciliation_failed",
+                            &format!("Derived bar reconciliation failed: {error}"),
+                        )
+                        .await;
+                    eprintln!("QMD derived bar reconciliation failed: {error}");
+                }
+            }
+        }
+        sleep(Duration::from_millis(
+            config.derived_reconciliation_interval_ms,
+        ))
+        .await;
     }
 }
 
@@ -383,6 +480,7 @@ pub async fn spawn_intraday_bar_service(
     validate_resolutions(&resolutions)?;
     validate_identifier(&config.intraday_bar_table, "QMD_INTRADAY_BAR_TABLE")?;
     validate_identifier(&config.compact_event_table, "QMD_COMPACT_EVENT_TABLE")?;
+    validate_identifier(&config.derived_coverage_table, "QMD_DERIVED_COVERAGE_TABLE")?;
 
     let (broadcast_sender, _) = broadcast::channel(10_000);
     let writer = IntradayBarWriter::new(config.clone(), metrics.clone(), resolutions.clone());
@@ -543,6 +641,9 @@ pub async fn spawn_intraday_bar_service(
     }
     drop(writer_senders);
     Ok(IntradayBarService {
+        reconciler: IntradayBarReconciler {
+            writer: writer.clone(),
+        },
         router: IntradayBarRouter { senders },
         rows: broadcast_sender,
         tasks,
@@ -757,6 +858,27 @@ impl IntradayBarWriter {
             settings = merge_tree_settings(&self.config.clickhouse_storage_policy),
         ))
         .await?;
+        self.query(&format!(
+            r#"CREATE TABLE IF NOT EXISTS {table}
+            (
+                product LowCardinality(String),
+                local_date Date,
+                scope_id String,
+                calculation_revision LowCardinality(String),
+                source_revision String,
+                source_row_count UInt64,
+                output_row_count UInt64,
+                status LowCardinality(String),
+                detail String,
+                updated_at_utc DateTime64(3, 'UTC') DEFAULT now64(3)
+            ) ENGINE = ReplacingMergeTree(updated_at_utc)
+            PARTITION BY local_date
+            ORDER BY (product, local_date, scope_id, calculation_revision)
+            {settings}"#,
+            table = self.config.derived_coverage_table,
+            settings = merge_tree_settings(&self.config.clickhouse_storage_policy),
+        ))
+        .await?;
         self.validate_schema().await?;
         if self.config.intraday_bar_bootstrap_on_start {
             self.bootstrap_if_empty().await?;
@@ -849,7 +971,15 @@ impl IntradayBarWriter {
         Ok(())
     }
 
-    async fn bootstrap_if_empty(&self) -> Result<(), String> {
+    async fn bootstrap_if_empty(&self) -> Result<IntradayBarReconciliationSummary, String> {
+        self.bootstrap_dates(None, None).await
+    }
+
+    async fn bootstrap_dates(
+        &self,
+        requested_dates: Option<&[chrono::NaiveDate]>,
+        maintenance: Option<&SharedMaintenanceState>,
+    ) -> Result<IntradayBarReconciliationSummary, String> {
         let source_exists = parse_count(
             &self
                 .query(&format!(
@@ -859,19 +989,9 @@ impl IntradayBarWriter {
                 .await?,
         )?;
         if source_exists == 0 {
-            return Ok(());
+            return Ok(IntradayBarReconciliationSummary::default());
         }
-        let source_rows = parse_count(
-            &self
-                .query(&format!(
-                    "SELECT count() FROM {} FORMAT TabSeparated",
-                    self.config.compact_event_table
-                ))
-                .await?,
-        )?;
-        if source_rows == 0 {
-            return Ok(());
-        }
+        let mut source_rows = 0_u64;
         self.query(&format!(
             r#"CREATE TABLE IF NOT EXISTS {BOOTSTRAP_STATE_TABLE} (
                 calculation_revision LowCardinality(String), local_date Date,
@@ -887,17 +1007,57 @@ impl IntradayBarWriter {
             "ALTER TABLE {BOOTSTRAP_STATE_TABLE} ADD COLUMN IF NOT EXISTS batch_fingerprint String DEFAULT '' AFTER batch_id"
         ))
         .await?;
+        let requested = requested_dates
+            .unwrap_or_default()
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>();
+        let mut incomplete_dates = Vec::new();
+        for date in &requested {
+            let complete = parse_count(
+                &self
+                    .query(&format!(
+                        "SELECT count() FROM {} FINAL WHERE product = 'intraday_family_bars' AND local_date = toDate('{}') AND scope_id = 'session' AND calculation_revision = '{}' AND status = 'complete' FORMAT TabSeparated",
+                        self.config.derived_coverage_table,
+                        date,
+                        INTRADAY_BAR_CALCULATION_REVISION,
+                    ))
+                    .await?,
+            )? > 0;
+            if !complete {
+                incomplete_dates.push(date.clone());
+            }
+        }
+        if requested_dates.is_some() && incomplete_dates.is_empty() {
+            return Ok(IntradayBarReconciliationSummary::default());
+        }
+        let date_filter = if incomplete_dates.is_empty() {
+            String::new()
+        } else {
+            let values = incomplete_dates
+                .iter()
+                .map(|date| format!("toDate('{date}')"))
+                .collect::<Vec<_>>()
+                .join(",");
+            let min_date = incomplete_dates.iter().min().expect("dates are nonempty");
+            let max_date = incomplete_dates.iter().max().expect("dates are nonempty");
+            format!(
+                "WHERE event_date BETWEEN toDate('{min_date}') - 1 AND toDate('{max_date}') + 1 AND toDate(toTimeZone(fromUnixTimestamp64Micro(toInt64(sip_timestamp_us)), 'America/New_York')) IN ({values})"
+            )
+        };
         let discovered = self
             .query(&format!(
                 r#"SELECT
                     toString(toDate(toTimeZone(fromUnixTimestamp64Micro(toInt64(sip_timestamp_us)), 'America/New_York'))) AS local_date,
                     ticker
                 FROM {source}
-                WHERE ticker != ''
+                {date_filter}
+                {connector} ticker != ''
                 GROUP BY local_date, ticker
                 ORDER BY local_date, ticker
                 FORMAT TSV"#,
                 source = self.config.compact_event_table,
+                connector = if date_filter.is_empty() { "WHERE" } else { "AND" },
             ))
             .await?;
         let mut by_date = BTreeMap::<String, Vec<String>>::new();
@@ -923,8 +1083,20 @@ impl IntradayBarWriter {
         if let Some(first_retained_date) = first_retained_date {
             by_date.retain(|local_date, _| local_date >= &first_retained_date);
         }
+        if let Some(maintenance) = maintenance {
+            let jobs = by_date
+                .values()
+                .map(|tickers| {
+                    tickers
+                        .len()
+                        .div_ceil(self.config.intraday_bar_bootstrap_symbol_batch)
+                })
+                .sum::<usize>();
+            maintenance.configure_job_total(jobs as u64).await;
+        }
         let mut planned_batches = 0_u64;
         let mut completed_batches = 0_u64;
+        let mut newly_completed_batches = 0_u64;
         for (local_date, tickers) in by_date {
             let parsed_date = chrono::NaiveDate::parse_from_str(&local_date, "%Y-%m-%d")
                 .map_err(|error| format!("invalid bootstrap local date {local_date}: {error}"))?;
@@ -937,6 +1109,17 @@ impl IntradayBarWriter {
                     .map_err(|_| "too many intraday bootstrap batches".to_string())?;
                 let batch_fingerprint =
                     format!("{:016x}", stable_hash(&ticker_batch.join("\u{1f}")));
+                if let Some(maintenance) = maintenance {
+                    maintenance
+                        .start_derived_batch(&format!(
+                            "{local_date} {}/{}",
+                            batch_index.saturating_add(1),
+                            tickers
+                                .len()
+                                .div_ceil(self.config.intraday_bar_bootstrap_symbol_batch)
+                        ))
+                        .await;
+                }
                 let already_complete = parse_count(
                     &self
                         .query(&format!(
@@ -947,6 +1130,9 @@ impl IntradayBarWriter {
                 )? > 0;
                 if already_complete {
                     completed_batches = completed_batches.saturating_add(1);
+                    if let Some(maintenance) = maintenance {
+                        maintenance.complete_derived_batch(0).await;
+                    }
                     continue;
                 }
                 let ticker_list = ticker_batch
@@ -962,6 +1148,22 @@ impl IntradayBarWriter {
                 let source_filter = format!(
                     " AND event_date BETWEEN toDate('{source_start}') AND toDate('{source_end}') AND ticker IN ({ticker_list})"
                 );
+                let source_row_count = parse_count(
+                    &self
+                        .query(&format!(
+                            "SELECT count() FROM {source} FINAL WHERE event_date BETWEEN toDate('{source_start}') AND toDate('{source_end}') AND ticker IN ({ticker_list}) AND toDate(toTimeZone(fromUnixTimestamp64Micro(toInt64(sip_timestamp_us)), 'America/New_York')) = toDate('{local_date}') FORMAT TabSeparated",
+                            source = self.config.compact_event_table,
+                        ))
+                        .await?,
+                )?;
+                source_rows = source_rows.saturating_add(source_row_count);
+                if source_row_count == 0 {
+                    completed_batches = completed_batches.saturating_add(1);
+                    if let Some(maintenance) = maintenance {
+                        maintenance.complete_derived_batch(0).await;
+                    }
+                    continue;
+                }
                 let base_sql = self.bootstrap_base_sql_with_filter(&base_filter, &source_filter);
                 self.query(&format!("EXPLAIN SYNTAX {base_sql}")).await?;
                 self.query(&base_sql).await?;
@@ -996,15 +1198,78 @@ impl IntradayBarWriter {
                     ticker_count = ticker_batch.len(),
                 ))
                 .await?;
+                let output_row_count = parse_count(
+                    &self
+                        .query(&format!(
+                            "SELECT count() FROM {} FINAL WHERE calculation_revision = '{}' AND complete = 1 AND local_date = toDate('{}') AND ticker IN ({}) FORMAT TabSeparated",
+                            self.config.intraday_bar_table,
+                            INTRADAY_BAR_CALCULATION_REVISION,
+                            local_date,
+                            ticker_list,
+                        ))
+                        .await?,
+                )?;
+                self.record_derived_coverage(
+                    &local_date,
+                    &format!("batch:{batch_id}:{batch_fingerprint}"),
+                    source_row_count,
+                    output_row_count,
+                    "complete",
+                    &format!("tickers={}", ticker_batch.len()),
+                )
+                .await?;
                 completed_batches = completed_batches.saturating_add(1);
+                newly_completed_batches = newly_completed_batches.saturating_add(1);
+                if let Some(maintenance) = maintenance {
+                    maintenance.complete_derived_batch(output_row_count).await;
+                }
             }
+            self.record_derived_coverage(
+                &local_date,
+                "session",
+                0,
+                0,
+                "complete",
+                &format!("completed_batches={planned_batches}"),
+            )
+            .await?;
         }
         if planned_batches == 0 || completed_batches != planned_batches {
             return Err(format!(
                 "bounded intraday bootstrap incomplete: planned={planned_batches}, completed={completed_batches}, source_rows={source_rows}"
             ));
         }
-        Ok(())
+        Ok(IntradayBarReconciliationSummary {
+            completed_batches,
+            newly_completed_batches,
+            planned_batches,
+            source_rows,
+        })
+    }
+
+    async fn record_derived_coverage(
+        &self,
+        local_date: &str,
+        scope_id: &str,
+        source_row_count: u64,
+        output_row_count: u64,
+        status: &str,
+        detail: &str,
+    ) -> Result<(), String> {
+        self.query(&format!(
+            "INSERT INTO {} (product, local_date, scope_id, calculation_revision, source_revision, source_row_count, output_row_count, status, detail, updated_at_utc) VALUES ('intraday_family_bars', toDate('{}'), '{}', '{}', '{}', {}, {}, '{}', '{}', now64(3))",
+            self.config.derived_coverage_table,
+            escape_sql_string(local_date),
+            escape_sql_string(scope_id),
+            INTRADAY_BAR_CALCULATION_REVISION,
+            escape_sql_string(&self.config.qmd_run_id),
+            source_row_count,
+            output_row_count,
+            escape_sql_string(status),
+            escape_sql_string(detail),
+        ))
+        .await
+        .map(|_| ())
     }
 
     fn bootstrap_base_sql(&self, repair: Option<&RepairRequest>) -> String {

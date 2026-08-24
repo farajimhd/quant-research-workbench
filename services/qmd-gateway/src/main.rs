@@ -11,11 +11,14 @@ use qmd_core::computation_targets::SharedComputationTargets;
 use qmd_core::config::{is_valid_qmd_host_role, load_env_files, GatewayConfig};
 use qmd_core::event::MarketEvent;
 use qmd_core::gapfill::{run_gap_fill_service, run_startup_maintenance, GapFillService};
+use qmd_core::indicator_reconciliation::IndicatorReconciler;
 use qmd_core::indicators::{
     load_live_market_structure_references, spawn_indicator_engines, IndicatorClickHouseWriter,
     IndicatorRow, SharedIndicatorStore,
 };
-use qmd_core::intraday_bars::spawn_intraday_bar_service;
+use qmd_core::intraday_bars::{
+    run_intraday_bar_reconciliation_service, spawn_intraday_bar_service,
+};
 use qmd_core::live_market_state::{
     spawn_live_market_state_service, LiveSymbolMarketStateEvent, SharedLiveMarketStateStore,
 };
@@ -218,6 +221,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             "qmd-gateway canonical intraday bar preflight failed: {error}"
         ))
     })?;
+    let intraday_bar_reconciler = intraday_bar_service.reconciler.clone();
 
     let mut writer_handles = Vec::new();
     if config.persist_raw_events {
@@ -306,6 +310,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             "Canonical QMD structure-event writer initialized; awaiting confirmed events.",
         );
     }
+    let indicator_reconciler = IndicatorReconciler::new(
+        config.clone(),
+        market_calendar.clone(),
+        compact_event_decoder.clone(),
+        indicators.clone(),
+        trade_aggregation_rules.clone(),
+        indicator_writer.clone(),
+    );
 
     writer_handles.push(tokio::spawn(indicator_writer.run(
         indicator_writer_receiver,
@@ -422,6 +434,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         config: config.clone(),
         events: event_sender,
         indicators,
+        indicator_reconciler,
         live_market_state,
         live_market_state_events: live_market_state_sender,
         market: market.clone(),
@@ -532,6 +545,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             compact_event_store.clone(),
             market_calendar.clone(),
             compact_references,
+        )));
+    }
+    if config.derived_reconciliation_enabled {
+        producer_handles.push(tokio::spawn(run_intraday_bar_reconciliation_service(
+            config.clone(),
+            intraday_bar_reconciler,
+            maintenance.clone(),
+            market_calendar.clone(),
         )));
     }
     server.await??;

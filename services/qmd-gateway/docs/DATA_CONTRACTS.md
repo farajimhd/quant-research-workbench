@@ -539,6 +539,17 @@ cold reconstruction. Each row carries calculation/source revision and a
 complete flag. Generic-structure event/state persistence remains the separate
 durable strategy and restart contract rather than a per-chart duplicate.
 
+## Derived Coverage
+
+Table: `qmd_derived_coverage_v1`.
+
+Each row certifies one versioned bar batch, completed bar session, or scoped
+indicator reconstruction. Identity includes `product`, `local_date`,
+`scope_id`, and `calculation_revision`; rows also carry source revision, source
+and output row counts, status, detail, and update time. This ledger is
+independent of `qmd_live_event_coverage_v1`: complete canonical events do not
+imply complete bars or indicators.
+
 ## Indicator Catalog Summary
 
 Endpoint:

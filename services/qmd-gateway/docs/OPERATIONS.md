@@ -373,6 +373,9 @@ Before live use:
 | Gap fill keeps fetching many rows | Compare `provider_rows_fetched`, `canonical_rows_replayed`, and `novel_rows_enqueued`. Replayed rows must be filtered before fan-out; repeated novel rows indicate a true coverage or checkpoint gap. |
 | Startup fails during compact-event preflight | The table engine, partition, columns, or full-payload sorting key is incompatible. Apply a reviewed schema migration; do not reinterpret provider timestamp/sequence collisions as duplicate events. |
 | Bars predate v3 | Stop QMD Live and use the managed `-BootstrapBars` migration. `repair_qmd_live_canonical_bars.py` is audit-only; direct SQL execution is retired. |
+| Events are current but bars are missing | Leave automatic derived reconciliation enabled. Outside collection hours it resumes exact retained-session date/ticker batches and publishes progress through `/snapshot/maintenance` and `/snapshot/coverage`. Use `-BootstrapBars` only if the automatic path cannot start. |
+| A chart has no persisted indicators | Activate its normal QMD computation target. A small request scope reconstructs retained indicators through the shared event/bar/indicator engines; large scopes reconcile after hours without blocking live admission. Check `derived_indicators` rows in `/snapshot/coverage`. |
+| Generic Structure activation returns a source-incompatible checkpoint | Run `scripts/rebuild_qmd_structure_checkpoint.ps1 -Ticker SYMBOL -PlanOnly`, then the same command without `-PlanOnly`. The safe default is a seven-calendar-day replay covering the retained live horizon; use an older explicit `-StartUtc` only after reviewing its source plan, event bound, and timeout budget. |
 
 ## Security Notes
 

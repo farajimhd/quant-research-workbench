@@ -614,7 +614,7 @@ class HistoricalContractTests(unittest.TestCase):
         persisted_indicators.return_value = {
             "history": [{"bar_start": "2026-07-14T13:44:00+00:00", "ema_20": 314.5}],
             "source": "qmd_live_qmd_indicator_rows_v1",
-            "calculation_revision": "qmd-indicators-v19",
+            "calculation_revision": "qmd-indicators-v20",
             "complete": True,
         }
 

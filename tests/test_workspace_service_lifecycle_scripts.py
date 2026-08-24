@@ -142,6 +142,9 @@ def test_qmd_cargo_output_is_external_and_binary_is_executed_directly() -> None:
     assert r"d:\tradingml\runtimes\qmd_gateway" in live_source
     assert 'join-path $resolvedruntimeroot "logs"' in live_source
     assert '$env:qmd_host_role = $hostrole.tolowerinvariant()' in live_source
+    assert '$env:qmd_derived_reconciliation_enabled = "true"' in live_source
+    assert '$env:qmd_derived_reconciliation_interval_ms = "300000"' in live_source
+    assert '$env:qmd_derived_coverage_table = "qmd_derived_coverage_v1"' in live_source
     assert '$env:qmd_historical_pipeline_python = $python' in live_source
     assert '$env:qmd_historical_update_runtime_root = $historicalupdateruntimeroot' in live_source
     assert "workstation qmd historical autorun requires an exact python executable" in live_source
@@ -178,6 +181,7 @@ def test_qmd_structure_checkpoint_rebuild_uses_ephemeral_operator_authority() ->
     assert "protecteddata]::unprotect" in rebuild
     assert "supportsshouldprocess" in rebuild
     assert "planonly" in rebuild
+    assert "[datetime]::utcnow.adddays(-7)" in rebuild
     assert "source-plan" in rebuild
     assert "uncovered segment" in rebuild
 

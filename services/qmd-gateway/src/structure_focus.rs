@@ -218,6 +218,7 @@ impl StructureFocusCoordinator {
         let _activation_guards = self.activation_locks.acquire(&lease.tickers).await;
         let mut staged = Vec::new();
         let mut activated = Vec::new();
+        let mut current_ticker = None::<String>;
         let result = async {
             for ticker in &lease.tickers {
                 if self
@@ -245,6 +246,7 @@ impl StructureFocusCoordinator {
                 }
             }
             for ticker in &staged {
+                current_ticker = Some(ticker.clone());
                 let checkpoint = self
                     .checkpoint_store
                     .load_structure_checkpoint(ticker)
@@ -301,6 +303,11 @@ impl StructureFocusCoordinator {
         }
         .await;
         if let Err(error) = result {
+            let quarantine = non_retryable_history_error(&error).and_then(|history_error| {
+                current_ticker
+                    .as_ref()
+                    .map(|ticker| (ticker.clone(), history_error))
+            });
             for ticker in &staged {
                 self.bars.cancel_structure_staging(ticker).await;
             }
@@ -308,6 +315,22 @@ impl StructureFocusCoordinator {
                 if !activation.already_active {
                     self.bars.deactivate_structure(&activation.ticker).await;
                 }
+            }
+            if let Some((ticker, history_error)) = quarantine {
+                self.checkpoint_store
+                    .persist_structure_focus_blocked(
+                        &ticker,
+                        &history_error.error_code,
+                        &history_error.retry_action,
+                        &history_error.error,
+                    )
+                    .await
+                    .map_err(|persist_error| {
+                        format!(
+                            "{error}; additionally failed to persist blocked Generic Structure status for {ticker}: {persist_error}"
+                        )
+                    })?;
+                self.inactive_registry.lock().await.remove(&ticker);
             }
             return Err(error);
         }

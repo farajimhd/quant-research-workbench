@@ -13,6 +13,7 @@ use crate::config::GatewayConfig;
 use crate::definition_catalog::{definition_catalog, QmdDefinitionCatalog};
 use crate::event::MarketEvent;
 use crate::indicator_catalog::{indicator_taxonomy_catalog, IndicatorTaxonomyEntry};
+use crate::indicator_reconciliation::IndicatorReconciler;
 use crate::indicators::{
     IndicatorScannerSnapshot, IndicatorSnapshot, SharedIndicatorStore,
     INDICATOR_CALCULATION_REVISION, INDICATOR_SCHEMA_VERSION,
@@ -73,6 +74,7 @@ pub struct AppState {
     pub config: GatewayConfig,
     pub events: broadcast::Sender<MarketEvent>,
     pub indicators: SharedIndicatorStore,
+    pub indicator_reconciler: IndicatorReconciler,
     pub live_market_state: SharedLiveMarketStateStore,
     pub live_market_state_events: broadcast::Sender<LiveSymbolMarketStateEvent>,
     pub market: SharedMarketState,
@@ -428,7 +430,33 @@ async fn activate_prepared_computation_target(
     prepared: ComputationTargetLease,
 ) -> Result<ComputationTargetLease, String> {
     state.structure_focus.stage_and_activate(&prepared).await?;
+    let inline_reconciliation = prepared.tickers.len() <= 8;
+    if inline_reconciliation {
+        state
+            .indicator_reconciler
+            .reconcile_lease(&prepared)
+            .await?;
+    }
     let lease = state.computation_targets.activate(prepared);
+    if !inline_reconciliation {
+        let reconciler = state.indicator_reconciler.clone();
+        let calendar = state.market_calendar.clone();
+        let background_lease = lease.clone();
+        tokio::spawn(async move {
+            loop {
+                if !calendar.snapshot(Utc::now()).active_collection_window {
+                    if let Err(error) = reconciler.reconcile_lease(&background_lease).await {
+                        eprintln!(
+                            "QMD scoped indicator reconciliation failed for {}: {error}",
+                            background_lease.target_id
+                        );
+                    }
+                    break;
+                }
+                tokio::time::sleep(Duration::from_secs(60)).await;
+            }
+        });
+    }
     for ticker in &lease.tickers {
         for timeframe in &lease.timeframes {
             if !state.indicators.needs_warm(ticker, timeframe).await {
@@ -621,11 +649,13 @@ async fn send_resnapshot_required(
 #[cfg(test)]
 mod shutdown_tests {
     use super::{
-        live_market_state_history_sql, parse_indicator_projection_fields,
-        resnapshot_required_frame, retain_indicator_projection_fields, scanner_sequence_gap,
-        valid_shutdown_token,
+        intraday_bar_history_sql, live_market_state_history_sql, parse_indicator_projection_fields,
+        resnapshot_required_frame, retain_indicator_projection_fields, retained_query_date_bounds,
+        scanner_sequence_gap, valid_shutdown_token,
     };
-    use chrono::{TimeZone, Utc};
+    use crate::config::GatewayConfig;
+    use crate::market_calendar::MarketCalendarClient;
+    use chrono::{NaiveDate, TimeZone, Utc};
     use serde_json::json;
 
     #[test]
@@ -633,6 +663,36 @@ mod shutdown_tests {
         assert!(valid_shutdown_token("run-token", "run-token"));
         assert!(!valid_shutdown_token("run-token", "wrong"));
         assert!(!valid_shutdown_token("", ""));
+    }
+
+    #[test]
+    fn default_live_history_bounds_use_market_sessions_on_weekends() {
+        let calendar = MarketCalendarClient::new(GatewayConfig::from_env());
+        let saturday = NaiveDate::from_ymd_opt(2026, 8, 22).unwrap();
+        let (start, end) = retained_query_date_bounds(&calendar, saturday, 3);
+        assert_eq!(start, NaiveDate::from_ymd_opt(2026, 8, 18).unwrap());
+        assert_eq!(end, NaiveDate::from_ymd_opt(2026, 8, 21).unwrap());
+    }
+
+    #[test]
+    fn canonical_bar_history_keeps_source_columns_distinct_from_latest_aliases() {
+        let sql = intraday_bar_history_sql(
+            "intraday_family_bars_v3",
+            "AAPL",
+            10_000_000,
+            NaiveDate::from_ymd_opt(2026, 8, 18).unwrap(),
+            NaiveDate::from_ymd_opt(2026, 8, 21).unwrap(),
+            None,
+            5,
+        );
+        assert!(sql.contains("AS latest_calculation_revision"));
+        assert!(sql.contains("AS latest_complete"));
+        assert!(sql.contains("AS latest_updated_at_utc"));
+        assert!(sql.contains("latest_updated_at_utc AS updated_at_utc"));
+        assert!(!sql.contains("AS calculation_revision"));
+        assert!(!sql.contains("AS complete"));
+        assert!(!sql.contains("max(updated_at_utc) AS updated_at_utc"));
+        assert!(sql.contains("AND open > 0 AND high > 0 AND low > 0 AND close > 0"));
     }
 
     #[test]
@@ -1181,6 +1241,33 @@ async fn coverage_snapshot(
         Err(error) => errors.push(format!("live: {error}")),
     }
 
+    let derived_sql = format!(
+        r#"
+        SELECT updated_at_utc AS started_at, updated_at_utc AS finished_at,
+            concat('derived_', product) AS coverage_kind, status,
+            toDateTime64(local_date, 3, 'UTC') AS start_ts_utc,
+            toDateTime64(local_date + 1, 3, 'UTC') AS end_ts_utc,
+            scope_id AS action, output_row_count AS rows_written,
+            '' AS host_role, '' AS command,
+            toJSONString(map(
+                'calculation_revision', calculation_revision,
+                'source_revision', source_revision,
+                'source_row_count', toString(source_row_count),
+                'detail', detail
+            )) AS summary_json,
+            'derived_coverage' AS table_group
+        FROM {} FINAL
+        ORDER BY updated_at_utc DESC
+        LIMIT {}
+        FORMAT JSONEachRow
+        "#,
+        state.config.derived_coverage_table, limit,
+    );
+    match coverage_query_rows(&state.config, &derived_sql).await {
+        Ok(mut values) => rows.append(&mut values),
+        Err(error) => errors.push(format!("derived: {error}")),
+    }
+
     let flatfile_sql = format!(
         r#"
         SELECT updated_at_utc AS started_at, updated_at_utc AS finished_at,
@@ -1577,8 +1664,13 @@ async fn intraday_bar_history_snapshot(
         ));
     }
     let today = Utc::now().with_timezone(&New_York).date_naive();
-    let start_date = parse_iso_date(query.start_date.as_deref()).unwrap_or(today);
-    let end_date = parse_iso_date(query.end_date.as_deref()).unwrap_or(today);
+    let (retained_start, retained_end) = retained_query_date_bounds(
+        &state.market_calendar,
+        today,
+        state.config.recent_live_prior_market_days,
+    );
+    let start_date = parse_iso_date(query.start_date.as_deref()).unwrap_or(retained_start);
+    let end_date = parse_iso_date(query.end_date.as_deref()).unwrap_or(retained_end);
     if start_date > end_date {
         return Err((
             StatusCode::BAD_REQUEST,
@@ -1648,6 +1740,18 @@ fn parse_iso_date(value: Option<&str>) -> Option<NaiveDate> {
     value.and_then(|raw| NaiveDate::parse_from_str(raw, "%Y-%m-%d").ok())
 }
 
+fn retained_query_date_bounds(
+    calendar: &MarketCalendarClient,
+    today: NaiveDate,
+    prior_market_days: i64,
+) -> (NaiveDate, NaiveDate) {
+    let dates = calendar.prior_sessions(today, prior_market_days.max(0).saturating_add(1) as usize);
+    (
+        dates.first().copied().unwrap_or(today),
+        dates.last().copied().unwrap_or(today),
+    )
+}
+
 fn valid_ticker(value: &str) -> bool {
     !value.is_empty()
         && value.len() <= 10
@@ -1673,7 +1777,8 @@ fn intraday_bar_history_sql(
     format!(
         r#"SELECT local_date, open, high, low, close, size_sum, event_count,
             first_event_timestamp_us, last_event_timestamp_us,
-            bar_start_session_us, bar_end_session_us, updated_at_utc
+            bar_start_session_us, bar_end_session_us,
+            latest_updated_at_utc AS updated_at_utc
         FROM (
             SELECT local_date, bucket_index,
                 argMax(open, updated_at_utc) AS open,
@@ -1686,9 +1791,9 @@ fn intraday_bar_history_sql(
                 argMax(last_event_timestamp_us, updated_at_utc) AS last_event_timestamp_us,
                 argMax(bar_start_session_us, updated_at_utc) AS bar_start_session_us,
                 argMax(bar_end_session_us, updated_at_utc) AS bar_end_session_us,
-                argMax(calculation_revision, updated_at_utc) AS calculation_revision,
-                argMax(complete, updated_at_utc) AS complete,
-                max(updated_at_utc) AS updated_at_utc
+                argMax(calculation_revision, updated_at_utc) AS latest_calculation_revision,
+                argMax(complete, updated_at_utc) AS latest_complete,
+                max(updated_at_utc) AS latest_updated_at_utc
             FROM {table}
             WHERE ticker = '{ticker}' AND label_resolution_us = {resolution_us}
               AND bar_family = 'trade' AND local_date >= toDate('{start_date}')
@@ -1696,7 +1801,11 @@ fn intraday_bar_history_sql(
               AND schema_version = {schema_version}
               AND calculation_revision = '{calculation_revision}'
             GROUP BY local_date, bucket_index
-            HAVING complete = 1 AND calculation_revision = '{calculation_revision}'
+            HAVING latest_complete = 1
+               AND latest_calculation_revision = '{calculation_revision}'
+               AND open > 0 AND high > 0 AND low > 0 AND close > 0
+               AND high >= greatest(open, close)
+               AND low <= least(open, close) AND high >= low
         )
         WHERE 1 = 1{before_filter}
         ORDER BY local_date DESC, bucket_index DESC
@@ -1989,8 +2098,13 @@ async fn persisted_indicator_snapshot(
         return Err((StatusCode::BAD_REQUEST, "invalid timeframe".to_string()));
     }
     let today = Utc::now().with_timezone(&New_York).date_naive();
-    let start_date = parse_iso_date(query.start_date.as_deref()).unwrap_or(today);
-    let end_date = parse_iso_date(query.end_date.as_deref()).unwrap_or(today);
+    let (retained_start, retained_end) = retained_query_date_bounds(
+        &state.market_calendar,
+        today,
+        state.config.recent_live_prior_market_days,
+    );
+    let start_date = parse_iso_date(query.start_date.as_deref()).unwrap_or(retained_start);
+    let end_date = parse_iso_date(query.end_date.as_deref()).unwrap_or(retained_end);
     if start_date > end_date {
         return Err((
             StatusCode::BAD_REQUEST,

@@ -20,6 +20,7 @@ pub mod flatfile;
 pub mod gapfill;
 pub mod generic_structure;
 pub mod indicator_catalog;
+pub mod indicator_reconciliation;
 pub mod indicators;
 pub mod intraday_bars;
 pub mod live_market_state;

@@ -101,6 +101,14 @@ restart-safe date/ticker batch. Keep it unchanged until an active migration
 finishes; the checkpoint also fingerprints the exact ordered ticker set so
 source-universe changes cannot make a different batch look complete.
 
+`QMD_DERIVED_RECONCILIATION_ENABLED` defaults to `true`. It automatically
+reconciles the retained Live event window into canonical bars outside market
+hours and performs scoped indicator reconstruction when computation demand is
+activated. `QMD_DERIVED_RECONCILIATION_INTERVAL_MS` defaults to `300000`, and
+`QMD_DERIVED_COVERAGE_TABLE` defaults to `qmd_derived_coverage_v1`.
+`-BootstrapBars` is an emergency foreground recovery control, not normal
+operation.
+
 ## Indicators
 
 | Env Var | Default | Meaning | Tuning Note |

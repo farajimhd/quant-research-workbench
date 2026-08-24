@@ -167,6 +167,9 @@ pub struct GatewayConfig {
     pub intraday_bar_channel_capacity: usize,
     pub intraday_bar_bootstrap_on_start: bool,
     pub intraday_bar_bootstrap_symbol_batch: usize,
+    pub derived_reconciliation_enabled: bool,
+    pub derived_reconciliation_interval_ms: u64,
+    pub derived_coverage_table: String,
     pub intraday_bar_shard_count: usize,
     pub intraday_bar_table: String,
     pub intraday_bar_timeframes: Vec<String>,
@@ -451,6 +454,16 @@ impl GatewayConfig {
                 128,
             )
             .clamp(1, 1_000),
+            derived_reconciliation_enabled: env_bool("QMD_DERIVED_RECONCILIATION_ENABLED", true),
+            derived_reconciliation_interval_ms: env_u64(
+                "QMD_DERIVED_RECONCILIATION_INTERVAL_MS",
+                300_000,
+            )
+            .max(10_000),
+            derived_coverage_table: env_string(
+                "QMD_DERIVED_COVERAGE_TABLE",
+                "qmd_derived_coverage_v1",
+            ),
             intraday_bar_shard_count: env_usize("QMD_INTRADAY_BAR_SHARD_COUNT", 8),
             intraday_bar_table: env_string("QMD_INTRADAY_BAR_TABLE", "intraday_family_bars_v3"),
             intraday_bar_timeframes: env_list_with_default(

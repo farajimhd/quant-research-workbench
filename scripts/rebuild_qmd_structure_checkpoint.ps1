@@ -3,7 +3,7 @@ param(
     [Parameter(Mandatory)]
     [ValidatePattern('^[A-Za-z0-9._-]{1,32}$')]
     [string]$Ticker,
-    [datetime]$StartUtc = [datetime]::Parse('2019-01-01T00:00:00Z').ToUniversalTime(),
+    [datetime]$StartUtc = [datetime]::UtcNow.AddDays(-7),
     [datetime]$AsOfUtc = [datetime]::UtcNow,
     [ValidateRange(1000, 250000000)]
     [int]$EventLimit = 50000000,

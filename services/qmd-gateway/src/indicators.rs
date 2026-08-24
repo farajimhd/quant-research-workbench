@@ -25,7 +25,7 @@ use tokio::time::{interval, sleep, Duration, MissedTickBehavior};
 const STRUCTURE_CHECKPOINT_BATCH_LIMIT: usize = 256;
 
 pub const INDICATOR_SCHEMA_VERSION: u16 = 19;
-pub const INDICATOR_CALCULATION_REVISION: &str = "qmd-indicators-v19";
+pub const INDICATOR_CALCULATION_REVISION: &str = "qmd-indicators-v20";
 const MICROSTRUCTURE_AGGREGATE_TIMEFRAMES: [&str; 7] = ["1s", "5s", "10s", "30s", "1m", "5m", "1h"];
 const INDICATOR_STATE_RECLAIM_INTERVAL_SECONDS: u64 = 30;
 const PREMARKET_SESSION_START_SECONDS: u32 = 4 * 60 * 60;
@@ -1140,6 +1140,21 @@ impl SharedIndicatorStore {
             .is_some_and(|history| !history.is_empty())
     }
 
+    /// Apply one ordered canonical event during a bounded retained-window
+    /// reconciliation. Callers must serialize a ticker reconciliation and
+    /// replay events in canonical event-time order.
+    pub async fn apply_reconciliation_event(&self, event: &MarketEvent) {
+        self.shard_for_ticker(event.ticker())
+            .apply_event(event)
+            .await;
+    }
+
+    /// Apply one closed bar through the same indicator state machine used by
+    /// the live router and return the exact durable row.
+    pub async fn apply_reconciliation_bar(&self, bar: BarRow) -> IndicatorRow {
+        self.shard_for_ticker(&bar.sym).apply_bar(bar).await
+    }
+
     pub async fn replace_market_structure_references(
         &self,
         references: HashMap<String, MarketStructureReferenceLevels>,
@@ -1365,29 +1380,39 @@ impl IndicatorStore {
             .get(&bar.sym.to_ascii_uppercase())
             .copied()
             .unwrap_or_default();
+        let ticker = bar.sym.to_ascii_uppercase();
+        let is_base = bar.timeframe.eq_ignore_ascii_case("100ms");
+        let valid_price = indicator_valid_price_bar(&bar);
+        let carried = if valid_price {
+            None
+        } else if is_base {
+            self.last_base_indicators.get(&ticker).cloned()
+        } else {
+            self.history
+                .get(&key)
+                .and_then(|history| history.back())
+                .cloned()
+        };
         let state = self.bars.entry(key.clone()).or_insert_with(|| {
             let mut calculator = BarIndicatorCalculator::new();
             calculator.set_market_structure_references(references);
             calculator
         });
-        let ticker = bar.sym.to_ascii_uppercase();
-        let is_base = bar.timeframe.eq_ignore_ascii_case("100ms");
-        let valid_price = indicator_valid_price_bar(&bar);
-        let mut row = if is_base && !valid_price {
-            self.last_base_indicators
-                .get(&ticker)
-                .cloned()
-                .map(|mut carried| {
-                    carried.session_date = bar.session_date.clone();
-                    carried.bar_start = bar.bar_start;
-                    carried.bar_end = bar.bar_end;
-                    carried.volume = 0.0;
-                    carried.qmd_structure_events.clear();
-                    carried
-                })
-                .unwrap_or_else(|| state.apply_bar(&bar))
-        } else {
+        let mut row = if let Some(mut carried) = carried {
+            carried.session_date = bar.session_date.clone();
+            carried.bar_start = bar.bar_start;
+            carried.bar_end = bar.bar_end;
+            carried.volume = 0.0;
+            carried.qmd_structure_events.clear();
+            carried
+        } else if valid_price {
             state.apply_bar(&bar)
+        } else {
+            // Before the first eligible trade-price bar, expose a transient
+            // zero row without contaminating the canonical rolling state.
+            let mut transient = BarIndicatorCalculator::new();
+            transient.set_market_structure_references(references);
+            transient.apply_bar(&bar)
         };
         if is_base {
             if let Some(window) = self.microstructure.get(&ticker) {
@@ -1420,14 +1445,16 @@ impl IndicatorStore {
                 .expect("indicator calculator exists")
                 .apply_market_levels(&mut row, &bar);
         }
-        if is_base {
+        if is_base && row.close.is_finite() && row.close > 0.0 {
             self.last_base_indicators.insert(ticker, row.clone());
         }
-        let history_limit = self.history_limit_for(&bar.timeframe);
-        let history = self.history.entry(key).or_insert_with(VecDeque::new);
-        history.push_back(row.clone());
-        while history.len() > history_limit {
-            history.pop_front();
+        if row.close.is_finite() && row.close > 0.0 {
+            let history_limit = self.history_limit_for(&bar.timeframe);
+            let history = self.history.entry(key).or_insert_with(VecDeque::new);
+            history.push_back(row.clone());
+            while history.len() > history_limit {
+                history.pop_front();
+            }
         }
         row
     }
@@ -2283,6 +2310,9 @@ async fn run_indicator_engine(
                         }
                         let source_bar = bar.clone();
                         let row = shard.apply_bar(bar).await;
+                        if !row.close.is_finite() || row.close <= 0.0 {
+                            continue;
+                        }
                         if scanner_sender
                             .send_observation(source_bar, row.clone())
                             .await
@@ -2698,6 +2728,13 @@ impl IndicatorClickHouseWriter {
         Ok(())
     }
 
+    pub async fn persist_reconciled_rows(&self, rows: &[IndicatorRow]) -> Result<(), String> {
+        if rows.is_empty() || !self.config.persist_indicators {
+            return Ok(());
+        }
+        self.insert_indicators(rows).await
+    }
+
     pub async fn load_structure_checkpoints(
         &self,
     ) -> Result<Vec<(String, GenericStructureCheckpoint)>, String> {
@@ -3068,23 +3105,15 @@ impl IndicatorClickHouseWriter {
     }
 
     async fn insert_indicators(&self, rows: &[IndicatorRow]) -> Result<(), String> {
-        let updated_at = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+        let updated_at = clickhouse_datetime64(&Utc::now());
         let body = rows
             .iter()
             .map(|row| {
-                let mut value = indicator_insert_row(row);
-                if let Some(object) = value.as_object_mut() {
-                    object.insert(
-                        "calculation_revision".to_string(),
-                        json!(INDICATOR_CALCULATION_REVISION),
-                    );
-                    object.insert(
-                        "source_revision".to_string(),
-                        json!(self.config.qmd_run_id.as_str()),
-                    );
-                    object.insert("complete".to_string(), json!(1u8));
-                    object.insert("updated_at_utc".to_string(), json!(updated_at.as_str()));
-                }
+                let value = durable_indicator_insert_row(
+                    row,
+                    self.config.qmd_run_id.as_str(),
+                    updated_at.as_str(),
+                );
                 serde_json::to_string(&value).unwrap_or_else(|_| "{}".to_string())
             })
             .collect::<Vec<_>>()
@@ -3209,6 +3238,24 @@ impl IndicatorClickHouseWriter {
     }
 }
 
+fn durable_indicator_insert_row(
+    row: &IndicatorRow,
+    source_revision: &str,
+    updated_at_utc: &str,
+) -> serde_json::Value {
+    let mut value = indicator_insert_row(row);
+    if let Some(object) = value.as_object_mut() {
+        object.insert(
+            "calculation_revision".to_string(),
+            json!(INDICATOR_CALCULATION_REVISION),
+        );
+        object.insert("source_revision".to_string(), json!(source_revision));
+        object.insert("complete".to_string(), json!(1u8));
+        object.insert("updated_at_utc".to_string(), json!(updated_at_utc));
+    }
+    value
+}
+
 fn indicator_insert_row(row: &IndicatorRow) -> serde_json::Value {
     let mut value = serde_json::to_value(row).unwrap_or_else(|_| json!({}));
     if let Some(object) = value.as_object_mut() {
@@ -3309,11 +3356,11 @@ fn safe_div(numerator: f64, denominator: f64) -> f64 {
 mod tests {
     use super::{
         anchored_flow_relationship, anchored_market_session_date,
-        calculate_flow_structure_composite, indicator_insert_row, market_structure_reference_sql,
-        parse_market_structure_reference_rows, summarize_canonical_composites,
-        BarIndicatorCalculator, IndicatorKey, MicrostructureCumulativeFlow,
-        MicrostructureSampleAggregate, SessionVwapState, SharedIndicatorStore, TickState,
-        INDICATOR_SCHEMA_VERSION,
+        calculate_flow_structure_composite, durable_indicator_insert_row, indicator_insert_row,
+        market_structure_reference_sql, parse_market_structure_reference_rows,
+        summarize_canonical_composites, BarIndicatorCalculator, IndicatorKey,
+        MicrostructureCumulativeFlow, MicrostructureSampleAggregate, SessionVwapState,
+        SharedIndicatorStore, TickState, INDICATOR_SCHEMA_VERSION,
     };
     use crate::bars::{TradeAggregationRules, TradeUpdateRule};
     use crate::capability_catalog::ExecutionScope;
@@ -3342,6 +3389,53 @@ mod tests {
         assert!(insert.get("price_change_1_bar_pct").is_none());
         assert!(insert.get("trade_count_change").is_none());
         assert!(insert.get("ema_9").is_some());
+
+        let durable = durable_indicator_insert_row(
+            &calculator.apply_bar(&bar),
+            "run-1",
+            "2026-08-23 17:30:12.345",
+        );
+        assert_eq!(durable["updated_at_utc"], "2026-08-23 17:30:12.345");
+        assert_eq!(durable["source_revision"], "run-1");
+        assert_eq!(durable["complete"], 1);
+    }
+
+    #[tokio::test]
+    async fn price_indicators_carry_across_invalid_buckets_without_zero_pollution() {
+        let store = SharedIndicatorStore::new(
+            100,
+            HashMap::new(),
+            300,
+            1,
+            TradeAggregationRules::new([(0, TradeUpdateRule::regular())]).unwrap(),
+            HashMap::new(),
+        );
+        let mut first = base_bar();
+        first.sym = "AAPL".to_string();
+        let first_row = store.apply_reconciliation_bar(first.clone()).await;
+
+        let mut invalid = first.clone();
+        invalid.bar_start = first.bar_end;
+        invalid.bar_end = first.bar_end + chrono::Duration::seconds(10);
+        invalid.open = 0.0;
+        invalid.high = 0.0;
+        invalid.low = 0.0;
+        invalid.close = 0.0;
+        let carried = store.apply_reconciliation_bar(invalid.clone()).await;
+        assert_eq!(carried.close, first_row.close);
+        assert_eq!(carried.ema_20, first_row.ema_20);
+
+        let mut second = first;
+        second.bar_start = invalid.bar_end;
+        second.bar_end = invalid.bar_end + chrono::Duration::seconds(10);
+        second.open = 11.0;
+        second.high = 11.0;
+        second.low = 11.0;
+        second.close = 11.0;
+        let second_row = store.apply_reconciliation_bar(second).await;
+        assert!(second_row.ema_20 > first_row.ema_20);
+        assert!(second_row.ema_20 < 11.0);
+        assert_eq!(store.snapshot("AAPL", "10s", 10).await.history.len(), 3);
     }
 
     #[test]
