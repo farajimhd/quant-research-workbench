@@ -2,6 +2,20 @@
 
 ## 2026
 
+### [2026-08-23 time unavailable - Refine forecast labels, compare models, and evaluate the historical hybrid funnel](docs/codex/chat-summaries/2026/CHAT-20260823-UNKNOWN-news-label-refinement-model-funnel.md)
+
+- Chat/task ID: unavailable
+- Related tasks: `TASK-0182`, `TASK-0191`
+- Summary written: 2026-08-23 17:10 PDT
+
+Completed provider-path and model-disagreement audits, finalized the
+361,695-article development supervision authority, created the blinded August
+2026 temporal holdout, and compared structured RF, TF-IDF RF, MLP, and DeepFM.
+The final historical experiment labeled all 218,040 2024 articles through a
+deterministic-rejection-plus-DeepFM funnel. The user's final policy is DeepFM
+only for future filtering; a new later sealed holdout is required before
+production certification or threshold selection.
+
 ### [2026-08-15 time unavailable - Consolidate forecast labels and establish blind mismatch auditing](docs/codex/chat-summaries/2026/CHAT-20260815-UNKNOWN-forecast-labeling-metadata-audits.md)
 
 - Related task: `TASK-0191`
