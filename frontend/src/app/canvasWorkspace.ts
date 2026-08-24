@@ -369,14 +369,17 @@ export function snapshotCanvasProfile(registry = readCanvasRegistry()): CanvasRe
 }
 
 export type CanvasFocusProfileAuthority = "approved" | "draft";
+export type CanvasFocusRuntimeMode = "live" | "paper";
 
-export function focusCanvasUrl(canvasId: string, containerId?: string, profileAuthority: CanvasFocusProfileAuthority = "approved") {
+export function focusCanvasUrl(canvasId: string, containerId?: string, profileAuthority: CanvasFocusProfileAuthority = "approved", runtimeMode?: CanvasFocusRuntimeMode) {
   const url = new URL(window.location.href);
   url.searchParams.set("canvas", canvasId);
   if (containerId) url.searchParams.set("container", containerId);
   else url.searchParams.delete("container");
   if (profileAuthority === "draft") url.searchParams.set("canvas_profile", "draft");
   else url.searchParams.delete("canvas_profile");
+  if (runtimeMode) url.searchParams.set("runtime_mode", runtimeMode);
+  else url.searchParams.delete("runtime_mode");
   url.searchParams.delete("replay_focus");
   url.searchParams.delete("replay_run");
   url.hash = "canvas-focus";

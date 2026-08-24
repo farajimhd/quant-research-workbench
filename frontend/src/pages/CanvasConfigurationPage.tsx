@@ -465,6 +465,7 @@ function ReplayCanvasFocusPage({ focusToken, runId }: { focusToken: string; runI
 export function CanvasWorkspaceSurface({ accountKeys, approvedCanvas, canvasId, manager, modeControls, readOnly = false, replayRun, requestedInstanceId, requestedNewsId, requestedSecAccession, requestedSecCik, runtimeMode: requestedRuntimeMode, runtimeWorkspaceId }: { accountKeys?: string[]; approvedCanvas?: ApprovedCanvasProfile; canvasId: string; manager: boolean; modeControls?: ReactNode; readOnly?: boolean; replayRun?: CanvasReplayRun; requestedInstanceId?: string; requestedNewsId?: string; requestedSecAccession?: string; requestedSecCik?: string; runtimeMode?: CanvasRuntimeMode; runtimeWorkspaceId?: string }) {
   const runtimeMode: CanvasRuntimeMode = replayRun?.mode === "backtest" || replayRun?.mode === "backtest_debug" ? replayRun.mode : replayRun ? "replay" : requestedRuntimeMode ?? "canvas";
   const liveMode = runtimeMode === "live" || runtimeMode === "paper";
+  const focusRuntimeMode = runtimeMode === "live" || runtimeMode === "paper" ? runtimeMode : undefined;
   const resolvedAccountKeys = readOnly ? [] : accountKeys?.length ? accountKeys : readLiveAccountKeys();
   const accountSignature = [...resolvedAccountKeys].sort().join(".") || runtimeMode;
   const runtimeBase = replayRun?.canvas_profile ?? approvedCanvas?.profile;
@@ -949,7 +950,7 @@ export function CanvasWorkspaceSurface({ accountKeys, approvedCanvas, canvasId, 
     writeCanvasWorkspaceState(created.canvas.id, state);
     writeCanvasRegistry(created.registry);
     setRegistry(created.registry);
-    window.open(focusCanvasUrl(created.canvas.id, instanceId, runtimeBase ? "approved" : "draft"), "_blank", "noopener,noreferrer");
+    window.open(focusCanvasUrl(created.canvas.id, instanceId, runtimeBase ? "approved" : "draft", focusRuntimeMode), "_blank", "noopener,noreferrer");
   }
 
   function openNewCanvas(instanceId?: string, sourceLayout?: WorkspaceWindowLayout) {
@@ -976,7 +977,7 @@ export function CanvasWorkspaceSurface({ accountKeys, approvedCanvas, canvasId, 
         };
     writeCanvasWorkspaceState(created.canvas.id, state);
     setRegistry(created.registry);
-    window.open(focusCanvasUrl(created.canvas.id, instanceId, runtimeBase ? "approved" : "draft"), "_blank", "noopener,noreferrer");
+    window.open(focusCanvasUrl(created.canvas.id, instanceId, runtimeBase ? "approved" : "draft", focusRuntimeMode), "_blank", "noopener,noreferrer");
   }
 
   function moveContainer(instanceId: string, targetCanvasId: string, sourceLayout: WorkspaceWindowLayout) {
@@ -1024,7 +1025,7 @@ export function CanvasWorkspaceSurface({ accountKeys, approvedCanvas, canvasId, 
     const state = { ...sourceState, groups, layoutVersion: TRADING_WORKSPACE_LAYOUT_VERSION };
     writeCanvasWorkspaceState(created.canvas.id, state);
     setRegistry(created.registry);
-    window.open(focusCanvasUrl(created.canvas.id, undefined, runtimeBase ? "approved" : "draft"), "_blank", "noopener,noreferrer");
+    window.open(focusCanvasUrl(created.canvas.id, undefined, runtimeBase ? "approved" : "draft", focusRuntimeMode), "_blank", "noopener,noreferrer");
   }
 
   function openReplayFocus(profile: CanvasRegistry, state: CanvasWorkspaceState) {
@@ -1066,7 +1067,7 @@ export function CanvasWorkspaceSurface({ accountKeys, approvedCanvas, canvasId, 
       openReplayConfiguredCanvas(targetCanvasId);
       return;
     }
-    window.open(focusCanvasUrl(targetCanvasId), "_blank", "noopener,noreferrer");
+    window.open(focusCanvasUrl(targetCanvasId, undefined, "approved", focusRuntimeMode), "_blank", "noopener,noreferrer");
   }
 
   function resetRuntimeOverlay() {
@@ -1103,7 +1104,7 @@ export function CanvasWorkspaceSurface({ accountKeys, approvedCanvas, canvasId, 
       return;
     }
     const focusedWindow = window.open(
-      focusCanvasUrl(created.canvas.id),
+      focusCanvasUrl(created.canvas.id, undefined, "approved", focusRuntimeMode),
       "_blank",
       "noopener,noreferrer",
     );
@@ -1376,7 +1377,7 @@ function ContainerPreview({ canvasId, chartCutoffMs, definition, instanceId, lin
       : definition.id === "sec"
         ? <AllSecContainer asOf={new Date(chartCutoffMs).toISOString()} live={liveMode} onSettingsChange={(patch) => updateSettings((state) => ({ ...state, sec: { ...state.sec, ...patch } }))} settings={settings.sec} />
       : definition.id === "ticker_sec"
-        ? <TickerSecContainer asOf={new Date(chartCutoffMs).toISOString()} onSymbolChange={symbolEditable ? (symbol) => onLinkContextChange({ symbol }) : undefined} settings={settings.ticker_sec} symbol={linkContext.symbol} />
+        ? <TickerSecContainer asOf={new Date(chartCutoffMs).toISOString()} live={liveMode} onSymbolChange={symbolEditable ? (symbol) => onLinkContextChange({ symbol }) : undefined} settings={settings.ticker_sec} symbol={linkContext.symbol} />
       : definition.id === "sec_detail"
         ? <SecDetailContainer asOf={new Date(chartCutoffMs).toISOString()} canvasId={canvasId} requestedAccession={requestedSecAccession} requestedCik={requestedSecCik} />
       : definition.id === "xbrl"

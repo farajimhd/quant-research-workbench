@@ -302,6 +302,41 @@ class CanonicalTextRuntimeLifecycleTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("f.source_updated_at_utc > s.updated_at_utc", client.sql)
         self.assertIn("max_execution_time=25", client.sql)
 
+    def test_stale_funnel_reconciliation_is_release_and_threshold_bound(self) -> None:
+        class Client:
+            sql = ""
+
+            def iter_json_each_row(self, sql):
+                self.sql = sql
+                return iter(({
+                    "corpus": "news",
+                    "source_id": "news-1",
+                    "source_timestamp": "2026-08-24 12:27:30",
+                    "source_cik": "",
+                },))
+
+        client = Client()
+        review = mock.Mock()
+        review.config.forecast_funnel_enabled = True
+        review.config.forecast_eligibility_threshold = 0.5
+        review.release.release_id = "release-v2"
+        review.release.release_hash = "release-hash-v2"
+        runtime = CanonicalTextRuntime(
+            client=client,
+            database="q_live",
+            live_news=mock.Mock(),
+            forecast_review=review,
+        )
+
+        notices = runtime._stale_funnel_notices()
+
+        self.assertEqual(notices[0].source_id, "news-1")
+        self.assertIn("news_forecast_funnel_deepfm_only_serving_v2", client.sql)
+        self.assertIn("model_release_id='release-v2'", client.sql)
+        self.assertIn("model_release_hash='release-hash-v2'", client.sql)
+        self.assertIn("abs(threshold-0.5)<1e-12", client.sql)
+        self.assertIn("legacy.stage='deterministic_rejected' DESC", client.sql)
+
 
 if __name__ == "__main__":
     unittest.main()

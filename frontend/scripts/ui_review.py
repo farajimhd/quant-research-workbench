@@ -2087,7 +2087,7 @@ def capture(args: argparse.Namespace) -> int:
                         "canvases": [{"id": "main", "label": "Main"}, {"id": focus_id, "label": "Chart focus"}],
                         "linkAssignments": {"chart": "A"},
                         "linkContexts": {
-                            "A": {"symbol": "AAPL", "timeframe": args.canvas_chart_timeframe},
+                            "A": {"symbol": args.canvas_symbol, "timeframe": args.canvas_chart_timeframe},
                             "B": {"symbol": "MSFT", "timeframe": "1m"},
                             "C": {"symbol": "NVDA", "timeframe": "5m"},
                         },
@@ -2096,7 +2096,7 @@ def capture(args: argparse.Namespace) -> int:
                         "version": 8,
                         "chart": {
                             "showVolume": True,
-                            "symbol": "AAPL",
+                            "symbol": args.canvas_symbol,
                             "timeframe": args.canvas_chart_timeframe,
                             "visibleIndicators": [
                                 value.strip()
@@ -2234,6 +2234,8 @@ def capture(args: argparse.Namespace) -> int:
                     canvas_query = f"?liveCanvas={args.canvas_id}"
                 elif scenario["page"] == "canvas-focus":
                     canvas_query = f"?canvas={args.canvas_id or 'review-focus'}&canvas_profile=draft"
+                    if args.canvas_runtime_mode:
+                        canvas_query += f"&runtime_mode={args.canvas_runtime_mode}"
                 elif args.seed_core_containers and scenario["page"] == "replay-trading":
                     canvas_query = "?historicalWorkspace=replay"
                 elif args.seed_core_containers and scenario["page"] == "backtest-trading":
@@ -2406,6 +2408,8 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--canvas-id", help="open trading routes directly in the named child canvas")
     result.add_argument("--canvas-session-date", help="seed a deterministic Canvas preview session date (YYYY-MM-DD)")
     result.add_argument("--canvas-preview-time", default="09:45", help="preview time paired with --canvas-session-date (HH:MM)")
+    result.add_argument("--canvas-runtime-mode", choices=("live", "paper"), help="open Canvas focus review under the selected real-time runtime authority")
+    result.add_argument("--canvas-symbol", default="AAPL", help="symbol seeded into the Canvas focus review")
     result.add_argument("--canvas-chart-timeframe", default="1m", help="timeframe selected before Canvas interaction stress")
     result.add_argument("--canvas-visible-indicators", help="comma-separated Canvas chart indicator IDs to seed before capture")
     result.add_argument("--chart-stress-cycles", type=int, default=24, help="mixed pan, zoom, and axis-scale cycles in the Canvas interaction stress")

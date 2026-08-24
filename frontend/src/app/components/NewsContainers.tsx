@@ -170,7 +170,7 @@ export function AllNewsContainer({ asOf, live = false, onSettingsChange, setting
       const deepfm = row.ai_state?.funnel;
       const reaction = reactionStateValue(row.ai_state);
       return (!concept || row.news_synthesis_summary?.concepts.includes(concept))
-        && (!deepfmState || (deepfmState === "pending" ? !deepfm : Boolean(deepfm && deepfm.forecast_eligibility === (deepfmState === "filtered" ? "ineligible" : "eligible"))))
+        && (!deepfmState || (deepfmState === "pending" ? !isDeepFmFunnel(deepfm) : Boolean(isDeepFmFunnel(deepfm) && deepfm.forecast_eligibility === (deepfmState === "filtered" ? "ineligible" : "eligible"))))
         && (!aiReviewState || reviewStatus === aiReviewState)
         && (!aiSentiment || sentiments.some((value) => value === aiSentiment))
         && (!reactionState || reaction === reactionState);
@@ -259,8 +259,8 @@ export function TickerNewsContainer({ asOf, live = false, onSymbolChange, settin
   const wallClockMs = useWallClock();
   const priceAsOf = live ? new Date(Math.floor(wallClockMs / 5000) * 5000).toISOString() : effectiveAsOf;
   const orderedRows = [...state.rows].sort(compareNewsRecency);
-  const eventRows = orderedRows.filter((row) => row.ai_state?.funnel?.forecast_eligibility === "eligible");
-  const contextRows = orderedRows.filter((row) => row.ai_state?.funnel?.forecast_eligibility !== "eligible" && ["analyst", "editorial", "regulator", "mixed"].includes(row.news_synthesis_summary?.information_origin ?? ""));
+  const eventRows = orderedRows.filter((row) => isDeepFmFunnel(row.ai_state?.funnel) && row.ai_state?.funnel?.forecast_eligibility === "eligible");
+  const contextRows = orderedRows.filter((row) => (!isDeepFmFunnel(row.ai_state?.funnel) || row.ai_state?.funnel?.forecast_eligibility !== "eligible") && ["analyst", "editorial", "regulator", "mixed"].includes(row.news_synthesis_summary?.information_origin ?? ""));
   const followupRows = orderedRows.filter((row) => !eventRows.includes(row) && !contextRows.includes(row));
   return <section className="ticker-news" aria-label={`${symbol} news`}>
     <header><div><TickerIdentityWithChange asOf={priceAsOf} className="ticker-news-symbol" inputAriaLabel="Ticker news symbol" logoUrl={presentations[symbol]?.logo_url} onTickerChange={onSymbolChange} ticker={symbol} /><span>Recent coverage</span></div><small>{state.rows.length} stories · through <MarketTime value={priceAsOf} /></small></header>
@@ -550,10 +550,11 @@ type NewsIntelligenceController = ReturnType<typeof useNewsIntelligenceState>;
 
 function AiReviewCard({ intelligence, detail = false }: { intelligence: NewsIntelligenceController; detail?: boolean }) {
   const deepfm = intelligence.state?.funnel;
+  const deepfmCurrent = isDeepFmFunnel(deepfm);
   const labels = [...(intelligence.state?.review?.labels?.issuers ?? [])].sort((a, b) => b.forecast_relevance_probability - a.forecast_relevance_probability);
   const primary = labels[0];
   return <section className="news-intelligence-card news-ai-card" data-detail={detail ? "true" : "false"} data-state={intelligence.status}>
-    <header><span>DeepFM</span>{deepfm ? <b data-tone={deepfm.forecast_eligibility === "eligible" ? "candidate" : "filtered"}>{deepfm.forecast_eligibility === "eligible" ? "Eligible" : "Filtered"} {Math.round(deepfm.eligible_probability * 100)}%</b> : <b data-tone="pending">Pending</b>}</header>
+    <header><span>DeepFM</span>{deepfmCurrent ? <b data-tone={deepfm.forecast_eligibility === "eligible" ? "candidate" : "filtered"}>{deepfm.forecast_eligibility === "eligible" ? "Eligible" : "Filtered"} {Math.round(deepfm.eligible_probability * 100)}%</b> : <b data-tone="pending">{deepfm ? "Rescore needed" : "Pending"}</b>}</header>
     {primary ? <><div className="news-card-primary"><strong>{primary.ticker || primary.issuer_name}</strong><em>{Math.round(primary.forecast_relevance_probability * 100)}%</em><span data-tone={aiLabelTone(primary)}>{shortSentiment(aiLanguageSentiment(primary))}</span></div><div className="news-card-metrics"><span>Pos {Math.round(primary.positive_implication_probability * 100)}</span><span>Neg {Math.round(primary.negative_implication_probability * 100)}</span>{labels.length > 1 ? <span>+{labels.length - 1}</span> : null}</div>{detail ? <><DetailList label="Events" values={primary.event_tags.map(readableLabel)} /><DetailList label="Roles" values={primary.issuer_roles.map(readableLabel)} /><DetailDatum label="Time scope" value={readableLabel(primary.time_scope)} /><DetailDatum label="Claim source" value={readableLabel(primary.claim_source)} /></> : null}</> : <button className="news-card-action" disabled={intelligence.reviewPending} onClick={() => void intelligence.requestReview()} type="button"><Bot size={12} />{intelligence.reviewPending ? "Reviewing" : intelligence.status === "failed" ? "Retry" : "Review"}</button>}
     {intelligence.error ? <small className="news-ai-review-error">{intelligence.error}</small> : null}
   </section>;
@@ -584,7 +585,9 @@ function aiLanguageSentiment(label: IssuerAiLabel) { return label.positive_impli
 function aiLabelTone(label: IssuerAiLabel) { return label.forecast_relevance_probability < 0.5 ? "filtered" : aiLanguageSentiment(label); }
 function normalizedReviewState(value?: string) { return ["queued", "labeling"].includes(value ?? "") ? "pending" : value || "not_reviewed"; }
 function reactionStateValue(state?: NewsAiState | null) { if (state?.hypotheses?.length) return "complete"; return state?.review?.labels?.issuers.some((label) => label.ticker && label.forecast_relevance_probability >= .5) ? "available" : "blocked"; }
-function newsSortValue(row: NewsRow, key: "time" | "synthesis" | "ai" | "reaction") { if (key === "time") return Date.parse(row.published_at_utc); if (key === "synthesis") return synthesisScore(row.news_synthesis_summary); if (key === "ai") { const labels = row.ai_state?.review?.labels?.issuers ?? []; return labels.length ? Math.max(...labels.map((label) => label.forecast_relevance_probability)) : row.ai_state?.funnel?.eligible_probability ?? null; } const predictions = row.ai_state?.hypotheses?.flatMap((item) => item.prediction.predictions["5m"] ? [item.prediction.predictions["5m"]] : []) ?? []; return predictions.length ? Math.max(...predictions.map((item) => item.expected_return_pct)) : null; }
+function newsSortValue(row: NewsRow, key: "time" | "synthesis" | "ai" | "reaction") { if (key === "time") return Date.parse(row.published_at_utc); if (key === "synthesis") return synthesisScore(row.news_synthesis_summary); if (key === "ai") { const labels = row.ai_state?.review?.labels?.issuers ?? []; return labels.length ? Math.max(...labels.map((label) => label.forecast_relevance_probability)) : isDeepFmFunnel(row.ai_state?.funnel) ? row.ai_state?.funnel?.eligible_probability ?? null : null; } const predictions = row.ai_state?.hypotheses?.flatMap((item) => item.prediction.predictions["5m"] ? [item.prediction.predictions["5m"]] : []) ?? []; return predictions.length ? Math.max(...predictions.map((item) => item.expected_return_pct)) : null; }
+
+function isDeepFmFunnel(funnel: NewsAiState["funnel"] | undefined | null): funnel is NonNullable<NewsAiState["funnel"]> { return Boolean(funnel?.release_id && ["deepfm_eligible", "deepfm_filtered"].includes(funnel.stage)); }
 function shortSentiment(value: string) { return value === "positive" ? "Pos" : value === "negative" ? "Neg" : value === "mixed" ? "Mixed" : value === "neutral" ? "Neutral" : "Pending"; }
 function shortHorizon(value: string) { return value === "regular_close" ? "Reg close" : value === "extended_close" ? "Ext close" : value; }
 function formatSignedPercent(value: number) { return `${value > 0 ? "+" : ""}${value.toFixed(2)}%`; }
@@ -680,5 +683,5 @@ function parseNewsSelection(value: string): NewsSelection { try { const parsed =
 function readSelectedNews(canvasId: string) { return parseNewsSelection(window.localStorage.getItem(selectionKey(canvasId)) || ""); }
 function selectNews(canvasId: string, selection: NewsSelection) { window.localStorage.setItem(selectionKey(canvasId), JSON.stringify(selection)); window.dispatchEvent(new CustomEvent(NEWS_SELECTION_EVENT, { detail: { canvasId, ...selection } })); }
 function prepareNewsReader(selection: NewsSelection) { ensureNewsReaderCanvas(); selectNews(NEWS_READER_CANVAS_ID, selection); }
-function newsPageUrl(selection: NewsSelection, live = false) { const url = new URL(focusCanvasUrl(NEWS_READER_CANVAS_ID, "news_detail", "draft")); url.searchParams.set("news", selection.newsId); if (selection.publishedAt) url.searchParams.set("news_published_at", selection.publishedAt); if (selection.queryId) url.searchParams.set("news_query_id", selection.queryId); if (live) url.searchParams.set("runtime_mode", "live"); return url.toString(); }
+function newsPageUrl(selection: NewsSelection, live = false) { const url = new URL(focusCanvasUrl(NEWS_READER_CANVAS_ID, "news_detail", "draft", live ? "live" : undefined)); url.searchParams.set("news", selection.newsId); if (selection.publishedAt) url.searchParams.set("news_published_at", selection.publishedAt); if (selection.queryId) url.searchParams.set("news_query_id", selection.queryId); return url.toString(); }
 function openNewsPage(row: NewsRow, queryId: string, live = false) { const selection = { newsId: row.canonical_news_id, publishedAt: row.published_at_utc, queryId }; prepareNewsReader(selection); window.open(newsPageUrl(selection, live), "quant-news-reader"); }

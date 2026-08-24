@@ -29,7 +29,7 @@ from .config import IntelligenceConfig
 FUNNEL_TABLE = "news_forecast_funnel_v1"
 REVIEW_TABLE = "news_llm_issuer_review_v1"
 REVIEW_HISTORY_TABLE = "news_llm_issuer_review_history_v1"
-FUNNEL_CONTRACT = "news_forecast_funnel_serving_v1"
+FUNNEL_CONTRACT = "news_forecast_funnel_deepfm_only_serving_v2"
 REVIEW_CONTRACT = "news_llm_issuer_review_serving_v1"
 PROMPT_VERSION = "news_issuer_review_prompt_v1_gold_examples"
 _SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s+(?=[A-Z0-9\"'(])")
@@ -213,11 +213,17 @@ ORDER BY updated_at_utc DESC LIMIT 1 FORMAT JSONEachRow
         return rows[0] if rows else {"canonical_news_id": canonical_news_id, "status": "not_reviewed"}
 
     def funnel_current(self, canonical_news_id: str, rendered_text_hash: str) -> bool:
+        if self.release is None:
+            return False
         value = self.client.execute(f"""
 SELECT count() FROM `{self.database}`.`{FUNNEL_TABLE}` FINAL
 WHERE canonical_news_id={sql_string(canonical_news_id)}
   AND rendered_text_hash={sql_string(rendered_text_hash)}
   AND contract_version={sql_string(FUNNEL_CONTRACT)}
+  AND stage IN ('deepfm_eligible','deepfm_filtered')
+  AND model_release_id={sql_string(self.release.release_id)}
+  AND model_release_hash={sql_string(self.release.release_hash)}
+  AND abs(threshold-{float(self.config.forecast_eligibility_threshold):.17g})<1e-12
 """).strip()
         return int(value or "0") > 0
 

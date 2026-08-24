@@ -63,7 +63,13 @@ SELECT s.canonical_news_id,
 FROM `q_live`.`news_synthesis_v1` AS s FINAL
 LEFT JOIN `q_live`.`benzinga_news_event_v2` AS e FINAL
   ON e.canonical_news_id=s.canonical_news_id AND e.published_at_utc=s.published_at_utc
-LEFT JOIN `q_live`.`news_forecast_funnel_v1` AS f FINAL
+LEFT JOIN
+(
+  SELECT *
+  FROM `q_live`.`news_forecast_funnel_v1` FINAL
+  ORDER BY created_at_utc DESC
+  LIMIT 1 BY canonical_news_id
+) AS f
   ON f.canonical_news_id=s.canonical_news_id
 WHERE s.engine_version={sql_string(ENGINE_VERSION)}
   AND greatest(s.updated_at_utc,ifNull(f.created_at_utc,s.updated_at_utc))>=parseDateTime64BestEffort({sql_string(start_at.astimezone(UTC).isoformat())})

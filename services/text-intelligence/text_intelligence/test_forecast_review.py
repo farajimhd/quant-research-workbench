@@ -4,7 +4,7 @@ import unittest
 from types import SimpleNamespace
 from unittest import mock
 
-from .forecast_review import ForecastReviewRuntime, ReactionRequest, ReviewRequest
+from .forecast_review import FUNNEL_CONTRACT, ForecastReviewRuntime, ReactionRequest, ReviewRequest
 
 
 class ForecastReviewRuntimeTests(unittest.TestCase):
@@ -69,6 +69,27 @@ class ForecastReviewRuntimeTests(unittest.TestCase):
         runtime.release.score.assert_called_once()
         self.assertEqual(runtime.release.score.call_args.kwargs["threshold"], 0.5)
         self.assertEqual(insert.call_args.args[2], "news_forecast_funnel_v1")
+        self.assertEqual(result["contract_version"], "news_forecast_funnel_deepfm_only_serving_v2")
+
+    def test_funnel_current_requires_exact_deepfm_release_and_threshold(self) -> None:
+        runtime = self.runtime("manual")
+        runtime.release = SimpleNamespace(release_id="release-v2", release_hash="release-hash-v2")
+        runtime.client.execute.return_value = "1"
+
+        self.assertTrue(runtime.funnel_current("news-1", "source-hash"))
+
+        sql = runtime.client.execute.call_args.args[0]
+        self.assertIn(FUNNEL_CONTRACT, sql)
+        self.assertIn("stage IN ('deepfm_eligible','deepfm_filtered')", sql)
+        self.assertIn("model_release_id='release-v2'", sql)
+        self.assertIn("model_release_hash='release-hash-v2'", sql)
+        self.assertIn("abs(threshold-0.5)<1e-12", sql)
+
+    def test_funnel_is_never_current_without_loaded_deepfm_release(self) -> None:
+        runtime = self.runtime("manual")
+
+        self.assertFalse(runtime.funnel_current("news-1", "source-hash"))
+        runtime.client.execute.assert_not_called()
 
     @mock.patch("text_intelligence.forecast_review.insert_json_each_row")
     def test_automatic_mode_queues_deepfm_candidate(self, insert: mock.Mock) -> None:

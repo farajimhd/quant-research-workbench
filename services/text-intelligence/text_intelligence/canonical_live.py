@@ -50,7 +50,7 @@ from research.text_intelligence.news_synthesis_v1.storage import (
 )
 
 from .live import LiveCandidate, LiveNewsRuntime, PreparedNewsCandidate, SynthesisLiveLabel
-from .forecast_review import ForecastReviewRuntime
+from .forecast_review import FUNNEL_CONTRACT, ForecastReviewRuntime
 
 
 STATUS_TABLE = "canonical_text_live_status_v1"
@@ -130,6 +130,7 @@ class CanonicalTextRuntime:
             "deterministic_last_success_at_utc": "",
             "deterministic_reconcile_runs": 0,
             "deterministic_reconcile_notices": 0,
+            "forecast_funnel_reconcile_notices": 0,
             "deterministic_reconcile_seconds": 0,
             "deterministic_reconcile_last_at_utc": "",
             "deterministic_reconcile_last_error": "",
@@ -726,6 +727,13 @@ WHERE corpus={sql_string(notice.corpus)}
         while True:
             reconcile_started = time.perf_counter()
             try:
+                funnel_notices = await asyncio.to_thread(self._stale_funnel_notices)
+                self.metrics["forecast_funnel_reconcile_notices"] = len(funnel_notices)
+                for notice in funnel_notices:
+                    try:
+                        self.enqueue(notice, reconciled=True)
+                    except asyncio.QueueFull:
+                        break
                 notices = await asyncio.to_thread(self._recent_notices)
                 self.metrics["deterministic_reconcile_runs"] = int(
                     self.metrics["deterministic_reconcile_runs"]
@@ -770,6 +778,67 @@ WHERE corpus={sql_string(notice.corpus)}
                     time.perf_counter() - reconcile_started, 3
                 )
             await asyncio.sleep(interval)
+
+    def _stale_funnel_notices(self) -> list[TextDocumentNotice]:
+        review = self.forecast_review
+        if not review or not review.config.forecast_funnel_enabled or review.release is None:
+            return []
+        hours = max(
+            1, min(24 * 30, int(os.environ.get("TEXT_INTELLIGENCE_RECONCILE_HOURS", "72")))
+        )
+        start = datetime.now(UTC) - timedelta(hours=hours)
+        start_sql = start.strftime("%Y-%m-%d %H:%M:%S.%f")
+        start_date_sql = start.date().isoformat()
+        threshold = float(review.config.forecast_eligibility_threshold)
+        rows = list(self.client.iter_json_each_row(f"""
+WITH current_funnel AS
+(
+ SELECT canonical_news_id,rendered_text_hash
+ FROM `{self.database}`.`news_forecast_funnel_v1` FINAL
+ WHERE contract_version={sql_string(FUNNEL_CONTRACT)}
+   AND stage IN ('deepfm_eligible','deepfm_filtered')
+   AND model_release_id={sql_string(review.release.release_id)}
+   AND model_release_hash={sql_string(review.release.release_hash)}
+   AND abs(threshold-{threshold:.17g})<1e-12
+)
+SELECT 'news' corpus,e.canonical_news_id source_id,
+       toString(e.published_at_utc) source_timestamp,'' source_cik
+FROM
+(
+ SELECT canonical_news_id,published_date,provider_article_id,title,
+        source_revision_key,published_at_utc
+ FROM `{self.database}`.`benzinga_news_event_v2` FINAL
+ PREWHERE published_date >= toDate({sql_string(start_date_sql)})
+ WHERE published_at_utc >= toDateTime64({sql_string(start_sql)},6,'UTC')
+) e
+LEFT JOIN
+(
+ SELECT published_date,provider_article_id,source_revision_key,rendered_text_hash
+ FROM `{self.database}`.`benzinga_news_rendered_v2` FINAL
+ PREWHERE published_date >= toDate({sql_string(start_date_sql)})
+ WHERE published_at_utc >= toDateTime64({sql_string(start_sql)},6,'UTC')
+) r
+ ON r.published_date=e.published_date
+ AND r.provider_article_id=e.provider_article_id
+ AND r.source_revision_key=e.source_revision_key
+LEFT JOIN current_funnel f
+ ON f.canonical_news_id=e.canonical_news_id
+ AND f.rendered_text_hash=if(empty(r.rendered_text_hash),hex(SHA256(e.title)),r.rendered_text_hash)
+LEFT JOIN
+(
+ SELECT canonical_news_id,stage
+ FROM `{self.database}`.`news_forecast_funnel_v1` FINAL
+ ORDER BY created_at_utc DESC
+ LIMIT 1 BY canonical_news_id
+) legacy
+ ON legacy.canonical_news_id=e.canonical_news_id
+WHERE empty(f.canonical_news_id)
+ORDER BY legacy.stage='deterministic_rejected' DESC,e.published_at_utc DESC,e.canonical_news_id
+LIMIT 500
+SETTINGS max_execution_time=25
+FORMAT JSONEachRow
+"""))
+        return [TextDocumentNotice.model_validate(row) for row in rows]
 
     def _recent_notices(self) -> list[TextDocumentNotice]:
         hours = max(
