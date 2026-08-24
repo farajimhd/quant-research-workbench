@@ -17,7 +17,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::sync::{broadcast, mpsc, Mutex};
 use tokio::task::JoinHandle;
-use tokio::time::{interval, sleep, timeout, Duration, Instant};
+use tokio::time::{interval, sleep, Duration, Instant};
 
 pub const INTRADAY_BAR_SCHEMA_VERSION: u16 = 3;
 pub const INTRADAY_BAR_CALCULATION_REVISION: &str = "qmd-family-bars-v3";
@@ -39,7 +39,8 @@ type FinalizedSeries = (String, String, &'static str);
 struct RepairRequest {
     ticker: String,
     local_date: String,
-    bucket_index: i64,
+    first_bucket_index: i64,
+    last_bucket_index: i64,
     sip_timestamp_us: u64,
     source_sequence: u64,
     event_type: u8,
@@ -48,9 +49,7 @@ struct RepairRequest {
 
 impl PartialEq for RepairRequest {
     fn eq(&self, other: &Self) -> bool {
-        self.ticker == other.ticker
-            && self.local_date == other.local_date
-            && self.bucket_index == other.bucket_index
+        self.ticker == other.ticker && self.local_date == other.local_date
     }
 }
 
@@ -60,7 +59,19 @@ impl Hash for RepairRequest {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.ticker.hash(state);
         self.local_date.hash(state);
-        self.bucket_index.hash(state);
+    }
+}
+
+impl RepairRequest {
+    fn merge(&mut self, newer: Self) {
+        self.first_bucket_index = self.first_bucket_index.min(newer.first_bucket_index);
+        self.last_bucket_index = self.last_bucket_index.max(newer.last_bucket_index);
+        if newer.arrival_sequence >= self.arrival_sequence {
+            self.sip_timestamp_us = newer.sip_timestamp_us;
+            self.source_sequence = newer.source_sequence;
+            self.event_type = newer.event_type;
+            self.arrival_sequence = newer.arrival_sequence;
+        }
     }
 }
 
@@ -249,6 +260,11 @@ impl IntradayBarRouter {
     pub async fn send(&self, event: LiveCompactEvent) -> Result<(), ()> {
         let index = stable_hash(&event.ticker) as usize % self.senders.len();
         self.senders[index].send(event).await.map_err(|_| ())
+    }
+
+    pub fn try_send(&self, event: LiveCompactEvent) -> Result<(), ()> {
+        let index = stable_hash(&event.ticker) as usize % self.senders.len();
+        self.senders[index].try_send(event).map_err(|_| ())
     }
 }
 
@@ -506,10 +522,13 @@ pub async fn spawn_intraday_bar_service(
         )));
     }
     let mut senders = Vec::new();
-    let lateness_us = config.compact_event_reorder_lag_ms.saturating_mul(1_000) as i64;
+    // CompactEventClickHouseWriter routes this service from its canonical
+    // per-ticker reorder buffer. Applying the same lateness window here would
+    // add a second avoidable delay to live bars.
+    let lateness_us = 0;
+    let per_shard_capacity = (config.intraday_bar_channel_capacity / shard_count).max(1);
     for shard_id in 0..shard_count {
-        let (sender, mut receiver) =
-            mpsc::channel::<LiveCompactEvent>(config.intraday_bar_channel_capacity);
+        let (sender, mut receiver) = mpsc::channel::<LiveCompactEvent>(per_shard_capacity);
         let output = writer_senders[shard_id % writer_count].clone();
         let live_rows = broadcast_sender.clone();
         let shard_resolutions = resolutions.clone();
@@ -522,11 +541,14 @@ pub async fn spawn_intraday_bar_service(
             let mut rollups: BTreeMap<BarKey, IntradayBarRow> = BTreeMap::new();
             let mut max_seen: HashMap<(String, String), i64> = HashMap::new();
             let mut finalized_through: HashMap<FinalizedSeries, i64> = HashMap::new();
+            let mut cleanup_tick = interval(Duration::from_millis(100));
             loop {
-                let event = match timeout(Duration::from_millis(100), receiver.recv()).await {
-                    Ok(Some(event)) => event,
-                    Ok(None) => break,
-                    Err(_) => {
+                let event = tokio::select! {
+                    event = receiver.recv() => match event {
+                        Some(event) => event,
+                        None => break,
+                    },
+                    _ = cleanup_tick.tick() => {
                         if !flush_wall_ready(
                             &mut base_bars,
                             &mut base_seen,
@@ -570,7 +592,8 @@ pub async fn spawn_intraday_bar_service(
                             .send(WriterMessage::Repair(RepairRequest {
                                 ticker: event.ticker.clone(),
                                 local_date: local_date.clone(),
-                                bucket_index: bucket,
+                                first_bucket_index: bucket,
+                                last_bucket_index: bucket,
                                 sip_timestamp_us: event.sip_timestamp_us,
                                 source_sequence: event.source_sequence,
                                 event_type: event.event_meta & 1,
@@ -1276,10 +1299,11 @@ impl IntradayBarWriter {
         let filter = repair
             .map(|request| {
                 format!(
-                    " AND ticker = '{}' AND local_date_value = toDate('{}') AND bucket = {}",
+                    " AND ticker = '{}' AND local_date_value = toDate('{}') AND bucket BETWEEN {} AND {}",
                     escape_sql_string(&request.ticker),
                     request.local_date,
-                    request.bucket_index,
+                    request.first_bucket_index,
+                    request.last_bucket_index,
                 )
             })
             .unwrap_or_default();
@@ -1372,11 +1396,12 @@ impl IntradayBarWriter {
         let filter = repair
             .map(|request| {
                 format!(
-                    " AND ticker = '{}' AND local_date = toDate('{}') AND intDiv(bar_start_session_us, {}) = {}",
+                    " AND ticker = '{}' AND local_date = toDate('{}') AND intDiv(bar_start_session_us, {}) BETWEEN {} AND {}",
                     escape_sql_string(&request.ticker),
                     request.local_date,
                     resolution_us,
-                    request.bucket_index * BASE_RESOLUTION_US / resolution_us,
+                    request.first_bucket_index * BASE_RESOLUTION_US / resolution_us,
+                    request.last_bucket_index * BASE_RESOLUTION_US / resolution_us,
                 )
             })
             .unwrap_or_default();
@@ -1492,14 +1517,14 @@ impl IntradayBarWriter {
                 message = receiver.recv() => match message {
                     Some(WriterMessage::Row(row)) => batch.push(row),
                     Some(WriterMessage::Repair(request)) => {
-                        repairs.remove(&request);
-                        repairs.insert(
-                            request,
-                            Instant::now()
-                                + Duration::from_millis(
-                                    self.config.flush_interval_ms.saturating_mul(2),
-                                ),
-                        );
+                        let due = Instant::now()
+                            + Duration::from_millis(self.config.flush_interval_ms.saturating_mul(2));
+                        if let Some((mut current, current_due)) = repairs.remove_entry(&request) {
+                            current.merge(request);
+                            repairs.insert(current, current_due.min(due));
+                        } else {
+                            repairs.insert(request, due);
+                        }
                     }
                     None => {
                         while !batch.is_empty() {
@@ -1509,15 +1534,24 @@ impl IntradayBarWriter {
                             }
                         }
                         if !repairs.is_empty() {
-                            sleep(Duration::from_millis(self.config.flush_interval_ms.saturating_mul(2))).await;
-                            self.flush_repairs(&mut repairs, true).await;
+                            eprintln!(
+                                "Deferred {} merged intraday repair range(s) to restart-safe canonical reconciliation during shutdown.",
+                                repairs.len()
+                            );
                         }
                         return;
                     }
                 },
                 _ = tick.tick() => {
                     self.flush(&mut batch).await;
-                    self.flush_repairs(&mut repairs, false).await;
+                    // Correction queries are deliberately excluded from the
+                    // busy live path. q_live.events is the durable authority,
+                    // so accumulated ticker/session ranges can wait for an
+                    // idle writer or the restart-safe retained reconciliation
+                    // instead of delaying current bars.
+                    if receiver.is_empty() && batch.is_empty() {
+                        self.flush_repairs(&mut repairs, false).await;
+                    }
                 },
             }
             if batch.len() >= self.config.max_clickhouse_batch {
@@ -1532,6 +1566,9 @@ impl IntradayBarWriter {
 
     async fn flush_repairs(&self, repairs: &mut HashMap<RepairRequest, Instant>, force: bool) {
         let now = Instant::now();
+        // One range covers every dirty 100 ms bucket for a ticker/session and
+        // all parent resolutions. A bounded batch converges rapidly without
+        // allowing correction queries to monopolize the live writer.
         let limit = if force { usize::MAX } else { 1 };
         let ready = repairs
             .iter()
@@ -1543,10 +1580,11 @@ impl IntradayBarWriter {
             if let Err(error) = self.repair_bucket(&request).await {
                 self.metrics.record_lane_failure("intraday_bars", &error);
                 eprintln!(
-                    "Intraday bar late-event repair failed: ticker={} local_date={} bucket={} sip_timestamp_us={} source_sequence={} event_type={} arrival_sequence={} error={error}",
+                    "Intraday bar late-range repair failed: ticker={} local_date={} buckets={}..={} sip_timestamp_us={} source_sequence={} event_type={} arrival_sequence={} error={error}",
                     request.ticker,
                     request.local_date,
-                    request.bucket_index,
+                    request.first_bucket_index,
+                    request.last_bucket_index,
                     request.sip_timestamp_us,
                     request.source_sequence,
                     request.event_type,
@@ -1564,7 +1602,7 @@ impl IntradayBarWriter {
             self.metrics.record_lane_success(
                 "intraday_bars",
                 1,
-                "Rebuilt one late-event 100ms bucket and its parent rollups.",
+                "Rebuilt one merged late-event bucket range and its parent rollups.",
             );
         }
     }
@@ -2177,22 +2215,53 @@ mod tests {
     }
 
     #[test]
-    fn late_repair_identity_collapses_events_for_the_same_bucket() {
+    fn late_repair_identity_collapses_and_merges_one_ticker_session() {
         let first = RepairRequest {
             ticker: "AAPL".into(),
             local_date: "2026-08-11".into(),
-            bucket_index: 42,
+            first_bucket_index: 42,
+            last_bucket_index: 42,
             sip_timestamp_us: 100,
             source_sequence: 1,
             event_type: 0,
             arrival_sequence: 10,
         };
         let mut later = first.clone();
+        later.first_bucket_index = 99;
+        later.last_bucket_index = 99;
         later.sip_timestamp_us = 199;
         later.source_sequence = 9;
         later.event_type = 1;
         later.arrival_sequence = 20;
+        let mut merged = first.clone();
+        merged.merge(later.clone());
+        assert_eq!(merged.first_bucket_index, 42);
+        assert_eq!(merged.last_bucket_index, 99);
+        assert_eq!(merged.arrival_sequence, 20);
         let requests = HashSet::from([first, later]);
         assert_eq!(requests.len(), 1);
+    }
+
+    #[test]
+    fn merged_repair_sql_rebuilds_one_bounded_range_and_parent_ranges() {
+        let writer = IntradayBarWriter::new(
+            GatewayConfig::from_env(),
+            SharedMetrics::new(),
+            vec![BASE_RESOLUTION_US, 1_000_000],
+        );
+        let request = RepairRequest {
+            ticker: "AAPL".into(),
+            local_date: "2026-08-24".into(),
+            first_bucket_index: 42,
+            last_bucket_index: 99,
+            sip_timestamp_us: 100,
+            source_sequence: 1,
+            event_type: 0,
+            arrival_sequence: 10,
+        };
+        let base = writer.bootstrap_base_sql(Some(&request));
+        let parent = writer.bootstrap_rollup_sql(1_000_000, Some(&request));
+        assert!(base.contains("bucket BETWEEN 42 AND 99"));
+        assert!(parent.contains("BETWEEN 4 AND 9"));
     }
 }

@@ -514,7 +514,8 @@ async fn health(State(state): State<Arc<AppState>>) -> Json<HealthPayload> {
     let market_calendar = state.market_calendar.snapshot(chrono::Utc::now());
     let maintenance = state.maintenance.snapshot().await;
     let operational = state.metrics.operational_snapshot();
-    let status = qmd_status(&market_calendar, &maintenance, &operational);
+    let metrics = state.metrics.snapshot();
+    let status = qmd_status(&market_calendar, &maintenance, &operational, &metrics);
     Json(HealthPayload {
         config: state.config.clone(),
         metrics: state.market.metrics().await,
@@ -649,12 +650,14 @@ async fn send_resnapshot_required(
 #[cfg(test)]
 mod shutdown_tests {
     use super::{
-        intraday_bar_history_sql, live_market_state_history_sql, parse_indicator_projection_fields,
-        resnapshot_required_frame, retain_indicator_projection_fields, retained_query_date_bounds,
-        scanner_sequence_gap, valid_shutdown_token,
+        intraday_bar_history_sql, live_feed_is_stale, live_market_state_history_sql,
+        parse_indicator_projection_fields, resnapshot_required_frame,
+        retain_indicator_projection_fields, retained_query_date_bounds, scanner_sequence_gap,
+        valid_shutdown_token,
     };
     use crate::config::GatewayConfig;
     use crate::market_calendar::MarketCalendarClient;
+    use crate::metrics::SharedMetrics;
     use chrono::{NaiveDate, TimeZone, Utc};
     use serde_json::json;
 
@@ -663,6 +666,17 @@ mod shutdown_tests {
         assert!(valid_shutdown_token("run-token", "run-token"));
         assert!(!valid_shutdown_token("run-token", "wrong"));
         assert!(!valid_shutdown_token("", ""));
+    }
+
+    #[test]
+    fn active_feed_freshness_fails_closed_after_thirty_seconds() {
+        let metrics = SharedMetrics::new();
+        metrics.observe_event("quote", Utc::now() - chrono::Duration::seconds(31));
+        assert!(live_feed_is_stale(&metrics.snapshot()));
+
+        let fresh = SharedMetrics::new();
+        fresh.observe_event("quote", Utc::now());
+        assert!(!live_feed_is_stale(&fresh.snapshot()));
     }
 
     #[test]
@@ -827,14 +841,15 @@ async fn status_snapshot(State(state): State<Arc<AppState>>) -> Json<StandardSta
     let market_calendar = state.market_calendar.snapshot(chrono::Utc::now());
     let operational = state.metrics.operational_snapshot();
     let computation_demand = state.computation_targets.snapshot();
-    let status = qmd_status(&market_calendar, &maintenance, &operational);
+    let status = qmd_status(&market_calendar, &maintenance, &operational, &metrics);
     let queue_drops = metrics.events_broadcast_dropped
         + metrics.bar_events_dropped
+        + metrics.intraday_bar_events_dropped
         + metrics.indicator_events_dropped
         + metrics.compact_event_queue_dropped
         + metrics.clickhouse_events_dropped;
     Json(StandardStatusPayload {
-        attention: build_attention(&operational, &maintenance, queue_drops),
+        attention: build_attention(&operational, &maintenance, &metrics, queue_drops),
         live_pipeline: build_live_pipeline(&operational, &metrics),
         downstream_products: build_downstream_products(&state.config, &operational, &metrics),
         header: json!({
@@ -903,6 +918,7 @@ async fn status_snapshot(State(state): State<Arc<AppState>>) -> Json<StandardSta
         queues: json!({
             "event_broadcast_dropped": metrics.events_broadcast_dropped,
             "bar_events_dropped": metrics.bar_events_dropped,
+            "intraday_bar_events_dropped": metrics.intraday_bar_events_dropped,
             "indicator_events_dropped": metrics.indicator_events_dropped,
             "compact_event_queue_dropped": metrics.compact_event_queue_dropped,
             "clickhouse_events_dropped": metrics.clickhouse_events_dropped,
@@ -934,6 +950,7 @@ fn qmd_status(
     market: &MarketSnapshot,
     maintenance: &MaintenanceSnapshot,
     operational: &OperationalSnapshot,
+    metrics: &MetricsSnapshot,
 ) -> String {
     if operational
         .lanes
@@ -954,11 +971,21 @@ fn qmd_status(
     if !market.active_collection_window {
         return "closed".to_string();
     }
+    if live_feed_is_stale(metrics) {
+        return "degraded".to_string();
+    }
     match lane_state(operational, "massive_feed") {
         "healthy" => "running".to_string(),
         "starting" | "connecting" => "starting".to_string(),
         _ => "degraded".to_string(),
     }
+}
+
+fn live_feed_is_stale(metrics: &MetricsSnapshot) -> bool {
+    metrics.ingest_events > 0
+        && metrics
+            .last_event_lag_ms
+            .is_some_and(|lag_ms| lag_ms > 30_000)
 }
 
 fn lane<'a>(
@@ -983,6 +1010,7 @@ fn lane_detail<'a>(operational: &'a OperationalSnapshot, key: &str) -> &'a str {
 fn build_attention(
     operational: &OperationalSnapshot,
     maintenance: &MaintenanceSnapshot,
+    metrics: &MetricsSnapshot,
     queue_drops: u64,
 ) -> Vec<Value> {
     let mut items = operational
@@ -1007,6 +1035,15 @@ fn build_attention(
             "message": format!("{queue_drops} receiver-closed event(s) were recorded."),
             "impact": "One or more required consumers stopped accepting work.",
             "action": "Inspect the failed worker and restart only after its cause is understood.",
+        }));
+    }
+    if live_feed_is_stale(metrics) {
+        items.push(json!({
+            "severity": "critical",
+            "area": "Massive feed freshness",
+            "message": format!("The newest market event is {} ms old during an active collection window.", metrics.last_event_lag_ms.unwrap_or_default()),
+            "impact": "Live application state is stale even if the websocket remains connected.",
+            "action": "Inspect source-persistence and derived queue pressure; do not treat the service as ready until event time advances.",
         }));
     }
     if maintenance.errors > 0 {

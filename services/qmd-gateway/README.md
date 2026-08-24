@@ -94,7 +94,7 @@ Environment variables:
 - `QMD_COMPACT_EVENT_CHANNEL_CAPACITY`, default `250000`
 - `QMD_COMPACT_EVENT_LIVE_BUFFER_EVENTS_PER_TICKER`, default `512`
 - `QMD_COMPACT_EVENT_REORDER_LAG_MS`, default `500`
-- `QMD_COMPACT_EVENT_REORDER_FORCE_FLUSH_MS`, default `2000`
+- `QMD_COMPACT_EVENT_REORDER_FORCE_FLUSH_MS`, default `500` (independent of the ClickHouse batch flush, so sparse live bars are not delayed)
 - `QMD_COMPACT_EVENT_REORDER_MAX_EVENTS_PER_TICKER`, default `4096`
 - compact condition/indicator tokens and tape ids load from the canonical
   `market_sip_compact` reference tables; QMD fails preflight on reference drift

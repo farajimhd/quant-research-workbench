@@ -1102,7 +1102,8 @@ impl CompactEventClickHouseWriter {
             .compact_event_reorder_lag_ms
             .saturating_mul(1_000);
         let mut last_force_flush = Instant::now();
-        let mut flush_interval = interval(Duration::from_millis(self.config.flush_interval_ms));
+        let mut reorder_interval = interval(Duration::from_millis(100));
+        let mut persist_interval = interval(Duration::from_millis(self.config.flush_interval_ms));
         loop {
             tokio::select! {
                 event = receiver.recv() => {
@@ -1130,22 +1131,25 @@ impl CompactEventClickHouseWriter {
                                 }
                                 self.live_store.push(conversion.event.clone()).await;
                                 let canonical_event = self.decoder.decode(&conversion.event);
-                                if self.canonical_event_sender.send(canonical_event.clone()).await.is_err() {
-                                    self.metrics.inc_event_broadcast_dropped();
-                                    self.metrics.record_lane_failure("canonical_events", "Canonical event fanout receiver closed.");
-                                    eprintln!("Canonical event fanout receiver closed; could not route one normalized event.");
-                                } else {
-                                    self.metrics.set_lane_pending(
+                                match self.canonical_event_sender.try_send(canonical_event.clone()) {
+                                    Ok(()) => self.metrics.set_lane_pending(
                                         "canonical_events",
                                         self.canonical_event_sender.max_capacity().saturating_sub(self.canonical_event_sender.capacity()) as u64,
+                                    ),
+                                    Err(_) => {
+                                        self.metrics.inc_event_broadcast_dropped();
+                                        self.metrics.record_lane_failure(
+                                            "canonical_events",
+                                            "The bounded computation fanout is saturated; real-time compact delivery and canonical persistence continue, while downstream state must resnapshot from canonical data.",
+                                        );
+                                    }
+                                }
+                                if self.product_router.try_send(canonical_event).is_err() {
+                                    self.metrics.inc_event_broadcast_dropped();
+                                    self.metrics.record_lane_failure(
+                                        "canonical_events",
+                                        "A focused market-product queue is saturated; real-time compact delivery and canonical persistence continue, while the focused product must rebuild from canonical data.",
                                     );
-                                }
-                                if self.product_router.send(canonical_event).await.is_err() {
-                                    eprintln!("Market-product receiver closed; could not route one compact event.");
-                                }
-                                if self.intraday_bar_router.send(conversion.event.clone()).await.is_err() {
-                                    self.metrics.inc_intraday_bar_event_dropped();
-                                    eprintln!("Canonical intraday bar receiver closed; could not route one compact event.");
                                 }
                                 self.metrics.inc_compact_events_emitted(1);
                                 if self.config.persist_compact_events {
@@ -1157,7 +1161,7 @@ impl CompactEventClickHouseWriter {
                                     reorder_pending_count = reorder_pending_count.saturating_add(1);
                                     self.metrics.inc_compact_events_reorder_buffered(1);
                                     self.metrics.set_compact_events_reorder_pending(reorder_pending_count);
-                                    self.drain_reorder_buffer(
+                                    let ready = self.drain_reorder_buffer(
                                         &mut reorder_buffers,
                                         &ticker,
                                         &mut batch,
@@ -1165,21 +1169,33 @@ impl CompactEventClickHouseWriter {
                                         reorder_lag_us,
                                         false,
                                     );
+                                    self.route_ordered_intraday_events(ready);
                                     if batch.len() >= self.config.compact_event_max_clickhouse_batch {
                                         self.submit_persist_work(&persist_sender, &mut batch, &mut issue_batch).await;
                                     }
+                                } else if self
+                                    .intraday_bar_router
+                                    .try_send(conversion.event)
+                                    .is_err()
+                                {
+                                    self.metrics.inc_intraday_bar_event_dropped();
+                                    self.metrics.record_lane_failure(
+                                        "intraday_bars",
+                                        "The bounded intraday queue is full while compact persistence is disabled; canonical bar input was rejected.",
+                                    );
                                 }
                             }
                             Err(reason) => record_compact_event_rejection(&self.metrics, reason),
                         },
                         None => {
-                            self.drain_reorder_buffers(
+                            let ready = self.drain_reorder_buffers(
                                 &mut reorder_buffers,
                                 &mut batch,
                                 &mut reorder_pending_count,
                                 reorder_lag_us,
                                 true,
                             );
+                            self.route_ordered_intraday_events(ready);
                             self.submit_persist_work(&persist_sender, &mut batch, &mut issue_batch).await;
                             drop(persist_sender);
                             for handle in persist_handles {
@@ -1189,18 +1205,24 @@ impl CompactEventClickHouseWriter {
                         }
                     }
                 }
-                _ = flush_interval.tick() => {
+                _ = reorder_interval.tick() => {
                     let force = last_force_flush.elapsed() >= Duration::from_millis(self.config.compact_event_reorder_force_flush_ms);
                     if force {
                         last_force_flush = Instant::now();
                     }
-                    self.drain_reorder_buffers(
+                    let ready = self.drain_reorder_buffers(
                         &mut reorder_buffers,
                         &mut batch,
                         &mut reorder_pending_count,
                         reorder_lag_us,
                         force,
                     );
+                    self.route_ordered_intraday_events(ready);
+                    if batch.len() >= self.config.compact_event_max_clickhouse_batch {
+                        self.submit_persist_work(&persist_sender, &mut batch, &mut issue_batch).await;
+                    }
+                }
+                _ = persist_interval.tick() => {
                     self.submit_persist_work(&persist_sender, &mut batch, &mut issue_batch).await;
                 }
             }
@@ -1278,7 +1300,8 @@ impl CompactEventClickHouseWriter {
         reorder_pending_count: &mut u64,
         reorder_lag_us: u64,
         force: bool,
-    ) {
+    ) -> Vec<LiveCompactEvent> {
+        let mut ordered = Vec::new();
         for buffer in reorder_buffers.values_mut() {
             let (ready, forced) = if force {
                 (buffer.drain_all(), false)
@@ -1294,10 +1317,12 @@ impl CompactEventClickHouseWriter {
             *reorder_pending_count = reorder_pending_count.saturating_sub(ready.len() as u64);
             self.metrics
                 .inc_compact_events_reorder_flushed(ready.len() as u64);
+            ordered.extend(ready.iter().cloned());
             batch.extend(ready);
         }
         self.metrics
             .set_compact_events_reorder_pending(*reorder_pending_count);
+        ordered
     }
 
     fn drain_reorder_buffer(
@@ -1308,9 +1333,9 @@ impl CompactEventClickHouseWriter {
         reorder_pending_count: &mut u64,
         reorder_lag_us: u64,
         force: bool,
-    ) {
+    ) -> Vec<LiveCompactEvent> {
         let Some(buffer) = reorder_buffers.get_mut(ticker) else {
-            return;
+            return Vec::new();
         };
         let (ready, forced) = if force {
             (buffer.drain_all(), false)
@@ -1326,9 +1351,23 @@ impl CompactEventClickHouseWriter {
         *reorder_pending_count = reorder_pending_count.saturating_sub(ready.len() as u64);
         self.metrics
             .inc_compact_events_reorder_flushed(ready.len() as u64);
+        let ordered = ready.clone();
         batch.extend(ready);
         self.metrics
             .set_compact_events_reorder_pending(*reorder_pending_count);
+        ordered
+    }
+
+    fn route_ordered_intraday_events(&self, events: Vec<LiveCompactEvent>) {
+        for event in events {
+            if self.intraday_bar_router.try_send(event).is_err() {
+                self.metrics.inc_intraday_bar_event_dropped();
+                self.metrics.record_lane_failure(
+                    "intraday_bars",
+                    "The bounded ordered-event queue is full; compact events remain durable and the affected bar range is deferred to canonical reconciliation.",
+                );
+            }
+        }
     }
 
     async fn flush_persisted(&self, batch: &mut Vec<LiveCompactEvent>) {
@@ -2212,6 +2251,32 @@ mod tests {
             ticker: "TEST".to_string(),
             ts: timestamp,
         })
+    }
+
+    #[test]
+    fn reorder_buffer_emits_event_time_order_once_without_a_second_bar_delay() {
+        let base = Utc.with_ymd_and_hms(2026, 8, 24, 14, 30, 0).unwrap();
+        let mut buffer = TickerReorderBuffer::default();
+        buffer.insert(compact_quote_at(
+            base + chrono::Duration::milliseconds(2_000),
+            2,
+        ));
+        buffer.insert(compact_quote_at(
+            base + chrono::Duration::milliseconds(1_800),
+            1,
+        ));
+        let (waiting, forced) = buffer.drain_ready(500_000, 4_096);
+        assert!(waiting.is_empty());
+        assert!(!forced);
+
+        buffer.insert(compact_quote_at(
+            base + chrono::Duration::milliseconds(3_000),
+            3,
+        ));
+        let (ready, forced) = buffer.drain_ready(500_000, 4_096);
+        assert!(!forced);
+        assert_eq!(ready.len(), 2);
+        assert!(ready[0].sip_timestamp_us < ready[1].sip_timestamp_us);
     }
 
     #[tokio::test]

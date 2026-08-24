@@ -272,7 +272,7 @@ impl GatewayConfig {
             ),
             compact_event_reorder_force_flush_ms: env_u64(
                 "QMD_COMPACT_EVENT_REORDER_FORCE_FLUSH_MS",
-                2_000,
+                500,
             ),
             compact_event_reorder_lag_ms: env_u64("QMD_COMPACT_EVENT_REORDER_LAG_MS", 500),
             compact_event_reorder_max_events_per_ticker: env_usize(

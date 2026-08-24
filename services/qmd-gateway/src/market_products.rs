@@ -295,6 +295,17 @@ impl MarketProductEventRouter {
         let index = stable_hash(event.ticker()) as usize % self.senders.len();
         self.senders[index].send(event).await
     }
+
+    pub fn try_send(&self, event: MarketEvent) -> Result<(), ()> {
+        if !self
+            .computation_targets
+            .requires_focused_computation(event.ticker())
+        {
+            return Ok(());
+        }
+        let index = stable_hash(event.ticker()) as usize % self.senders.len();
+        self.senders[index].try_send(event).map_err(|_| ())
+    }
 }
 
 pub struct MarketProductEngine {

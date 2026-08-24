@@ -35,7 +35,7 @@ Settings are read from environment variables at process start. The gateway also 
 | `QMD_COMPACT_EVENT_TABLE` | `events` | Singular ClickHouse table for compact live events. | Encoding stays aligned with historical `market_sip_compact.events_YYYY`; the physical live table is not yearly. |
 | `QMD_COMPACT_EVENT_LIVE_BUFFER_EVENTS_PER_TICKER` | `512` | Recent compact events retained in memory per ticker for ML/app snapshots. | Must be at least the largest live inference context, e.g. 128. |
 | `QMD_COMPACT_EVENT_REORDER_LAG_MS` | `500` | Per-ticker persistence reorder watermark lag. | Higher values improve late-arrival ordering but delay durable writes. |
-| `QMD_COMPACT_EVENT_REORDER_FORCE_FLUSH_MS` | `2000` | Maximum persistence wait before flushing reorder buffers. | Keeps DB lag bounded. |
+| `QMD_COMPACT_EVENT_REORDER_FORCE_FLUSH_MS` | `500` | Maximum event-time reorder wait before routing sparse events to live bars. | Runs on an independent 100 ms clock; ClickHouse inserts retain their separate batch interval. |
 | `QMD_COMPACT_EVENT_REORDER_MAX_EVENTS_PER_TICKER` | `4096` | Per-ticker persistence reorder buffer cap. | Protects memory during liquid bursts. |
 | `QMD_PERSIST_COMPACT_EVENTS` | `true` | Persist compact live events to ClickHouse. | Disable only for stream-only tests. |
 | `QMD_PERSIST_RAW_EVENTS` | `false` | Persist raw quote/trade rows. | Enable only for debug/replay/gap-fill workflows. |
