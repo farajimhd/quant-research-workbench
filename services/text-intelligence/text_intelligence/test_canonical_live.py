@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import unittest
 import asyncio
+import json
 from unittest import mock
 
 from .canonical_live import CanonicalTextRuntime, LoadedSource, TextDocumentNotice
@@ -226,6 +227,25 @@ class CanonicalTextRuntimeTests(unittest.TestCase):
         snapshot = runtime.snapshot_metrics()
         self.assertEqual(snapshot["deterministic_active_failure_count"], 0)
         self.assertEqual(snapshot["deterministic_worker_error_status"], "resolved")
+
+    def test_status_write_normalizes_offset_timestamp_for_clickhouse(self) -> None:
+        client = mock.Mock()
+        runtime = CanonicalTextRuntime(
+            client=client,
+            database="q_live",
+            live_news=mock.Mock(),
+        )
+        notice = TextDocumentNotice(
+            corpus="sec",
+            source_id="0001213900-26-093081",
+            source_timestamp="2026-08-24T20:44:18.460791+00:00",
+        )
+
+        runtime._write_status(notice, "a" * 64, "complete", 1, 2, "")
+
+        sql = client.execute.call_args.args[0]
+        row = json.loads(sql.split("\n", 1)[1])
+        self.assertEqual(row["source_timestamp"], "2026-08-24 20:44:18.460791")
 
 
 class CanonicalTextRuntimeLifecycleTests(unittest.IsolatedAsyncioTestCase):

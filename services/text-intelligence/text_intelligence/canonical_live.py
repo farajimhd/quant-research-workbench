@@ -703,7 +703,9 @@ WHERE corpus={sql_string(notice.corpus)}
         row = {
             "corpus": notice.corpus,
             "source_id": notice.source_id,
-            "source_timestamp": notice.source_timestamp or "1970-01-01 00:00:00",
+            "source_timestamp": _clickhouse_datetime(
+                notice.source_timestamp or "1970-01-01 00:00:00"
+            ),
             "source_hash": source_hash,
             "authority_version": _authority_version(notice.corpus),
             "status": status,
@@ -1052,3 +1054,10 @@ def _parse_utc(value: str) -> datetime | None:
         if parsed.tzinfo is None
         else parsed.astimezone(UTC)
     )
+
+
+def _clickhouse_datetime(value: str) -> str:
+    parsed = _parse_utc(value)
+    if parsed is None:
+        raise ValueError(f"invalid UTC timestamp: {value!r}")
+    return parsed.replace(tzinfo=None).strftime("%Y-%m-%d %H:%M:%S.%f")

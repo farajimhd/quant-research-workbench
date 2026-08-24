@@ -588,15 +588,6 @@ export function RealLiveTradingPage({ onMarketStatusChange, onTopbarCenterChange
   }, [canvasId, isChildCanvas]);
 
   useEffect(() => {
-    const exchangeSession = currentExchangeSession(wallClock);
-    setSession((current) => {
-      if (current.barTime === exchangeSession.barTime && current.sessionDate === exchangeSession.sessionDate) return current;
-      window.localStorage.setItem(LIVE_SESSION_STORAGE_KEY, JSON.stringify(exchangeSession));
-      return exchangeSession;
-    });
-  }, [wallClock]);
-
-  useEffect(() => {
     window.localStorage.setItem(LIVE_ACCOUNT_KEYS_STORAGE_KEY, JSON.stringify(selectedAccountKeys));
     setPreflightStatus((current) => (current && sameAccountKeySet(current.selected_account_keys, selectedAccountKeys) ? current : null));
   }, [selectedAccountKeys]);
@@ -715,6 +706,7 @@ export function RealLiveTradingPage({ onMarketStatusChange, onTopbarCenterChange
       if (enrichedRows.length) appendSignalRows(enrichedRows, exchangeSession.barTime);
       if (options.warmCharts !== false) void warmChartCacheForRows(enrichedRows);
       if (firstRow) setLastActionTime(exchangeSession.barTime);
+      window.localStorage.setItem(LIVE_SESSION_STORAGE_KEY, JSON.stringify(exchangeSession));
       setLiveClockMode("running");
       setLiveClockMessage(scannerPayload.gateway_error ? `Live scanner used REST fallback at ${exchangeSession.barTime} ET. ${scannerPayload.gateway_error}` : `Live scanner refreshed from ${scannerPayload.provider} at ${exchangeSession.barTime} ET.`);
       return { firstRow, marketSnapshot: marketStateSnapshot, snapshot: enrichedSnapshot };

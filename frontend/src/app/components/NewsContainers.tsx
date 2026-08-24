@@ -474,7 +474,7 @@ function NewsStatus({ compact, inline, state }: { compact?: boolean; inline?: bo
 function NewsIntelligenceStatus() {
   const [services, setServices] = useState<Array<{ online?: boolean; registry?: { id?: string; label?: string }; status?: string }>>([]);
   useEffect(() => { const controller = new AbortController(); const load = () => api<{ services?: typeof services }>("/api/services/status?include_database_tables=false&include_recent=false&include_logs=false", { signal: controller.signal, timeoutMs: 15000 }).then((payload) => setServices(payload.services ?? [])).catch(() => setServices([])); void load(); const timer = window.setInterval(load, 15000); return () => { controller.abort(); window.clearInterval(timer); }; }, []);
-  const ready = (id: string) => { const service = services.find((row) => row.registry?.id === id); return Boolean(service?.online && ["ready", "running", "idle", "processing"].includes(String(service.status || "").toLowerCase())); };
+  const ready = (id: string) => { const service = services.find((row) => row.registry?.id === id); return Boolean(service?.online && ["online", "ready", "running", "idle", "processing"].includes(String(service.status || "").toLowerCase())); };
   const features = [{ label: "Synthesis", ready: ready("text-intelligence") }, { label: "DeepFM", ready: ready("text-intelligence") }, { label: "AI review", ready: ready("text-intelligence") && ready("model-gateway") }, { label: "Reaction", ready: ready("text-intelligence") && ready("model-gateway") && ready("news-hypothesis") && ready("qmd") }];
   const allReady = features.every((item) => item.ready);
   return <details className="news-intelligence-status"><summary><span data-ready={allReady}>{allReady ? "Intelligence ready" : "Intelligence partial"}</span></summary><div>{features.map((item) => <span data-ready={item.ready} key={item.label}><b>{item.label}</b><em>{item.ready ? "Ready" : "Unavailable"}</em></span>)}</div></details>;
@@ -494,7 +494,17 @@ function useNewsIntelligenceState(initialState: NewsAiState | null | undefined, 
   const reviewPending = ["queued", "labeling"].includes(status);
   const pending = reviewPending || reactionPending;
   const pollCount = useRef(0);
-  useEffect(() => { setState(initialState ?? null); }, [initialState]);
+  const initialRevision = JSON.stringify(initialState ?? null);
+  const appliedInitialRevision = useRef(initialRevision);
+  useEffect(() => {
+    // Live News refreshes replace every row object even when its persisted AI
+    // state is unchanged. Updating local state for all 100 cards on every
+    // refresh creates a passive-effect feedback burst in React. Reconcile only
+    // when the serialized intelligence contract actually changed.
+    if (initialRevision === appliedInitialRevision.current) return;
+    appliedInitialRevision.current = initialRevision;
+    setState(initialState ?? null);
+  }, [initialRevision, initialState]);
   useEffect(() => {
     if (!pending) return;
     pollCount.current = 0;
