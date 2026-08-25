@@ -503,6 +503,8 @@ export function CanvasWorkspaceSurface({ accountKeys, approvedCanvas, canvasId, 
   const [editableProfileReady, setEditableProfileReady] = useState(Boolean(runtimeBase));
   const [canvasPersistenceEpoch, setCanvasPersistenceEpoch] = useState(0);
   const editableProfileRevisionRef = useRef(0);
+  const canvasProfileSaveInFlightRef = useRef(false);
+  const pendingCanvasProfileRef = useRef<CanvasRegistry | null>(null);
   const [linkPopoverContainerId, setLinkPopoverContainerId] = useState<string | null>(null);
   const [settingsContainerId, setSettingsContainerId] = useState<string | null>(null);
   const managementEnabled = manager || Boolean(runtimeBase);
@@ -607,27 +609,36 @@ export function CanvasWorkspaceSurface({ accountKeys, approvedCanvas, canvasId, 
           [canvasId]: snapshotCanvasWorkspaceState(workspaceState),
         };
       }
-      const save = (expectedRevision: number, candidate = profile) => api<EditableCanvasProfile>("/api/trading/canvas-profile", {
-        body: JSON.stringify({ expected_revision: expectedRevision, profile: candidate }),
-        method: "PUT",
-        timeoutMs: 20_000,
-      });
-      try {
-        const saved = await save(editableProfileRevisionRef.current);
-        editableProfileRevisionRef.current = saved.revision;
-        setError((current) => current.startsWith("Canvas persistence is unavailable:") ? "" : current);
-      } catch (reason) {
-        const status = typeof reason === "object" && reason && "status" in reason ? Number((reason as { status?: number }).status) : 0;
+      pendingCanvasProfileRef.current = profile;
+      if (canvasProfileSaveInFlightRef.current) return;
+      canvasProfileSaveInFlightRef.current = true;
+      while (pendingCanvasProfileRef.current) {
+        const candidate = pendingCanvasProfileRef.current;
+        pendingCanvasProfileRef.current = null;
+        const save = (expectedRevision: number, value = candidate) => api<EditableCanvasProfile>("/api/trading/canvas-profile", {
+          body: JSON.stringify({ expected_revision: expectedRevision, profile: value }),
+          method: "PUT",
+          timeoutMs: 20_000,
+        });
         try {
-          if (status !== 409) throw reason;
-          const latest = await api<EditableCanvasProfile>("/api/trading/canvas-profile", { timeoutMs: 20_000 });
-          const merged = latest.profile ? mergeCanvasProfiles(latest.profile, profile, canvasId) : profile;
-          const saved = await save(latest.revision, merged);
+          const saved = await save(editableProfileRevisionRef.current);
           editableProfileRevisionRef.current = saved.revision;
-        } catch (retryReason) {
-          setError(`Canvas persistence is unavailable: ${retryReason instanceof Error ? retryReason.message : String(retryReason)}`);
+          setError((current) => current.startsWith("Canvas persistence is unavailable:") ? "" : current);
+        } catch (reason) {
+          const status = typeof reason === "object" && reason && "status" in reason ? Number((reason as { status?: number }).status) : 0;
+          try {
+            if (status !== 409) throw reason;
+            const latest = await api<EditableCanvasProfile>("/api/trading/canvas-profile", { timeoutMs: 20_000 });
+            const merged = latest.profile ? mergeCanvasProfiles(latest.profile, candidate, canvasId) : candidate;
+            const saved = await save(latest.revision, merged);
+            editableProfileRevisionRef.current = saved.revision;
+            setError((current) => current.startsWith("Canvas persistence is unavailable:") ? "" : current);
+          } catch (retryReason) {
+            setError(`Canvas persistence is unavailable: ${retryReason instanceof Error ? retryReason.message : String(retryReason)}`);
+          }
         }
       }
+      canvasProfileSaveInFlightRef.current = false;
     }, 400);
     return () => window.clearTimeout(timer);
   }, [canvasId, canvasPersistenceEpoch, editableProfileReady, registry, runtimeBase, workspaceState]);
@@ -918,13 +929,18 @@ export function CanvasWorkspaceSurface({ accountKeys, approvedCanvas, canvasId, 
       ...(workspaceState?.openIds ?? []),
     ]);
     const settings = instanceSettings(registry, instanceId);
+    const focusedIndicators = Array.from(new Set([
+      "indicator.vwap",
+      "indicator.macd",
+      ...settings.charts_quotes.main.visibleIndicators,
+    ]));
     const focusedSettings = normalizeSettings({
       ...settings,
       chart: { ...settings.chart, symbol },
       charts_quotes: {
         daily: { ...settings.charts_quotes.daily, symbol },
         layout: settings.charts_quotes.layout,
-        main: { ...settings.charts_quotes.main, symbol },
+        main: { ...settings.charts_quotes.main, symbol, visibleIndicators: focusedIndicators },
         month: { ...settings.charts_quotes.month, symbol },
       },
     });
@@ -1389,7 +1405,7 @@ function ContainerPreview({ canvasId, chartCutoffMs, definition, instanceId, lin
             ? <div className="canvas-inline-error">{liveMode ? "Live" : "Historical"} scanner unavailable: {scannerError}</div>
             : <MarketScannerContainer asOf={scannerSnapshot?.as_of ?? new Date(chartCutoffMs).toISOString()} live={liveMode} meta={scannerSnapshot?.meta ?? preview?.scanner_meta} onSettingsChange={(patch) => updateSettings((state) => ({ ...state, scanner: { ...state.scanner, ...patch } }))} onTickerSelect={onTickerWorkspaceOpen} rows={scannerSnapshot?.rows ?? preview?.scanner ?? []} settings={settings.scanner} />
       : definition.id === "signal_stream"
-        ? <SignalStreamContainer asOf={new Date(chartCutoffMs).toISOString()} live={signalStreamLive} onSettingsChange={(patch) => updateSettings((state) => ({ ...state, signal_stream: { ...state.signal_stream, ...patch } }))} onTickerSelect={onTickerWorkspaceOpen} runId={signalStreamRunId} settings={settings.signal_stream} />
+        ? <SignalStreamContainer asOf={new Date(chartCutoffMs).toISOString()} live={signalStreamLive} onSettingsChange={(patch) => updateSettings((state) => ({ ...state, signal_stream: { ...state.signal_stream, ...patch } }))} onTickerSelect={onTickerWorkspaceOpen} runId={signalStreamRunId} scannerRows={scannerSnapshot?.rows ?? preview?.scanner ?? []} settings={settings.signal_stream} />
       : definition.id === "watchlist"
         ? (scannerLoading || scannerSnapshot?.meta.status === "building") && !scannerSnapshot?.rows.length
           ? <div className="canvas-preview-loading">Loading the {liveMode ? "live" : "historical"} watchlist snapshot…</div>

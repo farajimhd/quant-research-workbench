@@ -106,6 +106,7 @@ type MarketListViewState = {
 };
 
 const MARKET_LIST_VIEW_STATE = new Map<string, MarketListViewState>();
+const NEWS_INTELLIGENCE_COLUMNS = ["news_synthesis", "news_ai_review", "news_ai_reaction"];
 
 export const SCANNER_TIMEFRAMES: ScannerTimeframe[] = ["100ms", "1s", "5s", "10s", "30s", "1m", "5m", "15m", "30m", "1h", "1d"];
 const DEFAULT_SCANNER_TECHNICAL_TIMEFRAME: ScannerTimeframe = "15m";
@@ -184,6 +185,20 @@ const FIELD_CATALOG: FieldDefinition[] = [
   field("live_news_recency", "News recency", "News & SEC", "derived", "text", "Hot, cold, old, or none for company-specific news at the workspace clock."),
   field("live_news_count", "News count", "News & SEC", "derived", "integer", "Recent company-specific article count."),
   field("news_labels", "News", "News & SEC", "derived", "text", "Explainable company-news classifications."),
+  field("news_synthesis", "News synthesis", "News intelligence", "derived", "number", "Informational synthesis card for the latest issuer story; sorting uses its signed direction score."),
+  field("news_synthesis_class", "Synthesis class", "News intelligence", "derived", "text", "Short article class from News Synthesis."),
+  field("news_synthesis_purpose", "Synthesis purpose", "News intelligence", "derived", "text", "Communication purpose from News Synthesis."),
+  field("news_synthesis_origin", "Synthesis origin", "News intelligence", "derived", "text", "Information origin from News Synthesis."),
+  field("news_synthesis_direction", "Synthesis direction", "News intelligence", "derived", "text", "Informational issuer direction from News Synthesis; never decision-authorized."),
+  field("news_synthesis_event", "Synthesis event", "News intelligence", "derived", "text", "Primary concept on the latest issuer story."),
+  field("news_ai_review", "AI review", "News intelligence", "derived", "percentPlain", "Latest issuer forecast-relevance score; sorting uses this probability."),
+  field("news_ai_review_state", "AI review state", "News intelligence", "derived", "text", "Manual AI review workflow state."),
+  field("news_ai_eligibility", "AI eligibility", "News intelligence", "derived", "text", "AI issuer forecast eligibility at the configured operating threshold."),
+  field("news_ai_sentiment", "AI sentiment", "News intelligence", "derived", "text", "AI language implication sentiment for the issuer."),
+  field("news_ai_reaction", "AI reaction", "News intelligence", "derived", "percentPlain", "Latest five-minute expected-return forecast; sorting uses expected return."),
+  field("news_ai_reaction_state", "AI reaction state", "News intelligence", "derived", "text", "Manual market-reaction forecast workflow state."),
+  field("news_ai_reaction_confidence", "Reaction confidence", "News intelligence", "derived", "percentPlain", "Confidence of the latest five-minute reaction forecast."),
+  field("news_ai_reaction_regime", "Reaction regime", "News intelligence", "derived", "text", "Market-regime compatibility for the reaction forecast."),
   field("sec_recency", "SEC recency", "News & SEC", "derived", "text", "Hot, cold, old, or none from filing acceptance time."),
   field("sec_count", "SEC filings", "News & SEC", "derived", "integer", "Recent ticker-linked SEC filing count."),
   field("sec_labels", "SEC", "News & SEC", "derived", "text", "Explainable SEC disclosure categories."),
@@ -433,7 +448,7 @@ export function normalizeMarketScannerPreset(value: unknown): string {
   return QMD_SCANNER_PRESET;
 }
 
-export function SignalStreamContainer({ asOf, live, onSettingsChange, onTickerSelect, runId, settings }: { asOf: string; live: boolean; onSettingsChange: (patch: Partial<SignalStreamSettings>) => void; onTickerSelect: (ticker: string) => void; runId?: string; settings: SignalStreamSettings }) {
+export function SignalStreamContainer({ asOf, live, onSettingsChange, onTickerSelect, runId, scannerRows = [], settings }: { asOf: string; live: boolean; onSettingsChange: (patch: Partial<SignalStreamSettings>) => void; onTickerSelect: (ticker: string) => void; runId?: string; scannerRows?: ScreenerRow[]; settings: SignalStreamSettings }) {
   const { catalog, discovery } = useDiscoveryPresentation();
   const [addingStream, setAddingStream] = useState(false);
   const streams = (discovery?.signal_streams ?? []).filter((row) => row.enabled !== false);
@@ -493,9 +508,14 @@ export function SignalStreamContainer({ asOf, live, onSettingsChange, onTickerSe
     },
   });
   const rows = useMemo(() => {
-    const normalized: ScreenerRow[] = normalizeScannerRows(runtime?.occurrences ?? []);
+    const scannerByTicker = new Map(scannerRows.map((row) => [String(row["ticker"] ?? row["symbol"] ?? "").toUpperCase(), row]));
+    const enriched = (runtime?.occurrences ?? []).map((occurrence) => {
+      const ticker = String(occurrence["ticker"] ?? occurrence["symbol"] ?? "").toUpperCase();
+      return { ...(scannerByTicker.get(ticker) ?? {}), ...occurrence };
+    });
+    const normalized: ScreenerRow[] = normalizeScannerRows(enriched);
     return normalized.filter((row) => String(row["signal_stream_id"] ?? "") === String(stream?.signal_stream_id ?? "")).sort((left, right) => String(right["event_time"] ?? "").localeCompare(String(left["event_time"] ?? "")));
-  }, [runtime?.occurrences, stream?.signal_stream_id]);
+  }, [runtime?.occurrences, scannerRows, stream?.signal_stream_id]);
   const runtimeDefinition = runtime?.signal_streams?.find((row) => row.signal_stream_id === stream?.signal_stream_id);
   const sourceType = stream?.source_type ?? "core_scan";
   const sourceId = stream?.source_id ?? stream?.source_scan_id ?? discovery?.core_scan?.scan_id ?? "";
@@ -532,7 +552,7 @@ export function SignalStreamContainer({ asOf, live, onSettingsChange, onTickerSe
     label: stream?.column_labels?.[definition.key] ?? definition.label,
   }));
   const streamColumns = canonicalDiscoveryColumns([...(stream?.columns ?? []), ...SIGNAL_STREAM_CONTEXT_COLUMNS]);
-  const columns = canonicalDiscoveryColumns(["event_time", "symbol", ...streamColumns, ...settings.columns]);
+  const columns = canonicalDiscoveryColumns(["event_time", "symbol", ...streamColumns, ...NEWS_INTELLIGENCE_COLUMNS, ...settings.columns]);
   const selectStream = (signalStreamId: string) => onSettingsChange({ columns: [], signalStreamId });
   const addStream = (signalStreamId: string) => {
     if (!signalStreamId) return;
@@ -561,7 +581,7 @@ export function SignalStreamContainer({ asOf, live, onSettingsChange, onTickerSe
     </nav>
     {addingStream ? <div className="watchlist-tab-lookup"><InventoryFilterSelect ariaLabel="Signal Stream to add" className="watchlist-add-lookup" onChange={addStream} options={availableStreams.map((row) => ({ description: row.description, label: row.name, value: row.signal_stream_id }))} searchable showAllOnOpen value="" /><button onClick={() => { window.location.hash = "market-discovery-configuration"; }} type="button">Configure Signal Stream <ArrowRight size={13} /></button></div> : null}
     <div className="watch-universe-context"><div><span>Source</span><strong>{sourceLabel} · 04:00–20:00 ET</strong></div><button onClick={() => { window.location.hash = "market-discovery-configuration"; }} type="button">Configure in Market Discovery <ArrowRight size={13} /></button></div>
-    <MarketListTable key={runtimeScopeKey || "signal-stream"} catalog={streamCatalog} chronological columns={columns} customColumns={settings.customColumns} empty={emptyMessage} limit={Math.min(settings.limit, stream?.maximum_events ?? settings.limit)} liveRecency={live && !lastSession && !recoveringSession} lockedColumns={canonicalDiscoveryColumns(["event_time", "symbol", ...streamColumns])} onColumnsChange={(columns) => onSettingsChange({ columns })} onCustomColumnsChange={(customColumns) => onSettingsChange({ customColumns })} onTickerSelect={onTickerSelect} recencyRail rows={rows} title={stream?.name ?? "Signal Stream"} viewStateKey={`signal-stream:${stream?.signal_stream_id ?? "none"}`} />
+    <MarketListTable key={runtimeScopeKey || "signal-stream"} catalog={streamCatalog} chronological columns={columns} customColumns={settings.customColumns} empty={emptyMessage} limit={Math.min(settings.limit, stream?.maximum_events ?? settings.limit)} liveRecency={live && !lastSession && !recoveringSession} lockedColumns={canonicalDiscoveryColumns(["event_time", "symbol", ...streamColumns, ...NEWS_INTELLIGENCE_COLUMNS])} onColumnsChange={(columns) => onSettingsChange({ columns })} onCustomColumnsChange={(customColumns) => onSettingsChange({ customColumns })} onTickerSelect={onTickerSelect} recencyRail rows={rows} title={stream?.name ?? "Signal Stream"} viewStateKey={`signal-stream:${stream?.signal_stream_id ?? "none"}`} />
   </section>;
 }
 
@@ -603,7 +623,7 @@ export function WatchUniverseContainer({ asOf, live = false, onSettingsChange, o
         : runtime.status !== "ready" && runtime.status !== "degraded"
           ? `Membership projection is ${String(runtime.status || "unavailable").replaceAll("_", " ")}.`
           : `QMD Watchlist ${watchlist?.watchlist_id || "not selected"} has no membership snapshot.`);
-  const columns = canonicalDiscoveryColumns([...(watchlist?.columns ?? ["symbol"]), ...settings.columns]);
+  const columns = canonicalDiscoveryColumns([...(watchlist?.columns ?? ["symbol"]), ...NEWS_INTELLIGENCE_COLUMNS, ...settings.columns]);
   const selectWatchlist = (watchlistId: string) => onSettingsChange((current) => ({ columns: [], watchlistId, watchlistIds: current.watchlistIds }));
   const addWatchlist = (watchlistId: string) => {
     if (!watchlistId || !selectableWatchlists.some((row) => row.watchlist_id === watchlistId)) return;
@@ -645,7 +665,7 @@ export function WatchUniverseContainer({ asOf, live = false, onSettingsChange, o
       empty={!watchlist ? "No Watchlist tabs are open. Use Add to choose one." : resolved ? "This QMD Watchlist currently has no members." : "No resolved membership is available."}
       limit={settings.limit}
       liveRecency={live && !historicalObservation}
-      lockedColumns={canonicalDiscoveryColumns(watchlist?.columns ?? ["symbol"])}
+      lockedColumns={canonicalDiscoveryColumns([...(watchlist?.columns ?? ["symbol"]), ...NEWS_INTELLIGENCE_COLUMNS])}
       mergeCompanyWithIdentity
       onColumnsChange={(columns) => onSettingsChange({ columns })}
       onCustomColumnsChange={(customColumns) => onSettingsChange({ customColumns })}
@@ -1008,6 +1028,9 @@ function renderMarketCell(row: ScreenerRow, column: string, presentations: Retur
     return <SecurityIdentityCell companyName={companyName} country={String(row.country ?? presentations[ticker]?.country ?? "")} halted={row.market_is_halted ?? row.is_halted ?? row.trading_status ?? presentations[ticker]?.market_is_halted ?? presentations[ticker]?.trading_status} logoUrl={String(row.logo_url ?? presentations[ticker]?.logo_url ?? "")} newsRecency={preferRecentRecency(row.live_news_recency, presentations[ticker]?.live_news_recency)} secRecency={preferRecentRecency(row.sec_recency, presentations[ticker]?.sec_recency)} ticker={ticker} />;
   }
   if (column === "event_time") return value ? <MarketTime includeSeconds value={String(value)} /> : "—";
+  if (column === "news_synthesis") return <NewsSynthesisMarketCard row={row} />;
+  if (column === "news_ai_review") return <NewsAiReviewMarketCard row={row} />;
+  if (column === "news_ai_reaction") return <NewsAiReactionMarketCard row={row} />;
   const definition = catalogField(column, customColumns, catalog);
   const presentationValueType = definition.presentationValueType ?? presentationForColumn(column).presentationValueType;
   if (presentationValueType === "category" || presentationValueType === "boolean" || ["direction", "source"].includes(column)) return <CategoryBadge column={column} value={value} />;
@@ -1028,6 +1051,41 @@ function renderMarketCell(row: ScreenerRow, column: string, presentations: Retur
   if (definition.format === "number") return marketNumber(formatDecimal(numeric), numeric, definition, semanticTone);
   if (definition.format === "score") return marketNumber(formatDecimal(numeric, 0), numeric, definition, semanticTone);
   return <PresentedValue column={column} presentation={{ presentationValueType: definition.presentationValueType }} value={value} />;
+}
+
+function NewsSynthesisMarketCard({ row }: { row: ScreenerRow }) {
+  if (!row.latest_news_id) return <span className="market-list-unavailable">—</span>;
+  return <span className="market-news-card" data-kind="synthesis" title={String(row.latest_news_title ?? "Latest issuer news")}>
+    <span><strong>{shortMarketNewsValue(row.news_synthesis_class, "News")}</strong><em data-tone="view">View</em></span>
+    <b data-tone={String(row.news_synthesis_direction ?? "neutral")}>{shortMarketNewsValue(row.news_synthesis_direction, "Pending")}</b>
+    <small>{shortMarketNewsValue(row.news_synthesis_purpose, "Unknown")} · {shortMarketNewsValue(row.news_synthesis_event, "Unclassified")}</small>
+  </span>;
+}
+
+function NewsAiReviewMarketCard({ row }: { row: ScreenerRow }) {
+  if (!row.latest_news_id) return <span className="market-list-unavailable">—</span>;
+  const score = numberValue(row.news_ai_review);
+  const complete = row.news_ai_review !== null && row.news_ai_review !== undefined;
+  return <span className="market-news-card" data-kind="review">
+    <span><strong>AI review</strong><em data-tone={complete && score >= 50 ? "positive" : complete ? "negative" : "pending"}>{complete ? `${Math.round(score)}%` : shortMarketNewsValue(row.news_ai_review_state, "Pending")}</em></span>
+    <b data-tone={String(row.news_ai_sentiment ?? "neutral")}>{complete ? shortMarketNewsValue(row.news_ai_sentiment, "Neutral") : "Not reviewed"}</b>
+    <small>{complete ? `${shortMarketNewsValue(row.news_ai_eligibility, "Pending")} · DeepFM ${Math.round(numberValue(row.news_deepfm_probability))}%` : `DeepFM ${shortMarketNewsValue(row.news_deepfm_eligibility, "Pending")}`}</small>
+  </span>;
+}
+
+function NewsAiReactionMarketCard({ row }: { row: ScreenerRow }) {
+  if (!row.latest_news_id) return <span className="market-list-unavailable">—</span>;
+  const expected = row.news_ai_reaction === null || row.news_ai_reaction === undefined ? null : numberValue(row.news_ai_reaction);
+  return <span className="market-news-card" data-kind="reaction">
+    <span><strong>5 min</strong><em data-tone={expected === null ? "pending" : expected > 0 ? "positive" : expected < 0 ? "negative" : "neutral"}>{expected === null ? shortMarketNewsValue(row.news_ai_reaction_state, "Review first") : `${expected > 0 ? "+" : ""}${expected.toFixed(2)}%`}</em></span>
+    <b>{expected === null ? "No forecast" : `${Math.round(numberValue(row.news_ai_reaction_confidence))}% confidence`}</b>
+    <small>{expected === null ? "Manual action required" : shortMarketNewsValue(row.news_ai_reaction_regime, "Unknown regime")}</small>
+  </span>;
+}
+
+function shortMarketNewsValue(value: unknown, fallback: string) {
+  const text = String(value ?? "").trim();
+  return text ? text.replaceAll("_", " ").replace(/\b\w/g, (letter) => letter.toUpperCase()) : fallback;
 }
 
 function preferRecentRecency(frozenValue: unknown, liveValue: unknown) {
@@ -1091,7 +1149,7 @@ function withLockedColumns(columns: string[], lockedColumns: string[]) {
   return [...lockedColumns, ...columns.filter((column) => !lockedColumns.includes(column))];
 }
 function columnClass(column: string, definition = catalogField(column)) {
-  const identityClass = column === "logo" ? "market-list-logo-column" : column === "ticker" || column === "symbol" ? "market-list-symbol-column" : column === "news_labels" || column === "sec_labels" ? "market-list-label-column" : "";
+  const identityClass = column === "logo" ? "market-list-logo-column" : column === "ticker" || column === "symbol" ? "market-list-symbol-column" : column === "news_labels" || column === "sec_labels" ? "market-list-label-column" : NEWS_INTELLIGENCE_COLUMNS.includes(column) ? "market-list-news-card-column" : "";
   const numericClass = ["integer", "money", "multiple", "number", "percent", "percentPlain", "score"].includes(definition.format) ? "market-list-numeric-column" : "";
   const timeClass = definition.format === "date" || ["date", "datetime", "time"].includes(definition.presentationValueType ?? "") ? "market-list-time-column" : "";
   return `${identityClass} ${numericClass} ${timeClass} ${tableCellClass(column, { presentationValueType: definition.presentationValueType })}`.trim();

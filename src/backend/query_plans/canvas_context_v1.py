@@ -66,27 +66,41 @@ def scanner_company_news(
     )
     return f"""
         SELECT
-            ticker,
-            uniqExact(canonical_news_id) AS live_news_count,
-            formatDateTime(max(published_at_utc), '%Y-%m-%dT%H:%i:%S.%fZ', 'UTC') AS latest_news_at,
-            arraySort(arrayDistinct(arrayFlatten(groupArray(news_topics)))) AS news_labels
+            canonical_news_id,
+            formatDateTime(published_at_utc, '%Y-%m-%dT%H:%i:%S.%fZ', 'UTC') AS published_at_utc,
+            title,
+            tupleElement(issuer_view, 1) AS ticker,
+            tupleElement(issuer_view, 2) AS synthesis_direction,
+            document_structure,
+            communication_purpose,
+            information_origin,
+            text_availability,
+            concepts AS news_labels,
+            quality_flags
         FROM
         (
             SELECT
                 n.canonical_news_id,
                 n.published_at_utc,
-                arrayJoin(s.tickers) AS ticker,
-                toUInt8(s.information_origin = 'issuer') AS is_company_news,
-                s.concepts AS news_topics
+                n.title,
+                arrayJoin(arrayZip(s.tickers, s.sentiments)) AS issuer_view,
+                s.document_structure,
+                s.communication_purpose,
+                s.information_origin,
+                s.text_availability,
+                s.concepts,
+                s.quality_flags
             FROM q_live.benzinga_news_event_v2 AS n FINAL
             INNER JOIN q_live.{synthesis_table} AS s FINAL
                 ON s.canonical_news_id=n.canonical_news_id
                 AND s.engine_version={sql_string(engine_version)}
             WHERE n.published_at_utc BETWEEN toDateTime64({_utc_sql(start)}, 3, 'UTC')
                 AND toDateTime64({_utc_sql(cutoff)}, 3, 'UTC')
+                AND s.information_origin = 'issuer'
         )
-        WHERE is_company_news AND notEmpty(ticker){ticker_filter}
-        GROUP BY ticker
+        WHERE notEmpty(ticker){ticker_filter}
+        ORDER BY published_at_utc DESC, canonical_news_id
+        LIMIT 10000
     """
 
 

@@ -19,6 +19,7 @@ from research.mlops.clickhouse import (
     default_clickhouse_user,
 )
 from src.backend.news_synthesis import ENGINE_VERSION, SYNTHESIS_TABLE
+from src.backend.news_ai_review_service import load_news_ai_state
 from src.backend.trading_runtime_service import (
     SUPPORTED_HISTORICAL_TIMEFRAMES,
     historical_day_coverage,
@@ -47,12 +48,18 @@ _SCANNER_RESPONSE_CACHE_TTL_SECONDS = 30.0
 _SCANNER_RESPONSE_CACHE_LOCK = Lock()
 _SCANNER_RESPONSE_CACHE: dict[tuple[Any, ...], tuple[float, dict[str, Any]]] = {}
 _SCANNER_RESPONSE_KEY_LOCKS: dict[tuple[Any, ...], Lock] = {}
+_NEWS_INTELLIGENCE_CACHE_TTL_SECONDS = 15.0
+_NEWS_INTELLIGENCE_CACHE_LOCK = Lock()
+_NEWS_INTELLIGENCE_CACHE: tuple[float, list[dict[str, Any]]] | None = None
 
 
 def clear_scanner_snapshot_cache() -> None:
+    global _NEWS_INTELLIGENCE_CACHE
     with _SCANNER_RESPONSE_CACHE_LOCK:
         _SCANNER_RESPONSE_CACHE.clear()
         _SCANNER_RESPONSE_KEY_LOCKS.clear()
+    with _NEWS_INTELLIGENCE_CACHE_LOCK:
+        _NEWS_INTELLIGENCE_CACHE = None
 
 
 def canvas_preview_payload(
@@ -621,7 +628,10 @@ def _as_of(session_date: date, preview_time: str) -> datetime:
 
 def _clickhouse_rows(query: str) -> list[dict[str, Any]]:
     client = ClickHouseHttpClient(default_clickhouse_url(), default_clickhouse_user(), default_clickhouse_password())
-    payload = client.execute(query.strip().rstrip(";") + "\nFORMAT JSONEachRow")
+    normalized = query.strip().rstrip(";")
+    if not re.search(r"\bFORMAT\s+JSONEachRow\s*$", normalized, re.IGNORECASE):
+        normalized += "\nFORMAT JSONEachRow"
+    payload = client.execute(normalized)
     return [json.loads(line) for line in payload.splitlines() if line.strip()]
 
 
@@ -639,11 +649,48 @@ def _query_sec(cutoff: datetime) -> list[dict[str, Any]]:
 
 def _query_scanner_news_intelligence(cutoff: datetime) -> list[dict[str, Any]]:
     """Return one causal company-news summary per ticker for scanner enrichment."""
-    return _clickhouse_rows(
+    source_rows = _clickhouse_rows(
         canvas_context_v1.scanner_company_news(
             cutoff, engine_version=ENGINE_VERSION, synthesis_table=SYNTHESIS_TABLE
         )
     )
+    latest_by_ticker: dict[str, dict[str, Any]] = {}
+    counts: dict[str, int] = {}
+    labels: dict[str, set[str]] = {}
+    for row in source_rows:
+        ticker = str(row.get("ticker") or "").strip().upper()
+        if not ticker:
+            continue
+        counts[ticker] = counts.get(ticker, 0) + 1
+        labels.setdefault(ticker, set()).update(_string_values(row.get("news_labels")))
+        latest_by_ticker.setdefault(ticker, dict(row))
+    ai_by_news = load_news_ai_state(
+        [str(row.get("canonical_news_id") or "") for row in latest_by_ticker.values()],
+        query_rows=_clickhouse_rows,
+    )
+    result: list[dict[str, Any]] = []
+    for ticker, row in latest_by_ticker.items():
+        row["live_news_count"] = counts[ticker]
+        row["latest_news_at"] = row.get("published_at_utc")
+        row["news_labels"] = sorted(labels[ticker])
+        row["ai_state"] = ai_by_news.get(str(row.get("canonical_news_id") or ""))
+        result.append(row)
+    return result
+
+
+def scanner_news_intelligence_projection(cutoff: datetime) -> list[dict[str, Any]]:
+    """Return a bounded shared projection for live scanner/watchlist refreshes."""
+    global _NEWS_INTELLIGENCE_CACHE
+    now = monotonic()
+    with _NEWS_INTELLIGENCE_CACHE_LOCK:
+        if _NEWS_INTELLIGENCE_CACHE and _NEWS_INTELLIGENCE_CACHE[0] > now:
+            return deepcopy(_NEWS_INTELLIGENCE_CACHE[1])
+        rows = _query_scanner_news_intelligence(cutoff)
+        _NEWS_INTELLIGENCE_CACHE = (
+            monotonic() + _NEWS_INTELLIGENCE_CACHE_TTL_SECONDS,
+            rows,
+        )
+        return deepcopy(rows)
 
 
 def _query_scanner_sec_intelligence(cutoff: datetime) -> list[dict[str, Any]]:
@@ -695,28 +742,101 @@ def _enrich_scanner_intelligence(scanner: list[dict[str, Any]], news: Any, sec: 
 
 def _merge_scanner_intelligence(scanner: list[dict[str, Any]], news: Any, sec: Any, as_of: datetime) -> None:
     """Merge already-aggregated intelligence without making scanner cost scale with documents."""
-    news_by_ticker = {
-        str(item.get("ticker") or "").strip().upper(): item
-        for item in news if isinstance(news, list) and isinstance(item, dict) and item.get("ticker")
-    }
+    enrich_scanner_news_intelligence(scanner, news, as_of)
     sec_by_ticker = {
         str(item.get("ticker") or "").strip().upper(): item
         for item in sec if isinstance(sec, list) and isinstance(item, dict) and item.get("ticker")
     }
     for row in scanner:
         ticker = str(row.get("symbol") or row.get("ticker") or "").strip().upper()
-        news_item = news_by_ticker.get(ticker, {})
         sec_item = sec_by_ticker.get(ticker, {})
-        row["live_news_count"] = int(news_item.get("live_news_count") or 0)
-        row["live_news_recency"] = _latest_recency(
-            [{"published_at_utc": news_item.get("latest_news_at")}], "published_at_utc", as_of
-        )
-        row["news_labels"] = ", ".join(sorted(set(_string_values(news_item.get("news_labels")))))
         row["sec_count"] = int(sec_item.get("sec_count") or 0)
         row["sec_recency"] = _latest_recency(
             [{"accepted_at_utc": sec_item.get("latest_sec_at")}], "accepted_at_utc", as_of
         )
         row["sec_labels"] = ", ".join(sorted(set(_string_values(sec_item.get("sec_labels")))))
+
+
+def enrich_scanner_news_intelligence(scanner: list[dict[str, Any]], news: Any, as_of: datetime) -> None:
+    """Attach current news presentation fields without changing scanner eligibility."""
+    news_by_ticker = {
+        str(item.get("ticker") or "").strip().upper(): item
+        for item in news if isinstance(news, list) and isinstance(item, dict) and item.get("ticker")
+    }
+    for row in scanner:
+        ticker = str(row.get("symbol") or row.get("ticker") or "").strip().upper()
+        news_item = news_by_ticker.get(ticker, {})
+        row["live_news_count"] = int(news_item.get("live_news_count") or 0)
+        row["live_news_recency"] = _latest_recency(
+            [{"published_at_utc": news_item.get("latest_news_at")}], "published_at_utc", as_of
+        )
+        row["news_labels"] = ", ".join(sorted(set(_string_values(news_item.get("news_labels")))))
+        _attach_compact_news_intelligence(row, news_item)
+
+
+def _attach_compact_news_intelligence(row: dict[str, Any], news_item: dict[str, Any]) -> None:
+    """Project the latest story into sortable, presentation-safe table fields."""
+    if not news_item.get("canonical_news_id"):
+        return
+    purpose = str(news_item.get("communication_purpose") or "unknown")
+    origin = str(news_item.get("information_origin") or "unknown")
+    structure = str(news_item.get("document_structure") or "unknown")
+    article_class = (
+        "Why moving" if purpose == "explain_move" else
+        "Analyst" if origin == "analyst" else
+        "Regulatory" if origin == "regulator" else
+        "Market event" if structure in {"market_overview", "reference_list"} else
+        "Multi-company" if structure == "multi_subject_digest" else
+        "Company" if origin == "issuer" else "Editorial"
+    )
+    concepts = _string_values(news_item.get("news_labels"))
+    direction = str(news_item.get("synthesis_direction") or "unknown")
+    direction_score = {"positive": 1.0, "mixed": 0.5, "neutral": 0.0, "negative": -1.0}.get(direction, 0.0)
+    row.update({
+        "latest_news_id": str(news_item.get("canonical_news_id") or ""),
+        "latest_news_title": str(news_item.get("title") or ""),
+        "news_synthesis": direction_score,
+        "news_synthesis_class": article_class,
+        "news_synthesis_purpose": purpose,
+        "news_synthesis_origin": origin,
+        "news_synthesis_direction": direction,
+        "news_synthesis_event": concepts[0] if concepts else "",
+        "news_synthesis_text": str(news_item.get("text_availability") or "unknown"),
+    })
+    ai_state = news_item.get("ai_state") if isinstance(news_item.get("ai_state"), dict) else {}
+    funnel = ai_state.get("funnel") if isinstance(ai_state.get("funnel"), dict) else {}
+    review = ai_state.get("review") if isinstance(ai_state.get("review"), dict) else {}
+    labels_payload = review.get("labels") if isinstance(review.get("labels"), dict) else {}
+    issuer_labels = [value for value in labels_payload.get("issuers") or [] if isinstance(value, dict)]
+    issuer_labels.sort(key=lambda value: float(value.get("forecast_relevance_probability") or 0), reverse=True)
+    primary = issuer_labels[0] if issuer_labels else {}
+    positive = float(primary.get("positive_implication_probability") or 0)
+    negative = float(primary.get("negative_implication_probability") or 0)
+    sentiment = "mixed" if positive >= 0.5 and negative >= 0.5 else "positive" if positive >= 0.5 else "negative" if negative >= 0.5 else "neutral"
+    relevance = float(primary.get("forecast_relevance_probability") or 0)
+    row.update({
+        "news_ai_review": relevance * 100 if primary else None,
+        "news_ai_review_state": str(review.get("status") or "not_reviewed"),
+        "news_ai_eligibility": "eligible" if relevance >= 0.5 else "not_eligible" if primary else "pending",
+        "news_ai_sentiment": sentiment if primary else "pending",
+        "news_ai_positive_probability": positive * 100 if primary else None,
+        "news_ai_negative_probability": negative * 100 if primary else None,
+        "news_deepfm_probability": float(funnel.get("eligible_probability") or 0) * 100 if funnel else None,
+        "news_deepfm_eligibility": str(funnel.get("forecast_eligibility") or "pending"),
+    })
+    hypotheses = [value for value in ai_state.get("hypotheses") or [] if isinstance(value, dict)]
+    hypothesis = next((value for value in hypotheses if str(value.get("ticker") or "").upper() == str(row.get("symbol") or row.get("ticker") or "").upper()), hypotheses[0] if hypotheses else {})
+    prediction_payload = hypothesis.get("prediction") if isinstance(hypothesis.get("prediction"), dict) else {}
+    predictions = prediction_payload.get("predictions") if isinstance(prediction_payload.get("predictions"), dict) else {}
+    prediction = predictions.get("5m") if isinstance(predictions.get("5m"), dict) else {}
+    row.update({
+        "news_ai_reaction": float(prediction.get("expected_return_pct") or 0) if prediction else None,
+        "news_ai_reaction_state": "complete" if prediction else "available" if relevance >= 0.5 else "review_first",
+        "news_ai_reaction_confidence": float(prediction.get("confidence") or 0) * 100 if prediction else None,
+        "news_ai_reaction_up_probability": float(prediction.get("upside_probability") or 0) * 100 if prediction else None,
+        "news_ai_reaction_down_probability": float(prediction.get("downside_probability") or 0) * 100 if prediction else None,
+        "news_ai_reaction_regime": str(prediction_payload.get("regime_compatibility") or "unknown"),
+    })
 
 
 def _latest_recency(items: list[dict[str, Any]], key: str, as_of: datetime) -> str:

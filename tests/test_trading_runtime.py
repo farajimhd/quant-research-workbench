@@ -674,6 +674,31 @@ class HistoricalContractTests(unittest.TestCase):
         self.assertFalse(result["has_more"])
         self.assertEqual(result["next_before"], "")
 
+    @patch("src.backend.trading_runtime_service.qmd_product_request")
+    @patch("src.backend.trading_runtime_service._historical_gateway_get")
+    def test_live_monthly_chart_reads_completed_history_without_source_plan(
+        self, gateway_get, product_request
+    ) -> None:
+        gateway_get.return_value = {"bars": [], "source": "qmd_history"}
+
+        historical_bar_history_before(
+            before=date(2026, 8, 25),
+            session_date=date(2026, 8, 24),
+            as_of="2026-08-25T02:15:00+00:00",
+            ticker="AMIX",
+            timeframe="1mo",
+            row_limit=36,
+            mode="live",
+        )
+
+        product_request.assert_not_called()
+        path, params = self.gateway_call(
+            gateway_get, "/snapshot/chart-macro-bars/AMIX"
+        )
+        self.assertEqual(path, "/snapshot/chart-macro-bars/AMIX")
+        self.assertEqual(params["mode"], "live")
+        self.assertEqual(params["limit"], 37)
+
     @patch("src.backend.trading_runtime_service._historical_gateway_get")
     def test_daily_chart_history_honors_visible_page_budget(self, gateway_get) -> None:
         gateway_get.return_value = {"bars": [], "source": "market_sip_compact.daily_session_bars_by_symbol_time_v1"}

@@ -434,6 +434,10 @@ class RealLiveScannerCompositionTests(unittest.TestCase):
                     "data.quote.ask_price@1:value@@100ms##last": 12.36,
                     "data.price_change_1_bar_pct@1:value@@5m": 6.25,
                     "data.volume_rate_ratio@1:value@@1s": 2.5,
+                    "news_synthesis": 0.5,
+                    "news_ai_review": 82.0,
+                    "news_ai_reaction": 1.25,
+                    "news_deepfm_probability": 100.0,
                     "unrelated": "do not publish",
                 }
             ],
@@ -443,6 +447,10 @@ class RealLiveScannerCompositionTests(unittest.TestCase):
         self.assertEqual(candidates[0]["event_quote_ask_price"], 12.36)
         self.assertEqual(candidates[0]["field__price__change__1__bar__pct"], 6.25)
         self.assertEqual(candidates[0]["field__volume__rate__ratio"], 2.5)
+        self.assertEqual(candidates[0]["news_synthesis"], 0.5)
+        self.assertEqual(candidates[0]["news_ai_review"], 82.0)
+        self.assertEqual(candidates[0]["news_ai_reaction"], 1.25)
+        self.assertEqual(candidates[0]["news_deepfm_probability"], 100.0)
         self.assertNotIn("unrelated", candidates[0])
 
     def test_full_population_is_cached_before_per_request_slicing(self) -> None:

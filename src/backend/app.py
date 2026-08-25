@@ -74,6 +74,15 @@ from src.backend.canvas_profile_service import (
     editable_canvas_profile,
     save_editable_canvas_profile,
 )
+
+_CANVAS_PROFILE_READ_EXECUTOR = ThreadPoolExecutor(
+    max_workers=2,
+    thread_name_prefix="canvas-profile-read",
+)
+_CANVAS_PROFILE_WRITE_EXECUTOR = ThreadPoolExecutor(
+    max_workers=1,
+    thread_name_prefix="canvas-profile-write",
+)
 from src.backend.canonical_backtest_service import backtest_comparison_projection
 from src.backend.canonical_trading_service import canonical_trading_state
 from src.backend.portfolio_management_service import (
@@ -540,6 +549,8 @@ async def application_lifespan(_app: FastAPI):
     finally:
         MARKET_DISCOVERY_RUNTIME.stop()
         LIVE_STRATEGY_RUNTIME.stop()
+        _CANVAS_PROFILE_READ_EXECUTOR.shutdown(wait=True, cancel_futures=True)
+        _CANVAS_PROFILE_WRITE_EXECUTOR.shutdown(wait=True, cancel_futures=True)
         close_trading_journal()
 
 
@@ -4982,16 +4993,21 @@ def trading_configuration_canvas_profile() -> dict[str, Any]:
 
 
 @app.get("/api/trading/canvas-profile")
-def trading_canvas_profile() -> dict[str, Any]:
-    return editable_canvas_profile()
+async def trading_canvas_profile() -> dict[str, Any]:
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(_CANVAS_PROFILE_READ_EXECUTOR, editable_canvas_profile)
 
 
 @app.put("/api/trading/canvas-profile")
-def trading_canvas_profile_update(payload: EditableCanvasProfileSubmit) -> dict[str, Any]:
+async def trading_canvas_profile_update(payload: EditableCanvasProfileSubmit) -> dict[str, Any]:
     try:
-        return save_editable_canvas_profile(
-            payload.profile,
-            expected_revision=payload.expected_revision,
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(
+            _CANVAS_PROFILE_WRITE_EXECUTOR,
+            lambda: save_editable_canvas_profile(
+                payload.profile,
+                expected_revision=payload.expected_revision,
+            ),
         )
     except CanvasProfileConflictError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc

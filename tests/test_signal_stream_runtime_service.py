@@ -84,6 +84,11 @@ class SignalStreamRuntimeTests(unittest.TestCase):
             "country": "US",
             "logo_url": "https://example.test/aaa.svg",
             "live_news_recency": "hot",
+            "latest_news_id": "news-1",
+            "news_synthesis": 1.0,
+            "news_synthesis_direction": "positive",
+            "news_ai_review": 92.0,
+            "news_ai_reaction": 1.25,
             "sec_recency": "cold",
         }
         first = runtime.resolve(
@@ -103,6 +108,9 @@ class SignalStreamRuntimeTests(unittest.TestCase):
         self.assertEqual(repeated["occurrences"][0]["company_name"], "Alpha Analytics")
         self.assertEqual(repeated["occurrences"][0]["country"], "US")
         self.assertEqual(repeated["occurrences"][0]["live_news_recency"], "hot")
+        self.assertEqual(repeated["occurrences"][0]["latest_news_id"], "news-1")
+        self.assertEqual(repeated["occurrences"][0]["news_ai_review"], 92.0)
+        self.assertEqual(repeated["occurrences"][0]["news_ai_reaction"], 1.25)
         self.assertEqual(repeated["occurrences"][0]["sec_recency"], "cold")
 
         restarted = SignalStreamRuntime()

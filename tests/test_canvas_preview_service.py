@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 import unittest
-from datetime import date
+from datetime import date, datetime
 from unittest.mock import patch
 
-from src.backend.canvas_preview_service import _attach_sec_tickers, canvas_preview_payload
+from src.backend.canvas_preview_service import (
+    _attach_sec_tickers,
+    _merge_scanner_intelligence,
+    canvas_preview_payload,
+)
 
 
 class CanvasPreviewServiceTests(unittest.TestCase):
@@ -65,6 +69,52 @@ class CanvasPreviewServiceTests(unittest.TestCase):
         query = clickhouse_mock.call_args.args[0]
         self.assertIn("AS mapped_ticker", query)
         self.assertIn("notEmpty(ticker)", query)
+
+    def test_scanner_news_projection_exposes_three_sortable_intelligence_cards(self) -> None:
+        scanner = [{"symbol": "XPON"}]
+        news = [{
+            "ticker": "XPON",
+            "canonical_news_id": "news-1",
+            "title": "Issuer acquisition",
+            "latest_news_at": "2026-08-24T15:00:00Z",
+            "live_news_count": 1,
+            "communication_purpose": "report",
+            "information_origin": "issuer",
+            "document_structure": "single_subject",
+            "synthesis_direction": "neutral",
+            "news_labels": ["corporate_transaction.acquisition"],
+            "text_availability": "title_only",
+            "ai_state": {
+                "funnel": {"eligible_probability": 1.0, "forecast_eligibility": "eligible"},
+                "review": {"status": "complete", "labels": {"issuers": [{
+                    "ticker": "XPON",
+                    "forecast_relevance_probability": 0.92,
+                    "positive_implication_probability": 0.71,
+                    "negative_implication_probability": 0.18,
+                }]}},
+                "hypotheses": [{"ticker": "XPON", "prediction": {
+                    "regime_compatibility": "supportive",
+                    "predictions": {"5m": {
+                        "expected_return_pct": 1.25,
+                        "confidence": 0.66,
+                        "upside_probability": 0.7,
+                        "downside_probability": 0.2,
+                    }},
+                }}],
+            },
+        }]
+
+        _merge_scanner_intelligence(
+            scanner,
+            news,
+            [],
+            datetime.fromisoformat("2026-08-24T16:00:00+00:00"),
+        )
+
+        self.assertEqual(scanner[0]["news_synthesis_class"], "Company")
+        self.assertEqual(scanner[0]["news_ai_review"], 92.0)
+        self.assertEqual(scanner[0]["news_deepfm_probability"], 100.0)
+        self.assertEqual(scanner[0]["news_ai_reaction"], 1.25)
 
 
 if __name__ == "__main__":

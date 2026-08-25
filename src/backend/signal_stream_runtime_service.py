@@ -708,6 +708,23 @@ def _occurrence(
         ),
         "logo_url": str(row.get("logo_url") or ""),
         "live_news_recency": str(row.get("live_news_recency") or "none"),
+        **{
+            key: row.get(key)
+            for key in (
+                "latest_news_id", "latest_news_title",
+                "news_synthesis", "news_synthesis_class", "news_synthesis_purpose",
+                "news_synthesis_origin", "news_synthesis_direction",
+                "news_synthesis_event", "news_synthesis_text",
+                "news_ai_review", "news_ai_review_state", "news_ai_eligibility",
+                "news_ai_sentiment", "news_ai_positive_probability",
+                "news_ai_negative_probability", "news_deepfm_probability",
+                "news_deepfm_eligibility", "news_ai_reaction",
+                "news_ai_reaction_state", "news_ai_reaction_confidence",
+                "news_ai_reaction_up_probability", "news_ai_reaction_down_probability",
+                "news_ai_reaction_regime",
+            )
+            if row.get(key) not in (None, "")
+        },
         "sec_recency": str(row.get("sec_recency") or "none"),
         "conid": int(row.get("ibkr_conid") or row.get("conid") or 0),
         "event_time": as_of.isoformat(),

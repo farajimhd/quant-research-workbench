@@ -153,21 +153,17 @@ export function useCanvasHistoricalChart(symbol: string, timeframe: CanvasChartT
       const barsRequest = progressive
         ? api<QmdBarHistory>(`/api/trading/canvas-chart/history${query({ ...requestParams, row_limit: chartInitialPageSize(timeframe), stage: "bars" })}`, { signal: historyController.signal, timeoutMs: 120000 })
         : api<QmdBarHistory>(`/api/trading/canvas-chart/history${query({ ...requestParams, indicator_columns: indicatorColumns, stage: "full" })}`, { signal: historyController.signal, timeoutMs: 120000 });
-      // Start the authoritative indicator waiter against the same QMD History
-      // cache entry immediately. The accurate bar phase can paint first while
-      // indicator completion continues without a second serial round trip.
       const fullRequest = progressive
-        ? api<QmdBarHistory>(`/api/trading/canvas-chart/history${query({ ...requestParams, indicator_columns: indicatorColumns, stage: "full" })}`, { signal: historyController.signal, timeoutMs: 120000 })
+        ? () => api<QmdBarHistory>(`/api/trading/canvas-chart/history${query({ ...requestParams, indicator_columns: indicatorColumns, stage: "full" })}`, { signal: historyController.signal, timeoutMs: 120000 })
         : null;
-      void fullRequest?.catch(() => undefined);
       // Live bars and closed indicators come from the recent materializations.
       // Signal/structure history remains causal QMD History work and advances
-      // independently so it cannot delay the chart or indicator first paint.
+      // after the first bar paint so chart work cannot exhaust the browser's
+      // connection pool and starve Canvas persistence or other control calls.
       const auxiliaryRequest = progressive && liveTail && (auxiliaryProjection.includeMarketSignals || auxiliaryProjection.includeStructure)
-        ? api<QmdBarHistory>(`/api/trading/canvas-chart/history${query({ ...requestParams, allow_persisted_bars: false, mode: "replay", indicator_columns: indicatorColumns, stage: "full" })}`, { signal: historyController.signal, timeoutMs: 120000 })
+        ? () => api<QmdBarHistory>(`/api/trading/canvas-chart/history${query({ ...requestParams, allow_persisted_bars: false, mode: "replay", indicator_columns: indicatorColumns, stage: "full" })}`, { signal: historyController.signal, timeoutMs: 120000 })
         : null;
-      void auxiliaryRequest
-        ?.then((payload) => {
+      const mergeAuxiliaryPayload = (payload: QmdBarHistory) => {
           if (!active || requestKeyRef.current !== requestKey) return;
           const aligned = alignHistoricalChartRows(
             closedRowsAtCutoff(payload.history, timeframe, cutoffMs),
@@ -187,8 +183,7 @@ export function useCanvasHistoricalChart(symbol: string, timeframe: CanvasChartT
               structureLevelHistory: mergeStructureLevelHistory(current.structureLevelHistory, payload.structure_level_history),
             };
           });
-        })
-        .catch(() => undefined);
+        };
       barsRequest
         .then((payload) => {
           if (!active || requestKeyRef.current !== requestKey) return;
@@ -220,7 +215,8 @@ export function useCanvasHistoricalChart(symbol: string, timeframe: CanvasChartT
           if (!progressive) {
             return null;
           }
-          return fullRequest;
+          void auxiliaryRequest?.().then(mergeAuxiliaryPayload).catch(() => undefined);
+          return fullRequest?.() ?? null;
         })
         .then((payload) => {
           if (!payload || !active || requestKeyRef.current !== requestKey) return;
@@ -553,14 +549,17 @@ export function chartPageSize(timeframe: string) {
 
 export function chartInitialPageSize(timeframe: string) {
   const pageSizes: Record<string, number> = {
-    "100ms": 600,
-    "1s": 300,
-    "5s": 120,
-    "10s": 90,
-    "30s": 40,
-    "1m": 20,
-    "5m": 12,
-    "1h": 4,
+    // Focused live charts must arrive with enough causal history to pan across
+    // the active session. A tiny visual-window fetch made liquid 10-second
+    // charts appear to begin only minutes before the operator opened them.
+    "100ms": 5_000,
+    "1s": 5_000,
+    "5s": 5_000,
+    "10s": 5_000,
+    "30s": 1_920,
+    "1m": 960,
+    "5m": 192,
+    "1h": 64,
   };
   return pageSizes[timeframe] ?? chartPageSize(timeframe);
 }

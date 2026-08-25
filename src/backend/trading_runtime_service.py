@@ -1128,6 +1128,7 @@ def historical_bar_history_before(
             as_of=as_of,
             before_bar=before_bar,
             row_limit=row_limit,
+            mode=mode,
         )
     requested_session = session_date or before
     # Recent durable bars are the fast first-paint authority. In Live mode the
@@ -1291,6 +1292,7 @@ def historical_macro_bar_history(
     as_of: str | None,
     before_bar: str | None = None,
     row_limit: int = 240,
+    mode: str = "replay",
 ) -> dict[str, Any]:
     row_limit = max(1, min(int(row_limit), 5_000))
     resolved_as_of = datetime.fromisoformat(as_of) if as_of else datetime.combine(session_date, time(20, 0), tzinfo=ZoneInfo("America/New_York"))
@@ -1334,20 +1336,45 @@ def historical_macro_bar_history(
         except ValueError:
             start = (page_end - timedelta(days=calendar_days + 1)).replace(hour=0, minute=0, second=0, microsecond=0)
     query_end = page_end if before_bar else resolved_as_of + timedelta(days=1)
-    payload = qmd_product_request(
-        QmdProductRequest(
-            "chart",
-            authority="history",
-            ticker=ticker,
-            timeframe=timeframe,
-            start=start.isoformat(),
-            end=query_end.isoformat(),
-            as_of=resolved_as_of.isoformat(),
-            limit=row_limit + 1,
-            timeout_seconds=30,
-        ),
-        history_get=_historical_gateway_get,
-    ).payload
+    request = QmdProductRequest(
+        "chart",
+        authority="history",
+        mode=mode,
+        ticker=ticker,
+        timeframe=timeframe,
+        start=start.isoformat(),
+        end=query_end.isoformat(),
+        as_of=resolved_as_of.isoformat(),
+        limit=row_limit + 1,
+        timeout_seconds=30,
+    )
+    if mode == "live":
+        # Canvas already owns the advancing QMD Live macro tail through its
+        # websocket. Fetch the completed historical base directly so a slow
+        # source-plan lookup cannot discard valid monthly/daily history.
+        payload = _historical_gateway_get(
+            f"/snapshot/chart-macro-bars/{urllib.parse.quote(ticker)}",
+            {
+                "start": start.isoformat(),
+                "end": query_end.isoformat(),
+                "as_of": resolved_as_of.isoformat(),
+                "before": None,
+                "indicator_columns": None,
+                "allow_persisted_bars": "true",
+                "include_market_signals": "true",
+                "include_structure": "true",
+                "mode": mode,
+                "stage": "full",
+                "timeframe": timeframe,
+                "limit": row_limit + 1,
+            },
+            timeout=30,
+        )
+    else:
+        payload = qmd_product_request(
+            request,
+            history_get=_historical_gateway_get,
+        ).payload
     rows = [
         {
             "schema_version": 1,

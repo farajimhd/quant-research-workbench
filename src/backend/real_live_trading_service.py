@@ -255,6 +255,15 @@ def qmd_signal_stream_candidates(
         "ticker", "symbol", "conid", "company_name", "logo_url", "country",
         "news_recency", "live_news_recency", "sec_recency", "market_is_halted",
         "market_event_at", "session_phase",
+        "latest_news_id", "latest_news_title",
+        "news_synthesis", "news_synthesis_class", "news_synthesis_purpose",
+        "news_synthesis_origin", "news_synthesis_direction", "news_synthesis_event",
+        "news_synthesis_text", "news_ai_review", "news_ai_review_state",
+        "news_ai_eligibility", "news_ai_sentiment", "news_ai_positive_probability",
+        "news_ai_negative_probability", "news_deepfm_probability",
+        "news_deepfm_eligibility", "news_ai_reaction", "news_ai_reaction_state",
+        "news_ai_reaction_confidence", "news_ai_reaction_up_probability",
+        "news_ai_reaction_down_probability", "news_ai_reaction_regime",
     }
     rule_index = {
         str(rule.get("rule_set_id") or ""): dict(rule)
@@ -1195,6 +1204,21 @@ def _compose_real_live_scanner_snapshot(*, allow_provider_fallback: bool = True)
                 )
                 finish_stage("core_projection")
                 cycle_as_of = datetime.now(UTC)
+                news_intelligence_status: dict[str, Any] = {"status": "ready"}
+                try:
+                    from src.backend.canvas_preview_service import (
+                        enrich_scanner_news_intelligence,
+                        scanner_news_intelligence_projection,
+                    )
+
+                    news_projection = scanner_news_intelligence_projection(cycle_as_of)
+                    enrich_scanner_news_intelligence(rows, news_projection, cycle_as_of)
+                    news_intelligence_status["ticker_count"] = len(news_projection)
+                except Exception as exc:
+                    # News intelligence is additive. Preserve the real-time market
+                    # population and report degraded enrichment instead of blocking it.
+                    news_intelligence_status = {"status": "degraded", "error": str(exc)}
+                finish_stage("news_intelligence")
                 existing_admissions = SIGNAL_STREAM_RUNTIME.admissions_by_watchlist(cycle_as_of)
                 watchlist_runtime = WATCHLIST_RUNTIME.resolve(
                     configuration,
@@ -1327,6 +1351,7 @@ def _compose_real_live_scanner_snapshot(*, allow_provider_fallback: bool = True)
                     "signal_stream_runtime": signal_stream_runtime,
                     "signal_rows": [],
                     "reference_enrichment_status": reference_status,
+                    "news_intelligence_status": news_intelligence_status,
                     "stage_durations_ms": stage_durations_ms,
                 }
             )
