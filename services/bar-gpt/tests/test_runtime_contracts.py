@@ -238,8 +238,8 @@ class RuntimeContractTests(unittest.TestCase):
             available_at_us=torch.tensor([start_us + 1_000_000], dtype=torch.long),
         )
         actual.direct = SimpleNamespace(
-            iter_session_views=lambda **_kwargs: [],
-            iter_daily_views=lambda **_kwargs: [("1970-01-01", daily_view, 1)],
+            iter_session_views=MagicMock(return_value=[]),
+            iter_daily_views=MagicMock(return_value=[("1970-01-01", daily_view, 1)]),
         )
         revision = {"revision_sha256": "a" * 64}
         harness = SimpleNamespace(
@@ -261,6 +261,8 @@ class RuntimeContractTests(unittest.TestCase):
             asyncio.run(runtime._warm("live", "AAPL", 3_000_000))
         self.assertEqual(runtime._warm_state[("live", "AAPL")]["status"], "ready")
         self.assertEqual(harness.source_revision.call_count, 2)
+        self.assertEqual(actual.direct.iter_session_views.call_args.kwargs["prefetch_pages"], 1)
+        self.assertEqual(actual.direct.iter_daily_views.call_args.kwargs["prefetch_pages"], 1)
         snapshot_store.save.assert_called_once()
         self.assertTrue(snapshot_store.save.call_args.args[2])
 

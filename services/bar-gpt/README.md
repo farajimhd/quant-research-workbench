@@ -85,7 +85,8 @@ Bounded warm concurrency prioritizes interactive Replay, Backtest, and
 Backtest Debug scopes ahead of queued broad Live watchlist warming. Broad Live
 discovery may run only one raw compact-event warm at a time, leaving the
 remaining configured capacity for interactive scopes and preventing
-opportunistic scans from saturating ClickHouse. Contract- and source-revision-
+opportunistic scans from saturating ClickHouse. Serving uses one raw page query
+per ticker; training retains its separately configured page prefetch. Contract- and source-revision-
 validated same-session calendar snapshots are shared across Live, Replay,
 Backtest, and Debug caches and refreshed after every successful warm. Running
 Live warm jobs are not cancelled; the interactive scope receives the next

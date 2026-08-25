@@ -439,7 +439,10 @@ FORMAT JSONEachRow
                 start_date=(local_day - dt.timedelta(days=lookback_days)).isoformat(),
                 end_date=end.isoformat(),
                 source_intervals=intervals,
-                prefetch_pages=max(1, int(data.clickhouse_prefetch_pages)),
+                # Serving already warms multiple tickers concurrently. Keep
+                # each ticker to one raw query so model bootstrap cannot
+                # monopolize ClickHouse ahead of interactive chart traffic.
+                prefetch_pages=1,
             ))
             if _intraday_context_satisfied(session_views, data.intraday_context_by_name):
                 break
@@ -469,7 +472,7 @@ FORMAT JSONEachRow
                 start_date=history_start.isoformat(),
                 end_date=end.isoformat(),
                 source_intervals=intervals,
-                prefetch_pages=max(1, int(data.clickhouse_prefetch_pages)),
+                prefetch_pages=1,
             ):
                 check_stopping()
                 if day in excluded_daily:
