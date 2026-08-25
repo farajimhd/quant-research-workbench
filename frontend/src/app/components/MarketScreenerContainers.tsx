@@ -552,7 +552,8 @@ export function SignalStreamContainer({ asOf, live, onSettingsChange, onTickerSe
     label: stream?.column_labels?.[definition.key] ?? definition.label,
   }));
   const streamColumns = canonicalDiscoveryColumns([...(stream?.columns ?? []), ...SIGNAL_STREAM_CONTEXT_COLUMNS]);
-  const columns = canonicalDiscoveryColumns(["event_time", "symbol", ...streamColumns, ...NEWS_INTELLIGENCE_COLUMNS, ...settings.columns]);
+  const lockedColumns = withNewsIntelligenceAfterIdentity(["event_time", "symbol", ...streamColumns], true);
+  const columns = canonicalDiscoveryColumns([...lockedColumns, ...settings.columns]);
   const selectStream = (signalStreamId: string) => onSettingsChange({ columns: [], signalStreamId });
   const addStream = (signalStreamId: string) => {
     if (!signalStreamId) return;
@@ -581,7 +582,7 @@ export function SignalStreamContainer({ asOf, live, onSettingsChange, onTickerSe
     </nav>
     {addingStream ? <div className="watchlist-tab-lookup"><InventoryFilterSelect ariaLabel="Signal Stream to add" className="watchlist-add-lookup" onChange={addStream} options={availableStreams.map((row) => ({ description: row.description, label: row.name, value: row.signal_stream_id }))} searchable showAllOnOpen value="" /><button onClick={() => { window.location.hash = "market-discovery-configuration"; }} type="button">Configure Signal Stream <ArrowRight size={13} /></button></div> : null}
     <div className="watch-universe-context"><div><span>Source</span><strong>{sourceLabel} · 04:00–20:00 ET</strong></div><button onClick={() => { window.location.hash = "market-discovery-configuration"; }} type="button">Configure in Market Discovery <ArrowRight size={13} /></button></div>
-    <MarketListTable key={runtimeScopeKey || "signal-stream"} catalog={streamCatalog} chronological columns={columns} customColumns={settings.customColumns} empty={emptyMessage} limit={Math.min(settings.limit, stream?.maximum_events ?? settings.limit)} liveRecency={live && !lastSession && !recoveringSession} lockedColumns={canonicalDiscoveryColumns(["event_time", "symbol", ...streamColumns, ...NEWS_INTELLIGENCE_COLUMNS])} onColumnsChange={(columns) => onSettingsChange({ columns })} onCustomColumnsChange={(customColumns) => onSettingsChange({ customColumns })} onTickerSelect={onTickerSelect} recencyRail rows={rows} title={stream?.name ?? "Signal Stream"} viewStateKey={`signal-stream:${stream?.signal_stream_id ?? "none"}`} />
+    <MarketListTable key={runtimeScopeKey || "signal-stream"} catalog={streamCatalog} chronological columns={columns} customColumns={settings.customColumns} empty={emptyMessage} limit={Math.min(settings.limit, stream?.maximum_events ?? settings.limit)} liveRecency={live && !lastSession && !recoveringSession} lockedColumns={lockedColumns} onColumnsChange={(columns) => onSettingsChange({ columns })} onCustomColumnsChange={(customColumns) => onSettingsChange({ customColumns })} onTickerSelect={onTickerSelect} recencyRail rows={rows} title={stream?.name ?? "Signal Stream"} viewStateKey={`signal-stream:${stream?.signal_stream_id ?? "none"}`} />
   </section>;
 }
 
@@ -623,7 +624,8 @@ export function WatchUniverseContainer({ asOf, live = false, onSettingsChange, o
         : runtime.status !== "ready" && runtime.status !== "degraded"
           ? `Membership projection is ${String(runtime.status || "unavailable").replaceAll("_", " ")}.`
           : `QMD Watchlist ${watchlist?.watchlist_id || "not selected"} has no membership snapshot.`);
-  const columns = canonicalDiscoveryColumns([...(watchlist?.columns ?? ["symbol"]), ...NEWS_INTELLIGENCE_COLUMNS, ...settings.columns]);
+  const lockedColumns = withNewsIntelligenceAfterIdentity(watchlist?.columns ?? ["symbol"]);
+  const columns = canonicalDiscoveryColumns([...lockedColumns, ...settings.columns]);
   const selectWatchlist = (watchlistId: string) => onSettingsChange((current) => ({ columns: [], watchlistId, watchlistIds: current.watchlistIds }));
   const addWatchlist = (watchlistId: string) => {
     if (!watchlistId || !selectableWatchlists.some((row) => row.watchlist_id === watchlistId)) return;
@@ -665,7 +667,7 @@ export function WatchUniverseContainer({ asOf, live = false, onSettingsChange, o
       empty={!watchlist ? "No Watchlist tabs are open. Use Add to choose one." : resolved ? "This QMD Watchlist currently has no members." : "No resolved membership is available."}
       limit={settings.limit}
       liveRecency={live && !historicalObservation}
-      lockedColumns={canonicalDiscoveryColumns([...(watchlist?.columns ?? ["symbol"]), ...NEWS_INTELLIGENCE_COLUMNS])}
+      lockedColumns={lockedColumns}
       mergeCompanyWithIdentity
       onColumnsChange={(columns) => onSettingsChange({ columns })}
       onCustomColumnsChange={(customColumns) => onSettingsChange({ customColumns })}
@@ -1126,6 +1128,15 @@ function catalogField(key: string, customColumns: ScannerCustomColumn[] = [], ca
 }
 function canonicalDiscoveryColumns(columns: string[]) {
   return [...new Set(columns.map((column) => column === "ticker" ? "symbol" : column === "last" ? "last_price" : column))];
+}
+function withNewsIntelligenceAfterIdentity(columns: string[], chronological = false) {
+  const canonical = canonicalDiscoveryColumns(columns);
+  const leading = chronological && canonical.includes("event_time") ? ["event_time", "symbol"] : ["symbol"];
+  return canonicalDiscoveryColumns([
+    ...leading,
+    ...NEWS_INTELLIGENCE_COLUMNS,
+    ...canonical.filter((column) => !leading.includes(column) && !NEWS_INTELLIGENCE_COLUMNS.includes(column)),
+  ]);
 }
 function tableFilterColumn(definition: FieldDefinition): TableFilterColumn {
   const presentation = definition.presentationValueType ?? presentationForColumn(definition.key).presentationValueType;
