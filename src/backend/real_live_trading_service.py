@@ -253,7 +253,7 @@ def qmd_signal_stream_candidates(
 
     fixed = {
         "ticker", "symbol", "conid", "company_name", "logo_url", "country",
-        "news_recency", "live_news_recency", "sec_recency", "market_is_halted",
+        "news_recency", "live_news_recency", "live_news_count", "today_news_count", "sec_recency", "market_is_halted",
         "market_event_at", "session_phase",
         "latest_news_id", "latest_news_title",
         "news_synthesis", "news_synthesis_class", "news_synthesis_purpose",

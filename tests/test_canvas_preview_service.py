@@ -70,7 +70,7 @@ class CanvasPreviewServiceTests(unittest.TestCase):
         self.assertIn("AS mapped_ticker", query)
         self.assertIn("notEmpty(ticker)", query)
 
-    def test_scanner_news_projection_exposes_three_sortable_intelligence_cards(self) -> None:
+    def test_scanner_news_projection_exposes_combined_news_contract(self) -> None:
         scanner = [{"symbol": "XPON"}]
         news = [{
             "ticker": "XPON",
@@ -78,6 +78,7 @@ class CanvasPreviewServiceTests(unittest.TestCase):
             "title": "Issuer acquisition",
             "latest_news_at": "2026-08-24T15:00:00Z",
             "live_news_count": 1,
+            "today_news_count": 1,
             "communication_purpose": "report",
             "information_origin": "issuer",
             "document_structure": "single_subject",
@@ -112,6 +113,7 @@ class CanvasPreviewServiceTests(unittest.TestCase):
         )
 
         self.assertEqual(scanner[0]["news_synthesis_class"], "Company")
+        self.assertEqual(scanner[0]["today_news_count"], 1)
         self.assertEqual(scanner[0]["latest_news_published_at"], "2026-08-24T15:00:00Z")
         self.assertEqual(scanner[0]["news_ai_review"], 92.0)
         self.assertEqual(scanner[0]["news_deepfm_probability"], 100.0)

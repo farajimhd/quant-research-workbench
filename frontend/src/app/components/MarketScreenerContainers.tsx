@@ -1,4 +1,4 @@
-import { ArrowDown, ArrowLeft, ArrowRight, ArrowUp, ArrowUpDown, Bot, Check, ChevronDown, ChevronLeft, ChevronRight, Columns3, FileCheck2, Flame, ListFilter, Plus, Search, Star, Trash2, TrendingUp, X } from "lucide-react";
+import { ArrowDown, ArrowLeft, ArrowRight, ArrowUp, ArrowUpDown, Check, ChevronDown, ChevronLeft, ChevronRight, Columns3, FileCheck2, Flame, ListFilter, Plus, Search, Star, Trash2, X } from "lucide-react";
 import { forwardRef, useDeferredValue, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
 import { api, apiCached, invalidateApiCache } from "../../api/client";
@@ -7,6 +7,8 @@ import { usePollingTask } from "../hooks/usePollingTask";
 import { timeRecency } from "../timeRecency";
 import { InventoryFilterSelect } from "./InventoryFilterSelect";
 import { MarketTime } from "./MarketTime";
+import { TickerNewsPopover, type TickerNewsPopoverAnchor } from "./NewsContainers";
+import { NewsIntelligenceIcon, type NewsIconRecency, type NewsReactionDirection } from "./NewsIntelligenceIcon";
 import { filterRowsByConditions, TableActiveFilterBar, TableColumnFilterControl, type TableFilterColumn, type TableFilterCondition, type TableFilterMatchMode } from "./TableColumnFilters";
 import { useTickerPresentations } from "./TickerIdentity";
 import { CategoryBadge, PresentedValue, SecurityIdentityCell, presentationForColumn, tableCellClass, type PresentationValueType } from "./TablePresentation";
@@ -106,7 +108,8 @@ type MarketListViewState = {
 };
 
 const MARKET_LIST_VIEW_STATE = new Map<string, MarketListViewState>();
-const NEWS_INTELLIGENCE_COLUMNS = ["news_synthesis", "news_ai_review", "news_ai_reaction"];
+const OPEN_TICKER_NEWS_EVENT = "quant-open-ticker-news";
+const NEWS_INTELLIGENCE_COLUMNS = ["news_intelligence"];
 const MARKET_MONITOR_COLUMN_PRIORITY = [
   "symbol",
   "company_name",
@@ -118,9 +121,9 @@ const MARKET_MONITOR_COLUMN_PRIORITY = [
   "squeeze_move_pct",
   "float_category",
   "short_pressure",
+  ...NEWS_INTELLIGENCE_COLUMNS,
   "event_quote_bid_price",
   "event_quote_ask_price",
-  ...NEWS_INTELLIGENCE_COLUMNS,
 ];
 
 export const SCANNER_TIMEFRAMES: ScannerTimeframe[] = ["100ms", "1s", "5s", "10s", "30s", "1m", "5m", "15m", "30m", "1h", "1d"];
@@ -200,6 +203,7 @@ const FIELD_CATALOG: FieldDefinition[] = [
   field("live_news_recency", "News recency", "News & SEC", "derived", "text", "Hot, cold, old, or none for company-specific news at the workspace clock."),
   field("live_news_count", "News count", "News & SEC", "derived", "integer", "Recent company-specific article count."),
   field("news_labels", "News", "News & SEC", "derived", "text", "Explainable company-news classifications."),
+  field("news_intelligence", "News", "News intelligence", "derived", "percentPlain", "Today’s ticker news and model state; sorting and numeric filtering use the strongest available DeepFM, AI-review, or reaction confidence."),
   field("news_synthesis", "News synthesis", "News intelligence", "derived", "number", "Informational synthesis card for the latest issuer story; sorting uses its signed direction score."),
   field("news_synthesis_class", "Synthesis class", "News intelligence", "derived", "text", "Short article class from News Synthesis."),
   field("news_synthesis_purpose", "Synthesis purpose", "News intelligence", "derived", "text", "Communication purpose from News Synthesis."),
@@ -829,11 +833,13 @@ function MarketListTable({
   const [filterMatchMode, setFilterMatchMode] = useState<TableFilterMatchMode>(() => cachedViewState?.filterMatchMode ?? "all");
   const [filterPanelOpen, setFilterPanelOpen] = useState(() => cachedViewState?.filterPanelOpen ?? false);
   const [headerMenuColumn, setHeaderMenuColumn] = useState<string | null>(null);
+  const [newsPopover, setNewsPopover] = useState<{ anchor: TickerNewsPopoverAnchor; ticker: string } | null>(null);
   const [page, setPage] = useState(0);
   const [query, setQuery] = useState(() => cachedViewState?.query ?? "");
   const [sort, setSort] = useState<{ column: string; direction: "asc" | "desc" }>(() => cachedViewState?.sort ?? { column: chronological ? "event_time" : "change_pct", direction: "desc" });
   const wallClockMs = useWallClock();
   const headerMenuRef = useRef<HTMLDivElement | null>(null);
+  const tableShellRef = useRef<HTMLDivElement | null>(null);
   const deferredQuery = useDeferredValue(query.trim().toLowerCase());
   const identityColumn = columns.includes("symbol") ? "symbol" : "ticker";
   const effectiveLockedColumns = useMemo(() => [...new Set([...(chronological ? ["event_time"] : []), identityColumn, ...lockedColumns.filter((column) => column !== "logo" && column !== "company_name")])], [chronological, identityColumn, lockedColumns]);
@@ -875,6 +881,13 @@ function MarketListTable({
     document.addEventListener("pointerdown", dismiss, true);
     return () => document.removeEventListener("pointerdown", dismiss, true);
   }, [headerMenuColumn]);
+  useEffect(() => {
+    const shell = tableShellRef.current;
+    if (!shell) return;
+    const open = (event: Event) => setNewsPopover((event as CustomEvent<{ anchor: TickerNewsPopoverAnchor; ticker: string }>).detail);
+    shell.addEventListener(OPEN_TICKER_NEWS_EVENT, open);
+    return () => shell.removeEventListener(OPEN_TICKER_NEWS_EVENT, open);
+  }, []);
   function changeSort(column: string, direction?: "asc" | "desc") {
     setSort((current) => ({ column, direction: direction ?? (current.column === column && current.direction === "desc" ? "asc" : "desc") }));
     setHeaderMenuColumn(null);
@@ -937,7 +950,7 @@ function MarketListTable({
     onColumnsChange(nextColumns);
     setHeaderMenuColumn(key);
   }
-  return <div className="market-list-table-shell">
+  return <div className="market-list-table-shell" ref={tableShellRef}>
     <div className="market-list-toolbar-stack"><div className="market-list-toolbar">
       <label className="market-list-search"><Search size={14} /><input aria-label={`Search ${title}`} onChange={(event) => setQuery(event.target.value)} placeholder="Search symbols and values" value={query} /></label>
       <TableColumnFilterControl columns={filterColumns} conditions={columnFilters} matchMode={filterMatchMode} onChange={setColumnFilters} onMatchModeChange={setFilterMatchMode} onOpenChange={setFilterPanelOpen} open={filterPanelOpen} rows={rows} title={title} />
@@ -950,6 +963,7 @@ function MarketListTable({
     </div><TableActiveFilterBar columns={filterColumns} conditions={columnFilters} onChange={setColumnFilters} /></div>
     <div className="market-list-table-scroll"><table className={`market-list-table${companyInIdentity ? " with-company-identity" : ""}`}><thead><tr>{tableColumns.map((column) => { const definition = catalogField(column, customColumns, catalog); const sorted = sort.column === column; const className = columnClass(column, definition); const menuOpen = headerMenuColumn === column; return column === "logo" ? <th aria-label="Ticker logo" className={className} key={column} /> : <th aria-sort={sorted ? (sort.direction === "asc" ? "ascending" : "descending") : "none"} className={className} data-menu-open={menuOpen ? "true" : undefined} key={column}><button aria-expanded={menuOpen} aria-label={`Configure ${definition.label} column`} onClick={() => setHeaderMenuColumn((current) => current === column ? null : column)} title={`Configure ${definition.label}`} type="button"><span>{definition.label}</span>{sorted ? sort.direction === "asc" ? <ArrowUp size={13} /> : <ArrowDown size={13} /> : <ChevronDown size={13} />}</button>{menuOpen ? <ColumnHeaderMenu column={column} definition={definition} locked={effectiveLockedColumns.includes(column)} onAnchorChange={(value) => changeTechnicalAnchor(column, value)} onMove={(target) => moveColumn(column, target)} onRemove={() => removeColumn(column)} onSort={(direction) => changeSort(column, direction)} onSourceChange={(value) => changeTechnicalSource(column, value)} onTimeframeChange={(value) => changeTechnicalTimeframe(column, value)} ref={headerMenuRef} /> : null}</th>; })}{rowAction ? <th aria-label="Row actions" /> : null}</tr></thead><tbody>{visibleRows.length ? visibleRows.map((row, index) => { const ticker = String(row.ticker ?? row.symbol ?? "").trim().toUpperCase(); const selectable = Boolean(ticker && onTickerSelect); const select = () => { if (selectable) onTickerSelect?.(ticker); }; return <tr aria-label={selectable ? `Open ${ticker} Charts & Quotes` : undefined} data-recency={recencyRail ? eventRecency(row.event_time, wallClockMs) : undefined} data-selectable={selectable ? "true" : undefined} key={`${ticker || "row"}:${row.event_time ?? index}:${index}`} onClick={(event) => { if (!(event.target as HTMLElement).closest("button, input, select, a")) select(); }} onKeyDown={(event) => { if (selectable && (event.key === "Enter" || event.key === " ")) { event.preventDefault(); select(); } }} tabIndex={selectable ? 0 : undefined}>{tableColumns.map((column) => { const definition = catalogField(column, customColumns, catalog); return <td className={`${toneClass(row[column], column, customColumns, catalog)} ${columnClass(column, definition)}`.trim()} key={column}>{renderMarketCell(row, column, presentations, customColumns, catalog, companyInIdentity)}</td>; })}{rowAction ? <td className="market-list-row-action">{rowAction(row)}</td> : null}</tr>; }) : <tr><td className="market-list-empty" colSpan={tableColumns.length + (rowAction ? 1 : 0)}>{empty}</td></tr>}</tbody></table></div>
     {columnPickerOpen ? <ColumnPicker catalog={catalog} columns={selectedColumns} customColumns={customColumns} fieldCoverage={fieldCoverage} lockedColumns={effectiveLockedColumns} onAddTechnical={addTechnicalColumn} onChange={onColumnsChange} onClose={() => setColumnPickerOpen(false)} /> : null}
+    {newsPopover ? <TickerNewsPopover anchor={newsPopover.anchor} onClose={() => setNewsPopover(null)} ticker={newsPopover.ticker} /> : null}
   </div>;
 }
 
@@ -1034,6 +1048,7 @@ function normalizeScannerRows(rows: ScreenerRow[]) {
       flow_structure_composite_confidence_pct: numberValue(row.flow_structure_composite_confidence) * 100,
       qmd_structure_confidence_pct: numberValue(row.qmd_structure_confidence) * 100,
       signal_confidence_pct: numberValue(row.signal_confidence) * 100,
+      news_intelligence: newsIntelligenceConfidence(row),
       ticker,
     };
   });
@@ -1047,9 +1062,7 @@ function renderMarketCell(row: ScreenerRow, column: string, presentations: Retur
     return <SecurityIdentityCell companyName={companyName} country={String(row.country ?? presentations[ticker]?.country ?? "")} halted={row.market_is_halted ?? row.is_halted ?? row.trading_status ?? presentations[ticker]?.market_is_halted ?? presentations[ticker]?.trading_status} logoUrl={String(row.logo_url ?? presentations[ticker]?.logo_url ?? "")} newsRecency={preferRecentRecency(row.live_news_recency, presentations[ticker]?.live_news_recency)} secRecency={preferRecentRecency(row.sec_recency, presentations[ticker]?.sec_recency)} ticker={ticker} />;
   }
   if (column === "event_time") return value ? <MarketTime includeSeconds value={String(value)} /> : "—";
-  if (column === "news_synthesis") return <NewsSynthesisMarketCard row={row} />;
-  if (column === "news_ai_review") return <NewsAiReviewMarketCard row={row} />;
-  if (column === "news_ai_reaction") return <NewsAiReactionMarketCard row={row} />;
+  if (column === "news_intelligence") return <NewsMarketCell row={row} ticker={ticker} />;
   const definition = catalogField(column, customColumns, catalog);
   const presentationValueType = definition.presentationValueType ?? presentationForColumn(column).presentationValueType;
   if (presentationValueType === "category" || presentationValueType === "boolean" || ["direction", "source"].includes(column)) return <CategoryBadge column={column} value={value} />;
@@ -1072,77 +1085,36 @@ function renderMarketCell(row: ScreenerRow, column: string, presentations: Retur
   return <PresentedValue column={column} presentation={{ presentationValueType: definition.presentationValueType }} value={value} />;
 }
 
-function NewsSynthesisMarketCard({ row }: { row: ScreenerRow }) {
-  if (!row.latest_news_id) return <span className="market-list-unavailable">—</span>;
-  return <span className="market-news-card" data-kind="synthesis" title={String(row.latest_news_title ?? "Latest issuer news")}>
-    <span><strong>{shortMarketNewsValue(row.news_synthesis_class, "News")}</strong><em data-tone="view">View</em></span>
-    <b data-tone={String(row.news_synthesis_direction ?? "neutral")}>{shortMarketNewsValue(row.news_synthesis_direction, "Pending")}</b>
-    <small>{shortMarketNewsValue(row.news_synthesis_purpose, "Unknown")} · {shortMarketNewsValue(row.news_synthesis_event, "Unclassified")}</small>
-  </span>;
-}
-
-function NewsAiReviewMarketCard({ row }: { row: ScreenerRow }) {
-  if (!row.latest_news_id) return <span className="market-list-unavailable">—</span>;
-  const score = numberValue(row.news_ai_review);
-  const complete = row.news_ai_review !== null && row.news_ai_review !== undefined;
-  return <span className="market-news-card" data-kind="review">
-    <span><strong>AI review</strong><em data-tone={complete && score >= 50 ? "positive" : complete ? "negative" : "pending"}>{complete ? `${Math.round(score)}%` : shortMarketNewsValue(row.news_ai_review_state, "Pending")}</em></span>
-    <b data-tone={String(row.news_ai_sentiment ?? "neutral")}>{complete ? shortMarketNewsValue(row.news_ai_sentiment, "Neutral") : "Not reviewed"}</b>
-    <small>{complete ? `${shortMarketNewsValue(row.news_ai_eligibility, "Pending")} · DeepFM ${Math.round(numberValue(row.news_deepfm_probability))}%` : `DeepFM ${shortMarketNewsValue(row.news_deepfm_eligibility, "Pending")}`}</small>
-    <MarketNewsAction kind="review" row={row} />
-  </span>;
-}
-
-function NewsAiReactionMarketCard({ row }: { row: ScreenerRow }) {
-  if (!row.latest_news_id) return <span className="market-list-unavailable">—</span>;
+function NewsMarketCell({ row, ticker }: { row: ScreenerRow; ticker: string }) {
+  const countSource = row.today_news_count === null || row.today_news_count === undefined ? row.live_news_count : row.today_news_count;
+  const count = Math.max(0, Math.round(numberValue(countSource)));
+  if (!count) return <span className="market-list-unavailable">—</span>;
   const expected = row.news_ai_reaction === null || row.news_ai_reaction === undefined ? null : numberValue(row.news_ai_reaction);
-  return <span className="market-news-card" data-kind="reaction">
-    <span><strong>5 min</strong><em data-tone={expected === null ? "pending" : expected > 0 ? "positive" : expected < 0 ? "negative" : "neutral"}>{expected === null ? shortMarketNewsValue(row.news_ai_reaction_state, "Review first") : `${expected > 0 ? "+" : ""}${expected.toFixed(2)}%`}</em></span>
-    <b>{expected === null ? "No forecast" : `${Math.round(numberValue(row.news_ai_reaction_confidence))}% confidence`}</b>
-    <small>{expected === null ? "Manual action required" : shortMarketNewsValue(row.news_ai_reaction_regime, "Unknown regime")}</small>
-    <MarketNewsAction kind="reaction" row={row} />
-  </span>;
+  const reactionDirection: NewsReactionDirection | undefined = expected === null ? undefined : expected > 0 ? "up" : expected < 0 ? "down" : "flat";
+  const confidence = newsIntelligenceConfidence(row);
+  const reviewed = row.news_ai_review !== null && row.news_ai_review !== undefined;
+  const pending = [row.news_ai_review_state, row.news_ai_reaction_state].some((value) => ["queued", "labeling", "running"].includes(String(value ?? "").toLowerCase()));
+  const failed = [row.news_ai_review_state, row.news_ai_reaction_state].some((value) => String(value ?? "").toLowerCase() === "failed");
+  const recency = newsIconRecency(row.latest_news_published_at ?? row.latest_news_at);
+  const eligible = String(row.news_deepfm_eligibility ?? "").toLowerCase() === "eligible";
+  return <>
+    <button aria-label={`Open ${ticker} news timeline`} className="market-news-summary" onClick={(event) => { event.stopPropagation(); const rect = event.currentTarget.getBoundingClientRect(); event.currentTarget.dispatchEvent(new CustomEvent(OPEN_TICKER_NEWS_EVENT, { bubbles: true, detail: { anchor: { bottom: rect.bottom, left: rect.left, right: rect.right, top: rect.top }, ticker } })); }} title={`${count} linked ${ticker} ${count === 1 ? "story" : "stories"} · ${Math.round(confidence)}% strongest confidence`} type="button">
+      <NewsIntelligenceIcon count={count} deepFmEligible={eligible} failed={failed} pending={pending} reactionDirection={reactionDirection} recency={recency} reviewed={reviewed} />
+      <span>{reviewed ? <b data-tone={String(row.news_ai_sentiment ?? "neutral")}>AI {shortMarketNewsValue(row.news_ai_sentiment, "Reviewed")} {Math.round(numberValue(row.news_ai_review))}</b> : <b>{eligible ? `DeepFM ${Math.round(numberValue(row.news_deepfm_probability))}` : "News"}</b>}{expected !== null ? <small data-tone={reactionDirection}>{`5m ${expected > 0 ? "+" : ""}${expected.toFixed(2)}% · ${Math.round(numberValue(row.news_ai_reaction_confidence))}`}</small> : null}</span>
+    </button>
+  </>;
 }
 
-function MarketNewsAction({ kind, row }: { kind: "reaction" | "review"; row: ScreenerRow }) {
-  const [pending, setPending] = useState(false);
-  const [error, setError] = useState("");
-  const newsId = String(row.latest_news_id ?? "");
-  const publishedAt = String(row.latest_news_published_at ?? row.latest_news_at ?? "");
-  const reviewed = row.news_ai_review !== null && row.news_ai_review !== undefined;
-  const reactionReady = reviewed && numberValue(row.news_ai_review) >= 50;
-  const completed = kind === "review" ? reviewed : row.news_ai_reaction !== null && row.news_ai_reaction !== undefined;
-  useEffect(() => {
-    if (completed) setPending(false);
-  }, [completed]);
-  const unavailable = !newsId || !publishedAt || completed || (kind === "reaction" && !reactionReady);
-  const label = pending
-    ? kind === "review" ? "Reviewing" : "Forecasting"
-    : kind === "review" ? completed ? "Reviewed" : "Review news"
-    : completed ? "Forecasted" : !reactionReady ? "Review first" : "Forecast reaction";
-  const Icon = kind === "review" ? Bot : TrendingUp;
-  const submit = async () => {
-    setError("");
-    setPending(true);
-    try {
-      await api(`/api/trading/news/${encodeURIComponent(newsId)}/ai-${kind}`, {
-        method: "POST",
-        body: JSON.stringify({
-          published_at_utc: publishedAt,
-          requested_by: "frontend-operator",
-          ...(kind === "reaction" ? { ticker: String(row.ticker ?? row.symbol ?? "").toUpperCase() } : {}),
-        }),
-        timeoutMs: 30000,
-      });
-    } catch (reason) {
-      setPending(false);
-      setError(reason instanceof Error ? reason.message : String(reason));
-    }
-  };
-  return <>
-    <button className="market-news-action" disabled={pending || unavailable} onClick={(event) => { event.stopPropagation(); void submit(); }} title={!publishedAt ? "The news publication timestamp is unavailable." : kind === "reaction" && !reactionReady ? "Complete an eligible AI news review first." : label} type="button"><Icon size={10} />{label}</button>
-    {error ? <small className="market-news-action-error" title={error}>{error}</small> : null}
-  </>;
+function newsIntelligenceConfidence(row: ScreenerRow) {
+  const values = [row.news_ai_reaction_confidence, row.news_ai_review, row.news_deepfm_probability].filter((value) => value !== null && value !== undefined && value !== "").map(numberValue);
+  return values.length ? Math.max(...values) : 0;
+}
+
+function newsIconRecency(value: unknown): NewsIconRecency {
+  const ageMinutes = (Date.now() - Date.parse(String(value ?? ""))) / 60_000;
+  if (Number.isFinite(ageMinutes) && ageMinutes <= 15) return "hot";
+  if (Number.isFinite(ageMinutes) && ageMinutes <= 60) return "fresh";
+  return "older";
 }
 
 function shortMarketNewsValue(value: unknown, fallback: string) {
@@ -1187,7 +1159,7 @@ function catalogField(key: string, customColumns: ScannerCustomColumn[] = [], ca
   return custom ? customField(custom) : field(key, label(key), "Other", "raw", "text", "Available source field.");
 }
 function canonicalDiscoveryColumns(columns: string[]) {
-  return [...new Set(columns.map((column) => column === "ticker" ? "symbol" : column === "last" ? "last_price" : column))];
+  return [...new Set(columns.map((column) => column === "ticker" ? "symbol" : column === "last" ? "last_price" : ["news_synthesis", "news_ai_review", "news_ai_reaction"].includes(column) ? "news_intelligence" : column))];
 }
 function marketMonitorColumns(columns: string[], chronological = false) {
   const canonical = canonicalDiscoveryColumns([...columns, ...NEWS_INTELLIGENCE_COLUMNS]);

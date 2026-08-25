@@ -708,6 +708,8 @@ def _occurrence(
         ),
         "logo_url": str(row.get("logo_url") or ""),
         "live_news_recency": str(row.get("live_news_recency") or "none"),
+        "live_news_count": int(row.get("live_news_count") or 0),
+        "today_news_count": int(row.get("today_news_count") or 0),
         **{
             key: row.get(key)
             for key in (

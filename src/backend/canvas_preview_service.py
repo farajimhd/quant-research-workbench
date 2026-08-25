@@ -656,12 +656,20 @@ def _query_scanner_news_intelligence(cutoff: datetime) -> list[dict[str, Any]]:
     )
     latest_by_ticker: dict[str, dict[str, Any]] = {}
     counts: dict[str, int] = {}
+    today_counts: dict[str, int] = {}
     labels: dict[str, set[str]] = {}
+    market_date = cutoff.astimezone(ZoneInfo("America/New_York")).date()
     for row in source_rows:
         ticker = str(row.get("ticker") or "").strip().upper()
         if not ticker:
             continue
         counts[ticker] = counts.get(ticker, 0) + 1
+        try:
+            published_at = datetime.fromisoformat(str(row.get("published_at_utc") or "").replace("Z", "+00:00"))
+            if published_at.astimezone(ZoneInfo("America/New_York")).date() == market_date:
+                today_counts[ticker] = today_counts.get(ticker, 0) + 1
+        except ValueError:
+            pass
         labels.setdefault(ticker, set()).update(_string_values(row.get("news_labels")))
         latest_by_ticker.setdefault(ticker, dict(row))
     ai_by_news = load_news_ai_state(
@@ -671,6 +679,7 @@ def _query_scanner_news_intelligence(cutoff: datetime) -> list[dict[str, Any]]:
     result: list[dict[str, Any]] = []
     for ticker, row in latest_by_ticker.items():
         row["live_news_count"] = counts[ticker]
+        row["today_news_count"] = today_counts.get(ticker, 0)
         row["latest_news_at"] = row.get("published_at_utc")
         row["news_labels"] = sorted(labels[ticker])
         row["ai_state"] = ai_by_news.get(str(row.get("canonical_news_id") or ""))
@@ -767,6 +776,7 @@ def enrich_scanner_news_intelligence(scanner: list[dict[str, Any]], news: Any, a
         ticker = str(row.get("symbol") or row.get("ticker") or "").strip().upper()
         news_item = news_by_ticker.get(ticker, {})
         row["live_news_count"] = int(news_item.get("live_news_count") or 0)
+        row["today_news_count"] = int(news_item.get("today_news_count") or 0)
         row["live_news_recency"] = _latest_recency(
             [{"published_at_utc": news_item.get("latest_news_at")}], "published_at_utc", as_of
         )

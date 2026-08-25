@@ -5,6 +5,7 @@ import { useEffect, useState } from "react";
 import { buildMenuItemButtonClassName, buildThemeMenuItemButtonClassName } from "../selectionStyles";
 import { configurationToneForPage, NAVIGATION_GROUPS, type NavigationIcon, type PageKey } from "../routes";
 import { APP_THEMES, DEFAULT_THEME_ID, applyThemeDefinition, isAppThemeId, type AppThemeDefinition, type AppThemeId } from "../theme";
+import { NewsIconLegend } from "./NewsIntelligenceIcon";
 
 export type UiScale = 0.8 | 0.9 | 1 | 1.1 | 1.25;
 
@@ -138,6 +139,8 @@ export function Layout({
                     ))}
                   </div>
                 </div>
+                <div className="theme-menu-divider" />
+                <NewsIconLegend />
                 <div className="theme-menu-divider" />
                 <ThemeMenuGroup activeThemeId={themeId} label="Light themes" themes={lightThemes} onSelect={selectTheme} />
                 <div className="theme-menu-divider" />
