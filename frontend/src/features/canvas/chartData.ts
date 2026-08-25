@@ -46,10 +46,14 @@ export function useCanvasHistoricalChart(symbol: string, timeframe: CanvasChartT
   const rowBudget = useMemo(() => chartRowBudget(indicatorColumns), [indicatorColumns]);
   const [state, setState] = useState<Omit<CanvasLiveChartState, "loadEarlier" | "ready">>({ bars: [], canLoadEarlier: false, connected: false, error: "", historyError: "", historyNotice: "", indicators: [], indicatorsAvailable: ENRICHED_QMD_TIMEFRAMES.has(timeframe), lastUpdateAt: "", loading: true, loadingEarlier: false, marketSignalEvents: [], pointInTime, structureEvents: [], structureLevelHistory: [] });
   const [readyKey, setReadyKey] = useState("");
+  const stateRef = useRef(state);
+  stateRef.current = state;
   const historyCursorRef = useRef<ChartHistoryCursor | null>(null);
   const historyRequestRef = useRef(false);
   const historyAbortRef = useRef<AbortController | null>(null);
   const requestKeyRef = useRef("");
+  const displayedIdentityRef = useRef("");
+  const displayedRequestKeyRef = useRef("");
   const loadedCutoffRef = useRef(0);
 
   const loadEarlier = useCallback(() => {
@@ -112,6 +116,7 @@ export function useCanvasHistoricalChart(symbol: string, timeframe: CanvasChartT
     const historyController = new AbortController();
     const ticker = symbol.trim().toUpperCase();
     const requestKey = chartRequestKey(ticker, timeframe, projectionKey, sessionDate);
+    const identityKey = chartIdentityKey(ticker, projectionKey, sessionDate);
     historyAbortRef.current?.abort();
     historyAbortRef.current = historyController;
     requestKeyRef.current = requestKey;
@@ -127,7 +132,29 @@ export function useCanvasHistoricalChart(symbol: string, timeframe: CanvasChartT
         cached.indicators_available,
       )
       : null;
-    setState({
+    const previous = stateRef.current;
+    const retainPreviousTimeframe = !cachedRows
+      && previous.bars.length > 0
+      && displayedIdentityRef.current === identityKey
+      && displayedRequestKeyRef.current !== requestKey;
+    if (cachedRows) {
+      displayedIdentityRef.current = identityKey;
+      displayedRequestKeyRef.current = requestKey;
+    } else if (!retainPreviousTimeframe) {
+      displayedIdentityRef.current = "";
+      displayedRequestKeyRef.current = "";
+    }
+    setState(retainPreviousTimeframe ? {
+      ...previous,
+      canLoadEarlier: false,
+      connected: false,
+      error: "",
+      historyError: "",
+      historyNotice: `Loading ${timeframe} chart; retaining the last complete timeframe until replacement bars arrive.`,
+      loading: true,
+      loadingEarlier: false,
+      pointInTime,
+    } : {
       bars: cachedRows?.bars ?? [],
       canLoadEarlier: false,
       connected: false,
@@ -195,20 +222,29 @@ export function useCanvasHistoricalChart(symbol: string, timeframe: CanvasChartT
             closedRowsAtCutoff(payload.indicators, timeframe, cutoffMs),
             payload.indicators_available,
           );
+          const replaceDisplayedTimeframe = displayedRequestKeyRef.current !== requestKey;
+          displayedIdentityRef.current = identityKey;
+          displayedRequestKeyRef.current = requestKey;
           setState((current) => {
-            const merged = mergeHistoricalChartPage(current.bars, current.indicators, aligned.bars, aligned.indicators, rowBudget);
+            const merged = mergeHistoricalChartPage(
+              replaceDisplayedTimeframe ? [] : current.bars,
+              replaceDisplayedTimeframe ? [] : current.indicators,
+              aligned.bars,
+              aligned.indicators,
+              rowBudget,
+            );
             return {
               ...current,
               bars: merged.bars,
               canLoadEarlier: payload.has_more && !merged.atCapacity,
-              marketSignalEvents: mergeMarketSignalEvents(current.marketSignalEvents, payload.market_signal_events),
+              marketSignalEvents: mergeMarketSignalEvents(replaceDisplayedTimeframe ? [] : current.marketSignalEvents, payload.market_signal_events),
               historyError: "",
               historyNotice: merged.atCapacity ? chartHistoryLimitNotice(rowBudget) : progressive ? liveTail ? "Loading current QMD indicators..." : "Loading requested indicators..." : liveTail ? "Historical base loaded; connecting the QMD live tail..." : "",
               indicators: merged.indicators,
               indicatorsAvailable: progressive ? current.indicatorsAvailable : payload.indicators_available,
               indicatorProvenance: payload.indicator_provenance ?? current.indicatorProvenance,
-              structureEvents: mergeStructureEvents(current.structureEvents, payload.structure_events),
-              structureLevelHistory: mergeStructureLevelHistory(current.structureLevelHistory, payload.structure_level_history),
+              structureEvents: mergeStructureEvents(replaceDisplayedTimeframe ? [] : current.structureEvents, payload.structure_events),
+              structureLevelHistory: mergeStructureLevelHistory(replaceDisplayedTimeframe ? [] : current.structureLevelHistory, payload.structure_level_history),
               loading: false,
             };
           });
@@ -318,6 +354,8 @@ export function useCanvasHistoricalChart(symbol: string, timeframe: CanvasChartT
     if (!enabled || !liveTail) return;
     const ticker = symbol.trim().toUpperCase();
     if (!ticker) return;
+    const requestKey = chartRequestKey(ticker, timeframe, projectionKey, sessionDate);
+    const identityKey = chartIdentityKey(ticker, projectionKey, sessionDate);
     let active = true;
     let resnapshotController: AbortController | null = null;
     const sockets: Partial<Record<"bars" | "indicators", WebSocket>> = {};
@@ -327,13 +365,23 @@ export function useCanvasHistoricalChart(symbol: string, timeframe: CanvasChartT
     const applyRows = (kind: "bars" | "indicators", rows: QmdLiveBar[] | HistoricalIndicator[]) => {
       if (!active) return;
       setState((current) => {
+        const replacingDisplayedTimeframe = displayedRequestKeyRef.current !== requestKey;
+        if (kind === "indicators" && replacingDisplayedTimeframe) return current;
+        if (kind === "bars" && replacingDisplayedTimeframe && rows.length === 0) return current;
+        if (kind === "bars" && replacingDisplayedTimeframe && rows.length > 0) {
+          displayedIdentityRef.current = identityKey;
+          displayedRequestKeyRef.current = requestKey;
+        }
         const bars = kind === "bars"
-          ? limitLiveRowsWithHysteresis(mergeRowsByTime(current.bars, rows as QmdLiveBar[]), rowBudget)
+          ? limitLiveRowsWithHysteresis(
+            mergeRowsByTime(replacingDisplayedTimeframe ? [] : current.bars, rows as QmdLiveBar[]),
+            rowBudget,
+          )
           : current.bars;
         const admittedTimes = new Set(bars.map(barStartTime));
         const indicators = kind === "indicators"
           ? limitLiveRowsWithHysteresis(mergeRowsByTime(current.indicators, rows as HistoricalIndicator[]), rowBudget).filter((row) => admittedTimes.has(barStartTime(row)))
-          : current.indicators.filter((row) => admittedTimes.has(barStartTime(row)));
+          : (replacingDisplayedTimeframe ? [] : current.indicators).filter((row) => admittedTimes.has(barStartTime(row)));
         return {
           ...current,
           bars,
@@ -436,7 +484,7 @@ export function useCanvasHistoricalChart(symbol: string, timeframe: CanvasChartT
       Object.values(sockets).forEach((socket) => socket?.close());
       document.removeEventListener("visibilitychange", handleVisibilityChange);
     };
-  }, [enabled, indicatorColumns, liveTail, rowBudget, symbol, timeframe]);
+  }, [enabled, indicatorColumns, liveTail, projectionKey, rowBudget, sessionDate, symbol, timeframe]);
 
   const currentRequestKey = chartRequestKey(symbol.trim().toUpperCase(), timeframe, projectionKey, sessionDate);
   const causalBars = pointInTime ? closedRowsAtCutoff(state.bars, timeframe, cutoffMs) : state.bars;
@@ -447,6 +495,10 @@ export function useCanvasHistoricalChart(symbol: string, timeframe: CanvasChartT
 
 function chartRequestKey(ticker: string, timeframe: string, indicatorColumns: string, sessionDate: string): string {
   return [ticker, timeframe, indicatorColumns, sessionDate].join("|");
+}
+
+function chartIdentityKey(ticker: string, indicatorColumns: string, sessionDate: string): string {
+  return [ticker, indicatorColumns, sessionDate].join("|");
 }
 
 function rememberChartSnapshot(key: string, payload: QmdBarHistory) {

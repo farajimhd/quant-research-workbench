@@ -23,8 +23,8 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::sync::{broadcast, mpsc, Mutex, Notify, Semaphore};
 
-pub const HISTORICAL_ENGINE_VERSION: &str = "qmd-derived-v28";
-pub const HISTORICAL_CALCULATION_REVISION: &str = "qmd-derived-v28";
+pub const HISTORICAL_ENGINE_VERSION: &str = "qmd-derived-v29";
+pub const HISTORICAL_CALCULATION_REVISION: &str = "qmd-derived-v29";
 pub const HISTORICAL_CORPORATE_ACTION_REVISION: &str = "raw-unadjusted-v1";
 const MAX_ENCOUNTERED_STRUCTURE_LEVELS: usize = 4_000;
 

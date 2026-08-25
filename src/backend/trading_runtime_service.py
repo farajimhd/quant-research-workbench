@@ -967,7 +967,10 @@ _HISTORICAL_CHART_PAGE_MAX_SECONDS = {
     "10s": 2 * 60 * 60,
     "30s": 2 * 60 * 60,
     "1m": 2 * 60 * 60,
-    "5m": 4 * 60 * 60,
+    # Coarser bars must not expand first paint into a proportionally larger raw
+    # compact-event scan. Two hours yields 24 five-minute bars immediately;
+    # the existing cursor loads earlier history on demand.
+    "5m": 2 * 60 * 60,
     "1h": 16 * 60 * 60,
 }
 

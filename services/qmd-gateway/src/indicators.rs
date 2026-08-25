@@ -25,7 +25,7 @@ use tokio::time::{interval, sleep, Duration, MissedTickBehavior};
 const STRUCTURE_CHECKPOINT_BATCH_LIMIT: usize = 256;
 
 pub const INDICATOR_SCHEMA_VERSION: u16 = 19;
-pub const INDICATOR_CALCULATION_REVISION: &str = "qmd-indicators-v20";
+pub const INDICATOR_CALCULATION_REVISION: &str = "qmd-indicators-v21";
 const MICROSTRUCTURE_AGGREGATE_TIMEFRAMES: [&str; 7] = ["1s", "5s", "10s", "30s", "1m", "5m", "1h"];
 const INDICATOR_STATE_RECLAIM_INTERVAL_SECONDS: u64 = 30;
 const RETAINED_100MS_HISTORY_ROWS: usize = 128;
@@ -982,7 +982,7 @@ struct BarIndicatorState {
 }
 
 struct SessionVwapState {
-    cumulative_typical_notional: f64,
+    cumulative_trade_notional: f64,
     cumulative_volume: f64,
     anchor: Option<NaiveDate>,
 }
@@ -1826,14 +1826,9 @@ impl BarIndicatorState {
         self.volume_sma_20.push(bar.volume);
         self.bollinger_20.push(bar.close);
         self.last_close = bar.close;
-        let session_vwap = self.session_vwap.update(
-            bar.bar_start,
-            bar.high,
-            bar.low,
-            bar.close,
-            bar.volume,
-            bar.vwap,
-        );
+        let session_vwap = self
+            .session_vwap
+            .update(bar.bar_start, bar.volume, bar.vwap);
         let structure = &bar.qmd_structure;
         let state_for = |timeframe: &str| {
             structure
@@ -2051,36 +2046,30 @@ impl BarIndicatorState {
 impl SessionVwapState {
     fn new() -> Self {
         Self {
-            cumulative_typical_notional: 0.0,
+            cumulative_trade_notional: 0.0,
             cumulative_volume: 0.0,
             anchor: None,
         }
     }
 
-    fn update(
-        &mut self,
-        bar_start: DateTime<Utc>,
-        high: f64,
-        low: f64,
-        close: f64,
-        volume: f64,
-        fallback: f64,
-    ) -> f64 {
+    fn update(&mut self, bar_start: DateTime<Utc>, volume: f64, interval_vwap: f64) -> f64 {
         let anchor = market_session_anchor_date(bar_start);
         if self.anchor != Some(anchor) {
             self.anchor = Some(anchor);
-            self.cumulative_typical_notional = 0.0;
+            self.cumulative_trade_notional = 0.0;
             self.cumulative_volume = 0.0;
         }
-        let typical_price = (high + low + close) / 3.0;
-        if typical_price.is_finite() && volume.is_finite() && volume > 0.0 {
-            self.cumulative_typical_notional += typical_price * volume;
+        if interval_vwap.is_finite() && interval_vwap > 0.0 && volume.is_finite() && volume > 0.0 {
+            // Bar VWAP is exact eligible-trade notional divided by eligible
+            // volume. Recombining those two additive primitives keeps the
+            // anchored session value invariant under timeframe aggregation.
+            self.cumulative_trade_notional += interval_vwap * volume;
             self.cumulative_volume += volume;
         }
         if self.cumulative_volume > 0.0 {
-            self.cumulative_typical_notional / self.cumulative_volume
+            self.cumulative_trade_notional / self.cumulative_volume
         } else {
-            fallback
+            interval_vwap
         }
     }
 }
@@ -3587,27 +3576,35 @@ mod tests {
     }
 
     #[test]
-    fn session_vwap_accumulates_hlc3_weighted_by_volume() {
+    fn session_vwap_accumulates_exact_trade_notional() {
         let mut state = SessionVwapState::new();
         let first = state.update(
             Utc.with_ymd_and_hms(2026, 7, 14, 14, 0, 0).unwrap(),
-            11.0,
-            9.0,
-            10.0,
             100.0,
-            0.0,
+            10.0,
         );
         let second = state.update(
             Utc.with_ymd_and_hms(2026, 7, 14, 14, 1, 0).unwrap(),
-            22.0,
-            18.0,
-            20.0,
             300.0,
-            0.0,
+            20.0,
         );
 
         assert!((first - 10.0).abs() < 1e-9);
         assert!((second - 17.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn session_vwap_is_invariant_under_timeframe_aggregation() {
+        let first_start = Utc.with_ymd_and_hms(2026, 7, 14, 14, 0, 0).unwrap();
+        let second_start = Utc.with_ymd_and_hms(2026, 7, 14, 14, 1, 0).unwrap();
+        let mut fine = SessionVwapState::new();
+        fine.update(first_start, 100.0, 10.0);
+        let fine_value = fine.update(second_start, 300.0, 20.0);
+
+        let mut coarse = SessionVwapState::new();
+        let coarse_value = coarse.update(first_start, 400.0, 17.5);
+
+        assert!((fine_value - coarse_value).abs() < 1e-9);
     }
 
     #[test]
@@ -3706,19 +3703,13 @@ mod tests {
         let mut state = SessionVwapState::new();
         state.update(
             Utc.with_ymd_and_hms(2026, 7, 14, 13, 29, 0).unwrap(),
-            11.0,
-            9.0,
-            10.0,
             100.0,
-            0.0,
+            10.0,
         );
         let regular_session = state.update(
             Utc.with_ymd_and_hms(2026, 7, 14, 13, 30, 0).unwrap(),
-            31.0,
-            29.0,
-            30.0,
             50.0,
-            0.0,
+            30.0,
         );
 
         assert!((regular_session - (2500.0 / 150.0)).abs() < 1e-9);
@@ -3729,19 +3720,13 @@ mod tests {
         let mut state = SessionVwapState::new();
         state.update(
             Utc.with_ymd_and_hms(2026, 1, 14, 8, 59, 0).unwrap(),
-            11.0,
-            9.0,
-            10.0,
             100.0,
-            0.0,
+            10.0,
         );
         let winter_premarket = state.update(
             Utc.with_ymd_and_hms(2026, 1, 14, 9, 0, 0).unwrap(),
-            31.0,
-            29.0,
-            30.0,
             50.0,
-            0.0,
+            30.0,
         );
 
         assert!((winter_premarket - 30.0).abs() < 1e-9);

@@ -10,7 +10,10 @@ from unittest.mock import AsyncMock, patch
 
 from src.backend.real_live_trading_service import ibkr_order_payload
 from src.backend.qmd_gateway_client import ENRICHED_QMD_TIMEFRAMES, normalize_qmd_family_bar_snapshot
-from src.backend.trading_runtime_service import historical_bar_history_before
+from src.backend.trading_runtime_service import (
+    _bounded_historical_chart_window,
+    historical_bar_history_before,
+)
 from src.market_engine.events import QuoteEvent
 from src.market_engine.historical_source import _validate_health, event_from_qmd_payload
 from src.trading_runtime.ibkr_schema import OrderRequest, OrderStatus
@@ -364,6 +367,21 @@ class HistoricalContractTests(unittest.TestCase):
         self.assertIn("100ms", ENRICHED_QMD_TIMEFRAMES)
         self.assertIn("5s", ENRICHED_QMD_TIMEFRAMES)
 
+    def test_five_minute_first_paint_bounds_raw_event_work(self) -> None:
+        session_start = datetime(2026, 8, 25, 8, 0, tzinfo=timezone.utc)
+        page_start, page_end, has_earlier = _bounded_historical_chart_window(
+            session_start=session_start,
+            session_end=datetime(2026, 8, 26, 0, 0, tzinfo=timezone.utc),
+            as_of=datetime(2026, 8, 25, 22, 35, tzinfo=timezone.utc),
+            before_bar=None,
+            timeframe="5m",
+            row_limit=5_000,
+        )
+
+        self.assertEqual(page_end, datetime(2026, 8, 25, 22, 35, tzinfo=timezone.utc))
+        self.assertEqual(page_start, datetime(2026, 8, 25, 20, 35, tzinfo=timezone.utc))
+        self.assertTrue(has_earlier)
+
     def test_python_runtime_consumes_the_rust_market_event_contract(self) -> None:
         event = event_from_qmd_payload(
             {
@@ -614,7 +632,7 @@ class HistoricalContractTests(unittest.TestCase):
         persisted_indicators.return_value = {
             "history": [{"bar_start": "2026-07-14T13:44:00+00:00", "ema_20": 314.5}],
             "source": "qmd_live_qmd_indicator_rows_v1",
-            "calculation_revision": "qmd-indicators-v20",
+            "calculation_revision": "qmd-indicators-v21",
             "complete": True,
         }
 
