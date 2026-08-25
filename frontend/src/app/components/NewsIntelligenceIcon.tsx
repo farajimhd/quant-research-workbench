@@ -29,7 +29,7 @@ export function NewsIntelligenceIcon({ count, deepFmEligible = false, failed = f
 export function NewsIconGuide() {
   return <section aria-label="News marker guide" className="news-icon-guide">
     <header><div><strong>News marker guide</strong><span>Signal streams, watchlists, and market tables</span></div><NewsIntelligenceIcon count={4} deepFmEligible reactionDirection="up" recency="hot" reviewed /></header>
-    <p className="news-guide-intro">The marker sits beside the ticker. Layers accumulate as the story moves through the funnel; select it to open today’s complete news timeline and manual AI actions.</p>
+    <p className="news-guide-intro">The marker sits beside the ticker. Layers accumulate as the story moves through the funnel; select it to open today’s timeline, lazily load recent history, and use manual AI actions.</p>
     <section className="news-guide-section"><header><strong>Recency + DeepFM</strong><span>Color is age; fill is eligibility</span></header><div className="news-guide-combinations">
       <Legend icon={<NewsIntelligenceIcon count={1} recency="hot" />} label="Hot · outline" detail="Under 15 min · not eligible" />
       <Legend icon={<NewsIntelligenceIcon count={3} deepFmEligible recency="hot" />} label="Hot · filled" detail="Under 15 min · eligible" />

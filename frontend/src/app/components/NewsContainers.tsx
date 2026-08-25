@@ -1,4 +1,4 @@
-import { Bot, Building2, Check, ChevronLeft, ChevronRight, CircleDot, Clock3, ExternalLink, FileCheck2, Flame, Globe2, History, Layers3, Lightbulb, Megaphone, Newspaper, RefreshCw, Search, Snowflake, TrendingDown, TrendingUp, X } from "lucide-react";
+import { Bot, Building2, Check, ChevronDown, ChevronLeft, ChevronRight, CircleDot, Clock3, ExternalLink, FileCheck2, Flame, Globe2, History, Layers3, Lightbulb, Megaphone, Newspaper, RefreshCw, Search, Snowflake, TrendingDown, TrendingUp, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } from "react";
 import { createPortal } from "react-dom";
 
@@ -318,12 +318,87 @@ function TickerNewsPopoverStory({ asOfMs, queryId, row }: { asOfMs: number; quer
 
 export type TickerNewsPopoverAnchor = { bottom: number; left: number; right: number; top: number };
 
+type TickerNewsFilter = "all" | "candidates" | "forecasted" | "reviewed";
+const TICKER_NEWS_HISTORY_DAYS = 3;
+const TICKER_NEWS_HISTORY_PAGE_SIZE = 25;
+
+function tickerNewsMatchesFilter(row: NewsRow, filter: TickerNewsFilter) {
+  if (filter === "candidates") return isDeepFmFunnel(row.ai_state?.funnel) && row.ai_state?.funnel?.forecast_eligibility === "eligible";
+  if (filter === "reviewed") return row.ai_state?.review?.status === "complete";
+  if (filter === "forecasted") return Boolean(row.ai_state?.hypotheses?.length);
+  return true;
+}
+
+function tickerNewsFilterLabel(filter: TickerNewsFilter) {
+  if (filter === "candidates") return "DeepFM-eligible news";
+  if (filter === "reviewed") return "AI-reviewed news";
+  if (filter === "forecasted") return "reaction forecasts";
+  return "news";
+}
+
+function shiftIsoDate(value: string, days: number) {
+  const date = new Date(`${value}T12:00:00Z`);
+  date.setUTCDate(date.getUTCDate() + days);
+  return date.toISOString().slice(0, 10);
+}
+
+function useOlderTickerNews(asOf: string, sessionDate: string, ticker: string) {
+  const [rows, setRows] = useState<NewsRow[]>([]);
+  const [payload, setPayload] = useState<NewsPayload | null>(null);
+  const [started, setStarted] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  useEffect(() => {
+    setRows([]);
+    setPayload(null);
+    setStarted(false);
+    setLoading(false);
+    setError("");
+  }, [sessionDate, ticker]);
+  const loadMore = useCallback(async () => {
+    if (loading || (started && !payload?.has_more)) return;
+    setLoading(true);
+    setError("");
+    const before = payload?.next_before || "";
+    const beforeId = payload?.next_before_id || "";
+    const pageAsOf = payload?.as_of || asOf;
+    try {
+      const next = await api<NewsPayload>(`/api/trading/news${query({
+        as_of: pageAsOf,
+        before: before || undefined,
+        before_id: beforeId || undefined,
+        content: "all",
+        end_date: shiftIsoDate(sessionDate, -1),
+        kind: undefined,
+        limit: TICKER_NEWS_HISTORY_PAGE_SIZE,
+        lookback_hours: 24 * TICKER_NEWS_HISTORY_DAYS,
+        query_id: before ? payload?.query_id : undefined,
+        start_date: shiftIsoDate(sessionDate, -TICKER_NEWS_HISTORY_DAYS),
+        ticker,
+      })}`, { timeoutMs: 30000 });
+      setRows((current) => {
+        const byId = new Map(current.map((row) => [row.canonical_news_id, row]));
+        next.rows.forEach((row) => byId.set(row.canonical_news_id, row));
+        return [...byId.values()].sort(compareNewsRecency);
+      });
+      setPayload(next);
+      setStarted(true);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setLoading(false);
+    }
+  }, [asOf, loading, payload, sessionDate, started, ticker]);
+  return { error, hasMore: !started || Boolean(payload?.has_more), loadMore, loading, queryId: payload?.query_id || "", rows, started };
+}
+
 export function TickerNewsPopover({ anchor, onClose, ticker }: { anchor: TickerNewsPopoverAnchor; onClose: () => void; ticker: string }) {
   const now = useWallClock();
   const asOf = new Date(now).toISOString();
   const sessionDate = marketDate(asOf);
   const state = useNewsQuery({ asOf, content: "all", direction: "", eligibilityFilters: EMPTY_ELIGIBILITY_QUERY, endDate: sessionDate, hours: 24, kind: "all", labelState: "", limit: 250, live: true, origin: "", refreshKey: 0, role: "", search: "", startDate: sessionDate, ticker });
-  const [filter, setFilter] = useState<"all" | "candidates" | "forecasted" | "reviewed">("all");
+  const older = useOlderTickerNews(asOf, sessionDate, ticker);
+  const [filter, setFilter] = useState<TickerNewsFilter>("all");
   const presentations = useTickerPresentations([ticker]);
   const popoverRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -332,30 +407,35 @@ export function TickerNewsPopover({ anchor, onClose, ticker }: { anchor: TickerN
     window.addEventListener("mousedown", dismiss); window.addEventListener("keydown", escape);
     return () => { window.removeEventListener("mousedown", dismiss); window.removeEventListener("keydown", escape); };
   }, [onClose]);
-  const orderedRows = [...state.rows].sort(compareNewsRecency);
+  const orderedRows = useMemo(() => {
+    const byId = new Map<string, NewsRow>();
+    [...state.rows, ...older.rows].forEach((row) => byId.set(row.canonical_news_id, row));
+    return [...byId.values()].sort(compareNewsRecency);
+  }, [older.rows, state.rows]);
+  const olderIds = useMemo(() => new Set(older.rows.map((row) => row.canonical_news_id)), [older.rows]);
   const filterCounts = {
     all: orderedRows.length,
     candidates: orderedRows.filter((row) => isDeepFmFunnel(row.ai_state?.funnel) && row.ai_state?.funnel?.forecast_eligibility === "eligible").length,
     reviewed: orderedRows.filter((row) => row.ai_state?.review?.status === "complete").length,
     forecasted: orderedRows.filter((row) => Boolean(row.ai_state?.hypotheses?.length)).length,
   };
-  const rows = orderedRows.filter((row) => {
-    if (filter === "candidates") return isDeepFmFunnel(row.ai_state?.funnel) && row.ai_state?.funnel?.forecast_eligibility === "eligible";
-    if (filter === "reviewed") return row.ai_state?.review?.status === "complete";
-    if (filter === "forecasted") return Boolean(row.ai_state?.hypotheses?.length);
-    return true;
-  });
+  const rows = orderedRows.filter((row) => tickerNewsMatchesFilter(row, filter));
   const width = Math.min(700, window.innerWidth - 24);
   const left = Math.max(12, Math.min(anchor.left, window.innerWidth - width - 12));
   const top = anchor.bottom + 8 + 620 <= window.innerHeight ? anchor.bottom + 8 : Math.max(12, anchor.top - 628);
   return createPortal(<div aria-label={`${ticker} news timeline`} className="ticker-news-popover" ref={popoverRef} role="dialog" style={{ left, top, width }}>
     <header>
-      <div className="ticker-news-popover-heading"><TickerIdentity className="ticker-news-popover-identity" logoUrl={presentations[ticker]?.logo_url} showLogoPlaceholder ticker={ticker} /><span><strong>Today’s news</strong><small>New York session · through <MarketTime value={asOf} /></small></span></div>
+      <div className="ticker-news-popover-heading"><TickerIdentity className="ticker-news-popover-identity" logoUrl={presentations[ticker]?.logo_url} showLogoPlaceholder ticker={ticker} /><span><strong>News timeline</strong><small>{older.started ? `Today + previous ${TICKER_NEWS_HISTORY_DAYS} days` : "Today · New York time"} · through <MarketTime value={asOf} /></small></span></div>
       <div className="ticker-news-popover-header-actions"><span className="ticker-news-popover-live"><CircleDot size={10} />Live</span><button aria-label="Close ticker news" onClick={onClose} type="button"><X size={15} /></button></div>
     </header>
     <nav aria-label="News timeline filters">{(["all", "candidates", "reviewed", "forecasted"] as const).map((value) => <button aria-pressed={filter === value} key={value} onClick={() => setFilter(value)} type="button"><span>{value === "all" ? "All news" : value === "candidates" ? "DeepFM eligible" : value === "reviewed" ? "AI reviewed" : "Reaction forecast"}</span><b>{filterCounts[value]}</b></button>)}</nav>
-    <NewsStatus compact state={state} />
-    <div className="ticker-news-popover-feed">{rows.map((row) => <TickerNewsPopoverStory asOfMs={now} key={row.canonical_news_id} queryId={state.queryId} row={row} />)}{!state.loading && !rows.length ? <NewsEmpty label="No news matches this view." /> : null}</div>
+    {state.loading ? <NewsStatus compact state={state} /> : <div className="news-status" data-compact="true"><span>{orderedRows.length} {orderedRows.length === 1 ? "story" : "stories"} loaded{older.started ? ` · today + previous ${TICKER_NEWS_HISTORY_DAYS} days` : " · today"}</span><span className="news-source-label">{state.liveConnected ? "Live updates" : "Reconnecting…"}</span></div>}
+    <div className="ticker-news-popover-feed">
+      {rows.map((row) => <TickerNewsPopoverStory asOfMs={now} key={row.canonical_news_id} queryId={olderIds.has(row.canonical_news_id) ? older.queryId : state.queryId} row={row} />)}
+      {!state.loading && !rows.length ? <NewsEmpty label={older.started ? `No ${tickerNewsFilterLabel(filter)} found in the loaded history.` : `No ${tickerNewsFilterLabel(filter)} today.`} /> : null}
+      {older.error ? <div className="ticker-news-popover-more-error" role="status">{older.error}</div> : null}
+      {older.hasMore ? <button className="ticker-news-popover-more" disabled={older.loading} onClick={older.loadMore} type="button">{older.loading ? <><span className="loading-spinner" aria-hidden="true" /><span>Loading earlier {tickerNewsFilterLabel(filter)}…</span></> : <><ChevronDown size={14} /><span><strong>See more {tickerNewsFilterLabel(filter)}</strong><small>Load earlier stories from the previous {TICKER_NEWS_HISTORY_DAYS} days</small></span></>}</button> : older.started ? <div className="ticker-news-popover-history-end">End of the previous {TICKER_NEWS_HISTORY_DAYS}-day history</div> : null}
+    </div>
   </div>, document.body);
 }
 
