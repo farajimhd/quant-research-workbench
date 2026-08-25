@@ -528,15 +528,16 @@ function useNewsQuery({ asOf, content, direction, eligibilityFilters, endDate, h
   const [liveConnected, setLiveConnected] = useState(false);
   const [liveError, setLiveError] = useState("");
   const latestRevision = useRef<number | null>(null);
+  const pointInTimeAsOf = live ? "" : asOf;
   const load = useCallback(async (before = "", beforeId = "", signal?: AbortSignal, pageAsOf = "") => {
-    const queryAsOf = pageAsOf || (live ? new Date().toISOString() : asOf);
+    const queryAsOf = pageAsOf || (live ? new Date().toISOString() : pointInTimeAsOf);
     const next = await api<NewsPayload>(`/api/trading/news${query({ analyst_eligible: eligibilityFilters.analyst || undefined, as_of: queryAsOf, before: before || undefined, before_id: beforeId || undefined, content, direction: direction || undefined, end_date: endDate || undefined, forecast_eligible: eligibilityFilters.forecast || undefined, history_eligible: eligibilityFilters.history || undefined, kind: kind === "all" ? undefined : kind, label_state: labelState || undefined, limit, lookback_hours: hours, origin: origin || undefined, query_id: before ? queryIdRef.current : undefined, reaction_eligible: eligibilityFilters.reaction || undefined, role: role || undefined, search: search || undefined, start_date: startDate || undefined, ticker: ticker || undefined })}`, { signal, timeoutMs: 30000 });
     if (signal?.aborted) return;
     queryIdRef.current = next.query_id;
     setError("");
     if (next.ticker_options) setTickerOptions(next.ticker_options);
     setPayload(next); setRows(next.rows);
-  }, [asOf, content, direction, eligibilityFilters.analyst, eligibilityFilters.forecast, eligibilityFilters.history, eligibilityFilters.reaction, endDate, hours, kind, labelState, limit, live, origin, role, search, startDate, ticker]);
+  }, [content, direction, eligibilityFilters.analyst, eligibilityFilters.forecast, eligibilityFilters.history, eligibilityFilters.reaction, endDate, hours, kind, labelState, limit, live, origin, pointInTimeAsOf, role, search, startDate, ticker]);
   useEffect(() => { const controller = new AbortController(); pageStartsRef.current = [{ before: "", beforeId: "" }]; setPageIndex(0); setTickerOptions([]); setLoading(true); setError(""); load("", "", controller.signal).catch((reason) => { if (!controller.signal.aborted) setError(reason instanceof Error ? reason.message : String(reason)); }).finally(() => { if (!controller.signal.aborted) setLoading(false); }); return () => controller.abort(); }, [load, refreshKey]);
   useEffect(() => {
     if (!live) { setLiveConnected(false); latestRevision.current = null; return; }
