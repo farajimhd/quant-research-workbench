@@ -775,6 +775,12 @@ impl BarIndicatorCalculator {
         self.state.apply_bar(bar)
     }
 
+    pub fn apply_session_vwap_only(&mut self, bar: &BarRow) -> f64 {
+        self.state
+            .session_vwap
+            .update(bar.bar_start, bar.volume, bar.vwap)
+    }
+
     /// Seed only the additive, session-anchored VWAP state before processing a
     /// bounded page of bars. Other indicators intentionally remain page-local.
     pub fn seed_session_vwap(
@@ -1426,6 +1432,10 @@ impl IndicatorStore {
             transient.set_market_structure_references(references);
             transient.apply_bar(&bar)
         };
+        if is_base && !valid_price {
+            row.vwap = state.apply_session_vwap_only(&bar);
+            row.price_vs_vwap_pct = pct_change(row.close, row.vwap);
+        }
         if is_base {
             if let Some(window) = self.microstructure.get(&ticker) {
                 let interval = window.interval_at(bar.bar_end, &self.trade_rules);
@@ -1513,6 +1523,7 @@ pub struct MicrostructureSampleAggregate {
     composite_confidence_sum: f64,
     composite_weighted_score_sum: f64,
     composite_sample_count: u64,
+    last_session_vwap: Option<f64>,
 }
 
 impl MicrostructureSampleAggregate {
@@ -1523,6 +1534,9 @@ impl MicrostructureSampleAggregate {
         self.composite_weighted_score_sum +=
             row.flow_structure_composite_score.clamp(-1.0, 1.0) * confidence;
         self.composite_sample_count += 1;
+        if row.vwap.is_finite() && row.vwap > 0.0 {
+            self.last_session_vwap = Some(row.vwap);
+        }
     }
 
     pub fn push_interval(&mut self, interval: &MicrostructureIntervalFeatures) {
@@ -1540,6 +1554,10 @@ impl MicrostructureSampleAggregate {
         };
         interval.refresh(coverage);
         target.apply_microstructure_interval(&interval);
+        if let Some(session_vwap) = self.last_session_vwap {
+            target.vwap = session_vwap;
+            target.price_vs_vwap_pct = pct_change(target.close, session_vwap);
+        }
         self.apply_composite_summary(target);
     }
 
@@ -3476,6 +3494,46 @@ mod tests {
         assert!(second_row.ema_20 > first_row.ema_20);
         assert!(second_row.ema_20 < 11.0);
         assert_eq!(store.snapshot("AAPL", "10s", 10).await.history.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn higher_timeframes_project_canonical_base_vwap_including_volume_only_buckets() {
+        let store = SharedIndicatorStore::new(
+            100,
+            HashMap::new(),
+            300,
+            1,
+            TradeAggregationRules::new([(0, TradeUpdateRule::regular())]).unwrap(),
+            HashMap::new(),
+        );
+        let mut first = base_bar();
+        first.sym = "AAPL".to_string();
+        first.timeframe = "100ms".to_string();
+        first.volume = 100.0;
+        first.vwap = 10.0;
+        store.apply_reconciliation_bar(first.clone()).await;
+
+        let mut volume_only = first.clone();
+        volume_only.bar_start = first.bar_end;
+        volume_only.bar_end = first.bar_end + chrono::Duration::milliseconds(100);
+        volume_only.open = 0.0;
+        volume_only.high = 0.0;
+        volume_only.low = 0.0;
+        volume_only.close = 0.0;
+        volume_only.volume = 300.0;
+        volume_only.vwap = 20.0;
+        let carried = store.apply_reconciliation_bar(volume_only.clone()).await;
+        assert!((carried.vwap - 17.5).abs() < 1e-9);
+
+        let mut minute = first;
+        minute.timeframe = "1m".to_string();
+        minute.bar_end = volume_only.bar_end;
+        minute.volume = 400.0;
+        minute.vwap = 999.0;
+        let projected = store.apply_reconciliation_bar(minute).await;
+
+        assert!((projected.vwap - 17.5).abs() < 1e-9);
+        assert!((projected.price_vs_vwap_pct - (projected.close / 17.5 - 1.0) * 100.0).abs() < 1e-9);
     }
 
     #[tokio::test]

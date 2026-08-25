@@ -26,8 +26,8 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::sync::{broadcast, mpsc, Mutex, Notify, Semaphore};
 
-pub const HISTORICAL_ENGINE_VERSION: &str = "qmd-derived-v30";
-pub const HISTORICAL_CALCULATION_REVISION: &str = "qmd-derived-v30";
+pub const HISTORICAL_ENGINE_VERSION: &str = "qmd-derived-v31";
+pub const HISTORICAL_CALCULATION_REVISION: &str = "qmd-derived-v31";
 pub const HISTORICAL_CORPORATE_ACTION_REVISION: &str = "raw-unadjusted-v1";
 const MAX_ENCOUNTERED_STRUCTURE_LEVELS: usize = 4_000;
 
@@ -882,8 +882,15 @@ impl HistoricalDerivedCache {
                                 carried.bar_end = bar.bar_end;
                                 carried.volume = 0.0;
                                 carried.qmd_structure_events.clear();
+                                carried.vwap = calculator.apply_session_vwap_only(&bar);
+                                carried.price_vs_vwap_pct = if carried.vwap > 0.0 {
+                                    (carried.close / carried.vwap - 1.0) * 100.0
+                                } else {
+                                    0.0
+                                };
                                 carried
                             } else {
+                                calculator.apply_session_vwap_only(&bar);
                                 continue;
                             };
                             calculator.apply_microstructure_interval(&mut indicator, &interval);
