@@ -2,6 +2,21 @@
 
 ## 2026
 
+### [2026-08-25 12:25 PDT - Harden QMD Live, BarGPT, and managed service operations](docs/codex/chat-summaries/2026/CHAT-20260825-1225-service-qmd-bargpt-runtime-hardening.md)
+
+- Chat/task ID: `01a03a62-807a-7c23-96c7-a16aba5b4d93`
+- Related tasks: `TASK-0025`, `TASK-0197`, `TASK-0201`, `TASK-0203`
+- Summary written: 2026-08-25 14:05 PDT
+
+Traced QMD's 128 GiB memory incident to unbounded whole-universe computation
+leases, retained indicator state, and premature repair amplification; bounded
+all three without delaying canonical events or app streams. Rebuilt BarGPT
+admission, immutable model selection, revision-bound warm snapshots, health,
+and graceful cancellation, then hardened semantic readiness, run evidence,
+drift reporting, and Windows transient-error handling across managed services.
+Live validation restored QMD to about 1.52 GiB with zero drops and kept BarGPT
+responsive while warming both approved releases.
+
 ### [2026-08-23 19:52 PDT - Deploy live News Intelligence, unify services, and harden QMD](docs/codex/chat-summaries/2026/CHAT-20260823-1952-live-news-intelligence-service-lifecycle-qmd-hardening.md)
 
 - Chat/task ID: `01a031af-1e60-7b32-a631-89274affb2fa`
