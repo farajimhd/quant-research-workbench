@@ -1,11 +1,11 @@
 import type { ReactNode } from "react";
-import { Activity, BadgeCheck, BriefcaseBusiness, Bug, Check, ChevronLeft, ChevronRight, Database, FlaskConical, GitBranch, History, Microscope, Network, PanelsTopLeft, Palette, ScanSearch, Send, ServerCog, ShieldCheck, Type, UsersRound, Wifi } from "lucide-react";
+import { Activity, BadgeCheck, BriefcaseBusiness, Bug, Check, ChevronLeft, ChevronRight, Database, Flame, FlaskConical, GitBranch, History, Microscope, Network, PanelsTopLeft, Palette, ScanSearch, Send, ServerCog, ShieldCheck, Type, UsersRound, Wifi } from "lucide-react";
 import { useEffect, useState } from "react";
 
 import { buildMenuItemButtonClassName, buildThemeMenuItemButtonClassName } from "../selectionStyles";
 import { configurationToneForPage, NAVIGATION_GROUPS, type NavigationIcon, type PageKey } from "../routes";
 import { APP_THEMES, DEFAULT_THEME_ID, applyThemeDefinition, isAppThemeId, type AppThemeDefinition, type AppThemeId } from "../theme";
-import { NewsIconLegend } from "./NewsIntelligenceIcon";
+import { NewsIconGuide } from "./NewsIntelligenceIcon";
 
 export type UiScale = 0.8 | 0.9 | 1 | 1.1 | 1.25;
 
@@ -54,6 +54,7 @@ export function Layout({
 }: LayoutProps) {
   const [collapsed, setCollapsed] = useState(false);
   const [themeMenuOpen, setThemeMenuOpen] = useState(false);
+  const [newsGuideOpen, setNewsGuideOpen] = useState(false);
   const [themeId, setThemeId] = useState<AppThemeId>(() => {
     const stored = window.localStorage.getItem(THEME_STORAGE_KEY);
     return stored && isAppThemeId(stored) ? stored : DEFAULT_THEME_ID;
@@ -116,7 +117,7 @@ export function Layout({
               className="icon-button"
               type="button"
               aria-label="Change appearance"
-              onClick={() => setThemeMenuOpen((value) => !value)}
+              onClick={() => { setNewsGuideOpen(false); setThemeMenuOpen((value) => !value); }}
             >
               <Palette size={18} />
             </button>
@@ -139,14 +140,15 @@ export function Layout({
                     ))}
                   </div>
                 </div>
-                <div className="theme-menu-divider" />
-                <NewsIconLegend />
-                <div className="theme-menu-divider" />
                 <ThemeMenuGroup activeThemeId={themeId} label="Light themes" themes={lightThemes} onSelect={selectTheme} />
                 <div className="theme-menu-divider" />
                 <ThemeMenuGroup activeThemeId={themeId} label="Dark themes" themes={darkThemes} onSelect={selectTheme} />
               </div>
             ) : null}
+          </div>
+          <div className="news-guide-picker">
+            <button aria-controls="news-marker-guide" aria-expanded={newsGuideOpen} aria-haspopup="dialog" aria-label="Explain news markers" className="icon-button news-guide-button" onClick={() => { setThemeMenuOpen(false); setNewsGuideOpen((value) => !value); }} title="News marker guide" type="button"><Flame size={18} /></button>
+            {newsGuideOpen ? <div aria-label="News marker guide" className="news-guide-menu" id="news-marker-guide" role="dialog"><NewsIconGuide /></div> : null}
           </div>
           <div className="account-pill">Local</div>
         </div>

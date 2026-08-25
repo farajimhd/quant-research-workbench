@@ -280,11 +280,11 @@ function TickerNewsSection({ asOfMs, emptyLabel, label, live, queryId, rows, sho
   </section>;
 }
 
-function TickerNewsStory({ asOfMs, live, queryId, row, showTeaser }: { asOfMs: number; live: boolean; queryId: string; row: NewsRow; showTeaser: boolean }) {
+function TickerNewsStory({ asOfMs, compact = false, live, queryId, row, showTeaser }: { asOfMs: number; compact?: boolean; live: boolean; queryId: string; row: NewsRow; showTeaser: boolean }) {
   const tone = newsTemperature(row.published_at_utc, asOfMs);
   const TemperatureIcon = newsTemperaturePresentation(tone).Icon;
   const direction = normalizeSemanticDirection(row.news_synthesis_summary?.composite_sentiment);
-  return <article className="ticker-news-story" data-direction={direction} data-tone={tone}>
+  return <article className={compact ? "ticker-news-story compact" : "ticker-news-story"} data-direction={direction} data-tone={tone}>
     <div className="ticker-event-time"><span aria-label={`${tone} news`} className="ticker-news-temperature" data-tone={tone} title={`${tone} news`}><TemperatureIcon size={12} />{tone}</span><MarketTime dateStyle="short" includeDate value={row.published_at_utc} /></div>
     <div className="ticker-event-content"><div className="ticker-news-meta"><NewsKind classification={classificationFromRow(row)} /><SynthesisDirection summary={row.news_synthesis_summary} salient /><SynthesisConcepts concepts={row.news_synthesis_summary?.concepts} compact /></div><button className="ticker-news-open" onClick={() => openNewsPage(row, queryId, live)} type="button"><strong>{row.title}</strong>{showTeaser && newsTeaser(row) ? <p>{newsTeaser(row)}</p> : null}</button><NewsTimelineIntelligence row={row} /></div>
   </article>;
@@ -315,10 +315,10 @@ export function TickerNewsPopover({ anchor, onClose, ticker }: { anchor: TickerN
   const left = Math.max(12, Math.min(anchor.left, window.innerWidth - width - 12));
   const top = anchor.bottom + 8 + 540 <= window.innerHeight ? anchor.bottom + 8 : Math.max(12, anchor.top - 548);
   return createPortal(<div aria-label={`${ticker} news timeline`} className="ticker-news-popover" ref={popoverRef} role="dialog" style={{ left, top, width }}>
-    <header><div><strong>{ticker} news</strong><span>{state.rows.length} today · through <MarketTime value={asOf} /></span></div><button aria-label="Close ticker news" onClick={onClose} type="button"><X size={15} /></button></header>
+    <header><div><span className="ticker-news-popover-kicker">Today · New York time</span><strong>{ticker} news timeline</strong><span>{state.rows.length} stories through <MarketTime value={asOf} /></span></div><button aria-label="Close ticker news" onClick={onClose} type="button"><X size={15} /></button></header>
     <nav aria-label="News timeline filters">{(["all", "candidates", "reviewed", "forecasted"] as const).map((value) => <button aria-pressed={filter === value} key={value} onClick={() => setFilter(value)} type="button">{value === "all" ? "All" : value === "candidates" ? "Candidates" : value === "reviewed" ? "Reviewed" : "Forecasted"}</button>)}</nav>
     <NewsStatus compact state={state} />
-    <div className="ticker-news-popover-feed">{rows.map((row) => <TickerNewsStory asOfMs={now} key={row.canonical_news_id} live queryId={state.queryId} row={row} showTeaser />)}{!state.loading && !rows.length ? <NewsEmpty label="No news matches this view." /> : null}</div>
+    <div className="ticker-news-popover-feed">{rows.map((row) => <TickerNewsStory asOfMs={now} compact key={row.canonical_news_id} live queryId={state.queryId} row={row} showTeaser />)}{!state.loading && !rows.length ? <NewsEmpty label="No news matches this view." /> : null}</div>
   </div>, document.body);
 }
 

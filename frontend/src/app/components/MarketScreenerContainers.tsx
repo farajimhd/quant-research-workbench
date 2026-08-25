@@ -109,7 +109,8 @@ type MarketListViewState = {
 
 const MARKET_LIST_VIEW_STATE = new Map<string, MarketListViewState>();
 const OPEN_TICKER_NEWS_EVENT = "quant-open-ticker-news";
-const NEWS_INTELLIGENCE_COLUMNS = ["news_intelligence"];
+const NEWS_INTELLIGENCE_COLUMNS: string[] = [];
+const LEGACY_NEWS_INTELLIGENCE_COLUMNS = ["news_intelligence", "news_synthesis", "news_ai_review", "news_ai_reaction"];
 const MARKET_MONITOR_COLUMN_PRIORITY = [
   "symbol",
   "company_name",
@@ -1059,7 +1060,7 @@ function renderMarketCell(row: ScreenerRow, column: string, presentations: Retur
   const ticker = String(row.ticker ?? row.symbol ?? "").trim().toUpperCase();
   if (column === "ticker" || column === "symbol") {
     const companyName = companyInIdentity ? String(row.company_name ?? presentations[ticker]?.issuer_name ?? "").trim() : "";
-    return <SecurityIdentityCell companyName={companyName} country={String(row.country ?? presentations[ticker]?.country ?? "")} halted={row.market_is_halted ?? row.is_halted ?? row.trading_status ?? presentations[ticker]?.market_is_halted ?? presentations[ticker]?.trading_status} logoUrl={String(row.logo_url ?? presentations[ticker]?.logo_url ?? "")} newsRecency={preferRecentRecency(row.live_news_recency, presentations[ticker]?.live_news_recency)} secRecency={preferRecentRecency(row.sec_recency, presentations[ticker]?.sec_recency)} ticker={ticker} />;
+    return <SecurityIdentityCell companyName={companyName} country={String(row.country ?? presentations[ticker]?.country ?? "")} halted={row.market_is_halted ?? row.is_halted ?? row.trading_status ?? presentations[ticker]?.market_is_halted ?? presentations[ticker]?.trading_status} logoUrl={String(row.logo_url ?? presentations[ticker]?.logo_url ?? "")} secRecency={preferRecentRecency(row.sec_recency, presentations[ticker]?.sec_recency)} ticker={ticker} trailing={hasNewsMarker(row) ? <NewsMarketCell compact row={row} ticker={ticker} /> : null} />;
   }
   if (column === "event_time") return value ? <MarketTime includeSeconds value={String(value)} /> : "—";
   if (column === "news_intelligence") return <NewsMarketCell row={row} ticker={ticker} />;
@@ -1085,10 +1086,9 @@ function renderMarketCell(row: ScreenerRow, column: string, presentations: Retur
   return <PresentedValue column={column} presentation={{ presentationValueType: definition.presentationValueType }} value={value} />;
 }
 
-function NewsMarketCell({ row, ticker }: { row: ScreenerRow; ticker: string }) {
-  const countSource = row.today_news_count === null || row.today_news_count === undefined ? row.live_news_count : row.today_news_count;
-  const count = Math.max(0, Math.round(numberValue(countSource)));
-  if (!count) return <span className="market-list-unavailable">—</span>;
+function NewsMarketCell({ compact = false, row, ticker }: { compact?: boolean; row: ScreenerRow; ticker: string }) {
+  const count = Math.max(0, Math.round(numberValue(row.today_news_count)), Math.round(numberValue(row.live_news_count)));
+  if (!count) return null;
   const expected = row.news_ai_reaction === null || row.news_ai_reaction === undefined ? null : numberValue(row.news_ai_reaction);
   const reactionDirection: NewsReactionDirection | undefined = expected === null ? undefined : expected > 0 ? "up" : expected < 0 ? "down" : "flat";
   const confidence = newsIntelligenceConfidence(row);
@@ -1097,8 +1097,14 @@ function NewsMarketCell({ row, ticker }: { row: ScreenerRow; ticker: string }) {
   const failed = [row.news_ai_review_state, row.news_ai_reaction_state].some((value) => String(value ?? "").toLowerCase() === "failed");
   const recency = newsIconRecency(row.latest_news_published_at ?? row.latest_news_at);
   const eligible = String(row.news_deepfm_eligibility ?? "").toLowerCase() === "eligible";
+  const details = [
+    `${count} linked ${count === 1 ? "story" : "stories"}`,
+    eligible ? `DeepFM eligible ${Math.round(numberValue(row.news_deepfm_probability))}%` : "DeepFM not eligible or pending",
+    reviewed ? `AI ${shortMarketNewsValue(row.news_ai_sentiment, "reviewed")} ${Math.round(numberValue(row.news_ai_review))}% relevance` : "AI not reviewed",
+    expected === null ? "Reaction not forecasted" : `5m ${expected > 0 ? "+" : ""}${expected.toFixed(2)}% · ${Math.round(numberValue(row.news_ai_reaction_confidence))}% confidence`,
+  ].join(" · ");
   return <>
-    <button aria-label={`Open ${ticker} news timeline`} className="market-news-summary" onClick={(event) => { event.stopPropagation(); const rect = event.currentTarget.getBoundingClientRect(); event.currentTarget.dispatchEvent(new CustomEvent(OPEN_TICKER_NEWS_EVENT, { bubbles: true, detail: { anchor: { bottom: rect.bottom, left: rect.left, right: rect.right, top: rect.top }, ticker } })); }} title={`${count} linked ${ticker} ${count === 1 ? "story" : "stories"} · ${Math.round(confidence)}% strongest confidence`} type="button">
+    <button aria-label={`Open ${ticker} news timeline`} className="market-news-summary" data-compact={compact ? "true" : "false"} onClick={(event) => { event.stopPropagation(); const rect = event.currentTarget.getBoundingClientRect(); event.currentTarget.dispatchEvent(new CustomEvent(OPEN_TICKER_NEWS_EVENT, { bubbles: true, detail: { anchor: { bottom: rect.bottom, left: rect.left, right: rect.right, top: rect.top }, ticker } })); }} title={`${ticker} · ${details} · ${Math.round(confidence)}% strongest confidence`} type="button">
       <NewsIntelligenceIcon count={count} deepFmEligible={eligible} failed={failed} pending={pending} reactionDirection={reactionDirection} recency={recency} reviewed={reviewed} />
       <span>{reviewed ? <b data-tone={String(row.news_ai_sentiment ?? "neutral")}>AI {shortMarketNewsValue(row.news_ai_sentiment, "Reviewed")} {Math.round(numberValue(row.news_ai_review))}</b> : <b>{eligible ? `DeepFM ${Math.round(numberValue(row.news_deepfm_probability))}` : "News"}</b>}{expected !== null ? <small data-tone={reactionDirection}>{`5m ${expected > 0 ? "+" : ""}${expected.toFixed(2)}% · ${Math.round(numberValue(row.news_ai_reaction_confidence))}`}</small> : null}</span>
     </button>
@@ -1109,6 +1115,8 @@ function newsIntelligenceConfidence(row: ScreenerRow) {
   const values = [row.news_ai_reaction_confidence, row.news_ai_review, row.news_deepfm_probability].filter((value) => value !== null && value !== undefined && value !== "").map(numberValue);
   return values.length ? Math.max(...values) : 0;
 }
+
+function hasNewsMarker(row: ScreenerRow) { return Math.max(numberValue(row.today_news_count), numberValue(row.live_news_count)) > 0; }
 
 function newsIconRecency(value: unknown): NewsIconRecency {
   const ageMinutes = (Date.now() - Date.parse(String(value ?? ""))) / 60_000;
@@ -1159,7 +1167,7 @@ function catalogField(key: string, customColumns: ScannerCustomColumn[] = [], ca
   return custom ? customField(custom) : field(key, label(key), "Other", "raw", "text", "Available source field.");
 }
 function canonicalDiscoveryColumns(columns: string[]) {
-  return [...new Set(columns.map((column) => column === "ticker" ? "symbol" : column === "last" ? "last_price" : ["news_synthesis", "news_ai_review", "news_ai_reaction"].includes(column) ? "news_intelligence" : column))];
+  return [...new Set(columns.map((column) => column === "ticker" ? "symbol" : column === "last" ? "last_price" : column).filter((column) => !LEGACY_NEWS_INTELLIGENCE_COLUMNS.includes(column)))];
 }
 function marketMonitorColumns(columns: string[], chronological = false) {
   const canonical = canonicalDiscoveryColumns([...columns, ...NEWS_INTELLIGENCE_COLUMNS]);
