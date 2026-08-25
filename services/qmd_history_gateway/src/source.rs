@@ -15,11 +15,17 @@ use qmd_core::indicators::{
 use qmd_core::market_products::parse_resolution_us;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::str::FromStr;
 use std::sync::Arc;
-use std::time::Duration;
-use tokio::sync::{mpsc, OnceCell};
+use std::time::{Duration, Instant};
+use tokio::sync::{mpsc, Mutex, OnceCell};
+
+const LATEST_COVERAGE_CACHE_TTL: Duration = Duration::from_secs(30);
+const LATEST_COVERAGE_CACHE_MAX_ENTRIES: usize = 64;
+const LATEST_COVERAGE_QUERY_MAX_MEMORY_BYTES: u64 = 512 * 1024 * 1024;
+const LATEST_COVERAGE_QUERY_MAX_THREADS: u8 = 2;
+const LATEST_COVERAGE_QUERY_MAX_SECONDS: u8 = 15;
 
 #[derive(Clone, Debug)]
 pub struct EventWindow {
@@ -193,8 +199,16 @@ pub struct HistoricalEventSource {
     client: Client,
     config: HistoricalGatewayConfig,
     decoder: CompactEventDecoder,
+    latest_coverage_cache: Arc<Mutex<HashMap<Option<NaiveDate>, CachedLatestEventCoverage>>>,
+    latest_coverage_query_gate: Arc<Mutex<()>>,
     structure_table_available: Arc<OnceCell<bool>>,
     trade_rules: TradeAggregationRules,
+}
+
+#[derive(Clone, Debug)]
+struct CachedLatestEventCoverage {
+    expires_at: Instant,
+    value: LatestEventCoverage,
 }
 
 #[derive(Debug, Deserialize)]
@@ -314,6 +328,8 @@ impl HistoricalEventSource {
             client: Client::new(),
             config,
             decoder: references.decoder(),
+            latest_coverage_cache: Arc::new(Mutex::new(HashMap::new())),
+            latest_coverage_query_gate: Arc::new(Mutex::new(())),
             structure_table_available: Arc::new(OnceCell::new()),
             trade_rules: references.trade_aggregation_rules()?,
         };
@@ -1606,49 +1622,89 @@ impl HistoricalEventSource {
         &self,
         before: Option<chrono::NaiveDate>,
     ) -> Result<LatestEventCoverage, String> {
+        if let Some(cached) = self.cached_latest_coverage(before).await {
+            return Ok(cached);
+        }
+
+        // Every source-plan and status request needs this watermark. Serialize
+        // cold lookups so a slow or unhealthy ClickHouse cannot turn client
+        // retries into many copies of the same server-side aggregation.
+        let _query_guard = self.latest_coverage_query_gate.lock().await;
+        if let Some(cached) = self.cached_latest_coverage(before).await {
+            return Ok(cached);
+        }
+
         let coverage_table = format!(
             "{}.events_ordinal_continuity",
             self.config.clickhouse_database
         );
-        let before_filter = before
-            .map(|value| format!(" AND source_date < toDate('{value}')"))
-            .unwrap_or_default();
-        let sql = format!(
-            r#"SELECT
-                toString(source_date) AS session_date,
-                sum(canonical_event_count) AS event_count,
-                uniqExact(ticker) AS ticker_count
-            FROM (
-                SELECT
-                    ticker,
-                    source_date,
-                    argMax(event_count, tuple(build_step, updated_at)) AS canonical_event_count
-                FROM {coverage_table}
-                GROUP BY ticker, source_date
-            )
-            WHERE canonical_event_count > 0{before_filter}
-            GROUP BY source_date
-            ORDER BY source_date DESC
-            LIMIT 1
-            FORMAT JSONEachRow"#,
-            before_filter = before_filter,
-        );
-        let text = self.query(&sql).await?;
-        let row = text
-            .lines()
-            .find(|line| !line.trim().is_empty())
-            .map(|line| {
-                serde_json::from_str::<LatestEventCoverageRow>(line).map_err(|error| {
-                    format!("invalid latest historical coverage response: {error}")
+        let target_sql = latest_coverage_target_date_sql(&coverage_table, before);
+        let target_text = self.query(&target_sql).await?;
+        let target_date = target_text
+            .trim()
+            .split_whitespace()
+            .next()
+            .filter(|value| !value.is_empty() && *value != "\\N")
+            .map(|value| {
+                NaiveDate::parse_from_str(value, "%Y-%m-%d").map_err(|error| {
+                    format!("invalid latest historical coverage date {value:?}: {error}")
                 })
             })
             .transpose()?;
-        Ok(LatestEventCoverage {
+        let row = if let Some(target_date) = target_date {
+            let summary_sql = latest_coverage_summary_sql(&coverage_table, target_date);
+            let text = self.query(&summary_sql).await?;
+            text.lines()
+                .find(|line| !line.trim().is_empty())
+                .map(|line| {
+                    serde_json::from_str::<LatestEventCoverageRow>(line).map_err(|error| {
+                        format!("invalid latest historical coverage response: {error}")
+                    })
+                })
+                .transpose()?
+        } else {
+            None
+        };
+        let value = LatestEventCoverage {
             coverage_table,
             event_count: row.as_ref().map_or(0, |value| value.event_count),
             session_date: row.as_ref().map(|value| value.session_date.clone()),
             ticker_count: row.map_or(0, |value| value.ticker_count),
-        })
+        };
+        self.store_latest_coverage(before, value.clone()).await;
+        Ok(value)
+    }
+
+    async fn cached_latest_coverage(
+        &self,
+        before: Option<NaiveDate>,
+    ) -> Option<LatestEventCoverage> {
+        let now = Instant::now();
+        let mut cache = self.latest_coverage_cache.lock().await;
+        cache.retain(|_, entry| entry.expires_at > now);
+        cache.get(&before).map(|entry| entry.value.clone())
+    }
+
+    async fn store_latest_coverage(&self, before: Option<NaiveDate>, value: LatestEventCoverage) {
+        let now = Instant::now();
+        let mut cache = self.latest_coverage_cache.lock().await;
+        cache.retain(|_, entry| entry.expires_at > now);
+        if cache.len() >= LATEST_COVERAGE_CACHE_MAX_ENTRIES && !cache.contains_key(&before) {
+            if let Some(oldest_key) = cache
+                .iter()
+                .min_by_key(|(_, entry)| entry.expires_at)
+                .map(|(key, _)| *key)
+            {
+                cache.remove(&oldest_key);
+            }
+        }
+        cache.insert(
+            before,
+            CachedLatestEventCoverage {
+                expires_at: now + LATEST_COVERAGE_CACHE_TTL,
+                value,
+            },
+        );
     }
 
     async fn query(&self, sql: &str) -> Result<String, String> {
@@ -1703,6 +1759,42 @@ impl HistoricalEventSource {
         }
         Ok(text)
     }
+}
+
+fn latest_coverage_target_date_sql(table: &str, before: Option<NaiveDate>) -> String {
+    let before_filter = before
+        .map(|value| format!(" WHERE source_date < toDate('{value}')"))
+        .unwrap_or_default();
+    format!(
+        "SELECT ifNull(toString(maxOrNull(source_date)), '') \
+         FROM {table}{before_filter} \
+         SETTINGS max_threads = {LATEST_COVERAGE_QUERY_MAX_THREADS}, \
+             max_memory_usage = {LATEST_COVERAGE_QUERY_MAX_MEMORY_BYTES}, \
+             max_execution_time = {LATEST_COVERAGE_QUERY_MAX_SECONDS} \
+         FORMAT TSV"
+    )
+}
+
+fn latest_coverage_summary_sql(table: &str, source_date: NaiveDate) -> String {
+    format!(
+        r#"SELECT
+            toString(toDate('{source_date}')) AS session_date,
+            sum(canonical_event_count) AS event_count,
+            uniqExact(ticker) AS ticker_count
+        FROM (
+            SELECT
+                ticker,
+                argMax(event_count, tuple(build_step, updated_at)) AS canonical_event_count
+            FROM {table}
+            WHERE source_date = toDate('{source_date}')
+            GROUP BY ticker
+        )
+        WHERE canonical_event_count > 0
+        SETTINGS max_threads = {LATEST_COVERAGE_QUERY_MAX_THREADS},
+            max_memory_usage = {LATEST_COVERAGE_QUERY_MAX_MEMORY_BYTES},
+            max_execution_time = {LATEST_COVERAGE_QUERY_MAX_SECONDS}
+        FORMAT JSONEachRow"#
+    )
 }
 
 fn scanner_market_snapshot_sql(
@@ -2392,15 +2484,37 @@ fn persisted_structure_events_sql(table: &str, ticker: &str, before: DateTime<Ut
 mod tests {
     use super::{
         append_scheduled_gap_segments, archive_session_end_utc, build_source_plan, event_select,
-        macro_bar_is_closed, materialize_confirmed_recent_coverage, merge_coverage_intervals,
-        normalize_ticker, parse_historical_tsv_row, persisted_structure_events_sql,
-        recent_coverage_sql, row_to_event, CoverageInterval, EventWindow, HistoricalRow,
-        MarketSourceTier, RecentCoverageRow,
+        latest_coverage_summary_sql, latest_coverage_target_date_sql, macro_bar_is_closed,
+        materialize_confirmed_recent_coverage, merge_coverage_intervals, normalize_ticker,
+        parse_historical_tsv_row, persisted_structure_events_sql, recent_coverage_sql,
+        row_to_event, CoverageInterval, EventWindow, HistoricalRow, MarketSourceTier,
+        RecentCoverageRow,
     };
     use crate::config::HistoricalGatewayConfig;
     use chrono::{TimeZone, Utc};
     use qmd_core::compact_event::{CompactEventDecoder, LIVE_COMPACT_EVENT_SCHEMA_VERSION};
     use qmd_core::event::MarketEvent;
+
+    #[test]
+    fn latest_coverage_queries_bound_memory_and_aggregate_only_the_target_session() {
+        let before = chrono::NaiveDate::from_ymd_opt(2026, 8, 21).unwrap();
+        let target = latest_coverage_target_date_sql(
+            "market_sip_compact.events_ordinal_continuity",
+            Some(before),
+        );
+        assert!(target.contains("maxOrNull(source_date)"));
+        assert!(target.contains("source_date < toDate('2026-08-21')"));
+        assert!(target.contains("max_threads = 2"));
+        assert!(target.contains("max_memory_usage = 536870912"));
+        assert!(!target.contains("GROUP BY ticker"));
+
+        let summary =
+            latest_coverage_summary_sql("market_sip_compact.events_ordinal_continuity", before);
+        assert!(summary.contains("source_date = toDate('2026-08-21')"));
+        assert!(summary.contains("GROUP BY ticker"));
+        assert!(!summary.contains("GROUP BY ticker, source_date"));
+        assert!(summary.contains("max_execution_time = 15"));
+    }
 
     #[test]
     fn historical_rows_use_the_live_compact_contract_and_decoder() {

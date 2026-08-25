@@ -145,6 +145,11 @@ Supported bar timeframes are the live QMD set: `100ms`, `1s`, `5s`, `10s`,
   reports the exact archive-plus-recent source tables selected by the source
   plan, its hash and completeness, and combined event/ticker/time bounds.
 - `GET /coverage/latest` (latest market day with canonical event coverage)
+  uses a two-stage, resource-capped continuity lookup and coalesces identical
+  cold requests behind a 30-second bounded cache. It first resolves only the
+  target source date, then aggregates canonical ticker counts for that date;
+  it never groups the complete continuity history on a status or source-plan
+  request.
 - `GET /source-plan?start=...&end=...&tickers=AAPL,MSFT` (ordered archive,
   recent, scheduled-closed, gap, and current-live continuation segments;
   clients never choose a physical database). Known weekend and 20:00-04:00
