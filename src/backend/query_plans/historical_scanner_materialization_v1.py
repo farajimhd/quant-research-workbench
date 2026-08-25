@@ -13,9 +13,8 @@ QUERY_PLAN_ID = "market.historical_scanner_materialization.v1"
 QUERY_PLAN_VERSION = 1
 SCANNER_SCHEMA_VERSION = "canvas_historical_scanner_v1"
 SCANNER_TABLE = "q_live.canvas_historical_scanner_v1"
-SCANNER_TECHNICAL_SCHEMA_VERSION = "canvas_scanner_technical_v3"
+SCANNER_TECHNICAL_SCHEMA_VERSION = "canvas_scanner_technical_v4"
 SCANNER_TECHNICAL_TABLE = "q_live.canvas_scanner_technical_v3"
-EXTENDED_SESSION_DURATION_US = 16 * 60 * 60 * 1_000_000
 NEW_YORK = ZoneInfo("America/New_York")
 
 
@@ -30,7 +29,6 @@ def technical_snapshot_materialization(
 ) -> str:
     start_us = int(window_start.timestamp() * 1_000_000)
     end_us = int(snapshot_at.timestamp() * 1_000_000)
-    elapsed_us = max(1, end_us - start_us)
     start_date = window_start.date().isoformat()
     end_date = snapshot_at.date().isoformat()
     selects = [
@@ -58,9 +56,6 @@ def technical_snapshot_materialization(
         vwap, vwap_distance_pct, vwap_trade, vwap_trade_distance_pct,
         relative_volume, range_pct, average_daily_volume
     )
-    WITH
-        {elapsed_us} AS elapsed_us,
-        {EXTENDED_SESSION_DURATION_US} AS session_us
     SELECT
         parseDateTime64BestEffort({sql_string(_clock(snapshot_at))}),
         {sql_string(calculation_window)},
@@ -79,9 +74,7 @@ def technical_snapshot_materialization(
         if(current.vwap = 0, 0, (current.last / current.vwap - 1) * 100),
         current.vwap_trade,
         if(current.vwap_trade = 0, 0, (current.last / current.vwap_trade - 1) * 100),
-        if(prior.average_daily_volume > 0,
-           current.volume / (prior.average_daily_volume * elapsed_us / session_us),
-           NULL),
+        CAST(NULL, 'Nullable(Float64)'),
         if(current.low = 0, 0, (current.high / current.low - 1) * 100),
         prior.average_daily_volume
     FROM

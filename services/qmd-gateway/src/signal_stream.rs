@@ -1324,12 +1324,7 @@ fn lookup_value<'a>(values: &'a Value, key: &str) -> Option<&'a Value> {
         .next()
         .unwrap_or(key)
         .trim_end_matches(":value");
-    object.get(stripped).or_else(|| {
-        object
-            .iter()
-            .find(|(candidate, _)| candidate.ends_with(stripped))
-            .map(|(_, value)| value)
-    })
+    object.get(stripped)
 }
 
 fn values_equal(left: Option<&Value>, right: Option<&Value>) -> bool {
@@ -2011,6 +2006,12 @@ mod tests {
             lookup_value(&row, "data.price_change_1_bar_pct@1:value"),
             Some(&json!(5.4))
         );
+    }
+
+    #[test]
+    fn field_lookup_does_not_confuse_suffix_matched_metrics() {
+        let row = json!({"volume_change_pct":27650.0});
+        assert_eq!(lookup_value(&row, "change_pct"), None);
     }
 
     #[test]

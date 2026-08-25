@@ -42,6 +42,8 @@ class HistoricalScannerQueryPlanTests(unittest.TestCase):
         self.assertIn("available_at_us <=", query)
         self.assertIn("LIMIT 20 BY sym", query)
         self.assertIn("'revision-7'", query)
+        self.assertIn("CAST(NULL, 'Nullable(Float64)')", query)
+        self.assertNotIn("elapsed_us / session_us", query)
 
     def test_core_scanner_plan_keeps_only_registered_primitives(self) -> None:
         query = scanner_snapshot_materialization(

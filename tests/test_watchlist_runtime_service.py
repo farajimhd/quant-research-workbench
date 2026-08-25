@@ -117,7 +117,7 @@ class WatchlistRuntimeServiceTests(unittest.TestCase):
         self.assertEqual(row["liquidity_rank"], 9)
         self.assertEqual(row["liquidity_score"], 9)
 
-    def test_live_reference_enrichment_materializes_aligned_relative_volume(self) -> None:
+    def test_live_reference_enrichment_does_not_invent_aligned_relative_volume(self) -> None:
         rows = enrich_core_scanner_rows(
             [
                 {
@@ -129,8 +129,44 @@ class WatchlistRuntimeServiceTests(unittest.TestCase):
             {"AAA": {"average_daily_volume": 2_000_000}},
         )
 
-        # 12:00 ET is halfway through the 04:00-20:00 extended session.
-        self.assertEqual(rows[0]["relative_volume"], 1.0)
+        self.assertIsNone(rows[0]["relative_volume"])
+        self.assertEqual(
+            rows[0]["relative_volume__null_reason"],
+            "aligned_20_session_baseline_unavailable",
+        )
+
+    def test_signal_enrichment_repairs_corrupted_session_change_from_event_price(self) -> None:
+        payload = enrich_signal_stream_snapshot(
+            {
+                "session": {"start_at": "2026-08-25T08:00:00Z"},
+                "occurrences": [
+                    {
+                        "ticker": "FVN",
+                        "event_time": "2026-08-25T17:32:13Z",
+                        "last_price": 10.675,
+                        "change_pct": 27_650.0,
+                        "volume": 555,
+                    }
+                ],
+                "new_occurrences": [],
+            },
+            {
+                "FVN": {
+                    "previous_close": 18.0,
+                    "previous_session_date": "2026-08-24",
+                    "average_daily_volume": 57_894.0,
+                }
+            },
+        )
+
+        row = payload["occurrences"][0]
+        self.assertAlmostEqual(row["change_pct"], -40.6944444444)
+        self.assertAlmostEqual(row["change_actual"], -7.325)
+        self.assertIsNone(row["relative_volume"])
+        self.assertEqual(
+            row["relative_volume__null_reason"],
+            "aligned_20_session_baseline_unavailable",
+        )
 
     def test_live_reference_enrichment_rejects_stale_previous_session_close(self) -> None:
         rows = enrich_core_scanner_rows(

@@ -1410,29 +1410,8 @@ def enrich_core_scanner_rows(
             )
         elif expected_previous_session_date:
             merged["previous_close_reference_status"] = "ready"
-        session_volume = numeric_value(merged, "volume", "day_volume", "last_day_volume_so_far")
-        average_daily_volume = numeric_value(merged, "average_daily_volume")
-        observed_at = parse_datetime(
-            merged.get("last_event_ts")
-            or merged.get("snapshot_at_utc")
-            or merged.get("reference_available_at")
-        )
-        if (
-            merged.get("relative_volume") is None
-            and session_volume is not None
-            and average_daily_volume is not None
-            and average_daily_volume > 0
-            and observed_at is not None
-        ):
-            local = observed_at.astimezone(NEW_YORK)
-            session_start = datetime.combine(local.date(), time(4, 0), NEW_YORK)
-            elapsed_seconds = min(
-                16 * 60 * 60,
-                max(1.0, (local - session_start).total_seconds()),
-            )
-            merged["relative_volume"] = session_volume / (
-                average_daily_volume * elapsed_seconds / (16 * 60 * 60)
-            )
+            _recompute_session_change(merged)
+        _fail_closed_relative_volume(merged)
         enriched.append(normalize_watchlist_candidate(merged))
     return enriched
 
@@ -1449,6 +1428,8 @@ def enrich_signal_stream_snapshot(
     """
     result = dict(payload)
     enriched_at = datetime.now(UTC).isoformat()
+    session_start = parse_datetime((result.get("session") or {}).get("start_at"))
+    session_date = session_start.astimezone(NEW_YORK).date() if session_start else None
 
     def enrich(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         output: list[dict[str, Any]] = []
@@ -1459,27 +1440,28 @@ def enrich_signal_stream_snapshot(
                 **reference,
                 **row,
             }
-            session_volume = numeric_value(merged, "volume", "day_volume")
-            average_daily_volume = numeric_value(merged, "average_daily_volume")
-            observed_at = parse_datetime(
-                merged.get("event_time") or merged.get("reference_available_at")
-            )
+            event_at = parse_datetime(merged.get("event_time"))
+            event_date = event_at.astimezone(NEW_YORK).date() if event_at else None
+            previous_session_date = str(reference.get("previous_session_date") or "")
             if (
-                merged.get("relative_volume") is None
-                and session_volume is not None
-                and average_daily_volume is not None
-                and average_daily_volume > 0
-                and observed_at is not None
+                session_date is not None
+                and event_date == session_date
+                and previous_session_date
+                and previous_session_date < session_date.isoformat()
             ):
-                local = observed_at.astimezone(NEW_YORK)
-                session_start = datetime.combine(local.date(), time(4, 0), NEW_YORK)
-                elapsed_seconds = min(
-                    16 * 60 * 60,
-                    max(1.0, (local - session_start).total_seconds()),
+                merged["previous_close_reference_status"] = "ready"
+                _recompute_session_change(merged)
+            else:
+                merged.update(
+                    {
+                        "previous_close": None,
+                        "change_pct": None,
+                        "change_actual": None,
+                        "previous_close_reference_status": "unavailable",
+                        "previous_close__null_reason": "previous_session_authority_unavailable",
+                    }
                 )
-                merged["relative_volume"] = session_volume / (
-                    average_daily_volume * elapsed_seconds / (16 * 60 * 60)
-                )
+            _fail_closed_relative_volume(merged)
             normalized = normalize_watchlist_candidate(merged)
             normalized["reference_enriched_at"] = enriched_at if reference else ""
             output.append(normalized)
@@ -1493,6 +1475,24 @@ def enrich_signal_stream_snapshot(
         "trigger_evidence_preserved": True,
     }
     return result
+
+
+def _recompute_session_change(row: dict[str, Any]) -> None:
+    """Derive session change only from the row's causal price and validated close."""
+    last_price = numeric_value(row, "last_price", "last_close", "current_open", "last")
+    previous_close = numeric_value(row, "previous_close")
+    if last_price is None or previous_close is None or previous_close <= 0:
+        row["change_pct"] = None
+        row["change_actual"] = None
+        return
+    row["change_actual"] = last_price - previous_close
+    row["change_pct"] = (last_price / previous_close - 1) * 100
+
+
+def _fail_closed_relative_volume(row: dict[str, Any]) -> None:
+    """Reject daily-volume interpolation masquerading as an aligned baseline."""
+    row["relative_volume"] = None
+    row["relative_volume__null_reason"] = "aligned_20_session_baseline_unavailable"
 
 
 def numeric_value(row: dict[str, Any], *keys: str) -> float | None:
