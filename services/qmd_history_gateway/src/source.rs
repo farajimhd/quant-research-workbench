@@ -203,9 +203,10 @@ pub struct HistoricalEventSource {
     latest_coverage_query_gate: Arc<Mutex<()>>,
     structure_table_available: Arc<OnceCell<bool>>,
     trade_rules: TradeAggregationRules,
+    volume_eligible_trade_tokens: Arc<Vec<u8>>,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq)]
 pub struct SessionVwapSeed {
     pub cumulative_trade_notional: f64,
     pub cumulative_volume: f64,
@@ -338,6 +339,7 @@ impl HistoricalEventSource {
             latest_coverage_query_gate: Arc::new(Mutex::new(())),
             structure_table_available: Arc::new(OnceCell::new()),
             trade_rules: references.trade_aggregation_rules()?,
+            volume_eligible_trade_tokens: Arc::new(references.volume_eligible_trade_tokens()),
         };
         source.health().await?;
         Ok(source)
@@ -476,30 +478,79 @@ impl HistoricalEventSource {
         if window.start >= window.end {
             return Ok(SessionVwapSeed::default());
         }
-        let mut receiver = self.stream_ordered_filtered_with_chunk_minutes(
-            window,
-            100_000,
-            live_continuation_sequence,
-            Some(0),
-            120,
-        )?;
+        validate_window(&window)?;
+        let plan = self.source_plan(&window).await?;
+        let ticker_filter = ticker_filter(&window.tickers)?;
+        let eligible_tokens = std::iter::once(0_u8)
+            .chain(self.volume_eligible_trade_tokens.iter().copied())
+            .map(|token| token.to_string())
+            .collect::<Vec<_>>()
+            .join(",");
+        let mut selects = Vec::new();
+        for segment in plan
+            .segments
+            .iter()
+            .filter(|segment| segment.queryable_by_history)
+        {
+            match segment.tier {
+                MarketSourceTier::Archive => {
+                    let last_inclusive = segment.end - chrono::Duration::microseconds(1);
+                    for year in segment.start.year()..=last_inclusive.year() {
+                        selects.push(session_vwap_seed_select(
+                            &format!(
+                                "{}.{}{}",
+                                self.config.clickhouse_database, self.config.table_prefix, year
+                            ),
+                            false,
+                            segment.start,
+                            segment.end,
+                            &ticker_filter,
+                            &eligible_tokens,
+                        ));
+                    }
+                }
+                MarketSourceTier::Recent => selects.push(session_vwap_seed_select(
+                    &format!(
+                        "{}.{}",
+                        self.config.recent_database, self.config.recent_event_table
+                    ),
+                    true,
+                    segment.start,
+                    segment.end,
+                    &ticker_filter,
+                    &eligible_tokens,
+                )),
+                MarketSourceTier::CurrentLive
+                | MarketSourceTier::ClosedMarket
+                | MarketSourceTier::Gap => {}
+            }
+        }
         let mut seed = SessionVwapSeed::default();
-        while let Some(batch) = receiver.recv().await {
-            for compact in batch? {
-                let MarketEvent::Trade(trade) = self.market_event(&compact) else {
-                    continue;
-                };
-                if trade.price <= 0.0 || trade.size <= 0.0 {
-                    continue;
-                }
-                if self
-                    .trade_rules
-                    .resolve(&trade.conditions, trade.ts)
-                    .update_volume
-                {
-                    seed.cumulative_volume += trade.size;
-                    seed.cumulative_trade_notional += trade.price * trade.size;
-                }
+        if !selects.is_empty() {
+            let sql = format!(
+                "SELECT sum(cumulative_trade_notional) AS cumulative_trade_notional, sum(cumulative_volume) AS cumulative_volume FROM ({}) FORMAT JSONEachRow",
+                selects.join(" UNION ALL ")
+            );
+            let text = self.query(&sql).await?;
+            seed = serde_json::from_str(text.trim())
+                .map_err(|error| format!("invalid session VWAP seed response: {error}"))?;
+        }
+        for segment in plan
+            .segments
+            .iter()
+            .filter(|segment| matches!(segment.tier, MarketSourceTier::CurrentLive))
+        {
+            for compact in self
+                .fetch_live_segment(segment, &window.tickers, live_continuation_sequence)
+                .await?
+                .into_iter()
+                .filter(|event| event.event_meta & 1 == 0)
+            {
+                accumulate_session_vwap_seed(
+                    &mut seed,
+                    self.market_event(&compact),
+                    &self.trade_rules,
+                );
             }
         }
         Ok(seed)
@@ -785,23 +836,6 @@ impl HistoricalEventSource {
         live_continuation_sequence: Option<u64>,
         event_type_filter: Option<u8>,
     ) -> Result<mpsc::Receiver<Result<Vec<LiveCompactEvent>, String>>, String> {
-        self.stream_ordered_filtered_with_chunk_minutes(
-            window,
-            batch_size,
-            live_continuation_sequence,
-            event_type_filter,
-            self.config.scanner_fetch_chunk_minutes.max(1),
-        )
-    }
-
-    fn stream_ordered_filtered_with_chunk_minutes(
-        &self,
-        window: EventWindow,
-        batch_size: usize,
-        live_continuation_sequence: Option<u64>,
-        event_type_filter: Option<u8>,
-        chunk_minutes: usize,
-    ) -> Result<mpsc::Receiver<Result<Vec<LiveCompactEvent>, String>>, String> {
         validate_window(&window)?;
         let batch_size = batch_size.clamp(1, 100_000);
         let (sender, receiver) = mpsc::channel(2);
@@ -815,7 +849,6 @@ impl HistoricalEventSource {
                     batch_size,
                     live_continuation_sequence,
                     event_type_filter,
-                    chunk_minutes,
                     stream_sender,
                 ) => result,
             };
@@ -832,7 +865,6 @@ impl HistoricalEventSource {
         batch_size: usize,
         live_continuation_sequence: Option<u64>,
         event_type_filter: Option<u8>,
-        chunk_minutes: usize,
         sender: mpsc::Sender<Result<Vec<LiveCompactEvent>, String>>,
     ) -> Result<(), String> {
         let plan = self.source_plan(&window).await?;
@@ -861,7 +893,8 @@ impl HistoricalEventSource {
             .filter(|segment| segment.queryable_by_history)
             .collect::<Vec<_>>();
         historical_segments.sort_by_key(|segment| segment.start);
-        let chunk_duration = chrono::Duration::minutes(chunk_minutes.max(1) as i64);
+        let chunk_duration =
+            chrono::Duration::minutes(self.config.scanner_fetch_chunk_minutes.max(1) as i64);
         for segment in historical_segments {
             let mut chunk_start = segment.start;
             while chunk_start < segment.end {
@@ -2058,6 +2091,74 @@ fn event_select(
     )
 }
 
+fn ticker_filter(tickers: &[String]) -> Result<String, String> {
+    if tickers.is_empty() {
+        return Ok(String::new());
+    }
+    let values = tickers
+        .iter()
+        .map(|ticker| normalize_ticker(ticker))
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter()
+        .map(|ticker| sql_literal(&ticker))
+        .collect::<Vec<_>>()
+        .join(",");
+    Ok(format!(" AND upper(source.ticker) IN ({values})"))
+}
+
+fn session_vwap_seed_select(
+    table: &str,
+    recent: bool,
+    start: DateTime<Utc>,
+    end: DateTime<Utc>,
+    ticker_filter: &str,
+    eligible_tokens: &str,
+) -> String {
+    let final_clause = if recent { " FINAL" } else { "" };
+    let last_inclusive = end - chrono::Duration::microseconds(1);
+    let eligible = (1..=5)
+        .map(|slot| format!("source.condition_token_{slot} IN ({eligible_tokens})"))
+        .collect::<Vec<_>>()
+        .join(" AND ");
+    format!(
+        r#"SELECT
+            sum((toFloat64(source.price_primary_int) / if(bitAnd(source.event_meta, 2) != 0, 10000., 100.)) * toFloat64(source.size_primary)) AS cumulative_trade_notional,
+            sum(toFloat64(source.size_primary)) AS cumulative_volume
+        FROM {table} AS source{final_clause}
+        PREWHERE source.event_date >= toDate('{start_date}')
+          AND source.event_date <= toDate('{end_date}')
+          AND source.sip_timestamp_us >= {start_us}
+          AND source.sip_timestamp_us < {end_us}
+        WHERE bitAnd(source.event_meta, 1) = 0
+          AND source.price_primary_int > 0
+          AND source.size_primary > 0
+          AND {eligible}{ticker_filter}"#,
+        start_date = start.date_naive(),
+        end_date = last_inclusive.date_naive(),
+        start_us = start.timestamp_micros(),
+        end_us = end.timestamp_micros(),
+    )
+}
+
+fn accumulate_session_vwap_seed(
+    seed: &mut SessionVwapSeed,
+    event: MarketEvent,
+    trade_rules: &TradeAggregationRules,
+) {
+    let MarketEvent::Trade(trade) = event else {
+        return;
+    };
+    if trade.price > 0.0
+        && trade.size > 0.0
+        && trade_rules
+            .resolve(&trade.conditions, trade.ts)
+            .update_volume
+    {
+        seed.cumulative_volume += trade.size;
+        seed.cumulative_trade_notional += trade.price * trade.size;
+    }
+}
+
 fn archive_session_end_utc(date: NaiveDate) -> Result<DateTime<Utc>, String> {
     New_York
         .with_ymd_and_hms(date.year(), date.month(), date.day(), 20, 0, 0)
@@ -2548,13 +2649,33 @@ mod tests {
         latest_coverage_summary_sql, latest_coverage_target_date_sql, macro_bar_is_closed,
         materialize_confirmed_recent_coverage, merge_coverage_intervals, normalize_ticker,
         parse_historical_tsv_row, persisted_structure_events_sql, recent_coverage_sql,
-        row_to_event, CoverageInterval, EventWindow, HistoricalRow, MarketSourceTier,
-        RecentCoverageRow,
+        row_to_event, session_vwap_seed_select, CoverageInterval, EventWindow, HistoricalRow,
+        MarketSourceTier, RecentCoverageRow,
     };
     use crate::config::HistoricalGatewayConfig;
     use chrono::{TimeZone, Utc};
     use qmd_core::compact_event::{CompactEventDecoder, LIVE_COMPACT_EVENT_SCHEMA_VERSION};
     use qmd_core::event::MarketEvent;
+
+    #[test]
+    fn session_vwap_seed_sql_aggregates_only_exact_volume_eligible_trades() {
+        let sql = session_vwap_seed_select(
+            "q_live.events",
+            true,
+            Utc.with_ymd_and_hms(2026, 8, 25, 8, 0, 0).unwrap(),
+            Utc.with_ymd_and_hms(2026, 8, 25, 20, 30, 0).unwrap(),
+            " AND upper(source.ticker) IN ('AAPL')",
+            "0,3,7",
+        );
+
+        assert!(sql.contains("FROM q_live.events AS source FINAL"));
+        assert!(sql.contains("bitAnd(source.event_meta, 1) = 0"));
+        assert!(sql.contains("source.condition_token_1 IN (0,3,7)"));
+        assert!(sql.contains("source.condition_token_5 IN (0,3,7)"));
+        assert!(sql.contains("if(bitAnd(source.event_meta, 2) != 0, 10000., 100.)"));
+        assert!(sql.contains("sum(toFloat64(source.size_primary))"));
+        assert!(!sql.contains("ORDER BY"));
+    }
 
     #[test]
     fn latest_coverage_queries_bound_memory_and_aggregate_only_the_target_session() {

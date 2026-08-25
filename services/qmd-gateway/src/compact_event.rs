@@ -765,6 +765,22 @@ impl From<&LiveCompactEvent> for CompactEventIdentity {
 }
 
 impl CompactEventReferences {
+    pub fn volume_eligible_trade_tokens(&self) -> Vec<u8> {
+        let mut tokens = self
+            .trade_conditions
+            .iter()
+            .filter_map(|(modifier, token)| {
+                self.trade_updates
+                    .get(modifier)
+                    .is_some_and(|rule| rule.update_volume)
+                    .then_some(*token)
+            })
+            .collect::<Vec<_>>();
+        tokens.sort_unstable();
+        tokens.dedup();
+        tokens
+    }
+
     pub async fn load(config: &GatewayConfig) -> Result<Self, String> {
         Self::load_from_clickhouse(
             &config.historical_clickhouse_url,
@@ -2304,6 +2320,21 @@ mod tests {
             quote_indicators: [(7, 31)].into_iter().collect(),
             tapes: [(1, 0), (2, 1), (3, 2)].into_iter().collect(),
         }
+    }
+
+    #[test]
+    fn volume_eligible_trade_tokens_follow_the_canonical_update_rules() {
+        let mut references = references();
+        references.trade_updates.insert(
+            5,
+            TradeUpdateRule {
+                update_high_low: true,
+                update_last: true,
+                update_volume: false,
+            },
+        );
+
+        assert_eq!(references.volume_eligible_trade_tokens(), vec![21]);
     }
 
     fn compact_quote_at(timestamp: DateTime<Utc>, sequence: u64) -> LiveCompactEvent {
