@@ -263,7 +263,7 @@ export function TickerNewsContainer({ asOf, live = false, onSymbolChange, settin
   const contextRows = orderedRows.filter((row) => (!isDeepFmFunnel(row.ai_state?.funnel) || row.ai_state?.funnel?.forecast_eligibility !== "eligible") && ["analyst", "editorial", "regulator", "mixed"].includes(row.news_synthesis_summary?.information_origin ?? ""));
   const followupRows = orderedRows.filter((row) => !eventRows.includes(row) && !contextRows.includes(row));
   return <section className="ticker-news" aria-label={`${symbol} news`}>
-    <header><div><TickerIdentityWithChange asOf={priceAsOf} className="ticker-news-symbol" inputAriaLabel="Ticker news symbol" logoUrl={presentations[symbol]?.logo_url} onTickerChange={onSymbolChange} ticker={symbol} /><span>Recent coverage</span></div><small>{state.rows.length} stories · through <MarketTime value={priceAsOf} /></small></header>
+    <header><div><TickerIdentityWithChange asOf={priceAsOf} className="ticker-news-symbol" inputAriaLabel="Ticker news symbol" logoUrl={presentations[symbol]?.logo_url} onTickerChange={onSymbolChange} ticker={symbol} /><span>Issuer news</span></div><small><b>{state.rows.length}</b> stories through <MarketTime value={priceAsOf} /></small></header>
     <NewsStatus state={state} compact />
     <div className="ticker-news-feed">
       <TickerNewsSection asOfMs={wallClockMs} emptyLabel="No actionable events in this window." label="Actionable events" live={live} queryId={state.queryId} rows={eventRows} showTeaser={settings.showTeaser} />
@@ -275,10 +275,9 @@ export function TickerNewsContainer({ asOf, live = false, onSymbolChange, settin
 }
 
 function TickerNewsSection({ asOfMs, emptyLabel, label, live, queryId, rows, showTeaser }: { asOfMs: number; emptyLabel: string; label: string; live: boolean; queryId: string; rows: NewsRow[]; showTeaser: boolean }) {
-  return <section className="ticker-news-section" aria-label={label}>
-    <header><strong>{label}</strong><span>{rows.length}</span></header>
+  return <section className="ticker-news-section" aria-label={label} data-empty={!rows.length ? "true" : undefined}>
+    <header><strong>{label}</strong><span>{rows.length ? `${rows.length} stories` : emptyLabel}</span></header>
     {rows.map((row) => <TickerNewsStory asOfMs={asOfMs} key={row.canonical_news_id} live={live} queryId={queryId} row={row} showTeaser={showTeaser} />)}
-    {!rows.length ? <small className="ticker-news-section-empty">{emptyLabel}</small> : null}
   </section>;
 }
 
@@ -286,9 +285,8 @@ function TickerNewsStory({ asOfMs, live, queryId, row, showTeaser }: { asOfMs: n
   const tone = newsTemperature(row.published_at_utc, asOfMs);
   const TemperatureIcon = newsTemperaturePresentation(tone).Icon;
   const direction = normalizeSemanticDirection(row.news_synthesis_summary?.composite_sentiment);
-  return <article data-direction={direction} data-tone={tone}>
-    <div aria-label={`${tone} news`} className="ticker-news-marker" title={`${tone} news`}><TemperatureIcon size={14} /></div>
-    <div className="ticker-event-time"><MarketTime dateStyle="short" includeDate value={row.published_at_utc} /><em data-tone={tone}>{tone}</em></div>
+  return <article className="ticker-news-story" data-direction={direction} data-tone={tone}>
+    <div className="ticker-event-time"><span aria-label={`${tone} news`} className="ticker-news-temperature" data-tone={tone} title={`${tone} news`}><TemperatureIcon size={12} />{tone}</span><MarketTime dateStyle="short" includeDate value={row.published_at_utc} /></div>
     <div className="ticker-event-content"><div className="ticker-news-meta"><SynthesisDirection summary={row.news_synthesis_summary} salient /><SynthesisConcepts concepts={row.news_synthesis_summary?.concepts} compact /></div><button className="ticker-news-open" onClick={() => openNewsPage(row, queryId, live)} type="button"><strong>{row.title}</strong>{showTeaser && newsTeaser(row) ? <p>{newsTeaser(row)}</p> : null}</button><div className="ticker-news-intelligence"><NewsSynthesisCard row={row} /><NewsIntelligenceCards initialState={row.ai_state} newsId={row.canonical_news_id} publishedAt={row.published_at_utc} /></div></div>
   </article>;
 }
