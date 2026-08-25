@@ -84,12 +84,12 @@ export function SecurityIdentityCell({ companyName = "", country = "", halted, l
   const secState = normalizedRecency(secRecency);
   const isHalted = normalizedBoolean(halted);
   const hasTrailing = isHalted || isRecentRecency(newsState) || isRecentRecency(secState) || Boolean(trailing);
-  return <span className="table-security-card" data-has-trailing={hasTrailing} title={[symbol, companyName, countryName].filter(Boolean).join(" · ")}>
+  return <span className="table-security-card" data-has-trailing={hasTrailing}>
     <TickerLogo logoUrl={logoUrl} showLogoPlaceholder ticker={symbol} />
     <span className="table-security-copy"><strong>{symbol || "—"}</strong>{companyName ? <small>{companyName}</small> : null}</span>
     {countryName ? <span className="table-security-country">{countryName}</span> : null}
     {hasTrailing ? <span className="table-security-trailing">
-      {isHalted ? <span aria-label="Trading halted" className="table-security-status-icon" data-status="halted" title="Trading halted"><ShieldAlert aria-hidden="true" size={17} strokeWidth={1.8} /></span> : null}
+      {isHalted ? <span aria-label="Trading halted" className="table-security-status-icon" data-status="halted"><ShieldAlert aria-hidden="true" size={17} strokeWidth={1.8} /></span> : null}
       <SecurityRecencyIcon kind="news" state={newsState} />
       <SecurityRecencyIcon kind="sec" state={secState} />
       {trailing}
@@ -105,7 +105,7 @@ function SecurityRecencyIcon({ kind, state }: { kind: "news" | "sec"; state: Rec
   const Icon = kind === "news" ? state === "hot" ? Flame : Snowflake : FileCheck2;
   const description = `${state} ${source.toLowerCase()}`;
   const hot = state === "hot";
-  return <span aria-label={description} className="table-security-recency-icon" data-source={kind} data-state={state} title={description}><Icon aria-hidden="true" size={hot ? 16 : 15} strokeWidth={hot ? 1.5 : 1.8} /></span>;
+  return <span aria-label={description} className="table-security-recency-icon" data-source={kind} data-state={state}><Icon aria-hidden="true" size={hot ? 16 : 15} strokeWidth={hot ? 1.5 : 1.8} /></span>;
 }
 
 function normalizedRecency(value: unknown): RecencyState {
