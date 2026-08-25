@@ -775,6 +775,19 @@ impl BarIndicatorCalculator {
         self.state.apply_bar(bar)
     }
 
+    /// Seed only the additive, session-anchored VWAP state before processing a
+    /// bounded page of bars. Other indicators intentionally remain page-local.
+    pub fn seed_session_vwap(
+        &mut self,
+        bar_start: DateTime<Utc>,
+        cumulative_volume: f64,
+        cumulative_trade_notional: f64,
+    ) -> Result<(), String> {
+        self.state
+            .session_vwap
+            .seed(bar_start, cumulative_volume, cumulative_trade_notional)
+    }
+
     pub fn set_market_structure_references(&mut self, references: MarketStructureReferenceLevels) {
         self.state.market_structure_references = references;
     }
@@ -2071,6 +2084,28 @@ impl SessionVwapState {
         } else {
             interval_vwap
         }
+    }
+
+    fn seed(
+        &mut self,
+        bar_start: DateTime<Utc>,
+        cumulative_volume: f64,
+        cumulative_trade_notional: f64,
+    ) -> Result<(), String> {
+        if !cumulative_volume.is_finite()
+            || cumulative_volume < 0.0
+            || !cumulative_trade_notional.is_finite()
+            || cumulative_trade_notional < 0.0
+        {
+            return Err("session VWAP seed must contain finite non-negative primitives".into());
+        }
+        if cumulative_volume == 0.0 && cumulative_trade_notional != 0.0 {
+            return Err("session VWAP seed cannot contain notional without volume".into());
+        }
+        self.anchor = Some(market_session_anchor_date(bar_start));
+        self.cumulative_volume = cumulative_volume;
+        self.cumulative_trade_notional = cumulative_trade_notional;
+        Ok(())
     }
 }
 
@@ -3605,6 +3640,24 @@ mod tests {
         let coarse_value = coarse.update(first_start, 400.0, 17.5);
 
         assert!((fine_value - coarse_value).abs() < 1e-9);
+    }
+
+    #[test]
+    fn session_vwap_seed_matches_processing_the_prior_session_bars() {
+        let page_start = Utc.with_ymd_and_hms(2026, 7, 14, 18, 0, 0).unwrap();
+        let mut complete = SessionVwapState::new();
+        complete.update(
+            Utc.with_ymd_and_hms(2026, 7, 14, 14, 0, 0).unwrap(),
+            100.0,
+            10.0,
+        );
+        let complete_value = complete.update(page_start, 300.0, 20.0);
+
+        let mut paged = SessionVwapState::new();
+        paged.seed(page_start, 100.0, 1_000.0).unwrap();
+        let paged_value = paged.update(page_start, 300.0, 20.0);
+
+        assert!((complete_value - paged_value).abs() < 1e-9);
     }
 
     #[test]

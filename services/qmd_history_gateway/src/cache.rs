@@ -1,6 +1,9 @@
 use crate::config::HistoricalGatewayConfig;
-use crate::source::{EventWindow, HistoricalCursor, HistoricalEventSource, SourceRevision};
-use chrono::{DateTime, Duration, Utc};
+use crate::source::{
+    EventWindow, HistoricalCursor, HistoricalEventSource, SessionVwapSeed, SourceRevision,
+};
+use chrono::{DateTime, Datelike, Duration, TimeZone, Timelike, Utc};
+use chrono_tz::America::New_York;
 use qmd_core::bars::{BarRow, BarSnapshot, SharedBarStore, BAR_SCHEMA_VERSION};
 use qmd_core::compact_event::LiveCompactEvent;
 use qmd_core::event::MarketEvent;
@@ -23,8 +26,8 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::sync::{broadcast, mpsc, Mutex, Notify, Semaphore};
 
-pub const HISTORICAL_ENGINE_VERSION: &str = "qmd-derived-v29";
-pub const HISTORICAL_CALCULATION_REVISION: &str = "qmd-derived-v29";
+pub const HISTORICAL_ENGINE_VERSION: &str = "qmd-derived-v30";
+pub const HISTORICAL_CALCULATION_REVISION: &str = "qmd-derived-v30";
 pub const HISTORICAL_CORPORATE_ACTION_REVISION: &str = "raw-unadjusted-v1";
 const MAX_ENCOUNTERED_STRUCTURE_LEVELS: usize = 4_000;
 
@@ -293,7 +296,8 @@ impl HistoricalDerivedCache {
         ticker: String,
         profile: CacheProfile,
     ) -> Result<CacheLease, String> {
-        let source_revision = self.source.source_revision(&window).await?;
+        let revision_window = revision_window(&window, &profile)?;
+        let source_revision = self.source.source_revision(&revision_window).await?;
         let key = cache_key(&window, &ticker, &source_revision, &profile);
         let mut index = self.inner.lock().await;
         if let Some(entry) = index.entries.get(&key).cloned() {
@@ -325,8 +329,13 @@ impl HistoricalDerivedCache {
         }
         let (bar_updates, _) = broadcast::channel(self.config.cache_update_capacity.max(16));
         let (updates, _) = broadcast::channel(self.config.cache_update_capacity.max(16));
-        let requirement =
-            historical_requirement(&key, &window, &ticker, &profile, &source_revision);
+        let requirement = historical_requirement(
+            &key,
+            &revision_window,
+            &ticker,
+            &profile,
+            &source_revision,
+        );
         let entry = Arc::new(CacheEntry {
             allocated_bytes: self.allocated_bytes.clone(),
             complete: AtomicBool::new(false),
@@ -781,6 +790,21 @@ impl HistoricalDerivedCache {
             1,
             self.source.trade_aggregation_rules(),
         );
+        let session_vwap_seed = if matches!(&profile, CacheProfile::Derived(_)) {
+            let seed_start = session_anchor(window.start)?;
+            self.source
+                .session_vwap_seed(
+                    EventWindow {
+                        start: seed_start,
+                        end: window.start,
+                        tickers: window.tickers.clone(),
+                    },
+                    source_revision.live_continuation_sequence,
+                )
+                .await?
+        } else {
+            SessionVwapSeed::default()
+        };
         if matches!(&profile, CacheProfile::Derived(_)) {
             match self
                 .source
@@ -815,6 +839,8 @@ impl HistoricalDerivedCache {
             let worker_entry = entry.clone();
             let worker_rules = trade_rules.clone();
             let worker_structure_references = structure_references;
+            let worker_session_vwap_seed = session_vwap_seed;
+            let worker_page_start = window.start;
             let handle = tokio::spawn(async move {
                 let mut calculators = HashMap::<String, BarIndicatorCalculator>::new();
                 let mut microstructure = MicrostructureIntervalWindow::default();
@@ -835,6 +861,13 @@ impl HistoricalDerivedCache {
                             let calculator =
                                 calculators.entry(bar.timeframe.clone()).or_insert_with(|| {
                                     let mut calculator = BarIndicatorCalculator::new();
+                                    calculator
+                                        .seed_session_vwap(
+                                            worker_page_start,
+                                            worker_session_vwap_seed.cumulative_volume,
+                                            worker_session_vwap_seed.cumulative_trade_notional,
+                                        )
+                                        .expect("validated historical session VWAP seed");
                                     calculator.set_market_structure_references(
                                         worker_structure_references,
                                     );
@@ -877,6 +910,13 @@ impl HistoricalDerivedCache {
                             let calculator =
                                 calculators.entry(bar.timeframe.clone()).or_insert_with(|| {
                                     let mut calculator = BarIndicatorCalculator::new();
+                                    calculator
+                                        .seed_session_vwap(
+                                            worker_page_start,
+                                            worker_session_vwap_seed.cumulative_volume,
+                                            worker_session_vwap_seed.cumulative_trade_notional,
+                                        )
+                                        .expect("validated historical session VWAP seed");
                                     calculator.set_market_structure_references(
                                         worker_structure_references,
                                     );
@@ -1568,6 +1608,34 @@ fn split_event_window(window: &EventWindow, chunk_hours: usize) -> Vec<EventWind
     chunks
 }
 
+fn revision_window(window: &EventWindow, profile: &CacheProfile) -> Result<EventWindow, String> {
+    let start = if matches!(profile, CacheProfile::Derived(_)) {
+        session_anchor(window.start)?
+    } else {
+        window.start
+    };
+    Ok(EventWindow {
+        start,
+        end: window.end,
+        tickers: window.tickers.clone(),
+    })
+}
+
+fn session_anchor(timestamp: DateTime<Utc>) -> Result<DateTime<Utc>, String> {
+    let local = timestamp.with_timezone(&New_York);
+    let mut date = local.date_naive();
+    if local.hour() < 4 {
+        date = date
+            .pred_opt()
+            .ok_or_else(|| "historical session anchor underflow".to_string())?;
+    }
+    New_York
+        .with_ymd_and_hms(date.year(), date.month(), date.day(), 4, 0, 0)
+        .single()
+        .map(|value| value.with_timezone(&Utc))
+        .ok_or_else(|| format!("invalid America/New_York session anchor for {date}"))
+}
+
 fn cache_key(
     window: &EventWindow,
     ticker: &str,
@@ -1659,10 +1727,11 @@ fn valid_price_bar(bar: &BarRow) -> bool {
 mod tests {
     use super::{
         bounded_encountered_structure_levels, cache_key, encountered_structure_levels_for_session,
-        ensure_monotonic_bar_start, historical_requirement, split_event_window, stable_hash_hex,
-        structure_events_overlapping, CacheEntry, CacheProfile, EntryState, SourceRevision,
-        HISTORICAL_CALCULATION_REVISION, HISTORICAL_CORPORATE_ACTION_REVISION,
-        HISTORICAL_ENGINE_VERSION, MAX_ENCOUNTERED_STRUCTURE_LEVELS,
+        ensure_monotonic_bar_start, historical_requirement, revision_window, session_anchor,
+        split_event_window, stable_hash_hex, structure_events_overlapping, CacheEntry,
+        CacheProfile, EntryState, SourceRevision, HISTORICAL_CALCULATION_REVISION,
+        HISTORICAL_CORPORATE_ACTION_REVISION, HISTORICAL_ENGINE_VERSION,
+        MAX_ENCOUNTERED_STRUCTURE_LEVELS,
     };
     use crate::source::EventWindow;
     use chrono::{DateTime, Duration, TimeZone, Utc};
@@ -1670,6 +1739,30 @@ mod tests {
     use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
     use std::sync::Arc;
     use tokio::sync::{broadcast, Mutex, Notify};
+
+    #[test]
+    fn derived_revision_and_seed_anchor_cover_the_full_new_york_session() {
+        let page = EventWindow {
+            start: Utc.with_ymd_and_hms(2026, 7, 14, 18, 30, 0).unwrap(),
+            end: Utc.with_ymd_and_hms(2026, 7, 14, 20, 30, 0).unwrap(),
+            tickers: vec!["AAPL".to_string()],
+        };
+        let expected = Utc.with_ymd_and_hms(2026, 7, 14, 8, 0, 0).unwrap();
+
+        assert_eq!(session_anchor(page.start).unwrap(), expected);
+        assert_eq!(
+            revision_window(&page, &CacheProfile::Derived("5m".to_string()))
+                .unwrap()
+                .start,
+            expected
+        );
+        assert_eq!(
+            revision_window(&page, &CacheProfile::Products)
+                .unwrap()
+                .start,
+            page.start
+        );
+    }
 
     #[test]
     fn cache_key_changes_with_source_revision_and_engine_contract() {

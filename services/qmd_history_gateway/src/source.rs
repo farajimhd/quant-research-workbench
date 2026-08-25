@@ -205,6 +205,12 @@ pub struct HistoricalEventSource {
     trade_rules: TradeAggregationRules,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct SessionVwapSeed {
+    pub cumulative_trade_notional: f64,
+    pub cumulative_volume: f64,
+}
+
 #[derive(Clone, Debug)]
 struct CachedLatestEventCoverage {
     expires_at: Instant,
@@ -460,6 +466,38 @@ impl HistoricalEventSource {
 
     pub fn trade_aggregation_rules(&self) -> TradeAggregationRules {
         self.trade_rules.clone()
+    }
+
+    pub async fn session_vwap_seed(
+        &self,
+        window: EventWindow,
+        live_continuation_sequence: Option<u64>,
+    ) -> Result<SessionVwapSeed, String> {
+        if window.start >= window.end {
+            return Ok(SessionVwapSeed::default());
+        }
+        let mut receiver =
+            self.stream_ordered_filtered(window, 100_000, live_continuation_sequence, Some(0))?;
+        let mut seed = SessionVwapSeed::default();
+        while let Some(batch) = receiver.recv().await {
+            for compact in batch? {
+                let MarketEvent::Trade(trade) = self.market_event(&compact) else {
+                    continue;
+                };
+                if trade.price <= 0.0 || trade.size <= 0.0 {
+                    continue;
+                }
+                if self
+                    .trade_rules
+                    .resolve(&trade.conditions, trade.ts)
+                    .update_volume
+                {
+                    seed.cumulative_volume += trade.size;
+                    seed.cumulative_trade_notional += trade.price * trade.size;
+                }
+            }
+        }
+        Ok(seed)
     }
 
     pub async fn scanner_market_snapshot(
