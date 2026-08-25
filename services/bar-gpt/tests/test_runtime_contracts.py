@@ -64,6 +64,32 @@ class RuntimeContractTests(unittest.TestCase):
 
         self.assertEqual(asyncio.run(scenario()), ["replay", "live"])
 
+    def test_background_warm_cannot_consume_interactive_capacity(self) -> None:
+        async def scenario() -> tuple[int, bool]:
+            gate = PrioritySemaphore(4, background_limit=1)
+            release = asyncio.Event()
+            first_live_entered = asyncio.Event()
+            second_live_entered = asyncio.Event()
+            replay_entered = asyncio.Event()
+
+            async def worker(priority: int, entered: asyncio.Event) -> None:
+                async with gate.slot(priority):
+                    entered.set()
+                    await release.wait()
+
+            first_live = asyncio.create_task(worker(1, first_live_entered))
+            await first_live_entered.wait()
+            second_live = asyncio.create_task(worker(1, second_live_entered))
+            replay = asyncio.create_task(worker(0, replay_entered))
+            await asyncio.wait_for(replay_entered.wait(), timeout=1)
+            await asyncio.sleep(0)
+            active_live = int(first_live_entered.is_set()) + int(second_live_entered.is_set())
+            release.set()
+            await asyncio.gather(first_live, second_live, replay)
+            return active_live, replay_entered.is_set()
+
+        self.assertEqual(asyncio.run(scenario()), (1, True))
+
     def _scoped_runtime(self, warm_status: str) -> BarGptRuntime:
         runtime = _runtime()
         runtime.caches["live"] = SimpleNamespace(
@@ -237,6 +263,35 @@ class RuntimeContractTests(unittest.TestCase):
         self.assertEqual(harness.source_revision.call_count, 2)
         snapshot_store.save.assert_called_once()
         self.assertTrue(snapshot_store.save.call_args.args[2])
+
+    def test_replay_warm_reuses_and_refreshes_same_session_snapshot(self) -> None:
+        runtime = _runtime()
+        runtime.caches["replay"] = MagicMock()
+        release = runtime.releases["v2-fixed"]
+        release.data_config = SimpleNamespace()
+        revision = {"revision_sha256": "b" * 64}
+        snapshot_row = SimpleNamespace(available_at_us=1)
+        snapshot_store = SimpleNamespace(
+            load=MagicMock(return_value=[snapshot_row]),
+            save=MagicMock(),
+        )
+        runtime._snapshot_store = snapshot_store
+        harness = SimpleNamespace(
+            source_revision=MagicMock(return_value=revision),
+            load=MagicMock(return_value=[]),
+        )
+        runtime._admit_warm_rows = MagicMock(
+            side_effect=lambda *_args: asyncio.sleep(0)
+        )
+        runtime.caches["replay"].snapshot_rows.return_value = [snapshot_row]
+        with (
+            patch("bar_gpt_service.runtime.HistoricalBootstrap", return_value=harness),
+            patch.object(runtime, "_record_event"),
+        ):
+            asyncio.run(runtime._warm("replay", "AAPL", 3_000_000))
+        snapshot_store.load.assert_called_once_with("AAPL", 3_000_000, revision)
+        self.assertFalse(harness.load.call_args.kwargs["include_calendar"])
+        snapshot_store.save.assert_called_once()
 
     def test_historical_warm_stops_before_queries_when_shutdown_is_requested(self) -> None:
         bootstrap = object.__new__(HistoricalBootstrap)

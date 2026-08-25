@@ -31,10 +31,16 @@ class ContextWarmingError(RuntimeError):
 
 
 class PrioritySemaphore:
-    """Bounded concurrency gate that admits lower numeric priorities first."""
+    """Bounded gate with priority ordering and a cap for background work."""
 
-    def __init__(self, value: int) -> None:
-        self._value = max(1, value)
+    def __init__(self, value: int, *, background_limit: int | None = None) -> None:
+        self._capacity = max(1, value)
+        self._available = self._capacity
+        self._background_limit = min(
+            self._capacity,
+            max(1, background_limit if background_limit is not None else self._capacity),
+        )
+        self._active_background = 0
         self._condition = asyncio.Condition()
         self._waiting: dict[int, int] = {}
 
@@ -44,17 +50,22 @@ class PrioritySemaphore:
             self._waiting[priority] = self._waiting.get(priority, 0) + 1
             try:
                 await self._condition.wait_for(
-                    lambda: self._value > 0
+                    lambda: self._available > 0
                     and not any(count > 0 and candidate < priority for candidate, count in self._waiting.items())
+                    and (priority == 0 or self._active_background < self._background_limit)
                 )
-                self._value -= 1
+                self._available -= 1
+                if priority > 0:
+                    self._active_background += 1
             finally:
                 self._waiting[priority] -= 1
         try:
             yield
         finally:
             async with self._condition:
-                self._value += 1
+                self._available += 1
+                if priority > 0:
+                    self._active_background -= 1
                 self._condition.notify_all()
 
 
@@ -96,7 +107,10 @@ class BarGptRuntime:
         self._builder: LiveEventBarBuilder | None = None
         self._lock = RLock()
         self._listeners: set[asyncio.Queue[dict[str, Any]]] = set()
-        self._warm_gate = PrioritySemaphore(config.warm_concurrency)
+        # Direct-event historical warm-up is ClickHouse and memory intensive.
+        # Keep broad Live discovery to one raw scan while leaving the remaining
+        # configured capacity available to bounded interactive scopes.
+        self._warm_gate = PrioritySemaphore(config.warm_concurrency, background_limit=1)
         self._stop_requested = Event()
         self._pending_historical: dict[tuple[str, str], list[RawBar]] = {}
         self._snapshot_store: WarmSnapshotStore | None = None
@@ -467,7 +481,7 @@ class BarGptRuntime:
                     await asyncio.to_thread(
                         self._snapshot_store.load, ticker, origin_us, source_revision
                     )
-                    if cache_id == "live" and self._snapshot_store is not None else []
+                    if self._snapshot_store is not None else []
                 )
                 bars = await asyncio.to_thread(
                     bootstrap.load,
@@ -497,7 +511,7 @@ class BarGptRuntime:
                     "status": "ready", "origin_us": origin_us, "duration_seconds": round(duration, 3),
                     "snapshot_hit": bool(snapshot_rows), "updated_at": datetime.now(UTC).isoformat(),
                 }
-                if cache_id == "live" and self._snapshot_store is not None:
+                if self._snapshot_store is not None:
                     calendar = self._cache(cache_id).snapshot_rows(ticker, views=CALENDAR_VIEWS)
                     await asyncio.to_thread(
                         self._snapshot_store.save, ticker, origin_us, calendar, confirmed_revision
