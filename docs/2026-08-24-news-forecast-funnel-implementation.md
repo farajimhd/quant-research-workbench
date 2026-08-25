@@ -3,10 +3,13 @@
 ## Shipped operating contract
 
 Text Intelligence is the single routing authority for each canonical News
-revision. News Synthesis first makes the deterministic final-eligibility
-decision. Final-ineligible documents stop there. Remaining documents are scored
-by the hash-pinned DeepFM serving release; only DeepFM candidates may reach an
-issuer LLM review.
+revision. News Synthesis produces a structured, evidence-preserving view for
+every revision, but its eligibility interpretation is informational only: it
+cannot reject a document, suppress DeepFM, authorize an LLM call, or generate a
+signal. Every revision is scored by the hash-pinned DeepFM serving release.
+DeepFM is the sole live forecast-eligibility authority at the configured
+operating threshold, currently `0.5`; only DeepFM-eligible candidates may reach
+an issuer LLM review.
 
 The default trigger mode is `manual`. The frontend requests review for a
 specific canonical News identity and publication timestamp. Text Intelligence
@@ -21,7 +24,7 @@ contracts; the production launcher leaves both manual.
 
 | Concern | Authority | Durable tables |
 | --- | --- | --- |
-| Deterministic synthesis | Text Intelligence / News Synthesis V1 | `q_live.news_synthesis_v1` |
+| Informational synthesis | Text Intelligence / News Synthesis V1 | `q_live.news_synthesis_v1` |
 | Funnel decision | Text Intelligence / promoted DeepFM release | `q_live.news_forecast_funnel_v1` |
 | Issuer labels and article-language implication | Text Intelligence via Model Gateway | `q_live.news_llm_issuer_review_v1`, `q_live.news_llm_issuer_review_history_v1` |
 | Causal market-reaction hypotheses | News Hypothesis via Model Gateway | `q_live.news_market_hypothesis_v1`, `q_live.news_market_hypothesis_history_v1` |
@@ -49,6 +52,8 @@ merges deterministic and LLM events, projects configured fields, and evaluates
 every enabled `source_type=news_events` Signal Stream through its Rule Set.
 Manual labels therefore generate signals when—and only when—an enabled stream's
 configured rules match. Automatic labels use the identical event contract.
+News Synthesis fields remain available for presentation and comparison but are
+excluded from forecast-eligibility and signal-decision authority.
 
 ## Operations
 

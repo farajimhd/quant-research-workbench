@@ -1,7 +1,8 @@
 # Text Intelligence Service
 
-Shared domain service for News Synthesis V1, separately versioned SEC text
-labels, and an optional downstream live News model path.
+Shared domain service for informational News Synthesis V1, separately versioned
+SEC text labels, DeepFM forecast-eligibility scoring, and issuer-review
+orchestration.
 
 News Gateway and SEC Gateway own acquisition and canonical persistence. After a
 canonical publish, they send only a corpus, source identity, timestamp, and
@@ -17,9 +18,11 @@ The SEC classifier is never a News fallback or input.
 `q_live.canonical_text_live_status_v1` binds completion to the exact rendered
 source hash and the applicable authority version. Reconciliation therefore
 repairs missed notices and reprocesses new News or SEC revisions without
-repeating current work. Deterministic processing
-run regardless of trading state. Only the optional live News model path
-requires an active Live session and point-in-time QMD price eligibility.
+repeating current work. Deterministic processing and DeepFM scoring run
+regardless of trading state. News Synthesis is a view-only interpretation and
+never gates DeepFM, LLM review, or signal decisions. The active Live session is
+relevant only to automatic live forwarding and context-sensitive optional
+inference.
 SEC filings whose canonical document taxonomy is intentionally non-narrative
 are durably completed with zero labels and a revision-sensitive ineligibility
 hash. Eligible filings whose rendered text is not ready are deferred for the
@@ -34,7 +37,10 @@ next reconciliation cycle rather than misreported as processing failures.
 - Preserve one canonical publication while separating issuer roles, evidence,
   concepts, eligibility, and direction for multi-issuer events.
 - Persist News synthesis and SEC relationships to their distinct authorities.
-- Route only eligible News issuer units into optional live model inference.
+- Score every News revision with the promoted DeepFM release; use DeepFM as the
+  sole live forecast-eligibility authority.
+- Route only DeepFM-eligible issuer units into manual or explicitly enabled
+  automatic review.
 - Freeze the point-in-time QMD snapshot used for price eligibility.
 - Persist validated versioned semantic labels with model/cost/latency lineage.
 - Reconcile missed or revised canonical News and SEC text.
@@ -57,8 +63,12 @@ next reconciliation cycle rather than misreported as processing failures.
 - `TEXT_INTELLIGENCE_PROMPT_VERSION`, default `news-llm-prompt-v1`
 - `TEXT_INTELLIGENCE_ENABLE_MODELS`, default `false`; set `true` explicitly to
   load the configured optional local sentiment/NER models.
-- `TEXT_INTELLIGENCE_FORECAST_FUNNEL_ENABLED`, default `true`; applies the
-  deterministic final-ineligible gate and then the hash-pinned DeepFM release.
+- `TEXT_INTELLIGENCE_FORECAST_FUNNEL_ENABLED`, default `true`; scores every
+  canonical News revision with the hash-pinned DeepFM release. News Synthesis
+  is persisted for presentation and comparison but cannot filter this stage.
+- `TEXT_INTELLIGENCE_FORECAST_ELIGIBILITY_THRESHOLD`, default `0.5`; operating
+  threshold for the sole live eligibility authority. The threshold is persisted
+  as provenance and intentionally omitted from compact table labels.
 - `TEXT_INTELLIGENCE_FORECAST_RELEASE_MANIFEST`, default
   `D:\TradingML\runtimes\text_intelligence\serving\news_forecast_funnel_v1\release.json`.
 - `TEXT_INTELLIGENCE_FORECAST_MODEL_DEVICE`, default `cpu`.
@@ -130,14 +140,14 @@ or:
 .\scripts\run_text_intelligence.ps1
 ```
 
-The bare launcher runs News Synthesis V1 plus the separate SEC V5 classifier
-and reconciler. It does not load local language models and does not call an
-LLM, Model Gateway, or News Hypothesis. The standard live-gateway launcher also
-starts this deterministic service as its fifth tab with the shared Rich
-operational terminal. That terminal keeps current reconciliation, worker
-focus, queue depth, durable completion counts, and active failures visible;
-redirected/non-interactive starts remain cursor-control free. Optional
-inference is an explicit operator choice:
+The bare launcher runs News Synthesis V1, the promoted DeepFM scorer, and the
+separate SEC V5 classifier and reconciler. It does not make an LLM call unless
+Review is explicitly requested or automatic review is enabled. The standard
+live-gateway launcher also starts the service with the shared Rich operational
+terminal. That terminal keeps current reconciliation, worker focus, queue
+depth, durable completion counts, and active failures visible;
+redirected/non-interactive starts remain cursor-control free. Optional local
+models and automatic LLM inference remain explicit operator choices:
 
 ```powershell
 # Optional local sentiment/NER models.

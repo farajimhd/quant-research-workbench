@@ -2,6 +2,21 @@
 
 ## 2026
 
+### [2026-08-23 19:52 PDT - Deploy live News Intelligence, unify services, and harden QMD](docs/codex/chat-summaries/2026/CHAT-20260823-1952-live-news-intelligence-service-lifecycle-qmd-hardening.md)
+
+- Chat/task ID: `01a031af-1e60-7b32-a631-89274affb2fa`
+- Related tasks: `TASK-0025`, `TASK-0028`, `TASK-0174`, `TASK-0182`, `TASK-0191`, `TASK-0200`, `TASK-0201`, `TASK-0202`
+- Summary written: 2026-08-25, exact time unavailable (PDT)
+
+Deployed DeepFM-authoritative live News eligibility with persisted manual AI
+review and separate market-reaction forecasting, then repaired the live tables,
+focus clocks, chart history, Canvas persistence, and intelligence presentation
+found during UAT. Added one ownership-aware service manager with static profiles
+and fingerprint-derived development restarts. Finally, traced ClickHouse
+exhaustion to an unbounded QMD History coverage query and replaced it with a
+date-scoped, coalesced, cached, memory- and time-bounded contract without
+restarting QMD Live.
+
 ### [2026-08-23 time unavailable - Refine forecast labels, compare models, and evaluate the historical hybrid funnel](docs/codex/chat-summaries/2026/CHAT-20260823-UNKNOWN-news-label-refinement-model-funnel.md)
 
 - Chat/task ID: unavailable

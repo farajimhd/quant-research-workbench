@@ -6,14 +6,16 @@ The live AI path uses four independent service authorities:
    It owns provider profiles, fallback, timeouts, concurrency, idempotency,
    route budgets, usage, cost, and metadata-only audit state. It has no news or
    trading policy.
-2. **Text Intelligence (`:8804`)** owns News Synthesis V1, the separately
-   versioned SEC semantics, and optional live News eligibility routing. Its
-   reconciliation loop run independently of trading state after News Gateway
-   or SEC Gateway durably publishes canonical rendered text. Its optional News
-   model route operates only while the explicit live-trading session gate is
-   active, applies News Synthesis V1 eligibility, freezes the QMD ticker
-   snapshot, validates the current `gpt_oss_news_semantics_v1` output, and
-   persists it.
+2. **Text Intelligence (`:8804`)** owns informational News Synthesis V1, the
+   separately versioned SEC semantics, DeepFM forecast-eligibility scoring, and
+   issuer-review orchestration. Its reconciliation loops run independently of
+   trading state after News Gateway or SEC Gateway durably publishes canonical
+   rendered text. Every News revision receives both a synthesis view and a
+   hash-pinned DeepFM score. Synthesis cannot gate DeepFM or participate in a
+   forecast or signal decision. DeepFM is the sole live eligibility authority
+   at the configured operating threshold. Explicit or enabled automatic issuer
+   review invokes `news.issuer_review.v1` and persists validated current and
+   append-only results.
 3. **News Hypothesis (`:8803`)** owns deeper contextual hypotheses. It freezes the
    semantic label and point-in-time QMD, market, SEC, and fundamental context;
    invokes `news.trade_hypothesis.v2`; validates fixed-horizon probability
@@ -33,21 +35,26 @@ only decision/risk authorities; none of these three services can place orders.
 ```text
 News Gateway canonical V2 publish
   -> Text Intelligence bounded queue
-     -> News Synthesis V1 persistence
-     -> V1 eligibility + active-session + QMD price gate
-     -> Model Gateway: news.semantic_fast.v1
-     -> q_live.news_live_semantic_v3
-     -> News Hypothesis bounded queue
+     -> News Synthesis V1 persistence (informational view only)
+     -> hash-pinned DeepFM score for every revision
+     -> q_live.news_forecast_funnel_v1
+     -> manual Review, or explicitly enabled automatic Review
+        -> Model Gateway: news.issuer_review.v1
+        -> q_live.news_llm_issuer_review_v1 + append-only history
+     -> separate Forecast Reaction action, or enabled automatic handoff
+        -> News Hypothesis bounded queue
         -> frozen point-in-time context
         -> Model Gateway: news.trade_hypothesis.v2
-        -> q_live.news_market_hypothesis_v1
-        -> strategy may consume only before expires_at_utc
+        -> q_live.news_market_hypothesis_v1 + append-only history
+     -> configured Data Fields / Rule Sets / Signal Streams
 ```
 
 The notification from News Gateway is deliberately downstream and
 non-authoritative: inference unavailability cannot roll back canonical news.
-Model requests are idempotent by content/contract identity. Generated audit
-state belongs under `D:\TradingML\runtimes`, never inside the repository.
+Model requests are idempotent by content/contract identity. Manual Review does
+not silently trigger Forecast Reaction. Automatic Review and Reaction remain
+implemented but disabled by the production launchers. Generated audit state
+belongs under `D:\TradingML\runtimes`, never inside the repository.
 
 ## Start order
 
@@ -59,12 +66,12 @@ state belongs under `D:\TradingML\runtimes`, never inside the repository.
 .\scripts\run_bar_gpt.ps1
 ```
 
-Starting and stopping the backend live market gateway updates the explicit Text
-Intelligence session gate immediately. Text Intelligence also polls the
-backend market-gateway status, so it restores the gate after a service restart
-and fails closed when that authority is unavailable. Verify
-`GET http://127.0.0.1:8804/live-session` before expecting paid or local live
-inference.
+DeepFM and News Synthesis reconciliation do not depend on an active trading
+session. The explicit live-session state controls automatic live forwarding and
+context-sensitive legacy inference; manual Review remains an explicit request.
+Text Intelligence polls backend status to restore the session state after a
+restart and fails closed when required live context is unavailable. Verify
+`GET http://127.0.0.1:8804/live-session` when diagnosing automatic live work.
 
 When services run on different machines, set the advertised dependencies
 explicitly rather than relying on loopback defaults:
