@@ -31,8 +31,14 @@ class HistoricalWatchlistPlanTests(unittest.TestCase):
 
         halt = next(row for row in templates if row["signal_stream_id"] == "market-halts")
         news = next(row for row in templates if row["signal_stream_id"] == "bullish-news-v1")
+        synthesis_news = next(
+            row
+            for row in templates
+            if row["signal_stream_id"] == "bullish-synthesis-deepfm-news-v1"
+        )
         self.assertEqual(halt["recovery_kind"], "source_native")
         self.assertEqual(news["recovery_kind"], "source_native")
+        self.assertEqual(synthesis_news["recovery_kind"], "source_native")
 
     def test_compiles_deterministic_qmd_and_external_feature_contract(self) -> None:
         configuration = _default_draft()
@@ -54,7 +60,7 @@ class HistoricalWatchlistPlanTests(unittest.TestCase):
         self.assertEqual(plan["plan_hash"], repeated["plan_hash"])
         self.assertEqual(
             plan["plan_hash"],
-            "sha256:d61d219d61a6ec4c00d776f0ef2e5e79d03b8c8de9a0470f0f356b4e2b327341",
+            "sha256:16d7a19abbb2215bd22dc36365fdb2922e0aea776a3b0f5d0d6fe6ee7ca8abb2",
         )
         self.assertEqual(plan["qmd_sources"], ["market.liquidity_rank"])
         self.assertEqual(
@@ -69,7 +75,7 @@ class HistoricalWatchlistPlanTests(unittest.TestCase):
         )
         self.assertEqual(plan["external_features"][0]["field_id"], "reference.float_shares")
         self.assertEqual(plan["external_features"][0]["query_plan_id"], "reference.scanner_asof.v1")
-        self.assertEqual(plan["external_features"][0]["query_plan_version"], 2)
+        self.assertEqual(plan["external_features"][0]["query_plan_version"], 3)
         self.assertEqual(plan["chunk_duration_ms"], plan["cadence_ms"] * 1_800)
         self.assertTrue(plan["state_carry_required"])
 

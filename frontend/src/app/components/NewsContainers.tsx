@@ -613,7 +613,7 @@ function NewsIntelligenceDetail({ classification, initialState, newsId, publishe
               <span>{readableLabel(summary.information_origin)}</span>
               <span>{shortConcept(summary.concepts[0] || "Unclassified")}</span>
             </div>
-            <small>Informational interpretation; not a filtering or signal authority.</small>
+            <small>Informational interpretation; only the protected positive-direction + DeepFM-eligible stream may use it as paired signal evidence.</small>
           </>
         ) : <span className="news-card-empty">Pending</span>}
       </section>

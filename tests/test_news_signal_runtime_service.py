@@ -181,6 +181,105 @@ class NewsSignalRuntimeTests(unittest.TestCase):
             journal.close()
         self.assertEqual(result["occurrences"], [])
 
+    def test_positive_synthesis_plus_deepfm_emits_labeled_signal(self) -> None:
+        now = datetime(2026, 8, 17, 15, 0, tzinfo=UTC)
+        config = configuration()
+        config["market_discovery"]["column_catalog"].append({
+            "column_id": "news_composite_sentiment",
+            "source_id": "news.composite_sentiment",
+            "field_ref": "news.composite_sentiment",
+        })
+        config["market_discovery"]["rule_sets"][0] = {
+            "rule_set_id": "signal-news-synthesis-deepfm-bullish",
+            "conditions": [
+                {
+                    "enabled": True,
+                    "left_field_ref": "news.composite_sentiment",
+                    "left_source_id": "news.composite_sentiment",
+                    "comparator": "equals",
+                    "value": "positive",
+                },
+                {
+                    "enabled": True,
+                    "left_field_ref": "news.deepfm.forecast_eligible",
+                    "left_source_id": "news.deepfm.forecast_eligible",
+                    "comparator": "is_true",
+                    "value": True,
+                },
+            ],
+        }
+        config["market_discovery"]["signal_streams"][0].update({
+            "signal_stream_id": "bullish-synthesis-deepfm-news-v1",
+            "inclusion_rule_sets": ["signal-news-synthesis-deepfm-bullish"],
+            "columns": [
+                "symbol",
+                "news_composite_sentiment",
+                "news_deepfm_probability",
+                "news_forecast_eligible",
+            ],
+        })
+        runtime = NewsSignalRuntime(
+            loader=lambda **_: [source_row("2026-08-17T14:59:50+00:00")],
+            publisher=lambda stream_id, rows: {
+                "new_occurrences": [dict(row, signal_stream_id=stream_id) for row in rows]
+            },
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            journal = TradingJournal(Path(directory) / "journal.sqlite3")
+            result = runtime.refresh(
+                config,
+                [{"ticker": "ACME", "last_price": 12.5}],
+                as_of=now,
+                journal=journal,
+            )
+            journal.close()
+
+        self.assertEqual(len(result["new_occurrences"]), 1)
+        occurrence = result["new_occurrences"][0]
+        self.assertEqual(occurrence["signal_stream_id"], "bullish-synthesis-deepfm-news-v1")
+        self.assertEqual(occurrence["news_composite_sentiment"], "positive")
+        self.assertEqual(occurrence["news_deepfm_probability"], 0.91)
+        self.assertTrue(occurrence["news_forecast_eligible"])
+
+    def test_protected_synthesis_stream_requires_deepfm_eligibility(self) -> None:
+        now = datetime(2026, 8, 17, 15, 0, tzinfo=UTC)
+        config = configuration()
+        config["market_discovery"]["rule_sets"][0] = {
+            "rule_set_id": "signal-news-synthesis-deepfm-bullish",
+            "conditions": [
+                {
+                    "enabled": True,
+                    "left_source_id": "news.composite_sentiment",
+                    "comparator": "equals",
+                    "value": "positive",
+                },
+                {
+                    "enabled": True,
+                    "left_source_id": "news.deepfm.forecast_eligible",
+                    "comparator": "is_true",
+                    "value": True,
+                },
+            ],
+        }
+        rejected = source_row("2026-08-17T14:59:50+00:00")
+        rejected["funnel_forecast_eligibility"] = "ineligible"
+        rejected["funnel_stage"] = "deepfm_filtered"
+        runtime = NewsSignalRuntime(
+            loader=lambda **_: [rejected],
+            publisher=lambda _stream_id, rows: {"new_occurrences": rows},
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            journal = TradingJournal(Path(directory) / "journal.sqlite3")
+            result = runtime.refresh(
+                config,
+                [{"ticker": "ACME"}],
+                as_of=now,
+                journal=journal,
+            )
+            journal.close()
+
+        self.assertEqual(result["occurrences"], [])
+
     def test_stale_bootstrap_event_is_visible_but_not_live_dispatchable(self) -> None:
         now = datetime(2026, 8, 17, 15, 0, tzinfo=UTC)
         runtime = NewsSignalRuntime(

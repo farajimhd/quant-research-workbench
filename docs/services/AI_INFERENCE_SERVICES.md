@@ -12,7 +12,9 @@ The live AI path uses four independent service authorities:
    trading state after News Gateway or SEC Gateway durably publishes canonical
    rendered text. Every News revision receives both a synthesis view and a
    hash-pinned DeepFM score. Synthesis cannot gate DeepFM or participate in a
-   forecast or signal decision. DeepFM is the sole live eligibility authority
+   forecast decision. It may participate only in the protected positive-direction
+   plus DeepFM-eligible Signal Stream; synthesis-only signal rules fail closed.
+   DeepFM is the sole live eligibility authority
    at the configured operating threshold. Explicit or enabled automatic issuer
    review invokes `news.issuer_review.v1` and persists validated current and
    append-only results.

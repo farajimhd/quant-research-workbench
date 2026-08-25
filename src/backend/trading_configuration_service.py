@@ -2794,6 +2794,7 @@ def _default_watchlist_rule_sets() -> list[dict[str, Any]]:
         _watchlist_rule("watchlist-vwap-breakout", "VWAP breakout", "Requires last price to trade at least 5 basis points above current VWAP.", [{**_watchlist_condition("vwap-breakout-price", "market.last_price", "above_by_bps", 5), "right_source_id": "indicator.vwap.value"}]),
         _watchlist_rule("watchlist-news-bullish", "Bullish AI-reviewed news", "Requires a persisted issuer-specific AI review with forecast relevance and positive language implication.", [_watchlist_condition("news-ai-forecast-eligible", "news.llm.forecast_eligible", "is_true", True), _watchlist_condition("news-ai-positive-sentiment", "news.llm.language_sentiment", "equals", "positive")]),
         _watchlist_rule("watchlist-news-bearish", "Bearish AI-reviewed news", "Requires a persisted issuer-specific AI review with forecast relevance and negative language implication.", [_watchlist_condition("news-ai-forecast-eligible-negative", "news.llm.forecast_eligible", "is_true", True), _watchlist_condition("news-ai-negative-sentiment", "news.llm.language_sentiment", "equals", "negative")]),
+        _watchlist_rule("signal-news-synthesis-deepfm-bullish", "Bullish Synthesis + DeepFM", "Requires positive issuer direction from News Synthesis and an eligible decision from the promoted DeepFM release for the same canonical news event.", [_watchlist_condition("news-synthesis-positive-direction", "news.composite_sentiment", "equals", "positive"), _watchlist_condition("news-synthesis-deepfm-eligible", "news.deepfm.forecast_eligible", "is_true", True)]),
         _watchlist_rule("watchlist-sec-bullish", "Bullish SEC sentiment", "Requires a validated SEC label and a positive filing score of at least 0.35.", [_watchlist_condition("sec-labeled-positive", "signal.sec_labeled", "is_true", True), _watchlist_condition("sec-positive-score", "signal.sec_filing.score", "greater_or_equal", 0.35)], enabled=False, implementation_status="integration_pending"),
         _watchlist_rule("watchlist-sec-bearish", "Bearish SEC sentiment", "Requires a validated SEC label and a negative filing score of -0.35 or lower.", [_watchlist_condition("sec-labeled-negative", "signal.sec_labeled", "is_true", True), _watchlist_condition("sec-negative-score", "signal.sec_filing.score", "less_or_equal", -0.35)], enabled=False, implementation_status="integration_pending"),
         _watchlist_rule("watchlist-fundamental-bullish", "Fundamental Bullish", "Requires reliable SEC evidence and a trajectory score of at least 65.", [_watchlist_condition("fundamental-bull-quality", "fundamental.quality_score", "greater_or_equal", 60), _watchlist_condition("fundamental-bull-score", "fundamental.trajectory_score", "greater_or_equal", 65)]),
@@ -3219,6 +3220,21 @@ def _default_signal_streams(
         "news.published_at",
     ]
     news_columns = columns_for_sources(news_sources)
+    synthesis_deepfm_sources = [
+        "identity.symbol",
+        "market.last_price",
+        "quote.bid_price",
+        "quote.ask_price",
+        "market.spread_bps",
+        "market.session_phase",
+        "news.composite_sentiment",
+        "news.deepfm.eligible_probability",
+        "news.deepfm.forecast_eligible",
+        "news.deepfm.status",
+        "news.canonical_news_id",
+        "news.published_at",
+    ]
+    synthesis_deepfm_columns = columns_for_sources(synthesis_deepfm_sources)
     halt_sources = [
         "identity.symbol",
         "market.last_price",
@@ -3329,6 +3345,32 @@ def _default_signal_streams(
             "inclusion_rule_sets": ["watchlist-news-bullish"],
             "inclusion_operator": "all",
             "columns": news_columns,
+            "column_intervals": {
+                columns_by_source[source_id]: normalize_interval_spec("100ms")
+                for source_id in ("quote.bid_price", "quote.ask_price")
+                if source_id in columns_by_source
+            },
+            "refresh_interval_ms": 1000,
+            "trigger_policy": "false_to_true",
+            "rearm_policy": "after_false",
+            "cooldown_ms": 0,
+            "maximum_events": 5000,
+            "watchlist_routes": [],
+        },
+        {
+            "signal_stream_id": "bullish-synthesis-deepfm-news-v1",
+            "revision": 1,
+            "name": "Bullish Synthesis + DeepFM News",
+            "description": "Append-only issuer occurrences emitted only when News Synthesis direction is positive and the promoted DeepFM release marks the same canonical article forecast-eligible. DeepFM remains the eligibility authority.",
+            "enabled": True,
+            "origin": "system",
+            "protected": True,
+            "source_type": "news_events",
+            "source_id": "q_live.news_intelligence_events_v1",
+            "source_scan_id": "qmd-core-scan",
+            "inclusion_rule_sets": ["signal-news-synthesis-deepfm-bullish"],
+            "inclusion_operator": "all",
+            "columns": synthesis_deepfm_columns,
             "column_intervals": {
                 columns_by_source[source_id]: normalize_interval_spec("100ms")
                 for source_id in ("quote.bid_price", "quote.ask_price")

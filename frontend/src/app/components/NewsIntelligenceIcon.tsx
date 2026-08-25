@@ -53,7 +53,7 @@ export function NewsIconGuide() {
       <Legend icon={<NewsIntelligenceIcon count={1} pending recency="fresh" />} label="Processing" detail="Review or reaction running" />
       <Legend icon={<NewsIntelligenceIcon count={4} failed recency="older" />} label="Needs attention" detail="Failed or incomplete processing" />
     </div></section>
-    <footer><strong>Counter</strong><span>The violet number is the linked story count. The timeline itself is restricted to the current New York market date.</span><strong>Synthesis</strong><span>News Synthesis remains view-only and does not control fill, filtering, or signals.</span></footer>
+    <footer><strong>Counter</strong><span>The violet number is the linked story count. The timeline itself is restricted to the current New York market date.</span><strong>Synthesis</strong><span>News Synthesis remains informational except in the protected positive-direction + DeepFM-eligible signal stream; it never controls eligibility by itself.</span></footer>
   </section>;
 }
 

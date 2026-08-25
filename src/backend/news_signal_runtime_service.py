@@ -230,7 +230,7 @@ class NewsSignalRuntime:
         rule_sets = {
             str(row.get("rule_set_id") or ""): row
             for row in discovery.get("rule_sets") or []
-            if not _uses_synthesis_decision_field(row)
+            if _rule_set_authorized_for_news_signal(row)
         }
         inserted: list[dict[str, Any]] = []
         for stream in discovery.get("signal_streams") or []:
@@ -436,6 +436,33 @@ def _uses_synthesis_decision_field(rule_set: dict[str, Any]) -> bool:
         for condition in rule_set.get("conditions") or []
         for key in ("left_field_ref", "left_source_id", "right_field_ref", "right_source_id")
     )
+
+
+def _rule_set_authorized_for_news_signal(rule_set: dict[str, Any]) -> bool:
+    """Allow one protected DeepFM-guarded synthesis-direction contract.
+
+    Synthesis-only and custom synthesis rules remain fail-closed.  The narrow
+    exception requires the exact built-in rule ID plus both positive issuer
+    direction and DeepFM eligibility for the same event row.
+    """
+
+    if not _uses_synthesis_decision_field(rule_set):
+        return True
+    if str(rule_set.get("rule_set_id") or "") != "signal-news-synthesis-deepfm-bullish":
+        return False
+    conditions = {
+        (
+            str(condition.get("left_source_id") or ""),
+            str(condition.get("comparator") or ""),
+            str(condition.get("value") or "").lower(),
+        )
+        for condition in rule_set.get("conditions") or []
+        if bool(condition.get("enabled", True))
+    }
+    return {
+        ("news.composite_sentiment", "equals", "positive"),
+        ("news.deepfm.forecast_eligible", "is_true", "true"),
+    }.issubset(conditions)
 
 
 def _datetime(value: Any) -> datetime | None:

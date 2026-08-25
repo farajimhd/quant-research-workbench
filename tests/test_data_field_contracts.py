@@ -238,7 +238,11 @@ class DataFieldContractTests(unittest.TestCase):
                 if condition.get("right_field_ref"):
                     self.assertTrue(by_ref[condition["right_field_ref"]]["enabled"])
 
-        implemented_ids = {"watchlist-news-bullish", "watchlist-news-bearish"}
+        implemented_ids = {
+            "watchlist-news-bullish",
+            "watchlist-news-bearish",
+            "signal-news-synthesis-deepfm-bullish",
+        }
         implemented = {
             row["rule_set_id"]: row for row in self.discovery["rule_sets"]
             if row["rule_set_id"] in implemented_ids

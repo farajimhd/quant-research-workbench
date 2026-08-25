@@ -210,7 +210,7 @@ const FIELD_CATALOG: FieldDefinition[] = [
   field("news_synthesis_class", "Synthesis class", "News intelligence", "derived", "text", "Short article class from News Synthesis."),
   field("news_synthesis_purpose", "Synthesis purpose", "News intelligence", "derived", "text", "Communication purpose from News Synthesis."),
   field("news_synthesis_origin", "Synthesis origin", "News intelligence", "derived", "text", "Information origin from News Synthesis."),
-  field("news_synthesis_direction", "Synthesis direction", "News intelligence", "derived", "text", "Informational issuer direction from News Synthesis; never decision-authorized."),
+  field("news_synthesis_direction", "Synthesis direction", "News intelligence", "derived", "text", "Issuer direction from News Synthesis. It can activate only the protected positive-direction plus DeepFM-eligible stream."),
   field("news_synthesis_event", "Synthesis event", "News intelligence", "derived", "text", "Primary concept on the latest issuer story."),
   field("news_ai_review", "AI review", "News intelligence", "derived", "percentPlain", "Latest issuer forecast-relevance score; sorting uses this probability."),
   field("news_ai_review_state", "AI review state", "News intelligence", "derived", "text", "Manual AI review workflow state."),

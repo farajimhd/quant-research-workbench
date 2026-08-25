@@ -19,8 +19,10 @@ The SEC classifier is never a News fallback or input.
 source hash and the applicable authority version. Reconciliation therefore
 repairs missed notices and reprocesses new News or SEC revisions without
 repeating current work. Deterministic processing and DeepFM scoring run
-regardless of trading state. News Synthesis is a view-only interpretation and
-never gates DeepFM, LLM review, or signal decisions. The active Live session is
+regardless of trading state. News Synthesis is an informational interpretation
+and never gates DeepFM or LLM review. It participates in signal decisions only
+through the protected positive-direction plus DeepFM-eligible stream; synthesis-
+only rules fail closed. The active Live session is
 relevant only to automatic live forwarding and context-sensitive optional
 inference.
 SEC filings whose canonical document taxonomy is intentionally non-narrative

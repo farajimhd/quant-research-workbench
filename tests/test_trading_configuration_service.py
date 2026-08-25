@@ -484,6 +484,41 @@ class TradingConfigurationServiceTests(unittest.TestCase):
             {row["signal_stream_id"] for row in discovery["signal_streams"]},
         )
 
+    def test_default_discovery_adds_guarded_synthesis_deepfm_stream(self) -> None:
+        discovery = self._draft()["market_discovery"]
+        rule = next(
+            row
+            for row in discovery["rule_sets"]
+            if row["rule_set_id"] == "signal-news-synthesis-deepfm-bullish"
+        )
+        self.assertEqual(
+            {
+                (condition["left_source_id"], condition["comparator"], condition["value"])
+                for condition in rule["conditions"]
+            },
+            {
+                ("news.composite_sentiment", "equals", "positive"),
+                ("news.deepfm.forecast_eligible", "is_true", True),
+            },
+        )
+        stream = next(
+            row
+            for row in discovery["signal_streams"]
+            if row["signal_stream_id"] == "bullish-synthesis-deepfm-news-v1"
+        )
+        self.assertEqual(
+            stream["inclusion_rule_sets"],
+            ["signal-news-synthesis-deepfm-bullish"],
+        )
+        self.assertTrue(
+            {
+                "news_composite_sentiment",
+                "news_deepfm_probability",
+                "news_deepfm_eligible",
+                "news_deepfm_status",
+            }.issubset(set(stream["columns"]))
+        )
+
     def test_schema_v27_migrates_generic_timeframes_to_field_dimensions(self) -> None:
         legacy = self._draft()
         legacy["schema_version"] = 27
