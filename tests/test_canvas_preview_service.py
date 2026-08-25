@@ -7,6 +7,7 @@ from unittest.mock import patch
 from src.backend.canvas_preview_service import (
     _attach_sec_tickers,
     _merge_scanner_intelligence,
+    _query_scanner_news_intelligence,
     canvas_preview_payload,
 )
 
@@ -118,6 +119,31 @@ class CanvasPreviewServiceTests(unittest.TestCase):
         self.assertEqual(scanner[0]["news_ai_review"], 92.0)
         self.assertEqual(scanner[0]["news_deepfm_probability"], 100.0)
         self.assertEqual(scanner[0]["news_ai_reaction"], 1.25)
+
+    @patch("src.backend.canvas_preview_service.load_news_ai_state", return_value={})
+    @patch("src.backend.canvas_preview_service._clickhouse_rows")
+    def test_scanner_news_counts_use_authoritative_ticker_membership(self, clickhouse_mock, _ai_mock) -> None:
+        clickhouse_mock.side_effect = [
+            [{
+                "ticker": "DAIC",
+                "canonical_news_id": "synthesized-1",
+                "published_at_utc": "2026-08-25T17:00:00.000000Z",
+                "news_labels": ["market_observation"],
+            }],
+            [{
+                "ticker": "DAIC",
+                "live_news_count": 12,
+                "today_news_count": 5,
+                "latest_news_at": "2026-08-25T20:00:00.000000Z",
+            }],
+        ]
+
+        rows = _query_scanner_news_intelligence(datetime.fromisoformat("2026-08-25T21:00:00+00:00"))
+
+        self.assertEqual(rows[0]["live_news_count"], 12)
+        self.assertEqual(rows[0]["today_news_count"], 5)
+        self.assertEqual(rows[0]["latest_news_at"], "2026-08-25T20:00:00.000000Z")
+        self.assertIn("uniqExactIf", clickhouse_mock.call_args_list[1].args[0])
 
 
 if __name__ == "__main__":

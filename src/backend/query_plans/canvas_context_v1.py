@@ -103,6 +103,37 @@ def scanner_company_news(
     """
 
 
+def scanner_ticker_news_counts(cutoff: datetime) -> str:
+    """Return authoritative rolling and New York-date ticker-news membership counts."""
+
+    start = cutoff - timedelta(days=3)
+    cutoff_sql = f"toDateTime64({_utc_sql(cutoff)}, 3, 'UTC')"
+    return f"""
+        SELECT
+            ticker,
+            uniqExact(canonical_news_id) AS live_news_count,
+            uniqExactIf(
+                canonical_news_id,
+                toDate(published_at_utc, 'America/New_York') =
+                    toDate({cutoff_sql}, 'America/New_York')
+            ) AS today_news_count,
+            formatDateTime(max(published_at_utc), '%Y-%m-%dT%H:%i:%S.%fZ', 'UTC') AS latest_news_at
+        FROM
+        (
+            SELECT
+                canonical_news_id,
+                published_at_utc,
+                arrayJoin(arrayMap(value -> upperUTF8(trimBoth(value)), tickers)) AS ticker
+            FROM q_live.benzinga_news_event_v2 FINAL
+            PREWHERE published_date BETWEEN toDate({_utc_sql(start)}) AND toDate({_utc_sql(cutoff)})
+            WHERE published_at_utc BETWEEN toDateTime64({_utc_sql(start)}, 3, 'UTC')
+                AND {cutoff_sql}
+        )
+        WHERE notEmpty(ticker)
+        GROUP BY ticker
+    """
+
+
 def ticker_news_recency(
     cutoff: datetime,
     *,

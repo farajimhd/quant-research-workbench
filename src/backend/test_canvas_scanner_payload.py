@@ -246,13 +246,15 @@ class CanvasScannerPayloadTest(unittest.TestCase):
         as_of = datetime(2026, 7, 17, 13, 45, tzinfo=UTC)
         with patch("src.backend.canvas_preview_service._clickhouse_rows", return_value=[]) as clickhouse:
             _query_scanner_news_intelligence(as_of)
-            news_sql = clickhouse.call_args.args[0]
+            count_sql = clickhouse.call_args_list[1].args[0]
             _query_scanner_sec_intelligence(as_of)
             sec_sql = clickhouse.call_args.args[0]
 
-        self.assertIn("GROUP BY ticker", news_sql)
-        self.assertIn("WHERE is_company_news", news_sql)
-        self.assertNotIn("LIMIT 30", news_sql)
+        self.assertIn("GROUP BY ticker", count_sql)
+        self.assertIn("uniqExactIf", count_sql)
+        self.assertIn("America/New_York", count_sql)
+        self.assertIn("benzinga_news_event_v2 FINAL", count_sql)
+        self.assertNotIn("LIMIT 30", count_sql)
         self.assertIn("GROUP BY ticker", sec_sql)
         self.assertIn("valid_to_date_exclusive", sec_sql)
         self.assertNotIn("LIMIT 30", sec_sql)

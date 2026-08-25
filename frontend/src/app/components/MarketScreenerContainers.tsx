@@ -202,7 +202,8 @@ const FIELD_CATALOG: FieldDefinition[] = [
   field("fundamental_sga_intensity_pct", "SG&A intensity", "Financial ratios & growth", "derived", "percent", "Selling, general, and administrative expense divided by aligned revenue."),
   ...reportedFundamentalFields(),
   field("live_news_recency", "News recency", "News & SEC", "derived", "text", "Hot, cold, old, or none for company-specific news at the workspace clock."),
-  field("live_news_count", "News count", "News & SEC", "derived", "integer", "Recent company-specific article count."),
+  field("today_news_count", "Today news count", "News & SEC", "derived", "integer", "Company-specific stories published on the current New York market date; this is the ticker news marker count."),
+  field("live_news_count", "Recent news count", "News & SEC", "derived", "integer", "Company-specific stories in the rolling three-day intelligence window; this is not the ticker news marker count."),
   field("news_labels", "News", "News & SEC", "derived", "text", "Explainable company-news classifications."),
   field("news_intelligence", "News", "News intelligence", "derived", "percentPlain", "Today’s ticker news and model state; sorting and numeric filtering use the strongest available DeepFM, AI-review, or reaction confidence."),
   field("news_synthesis", "News synthesis", "News intelligence", "derived", "number", "Informational synthesis card for the latest issuer story; sorting uses its signed direction score."),
@@ -1087,7 +1088,7 @@ function renderMarketCell(row: ScreenerRow, column: string, presentations: Retur
 }
 
 function NewsMarketCell({ compact = false, row, ticker }: { compact?: boolean; row: ScreenerRow; ticker: string }) {
-  const count = Math.max(0, Math.round(numberValue(row.today_news_count)), Math.round(numberValue(row.live_news_count)));
+  const count = todayNewsCount(row);
   if (!count) return null;
   const expected = row.news_ai_reaction === null || row.news_ai_reaction === undefined ? null : numberValue(row.news_ai_reaction);
   const reactionDirection: NewsReactionDirection | undefined = expected === null ? undefined : expected > 0 ? "up" : expected < 0 ? "down" : "flat";
@@ -1116,7 +1117,12 @@ function newsIntelligenceConfidence(row: ScreenerRow) {
   return values.length ? Math.max(...values) : 0;
 }
 
-function hasNewsMarker(row: ScreenerRow) { return Math.max(numberValue(row.today_news_count), numberValue(row.live_news_count)) > 0; }
+function todayNewsCount(row: ScreenerRow) {
+  if (row.today_news_count === null || row.today_news_count === undefined || row.today_news_count === "") return 0;
+  return Math.max(0, Math.round(numberValue(row.today_news_count)));
+}
+
+function hasNewsMarker(row: ScreenerRow) { return todayNewsCount(row) > 0; }
 
 function newsIconRecency(value: unknown): NewsIconRecency {
   const ageMinutes = (Date.now() - Date.parse(String(value ?? ""))) / 60_000;

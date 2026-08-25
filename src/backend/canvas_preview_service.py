@@ -648,40 +648,38 @@ def _query_sec(cutoff: datetime) -> list[dict[str, Any]]:
 
 
 def _query_scanner_news_intelligence(cutoff: datetime) -> list[dict[str, Any]]:
-    """Return one causal synthesized-news summary per ticker for scanner enrichment."""
+    """Return authoritative ticker counts plus the latest synthesized interpretation."""
     source_rows = _clickhouse_rows(
         canvas_context_v1.scanner_company_news(
             cutoff, engine_version=ENGINE_VERSION, synthesis_table=SYNTHESIS_TABLE
         )
     )
+    count_rows = _clickhouse_rows(canvas_context_v1.scanner_ticker_news_counts(cutoff))
     latest_by_ticker: dict[str, dict[str, Any]] = {}
-    counts: dict[str, int] = {}
-    today_counts: dict[str, int] = {}
     labels: dict[str, set[str]] = {}
-    market_date = cutoff.astimezone(ZoneInfo("America/New_York")).date()
     for row in source_rows:
         ticker = str(row.get("ticker") or "").strip().upper()
         if not ticker:
             continue
-        counts[ticker] = counts.get(ticker, 0) + 1
-        try:
-            published_at = datetime.fromisoformat(str(row.get("published_at_utc") or "").replace("Z", "+00:00"))
-            if published_at.astimezone(ZoneInfo("America/New_York")).date() == market_date:
-                today_counts[ticker] = today_counts.get(ticker, 0) + 1
-        except ValueError:
-            pass
         labels.setdefault(ticker, set()).update(_string_values(row.get("news_labels")))
         latest_by_ticker.setdefault(ticker, dict(row))
+    counts_by_ticker = {
+        str(row.get("ticker") or "").strip().upper(): row
+        for row in count_rows
+        if str(row.get("ticker") or "").strip()
+    }
     ai_by_news = load_news_ai_state(
         [str(row.get("canonical_news_id") or "") for row in latest_by_ticker.values()],
         query_rows=_clickhouse_rows,
     )
     result: list[dict[str, Any]] = []
-    for ticker, row in latest_by_ticker.items():
-        row["live_news_count"] = counts[ticker]
-        row["today_news_count"] = today_counts.get(ticker, 0)
-        row["latest_news_at"] = row.get("published_at_utc")
-        row["news_labels"] = sorted(labels[ticker])
+    for ticker in sorted(set(latest_by_ticker) | set(counts_by_ticker)):
+        row = latest_by_ticker.get(ticker, {"ticker": ticker})
+        count_row = counts_by_ticker.get(ticker, {})
+        row["live_news_count"] = int(count_row.get("live_news_count") or 0)
+        row["today_news_count"] = int(count_row.get("today_news_count") or 0)
+        row["latest_news_at"] = count_row.get("latest_news_at") or row.get("published_at_utc")
+        row["news_labels"] = sorted(labels.get(ticker, set()))
         row["ai_state"] = ai_by_news.get(str(row.get("canonical_news_id") or ""))
         result.append(row)
     return result
