@@ -16,14 +16,25 @@ export type Revision = {
   revision_id: string;
 };
 
+export type TestCandidate = {
+  candidate_id: string;
+  candidate_revision: number;
+  content_hash: string;
+  created_at: string;
+  label: string;
+  payload: Revision["payload"];
+  release_state: "test_candidate";
+};
 
-export function RevisionBadge({ approved }: { approved: Revision | null }) {
-  const Icon = approved ? BadgeCheck : LockKeyhole;
-  return <div className="configuration-revision-badge" data-approved={approved ? "true" : "false"}><span className="configuration-revision-icon"><Icon aria-hidden="true" size={16} /></span><span className="configuration-revision-copy"><small>Runtime authority</small><strong>{approved ? `Release ${approved.revision}` : "Session only"}</strong><span>{approved ? approved.label : "Publish to retain"}</span></span></div>;
+
+export function RevisionBadge({ approved, candidate }: { approved: Revision | null; candidate?: TestCandidate }) {
+  const Icon = approved || candidate ? BadgeCheck : LockKeyhole;
+  return <div className="configuration-revision-badge" data-approved={approved ? "true" : "false"}><span className="configuration-revision-icon"><Icon aria-hidden="true" size={16} /></span><span className="configuration-revision-copy"><small>Runtime authority</small><strong>{approved ? `Release ${approved.revision}` : candidate ? `Test t${candidate.candidate_revision}` : "Session only"}</strong><span>{approved ? approved.label : candidate ? "Debug and Backtest only" : "Create a Test Candidate"}</span></span></div>;
 }
 
-export function RevisionPublisher({ approved, draft, guided = false, label, onLabelChange, onPublish, publishing, revisions }: {
+export function RevisionPublisher({ approved, candidates = [], draft, guided = false, label, onLabelChange, onPublish, publishing, revisions }: {
   approved: Revision | null;
+  candidates?: TestCandidate[];
   draft: Draft | null;
   guided?: boolean;
   label: string;
@@ -39,18 +50,19 @@ export function RevisionPublisher({ approved, draft, guided = false, label, onLa
   return (
     <div className="configuration-revision-layout">
       <section className="configuration-publish-card">
-        <header><div><span>{guided ? "Ready for use" : "Completion gate"}</span><strong>{guided ? "Publish this setup" : "Publish the application release"}</strong></div><Send size={18} /></header>
-        <p>{guided ? "Publishing makes this execution setup available to new runs. Existing runs keep the release they started with." : "A release freezes every referenced Strategy, Session Profile, Execution Route, mandate, policy, OMS configuration, and account binding. Canvas profiles remain separately versioned presentation and may attach to a run by run ID."}</p>
+        <header><div><span>{guided ? "Ready to test" : "Test-first gate"}</span><strong>Create an immutable Test Candidate</strong></div><Send size={18} /></header>
+        <p>This freezes every referenced Strategy, Run Plan, mandate, policy, OMS configuration, account binding, and Canvas reference for reproducible Debug and Backtest runs. It does not authorize Paper or Live trading.</p>
         <div className="configuration-publish-proof">
           {visibleChecks.map((check) => <span data-ready={check.ready ? "true" : "false"} key={check.label}>{check.ready ? <CheckCircle2 size={14} /> : <TriangleAlert size={14} />} {guided ? publishCheckLabel(check.label) : check.label} · {check.detail}</span>)}
           <span data-ready="true"><CheckCircle2 size={14} /> Optional Canvas · {canvas.containerCount} saved containers</span>
         </div>
-        <label><span>Release label <FieldHelp content="Use a short operational label that explains what this release is intended to validate." /></span><input onChange={(event) => onLabelChange(event.target.value)} placeholder="Replay strategy-studio acceptance" value={label} /></label>
-        <button className="button primary" disabled={!draft || !configurationReady || !label.trim() || publishing} onClick={onPublish} type="button"><Send size={15} /> {publishing ? "Publishing…" : "Publish release"}</button>
+        <label><span>Candidate label <FieldHelp content="Use a short label that identifies the hypothesis and parameters under test." /></span><input onChange={(event) => onLabelChange(event.target.value)} placeholder="Long momentum squeeze · baseline" value={label} /></label>
+        <button className="button primary" disabled={!draft || !configurationReady || !label.trim() || publishing} onClick={onPublish} type="button"><Send size={15} /> {publishing ? "Freezing…" : "Create Test Candidate"}</button>
       </section>
       <section className="configuration-history-card">
-        <header><span>Immutable history</span><strong>{revisions.length} approved release{revisions.length === 1 ? "" : "s"}</strong></header>
-        <div>{revisions.map((revision) => <article data-current={revision.revision_id === approved?.revision_id ? "true" : "false"} key={revision.revision_id}><span><strong>r{revision.revision} · {revision.label}</strong><small>{new Date(revision.approved_at).toLocaleString()}</small></span><code>{revision.content_hash.slice(0, 12)}</code></article>)}{!revisions.length ? <div className="configuration-empty-history">No release has been approved. Replay remains correctly blocked.</div> : null}</div>
+        <header><span>Immutable test history</span><strong>{candidates.length} candidate{candidates.length === 1 ? "" : "s"}</strong></header>
+        <div>{candidates.map((candidate) => <article key={candidate.candidate_id}><span><strong>t{candidate.candidate_revision} · {candidate.label}</strong><small>{new Date(candidate.created_at).toLocaleString()}</small></span><code>{candidate.content_hash.slice(0, 12)}</code></article>)}{!candidates.length ? <div className="configuration-empty-history">No Test Candidate exists. Create one before Debug or Backtest.</div> : null}</div>
+        {revisions.length ? <><header><span>Promoted history</span><strong>{revisions.length} approved release{revisions.length === 1 ? "" : "s"}</strong></header><div>{revisions.map((revision) => <article data-current={revision.revision_id === approved?.revision_id ? "true" : "false"} key={revision.revision_id}><span><strong>r{revision.revision} · {revision.label}</strong><small>{new Date(revision.approved_at).toLocaleString()}</small></span><code>{revision.content_hash.slice(0, 12)}</code></article>)}</div></> : null}
       </section>
       {draft ? <JsonInspector label="Complete generated release JSON" value={draft} /> : null}
     </div>

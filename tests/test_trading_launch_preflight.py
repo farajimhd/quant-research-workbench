@@ -27,8 +27,9 @@ class TradingLaunchPreflightTests(unittest.TestCase):
         self.assertIn("historical_source", {row["id"] for row in payload["checks"]})
         self.assertIn("runtime_storage", {row["id"] for row in payload["checks"]})
 
+    @patch("src.backend.app.configuration_candidate", return_value=None)
     @patch("src.backend.app.approved_configuration", return_value=None)
-    def test_backtest_missing_release_preserves_launch_contract(self, _approved) -> None:
+    def test_backtest_missing_release_preserves_launch_contract(self, _approved, _candidate) -> None:
         payload = trading_historical_preflight(
             HistoricalPreflightRequest(
                 mode="backtest",
@@ -41,8 +42,9 @@ class TradingLaunchPreflightTests(unittest.TestCase):
         self.assertEqual(payload["window"]["sessions"], [])
         self.assertEqual(payload["available_run_plans"], [])
 
+    @patch("src.backend.app.configuration_candidate", return_value=None)
     @patch("src.backend.app.approved_configuration", return_value=None)
-    def test_debug_missing_release_is_a_blocked_readiness_payload(self, _approved) -> None:
+    def test_debug_missing_release_is_a_blocked_readiness_payload(self, _approved, _candidate) -> None:
         payload = trading_backtest_debug_preflight(
             ReplayPreflightRequest(session_date=date(2026, 8, 18))
         )

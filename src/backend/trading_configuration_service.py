@@ -379,6 +379,17 @@ def configuration_revisions() -> list[dict[str, Any]]:
     return trading_journal().trading_configuration_revisions()
 
 
+def configuration_candidates() -> list[dict[str, Any]]:
+    return trading_journal().trading_configuration_candidates()
+
+
+def configuration_candidate(candidate_id: str = "", *, required: bool = False) -> dict[str, Any] | None:
+    result = trading_journal().trading_configuration_candidate(candidate_id)
+    if result is None and required:
+        raise ValueError("No immutable Test Candidate exists. Create one from Configuration first.")
+    return result
+
+
 def approved_configuration(*, required: bool = False) -> dict[str, Any] | None:
     result = trading_journal().approved_trading_configuration()
     if result is None and required:
@@ -423,11 +434,75 @@ def publish_configuration(
     run_plan_id: str = "",
     strategy_profile_id: str = "",
 ) -> dict[str, Any]:
+    runtime_candidate, payload, content_hash = _build_configuration_release(
+        canvas_revision=canvas_revision,
+        canvas_profile=canvas_profile,
+        configuration=configuration,
+        run_plan_id=run_plan_id,
+        strategy_profile_id=strategy_profile_id,
+    )
     normalized_label = label.strip()
     if not normalized_label:
         raise ValueError("An approval label is required")
+    existing = configuration_revisions()
+    if existing and existing[0]["content_hash"] == content_hash:
+        materialize_market_discovery(runtime_candidate["market_discovery"])
+        return existing[0]
+    revision = int(existing[0]["revision"]) + 1 if existing else 1
+    published = trading_journal().publish_trading_configuration(
+        revision_id=str(uuid4()),
+        revision=revision,
+        label=normalized_label,
+        content_hash=content_hash,
+        payload=payload,
+    )
+    materialize_market_discovery(runtime_candidate["market_discovery"])
+    return published
+
+
+def create_test_candidate(
+    *,
+    label: str,
+    canvas_revision: str,
+    canvas_profile: dict[str, Any],
+    configuration: dict[str, Any],
+    run_plan_id: str = "",
+    strategy_profile_id: str = "",
+) -> dict[str, Any]:
+    normalized_label = label.strip()
+    if not normalized_label:
+        raise ValueError("A Test Candidate label is required")
+    _, payload, content_hash = _build_configuration_release(
+        canvas_revision=canvas_revision,
+        canvas_profile=canvas_profile,
+        configuration=configuration,
+        run_plan_id=run_plan_id,
+        strategy_profile_id=strategy_profile_id,
+    )
+    existing = configuration_candidates()
+    same = next((row for row in existing if row["content_hash"] == content_hash), None)
+    if same is not None:
+        return same
+    candidate_revision = int(existing[0]["candidate_revision"]) + 1 if existing else 1
+    return trading_journal().save_trading_configuration_candidate(
+        candidate_id=str(uuid4()),
+        candidate_revision=candidate_revision,
+        label=normalized_label,
+        content_hash=content_hash,
+        payload=payload,
+    )
+
+
+def _build_configuration_release(
+    *,
+    canvas_revision: str,
+    canvas_profile: dict[str, Any],
+    configuration: dict[str, Any],
+    run_plan_id: str = "",
+    strategy_profile_id: str = "",
+) -> tuple[dict[str, Any], dict[str, Any], str]:
     if not isinstance(configuration, dict):
-        raise TypeError("Publishing requires the complete session configuration")
+        raise TypeError("A release requires the complete session configuration")
     base_configuration = configuration_base()
     draft_candidate = _without_timestamp(_migrate_draft(deepcopy(configuration)))
     _assert_published_profiles_unchanged(base_configuration, draft_candidate)
@@ -510,20 +585,7 @@ def publish_configuration(
     }
     encoded = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
     content_hash = hashlib.sha256(encoded).hexdigest()
-    existing = configuration_revisions()
-    if existing and existing[0]["content_hash"] == content_hash:
-        materialize_market_discovery(draft_candidate["market_discovery"])
-        return existing[0]
-    revision = int(existing[0]["revision"]) + 1 if existing else 1
-    published = trading_journal().publish_trading_configuration(
-        revision_id=str(uuid4()),
-        revision=revision,
-        label=normalized_label,
-        content_hash=content_hash,
-        payload=payload,
-    )
-    materialize_market_discovery(runtime_candidate["market_discovery"])
-    return published
+    return runtime_candidate, payload, content_hash
 
 
 def replay_configuration_snapshot(run_plan_id: str = "") -> dict[str, Any]:
@@ -568,18 +630,40 @@ def approved_session_configuration_snapshot(
     }
 
 
-def backtest_configuration_snapshot(run_plan_id: str = "") -> dict[str, Any]:
-    if run_plan_id:
-        return approved_runtime_configuration_snapshot("backtest", run_plan_id=run_plan_id)
-    return approved_runtime_configuration_snapshot("backtest")
-
-
-def backtest_debug_configuration_snapshot(run_plan_id: str = "") -> dict[str, Any]:
-    if run_plan_id:
-        return approved_runtime_configuration_snapshot(
-            "backtest_debug", run_plan_id=run_plan_id
+def backtest_configuration_snapshot(
+    run_plan_id: str = "", *, candidate_id: str = ""
+) -> dict[str, Any]:
+    if candidate_id or approved_configuration() is None:
+        return candidate_runtime_configuration_snapshot(
+            "backtest", candidate_id=candidate_id, run_plan_id=run_plan_id
         )
-    return approved_runtime_configuration_snapshot("backtest_debug")
+    return approved_runtime_configuration_snapshot("backtest", run_plan_id=run_plan_id)
+
+
+def backtest_debug_configuration_snapshot(
+    run_plan_id: str = "", *, candidate_id: str = ""
+) -> dict[str, Any]:
+    if candidate_id or approved_configuration() is None:
+        return candidate_runtime_configuration_snapshot(
+            "backtest_debug", candidate_id=candidate_id, run_plan_id=run_plan_id
+        )
+    return approved_runtime_configuration_snapshot("backtest_debug", run_plan_id=run_plan_id)
+
+
+def candidate_runtime_configuration_snapshot(
+    mode: str, *, candidate_id: str = "", run_plan_id: str = ""
+) -> dict[str, Any]:
+    candidate = configuration_candidate(candidate_id, required=True)
+    assert candidate is not None
+    return _runtime_configuration_snapshot(
+        candidate,
+        mode=mode,
+        run_plan_id=run_plan_id,
+        revision_id=str(candidate["candidate_id"]),
+        revision=int(candidate["candidate_revision"]),
+        timestamp=str(candidate["created_at"]),
+        release_state="test_candidate",
+    )
 
 
 def approved_runtime_configuration_snapshot(
@@ -589,7 +673,30 @@ def approved_runtime_configuration_snapshot(
         raise ValueError(f"Unsupported trading configuration mode: {mode}")
     approved = approved_configuration(required=True)
     assert approved is not None
-    model = _migrate_draft(deepcopy(approved["payload"]))
+    return _runtime_configuration_snapshot(
+        approved,
+        mode=mode,
+        run_plan_id=run_plan_id,
+        revision_id=str(approved["revision_id"]),
+        revision=int(approved["revision"]),
+        timestamp=str(approved["approved_at"]),
+        release_state="approved",
+    )
+
+
+def _runtime_configuration_snapshot(
+    release: dict[str, Any],
+    *,
+    mode: str,
+    run_plan_id: str,
+    revision_id: str,
+    revision: int,
+    timestamp: str,
+    release_state: str,
+) -> dict[str, Any]:
+    if mode not in SUPPORTED_MODES:
+        raise ValueError(f"Unsupported trading configuration mode: {mode}")
+    model = _migrate_draft(deepcopy(release["payload"]))
     _validate_draft(model)
     runtimes = resolve_runtime_configurations(model, mode=mode)
     if not runtimes:
@@ -609,11 +716,13 @@ def approved_runtime_configuration_snapshot(
         # Returned for optional presentation attachment only.
         runtime_payload["canvas"] = deepcopy(model["canvas"])
     return {
-        "revision_id": approved["revision_id"],
-        "revision": approved["revision"],
-        "label": approved["label"],
-        "content_hash": approved["content_hash"],
-        "approved_at": approved["approved_at"],
+        "revision_id": revision_id,
+        "revision": revision,
+        "label": release["label"],
+        "content_hash": release["content_hash"],
+        "approved_at": timestamp if release_state == "approved" else "",
+        "created_at": timestamp,
+        "release_state": release_state,
         "schema_version": CONFIGURATION_SCHEMA_VERSION,
         "mode": mode,
         "run_plan_id": runtime_payload["run_plan"]["run_plan_id"],
@@ -2386,6 +2495,7 @@ def _discovery_reference_capabilities() -> list[dict[str, Any]]:
         ("market.change_actual", "Session price change", "market_data", "currency", "market.change_actual", "Last price minus the completed previous-session close.", "QMD bars + previous-session reference", ["session"]),
         ("market.change_pct", "Session change", "market_data", "percent", "market.change_pct", "Last price divided by the completed previous-session close, minus one, expressed as a percentage.", "QMD bars + previous-session reference", ["session"]),
         ("market.volume", "Session volume", "market_data", "shares", "market.volume", "Cumulative eligible trade size for the current session.", "QMD eligible trades", ["session"]),
+        ("market.session_dollar_volume", "Session dollar volume", "market_data", "currency", "market.session_dollar_volume", "Cumulative eligible trade notional since the 04:00 New York session boundary.", "QMD eligible trades", ["session"]),
         ("market.relative_volume", "Relative volume", "indicator", "multiple", "market.relative_volume", "Current cumulative session volume divided by the point-in-time 20-session baseline for the same elapsed session interval.", "QMD volume + 20-session baseline", ["session"]),
         ("reference.market_cap", "Market capitalization", "reference", "currency", "reference.market_cap", "Latest point-in-time provider market capitalization available before evaluation.", "DB-managed market snapshot", ["1d"]),
         ("reference.float_shares", "Public float", "reference", "shares", "reference.float_shares", "Tradable share supply from DB-managed reference data, with the SEC public-float estimate available as a provenance-preserving fallback.", "DB reference + SEC facts", ["1d"]),
@@ -2653,8 +2763,13 @@ def _default_watchlist_rule_sets() -> list[dict[str, Any]]:
         _watchlist_rule(
             "strategy-squeeze-volume-spread-quality",
             "Squeeze volume and spread quality",
-            "Confirms an entry only when one-second share-volume activity is at least 1.5 times its preceding bar and the latest one-second spread is no wider than 50 basis points.",
+            "Confirms an entry only for $2-$50 securities with at least $500,000 session dollar volume, one trade per second, a QMD liquidity score of at least 50, accelerating one-second volume, and spread no wider than 50 basis points.",
             [
+                _watchlist_condition("squeeze-price-floor", "market.last_price", "greater_or_equal", 2.0),
+                _watchlist_condition("squeeze-price-ceiling", "market.last_price", "less_or_equal", 50.0),
+                _watchlist_condition("squeeze-session-dollar-volume", "market.session_dollar_volume", "greater_or_equal", 500_000.0),
+                _watchlist_condition("squeeze-trade-rate", "market.trade_rate_10s", "greater_or_equal", 1.0),
+                _watchlist_condition("squeeze-relative-liquidity", "market.liquidity_score", "greater_or_equal", 50.0),
                 _watchlist_condition(
                     "squeeze-volume-attraction",
                     "volume_rate_ratio",
@@ -2993,7 +3108,7 @@ def _bind_discovery_scanner_columns(
 
 
 def _default_watchlist_templates(symbols: list[str], calculation_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    common_columns = ["symbol", "company_name", "last_price", "change_pct", "volume", "liquidity_score", "liquidity_rank", "relative_volume", "market_cap", "market_cap_category", "float_shares", "float_category", "short_interest_pct"]
+    common_columns = ["symbol", "company_name", "last_price", "change_pct", "volume", "session_dollar_volume", "trade_rate_10s", "liquidity_score", "liquidity_rank", "relative_volume", "market_cap", "market_cap_category", "float_shares", "float_category", "short_interest_pct"]
     def template(identifier: str, name: str, description: str, rules: list[str], ranking: str, *, direction: str = "descending", refresh: int = 1000, enabled: bool = True, columns: list[str] | None = None, availability: str = "available", availability_detail: str = "") -> dict[str, Any]:
         return {"watchlist_id": identifier, "name": name, "description": description, "enabled": enabled, "origin": "system", "template": True, "availability": availability, "availability_detail": availability_detail, "source_scan_id": "qmd-core-scan", "inclusion_rule_sets": rules, "inclusion_operator": "all", "exclusion_rule_sets": [], "ranking_field": ranking, "ranking_direction": direction, "maximum_size": 10, "refresh_interval_ms": refresh, "membership_expiry": "end_of_trading_day", "membership_ttl_ms": 300000, "manual_inclusions": [], "manual_exclusions": [], "columns": columns or common_columns, "membership_history": []}
     gainers = []
@@ -3002,6 +3117,7 @@ def _default_watchlist_templates(symbols: list[str], calculation_rows: list[dict
         gainers.append(template(f"top-{slug}-volume-gainers", f"Top {label} Volume Gainers", f"Most unusually active {label.lower()} instruments, ranked by aligned relative volume.", [category_rule, "watchlist-relative-volume-gainer"], "market.relative_volume"))
     return [
         {"watchlist_id": "core-candidates", "name": "Core candidates", "description": "Candidate instruments produced from the Core Scan for strategy evaluation.", "enabled": True, "origin": "system", "template": False, "availability": "available", "availability_detail": "", "source_scan_id": "qmd-core-scan", "inclusion_rule_sets": [], "inclusion_operator": "all", "exclusion_rule_sets": [], "ranking_field": "market.liquidity_rank", "ranking_direction": "ascending", "maximum_size": 250, "refresh_interval_ms": 1000, "membership_expiry": "end_of_trading_day", "membership_ttl_ms": 300000, "manual_inclusions": symbols, "manual_exclusions": [], "columns": common_columns, "membership_history": []},
+        template("squeeze-tradable-candidates", "Squeeze tradable candidates", "Causal $2-$50 candidates that satisfy the shared absolute and relative liquidity contract before the exact 5% Squeeze event is allowed to activate an entry.", ["strategy-squeeze-volume-spread-quality"], "market.liquidity_score", refresh=1000, columns=common_columns),
         *gainers,
         template("price-or-volume-squeeze", "Session Price or Volume Expansion", "Symbols with at least 5% session price expansion or 3x aligned 20-session relative volume.", ["watchlist-price-or-volume-squeeze"], "market.relative_volume"),
         template("vwap-breakout", "VWAP Breakout", "Symbols trading at least 5 basis points above causal session VWAP.", ["watchlist-vwap-breakout"], "market.change_pct"),
@@ -3593,8 +3709,10 @@ def _default_draft() -> dict[str, Any]:
     )
     squeeze_lifecycle = system_profiles[0]["lifecycle"]
     squeeze_lifecycle["trading_behavior"]["eligible_sessions"] = [
-        "premarket", "regular", "after_hours"
+        "premarket", "regular"
     ]
+    squeeze_lifecycle["trading_behavior"]["entry_cutoff_time"] = "15:45:00"
+    squeeze_lifecycle["trading_behavior"]["flatten_time"] = "15:55:00"
     squeeze_lifecycle["initial_entry"]["opportunity"] = {
         "expression": {
             "kind": "operator",
@@ -3616,6 +3734,18 @@ def _default_draft() -> dict[str, Any]:
         }
     }
     squeeze_lifecycle["initial_entry"]["add_steps"] = []
+    squeeze_lifecycle["initial_entry"]["capital_request"] = {
+        "mode": "mandate_fraction",
+        "value": 0.10,
+        "allow_replacement": False,
+    }
+    squeeze_lifecycle["reentry"]["capital_request"] = {
+        "mode": "mandate_fraction",
+        "value": 0.10,
+        "allow_replacement": False,
+    }
+    squeeze_lifecycle["reentry"]["maximum_attempts"] = 1
+    squeeze_lifecycle["reentry"]["cooldown_ms"] = 5_000
     system_profiles[0]["action_policy_ids"] = ["profit-pocket"]
     system_profiles[0]["protected"] = True
     news_profile = deepcopy(system_profiles[0])
@@ -3673,6 +3803,21 @@ def _default_draft() -> dict[str, Any]:
     for profile in [*system_profiles, *profile_templates]:
         profile.pop("rule_set_catalog", None)
     policy = asdict(PortfolioPolicy())
+    policy.update({
+        "maximum_position_fraction": 0.10,
+        "maximum_ticker_fraction": 0.10,
+        "maximum_planned_risk_fraction": 0.0025,
+        "maximum_open_risk_fraction": 0.0075,
+        "maximum_open_positions": 3,
+        "allow_outside_rth": True,
+        "allow_overnight": False,
+    })
+    real_policy = deepcopy(policy)
+    real_policy.update({
+        "policy_id": "long-momentum-real-80",
+        "revision": 1,
+        "eligible_equity_fraction": 0.80,
+    })
     bindings = [
         {
             "account_key": account_keys[account_id],
@@ -3688,6 +3833,9 @@ def _default_draft() -> dict[str, Any]:
         for account_id in account_ids
     ]
     _ensure_environment_account_bindings(bindings, policy["policy_id"])
+    for binding in bindings:
+        if set(binding.get("modes") or []).intersection({"paper", "live"}):
+            binding["portfolio_policy_id"] = real_policy["policy_id"]
     mandates = [
         {
             "mandate_id": f"balanced-{binding['account_key']}",
@@ -3695,8 +3843,8 @@ def _default_draft() -> dict[str, Any]:
             "account_key": binding["account_key"],
             "enabled": True,
             "maximum_cash_fraction": 1.0,
-            "maximum_planned_risk_fraction": 0.01,
-            "maximum_positions": 10,
+            "maximum_planned_risk_fraction": 0.0025,
+            "maximum_positions": 3,
             "assignment_mode": "single",
             "allocation_weight": 1.0,
             "maximum_action_authority": "automatic",
@@ -3712,9 +3860,9 @@ def _default_draft() -> dict[str, Any]:
             "run_plan_id": f"long-momentum-squeeze-{binding['account_key']}",
             "account_key": binding["account_key"],
             "enabled": True,
-            "maximum_cash_fraction": 0.10,
-            "maximum_planned_risk_fraction": 0.005,
-            "maximum_positions": 5,
+            "maximum_cash_fraction": 0.80,
+            "maximum_planned_risk_fraction": 0.0025,
+            "maximum_positions": 3,
             "assignment_mode": "single",
             "allocation_weight": 1.0,
             "maximum_action_authority": "automatic",
@@ -3813,7 +3961,7 @@ def _default_draft() -> dict[str, Any]:
         "profile_id": "long-momentum-balanced",
         "oms_profile_id": "adaptive-regular",
         "universe_id": "configured-watch-universe",
-        "watchlist_ids": ["core-candidates"],
+        "watchlist_ids": ["squeeze-tradable-candidates"],
         "signal_stream_ids": ["price-squeeze-5m"],
         "activation": {"event_policy": "new_occurrences", "watchlist_policy": "any_selected"},
         "enablement": {"state": "enabled", "scope": "persistent", "effective_session": ""},
@@ -3821,10 +3969,21 @@ def _default_draft() -> dict[str, Any]:
         "data_plan_ids": _default_data_plan_ids(),
         "source_revision_policy": "require_complete",
         "book_id": "default",
-        "action_authority": _default_action_authority(),
-        "campaign_lifecycle": _default_campaign_policy(),
+        "action_authority": {
+            **_default_action_authority(),
+            "initial_entry": "automatic",
+            "reentry": "automatic",
+        },
+        "campaign_lifecycle": {
+            **_default_campaign_policy(),
+            "initial_entry_authority": "automatic",
+            "reentry_authority": "automatic",
+            "maximum_reentries": 1,
+            "reentry_cooldown_ms": 5_000,
+            "session_end_behavior": "exit_and_stop",
+        },
         "safety_supervisor": _default_safety_supervisor(),
-        "mandate_ids": [row["mandate_id"] for row in mandates],
+        "mandate_ids": [row["mandate_id"] for row in mandates if row["run_plan_id"] == "balanced-replay"],
         "enabled": True,
         "allowed_environments": ["replay", "backtest", "backtest_debug"],
         "runtime_assignments": runtime_assignments,
@@ -3862,7 +4021,7 @@ def _default_draft() -> dict[str, Any]:
             "plans": all_run_plans,
         },
         "sessions": sessions,
-        "portfolio": {"policies": [policy], "groups": [], "mandates": mandates},
+        "portfolio": {"policies": [policy, real_policy], "groups": [], "mandates": mandates},
         "oms": {
             "profiles": [_default_oms_profile()],
             "execution_policies": _default_execution_policies(),
@@ -6803,11 +6962,11 @@ def _default_protection_profiles() -> list[dict[str, Any]]:
                 "stop_limit_offset_bps": None,
             },
             "trailing": {
-                "rule_type": "none",
+                "rule_type": "volatility_trail",
                 "amount": None,
                 "percent": None,
-                "volatility_multiple": None,
-                "activation_gain_percent": 0.0,
+                "volatility_multiple": 1.0,
+                "activation_gain_percent": 0.5,
                 "breakeven_buffer_bps": 0.0,
                 "structural_timeframe": "",
             },

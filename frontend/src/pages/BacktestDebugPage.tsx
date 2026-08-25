@@ -43,6 +43,13 @@ type StoredFixture = {
   symbol: string;
 };
 
+type TestCandidateSummary = {
+  candidate_id: string;
+  candidate_revision: number;
+  content_hash: string;
+  label: string;
+};
+
 const STORAGE_KEY = "quant-research-workbench.backtest-debug-fixtures.v1";
 
 export function BacktestDebugPage() {
@@ -62,7 +69,21 @@ export function BacktestDebugPage() {
   const [error, setError] = useState("");
   const [run, setRun] = useState<DebugRun | null>(null);
   const [runPlanId, setRunPlanId] = useState("");
+  const [candidateId, setCandidateId] = useState("");
+  const [candidates, setCandidates] = useState<TestCandidateSummary[]>([]);
   const parsed = useMemo(() => parseFixture(marketEvents, derivedFrames, signalEvents), [derivedFrames, marketEvents, signalEvents]);
+
+  useEffect(() => {
+    let cancelled = false;
+    api<{ rows: TestCandidateSummary[] }>("/api/trading/configuration/candidates")
+      .then((payload) => {
+        if (cancelled) return;
+        setCandidates(payload.rows);
+        setCandidateId((current) => current || payload.rows[0]?.candidate_id || "");
+      })
+      .catch((reason) => { if (!cancelled) setError(message(reason)); });
+    return () => { cancelled = true; };
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -70,7 +91,7 @@ export function BacktestDebugPage() {
     setError("");
     const timer = window.setTimeout(() => {
       api<DebugPreflight>("/api/trading/backtest_debug/preflight", {
-        body: JSON.stringify({ run_plan_id: runPlanId, session_date: sessionDate, start_time: startTime, tickers: [symbol] }),
+        body: JSON.stringify({ configuration_revision_id: candidateId, run_plan_id: runPlanId, session_date: sessionDate, start_time: startTime, tickers: [symbol] }),
         method: "POST",
         timeoutMs: 20_000,
       })
@@ -79,7 +100,7 @@ export function BacktestDebugPage() {
         .finally(() => { if (!cancelled) setChecking(false); });
     }, 300);
     return () => { cancelled = true; window.clearTimeout(timer); };
-  }, [runPlanId, sessionDate, startTime, symbol]);
+  }, [candidateId, runPlanId, sessionDate, startTime, symbol]);
 
   usePollingTask({
     enabled: Boolean(run && !terminal(run.status)),
@@ -230,6 +251,7 @@ export function BacktestDebugPage() {
     ready={Boolean(preflight?.ready && parsed.ok)}
     title="Inspect an exact scenario"
   >
+            <label className="configuration-field"><span>Test Candidate</span><select aria-label="Test Candidate" onChange={(event) => setCandidateId(event.target.value)} value={candidateId}><option value="">Latest available candidate</option>{candidates.map((candidate) => <option key={candidate.candidate_id} value={candidate.candidate_id}>t{candidate.candidate_revision} · {candidate.label} · {candidate.content_hash.slice(0, 8)}</option>)}</select><small>The exact immutable configuration exercised by this deterministic scenario.</small></label>
             <label className="configuration-field"><span>Strategy Run Plan</span><select aria-label="Strategy Run Plan" onChange={(event) => setRunPlanId(event.target.value)} value={runPlanId}>{(preflight?.available_run_plans ?? []).map((plan) => <option key={plan.run_plan_id} value={plan.run_plan_id}>{plan.name} · {plan.strategy_id} r{plan.strategy_revision}</option>)}</select><small>The test scenario runs through this exact Strategy Studio profile and installed executor.</small></label>
             <label className="configuration-field"><span>Test Scenario library</span><select onChange={(event) => loadFixture(event.target.value)} value={selectedFixture}><option value="">Unsaved scenario</option>{library.map((row) => <option key={row.fixtureId} value={row.fixtureId}>{row.fixtureId}</option>)}</select><small>Stored in this browser; exact submitted records are persisted with the backend run.</small></label>
             <label className="configuration-field"><span>Stable scenario ID</span><input onChange={(event) => setFixtureId(event.target.value)} value={fixtureId} /><small>Used with the backend content hash to identify reproducible evidence.</small></label>

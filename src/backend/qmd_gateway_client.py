@@ -1930,9 +1930,12 @@ def normalize_qmd_symbol_snapshot(row: dict[str, Any]) -> dict[str, Any]:
             else None
         ),
         "volume": day_volume,
+        "session_dollar_volume": day_dollar_volume,
         "vwap": day_dollar_volume / day_volume if day_volume > 0 else None,
         "liquidity_rank": liquidity_rank,
         "liquidity_score": liquidity_score,
+        "liquidity_eligible": bool(row.get("liquidity_eligible")),
+        "liquidity_eligibility_reasons": list(row.get("liquidity_eligibility_reasons") or []),
     }
 
 

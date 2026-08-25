@@ -971,6 +971,12 @@ FIELD_OPERATOR_DOCUMENTATION: dict[str, dict[str, object]] = {
         "inputs": (),
         "timeframes": ("event", "1s", "10s", "30s", "1m"),
     },
+    "market.session_dollar_volume": {
+        "source": "Eligible trades accepted by QMD for the current extended-hours trading session.",
+        "calculation": "Cumulative sum of eligible trade price multiplied by size from the 04:00 New York session boundary through the current market clock.",
+        "inputs": ("market.volume", "market.last_price"),
+        "timeframes": ("event", "1s", "10s", "30s", "1m"),
+    },
     "market.relative_volume": {
         "source": "QMD current-session volume and a point-in-time 20-session volume baseline aligned to the same elapsed session interval.",
         "calculation": "Current cumulative session volume divided by the aligned 20-session baseline. A missing or non-positive baseline remains unavailable.",
@@ -1021,8 +1027,8 @@ FIELD_OPERATOR_DOCUMENTATION: dict[str, dict[str, object]] = {
     },
     "market.liquidity_score": {
         "source": "The complete QMD scanner population at one market clock.",
-        "calculation": "A 0-100 cross-sectional score combining session dollar-volume percentile (45%), trailing 10-second trade-rate percentile (30%), inverse quoted-spread percentile (15%), and displayed NBBO-depth percentile (10%). Higher is more liquid.",
-        "inputs": ("market.volume", "market.trade_rate_10s", "market.spread_bps"),
+        "calculation": "A 0-100 relative score combining session dollar-volume percentile (45%), trailing 10-second trade-rate percentile (30%), inverse quoted-spread percentile (15%), and displayed NBBO-depth percentile (10%). Only fresh rows with at least $500,000 session dollar volume, one trade per second over ten seconds, and spread no wider than 50 basis points may score 50 or higher.",
+        "inputs": ("market.session_dollar_volume", "market.trade_rate_10s", "market.spread_bps"),
         "timeframes": ("scanner_clock",),
     },
     "market.liquidity_rank": {
@@ -1778,6 +1784,7 @@ def _fields() -> tuple[FieldDefinition, ...]:
         ("market.change_actual", "number", "currency"),
         ("market.change_pct", "number", "percent"),
         ("market.volume", "number", "shares"),
+        ("market.session_dollar_volume", "number", "currency"),
         ("market.relative_volume", "number", "multiple"),
         ("market.vwap", "number", "currency"),
         ("market.spread_bps", "number", "basis_points"),
@@ -2172,6 +2179,7 @@ DISCOVERY_FIELD_PRESENTATIONS = (
     DiscoveryFieldPresentation("market.change_actual", "market.change_actual", "change_actual", "Session price change", "Last price minus the completed previous-session close.", "market_data", True, True, True, ("greater_or_equal", "greater_than", "less_or_equal", "less_than", "equals"), ("session",)),
     DiscoveryFieldPresentation("market.change_pct", "market.change_pct", "change_pct", "Session change %", "Percentage change from the completed previous-session close.", "market_data", True, True, True, ("greater_or_equal", "greater_than", "less_or_equal", "less_than", "equals"), ("session",)),
     DiscoveryFieldPresentation("market.volume", "market.volume", "volume", "Session volume", "Cumulative eligible share volume for the current session.", "market_data", True, True, True, ("greater_or_equal", "greater_than", "less_or_equal", "less_than", "equals"), ("session",)),
+    DiscoveryFieldPresentation("market.session_dollar_volume", "market.session_dollar_volume", "session_dollar_volume", "Session dollar volume", "Cumulative eligible trade notional since the 04:00 New York session boundary.", "market_data", True, True, True, ("greater_or_equal", "greater_than", "less_or_equal", "less_than", "equals"), ("session",)),
     DiscoveryFieldPresentation("market.relative_volume", "market.relative_volume", "relative_volume", "Relative volume", "Cumulative volume versus the aligned 20-session baseline.", "indicator", True, True, True, ("greater_or_equal", "greater_than", "less_or_equal", "less_than", "equals"), ("session",)),
     DiscoveryFieldPresentation("indicator.vwap.value", "market.vwap", "vwap", "Session VWAP", "Causal session volume-weighted average eligible trade price.", "indicator", True, True, True, ("greater_or_equal", "greater_than", "less_or_equal", "less_than", "equals", "above_by_bps"), ("session",)),
     DiscoveryFieldPresentation("identity.exchange", "listing.exchange", "exchange", "Exchange", "Point-in-time listing venue for the eligible security.", "reference", False, False, True, (), ("event",)),
@@ -2189,7 +2197,7 @@ DISCOVERY_FIELD_PRESENTATIONS = (
     DiscoveryFieldPresentation("market.halt_direction", "market.halt_direction", "halt_direction", "Halt direction", "Up, Down, or Flat label derived from the registered five-minute price change at the halt occurrence.", "market_data", False, False, True, ("equals", "not_equals"), ("event",)),
     DiscoveryFieldPresentation("market.trade_rate_10s", "market.trade_rate_10s", "trade_rate_10s", "Trades / sec (10s)", "Eligible trade-event rate over the latest ten seconds.", "market_data", False, True, True, ("greater_or_equal", "greater_than", "less_or_equal", "less_than", "equals"), ("10s",)),
     DiscoveryFieldPresentation("market.trade_rate_60s", "market.trade_rate_60s", "trade_rate_60s", "Trades / sec (60s)", "Eligible trade-event rate over the latest sixty seconds.", "market_data", False, True, True, ("greater_or_equal", "greater_than", "less_or_equal", "less_than", "equals"), ("1m",)),
-    DiscoveryFieldPresentation("market.liquidity_score", "market.liquidity_score", "liquidity_score", "Liquidity score", "QMD cross-sectional liquidity score from 0 to 100; higher combines stronger dollar volume, recent trade activity, tighter spread, and greater displayed depth.", "indicator", True, True, True, ("greater_or_equal", "greater_than", "less_or_equal", "less_than", "equals"), ("scanner_clock",)),
+    DiscoveryFieldPresentation("market.liquidity_score", "market.liquidity_score", "liquidity_score", "Relative liquidity score", "QMD score from 0 to 100. A value of 50 or higher additionally certifies the absolute session-dollar-volume, recent-trade-rate, spread, and freshness gates.", "indicator", True, True, True, ("greater_or_equal", "greater_than", "less_or_equal", "less_than", "equals"), ("scanner_clock",)),
     DiscoveryFieldPresentation("signal.squeeze_move_pct", "signal.squeeze_move_pct", "squeeze_move_pct", "Move from anchor", "Live percentage move from the event-time price immediately before the early squeeze trigger.", "signal", True, True, True, ("greater_or_equal", "greater_than", "less_or_equal", "less_than", "equals"), ("event",)),
     DiscoveryFieldPresentation("signal.squeeze_anchor_price", "signal.squeeze_anchor_price", "squeeze_anchor_price", "Move anchor", "Frozen eligible trade price immediately before the early squeeze trigger.", "signal", False, True, True, ("greater_or_equal", "greater_than", "less_or_equal", "less_than", "equals"), ("event",)),
     DiscoveryFieldPresentation("signal.squeeze_high_water_pct", "signal.squeeze_high_water_pct", "squeeze_high_water_pct", "Move high-water", "Largest percentage move reached from the episode anchor before this occurrence.", "signal", False, True, True, ("greater_or_equal", "greater_than", "less_or_equal", "less_than", "equals"), ("event",)),

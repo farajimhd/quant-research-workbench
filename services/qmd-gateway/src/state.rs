@@ -8,6 +8,9 @@ use tokio::sync::RwLock;
 
 const SCANNER_STALE_AFTER_MS: u64 = 60_000;
 const LIQUIDITY_RANK_CACHE_MS: i64 = 1_000;
+const LIQUIDITY_MIN_SESSION_DOLLAR_VOLUME: f64 = 500_000.0;
+const LIQUIDITY_MIN_TRADE_RATE_10S: f64 = 1.0;
+const LIQUIDITY_MAX_SPREAD_BPS: f64 = 50.0;
 
 #[derive(Clone)]
 pub struct SharedMarketState {
@@ -73,6 +76,8 @@ pub struct SymbolSnapshot {
     pub last_price: f64,
     pub liquidity_rank: u32,
     pub liquidity_score: f64,
+    pub liquidity_eligible: bool,
+    pub liquidity_eligibility_reasons: Vec<String>,
     pub quality_flags: Vec<String>,
     pub quality_state: String,
     pub spread: f64,
@@ -459,6 +464,8 @@ impl SymbolState {
             last_price: self.last_price,
             liquidity_rank: 0,
             liquidity_score: 0.0,
+            liquidity_eligible: false,
+            liquidity_eligibility_reasons: Vec::new(),
             quality_flags: quality_flags.into_iter().map(str::to_string).collect(),
             quality_state: quality_state.to_string(),
             spread: if bid > 0.0 && ask > 0.0 {
@@ -491,13 +498,18 @@ fn apply_liquidity_ranking(rows: &mut [SymbolSnapshot]) {
     if rows.is_empty() {
         return;
     }
-    let dollar_volume = sorted_finite(rows.iter().map(|row| row.day_dollar_volume.max(0.0)));
-    let trade_rate = sorted_finite(rows.iter().map(|row| row.trade_rate_10s.max(0.0)));
+    // Zero-activity rows cannot form the percentile reference population. Including
+    // thousands of inactive listings made a few thin prints appear highly liquid.
+    let executed = rows.iter().filter(|row| {
+        row.day_trade_count > 0 && row.day_dollar_volume > 0.0 && row.day_volume > 0.0
+    });
+    let dollar_volume = sorted_finite(executed.clone().map(|row| row.day_dollar_volume));
+    let trade_rate = sorted_finite(executed.clone().map(|row| row.trade_rate_10s.max(0.0)));
     let quoted_depth = sorted_finite(
-        rows.iter()
+        executed.clone()
             .map(|row| f64::from(row.bid_size) + f64::from(row.ask_size)),
     );
-    let valid_spreads = sorted_finite(rows.iter().filter_map(|row| {
+    let valid_spreads = sorted_finite(executed.filter_map(|row| {
         (row.last_price > 0.0 && row.bid > 0.0 && row.ask > row.bid)
             .then_some((row.ask - row.bid) / row.last_price * 10_000.0)
     }));
@@ -507,17 +519,21 @@ fn apply_liquidity_ranking(rows: &mut [SymbolSnapshot]) {
             row.day_trade_count > 0 && row.day_dollar_volume > 0.0 && row.day_volume > 0.0;
         if !has_executed_liquidity {
             row.liquidity_score = 0.0;
+            row.liquidity_eligible = false;
+            row.liquidity_eligibility_reasons = vec!["no_executed_session_liquidity".to_string()];
             continue;
         }
-        let spread_quality = if row.last_price > 0.0 && row.bid > 0.0 && row.ask > row.bid {
+        let spread_bps = (row.last_price > 0.0 && row.bid > 0.0 && row.ask > row.bid)
+            .then_some((row.ask - row.bid) / row.last_price * 10_000.0);
+        let spread_quality = if let Some(spread_bps) = spread_bps {
             descending_percentile(
-                (row.ask - row.bid) / row.last_price * 10_000.0,
+                spread_bps,
                 &valid_spreads,
             )
         } else {
             0.0
         };
-        row.liquidity_score = round2(
+        let relative_score = (
             0.45 * ascending_percentile(row.day_dollar_volume.max(0.0), &dollar_volume)
                 + 0.30 * ascending_percentile(row.trade_rate_10s.max(0.0), &trade_rate)
                 + 0.15 * spread_quality
@@ -525,8 +541,33 @@ fn apply_liquidity_ranking(rows: &mut [SymbolSnapshot]) {
                     * ascending_percentile(
                         f64::from(row.bid_size) + f64::from(row.ask_size),
                         &quoted_depth,
-                    ),
+                    )
         )
+        .clamp(0.0, 100.0);
+        let mut reasons = Vec::new();
+        if row.quality_state != "ready" {
+            reasons.push(format!("market_state_{}", row.quality_state));
+        }
+        if row.day_dollar_volume < LIQUIDITY_MIN_SESSION_DOLLAR_VOLUME {
+            reasons.push("session_dollar_volume_below_500000".to_string());
+        }
+        if row.trade_rate_10s < LIQUIDITY_MIN_TRADE_RATE_10S {
+            reasons.push("trade_rate_10s_below_1".to_string());
+        }
+        if spread_bps.is_none() {
+            reasons.push("executable_nbbo_unavailable".to_string());
+        } else if spread_bps.is_some_and(|value| value > LIQUIDITY_MAX_SPREAD_BPS) {
+            reasons.push("spread_above_50_bps".to_string());
+        }
+        row.liquidity_eligible = reasons.is_empty();
+        row.liquidity_eligibility_reasons = reasons;
+        // Score 50 is an executable-liquidity boundary, not merely a percentile.
+        // Eligible rows occupy 50..100; ineligible rows remain strictly below 50.
+        row.liquidity_score = round2(if row.liquidity_eligible {
+            50.0 + relative_score * 0.5
+        } else {
+            relative_score * 0.4999
+        })
         .clamp(0.0, 100.0);
     }
     rows.sort_by(|left, right| {
@@ -632,6 +673,8 @@ mod tests {
             last_price: 10.0,
             liquidity_rank: 0,
             liquidity_score: 0.0,
+            liquidity_eligible: false,
+            liquidity_eligibility_reasons: Vec::new(),
             quality_flags: Vec::new(),
             quality_state: "ready".to_string(),
             spread,
@@ -681,6 +724,28 @@ mod tests {
         assert_eq!(rows[0].liquidity_rank, 1);
         assert_eq!(rows[1].ticker, "QUOTE");
         assert_eq!(rows[1].liquidity_score, 0.0);
+    }
+
+    #[test]
+    fn thin_relative_leader_cannot_cross_executable_liquidity_boundary() {
+        let mut rows = vec![
+            liquidity_row("THIN", 25_000.0, 0.1, 0.01, 10_000),
+            liquidity_row("ELIGIBLE", 1_000_000.0, 2.0, 0.02, 1_000),
+            liquidity_row("NONE", 0.0, 0.0, 0.0, 0),
+        ];
+
+        apply_liquidity_ranking(&mut rows);
+
+        let thin = rows.iter().find(|row| row.ticker == "THIN").unwrap();
+        let eligible = rows.iter().find(|row| row.ticker == "ELIGIBLE").unwrap();
+        assert!(!thin.liquidity_eligible);
+        assert!(thin.liquidity_score < 50.0);
+        assert!(thin
+            .liquidity_eligibility_reasons
+            .contains(&"session_dollar_volume_below_500000".to_string()));
+        assert!(eligible.liquidity_eligible);
+        assert!(eligible.liquidity_score >= 50.0);
+        assert_eq!(eligible.liquidity_rank, 1);
     }
 
     #[test]

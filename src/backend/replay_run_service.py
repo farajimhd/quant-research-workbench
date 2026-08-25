@@ -163,6 +163,7 @@ class ReplayRunDefinition:
     mode: RunMode = RunMode.REPLAY
     final_session_date: date | None = None
     debug_fixture: HistoricalDebugFixture | None = None
+    simulation_profile: str = "baseline"
 
     def __post_init__(self) -> None:
         if self.mode not in {RunMode.REPLAY, RunMode.BACKTEST, RunMode.BACKTEST_DEBUG}:
@@ -175,6 +176,8 @@ class ReplayRunDefinition:
             raise ValueError("Backtest Debug requires a deterministic fixture")
         if self.mode != RunMode.BACKTEST_DEBUG and self.debug_fixture is not None:
             raise ValueError("Debug fixtures may only be used by Backtest Debug")
+        if self.simulation_profile not in {"baseline", "stress"}:
+            raise ValueError("Simulation profile must be baseline or stress")
         if self.mode == RunMode.REPLAY and self.final_session_date not in {None, self.session_date}:
             raise ValueError("Replay is limited to one exchange session")
         if self.final_session_date is not None and self.final_session_date < self.session_date:
@@ -232,6 +235,7 @@ class ReplayRunDefinition:
             "session_end": self.session_end.isoformat(),
             "requested_start": self.requested_start.isoformat(),
             "initial_cash": self.initial_cash,
+            "simulation_profile": self.simulation_profile,
             "assignment_ids": list(self.assignment_ids),
             "tickers": list(self.tickers),
             "configuration_revision_id": approved.get("revision_id", ""),
@@ -256,6 +260,17 @@ class ReplayDerivedFrame:
     ticker: str
     timeframe: str
     signals: dict[str, float] = field(default_factory=dict)
+
+
+def _simulation_config(definition: ReplayRunDefinition) -> SimulationConfig:
+    stress = definition.mode == RunMode.BACKTEST and definition.simulation_profile == "stress"
+    return SimulationConfig(
+        initial_cash=definition.initial_cash,
+        commission_per_share=0.005,
+        minimum_commission=1.0,
+        liquidity_participation=0.10 if stress else 0.25,
+        market_slippage_bps=10.0 if stress else 5.0 if definition.mode == RunMode.BACKTEST else 0.0,
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -1230,7 +1245,7 @@ class ReplayRunController:
         )
         broker = SimulatedBrokerAdapter(
             list(self.account_ids),
-            SimulationConfig(initial_cash=self.definition.initial_cash),
+            _simulation_config(self.definition),
             mode=TradingMode(self.definition.mode.value),
         )
         if self._resume_state is not None:
@@ -2715,6 +2730,7 @@ def _definition_from_manifest(
         execution_mode=str(definition.get("execution_mode") or "strategy"),
         mode=mode,
         debug_fixture=fixture,
+        simulation_profile=str(definition.get("simulation_profile") or "baseline"),
     )
 
 
@@ -3558,7 +3574,7 @@ def backtest_preflight(
     checks.append(
         {
             "id": "approved_configuration",
-            "label": "Approved application revision",
+            "label": "Immutable Test Candidate" if approved.get("release_state") == "test_candidate" else "Approved application revision",
             "status": "ready",
             "summary": f"Revision {approved.get('revision')} is pinned for the complete run.",
             "evidence": str(approved.get("content_hash") or approved.get("revision_id") or ""),
@@ -3573,7 +3589,7 @@ def backtest_preflight(
             "summary": (
                 f"{len(bindings)} account binding(s) map to isolated simulated ledgers."
                 if bindings
-                else "The approved revision has no enabled account binding for Backtest."
+                else "The selected configuration has no enabled account binding for Backtest."
             ),
             "evidence": ", ".join(sorted(binding_keys)) or "No Backtest account authority",
             "required": True,
@@ -3694,7 +3710,7 @@ def backtest_debug_preflight(
     checks = [
         _check(
             "approved_configuration",
-            "Approved application revision",
+            "Immutable Test Candidate" if approved.get("release_state") == "test_candidate" else "Approved application revision",
             bool(approved.get("revision_id")),
             f"Revision {approved.get('revision')} is pinned to every fixture run.",
             str(approved.get("content_hash") or approved.get("revision_id") or ""),
@@ -3705,7 +3721,7 @@ def backtest_debug_preflight(
             bool(bindings),
             f"{len(bindings)} isolated simulated account binding(s) are enabled."
             if bindings
-            else "The approved revision has no Backtest Debug account binding.",
+            else "The selected configuration has no Backtest Debug account binding.",
             ", ".join(sorted(binding_keys)) or "No Backtest Debug account authority",
         ),
         _check(

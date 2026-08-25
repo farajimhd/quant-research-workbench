@@ -241,6 +241,8 @@ from src.backend.trading_configuration_service import (
     approved_configuration,
     backtest_configuration_snapshot,
     backtest_debug_configuration_snapshot,
+    configuration_candidate,
+    configuration_candidates,
     configuration_base,
     configuration_revisions,
     effective_configuration_snapshot,
@@ -248,6 +250,7 @@ from src.backend.trading_configuration_service import (
     market_discovery_presentation_configuration,
     market_discovery_runtime_configuration,
     materialize_market_discovery,
+    create_test_candidate,
     publish_configuration,
     public_configuration_revision,
     replay_configuration_snapshot,
@@ -922,6 +925,7 @@ class HistoricalPreflightRequest(BaseModel):
     mode: str
     anchor_date: date
     session_count: int = Field(default=20, ge=1, le=260)
+    configuration_revision_id: str = Field(default="", max_length=128)
     run_plan_id: str = Field(default="", max_length=128)
 
 
@@ -956,6 +960,7 @@ class BacktestRunCreateRequest(BaseModel):
     initial_cash: float = Field(default=100_000.0, ge=1_000, le=1_000_000_000)
     configuration_revision_id: str = Field(default="", max_length=128)
     run_plan_id: str = Field(default="", max_length=128)
+    simulation_profile: str = Field(default="baseline", pattern="^(baseline|stress)$")
 
 
 class BacktestDebugRunCreateRequest(BaseModel):
@@ -4987,6 +4992,29 @@ def trading_configuration_revision_list() -> dict[str, Any]:
     return {"schema_version": 1, "rows": rows, "row_count": len(rows)}
 
 
+@app.get("/api/trading/configuration/candidates")
+def trading_configuration_candidate_list() -> dict[str, Any]:
+    rows = [public_configuration_revision(row) for row in configuration_candidates()]
+    return {"schema_version": 1, "rows": rows, "row_count": len(rows)}
+
+
+@app.post("/api/trading/configuration/candidates")
+def trading_configuration_candidate_create(
+    payload: TradingConfigurationPublishSubmit,
+) -> dict[str, Any]:
+    try:
+        return public_configuration_revision(create_test_candidate(
+            label=payload.label,
+            canvas_revision=payload.canvas_revision,
+            canvas_profile=payload.canvas_profile,
+            run_plan_id=payload.run_plan_id,
+            strategy_profile_id=payload.strategy_profile_id,
+            configuration=payload.configuration,
+        ))
+    except (KeyError, TypeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @app.get("/api/trading/configuration/approved")
 def trading_configuration_approved() -> dict[str, Any]:
     result = approved_configuration()
@@ -5089,7 +5117,7 @@ def trading_historical_window(payload: HistoricalWindowPreviewRequest) -> dict[s
 def trading_historical_preflight(payload: HistoricalPreflightRequest) -> dict[str, Any]:
     if payload.mode not in {"replay", "backtest"}:
         raise HTTPException(status_code=400, detail="mode must be replay or backtest")
-    if approved_configuration() is None:
+    if approved_configuration() is None and configuration_candidate() is None:
         return _blocked_trading_launch_preflight(payload.mode)
     try:
         if payload.mode == "backtest":
@@ -5097,9 +5125,10 @@ def trading_historical_preflight(payload: HistoricalPreflightRequest) -> dict[st
                 anchor_date=payload.anchor_date,
                 session_count=payload.session_count,
                 configuration_revision=(
-                    backtest_configuration_snapshot(payload.run_plan_id)
-                    if payload.run_plan_id
-                    else backtest_configuration_snapshot()
+                    backtest_configuration_snapshot(
+                        payload.run_plan_id,
+                        candidate_id=payload.configuration_revision_id,
+                    )
                 ),
             )
         return historical_preflight(
@@ -5196,13 +5225,12 @@ async def trading_replay_run_create(payload: ReplayRunCreateRequest) -> dict[str
 @app.post("/api/trading/backtest/runs")
 async def trading_backtest_run_create(payload: BacktestRunCreateRequest) -> dict[str, Any]:
     try:
-        configuration_revision = (
-            backtest_configuration_snapshot(payload.run_plan_id)
-            if payload.run_plan_id
-            else backtest_configuration_snapshot()
+        configuration_revision = backtest_configuration_snapshot(
+            payload.run_plan_id,
+            candidate_id=payload.configuration_revision_id,
         )
         if payload.configuration_revision_id != configuration_revision["revision_id"]:
-            raise ValueError("The approved configuration changed; review Backtest preflight again")
+            raise ValueError("The selected configuration changed; review Backtest preflight again")
         preflight = backtest_preflight(
             anchor_date=payload.anchor_date,
             session_count=payload.session_count,
@@ -5219,6 +5247,7 @@ async def trading_backtest_run_create(payload: BacktestRunCreateRequest) -> dict
             initial_cash=payload.initial_cash,
             configuration_revision=configuration_revision,
             mode=RunMode.BACKTEST,
+            simulation_profile=payload.simulation_profile,
         )
         controller = await backtest_run_service.create(definition)
         return controller.snapshot()
@@ -5233,14 +5262,13 @@ async def trading_backtest_debug_run_create(
     payload: BacktestDebugRunCreateRequest,
 ) -> dict[str, Any]:
     try:
-        configuration_revision = (
-            backtest_debug_configuration_snapshot(payload.run_plan_id)
-            if payload.run_plan_id
-            else backtest_debug_configuration_snapshot()
+        configuration_revision = backtest_debug_configuration_snapshot(
+            payload.run_plan_id,
+            candidate_id=payload.configuration_revision_id,
         )
         if payload.configuration_revision_id != configuration_revision["revision_id"]:
             raise ValueError(
-                "The approved configuration changed; review Backtest Debug again"
+                "The selected configuration changed; review Backtest Debug again"
             )
         fixture = HistoricalDebugFixture(
             fixture_id=payload.fixture_id,
@@ -5268,20 +5296,19 @@ async def trading_backtest_debug_run_create(
 
 @app.post("/api/trading/backtest_debug/preflight")
 def trading_backtest_debug_preflight(payload: ReplayPreflightRequest) -> dict[str, Any]:
-    if approved_configuration() is None:
+    if approved_configuration() is None and configuration_candidate() is None:
         return _blocked_trading_launch_preflight("backtest_debug")
     try:
-        configuration_revision = (
-            backtest_debug_configuration_snapshot(payload.run_plan_id)
-            if payload.run_plan_id
-            else backtest_debug_configuration_snapshot()
+        configuration_revision = backtest_debug_configuration_snapshot(
+            payload.run_plan_id,
+            candidate_id=payload.configuration_revision_id,
         )
         if (
             payload.configuration_revision_id
             and payload.configuration_revision_id != configuration_revision["revision_id"]
         ):
             raise ValueError(
-                "The approved configuration changed; review Backtest Debug again"
+                "The selected configuration changed; review Backtest Debug again"
             )
         return backtest_debug_preflight(
             session_date=payload.session_date,
@@ -5296,22 +5323,27 @@ def trading_backtest_debug_preflight(payload: ReplayPreflightRequest) -> dict[st
 
 
 def _blocked_trading_launch_preflight(mode: str) -> dict[str, Any]:
-    """Represent missing publication as a normal blocked launch state.
+    """Represent missing runtime configuration as a normal blocked launch state.
 
-    A missing Approved Release is an operator-remediable readiness condition,
+    A missing Test Candidate or Approved Release is an operator-remediable readiness condition,
     not malformed request input. Run-creation routes continue to fail closed.
     """
 
+    historical_test_mode = mode in {"backtest", "backtest_debug"}
     check = {
         "id": "approved_configuration",
-        "label": "Approved configuration",
+        "label": "Test Candidate" if historical_test_mode else "Approved configuration",
         "status": "blocked",
-        "summary": "Publish an immutable trading configuration before starting this mode.",
-        "evidence": "Configuration > Approved Releases",
+        "summary": (
+            "Create an immutable Test Candidate before starting this mode."
+            if historical_test_mode
+            else "Promote an immutable trading configuration before starting Replay."
+        ),
+        "evidence": "Configuration > Test Candidates",
         "required": True,
         "action": {
             "hash": "#revision-configuration",
-            "label": "Review Approved Releases",
+            "label": "Review Test Candidates" if historical_test_mode else "Review Releases",
         },
     }
     checks = [check]

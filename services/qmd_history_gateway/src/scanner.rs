@@ -332,8 +332,17 @@ impl CrossSectionEngine {
                         Some(market.last_price)
                     }
                     "market.volume" if market.day_volume.is_finite() => Some(market.day_volume),
-                    "liquidity-rank" | "market.liquidity_rank" => {
-                        Some(market.day_dollar_volume / 1_000_000.0 + market.trade_rate_10s * 100.0)
+                    "market.session_dollar_volume" if market.day_dollar_volume.is_finite() => {
+                        Some(market.day_dollar_volume)
+                    }
+                    "market.trade_rate_10s" if market.trade_rate_10s.is_finite() => {
+                        Some(market.trade_rate_10s)
+                    }
+                    "market.liquidity_score" if market.liquidity_score.is_finite() => {
+                        Some(market.liquidity_score)
+                    }
+                    "liquidity-rank" | "market.liquidity_rank" if market.liquidity_rank > 0 => {
+                        Some(f64::from(market.liquidity_rank))
                     }
                     "indicator.vwap.value" => indicator
                         .map(|row| row.vwap)
@@ -388,7 +397,7 @@ impl CrossSectionEngine {
         self.market_state
             .ticker_snapshot_at(ticker, as_of)
             .await
-            .map(|market| market.day_dollar_volume / 1_000_000.0 + market.trade_rate_10s * 100.0)
+            .map(|market| market.liquidity_score)
             .filter(|value| value.is_finite())
     }
 
@@ -824,6 +833,9 @@ fn source_event_requirement(source_id: &str) -> RuleEventRequirement {
             source.as_str(),
             "market.last_price"
                 | "market.volume"
+                | "market.session_dollar_volume"
+                | "market.trade_rate_10s"
+                | "market.liquidity_score"
                 | "market.session_volume"
                 | "market.session_vwap"
                 | "market.session_change"

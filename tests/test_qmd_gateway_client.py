@@ -63,11 +63,15 @@ class QmdGatewayClientTests(unittest.TestCase):
             "day_dollar_volume": 198_000.0,
             "liquidity_score": 87.25,
             "liquidity_rank": 3,
+            "liquidity_eligible": True,
+            "liquidity_eligibility_reasons": [],
         })
 
         self.assertEqual(row["liquidity_score"], 87.25)
         self.assertEqual(row["liquidity_rank"], 3)
         self.assertEqual(row["live_priority"], 87.25)
+        self.assertEqual(row["session_dollar_volume"], 198_000.0)
+        self.assertTrue(row["liquidity_eligible"])
 
     def test_scanner_payload_projects_authoritative_market_clock_into_rows(self) -> None:
         clock = {

@@ -557,6 +557,61 @@ class TradingJournal:
             "payload": payload,
         }
 
+    def save_trading_configuration_candidate(
+        self,
+        *,
+        candidate_id: str,
+        candidate_revision: int,
+        label: str,
+        content_hash: str,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        created_at = datetime.now(timezone.utc).isoformat()
+        with self._lock, self._connection:
+            self._connection.execute(
+                """
+                INSERT INTO trading_configuration_candidates(
+                    candidate_id, candidate_revision, label, content_hash, payload_json, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    candidate_id,
+                    candidate_revision,
+                    label,
+                    content_hash,
+                    json.dumps(payload, sort_keys=True, default=_json_default),
+                    created_at,
+                ),
+            )
+        return {
+            "candidate_id": candidate_id,
+            "candidate_revision": candidate_revision,
+            "label": label,
+            "content_hash": content_hash,
+            "created_at": created_at,
+            "release_state": "test_candidate",
+            "payload": payload,
+        }
+
+    def trading_configuration_candidates(self) -> list[dict[str, Any]]:
+        rows = self._fetchall(
+            "SELECT * FROM trading_configuration_candidates ORDER BY candidate_revision DESC"
+        )
+        return [_configuration_candidate(row) for row in rows]
+
+    def trading_configuration_candidate(self, candidate_id: str = "") -> dict[str, Any] | None:
+        row = (
+            self._fetchone(
+                "SELECT * FROM trading_configuration_candidates WHERE candidate_id = ?",
+                (candidate_id,),
+            )
+            if candidate_id
+            else self._fetchone(
+                "SELECT * FROM trading_configuration_candidates ORDER BY candidate_revision DESC LIMIT 1"
+            )
+        )
+        return _configuration_candidate(row) if row is not None else None
+
     def trading_configuration_revisions(self) -> list[dict[str, Any]]:
         rows = self._fetchall(
             "SELECT * FROM trading_configuration_revisions ORDER BY revision DESC"
@@ -1017,6 +1072,14 @@ class TradingJournal:
                     label TEXT NOT NULL, content_hash TEXT NOT NULL UNIQUE,
                     payload_json TEXT NOT NULL, approved_at TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS trading_configuration_candidates(
+                    candidate_id TEXT PRIMARY KEY,
+                    candidate_revision INTEGER NOT NULL UNIQUE,
+                    label TEXT NOT NULL,
+                    content_hash TEXT NOT NULL UNIQUE,
+                    payload_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                );
                 """
             )
 
@@ -1045,6 +1108,18 @@ def _configuration_revision(row: sqlite3.Row) -> dict[str, Any]:
         "label": str(row["label"]),
         "content_hash": str(row["content_hash"]),
         "approved_at": str(row["approved_at"]),
+        "payload": json.loads(row["payload_json"]),
+    }
+
+
+def _configuration_candidate(row: sqlite3.Row) -> dict[str, Any]:
+    return {
+        "candidate_id": str(row["candidate_id"]),
+        "candidate_revision": int(row["candidate_revision"]),
+        "label": str(row["label"]),
+        "content_hash": str(row["content_hash"]),
+        "created_at": str(row["created_at"]),
+        "release_state": "test_candidate",
         "payload": json.loads(row["payload_json"]),
     }
 

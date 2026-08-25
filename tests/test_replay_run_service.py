@@ -23,6 +23,7 @@ from src.backend.replay_run_service import (
     _historical_watchlist_membership_timeline_from_plans,
     _historical_signal_events,
     _qmd_payload_authority,
+    _simulation_config,
     _debug_derived_frames,
     _debug_market_events,
     backtest_debug_preflight,
@@ -107,6 +108,31 @@ def approved_configuration(*, assignments: list[dict] | None = None) -> dict:
 
 
 class ReplayRunDefinitionTests(unittest.TestCase):
+    def test_backtest_simulation_profiles_pin_baseline_and_stress_costs(self) -> None:
+        baseline = ReplayRunDefinition(
+            session_date=date(2026, 7, 28),
+            start_time=time(4, 0),
+            configuration_revision=approved_configuration(),
+            mode=RunMode.BACKTEST,
+            simulation_profile="baseline",
+        )
+        stress = ReplayRunDefinition(
+            session_date=date(2026, 7, 28),
+            start_time=time(4, 0),
+            configuration_revision=approved_configuration(),
+            mode=RunMode.BACKTEST,
+            simulation_profile="stress",
+        )
+
+        baseline_config = _simulation_config(baseline)
+        stress_config = _simulation_config(stress)
+        self.assertEqual(baseline_config.commission_per_share, 0.005)
+        self.assertEqual(baseline_config.minimum_commission, 1.0)
+        self.assertEqual(baseline_config.liquidity_participation, 0.25)
+        self.assertEqual(baseline_config.market_slippage_bps, 5.0)
+        self.assertEqual(stress_config.liquidity_participation, 0.10)
+        self.assertEqual(stress_config.market_slippage_bps, 10.0)
+
     def test_definition_builds_timezone_aware_session_boundaries(self) -> None:
         definition = ReplayRunDefinition(
             session_date=date(2026, 7, 28),

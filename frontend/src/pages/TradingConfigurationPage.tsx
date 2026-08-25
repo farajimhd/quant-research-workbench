@@ -35,9 +35,8 @@ import {
 import { useEffect, useId, useMemo, useRef, useState, type ReactElement, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 
-import { api, apiCached, invalidateApiCache } from "../api/client";
+import { api, apiCached } from "../api/client";
 import "../app/configurationVisuals.css";
-import { clearConfigurationSession } from "../app/configurationSession";
 import { AbstractionCard } from "../app/components/AbstractionCard";
 import { DefinitionRegistryProvider, type InformationRegistry } from "../app/components/DefinitionRegistry";
 import { InventoryFilterSelect } from "../app/components/InventoryFilterSelect";
@@ -187,6 +186,7 @@ import {
   EffectiveConfigurationPreview,
   RevisionBadge,
   RevisionPublisher,
+  type TestCandidate,
   releaseReadiness,
   type Revision,
 } from "../features/trading-configuration/release";
@@ -271,10 +271,10 @@ const SECTION_META = {
     description: "Bind application accounts to broker or simulated sessions and permissions.",
   },
   revisions: {
-    eyebrow: "Final publication gate",
+    eyebrow: "Test-first configuration gate",
     icon: BookOpenCheck,
-    title: "Approved Releases",
-    description: "Validate and publish the immutable configuration used by new runs.",
+    title: "Test Candidates",
+    description: "Freeze an immutable configuration for Debug and Backtest before any Paper or Live promotion.",
   },
 } as const;
 
@@ -282,6 +282,7 @@ const SECTION_META = {
 export function TradingConfigurationPage({ section }: { section: TradingConfigurationSection }) {
   const [draft, setDraft] = useState<Draft | null>(null);
   const [approved, setApproved] = useState<Revision | null>(null);
+  const [candidates, setCandidates] = useState<TestCandidate[]>([]);
   const [revisions, setRevisions] = useState<Revision[]>([]);
   const [registry, setRegistry] = useState<InformationRegistry | null>(null);
   const [label, setLabel] = useState("");
@@ -303,17 +304,22 @@ export function TradingConfigurationPage({ section }: { section: TradingConfigur
     const revisionsRequest = ["strategy", "revisions"].includes(section)
       ? api<{ rows: Revision[] }>("/api/trading/configuration/revisions")
       : Promise.resolve({ rows: [] as Revision[] });
+    const candidatesRequest = ["strategy", "revisions"].includes(section)
+      ? api<{ rows: TestCandidate[] }>("/api/trading/configuration/candidates")
+      : Promise.resolve({ rows: [] as TestCandidate[] });
     Promise.all([
       apiCached<Draft>("/api/trading/configuration/base", { timeoutMs: 20_000, ttlMs: 300_000 }),
       api<{ approved: Revision | null }>("/api/trading/configuration/approved"),
       revisionsRequest,
+      candidatesRequest,
       apiCached<InformationRegistry>("/api/registries/definitions", { timeoutMs: 20_000, ttlMs: 300_000 }),
     ])
-      .then(([nextDraft, approvedPayload, revisionPayload, registryPayload]) => {
+      .then(([nextDraft, approvedPayload, revisionPayload, candidatePayload, registryPayload]) => {
         if (cancelled) return;
         setDraft(readSessionConfiguration(normalizeDraft(nextDraft)));
         setApproved(approvedPayload.approved ? { ...approvedPayload.approved, payload: normalizeDraft(approvedPayload.approved.payload) as Revision["payload"] } : null);
         setRevisions(revisionPayload.rows.map((row) => ({ ...row, payload: normalizeDraft(row.payload) as Revision["payload"] })));
+        setCandidates(candidatePayload.rows.map((row) => ({ ...row, payload: normalizeDraft(row.payload) as TestCandidate["payload"] })));
         setRegistry(registryPayload);
         setStatus("ready");
       })
@@ -444,23 +450,17 @@ export function TradingConfigurationPage({ section }: { section: TradingConfigur
         ?? draft.assignments.deployments.find((row) => row.profile_id === selectionId)
         ?? draft.assignments.deployments.find((row) => row.enabled)
         ?? draft.assignments.deployments[0];
-      if (!selectedRunPlan) throw new Error("Configure a Run Plan before publishing.");
+      if (!selectedRunPlan) throw new Error("Configure a Run Plan before creating a Test Candidate.");
       const configuration = serializeDraft(draft);
-      const revision = await api<Revision>("/api/trading/configuration/publish", {
+      const candidate = await api<TestCandidate>("/api/trading/configuration/candidates", {
         body: JSON.stringify({ canvas_profile: canvas.profile, canvas_revision: canvas.revision, configuration, label, run_plan_id: selectedRunPlan.run_plan_id }),
         method: "POST",
       });
-      setApproved(revision);
-      invalidateApiCache("/api/trading/configuration/base");
-      invalidateApiCache("/api/market-discovery/configuration/presentation");
-      clearConfigurationSession();
-      setDraft(normalizeDraft(revision.payload));
-      setRevisions((current) => [revision, ...current.filter((row) => row.revision_id !== revision.revision_id)]);
-      window.dispatchEvent(new CustomEvent("quant-trading-configuration-published"));
+      setCandidates((current) => [candidate, ...current.filter((row) => row.candidate_id !== candidate.candidate_id)]);
       setLabel("");
       setStatus("saved");
       setMessageTone("success");
-      setMessage(`Release ${revision.revision} is approved. New Replay runs now pin this exact configuration.`);
+      setMessage(`Test Candidate t${candidate.candidate_revision} is frozen. Debug and Backtest can now pin this exact configuration; Paper and Live remain unauthorized.`);
     } catch (reason) {
       setStatus("error");
       setMessageTone("error");
@@ -474,7 +474,7 @@ export function TradingConfigurationPage({ section }: { section: TradingConfigur
     const canvas = canvasApprovalSnapshot();
     if (!canvas.ready) failed.push({ detail: "configure at least one container", label: "Canvas", ready: false });
     setMessageTone(failed.length ? "error" : "success");
-    setMessage(failed.length ? `Validation found ${failed.length} incomplete dependencies: ${failed.map((check) => check.label).join(", ")}.` : "Configuration graph is complete and ready for publication.");
+    setMessage(failed.length ? `Validation found ${failed.length} incomplete dependencies: ${failed.map((check) => check.label).join(", ")}.` : "Configuration graph is complete and ready to freeze as a Test Candidate.");
     setStatus(failed.length ? "error" : "ready");
   }
 
@@ -502,8 +502,8 @@ export function TradingConfigurationPage({ section }: { section: TradingConfigur
           {draft ? <div className="configuration-session-state"><span>Session draft</span><strong>Schema v{draft.schema_version}</strong></div> : null}
           {draft && section === "discovery" ? <div className="configuration-session-state"><span>QMD materialization</span><strong title={discoveryRuntimeError || undefined}>{discoveryRuntimeStatus === "ready" ? "Runtime active" : discoveryRuntimeStatus === "error" ? "Invalid draft" : "Applying…"}</strong></div> : null}
           {draft && !["revisions", "data_catalog"].includes(section) ? <button className="button compact" onClick={validateSession} type="button"><BadgeCheck size={14} /> Validate</button> : null}
-          {draft && !["revisions", "data_catalog"].includes(section) ? <a className="button compact primary" href="#revision-configuration">Review release <ChevronRight size={13} /></a> : null}
-          <RevisionBadge approved={approved} />
+          {draft && !["revisions", "data_catalog"].includes(section) ? <a className="button compact primary" href="#revision-configuration">Review Test Candidate <ChevronRight size={13} /></a> : null}
+          <RevisionBadge approved={approved} candidate={candidates[0]} />
         </div>
       </header>
 
@@ -543,6 +543,7 @@ export function TradingConfigurationPage({ section }: { section: TradingConfigur
           draft={draft}
           guided={<GuidedConfiguration
             approved={approved}
+            candidates={candidates}
             draft={draft}
             label={label}
             omsStage={omsGuidedStage}
@@ -563,6 +564,7 @@ export function TradingConfigurationPage({ section }: { section: TradingConfigur
       ) : experience === "guided" && draft ? (
         <div className="configuration-guided-workspace"><GuidedConfiguration
           approved={approved}
+          candidates={candidates}
           draft={draft}
           label={label}
           omsStage={omsGuidedStage}
@@ -579,6 +581,7 @@ export function TradingConfigurationPage({ section }: { section: TradingConfigur
       ) : section === "revisions" ? (
         <div className="configuration-expert-workspace"><RevisionPublisher
           approved={approved}
+          candidates={candidates}
           draft={draft}
           label={label}
           revisions={revisions}
@@ -589,7 +592,7 @@ export function TradingConfigurationPage({ section }: { section: TradingConfigur
       ) : draft ? (
         <div className="configuration-expert-workspace">
           <div className="configuration-expert-editor">
-            {section === "strategy" ? <StrategyStudio approved={approved} draft={draft} label={label} onChange={(value) => updateDraft("strategy", value)} onDeleteProfile={deleteStrategyProfile} onDraftChange={updateConfigurationBook} onLabelChange={setLabel} onPublish={publish} publishing={status === "saving"} revisions={revisions} section={draft.strategy} /> : null}
+            {section === "strategy" ? <StrategyStudio approved={approved} candidates={candidates} draft={draft} label={label} onChange={(value) => updateDraft("strategy", value)} onDeleteProfile={deleteStrategyProfile} onDraftChange={updateConfigurationBook} onLabelChange={setLabel} onPublish={publish} publishing={status === "saving"} revisions={revisions} section={draft.strategy} /> : null}
             {section === "discovery" ? <MarketDiscoveryComposer onChange={(value) => updateDraft("market_discovery", value as MarketDiscoverySection)} section={draft.market_discovery as MarketDiscoveryConfiguration} /> : null}
           </div>
         </div>
@@ -634,7 +637,7 @@ function ExpertWorkspaceGuide({ section }: { section: Exclude<TradingConfigurati
   const guidance = EXPERT_GUIDANCE[section];
   return <section className="configuration-expert-guide">
     <div><span>Expert workspace</span><h2>{SECTION_META[section].title} contract</h2><p>{guidance.outcome}</p></div>
-    <dl><div><dt>Authority boundary</dt><dd>{guidance.authority}</dd></div><div><dt>Work by subject</dt><dd>{guidance.subjects.map((subject) => <span key={subject}><Check size={12} />{subject}</span>)}</dd></div><div><dt>Release behavior</dt><dd>Changes remain in this browser session until validation and publication.</dd></div></dl>
+    <dl><div><dt>Authority boundary</dt><dd>{guidance.authority}</dd></div><div><dt>Work by subject</dt><dd>{guidance.subjects.map((subject) => <span key={subject}><Check size={12} />{subject}</span>)}</dd></div><div><dt>Test behavior</dt><dd>Changes remain in this browser session until frozen as an immutable Test Candidate.</dd></div></dl>
   </section>;
 }
 
@@ -683,7 +686,7 @@ function ConfigurationStudioHome({ approved, draft, onApplyRecommended, onCloneA
   const recommended = recommendedDraft(draft);
   return <section className="configuration-studio-home">
     <header>
-      <div><span>Choose how to begin</span><h2>Choose your starting point</h2><p>Every option edits the same schema-v{draft.schema_version} session configuration; publication is required before runtime.</p></div>
+      <div><span>Choose how to begin</span><h2>Choose your starting point</h2><p>Every option edits the same schema-v{draft.schema_version} session configuration; an immutable Test Candidate is required before Debug or Backtest.</p></div>
       <div className="configuration-home-authority"><ShieldCheck size={18} /><span><strong>One authority</strong><small>Guided choices update this browser session</small></span></div>
     </header>
     <div className="configuration-start-paths">
@@ -709,8 +712,9 @@ function ConfigurationStudioHome({ approved, draft, onApplyRecommended, onCloneA
   </section>;
 }
 
-function GuidedConfiguration({ approved, draft, label, omsStage, onChange, onContinue, onLabelChange, onOmsStageChange, onPublish, onSwitchToExpert, publishing, revisions, section }: {
+function GuidedConfiguration({ approved, candidates, draft, label, omsStage, onChange, onContinue, onLabelChange, onOmsStageChange, onPublish, onSwitchToExpert, publishing, revisions, section }: {
   approved: Revision | null;
+  candidates: TestCandidate[];
   draft: Draft;
   label: string;
   omsStage: OmsGuidedStage;
@@ -979,7 +983,7 @@ function GuidedConfiguration({ approved, draft, label, omsStage, onChange, onCon
     });
   }
 
-  if (section === "revisions") return <GuidedReview approved={approved} draft={draft} label={label} onLabelChange={onLabelChange} onPublish={onPublish} onReturn={() => navigateGuidedStep("assignments", onOmsStageChange)} publishing={publishing} revisions={revisions} />;
+  if (section === "revisions") return <GuidedReview approved={approved} candidates={candidates} draft={draft} label={label} onLabelChange={onLabelChange} onPublish={onPublish} onReturn={() => navigateGuidedStep("assignments", onOmsStageChange)} publishing={publishing} revisions={revisions} />;
   if (!profile || !deployment || !mandate || !omsProfile || !executionPolicy || !protectionProfile || !account) return <GuidedEmpty onSwitchToExpert={onSwitchToExpert} />;
   if (step === "strategy") return <GuidedStrategyConfiguration draft={draft} onChange={onChange} onContinue={() => onContinue("accounts")} onProfileChange={selectStrategyProfile} profile={profile} />;
 

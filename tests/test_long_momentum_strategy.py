@@ -711,6 +711,8 @@ class LongMomentumStrategyTests(unittest.TestCase):
         self.assertEqual(held.state["active_stop"], 100.0)
         self.assertEqual(protected.evaluation.signals[0].reason, "protective_stop")
         self.assertEqual(protected.evaluation.signals[0].action, "exit")
+        self.assertEqual(protected.status, AssignmentStatus.COMPLETED)
+        self.assertFalse(protected.evaluation.intents[0].metadata["buy_back"])
 
     def test_bullish_choch_adds_only_with_confirmation(self) -> None:
         managed = assignment(
@@ -776,6 +778,51 @@ class LongMomentumStrategyTests(unittest.TestCase):
             waiting, confirmed_observation(observed_at=NOW + timedelta(seconds=1))
         )
         self.assertEqual(result.evaluation.signals[0].reason, "reentry_cooldown")
+
+    def test_session_entry_cutoff_blocks_new_exposure(self) -> None:
+        parameters = default_long_momentum_parameters()
+        parameters["strategy_behavior"] = {
+            "entry_cutoff_time": "15:45:00",
+            "flatten_time": "15:55:00",
+        }
+        result = LongMomentumStrategyEngine().evaluate(
+            assignment(parameters=parameters),
+            confirmed_observation(observed_at=datetime(2026, 7, 24, 19, 45, tzinfo=timezone.utc)),
+        )
+
+        self.assertEqual(result.evaluation.signals[0].reason, "entry_cutoff_reached")
+        self.assertEqual(result.evaluation.signals[0].action, "wait")
+        self.assertEqual(result.status, AssignmentStatus.COMPLETED)
+
+    def test_session_flatten_forces_full_exit_without_reentry(self) -> None:
+        parameters = default_long_momentum_parameters()
+        parameters["strategy_behavior"] = {
+            "entry_cutoff_time": "15:45:00",
+            "flatten_time": "15:55:00",
+        }
+        managed = assignment(
+            parameters=parameters,
+            status=AssignmentStatus.MANAGING,
+            state={
+                "active_stop": 99.0,
+                "initial_stop": 99.0,
+                "entry_reference_price": 101.0,
+                "high_water_price": 101.0,
+            },
+        )
+        result = LongMomentumStrategyEngine().evaluate(
+            managed,
+            confirmed_observation(
+                observed_at=datetime(2026, 7, 24, 19, 55, tzinfo=timezone.utc),
+                position_quantity=100,
+            ),
+        )
+
+        self.assertEqual(result.evaluation.signals[0].reason, "session_flatten")
+        self.assertEqual(result.evaluation.signals[0].action, "exit")
+        self.assertEqual(result.evaluation.intents[0].quantity, 100)
+        self.assertEqual(result.status, AssignmentStatus.COMPLETED)
+        self.assertFalse(result.evaluation.intents[0].metadata["buy_back"])
 
     def test_ibkr_entry_plan_has_parent_target_hard_stop_and_trailing_stop(self) -> None:
         result = LongMomentumStrategyEngine().evaluate(assignment(), confirmed_observation())

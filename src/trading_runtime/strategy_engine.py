@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from enum import StrEnum
 from typing import Any
 from uuid import uuid4
+from zoneinfo import ZoneInfo
 
 from src.request_context import causal_identity
 
@@ -42,6 +43,7 @@ RULE_COMPARATORS = {
     "less_or_equal",
     "less_than",
 }
+NEW_YORK = ZoneInfo("America/New_York")
 
 STRATEGY_INPUT_SUMMARIES = {
     "market.last_price": "The most recent causally available market price used to compare the instrument with structural levels, indicators, and protection boundaries.",
@@ -498,6 +500,14 @@ def resolve_long_momentum_parameters(overrides: dict[str, Any] | None = None) ->
     side = str(dict(parameters.get("strategy_behavior") or {}).get("side") or "long")
     if side not in {"long", "short"}:
         raise ValueError("Strategy side must be long or short")
+    behavior = dict(parameters.get("strategy_behavior") or {})
+    for key in ("entry_cutoff_time", "flatten_time"):
+        value = str(behavior.get(key) or "").strip()
+        if value:
+            try:
+                datetime.strptime(value, "%H:%M:%S")
+            except ValueError as exc:
+                raise ValueError(f"Strategy {key} must use HH:MM:SS New York time") from exc
     if parameters["protection"]["stop"]["method"] not in {"structure", "volatility", "hybrid"}:
         raise ValueError("Unsupported protective stop method")
     sizing = parameters["sizing"]
@@ -675,13 +685,20 @@ class LongMomentumStrategyEngine:
         state = dict(assignment.state)
         status = assignment.status
         parameters = resolve_long_momentum_parameters(assignment.parameters)
+        flatten_due = bool(
+            observation.position_quantity > 0
+            and _at_or_after_session_time(
+                observation.observed_at,
+                str(dict(parameters.get("strategy_behavior") or {}).get("flatten_time") or ""),
+            )
+        )
         if status in {AssignmentStatus.DISABLED, AssignmentStatus.COMPLETED, AssignmentStatus.ERROR}:
             return self._result(assignment, observation, "wait", "assignment_not_active", 0.0, 1.0, state, status)
         if status == AssignmentStatus.PAUSED:
             return self._result(assignment, observation, "wait", "assignment_paused", 0.0, 1.0, state, status)
         if not assignment.permissions.observe:
             return self._result(assignment, observation, "wait", "observation_not_authorized", 0.0, 1.0, state, status)
-        if not _observation_updates_active_rules(
+        if not flatten_due and not _observation_updates_active_rules(
             parameters,
             observation,
             reentries=int(state.get("reentries") or 0),
@@ -766,6 +783,20 @@ class LongMomentumStrategyEngine:
             return self._result(assignment, observation, "wait", "entry_not_authorized", 0.0, 1.0, state, AssignmentStatus.WATCHING)
         if not observation.market_open:
             return self._result(assignment, observation, "wait", "market_not_open", 0.0, 1.0, state, AssignmentStatus.WATCHING)
+        entry_cutoff = str(
+            dict(parameters.get("strategy_behavior") or {}).get("entry_cutoff_time") or ""
+        )
+        if _at_or_after_session_time(observation.observed_at, entry_cutoff):
+            return self._result(
+                assignment,
+                observation,
+                "wait",
+                "entry_cutoff_reached",
+                0.0,
+                1.0,
+                state,
+                AssignmentStatus.COMPLETED,
+            )
 
         phase_policy = dict(parameters.get("phase_policy") or {})
         phase = dict(phase_policy.get(phase_name) or {})
@@ -928,7 +959,18 @@ class LongMomentumStrategyEngine:
             observation.price <= stop if side == "long" else observation.price >= stop
         )
         exit_automatic = _phase_is_automatic(parameters, "exit")
-        if protection_breached:
+        flatten_time = str(
+            dict(parameters.get("strategy_behavior") or {}).get("flatten_time") or ""
+        )
+        if _at_or_after_session_time(observation.observed_at, flatten_time):
+            state["disable_after_exit"] = True
+            exit_route = {
+                "route_id": "session-flatten",
+                "name": "Session flatten",
+                "mechanism": "session_flatten",
+                "position_fraction": 1.0,
+            }
+        elif protection_breached:
             exit_route = {
                 "route_id": "oms-protective-stop",
                 "name": "OMS protective stop",
@@ -994,6 +1036,8 @@ class LongMomentumStrategyEngine:
             or str(exit_route.get("mechanism")) == "protective_stop"
         ):
             reason = str(exit_route["mechanism"])
+            if reason in {"protective_stop", "failed_breakout", "bearish_qmd_macd", "session_flatten"}:
+                state["disable_after_exit"] = True
             state["last_exit_reason"] = reason
             state["last_exit_route_id"] = str(exit_route["route_id"])
             state["last_exit_at"] = observation.observed_at.isoformat()
@@ -1178,7 +1222,6 @@ class LongMomentumStrategyEngine:
             state, AssignmentStatus.MANAGING, invalidation_price=stop,
             metadata={"confirmation": confirmation, "gain_pct": gain_pct},
         )
-
     def _result(
         self,
         assignment: StrategyAssignment,
@@ -1324,6 +1367,13 @@ class LongMomentumStrategyEngine:
             **lineage,
         }
         return StrategyEngineResult(StrategyEvaluation(signals=(signal,), intents=intents), state, status, payload)
+
+
+def _at_or_after_session_time(observed_at: datetime, configured: str) -> bool:
+    if not configured:
+        return False
+    threshold = datetime.strptime(configured, "%H:%M:%S").time()
+    return observed_at.astimezone(NEW_YORK).time().replace(tzinfo=None) >= threshold
 
 
 def _capital_request(

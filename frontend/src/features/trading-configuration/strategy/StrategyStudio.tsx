@@ -49,7 +49,7 @@ import {
 } from "../contracts";
 import { collectLifecycleRuleSetIds, normalizeStrategyProfileReferences } from "../draft";
 import { navigateGuidedStep, reviewRows } from "../guidedNavigation";
-import { EffectiveConfigurationPreview, RevisionPublisher, type Revision } from "../release";
+import { EffectiveConfigurationPreview, RevisionPublisher, type Revision, type TestCandidate } from "../release";
 import { AccountsEditor, DeploymentEditor, OmsEditor, PortfolioEditor } from "../sections/OperationalConfigurationSections";
 import {
   AddStepsEditor,
@@ -696,11 +696,11 @@ export function ModeChoices({ onChange, options, values }: { onChange: (values: 
   return <div className="guided-mode-choices">{options.map((option) => <label key={option}><input checked={values.includes(option)} onChange={(event) => onChange(event.target.checked ? [...values, option] : values.filter((value) => value !== option))} type="checkbox" /><span><Check size={13} />{readableLabel(option)}</span></label>)}</div>;
 }
 
-export function GuidedReview({ approved, draft, label, onLabelChange, onPublish, onReturn, publishing, revisions }: { approved: Revision | null; draft: Draft; label: string; onLabelChange: (value: string) => void; onPublish: () => void; onReturn: () => void; publishing: boolean; revisions: Revision[] }) {
+export function GuidedReview({ approved, candidates, draft, label, onLabelChange, onPublish, onReturn, publishing, revisions }: { approved: Revision | null; candidates: TestCandidate[]; draft: Draft; label: string; onLabelChange: (value: string) => void; onPublish: () => void; onReturn: () => void; publishing: boolean; revisions: Revision[] }) {
   const rows = reviewRows(draft, approved);
   return <div className="guided-review">
     <header><span>Final step</span><h2>Review the effective configuration</h2><p>Resolve anything marked invalid or needing a decision. Publication freezes the entire draft and configured Canvas for new runs.</p></header>
-    <div className="guided-review-layout"><div className="guided-review-matrix">{rows.map((row) => { const Icon = row.icon; return <article key={row.step}><span><Icon size={18} /><strong>{row.label}</strong></span><span>{row.selection}</span><em data-state={row.state.toLowerCase().replaceAll(" ", "-")}>{row.state}</em><button onClick={() => navigateGuidedStep(row.step, () => undefined)} type="button">Change <ChevronRight size={13} /></button></article>; })}</div><aside><RevisionPublisher approved={approved} draft={draft} guided label={label} onLabelChange={onLabelChange} onPublish={onPublish} publishing={publishing} revisions={revisions} /></aside><details className="guided-technical-preview"><summary>Show the technical runtime preview <ChevronRight size={15} /></summary><EffectiveConfigurationPreview draft={draft} /></details></div>
+    <div className="guided-review-layout"><div className="guided-review-matrix">{rows.map((row) => { const Icon = row.icon; return <article key={row.step}><span><Icon size={18} /><strong>{row.label}</strong></span><span>{row.selection}</span><em data-state={row.state.toLowerCase().replaceAll(" ", "-")}>{row.state}</em><button onClick={() => navigateGuidedStep(row.step, () => undefined)} type="button">Change <ChevronRight size={13} /></button></article>; })}</div><aside><RevisionPublisher approved={approved} candidates={candidates} draft={draft} guided label={label} onLabelChange={onLabelChange} onPublish={onPublish} publishing={publishing} revisions={revisions} /></aside><details className="guided-technical-preview"><summary>Show the technical runtime preview <ChevronRight size={15} /></summary><EffectiveConfigurationPreview draft={draft} /></details></div>
     <button className="button" onClick={onReturn} type="button"><ArrowLeft size={15} /> Back to accounts</button>
   </div>;
 }
@@ -709,8 +709,9 @@ export function GuidedEmpty({ onSwitchToExpert }: { onSwitchToExpert: () => void
   return <div className="guided-empty"><TriangleAlert size={20} /><h2>This step needs a base object</h2><p>Create the missing profile, Run Plan, mandate, OMS profile, policy, protection profile, or account in Expert mode. Guided setup does not create a Live-critical object implicitly.</p><button className="button primary" onClick={onSwitchToExpert} type="button"><Settings2 size={15} /> Open Expert editor</button></div>;
 }
 
-export function StrategyStudio({ approved, draft, label, onChange, onDeleteProfile, onDraftChange, onLabelChange, onPublish, publishing, revisions, section }: {
+export function StrategyStudio({ approved, candidates, draft, label, onChange, onDeleteProfile, onDraftChange, onLabelChange, onPublish, publishing, revisions, section }: {
   approved: Revision | null;
+  candidates: TestCandidate[];
   draft: Draft;
   label: string;
   onChange: (value: StrategySection) => void;
@@ -945,12 +946,12 @@ export function StrategyStudio({ approved, draft, label, onChange, onDeleteProfi
             </BookConfigurationSurface>
           </StoryChapter>
 
-          <StoryChapter marker="09" eyebrow="Approved release" title="Validate and freeze the complete runtime configuration">
+          <StoryChapter marker="09" eyebrow="Test Candidate" title="Validate and freeze a reproducible test configuration">
             <div className="strategy-book-prose">
-              <p>The browser session has no runtime authority. Publication validates all references and freezes Strategy, Run Plan, Portfolio, OMS, account, safety, and Canvas configuration into one release. Each new run pins one release; later session changes cannot alter an active run.</p>
+              <p>The browser session has no runtime authority. Creating a Test Candidate validates all references and freezes Strategy, Run Plan, Portfolio, OMS, account, safety, and Canvas configuration for Debug and Backtest. It does not authorize Paper or Live trading.</p>
             </div>
-            <BookConfigurationSurface label="Review and publish the release">
-              <RevisionPublisher approved={approved} draft={draft} label={label} onLabelChange={onLabelChange} onPublish={() => onPublish(selected.profile_id)} publishing={publishing} revisions={revisions} />
+            <BookConfigurationSurface label="Review and create the Test Candidate">
+              <RevisionPublisher approved={approved} candidates={candidates} draft={draft} label={label} onLabelChange={onLabelChange} onPublish={() => onPublish(selected.profile_id)} publishing={publishing} revisions={revisions} />
             </BookConfigurationSurface>
           </StoryChapter>
 

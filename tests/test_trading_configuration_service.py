@@ -26,7 +26,10 @@ from src.backend.trading_configuration_service import (
     approved_runtime_configuration_snapshot,
     backtest_configuration_snapshot,
     backtest_debug_configuration_snapshot,
+    configuration_candidate,
+    configuration_candidates,
     configuration_base,
+    create_test_candidate,
     effective_configuration_snapshot,
     market_discovery_runtime_configuration,
     market_discovery_presentation_configuration,
@@ -204,8 +207,11 @@ class TradingConfigurationServiceTests(unittest.TestCase):
     def test_historical_snapshot_entrypoints_preserve_runtime_mode(self) -> None:
         with patch(
             "src.backend.trading_configuration_service.approved_runtime_configuration_snapshot",
-            side_effect=lambda mode: {"mode": mode},
-        ) as snapshot:
+            side_effect=lambda mode, **_kwargs: {"mode": mode},
+        ) as snapshot, patch(
+            "src.backend.trading_configuration_service.approved_configuration",
+            return_value={"revision_id": "approved"},
+        ):
             replay = replay_configuration_snapshot()
             backtest = backtest_configuration_snapshot()
             debug = backtest_debug_configuration_snapshot()
@@ -1145,7 +1151,7 @@ class TradingConfigurationServiceTests(unittest.TestCase):
         self.assertEqual(default_profile["publication_status"], "template")
         self.assertNotIn("composition", default_profile)
         default_run_plan = draft["run_plans"]["plans"][0]
-        self.assertEqual(default_run_plan["watchlist_ids"], ["core-candidates"])
+        self.assertEqual(default_run_plan["watchlist_ids"], ["squeeze-tradable-candidates"])
         self.assertEqual(default_run_plan["canvas_profile_id"], "current-canvas")
         self.assertEqual(
             default_run_plan["data_plan_ids"]["replay"],
@@ -1283,6 +1289,59 @@ class TradingConfigurationServiceTests(unittest.TestCase):
             saved_draft["run_plans"]["plans"][0]["action_policy_rule_set_ids"],
             [],
         )
+
+    def test_test_candidate_is_immutable_idempotent_and_does_not_approve(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            journal = TradingJournal(Path(directory) / "journal.sqlite3")
+            draft = self._draft()
+            with self._service_patches(journal):
+                first = create_test_candidate(
+                    label="Long momentum squeeze baseline",
+                    canvas_revision="canvas-1",
+                    canvas_profile={"workspaceStates": {"main": {"openIds": ["chart"]}}},
+                    configuration=draft,
+                    run_plan_id="balanced-replay",
+                )
+                second = create_test_candidate(
+                    label="Duplicate content",
+                    canvas_revision="canvas-1",
+                    canvas_profile={"workspaceStates": {"main": {"openIds": ["chart"]}}},
+                    configuration=first["payload"],
+                    run_plan_id="balanced-replay",
+                )
+                pinned = backtest_configuration_snapshot(
+                    "balanced-replay", candidate_id=first["candidate_id"]
+                )
+                latest = configuration_candidate(required=True)
+                rows = configuration_candidates()
+                approved = approved_configuration()
+            journal.close()
+
+        self.assertEqual(first["candidate_id"], second["candidate_id"])
+        self.assertEqual(latest["candidate_id"], first["candidate_id"])
+        self.assertEqual(len(rows), 1)
+        self.assertIsNone(approved)
+        self.assertEqual(pinned["revision_id"], first["candidate_id"])
+        self.assertEqual(pinned["release_state"], "test_candidate")
+        self.assertEqual(pinned["mode"], "backtest")
+
+    def test_squeeze_defaults_separate_backtest_and_real_capital(self) -> None:
+        draft = self._draft()
+        policies = {row["policy_id"]: row for row in draft["portfolio"]["policies"]}
+        replay = policies["default"]
+        real = policies["long-momentum-real-80"]
+        plan = next(row for row in draft["run_plans"]["plans"] if row["run_plan_id"] == "balanced-replay")
+        profile = next(row for row in draft["strategy"]["profiles"] if row["profile_id"] == "long-momentum-balanced")
+
+        self.assertEqual(replay["eligible_equity_fraction"], 1.0)
+        self.assertEqual(real["eligible_equity_fraction"], 0.8)
+        self.assertEqual(replay["maximum_position_fraction"], 0.1)
+        self.assertEqual(replay["maximum_planned_risk_fraction"], 0.0025)
+        self.assertEqual(replay["maximum_open_positions"], 3)
+        self.assertEqual(plan["watchlist_ids"], ["squeeze-tradable-candidates"])
+        self.assertEqual(plan["campaign_lifecycle"]["reentry_cooldown_ms"], 5_000)
+        self.assertEqual(profile["lifecycle"]["trading_behavior"]["entry_cutoff_time"], "15:45:00")
+        self.assertEqual(profile["lifecycle"]["trading_behavior"]["flatten_time"], "15:55:00")
 
     def test_approved_canvas_projection_exposes_only_published_profile_identity(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

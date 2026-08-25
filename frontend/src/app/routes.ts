@@ -113,7 +113,7 @@ export const NAVIGATION_GROUPS = [
       { key: "portfolio-configuration", label: "Portfolio & Risk", icon: "portfolio" },
       { key: "oms-configuration", label: "OMS & Protection", icon: "oms" },
       { key: "account-configuration", label: "Accounts & Sessions", icon: "accounts" },
-      { key: "revision-configuration", label: "Approved Releases", icon: "releases" },
+      { key: "revision-configuration", label: "Test Candidates", icon: "releases" },
     ],
   },
   {

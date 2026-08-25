@@ -63,10 +63,18 @@ type BacktestComparison = {
   warnings: Array<{ code: string; detail: string; run_id: string }>;
 };
 
+type TestCandidateSummary = {
+  candidate_id: string;
+  candidate_revision: number;
+  content_hash: string;
+  label: string;
+};
+
 export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
   const [anchorDate, setAnchorDate] = useState(previousWeekdayIsoDate);
   const [sessionCount, setSessionCount] = useState(20);
   const [initialCash, setInitialCash] = useState(100_000);
+  const [simulationProfile, setSimulationProfile] = useState<"baseline" | "stress">("baseline");
   const [preflight, setPreflight] = useState<HistoricalPreflight | null>(null);
   const [checking, setChecking] = useState(true);
   const [error, setError] = useState("");
@@ -78,6 +86,20 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
   const [comparisonError, setComparisonError] = useState("");
   const [controlBusy, setControlBusy] = useState("");
   const [runPlanId, setRunPlanId] = useState("");
+  const [candidateId, setCandidateId] = useState("");
+  const [candidates, setCandidates] = useState<TestCandidateSummary[]>([]);
+
+  useEffect(() => {
+    let cancelled = false;
+    api<{ rows: TestCandidateSummary[] }>("/api/trading/configuration/candidates")
+      .then((payload) => {
+        if (cancelled) return;
+        setCandidates(payload.rows);
+        setCandidateId((current) => current || payload.rows[0]?.candidate_id || "");
+      })
+      .catch((reason) => { if (!cancelled) setError(reason instanceof Error ? reason.message : String(reason)); });
+    return () => { cancelled = true; };
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -87,9 +109,11 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
       api<HistoricalPreflight>("/api/trading/historical-preflight", {
         body: JSON.stringify({
           anchor_date: anchorDate,
+          configuration_revision_id: candidateId,
           mode,
           run_plan_id: runPlanId,
           session_count: sessionCount,
+          simulation_profile: simulationProfile,
         }),
         method: "POST",
         timeoutMs: 60_000,
@@ -114,7 +138,7 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [anchorDate, mode, refreshKey, runPlanId, sessionCount]);
+  }, [anchorDate, candidateId, mode, refreshKey, runPlanId, sessionCount]);
 
   usePollingTask({
     enabled: Boolean(run && !["completed", "stopped", "failed"].includes(run.status)),
@@ -232,7 +256,7 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
       busy={creating}
       checking={checking}
       checks={preflight?.checks ?? []}
-      description="Evaluate a published Run Plan across a bounded historical window using the same strategy, Portfolio, OMS, and journal contracts as Replay."
+      description="Evaluate an immutable Test Candidate across a bounded historical window using the same strategy, Portfolio, OMS, and journal contracts as Paper and Live."
       error={error}
       eyebrow="Backtest"
       icon={Gauge}
@@ -242,10 +266,12 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
       secondary={results ? <HistoricalResults comparison={comparison} comparisonError={comparisonError} results={results} /> : null}
       title="Evaluate a strategy"
     >
+              <label className="configuration-field"><span>Test Candidate</span><select aria-label="Test Candidate" onChange={(event) => setCandidateId(event.target.value)} value={candidateId}><option value="">Latest available candidate</option>{candidates.map((candidate) => <option key={candidate.candidate_id} value={candidate.candidate_id}>t{candidate.candidate_revision} · {candidate.label} · {candidate.content_hash.slice(0, 8)}</option>)}</select><small>An immutable configuration hash; creating it grants no Paper or Live authority.</small></label>
               <label className="configuration-field"><span>Strategy Run Plan</span><select aria-label="Strategy Run Plan" onChange={(event) => setRunPlanId(event.target.value)} value={runPlanId}>{(preflight?.available_run_plans ?? []).map((plan) => <option key={plan.run_plan_id} value={plan.run_plan_id}>{plan.name} · {plan.strategy_id} r{plan.strategy_revision}</option>)}</select><small>The exact Strategy Studio profile and installed executor revision used for this Backtest.</small></label>
               <label className="configuration-field"><span>Anchor date · exclusive</span><input onChange={(event) => setAnchorDate(event.target.value)} type="date" value={anchorDate} /><small>The selected date is never included in the result window.</small></label>
               <label className="configuration-field"><span>Prior exchange sessions</span><input max={260} min={1} onChange={(event) => setSessionCount(Math.max(1, Number(event.target.value) || 1))} type="number" value={sessionCount} /><small>Resolved backward from the exclusive anchor.</small></label>
               <label className="configuration-field"><span>Initial cash</span><input max={1_000_000_000} min={1_000} onChange={(event) => setInitialCash(Math.max(1_000, Number(event.target.value) || 1_000))} step={1_000} type="number" value={initialCash} /><small>Applied to each isolated simulated account for the full run.</small></label>
+              <label className="configuration-field"><span>Execution realism</span><select onChange={(event) => setSimulationProfile(event.target.value as "baseline" | "stress")} value={simulationProfile}><option value="baseline">Baseline · 25% participation · 5 bps slippage</option><option value="stress">Stress · 10% participation · 10 bps slippage</option></select><small>Both use $0.005 per share with a $1 minimum commission. Approval requires positive stress results.</small></label>
     </TradingModeLaunch>
   );
 }
