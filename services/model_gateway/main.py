@@ -14,6 +14,7 @@ app = FastAPI(title="Model Gateway", version="1.0")
 
 @app.get("/health")
 def health() -> dict[str, object]:
+    attempt_metrics = gateway.store.attempt_metrics()
     return {
         "status": "ready",
         "service": "model_gateway",
@@ -25,6 +26,7 @@ def health() -> dict[str, object]:
             "route_count": len(config.routes),
             "provider_count": len(config.providers),
             "max_concurrency": config.max_concurrency,
+            **attempt_metrics,
         },
     }
 

@@ -266,10 +266,15 @@ WHERE canonical_news_id={sql_string(canonical_news_id)}
                 "prompt_version": PROMPT_VERSION,
             },
         }
-        # Deep reasoning can legitimately exceed the gateway's former 45-second
-        # budget. Keep this caller above the route timeout so the gateway can
-        # return its structured result or its own explicit failure.
-        response = await asyncio.to_thread(_post_json, f"{self.config.model_gateway_url}/infer", payload, 135.0)
+        # The gateway owns the total provider deadline. This caller remains
+        # slightly above it so the durable review state records the gateway's
+        # explicit result or failure instead of an ambiguous socket timeout.
+        response = await asyncio.to_thread(
+            _post_json,
+            f"{self.config.model_gateway_url}/infer",
+            payload,
+            self.config.review_gateway_timeout_seconds,
+        )
         result = canonicalize_output(response["result"])
         errors = validate_output(result, [row["sentence_id"] for row in sample["normalized_sentences"]])
         if errors:

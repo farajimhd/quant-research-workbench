@@ -19,4 +19,11 @@ Routes:
 Runtime state is stored outside the repository under
 `D:\TradingML\runtimes\model_gateway` by default.
 
+Route timeouts are total provider budgets, not per-attempt budgets. The issuer
+review route defaults to 300 seconds because structured deep-model reasoning can
+legitimately exceed two minutes. Provider attempts, including failures, are
+recorded in the metadata-only `inference_attempt_audit` table; `/health` exposes
+bounded attempt counts and the latest result for diagnosis without storing the
+source prompt.
+
 Run with `.\scripts\run_model_gateway.ps1`.

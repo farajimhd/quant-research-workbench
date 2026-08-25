@@ -22,6 +22,7 @@ class IntelligenceConfigTests(unittest.TestCase):
         self.assertFalse(config.enable_live_ai)
         self.assertFalse(config.terminal_rich_enabled)
         self.assertTrue(config.terminal_screen_enabled)
+        self.assertEqual(config.review_gateway_timeout_seconds, 315.0)
 
     def test_optional_inference_requires_explicit_opt_in(self) -> None:
         with (

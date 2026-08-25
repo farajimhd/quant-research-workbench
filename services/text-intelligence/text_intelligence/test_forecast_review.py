@@ -16,6 +16,8 @@ class ForecastReviewRuntimeTests(unittest.TestCase):
             forecast_model_device="cpu",
             forecast_eligibility_threshold=0.5,
             review_prompt_path=None,
+            model_gateway_url="http://127.0.0.1:8810",
+            review_gateway_timeout_seconds=315.0,
             news_hypothesis_url="http://127.0.0.1:8811",
         )
         client = mock.Mock()

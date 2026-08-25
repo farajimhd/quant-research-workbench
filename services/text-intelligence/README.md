@@ -78,6 +78,9 @@ next reconciliation cycle rather than misreported as processing failures.
 - `TEXT_INTELLIGENCE_REVIEW_PROMPT_PATH`, default to the hash-certified issuer
   review prompt next to the serving release manifest.
 - `TEXT_INTELLIGENCE_MODEL_GATEWAY_URL`, default `http://127.0.0.1:8802`.
+- `TEXT_INTELLIGENCE_REVIEW_GATEWAY_TIMEOUT_SECONDS`, default `315`; caller
+  budget kept above Model Gateway's 300-second total issuer-review deadline so
+  failures retain the gateway's explicit provider evidence.
 - `TEXT_INTELLIGENCE_NEWS_HYPOTHESIS_URL`, default `http://127.0.0.1:8803`.
 - `TEXT_INTELLIGENCE_ENABLE_LLM`, default `false`
 - `TEXT_INTELLIGENCE_ENABLE_LIVE_AI`, default `false`; when `true`, eligible

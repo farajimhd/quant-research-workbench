@@ -43,8 +43,12 @@ class ModelGateway:
         if cached:
             return InferenceResponse(idempotency_key=request.idempotency_key, cached=True, **cached)
         failures: list[str] = []
+        deadline = time.monotonic() + route.timeout_seconds
         async with self.semaphore:
             for provider_name in route.providers:
+                if time.monotonic() >= deadline:
+                    failures.append(f"route deadline exhausted after {route.timeout_seconds:g}s")
+                    break
                 provider = self.config.providers.get(provider_name)
                 if provider is None:
                     failures.append(f"{provider_name}: not configured")
@@ -62,25 +66,51 @@ class ModelGateway:
                     self.reserved_cost[route.name] = reserved + estimate
                 try:
                     for attempt in range(2):
+                        remaining = deadline - time.monotonic()
+                        if remaining <= 0:
+                            failures.append(f"route deadline exhausted after {route.timeout_seconds:g}s")
+                            break
+                        attempt_started = time.perf_counter()
                         try:
                             row = await asyncio.to_thread(
                                 _call_provider,
                                 provider,
                                 request,
                                 route.max_output_tokens,
-                                route.timeout_seconds,
+                                remaining,
                                 route.reasoning_effort,
                             )
                             Draft202012Validator(request.response_schema).validate(row["result"])
                             row["route"] = route.name
                             self.provider_failures[provider_name] = 0
+                            await asyncio.to_thread(
+                                self.store.record_attempt,
+                                idempotency_key=request.idempotency_key,
+                                route=route.name,
+                                provider=provider.name,
+                                model=provider.model,
+                                attempt=attempt + 1,
+                                status="completed",
+                                error="",
+                                latency_ms=round((time.perf_counter() - attempt_started) * 1000),
+                            )
                             await asyncio.to_thread(self.store.put, request.idempotency_key, request_hash, row)
                             return InferenceResponse(idempotency_key=request.idempotency_key, cached=False, **row)
                         except Exception as exc:  # provider retry/failover is the route contract
-                            failures.append(
-                                f"{provider_name}[{attempt + 1}/2]: {type(exc).__name__}: {exc}"
+                            failure = f"{provider_name}[{attempt + 1}/2]: {type(exc).__name__}: {exc}"
+                            failures.append(failure)
+                            await asyncio.to_thread(
+                                self.store.record_attempt,
+                                idempotency_key=request.idempotency_key,
+                                route=route.name,
+                                provider=provider.name,
+                                model=provider.model,
+                                attempt=attempt + 1,
+                                status="failed",
+                                error=f"{type(exc).__name__}: {exc}",
+                                latency_ms=round((time.perf_counter() - attempt_started) * 1000),
                             )
-                            if attempt == 0:
+                            if attempt == 0 and time.monotonic() + 0.25 < deadline:
                                 await asyncio.sleep(0.25)
                 finally:
                     async with self.budget_lock:

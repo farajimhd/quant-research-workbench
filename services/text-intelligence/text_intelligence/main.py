@@ -254,6 +254,7 @@ def _snapshot_metrics() -> dict[str, object]:
         "enable_llm": config.enable_llm,
         "enable_live_ai": config.enable_live_ai,
         "forecast_review_trigger_mode": forecast_review_runtime.trigger_mode,
+        "review_gateway_timeout_seconds": config.review_gateway_timeout_seconds,
         "forecast_funnel_enabled": config.forecast_funnel_enabled,
         "forecast_review_metrics": {
             **forecast_review_runtime.metrics,

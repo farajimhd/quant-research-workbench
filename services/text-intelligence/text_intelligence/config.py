@@ -23,6 +23,7 @@ class IntelligenceConfig:
     review_trigger_mode: str
     review_prompt_path: Path
     model_gateway_url: str
+    review_gateway_timeout_seconds: float
     news_hypothesis_url: str
     llm_base_url: str
     llm_min_materiality: float
@@ -102,6 +103,9 @@ class IntelligenceConfig:
             model_gateway_url=env_string(
                 "TEXT_INTELLIGENCE_MODEL_GATEWAY_URL", "http://127.0.0.1:8802"
             ).rstrip("/"),
+            review_gateway_timeout_seconds=env_float(
+                "TEXT_INTELLIGENCE_REVIEW_GATEWAY_TIMEOUT_SECONDS", 315.0
+            ),
             news_hypothesis_url=env_string(
                 "TEXT_INTELLIGENCE_NEWS_HYPOTHESIS_URL", "http://127.0.0.1:8803"
             ).rstrip("/"),

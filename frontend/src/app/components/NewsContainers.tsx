@@ -501,7 +501,6 @@ function useNewsIntelligenceState(initialState: NewsAiState | null | undefined, 
   const status = state?.review?.status ?? "not_reviewed";
   const reviewPending = ["queued", "labeling"].includes(status);
   const pending = reviewPending || reactionPending;
-  const pollCount = useRef(0);
   const initialRevision = JSON.stringify(initialState ?? null);
   const appliedInitialRevision = useRef(initialRevision);
   useEffect(() => {
@@ -515,14 +514,31 @@ function useNewsIntelligenceState(initialState: NewsAiState | null | undefined, 
   }, [initialRevision, initialState]);
   useEffect(() => {
     if (!pending) return;
-    pollCount.current = 0;
-    const timer = window.setInterval(() => {
-      pollCount.current += 1;
-      if (pollCount.current > 30) { window.clearInterval(timer); return; }
-      api<NewsAiState>(`/api/trading/news/${encodeURIComponent(newsId)}/ai-review`, { timeoutMs: 10000 })
-        .then((next) => { setState(next); if ((next.hypotheses?.length ?? 0) > 0) setReactionPending(false); }).catch((reason) => setError(reason instanceof Error ? reason.message : String(reason)));
-    }, 2000);
-    return () => window.clearInterval(timer);
+    let closed = false;
+    let timer = 0;
+    const startedAt = Date.now();
+    const poll = async () => {
+      if (closed) return;
+      try {
+        const next = await api<NewsAiState>(`/api/trading/news/${encodeURIComponent(newsId)}/ai-review`, { timeoutMs: 10000 });
+        if (closed) return;
+        setState(next);
+        const nextReviewPending = ["queued", "labeling"].includes(next.review?.status ?? "not_reviewed");
+        const nextReactionPending = reactionPending && (next.hypotheses?.length ?? 0) === 0;
+        if (!nextReactionPending) setReactionPending(false);
+        if ((nextReviewPending || nextReactionPending) && Date.now() - startedAt < 10 * 60_000) {
+          timer = window.setTimeout(() => void poll(), 2000);
+        }
+      } catch (reason) {
+        if (closed) return;
+        setError(reason instanceof Error ? reason.message : String(reason));
+        if (Date.now() - startedAt < 10 * 60_000) {
+          timer = window.setTimeout(() => void poll(), 5000);
+        }
+      }
+    };
+    timer = window.setTimeout(() => void poll(), 1000);
+    return () => { closed = true; window.clearTimeout(timer); };
   }, [newsId, pending]);
   const requestReview = async () => {
     setError("");
