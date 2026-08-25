@@ -96,6 +96,16 @@ type TradingWorkspaceProps = {
   managementContent?: ReactNode;
   managementOpen?: boolean;
   onManagementClose?: () => void;
+  groupTemplates?: WorkspaceGroupTemplate[];
+  onOpenGroupTemplate?: (id: string) => void;
+  persistState?: boolean;
+};
+
+export type WorkspaceGroupTemplate = {
+  description: string;
+  id: string;
+  memberSummary: string;
+  title: string;
 };
 
 type RegisteredContainer = {
@@ -199,6 +209,9 @@ export function TradingWorkspace({
   managementContent,
   managementOpen = false,
   onManagementClose,
+  groupTemplates = [],
+  onOpenGroupTemplate,
+  persistState = true,
 }: TradingWorkspaceProps) {
   const contentHostsRef = useRef(new Map<string, HTMLDivElement>());
   const [registeredContainers, setRegisteredContainers] = useState<RegisteredContainer[] | null>(null);
@@ -280,9 +293,9 @@ export function TradingWorkspace({
 
   useEffect(() => {
     const state = { groups, instances, layoutVersion: TRADING_WORKSPACE_LAYOUT_VERSION, layouts, openIds };
-    window.localStorage.setItem(storageKey, JSON.stringify(state));
+    if (persistState) window.localStorage.setItem(storageKey, JSON.stringify(state));
     onStateChange?.(state);
-  }, [groups, instances, layouts, onStateChange, openIds, storageKey]);
+  }, [groups, instances, layouts, onStateChange, openIds, persistState, storageKey]);
 
   useEffect(() => {
     const activeIds = new Set(openIds);
@@ -294,6 +307,7 @@ export function TradingWorkspace({
   }, [openIds]);
 
   useEffect(() => {
+    if (!persistState) return undefined;
     const syncStoredState = (event: StorageEvent) => {
       if (event.key !== storageKey || !event.newValue) return;
       const next = parseWorkspaceState(event.newValue, definitions);
@@ -307,7 +321,7 @@ export function TradingWorkspace({
     };
     window.addEventListener("storage", syncStoredState);
     return () => window.removeEventListener("storage", syncStoredState);
-  }, [definitions, storageKey]);
+  }, [definitions, persistState, storageKey]);
 
   const allRootNodeIds = useMemo(() => workspaceRootNodeIds(openIds, groups), [groups, openIds]);
   const rootNodeIds = useMemo(() => allRootNodeIds.filter((id) => !groups[id]?.closed), [allRootNodeIds, groups]);
@@ -762,7 +776,7 @@ export function TradingWorkspace({
           <header><div><strong>Canvas management</strong><small>Organize workspaces, groups, and containers</small></div><button aria-label="Close canvas management" className="toolbar-button compact" onClick={onManagementClose} type="button"><X size={13} /></button></header>
           <div className="workspace-management-body" ref={managementBodyRef}>
             {managementContent}
-            <WorkspaceGroupManager groups={managedGroups} onClose={closeGroup} onRename={renameGroup} onShow={showGroup} />
+            <WorkspaceGroupManager groups={managedGroups} onClose={closeGroup} onOpenTemplate={onOpenGroupTemplate} onRename={renameGroup} onShow={showGroup} templates={groupTemplates} />
             <WorkspaceContainerLibrary allowMultipleInstances={allowMultipleInstances} definitions={selectableDefinitions} instances={instances} mode={mode} openIds={openIds} onAdd={addContainer} />
           </div>
           <footer><button className="button secondary compact workspace-management-reset" onClick={resetLayout} type="button"><RefreshCcw size={13} /> Reset current layout</button></footer>
@@ -823,19 +837,29 @@ type ManagedWorkspaceGroup = {
 function WorkspaceGroupManager({
   groups,
   onClose,
+  onOpenTemplate,
   onRename,
   onShow,
+  templates,
 }: {
   groups: ManagedWorkspaceGroup[];
   onClose: (id: string) => void;
+  onOpenTemplate?: (id: string) => void;
   onRename: (id: string, title: string) => void;
   onShow: (id: string) => void;
+  templates: WorkspaceGroupTemplate[];
 }) {
   return <section aria-label="Workspace groups" className="workspace-group-manager">
-    <header><div><strong>Groups</strong><small>Move related containers as one surface</small></div><span>{groups.length}</span></header>
+    <header><div><strong>Reusable groups</strong><small>Fixed container compositions; ticker context changes independently</small></div><span>{templates.length}</span></header>
+    {templates.length ? <div className="workspace-group-template-list">{templates.map((template) => <article key={template.id}>
+      <span className="workspace-group-template-icon"><Layers3 aria-hidden="true" size={15} /></span>
+      <span><strong>{template.title}</strong><small>{template.description}</small><em>{template.memberSummary}</em></span>
+      <button aria-label={`Open ${template.title} group`} className="button secondary compact" onClick={() => onOpenTemplate?.(template.id)} type="button">Open</button>
+    </article>)}</div> : <p>No reusable groups are configured.</p>}
+    <div className="workspace-group-manager-subheader"><div><strong>My workspace groups</strong><small>Saved in this browser profile</small></div><span>{groups.length}</span></div>
     {groups.length ? <div className="workspace-group-manager-list">{groups.map((group) => (
       <WorkspaceGroupManagerRow group={group} key={group.id} onClose={onClose} onRename={onRename} onShow={onShow} />
-    ))}</div> : <p>No saved groups. Select containers on the Canvas to create one.</p>}
+    ))}</div> : <p>No personal groups yet. Select containers on the Canvas to create one.</p>}
   </section>;
 }
 

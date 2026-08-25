@@ -1,4 +1,4 @@
-import { Activity, BadgeDollarSign, BriefcaseBusiness, Check, CircleDollarSign, Clock3, ExternalLink, Globe2, Landmark, Link2, MapPin, PanelRightOpen, Plus, RefreshCcw, Search, Save, Settings2, ShieldCheck, Trash2, TriangleAlert, Unlink, WalletCards } from "lucide-react";
+import { Activity, BadgeDollarSign, BriefcaseBusiness, Check, CircleDollarSign, Clock3, Globe2, Landmark, Link2, MapPin, PanelRightOpen, RefreshCcw, Search, Save, Settings2, ShieldCheck, TriangleAlert, Unlink, WalletCards } from "lucide-react";
 import { lazy, memo, Suspense, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type MutableRefObject, type ReactNode } from "react";
 
 import { api, apiCached, query, type ApiError } from "../api/client";
@@ -8,33 +8,36 @@ import {
   CANVAS_PREVIEW_CONTEXT_STORAGE_KEY,
   CANVAS_REGISTRY_STORAGE_KEY,
   CANVAS_REGISTRY_UPDATED_EVENT,
-  CANVAS_WORKSPACE_UPDATED_EVENT,
   CANVAS_LINK_GROUPS,
   MAIN_CANVAS_ID,
   NEWS_READER_CANVAS_ID,
   SEC_READER_CANVAS_ID,
   canvasLinkGroupDefinition,
+  canvasFocusHandoffUrl,
   canvasRuntimeRegistryStorageKey,
   canvasRuntimeWorkspaceStorageKey,
   canvasWorkspaceStorageKey,
   createCanvasRecord,
   focusCanvasUrl,
   ensureNewsReaderCanvas,
-  hydrateCanvasProfile,
-  mergeCanvasProfiles,
+  mergeSharedCanvasProfile,
   readCanvasRegistry,
+  readCanvasFocusHandoff,
   readCanvasRuntimeRegistry,
   readCanvasRuntimeOverlayRecord,
   readCanvasWorkspaceState,
   readCanvasWorkspaceStateByStorageKey,
   readReplayCanvasFocusHandoff,
   removeCanvasRecord,
+  removeCanvasFocusHandoff,
   replayFocusCanvasUrl,
   rebaseCanvasRuntimeOverlay,
   snapshotCanvasWorkspaceState,
   snapshotCanvasProfile,
+  snapshotSharedCanvasProfile,
   writeReplayCanvasFocusHandoff,
   writeCanvasRegistry,
+  writeCanvasFocusHandoff,
   writeCanvasRuntimeOverlayRecord,
   writeCanvasWorkspaceState,
   type CanvasAssignedLinkGroupId,
@@ -56,7 +59,7 @@ import { StockFactsContainer } from "../app/components/StockFactsContainer";
 import { XbrlAnalysisContainer, type XbrlAnalysisSettings } from "../app/components/XbrlAnalysisContainer";
 import { useWallClock } from "../app/components/useWallClock";
 import { TickerIdentity, useTickerPresentations } from "../app/components/TickerIdentity";
-import { TRADING_WORKSPACE_LAYOUT_VERSION, TradingWorkspace, createFocusLayouts } from "../app/components/TradingWorkspace";
+import { TRADING_WORKSPACE_LAYOUT_VERSION, TradingWorkspace, createFocusLayouts, type WorkspaceGroupTemplate } from "../app/components/TradingWorkspace";
 import type { WorkspaceWindowLayout, WorkspaceWindowMeta, WorkspaceWindowStatus } from "../app/components/WorkspaceCanvas";
 import { TRADING_WORKSPACE_CONTAINERS, containerSupportsCanvasLink, containerSupportsSymbolLink, type WorkspaceContainerDefinition, type WorkspaceContainerId } from "../app/tradingWorkspace";
 import type { TradingWorkspaceMode } from "../app/tradingWorkspace";
@@ -95,6 +98,7 @@ type TradingContainerPreviewProps = import("../features/canvas/tradingPresentati
 type StrategyOrderEntryProps = Parameters<typeof import("../features/canvas/tradingPresentation").StrategyOrderEntry>[0];
 const LazyTradingContainerPreview = lazy(() => import("../features/canvas/tradingPresentation").then((module) => ({ default: module.TradingContainerPreview })));
 const LazyStrategyOrderEntry = lazy(() => import("../features/canvas/tradingPresentation").then((module) => ({ default: module.StrategyOrderEntry })));
+const LazyCanvasManagementPanel = lazy(() => import("../features/canvas/CanvasManagementPanel"));
 
 function ChartPreview(props: CanvasChartPreviewProps) {
   return <Suspense fallback={<div aria-live="polite" className="canvas-preview-loading" role="status">Loading chart renderer…</div>}>
@@ -116,6 +120,14 @@ function StrategyOrderEntry(props: StrategyOrderEntryProps) {
 
 const LIVE_ACCOUNT_KEYS_STORAGE_KEY = "quant-research-workbench.real-live-trading.account-keys";
 const LIVE_PERFORMANCE_STORAGE_KEY = "quant-research-workbench.canvas.live-performance-v1";
+const CHARTS_QUOTES_GROUP_TEMPLATE_ID = "charts-quotes";
+const CHARTS_QUOTES_FOCUS_INSTANCE_ID = "charts_quotes-focus";
+const CANVAS_GROUP_TEMPLATES: WorkspaceGroupTemplate[] = [{
+  description: "A fixed synchronized market workspace; only its ticker context changes.",
+  id: CHARTS_QUOTES_GROUP_TEMPLATE_ID,
+  memberSummary: "Intraday, daily, and monthly charts · quote and trade context",
+  title: "Charts & Quotes",
+}];
 
 function readLiveAccountKeys(): string[] {
   try {
@@ -359,11 +371,14 @@ export function ApprovedCanvasRuntimePage({ accountKeys, mode, modeControls }: {
 
 export function CanvasFocusPage() {
   const params = new URLSearchParams(window.location.search);
+  const canvasFocusToken = params.get("canvas_focus") || undefined;
+  const acceptanceRuntimeMode = params.get("runtime_mode");
+  const runtimeMode = acceptanceRuntimeMode === "live" || acceptanceRuntimeMode === "paper" ? acceptanceRuntimeMode : undefined;
+  if (canvasFocusToken) return <TransientCanvasFocusPage focusToken={canvasFocusToken} runtimeMode={runtimeMode} />;
   const replayRunId = params.get("replay_run") || undefined;
   const replayFocusToken = params.get("replay_focus") || undefined;
   if (replayRunId && replayFocusToken) return <ReplayCanvasFocusPage focusToken={replayFocusToken} runId={replayRunId} />;
   const acceptanceKind = params.get("container_preview") as WorkspaceContainerId | null;
-  const acceptanceRuntimeMode = params.get("runtime_mode");
   if (acceptanceKind && TRADING_WORKSPACE_CONTAINERS.some((definition) => definition.id === acceptanceKind)) {
     return <CanvasContainerAcceptancePage
       kind={acceptanceKind}
@@ -378,9 +393,29 @@ export function CanvasFocusPage() {
   const requestedNewsId = params.get("news") || undefined;
   const requestedSecCik = params.get("sec_cik") || undefined;
   const requestedSecAccession = params.get("sec_accession") || undefined;
-  const runtimeMode = acceptanceRuntimeMode === "live" || acceptanceRuntimeMode === "paper" ? acceptanceRuntimeMode : undefined;
   if (params.get("canvas_profile") === "draft") return <CanvasWorkspaceSurface canvasId={canvasId} manager={false} requestedInstanceId={requestedInstanceId} requestedNewsId={requestedNewsId} requestedSecAccession={requestedSecAccession} requestedSecCik={requestedSecCik} runtimeMode={runtimeMode} />;
   return <ApprovedCanvasFocusPage canvasId={canvasId} requestedInstanceId={requestedInstanceId} requestedNewsId={requestedNewsId} requestedSecAccession={requestedSecAccession} requestedSecCik={requestedSecCik} runtimeMode={runtimeMode} />;
+}
+
+function TransientCanvasFocusPage({ focusToken, runtimeMode }: { focusToken: string; runtimeMode?: Extract<CanvasRuntimeMode, "live" | "paper"> }) {
+  const [handoff] = useState(() => readCanvasFocusHandoff(focusToken));
+  if (!handoff) return <div className="canvas-config-page canvas-focus-page"><div className="canvas-inline-error">This focus group is missing or expired.</div></div>;
+  const profile: CanvasRegistry = {
+    ...handoff.profile,
+    canvases: [{ id: MAIN_CANVAS_ID, label: handoff.label }],
+    defaultState: handoff.state,
+    workspaceStates: { [MAIN_CANVAS_ID]: handoff.state },
+  };
+  const approved: ApprovedCanvasProfile = {
+    available: true,
+    canvas_revision: `focus-${focusToken}`,
+    configuration_revision: 0,
+    content_hash: `focus-${focusToken}`,
+    profile,
+    revision_id: "transient-focus",
+    schema_version: 1,
+  };
+  return <CanvasWorkspaceSurface approvedCanvas={approved} canvasId={MAIN_CANVAS_ID} manager={false} runtimeMode={runtimeMode} runtimeWorkspaceId={focusToken} transient />;
 }
 
 function CanvasContainerAcceptancePage({ kind, requestedNewsId, requestedSecAccession, requestedSecCik, runtimeMode }: { kind: WorkspaceContainerId; requestedNewsId?: string; requestedSecAccession?: string; requestedSecCik?: string; runtimeMode?: Extract<CanvasRuntimeMode, "live" | "paper"> }) {
@@ -462,7 +497,7 @@ function ReplayCanvasFocusPage({ focusToken, runId }: { focusToken: string; runI
   return <CanvasWorkspaceSurface canvasId={MAIN_CANVAS_ID} manager={false} replayRun={run} runtimeWorkspaceId={focusToken} />;
 }
 
-export function CanvasWorkspaceSurface({ accountKeys, approvedCanvas, canvasId, manager, modeControls, readOnly = false, replayRun, requestedInstanceId, requestedNewsId, requestedSecAccession, requestedSecCik, runtimeMode: requestedRuntimeMode, runtimeWorkspaceId }: { accountKeys?: string[]; approvedCanvas?: ApprovedCanvasProfile; canvasId: string; manager: boolean; modeControls?: ReactNode; readOnly?: boolean; replayRun?: CanvasReplayRun; requestedInstanceId?: string; requestedNewsId?: string; requestedSecAccession?: string; requestedSecCik?: string; runtimeMode?: CanvasRuntimeMode; runtimeWorkspaceId?: string }) {
+export function CanvasWorkspaceSurface({ accountKeys, approvedCanvas, canvasId, manager, modeControls, readOnly = false, replayRun, requestedInstanceId, requestedNewsId, requestedSecAccession, requestedSecCik, runtimeMode: requestedRuntimeMode, runtimeWorkspaceId, transient = false }: { accountKeys?: string[]; approvedCanvas?: ApprovedCanvasProfile; canvasId: string; manager: boolean; modeControls?: ReactNode; readOnly?: boolean; replayRun?: CanvasReplayRun; requestedInstanceId?: string; requestedNewsId?: string; requestedSecAccession?: string; requestedSecCik?: string; runtimeMode?: CanvasRuntimeMode; runtimeWorkspaceId?: string; transient?: boolean }) {
   const runtimeMode: CanvasRuntimeMode = replayRun?.mode === "backtest" || replayRun?.mode === "backtest_debug" ? replayRun.mode : replayRun ? "replay" : requestedRuntimeMode ?? "canvas";
   const liveMode = runtimeMode === "live" || runtimeMode === "paper";
   const focusRuntimeMode = runtimeMode === "live" || runtimeMode === "paper" ? runtimeMode : undefined;
@@ -477,17 +512,17 @@ export function CanvasWorkspaceSurface({ accountKeys, approvedCanvas, canvasId, 
     : canvasWorkspaceStorageKey(canvasId);
   const [overlayEpoch, setOverlayEpoch] = useState(0);
   const [runtimeRebase, setRuntimeRebase] = useState<CanvasRuntimeRebase | null>(() => {
-    if (!runtimeBase) return null;
+    if (!runtimeBase || transient) return null;
     const previous = readCanvasRuntimeOverlayRecord(runtimeScope, canvasId);
     return previous && previous.revision !== runtimeRevision
       ? rebaseCanvasRuntimeOverlay(previous, runtimeBase, canvasId)
       : null;
   });
   const initialCanvasState = useMemo<CanvasWorkspaceState | null>(() => runtimeBase
-    ? runtimeCanvasState(runtimeBase, workspaceStorageKey, canvasId, requestedInstanceId)
-    : focusCanvasState(canvasId, requestedInstanceId), [canvasId, overlayEpoch, requestedInstanceId, runtimeBase, workspaceStorageKey]);
+    ? runtimeCanvasState(runtimeBase, workspaceStorageKey, canvasId, requestedInstanceId, !transient)
+    : focusCanvasState(canvasId, requestedInstanceId), [canvasId, overlayEpoch, requestedInstanceId, runtimeBase, transient, workspaceStorageKey]);
   const [registry, setRegistry] = useState<CanvasRegistry>(() => runtimeBase
-    ? readCanvasRuntimeRegistry(runtimeBase, runtimeRegistryStorageKey)
+    ? transient ? runtimeBase : readCanvasRuntimeRegistry(runtimeBase, runtimeRegistryStorageKey)
     : readCanvasRegistry());
   const [previewContext, setPreviewContext] = useState<CanvasPreviewContext>(() => replayRun ? replayPreviewContext(replayRun) : liveMode ? currentLivePreviewContext() : readPreviewContext());
   const liveClockInstant = useWallClock(1_000, liveMode);
@@ -501,13 +536,10 @@ export function CanvasWorkspaceSurface({ accountKeys, approvedCanvas, canvasId, 
   const [defaultSaved, setDefaultSaved] = useState(false);
   const [managementOpen, setManagementOpen] = useState(false);
   const [editableProfileReady, setEditableProfileReady] = useState(Boolean(runtimeBase));
-  const [canvasPersistenceEpoch, setCanvasPersistenceEpoch] = useState(0);
   const editableProfileRevisionRef = useRef(0);
-  const canvasProfileSaveInFlightRef = useRef(false);
-  const pendingCanvasProfileRef = useRef<CanvasRegistry | null>(null);
   const [linkPopoverContainerId, setLinkPopoverContainerId] = useState<string | null>(null);
   const [settingsContainerId, setSettingsContainerId] = useState<string | null>(null);
-  const managementEnabled = manager || Boolean(runtimeBase);
+  const managementEnabled = !transient && (manager || Boolean(runtimeBase));
   const workspaceDefinitions = useMemo(() => readOnly
     ? TRADING_WORKSPACE_CONTAINERS.filter((definition) => !READ_ONLY_BLOCKED_CONTAINERS.has(definition.id))
     : TRADING_WORKSPACE_CONTAINERS, [readOnly]);
@@ -567,92 +599,38 @@ export function CanvasWorkspaceSurface({ accountKeys, approvedCanvas, canvasId, 
   useEffect(() => {
     if (runtimeBase) return;
     let cancelled = false;
-    const localProfile = snapshotCanvasProfile();
+    const personalProfile = snapshotCanvasProfile();
     api<EditableCanvasProfile>("/api/trading/canvas-profile", { timeoutMs: 20_000 })
-      .then(async (payload) => {
+      .then((payload) => {
         if (cancelled) return;
+        editableProfileRevisionRef.current = payload.revision;
         if (payload.available && payload.profile) {
-          const restored = hydrateCanvasProfile(mergeCanvasProfiles(payload.profile, localProfile, canvasId));
-          editableProfileRevisionRef.current = payload.revision;
+          const restored = mergeSharedCanvasProfile(payload.profile, personalProfile);
+          const sharedMainState = restored.workspaceStates?.[MAIN_CANVAS_ID] ?? restored.defaultState;
+          if (sharedMainState) writeCanvasWorkspaceState(MAIN_CANVAS_ID, sharedMainState);
+          writeCanvasRegistry(restored);
           setRegistry(restored);
-          setWorkspaceState(focusCanvasState(canvasId, requestedInstanceId));
-          return;
+          setWorkspaceState(runtimeCanvasState(restored, "", canvasId, requestedInstanceId, false));
         }
-        const saved = await api<EditableCanvasProfile>("/api/trading/canvas-profile", {
-          body: JSON.stringify({ expected_revision: payload.revision, profile: localProfile }),
-          method: "PUT",
-          timeoutMs: 20_000,
-        });
-        if (!cancelled) editableProfileRevisionRef.current = saved.revision;
       })
       .catch((reason) => {
-        if (!cancelled) setError(`Canvas persistence is unavailable: ${reason instanceof Error ? reason.message : String(reason)}`);
+        if (!cancelled) setError(`Shared Canvas default is unavailable: ${reason instanceof Error ? reason.message : String(reason)}`);
       })
       .finally(() => { if (!cancelled) setEditableProfileReady(true); });
     return () => { cancelled = true; };
   }, [canvasId, requestedInstanceId, runtimeBase]);
 
   useEffect(() => {
-    if (runtimeBase) return;
-    const noteWorkspaceChange = () => setCanvasPersistenceEpoch((value) => value + 1);
-    window.addEventListener(CANVAS_WORKSPACE_UPDATED_EVENT, noteWorkspaceChange);
-    return () => window.removeEventListener(CANVAS_WORKSPACE_UPDATED_EVENT, noteWorkspaceChange);
-  }, [runtimeBase]);
-
-  useEffect(() => {
-    if (runtimeBase || !editableProfileReady) return;
-    const timer = window.setTimeout(async () => {
-      const profile = snapshotCanvasProfile(registry);
-      if (workspaceState) {
-        profile.workspaceStates = {
-          ...(profile.workspaceStates ?? {}),
-          [canvasId]: snapshotCanvasWorkspaceState(workspaceState),
-        };
-      }
-      pendingCanvasProfileRef.current = profile;
-      if (canvasProfileSaveInFlightRef.current) return;
-      canvasProfileSaveInFlightRef.current = true;
-      while (pendingCanvasProfileRef.current) {
-        const candidate = pendingCanvasProfileRef.current;
-        pendingCanvasProfileRef.current = null;
-        const save = (expectedRevision: number, value = candidate) => api<EditableCanvasProfile>("/api/trading/canvas-profile", {
-          body: JSON.stringify({ expected_revision: expectedRevision, profile: value }),
-          method: "PUT",
-          timeoutMs: 20_000,
-        });
-        try {
-          const saved = await save(editableProfileRevisionRef.current);
-          editableProfileRevisionRef.current = saved.revision;
-          setError((current) => current.startsWith("Canvas persistence is unavailable:") ? "" : current);
-        } catch (reason) {
-          const status = typeof reason === "object" && reason && "status" in reason ? Number((reason as { status?: number }).status) : 0;
-          try {
-            if (status !== 409) throw reason;
-            const latest = await api<EditableCanvasProfile>("/api/trading/canvas-profile", { timeoutMs: 20_000 });
-            const merged = latest.profile ? mergeCanvasProfiles(latest.profile, candidate, canvasId) : candidate;
-            const saved = await save(latest.revision, merged);
-            editableProfileRevisionRef.current = saved.revision;
-            setError((current) => current.startsWith("Canvas persistence is unavailable:") ? "" : current);
-          } catch (retryReason) {
-            setError(`Canvas persistence is unavailable: ${retryReason instanceof Error ? retryReason.message : String(retryReason)}`);
-          }
-        }
-      }
-      canvasProfileSaveInFlightRef.current = false;
-    }, 400);
-    return () => window.clearTimeout(timer);
-  }, [canvasId, canvasPersistenceEpoch, editableProfileReady, registry, runtimeBase, workspaceState]);
-
-  useEffect(() => {
+    if (transient) return;
     if (runtimeBase && runtimeRegistryStorageKey) {
       window.localStorage.setItem(runtimeRegistryStorageKey, JSON.stringify(registry));
       return;
     }
     writeCanvasRegistry(registry);
-  }, [registry, runtimeBase, runtimeRegistryStorageKey]);
+  }, [registry, runtimeBase, runtimeRegistryStorageKey, transient]);
 
   useEffect(() => {
-    if (!runtimeBase || runtimeRebase || !workspaceState) return;
+    if (!runtimeBase || runtimeRebase || !workspaceState || transient) return;
     const baseWorkspace = runtimeBase.workspaceStates?.[canvasId]
       ?? (canvasId === MAIN_CANVAS_ID ? runtimeBase.defaultState : undefined)
       ?? null;
@@ -665,7 +643,7 @@ export function CanvasWorkspaceSurface({ accountKeys, approvedCanvas, canvasId, 
       schemaVersion: 1,
       updatedAt: new Date().toISOString(),
     });
-  }, [canvasId, registry, runtimeBase, runtimeRebase, runtimeRevision, runtimeScope, workspaceState]);
+  }, [canvasId, registry, runtimeBase, runtimeRebase, runtimeRevision, runtimeScope, transient, workspaceState]);
 
   useEffect(() => {
     if (replayRun || liveMode) return;
@@ -701,6 +679,7 @@ export function CanvasWorkspaceSurface({ accountKeys, approvedCanvas, canvasId, 
 
   useEffect(() => {
     if (runtimeBase) {
+      if (transient) return undefined;
       const syncRuntimeCanvasRegistry = (event: StorageEvent) => {
         if (event.key === runtimeRegistryStorageKey) setRegistry(readCanvasRuntimeRegistry(runtimeBase, runtimeRegistryStorageKey));
       };
@@ -718,7 +697,7 @@ export function CanvasWorkspaceSurface({ accountKeys, approvedCanvas, canvasId, 
       window.removeEventListener("storage", syncSharedCanvasState);
       window.removeEventListener(CANVAS_REGISTRY_UPDATED_EVENT, syncLocalCanvasRegistry);
     };
-  }, [runtimeBase, runtimeRegistryStorageKey]);
+  }, [runtimeBase, runtimeRegistryStorageKey, transient]);
 
   useEffect(() => {
     if (replayRun || liveMode) return;
@@ -920,15 +899,13 @@ export function CanvasWorkspaceSurface({ accountKeys, approvedCanvas, canvasId, 
       : { ...current, instanceSettings: { ...current.instanceSettings, [instanceId]: cloneDefaultSettings() } });
   }
 
-  function openChartsQuotesForTicker(tickerValue: string) {
+  function openReusableGroup(templateId: string, tickerValue = activeSymbol) {
+    if (templateId !== CHARTS_QUOTES_GROUP_TEMPLATE_ID) return;
     const symbol = tickerValue.trim().toUpperCase();
     if (!/^[A-Z][A-Z0-9.\-]{0,15}$/.test(symbol)) return;
-    const instanceId = nextAvailableContainerInstanceId("charts_quotes", [
-      ...Object.keys(registry.instanceSettings),
-      ...Object.keys(registry.linkAssignments),
-      ...(workspaceState?.openIds ?? []),
-    ]);
-    const settings = instanceSettings(registry, instanceId);
+    const sourceInstanceId = (workspaceState?.openIds ?? []).find((instanceId) => workspaceContainerKind(instanceId, workspaceState) === "charts_quotes")
+      ?? Object.keys(registry.instanceSettings).find((instanceId) => instanceId === "charts_quotes" || instanceId.startsWith("charts_quotes-"));
+    const settings = instanceSettings(registry, sourceInstanceId ?? "charts_quotes");
     const focusedIndicators = Array.from(new Set([
       "indicator.vwap",
       "indicator.macd",
@@ -946,27 +923,36 @@ export function CanvasWorkspaceSurface({ accountKeys, approvedCanvas, canvasId, 
     });
     const state: CanvasWorkspaceState = {
       groups: {},
-      instances: { [instanceId]: "charts_quotes" },
+      instances: { [CHARTS_QUOTES_FOCUS_INSTANCE_ID]: "charts_quotes" },
       layoutVersion: TRADING_WORKSPACE_LAYOUT_VERSION,
-      layouts: { [instanceId]: focusLayout() },
-      openIds: [instanceId],
+      layouts: { [CHARTS_QUOTES_FOCUS_INSTANCE_ID]: focusLayout() },
+      openIds: [CHARTS_QUOTES_FOCUS_INSTANCE_ID],
     };
     const profile: CanvasRegistry = {
-      ...registry,
-      instanceSettings: {
-        ...registry.instanceSettings,
-        [instanceId]: focusedSettings,
-      },
+      ...snapshotSharedCanvasProfile(registry),
+      canvases: [{ id: MAIN_CANVAS_ID, label: "Charts & Quotes" }],
+      defaultState: state,
+      instanceSettings: { [CHARTS_QUOTES_FOCUS_INSTANCE_ID]: focusedSettings },
+      linkAssignments: { [CHARTS_QUOTES_FOCUS_INSTANCE_ID]: "none" },
+      linkOwners: {},
+      workspaceStates: { [MAIN_CANVAS_ID]: state },
     };
     if (replayRun) {
       openReplayFocus(profile, state);
       return;
     }
-    const created = createCanvasRecord(profile, `${symbol} Charts & Quotes`);
-    writeCanvasWorkspaceState(created.canvas.id, state);
-    writeCanvasRegistry(created.registry);
-    setRegistry(created.registry);
-    window.open(focusCanvasUrl(created.canvas.id, instanceId, runtimeBase ? "approved" : "draft", focusRuntimeMode), "_blank", "noopener,noreferrer");
+    const token = writeCanvasFocusHandoff(profile, state, "Charts & Quotes");
+    const focusedWindow = window.open(canvasFocusHandoffUrl(token, focusRuntimeMode), "_blank");
+    if (!focusedWindow) {
+      removeCanvasFocusHandoff(token);
+      setError("The Charts & Quotes group could not open because the browser blocked the focus window.");
+      return;
+    }
+    focusedWindow.opener = null;
+  }
+
+  function openChartsQuotesForTicker(tickerValue: string) {
+    openReusableGroup(CHARTS_QUOTES_GROUP_TEMPLATE_ID, tickerValue);
   }
 
   function openNewCanvas(instanceId?: string, sourceLayout?: WorkspaceWindowLayout) {
@@ -1148,15 +1134,45 @@ export function CanvasWorkspaceSurface({ accountKeys, approvedCanvas, canvasId, 
     setOverlayEpoch((value) => value + 1);
   }
 
-  function saveDefaultLayout() {
-    if (!workspaceState) return;
+  async function saveDefaultLayout() {
+    if (!workspaceState || !editableProfileReady) return;
     const defaultState = snapshotCanvasWorkspaceState(workspaceState);
-    updateRegistry((current) => ({ ...current, defaultState }));
-    setDefaultSaved(true);
+    const nextRegistry = { ...registry, defaultState };
+    setRegistry(nextRegistry);
+    setDefaultSaved(false);
+    setError("");
+    try {
+      const sharedProfile = snapshotSharedCanvasProfile(nextRegistry);
+      const saved = await api<EditableCanvasProfile>("/api/trading/canvas-profile", {
+        body: JSON.stringify({ expected_revision: editableProfileRevisionRef.current, profile: sharedProfile }),
+        method: "PUT",
+        timeoutMs: 20_000,
+      });
+      editableProfileRevisionRef.current = saved.revision;
+      setDefaultSaved(true);
+    } catch (reason) {
+      const status = typeof reason === "object" && reason && "status" in reason ? Number((reason as { status?: number }).status) : 0;
+      if (status === 409) {
+        const latest = await api<EditableCanvasProfile>("/api/trading/canvas-profile", { timeoutMs: 20_000 }).catch(() => null);
+        if (latest) editableProfileRevisionRef.current = latest.revision;
+        setError("The shared Canvas default changed in another session. Review this workspace, then save the shared default again.");
+        return;
+      }
+      setError(`Shared Canvas default was not saved: ${reason instanceof Error ? reason.message : String(reason)}`);
+    }
   }
 
   function removeCanvas(canvasToRemove: string) {
     setRegistry((current) => removeCanvasRecord(current, canvasToRemove));
+  }
+
+  function renameCanvas(canvasToRename: string, label: string) {
+    const nextLabel = label.trim();
+    if (!nextLabel) return;
+    updateRegistry((current) => ({
+      ...current,
+      canvases: current.canvases.map((canvas) => canvas.id === canvasToRename ? { ...canvas, label: nextLabel } : canvas),
+    }));
   }
 
   return (
@@ -1173,7 +1189,7 @@ export function CanvasWorkspaceSurface({ accountKeys, approvedCanvas, canvasId, 
         <MarketStatusBadge value={marketStatus} />
         {contextError && !replayRun ? <span className="canvas-context-warning" title={contextError}>Saved clock</span> : null}
         <div className="canvas-mode-context-slot">{modeControls}{readOnly ? null : <CanvasPerformanceStrip state={performanceState} />}</div>
-        {managementEnabled ? <div className="canvas-toolbar-actions">{manager ? <button className="button secondary compact canvas-set-default" disabled={!workspaceState} onClick={saveDefaultLayout} type="button"><Save size={13} /> {defaultSaved ? "Default saved" : "Set default"}</button> : null}<button aria-expanded={managementOpen} aria-label="Canvas management" className="button secondary compact canvas-management-toggle" onClick={() => setManagementOpen((open) => !open)} type="button"><PanelRightOpen size={13} /> Manage</button></div> : null}
+        {managementEnabled ? <div className="canvas-toolbar-actions">{manager ? <button className="button secondary compact canvas-set-default" disabled={!workspaceState || !editableProfileReady} onClick={() => void saveDefaultLayout()} title="Save this composition as the shared draft default. Publish it from Trading Configuration before Live or Paper can use it." type="button"><Save size={13} /> {defaultSaved ? "Shared default saved" : "Save shared default"}</button> : null}<button aria-expanded={managementOpen} aria-label="Canvas management" className="button secondary compact canvas-management-toggle" onClick={() => setManagementOpen((open) => !open)} type="button"><PanelRightOpen size={13} /> Manage</button></div> : null}
       </header>
 
       {(contextError && replayRun) || error ? <div className="canvas-status-stack">
@@ -1196,8 +1212,9 @@ export function CanvasWorkspaceSurface({ accountKeys, approvedCanvas, canvasId, 
         historicalSourceReady={!error}
         initialStateOverride={manager ? null : initialCanvasState}
         layoutPreset={managementEnabled ? "global" : "focus"}
+        groupTemplates={CANVAS_GROUP_TEMPLATES}
         managementContent={manager
-          ? <CanvasManager registry={registry} onCreate={() => openNewCanvas()} onOpen={(id) => window.open(focusCanvasUrl(id, undefined, "draft"), "_blank", "noopener,noreferrer")} onRemove={removeCanvas} />
+          ? <CanvasManager currentCanvasId={canvasId} registry={registry} onCreate={() => openNewCanvas()} onOpen={(id) => window.open(focusCanvasUrl(id, undefined, "draft"), "_blank", "noopener,noreferrer")} onRemove={removeCanvas} onRename={renameCanvas} />
           : runtimeBase
             ? <><CanvasManager availableCanvasIds={new Set(Object.keys(registry.workspaceStates ?? {}))} registry={registry} onOpen={openRuntimeConfiguredCanvas} /><RuntimeCanvasScope mode={runtimeMode === "backtest_debug" ? "Backtest Debug" : runtimeMode === "backtest" ? "Backtest" : runtimeMode === "replay" ? "Replay" : runtimeMode === "research" ? "Research" : runtimeMode === "live" ? "Live" : runtimeMode === "paper" ? "Paper" : "Canvas"} onApplyRebase={applyRuntimeRebase} onKeepApproved={keepApprovedAfterRebase} onReset={resetRuntimeOverlay} onSaveAs={saveRuntimeWorkspace} rebase={runtimeRebase} revision={replayRun?.canvas_revision || approvedCanvas?.canvas_revision || runtimeRevision} /></>
             : null}
@@ -1208,9 +1225,11 @@ export function CanvasWorkspaceSurface({ accountKeys, approvedCanvas, canvasId, 
         onMoveContainerToCanvas={runtimeBase ? undefined : moveContainer}
         onMoveGroupToCanvas={runtimeBase ? undefined : moveGroup}
         onManagementClose={() => setManagementOpen(false)}
+        onOpenGroupTemplate={(templateId) => openReusableGroup(templateId)}
         onPopOutContainer={replayRun && runtimeMode === "replay" ? openReplayContainerCanvas : runtimeBase ? undefined : openNewCanvas}
         onPopOutGroup={replayRun && runtimeMode === "replay" ? openReplayGroupCanvas : runtimeBase ? undefined : openGroupCanvas}
         onStateChange={setWorkspaceState}
+        persistState={!transient}
         renderContainer={(definition, instanceId) => {
           const settings = instanceSettings(registry, instanceId);
           const linkable = containerSupportsCanvasLink(definition.id);
@@ -1314,20 +1333,8 @@ export function CanvasWorkspaceSurface({ accountKeys, approvedCanvas, canvasId, 
   );
 }
 
-function CanvasManager({ availableCanvasIds, onCreate, onOpen, onRemove, registry }: { availableCanvasIds?: Set<string>; onCreate?: () => void; onOpen: (id: string) => void; onRemove?: (id: string) => void; registry: CanvasRegistry }) {
-  const configurationMode = Boolean(onCreate && onRemove);
-  return <section aria-label="Canvas manager" className="canvas-manager-strip">
-    <header><div><strong>Canvases</strong><small>{configurationMode ? "Separate saved workspaces" : "Approved Replay profile"}</small></div>{onCreate ? <button aria-label="New canvas" className="button secondary compact" onClick={onCreate} type="button"><Plus size={13} /> New</button> : null}</header>
-    <div className="canvas-manager-items">{registry.canvases.map((canvas) => {
-      const available = configurationMode || availableCanvasIds?.has(canvas.id) || (canvas.id === MAIN_CANVAS_ID && Boolean(registry.defaultState));
-      const defaultCanvas = canvas.id === MAIN_CANVAS_ID;
-      const disabled = configurationMode ? defaultCanvas : !available;
-      return <article key={canvas.id} data-main={defaultCanvas ? "true" : "false"}>
-      <button aria-label={disabled ? `${canvas.label} is unavailable` : `Open ${canvas.label}`} className="canvas-manager-open" disabled={disabled} onClick={() => onOpen(canvas.id)} title={disabled ? (configurationMode ? "Default Canvas" : "No saved layout was captured") : "Open Canvas in a new page"} type="button"><span>{canvas.label}</span><small>{configurationMode && defaultCanvas ? "Default" : available ? "Open" : "Unavailable"}</small>{disabled ? null : <ExternalLink size={11} />}</button>
-      {defaultCanvas || !onRemove ? null : <button aria-label={`Remove ${canvas.label}`} className="toolbar-button compact" onClick={() => onRemove(canvas.id)} title="Remove canvas" type="button"><Trash2 size={12} /></button>}
-    </article>;
-    })}</div>
-  </section>;
+function CanvasManager(props: import("../features/canvas/CanvasManagementPanel").CanvasManagementPanelProps) {
+  return <Suspense fallback={<section aria-label="Canvas manager" className="canvas-manager-strip"><p>Loading workspace persistence…</p></section>}><LazyCanvasManagementPanel {...props} /></Suspense>;
 }
 
 function RuntimeCanvasScope({ mode, onApplyRebase, onKeepApproved, onReset, onSaveAs, rebase, revision }: { mode: "Backtest" | "Backtest Debug" | "Canvas" | "Live" | "Paper" | "Replay" | "Research"; onApplyRebase: () => void; onKeepApproved: () => void; onReset: () => void; onSaveAs: () => void; rebase: CanvasRuntimeRebase | null; revision: string }) {
@@ -1679,13 +1686,6 @@ function workspaceContainerKind(instanceId: string, state?: CanvasWorkspaceState
   return TRADING_WORKSPACE_CONTAINERS.find((definition) => instanceId === definition.id || instanceId.startsWith(`${definition.id}-`))?.id ?? "chart";
 }
 
-function nextAvailableContainerInstanceId(kind: WorkspaceContainerId, existingIds: string[]): string {
-  const used = new Set(existingIds);
-  if (!used.has(kind)) return kind;
-  let counter = 2;
-  while (used.has(`${kind}-${counter}`)) counter += 1;
-  return `${kind}-${counter}`;
-}
 function containerInstanceTitle(kind: WorkspaceContainerId, instanceId: string, state: CanvasWorkspaceState | null, registry: CanvasRegistry) {
   const matchingIds = (state?.openIds ?? [instanceId]).filter((candidateId) => workspaceContainerKind(candidateId, state) === kind);
   if (kind === "chart") {

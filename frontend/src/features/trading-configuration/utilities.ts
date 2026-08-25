@@ -1,4 +1,4 @@
-import { readCanvasRegistry, snapshotCanvasProfile } from "../../app/canvasWorkspace";
+import { readCanvasRegistry, snapshotSharedCanvasProfile } from "../../app/canvasWorkspace";
 import type { FieldDefinition, HelpContent } from "./components/ConfigurationFields";
 import { readableLabel, round } from "./components/ConfigurationFields";
 import type { AccountSection, AssignmentSection, ParameterMap, Primitive } from "./contracts";
@@ -105,7 +105,7 @@ export function stableStringify(value: unknown): string {
 }
 
 export function canvasApprovalSnapshot() {
-  const profile = snapshotCanvasProfile(readCanvasRegistry());
+  const profile = snapshotSharedCanvasProfile(readCanvasRegistry());
   const states = Object.values(profile.workspaceStates ?? {});
   const containerCount = states.reduce((count, state) => count + state.openIds.length, 0);
   const serialized = stableStringify(profile);

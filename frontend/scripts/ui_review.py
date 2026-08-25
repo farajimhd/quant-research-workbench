@@ -902,6 +902,10 @@ def validate_watch_universe_close_lifecycle(page: Any, issues: list[str]) -> Non
     management = page.get_by_role("complementary", name="Canvas management")
     library = management.get_by_role("region", name="Container library")
     watchlist_card = library.locator("article").filter(has_text="Watch Universe")
+    try:
+        watchlist_card.first.wait_for(state="visible", timeout=5000)
+    except Exception:
+        pass
     watchlist_definition_count = watchlist_card.count()
     if watchlist_definition_count != 1:
         issues.append(f"Container library exposes {watchlist_definition_count} Watch Universe definitions instead of one")
@@ -1089,7 +1093,7 @@ def validate_canvas_interactions(
         return ["main canvas does not render a Chart container"]
     chart = charts.first
     try:
-        scanner = page.get_by_role("region", name="Scanner", exact=True)
+        scanner = page.locator('.workspace-window[data-window-kind="scanner"]')
         if scanner.count() == 1:
             validate_loading_window_interactions(page, scanner, issues)
             symbol_header = scanner.locator("th.market-list-symbol-column").first
@@ -1137,11 +1141,11 @@ def validate_canvas_interactions(
                 issues.append("ET, Local, and UTC clocks do not have distinct theme colors")
             if any(float(value.evaluate("element => getComputedStyle(element).fontSize").replace("px", "")) < 11 for value in zones.locator("strong").all()):
                 issues.append("Preview datetime values are still undersized")
-        set_default = page.get_by_role("button", name="Set default")
+        set_default = page.get_by_role("button", name="Save shared default")
         manage_button = page.get_by_role("button", name="Canvas management", exact=True)
         set_default_box, manage_box = set_default.bounding_box(), manage_button.bounding_box()
         if not set_default_box or not manage_box or set_default_box["x"] >= manage_box["x"] or manage_box["x"] + manage_box["width"] < scenario["viewport"]["width"] - 18:
-            issues.append("Set default and Canvas management are not grouped on the far right")
+            issues.append("Save shared default and Canvas management are not grouped on the far right")
         if page.locator(".trading-workspace-command").count():
             issues.append("Canvas still renders the duplicate Main workspace context row")
         if page.evaluate("document.documentElement.scrollWidth > document.documentElement.clientWidth"):
@@ -1484,7 +1488,7 @@ def validate_canvas_interactions(
             issues.append("Chart link action is not in the container title bar")
         if "Blue" not in link_button.inner_text():
             issues.append("Chart does not expose its current link color at the point of use")
-        scanner = page.get_by_role("region", name="Scanner", exact=True)
+        scanner = page.locator('.workspace-window[data-window-kind="scanner"]')
         portfolio = page.get_by_role("region", name="Portfolio", exact=True)
         news = page.get_by_role("region", name="All News", exact=True)
         chart_tint = title_bar.evaluate("element => getComputedStyle(element).backgroundColor")
@@ -1690,8 +1694,29 @@ def validate_canvas_interactions(
         chart.get_by_role("button", name=re.compile(r"^Reset .+ to its default layout$")).click(force=True)
 
         page.get_by_role("button", name="Canvas management", exact=True).click()
+        canvas_count_before_group_focus = page.evaluate("""() => {
+            const raw = localStorage.getItem('quant-research-workbench.canvas.registry.v1');
+            return raw ? JSON.parse(raw).canvases.length : 0;
+        }""")
+        reusable_group = page.get_by_role("button", name="Open Charts & Quotes group", exact=True)
+        if reusable_group.count() != 1:
+            issues.append("Canvas management does not expose one reusable Charts & Quotes group")
+        else:
+            with page.expect_popup(timeout=5000) as reusable_group_popup_info:
+                reusable_group.click()
+            reusable_group_popup = reusable_group_popup_info.value
+            reusable_group_popup.locator('.workspace-window[data-window-kind="charts_quotes"]').wait_for(state="visible", timeout=10000)
+            if reusable_group_popup.locator('.workspace-window[data-window-kind="charts_quotes"]').count() != 1:
+                issues.append("reusable Charts & Quotes group did not open its fixed composition")
+            reusable_group_popup.close()
+            canvas_count_after_group_focus = page.evaluate("""() => {
+                const raw = localStorage.getItem('quant-research-workbench.canvas.registry.v1');
+                return raw ? JSON.parse(raw).canvases.length : 0;
+            }""")
+            if canvas_count_after_group_focus != canvas_count_before_group_focus:
+                issues.append("opening the reusable Charts & Quotes group created a persistent Canvas")
         with page.expect_popup(timeout=5000) as blank_canvas_popup_info:
-            page.get_by_role("button", name="New canvas", exact=True).click()
+            page.get_by_role("button", name="New personal canvas", exact=True).click()
         blank_canvas_popup = blank_canvas_popup_info.value
         blank_canvas_popup.locator(".app-shell").wait_for(state="visible", timeout=5000)
         blank_canvas_popup.locator(".workspace-window").first.wait_for(state="visible", timeout=5000)

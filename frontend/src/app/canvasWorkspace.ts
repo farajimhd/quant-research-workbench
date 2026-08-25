@@ -52,6 +52,7 @@ export const CANVAS_PREVIEW_CONTEXT_STORAGE_KEY = "quant-research-workbench.canv
 export const CANVAS_SETTINGS_STORAGE_KEY = "quant-research-workbench.canvas.container-settings.v1";
 export const MAIN_CANVAS_STORAGE_KEY = "quant-research-workbench.trading-workspace.global.v1";
 const CANVAS_RUNTIME_OVERLAY_PREFIX = "quant-research-workbench.canvas.runtime-overlay.v1";
+const CANVAS_FOCUS_HANDOFF_PREFIX = "quant-research-workbench.canvas-focus.";
 const REPLAY_FOCUS_HANDOFF_PREFIX = "quant-research-workbench.replay-focus.";
 const REPLAY_FOCUS_HANDOFF_TTL_MS = 24 * 60 * 60 * 1000;
 
@@ -326,8 +327,28 @@ export function createCanvasRecord(registry: CanvasRegistry, label?: string): { 
 
 export function removeCanvasRecord(registry: CanvasRegistry, canvasId: string): CanvasRegistry {
   if (canvasId === MAIN_CANVAS_ID) return registry;
+  const removedState = registry.workspaceStates?.[canvasId] ?? readCanvasWorkspaceState(canvasId);
+  const retainedCanvases = registry.canvases.filter((canvas) => canvas.id !== canvasId);
+  const retainedStates = Object.fromEntries(
+    Object.entries(registry.workspaceStates ?? {}).filter(([candidateId]) => candidateId !== canvasId),
+  );
+  const retainedInstanceIds = new Set([
+    ...(registry.defaultState?.openIds ?? []),
+    ...Object.values(retainedStates).flatMap((state) => state.openIds),
+    ...retainedCanvases.flatMap((canvas) => readCanvasWorkspaceState(canvas.id)?.openIds ?? []),
+  ]);
+  const removedIds = new Set(removedState?.openIds ?? []);
+  const shouldRetainInstance = (instanceId: string) => !removedIds.has(instanceId) || retainedInstanceIds.has(instanceId);
+  const linkAssignments = Object.fromEntries(Object.entries(registry.linkAssignments).filter(([instanceId]) => shouldRetainInstance(instanceId)));
   window.localStorage.removeItem(canvasWorkspaceStorageKey(canvasId));
-  return { ...registry, canvases: registry.canvases.filter((canvas) => canvas.id !== canvasId) };
+  return normalizeCanvasRegistry({
+    ...registry,
+    canvases: retainedCanvases,
+    instanceSettings: Object.fromEntries(Object.entries(registry.instanceSettings).filter(([instanceId]) => shouldRetainInstance(instanceId))),
+    linkAssignments,
+    linkOwners: normalizeLinkOwners(linkAssignments, registry.linkOwners),
+    workspaceStates: retainedStates,
+  });
 }
 
 export function readCanvasWorkspaceState(canvasId: string): CanvasWorkspaceState | null {
@@ -368,11 +389,111 @@ export function snapshotCanvasProfile(registry = readCanvasRegistry()): CanvasRe
   return { ...registry, workspaceStates };
 }
 
+export function snapshotSharedCanvasProfile(registry = readCanvasRegistry()): CanvasRegistry {
+  const fallback = readCanvasWorkspaceState(MAIN_CANVAS_ID);
+  const defaultState = registry.defaultState
+    ? snapshotCanvasWorkspaceState(registry.defaultState)
+    : fallback
+      ? snapshotCanvasWorkspaceState(fallback)
+      : undefined;
+  const activeIds = new Set(defaultState?.openIds ?? []);
+  const instanceSettings = Object.fromEntries(
+    Object.entries(registry.instanceSettings).filter(([instanceId]) => activeIds.has(instanceId)),
+  );
+  const linkAssignments = Object.fromEntries(
+    Object.entries(registry.linkAssignments).filter(([instanceId]) => activeIds.has(instanceId)),
+  );
+  const linkOwners = Object.fromEntries(
+    Object.entries(registry.linkOwners).filter(([, instanceId]) => Boolean(instanceId && activeIds.has(instanceId))),
+  );
+  return normalizeCanvasRegistry({
+    canvases: [{ id: MAIN_CANVAS_ID, label: "Main" }],
+    defaultState,
+    instanceSettings,
+    linkAssignments,
+    linkContexts: {
+      A: { ...DEFAULT_LINK_CONTEXTS.A },
+      B: { ...DEFAULT_LINK_CONTEXTS.B },
+      C: { ...DEFAULT_LINK_CONTEXTS.C },
+      D: { ...DEFAULT_LINK_CONTEXTS.D },
+      E: { ...DEFAULT_LINK_CONTEXTS.E },
+      F: { ...DEFAULT_LINK_CONTEXTS.F },
+      G: { ...DEFAULT_LINK_CONTEXTS.G },
+    },
+    linkOwners,
+    version: 3,
+    workspaceStates: defaultState ? { [MAIN_CANVAS_ID]: defaultState } : {},
+  });
+}
+
+export function mergeSharedCanvasProfile(sharedProfile: CanvasRegistry, personalProfile: CanvasRegistry): CanvasRegistry {
+  const shared = normalizeCanvasRegistry(sharedProfile);
+  const personal = normalizeCanvasRegistry(personalProfile);
+  return normalizeCanvasRegistry({
+    ...personal,
+    defaultState: shared.defaultState ?? personal.defaultState,
+    instanceSettings: { ...personal.instanceSettings, ...shared.instanceSettings },
+    linkAssignments: { ...personal.linkAssignments, ...shared.linkAssignments },
+    linkContexts: { ...shared.linkContexts, ...personal.linkContexts },
+    linkOwners: { ...personal.linkOwners, ...shared.linkOwners },
+    workspaceStates: {
+      ...(personal.workspaceStates ?? {}),
+      ...(shared.defaultState ? { [MAIN_CANVAS_ID]: shared.defaultState } : {}),
+    },
+  });
+}
+
 export type CanvasFocusProfileAuthority = "approved" | "draft";
 export type CanvasFocusRuntimeMode = "live" | "paper";
 
+export type CanvasFocusHandoff = {
+  createdAt: number;
+  label: string;
+  profile: CanvasRegistry;
+  state: CanvasWorkspaceState;
+};
+
+export function writeCanvasFocusHandoff(profile: CanvasRegistry, state: CanvasWorkspaceState, label: string) {
+  pruneCanvasFocusHandoffs();
+  const token = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+  const handoff: CanvasFocusHandoff = { createdAt: Date.now(), label: label.trim() || "Focus", profile, state };
+  window.localStorage.setItem(`${CANVAS_FOCUS_HANDOFF_PREFIX}${token}`, JSON.stringify(handoff));
+  return token;
+}
+
+export function readCanvasFocusHandoff(token: string): CanvasFocusHandoff | null {
+  try {
+    const handoff = JSON.parse(window.localStorage.getItem(`${CANVAS_FOCUS_HANDOFF_PREFIX}${token}`) || "null") as CanvasFocusHandoff | null;
+    if (!handoff || Date.now() - Number(handoff.createdAt) > REPLAY_FOCUS_HANDOFF_TTL_MS) return null;
+    const state = normalizeWorkspaceState(handoff.state);
+    if (!state || !handoff.profile) return null;
+    return { ...handoff, profile: normalizeCanvasRegistry(handoff.profile), state };
+  } catch {
+    return null;
+  }
+}
+
+export function removeCanvasFocusHandoff(token: string) {
+  window.localStorage.removeItem(`${CANVAS_FOCUS_HANDOFF_PREFIX}${token}`);
+}
+
+export function canvasFocusHandoffUrl(handoffToken: string, runtimeMode?: CanvasFocusRuntimeMode) {
+  const url = new URL(window.location.href);
+  url.searchParams.delete("canvas");
+  url.searchParams.delete("container");
+  url.searchParams.delete("canvas_profile");
+  url.searchParams.set("canvas_focus", handoffToken);
+  if (runtimeMode) url.searchParams.set("runtime_mode", runtimeMode);
+  else url.searchParams.delete("runtime_mode");
+  url.searchParams.delete("replay_focus");
+  url.searchParams.delete("replay_run");
+  url.hash = "canvas-focus";
+  return url.toString();
+}
+
 export function focusCanvasUrl(canvasId: string, containerId?: string, profileAuthority: CanvasFocusProfileAuthority = "approved", runtimeMode?: CanvasFocusRuntimeMode) {
   const url = new URL(window.location.href);
+  url.searchParams.delete("canvas_focus");
   url.searchParams.set("canvas", canvasId);
   if (containerId) url.searchParams.set("container", containerId);
   else url.searchParams.delete("container");
@@ -414,6 +535,7 @@ export function readReplayCanvasFocusHandoff(token: string): ReplayCanvasFocusHa
 
 export function replayFocusCanvasUrl(runId: string, handoffToken: string) {
   const url = new URL(window.location.href);
+  url.searchParams.delete("canvas_focus");
   url.searchParams.delete("canvas");
   url.searchParams.delete("container");
   url.searchParams.delete("canvas_profile");
@@ -425,6 +547,7 @@ export function replayFocusCanvasUrl(runId: string, handoffToken: string) {
 
 export function configurationCanvasUrl() {
   const url = new URL(window.location.href);
+  url.searchParams.delete("canvas_focus");
   url.searchParams.delete("canvas");
   url.searchParams.delete("container");
   url.searchParams.delete("canvas_profile");
@@ -441,6 +564,20 @@ function pruneReplayCanvasFocusHandoffs() {
     if (!key?.startsWith(REPLAY_FOCUS_HANDOFF_PREFIX)) continue;
     try {
       const value = JSON.parse(window.localStorage.getItem(key) || "null") as Partial<ReplayCanvasFocusHandoff> | null;
+      if (!value?.createdAt || now - Number(value.createdAt) > REPLAY_FOCUS_HANDOFF_TTL_MS) window.localStorage.removeItem(key);
+    } catch {
+      window.localStorage.removeItem(key);
+    }
+  }
+}
+
+function pruneCanvasFocusHandoffs() {
+  const now = Date.now();
+  for (let index = window.localStorage.length - 1; index >= 0; index -= 1) {
+    const key = window.localStorage.key(index);
+    if (!key?.startsWith(CANVAS_FOCUS_HANDOFF_PREFIX)) continue;
+    try {
+      const value = JSON.parse(window.localStorage.getItem(key) || "null") as Partial<CanvasFocusHandoff> | null;
       if (!value?.createdAt || now - Number(value.createdAt) > REPLAY_FOCUS_HANDOFF_TTL_MS) window.localStorage.removeItem(key);
     } catch {
       window.localStorage.removeItem(key);
