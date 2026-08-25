@@ -56,6 +56,54 @@ pub(crate) struct ExactConditionCodes {
 }
 
 impl LiveCompactEvent {
+    #[allow(clippy::too_many_arguments)]
+    pub fn from_persisted_fields(
+        arrival_sequence: u64,
+        condition_token_1: u8,
+        condition_token_2: u8,
+        condition_token_3: u8,
+        condition_token_4: u8,
+        condition_token_5: u8,
+        event_date: String,
+        event_meta: u8,
+        exchange_primary: u8,
+        exchange_secondary: u8,
+        ingest_ts: DateTime<Utc>,
+        issue_flags: u16,
+        price_primary_int: u32,
+        price_secondary_int: u32,
+        schema_version: u16,
+        sip_timestamp_us: u64,
+        size_primary: f32,
+        size_secondary: f32,
+        source_sequence: u64,
+        ticker: String,
+    ) -> Self {
+        Self {
+            arrival_sequence,
+            condition_token_1,
+            condition_token_2,
+            condition_token_3,
+            condition_token_4,
+            condition_token_5,
+            event_date,
+            event_meta,
+            exchange_primary,
+            exchange_secondary,
+            ingest_ts,
+            issue_flags,
+            price_primary_int,
+            price_secondary_int,
+            schema_version,
+            sip_timestamp_us,
+            size_primary,
+            size_secondary,
+            source_sequence,
+            ticker,
+            exact_conditions: None,
+        }
+    }
+
     pub fn event_type(&self) -> u8 {
         self.event_meta & 0x01
     }

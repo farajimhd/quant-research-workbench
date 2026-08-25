@@ -2314,28 +2314,28 @@ fn row_to_event(row: HistoricalRow) -> LiveCompactEvent {
         .timestamp_micros(row.sip_timestamp_us as i64)
         .single()
         .unwrap_or_else(Utc::now);
-    LiveCompactEvent {
-        arrival_sequence: row.ordinal,
-        condition_token_1: row.condition_token_1,
-        condition_token_2: row.condition_token_2,
-        condition_token_3: row.condition_token_3,
-        condition_token_4: row.condition_token_4,
-        condition_token_5: row.condition_token_5,
-        event_date: row.event_date,
-        event_meta: row.event_meta,
-        exchange_primary: row.exchange_primary,
-        exchange_secondary: row.exchange_secondary,
+    LiveCompactEvent::from_persisted_fields(
+        row.ordinal,
+        row.condition_token_1,
+        row.condition_token_2,
+        row.condition_token_3,
+        row.condition_token_4,
+        row.condition_token_5,
+        row.event_date,
+        row.event_meta,
+        row.exchange_primary,
+        row.exchange_secondary,
         ingest_ts,
-        issue_flags: 0,
-        price_primary_int: row.price_primary_int,
-        price_secondary_int: row.price_secondary_int,
-        schema_version: LIVE_COMPACT_EVENT_SCHEMA_VERSION,
-        sip_timestamp_us: row.sip_timestamp_us,
-        size_primary: row.size_primary,
-        size_secondary: row.size_secondary,
-        source_sequence: row.source_sequence,
-        ticker: row.ticker,
-    }
+        0,
+        row.price_primary_int,
+        row.price_secondary_int,
+        LIVE_COMPACT_EVENT_SCHEMA_VERSION,
+        row.sip_timestamp_us,
+        row.size_primary,
+        row.size_secondary,
+        row.source_sequence,
+        row.ticker,
+    )
 }
 
 fn parse_historical_tsv_row(bytes: &[u8]) -> Result<HistoricalRow, String> {
