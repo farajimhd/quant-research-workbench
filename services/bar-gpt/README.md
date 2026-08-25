@@ -81,6 +81,10 @@ older `RawBar` objects. Admission uses bounded bulk merges off the event loop;
 health and readiness therefore remain responsive while a large ticker warms.
 Automatic origins observed before readiness are coalesced to the newest origin
 per ticker and admitted once warm, without being reported as inference errors.
+Bounded warm concurrency prioritizes interactive Replay, Backtest, and
+Backtest Debug scopes ahead of queued broad Live watchlist warming. Running
+Live warm jobs are not cancelled; the interactive scope receives the next
+available worker slot.
 Managed shutdown also signals synchronous history loaders between their
 bounded ClickHouse requests, so an active multi-query warm plan cannot extend
 shutdown indefinitely.

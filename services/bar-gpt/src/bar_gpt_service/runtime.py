@@ -7,6 +7,7 @@ import os
 import time
 import urllib.request
 from collections import deque
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from threading import Event, RLock
 from typing import Any
@@ -27,6 +28,34 @@ from .warm_snapshots import WarmSnapshotStore
 
 class ContextWarmingError(RuntimeError):
     """Retryable inference admission state; not an operational failure."""
+
+
+class PrioritySemaphore:
+    """Bounded concurrency gate that admits lower numeric priorities first."""
+
+    def __init__(self, value: int) -> None:
+        self._value = max(1, value)
+        self._condition = asyncio.Condition()
+        self._waiting: dict[int, int] = {}
+
+    @asynccontextmanager
+    async def slot(self, priority: int):
+        async with self._condition:
+            self._waiting[priority] = self._waiting.get(priority, 0) + 1
+            try:
+                await self._condition.wait_for(
+                    lambda: self._value > 0
+                    and not any(count > 0 and candidate < priority for candidate, count in self._waiting.items())
+                )
+                self._value -= 1
+            finally:
+                self._waiting[priority] -= 1
+        try:
+            yield
+        finally:
+            async with self._condition:
+                self._value += 1
+                self._condition.notify_all()
 
 
 class BarGptRuntime:
@@ -67,7 +96,7 @@ class BarGptRuntime:
         self._builder: LiveEventBarBuilder | None = None
         self._lock = RLock()
         self._listeners: set[asyncio.Queue[dict[str, Any]]] = set()
-        self._warm_semaphore = asyncio.Semaphore(config.warm_concurrency)
+        self._warm_gate = PrioritySemaphore(config.warm_concurrency)
         self._stop_requested = Event()
         self._pending_historical: dict[tuple[str, str], list[RawBar]] = {}
         self._snapshot_store: WarmSnapshotStore | None = None
@@ -420,7 +449,9 @@ class BarGptRuntime:
         key = (cache_id, ticker)
         started = time.monotonic()
         try:
-            async with self._warm_semaphore:
+            # Historical/Replays are interactive bounded scopes. They must not
+            # wait behind hundreds of opportunistic Live watchlist warm-ups.
+            async with self._warm_gate.slot(priority=0 if cache_id != "live" else 1):
                 self._warm_state[key] = {
                     **self._warm_state.get(key, {}), "status": "warming",
                     "started_at": datetime.now(UTC).isoformat(),

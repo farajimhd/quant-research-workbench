@@ -15,7 +15,7 @@ from research.bar_gpt.v3.schema import FEATURE_NAMES
 
 from bar_gpt_service.cache import CALENDAR_VIEWS, INTRADAY_VIEW_US, CausalCache
 from bar_gpt_service.contracts import ScopeRequest
-from bar_gpt_service.runtime import BarGptRuntime
+from bar_gpt_service.runtime import BarGptRuntime, PrioritySemaphore
 from bar_gpt_service.sources import HistoricalBootstrap
 
 
@@ -37,6 +37,33 @@ def _runtime() -> BarGptRuntime:
 
 
 class RuntimeContractTests(unittest.TestCase):
+    def test_interactive_warm_has_priority_over_queued_live_warm(self) -> None:
+        async def scenario() -> list[str]:
+            gate = PrioritySemaphore(1)
+            holder_entered = asyncio.Event()
+            release_holder = asyncio.Event()
+            order: list[str] = []
+
+            async def worker(name: str, priority: int, *, holder: bool = False) -> None:
+                async with gate.slot(priority):
+                    if holder:
+                        holder_entered.set()
+                        await release_holder.wait()
+                    else:
+                        order.append(name)
+
+            holder = asyncio.create_task(worker("holder", 1, holder=True))
+            await holder_entered.wait()
+            queued_live = asyncio.create_task(worker("live", 1))
+            await asyncio.sleep(0)
+            interactive = asyncio.create_task(worker("replay", 0))
+            await asyncio.sleep(0)
+            release_holder.set()
+            await asyncio.gather(holder, queued_live, interactive)
+            return order
+
+        self.assertEqual(asyncio.run(scenario()), ["replay", "live"])
+
     def _scoped_runtime(self, warm_status: str) -> BarGptRuntime:
         runtime = _runtime()
         runtime.caches["live"] = SimpleNamespace(
