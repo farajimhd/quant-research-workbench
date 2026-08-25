@@ -1,7 +1,7 @@
 use crate::bars::{TradeAggregationRules, TradeUpdateRule};
 use crate::config::GatewayConfig;
 use crate::event::{MarketEvent, QuoteEvent, TradeEvent};
-use crate::intraday_bars::IntradayBarRouter;
+use crate::intraday_bars::{DurableCompactEvents, IntradayBarRouter};
 use crate::market_products::MarketProductEventRouter;
 use crate::metrics::SharedMetrics;
 use crate::timefmt::clickhouse_datetime64;
@@ -45,6 +45,14 @@ pub struct LiveCompactEvent {
     pub size_secondary: f32,
     pub source_sequence: u64,
     pub ticker: String,
+    #[serde(skip)]
+    pub(crate) exact_conditions: Option<Arc<ExactConditionCodes>>,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct ExactConditionCodes {
+    conditions: Vec<u16>,
+    indicators: Vec<u16>,
 }
 
 impl LiveCompactEvent {
@@ -162,10 +170,16 @@ impl CompactEventDecoder {
             "causation_id": event.causation_id(),
         });
         if event.event_type() == TRADE_EVENT_TYPE {
-            let conditions = tokens
-                .into_iter()
-                .filter_map(|token| self.trade_conditions.get(&token).copied())
-                .collect();
+            let conditions = event
+                .exact_conditions
+                .as_ref()
+                .map(|exact| exact.conditions.clone())
+                .unwrap_or_else(|| {
+                    tokens
+                        .into_iter()
+                        .filter_map(|token| self.trade_conditions.get(&token).copied())
+                        .collect()
+                });
             MarketEvent::Trade(TradeEvent {
                 conditions,
                 exchange: u16::from(event.exchange_primary),
@@ -186,16 +200,27 @@ impl CompactEventDecoder {
                     .unwrap_or(event.ingest_ts),
             })
         } else {
-            let conditions = tokens[..4]
-                .iter()
-                .filter_map(|token| self.quote_conditions.get(token).copied())
-                .collect();
-            let indicators = self
-                .quote_indicators
-                .get(&tokens[4])
-                .copied()
-                .into_iter()
-                .collect();
+            let conditions = event
+                .exact_conditions
+                .as_ref()
+                .map(|exact| exact.conditions.clone())
+                .unwrap_or_else(|| {
+                    tokens[..4]
+                        .iter()
+                        .filter_map(|token| self.quote_conditions.get(token).copied())
+                        .collect()
+                });
+            let indicators = event
+                .exact_conditions
+                .as_ref()
+                .map(|exact| exact.indicators.clone())
+                .unwrap_or_else(|| {
+                    self.quote_indicators
+                        .get(&tokens[4])
+                        .copied()
+                        .into_iter()
+                        .collect()
+                });
             MarketEvent::Quote(QuoteEvent {
                 ask_exchange: u16::from(event.exchange_primary),
                 ask_price: f64::from(event.price_primary_int) / primary_scale,
@@ -934,6 +959,7 @@ pub struct CompactEventClickHouseWriter {
     references: CompactEventReferences,
     decoder: CompactEventDecoder,
     intraday_bar_router: IntradayBarRouter,
+    durability: DurableCompactEvents,
     coverage_windows: Arc<Mutex<HashMap<(String, String), CoverageWindow>>>,
 }
 
@@ -1004,6 +1030,7 @@ impl CompactEventClickHouseWriter {
         live_store: SharedCompactEventStore,
         metrics: SharedMetrics,
         intraday_bar_router: IntradayBarRouter,
+        durability: DurableCompactEvents,
         product_router: MarketProductEventRouter,
         canonical_event_sender: mpsc::Sender<MarketEvent>,
     ) -> Self {
@@ -1019,6 +1046,7 @@ impl CompactEventClickHouseWriter {
             references,
             decoder,
             intraday_bar_router,
+            durability,
             coverage_windows: Arc::new(Mutex::new(HashMap::new())),
         }
     }
@@ -1382,6 +1410,7 @@ impl CompactEventClickHouseWriter {
         match self.insert_events(batch).await {
             Ok(()) => {
                 let count = batch.len() as u64;
+                self.durability.mark_persisted(batch);
                 self.metrics.inc_compact_events_persisted(count);
                 let coverage_result = self
                     .record_live_event_coverage("compact_persisted", batch, "", 0)
@@ -1939,6 +1968,7 @@ fn compact_quote_event(
         },
         source_sequence: quote.sequence,
         ticker: quote.ticker.clone(),
+        exact_conditions: exact_condition_overflow(&quote.conditions, &quote.indicators, true),
     }
     .with_condition_tokens(tokens);
     Ok(CompactConversion { event, issue })
@@ -1994,6 +2024,7 @@ fn compact_trade_event(
         size_secondary: 0.0,
         source_sequence: trade.sequence,
         ticker: trade.ticker.clone(),
+        exact_conditions: exact_condition_overflow(&trade.conditions, &[], false),
     }
     .with_condition_tokens(tokens);
     Ok(CompactConversion { event, issue })
@@ -2090,6 +2121,24 @@ fn condition_issue(
         indicator_codes: indicators.to_vec(),
         selected_tokens: tokens,
         raw_tape,
+    })
+}
+
+fn exact_condition_overflow(
+    conditions: &[u16],
+    indicators: &[u16],
+    quote: bool,
+) -> Option<Arc<ExactConditionCodes>> {
+    let overflow = if quote {
+        conditions.len() > 4 || indicators.len() > 1
+    } else {
+        conditions.len() > CONDITION_TOKEN_SLOTS
+    };
+    overflow.then(|| {
+        Arc::new(ExactConditionCodes {
+            conditions: conditions.to_vec(),
+            indicators: indicators.to_vec(),
+        })
     })
 }
 
@@ -2407,10 +2456,14 @@ mod tests {
         };
         let converted = compact_trade_event(&trade, &refs).unwrap();
         assert_eq!(
-            converted.issue.unwrap().issue_kind,
+            converted.issue.as_ref().unwrap().issue_kind,
             "condition_token_overflow"
         );
         assert_eq!(converted.event.condition_token_5, 5);
+        match refs.decoder().decode(&converted.event) {
+            MarketEvent::Trade(decoded) => assert_eq!(decoded.conditions, trade.conditions),
+            MarketEvent::Quote(_) => panic!("expected trade"),
+        }
     }
 
     #[test]

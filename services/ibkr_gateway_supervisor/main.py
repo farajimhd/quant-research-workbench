@@ -49,10 +49,19 @@ class SupervisorService:
 
     def metrics(self) -> dict[str, object]:
         state = self.supervisor.terminal_state
+        thread_alive = bool(self.thread and self.thread.is_alive())
+        operational = (
+            thread_alive
+            and str(state.gateway_status).lower() == "ready"
+            and str(state.auth_status).lower() == "authenticated"
+            and str(state.keepalive_status).lower() == "ok"
+            and str(state.clickhouse_status).lower() == "ready"
+        )
         return {
-            "status": "failed" if self.last_error else "",
+            "status": "failed" if self.last_error else ("running" if operational else "starting"),
+            "current_phase": "failed" if self.last_error else ("monitoring" if operational else "starting"),
             "last_error": self.last_error or state.last_error,
-            "supervisor_thread_alive": bool(self.thread and self.thread.is_alive()),
+            "supervisor_thread_alive": thread_alive,
             "gateway_status": state.gateway_status,
             "auth_status": state.auth_status,
             "keepalive_status": state.keepalive_status,

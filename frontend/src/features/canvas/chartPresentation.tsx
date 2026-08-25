@@ -132,10 +132,13 @@ export function ChartPreview({
             mode: liveChart.pointInTime ? "replay" : "live",
             trigger_mode: barGptTriggerMode,
             tickers: [linkContext.symbol],
+            model_ids: [`bar_gpt_${barGptVersion}`],
             watchlist_ids: [],
-            clock_us: barGptClockUs,
-            revision: Math.max(1, Math.floor((barGptClockUs ?? Date.now() * 1000) / 1_000_000)),
-            ttl_ms: 10_000,
+            clock_us: liveChart.pointInTime ? barGptClockUs : null,
+            revision: liveChart.pointInTime
+              ? Math.max(1, Math.floor((barGptClockUs ?? Date.now() * 1000) / 1_000_000))
+              : 1,
+            ttl_ms: 30_000,
             source: "canvas.chart",
           }),
           signal: controller.signal,
@@ -156,7 +159,7 @@ export function ChartPreview({
       } finally {
         if (requestController === controller) requestController = null;
       }
-      if (!cancelled) timer = window.setTimeout(refresh, 1_000);
+      if (!cancelled) timer = window.setTimeout(refresh, 5_000);
     };
     void refresh();
     return () => {
@@ -234,10 +237,16 @@ export function ChartPreview({
   } satisfies LiveEntryLine : null;
   const emptyMessage = `No closed ${linkContext.symbol} ${timeframe} bars are available from QMD History at this Canvas clock.`;
   const barGptReady = Boolean(barGptScope?.ticker_count && barGptScope.ready_count === barGptScope.ticker_count);
+  const barGptWarm = barGptScope?.readiness?.find((row) => row.ticker === linkContext.symbol)?.warm;
+  const barGptDetail = barGptError || barGptWarm?.error || "";
   const barGptState = barGptError
     ? "Unavailable"
     : !barGptReady
-      ? "Warming context"
+      ? barGptWarm?.status === "failed"
+        ? "Warm-up failed"
+        : barGptWarm?.status === "queued"
+          ? "Queued for context"
+          : "Warming context"
       : barGptInferring
         ? "Inference running"
         : barGptForecasts.length
@@ -254,6 +263,7 @@ export function ChartPreview({
         body: JSON.stringify({
           scope_id: barGptScopeId,
           tickers: [linkContext.symbol],
+          model_ids: [`bar_gpt_${barGptVersion}`],
           origin_us: barGptClockUs,
           request_id: `canvas:${instanceId}:${barGptClockUs ?? Date.now() * 1000}`,
         }),
@@ -267,8 +277,8 @@ export function ChartPreview({
     }
   }
   return <div className={`canvas-chart-with-model ${fillHeight ? "is-fill-height" : ""}`}>
-    {showBarGpt ? <div className="canvas-bar-gpt-controls" data-state={barGptError ? "error" : barGptReady ? "ready" : "warming"}>
-      <div className="canvas-bar-gpt-state"><Activity size={13} /><span>BarGPT</span><strong>{barGptState}</strong>{barGptError ? <small title={barGptError}>{barGptError}</small> : null}</div>
+    {showBarGpt ? <div className="canvas-bar-gpt-controls" data-state={barGptDetail ? "error" : barGptReady ? "ready" : "warming"}>
+      <div className="canvas-bar-gpt-state"><Activity size={13} /><span>BarGPT</span><strong>{barGptState}</strong>{barGptDetail ? <small title={barGptDetail}>{barGptDetail}</small> : null}</div>
       <label><span>Model</span><select aria-label="BarGPT model version" onChange={(event) => onChartSettingsChange({ ...chartSettings, barGptVersion: event.target.value as BarGptChartVersion })} value={barGptVersion}><option value="v2">V2</option><option value="v3">V3</option></select></label>
       <label><span>Forecast</span><select aria-label="BarGPT forecast quantile" onChange={(event) => onChartSettingsChange({ ...chartSettings, barGptQuantile: event.target.value as BarGptChartQuantile })} value={barGptQuantile}><option value="q10">Lower q10</option><option value="q50">Median q50</option><option value="q90">Upper q90</option></select></label>
       <label><span>Horizon</span><select aria-label="BarGPT forecast horizon" onChange={(event) => onChartSettingsChange({ ...chartSettings, barGptHorizon: event.target.value as CanvasChartSettings["barGptHorizon"] })} value={barGptHorizon}>{["all", "5s", "30s", "1m", "5m", "15m", "1h"].map((value) => <option key={value} value={value}>{value === "all" ? "All horizons" : value}</option>)}</select></label>

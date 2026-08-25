@@ -10,7 +10,11 @@ param(
     [int]$ServicePort = 0,
     [string]$InstanceId = "",
     [string]$RepositoryRoot = "",
-    [string]$DesiredFingerprint = ""
+    [string]$DesiredFingerprint = "",
+    [string]$LaunchMetadataBase64 = "",
+    [string]$LogRoot = "",
+    [ValidateRange(1, 100)]
+    [int]$LogRetentionRuns = 10
 )
 
 $ErrorActionPreference = "Stop"
@@ -230,12 +234,66 @@ $child = $null
 $job = [IntPtr]::Zero
 $startGate = $null
 $registered = $false
+$stdoutWriter = $null
+$stderrWriter = $null
+$runRoot = ""
+$stdoutPath = ""
+$stderrPath = ""
+$exitPath = ""
+$runStartedAtUtc = [DateTime]::UtcNow
+$childExitCode = 1
+$exitReason = "host_exception"
+$hostError = $null
 try {
     $registrationValues = @($RegistryPath, $ServiceRole, $InstanceId, $RepositoryRoot)
     $registrationEnabled = @($registrationValues | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }).Count -gt 0
     if ($registrationEnabled -and
         @($registrationValues | Where-Object { [string]::IsNullOrWhiteSpace($_) }).Count -gt 0) {
         throw "RegistryPath, ServiceRole, InstanceId, and RepositoryRoot must be supplied together."
+    }
+
+    $launchMetadata = [pscustomobject]@{
+        fingerprint_components = @{}
+        launch_inputs = @{}
+    }
+    if ($LaunchMetadataBase64.Trim()) {
+        $metadataText = [Text.Encoding]::UTF8.GetString(
+            [Convert]::FromBase64String($LaunchMetadataBase64)
+        )
+        $launchMetadata = $metadataText | ConvertFrom-Json
+    }
+
+    if ($LogRoot.Trim()) {
+        $resolvedRepositoryRootForLogs = [IO.Path]::GetFullPath($RepositoryRoot).TrimEnd('\')
+        $resolvedLogRoot = [IO.Path]::GetFullPath($LogRoot).TrimEnd('\')
+        if ($resolvedLogRoot.Equals($resolvedRepositoryRootForLogs, [StringComparison]::OrdinalIgnoreCase) -or
+            $resolvedLogRoot.StartsWith($resolvedRepositoryRootForLogs + '\', [StringComparison]::OrdinalIgnoreCase)) {
+            throw "Service logs must be outside the repository: $resolvedLogRoot"
+        }
+        $safeRole = if ($ServiceRole.Trim()) { $ServiceRole -replace '[^A-Za-z0-9_.-]', '_' } else { 'service' }
+        $safeInstance = if ($InstanceId.Trim()) { $InstanceId -replace '[^A-Za-z0-9_.-]', '_' } else { [Guid]::NewGuid().ToString('N') }
+        $runName = "{0}_{1}" -f ([DateTime]::UtcNow.ToString('yyyyMMddTHHmmssfffZ')), $safeInstance
+        $serviceLogRoot = Join-Path $resolvedLogRoot $safeRole
+        $runRoot = Join-Path $serviceLogRoot $runName
+        [IO.Directory]::CreateDirectory($runRoot) | Out-Null
+        $stdoutPath = Join-Path $runRoot 'stdout.log'
+        $stderrPath = Join-Path $runRoot 'stderr.log'
+        $exitPath = Join-Path $runRoot 'exit.json'
+        $runManifest = [ordered]@{
+            schema_version = 1
+            service_role = $ServiceRole
+            service_port = $ServicePort
+            instance_id = $InstanceId
+            repository_root = $resolvedRepositoryRootForLogs
+            desired_fingerprint = $DesiredFingerprint
+            fingerprint_components = $launchMetadata.fingerprint_components
+            launch_inputs = $launchMetadata.launch_inputs
+            started_at_utc = $runStartedAtUtc.ToString('o')
+            stdout_path = $stdoutPath
+            stderr_path = $stderrPath
+            exit_path = $exitPath
+        }
+        $runManifest | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $runRoot 'run.json') -Encoding UTF8
     }
 
     $jobName = "Local\QWServiceTabJob_$([Guid]::NewGuid().ToString('N'))"
@@ -251,6 +309,7 @@ try {
     $bootstrapCommand = @"
 `$gate = [Threading.EventWaitHandle]::OpenExisting('$gateLiteral')
 try { [void]`$gate.WaitOne() } finally { `$gate.Dispose() }
+`$ProgressPreference = 'SilentlyContinue'
 `$commandText = [Text.Encoding]::Unicode.GetString([Convert]::FromBase64String('$commandLiteral'))
 & ([ScriptBlock]::Create(`$commandText))
 if (`$null -ne `$LASTEXITCODE) { exit `$LASTEXITCODE }
@@ -263,7 +322,7 @@ if (-not `$?) { exit 1 }
     $startInfo = [Diagnostics.ProcessStartInfo]::new()
     $startInfo.FileName = $PowerShellExe
     $startInfo.Arguments = (
-        "-NoLogo -NoProfile -ExecutionPolicy Bypass -EncodedCommand {0}" -f
+        "-NoLogo -NoProfile -ExecutionPolicy Bypass -OutputFormat Text -EncodedCommand {0}" -f
         $bootstrapEncodedCommand
     )
     $startInfo.UseShellExecute = $false
@@ -272,6 +331,10 @@ if (-not `$?) { exit 1 }
     # rendering reach the tab. CREATE_NO_WINDOW detaches a console child and
     # silently discards the operational display.
     $startInfo.CreateNoWindow = $false
+    if ($runRoot) {
+        $startInfo.RedirectStandardOutput = $true
+        $startInfo.RedirectStandardError = $true
+    }
     $child = [Diagnostics.Process]::Start($startInfo)
     if ($null -eq $child) {
         throw "PowerShell did not return a child process for the service command."
@@ -305,6 +368,12 @@ if (-not `$?) { exit 1 }
             job_name = $jobName
             terminal_session = [string]$env:WT_SESSION
             desired_fingerprint = $DesiredFingerprint
+            fingerprint_components = $launchMetadata.fingerprint_components
+            launch_inputs = $launchMetadata.launch_inputs
+            run_log_root = $runRoot
+            stdout_path = $stdoutPath
+            stderr_path = $stderrPath
+            exit_path = $exitPath
             registered_at_utc = [DateTime]::UtcNow.ToString("o")
         }
         $temporaryRegistryPath = "$resolvedRegistryPath.$PID.tmp"
@@ -316,11 +385,66 @@ if (-not `$?) { exit 1 }
 
     [void]$startGate.Set()
 
-    while (-not $child.WaitForExit(250)) {
-        # Wait in bounded intervals so Ctrl+C callbacks remain observable.
+    if ($runRoot) {
+        $stdoutWriter = [IO.StreamWriter]::new($stdoutPath, $true, [Text.UTF8Encoding]::new($false))
+        $stderrWriter = [IO.StreamWriter]::new($stderrPath, $true, [Text.UTF8Encoding]::new($false))
+        $stdoutRead = $child.StandardOutput.ReadLineAsync()
+        $stderrRead = $child.StandardError.ReadLineAsync()
+        $stdoutEof = $false
+        $stderrEof = $false
+        while (-not $child.HasExited -or -not $stdoutEof -or -not $stderrEof) {
+            if (-not $stdoutEof -and $stdoutRead.IsCompleted) {
+                $line = $stdoutRead.GetAwaiter().GetResult()
+                if ($null -ne $line) {
+                    [Console]::Out.WriteLine($line)
+                    $stdoutWriter.WriteLine($line)
+                    $stdoutWriter.Flush()
+                    $stdoutRead = $child.StandardOutput.ReadLineAsync()
+                }
+                else {
+                    $stdoutEof = $true
+                }
+            }
+            if (-not $stderrEof -and $stderrRead.IsCompleted) {
+                $line = $stderrRead.GetAwaiter().GetResult()
+                if ($null -ne $line) {
+                    # Windows PowerShell prefixes redirected error streams with
+                    # CLIXML transport metadata. Preserve the human diagnostic
+                    # line, not serialization/progress envelopes.
+                    if ($line -ne '#< CLIXML' -and -not $line.StartsWith('<Objs ')) {
+                        [Console]::Error.WriteLine($line)
+                        $stderrWriter.WriteLine($line)
+                        $stderrWriter.Flush()
+                    }
+                    $stderrRead = $child.StandardError.ReadLineAsync()
+                }
+                else {
+                    $stderrEof = $true
+                }
+            }
+            Start-Sleep -Milliseconds 50
+        }
+        $child.WaitForExit()
+    }
+    else {
+        while (-not $child.WaitForExit(250)) {
+            # Wait in bounded intervals so Ctrl+C callbacks remain observable.
+        }
     }
     $child.Refresh()
     $childExitCode = $child.ExitCode
+    $exitReason = if ([ServiceTabConsoleControl]::StopRequested) {
+        'operator_stop'
+    } elseif ($childExitCode -eq 0) {
+        'process_exit_zero'
+    } else {
+        'process_exit_nonzero'
+    }
+}
+catch {
+    $hostError = $_
+    $childExitCode = 1
+    $exitReason = 'host_exception'
 }
 finally {
     [ServiceTabConsoleControl]::Unregister()
@@ -330,12 +454,42 @@ finally {
     if ($null -ne $child) {
         $child.Dispose()
     }
+    if ($null -ne $stdoutWriter) { $stdoutWriter.Dispose() }
+    if ($null -ne $stderrWriter) { $stderrWriter.Dispose() }
     [ServiceTabJobControl]::Close($job)
+    if ($runRoot) {
+        $exitRecord = [ordered]@{
+            schema_version = 1
+            service_role = $ServiceRole
+            service_port = $ServicePort
+            instance_id = $InstanceId
+            started_at_utc = $runStartedAtUtc.ToString('o')
+            finished_at_utc = [DateTime]::UtcNow.ToString('o')
+            exit_code = $childExitCode
+            reason = $exitReason
+            stop_requested = [ServiceTabConsoleControl]::StopRequested
+            error = if ($null -ne $hostError) { [string]$hostError.Exception.Message } else { '' }
+        }
+        $exitRecord | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $exitPath -Encoding UTF8
+        $serviceLogRoot = Split-Path -Parent $runRoot
+        $expired = @(Get-ChildItem -LiteralPath $serviceLogRoot -Directory -ErrorAction SilentlyContinue |
+            Sort-Object Name -Descending | Select-Object -Skip $LogRetentionRuns)
+        foreach ($directory in $expired) {
+            $resolvedExpired = [IO.Path]::GetFullPath($directory.FullName)
+            if ($resolvedExpired.StartsWith($serviceLogRoot.TrimEnd('\') + '\', [StringComparison]::OrdinalIgnoreCase)) {
+                Remove-Item -LiteralPath $resolvedExpired -Recurse -Force
+            }
+        }
+    }
     if ($registered -and (Test-Path -LiteralPath $RegistryPath -PathType Leaf)) {
         Remove-Item -LiteralPath $RegistryPath -Force -ErrorAction SilentlyContinue
     }
 }
 
+if ($null -ne $hostError) {
+    [Console]::Error.WriteLine($hostError.Exception.Message)
+    exit 1
+}
 if ([ServiceTabConsoleControl]::StopRequested) {
     exit 0
 }

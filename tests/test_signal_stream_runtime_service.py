@@ -397,6 +397,30 @@ class SignalStreamRuntimeTests(unittest.TestCase):
         self.assertEqual(publish.call_args.kwargs["scope"], "signal_stream")
 
     @patch("src.backend.signal_stream_runtime_service.publish_computation_target")
+    def test_core_source_prefilters_and_bounds_expensive_computation_demand(self, publish) -> None:
+        stream = self.configuration["market_discovery"]["signal_streams"][0]
+        stream["enabled"] = True
+        stream["inclusion_rule_sets"] = ["watchlist-squeeze-early-impulse-100ms"]
+        stream["computation_candidate_limit"] = 2
+
+        seeds = SignalStreamRuntime().seed_computation_targets(
+            self.configuration,
+            [
+                {"ticker": "SLOW", "liquidity_rank": 30},
+                {"ticker": "FAST", "liquidity_rank": 1},
+                {"ticker": "MID", "liquidity_rank": 10},
+            ],
+        )
+
+        self.assertEqual(publish.call_args.args[1], ["FAST", "MID"])
+        self.assertEqual(seeds[0]["source_candidate_count"], 3)
+        self.assertEqual(seeds[0]["candidate_count"], 2)
+        self.assertTrue(seeds[0]["degraded"])
+        self.assertEqual(
+            seeds[0]["degradation_reason"], "bounded_core_computation_admission"
+        )
+
+    @patch("src.backend.signal_stream_runtime_service.publish_computation_target")
     def test_configured_bar_column_is_included_in_signal_computation_demand(self, publish) -> None:
         discovery = self.configuration["market_discovery"]
         stream = discovery["signal_streams"][0]

@@ -11,6 +11,8 @@ param(
     [string]$TerminalTarget = "Auto",
     [string]$TerminalWindowName = "quant-research-workbench-qmd-live",
     [string]$QmdLiveServiceRuntimeRoot = "",
+    [string]$DesiredFingerprint = "",
+    [string]$LaunchMetadataBase64 = "",
     [switch]$BootstrapBars,
     [ValidateRange(0.01, 100.0)]
     [double]$MaxGitDirectoryGB = 2.0
@@ -257,7 +259,10 @@ function Open-ServiceTabs {
             "-ServiceRole", $Tabs[$index].Role,
             "-ServicePort", $Tabs[$index].Port,
             "-InstanceId", $qmdLiveInstanceId,
-            "-RepositoryRoot", $repoRoot
+            "-RepositoryRoot", $repoRoot,
+            "-DesiredFingerprint", $DesiredFingerprint,
+            "-LaunchMetadataBase64", $LaunchMetadataBase64,
+            "-LogRoot", (Join-Path $resolvedQmdLiveServiceRuntimeRoot "logs")
         )
     }
 

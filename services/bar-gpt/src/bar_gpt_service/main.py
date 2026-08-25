@@ -59,6 +59,11 @@ def status_snapshot() -> dict:
         "active_tickers": health["active_ticker_count"],
         "queue_size": queue["active"],
         "queue_capacity": queue["capacity"],
+        "warm_admitted": health["warm"]["admitted"],
+        "warm_queued": health["warm"]["queued"],
+        "warm_warming": health["warm"]["warming"],
+        "warm_ready": health["warm"]["ready"],
+        "warm_failed_active": health["warm"]["failed"],
     }
     public_config = {
         "bind": config.bind,
@@ -88,7 +93,7 @@ def status_snapshot() -> dict:
             "queues": {
                 "depth": queue["active"],
                 "capacity": queue["capacity"],
-                "drop_total": health["metrics"].get("queue_drops", 0),
+                "drop_total": health["metrics"].get("queue_dropped", 0),
             },
             "cache": {"entries": len(health["caches"]), "tickers": health["active_ticker_count"]},
             "checkpoint": {"models": health["models"]},
@@ -107,6 +112,7 @@ def metrics() -> dict:
         "active_tickers": health["active_ticker_count"],
         "queue_size": health["queue"]["active"],
         "queue_capacity": health["queue"]["capacity"],
+        **{f"warm_{key}": value for key, value in health["warm"].items()},
     }
 
 

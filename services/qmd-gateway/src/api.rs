@@ -386,6 +386,23 @@ async fn replace_computation_target(
         .computation_targets
         .prepare(request)
         .map_err(|error| (StatusCode::BAD_REQUEST, Json(json!({ "error": error }))))?;
+    state
+        .computation_targets
+        .admit(&prepared)
+        .map_err(|error| {
+            (
+                StatusCode::TOO_MANY_REQUESTS,
+                Json(json!({
+                    "error": error,
+                    "error_code": "computation_target_admission_rejected",
+                    "retryable": true,
+                    "retry_action": "narrow_computation_target",
+                    "degraded": true,
+                    "estimated_demand_units": prepared.estimated_demand_units,
+                    "estimated_retained_bytes": prepared.estimated_retained_bytes,
+                })),
+            )
+        })?;
     if state.computation_targets.matches_active_contract(&prepared) {
         // A lease renewal changes expiry and lineage timestamps, not its
         // computation demand. Reactivate the normalized lease without
@@ -1069,7 +1086,30 @@ fn build_live_pipeline(operational: &OperationalSnapshot, metrics: &MetricsSnaps
         json!({"key": "massive_feed", "label": "Massive feed", "state": lane_state(operational, "massive_feed"), "detail": lane_detail(operational, "massive_feed"), "rows": metrics.ingest_events, "last_event_utc": metrics.last_event_ts, "lag_ms": metrics.last_event_lag_ms}),
         json!({"key": "normalize", "label": "Normalize / encode", "state": normalize_state, "rows": metrics.compact_events_emitted, "rejected": metrics.compact_event_rejected, "detail": "Uses the compact event reference-table encoding contract; consumers should alert if rejects are actively rising."}),
         json!({"key": "compact_events", "label": "q_live.events", "lane": lane(operational, "compact_events"), "rows": metrics.compact_events_persisted, "reorder_pending": metrics.compact_events_reorder_pending}),
-        json!({"key": "intraday_bars", "label": "Canonical intraday bars", "lane": lane(operational, "intraday_bars"), "rows": metrics.intraday_bar_rows_persisted, "emitted": metrics.intraday_bar_rows_emitted}),
+        json!({
+            "key": "intraday_bars",
+            "label": "Canonical intraday bars",
+            "lane": lane(operational, "intraday_bars"),
+            "rows": metrics.intraday_bar_rows_persisted,
+            "emitted": metrics.intraday_bar_rows_emitted,
+            "repair_pipeline": {
+                "lane": lane(operational, "intraday_repairs"),
+                "coalesced_ranges_created": metrics.intraday_bar_repairs_requested,
+                "late_events_merged": metrics.intraday_bar_repair_events_merged,
+                "pending_coalesced_ranges": metrics.intraday_bar_repair_ranges_pending,
+                "oldest_pending_ms": metrics.intraday_bar_repair_oldest_pending_ms,
+                "durable_idle_ranges_enqueued": metrics.intraday_bar_repair_ranges_enqueued,
+                "execution_backlog": metrics.intraday_bar_repair_execution_backlog,
+                "execution_inflight": metrics.intraday_bar_repair_execution_inflight,
+                "execution_oldest_pending_ms": metrics.intraday_bar_repair_execution_oldest_pending_ms,
+                "execution_retries": metrics.intraday_bar_repair_execution_retries,
+                "execution_deferred_to_reconciliation": metrics.intraday_bar_repair_execution_deferred,
+                "execution_concurrency_limit": 1,
+                "execution_rate_limit_per_second": 4,
+                "ranges_completed": metrics.intraday_bar_repairs_completed,
+                "restart_authority": "durable q_live.events retained-window reconciliation",
+            }
+        }),
     ]
 }
 

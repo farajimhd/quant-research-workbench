@@ -6,12 +6,20 @@ import unittest
 from unittest.mock import patch
 
 from src.backend.application_registry import FIELD_BY_ID
-from src.backend.bar_gpt_client import publish_bar_gpt_scope
+from src.backend.bar_gpt_client import _stable_unique, publish_bar_gpt_scope
 from src.backend.model_feature_store import ModelFeatureStore
 from src.backend.trading_configuration_service import _default_market_discovery, _validate_market_discovery
+from src.backend.real_live_trading_service import _ranked_unique_tickers
 
 
 class BarGptServingTests(unittest.TestCase):
+    def test_ranked_watchlist_authority_survives_deduplication_and_cap(self) -> None:
+        watchlists = [
+            {"members": [{"ticker": "MSFT"}, {"ticker": "AAPL"}]},
+            {"members": [{"ticker": "AAPL"}, {"ticker": "NVDA"}]},
+        ]
+        self.assertEqual(_ranked_unique_tickers(watchlists, 2), ["MSFT", "AAPL"])
+        self.assertEqual(_stable_unique(["msft", "AAPL", "MSFT"], uppercase=True), ["MSFT", "AAPL"])
     def test_raw_and_decoded_heads_are_registered_for_rules(self) -> None:
         raw = "model.bargpt.v2.physical.1m.trade_close_return.q50.raw"
         decoded = "model.bargpt.v2.physical.1m.trade_close_return.q50.value"

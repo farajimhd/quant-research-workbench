@@ -50,7 +50,22 @@ def classify_exception(exc: BaseException | str, *, service: str, phase: str = "
         category = "provider_rate_limit"
         retryable = True
         status = "retrying"
-    elif "timeout" in lowered or "connection reset" in lowered or "temporar" in lowered:
+    elif any(
+        token in lowered
+        for token in (
+            "timeout",
+            "connection reset",
+            "connectionreseterror",
+            "connection aborted",
+            "connectionabortederror",
+            "connection refused",
+            "connectionrefusederror",
+            "forcibly closed",
+            "broken pipe",
+            "winerror 10054",
+            "temporar",
+        )
+    ):
         category = "provider_transient"
         retryable = True
         status = "retrying"
@@ -91,12 +106,19 @@ def error_summary_from_metrics(metrics: dict[str, Any], *, service: str) -> dict
     failed_rows = int(metrics.get("failed_rows") or metrics.get("failed_filings") or 0)
     if last_error:
         record = classify_exception(last_error, service=service, phase=str(metrics.get("current_phase") or ""), task="runtime")
+        last_seen = str(metrics.get("last_error_seen_at_utc") or record.last_seen_utc)
+        first_seen = str(metrics.get("last_error_first_seen_at_utc") or last_seen)
+        record_values = {
+            **record.public_dict(),
+            "first_seen_utc": first_seen,
+            "last_seen_utc": last_seen,
+        }
         if last_error_status == "resolved":
             summary.resolved_this_run_count = 1
             summary.latest_resolved_errors.append(
                 GatewayErrorRecord(
                     **{
-                        **record.public_dict(),
+                        **record_values,
                         "status": "resolved",
                         "resolved_at_utc": str(metrics.get("last_error_resolved_at_utc") or datetime.now(UTC).isoformat(timespec="seconds").replace("+00:00", "Z")),
                     }
@@ -104,13 +126,18 @@ def error_summary_from_metrics(metrics: dict[str, Any], *, service: str) -> dict
             )
         elif failed_phase:
             summary.active_critical_count = 1
-            record = GatewayErrorRecord(**{**record.public_dict(), "severity": "critical"})
+            record = GatewayErrorRecord(**{**record_values, "severity": "critical"})
             summary.latest_active_errors.append(record.public_dict())
         elif record.retryable and (provider_cooldown > 0 or phase == "provider_cooldown"):
             summary.retrying_count = 1
             if provider_cooldown_reason in {"sec_http_403", "sec_http_429"}:
                 summary.active_error_count = 1
-            summary.latest_active_errors.append(record.public_dict())
+            summary.latest_active_errors.append(GatewayErrorRecord(**record_values).public_dict())
+        elif last_error_status == "retrying":
+            summary.retrying_count = 1
+            summary.latest_active_errors.append(
+                GatewayErrorRecord(**{**record_values, "status": "retrying"}).public_dict()
+            )
         elif last_error_status == "active":
             if record.retryable:
                 summary.retrying_count = 1
@@ -118,13 +145,13 @@ def error_summary_from_metrics(metrics: dict[str, Any], *, service: str) -> dict
                 summary.active_error_count = 1
             else:
                 summary.active_warning_count = 1
-            summary.latest_active_errors.append(record.public_dict())
+            summary.latest_active_errors.append(GatewayErrorRecord(**record_values).public_dict())
         elif record.retryable:
             summary.resolved_this_run_count = 1
             summary.latest_resolved_errors.append(
                 GatewayErrorRecord(
                     **{
-                        **record.public_dict(),
+                        **record_values,
                         "status": "resolved",
                         "resolved_at_utc": datetime.now(UTC).isoformat(timespec="seconds").replace("+00:00", "Z"),
                     }
@@ -132,10 +159,10 @@ def error_summary_from_metrics(metrics: dict[str, Any], *, service: str) -> dict
             )
         elif poll_failures or failed_rows:
             summary.active_error_count = 1
-            summary.latest_active_errors.append(record.public_dict())
+            summary.latest_active_errors.append(GatewayErrorRecord(**record_values).public_dict())
         else:
             summary.active_warning_count = 1
-            summary.latest_active_errors.append(record.public_dict())
+            summary.latest_active_errors.append(GatewayErrorRecord(**record_values).public_dict())
     return asdict(summary)
 
 

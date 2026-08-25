@@ -96,6 +96,8 @@ def service_status(metrics: dict[str, Any]) -> str:
     provider_cooldown_reason = str(metrics.get("sec_request_cooldown_reason") or metrics.get("provider_cooldown_reason") or "").lower()
     if phase == "provider_cooldown" or provider_cooldown > 0:
         return "DEGRADED" if provider_cooldown_reason in {"sec_http_403", "sec_http_429"} else "CATCHING_UP"
+    if last_error_status == "retrying":
+        return "CATCHING_UP"
     if explicit_status in {"degraded", "warning"} or phase == "error" or last_error_status == "active":
         return "DEGRADED"
     if phase in {"preflight", "coverage_bootstrap", "gap_planning"}:

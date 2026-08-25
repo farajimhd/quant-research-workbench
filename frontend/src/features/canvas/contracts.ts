@@ -253,7 +253,11 @@ export type BarGptScopePayload = {
   error?: string;
   ready_count?: number;
   ticker_count?: number;
-  readiness?: Array<{ ready: boolean; ticker: string }>;
+  readiness?: Array<{
+    ready: boolean;
+    ticker: string;
+    warm?: { status?: "queued" | "warming" | "ready" | "failed" | "cancelled"; error?: string };
+  }>;
 };
 export type QmdBarHistory = {
   as_of: string;

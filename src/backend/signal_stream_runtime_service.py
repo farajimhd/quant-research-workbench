@@ -34,6 +34,8 @@ SIGNAL_STATE_RUN_ID = "market-discovery:signal-stream-state"
 SIGNAL_EVENT_RUN_ID = "market-discovery:signal-stream"
 SIGNAL_STREAM_SCHEMA_VERSION = 1
 SIGNAL_STREAM_SNAPSHOT_CACHE_SECONDS = 1.0
+DEFAULT_CORE_COMPUTATION_CANDIDATE_LIMIT = 512
+MAX_CORE_COMPUTATION_CANDIDATE_LIMIT = 2_000
 
 
 class SignalStreamRuntime:
@@ -73,11 +75,7 @@ class SignalStreamRuntime:
             str(row.get("column_id") or ""): str(row.get("field_ref") or row.get("source_id") or "")
             for row in discovery.get("column_catalog") or []
         }
-        core_tickers = sorted({
-            str(row.get("ticker") or row.get("symbol") or "").strip().upper()
-            for row in candidates
-            if str(row.get("ticker") or row.get("symbol") or "").strip()
-        })
+        core_candidates = bounded_core_computation_candidates(candidates)
         watchlist_members = {
             str(snapshot.get("watchlist_id") or ""): sorted({
                 str(member.get("ticker") or member.get("symbol") or "").strip().upper()
@@ -107,7 +105,28 @@ class SignalStreamRuntime:
                 continue
             source_type = str(stream.get("source_type") or "core_scan")
             source_id = str(stream.get("source_id") or stream.get("source_scan_id") or "")
-            tickers = core_tickers if source_type == "core_scan" else watchlist_members.get(source_id, [])
+            source_candidate_count = len(core_candidates)
+            candidate_limit = None
+            if source_type == "core_scan":
+                candidate_limit = max(
+                    1,
+                    min(
+                        int(
+                            stream.get("computation_candidate_limit")
+                            or DEFAULT_CORE_COMPUTATION_CANDIDATE_LIMIT
+                        ),
+                        MAX_CORE_COMPUTATION_CANDIDATE_LIMIT,
+                    ),
+                )
+                source_candidate_count = len({
+                    str(row.get("ticker") or row.get("symbol") or "").strip().upper()
+                    for row in candidates
+                    if str(row.get("ticker") or row.get("symbol") or "").strip()
+                })
+                tickers = [row[1] for row in core_candidates[:candidate_limit]]
+            else:
+                tickers = watchlist_members.get(source_id, [])
+                source_candidate_count = len(tickers)
             target_id = f"signal-stream:{stream_id}"
             active_target_ids.add(target_id)
             if tickers or target_id in previously_published:
@@ -127,6 +146,14 @@ class SignalStreamRuntime:
                     "source_type": source_type,
                     "source_id": source_id,
                     "candidate_count": len(tickers),
+                    "source_candidate_count": source_candidate_count,
+                    "computation_candidate_limit": candidate_limit,
+                    "degraded": source_candidate_count > len(tickers),
+                    "degradation_reason": (
+                        "bounded_core_computation_admission"
+                        if source_candidate_count > len(tickers)
+                        else ""
+                    ),
                     "capabilities": capabilities,
                     "timeframes": timeframes,
                 })
@@ -626,6 +653,36 @@ class SignalStreamRuntime:
                 self._admissions[watchlist_id] = retained
                 changed = True
         return changed
+
+
+def bounded_core_computation_candidates(
+    candidates: list[dict[str, Any]],
+) -> list[tuple[tuple[float, float, str], str]]:
+    """Rank a cheap Core Scan projection before leasing expensive QMD state."""
+    ranked: dict[str, tuple[float, float, str]] = {}
+    for row in candidates:
+        ticker = str(row.get("ticker") or row.get("symbol") or "").strip().upper()
+        if not ticker:
+            continue
+        liquidity_rank = _finite_rank(
+            row.get("liquidity_rank", row.get("market.liquidity_rank"))
+        )
+        activity_rank = _finite_rank(
+            row.get("activity_rank", row.get("market.activity_rank"))
+        )
+        rank = (liquidity_rank, activity_rank, ticker)
+        current = ranked.get(ticker)
+        if current is None or rank < current:
+            ranked[ticker] = rank
+    return sorted((rank, ticker) for ticker, rank in ranked.items())
+
+
+def _finite_rank(value: Any) -> float:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return float("inf")
+    return parsed if parsed == parsed and parsed != float("inf") else float("inf")
 
 
 def _definition_revision(

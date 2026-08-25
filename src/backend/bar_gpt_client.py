@@ -39,8 +39,8 @@ def request_bar_gpt_inference(
 ) -> dict[str, Any]:
     payload = {
         "scope_id": scope_id.strip(),
-        "tickers": sorted({str(value).strip().upper() for value in tickers or [] if str(value).strip()}),
-        "model_ids": sorted({str(value).strip() for value in model_ids or [] if str(value).strip()}),
+        "tickers": _stable_unique(tickers or [], uppercase=True),
+        "model_ids": _stable_unique(model_ids or []),
         "origin_us": origin_us,
         "request_id": request_id.strip(),
     }
@@ -62,6 +62,7 @@ def publish_bar_gpt_scope(
     *,
     mode: str,
     tickers: list[str],
+    model_ids: list[str] | None = None,
     watchlist_ids: list[str] | None = None,
     trigger_mode: str = "auto",
     clock_us: int | None = None,
@@ -74,7 +75,8 @@ def publish_bar_gpt_scope(
     payload = {
         "mode": mode,
         "trigger_mode": trigger_mode,
-        "tickers": sorted({str(value).strip().upper() for value in tickers if str(value).strip()}),
+        "tickers": _stable_unique(tickers, uppercase=True),
+        "model_ids": _stable_unique(model_ids or []),
         "watchlist_ids": sorted({str(value) for value in watchlist_ids or [] if str(value)}),
         "clock_us": clock_us,
         "revision": max(1, int(revision)),
@@ -118,6 +120,7 @@ def advance_bar_gpt_scope(
     *,
     mode: str,
     tickers: list[str],
+    model_ids: list[str] | None = None,
     watchlist_ids: list[str] | None = None,
     clock_us: int,
     revision: int = 1,
@@ -128,7 +131,8 @@ def advance_bar_gpt_scope(
     payload = {
         "mode": mode,
         "trigger_mode": "manual",
-        "tickers": sorted({str(value).strip().upper() for value in tickers if str(value).strip()}),
+        "tickers": _stable_unique(tickers, uppercase=True),
+        "model_ids": _stable_unique(model_ids or []),
         "watchlist_ids": sorted({str(value) for value in watchlist_ids or [] if str(value)}),
         "clock_us": int(clock_us),
         "revision": max(1, int(revision)),
@@ -141,6 +145,18 @@ def advance_bar_gpt_scope(
         payload=payload,
         timeout=timeout,
     )
+
+
+def _stable_unique(values: list[str], *, uppercase: bool = False) -> list[str]:
+    result: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        normalized = str(value).strip()
+        normalized = normalized.upper() if uppercase else normalized
+        if normalized and normalized not in seen:
+            seen.add(normalized)
+            result.append(normalized)
+    return result
 
 
 def _request(

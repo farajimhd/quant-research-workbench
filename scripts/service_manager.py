@@ -6,7 +6,7 @@ import argparse
 import base64
 import contextlib
 import ctypes
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 import hashlib
 import json
@@ -71,6 +71,7 @@ class Service:
     fingerprint_env: tuple[str, ...]
     start_priority: int
     graceful_timeout_seconds: int
+    readiness: Mapping[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -87,6 +88,8 @@ class ServiceStatus:
     desired_fingerprint: str
     running_fingerprint: str
     registry_path: str
+    drift_components: tuple[str, ...] = ()
+    run_log_root: str = ""
 
 
 @dataclass(frozen=True)
@@ -130,6 +133,7 @@ def _load_catalog(path: Path = CATALOG_PATH) -> tuple[dict[str, Service], dict[s
             fingerprint_env=tuple(str(value) for value in row.get("fingerprint_env") or ()),
             start_priority=int(row.get("start_priority") or 50),
             graceful_timeout_seconds=int(row.get("graceful_timeout_seconds") or 30),
+            readiness=dict(row.get("readiness") or {}),
         )
     profiles = {
         str(name): tuple(str(value) for value in values)
@@ -226,11 +230,17 @@ def _port_open(port: int, timeout: float = 0.2) -> bool:
         return False
 
 
-def _http_probe(url: str, timeout: float = 2.0) -> tuple[bool, str, dict[str, Any] | None]:
+def _http_probe(
+    url: str,
+    timeout: float = 2.0,
+    max_body_bytes: int = 262_144,
+) -> tuple[bool, str, dict[str, Any] | None]:
     request = Request(url, headers={"User-Agent": "qw-service-manager/1"})
     try:
         with urlopen(request, timeout=timeout) as response:
-            body = response.read(262_144)
+            body = response.read(max_body_bytes + 1)
+            if len(body) > max_body_bytes:
+                return False, f"health response exceeds {max_body_bytes} bytes", None
             if not 200 <= response.status < 400:
                 return False, f"HTTP {response.status}", None
             content_type = str(response.headers.get("Content-Type") or "")
@@ -248,6 +258,41 @@ def _http_probe(url: str, timeout: float = 2.0) -> tuple[bool, str, dict[str, An
     except (URLError, TimeoutError, OSError, json.JSONDecodeError) as error:
         detail = error.reason if isinstance(error, URLError) else error
         return False, str(detail), None
+
+
+def _semantic_readiness(
+    service: Service,
+    payload: dict[str, Any],
+) -> tuple[bool, str, bool]:
+    """Return ready, operator detail, and whether failure is a degradation."""
+    rule = service.readiness
+    accepted = {str(value).lower() for value in rule.get("accepted_statuses") or ()}
+    declared = str(payload.get("service_status") or payload.get("status") or "").lower()
+    if accepted and declared not in accepted:
+        return False, f"status={declared or 'missing'}", declared in {"degraded", "warning", "catching_up"}
+
+    metrics = payload.get("metrics") if isinstance(payload.get("metrics"), dict) else {}
+    if bool(rule.get("require_running")) and payload.get("running") is not True:
+        return False, "running flag is not true", False
+
+    kind = str(rule.get("kind") or "transport")
+    if kind == "ibkr":
+        expected = {
+            "gateway_status": "ready",
+            "auth_status": "authenticated",
+            "keepalive_status": "ok",
+            "clickhouse_status": "ready",
+        }
+        mismatches = [
+            f"{key}={str(metrics.get(key) or 'missing').lower()}"
+            for key, value in expected.items()
+            if str(metrics.get(key) or "").lower() != value
+        ]
+        if metrics.get("supervisor_thread_alive") is not True:
+            mismatches.append("supervisor_thread_alive=false")
+        if mismatches:
+            return False, " ".join(mismatches), True
+    return True, f"semantic status={declared or 'reachable'}", False
 
 
 def _utc_now() -> str:
@@ -272,10 +317,15 @@ def _read_json(path: Path) -> dict[str, Any] | None:
 
 
 def _record_matches_service(record: Mapping[str, Any], service: Service, registry_path: Path) -> bool:
+    return _record_identity_matches(record, service, registry_path) and _pid_exists(
+        int(record.get("host_pid") or 0)
+    )
+
+
+def _record_identity_matches(record: Mapping[str, Any], service: Service, registry_path: Path) -> bool:
     try:
         record_repo = Path(str(record.get("repository_root") or "")).resolve()
         record_path = Path(str(record.get("registry_path") or "")).resolve()
-        host_pid = int(record.get("host_pid") or 0)
     except (OSError, ValueError):
         return False
     return (
@@ -283,7 +333,6 @@ def _record_matches_service(record: Mapping[str, Any], service: Service, registr
         and str(record.get("service_role") or "") == service.role
         and os.path.normcase(str(record_repo)) == os.path.normcase(str(REPO_ROOT.resolve()))
         and os.path.normcase(str(record_path)) == os.path.normcase(str(registry_path.resolve()))
-        and _pid_exists(host_pid)
     )
 
 
@@ -301,9 +350,8 @@ def _format(value: str, options: ManagerOptions) -> str:
     return value.format_map(_format_values(options))
 
 
-def _fingerprint(service: Service, options: ManagerOptions) -> str:
-    digest = hashlib.sha256()
-    normalized = {
+def _launch_inputs(service: Service, options: ManagerOptions) -> dict[str, Any]:
+    return {
         "service_id": service.service_id,
         "role": service.role,
         "port": service.port,
@@ -321,33 +369,81 @@ def _fingerprint(service: Service, options: ManagerOptions) -> str:
         },
         "qmd_live_host_role": options.qmd_live_host_role if service.service_id == "qmd-live" else "",
     }
-    digest.update(json.dumps(normalized, sort_keys=True, separators=(",", ":")).encode("utf-8"))
+
+
+def _hash_json(value: Any) -> str:
+    return hashlib.sha256(
+        json.dumps(value, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+
+
+_GENERATED_SOURCE_DIRECTORY_NAMES = frozenset(
+    {
+        "__pycache__",
+        ".pytest_cache",
+        ".mypy_cache",
+        ".ruff_cache",
+        "node_modules",
+        "dist",
+    }
+)
+
+
+def _is_generated_source_path(path: Path) -> bool:
+    """Keep runtime/test artifacts from creating false source drift."""
+    return (
+        any(part.lower() in _GENERATED_SOURCE_DIRECTORY_NAMES for part in path.parts)
+        or path.suffix.lower() in {".pyc", ".pyo"}
+        or path.name.lower() in {".coverage"}
+    )
+
+
+def _fingerprint_components(service: Service, options: ManagerOptions) -> dict[str, str]:
+    launch_inputs = _launch_inputs(service, options)
+    source_digest = hashlib.sha256()
     matched: set[Path] = set()
     tab_host = REPO_ROOT / "scripts" / "run_windows_terminal_service_tab.ps1"
     if tab_host.is_file():
         matched.add(tab_host)
     for pattern in service.watch:
         for path in REPO_ROOT.glob(pattern):
-            if path.is_file():
+            if path.is_file() and not _is_generated_source_path(path):
                 matched.add(path)
             elif path.is_dir():
-                matched.update(child for child in path.rglob("*") if child.is_file())
+                matched.update(
+                    child
+                    for child in path.rglob("*")
+                    if child.is_file() and not _is_generated_source_path(child)
+                )
     for path in sorted(matched, key=lambda item: item.as_posix().lower()):
         relative = path.relative_to(REPO_ROOT).as_posix()
-        digest.update(relative.encode("utf-8"))
+        source_digest.update(relative.encode("utf-8"))
         with path.open("rb") as handle:
             for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-                digest.update(chunk)
+                source_digest.update(chunk)
+    artifact_digest = hashlib.sha256()
     for raw_path in service.artifact_paths:
         artifact = Path(_format(raw_path, options)).expanduser()
-        digest.update(str(artifact).encode("utf-8"))
+        artifact_digest.update(str(artifact).encode("utf-8"))
         if artifact.is_file():
             with artifact.open("rb") as handle:
                 for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-                    digest.update(chunk)
+                    artifact_digest.update(chunk)
         else:
-            digest.update(b"<missing>")
-    return digest.hexdigest()
+            artifact_digest.update(b"<missing>")
+    environment = launch_inputs.pop("effective_nonsecret_environment")
+    role = launch_inputs.pop("qmd_live_host_role")
+    return {
+        "launch": _hash_json(launch_inputs),
+        "environment": _hash_json(environment),
+        "host_role": _hash_json(role),
+        "source": source_digest.hexdigest(),
+        "artifacts": artifact_digest.hexdigest(),
+    }
+
+
+def _fingerprint(service: Service, options: ManagerOptions) -> str:
+    return _hash_json(_fingerprint_components(service, options))
 
 
 class ServiceManager:
@@ -367,11 +463,19 @@ class ServiceManager:
         self.state_root = self.runtime_root / "state"
         self.qmd_runtime_root = self.runtime_root / "qmd-live"
         self._fingerprints: dict[str, str] = {}
+        self._fingerprint_component_cache: dict[str, dict[str, str]] = {}
 
     def desired_fingerprint(self, service_id: str) -> str:
         if service_id not in self._fingerprints:
-            self._fingerprints[service_id] = _fingerprint(self.services[service_id], self.options)
+            self._fingerprints[service_id] = _hash_json(self.desired_fingerprint_components(service_id))
         return self._fingerprints[service_id]
+
+    def desired_fingerprint_components(self, service_id: str) -> dict[str, str]:
+        if service_id not in self._fingerprint_component_cache:
+            self._fingerprint_component_cache[service_id] = _fingerprint_components(
+                self.services[service_id], self.options
+            )
+        return dict(self._fingerprint_component_cache[service_id])
 
     def _state_path(self, service_id: str) -> Path:
         return self.state_root / f"{service_id}.json"
@@ -389,14 +493,59 @@ class ServiceManager:
 
     def _probe(self, service: Service) -> tuple[bool, str, dict[str, Any] | None]:
         ready, detail, payload = _http_probe(service.health_url)
-        if ready and service.service_id == "ibkr-supervisor":
-            metrics = (payload or {}).get("metrics")
-            metrics = metrics if isinstance(metrics, dict) else {}
-            gateway = str(metrics.get("gateway_status") or "").lower()
-            auth = str(metrics.get("auth_status") or "").lower()
-            if gateway != "ready" or auth != "authenticated":
-                return False, f"gateway={gateway or 'missing'} auth={auth or 'missing'}", payload
-        return ready, detail, payload
+        if not ready or payload is None:
+            return ready, detail, payload
+        semantic_ready, semantic_detail, degraded = _semantic_readiness(service, payload)
+        if service.readiness.get("kind") == "qmd_live" and semantic_ready:
+            snapshot_url = str(service.readiness.get("snapshot_url") or "").strip()
+            snapshot_ready, snapshot_detail, snapshot = _http_probe(
+                snapshot_url, timeout=4.0, max_body_bytes=32 * 1024 * 1024
+            )
+            if not snapshot_ready or snapshot is None:
+                semantic_ready, semantic_detail = False, f"status snapshot unavailable: {snapshot_detail}"
+            else:
+                required_lanes = []
+                health_operational = payload.get("operational")
+                if isinstance(health_operational, dict):
+                    required_lanes = [
+                        row for row in health_operational.get("lanes") or []
+                        if isinstance(row, dict) and row.get("required") is True
+                    ]
+                failed_lanes = [
+                    str(row.get("key") or "unknown")
+                    for row in required_lanes
+                    if str(row.get("state") or "").lower() != "healthy"
+                ]
+                saturation = float(service.readiness.get("queue_saturation_ratio") or 0.95)
+                saturated_lanes = [
+                    str(row.get("key") or "unknown")
+                    for row in required_lanes
+                    if int(row.get("max_pending_rows") or 0) > 0
+                    and int(row.get("pending_rows") or 0) / int(row.get("max_pending_rows") or 1) >= saturation
+                ]
+                snapshot_error = snapshot.get("error_state") if isinstance(snapshot.get("error_state"), dict) else {}
+                if failed_lanes:
+                    semantic_ready, semantic_detail, degraded = False, f"required lanes failed: {','.join(failed_lanes)}", True
+                elif saturated_lanes:
+                    semantic_ready, semantic_detail, degraded = False, f"required queues saturated: {','.join(saturated_lanes)}", True
+                elif snapshot_error.get("active") is True:
+                    semantic_ready, semantic_detail, degraded = False, str(snapshot_error.get("message") or "active QMD degradation"), True
+                else:
+                    calendar = payload.get("market_calendar") if isinstance(payload.get("market_calendar"), dict) else {}
+                    runtime = snapshot.get("runtime") if isinstance(snapshot.get("runtime"), dict) else {}
+                    if calendar.get("active_collection_window") is True and calendar.get("market_closed") is not True:
+                        lag_ms = int(runtime.get("last_event_lag_ms") or 0)
+                        max_lag_ms = int(float(service.readiness.get("max_event_lag_seconds") or 30) * 1000)
+                        if lag_ms > max_lag_ms:
+                            semantic_ready, semantic_detail, degraded = False, f"live event lag {lag_ms}ms exceeds {max_lag_ms}ms", True
+        declared_state = str(payload.get("service_status") or payload.get("status") or "").lower()
+        manager_detail = {
+            "degraded": degraded,
+            "detail": semantic_detail,
+            "state": declared_state,
+        }
+        payload = {**payload, "_service_manager": manager_detail}
+        return semantic_ready, semantic_detail, payload
 
     def status(self, service_id: str) -> ServiceStatus:
         service = self.services[service_id]
@@ -407,23 +556,39 @@ class ServiceManager:
         listening = _port_open(service.port)
         ready, health_detail, health = self._probe(service) if listening else (False, "port closed", None)
         error_state = (health or {}).get("error_state") if isinstance(health, dict) else {}
+        manager_state = (health or {}).get("_service_manager") if isinstance(health, dict) else {}
         degraded = bool(
             isinstance(error_state, dict)
             and (
                 int(error_state.get("active_critical_count") or 0) > 0
                 or int(error_state.get("active_error_count") or 0) > 0
             )
-        ) or str((health or {}).get("status") or "").lower() == "degraded"
+        ) or str((health or {}).get("status") or "").lower() == "degraded" or bool(
+            isinstance(manager_state, dict) and manager_state.get("degraded")
+        )
+        semantic_state = str(manager_state.get("state") or "").lower() if isinstance(manager_state, dict) else ""
         running_fingerprint = str(record.get("desired_fingerprint") or "")
         if not running_fingerprint:
             running_fingerprint = str(self._state(service_id).get("last_fingerprint") or "")
         stale = bool(running_fingerprint) and running_fingerprint != desired
+        desired_components = self.desired_fingerprint_components(service_id)
+        running_components = record.get("fingerprint_components")
+        if not isinstance(running_components, dict):
+            running_components = self._state(service_id).get("fingerprint_components") or {}
+        drift_components = tuple(
+            key for key in desired_components
+            if running_components and str(running_components.get(key) or "") != desired_components[key]
+        )
         if listening and not owned:
-            state, reason = "foreign", "listener is not owned by the unified manager"
-        elif owned and ready and stale:
-            state, reason = "stale", "source, configuration, shared contract, or artifact changed"
-        elif owned and ready and degraded:
+            health_suffix = f"; health: {health_detail}" if not ready else ""
+            state, reason = "foreign", "listener is not owned by the unified manager" + health_suffix
+        elif owned and listening and degraded:
             state, reason = "degraded", "health contract reports active error or critical state"
+        elif owned and ready and stale:
+            changed = ", ".join(drift_components) or "unknown component"
+            state, reason = "stale", f"changed: {changed}"
+        elif owned and ready and semantic_state == "warming":
+            state, reason = "warming", health_detail
         elif owned and ready:
             state, reason = "ready", health_detail
         elif owned and listening:
@@ -447,6 +612,8 @@ class ServiceManager:
             desired_fingerprint=desired,
             running_fingerprint=running_fingerprint,
             registry_path=str(registry_path),
+            drift_components=drift_components,
+            run_log_root=str(record.get("run_log_root") or ""),
         )
 
     def statuses(self, selected: Iterable[str] | None = None) -> dict[str, ServiceStatus]:
@@ -491,7 +658,7 @@ class ServiceManager:
                 if len(detail) > detail_width:
                     detail = detail[: max(1, detail_width - 3)] + "..."
                 print(f"{row.service_id:<20} {row.state:<15} {revision:<18} {row.port:>5}  {detail}")
-        return all(row.state == "ready" for row in rows.values())
+        return all(row.state in {"ready", "warming"} for row in rows.values())
 
     def print_groups(self) -> None:
         print("Static profiles")
@@ -558,10 +725,36 @@ class ServiceManager:
                 "service_id": service_id,
                 "registry_path": str(registry_path),
                 "last_fingerprint": fingerprint,
+                "fingerprint_components": self.desired_fingerprint_components(service_id),
+                "launch_inputs": _launch_inputs(self.services[service_id], self.options),
                 "last_started_at_utc": _utc_now(),
                 "repository_root": str(REPO_ROOT),
             },
         )
+
+    def reconcile_dead_registries(self, selected: Iterable[str]) -> list[Path]:
+        archived: list[Path] = []
+        for service_id in selected:
+            service = self.services[service_id]
+            registry_path = self._registry_path(service_id)
+            record = _read_json(registry_path) or {}
+            if not record or not _record_identity_matches(record, service, registry_path):
+                continue
+            try:
+                host_pid = int(record.get("host_pid") or 0)
+            except (TypeError, ValueError):
+                continue
+            if _pid_exists(host_pid):
+                continue
+            destination = (
+                self.runtime_root / "dead-registry" / service_id /
+                f"{datetime.now(UTC).strftime('%Y%m%dT%H%M%S%fZ')}.json"
+            )
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            os.replace(registry_path, destination)
+            archived.append(destination)
+            print(f"[reconcile] {service_id} archived dead ownership pid={host_pid}")
+        return archived
 
     def _validate_launch_inputs(self, service: Service) -> None:
         if service.service_id == "bar-gpt" and not self.options.bar_gpt_release_manifest.is_file():
@@ -600,6 +793,10 @@ class ServiceManager:
         registry_path.parent.mkdir(parents=True, exist_ok=True)
         command = self._powershell_command(service)
         encoded = base64.b64encode(command.encode("utf-16-le")).decode("ascii")
+        launch_metadata = base64.b64encode(json.dumps({
+            "fingerprint_components": self.desired_fingerprint_components(service.service_id),
+            "launch_inputs": _launch_inputs(service, self.options),
+        }, sort_keys=True).encode("utf-8")).decode("ascii")
         window = "0" if self.options.terminal_target == "current" else self.options.terminal_window
         arguments = [
             _windows_terminal(), "-w", window, "new-tab", "--title", service.title,
@@ -610,6 +807,8 @@ class ServiceManager:
             "-ServiceRole", service.role, "-ServicePort", str(service.port),
             "-InstanceId", uuid.uuid4().hex, "-RepositoryRoot", str(REPO_ROOT),
             "-DesiredFingerprint", fingerprint,
+            "-LaunchMetadataBase64", launch_metadata,
+            "-LogRoot", str((self.runtime_root / "logs").resolve()),
         ]
         completed = subprocess.run(arguments, cwd=REPO_ROOT, check=False)
         if completed.returncode:
@@ -624,6 +823,10 @@ class ServiceManager:
     def _start_qmd_live(self, fingerprint: str, *, dry_run: bool) -> Path:
         if dry_run:
             return self.qmd_runtime_root / "instances" / "<instance>" / "qmd_live.json"
+        launch_metadata = base64.b64encode(json.dumps({
+            "fingerprint_components": self.desired_fingerprint_components("qmd-live"),
+            "launch_inputs": _launch_inputs(self.services["qmd-live"], self.options),
+        }, sort_keys=True).encode("utf-8")).decode("ascii")
         _run_script(
             "start_qmd_live_gateway.ps1",
             [
@@ -632,6 +835,8 @@ class ServiceManager:
                 "-TerminalWindowName", self.options.terminal_window,
                 "-QmdLiveServiceRuntimeRoot", str(self.qmd_runtime_root),
                 "-PythonExe", str(self.options.python),
+                "-DesiredFingerprint", fingerprint,
+                "-LaunchMetadataBase64", launch_metadata,
             ],
         )
         deadline = time.monotonic() + 10
@@ -646,6 +851,8 @@ class ServiceManager:
         registry_path = max(matches, key=lambda path: path.stat().st_mtime_ns)
         record = _read_json(registry_path) or {}
         record["desired_fingerprint"] = fingerprint
+        record["fingerprint_components"] = self.desired_fingerprint_components("qmd-live")
+        record["launch_inputs"] = _launch_inputs(self.services["qmd-live"], self.options)
         _atomic_json(registry_path, record)
         return registry_path
 
@@ -665,6 +872,8 @@ class ServiceManager:
     def start(self, selected: set[str], *, dry_run: bool = False) -> list[str]:
         closure = _dependency_closure(self.services, selected)
         ordered = _topological_order(self.services, closure)
+        if not dry_run:
+            self.reconcile_dead_registries(ordered)
         initial = self.statuses(ordered)
         foreign = [row for row in initial.values() if row.state == "foreign"]
         if foreign:
@@ -749,6 +958,8 @@ class ServiceManager:
 
     def stop(self, selected: set[str], *, dry_run: bool = False) -> list[str]:
         ordered = list(reversed(_topological_order(self.services, selected)))
+        if not dry_run:
+            self.reconcile_dead_registries(ordered)
         initial = self.statuses(ordered)
         foreign = [row for row in initial.values() if row.state == "foreign"]
         if foreign:

@@ -128,6 +128,25 @@ def test_tab_host_owns_children_with_manifest_and_kill_on_close_job() -> None:
     assert "child_started_at_utc" in source
     assert "registered_at_utc" in source
     assert "eventwaithandle" in source
+    assert "stdout.log" in source
+    assert "stderr.log" in source
+    assert "exit.json" in source
+    assert "process_exit_nonzero" in source
+    assert "logretentionruns" in source
+
+
+def test_qmd_specialized_launcher_persists_per_run_stream_and_exit_evidence() -> None:
+    start_source = _source("start_qmd_live_gateway.ps1")
+    run_source = _source("run_qmd_gateway.ps1")
+
+    assert '"-logroot"' in start_source
+    assert 'join-path $resolvedqmdliveserviceruntimeroot "logs"' in start_source
+    assert 'join-path $runroot "stdout.log"' in run_source
+    assert 'join-path $runroot "stderr.log"' in run_source
+    assert 'join-path $runroot "exit.json"' in run_source
+    assert 'reason = $exitreason' in run_source
+    assert 'gateway_exit_code = $gatewayexitcode' in run_source
+    assert 'select-object -skip $logretentionruns' in run_source
 
 
 def test_qmd_cargo_output_is_external_and_binary_is_executed_directly() -> None:

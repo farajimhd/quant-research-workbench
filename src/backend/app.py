@@ -1052,6 +1052,7 @@ class BarGptScopeSubmit(BaseModel):
     mode: str = Field(pattern="^(live|paper|replay|backtest|backtest_debug)$")
     trigger_mode: str = Field(default="auto", pattern="^(auto|manual)$")
     tickers: list[str] = Field(default_factory=list, max_length=5000)
+    model_ids: list[str] = Field(default_factory=list, max_length=16)
     watchlist_ids: list[str] = Field(default_factory=list, max_length=100)
     clock_us: int | None = Field(default=None, gt=0)
     revision: int = Field(default=1, ge=1)

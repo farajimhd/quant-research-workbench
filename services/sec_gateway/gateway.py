@@ -48,6 +48,7 @@ from services.sec_gateway.config import (
 from services.sec_gateway.preflight import PreflightError, PreflightReport, run_preflight
 from services.gateway_policy import backfill_auto_run_allowed, maintenance_window_message
 from services.gateway_core.market_calendar import MarketHoursSnapshot, MassiveMarketHoursClient
+from services.gateway_core.errors import classify_exception
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -1117,7 +1118,13 @@ class SecGateway:
 
     def _record_error(self, exc: BaseException) -> None:
         self.metrics.last_error = repr(exc)
-        self.metrics.last_error_status = "active"
+        record = classify_exception(
+            self.metrics.last_error,
+            service="sec_gateway",
+            phase=self.metrics.current_phase,
+            task="runtime",
+        )
+        self.metrics.last_error_status = "retrying" if record.retryable else "active"
         self.metrics.last_error_seen_at_utc = datetime.now(UTC).isoformat(timespec="seconds").replace("+00:00", "Z")
         self.metrics.last_error_resolved_at_utc = ""
 

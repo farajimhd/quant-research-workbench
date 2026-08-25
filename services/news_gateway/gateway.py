@@ -50,6 +50,7 @@ from services.news_gateway.run_logger import AsyncRunLogger
 from services.news_gateway.state import NewsMemoryState
 from services.gateway_policy import backfill_auto_run_allowed, maintenance_window_message
 from services.gateway_core.market_calendar import MarketHoursSnapshot, MassiveMarketHoursClient
+from services.gateway_core.errors import classify_exception
 
 
 EASTERN = ZoneInfo("America/New_York")
@@ -386,7 +387,13 @@ class NewsGateway:
 
     def _record_error_message(self, message: str) -> None:
         self.metrics.last_error = message
-        self.metrics.last_error_status = "active"
+        record = classify_exception(
+            message,
+            service="news_gateway",
+            phase=self.metrics.current_phase,
+            task="runtime",
+        )
+        self.metrics.last_error_status = "retrying" if record.retryable else "active"
         self.metrics.last_error_seen_at_utc = datetime.now(UTC).isoformat(timespec="seconds").replace("+00:00", "Z")
         self.metrics.last_error_resolved_at_utc = ""
 

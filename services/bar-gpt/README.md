@@ -63,8 +63,27 @@ aggregation, masks, and feature contract as the checkpoint loader. Intraday
 history expands from a short causal window only when a thin ticker still lacks
 required view counts. Calendar views are rebuilt with the v13 vectorized
 compact-event daily authority; the removed legacy BarGPT daily table is not a
-serving dependency. Tickers removed from every active scope have their pending
-warm work cancelled and their cache rows reclaimed.
+serving dependency. Live calendar context is persisted only in same-session,
+model-contract-hashed snapshots. Every reuse is additionally matched against
+an explicit QMD History source plan: active ClickHouse row, block, and mutation
+revision evidence for the
+compact-event, condition-reference, point-in-time identity, and stock-split
+tables. The revision is checked both before and after the incremental intraday
+refresh; a concurrent repair fails the warm rather than mixing revisions.
+Legacy snapshots without this revision evidence are rejected. The first warm
+remains authoritative only through the existing QMD direct-event loader and
+its point-in-time identity and split reads; the snapshot is an optimization,
+not a second source authority. Removed live scope members are retained for a
+bounded grace period before pending work and cache rows are reclaimed.
+Warm materialization retains the complete configured per-view causal context
+and any not-yet-admitted historical rows, but does not construct discarded
+older `RawBar` objects. Admission uses bounded bulk merges off the event loop;
+health and readiness therefore remain responsive while a large ticker warms.
+Automatic origins observed before readiness are coalesced to the newest origin
+per ticker and admitted once warm, without being reported as inference errors.
+Managed shutdown also signals synchronous history loaders between their
+bounded ClickHouse requests, so an active multi-query warm plan cannot extend
+shutdown indefinitely.
 
 Canvas can render translucent forecast OHLC candles and independent open,
 high, low, and close lines. Operators can select v2 or v3, q10/q50/q90, one

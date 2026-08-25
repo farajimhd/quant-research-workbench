@@ -28,6 +28,9 @@ pub const INDICATOR_SCHEMA_VERSION: u16 = 19;
 pub const INDICATOR_CALCULATION_REVISION: &str = "qmd-indicators-v20";
 const MICROSTRUCTURE_AGGREGATE_TIMEFRAMES: [&str; 7] = ["1s", "5s", "10s", "30s", "1m", "5m", "1h"];
 const INDICATOR_STATE_RECLAIM_INTERVAL_SECONDS: u64 = 30;
+const RETAINED_100MS_HISTORY_ROWS: usize = 128;
+const RETAINED_1S_HISTORY_ROWS: usize = 300;
+const RETAINED_OTHER_HISTORY_ROWS: usize = 256;
 const PREMARKET_SESSION_START_SECONDS: u32 = 4 * 60 * 60;
 
 #[derive(Clone, Debug, Serialize)]
@@ -828,6 +831,7 @@ pub struct IndicatorStateReclaim {
     pub bar_calculators: usize,
     pub base_indicator_rows: usize,
     pub history_series: usize,
+    pub current_rows: usize,
     pub microstructure_aggregates: usize,
     pub microstructure_windows: usize,
     pub tick_states: usize,
@@ -838,6 +842,7 @@ impl IndicatorStateReclaim {
         self.bar_calculators
             + self.base_indicator_rows
             + self.history_series
+            + self.current_rows
             + self.microstructure_aggregates
             + self.microstructure_windows
             + self.tick_states
@@ -858,6 +863,7 @@ struct IndicatorShardStore {
 
 struct IndicatorStore {
     bars: HashMap<IndicatorKey, BarIndicatorCalculator>,
+    current: HashMap<IndicatorKey, IndicatorRow>,
     history: HashMap<IndicatorKey, VecDeque<IndicatorRow>>,
     history_limits: HashMap<String, usize>,
     history_limit: usize,
@@ -1063,10 +1069,10 @@ impl SharedIndicatorStore {
             let store = shard.inner.lock().await;
             rows.extend(
                 store
-                    .history
+                    .current
                     .iter()
                     .filter(|(key, _)| key.timeframe == timeframe)
-                    .filter_map(|(_, history)| history.back().cloned()),
+                    .map(|(_, row)| row.clone()),
             );
         }
         rows.sort_by(|left, right| {
@@ -1109,11 +1115,7 @@ impl SharedIndicatorStore {
             sym: ticker,
             timeframe,
         };
-        if store
-            .history
-            .get(&key)
-            .is_some_and(|history| !history.is_empty())
-        {
+        if store.current.contains_key(&key) {
             return 0;
         }
         let mut ordered = bars;
@@ -1134,10 +1136,7 @@ impl SharedIndicatorStore {
             sym: ticker,
             timeframe,
         };
-        !store
-            .history
-            .get(&key)
-            .is_some_and(|history| !history.is_empty())
+        !store.current.contains_key(&key)
     }
 
     /// Apply one ordered canonical event during a bounded retained-window
@@ -1206,6 +1205,12 @@ impl SharedIndicatorStore {
                 computation_targets.requires_bar_computation(&key.sym, &key.timeframe)
             });
             reclaimed.history_series += before.saturating_sub(store.history.len());
+
+            let before = store.current.len();
+            store.current.retain(|key, _| {
+                computation_targets.requires_bar_computation(&key.sym, &key.timeframe)
+            });
+            reclaimed.current_rows += before.saturating_sub(store.current.len());
 
             let before = store.microstructure_aggregates.len();
             store.microstructure_aggregates.retain(|key, _| {
@@ -1286,6 +1291,7 @@ impl IndicatorShardStore {
         Self {
             inner: Arc::new(Mutex::new(IndicatorStore {
                 bars: HashMap::new(),
+                current: HashMap::new(),
                 history: HashMap::new(),
                 history_limits,
                 history_limit,
@@ -1317,11 +1323,7 @@ impl IndicatorShardStore {
         };
         let store = self.inner.lock().await;
         let tick = store.ticks.get(ticker).map(|state| state.snapshot(ticker));
-        let current = store
-            .history
-            .get(&key)
-            .and_then(|rows| rows.back())
-            .cloned();
+        let current = store.current.get(&key).cloned();
         let history_limit = store.history_limit_for(&timeframe);
         let mut history = store
             .history
@@ -1388,10 +1390,7 @@ impl IndicatorStore {
         } else if is_base {
             self.last_base_indicators.get(&ticker).cloned()
         } else {
-            self.history
-                .get(&key)
-                .and_then(|history| history.back())
-                .cloned()
+            self.current.get(&key).cloned()
         };
         let state = self.bars.entry(key.clone()).or_insert_with(|| {
             let mut calculator = BarIndicatorCalculator::new();
@@ -1450,20 +1449,37 @@ impl IndicatorStore {
         }
         if row.close.is_finite() && row.close > 0.0 {
             let history_limit = self.history_limit_for(&bar.timeframe);
-            let history = self.history.entry(key).or_insert_with(VecDeque::new);
-            history.push_back(row.clone());
+            let history = self
+                .history
+                .entry(key.clone())
+                .or_insert_with(VecDeque::new);
+            let mut retained = row.clone();
+            retained.qmd_structure_active_levels.clear();
+            retained.qmd_structure_timeframe_states.clear();
+            retained.qmd_structure_events.clear();
+            retained.qmd_structure_snapshot = GenericStructureSnapshot::default();
+            retained.microstructure_interval = MicrostructureIntervalFeatures::default();
+            history.push_back(retained);
             while history.len() > history_limit {
                 history.pop_front();
             }
+            self.current.insert(key, row.clone());
         }
         row
     }
 
     fn history_limit_for(&self, timeframe: &str) -> usize {
-        self.history_limits
+        let configured = self
+            .history_limits
             .get(&canonical_timeframe(timeframe))
             .copied()
-            .unwrap_or(self.history_limit)
+            .unwrap_or(self.history_limit);
+        let retained_cap = match canonical_timeframe(timeframe).as_str() {
+            "100ms" => RETAINED_100MS_HISTORY_ROWS,
+            "1s" => RETAINED_1S_HISTORY_ROWS,
+            _ => RETAINED_OTHER_HISTORY_ROWS,
+        };
+        configured.min(retained_cap)
     }
 }
 
@@ -3436,6 +3452,35 @@ mod tests {
         assert!(second_row.ema_20 > first_row.ema_20);
         assert!(second_row.ema_20 < 11.0);
         assert_eq!(store.snapshot("AAPL", "10s", 10).await.history.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn high_frequency_history_is_bounded_with_full_current_authority() {
+        let store = SharedIndicatorStore::new(
+            6_000,
+            HashMap::new(),
+            300,
+            1,
+            TradeAggregationRules::new([(0, TradeUpdateRule::regular())]).unwrap(),
+            HashMap::new(),
+        );
+        let mut bar = base_bar();
+        bar.sym = "AAPL".to_string();
+        bar.timeframe = "100ms".to_string();
+        let initial_start = bar.bar_start;
+        let mut latest = None;
+        for index in 0..200 {
+            bar.bar_start = initial_start + chrono::Duration::milliseconds(index * 100);
+            bar.bar_end = bar.bar_start + chrono::Duration::milliseconds(100);
+            bar.close = 10.0 + index as f64;
+            latest = Some(store.apply_reconciliation_bar(bar.clone()).await);
+        }
+
+        let snapshot = store.snapshot("AAPL", "100ms", 6_000).await;
+        assert_eq!(snapshot.history.len(), 128);
+        let current = snapshot.current.expect("current row remains authoritative");
+        assert_eq!(current.bar_end, bar.bar_end);
+        assert_eq!(current.close, latest.expect("latest indicator row").close);
     }
 
     #[test]

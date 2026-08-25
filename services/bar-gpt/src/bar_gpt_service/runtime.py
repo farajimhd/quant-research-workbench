@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
+import os
 import time
 import urllib.request
 from collections import deque
 from datetime import UTC, datetime
-from threading import RLock
+from threading import Event, RLock
 from typing import Any
 
 from .cache import CALENDAR_VIEWS, INTRADAY_VIEW_US, CausalCache, RawBar
@@ -20,6 +22,11 @@ from .sources import (
     LiveEventBarBuilder,
     consume_qmd_events,
 )
+from .warm_snapshots import WarmSnapshotStore
+
+
+class ContextWarmingError(RuntimeError):
+    """Retryable inference admission state; not an operational failure."""
 
 
 class BarGptRuntime:
@@ -39,9 +46,11 @@ class BarGptRuntime:
             "warm_requested": 0,
             "warm_completed": 0,
             "warm_failed": 0,
+            "warm_source_revision_checks": 0,
             "backend_delivered": 0,
             "backend_failed": 0,
             "queue_dropped": 0,
+            "event_log_write_failures": 0,
         }
         self.failures: deque[dict[str, Any]] = deque(maxlen=100)
         self.qmd_state = {"status": "disabled", "error": "", "updated_at": ""}
@@ -49,15 +58,31 @@ class BarGptRuntime:
         self.started_at = ""
         self._queue: asyncio.Queue[tuple[str, str, int]] = asyncio.Queue(maxsize=config.queue_capacity)
         self._queued: set[tuple[str, str, int]] = set()
+        self._deferred_auto: dict[tuple[str, str], int] = {}
         self._warm_tasks: dict[tuple[str, str], asyncio.Task[None]] = {}
+        self._warm_state: dict[tuple[str, str], dict[str, Any]] = {}
+        self._warm_durations: deque[float] = deque(maxlen=100)
+        self._retained_tickers: dict[tuple[str, str], float] = {}
         self._tasks: list[asyncio.Task[Any]] = []
         self._builder: LiveEventBarBuilder | None = None
         self._lock = RLock()
         self._listeners: set[asyncio.Queue[dict[str, Any]]] = set()
         self._warm_semaphore = asyncio.Semaphore(config.warm_concurrency)
+        self._stop_requested = Event()
         self._pending_historical: dict[tuple[str, str], list[RawBar]] = {}
+        self._snapshot_store: WarmSnapshotStore | None = None
+        self._event_lock = RLock()
+        self.event_log_state = {
+            "status": "unknown", "error": "", "last_error": "",
+            "failure_count": 0, "updated_at": "",
+        }
+        self._last_qmd_event_at_us = 0
+        self._shadow_sample_rate = min(1.0, max(0.0, float(os.environ.get("BAR_GPT_SHADOW_SAMPLE_RATE", "0.05"))))
+        self._shadow_max_tickers = max(0, int(os.environ.get("BAR_GPT_SHADOW_MAX_TICKERS", "4")))
+        self._scope_retention_seconds = max(0.0, float(os.environ.get("BAR_GPT_SCOPE_RETENTION_SECONDS", "300")))
 
     async def start(self) -> None:
+        self._stop_requested.clear()
         runtime_parent = self.config.runtime_root.parent
         if not runtime_parent.exists():
             raise RuntimeError(f"required runtime root is unavailable: {runtime_parent}")
@@ -75,6 +100,9 @@ class BarGptRuntime:
                 capacities, int(authority.data_config.intraday_warmup_bars_1s),
                 int(authority.data_config.calendar_warmup_daily_bars),
             )
+            self._snapshot_store = WarmSnapshotStore(
+                self.config.runtime_root / "warm_snapshots", authority.contract_hash
+            )
             self.caches["live"] = self._new_cache()
             if self.config.connect_qmd:
                 self._tasks.append(
@@ -88,8 +116,15 @@ class BarGptRuntime:
             self._tasks.append(asyncio.create_task(self._batch_loop(), name="bar-gpt-batcher"))
             self._tasks.append(asyncio.create_task(self._scope_reaper(), name="bar-gpt-scope-reaper"))
         self.started_at = datetime.now(UTC).isoformat()
+        self._record_event("service_started", {"models": list(self.releases)})
 
     async def stop(self) -> None:
+        self._record_event("service_stopping", {})
+        # Cancelling an asyncio task does not interrupt a synchronous
+        # ClickHouse request already running in a worker thread. Signal the
+        # history loader too so it stops between bounded requests instead of
+        # continuing the complete warm plan during shutdown.
+        self._stop_requested.set()
         for task in (*self._warm_tasks.values(), *self._tasks):
             task.cancel()
         await asyncio.gather(*self._warm_tasks.values(), *self._tasks, return_exceptions=True)
@@ -98,6 +133,8 @@ class BarGptRuntime:
 
     def health(self) -> dict[str, Any]:
         active = self.active_tickers()
+        now_us = time.time_ns() // 1_000
+        warm = self._warm_summary(active, now_us)
         live_auto = any(
             row["request"]["mode"] in {"live", "paper"}
             and row["request"]["trigger_mode"] == "auto"
@@ -108,9 +145,26 @@ class BarGptRuntime:
         if not self.releases:
             status = "blocked"
             message = "No enabled BarGPT checkpoint releases are configured."
-        elif live_auto and self.qmd_state["status"] != "streaming":
+        elif warm["failed"]:
+            status = "degraded"
+            message = f"BarGPT warm-up failed for {warm['failed']} admitted ticker(s)."
+        elif self.event_log_state["status"] == "failed":
+            status = "degraded"
+            message = "BarGPT durable lifecycle-event logging is unavailable."
+        elif live_auto and self.qmd_state["status"] not in {"streaming", "idle"}:
             status = "degraded"
             message = "Live automatic serving is scoped but the QMD stream is not healthy."
+        elif warm["ready"] < warm["admitted"]:
+            status = "warming"
+            message = (
+                f"BarGPT context is ready for {warm['ready']} of {warm['admitted']} admitted ticker(s)."
+            )
+        qmd = dict(self.qmd_state)
+        qmd["last_event_at_us"] = self._last_qmd_event_at_us
+        qmd["freshness_ms"] = (
+            max(0, (now_us - self._last_qmd_event_at_us) // 1_000)
+            if self._last_qmd_event_at_us else None
+        )
         return {
             "service": "bar_gpt",
             "status": status,
@@ -122,9 +176,11 @@ class BarGptRuntime:
             "active_ticker_count": len(active),
             "maximum_tickers": self.config.maximum_tickers,
             "queue": {"active": self._queue.qsize(), "capacity": self._queue.maxsize},
+            "warm": warm,
             "caches": {key: value.summary() for key, value in self.caches.items()},
-            "qmd": dict(self.qmd_state),
+            "qmd": qmd,
             "backend": dict(self.backend_state),
+            "event_log": dict(self.event_log_state),
             "metrics": dict(self.metrics),
             "active_failures": list(self.failures)[-10:],
         }
@@ -137,24 +193,41 @@ class BarGptRuntime:
             raise ValueError(
                 f"scope requests {len(request.tickers)} tickers; BAR_GPT_MAX_TICKERS is {self.config.maximum_tickers}"
             )
+        resolved_models = self._resolve_model_ids(request.model_ids)
         now = time.monotonic()
+        prior = self.active_scopes().get(scope_id)
+        prior_tickers = list((prior or {}).get("request", {}).get("tickers") or [])
+        cache_id = "live" if request.mode in {"live", "paper"} else scope_id
+        request_payload = request.model_dump()
+        request_payload["model_ids"] = resolved_models
         row = {
             "scope_id": scope_id,
-            "request": request.model_dump(),
-            "created_at": datetime.now(UTC).isoformat(),
+            "request": request_payload,
+            "created_at": str((prior or {}).get("created_at") or datetime.now(UTC).isoformat()),
+            "updated_at": datetime.now(UTC).isoformat(),
             "expires_monotonic": now + request.ttl_ms / 1000.0,
-            "cache_id": "live" if request.mode in {"live", "paper"} else scope_id,
+            "cache_id": cache_id,
         }
         with self._lock:
             self.scopes[scope_id] = row
-        cache_id = str(row["cache_id"])
         self.caches.setdefault(cache_id, self._new_cache())
+        added = [ticker for ticker in request.tickers if ticker not in prior_tickers]
+        removed = [ticker for ticker in prior_tickers if ticker not in request.tickers]
+        for ticker in added:
+            self._retained_tickers.pop((cache_id, ticker), None)
+        for ticker in removed:
+            self._retained_tickers[(cache_id, ticker)] = now + self._scope_retention_seconds
+        self._trim_retained()
         for ticker in request.tickers:
             self._promote_pending(cache_id, ticker, request.clock_us)
             self.request_warm(cache_id, ticker, request.clock_us)
             if request.clock_us and self._cache(cache_id).readiness(ticker, request.clock_us, self.config.minimum_warm_1s_bars)["ready"]:
                 self._schedule_auto(cache_id, ticker, request.clock_us)
         self._reclaim_cache()
+        if prior is None or added or removed or list((prior or {}).get("request", {}).get("model_ids") or []) != resolved_models:
+            self._record_event("scope_updated", {
+                "scope_id": scope_id, "added": added, "removed": removed, "model_ids": resolved_models,
+            })
         return self.scope_snapshot(scope_id)
 
     async def advance_scope(self, scope_id: str, request: ScopeRequest) -> dict[str, Any]:
@@ -177,7 +250,11 @@ class BarGptRuntime:
             missing = [row["ticker"] for row in snapshot["readiness"] if not row["ready"]]
             raise RuntimeError("BarGPT synchronous advance is not warm for: " + ",".join(missing))
         predictions = await self.infer(
-            InferenceRequest(scope_id=scope_id, tickers=request.tickers, origin_us=request.clock_us)
+            InferenceRequest(
+                scope_id=scope_id, tickers=request.tickers,
+                model_ids=list(snapshot["request"].get("model_ids") or []),
+                origin_us=request.clock_us,
+            )
         )
         with self._lock:
             active = self.scopes.get(scope_id)
@@ -187,9 +264,14 @@ class BarGptRuntime:
 
     def remove_scope(self, scope_id: str) -> bool:
         with self._lock:
-            removed = self.scopes.pop(scope_id, None) is not None
+            row = self.scopes.pop(scope_id, None)
+        if row is not None:
+            deadline = time.monotonic() + self._scope_retention_seconds
+            for ticker in row["request"]["tickers"]:
+                self._retained_tickers[(str(row["cache_id"]), ticker)] = deadline
+            self._trim_retained()
         self._reclaim_cache()
-        return removed
+        return row is not None
 
     def active_scopes(self) -> dict[str, dict[str, Any]]:
         now = time.monotonic()
@@ -215,7 +297,10 @@ class BarGptRuntime:
         clock_us = int(row["request"].get("clock_us") or time.time_ns() // 1_000)
         cache = self._cache(str(row["cache_id"]))
         readiness = [
-            cache.readiness(ticker, clock_us, self.config.minimum_warm_1s_bars)
+            {
+                **cache.readiness(ticker, clock_us, self.config.minimum_warm_1s_bars),
+                "warm": dict(self._warm_state.get((str(row["cache_id"]), ticker), {})),
+            }
             for ticker in row["request"]["tickers"]
         ]
         return {
@@ -233,8 +318,12 @@ class BarGptRuntime:
             return
         origin = int(clock_us or time.time_ns() // 1_000)
         if self._cache(cache_id).readiness(ticker, origin, self.config.minimum_warm_1s_bars)["ready"]:
+            self._warm_state[key] = {"status": "ready", "origin_us": origin, "updated_at": datetime.now(UTC).isoformat()}
             return
         self.metrics["warm_requested"] = int(self.metrics["warm_requested"]) + 1
+        self._warm_state[key] = {
+            "status": "queued", "origin_us": origin, "queued_at": datetime.now(UTC).isoformat(),
+        }
         task = asyncio.create_task(self._warm(cache_id, ticker, origin), name=f"bar-gpt-warm-{cache_id}-{ticker}")
         self._warm_tasks[key] = task
         task.add_done_callback(lambda _task, task_key=key: self._warm_tasks.pop(task_key, None))
@@ -252,12 +341,12 @@ class BarGptRuntime:
     async def infer(self, request: InferenceRequest) -> list[dict[str, Any]]:
         scope_id = request.scope_id or self._default_scope_id()
         cache_id = self._scope_cache_id(scope_id)
-        tickers = request.tickers or sorted(self.active_tickers(cache_id))
-        if not tickers:
-            raise RuntimeError(f"BarGPT scope {scope_id!r} has no active tickers")
         scope = self.active_scopes().get(scope_id)
         if scope is None:
             raise KeyError(f"unknown or expired BarGPT scope {scope_id!r}")
+        tickers = request.tickers or list(scope["request"]["tickers"])
+        if not tickers:
+            raise RuntimeError(f"BarGPT scope {scope_id!r} has no active tickers")
         outside_scope = sorted(set(tickers) - set(scope["request"]["tickers"]))
         if outside_scope:
             raise RuntimeError(
@@ -271,18 +360,20 @@ class BarGptRuntime:
             )["ready"]
         ]
         if not_ready:
-            raise RuntimeError(
+            raise ContextWarmingError(
                 "BarGPT context is still warming for: " + ",".join(not_ready)
             )
-        model_ids = request.model_ids or list(self.releases)
-        unknown = sorted(set(model_ids) - set(self.releases))
-        if unknown:
-            raise KeyError(f"unknown BarGPT model ids: {','.join(unknown)}")
+        explicit_models = self._resolve_model_ids(request.model_ids) if request.model_ids else []
+        selected_models = explicit_models or list(scope["request"].get("model_ids") or [])
+        plan = self._inference_plan(
+            selected_models, tickers, readiness_origin,
+            automatic=not explicit_models and scope["request"].get("trigger_mode") == "auto",
+        )
         self.metrics["inference_requests"] = int(self.metrics["inference_requests"]) + 1
         results: list[dict[str, Any]] = []
-        for start in range(0, len(tickers), self.config.maximum_batch_size):
-            chunk = tickers[start:start + self.config.maximum_batch_size]
-            for model_id in model_ids:
+        for model_id, model_tickers in plan:
+            for start in range(0, len(model_tickers), self.config.maximum_batch_size):
+                chunk = model_tickers[start:start + self.config.maximum_batch_size]
                 release = self.releases[model_id]
                 try:
                     predictions = await asyncio.to_thread(
@@ -326,32 +417,93 @@ class BarGptRuntime:
         self._listeners.discard(queue)
 
     async def _warm(self, cache_id: str, ticker: str, origin_us: int) -> None:
+        key = (cache_id, ticker)
+        started = time.monotonic()
         try:
             async with self._warm_semaphore:
-                release = next(iter(self.releases.values()))
+                self._warm_state[key] = {
+                    **self._warm_state.get(key, {}), "status": "warming",
+                    "started_at": datetime.now(UTC).isoformat(),
+                }
+                release = self._champion_release()
                 bootstrap = HistoricalBootstrap(release)
+                as_of = datetime.fromtimestamp(origin_us / 1_000_000, tz=UTC)
+                source_revision = await asyncio.to_thread(bootstrap.source_revision, ticker, as_of)
+                self.metrics["warm_source_revision_checks"] = int(
+                    self.metrics["warm_source_revision_checks"]
+                ) + 1
+                snapshot_rows = (
+                    await asyncio.to_thread(
+                        self._snapshot_store.load, ticker, origin_us, source_revision
+                    )
+                    if cache_id == "live" and self._snapshot_store is not None else []
+                )
                 bars = await asyncio.to_thread(
                     bootstrap.load,
                     ticker,
-                    datetime.fromtimestamp(origin_us / 1_000_000, tz=UTC),
+                    as_of,
+                    include_calendar=not bool(snapshot_rows),
+                    stop_requested=self._stop_requested.is_set,
                 )
+                confirmed_revision = await asyncio.to_thread(bootstrap.source_revision, ticker, as_of)
+                self.metrics["warm_source_revision_checks"] = int(
+                    self.metrics["warm_source_revision_checks"]
+                ) + 1
+                if confirmed_revision != source_revision:
+                    raise RuntimeError("QMD history source revision changed during BarGPT warm-up")
                 current = [bar for bar in bars if bar.available_at_us <= origin_us]
                 future = sorted(
                     (bar for bar in bars if bar.available_at_us > origin_us),
                     key=lambda bar: (bar.available_at_us, bar.view, bar.bar_start_us),
                 )
-                self._cache(cache_id).upsert_many(current, derive=False)
+                await self._admit_warm_rows(cache_id, [*snapshot_rows, *current])
                 if cache_id != "live" and future:
                     self._pending_historical[(cache_id, ticker)] = future
                 self.metrics["warm_completed"] = int(self.metrics["warm_completed"]) + 1
+                duration = time.monotonic() - started
+                self._warm_durations.append(duration)
+                self._warm_state[key] = {
+                    "status": "ready", "origin_us": origin_us, "duration_seconds": round(duration, 3),
+                    "snapshot_hit": bool(snapshot_rows), "updated_at": datetime.now(UTC).isoformat(),
+                }
+                if cache_id == "live" and self._snapshot_store is not None:
+                    calendar = self._cache(cache_id).snapshot_rows(ticker, views=CALENDAR_VIEWS)
+                    await asyncio.to_thread(
+                        self._snapshot_store.save, ticker, origin_us, calendar, confirmed_revision
+                    )
+                self._record_event("warm_completed", {
+                    "cache_id": cache_id, "ticker": ticker, "duration_seconds": round(duration, 3),
+                    "snapshot_hit": bool(snapshot_rows),
+                })
+                deferred_origin = self._deferred_auto.get((cache_id, ticker))
+                if deferred_origin is not None:
+                    self._schedule_auto(cache_id, ticker, deferred_origin)
                 for scope_id, row in self.active_scopes().items():
                     if row["cache_id"] == cache_id and ticker in row["request"]["tickers"] and row["request"].get("clock_us"):
                         self._schedule_auto(cache_id, ticker, int(row["request"]["clock_us"]))
         except asyncio.CancelledError:
+            self._warm_state[key] = {
+                **self._warm_state.get(key, {}), "status": "cancelled",
+                "updated_at": datetime.now(UTC).isoformat(),
+            }
             raise
         except Exception as exc:
             self.metrics["warm_failed"] = int(self.metrics["warm_failed"]) + 1
+            self._warm_state[key] = {
+                "status": "failed", "origin_us": origin_us, "error": str(exc),
+                "updated_at": datetime.now(UTC).isoformat(),
+            }
             self._record_failure("warm_failed", f"{ticker}: {exc}")
+
+    async def _admit_warm_rows(self, cache_id: str, rows: list[RawBar]) -> None:
+        """Admit a complete causal context without monopolizing the event loop/cache lock."""
+        cache = self._cache(cache_id)
+        chunk_size = 2_048
+        for start in range(0, len(rows), chunk_size):
+            await asyncio.to_thread(
+                cache.upsert_many, rows[start:start + chunk_size], derive=False
+            )
+            await asyncio.sleep(0)
 
     def _infer_sync(self, release: LoadedRelease, cache: CausalCache, tickers: list[str], origin_us: int | None) -> list[dict[str, Any]]:
         batch = prepare_batch(release, cache, tickers, origin_us)
@@ -433,6 +585,12 @@ class BarGptRuntime:
     async def _on_qmd_events(self, events: list[dict[str, Any]]) -> None:
         if self._builder is None:
             return
+        if events:
+            self._last_qmd_event_at_us = max(
+                self._last_qmd_event_at_us,
+                max(int(row.get("received_at_us") or row.get("sip_timestamp_us") or 0) for row in events),
+            )
+            self._set_qmd_state("streaming", "")
         corrections: list[RawBar] = []
         active = self.active_tickers("live")
         for event in events:
@@ -462,12 +620,26 @@ class BarGptRuntime:
             and int(row["request"].get("clock_us") or origin_us) >= origin_us
             for row in self.active_scopes().values()
         )
-        key = (cache_id, ticker, origin_us)
-        if not eligible or key in self._queued:
+        if not eligible:
+            return
+        if not self._cache(cache_id).readiness(
+            ticker, origin_us, self.config.minimum_warm_1s_bars
+        )["ready"]:
+            deferred_key = (cache_id, ticker)
+            self._deferred_auto[deferred_key] = max(
+                origin_us, self._deferred_auto.get(deferred_key, 0)
+            )
+            return
+        deferred_key = (cache_id, ticker)
+        scheduled_origin = max(origin_us, self._deferred_auto.get(deferred_key, 0))
+        key = (cache_id, ticker, scheduled_origin)
+        if key in self._queued:
+            self._deferred_auto.pop(deferred_key, None)
             return
         try:
             self._queue.put_nowait(key)
             self._queued.add(key)
+            self._deferred_auto.pop(deferred_key, None)
         except asyncio.QueueFull:
             self.metrics["queue_dropped"] = int(self.metrics["queue_dropped"]) + 1
             self._record_failure("inference_queue_full", f"{ticker}@{origin_us}")
@@ -495,7 +667,13 @@ class BarGptRuntime:
                             key for key, row in self.active_scopes().items()
                             if row["cache_id"] == cache_id and row["request"]["trigger_mode"] == "auto"
                         )
-                        await self.infer(InferenceRequest(scope_id=scope_id, tickers=sorted(set(tickers)), origin_us=origin))
+                        await self.infer(InferenceRequest(
+                            scope_id=scope_id, tickers=list(dict.fromkeys(tickers)), origin_us=origin
+                        ))
+                    except ContextWarmingError:
+                        # Admission normally gates this path. A concurrent scope/cache
+                        # transition remains retryable and must not pollute failure logs.
+                        pass
                     except Exception as exc:
                         self._record_failure("automatic_inference_failed", str(exc))
             finally:
@@ -510,19 +688,28 @@ class BarGptRuntime:
             with self._lock:
                 expired = [key for key, value in self.scopes.items() if float(value["expires_monotonic"]) <= now]
                 for key in expired:
-                    del self.scopes[key]
+                    row = self.scopes.pop(key)
+                    for ticker in row["request"]["tickers"]:
+                        self._retained_tickers[(str(row["cache_id"]), ticker)] = now + self._scope_retention_seconds
             if expired:
+                self._trim_retained()
                 self._reclaim_cache()
 
     def _reclaim_cache(self) -> None:
         active_cache_ids = {str(row["cache_id"]) for row in self.active_scopes().values()} | {"live"}
         active_by_cache = {
-            cache_id: self.active_tickers(cache_id)
+            cache_id: self.active_tickers(cache_id) | {
+                ticker for (retained_cache_id, ticker), deadline in self._retained_tickers.items()
+                if retained_cache_id == cache_id and deadline > time.monotonic()
+            }
             for cache_id in active_cache_ids
         }
         for (cache_id, ticker), task in list(self._warm_tasks.items()):
             if ticker not in active_by_cache.get(cache_id, set()):
                 task.cancel()
+        for cache_id, ticker in list(self._deferred_auto):
+            if ticker not in active_by_cache.get(cache_id, set()):
+                del self._deferred_auto[(cache_id, ticker)]
         for cache_id in list(self.caches):
             if cache_id not in active_cache_ids:
                 del self.caches[cache_id]
@@ -583,7 +770,124 @@ class BarGptRuntime:
         self.qmd_state = {"status": status, "error": error, "updated_at": datetime.now(UTC).isoformat()}
 
     def _record_failure(self, code: str, message: str) -> None:
-        self.failures.append({"code": code, "message": message, "at": datetime.now(UTC).isoformat()})
+        row = {"code": code, "message": message, "at": datetime.now(UTC).isoformat()}
+        self.failures.append(row)
+        self._record_event("failure", row)
+
+    def _record_event(self, event: str, detail: dict[str, Any]) -> None:
+        row = {"schema_version": 1, "event": event, "at": datetime.now(UTC).isoformat(), **detail}
+        path = self.config.runtime_root / "events" / f"{datetime.now(UTC).date().isoformat()}.jsonl"
+        try:
+            with self._event_lock:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                with path.open("a", encoding="utf-8") as handle:
+                    handle.write(json.dumps(row, separators=(",", ":"), allow_nan=False) + "\n")
+            self.event_log_state = {
+                **self.event_log_state,
+                "status": "ready", "error": "", "updated_at": datetime.now(UTC).isoformat()
+            }
+        except OSError as exc:
+            self.metrics["event_log_write_failures"] = int(self.metrics["event_log_write_failures"]) + 1
+            self.event_log_state = {
+                "status": "failed", "error": str(exc), "last_error": str(exc),
+                "failure_count": int(self.metrics["event_log_write_failures"]),
+                "updated_at": datetime.now(UTC).isoformat(),
+            }
+
+    def _champion_release(self) -> LoadedRelease:
+        return next(
+            (release for release in self.releases.values() if release.config.role == "champion"),
+            next(iter(self.releases.values())),
+        )
+
+    def _resolve_model_ids(self, selectors: list[str]) -> list[str]:
+        if not selectors:
+            return list(self.releases)
+        resolved: list[str] = []
+        for selector in selectors:
+            matches = [
+                model_id for model_id, release in self.releases.items()
+                if selector == model_id or selector.lower() in {release.config.version, f"bar_gpt_{release.config.version}"}
+            ]
+            if len(matches) != 1:
+                raise ValueError(f"unknown or ambiguous immutable BarGPT release selector: {selector}")
+            if matches[0] not in resolved:
+                resolved.append(matches[0])
+        return resolved
+
+    def _inference_plan(
+        self, model_ids: list[str], tickers: list[str], origin_us: int, *, automatic: bool
+    ) -> list[tuple[str, list[str]]]:
+        selected = model_ids or list(self.releases)
+        unknown = sorted(set(selected) - set(self.releases))
+        if unknown:
+            raise KeyError(f"unknown BarGPT model ids: {','.join(unknown)}")
+        if not automatic:
+            return [(model_id, tickers) for model_id in selected]
+        champion = self._champion_release().config.model_id
+        plan: list[tuple[str, list[str]]] = [(champion, tickers)]
+        explicit_shadow = (
+            len(selected) == 1 and self.releases[selected[0]].config.role == "shadow"
+        )
+        for model_id in selected:
+            release = self.releases[model_id]
+            if model_id == champion or release.config.role != "shadow" or self._shadow_max_tickers <= 0:
+                continue
+            sampled = tickers if explicit_shadow else [
+                ticker for ticker in tickers
+                if int(hashlib.sha256(f"{model_id}:{ticker}:{origin_us // 1_000_000}".encode()).hexdigest(), 16)
+                / (2**256 - 1) < self._shadow_sample_rate
+            ]
+            sampled = sampled[:self._shadow_max_tickers]
+            if sampled:
+                plan.append((model_id, sampled))
+        return plan
+
+    def _warm_summary(self, active: set[str], origin_us: int) -> dict[str, Any]:
+        admitted = {
+            (str(row["cache_id"]), ticker)
+            for row in self.active_scopes().values()
+            for ticker in row["request"]["tickers"]
+        }
+        states = [self._warm_state.get(key, {}) for key in admitted]
+        ready = sum(
+            self._cache(cache_id).readiness(ticker, origin_us, self.config.minimum_warm_1s_bars)["ready"]
+            for cache_id, ticker in admitted
+        )
+        queued = sum(row.get("status") == "queued" for row in states)
+        warming = sum(row.get("status") == "warming" for row in states)
+        failed = sum(row.get("status") == "failed" for row in states)
+        mean = sum(self._warm_durations) / len(self._warm_durations) if self._warm_durations else 0.0
+        remaining = max(0, len(admitted) - ready - failed)
+        now = datetime.now(UTC)
+
+        def oldest_age(field: str, selected_status: str) -> float | None:
+            ages = [
+                max(0.0, (now - datetime.fromisoformat(str(row[field]))).total_seconds())
+                for row in states
+                if row.get("status") == selected_status and row.get(field)
+            ]
+            return round(max(ages), 1) if ages else None
+
+        return {
+            "admitted": len(admitted), "unique_tickers": len(active),
+            "queued": queued, "warming": warming, "ready": ready,
+            "failed": failed, "retained": len(self._retained_tickers),
+            "deferred_auto": len(self._deferred_auto),
+            "oldest_queued_seconds": oldest_age("queued_at", "queued"),
+            "oldest_warming_seconds": oldest_age("started_at", "warming"),
+            "mean_duration_seconds": round(mean, 3) if mean else None,
+            "eta_seconds": round(remaining * mean / self.config.warm_concurrency, 1) if mean else None,
+        }
+
+    def _trim_retained(self) -> None:
+        now = time.monotonic()
+        self._retained_tickers = {
+            key: deadline for key, deadline in self._retained_tickers.items() if deadline > now
+        }
+        overflow = max(0, len(self._retained_tickers) - self.config.maximum_tickers)
+        for key, _deadline in sorted(self._retained_tickers.items(), key=lambda item: item[1])[:overflow]:
+            del self._retained_tickers[key]
 
     def _validate_release_contexts(self, authority: LoadedRelease) -> None:
         expected = (

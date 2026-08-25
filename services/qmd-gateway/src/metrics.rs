@@ -45,6 +45,15 @@ struct MetricsInner {
     intraday_bar_rows_persisted: AtomicU64,
     intraday_bar_repairs_completed: AtomicU64,
     intraday_bar_repairs_requested: AtomicU64,
+    intraday_bar_repair_events_merged: AtomicU64,
+    intraday_bar_repair_oldest_pending_ms: AtomicU64,
+    intraday_bar_repair_ranges_enqueued: AtomicU64,
+    intraday_bar_repair_ranges_pending: AtomicU64,
+    intraday_bar_repair_execution_backlog: AtomicU64,
+    intraday_bar_repair_execution_deferred: AtomicU64,
+    intraday_bar_repair_execution_inflight: AtomicU64,
+    intraday_bar_repair_execution_oldest_pending_ms: AtomicU64,
+    intraday_bar_repair_execution_retries: AtomicU64,
     ingest_events: AtomicU64,
     ingest_quotes: AtomicU64,
     ingest_trades: AtomicU64,
@@ -138,6 +147,15 @@ pub struct MetricsSnapshot {
     pub intraday_bar_rows_persisted: u64,
     pub intraday_bar_repairs_completed: u64,
     pub intraday_bar_repairs_requested: u64,
+    pub intraday_bar_repair_events_merged: u64,
+    pub intraday_bar_repair_oldest_pending_ms: u64,
+    pub intraday_bar_repair_ranges_enqueued: u64,
+    pub intraday_bar_repair_ranges_pending: u64,
+    pub intraday_bar_repair_execution_backlog: u64,
+    pub intraday_bar_repair_execution_deferred: u64,
+    pub intraday_bar_repair_execution_inflight: u64,
+    pub intraday_bar_repair_execution_oldest_pending_ms: u64,
+    pub intraday_bar_repair_execution_retries: u64,
     pub ingest_events: u64,
     pub ingest_quotes: u64,
     pub ingest_trades: u64,
@@ -227,6 +245,15 @@ impl SharedMetrics {
                 intraday_bar_rows_persisted: AtomicU64::new(0),
                 intraday_bar_repairs_completed: AtomicU64::new(0),
                 intraday_bar_repairs_requested: AtomicU64::new(0),
+                intraday_bar_repair_events_merged: AtomicU64::new(0),
+                intraday_bar_repair_oldest_pending_ms: AtomicU64::new(0),
+                intraday_bar_repair_ranges_enqueued: AtomicU64::new(0),
+                intraday_bar_repair_ranges_pending: AtomicU64::new(0),
+                intraday_bar_repair_execution_backlog: AtomicU64::new(0),
+                intraday_bar_repair_execution_deferred: AtomicU64::new(0),
+                intraday_bar_repair_execution_inflight: AtomicU64::new(0),
+                intraday_bar_repair_execution_oldest_pending_ms: AtomicU64::new(0),
+                intraday_bar_repair_execution_retries: AtomicU64::new(0),
                 ingest_events: AtomicU64::new(0),
                 ingest_quotes: AtomicU64::new(0),
                 ingest_trades: AtomicU64::new(0),
@@ -427,6 +454,24 @@ impl SharedMetrics {
             intraday_bar_rows_persisted: self.get(&self.inner.intraday_bar_rows_persisted),
             intraday_bar_repairs_completed: self.get(&self.inner.intraday_bar_repairs_completed),
             intraday_bar_repairs_requested: self.get(&self.inner.intraday_bar_repairs_requested),
+            intraday_bar_repair_events_merged: self
+                .get(&self.inner.intraday_bar_repair_events_merged),
+            intraday_bar_repair_oldest_pending_ms: self
+                .get(&self.inner.intraday_bar_repair_oldest_pending_ms),
+            intraday_bar_repair_ranges_enqueued: self
+                .get(&self.inner.intraday_bar_repair_ranges_enqueued),
+            intraday_bar_repair_ranges_pending: self
+                .get(&self.inner.intraday_bar_repair_ranges_pending),
+            intraday_bar_repair_execution_backlog: self
+                .get(&self.inner.intraday_bar_repair_execution_backlog),
+            intraday_bar_repair_execution_deferred: self
+                .get(&self.inner.intraday_bar_repair_execution_deferred),
+            intraday_bar_repair_execution_inflight: self
+                .get(&self.inner.intraday_bar_repair_execution_inflight),
+            intraday_bar_repair_execution_oldest_pending_ms: self
+                .get(&self.inner.intraday_bar_repair_execution_oldest_pending_ms),
+            intraday_bar_repair_execution_retries: self
+                .get(&self.inner.intraday_bar_repair_execution_retries),
             ingest_events: self.get(&self.inner.ingest_events),
             ingest_quotes: self.get(&self.inner.ingest_quotes),
             ingest_trades: self.get(&self.inner.ingest_trades),
@@ -626,6 +671,44 @@ impl SharedMetrics {
 
     pub fn inc_intraday_bar_repair_requested(&self) {
         self.inc(&self.inner.intraday_bar_repairs_requested, 1);
+    }
+
+    pub fn inc_intraday_bar_repair_event_merged(&self) {
+        self.inc(&self.inner.intraday_bar_repair_events_merged, 1);
+    }
+
+    pub fn inc_intraday_bar_repair_range_enqueued(&self) {
+        self.inc(&self.inner.intraday_bar_repair_ranges_enqueued, 1);
+    }
+
+    pub fn set_intraday_bar_repair_pending(&self, ranges: u64, oldest_age_ms: u64) {
+        self.set(&self.inner.intraday_bar_repair_ranges_pending, ranges);
+        self.set(
+            &self.inner.intraday_bar_repair_oldest_pending_ms,
+            oldest_age_ms,
+        );
+    }
+
+    pub fn set_intraday_bar_repair_execution(
+        &self,
+        backlog: u64,
+        inflight: u64,
+        oldest_age_ms: u64,
+    ) {
+        self.set(&self.inner.intraday_bar_repair_execution_backlog, backlog);
+        self.set(&self.inner.intraday_bar_repair_execution_inflight, inflight);
+        self.set(
+            &self.inner.intraday_bar_repair_execution_oldest_pending_ms,
+            oldest_age_ms,
+        );
+    }
+
+    pub fn add_intraday_bar_repair_execution_deferred(&self, count: u64) {
+        self.inc(&self.inner.intraday_bar_repair_execution_deferred, count);
+    }
+
+    pub fn inc_intraday_bar_repair_execution_retry(&self) {
+        self.inc(&self.inner.intraday_bar_repair_execution_retries, 1);
     }
 
     pub fn inc_live_market_state_broadcast_dropped(&self) {

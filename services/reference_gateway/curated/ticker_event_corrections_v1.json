@@ -16,5 +16,23 @@
     "evidence_accession_number": "0001288776-15-000008",
     "evidence_summary": "Google Inc. states that Class A common stock traded as GOOG from August 19, 2004 through April 2, 2014 and as GOOGL beginning April 3, 2014. The successor Alphabet security retains that Class A listing identity.",
     "scope_note": "Repairs only the exact Class A Composite FIGI and Share Class FIGI when Massive returns the reviewed defective signature; raw Massive events remain unchanged."
+  },
+  {
+    "correction_id": "tss-inc-s258-provider-symbol",
+    "current_ticker": "TSSI",
+    "composite_figi": "BBG000D40Z80",
+    "share_class_figi": "BBG001SMD6B8",
+    "cik": "0001320760",
+    "provider_event_signature": [
+      {"date": "2021-09-23", "ticker": "TSSI"},
+      {"date": "2023-11-18", "ticker": "S258"}
+    ],
+    "canonical_timeline": [
+      {"date": "2021-09-23", "ticker": "TSSI"}
+    ],
+    "evidence_url": "https://www.sec.gov/Archives/edgar/data/1320760/000165495425004295/tssi_10k.htm",
+    "evidence_accession_number": "0001654954-25-004295",
+    "evidence_summary": "TSS, Inc. states that its common stock has traded on the Nasdaq Capital Market under TSSI since November 2024. Massive's exact current FIGI inventory also identifies TSSI, while its reviewed event response incorrectly terminates the same identity at S258.",
+    "scope_note": "Repairs only Composite FIGI BBG000D40Z80 and Share Class FIGI BBG001SMD6B8 when Massive returns the exact reviewed TSSI-to-S258 defect signature; raw Massive events remain unchanged."
   }
 ]

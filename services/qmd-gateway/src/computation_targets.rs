@@ -5,6 +5,11 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::{Arc, RwLock};
 use std::time::{Duration as StdDuration, Instant};
 
+const MAX_TARGET_DEMAND_UNITS: u64 = 12_000;
+const MAX_TOTAL_REQUESTED_DEMAND_UNITS: u64 = 30_000;
+const MAX_ESTIMATED_RETAINED_BYTES: u64 = 4 * 1024 * 1024 * 1024;
+const ESTIMATED_INDICATOR_ROW_BYTES: u64 = 2_048;
+
 #[derive(Clone, Debug, Deserialize)]
 pub struct ComputationTargetRequest {
     pub target_id: String,
@@ -43,6 +48,9 @@ pub struct ComputationTargetLease {
     pub correlation_id: String,
     pub causation_id: String,
     pub event_driven: bool,
+    pub estimated_demand_units: u64,
+    pub estimated_retained_bytes: u64,
+    pub admission_status: String,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -123,6 +131,7 @@ impl SharedComputationTargets {
         request: ComputationTargetRequest,
     ) -> Result<ComputationTargetLease, String> {
         let lease = self.prepare(request)?;
+        self.admit(&lease)?;
         Ok(self.activate(lease))
     }
 
@@ -184,7 +193,7 @@ impl SharedComputationTargets {
             None => None,
         };
         let event_driven = capabilities_require_events(&capabilities);
-        let lease = ComputationTargetLease {
+        let mut lease = ComputationTargetLease {
             target_id: target_id.clone(),
             owner,
             scope: request.scope,
@@ -199,17 +208,64 @@ impl SharedComputationTargets {
             correlation_id: lineage_identity(&request.correlation_id, "lease", &target_id),
             causation_id: lineage_identity(&request.causation_id, "target", &target_id),
             event_driven,
+            estimated_demand_units: 0,
+            estimated_retained_bytes: 0,
+            admission_status: "prepared".to_string(),
         };
+        lease.estimated_demand_units = estimate_target_demand_units(&lease);
+        lease.estimated_retained_bytes = estimate_target_retained_bytes(&lease);
         Ok(lease)
     }
 
-    pub fn activate(&self, lease: ComputationTargetLease) -> ComputationTargetLease {
+    pub fn admit(&self, lease: &ComputationTargetLease) -> Result<(), String> {
+        if lease.estimated_demand_units > MAX_TARGET_DEMAND_UNITS {
+            return Err(format!(
+                "computation_target_admission_rejected: target={} requested_demand_units={} target_limit={} estimated_retained_bytes={}",
+                lease.target_id,
+                lease.estimated_demand_units,
+                MAX_TARGET_DEMAND_UNITS,
+                lease.estimated_retained_bytes,
+            ));
+        }
+        let now = Utc::now();
+        let state = self.inner.read().expect("computation target lock poisoned");
+        let mut requested = lease.estimated_demand_units;
+        let mut retained_bytes = lease.estimated_retained_bytes;
+        for target in state.targets.values() {
+            if target.target_id == lease.target_id
+                || target
+                    .expires_at
+                    .map(|expiry| expiry <= now)
+                    .unwrap_or(false)
+            {
+                continue;
+            }
+            requested = requested.saturating_add(target.estimated_demand_units);
+            retained_bytes = retained_bytes.saturating_add(target.estimated_retained_bytes);
+        }
+        if requested > MAX_TOTAL_REQUESTED_DEMAND_UNITS
+            || retained_bytes > MAX_ESTIMATED_RETAINED_BYTES
+        {
+            return Err(format!(
+                "computation_target_admission_rejected: target={} projected_requested_demand_units={} total_limit={} projected_retained_bytes={} byte_limit={}",
+                lease.target_id,
+                requested,
+                MAX_TOTAL_REQUESTED_DEMAND_UNITS,
+                retained_bytes,
+                MAX_ESTIMATED_RETAINED_BYTES,
+            ));
+        }
+        Ok(())
+    }
+
+    pub fn activate(&self, mut lease: ComputationTargetLease) -> ComputationTargetLease {
         let now = Utc::now();
         let mut state = self
             .inner
             .write()
             .expect("computation target lock poisoned");
         prune_expired(&mut state.targets, now);
+        lease.admission_status = "admitted".to_string();
         state.targets.insert(lease.target_id.clone(), lease.clone());
         *self
             .summary_cache
@@ -532,6 +588,55 @@ fn cost_weight(cost: CostClass) -> u64 {
         CostClass::High => 8,
         CostClass::Offline => 16,
     }
+}
+
+fn estimate_target_demand_units(target: &ComputationTargetLease) -> u64 {
+    let catalog = computation_capability_catalog();
+    let mut timeframes = if target.timeframes.is_empty() {
+        vec!["100ms".to_string()]
+    } else {
+        target.timeframes.clone()
+    };
+    if !timeframes.iter().any(|value| value == "100ms") {
+        timeframes.push("100ms".to_string());
+    }
+    let per_ticker = target
+        .capabilities
+        .iter()
+        .filter_map(|key| catalog.iter().find(|row| row.key == key))
+        .map(|definition| {
+            cost_weight(definition.cost_class).saturating_mul(timeframes.len() as u64)
+        })
+        .fold(0_u64, u64::saturating_add);
+    per_ticker.saturating_mul(target.tickers.len() as u64)
+}
+
+fn estimate_target_retained_bytes(target: &ComputationTargetLease) -> u64 {
+    let mut timeframes = target.timeframes.clone();
+    if !timeframes.iter().any(|value| value == "100ms") {
+        timeframes.push("100ms".to_string());
+    }
+    timeframes.sort();
+    timeframes.dedup();
+    let retained_rows_per_ticker = timeframes
+        .iter()
+        .map(|timeframe| match timeframe.as_str() {
+            "100ms" => 128_u64,
+            "1s" => 300,
+            _ => 256,
+        })
+        .fold(0_u64, u64::saturating_add);
+    let indicator_bytes = retained_rows_per_ticker
+        .saturating_mul(ESTIMATED_INDICATOR_ROW_BYTES)
+        .saturating_mul(target.tickers.len() as u64);
+    let event_bytes = if target.event_driven {
+        64_u64
+            .saturating_mul(1024)
+            .saturating_mul(target.tickers.len() as u64)
+    } else {
+        0
+    };
+    indicator_bytes.saturating_add(event_bytes)
 }
 
 fn normalize_values(values: Vec<String>, uppercase: bool) -> Vec<String> {
@@ -879,5 +984,32 @@ mod tests {
         event_signal.timeframes = vec!["100ms".to_string()];
         targets.replace(event_signal).unwrap();
         assert!(targets.requires_event_computation("AAPL"));
+    }
+
+    #[test]
+    fn admission_rejects_oversized_replacement_without_mutating_client_lease() {
+        let targets = SharedComputationTargets::default();
+        let original = targets
+            .replace(request(
+                "signal-stream:bounded",
+                ExecutionScope::SignalStream,
+            ))
+            .unwrap();
+        let mut oversized = request("signal-stream:bounded", ExecutionScope::SignalStream);
+        oversized.tickers = (0..5_000).map(|index| format!("S{index:04}")).collect();
+        oversized.capabilities = vec![
+            "core_bars".to_string(),
+            "nbbo_liquidity".to_string(),
+            "tape_pressure".to_string(),
+        ];
+        oversized.timeframes = vec!["100ms".to_string(), "1s".to_string()];
+
+        let error = targets.replace(oversized).unwrap_err();
+
+        assert!(error.contains("computation_target_admission_rejected"));
+        let snapshot = targets.snapshot();
+        assert_eq!(snapshot.targets.len(), 1);
+        assert_eq!(snapshot.targets[0].tickers, original.tickers);
+        assert_eq!(snapshot.targets[0].admission_status, "admitted");
     }
 }

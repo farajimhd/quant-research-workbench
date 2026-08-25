@@ -86,6 +86,21 @@ NATIVE_SIGNAL_HYDRATION_LAST_CHECK: dict[str, float] = {}
 NATIVE_SIGNAL_HYDRATION_INTERVAL_SECONDS = 5.0
 
 
+def _ranked_unique_tickers(watchlists: list[dict[str, Any]], limit: int) -> list[str]:
+    """Preserve Watchlist membership/rank authority while deduplicating across scopes."""
+    result: list[str] = []
+    seen: set[str] = set()
+    for snapshot in watchlists:
+        for member in snapshot.get("members") or []:
+            ticker = str(member.get("ticker") or member.get("symbol") or "").strip().upper()
+            if ticker and ticker not in seen:
+                seen.add(ticker)
+                result.append(ticker)
+                if len(result) >= limit:
+                    return result
+    return result
+
+
 def hydrate_native_signal_streams(
     configuration: dict[str, Any],
     *,
@@ -1242,16 +1257,12 @@ def _compose_real_live_scanner_snapshot(*, allow_provider_fallback: bool = True)
                     if str(row.get("watchlist_id") or "") in selected_watchlist_ids
                 ]
                 maximum_tickers = max(1, min(int(serving.get("maximum_tickers") or 500), 5000))
-                bar_gpt_tickers = sorted({
-                    str(member.get("ticker") or member.get("symbol") or "").upper()
-                    for snapshot in serving_watchlists
-                    for member in snapshot.get("members") or []
-                    if str(member.get("ticker") or member.get("symbol") or "").strip()
-                })[:maximum_tickers]
+                bar_gpt_tickers = _ranked_unique_tickers(serving_watchlists, maximum_tickers)
                 try:
                     bar_gpt_runtime = (
                         publish_bar_gpt_scope(
                             "live:market-discovery", mode="live", tickers=bar_gpt_tickers,
+                            model_ids=[str(value) for value in serving.get("model_ids") or [] if str(value)],
                             watchlist_ids=sorted(selected_watchlist_ids),
                             trigger_mode=str(serving.get("trigger_mode") or "auto"),
                             ttl_ms=30_000, source="backend.market_discovery",

@@ -46,33 +46,65 @@ class TickerCache:
         self.rows: dict[str, OrderedDict[int, RawBar]] = {
             name: OrderedDict() for name in (*INTRADAY_VIEW_US, *CALENDAR_VIEWS)
         }
+        self.max_available_at: dict[str, int] = {name: 0 for name in self.rows}
         self.last_source_revision = ""
 
     def upsert(self, bar: RawBar) -> str:
+        self._validate(bar)
+        status = self._merge(bar)
+        self._order_and_bound(bar.view)
+        return status
+
+    def upsert_many(self, bars: Iterable[RawBar]) -> dict[str, int]:
+        counts = {"appended": 0, "corrected": 0, "duplicate": 0}
+        touched: set[str] = set()
+        for bar in bars:
+            self._validate(bar)
+            status = self._merge(bar)
+            counts[status] += 1
+            if status != "duplicate":
+                touched.add(bar.view)
+        for view in touched:
+            self._order_and_bound(view)
+        return counts
+
+    def _validate(self, bar: RawBar) -> None:
         if bar.view not in self.rows:
             raise ValueError(f"unsupported BarGPT view {bar.view!r}")
         if len(bar.values) != len(FEATURE_NAMES):
             raise ValueError(f"raw BarGPT bar must contain {len(FEATURE_NAMES)} features")
         if bar.bar_end_us <= bar.bar_start_us or bar.available_at_us < bar.bar_end_us:
             raise ValueError("bar timestamps violate start < end <= available_at")
+
+    def _merge(self, bar: RawBar) -> str:
         target = self.rows[bar.view]
         prior = target.get(bar.bar_start_us)
         if prior is not None and bar.revision <= prior.revision:
             return "duplicate"
         target[bar.bar_start_us] = bar
-        target.move_to_end(bar.bar_start_us)
+        self.max_available_at[bar.view] = max(self.max_available_at[bar.view], bar.available_at_us)
+        self.last_source_revision = bar.source_revision or self.last_source_revision
+        return "corrected" if prior is not None else "appended"
+
+    def _order_and_bound(self, view: str) -> None:
+        target = self.rows[view]
         ordered = sorted(target.items())
         target.clear()
         target.update(ordered)
         capacity = (
-            self.raw_capacity_1s if bar.view == "1s"
-            else self.raw_capacity_1d if bar.view == "1D"
-            else self.capacities[bar.view]
+            self.raw_capacity_1s if view == "1s"
+            else self.raw_capacity_1d if view == "1D"
+            else self.capacities[view]
         )
         while len(target) > capacity:
             target.popitem(last=False)
-        self.last_source_revision = bar.source_revision or self.last_source_revision
-        return "corrected" if prior is not None else "appended"
+
+    def readiness_count(self, view: str, origin_us: int) -> int:
+        target = self.rows[view]
+        capacity = self.capacities[view]
+        if origin_us >= self.max_available_at[view]:
+            return min(len(target), capacity)
+        return min(sum(row.available_at_us <= origin_us for row in target.values()), capacity)
 
     def rebuild_intraday_bucket(self, view: str, bar_start_us: int, origin_available_us: int) -> None:
         if view == "1s" or view not in INTRADAY_VIEW_US:
@@ -122,6 +154,7 @@ class TickerCache:
             rolled = rollup_calendar_view(base, identifiers)
             target = self.rows[name]
             target.clear()
+            self.max_available_at[name] = 0
             for index in range(rolled.features.shape[0]):
                 if int(rolled.available_at_us[index]) > origin_available_us:
                     continue
@@ -168,17 +201,23 @@ class CausalCache:
 
     def upsert_many(self, bars: Iterable[RawBar], *, derive: bool = True) -> dict[str, int]:
         counts = {"appended": 0, "corrected": 0, "duplicate": 0}
-        for bar in bars:
-            if derive:
+        if derive:
+            for bar in bars:
                 counts[self.upsert(bar)] += 1
-                continue
+            return counts
+        rows = list(bars)
+        grouped: dict[str, list[RawBar]] = {}
+        for bar in rows:
+            grouped.setdefault(bar.ticker.upper(), []).append(bar)
+        for ticker_name, ticker_rows in grouped.items():
             with self._lock:
                 ticker = self._tickers.setdefault(
-                    bar.ticker, TickerCache(self.capacities, self.raw_capacity_1s, self.raw_capacity_1d)
+                    ticker_name, TickerCache(self.capacities, self.raw_capacity_1s, self.raw_capacity_1d)
                 )
-                status = ticker.upsert(bar)
-                self.metrics[status] += 1
-                counts[status] += 1
+                ticker_counts = ticker.upsert_many(ticker_rows)
+                for status, count in ticker_counts.items():
+                    self.metrics[status] += count
+                    counts[status] += count
         return counts
 
     def rows(self, ticker: str, view: str, origin_us: int) -> list[RawBar]:
@@ -186,8 +225,22 @@ class CausalCache:
             cache = self._tickers.get(ticker.upper())
             return [] if cache is None else cache.model_rows(view, origin_us)
 
+    def snapshot_rows(self, ticker: str, *, views: Iterable[str] | None = None) -> list[RawBar]:
+        """Return an immutable copy of retained source rows for a warm snapshot."""
+        selected = tuple(views or (*INTRADAY_VIEW_US, *CALENDAR_VIEWS))
+        with self._lock:
+            cache = self._tickers.get(ticker.upper())
+            if cache is None:
+                return []
+            return [row for view in selected for row in cache.rows[view].values()]
+
     def readiness(self, ticker: str, origin_us: int, minimum_1s: int) -> dict[str, object]:
-        counts = {view: len(self.rows(ticker, view, origin_us)) for view in self.capacities}
+        with self._lock:
+            cache = self._tickers.get(ticker.upper())
+            counts = {
+                view: 0 if cache is None else cache.readiness_count(view, origin_us)
+                for view in self.capacities
+            }
         missing = [view for view, count in counts.items() if count == 0]
         ready = counts.get("1s", 0) >= minimum_1s and not missing
         return {"ticker": ticker.upper(), "ready": ready, "counts": counts, "missing_views": missing}

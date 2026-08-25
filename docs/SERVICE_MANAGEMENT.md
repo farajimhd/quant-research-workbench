@@ -60,7 +60,13 @@ No secret values are written to the catalog or ownership records.
 .\scripts\services.ps1 plan restart dev
 ```
 
-`status` returns zero only when every selected service is ready. JSON mode has
+`status` returns zero only when every selected service is semantically ready.
+An open port or HTTP 200 is not sufficient: each service must report its
+service-specific ready state. QMD Live additionally requires a running health
+contract, healthy required lanes, unsaturated required queues, no active
+pipeline degradation, and a fresh event stream while the collection window is
+active. IBKR requires a live supervisor thread plus ready gateway,
+authenticated session, healthy keepalive, and ready ClickHouse. JSON mode has
 the same exit-code meaning.
 
 ## Static profiles
@@ -94,6 +100,12 @@ The manager calculates a desired fingerprint from each service's owned source,
 shared code, launcher contract, selected non-secret environment, and promoted
 model manifest. The startup ownership record contains the running fingerprint.
 Uncommitted edits therefore count; a Git commit or version bump is unnecessary.
+Generated caches and build outputs (`__pycache__`, pytest caches, `node_modules`,
+and `dist`) are excluded so runtime activity cannot create false source drift.
+The manager also persists normalized launch inputs and separate `launch`,
+`environment`, `host_role`, `source`, and `artifacts` component hashes. Stale
+status identifies the changed components instead of reporting only an opaque
+whole-service revision.
 
 | Selector | Selection |
 | --- | --- |
@@ -221,6 +233,24 @@ process creation time, and service role before Ctrl+C. Bounded fallback applies
 only to that validated host and its child Job Object. Foreign listeners remain
 untouched. Only one mutating manager operation can run at a time.
 
+Every manager-launched tab writes bounded per-run evidence below
+`D:\TradingML\runtimes\service_manager\logs\<service-role>\<run-id>`:
+
+- `run.json` contains normalized non-secret launch inputs and fingerprint components.
+- `stdout.log` and `stderr.log` preserve the child streams while output remains visible in the terminal.
+- `exit.json` records start/finish timestamps, exit code, and the normalized exit reason (`operator_stop`, `process_exit_zero`, `process_exit_nonzero`, or `host_exception`).
+
+The newest ten runs per service are retained by default. A dead ownership
+record is archived under `dead-registry` before a mutating operation proceeds;
+it is never treated as authority over a current listener. If another process
+owns the port, foreign-listener refusal still applies.
+
+QMD Live keeps both layers of evidence without changing its specialized
+lifecycle authority: the registered tab host writes under the manager's
+QMD-live runtime root, while `run_qmd_gateway.ps1` writes the gateway process's
+own `run.json`, `stdout.log`, `stderr.log`, and `exit.json` below
+`D:\TradingML\runtimes\qmd_gateway\logs\<run-id>`.
+
 QMD Live retains its specialized lifecycle behind this command. The manager
 uses its dedicated start/stop authorities, requires an explicit host role,
 snapshots active computation-target leases before restart, restores them with
@@ -265,6 +295,24 @@ Inspect the service terminal and status detail, then:
 .\scripts\services.ps1 status unhealthy
 .\scripts\services.ps1 restart unhealthy
 ```
+
+Use the status detail to distinguish transport failure from semantic
+degradation. QMD queue/freshness failures and IBKR authentication/keepalive
+failures remain visible even when their HTTP endpoints return 200. Historical
+failure counters alone do not make a recovered service unhealthy.
+
+BarGPT reports `warming` while admitted tickers are progressing through their
+initial warmup. The manager treats that state as successful and excludes it
+from `restart unhealthy`. A warmup with an active error, or a top-level
+`degraded` state, remains degraded and eligible for operator action.
+
+### Exit evidence
+
+Inspect the newest per-run directory under
+`D:\TradingML\runtimes\service_manager\logs\<service-role>`. `exit.json` is
+the lifecycle authority for whether the child exited cleanly, was stopped by
+the operator, returned nonzero, or failed in the tab host. Terminal scrollback
+is not the only evidence path.
 
 ### Missing release manifest
 

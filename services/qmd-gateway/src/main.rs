@@ -81,6 +81,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         true,
     );
     metrics.register_lane(
+        "intraday_repairs",
+        "Deferred intraday repair execution",
+        "repair",
+        true,
+        false,
+    );
+    metrics.register_lane(
         "coverage_ledger",
         "Live coverage ledger",
         "coverage",
@@ -251,6 +258,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             compact_event_store.clone(),
             metrics.clone(),
             intraday_bar_service.router.clone(),
+            intraday_bar_service.durability.clone(),
             product_router,
             canonical_event_sender.clone(),
         );

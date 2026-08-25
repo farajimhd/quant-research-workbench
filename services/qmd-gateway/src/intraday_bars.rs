@@ -11,10 +11,10 @@ use chrono_tz::America::New_York;
 use reqwest::Client;
 use serde::Serialize;
 use serde_json::json;
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::hash::{Hash, Hasher};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex as StdMutex};
 use tokio::sync::{broadcast, mpsc, Mutex};
 use tokio::task::JoinHandle;
 use tokio::time::{interval, sleep, Duration, Instant};
@@ -24,6 +24,11 @@ pub const INTRADAY_BAR_CALCULATION_REVISION: &str = "qmd-family-bars-v3";
 pub const BASE_RESOLUTION_US: i64 = 100_000;
 const SESSION_START_US: i64 = 4 * 60 * 60 * 1_000_000;
 const SESSION_END_US: i64 = 20 * 60 * 60 * 1_000_000;
+const DURABLE_EVENT_ACK_CAPACITY: usize = 2_000_000;
+const REPAIR_IDLE_INTERVAL: Duration = Duration::from_secs(2);
+const REPAIR_EXECUTION_CHANNEL_CAPACITY: usize = 512;
+const REPAIR_EXECUTION_MAX_BACKLOG: usize = 2_048;
+const REPAIR_EXECUTION_INTERVAL: Duration = Duration::from_millis(250);
 const OBSOLETE_BAR_TABLES: &[&str] = &[
     "live_market_bars",
     "bars_by_symbol_time",
@@ -45,6 +50,12 @@ struct RepairRequest {
     source_sequence: u64,
     event_type: u8,
     arrival_sequence: u64,
+}
+
+struct PendingRepair {
+    request: RepairRequest,
+    first_seen: Instant,
+    last_update: Instant,
 }
 
 impl PartialEq for RepairRequest {
@@ -77,7 +88,17 @@ impl RepairRequest {
 
 enum WriterMessage {
     Row(IntradayBarRow),
-    Repair(RepairRequest),
+}
+
+struct RepairExecutionRequest {
+    request: RepairRequest,
+    enqueued_at: Instant,
+}
+
+struct RepairExecutionPending {
+    request: RepairRequest,
+    first_enqueued: Instant,
+    due: Instant,
 }
 
 #[derive(Clone, Debug)]
@@ -125,10 +146,49 @@ pub struct IntradayBarRouter {
 }
 
 pub struct IntradayBarService {
+    pub durability: DurableCompactEvents,
     pub reconciler: IntradayBarReconciler,
     pub router: IntradayBarRouter,
     pub rows: broadcast::Sender<IntradayBarRow>,
     tasks: Vec<JoinHandle<()>>,
+}
+
+#[derive(Clone, Default)]
+pub struct DurableCompactEvents {
+    inner: Arc<StdMutex<DurableCompactEventState>>,
+}
+
+#[derive(Default)]
+struct DurableCompactEventState {
+    arrivals: HashSet<u64>,
+    order: VecDeque<u64>,
+}
+
+impl DurableCompactEvents {
+    pub fn mark_persisted(&self, events: &[LiveCompactEvent]) {
+        let mut state = self
+            .inner
+            .lock()
+            .expect("durable compact-event lock poisoned");
+        for event in events {
+            if state.arrivals.insert(event.arrival_sequence) {
+                state.order.push_back(event.arrival_sequence);
+            }
+        }
+        while state.order.len() > DURABLE_EVENT_ACK_CAPACITY {
+            if let Some(expired) = state.order.pop_front() {
+                state.arrivals.remove(&expired);
+            }
+        }
+    }
+
+    fn contains(&self, arrival_sequence: u64) -> bool {
+        self.inner
+            .lock()
+            .expect("durable compact-event lock poisoned")
+            .arrivals
+            .contains(&arrival_sequence)
+    }
 }
 
 #[derive(Clone)]
@@ -166,6 +226,45 @@ impl IntradayWriterPending {
             .map(|value| value.load(Ordering::Relaxed))
             .fold(0_u64, u64::saturating_add);
         self.metrics.set_lane_pending("intraday_bars", total);
+    }
+}
+
+#[derive(Clone)]
+struct IntradayRepairPendingMetrics {
+    counts: Arc<Vec<AtomicU64>>,
+    oldest_ages_ms: Arc<Vec<AtomicU64>>,
+    metrics: SharedMetrics,
+}
+
+impl IntradayRepairPendingMetrics {
+    fn new(shard_count: usize, metrics: SharedMetrics) -> Self {
+        Self {
+            counts: Arc::new((0..shard_count).map(|_| AtomicU64::new(0)).collect()),
+            oldest_ages_ms: Arc::new((0..shard_count).map(|_| AtomicU64::new(0)).collect()),
+            metrics,
+        }
+    }
+
+    fn publish(&self, shard_id: usize, pending: &HashMap<RepairRequest, PendingRepair>) {
+        let oldest_age_ms = pending
+            .values()
+            .map(|value| value.first_seen.elapsed().as_millis().min(u64::MAX as u128) as u64)
+            .max()
+            .unwrap_or_default();
+        self.counts[shard_id].store(pending.len() as u64, Ordering::Relaxed);
+        self.oldest_ages_ms[shard_id].store(oldest_age_ms, Ordering::Relaxed);
+        let total = self
+            .counts
+            .iter()
+            .map(|value| value.load(Ordering::Relaxed))
+            .fold(0_u64, u64::saturating_add);
+        let oldest = self
+            .oldest_ages_ms
+            .iter()
+            .map(|value| value.load(Ordering::Relaxed))
+            .max()
+            .unwrap_or_default();
+        self.metrics.set_intraday_bar_repair_pending(total, oldest);
     }
 }
 
@@ -499,6 +598,7 @@ pub async fn spawn_intraday_bar_service(
     validate_identifier(&config.derived_coverage_table, "QMD_DERIVED_COVERAGE_TABLE")?;
 
     let (broadcast_sender, _) = broadcast::channel(10_000);
+    let durability = DurableCompactEvents::default();
     let writer = IntradayBarWriter::new(config.clone(), metrics.clone(), resolutions.clone());
     writer.initialize().await?;
     metrics.set_lane_state(
@@ -506,12 +606,20 @@ pub async fn spawn_intraday_bar_service(
         "healthy",
         "Canonical intraday bar table initialized; awaiting closed 100ms bars.",
     );
+    metrics.set_lane_state(
+        "intraday_repairs",
+        "healthy",
+        "Dedicated bounded repair executor initialized; q_live.events remains restart authority.",
+    );
     let shard_count = config.intraday_bar_shard_count.max(1);
     let writer_count = shard_count.min(4);
     let per_writer_capacity = (config.intraday_bar_channel_capacity / writer_count).max(1);
     let mut tasks = Vec::new();
     let mut writer_senders = Vec::with_capacity(writer_count);
     let writer_pending = IntradayWriterPending::new(writer_count, metrics.clone());
+    let repair_pending_metrics = IntradayRepairPendingMetrics::new(shard_count, metrics.clone());
+    let (repair_sender, repair_receiver) = mpsc::channel(REPAIR_EXECUTION_CHANNEL_CAPACITY);
+    tasks.push(tokio::spawn(writer.clone().run_repairs(repair_receiver)));
     for writer_id in 0..writer_count {
         let (sender, receiver) = mpsc::channel(per_writer_capacity);
         writer_senders.push(sender);
@@ -535,12 +643,16 @@ pub async fn spawn_intraday_bar_service(
         let shard_metrics = metrics.clone();
         let shard_decoder = decoder.clone();
         let shard_trade_rules = trade_rules.clone();
+        let shard_durability = durability.clone();
+        let shard_repair_pending_metrics = repair_pending_metrics.clone();
+        let repair_output = repair_sender.clone();
         tasks.push(tokio::spawn(async move {
             let mut base_bars: BTreeMap<BarKey, IntradayBarRow> = BTreeMap::new();
             let mut base_seen: HashMap<BarKey, HashSet<EventIdentity>> = HashMap::new();
             let mut rollups: BTreeMap<BarKey, IntradayBarRow> = BTreeMap::new();
             let mut max_seen: HashMap<(String, String), i64> = HashMap::new();
             let mut finalized_through: HashMap<FinalizedSeries, i64> = HashMap::new();
+            let mut pending_repairs: HashMap<RepairRequest, PendingRepair> = HashMap::new();
             let mut cleanup_tick = interval(Duration::from_millis(100));
             loop {
                 let event = tokio::select! {
@@ -549,6 +661,15 @@ pub async fn spawn_intraday_bar_service(
                         None => break,
                     },
                     _ = cleanup_tick.tick() => {
+                        if !flush_durable_repairs(
+                            &mut pending_repairs,
+                            &shard_durability,
+                            &repair_output,
+                            &shard_metrics,
+                        ).await {
+                            return;
+                        }
+                        shard_repair_pending_metrics.publish(shard_id, &pending_repairs);
                         if !flush_wall_ready(
                             &mut base_bars,
                             &mut base_seen,
@@ -587,23 +708,18 @@ pub async fn spawn_intraday_bar_service(
                         .copied()
                         .unwrap_or_default();
                     if (bucket + 1) * BASE_RESOLUTION_US <= finalized {
-                        shard_metrics.inc_intraday_bar_repair_requested();
-                        if output
-                            .send(WriterMessage::Repair(RepairRequest {
-                                ticker: event.ticker.clone(),
-                                local_date: local_date.clone(),
-                                first_bucket_index: bucket,
-                                last_bucket_index: bucket,
-                                sip_timestamp_us: event.sip_timestamp_us,
-                                source_sequence: event.source_sequence,
-                                event_type: event.event_meta & 1,
-                                arrival_sequence: event.arrival_sequence,
-                            }))
-                            .await
-                            .is_err()
-                        {
-                            shard_metrics.inc_intraday_bar_event_dropped();
-                            return;
+                        let request = RepairRequest {
+                            ticker: event.ticker.clone(),
+                            local_date: local_date.clone(),
+                            first_bucket_index: bucket,
+                            last_bucket_index: bucket,
+                            sip_timestamp_us: event.sip_timestamp_us,
+                            source_sequence: event.source_sequence,
+                            event_type: event.event_meta & 1,
+                            arrival_sequence: event.arrival_sequence,
+                        };
+                        if coalesce_pending_repair(&mut pending_repairs, request, &shard_metrics) {
+                            shard_repair_pending_metrics.publish(shard_id, &pending_repairs);
                         }
                         continue;
                     }
@@ -659,11 +775,21 @@ pub async fn spawn_intraday_bar_service(
                 &shard_metrics,
             )
             .await;
+            let _ = flush_durable_repairs(
+                &mut pending_repairs,
+                &shard_durability,
+                &repair_output,
+                &shard_metrics,
+            )
+            .await;
+            shard_repair_pending_metrics.publish(shard_id, &HashMap::new());
         }));
         senders.push(sender);
     }
+    drop(repair_sender);
     drop(writer_senders);
     Ok(IntradayBarService {
+        durability,
         reconciler: IntradayBarReconciler {
             writer: writer.clone(),
         },
@@ -671,6 +797,67 @@ pub async fn spawn_intraday_bar_service(
         rows: broadcast_sender,
         tasks,
     })
+}
+
+fn coalesce_pending_repair(
+    pending: &mut HashMap<RepairRequest, PendingRepair>,
+    request: RepairRequest,
+    metrics: &SharedMetrics,
+) -> bool {
+    if let Some(existing) = pending.get_mut(&request) {
+        existing.request.merge(request);
+        existing.last_update = Instant::now();
+        metrics.inc_intraday_bar_repair_event_merged();
+        false
+    } else {
+        let now = Instant::now();
+        metrics.inc_intraday_bar_repair_requested();
+        pending.insert(
+            request.clone(),
+            PendingRepair {
+                request,
+                first_seen: now,
+                last_update: now,
+            },
+        );
+        true
+    }
+}
+
+async fn flush_durable_repairs(
+    pending: &mut HashMap<RepairRequest, PendingRepair>,
+    durability: &DurableCompactEvents,
+    output: &mpsc::Sender<RepairExecutionRequest>,
+    metrics: &SharedMetrics,
+) -> bool {
+    let now = Instant::now();
+    let mut ready = pending
+        .values()
+        .filter(|pending| {
+            now.duration_since(pending.last_update) >= REPAIR_IDLE_INTERVAL
+                && durability.contains(pending.request.arrival_sequence)
+        })
+        .map(|pending| pending.request.clone())
+        .collect::<Vec<_>>();
+    ready.sort_by(|left, right| {
+        left.local_date
+            .cmp(&right.local_date)
+            .then_with(|| left.ticker.cmp(&right.ticker))
+    });
+    for request in ready {
+        match output.try_send(RepairExecutionRequest {
+            request: request.clone(),
+            enqueued_at: Instant::now(),
+        }) {
+            Ok(()) => {
+                pending.remove(&request);
+                metrics.inc_intraday_bar_repair_range_enqueued();
+            }
+            Err(mpsc::error::TrySendError::Full(_)) => break,
+            Err(mpsc::error::TrySendError::Closed(_)) => return false,
+        }
+    }
+    true
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1257,11 +1444,7 @@ impl IntradayBarWriter {
             )
             .await?;
         }
-        if planned_batches == 0 || completed_batches != planned_batches {
-            return Err(format!(
-                "bounded intraday bootstrap incomplete: planned={planned_batches}, completed={completed_batches}, source_rows={source_rows}"
-            ));
-        }
+        validate_reconciliation_counts(planned_batches, completed_batches, source_rows)?;
         Ok(IntradayBarReconciliationSummary {
             completed_batches,
             newly_completed_batches,
@@ -1510,22 +1693,11 @@ impl IntradayBarWriter {
         mut receiver: mpsc::Receiver<WriterMessage>,
     ) {
         let mut batch = Vec::with_capacity(self.config.max_clickhouse_batch);
-        let mut repairs = HashMap::<RepairRequest, Instant>::new();
         let mut tick = interval(Duration::from_millis(self.config.flush_interval_ms));
         loop {
             tokio::select! {
                 message = receiver.recv() => match message {
                     Some(WriterMessage::Row(row)) => batch.push(row),
-                    Some(WriterMessage::Repair(request)) => {
-                        let due = Instant::now()
-                            + Duration::from_millis(self.config.flush_interval_ms.saturating_mul(2));
-                        if let Some((mut current, current_due)) = repairs.remove_entry(&request) {
-                            current.merge(request);
-                            repairs.insert(current, current_due.min(due));
-                        } else {
-                            repairs.insert(request, due);
-                        }
-                    }
                     None => {
                         while !batch.is_empty() {
                             self.flush(&mut batch).await;
@@ -1533,78 +1705,118 @@ impl IntradayBarWriter {
                                 sleep(Duration::from_millis(250)).await;
                             }
                         }
-                        if !repairs.is_empty() {
-                            eprintln!(
-                                "Deferred {} merged intraday repair range(s) to restart-safe canonical reconciliation during shutdown.",
-                                repairs.len()
-                            );
-                        }
                         return;
                     }
                 },
                 _ = tick.tick() => {
                     self.flush(&mut batch).await;
-                    // Correction queries are deliberately excluded from the
-                    // busy live path. q_live.events is the durable authority,
-                    // so accumulated ticker/session ranges can wait for an
-                    // idle writer or the restart-safe retained reconciliation
-                    // instead of delaying current bars.
-                    if receiver.is_empty() && batch.is_empty() {
-                        self.flush_repairs(&mut repairs, false).await;
-                    }
                 },
             }
             if batch.len() >= self.config.max_clickhouse_batch {
                 self.flush(&mut batch).await;
             }
-            pending.set(
-                writer_id,
-                (batch.len() + repairs.len() + receiver.len()) as u64,
-            );
+            pending.set(writer_id, (batch.len() + receiver.len()) as u64);
         }
     }
 
-    async fn flush_repairs(&self, repairs: &mut HashMap<RepairRequest, Instant>, force: bool) {
-        let now = Instant::now();
-        // One range covers every dirty 100 ms bucket for a ticker/session and
-        // all parent resolutions. A bounded batch converges rapidly without
-        // allowing correction queries to monopolize the live writer.
-        let limit = if force { usize::MAX } else { 1 };
-        let ready = repairs
-            .iter()
-            .filter(|(_, due)| force || **due <= now)
-            .map(|(request, _)| request.clone())
-            .take(limit)
-            .collect::<HashSet<_>>();
-        for request in ready {
-            if let Err(error) = self.repair_bucket(&request).await {
-                self.metrics.record_lane_failure("intraday_bars", &error);
-                eprintln!(
-                    "Intraday bar late-range repair failed: ticker={} local_date={} buckets={}..={} sip_timestamp_us={} source_sequence={} event_type={} arrival_sequence={} error={error}",
-                    request.ticker,
-                    request.local_date,
-                    request.first_bucket_index,
-                    request.last_bucket_index,
-                    request.sip_timestamp_us,
-                    request.source_sequence,
-                    request.event_type,
-                    request.arrival_sequence,
-                );
-                repairs.insert(
-                    request,
-                    Instant::now()
-                        + Duration::from_millis(self.config.flush_interval_ms.saturating_mul(2)),
-                );
-                continue;
+    async fn run_repairs(self, mut receiver: mpsc::Receiver<RepairExecutionRequest>) {
+        let mut repairs = HashMap::<RepairRequest, RepairExecutionPending>::new();
+        let mut tick = interval(REPAIR_EXECUTION_INTERVAL);
+        loop {
+            tokio::select! {
+                message = receiver.recv() => match message {
+                    Some(message) => {
+                        merge_execution_repair(&mut repairs, message, &self.metrics);
+                    }
+                    None => {
+                        if !repairs.is_empty() {
+                            self.metrics.add_intraday_bar_repair_execution_deferred(
+                                repairs.len() as u64,
+                            );
+                            eprintln!(
+                                "Deferred {} merged repair execution range(s) to durable retained-window reconciliation during shutdown.",
+                                repairs.len()
+                            );
+                        }
+                        self.metrics.set_intraday_bar_repair_execution(0, 0, 0);
+                        self.metrics.set_lane_pending("intraday_repairs", 0);
+                        return;
+                    }
+                },
+                _ = tick.tick() => {
+                    while let Ok(message) = receiver.try_recv() {
+                        merge_execution_repair(&mut repairs, message, &self.metrics);
+                    }
+                    self.publish_repair_execution(&repairs, receiver.len(), 0);
+                    let now = Instant::now();
+                    let ready = repairs
+                        .values()
+                        .filter(|pending| pending.due <= now)
+                        .min_by_key(|pending| pending.first_enqueued)
+                        .map(|pending| pending.request.clone());
+                    let Some(request) = ready else {
+                        continue;
+                    };
+                    self.publish_repair_execution(&repairs, receiver.len(), 1);
+                    if let Err(error) = self.repair_bucket(&request).await {
+                        self.metrics.inc_intraday_bar_repair_execution_retry();
+                        self.metrics.record_lane_failure("intraday_repairs", &error);
+                        eprintln!(
+                            "Intraday bar late-range repair failed: ticker={} local_date={} buckets={}..={} sip_timestamp_us={} source_sequence={} event_type={} arrival_sequence={} error={error}",
+                            request.ticker,
+                            request.local_date,
+                            request.first_bucket_index,
+                            request.last_bucket_index,
+                            request.sip_timestamp_us,
+                            request.source_sequence,
+                            request.event_type,
+                            request.arrival_sequence,
+                        );
+                        if let Some(pending) = repairs.get_mut(&request) {
+                            pending.due = Instant::now()
+                                + Duration::from_millis(self.config.flush_interval_ms.saturating_mul(2));
+                        }
+                    } else {
+                        repairs.remove(&request);
+                        self.metrics.inc_intraday_bar_repair_completed();
+                        self.metrics.record_lane_success(
+                            "intraday_repairs",
+                            1,
+                            "Rebuilt one merged late-event bucket range and its parent rollups.",
+                        );
+                    }
+                    self.publish_repair_execution(&repairs, receiver.len(), 0);
+                }
             }
-            repairs.remove(&request);
-            self.metrics.inc_intraday_bar_repair_completed();
-            self.metrics.record_lane_success(
-                "intraday_bars",
-                1,
-                "Rebuilt one merged late-event bucket range and its parent rollups.",
-            );
         }
+    }
+
+    fn publish_repair_execution(
+        &self,
+        repairs: &HashMap<RepairRequest, RepairExecutionPending>,
+        queued: usize,
+        inflight: u64,
+    ) {
+        let oldest_age_ms = repairs
+            .values()
+            .map(|pending| {
+                pending
+                    .first_enqueued
+                    .elapsed()
+                    .as_millis()
+                    .min(u64::MAX as u128) as u64
+            })
+            .max()
+            .unwrap_or_default();
+        self.metrics.set_intraday_bar_repair_execution(
+            repairs.len().saturating_add(queued) as u64,
+            inflight,
+            oldest_age_ms,
+        );
+        self.metrics.set_lane_pending(
+            "intraday_repairs",
+            repairs.len().saturating_add(queued) as u64,
+        );
     }
 
     async fn repair_bucket(&self, request: &RepairRequest) -> Result<(), String> {
@@ -1785,6 +1997,46 @@ impl IntradayBarWriter {
             return Err(format!("ClickHouse HTTP {status}: {text}"));
         }
         Ok(text)
+    }
+}
+
+fn merge_execution_repair(
+    repairs: &mut HashMap<RepairRequest, RepairExecutionPending>,
+    incoming: RepairExecutionRequest,
+    metrics: &SharedMetrics,
+) -> bool {
+    if let Some(existing) = repairs.get_mut(&incoming.request) {
+        existing.request.merge(incoming.request);
+        existing.first_enqueued = existing.first_enqueued.min(incoming.enqueued_at);
+        return false;
+    }
+    if repairs.len() >= REPAIR_EXECUTION_MAX_BACKLOG {
+        metrics.add_intraday_bar_repair_execution_deferred(1);
+        return false;
+    }
+    let now = Instant::now();
+    repairs.insert(
+        incoming.request.clone(),
+        RepairExecutionPending {
+            request: incoming.request,
+            first_enqueued: incoming.enqueued_at,
+            due: now,
+        },
+    );
+    true
+}
+
+fn validate_reconciliation_counts(
+    planned_batches: u64,
+    completed_batches: u64,
+    source_rows: u64,
+) -> Result<(), String> {
+    if completed_batches == planned_batches {
+        Ok(())
+    } else {
+        Err(format!(
+            "bounded intraday bootstrap incomplete: planned={planned_batches}, completed={completed_batches}, source_rows={source_rows}"
+        ))
     }
 }
 
@@ -2015,6 +2267,7 @@ mod tests {
             size_secondary: 20.0,
             source_sequence: sequence,
             ticker: "TEST".into(),
+            exact_conditions: None,
         }
     }
 
@@ -2263,5 +2516,200 @@ mod tests {
         let parent = writer.bootstrap_rollup_sql(1_000_000, Some(&request));
         assert!(base.contains("bucket BETWEEN 42 AND 99"));
         assert!(parent.contains("BETWEEN 4 AND 9"));
+    }
+
+    #[tokio::test]
+    async fn repair_waits_for_compact_persistence_and_idle_coalescing() {
+        let metrics = SharedMetrics::new();
+        let durability = DurableCompactEvents::default();
+        let request = RepairRequest {
+            ticker: "AAPL".into(),
+            local_date: "2026-08-24".into(),
+            first_bucket_index: 42,
+            last_bucket_index: 99,
+            sip_timestamp_us: 100,
+            source_sequence: 1,
+            event_type: 0,
+            arrival_sequence: 10,
+        };
+        let mut pending = HashMap::from([(
+            request.clone(),
+            PendingRepair {
+                request,
+                first_seen: Instant::now() - REPAIR_IDLE_INTERVAL,
+                last_update: Instant::now() - REPAIR_IDLE_INTERVAL,
+            },
+        )]);
+        let (sender, mut receiver) = mpsc::channel(1);
+
+        assert!(flush_durable_repairs(&mut pending, &durability, &sender, &metrics).await);
+        assert!(receiver.try_recv().is_err());
+        let mut persisted = quote_event(100, 1, 100, 101);
+        persisted.arrival_sequence = 10;
+        durability.mark_persisted(&[persisted]);
+
+        assert!(flush_durable_repairs(&mut pending, &durability, &sender, &metrics).await);
+        assert!(matches!(
+            receiver.try_recv(),
+            Ok(RepairExecutionRequest { .. })
+        ));
+        assert!(pending.is_empty());
+    }
+
+    #[tokio::test]
+    async fn continuously_active_symbol_keeps_one_truthfully_reported_pending_range() {
+        let metrics = SharedMetrics::new();
+        let pending_metrics = IntradayRepairPendingMetrics::new(1, metrics.clone());
+        let mut pending = HashMap::new();
+        for sequence in 1..=100 {
+            let request = RepairRequest {
+                ticker: "AAPL".into(),
+                local_date: "2026-08-24".into(),
+                first_bucket_index: sequence,
+                last_bucket_index: sequence,
+                sip_timestamp_us: sequence as u64,
+                source_sequence: sequence as u64,
+                event_type: 0,
+                arrival_sequence: sequence as u64,
+            };
+            coalesce_pending_repair(&mut pending, request, &metrics);
+        }
+        pending_metrics.publish(0, &pending);
+
+        let active = metrics.snapshot();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(active.intraday_bar_repairs_requested, 1);
+        assert_eq!(active.intraday_bar_repair_events_merged, 99);
+        assert_eq!(active.intraday_bar_repair_ranges_pending, 1);
+        assert_eq!(active.intraday_bar_repair_ranges_enqueued, 0);
+
+        let entry = pending.values_mut().next().unwrap();
+        entry.last_update = Instant::now() - REPAIR_IDLE_INTERVAL;
+        let durability = DurableCompactEvents::default();
+        let mut persisted = quote_event(100, 1, 100, 101);
+        persisted.arrival_sequence = 100;
+        durability.mark_persisted(&[persisted]);
+        let (sender, mut receiver) = mpsc::channel(1);
+        assert!(flush_durable_repairs(&mut pending, &durability, &sender, &metrics).await);
+        pending_metrics.publish(0, &pending);
+
+        let released = metrics.snapshot();
+        assert_eq!(released.intraday_bar_repair_ranges_pending, 0);
+        assert_eq!(released.intraday_bar_repair_ranges_enqueued, 1);
+        assert!(matches!(
+            receiver.try_recv(),
+            Ok(RepairExecutionRequest { .. })
+        ));
+    }
+
+    #[tokio::test]
+    async fn full_repair_execution_queue_keeps_range_deferred_without_blocking() {
+        let metrics = SharedMetrics::new();
+        let durability = DurableCompactEvents::default();
+        let mut persisted = quote_event(100, 1, 100, 101);
+        persisted.arrival_sequence = 10;
+        durability.mark_persisted(&[persisted]);
+        let request = RepairRequest {
+            ticker: "AAPL".into(),
+            local_date: "2026-08-24".into(),
+            first_bucket_index: 42,
+            last_bucket_index: 42,
+            sip_timestamp_us: 100,
+            source_sequence: 1,
+            event_type: 0,
+            arrival_sequence: 10,
+        };
+        let mut pending = HashMap::from([(
+            request.clone(),
+            PendingRepair {
+                request: request.clone(),
+                first_seen: Instant::now() - REPAIR_IDLE_INTERVAL,
+                last_update: Instant::now() - REPAIR_IDLE_INTERVAL,
+            },
+        )]);
+        let (sender, _receiver) = mpsc::channel(1);
+        sender
+            .try_send(RepairExecutionRequest {
+                request,
+                enqueued_at: Instant::now(),
+            })
+            .unwrap();
+
+        assert!(flush_durable_repairs(&mut pending, &durability, &sender, &metrics).await);
+        assert_eq!(pending.len(), 1);
+        assert_eq!(metrics.snapshot().intraday_bar_repair_ranges_enqueued, 0);
+    }
+
+    #[test]
+    fn execution_backlog_coalesces_same_ticker_session_and_bounds_new_keys() {
+        let metrics = SharedMetrics::new();
+        let mut repairs = HashMap::new();
+        let base = RepairRequest {
+            ticker: "AAPL".into(),
+            local_date: "2026-08-24".into(),
+            first_bucket_index: 42,
+            last_bucket_index: 42,
+            sip_timestamp_us: 100,
+            source_sequence: 1,
+            event_type: 0,
+            arrival_sequence: 10,
+        };
+        assert!(merge_execution_repair(
+            &mut repairs,
+            RepairExecutionRequest {
+                request: base.clone(),
+                enqueued_at: Instant::now(),
+            },
+            &metrics,
+        ));
+        let mut later = base;
+        later.first_bucket_index = 99;
+        later.last_bucket_index = 99;
+        later.arrival_sequence = 20;
+        assert!(!merge_execution_repair(
+            &mut repairs,
+            RepairExecutionRequest {
+                request: later,
+                enqueued_at: Instant::now(),
+            },
+            &metrics,
+        ));
+
+        assert_eq!(repairs.len(), 1);
+        let merged = repairs.values().next().unwrap().request.clone();
+        assert_eq!(merged.first_bucket_index, 42);
+        assert_eq!(merged.last_bucket_index, 99);
+        assert_eq!(merged.arrival_sequence, 20);
+
+        for index in 1..REPAIR_EXECUTION_MAX_BACKLOG {
+            let mut distinct = merged.clone();
+            distinct.ticker = format!("S{index:04}");
+            assert!(merge_execution_repair(
+                &mut repairs,
+                RepairExecutionRequest {
+                    request: distinct,
+                    enqueued_at: Instant::now(),
+                },
+                &metrics,
+            ));
+        }
+        let mut overflow = merged.clone();
+        overflow.ticker = "OVERFLOW".into();
+        assert!(!merge_execution_repair(
+            &mut repairs,
+            RepairExecutionRequest {
+                request: overflow,
+                enqueued_at: Instant::now(),
+            },
+            &metrics,
+        ));
+        assert_eq!(repairs.len(), REPAIR_EXECUTION_MAX_BACKLOG);
+        assert_eq!(metrics.snapshot().intraday_bar_repair_execution_deferred, 1);
+    }
+
+    #[test]
+    fn zero_planned_reconciliation_is_up_to_date() {
+        assert!(validate_reconciliation_counts(0, 0, 0).is_ok());
+        assert!(validate_reconciliation_counts(2, 1, 10).is_err());
     }
 }

@@ -13,6 +13,7 @@ class ScopeRequest(BaseModel):
     mode: RuntimeMode
     trigger_mode: TriggerMode = "auto"
     tickers: list[str] = Field(default_factory=list, max_length=25_000)
+    model_ids: list[str] = Field(default_factory=list, max_length=16)
     watchlist_ids: list[str] = Field(default_factory=list)
     clock_us: int | None = Field(default=None, ge=1)
     revision: int = Field(default=1, ge=1)
@@ -22,7 +23,12 @@ class ScopeRequest(BaseModel):
     @field_validator("tickers")
     @classmethod
     def normalize_tickers(cls, values: list[str]) -> list[str]:
-        return sorted({str(value).strip().upper() for value in values if str(value).strip()})
+        return _stable_unique(values, uppercase=True)
+
+    @field_validator("model_ids")
+    @classmethod
+    def normalize_model_ids(cls, values: list[str]) -> list[str]:
+        return _stable_unique(values)
 
 
 class RawBarInput(BaseModel):
@@ -60,7 +66,7 @@ class InferenceRequest(BaseModel):
     @field_validator("tickers")
     @classmethod
     def normalize_tickers(cls, values: list[str]) -> list[str]:
-        return sorted({str(value).strip().upper() for value in values if str(value).strip()})
+        return _stable_unique(values, uppercase=True)
 
 
 class FeatureUpdate(BaseModel):
@@ -96,3 +102,15 @@ class OperationalConfigurationUpdate(BaseModel):
     @classmethod
     def normalize_release_ids(cls, values: list[str]) -> list[str]:
         return sorted({str(value).strip() for value in values if str(value).strip()})
+
+
+def _stable_unique(values: list[str], *, uppercase: bool = False) -> list[str]:
+    result: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        normalized = str(value).strip()
+        normalized = normalized.upper() if uppercase else normalized
+        if normalized and normalized not in seen:
+            seen.add(normalized)
+            result.append(normalized)
+    return result

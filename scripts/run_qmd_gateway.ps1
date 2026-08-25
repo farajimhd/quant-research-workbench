@@ -13,7 +13,9 @@ param(
     [switch]$CheckOnly,
     [switch]$DebugBuild,
     [switch]$NoTerminal,
-    [switch]$TerminalNoScreen
+    [switch]$TerminalNoScreen,
+    [ValidateRange(1, 100)]
+    [int]$LogRetentionRuns = 10
 )
 
 $ErrorActionPreference = "Stop"
@@ -240,9 +242,26 @@ if ($NoTerminal) {
 }
 
 New-Item -ItemType Directory -Force -Path $logRoot | Out-Null
-$runStamp = Get-Date -Format "yyyyMMdd_HHmmss"
-$stdoutLog = Join-Path $logRoot "qmd_gateway_$runStamp.out.log"
-$stderrLog = Join-Path $logRoot "qmd_gateway_$runStamp.err.log"
+$runStartedAtUtc = [DateTime]::UtcNow
+$runStamp = "{0}_{1}" -f $runStartedAtUtc.ToString("yyyyMMddTHHmmssfffZ"), ([Guid]::NewGuid().ToString("N"))
+$runRoot = Join-Path $logRoot $runStamp
+New-Item -ItemType Directory -Force -Path $runRoot | Out-Null
+$stdoutLog = Join-Path $runRoot "stdout.log"
+$stderrLog = Join-Path $runRoot "stderr.log"
+$exitLog = Join-Path $runRoot "exit.json"
+$runRecord = [ordered]@{
+    schema_version = 1
+    service = "qmd_gateway"
+    bind = $baseUrl
+    host_role = $HostRole.ToLowerInvariant()
+    target_profile = $targetProfile
+    gateway_executable = $gatewayExe
+    started_at_utc = $runStartedAtUtc.ToString("o")
+    stdout_path = $stdoutLog
+    stderr_path = $stderrLog
+    exit_path = $exitLog
+}
+$runRecord | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $runRoot "run.json") -Encoding UTF8
 $shutdownToken = [Guid]::NewGuid().ToString("N")
 $operatorTokenPath = Join-Path $resolvedRuntimeRoot "operator_token.dpapi"
 
@@ -324,6 +343,8 @@ Write-Host "  stdout: $stdoutLog"
 Write-Host "  stderr: $stderrLog"
 $terminalExitCode = 1
 $gatewayProcess = $null
+$exitReason = "launcher_exception"
+$launcherError = ""
 
 try {
     $gatewayProcess = Start-Process `
@@ -360,6 +381,10 @@ try {
         }
     }
 }
+catch {
+    $launcherError = $_.Exception.Message
+    throw
+}
 finally {
     if ($gatewayProcess -and -not $gatewayProcess.HasExited) {
         Write-Host "Requesting graceful qmd-gateway shutdown for process $($gatewayProcess.Id)..."
@@ -383,6 +408,48 @@ finally {
     if ($gatewayProcess -and $gatewayProcess.HasExited -and $gatewayProcess.ExitCode -ne 0) {
         Write-Warning "qmd-gateway exited with code $($gatewayProcess.ExitCode); inspect $stderrLog for a startup or writer-drain failure."
         $terminalExitCode = $gatewayProcess.ExitCode
+    }
+    $gatewayExitCode = if ($gatewayProcess -and $gatewayProcess.HasExited) {
+        [int]$gatewayProcess.ExitCode
+    }
+    else {
+        $null
+    }
+    $exitReason = if ($launcherError) {
+        "launcher_exception"
+    }
+    elseif ($terminalExitCode -eq 130) {
+        "operator_stop"
+    }
+    elseif ($gatewayExitCode -ne $null -and $gatewayExitCode -ne 0) {
+        "gateway_exit_nonzero"
+    }
+    elseif ($terminalExitCode -eq 0) {
+        "process_exit_zero"
+    }
+    else {
+        "terminal_exit_nonzero"
+    }
+    $exitRecord = [ordered]@{
+        schema_version = 1
+        service = "qmd_gateway"
+        bind = $baseUrl
+        host_role = $HostRole.ToLowerInvariant()
+        started_at_utc = $runStartedAtUtc.ToString("o")
+        finished_at_utc = [DateTime]::UtcNow.ToString("o")
+        exit_code = [int]$terminalExitCode
+        gateway_exit_code = $gatewayExitCode
+        reason = $exitReason
+        error = $launcherError
+    }
+    $exitRecord | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $exitLog -Encoding UTF8
+    $expiredRuns = @(Get-ChildItem -LiteralPath $logRoot -Directory -ErrorAction SilentlyContinue |
+        Sort-Object Name -Descending | Select-Object -Skip $LogRetentionRuns)
+    foreach ($expiredRun in $expiredRuns) {
+        $resolvedExpiredRun = [IO.Path]::GetFullPath($expiredRun.FullName)
+        if ($resolvedExpiredRun.StartsWith($logRoot.TrimEnd('\') + '\', [StringComparison]::OrdinalIgnoreCase)) {
+            Remove-Item -LiteralPath $resolvedExpiredRun -Recurse -Force
+        }
     }
     Remove-Item Env:QMD_SHUTDOWN_TOKEN -ErrorAction SilentlyContinue
     Remove-Item Env:QMD_OPERATOR_TOKEN -ErrorAction SilentlyContinue
