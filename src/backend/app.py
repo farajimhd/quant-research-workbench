@@ -372,7 +372,7 @@ _TICKER_CHANGE_CACHE = BoundedSingleFlightTtlCache[
 ](
     max_entries=2048,
     ttl_seconds=5.0,
-    contract_revision="ticker-change.v1",
+    contract_revision="ticker-change.v2",
     wait_timeout_seconds=95.0,
 )
 _CANVAS_COVERAGE_CACHE = BoundedSingleFlightTtlCache[str, dict[str, Any]](

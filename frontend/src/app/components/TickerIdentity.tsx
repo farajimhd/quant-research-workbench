@@ -27,7 +27,7 @@ const presentationListeners = new Set<() => void>();
 const failedLogoUrls = new Set<string>();
 const PRESENTATION_REQUEST_BATCH_SIZE = 200;
 const LIVE_RECENCY_TTL_MS = 30_000;
-type TickerChange = { absolute_change: number | null; as_of: string; current_price: number | null; percent_change: number | null; previous_close: number | null; previous_session_date: string; ticker: string };
+type TickerChange = { absolute_change: number | null; as_of: string; current_price: number | null; percent_change: number | null; previous_close: number | null; previous_session_date: string; reference_status: "ready" | "unavailable"; source: string; ticker: string };
 const changeCache = new Map<string, TickerChange | null>();
 const pendingChangeRequests = new Map<string, Promise<void>>();
 

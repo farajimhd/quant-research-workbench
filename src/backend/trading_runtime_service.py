@@ -1519,6 +1519,9 @@ def historical_ticker_change(ticker: str, *, as_of: str) -> dict[str, Any]:
         raise ValueError("as_of must include a timezone")
     exchange_as_of = resolved_as_of.astimezone(ZoneInfo("America/New_York"))
     session_date = exchange_as_of.date()
+    sessions = market_sessions(session_date - timedelta(days=14), session_date)
+    prior_sessions = [candidate for candidate in sessions if candidate < session_date]
+    expected_previous_session = prior_sessions[-1] if prior_sessions else None
     macro = historical_macro_bar_history(
         ticker=resolved_ticker,
         timeframe="1d",
@@ -1527,10 +1530,43 @@ def historical_ticker_change(ticker: str, *, as_of: str) -> dict[str, Any]:
     )
     prior_rows = [
         row for row in macro.get("history", [])
-        if str(row.get("session_date") or "") < session_date.isoformat() and float(row.get("close") or 0) > 0
+        if expected_previous_session is not None
+        and str(row.get("session_date") or "") == expected_previous_session.isoformat()
+        and float(row.get("close") or 0) > 0
     ]
     previous = prior_rows[-1] if prior_rows else {}
     previous_close = float(previous.get("close") or 0)
+    previous_close_source = "qmd-history-gateway" if previous_close > 0 else ""
+    # The macro materialization can legitimately trail the current live
+    # session.  For the current/prior exchange session, the completed durable
+    # 1-minute QMD Live bar is the newer previous-close authority.  Require the
+    # exact calendar session so an old last-known close can never be presented
+    # as today's session change (for example after a listing or split).
+    if expected_previous_session is not None and _is_recent_live_chart_session(session_date):
+        try:
+            live_previous = qmd_intraday_bar_history(
+                resolved_ticker,
+                timeframe="1m",
+                start_date=expected_previous_session.isoformat(),
+                end_date=expected_previous_session.isoformat(),
+                row_limit=1,
+            )
+        except QmdServiceError:
+            live_previous = {}
+        live_rows = [
+            row
+            for row in live_previous.get("bars", [])
+            if isinstance(row, dict)
+            and str(row.get("session_date") or "") == expected_previous_session.isoformat()
+            and float(row.get("close") or 0) > 0
+        ]
+        if live_rows:
+            live_rows.sort(key=_bar_start_sort_key)
+            previous = live_rows[-1]
+            previous_close = float(previous["close"])
+            previous_close_source = str(
+                live_previous.get("source") or "qmd_live_intraday_family_bars_v3"
+            )
     session_start = datetime.combine(session_date, time(4, 0), tzinfo=ZoneInfo("America/New_York"))
     session_end = datetime.combine(session_date, time(20, 0), tzinfo=ZoneInfo("America/New_York"))
     current_end = min(exchange_as_of, session_end)
@@ -1560,10 +1596,13 @@ def historical_ticker_change(ticker: str, *, as_of: str) -> dict[str, Any]:
         "as_of": resolved_as_of.isoformat(),
         "current_price": current_price or None,
         "previous_close": previous_close or None,
-        "previous_session_date": str(previous.get("session_date") or ""),
+        "previous_session_date": (
+            expected_previous_session.isoformat() if previous_close > 0 and expected_previous_session else ""
+        ),
         "absolute_change": absolute_change if current_price > 0 and previous_close > 0 else None,
         "percent_change": percent_change if current_price > 0 and previous_close > 0 else None,
-        "source": "qmd-history-gateway",
+        "reference_status": "ready" if previous_close > 0 else "unavailable",
+        "source": previous_close_source or "unavailable",
         "ticker": resolved_ticker,
     }
 

@@ -195,6 +195,62 @@ class HistoricalTradingServiceTests(unittest.TestCase):
             mode="live",
         )
 
+    @patch("src.backend.trading_runtime_service._is_recent_live_chart_session", return_value=True)
+    @patch("src.backend.trading_runtime_service.qmd_intraday_bar_history")
+    @patch("src.backend.trading_runtime_service.historical_bar_history_before")
+    @patch("src.backend.trading_runtime_service.historical_macro_bar_history")
+    def test_ticker_change_prefers_exact_recent_qmd_close_over_stale_macro(
+        self,
+        macro_history,
+        bar_history,
+        intraday_history,
+        _recent_session,
+    ) -> None:
+        macro_history.return_value = {
+            "history": [{"session_date": "2026-07-31", "close": 0.1872}]
+        }
+        intraday_history.return_value = {
+            "bars": [
+                {
+                    "bar_start": "2026-08-24T16:48:00-04:00",
+                    "close": 8.64,
+                    "session_date": "2026-08-24",
+                }
+            ],
+            "source": "qmd_live_intraday_family_bars_v3",
+        }
+        bar_history.return_value = {"history": [{"close": 7.22}]}
+
+        payload = historical_ticker_change(
+            "GRML", as_of="2026-08-25T17:31:00-04:00"
+        )
+
+        self.assertEqual(payload["previous_session_date"], "2026-08-24")
+        self.assertEqual(payload["previous_close"], 8.64)
+        self.assertAlmostEqual(payload["percent_change"], -16.4351851852)
+        self.assertEqual(payload["reference_status"], "ready")
+        self.assertEqual(payload["source"], "qmd_live_intraday_family_bars_v3")
+
+    @patch("src.backend.trading_runtime_service._is_recent_live_chart_session", return_value=False)
+    @patch("src.backend.trading_runtime_service.historical_bar_history_before")
+    @patch("src.backend.trading_runtime_service.historical_macro_bar_history")
+    def test_ticker_change_fails_closed_when_exact_previous_session_is_missing(
+        self, macro_history, bar_history, _recent_session
+    ) -> None:
+        macro_history.return_value = {
+            "history": [{"session_date": "2026-07-31", "close": 0.1872}]
+        }
+        bar_history.return_value = {"history": [{"close": 7.22}]}
+
+        payload = historical_ticker_change(
+            "GRML", as_of="2026-08-25T17:31:00-04:00"
+        )
+
+        self.assertIsNone(payload["previous_close"])
+        self.assertIsNone(payload["percent_change"])
+        self.assertEqual(payload["previous_session_date"], "")
+        self.assertEqual(payload["reference_status"], "unavailable")
+
     @patch("src.backend.trading_runtime_service._historical_gateway_get")
     def test_historical_market_state_uses_condition_transitions_and_qmd_luld_bar(self, gateway_get) -> None:
         gateway_get.side_effect = [
