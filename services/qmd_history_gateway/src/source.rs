@@ -2103,7 +2103,7 @@ fn ticker_filter(tickers: &[String]) -> Result<String, String> {
         .map(|ticker| sql_literal(&ticker))
         .collect::<Vec<_>>()
         .join(",");
-    Ok(format!(" AND upper(source.ticker) IN ({values})"))
+    Ok(format!(" AND source.ticker IN ({values})"))
 }
 
 fn session_vwap_seed_select(
@@ -2128,11 +2128,11 @@ fn session_vwap_seed_select(
         PREWHERE source.event_date >= toDate('{start_date}')
           AND source.event_date <= toDate('{end_date}')
           AND source.sip_timestamp_us >= {start_us}
-          AND source.sip_timestamp_us < {end_us}
+          AND source.sip_timestamp_us < {end_us}{ticker_filter}
         WHERE bitAnd(source.event_meta, 1) = 0
           AND source.price_primary_int > 0
           AND source.size_primary > 0
-          AND {eligible}{ticker_filter}"#,
+          AND {eligible}"#,
         start_date = start.date_naive(),
         end_date = last_inclusive.date_naive(),
         start_us = start.timestamp_micros(),
@@ -2664,11 +2664,12 @@ mod tests {
             true,
             Utc.with_ymd_and_hms(2026, 8, 25, 8, 0, 0).unwrap(),
             Utc.with_ymd_and_hms(2026, 8, 25, 20, 30, 0).unwrap(),
-            " AND upper(source.ticker) IN ('AAPL')",
+            " AND source.ticker IN ('AAPL')",
             "0,3,7",
         );
 
         assert!(sql.contains("FROM q_live.events AS source FINAL"));
+        assert!(sql.contains("source.sip_timestamp_us < 1787689800000000 AND source.ticker IN ('AAPL')"));
         assert!(sql.contains("bitAnd(source.event_meta, 1) = 0"));
         assert!(sql.contains("source.condition_token_1 IN (0,3,7)"));
         assert!(sql.contains("source.condition_token_5 IN (0,3,7)"));
