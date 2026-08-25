@@ -284,9 +284,35 @@ function TickerNewsStory({ asOfMs, compact = false, live, queryId, row, showTeas
   const tone = newsTemperature(row.published_at_utc, asOfMs);
   const TemperatureIcon = newsTemperaturePresentation(tone).Icon;
   const direction = normalizeSemanticDirection(row.news_synthesis_summary?.composite_sentiment);
+  const selection = newsSelectionForRow(row, queryId);
   return <article className={compact ? "ticker-news-story compact" : "ticker-news-story"} data-direction={direction} data-tone={tone}>
     <div className="ticker-event-time"><span aria-label={`${tone} news`} className="ticker-news-temperature" data-tone={tone} title={`${tone} news`}><TemperatureIcon size={12} />{tone}</span><MarketTime dateStyle="short" includeDate value={row.published_at_utc} /></div>
-    <div className="ticker-event-content"><div className="ticker-news-meta"><NewsKind classification={classificationFromRow(row)} /><SynthesisDirection summary={row.news_synthesis_summary} salient /><SynthesisConcepts concepts={row.news_synthesis_summary?.concepts} compact /></div><button className="ticker-news-open" onClick={() => openNewsPage(row, queryId, live)} type="button"><strong>{row.title}</strong>{showTeaser && newsTeaser(row) ? <p>{newsTeaser(row)}</p> : null}</button><NewsTimelineIntelligence row={row} /></div>
+    <div className="ticker-event-content"><div className="ticker-news-meta"><NewsKind classification={classificationFromRow(row)} /><SynthesisDirection summary={row.news_synthesis_summary} salient /><SynthesisConcepts concepts={row.news_synthesis_summary?.concepts} compact /></div><a className="ticker-news-open" href={newsPageUrl(selection, live)} onClick={() => prepareNewsReader(selection)} rel="noopener noreferrer" target="_blank"><strong>{row.title}</strong>{showTeaser && newsTeaser(row) ? <p>{newsTeaser(row)}</p> : null}</a><NewsTimelineIntelligence row={row} /></div>
+  </article>;
+}
+
+function TickerNewsPopoverStory({ asOfMs, queryId, row }: { asOfMs: number; queryId: string; row: NewsRow }) {
+  const tone = newsTemperature(row.published_at_utc, asOfMs);
+  const TemperatureIcon = newsTemperaturePresentation(tone).Icon;
+  const direction = normalizeSemanticDirection(row.news_synthesis_summary?.composite_sentiment);
+  const teaser = newsTeaser(row);
+  const selection = newsSelectionForRow(row, queryId);
+  return <article className="ticker-news-popover-story" data-direction={direction} data-tone={tone}>
+    <a className="ticker-news-popover-story-open" href={newsPageUrl(selection, true)} onClick={() => prepareNewsReader(selection)} rel="noopener noreferrer" target="_blank" title="Open News Detail in a new tab">
+      <span className="ticker-news-popover-story-time"><strong><MarketTime dateStyle="short" includeDate value={row.published_at_utc} /></strong></span>
+      <span className="ticker-news-popover-story-main">
+        <span className="ticker-news-popover-story-meta">
+          <span className="ticker-news-popover-recency" data-tone={tone}><TemperatureIcon size={11} />{readableLabel(tone)}</span>
+          <NewsKind classification={classificationFromRow(row)} />
+          <SynthesisDirection summary={row.news_synthesis_summary} salient />
+          <SynthesisConcepts concepts={row.news_synthesis_summary?.concepts} compact />
+        </span>
+        <strong className="ticker-news-popover-story-title">{row.title || "Untitled story"}</strong>
+        {teaser ? <span className="ticker-news-popover-story-teaser">{teaser}</span> : null}
+      </span>
+      <span className="ticker-news-popover-open-cue"><ExternalLink size={13} /><span>Detail</span></span>
+    </a>
+    <NewsTimelineIntelligence compact row={row} />
   </article>;
 }
 
@@ -298,6 +324,7 @@ export function TickerNewsPopover({ anchor, onClose, ticker }: { anchor: TickerN
   const sessionDate = marketDate(asOf);
   const state = useNewsQuery({ asOf, content: "all", direction: "", eligibilityFilters: EMPTY_ELIGIBILITY_QUERY, endDate: sessionDate, hours: 24, kind: "all", labelState: "", limit: 250, live: true, origin: "", refreshKey: 0, role: "", search: "", startDate: sessionDate, ticker });
   const [filter, setFilter] = useState<"all" | "candidates" | "forecasted" | "reviewed">("all");
+  const presentations = useTickerPresentations([ticker]);
   const popoverRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     const dismiss = (event: MouseEvent) => { if (!popoverRef.current?.contains(event.target as Node)) onClose(); };
@@ -305,20 +332,30 @@ export function TickerNewsPopover({ anchor, onClose, ticker }: { anchor: TickerN
     window.addEventListener("mousedown", dismiss); window.addEventListener("keydown", escape);
     return () => { window.removeEventListener("mousedown", dismiss); window.removeEventListener("keydown", escape); };
   }, [onClose]);
-  const rows = [...state.rows].sort(compareNewsRecency).filter((row) => {
+  const orderedRows = [...state.rows].sort(compareNewsRecency);
+  const filterCounts = {
+    all: orderedRows.length,
+    candidates: orderedRows.filter((row) => isDeepFmFunnel(row.ai_state?.funnel) && row.ai_state?.funnel?.forecast_eligibility === "eligible").length,
+    reviewed: orderedRows.filter((row) => row.ai_state?.review?.status === "complete").length,
+    forecasted: orderedRows.filter((row) => Boolean(row.ai_state?.hypotheses?.length)).length,
+  };
+  const rows = orderedRows.filter((row) => {
     if (filter === "candidates") return isDeepFmFunnel(row.ai_state?.funnel) && row.ai_state?.funnel?.forecast_eligibility === "eligible";
     if (filter === "reviewed") return row.ai_state?.review?.status === "complete";
     if (filter === "forecasted") return Boolean(row.ai_state?.hypotheses?.length);
     return true;
   });
-  const width = Math.min(620, window.innerWidth - 24);
+  const width = Math.min(700, window.innerWidth - 24);
   const left = Math.max(12, Math.min(anchor.left, window.innerWidth - width - 12));
-  const top = anchor.bottom + 8 + 540 <= window.innerHeight ? anchor.bottom + 8 : Math.max(12, anchor.top - 548);
+  const top = anchor.bottom + 8 + 620 <= window.innerHeight ? anchor.bottom + 8 : Math.max(12, anchor.top - 628);
   return createPortal(<div aria-label={`${ticker} news timeline`} className="ticker-news-popover" ref={popoverRef} role="dialog" style={{ left, top, width }}>
-    <header><div><span className="ticker-news-popover-kicker">Today · New York time</span><strong>{ticker} news timeline</strong><span>{state.rows.length} stories through <MarketTime value={asOf} /></span></div><button aria-label="Close ticker news" onClick={onClose} type="button"><X size={15} /></button></header>
-    <nav aria-label="News timeline filters">{(["all", "candidates", "reviewed", "forecasted"] as const).map((value) => <button aria-pressed={filter === value} key={value} onClick={() => setFilter(value)} type="button">{value === "all" ? "All" : value === "candidates" ? "Candidates" : value === "reviewed" ? "Reviewed" : "Forecasted"}</button>)}</nav>
+    <header>
+      <div className="ticker-news-popover-heading"><TickerIdentity className="ticker-news-popover-identity" logoUrl={presentations[ticker]?.logo_url} showLogoPlaceholder ticker={ticker} /><span><strong>Today’s news</strong><small>New York session · through <MarketTime value={asOf} /></small></span></div>
+      <div className="ticker-news-popover-header-actions"><span className="ticker-news-popover-live"><CircleDot size={10} />Live</span><button aria-label="Close ticker news" onClick={onClose} type="button"><X size={15} /></button></div>
+    </header>
+    <nav aria-label="News timeline filters">{(["all", "candidates", "reviewed", "forecasted"] as const).map((value) => <button aria-pressed={filter === value} key={value} onClick={() => setFilter(value)} type="button"><span>{value === "all" ? "All news" : value === "candidates" ? "DeepFM eligible" : value === "reviewed" ? "AI reviewed" : "Reaction forecast"}</span><b>{filterCounts[value]}</b></button>)}</nav>
     <NewsStatus compact state={state} />
-    <div className="ticker-news-popover-feed">{rows.map((row) => <TickerNewsStory asOfMs={now} compact key={row.canonical_news_id} live queryId={state.queryId} row={row} showTeaser />)}{!state.loading && !rows.length ? <NewsEmpty label="No news matches this view." /> : null}</div>
+    <div className="ticker-news-popover-feed">{rows.map((row) => <TickerNewsPopoverStory asOfMs={now} key={row.canonical_news_id} queryId={state.queryId} row={row} />)}{!state.loading && !rows.length ? <NewsEmpty label="No news matches this view." /> : null}</div>
   </div>, document.body);
 }
 
@@ -594,7 +631,7 @@ function useNewsIntelligenceState(initialState: NewsAiState | null | undefined, 
   return { error: error || state?.review?.error || "", pending, reactionPending, requestReaction, requestReview, reviewPending, state, status };
 }
 
-function NewsTimelineIntelligence({ row }: { row: NewsRow }) {
+function NewsTimelineIntelligence({ compact = false, row }: { compact?: boolean; row: NewsRow }) {
   const intelligence = useNewsIntelligenceState(row.ai_state, row.canonical_news_id, row.published_at_utc);
   const funnel = intelligence.state?.funnel;
   const deepFmCurrent = isDeepFmFunnel(funnel);
@@ -604,7 +641,7 @@ function NewsTimelineIntelligence({ row }: { row: NewsRow }) {
   const reaction = hypothesis?.prediction.predictions["5m"];
   const reactionReady = labels.some((label) => label.ticker && label.forecast_relevance_probability >= 0.5);
   const ticker = primary?.ticker || row.ticker_link_sample?.[0] || "";
-  return <div className="ticker-news-decision-strip">
+  return <div className={`ticker-news-decision-strip${compact ? " compact" : ""}`}>
     <div className="ticker-news-decision-badges">
       <span data-kind="synthesis" title="News Synthesis is informational and is not used for filtering or signals"><b>Synth</b>{row.news_synthesis_summary ? `${readableLabel(row.news_synthesis_summary.communication_purpose)} · ${shortSentiment(row.news_synthesis_summary.composite_sentiment)}` : "Pending"}<em>View only</em></span>
       <span data-kind="deepfm" data-tone={deepFmCurrent && funnel.forecast_eligibility === "eligible" ? "positive" : deepFmCurrent ? "negative" : "pending"}><b>DeepFM</b>{deepFmCurrent ? `${funnel.forecast_eligibility === "eligible" ? "Eligible" : "Filtered"} ${Math.round(funnel.eligible_probability * 100)}%` : "Pending"}</span>
@@ -763,4 +800,5 @@ function readSelectedNews(canvasId: string) { return parseNewsSelection(window.l
 function selectNews(canvasId: string, selection: NewsSelection) { window.localStorage.setItem(selectionKey(canvasId), JSON.stringify(selection)); window.dispatchEvent(new CustomEvent(NEWS_SELECTION_EVENT, { detail: { canvasId, ...selection } })); }
 function prepareNewsReader(selection: NewsSelection) { ensureNewsReaderCanvas(); selectNews(NEWS_READER_CANVAS_ID, selection); }
 function newsPageUrl(selection: NewsSelection, live = false) { const url = new URL(focusCanvasUrl(NEWS_READER_CANVAS_ID, "news_detail", "draft", live ? "live" : undefined)); url.searchParams.set("news", selection.newsId); if (selection.publishedAt) url.searchParams.set("news_published_at", selection.publishedAt); if (selection.queryId) url.searchParams.set("news_query_id", selection.queryId); return url.toString(); }
-function openNewsPage(row: NewsRow, queryId: string, live = false) { const selection = { newsId: row.canonical_news_id, publishedAt: row.published_at_utc, queryId }; prepareNewsReader(selection); window.open(newsPageUrl(selection, live), "quant-news-reader"); }
+function newsSelectionForRow(row: NewsRow, queryId: string): NewsSelection { return { newsId: row.canonical_news_id, publishedAt: row.published_at_utc, queryId }; }
+function openNewsPage(row: NewsRow, queryId: string, live = false) { const selection = newsSelectionForRow(row, queryId); prepareNewsReader(selection); const reader = window.open(newsPageUrl(selection, live), "_blank"); if (reader) reader.opener = null; }
