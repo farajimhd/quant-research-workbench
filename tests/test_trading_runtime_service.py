@@ -167,25 +167,32 @@ class HistoricalTradingServiceTests(unittest.TestCase):
         ):
             _historical_gateway_get("/health", {}, timeout=3)
 
-    @patch("src.backend.trading_runtime_service.historical_compact_events")
+    @patch("src.backend.trading_runtime_service.historical_bar_history_before")
     @patch("src.backend.trading_runtime_service.historical_macro_bar_history")
-    def test_ticker_change_compares_current_trade_with_prior_20_et_close(self, macro_history, compact_events) -> None:
+    def test_ticker_change_compares_current_trade_with_prior_20_et_close(self, macro_history, bar_history) -> None:
         macro_history.return_value = {"history": [
             {"session_date": "2026-07-13", "close": 317.88},
             {"session_date": "2026-07-14", "close": 320.00},
         ]}
-        compact_events.return_value = [{"event_meta": 1, "price_primary_int": 31481}]
+        bar_history.return_value = {"history": [{"close": 314.81}]}
 
         payload = historical_ticker_change("aapl", as_of="2026-07-14T09:45:00-04:00")
 
         self.assertEqual(payload["previous_session_date"], "2026-07-13")
         self.assertEqual(payload["current_price"], 314.81)
         self.assertAlmostEqual(payload["percent_change"], -0.9657732478)
-        compact_events.assert_called_once_with(
-            "AAPL",
-            start="2026-07-14T04:00:00-04:00",
-            end="2026-07-14T09:45:00-04:00",
-            row_limit=5_000,
+        bar_history.assert_called_once_with(
+            before=date(2026, 7, 14),
+            ticker="AAPL",
+            timeframe="1s",
+            row_limit=1,
+            session_date=date(2026, 7, 14),
+            as_of="2026-07-14T09:45:00-04:00",
+            allow_persisted_bars=True,
+            include_market_signals=False,
+            include_structure=False,
+            stage="bars",
+            mode="live",
         )
 
     @patch("src.backend.trading_runtime_service._historical_gateway_get")

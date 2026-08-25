@@ -648,7 +648,7 @@ def _query_sec(cutoff: datetime) -> list[dict[str, Any]]:
 
 
 def _query_scanner_news_intelligence(cutoff: datetime) -> list[dict[str, Any]]:
-    """Return one causal company-news summary per ticker for scanner enrichment."""
+    """Return one causal synthesized-news summary per ticker for scanner enrichment."""
     source_rows = _clickhouse_rows(
         canvas_context_v1.scanner_company_news(
             cutoff, engine_version=ENGINE_VERSION, synthesis_table=SYNTHESIS_TABLE
@@ -794,6 +794,7 @@ def _attach_compact_news_intelligence(row: dict[str, Any], news_item: dict[str, 
     direction_score = {"positive": 1.0, "mixed": 0.5, "neutral": 0.0, "negative": -1.0}.get(direction, 0.0)
     row.update({
         "latest_news_id": str(news_item.get("canonical_news_id") or ""),
+        "latest_news_published_at": str(news_item.get("published_at_utc") or news_item.get("latest_news_at") or ""),
         "latest_news_title": str(news_item.get("title") or ""),
         "news_synthesis": direction_score,
         "news_synthesis_class": article_class,

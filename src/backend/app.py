@@ -367,6 +367,14 @@ _CANVAS_CHART_HISTORY_CACHE = BoundedSingleFlightTtlCache[
     contract_revision="canvas-chart-history.v1",
     wait_timeout_seconds=95.0,
 )
+_TICKER_CHANGE_CACHE = BoundedSingleFlightTtlCache[
+    tuple[str, str], dict[str, Any]
+](
+    max_entries=2048,
+    ttl_seconds=5.0,
+    contract_revision="ticker-change.v1",
+    wait_timeout_seconds=95.0,
+)
 _CANVAS_COVERAGE_CACHE = BoundedSingleFlightTtlCache[str, dict[str, Any]](
     max_entries=1,
     ttl_seconds=30.0,
@@ -5897,7 +5905,13 @@ def trading_ticker_change(symbol: str, as_of: str) -> dict[str, Any]:
     if not re.fullmatch(r"[A-Z][A-Z0-9.\-]{0,9}", ticker):
         raise HTTPException(status_code=400, detail="symbol must be a valid ticker")
     try:
-        return historical_ticker_change(ticker, as_of=as_of)
+        # The identity appears in several simultaneously mounted Canvas panels.
+        # Coalesce identical causal cutoffs so one slow QMD History read cannot
+        # become a fan-out of duplicate requests.
+        return _TICKER_CHANGE_CACHE.get_or_load(
+            (ticker, as_of),
+            lambda: historical_ticker_change(ticker, as_of=as_of),
+        )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except QmdServiceError as exc:

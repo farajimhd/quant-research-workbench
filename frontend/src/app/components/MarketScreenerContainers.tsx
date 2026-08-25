@@ -1,4 +1,4 @@
-import { ArrowDown, ArrowLeft, ArrowRight, ArrowUp, ArrowUpDown, Check, ChevronDown, ChevronLeft, Columns3, FileCheck2, Flame, ListFilter, Plus, Search, Star, Trash2, X } from "lucide-react";
+import { ArrowDown, ArrowLeft, ArrowRight, ArrowUp, ArrowUpDown, Bot, Check, ChevronDown, ChevronLeft, Columns3, FileCheck2, Flame, ListFilter, Plus, Search, Star, Trash2, TrendingUp, X } from "lucide-react";
 import { forwardRef, useDeferredValue, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
 import { api, apiCached, invalidateApiCache } from "../../api/client";
@@ -1072,6 +1072,7 @@ function NewsAiReviewMarketCard({ row }: { row: ScreenerRow }) {
     <span><strong>AI review</strong><em data-tone={complete && score >= 50 ? "positive" : complete ? "negative" : "pending"}>{complete ? `${Math.round(score)}%` : shortMarketNewsValue(row.news_ai_review_state, "Pending")}</em></span>
     <b data-tone={String(row.news_ai_sentiment ?? "neutral")}>{complete ? shortMarketNewsValue(row.news_ai_sentiment, "Neutral") : "Not reviewed"}</b>
     <small>{complete ? `${shortMarketNewsValue(row.news_ai_eligibility, "Pending")} · DeepFM ${Math.round(numberValue(row.news_deepfm_probability))}%` : `DeepFM ${shortMarketNewsValue(row.news_deepfm_eligibility, "Pending")}`}</small>
+    <MarketNewsAction kind="review" row={row} />
   </span>;
 }
 
@@ -1082,7 +1083,49 @@ function NewsAiReactionMarketCard({ row }: { row: ScreenerRow }) {
     <span><strong>5 min</strong><em data-tone={expected === null ? "pending" : expected > 0 ? "positive" : expected < 0 ? "negative" : "neutral"}>{expected === null ? shortMarketNewsValue(row.news_ai_reaction_state, "Review first") : `${expected > 0 ? "+" : ""}${expected.toFixed(2)}%`}</em></span>
     <b>{expected === null ? "No forecast" : `${Math.round(numberValue(row.news_ai_reaction_confidence))}% confidence`}</b>
     <small>{expected === null ? "Manual action required" : shortMarketNewsValue(row.news_ai_reaction_regime, "Unknown regime")}</small>
+    <MarketNewsAction kind="reaction" row={row} />
   </span>;
+}
+
+function MarketNewsAction({ kind, row }: { kind: "reaction" | "review"; row: ScreenerRow }) {
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState("");
+  const newsId = String(row.latest_news_id ?? "");
+  const publishedAt = String(row.latest_news_published_at ?? row.latest_news_at ?? "");
+  const reviewed = row.news_ai_review !== null && row.news_ai_review !== undefined;
+  const reactionReady = reviewed && numberValue(row.news_ai_review) >= 50;
+  const completed = kind === "review" ? reviewed : row.news_ai_reaction !== null && row.news_ai_reaction !== undefined;
+  useEffect(() => {
+    if (completed) setPending(false);
+  }, [completed]);
+  const unavailable = !newsId || !publishedAt || completed || (kind === "reaction" && !reactionReady);
+  const label = pending
+    ? kind === "review" ? "Reviewing" : "Forecasting"
+    : kind === "review" ? completed ? "Reviewed" : "Review news"
+    : completed ? "Forecasted" : !reactionReady ? "Review first" : "Forecast reaction";
+  const Icon = kind === "review" ? Bot : TrendingUp;
+  const submit = async () => {
+    setError("");
+    setPending(true);
+    try {
+      await api(`/api/trading/news/${encodeURIComponent(newsId)}/ai-${kind}`, {
+        method: "POST",
+        body: JSON.stringify({
+          published_at_utc: publishedAt,
+          requested_by: "frontend-operator",
+          ...(kind === "reaction" ? { ticker: String(row.ticker ?? row.symbol ?? "").toUpperCase() } : {}),
+        }),
+        timeoutMs: 30000,
+      });
+    } catch (reason) {
+      setPending(false);
+      setError(reason instanceof Error ? reason.message : String(reason));
+    }
+  };
+  return <>
+    <button className="market-news-action" disabled={pending || unavailable} onClick={(event) => { event.stopPropagation(); void submit(); }} title={!publishedAt ? "The news publication timestamp is unavailable." : kind === "reaction" && !reactionReady ? "Complete an eligible AI news review first." : label} type="button"><Icon size={10} />{label}</button>
+    {error ? <small className="market-news-action-error" title={error}>{error}</small> : null}
+  </>;
 }
 
 function shortMarketNewsValue(value: unknown, fallback: string) {

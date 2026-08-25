@@ -22,7 +22,7 @@ class CanvasContextQueryPlanTests(unittest.TestCase):
         self.assertIn("LIMIT 30", query)
         self.assertIn("arrayDistinct", query)
 
-    def test_scanner_plans_keep_company_and_filing_identity_scoped(self) -> None:
+    def test_scanner_plans_keep_synthesized_news_and_filing_identity_scoped(self) -> None:
         news = canvas_context_v1.scanner_company_news(
             self.cutoff,
             engine_version="engine-v1",
@@ -30,8 +30,9 @@ class CanvasContextQueryPlanTests(unittest.TestCase):
         )
         sec = canvas_context_v1.scanner_sec_filings(self.cutoff)
 
-        self.assertIn("WHERE is_company_news", news)
-        self.assertIn("GROUP BY ticker", news)
+        self.assertIn("arrayJoin(arrayZip(s.tickers, s.sentiments))", news)
+        self.assertNotIn("s.information_origin = 'issuer'", news)
+        self.assertIn("WHERE notEmpty(ticker)", news)
         self.assertIn("id_sec_market_bridge_v3", sec)
         self.assertIn("valid_to_date_exclusive", sec)
         self.assertIn("GROUP BY ticker", sec)

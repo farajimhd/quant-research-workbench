@@ -186,13 +186,18 @@ function normalizeTicker(value: string) {
 
 function useTickerChange(ticker: string, asOf: string) {
   const normalized = ticker.trim().toUpperCase();
-  const key = normalized && asOf ? `${normalized}|${asOf}` : "";
+  // Day change is a second-resolution presentation metric. Canvas can render
+  // the same identity in several panels whose wall clocks differ only by a few
+  // milliseconds; normalize that shared cutoff so they coalesce into one
+  // causal request instead of saturating QMD History with duplicate scans.
+  const changeAsOf = useMemo(() => normalizeTickerChangeAsOf(asOf), [asOf]);
+  const key = normalized && changeAsOf ? `${normalized}|${changeAsOf}` : "";
   const [revision, setRevision] = useState(0);
   useEffect(() => {
     if (!key || changeCache.has(key)) return;
     let request = pendingChangeRequests.get(key);
     if (!request) {
-      request = api<TickerChange>(`/api/trading/ticker-change/${encodeURIComponent(normalized)}${query({ as_of: asOf })}`, { timeoutMs: 120000 })
+      request = api<TickerChange>(`/api/trading/ticker-change/${encodeURIComponent(normalized)}${query({ as_of: changeAsOf })}`, { timeoutMs: 120000 })
         .then((payload) => { changeCache.set(key, payload); })
         .catch(() => { changeCache.set(key, null); })
         .finally(() => pendingChangeRequests.delete(key));
@@ -201,8 +206,14 @@ function useTickerChange(ticker: string, asOf: string) {
     let active = true;
     request.then(() => { if (active) setRevision((value) => value + 1); });
     return () => { active = false; };
-  }, [asOf, key, normalized]);
+  }, [changeAsOf, key, normalized]);
   return useMemo(() => changeCache.get(key) ?? null, [key, revision]);
+}
+
+export function normalizeTickerChangeAsOf(value: string) {
+  const timestamp = Date.parse(value);
+  if (!Number.isFinite(timestamp)) return value;
+  return new Date(Math.floor(timestamp / 1000) * 1000).toISOString();
 }
 
 function formatTickerPrice(value: number) {

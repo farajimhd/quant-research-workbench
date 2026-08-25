@@ -112,6 +112,7 @@ class CanvasPreviewServiceTests(unittest.TestCase):
         )
 
         self.assertEqual(scanner[0]["news_synthesis_class"], "Company")
+        self.assertEqual(scanner[0]["latest_news_published_at"], "2026-08-24T15:00:00Z")
         self.assertEqual(scanner[0]["news_ai_review"], 92.0)
         self.assertEqual(scanner[0]["news_deepfm_probability"], 100.0)
         self.assertEqual(scanner[0]["news_ai_reaction"], 1.25)

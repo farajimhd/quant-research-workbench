@@ -1534,13 +1534,26 @@ def historical_ticker_change(ticker: str, *, as_of: str) -> dict[str, Any]:
     session_start = datetime.combine(session_date, time(4, 0), tzinfo=ZoneInfo("America/New_York"))
     session_end = datetime.combine(session_date, time(20, 0), tzinfo=ZoneInfo("America/New_York"))
     current_end = min(exchange_as_of, session_end)
-    events = historical_compact_events(
-        resolved_ticker,
-        start=session_start.isoformat(),
-        end=current_end.isoformat(),
-        row_limit=5_000,
-    ) if current_end > session_start else []
-    current_price = _latest_compact_price(events)
+    # Day change needs the latest causal trade price, not the whole compact
+    # event session. The former scan read up to 5,000 raw events per mounted
+    # identity and could time out QMD History. One canonical 1-second bar uses
+    # q_live for a bounded current-session read and falls back to QMD History
+    # for older clocks without leaking a later bar revision.
+    current_bars = historical_bar_history_before(
+        before=session_date,
+        ticker=resolved_ticker,
+        timeframe="1s",
+        row_limit=1,
+        session_date=session_date,
+        as_of=current_end.isoformat(),
+        allow_persisted_bars=True,
+        include_market_signals=False,
+        include_structure=False,
+        stage="bars",
+        mode="live",
+    ) if current_end > session_start else {"history": []}
+    bar_rows = [row for row in current_bars.get("history", []) if isinstance(row, dict)]
+    current_price = float(bar_rows[-1].get("close") or 0) if bar_rows else 0.0
     absolute_change = current_price - previous_close if current_price > 0 and previous_close > 0 else 0.0
     percent_change = absolute_change / previous_close * 100 if previous_close > 0 and current_price > 0 else 0.0
     return {

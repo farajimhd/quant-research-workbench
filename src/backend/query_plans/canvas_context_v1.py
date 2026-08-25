@@ -96,7 +96,6 @@ def scanner_company_news(
                 AND s.engine_version={sql_string(engine_version)}
             WHERE n.published_at_utc BETWEEN toDateTime64({_utc_sql(start)}, 3, 'UTC')
                 AND toDateTime64({_utc_sql(cutoff)}, 3, 'UTC')
-                AND s.information_origin = 'issuer'
         )
         WHERE notEmpty(ticker){ticker_filter}
         ORDER BY published_at_utc DESC, canonical_news_id
