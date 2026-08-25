@@ -476,8 +476,13 @@ impl HistoricalEventSource {
         if window.start >= window.end {
             return Ok(SessionVwapSeed::default());
         }
-        let mut receiver =
-            self.stream_ordered_filtered(window, 100_000, live_continuation_sequence, Some(0))?;
+        let mut receiver = self.stream_ordered_filtered_with_chunk_minutes(
+            window,
+            100_000,
+            live_continuation_sequence,
+            Some(0),
+            120,
+        )?;
         let mut seed = SessionVwapSeed::default();
         while let Some(batch) = receiver.recv().await {
             for compact in batch? {
@@ -780,6 +785,23 @@ impl HistoricalEventSource {
         live_continuation_sequence: Option<u64>,
         event_type_filter: Option<u8>,
     ) -> Result<mpsc::Receiver<Result<Vec<LiveCompactEvent>, String>>, String> {
+        self.stream_ordered_filtered_with_chunk_minutes(
+            window,
+            batch_size,
+            live_continuation_sequence,
+            event_type_filter,
+            self.config.scanner_fetch_chunk_minutes.max(1),
+        )
+    }
+
+    fn stream_ordered_filtered_with_chunk_minutes(
+        &self,
+        window: EventWindow,
+        batch_size: usize,
+        live_continuation_sequence: Option<u64>,
+        event_type_filter: Option<u8>,
+        chunk_minutes: usize,
+    ) -> Result<mpsc::Receiver<Result<Vec<LiveCompactEvent>, String>>, String> {
         validate_window(&window)?;
         let batch_size = batch_size.clamp(1, 100_000);
         let (sender, receiver) = mpsc::channel(2);
@@ -793,6 +815,7 @@ impl HistoricalEventSource {
                     batch_size,
                     live_continuation_sequence,
                     event_type_filter,
+                    chunk_minutes,
                     stream_sender,
                 ) => result,
             };
@@ -809,6 +832,7 @@ impl HistoricalEventSource {
         batch_size: usize,
         live_continuation_sequence: Option<u64>,
         event_type_filter: Option<u8>,
+        chunk_minutes: usize,
         sender: mpsc::Sender<Result<Vec<LiveCompactEvent>, String>>,
     ) -> Result<(), String> {
         let plan = self.source_plan(&window).await?;
@@ -837,8 +861,7 @@ impl HistoricalEventSource {
             .filter(|segment| segment.queryable_by_history)
             .collect::<Vec<_>>();
         historical_segments.sort_by_key(|segment| segment.start);
-        let chunk_duration =
-            chrono::Duration::minutes(self.config.scanner_fetch_chunk_minutes.max(1) as i64);
+        let chunk_duration = chrono::Duration::minutes(chunk_minutes.max(1) as i64);
         for segment in historical_segments {
             let mut chunk_start = segment.start;
             while chunk_start < segment.end {
