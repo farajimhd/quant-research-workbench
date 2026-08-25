@@ -7,6 +7,20 @@ each year.
 
 ## 2026
 
+### [2026-08-25 12:25 PDT - Harden QMD Live, BarGPT, managed services, and chart delivery](docs/codex/chat-summaries/2026/CHAT-20260825-1225-service-qmd-bargpt-runtime-hardening.md)
+
+- Chat/task ID: `01a03a62-807a-7c23-96c7-a16aba5b4d93`
+- Related tasks: `TASK-0025`, `TASK-0197`, `TASK-0201`, `TASK-0203`
+- Summary refreshed: 2026-08-25 15:57 PDT
+
+Diagnosed and corrected QMD memory and repair amplification, BarGPT warm-up and
+identity failures, misleading service readiness, and missing lifecycle evidence.
+The continuation established exact-trade, cross-timeframe session VWAP,
+bounded five-minute first paint, and atomic chart timeframe replacement. The
+service fix is live; the chart commit is validated and pushed, with managed
+activation and interactive Replay/BarGPT chart UAT pending until unrelated
+service source edits are resolved.
+
 ### [2026-08-23 19:52 PDT - Deploy live News Intelligence, unify services, and harden QMD](docs/codex/chat-summaries/2026/CHAT-20260823-1952-live-news-intelligence-service-lifecycle-qmd-hardening.md)
 
 - Chat/task ID: `01a031af-1e60-7b32-a631-89274affb2fa`
