@@ -5,6 +5,7 @@ import "@fontsource-variable/public-sans/wght.css";
 import "@fontsource-variable/public-sans/wght-italic.css";
 
 import { App } from "./App";
+import { installNativeTooltipSuppression } from "./app/suppressNativeTooltips";
 import "./app/styles.css";
 
 class ApplicationErrorBoundary extends Component<{ children: ReactNode }, { error: string; retryKey: number }> {
@@ -23,6 +24,8 @@ class ApplicationErrorBoundary extends Component<{ children: ReactNode }, { erro
     return <main className="application-error-boundary" role="alert"><div><strong>This page stopped rendering</strong><span>{this.state.error}</span><button className="button primary" onClick={() => this.setState((current) => ({ error: "", retryKey: current.retryKey + 1 }))} type="button">Retry this page</button></div></main>;
   }
 }
+
+installNativeTooltipSuppression();
 
 createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
