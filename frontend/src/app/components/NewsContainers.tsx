@@ -78,6 +78,9 @@ type NewsDetailPayload = {
 };
 
 const NEWS_SELECTION_EVENT = "quant-news-selection";
+const NEWS_INTELLIGENCE_EVENT = "quant-news-intelligence-change";
+const NEWS_INTELLIGENCE_CHANNEL = "quant-news-intelligence-v1";
+type NewsIntelligenceChange = { kind: "reaction" | "review"; newsId: string };
 type NewsKindValue = "ai" | "analyst" | "company" | "editorial" | "insights" | "market" | "multi" | "regulatory" | "why_moving";
 type NewsOrigin = "analyst" | "automated" | "editorial" | "issuer" | "regulatory" | "third_party" | "unknown";
 type NewsScope = "market_wide" | "multi_ticker" | "single_ticker";
@@ -647,9 +650,11 @@ function EligibilityCell({ active }: { active?: boolean }) { return <span aria-l
 function useNewsIntelligenceState(initialState: NewsAiState | null | undefined, newsId: string, publishedAt: string) {
   const [state, setState] = useState<NewsAiState | null>(initialState ?? null);
   const [error, setError] = useState("");
+  const [reviewRequestActive, setReviewRequestActive] = useState(false);
   const [reactionPending, setReactionPending] = useState(false);
   const status = state?.review?.status ?? "not_reviewed";
-  const reviewPending = ["queued", "labeling"].includes(status);
+  const persistedReviewPending = ["queued", "labeling"].includes(status);
+  const reviewPending = persistedReviewPending || reviewRequestActive;
   const pending = reviewPending || reactionPending;
   const initialRevision = JSON.stringify(initialState ?? null);
   const appliedInitialRevision = useRef(initialRevision);
@@ -663,6 +668,23 @@ function useNewsIntelligenceState(initialState: NewsAiState | null | undefined, 
     setState(initialState ?? null);
   }, [initialRevision, initialState]);
   useEffect(() => {
+    const receive = (change: NewsIntelligenceChange) => {
+      if (change.newsId !== newsId) return;
+      if (change.kind === "review") setReviewRequestActive(true);
+      else setReactionPending(true);
+    };
+    const onWindowChange = (event: Event) => receive((event as CustomEvent<NewsIntelligenceChange>).detail);
+    const channel = typeof BroadcastChannel === "undefined" ? null : new BroadcastChannel(NEWS_INTELLIGENCE_CHANNEL);
+    const onChannelChange = (event: MessageEvent<NewsIntelligenceChange>) => receive(event.data);
+    window.addEventListener(NEWS_INTELLIGENCE_EVENT, onWindowChange);
+    channel?.addEventListener("message", onChannelChange);
+    return () => {
+      window.removeEventListener(NEWS_INTELLIGENCE_EVENT, onWindowChange);
+      channel?.removeEventListener("message", onChannelChange);
+      channel?.close();
+    };
+  }, [newsId]);
+  useEffect(() => {
     if (!pending) return;
     let closed = false;
     let timer = 0;
@@ -672,11 +694,20 @@ function useNewsIntelligenceState(initialState: NewsAiState | null | undefined, 
       try {
         const next = await api<NewsAiState>(`/api/trading/news/${encodeURIComponent(newsId)}/ai-review`, { timeoutMs: 10000 });
         if (closed) return;
-        setState(next);
-        const nextReviewPending = ["queued", "labeling"].includes(next.review?.status ?? "not_reviewed");
+        const nextReviewStatus = next.review?.status ?? "not_reviewed";
+        const nextReviewPending = ["queued", "labeling"].includes(nextReviewStatus);
+        const nextReviewTerminal = ["complete", "failed"].includes(nextReviewStatus);
+        // Admission and persistence are separate operations. Preserve the local
+        // queued state when an early canonical read still says not_reviewed,
+        // and keep polling until the accepted request reaches a terminal row.
+        setState((current) => reviewRequestActive && nextReviewStatus === "not_reviewed"
+          ? { ...next, review: { ...(current?.review ?? {}), status: "queued" } }
+          : next);
+        const nextReviewRequestActive = reviewRequestActive && !nextReviewTerminal;
+        if (!nextReviewRequestActive) setReviewRequestActive(false);
         const nextReactionPending = reactionPending && (next.hypotheses?.length ?? 0) === 0;
         if (!nextReactionPending) setReactionPending(false);
-        if ((nextReviewPending || nextReactionPending) && Date.now() - startedAt < 10 * 60_000) {
+        if ((nextReviewPending || nextReviewRequestActive || nextReactionPending) && Date.now() - startedAt < 10 * 60_000) {
           timer = window.setTimeout(() => void poll(), 2000);
         }
       } catch (reason) {
@@ -689,15 +720,18 @@ function useNewsIntelligenceState(initialState: NewsAiState | null | undefined, 
     };
     timer = window.setTimeout(() => void poll(), 1000);
     return () => { closed = true; window.clearTimeout(timer); };
-  }, [newsId, pending]);
+  }, [newsId, pending, reactionPending, reviewRequestActive]);
   const requestReview = async () => {
     setError("");
+    setReviewRequestActive(true);
     setState((current) => ({ ...(current ?? {}), review: { ...(current?.review ?? {}), status: "queued" } }));
     try {
       await api(`/api/trading/news/${encodeURIComponent(newsId)}/ai-review`, {
         method: "POST", body: JSON.stringify({ published_at_utc: publishedAt, requested_by: "frontend-operator" }), timeoutMs: 15000,
       });
+      publishNewsIntelligenceChange({ kind: "review", newsId });
     } catch (reason) {
+      setReviewRequestActive(false);
       setError(reason instanceof Error ? reason.message : String(reason));
       setState((current) => ({ ...(current ?? {}), review: { ...(current?.review ?? {}), status: "failed" } }));
     }
@@ -708,11 +742,20 @@ function useNewsIntelligenceState(initialState: NewsAiState | null | undefined, 
       await api(`/api/trading/news/${encodeURIComponent(newsId)}/ai-reaction`, {
         method: "POST", body: JSON.stringify({ published_at_utc: publishedAt, requested_by: "frontend-operator", ticker }), timeoutMs: 20000,
       });
+      publishNewsIntelligenceChange({ kind: "reaction", newsId });
     } catch (reason) {
       setReactionPending(false); setError(reason instanceof Error ? reason.message : String(reason));
     }
   };
   return { error: error || state?.review?.error || "", pending, reactionPending, requestReaction, requestReview, reviewPending, state, status };
+}
+
+function publishNewsIntelligenceChange(change: NewsIntelligenceChange) {
+  window.dispatchEvent(new CustomEvent<NewsIntelligenceChange>(NEWS_INTELLIGENCE_EVENT, { detail: change }));
+  if (typeof BroadcastChannel === "undefined") return;
+  const channel = new BroadcastChannel(NEWS_INTELLIGENCE_CHANNEL);
+  channel.postMessage(change);
+  channel.close();
 }
 
 function NewsTimelineIntelligence({ compact = false, row }: { compact?: boolean; row: NewsRow }) {
