@@ -71,10 +71,25 @@ def _max_abs_scale(matrix: sparse.csr_matrix) -> np.ndarray:
     return scale
 
 
-def _scaled(matrix: sparse.csr_matrix, scale: np.ndarray) -> sparse.csr_matrix:
-    if matrix.shape[1] != len(scale):
+def apply_column_multipliers(
+    matrix: sparse.csr_matrix, column_multipliers: np.ndarray,
+) -> sparse.csr_matrix:
+    """Apply the inverse-max multipliers used by training.
+
+    The persisted values are multipliers, not divisors.  Keeping this operation
+    public and shared prevents serving from independently interpreting the
+    artifact semantics.
+    """
+    if matrix.shape[1] != len(column_multipliers):
         raise ValueError("matrix/scaler dimensionality mismatch")
-    return matrix.multiply(scale).tocsr().astype(np.float32)
+    if not np.all(np.isfinite(column_multipliers)) or np.any(column_multipliers <= 0):
+        raise ValueError("column multipliers must be finite and positive")
+    return matrix.multiply(column_multipliers).tocsr().astype(np.float32)
+
+
+def _scaled(matrix: sparse.csr_matrix, scale: np.ndarray) -> sparse.csr_matrix:
+    """Backward-compatible training alias for the shared serving transform."""
+    return apply_column_multipliers(matrix, scale)
 
 
 def _torch_csr(matrix: sparse.csr_matrix, device: torch.device) -> torch.Tensor:

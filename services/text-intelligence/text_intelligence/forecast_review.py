@@ -29,7 +29,7 @@ from .config import IntelligenceConfig
 FUNNEL_TABLE = "news_forecast_funnel_v1"
 REVIEW_TABLE = "news_llm_issuer_review_v1"
 REVIEW_HISTORY_TABLE = "news_llm_issuer_review_history_v1"
-FUNNEL_CONTRACT = "news_forecast_funnel_deepfm_only_serving_v2"
+FUNNEL_CONTRACT = "news_forecast_funnel_deepfm_only_serving_v3"
 REVIEW_CONTRACT = "news_llm_issuer_review_serving_v1"
 PROMPT_VERSION = "news_issuer_review_prompt_v1_gold_examples"
 _SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s+(?=[A-Z0-9\"'(])")

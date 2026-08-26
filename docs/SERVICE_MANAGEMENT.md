@@ -26,7 +26,7 @@ Set-Location D:\TradingCodes\quant-research-workbench
 ```text
 Service-manager state: D:\TradingML\runtimes\service_manager
 BarGPT releases:       D:\TradingML\runtimes\bar_gpt_service\configuration\releases.json
-DeepFM release:        D:\TradingML\runtimes\text_intelligence\serving\news_forecast_funnel_v1\release.json
+DeepFM release:        D:\TradingML\runtimes\text_intelligence\serving\news_forecast_funnel_v1\release_v2.json
 QMD Live host role:    Laptop
 IBKR account key:      paper
 Terminal window:       quant-research-workbench-services
@@ -231,7 +231,7 @@ ownership state, or stop processes.
 # Explicit promoted releases.
 .\scripts\services.ps1 start intelligence `
   --bar-gpt-release-manifest D:\TradingML\runtimes\bar_gpt_service\configuration\releases.json `
-  --text-intelligence-release-manifest D:\TradingML\runtimes\text_intelligence\serving\news_forecast_funnel_v1\release.json
+  --text-intelligence-release-manifest D:\TradingML\runtimes\text_intelligence\serving\news_forecast_funnel_v1\release_v2.json
 
 # Put tabs in the calling Windows Terminal window.
 .\scripts\services.ps1 start app --terminal-target current

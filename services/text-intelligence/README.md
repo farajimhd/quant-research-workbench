@@ -77,7 +77,7 @@ next reconciliation cycle rather than misreported as processing failures.
   threshold for the sole live eligibility authority. The threshold is persisted
   as provenance and intentionally omitted from compact table labels.
 - `TEXT_INTELLIGENCE_FORECAST_RELEASE_MANIFEST`, default
-  `D:\TradingML\runtimes\text_intelligence\serving\news_forecast_funnel_v1\release.json`.
+  `D:\TradingML\runtimes\text_intelligence\serving\news_forecast_funnel_v1\release_v2.json`.
 - `TEXT_INTELLIGENCE_FORECAST_MODEL_DEVICE`, default `cpu`.
 - `TEXT_INTELLIGENCE_REVIEW_TRIGGER_MODE`, default `manual`. `automatic` enables
   review enqueueing for DeepFM candidates; the shipped default never makes an

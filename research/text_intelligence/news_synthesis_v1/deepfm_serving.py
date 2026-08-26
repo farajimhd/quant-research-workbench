@@ -16,9 +16,11 @@ from scipy import sparse
 from .provider_filter_analysis import parse_utc, session_date, session_segment, text_flags
 from .structured_metadata_rf import _build_matrix
 from .structured_tfidf_deepfm_pre_holdout import SparseDeepFM
+from .structured_tfidf_mlp_pre_holdout import apply_column_multipliers
 
 
-SERVING_CONTRACT_VERSION = "news_forecast_deepfm_serving_v1"
+SERVING_CONTRACT_VERSION = "news_forecast_deepfm_serving_v2"
+COLUMN_TRANSFORM_VERSION = "news_deepfm_inverse_max_multiplier_v1"
 NEW_YORK = ZoneInfo("America/New_York")
 
 
@@ -32,6 +34,13 @@ class DeepFMServingRelease:
             raise ValueError("unsupported DeepFM serving contract")
         if self.manifest.get("status") != "promoted":
             raise ValueError("DeepFM release is not promoted")
+        transform = self.manifest.get("column_transform") or {}
+        if transform != {
+            "version": COLUMN_TRANSFORM_VERSION,
+            "operation": "multiply",
+            "semantics": "inverse_max_abs_column_multiplier",
+        }:
+            raise ValueError("unsupported DeepFM column transform semantics")
         self.threshold = float(self.manifest["threshold"])
         if not 0.0 < self.threshold < 1.0:
             raise ValueError("DeepFM threshold must be inside (0,1)")
@@ -61,11 +70,13 @@ class DeepFMServingRelease:
                 historical[str(item["family"])].add(str(item["category"]))
         self.historical = historical
         self.vectorizer = joblib.load(resolved["tfidf_vectorizer"])
-        self.scale = np.load(resolved["column_scale"], allow_pickle=False)
+        self.column_multiplier = np.load(
+            resolved["column_multiplier"], allow_pickle=False,
+        )
         checkpoint = torch.load(resolved["model"], map_location="cpu", weights_only=True)
-        if int(checkpoint["input_dim"]) != len(self.scale):
-            raise ValueError("DeepFM checkpoint and scale dimensions differ")
-        if len(self.feature_names) + len(self.vectorizer.get_feature_names_out()) != len(self.scale):
+        if int(checkpoint["input_dim"]) != len(self.column_multiplier):
+            raise ValueError("DeepFM checkpoint and multiplier dimensions differ")
+        if len(self.feature_names) + len(self.vectorizer.get_feature_names_out()) != len(self.column_multiplier):
             raise ValueError("DeepFM feature authorities do not match checkpoint dimensions")
         self.model = SparseDeepFM(int(checkpoint["input_dim"]))
         self.model.load_state_dict(checkpoint["state_dict"], strict=True)
@@ -87,7 +98,7 @@ class DeepFMServingRelease:
         )
         text = self.vectorizer.transform([str(source_row.get("text") or source_row.get("title") or "")])
         combined = sparse.hstack((structured, text), format="csr", dtype=np.float32)
-        combined = combined.multiply((1.0 / self.scale).astype(np.float32)).tocsr()
+        combined = apply_column_multipliers(combined, self.column_multiplier)
         probability = self._probability(combined)
         operating_threshold = self.threshold if threshold is None else float(threshold)
         if not 0.0 < operating_threshold < 1.0:

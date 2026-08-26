@@ -338,7 +338,7 @@ class CanonicalTextRuntimeLifecycleTests(unittest.IsolatedAsyncioTestCase):
         notices = runtime._stale_funnel_notices()
 
         self.assertEqual(notices[0].source_id, "news-1")
-        self.assertIn("news_forecast_funnel_deepfm_only_serving_v2", client.sql)
+        self.assertIn("news_forecast_funnel_deepfm_only_serving_v3", client.sql)
         self.assertIn("model_release_id='release-v2'", client.sql)
         self.assertIn("model_release_hash='release-hash-v2'", client.sql)
         self.assertIn("abs(threshold-0.5)<1e-12", client.sql)

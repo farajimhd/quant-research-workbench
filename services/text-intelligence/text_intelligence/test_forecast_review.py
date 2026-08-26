@@ -71,7 +71,7 @@ class ForecastReviewRuntimeTests(unittest.TestCase):
         runtime.release.score.assert_called_once()
         self.assertEqual(runtime.release.score.call_args.kwargs["threshold"], 0.5)
         self.assertEqual(insert.call_args.args[2], "news_forecast_funnel_v1")
-        self.assertEqual(result["contract_version"], "news_forecast_funnel_deepfm_only_serving_v2")
+        self.assertEqual(result["contract_version"], "news_forecast_funnel_deepfm_only_serving_v3")
 
     def test_funnel_current_requires_exact_deepfm_release_and_threshold(self) -> None:
         runtime = self.runtime("manual")

@@ -44,7 +44,7 @@ DEFAULT_BAR_GPT_MANIFEST = Path(
 DEFAULT_TEXT_INTELLIGENCE_MANIFEST = Path(
     os.environ.get(
         "TEXT_INTELLIGENCE_FORECAST_RELEASE_MANIFEST",
-        r"D:\TradingML\runtimes\text_intelligence\serving\news_forecast_funnel_v1\release.json",
+        r"D:\TradingML\runtimes\text_intelligence\serving\news_forecast_funnel_v1\release_v2.json",
     )
 )
 DYNAMIC_TARGETS = {"dev", "stale", "unhealthy", "stopped"}

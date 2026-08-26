@@ -85,7 +85,7 @@ class IntelligenceConfig:
             ),
             forecast_release_manifest=Path(env_string(
                 "TEXT_INTELLIGENCE_FORECAST_RELEASE_MANIFEST",
-                r"D:\TradingML\runtimes\text_intelligence\serving\news_forecast_funnel_v1\release.json",
+                r"D:\TradingML\runtimes\text_intelligence\serving\news_forecast_funnel_v1\release_v2.json",
             )),
             forecast_model_device=env_string(
                 "TEXT_INTELLIGENCE_FORECAST_MODEL_DEVICE", "cpu"
