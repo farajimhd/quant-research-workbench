@@ -6,6 +6,7 @@ import { buildMenuItemButtonClassName, buildThemeMenuItemButtonClassName } from 
 import { configurationToneForPage, NAVIGATION_GROUPS, type NavigationIcon, type PageKey } from "../routes";
 import { APP_THEMES, DEFAULT_THEME_ID, applyThemeDefinition, isAppThemeId, type AppThemeDefinition, type AppThemeId } from "../theme";
 import { NewsIconGuide } from "./NewsIntelligenceIcon";
+import { SecIconGuide, SecIntelligenceIcon } from "./SecIntelligenceIcon";
 
 export type UiScale = 0.8 | 0.9 | 1 | 1.1 | 1.25;
 
@@ -54,7 +55,7 @@ export function Layout({
 }: LayoutProps) {
   const [collapsed, setCollapsed] = useState(false);
   const [themeMenuOpen, setThemeMenuOpen] = useState(false);
-  const [newsGuideOpen, setNewsGuideOpen] = useState(false);
+  const [markerGuideOpen, setMarkerGuideOpen] = useState<"news" | "sec" | null>(null);
   const [themeId, setThemeId] = useState<AppThemeId>(() => {
     const stored = window.localStorage.getItem(THEME_STORAGE_KEY);
     return stored && isAppThemeId(stored) ? stored : DEFAULT_THEME_ID;
@@ -117,7 +118,7 @@ export function Layout({
               className="icon-button"
               type="button"
               aria-label="Change appearance"
-              onClick={() => { setNewsGuideOpen(false); setThemeMenuOpen((value) => !value); }}
+              onClick={() => { setMarkerGuideOpen(null); setThemeMenuOpen((value) => !value); }}
             >
               <Palette size={18} />
             </button>
@@ -146,9 +147,11 @@ export function Layout({
               </div>
             ) : null}
           </div>
-          <div className="news-guide-picker">
-            <button aria-controls="news-marker-guide" aria-expanded={newsGuideOpen} aria-haspopup="dialog" aria-label="Explain news markers" className="icon-button news-guide-button" onClick={() => { setThemeMenuOpen(false); setNewsGuideOpen((value) => !value); }} title="News marker guide" type="button"><Flame size={18} /></button>
-            {newsGuideOpen ? <div aria-label="News marker guide" className="news-guide-menu" id="news-marker-guide" role="dialog"><NewsIconGuide /></div> : null}
+          <div className="news-guide-picker intelligence-guide-picker">
+            <button aria-controls="news-marker-guide" aria-expanded={markerGuideOpen === "news"} aria-haspopup="dialog" aria-label="Explain news markers" className="icon-button news-guide-button" onClick={() => { setThemeMenuOpen(false); setMarkerGuideOpen((value) => value === "news" ? null : "news"); }} title="News marker guide" type="button"><Flame size={18} /></button>
+            <button aria-controls="sec-marker-guide" aria-expanded={markerGuideOpen === "sec"} aria-haspopup="dialog" aria-label="Explain SEC markers" className="icon-button sec-guide-button" onClick={() => { setThemeMenuOpen(false); setMarkerGuideOpen((value) => value === "sec" ? null : "sec"); }} title="SEC marker guide" type="button"><SecIntelligenceIcon count={1} kind="fundamentals" recency="cold" synthesized /></button>
+            {markerGuideOpen === "news" ? <div aria-label="News marker guide" className="news-guide-menu" id="news-marker-guide" role="dialog"><NewsIconGuide /></div> : null}
+            {markerGuideOpen === "sec" ? <div aria-label="SEC marker guide" className="news-guide-menu sec-guide-menu" id="sec-marker-guide" role="dialog"><SecIconGuide /></div> : null}
           </div>
           <div className="account-pill">Local</div>
         </div>

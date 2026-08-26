@@ -2,7 +2,7 @@ import { Building2, CheckCircle2, CircleAlert, Clock3, Flame, Gauge, Info, Minus
 import type { ReactNode } from "react";
 
 import { MarketTime } from "./MarketTime";
-import { SecIntelligenceIcon } from "./SecIntelligenceIcon";
+import { SecIntelligenceIcon, secIconKindFor, secIconKindLabel } from "./SecIntelligenceIcon";
 import { TickerLogo } from "./TickerIdentity";
 import { dispatchTickerSecPopover } from "./TickerSecPopoverContext";
 
@@ -79,7 +79,7 @@ function booleanBadge(value: unknown): { icon: typeof CheckCircle2; label: strin
   return null;
 }
 
-export function SecurityIdentityCell({ companyName = "", country = "", halted, logoUrl = "", newsRecency, secCount, secRecency, ticker, trailing }: { companyName?: string; country?: string; halted?: unknown; logoUrl?: string; newsRecency?: unknown; secCount?: unknown; secRecency?: unknown; ticker: string; trailing?: ReactNode }) {
+export function SecurityIdentityCell({ companyName = "", country = "", halted, logoUrl = "", newsRecency, secCount, secLabels, secRecency, secReviewStatus, secSynthesisCount, ticker, trailing }: { companyName?: string; country?: string; halted?: unknown; logoUrl?: string; newsRecency?: unknown; secCount?: unknown; secLabels?: unknown; secRecency?: unknown; secReviewStatus?: unknown; secSynthesisCount?: unknown; ticker: string; trailing?: ReactNode }) {
   const symbol = ticker.trim().toUpperCase();
   const countryName = formatCountry(country);
   const newsState = normalizedRecency(newsRecency);
@@ -93,7 +93,7 @@ export function SecurityIdentityCell({ companyName = "", country = "", halted, l
     {hasTrailing ? <span className="table-security-trailing">
       {isHalted ? <span aria-label="Trading halted" className="table-security-status-icon" data-status="halted"><ShieldAlert aria-hidden="true" size={17} strokeWidth={1.8} /></span> : null}
       <SecurityRecencyIcon kind="news" state={newsState} ticker={symbol} />
-      <SecurityRecencyIcon count={secCount} kind="sec" state={secState} ticker={symbol} />
+      <SecurityRecencyIcon count={secCount} kind="sec" labels={secLabels} reviewStatus={secReviewStatus} state={secState} synthesisCount={secSynthesisCount} ticker={symbol} />
       {trailing}
     </span> : null}
   </span>;
@@ -101,7 +101,7 @@ export function SecurityIdentityCell({ companyName = "", country = "", halted, l
 
 type RecencyState = "hot" | "cold" | "old" | "none" | "unavailable";
 
-function SecurityRecencyIcon({ count, kind, state, ticker }: { count?: unknown; kind: "news" | "sec"; state: RecencyState; ticker: string }) {
+function SecurityRecencyIcon({ count, kind, labels, reviewStatus, state, synthesisCount, ticker }: { count?: unknown; kind: "news" | "sec"; labels?: unknown; reviewStatus?: unknown; state: RecencyState; synthesisCount?: unknown; ticker: string }) {
   if (!isRecentRecency(state)) return null;
   const source = kind === "news" ? "News" : "SEC filing";
   const Icon = state === "hot" ? Flame : Snowflake;
@@ -109,7 +109,11 @@ function SecurityRecencyIcon({ count, kind, state, ticker }: { count?: unknown; 
   const hot = state === "hot";
   if (kind === "sec") {
     const filingCount = Math.max(0, Math.round(Number(count) || 0));
-    return <button aria-label={`Open ${ticker} SEC filing timeline. ${description}.`} className="table-security-recency-icon" data-open-sec-ticker={ticker} data-source={kind} data-state={state} onClick={(event) => { event.stopPropagation(); dispatchTickerSecPopover(event.currentTarget, ticker); }} onPointerDown={(event) => event.stopPropagation()} type="button"><SecIntelligenceIcon count={filingCount} recency={state} /></button>;
+    const synthesized = Math.max(0, Math.round(Number(synthesisCount) || 0)) > 0;
+    const reviewed = String(reviewStatus || "").toLowerCase() === "completed";
+    const iconKind = secIconKindFor(labels);
+    const intelligenceState = [secIconKindLabel(iconKind), synthesized ? "synthesis available" : "synthesis pending", reviewed ? "manual AI reviewed" : ""].filter(Boolean).join(", ");
+    return <button aria-label={`Open ${ticker} SEC filing timeline. ${description}; ${intelligenceState}.`} className="table-security-recency-icon" data-open-sec-ticker={ticker} data-source={kind} data-state={state} onClick={(event) => { event.stopPropagation(); dispatchTickerSecPopover(event.currentTarget, ticker); }} onPointerDown={(event) => event.stopPropagation()} type="button"><SecIntelligenceIcon count={filingCount} kind={iconKind} recency={state} reviewed={reviewed} synthesized={synthesized} /></button>;
   }
   return <span aria-label={description} className="table-security-recency-icon" data-source={kind} data-state={state}><Icon aria-hidden="true" size={hot ? 16 : 15} strokeWidth={hot ? 1.5 : 1.8} /></span>;
 }
