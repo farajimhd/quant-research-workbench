@@ -64,6 +64,13 @@ class BacktestCanvasContractTests(unittest.IsolatedAsyncioTestCase):
                 "ts": "2026-07-28T09:45:00-04:00",
                 "price": 101.25,
             }],
+            watchlist_events=[{
+                "effective_at": "2026-07-28T09:45:00-04:00",
+                "event": "added",
+                "ibkr_conid": 265598,
+                "ticker": "AAPL",
+                "watchlist_id": "squeeze-tradable-candidates",
+            }],
         )
         with (
             patch(
@@ -78,9 +85,10 @@ class BacktestCanvasContractTests(unittest.IsolatedAsyncioTestCase):
             payload = await trading_backtest_debug_run_create(request)
 
         definition = create.await_args.args[0]
-        configuration_snapshot.assert_called_once_with()
+        configuration_snapshot.assert_called_once_with("", candidate_id="approved-1")
         self.assertEqual(definition.mode, RunMode.BACKTEST_DEBUG)
         self.assertEqual(definition.debug_fixture.fixture_id, "gap-open")
+        self.assertEqual(definition.debug_fixture.watchlist_events[0]["ticker"], "AAPL")
         self.assertEqual(payload["mode"], "backtest_debug")
 
     async def test_backtest_create_uses_backtest_configuration_authority(self) -> None:
@@ -111,7 +119,9 @@ class BacktestCanvasContractTests(unittest.IsolatedAsyncioTestCase):
         ):
             payload = await trading_backtest_run_create(request)
 
-        configuration_snapshot.assert_called_once_with()
+        configuration_snapshot.assert_called_once_with(
+            "", candidate_id="approved-backtest"
+        )
         definition = create.await_args.args[0]
         self.assertEqual(definition.mode, RunMode.BACKTEST)
         self.assertIs(definition.configuration_revision, approved)

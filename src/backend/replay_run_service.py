@@ -110,26 +110,39 @@ class HistoricalDebugFixture:
     market_events: tuple[dict[str, Any], ...] = ()
     derived_frames: tuple[dict[str, Any], ...] = ()
     signal_events: tuple[dict[str, Any], ...] = ()
+    watchlist_events: tuple[dict[str, Any], ...] = ()
 
     def __post_init__(self) -> None:
         if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", self.fixture_id):
             raise ValueError("Debug fixture_id must be a stable 1-128 character identifier")
         if not self.market_events and not self.derived_frames and not self.signal_events:
             raise ValueError("Debug fixture requires market_events, derived_frames, or signal_events")
-        if len(self.market_events) + len(self.derived_frames) + len(self.signal_events) > MAX_DEBUG_FIXTURE_EVENTS:
+        if (
+            len(self.market_events)
+            + len(self.derived_frames)
+            + len(self.signal_events)
+            + len(self.watchlist_events)
+            > MAX_DEBUG_FIXTURE_EVENTS
+        ):
             raise ValueError(
                 f"Debug fixture supports at most {MAX_DEBUG_FIXTURE_EVENTS:,} records"
             )
+        _debug_watchlist_membership_timeline(self.watchlist_events)
 
     @property
     def content_hash(self) -> str:
+        records = {
+            "fixture_id": self.fixture_id,
+            "market_events": self.market_events,
+            "derived_frames": self.derived_frames,
+            "signal_events": self.signal_events,
+        }
+        # Preserve hashes persisted before deterministic Watchlist membership
+        # became part of the Backtest Debug fixture contract.
+        if self.watchlist_events:
+            records["watchlist_events"] = self.watchlist_events
         canonical = json.dumps(
-            {
-                "fixture_id": self.fixture_id,
-                "market_events": self.market_events,
-                "derived_frames": self.derived_frames,
-                "signal_events": self.signal_events,
-            },
+            records,
             separators=(",", ":"),
             sort_keys=True,
             default=str,
@@ -143,11 +156,13 @@ class HistoricalDebugFixture:
             "market_event_count": len(self.market_events),
             "derived_frame_count": len(self.derived_frames),
             "signal_event_count": len(self.signal_events),
+            "watchlist_event_count": len(self.watchlist_events),
         }
         if include_records:
             payload["market_events"] = [dict(row) for row in self.market_events]
             payload["derived_frames"] = [dict(row) for row in self.derived_frames]
             payload["signal_events"] = [dict(row) for row in self.signal_events]
+            payload["watchlist_events"] = [dict(row) for row in self.watchlist_events]
         return payload
 
 
@@ -199,6 +214,7 @@ class ReplayRunDefinition:
                 *(_debug_time(row.get("ts")) for row in self.debug_fixture.market_events),
                 *(_debug_time(row.get("as_of")) for row in self.debug_fixture.derived_frames),
                 *(_debug_time(row.get("available_at") or row.get("event_time")) for row in self.debug_fixture.signal_events),
+                *(_debug_time(row.get("effective_at")) for row in self.debug_fixture.watchlist_events),
             ]
             if any(
                 event_time < self.session_start or event_time > self.session_end
@@ -334,16 +350,23 @@ class ReplayRunController:
         self._pace_reset = True
         self._historical_watchlist_cache: list[dict[str, Any]] | None = None
         self._historical_watchlist_timeline_cache: list[dict[str, Any]] | None = None
-        self._historical_watchlist_plans = _historical_watchlist_plans_for_configuration(
-            self.definition.configuration_revision,
-            start=self.definition.requested_start,
-            end=self.definition.session_end,
-        )
-        self._historical_core_signal_plans = _historical_core_signal_plans_for_configuration(
-            self.definition.configuration_revision,
-            start=self.definition.session_start,
-            end=self.definition.session_end,
-        )
+        if self.definition.mode == RunMode.BACKTEST_DEBUG:
+            # Debug fixture records are the complete deterministic data
+            # authority. Compiling historical plans here both weakens that
+            # boundary and rejects intentionally injectable live-only fields.
+            self._historical_watchlist_plans = []
+            self._historical_core_signal_plans = []
+        else:
+            self._historical_watchlist_plans = _historical_watchlist_plans_for_configuration(
+                self.definition.configuration_revision,
+                start=self.definition.requested_start,
+                end=self.definition.session_end,
+            )
+            self._historical_core_signal_plans = _historical_core_signal_plans_for_configuration(
+                self.definition.configuration_revision,
+                start=self.definition.session_start,
+                end=self.definition.session_end,
+            )
         self._historical_watchlist_timeline_index = 0
         self._active_historical_watchlist_tickers: set[str] = set()
         self._active_historical_watchlists: dict[str, set[str]] = {}
@@ -1468,6 +1491,7 @@ class ReplayRunController:
                 or indicator.get("liquidity_dislocation_score")
                 or 0
             ),
+            acceleration=float(indicator.get("price_change_1_bar_pct") or 0),
             volatility=float(indicator.get("atr_14") or 0),
             upper_luld_price=_optional_positive(indicator.get("structure_luld_upper")),
             market_open=clock_time(9, 30) <= observed_market_time < clock_time(16, 0),
@@ -1815,6 +1839,10 @@ class ReplayRunController:
             )
 
     def _bar_gpt_fields_required(self) -> bool:
+        if self.definition.mode == RunMode.BACKTEST_DEBUG:
+            # Any model outputs used by Debug must be explicit hashed fixture
+            # fields. Never consult mutable service or feature-store state.
+            return False
         activation = dict(
             self.definition.configuration_revision["payload"].get("signal_activation") or {}
         )
@@ -1987,8 +2015,11 @@ class ReplayRunController:
 
     def _historical_watchlist_timeline(self) -> list[dict[str, Any]]:
         if self._historical_watchlist_timeline_cache is None:
+            fixture = self.definition.debug_fixture
             self._historical_watchlist_timeline_cache = (
-                _historical_watchlist_membership_timeline_from_plans(
+                _debug_watchlist_membership_timeline(fixture.watchlist_events)
+                if self.definition.mode == RunMode.BACKTEST_DEBUG and fixture is not None
+                else _historical_watchlist_membership_timeline_from_plans(
                     self._historical_watchlist_plans
                 )
             )
@@ -2070,6 +2101,22 @@ class ReplayRunController:
         return set().union(*memberships) if memberships else set()
 
     def _record_historical_watchlist_authority(self) -> None:
+        fixture = self.definition.debug_fixture
+        if (
+            self.definition.mode == RunMode.BACKTEST_DEBUG
+            and fixture is not None
+            and fixture.watchlist_events
+        ):
+            self._record_data_authority(
+                "watchlist_membership",
+                {
+                    "authority": "backtest_debug_fixture",
+                    "fixture_id": fixture.fixture_id,
+                    "revision_token": fixture.content_hash,
+                    "row_count": len(fixture.watchlist_events),
+                },
+            )
+            return
         for plan in self._historical_watchlist_plans:
             self._record_data_authority(
                 f"watchlist_membership_plan:{plan['watchlist_id']}",
@@ -2714,6 +2761,9 @@ def _definition_from_manifest(
             signal_events=tuple(
                 dict(row) for row in fixture_payload.get("signal_events") or ()
             ),
+            watchlist_events=tuple(
+                dict(row) for row in fixture_payload.get("watchlist_events") or ()
+            ),
         )
         if fixture.content_hash != str(fixture_payload.get("content_hash") or ""):
             raise ValueError("Backtest Debug fixture content hash changed")
@@ -2856,6 +2906,93 @@ def _strategy_assignment_from_checkpoint(payload: dict[str, Any]) -> StrategyAss
         created_at=_checkpoint_time(payload.get("created_at")),
         updated_at=_checkpoint_time(payload.get("updated_at")),
     )
+
+
+def _debug_watchlist_membership_timeline(
+    rows: tuple[dict[str, Any], ...],
+) -> list[dict[str, Any]]:
+    """Project exact fixture transitions into causal Watchlist snapshots."""
+
+    transitions: list[dict[str, Any]] = []
+    for source in rows:
+        row = dict(source)
+        watchlist_id = str(row.get("watchlist_id") or "").strip()
+        ticker = _ticker(row.get("ticker"))
+        event = str(row.get("event") or "added").strip().lower()
+        if not watchlist_id:
+            raise ValueError("Debug Watchlist event requires watchlist_id")
+        if event not in {"added", "removed"}:
+            raise ValueError("Debug Watchlist event must be added or removed")
+        conid = int(row.get("ibkr_conid") or row.get("conid") or 0)
+        if event == "added" and conid <= 0:
+            raise ValueError(
+                f"Debug Watchlist addition requires a positive point-in-time conid for {ticker}"
+            )
+        transitions.append(
+            {
+                **row,
+                "effective_at": _debug_time(row.get("effective_at")),
+                "event": event,
+                "ibkr_conid": conid,
+                "ticker": ticker,
+                "watchlist_id": watchlist_id,
+            }
+        )
+    transitions.sort(
+        key=lambda row: (
+            row["effective_at"],
+            row["watchlist_id"],
+            row["ticker"],
+            row["event"],
+        )
+    )
+    members_by_watchlist: dict[str, dict[str, dict[str, Any]]] = {}
+    timeline: list[dict[str, Any]] = []
+    offset = 0
+    while offset < len(transitions):
+        effective_at = transitions[offset]["effective_at"]
+        end = offset
+        while end < len(transitions) and transitions[end]["effective_at"] == effective_at:
+            row = transitions[end]
+            watchlist = members_by_watchlist.setdefault(row["watchlist_id"], {})
+            if row["event"] == "removed":
+                watchlist.pop(row["ticker"], None)
+            else:
+                existing = watchlist.get(row["ticker"])
+                if existing and int(existing["ibkr_conid"]) != int(row["ibkr_conid"]):
+                    raise ValueError(
+                        "Debug Watchlist identity changed for "
+                        f"{row['ticker']}: {existing['ibkr_conid']} -> {row['ibkr_conid']}"
+                    )
+                watchlist[row["ticker"]] = {
+                    "ticker": row["ticker"],
+                    "ibkr_conid": int(row["ibkr_conid"]),
+                }
+            end += 1
+        union: dict[str, dict[str, Any]] = {}
+        for watchlist_id, members in members_by_watchlist.items():
+            for ticker, member in members.items():
+                current = union.setdefault(
+                    ticker,
+                    {**member, "watchlist_ids": []},
+                )
+                if int(current["ibkr_conid"]) != int(member["ibkr_conid"]):
+                    raise ValueError(
+                        f"Debug Watchlist identity disagrees across lists for {ticker}"
+                    )
+                current["watchlist_ids"].append(watchlist_id)
+        timeline.append(
+            {
+                "effective_at": effective_at,
+                "members": sorted(union.values(), key=lambda row: row["ticker"]),
+                "authority": [{
+                    "authority": "backtest_debug_fixture",
+                    "watchlist_ids": sorted(members_by_watchlist),
+                }],
+            }
+        )
+        offset = end
+    return timeline
 
 
 def _debug_market_events(rows: tuple[dict[str, Any], ...]) -> list[MarketEvent]:
@@ -3669,6 +3806,14 @@ def backtest_debug_preflight(
 ) -> dict[str, Any]:
     approved = configuration_revision or backtest_debug_configuration_snapshot()
     configuration = dict(approved.get("payload") or {})
+    run_plan = dict(configuration.get("run_plan") or {})
+    required_watchlist_ids = [
+        str(value) for value in run_plan.get("watchlist_ids") or [] if str(value)
+    ]
+    watchlist_policy = str(
+        dict(run_plan.get("activation") or {}).get("watchlist_policy")
+        or "any_selected"
+    )
     bindings = [
         dict(row)
         for row in dict(configuration.get("accounts") or {}).get("bindings") or []
@@ -3760,6 +3905,8 @@ def backtest_debug_preflight(
         "run_plan_id": approved.get("run_plan_id", ""),
         "available_run_plans": deepcopy(approved.get("available_run_plans") or []),
         "configuration_label": approved.get("label", ""),
+        "required_watchlist_ids": required_watchlist_ids,
+        "watchlist_policy": watchlist_policy,
     }
 
 

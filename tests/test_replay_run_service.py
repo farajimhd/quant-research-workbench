@@ -26,6 +26,7 @@ from src.backend.replay_run_service import (
     _simulation_config,
     _debug_derived_frames,
     _debug_market_events,
+    _debug_watchlist_membership_timeline,
     backtest_debug_preflight,
     backtest_preflight,
     replay_preflight,
@@ -231,6 +232,52 @@ class ReplayRunDefinitionTests(unittest.TestCase):
                 configuration_revision=approved_configuration(),
             )
 
+    def test_debug_fixture_hashes_and_projects_exact_watchlist_membership(self) -> None:
+        fixture = HistoricalDebugFixture(
+            fixture_id="eligible-aapl",
+            market_events=({
+                "kind": "trade",
+                "ticker": "AAPL",
+                "ts": "2026-07-28T09:45:01-04:00",
+                "price": 101.25,
+            },),
+            watchlist_events=({
+                "effective_at": "2026-07-28T09:45:00-04:00",
+                "event": "added",
+                "ibkr_conid": 265598,
+                "ticker": "AAPL",
+                "watchlist_id": "squeeze-tradable-candidates",
+            },),
+        )
+
+        timeline = _debug_watchlist_membership_timeline(fixture.watchlist_events)
+
+        self.assertEqual(fixture.payload()["watchlist_event_count"], 1)
+        self.assertEqual(timeline[0]["members"][0]["ticker"], "AAPL")
+        self.assertEqual(timeline[0]["members"][0]["ibkr_conid"], 265598)
+        self.assertEqual(
+            timeline[0]["members"][0]["watchlist_ids"],
+            ["squeeze-tradable-candidates"],
+        )
+
+    def test_debug_fixture_rejects_unresolved_watchlist_identity(self) -> None:
+        with self.assertRaisesRegex(ValueError, "positive point-in-time conid"):
+            HistoricalDebugFixture(
+                fixture_id="unresolved-identity",
+                market_events=({
+                    "kind": "trade",
+                    "ticker": "AAPL",
+                    "ts": "2026-07-28T09:45:01-04:00",
+                    "price": 101.25,
+                },),
+                watchlist_events=({
+                    "effective_at": "2026-07-28T09:45:00-04:00",
+                    "event": "added",
+                    "ticker": "AAPL",
+                    "watchlist_id": "squeeze-tradable-candidates",
+                },),
+            )
+
 
 class HistoricalDebugFixtureTests(unittest.IsolatedAsyncioTestCase):
     def fixture(self) -> HistoricalDebugFixture:
@@ -372,6 +419,29 @@ class HistoricalDebugFixtureTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([event.kind for event in events], ["quote", "trade"])
         self.assertEqual(events[0].source, "debug_fixture:deterministic")
         self.assertEqual(frames[0].indicator["vwap"], 101.1)
+
+    def test_debug_constructor_does_not_compile_historical_data_plans(self) -> None:
+        with patch(
+            "src.backend.replay_run_service._historical_watchlist_plans_for_configuration",
+            side_effect=AssertionError("Debug must use fixture membership"),
+        ), patch(
+            "src.backend.replay_run_service._historical_core_signal_plans_for_configuration",
+            side_effect=AssertionError("Debug must use fixture signal events"),
+        ):
+            controller = ReplayRunController(
+                ReplayRunDefinition(
+                    session_date=date(2026, 7, 28),
+                    start_time=time(9, 45),
+                    mode=RunMode.BACKTEST_DEBUG,
+                    debug_fixture=self.fixture(),
+                    configuration_revision=approved_configuration(),
+                ),
+                runtime_root=Path(tempfile.gettempdir()),
+            )
+
+        self.assertEqual(controller._historical_watchlist_plans, [])
+        self.assertEqual(controller._historical_core_signal_plans, [])
+        self.assertFalse(controller._bar_gpt_fields_required())
 
     async def test_controller_injects_fixture_batches_instead_of_qmd(self) -> None:
         definition = ReplayRunDefinition(
@@ -525,6 +595,76 @@ class HistoricalDebugFixtureTests(unittest.IsolatedAsyncioTestCase):
                 if controller._journal is not None:
                     controller._journal.close()
 
+    async def test_debug_frame_projects_price_acceleration_into_profit_management(self) -> None:
+        assignment = {
+            "assignment_id": "acceleration-aapl",
+            "account_key": "primary",
+            "ticker": "AAPL",
+            "conid": 265598,
+            "status": "watching",
+            "permissions": {
+                "observe": True,
+                "enter": True,
+                "add": True,
+                "reduce": True,
+                "exit": True,
+                "reenter": True,
+            },
+            "parameters": default_long_momentum_parameters(),
+        }
+        fixture = HistoricalDebugFixture(
+            fixture_id="profit-slowdown-aapl",
+            market_events=({
+                "kind": "quote",
+                "ticker": "AAPL",
+                "ts": "2026-07-28T09:45:00-04:00",
+                "bid_price": 101.99,
+                "ask_price": 102.01,
+            },),
+            derived_frames=({
+                "ticker": "AAPL",
+                "timeframe": "1s",
+                "as_of": "2026-07-28T09:45:01-04:00",
+                "sequence": 1,
+                "bar": {"close": 102.0},
+                "indicator": {
+                    "close": 102.0,
+                    "vwap": 101.5,
+                    "price_change_1_bar_pct": 0.1,
+                },
+            },),
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            controller = ReplayRunController(
+                ReplayRunDefinition(
+                    session_date=date(2026, 7, 28),
+                    start_time=time(9, 45),
+                    mode=RunMode.BACKTEST_DEBUG,
+                    tickers=("AAPL",),
+                    debug_fixture=fixture,
+                    configuration_revision=approved_configuration(assignments=[assignment]),
+                ),
+                runtime_root=Path(directory),
+            )
+            controller._journal = TradingJournal(Path(directory) / "journal.sqlite3")
+            await controller._initialize_runtime()
+            assert controller._runtime is not None
+            process = AsyncMock()
+            controller._runtime.process_account_strategy_observation = process
+            controller._stream_tickers = ("AAPL",)
+            controller._quotes["AAPL"] = _debug_market_events(
+                fixture.market_events
+            )[0]
+            try:
+                await controller._process_strategy_frame(
+                    _debug_derived_frames(fixture.derived_frames)[0]
+                )
+                observation = process.await_args.args[0]
+                self.assertEqual(observation.acceleration, 0.1)
+            finally:
+                if controller._journal is not None:
+                    controller._journal.close()
+
     async def test_service_restores_complete_debug_checkpoint(self) -> None:
         class StopAfterFirstEvent(ReplayRunController):
             async def _after_event(self, event_time: datetime) -> None:
@@ -622,6 +762,11 @@ class HistoricalDebugFixtureTests(unittest.IsolatedAsyncioTestCase):
                     controller._journal.close()
 
     def test_debug_preflight_uses_configuration_and_external_storage_not_qmd(self) -> None:
+        configuration = approved_configuration()
+        configuration["payload"]["run_plan"] = {
+            "activation": {"watchlist_policy": "any_selected"},
+            "watchlist_ids": ["squeeze-tradable-candidates"],
+        }
         with tempfile.TemporaryDirectory() as directory, patch(
             "src.backend.replay_run_service.backtest_debug_runtime_root",
             return_value=Path(directory),
@@ -632,11 +777,13 @@ class HistoricalDebugFixtureTests(unittest.IsolatedAsyncioTestCase):
                 session_date=date(2026, 7, 28),
                 start_time=time(9, 45),
                 tickers=("AAPL",),
-                configuration_revision=approved_configuration(),
+                configuration_revision=configuration,
             )
 
         self.assertTrue(payload["ready"])
         self.assertEqual(payload["configuration_revision_id"], "configuration-test")
+        self.assertEqual(payload["required_watchlist_ids"], ["squeeze-tradable-candidates"])
+        self.assertEqual(payload["watchlist_policy"], "any_selected")
         historical.assert_not_called()
 
 

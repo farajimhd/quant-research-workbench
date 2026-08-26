@@ -976,6 +976,7 @@ class BacktestDebugRunCreateRequest(BaseModel):
     market_events: list[dict[str, Any]] = Field(default_factory=list, max_length=20_000)
     derived_frames: list[dict[str, Any]] = Field(default_factory=list, max_length=20_000)
     signal_events: list[dict[str, Any]] = Field(default_factory=list, max_length=20_000)
+    watchlist_events: list[dict[str, Any]] = Field(default_factory=list, max_length=20_000)
 
 
 class ReplayTradeProposalSubmit(BaseModel):
@@ -5306,6 +5307,7 @@ async def trading_backtest_debug_run_create(
             market_events=tuple(dict(row) for row in payload.market_events),
             derived_frames=tuple(dict(row) for row in payload.derived_frames),
             signal_events=tuple(dict(row) for row in payload.signal_events),
+            watchlist_events=tuple(dict(row) for row in payload.watchlist_events),
         )
         definition = ReplayRunDefinition(
             session_date=payload.session_date,

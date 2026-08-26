@@ -457,6 +457,60 @@ class LongMomentumStrategyTests(unittest.TestCase):
             "start_swing_trail",
         )
 
+    def test_hybrid_protection_carries_volatility_into_order_planning(self) -> None:
+        parameters = default_long_momentum_parameters()
+        parameters["phase_policy"] = {"initial_entry": {
+            "capital_request": {
+                "mode": "mandate_fraction",
+                "value": 0.1,
+                "allow_replacement": False,
+            },
+            "order_intent": {
+                "execution_policy": "adaptive_urgent",
+                "protection_profile": "hybrid-single",
+                "partial_fill_policy": "complete_remainder",
+                "deadline_ms": 500,
+            },
+            "add_steps": [],
+        }}
+        parameters["protection_profile_catalog"] = {"hybrid-single": {
+            "profile_id": "hybrid-single",
+            "revision": 1,
+            "slices": [{
+                "slice_id": "position",
+                "quantity_fraction": 1.0,
+                "stop": {
+                    "rule_type": "hybrid",
+                    "order_type": "STP",
+                    "anchor_source": "strategy_swing",
+                    "anchor_ordinal": "most_recent",
+                    "buffer_bps": 8.0,
+                    "volatility_multiple": 1.25,
+                },
+                "trailing": {
+                    "rule_type": "volatility_trail",
+                    "volatility_multiple": 1.0,
+                    "activation_gain_percent": 0.5,
+                },
+            }],
+        }}
+
+        result = LongMomentumStrategyEngine().evaluate(
+            assignment(parameters=parameters),
+            confirmed_observation(),
+        )
+        intent = replace(result.evaluation.intents[0], quantity=100)
+        plan = IbkrStrategyOrderPlanner().plan(
+            account_id="DU123",
+            instrument=InstrumentContract("ibkr:265598", 265598, "AAPL", "STK", "USD"),
+            intent=intent,
+            strategy_id=STRATEGY_ID,
+            strategy_revision=STRATEGY_REVISION,
+        )
+
+        self.assertEqual(intent.metadata["volatility"], 0.4)
+        self.assertEqual([order.orderType for order in plan.orders], ["LMT", "LMT", "STP"])
+
     def test_short_profile_emits_relative_sell_intent_with_phase_order_policy(self) -> None:
         parameters = default_long_momentum_parameters()
         parameters["strategy_behavior"] = {
@@ -778,6 +832,70 @@ class LongMomentumStrategyTests(unittest.TestCase):
             waiting, confirmed_observation(observed_at=NOW + timedelta(seconds=1))
         )
         self.assertEqual(result.evaluation.signals[0].reason, "reentry_cooldown")
+
+    def test_reentry_cooldown_sensitivity_and_fresh_confirmation(self) -> None:
+        for cooldown_seconds in (1, 3, 5, 10):
+            with self.subTest(cooldown_seconds=cooldown_seconds):
+                parameters = default_long_momentum_parameters()
+                parameters["reentry"]["cooldown_ms"] = cooldown_seconds * 1000
+                parameters["phase_policy"] = {"reentry": {
+                    "mode": "automatic",
+                    "rules": deepcopy(parameters["entry_rules"]),
+                    "capital_request": {
+                        "mode": "fixed_quantity",
+                        "value": 100,
+                        "allow_replacement": False,
+                    },
+                    "order_intent": {
+                        "execution_policy": "adaptive_urgent",
+                        "partial_fill_policy": "complete_remainder",
+                        "deadline_ms": 500,
+                    },
+                }}
+                waiting = assignment(
+                    parameters=parameters,
+                    status=AssignmentStatus.REENTRY_COOLDOWN,
+                    state={
+                        "reentries": 1,
+                        "last_exit_at": NOW.isoformat(),
+                        "entry_at": (NOW - timedelta(seconds=30)).isoformat(),
+                    },
+                )
+                before = LongMomentumStrategyEngine().evaluate(
+                    waiting,
+                    confirmed_observation(
+                        observed_at=NOW + timedelta(
+                            seconds=cooldown_seconds,
+                            milliseconds=-1,
+                        )
+                    ),
+                )
+                ready = LongMomentumStrategyEngine().evaluate(
+                    waiting,
+                    confirmed_observation(
+                        observed_at=NOW + timedelta(seconds=cooldown_seconds)
+                    ),
+                )
+
+                self.assertEqual(before.evaluation.signals[0].reason, "reentry_cooldown")
+                self.assertEqual(ready.evaluation.signals[0].action, "enter_long")
+
+        stale = assignment(
+            status=AssignmentStatus.REENTRY_COOLDOWN,
+            state={
+                "reentries": 1,
+                "last_exit_at": NOW.isoformat(),
+                "entry_at": (NOW - timedelta(seconds=30)).isoformat(),
+            },
+        )
+        stale_result = LongMomentumStrategyEngine().evaluate(
+            stale,
+            confirmed_observation(observed_at=NOW),
+        )
+        self.assertEqual(
+            stale_result.evaluation.signals[0].reason,
+            "reentry_confirmation_not_fresh",
+        )
 
     def test_session_entry_cutoff_blocks_new_exposure(self) -> None:
         parameters = default_long_momentum_parameters()

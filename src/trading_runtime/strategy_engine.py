@@ -676,6 +676,53 @@ def _observation_updates_active_rules(
     return False
 
 
+def _reentry_confirmation_is_fresh(
+    phase_rules: dict[str, Any],
+    observation: StrategyObservation,
+    previous_exit_at: str,
+) -> bool:
+    if not previous_exit_at:
+        return False
+    try:
+        boundary = datetime.fromisoformat(previous_exit_at.replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    dependencies = _rule_stage_source_dependencies(
+        dict(phase_rules.get("confirmation") or {})
+    )
+    if not dependencies:
+        return False
+    for source_id, timeframe in dependencies:
+        candidates = [f"{source_id}@{timeframe}"] if timeframe else []
+        candidates.append(source_id)
+        cached = next(
+            (
+                observation.source_values[candidate]
+                for candidate in candidates
+                if candidate in observation.source_values
+            ),
+            None,
+        )
+        if isinstance(cached, dict):
+            observed_at = cached.get("observed_at")
+            if not observed_at:
+                return False
+            try:
+                if datetime.fromisoformat(str(observed_at).replace("Z", "+00:00")) <= boundary:
+                    return False
+            except (TypeError, ValueError):
+                return False
+        elif _source_value(observation, source_id, timeframe) is None:
+            return False
+        else:
+            try:
+                if observation.observed_at <= boundary:
+                    return False
+            except TypeError:
+                return False
+    return True
+
+
 class LongMomentumStrategyEngine:
     """Deterministic long-only policy engine over causal point-in-time observations."""
 
@@ -805,6 +852,25 @@ class LongMomentumStrategyEngine:
             if reentries
             else dict(parameters.get("entry_rules") or {})
         )
+        if (
+            reentries
+            and bool(reentry.get("require_new_confirmation", True))
+            and not _reentry_confirmation_is_fresh(
+                phase_rules,
+                observation,
+                str(state.get("last_exit_at") or ""),
+            )
+        ):
+            return self._result(
+                assignment,
+                observation,
+                "wait",
+                "reentry_confirmation_not_fresh",
+                0.0,
+                _confirmation_confidence(observation),
+                state,
+                AssignmentStatus.REENTRY_COOLDOWN,
+            )
         rule_result = evaluate_entry_decision_rules(phase_rules, observation)
         reference_name, reference, reference_buffer_bps = _trigger_reference(
             phase_rules,
@@ -1334,6 +1400,7 @@ class LongMomentumStrategyEngine:
                         ),
                         "position_quantity": observation.position_quantity,
                         "opportunity_score": score,
+                        "volatility": observation.volatility,
                         "session_routing": "smart",
                         "eligible_sessions": list(
                             dict(

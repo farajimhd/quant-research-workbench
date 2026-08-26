@@ -25,19 +25,23 @@ type DebugPreflight = {
   ready: boolean;
   run_plan_id: string;
   available_run_plans: Array<{ name: string; profile_id: string; run_plan_id: string; strategy_id: string; strategy_revision: number }>;
+  required_watchlist_ids: string[];
   tickers: string[];
+  watchlist_policy: "all_selected" | "any_selected" | "not_required";
 };
 
 type DebugRun = CanvasReplayRun & {
-  debug_fixture?: { content_hash: string; derived_frame_count: number; fixture_id: string; market_event_count: number; signal_event_count: number };
+  debug_fixture?: { content_hash: string; derived_frame_count: number; fixture_id: string; market_event_count: number; signal_event_count: number; watchlist_event_count: number };
   mode: "backtest_debug";
 };
 
 type StoredFixture = {
+  conid?: number;
   derivedFrames: string;
   fixtureId: string;
   marketEvents: string;
   signalEvents?: string;
+  watchlistEvents?: string;
   sessionDate: string;
   startTime: string;
   symbol: string;
@@ -56,10 +60,12 @@ export function BacktestDebugPage() {
   const [sessionDate, setSessionDate] = useState(previousWeekdayIsoDate);
   const [startTime, setStartTime] = useState("09:45:00");
   const [symbol, setSymbol] = useState("AAPL");
+  const [conid, setConid] = useState(265598);
   const [fixtureId, setFixtureId] = useState("opening-range-case-1");
   const [marketEvents, setMarketEvents] = useState(() => fixtureMarketEvents(previousWeekdayIsoDate(), "AAPL"));
   const [derivedFrames, setDerivedFrames] = useState(() => fixtureDerivedFrames(previousWeekdayIsoDate(), "AAPL"));
   const [signalEvents, setSignalEvents] = useState("[]");
+  const [watchlistEvents, setWatchlistEvents] = useState("[]");
   const [library, setLibrary] = useState<StoredFixture[]>(readFixtureLibrary);
   const [selectedFixture, setSelectedFixture] = useState("");
   const [preflight, setPreflight] = useState<DebugPreflight | null>(null);
@@ -71,7 +77,7 @@ export function BacktestDebugPage() {
   const [runPlanId, setRunPlanId] = useState("");
   const [candidateId, setCandidateId] = useState("");
   const [candidates, setCandidates] = useState<TestCandidateSummary[]>([]);
-  const parsed = useMemo(() => parseFixture(marketEvents, derivedFrames, signalEvents), [derivedFrames, marketEvents, signalEvents]);
+  const parsed = useMemo(() => parseFixture(marketEvents, derivedFrames, signalEvents, watchlistEvents), [derivedFrames, marketEvents, signalEvents, watchlistEvents]);
 
   useEffect(() => {
     let cancelled = false;
@@ -95,7 +101,7 @@ export function BacktestDebugPage() {
         method: "POST",
         timeoutMs: 20_000,
       })
-        .then((payload) => { if (!cancelled) { setPreflight(payload); if (!runPlanId && payload.run_plan_id) setRunPlanId(payload.run_plan_id); } })
+        .then((payload) => { if (!cancelled) { setPreflight(payload); if (!runPlanId && payload.run_plan_id) setRunPlanId(payload.run_plan_id); setWatchlistEvents((current) => current.trim() === "[]" ? fixtureWatchlistEvents(sessionDate, symbol, conid, payload.required_watchlist_ids) : current); } })
         .catch((reason) => { if (!cancelled) { setPreflight(null); setError(message(reason)); } })
         .finally(() => { if (!cancelled) setChecking(false); });
     }, 300);
@@ -114,16 +120,20 @@ export function BacktestDebugPage() {
   });
 
   function updateTemplate(nextDate: string, nextSymbol: string) {
+    const nextTicker = nextSymbol.toUpperCase();
+    const nextConid = nextTicker === symbol.toUpperCase() ? conid : nextTicker === "AAPL" ? 265598 : 0;
     setSessionDate(nextDate);
-    setSymbol(nextSymbol.toUpperCase());
+    setSymbol(nextTicker);
+    setConid(nextConid);
     setMarketEvents(fixtureMarketEvents(nextDate, nextSymbol));
     setDerivedFrames(fixtureDerivedFrames(nextDate, nextSymbol));
     setSignalEvents("[]");
+    setWatchlistEvents(fixtureWatchlistEvents(nextDate, nextSymbol, nextConid, preflight?.required_watchlist_ids ?? []));
   }
 
   function saveFixture() {
     if (!fixtureId.trim()) { setError("A stable Test Scenario ID is required before saving."); return; }
-    const record = { derivedFrames, fixtureId: fixtureId.trim(), marketEvents, signalEvents, sessionDate, startTime, symbol };
+    const record = { conid, derivedFrames, fixtureId: fixtureId.trim(), marketEvents, signalEvents, watchlistEvents, sessionDate, startTime, symbol };
     const next = [...library.filter((row) => row.fixtureId !== record.fixtureId), record].sort((a, b) => a.fixtureId.localeCompare(b.fixtureId));
     setLibrary(next);
     setSelectedFixture(record.fixtureId);
@@ -136,9 +146,11 @@ export function BacktestDebugPage() {
     const record = library.find((row) => row.fixtureId === id);
     if (!record) return;
     setDerivedFrames(record.derivedFrames);
+    setConid(record.conid ?? (record.symbol === "AAPL" ? 265598 : 0));
     setFixtureId(record.fixtureId);
     setMarketEvents(record.marketEvents);
     setSignalEvents(record.signalEvents ?? "[]");
+    setWatchlistEvents(record.watchlistEvents ?? "[]");
     setSessionDate(record.sessionDate);
     setStartTime(record.startTime);
     setSymbol(record.symbol);
@@ -164,6 +176,7 @@ export function BacktestDebugPage() {
           fixture_id: fixtureId,
           market_events: parsed.marketEvents,
           signal_events: parsed.signalEvents,
+          watchlist_events: parsed.watchlistEvents,
           run_plan_id: runPlanId,
           session_date: sessionDate,
           start_time: startTime,
@@ -239,7 +252,7 @@ export function BacktestDebugPage() {
 
   return <TradingModeLaunch
     actionLabel="Run Test Scenario"
-    actionSummary={parsed.ok ? <><strong>{parsed.marketEvents.length}</strong> market events, <strong>{parsed.derivedFrames.length}</strong> derived frames, and <strong>{parsed.signalEvents.length}</strong> signal occurrences will be content hashed.</> : parsed.error}
+    actionSummary={parsed.ok ? <><strong>{parsed.marketEvents.length}</strong> market events, <strong>{parsed.derivedFrames.length}</strong> derived frames, <strong>{parsed.signalEvents.length}</strong> signal occurrences, and <strong>{parsed.watchlistEvents.length}</strong> eligibility transitions will be content hashed.</> : parsed.error}
     busy={creating}
     checking={checking}
     checks={preflight?.checks ?? []}
@@ -258,13 +271,15 @@ export function BacktestDebugPage() {
             <label className="configuration-field"><span>Session date</span><input onChange={(event) => updateTemplate(event.target.value, symbol)} type="date" value={sessionDate} /></label>
             <label className="configuration-field"><span>Start clock · New York</span><input onChange={(event) => setStartTime(event.target.value)} step="1" type="time" value={startTime} /></label>
             <label className="configuration-field"><span>Primary symbol</span><input maxLength={32} onChange={(event) => updateTemplate(sessionDate, event.target.value)} value={symbol} /></label>
+            <label className="configuration-field"><span>Point-in-time conid</span><input min="1" onChange={(event) => { const value = Number(event.target.value); setConid(value); setWatchlistEvents(fixtureWatchlistEvents(sessionDate, symbol, value, preflight?.required_watchlist_ids ?? [])); }} type="number" value={conid || ""} /><small>Required for deterministic eligibility and simulated broker identity. Do not guess this value.</small></label>
           <div className="debug-fixture-actions"><button className="button secondary compact" onClick={saveFixture} type="button"><Save size={14} /> Save scenario</button><button aria-label="Delete selected scenario" className="button secondary compact" disabled={!selectedFixture} onClick={deleteFixture} type="button"><Trash2 size={14} /> Delete</button></div>
           <details className="mode-launch-advanced">
-            <summary><span>Test Scenario payload</span><small>{parsed.ok ? `${parsed.marketEvents.length + parsed.derivedFrames.length + parsed.signalEvents.length} exact records` : "JSON needs attention"}</small></summary>
+            <summary><span>Test Scenario payload</span><small>{parsed.ok ? `${parsed.marketEvents.length + parsed.derivedFrames.length + parsed.signalEvents.length + parsed.watchlistEvents.length} exact records` : "JSON needs attention"}</small></summary>
             <div className="debug-fixture-editors">
             <label><span>Canonical market events · JSON array</span><textarea aria-label="Canonical market events JSON" onChange={(event) => setMarketEvents(event.target.value)} spellCheck={false} value={marketEvents} /><small>Quote/trade records require timezone-aware <code>ts</code> values and causal ordering.</small></label>
             <label><span>Derived strategy frames · JSON array</span><textarea aria-label="Derived strategy frames JSON" onChange={(event) => setDerivedFrames(event.target.value)} spellCheck={false} value={derivedFrames} /><small>Frames drive normalized strategy observations through the same controller.</small></label>
             <label><span>Signal Stream occurrences · JSON array</span><textarea aria-label="Signal Stream occurrences JSON" onChange={(event) => setSignalEvents(event.target.value)} spellCheck={false} value={signalEvents} /><small>Optional external events use <code>signal_stream_id</code>, <code>available_at</code>, ticker, conid, and configured Data Field values.</small></label>
+            <label><span>Watchlist eligibility transitions · JSON array</span><textarea aria-label="Watchlist eligibility transitions JSON" onChange={(event) => setWatchlistEvents(event.target.value)} spellCheck={false} value={watchlistEvents} /><small>{preflight?.required_watchlist_ids.length ? `Required by this Run Plan (${preflight.watchlist_policy.replaceAll("_", " ")}): ${preflight.required_watchlist_ids.join(", ")}.` : "This Run Plan does not require Watchlist membership."} Each addition pins a ticker, point-in-time conid, Watchlist, and effective clock.</small></label>
             </div>
           </details>
   </TradingModeLaunch>;
@@ -274,18 +289,19 @@ function DebugCheckRow({ check }: { check: DebugCheck }) {
   return <article data-status={check.status}><div className="historical-evidence-icon">{check.status === "ready" ? <CheckCircle2 size={20} /> : <TriangleAlert size={20} />}</div><div><header><strong>{check.label}</strong></header><p>{check.summary}</p><small>{check.evidence}</small>{check.action?.hash ? <button className="button secondary compact" onClick={() => { window.location.hash = check.action?.hash || "#revision-configuration"; }} type="button">{check.action.label || "Resolve"}</button> : null}</div></article>;
 }
 
-function parseFixture(marketText: string, framesText: string, signalText: string): { derivedFrames: Array<Record<string, unknown>>; error: string; marketEvents: Array<Record<string, unknown>>; signalEvents: Array<Record<string, unknown>>; ok: boolean } {
+function parseFixture(marketText: string, framesText: string, signalText: string, watchlistText: string): { derivedFrames: Array<Record<string, unknown>>; error: string; marketEvents: Array<Record<string, unknown>>; signalEvents: Array<Record<string, unknown>>; watchlistEvents: Array<Record<string, unknown>>; ok: boolean } {
   try {
     const marketEvents = JSON.parse(marketText) as unknown;
     const derivedFrames = JSON.parse(framesText) as unknown;
     const signalEvents = JSON.parse(signalText) as unknown;
-    if (!Array.isArray(marketEvents) || !Array.isArray(derivedFrames) || !Array.isArray(signalEvents)) throw new Error("All Test Scenario editors must contain JSON arrays.");
-    if (![...marketEvents, ...derivedFrames, ...signalEvents].every((row) => row !== null && typeof row === "object" && !Array.isArray(row))) throw new Error("Every Test Scenario record must be a JSON object.");
+    const watchlistEvents = JSON.parse(watchlistText) as unknown;
+    if (!Array.isArray(marketEvents) || !Array.isArray(derivedFrames) || !Array.isArray(signalEvents) || !Array.isArray(watchlistEvents)) throw new Error("All Test Scenario editors must contain JSON arrays.");
+    if (![...marketEvents, ...derivedFrames, ...signalEvents, ...watchlistEvents].every((row) => row !== null && typeof row === "object" && !Array.isArray(row))) throw new Error("Every Test Scenario record must be a JSON object.");
     if (!marketEvents.length && !derivedFrames.length && !signalEvents.length) throw new Error("Add at least one market event, derived frame, or Signal Stream occurrence.");
-    if (marketEvents.length + derivedFrames.length + signalEvents.length > 20_000) throw new Error("A Test Scenario may contain at most 20,000 records.");
-    return { derivedFrames, error: "", marketEvents, signalEvents, ok: true } as { derivedFrames: Array<Record<string, unknown>>; error: string; marketEvents: Array<Record<string, unknown>>; signalEvents: Array<Record<string, unknown>>; ok: boolean };
+    if (marketEvents.length + derivedFrames.length + signalEvents.length + watchlistEvents.length > 20_000) throw new Error("A Test Scenario may contain at most 20,000 records.");
+    return { derivedFrames, error: "", marketEvents, signalEvents, watchlistEvents, ok: true } as { derivedFrames: Array<Record<string, unknown>>; error: string; marketEvents: Array<Record<string, unknown>>; signalEvents: Array<Record<string, unknown>>; watchlistEvents: Array<Record<string, unknown>>; ok: boolean };
   } catch (reason) {
-    return { derivedFrames: [], error: message(reason), marketEvents: [], signalEvents: [], ok: false };
+    return { derivedFrames: [], error: message(reason), marketEvents: [], signalEvents: [], watchlistEvents: [], ok: false };
   }
 }
 
@@ -299,6 +315,11 @@ function fixtureMarketEvents(sessionDate: string, symbol: string) {
 
 function fixtureDerivedFrames(sessionDate: string, symbol: string) {
   return JSON.stringify([{ as_of: `${sessionDate}T09:45:01${newYorkOffset(sessionDate)}`, bar: { close: 101.25, high: 101.3, low: 101.2, open: 101.2, volume: 100 }, indicator: { close: 101.25, vwap: 101.22 }, sequence: 3, ticker: symbol.toUpperCase() || "AAPL", timeframe: "1m" }], null, 2);
+}
+
+function fixtureWatchlistEvents(sessionDate: string, symbol: string, conid: number, watchlistIds: string[]) {
+  const ticker = symbol.toUpperCase() || "AAPL";
+  return JSON.stringify(conid > 0 ? watchlistIds.map((watchlistId) => ({ effective_at: `${sessionDate}T09:45:00${newYorkOffset(sessionDate)}`, event: "added", ibkr_conid: conid, ticker, watchlist_id: watchlistId })) : [], null, 2);
 }
 
 function newYorkOffset(sessionDate: string) {
