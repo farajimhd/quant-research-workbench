@@ -3,6 +3,7 @@ import type { ReactNode } from "react";
 
 export type SecIconRecency = "hot" | "cold" | "older";
 export type SecIconKind = "administrative" | "capital" | "event" | "fundamentals" | "governance" | "ownership" | "risk" | "transaction" | "other";
+export type SecIconPrediction = "positive" | "negative" | "mixed" | "neutral" | "contextual" | "uncertain" | "unavailable";
 
 const SEC_ICON_KINDS = {
   administrative: { Icon: Clock3, label: "Administrative" },
@@ -31,9 +32,20 @@ export function secIconKindFor(...values: unknown[]): SecIconKind {
 
 export function secIconKindLabel(kind: SecIconKind): string { return SEC_ICON_KINDS[kind].label; }
 
-export function SecIntelligenceIcon({ count, failed = false, kind = "other", pending = false, recency = "older", reviewed = false, synthesized = false }: { count: number; failed?: boolean; kind?: SecIconKind; pending?: boolean; recency?: SecIconRecency; reviewed?: boolean; synthesized?: boolean }) {
+export function normalizeSecIconPrediction(value: unknown): SecIconPrediction {
+  const direction = String(value || "").trim().toLowerCase();
+  if (["positive", "upside", "bullish", "increase", "increased"].includes(direction)) return "positive";
+  if (["negative", "downside", "bearish", "decrease", "decreased"].includes(direction)) return "negative";
+  if (direction === "mixed") return "mixed";
+  if (direction === "contextual") return "contextual";
+  if (direction === "uncertain") return "uncertain";
+  if (direction === "neutral") return "neutral";
+  return "unavailable";
+}
+
+export function SecIntelligenceIcon({ count, failed = false, kind = "other", pending = false, prediction = "unavailable", recency = "older", reviewed = false, synthesized = false }: { count: number; failed?: boolean; kind?: SecIconKind; pending?: boolean; prediction?: SecIconPrediction; recency?: SecIconRecency; reviewed?: boolean; synthesized?: boolean }) {
   const Icon = SEC_ICON_KINDS[kind].Icon;
-  return <span aria-hidden="true" className="sec-intelligence-icon" data-kind={kind} data-recency={recency} data-synthesized={synthesized}>
+  return <span aria-hidden="true" className="sec-intelligence-icon" data-kind={kind} data-prediction={prediction} data-recency={recency} data-synthesized={synthesized}>
     <Icon className="sec-intelligence-document" />
     {synthesized ? <Check className="sec-intelligence-synthesis-mark" /> : null}
     {reviewed ? <Sparkles className="sec-intelligence-review-mark" /> : null}
@@ -45,8 +57,8 @@ export function SecIntelligenceIcon({ count, failed = false, kind = "other", pen
 
 export function SecIconGuide() {
   return <section aria-label="SEC marker guide" className="news-icon-guide sec-icon-guide">
-    <header><div><strong>SEC marker guide</strong><span>Signal streams, watchlists, and market tables</span></div><SecIntelligenceIcon count={3} kind="fundamentals" recency="hot" reviewed synthesized /></header>
-    <p className="news-guide-intro">The center glyph identifies what the latest filing means. Color still shows recency; select any SEC marker beside a ticker to open the synthesis-first filing timeline.</p>
+    <header><div><strong>SEC marker guide</strong><span>Signal streams, watchlists, and market tables</span></div><SecIntelligenceIcon count={3} kind="fundamentals" prediction="positive" recency="hot" reviewed synthesized /></header>
+    <p className="news-guide-intro">The center shape identifies the latest filing family. Its color shows predicted direction; the corner dot preserves recency. Select any SEC marker beside a ticker to open the synthesis-first filing timeline.</p>
     <section className="news-guide-section"><header><strong>Filing meaning</strong><span>Shape identifies the disclosure family</span></header><div className="news-guide-combinations sec-guide-kinds">
       <SecLegend kind="fundamentals" detail="Periodic results and financial changes" />
       <SecLegend kind="event" detail="Material event reported on Form 8-K" />
@@ -58,13 +70,19 @@ export function SecIconGuide() {
       <SecLegend kind="administrative" detail="Notices and routine disclosures" />
       <SecLegend kind="other" detail="Unclassified or synthesis pending" />
     </div></section>
+    <section className="news-guide-section"><header><strong>Prediction color</strong><span>AI review when available, otherwise SEC Synthesis</span></header><div className="news-guide-examples">
+      <GuideState icon={<SecIntelligenceIcon count={1} kind="fundamentals" prediction="positive" recency="cold" synthesized />} label="Positive" detail="Green = favorable implication" />
+      <GuideState icon={<SecIntelligenceIcon count={1} kind="risk" prediction="negative" recency="cold" synthesized />} label="Negative" detail="Red = adverse implication" />
+      <GuideState icon={<SecIntelligenceIcon count={1} kind="event" prediction="mixed" recency="cold" synthesized />} label="Mixed" detail="Amber = competing implications" />
+      <GuideState icon={<SecIntelligenceIcon count={1} kind="transaction" prediction="contextual" recency="cold" reviewed synthesized />} label="Contextual" detail="Blue-gray = insufficient direction" />
+    </div></section>
     <section className="news-guide-section"><header><strong>State layers</strong><span>Symbols remain readable without color</span></header><div className="news-guide-examples">
       <GuideState icon={<SecIntelligenceIcon count={1} kind="fundamentals" recency="hot" synthesized />} label="Synthesized" detail="Check = synthesis available" />
       <GuideState icon={<SecIntelligenceIcon count={1} kind="capital" recency="cold" reviewed synthesized />} label="AI reviewed" detail="Violet sparkle = manual review" />
       <GuideState icon={<SecIntelligenceIcon count={1} kind="other" pending recency="cold" />} label="Processing" detail="Spinner = synthesis pending" />
       <GuideState icon={<SecIntelligenceIcon count={4} failed kind="risk" recency="older" />} label="Needs attention" detail="Warning = incomplete processing" />
     </div></section>
-    <footer><strong>Color</strong><span>Coral is hot, blue is recent, and gray is older.</span><strong>Counter</strong><span>The blue number is the linked filing count.</span><strong>Authority</strong><span>Meaning and sentiment come from SEC Synthesis. Forecast eligibility remains a separate deterministic label shown in the timeline.</span></footer>
+    <footer><strong>Recency</strong><span>Corner dot: coral is hot, blue is recent, and gray is older.</span><strong>Counter</strong><span>The blue number is the linked filing count.</span><strong>Authority</strong><span>Prediction color uses completed manual AI review first, then SEC Synthesis sentiment. Forecast eligibility remains a separate deterministic label shown in the timeline.</span></footer>
   </section>;
 }
 

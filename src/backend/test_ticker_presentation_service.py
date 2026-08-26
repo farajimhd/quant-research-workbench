@@ -37,7 +37,12 @@ class TickerPresentationServiceTest(unittest.TestCase):
                 return [{"ticker": "AAPL", "latest_news_at": (now - timedelta(hours=1)).isoformat()}]
             if "sec_count" in query:
                 self.assertIn("upperUTF8(trimBoth(b.ticker)) IN ('AAPL')", query)
-                return [{"ticker": "AAPL", "latest_sec_at": (now - timedelta(hours=12)).isoformat()}]
+                return [{
+                    "ticker": "AAPL", "latest_sec_at": (now - timedelta(hours=12)).isoformat(),
+                    "sec_count": 2, "sec_labels": ["8-K"], "sec_synthesis_count": 2,
+                    "sec_synthesis_direction": "negative", "sec_review_status": "complete",
+                    "sec_review_fundamental_direction": "contextual",
+                }]
             return [{"ticker": "AAPL", "issuer_name": "Apple Inc.", "country": "US", "logo_relative_path": ""}]
 
         with patch("src.backend.ticker_presentation_service._clickhouse_rows", side_effect=rows):
@@ -46,6 +51,10 @@ class TickerPresentationServiceTest(unittest.TestCase):
         self.assertEqual(payload["status"], "ready")
         self.assertEqual(payload["presentations"]["AAPL"]["live_news_recency"], "hot")
         self.assertEqual(payload["presentations"]["AAPL"]["sec_recency"], "cold")
+        self.assertEqual(payload["presentations"]["AAPL"]["sec_labels"], ["8-K"])
+        self.assertEqual(payload["presentations"]["AAPL"]["sec_synthesis_direction"], "negative")
+        self.assertEqual(payload["presentations"]["AAPL"]["sec_review_status"], "complete")
+        self.assertEqual(payload["presentations"]["AAPL"]["sec_review_fundamental_direction"], "contextual")
 
     def test_optional_recency_failure_does_not_hide_ticker_identity(self) -> None:
         def rows(query: str) -> list[dict[str, object]]:

@@ -223,7 +223,13 @@ class CanvasScannerPayloadTest(unittest.TestCase):
                 "tickers": ["AAPL"],
             },
         ]
-        sec = [{"accepted_at_utc": "2026-07-17T11:00:00Z", "form_type": "8-K", "ticker": "AAPL"}]
+        sec = [{
+            "accepted_at_utc": "2026-07-17T11:00:00Z",
+            "form_type": "8-K",
+            "sec_review": {"status": "complete", "result": {"fundamental_direction": "positive"}},
+            "sec_synthesis": {"synthesis": {"composite_sentiment": "mixed"}},
+            "ticker": "AAPL",
+        }]
 
         _enrich_scanner_intelligence(rows, news, sec, as_of)
 
@@ -232,6 +238,9 @@ class CanvasScannerPayloadTest(unittest.TestCase):
         self.assertEqual(rows[0]["news_labels"], "earnings, guidance")
         self.assertEqual(rows[0]["sec_recency"], "hot")
         self.assertEqual(rows[0]["sec_labels"], "8-K")
+        self.assertEqual(rows[0]["sec_synthesis_direction"], "mixed")
+        self.assertEqual(rows[0]["sec_review_status"], "complete")
+        self.assertEqual(rows[0]["sec_review_fundamental_direction"], "positive")
 
     def test_news_query_requests_company_classification_and_topics(self) -> None:
         with patch("src.backend.canvas_preview_service._clickhouse_rows", return_value=[]) as clickhouse:
@@ -257,13 +266,22 @@ class CanvasScannerPayloadTest(unittest.TestCase):
         self.assertNotIn("LIMIT 30", count_sql)
         self.assertIn("GROUP BY ticker", sec_sql)
         self.assertIn("valid_to_date_exclusive", sec_sql)
+        self.assertIn("sec_synthesis_v1 AS s FINAL", sec_sql)
+        self.assertIn("sec_llm_issuer_review_v1 AS r FINAL", sec_sql)
+        self.assertIn("s.updated_at_utc <=", sec_sql)
+        self.assertIn("r.updated_at_utc <=", sec_sql)
+        self.assertIn("sec_review_fundamental_direction", sec_sql)
         self.assertNotIn("LIMIT 30", sec_sql)
 
     def test_aggregated_scanner_intelligence_populates_labels_and_recency(self) -> None:
         as_of = datetime(2026, 7, 17, 13, 45, tzinfo=UTC)
         rows = [{"symbol": "AAPL"}, {"symbol": "MSFT"}]
         news = [{"ticker": "AAPL", "live_news_count": 2, "latest_news_at": "2026-07-17T13:15:00Z", "news_labels": ["guidance", "earnings"]}]
-        sec = [{"ticker": "AAPL", "sec_count": 1, "latest_sec_at": "2026-07-16T20:00:00Z", "sec_labels": ["8-K"]}]
+        sec = [{
+            "ticker": "AAPL", "sec_count": 1, "latest_sec_at": "2026-07-16T20:00:00Z", "sec_labels": ["8-K"],
+            "sec_synthesis_count": 1, "sec_synthesis_direction": "negative", "sec_review_status": "complete",
+            "sec_review_fundamental_direction": "contextual",
+        }]
 
         _merge_scanner_intelligence(rows, news, sec, as_of)
 
@@ -271,6 +289,8 @@ class CanvasScannerPayloadTest(unittest.TestCase):
         self.assertEqual(rows[0]["live_news_recency"], "hot")
         self.assertEqual(rows[0]["sec_labels"], "8-K")
         self.assertEqual(rows[0]["sec_recency"], "cold")
+        self.assertEqual(rows[0]["sec_synthesis_direction"], "negative")
+        self.assertEqual(rows[0]["sec_review_fundamental_direction"], "contextual")
         self.assertEqual(rows[1]["live_news_recency"], "none")
 
 

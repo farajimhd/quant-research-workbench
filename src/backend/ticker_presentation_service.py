@@ -107,6 +107,14 @@ def ticker_presentation_payload(
             "sec_recency": _recency(
                 sec_by_ticker.get(ticker, {}).get("latest_sec_at"), cutoff
             ),
+            "sec_count": int(sec_by_ticker.get(ticker, {}).get("sec_count") or 0),
+            "sec_labels": list(sec_by_ticker.get(ticker, {}).get("sec_labels") or []),
+            "sec_synthesis_count": int(sec_by_ticker.get(ticker, {}).get("sec_synthesis_count") or 0),
+            "sec_synthesis_direction": str(sec_by_ticker.get(ticker, {}).get("sec_synthesis_direction") or ""),
+            "sec_review_status": str(sec_by_ticker.get(ticker, {}).get("sec_review_status") or ""),
+            "sec_review_fundamental_direction": str(
+                sec_by_ticker.get(ticker, {}).get("sec_review_fundamental_direction") or ""
+            ),
             "ticker": ticker,
         }
         if market_state_available:

@@ -10,7 +10,13 @@ export type TickerPresentation = {
   live_news_recency?: "hot" | "cold" | "old" | "none";
   logo_url: string;
   market_is_halted?: boolean;
+  sec_count?: number;
+  sec_labels?: string[];
   sec_recency?: "hot" | "cold" | "old" | "none";
+  sec_review_fundamental_direction?: string;
+  sec_review_status?: string;
+  sec_synthesis_count?: number;
+  sec_synthesis_direction?: string;
   ticker: string;
   trading_status?: string;
 };

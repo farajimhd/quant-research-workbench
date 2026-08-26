@@ -745,6 +745,17 @@ def _enrich_scanner_intelligence(scanner: list[dict[str, Any]], news: Any, sec: 
         row["sec_count"] = len(ticker_sec)
         row["sec_recency"] = _latest_recency(ticker_sec, "accepted_at_utc", as_of)
         row["sec_labels"] = ", ".join(sorted({str(item.get("form_type") or "") for item in ticker_sec if item.get("form_type")}))
+        latest_sec = max(ticker_sec, key=lambda item: str(item.get("accepted_at_utc") or ""), default={})
+        synthesis = latest_sec.get("sec_synthesis") if isinstance(latest_sec.get("sec_synthesis"), dict) else {}
+        synthesis_summary = synthesis.get("synthesis") if isinstance(synthesis.get("synthesis"), dict) else {}
+        review = latest_sec.get("sec_review") if isinstance(latest_sec.get("sec_review"), dict) else {}
+        row["sec_synthesis_count"] = sum(isinstance(item.get("sec_synthesis"), dict) for item in ticker_sec)
+        row["sec_synthesis_direction"] = str(synthesis_summary.get("composite_sentiment") or "")
+        row["sec_review_status"] = str(review.get("status") or "")
+        review_result = review.get("result") if isinstance(review.get("result"), dict) else {}
+        row["sec_review_fundamental_direction"] = str(
+            review_result.get("fundamental_direction") or review.get("fundamental_direction") or ""
+        )
 
 
 def _merge_scanner_intelligence(scanner: list[dict[str, Any]], news: Any, sec: Any, as_of: datetime) -> None:
@@ -762,6 +773,10 @@ def _merge_scanner_intelligence(scanner: list[dict[str, Any]], news: Any, sec: A
             [{"accepted_at_utc": sec_item.get("latest_sec_at")}], "accepted_at_utc", as_of
         )
         row["sec_labels"] = ", ".join(sorted(set(_string_values(sec_item.get("sec_labels")))))
+        row["sec_synthesis_count"] = int(sec_item.get("sec_synthesis_count") or 0)
+        row["sec_synthesis_direction"] = str(sec_item.get("sec_synthesis_direction") or "")
+        row["sec_review_status"] = str(sec_item.get("sec_review_status") or "")
+        row["sec_review_fundamental_direction"] = str(sec_item.get("sec_review_fundamental_direction") or "")
 
 
 def enrich_scanner_news_intelligence(scanner: list[dict[str, Any]], news: Any, as_of: datetime) -> None:

@@ -186,12 +186,24 @@ def scanner_sec_filings(cutoff: datetime, *, tickers: Iterable[str] = ()) -> str
             upperUTF8(trimBoth(b.ticker)) AS ticker,
             uniqExact(f.accession_number) AS sec_count,
             formatDateTime(max(f.accepted_at_utc), '%Y-%m-%dT%H:%i:%S.%fZ', 'UTC') AS latest_sec_at,
-            arraySort(groupUniqArray(f.form_type)) AS sec_labels
+            arraySort(groupUniqArray(f.form_type)) AS sec_labels,
+            uniqExactIf(f.accession_number, notEmpty(s.source_hash)) AS sec_synthesis_count,
+            argMax(ifNull(s.composite_sentiment, ''), f.accepted_at_utc) AS sec_synthesis_direction,
+            argMax(ifNull(r.status, ''), f.accepted_at_utc) AS sec_review_status,
+            argMax(if(r.status = 'complete', r.fundamental_direction, ''), f.accepted_at_utc) AS sec_review_fundamental_direction
         FROM q_live.sec_filing_v3 AS f FINAL
         INNER JOIN q_live.id_sec_market_bridge_v3 AS b FINAL
             ON toString(b.cik) = toString(f.cik)
             AND (b.valid_from_date IS NULL OR b.valid_from_date <= toDate(f.accepted_at_utc))
             AND (b.valid_to_date_exclusive IS NULL OR toDate(f.accepted_at_utc) < b.valid_to_date_exclusive)
+        LEFT JOIN q_live.sec_synthesis_v1 AS s FINAL
+            ON toString(s.cik) = toString(f.cik)
+            AND s.accession_number = f.accession_number
+            AND s.updated_at_utc <= toDateTime64({_utc_sql(cutoff)}, 6, 'UTC')
+        LEFT JOIN q_live.sec_llm_issuer_review_v1 AS r FINAL
+            ON toString(r.cik) = toString(f.cik)
+            AND r.accession_number = f.accession_number
+            AND r.updated_at_utc <= toDateTime64({_utc_sql(cutoff)}, 6, 'UTC')
         WHERE f.accepted_at_utc BETWEEN toDateTime64({_utc_sql(start)}, 3, 'UTC')
             AND toDateTime64({_utc_sql(cutoff)}, 3, 'UTC')
             AND notEmpty(b.ticker)
