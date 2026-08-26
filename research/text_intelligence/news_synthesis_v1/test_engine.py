@@ -1780,6 +1780,41 @@ class NewsSynthesisEngineTests(unittest.TestCase):
         fields = {row["source_field"] for row in envelope["information_origin"]["evidence"]}
         self.assertIn("title", fields)
 
+    def test_reviewed_why_moving_title_families_are_forecast_ineligible(self) -> None:
+        titles = (
+            "Why Is Alpha Stock Jumping Today?",
+            "What's Going On With Alpha Shares Tuesday?",
+            "Alpha shares are trading higher after the company announced results.",
+            "Shares of Alpha are trading lower after yesterday's filing.",
+            "Alpha (AAA) Stock Jumps 90% After Hours: Here's Why",
+            "Why Did CPI Aerostructures (CVU) Shares Jump After Hours?",
+        )
+        for index, title in enumerate(titles):
+            with self.subTest(title=title):
+                document = self.engine.synthesize({
+                    "source_id": f"news-reviewed-mover-{index}",
+                    "source_timestamp": "2026-08-03T12:00:00Z",
+                    "title": title,
+                    "text": (
+                        "Alpha Therapeutics Inc (NASDAQ:AAA) announced quarterly results. "
+                        "Revenue increased 20%."
+                    ),
+                    "tickers": ["AAA"],
+                })
+                purpose = document["envelope"]["communication_purpose"]
+                self.assertEqual(purpose["value"], "explain_move")
+                self.assertIn("why_moving_title_v1", purpose["rule_id"])
+                forecast = [
+                    row for row in document["eligibility"]
+                    if row["product"] == "forecast_trigger"
+                ]
+                self.assertTrue(forecast)
+                self.assertTrue(all(not row["eligible"] for row in forecast))
+                self.assertTrue(all(
+                    "communication_purpose:explain_move" in row["reasons"]
+                    for row in forecast
+                ))
+
     def test_market_quotes_guidance_and_semicolon_clauses_are_atomic(self) -> None:
         text = (
             "Alpha Therapeutics Inc (NASDAQ:AAA) closed at $17.25; "

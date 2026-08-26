@@ -14,7 +14,7 @@ from .facts import extract_regulatory_decision_facts, extract_typed_facts
 from .synthesis import derive_eligibility, derive_issuer_views, derive_synthesis
 
 
-ENGINE_VERSION = "news_synthesis_engine_v54"
+ENGINE_VERSION = "news_synthesis_engine_v55"
 EXCHANGE_TICKER_RE = re.compile(
     r"\b(?P<exchange>NASDAQ|NYSE|NYSE\s+AMERICAN|NYSEAMERICAN|AMEX|"
     r"OTC(?:QX|QB)?|TSX|TSXV|CSE)\s*[:\-]\s*"
@@ -24,6 +24,42 @@ EXCHANGE_TICKER_RE = re.compile(
 CASHTAG_RE = re.compile(r"(?<![A-Z0-9])\$([A-Z][A-Z0-9.\-]{0,9})\b")
 ROUNDUP_RE = re.compile(r"\b(?:stocks?|companies|biggest movers?|gainers?|losers?)\s+(?:moving|to watch)|\bmarket\s+(?:wrap|recap|update)\b", re.I)
 WHY_MOVING_RE = re.compile(r"\bwhy\s+(?:is|are|did)\b.*\b(?:stock|shares?)\b.*\bmov", re.I)
+WHY_MOVING_TITLE_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    (
+        "why_or_what_price_move_question",
+        re.compile(
+            r"\b(?:why\s+(?:is|are|did|has|have|was|were|does|do)|"
+            r"what(?:'s| is)\s+going\s+on\s+with)\b.{0,220}\b(?:stock|shares?)\b",
+            re.I,
+        ),
+    ),
+    (
+        "shares_trading_direction",
+        re.compile(
+            r"\bshares?\b.{0,120}\b(?:(?:are|is|were|was)\s+)?"
+            r"trading\s+(?:higher|lower|up|down)\b",
+            re.I,
+        ),
+    ),
+    (
+        "stock_or_shares_price_action",
+        re.compile(
+            r"\b(?:stock|shares?)\b(?!\s+(?:could|may|might|will|would|can|should|to)\b)"
+            r".{0,32}\b(?:jumps?|jumped|jumping|surges?|surged|surging|soars?|soared|"
+            r"soaring|rall(?:ies|ied|ying)|rises?|rose|rising|"
+            r"gains?|gained|gaining|pops?|popped|popping|spikes?|spiked|spiking|"
+            r"climbs?|climbed|climbing|rockets?|rocketed|rocketing|skyrockets?|"
+            r"skyrocketed|skyrocketing|slides?|slid|sliding|slumps?|slumped|slumping|"
+            r"sinks?|sank|sinking|falls?|fell|falling|drops?|dropped|dropping|"
+            r"tumbles?|tumbled|tumbling|plunges?|plunged|plunging|dips?|dipped|dipping|"
+            r"pauses?|paused)\b(?=.{0,120}(?:\b(?:after(?:\s+hours)?|following|on|as|"
+            r"amid|because|today|premarket|postmarket|monday|tuesday|wednesday|thursday|"
+            r"friday|here's\s+why|what(?:'s|\s+is)\s+(?:driving|happening)|"
+            r"why\s+it\s+is\s+trending)\b|\d+(?:\.\d+)?%))",
+            re.I,
+        ),
+    ),
+)
 ANALYST_RE = re.compile(r"\b(?:analyst|price target|rating|upgrade[sd]?|downgrade[sd]?|initiates?|maintains?|reiterates?)\b", re.I)
 ATTRIBUTED_ASSESSMENT_RE = re.compile(
     r"\b(?:short|bear|bull)\s+thesis\b|"
@@ -60,6 +96,14 @@ class IssuerIdentity:
 
     def valid_on(self, day: date | None) -> bool:
         return not day or ((not self.list_date or day >= self.list_date) and (not self.delisted_date or day <= self.delisted_date))
+
+
+def why_moving_title_pattern(title: str) -> str | None:
+    """Return the reviewed price-reaction headline family, if any."""
+    for name, pattern in WHY_MOVING_TITLE_PATTERNS:
+        if pattern.search(title):
+            return name
+    return None
 
 
 class IssuerIdentityIndex:
@@ -935,8 +979,10 @@ def _envelope(
     elif market_overview: structure = "market_overview"
     elif digest: structure = "multi_subject_digest"
     else: structure = "single_subject"
+    reviewed_mover_pattern = why_moving_title_pattern(title)
     causal_mover = bool(
-        WHY_MOVING_RE.search(title)
+        reviewed_mover_pattern
+        or WHY_MOVING_RE.search(title)
         or re.search(r"\bwhy is\b.{0,100}\b(?:up|down)\b(?:.{0,80}\bsince\b)?", title, re.I)
         or re.search(r"\b(?:why|what(?:'s| is) (?:up|going on) with)\b.{0,100}\b(?:shares?|stock)\b", title, re.I)
         or re.search(r"\b(?:shares?|stock)\b.{0,80}\b(?:up|down|higher|lower|rall(?:y|ies|ied|ying)|surg(?:e|es|ed|ing)|soar(?:s|ed|ing)?|spik(?:e|es|ed|ing)|jump(?:s|ed|ing)?|fall(?:s|ing)?|fell|rose|gain(?:s|ed)?|drop(?:s|ped|ping)?|slid(?:e|ing)?|sink(?:s|ing)?|sank|crash(?:es|ed|ing)?|tumble[sd]?|hammered|unaffected)\b.{0,80}\b(?:after|following|on|as|amid|because|here'?s why)\b", title, re.I)
@@ -954,7 +1000,11 @@ def _envelope(
             )
         )
     )
-    if causal_mover and not market_overview: purpose = "explain_move"
+    reviewed_mover_override = (
+        reviewed_mover_pattern == "why_or_what_price_move_question"
+        or bool(reviewed_mover_pattern and not market_overview)
+    )
+    if reviewed_mover_override or (causal_mover and not market_overview): purpose = "explain_move"
     elif list_title or re.search(
         r"\b(?:ahead of|preview|what to expect|will report|to watch)\b|"
         r"\bscheduled to (?:report|announce|release|publish)\b|"
@@ -1077,7 +1127,11 @@ def _envelope(
         "document_structure": decision(structure, "envelope.structure.v1"),
         "communication_purpose": decision(
             purpose,
-            "envelope.purpose.v1",
+            (
+                f"envelope.purpose.why_moving_title_v1:{reviewed_mover_pattern}"
+                if reviewed_mover_pattern
+                else "envelope.purpose.v1"
+            ),
             [_match_evidence(analyst_match)] if purpose == "analyze" and analyst_match is not None else default_evidence,
         ),
         "information_origin": decision(origin, "envelope.origin.v1", exact_origin_evidence),
