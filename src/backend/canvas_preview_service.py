@@ -4,7 +4,7 @@ import json
 import re
 from copy import deepcopy
 from dataclasses import asdict
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from threading import Lock
 from time import monotonic
 from typing import Any, Callable
@@ -36,7 +36,9 @@ from src.backend.historical_scanner_service import (
     historical_scanner_qmd_projection_or_schedule,
 )
 from src.backend.feature_projection import compact_feature_projection
+from src.backend.session_change_service import session_change_for_row
 from src.backend.query_plans import canvas_context_v1
+from src.data_provider.calendar import market_sessions
 from src.trading_runtime.domain import BrokerAccount, BrokerEventEnvelope, BrokerEventType, BrokerProvider, TradingMode
 from src.trading_runtime.ibkr_normalizer import normalize_account_values, normalize_execution, normalize_ledger, normalize_order, normalize_position_snapshot
 from src.trading_runtime.projector import TradingStateProjector
@@ -345,6 +347,20 @@ def _build_scanner_snapshot_payload(
                 errors[name] = str(exc)
     if enrichment_scope == "full":
         _merge_scanner_intelligence(rows, news, sec, effective_as_of)
+    session_date = effective_as_of.astimezone(NEW_YORK).date()
+    sessions = market_sessions(session_date - timedelta(days=14), session_date)
+    expected_previous_session_date = (
+        sessions[-2].isoformat()
+        if sessions and sessions[-1] == session_date and len(sessions) >= 2
+        else sessions[-1].isoformat() if sessions else ""
+    )
+    for row in rows:
+        row.update(session_change_for_row(
+            row,
+            session_date=session_date.isoformat(),
+            expected_previous_session_date=expected_previous_session_date,
+            reference_previous_session_date=expected_previous_session_date,
+        ))
     from src.backend.watchlist_runtime_service import normalize_watchlist_candidate
 
     normalized_rows = [normalize_watchlist_candidate(row) for row in rows]

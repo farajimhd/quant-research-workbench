@@ -68,6 +68,7 @@ class ReferenceGatewayConfig:
     daemon_child_max_rss_mb: int
     market_publication_gap_fill_enabled: bool
     market_publication_gap_fill_days: int
+    market_publication_forward_days: int
     market_publication_deep_backfill_enabled: bool
     market_publication_deep_backfill_start_date: str
     active_ticker_sync_frequency_seconds: int
@@ -183,6 +184,7 @@ class ReferenceGatewayConfig:
             daemon_child_max_rss_mb=env_int("REFERENCE_GATEWAY_DAEMON_CHILD_MAX_RSS_MB", 0),
             market_publication_gap_fill_enabled=not maintenance_skip,
             market_publication_gap_fill_days=env_int("REFERENCE_GATEWAY_MARKET_PUBLICATION_GAP_FILL_DAYS", 14),
+            market_publication_forward_days=env_int("REFERENCE_GATEWAY_MARKET_PUBLICATION_FORWARD_DAYS", 14),
             market_publication_deep_backfill_enabled=env_bool("REFERENCE_GATEWAY_MARKET_PUBLICATION_DEEP_BACKFILL_ENABLED", True),
             market_publication_deep_backfill_start_date=env_string("REFERENCE_GATEWAY_MARKET_PUBLICATION_DEEP_BACKFILL_START_DATE", "2019-01-01"),
             active_ticker_sync_frequency_seconds=env_int("REFERENCE_GATEWAY_ACTIVE_TICKER_SYNC_FREQUENCY_SECONDS", 43_200),
@@ -317,6 +319,7 @@ class ReferenceGatewayConfig:
                 "rebuild_tradable_in_test_mode": self.rebuild_tradable_in_test_mode,
                 "market_publication_gap_fill_enabled": self.market_publication_gap_fill_enabled,
                 "market_publication_gap_fill_days": self.market_publication_gap_fill_days,
+                "market_publication_forward_days": self.market_publication_forward_days,
                 "market_publication_deep_backfill_enabled": self.market_publication_deep_backfill_enabled,
                 "market_publication_deep_backfill_start_date": self.market_publication_deep_backfill_start_date,
                 "market_publication_gap_fill_frequency_seconds": self.market_publication_gap_fill_frequency_seconds,

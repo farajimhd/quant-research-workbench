@@ -22,6 +22,8 @@ from src.backend.query_plans.market_daily_bars_v1 import (
 )
 from src.backend.bounded_cache import BoundedTtlCache
 from src.backend.qmd_gateway_client import qmd_delete_json, qmd_put_json
+from src.backend.session_change_service import session_change_for_row
+from src.data_provider.calendar import market_sessions
 from src.backend.data_field_contracts import (
     compile_data_field_plan,
     data_field_output_index,
@@ -1381,36 +1383,7 @@ def enrich_core_scanner_rows(
             **row,
             **reference_projection.get(str(row.get("ticker") or "").upper(), {}),
         }
-        expected_previous_session_date = str(
-            row.get("expected_previous_session_date") or ""
-        )
-        reference_session_date = str(merged.get("previous_session_date") or "")
-        if not expected_previous_session_date:
-            merged.update(
-                {
-                    "previous_close": None,
-                    "change_pct": None,
-                    "change_actual": None,
-                    "previous_close__null_reason": "previous_session_authority_unavailable",
-                    "previous_close_reference_status": "unavailable",
-                }
-            )
-        elif (
-            expected_previous_session_date
-            and reference_session_date != expected_previous_session_date
-        ):
-            merged.update(
-                {
-                    "previous_close": None,
-                    "change_pct": None,
-                    "change_actual": None,
-                    "previous_close__null_reason": "stale_previous_session_reference",
-                    "previous_close_reference_status": "stale",
-                }
-            )
-        elif expected_previous_session_date:
-            merged["previous_close_reference_status"] = "ready"
-            _recompute_session_change(merged)
+        merged.update(_session_change_for_row(merged))
         _fail_closed_relative_volume(merged)
         enriched.append(normalize_watchlist_candidate(merged))
     return enriched
@@ -1442,25 +1415,12 @@ def enrich_signal_stream_snapshot(
             }
             event_at = parse_datetime(merged.get("event_time"))
             event_date = event_at.astimezone(NEW_YORK).date() if event_at else None
-            previous_session_date = str(reference.get("previous_session_date") or "")
-            if (
-                session_date is not None
-                and event_date == session_date
-                and previous_session_date
-                and previous_session_date < session_date.isoformat()
-            ):
-                merged["previous_close_reference_status"] = "ready"
-                _recompute_session_change(merged)
-            else:
-                merged.update(
-                    {
-                        "previous_close": None,
-                        "change_pct": None,
-                        "change_actual": None,
-                        "previous_close_reference_status": "unavailable",
-                        "previous_close__null_reason": "previous_session_authority_unavailable",
-                    }
+            if session_date is not None and event_date == session_date:
+                merged["expected_previous_session_date"] = str(
+                    reference.get("previous_session_date") or ""
                 )
+                merged["trading_date"] = session_date.isoformat()
+            merged.update(_session_change_for_row(merged))
             _fail_closed_relative_volume(merged)
             normalized = normalize_watchlist_candidate(merged)
             normalized["reference_enriched_at"] = enriched_at if reference else ""
@@ -1477,16 +1437,13 @@ def enrich_signal_stream_snapshot(
     return result
 
 
-def _recompute_session_change(row: dict[str, Any]) -> None:
-    """Derive session change only from the row's causal price and validated close."""
-    last_price = numeric_value(row, "last_price", "last_close", "current_open", "last")
-    previous_close = numeric_value(row, "previous_close")
-    if last_price is None or previous_close is None or previous_close <= 0:
-        row["change_pct"] = None
-        row["change_actual"] = None
-        return
-    row["change_actual"] = last_price - previous_close
-    row["change_pct"] = (last_price / previous_close - 1) * 100
+def _session_change_for_row(row: dict[str, Any]) -> dict[str, Any]:
+    """Adapt a scanner row to the shared session-change authority."""
+    return session_change_for_row(
+        row,
+        expected_previous_session_date=str(row.get("expected_previous_session_date") or ""),
+        session_date=str(row.get("trading_date") or row.get("exchange_date") or ""),
+    )
 
 
 def _fail_closed_relative_volume(row: dict[str, Any]) -> None:
@@ -1577,6 +1534,13 @@ def resolve_historical_watchlist(
         else {}
     )
     candidates: list[dict[str, Any]] = []
+    session_date = as_of.astimezone(NEW_YORK).date()
+    sessions = market_sessions(session_date - timedelta(days=14), session_date)
+    expected_previous_session_date = (
+        sessions[-2].isoformat()
+        if sessions and sessions[-1] == session_date and len(sessions) >= 2
+        else sessions[-1].isoformat() if sessions else ""
+    )
     for raw in rows:
         ticker = str(raw.get("ticker") or raw.get("symbol") or "").upper()
         merged = {
@@ -1594,6 +1558,12 @@ def resolve_historical_watchlist(
                 merged["vwap"] = merged.get(
                     f"technical__vwap__{window}__hlc3"
                 ) or merged.get(f"technical__vwap__{window}__trade_price")
+        merged.update(session_change_for_row(
+            merged,
+            session_date=session_date.isoformat(),
+            expected_previous_session_date=expected_previous_session_date,
+            reference_previous_session_date=expected_previous_session_date,
+        ))
         candidates.append(normalize_watchlist_candidate(merged))
     candidates = project_data_field_outputs(
         candidates, discovery.get("data_fields") or []

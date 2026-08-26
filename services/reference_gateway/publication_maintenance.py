@@ -33,13 +33,14 @@ def run_recent_publication_gap_fill(
 ) -> PublicationMaintenanceResult:
     if not config.market_publication_gap_fill_enabled:
         return PublicationMaintenanceResult(False, None, "", "", "disabled", [], "", "")
-    end_date = date.today() + timedelta(days=1)
+    today = date.today()
+    end_date = today + timedelta(days=max(0, config.market_publication_forward_days) + 1)
     if deep and config.market_publication_deep_backfill_enabled:
         start_date = date.fromisoformat(config.market_publication_deep_backfill_start_date)
         reason = "deep_reference_publication_gap_fill"
     else:
-        start_date = end_date - timedelta(days=max(1, config.market_publication_gap_fill_days))
-        reason = "recent_reference_publication_gap_fill"
+        start_date = today - timedelta(days=max(1, config.market_publication_gap_fill_days))
+        reason = "recent_and_forward_reference_publication_gap_fill"
     command = [
         sys.executable,
         "pipelines/reference_data/market_publications_historical_gap_fill.py",

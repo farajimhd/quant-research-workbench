@@ -25,6 +25,7 @@ from src.backend.qmd_gateway_client import (
     qmd_intraday_bar_history,
     qmd_persisted_indicators,
 )
+from src.backend.session_change_service import session_change_projection
 from src.data_provider.calendar import market_sessions
 from src.trading_runtime.journal import TradingJournal
 from src.trading_runtime.orchestrator import historical_run_window
@@ -1593,21 +1594,66 @@ def historical_ticker_change(ticker: str, *, as_of: str) -> dict[str, Any]:
     ) if current_end > session_start else {"history": []}
     bar_rows = [row for row in current_bars.get("history", []) if isinstance(row, dict)]
     current_price = float(bar_rows[-1].get("close") or 0) if bar_rows else 0.0
-    absolute_change = current_price - previous_close if current_price > 0 and previous_close > 0 else 0.0
-    percent_change = absolute_change / previous_close * 100 if previous_close > 0 and current_price > 0 else 0.0
+    split_reference = _ticker_session_reference(resolved_ticker, resolved_as_of)
+    change = session_change_projection(
+        current_price=current_price or None,
+        raw_previous_close=previous_close or None,
+        expected_previous_session_date=(
+            expected_previous_session.isoformat() if expected_previous_session else ""
+        ),
+        reference_previous_session_date=(
+            expected_previous_session.isoformat() if previous_close > 0 and expected_previous_session else ""
+        ),
+        session_date=session_date.isoformat(),
+        previous_close_source=previous_close_source,
+        split_execution_date=str(split_reference.get("split_execution_date") or ""),
+        split_from=_optional_positive_float(split_reference.get("split_from")),
+        split_to=_optional_positive_float(split_reference.get("split_to")),
+        corporate_action_reference_status=str(
+            split_reference.get("corporate_action_reference_status") or "unavailable"
+        ),
+    )
     return {
         "as_of": resolved_as_of.isoformat(),
         "current_price": current_price or None,
-        "previous_close": previous_close or None,
+        "previous_close": change["previous_close"],
+        "previous_close_raw": change["previous_close_raw"],
         "previous_session_date": (
-            expected_previous_session.isoformat() if previous_close > 0 and expected_previous_session else ""
+            expected_previous_session.isoformat()
+            if change["previous_close"] is not None and expected_previous_session
+            else ""
         ),
-        "absolute_change": absolute_change if current_price > 0 and previous_close > 0 else None,
-        "percent_change": percent_change if current_price > 0 and previous_close > 0 else None,
-        "reference_status": "ready" if previous_close > 0 else "unavailable",
-        "source": previous_close_source or "unavailable",
+        "absolute_change": change["change_actual"],
+        "percent_change": change["change_pct"],
+        "reference_status": change["previous_close_reference_status"],
+        "source": change.get("previous_close_source") or previous_close_source or "unavailable",
+        "session_change_authority": change["session_change_authority"],
+        "session_change_adjustment_factor": change["session_change_adjustment_factor"],
+        "split_adjusted": bool(change.get("split_adjusted")),
         "ticker": resolved_ticker,
     }
+
+
+def _ticker_session_reference(ticker: str, as_of: datetime) -> dict[str, Any]:
+    """Load the same causal split projection used by Scanner and Watchlists."""
+    try:
+        from src.backend.historical_scanner_service import historical_scanner_reference_projection
+
+        reference = historical_scanner_reference_projection(
+            as_of,
+            tickers=(ticker,),
+        ).get(ticker, {})
+        return {**reference, "corporate_action_reference_status": "ready"}
+    except Exception:
+        return {"corporate_action_reference_status": "unavailable"}
+
+
+def _optional_positive_float(value: Any) -> float | None:
+    try:
+        result = float(value)
+    except (TypeError, ValueError):
+        return None
+    return result if result > 0 else None
 
 
 def _latest_compact_price(events: list[dict[str, Any]]) -> float:

@@ -167,9 +167,10 @@ class HistoricalTradingServiceTests(unittest.TestCase):
         ):
             _historical_gateway_get("/health", {}, timeout=3)
 
+    @patch("src.backend.trading_runtime_service._ticker_session_reference", return_value={"corporate_action_reference_status": "ready"})
     @patch("src.backend.trading_runtime_service.historical_bar_history_before")
     @patch("src.backend.trading_runtime_service.historical_macro_bar_history")
-    def test_ticker_change_compares_current_trade_with_prior_20_et_close(self, macro_history, bar_history) -> None:
+    def test_ticker_change_compares_current_trade_with_prior_20_et_close(self, macro_history, bar_history, _reference) -> None:
         macro_history.return_value = {"history": [
             {"session_date": "2026-07-13", "close": 317.88},
             {"session_date": "2026-07-14", "close": 320.00},
@@ -196,6 +197,7 @@ class HistoricalTradingServiceTests(unittest.TestCase):
         )
 
     @patch("src.backend.trading_runtime_service._is_recent_live_chart_session", return_value=True)
+    @patch("src.backend.trading_runtime_service._ticker_session_reference", return_value={"corporate_action_reference_status": "ready"})
     @patch("src.backend.trading_runtime_service.qmd_intraday_bar_history")
     @patch("src.backend.trading_runtime_service.historical_bar_history_before")
     @patch("src.backend.trading_runtime_service.historical_macro_bar_history")
@@ -204,6 +206,7 @@ class HistoricalTradingServiceTests(unittest.TestCase):
         macro_history,
         bar_history,
         intraday_history,
+        _reference,
         _recent_session,
     ) -> None:
         macro_history.return_value = {
@@ -232,10 +235,11 @@ class HistoricalTradingServiceTests(unittest.TestCase):
         self.assertEqual(payload["source"], "qmd_live_intraday_family_bars_v3")
 
     @patch("src.backend.trading_runtime_service._is_recent_live_chart_session", return_value=False)
+    @patch("src.backend.trading_runtime_service._ticker_session_reference", return_value={"corporate_action_reference_status": "ready"})
     @patch("src.backend.trading_runtime_service.historical_bar_history_before")
     @patch("src.backend.trading_runtime_service.historical_macro_bar_history")
     def test_ticker_change_fails_closed_when_exact_previous_session_is_missing(
-        self, macro_history, bar_history, _recent_session
+        self, macro_history, bar_history, _reference, _recent_session
     ) -> None:
         macro_history.return_value = {
             "history": [{"session_date": "2026-07-31", "close": 0.1872}]

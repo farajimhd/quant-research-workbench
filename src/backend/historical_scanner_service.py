@@ -187,6 +187,8 @@ SCANNER_REFERENCE_FIELDS = (
     "ipo_days_to_event",
     "split_execution_date",
     "split_days_to_event",
+    "split_from",
+    "split_to",
     "ibkr_conid",
 )
 SCANNER_FUNDAMENTAL_FIELDS = (
@@ -593,6 +595,7 @@ def historical_scanner_reference_projection(
             for field in SCANNER_REFERENCE_FIELDS
             if row.get(field) not in (None, "")
         }
+        values["corporate_action_reference_status"] = "ready"
         logo_url = logo_asset_url(
             str(row.get("logo_relative_path") or ""),
             artifact_root=logo_artifact_root,

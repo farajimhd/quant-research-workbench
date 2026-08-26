@@ -175,6 +175,7 @@ class WatchlistRuntimeServiceTests(unittest.TestCase):
                     "ticker": "P",
                     "last_price": 111.0,
                     "expected_previous_session_date": "2026-08-20",
+                    "trading_date": "2026-08-21",
                 }
             ],
             {
@@ -219,6 +220,7 @@ class WatchlistRuntimeServiceTests(unittest.TestCase):
                     "ticker": "AAA",
                     "last_price": 110.0,
                     "expected_previous_session_date": "2026-08-20",
+                    "trading_date": "2026-08-21",
                 }
             ],
             {
@@ -231,6 +233,28 @@ class WatchlistRuntimeServiceTests(unittest.TestCase):
 
         self.assertAlmostEqual(rows[0]["change_pct"], 10.0)
         self.assertEqual(rows[0]["previous_close_reference_status"], "ready")
+
+    def test_live_reference_enrichment_uses_split_adjusted_session_change(self) -> None:
+        rows = enrich_core_scanner_rows(
+            [{
+                "ticker": "VMAR",
+                "last_price": 9.0284,
+                "expected_previous_session_date": "2026-08-25",
+                "trading_date": "2026-08-26",
+            }],
+            {"VMAR": {
+                "previous_close": 0.7287,
+                "previous_session_date": "2026-08-25",
+                "previous_close_source": "qmd_live_intraday_family_bars_v3",
+                "split_execution_date": "2026-08-26",
+                "split_from": 10,
+                "split_to": 1,
+            }},
+        )
+
+        self.assertAlmostEqual(rows[0]["previous_close"], 7.287)
+        self.assertAlmostEqual(rows[0]["change_pct"], 23.8973514478)
+        self.assertEqual(rows[0]["session_change_authority"], "session_change.v1")
 
     def test_projects_selected_rule_set_results_as_boolean_columns(self) -> None:
         discovery = self.configuration["market_discovery"]

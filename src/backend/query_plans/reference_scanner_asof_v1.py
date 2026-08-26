@@ -8,7 +8,7 @@ from research.mlops.clickhouse import quote_ident, sql_string
 
 
 QUERY_PLAN_ID = "reference.scanner_asof.v1"
-QUERY_PLAN_VERSION = 3
+QUERY_PLAN_VERSION = 4
 NEW_YORK = ZoneInfo("America/New_York")
 
 
@@ -80,8 +80,10 @@ def scanner_reference_projection(cutoff: datetime, database: str = "q_live", *, 
             coalesce(borrow.fee_rate, borrow.indicative_borrow_rate) AS borrow_fee,
             if(empty(ipo.symbol_id), NULL, ipo.listing_date) AS ipo_date,
             if(empty(ipo.symbol_id), NULL, dateDiff('day', cutoff_date, ipo.listing_date)) AS ipo_days_to_event,
-            if(empty(split.symbol_id), NULL, split.execution_date) AS split_execution_date,
-            if(empty(split.symbol_id), NULL, dateDiff('day', cutoff_date, split.execution_date)) AS split_days_to_event,
+            if(empty(split.symbol_id), NULL, split.selected_execution_date) AS split_execution_date,
+            if(empty(split.symbol_id), NULL, dateDiff('day', cutoff_date, split.selected_execution_date)) AS split_days_to_event,
+            if(empty(split.symbol_id), NULL, split.split_from) AS split_from,
+            if(empty(split.symbol_id), NULL, split.split_to) AS split_to,
             u.ibkr_conid AS ibkr_conid,
             ifNull(a.relative_path, '') AS logo_relative_path
         FROM
@@ -266,7 +268,15 @@ def scanner_reference_projection(cutoff: datetime, database: str = "q_live", *, 
                 argMin(
                     execution_date,
                     tuple(abs(dateDiff('day', cutoff_date, execution_date)), execution_date, inserted_at)
-                ) AS execution_date
+                ) AS selected_execution_date,
+                argMin(
+                    split_from,
+                    tuple(abs(dateDiff('day', cutoff_date, execution_date)), execution_date, inserted_at)
+                ) AS split_from,
+                argMin(
+                    split_to,
+                    tuple(abs(dateDiff('day', cutoff_date, execution_date)), execution_date, inserted_at)
+                ) AS split_to
             FROM {db}.market_stock_split_v1 FINAL
             WHERE inserted_at <= cutoff
             GROUP BY symbol_id
