@@ -7,7 +7,7 @@ import json
 import math
 import urllib.parse
 from collections import OrderedDict
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from typing import Any, Awaitable, Callable
 from zoneinfo import ZoneInfo
 
@@ -323,57 +323,79 @@ class HistoricalBootstrap:
         self.release = release
 
     def source_revision(self, ticker: str, as_of: dt.datetime) -> dict[str, Any]:
-        """Return the explicit QMD history source plan and its current durable revision.
+        """Return the ticker/date-bounded QMD source plan and durable revision.
 
-        Active ClickHouse part revision fields are used instead of wall-clock freshness so
-        inserts, mutations, replacements, identity repairs, and corporate-action
-        repairs invalidate a persisted warm snapshot.  The fingerprint is deliberately
-        table-wide: an unrelated repair may cause an extra warm, but a relevant repair
-        must never be silently missed.
+        The event authority is the exact per-ticker day index plus the source-file day
+        manifest over the requested causal window. Identity intervals and split actions
+        are resolved through the same readers used by the warm itself. This keeps the
+        before/after integrity check fail-closed for relevant repairs without allowing an
+        unrelated later-session insert in the same yearly table to starve historical
+        Replay forever.
         """
         data = self.release.data_config
         local_day, history_start, end = _historical_window(as_of)
-        tables = {
-            (data.database, data.condition_reference_table),
-            (data.database, "events_ticker_day_index"),
-            (data.database, "events_source_day_stats"),
-            (data.identity_database, data.identity_interval_table),
-            (data.identity_database, data.identity_entity_table),
-            (data.identity_database, data.identity_event_table),
-            (data.split_database, data.split_table),
-            *((data.database, f"{data.events_table_base}_{year}") for year in range(history_start.year, end.year + 1)),
-        }
-        predicates = ",".join(
-            f"('{_sql_text(database)}','{_sql_text(table)}')" for database, table in sorted(tables)
-        )
+        canonical = ticker.upper()
+        intervals = self.materialized.read_identity_intervals(
+            (canonical,),
+            identity_database=data.identity_database,
+            interval_table=data.identity_interval_table,
+            entity_table=data.identity_entity_table,
+            event_table=data.identity_event_table,
+            coverage_start=history_start.isoformat(),
+        )[canonical]
+        actions = self.materialized.read_split_actions(
+            {canonical: intervals},
+            start_date=history_start.isoformat(),
+            end_date=end.isoformat(),
+            split_database=data.split_database,
+            split_table=data.split_table,
+        )[canonical]
         client = ClickHouseHttpClient(
             default_clickhouse_url(), default_clickhouse_user(), default_clickhouse_password(), timeout_seconds=30
         )
         try:
-            sql = f"""
+            ticker_days_sql, source_days_sql = _bounded_event_revision_sql(
+                data.database, canonical, history_start, end
+            )
+            ticker_days = [
+                json.loads(line) for line in client.execute(ticker_days_sql).splitlines() if line.strip()
+            ]
+            source_days = [
+                json.loads(line) for line in client.execute(source_days_sql).splitlines() if line.strip()
+            ]
+            condition_sql = f"""
 SELECT database, table, sum(rows) AS row_count, max(max_block_number) AS max_block_number,
        max(data_version) AS max_data_version
 FROM system.parts
-WHERE active = 1 AND (database, table) IN ({predicates})
+WHERE active = 1
+  AND database = '{_sql_text(data.database)}'
+  AND table = '{_sql_text(data.condition_reference_table)}'
 GROUP BY database, table
 ORDER BY database, table
 FORMAT JSONEachRow
 """
-            rows = [json.loads(line) for line in client.execute(sql).splitlines() if line.strip()]
+            condition_parts = [
+                json.loads(line) for line in client.execute(condition_sql).splitlines() if line.strip()
+            ]
         finally:
             client.close()
-        observed = {(str(row["database"]), str(row["table"])) for row in rows}
-        missing = sorted(tables - observed)
-        if missing:
-            raise RuntimeError(f"QMD history source revision is incomplete; missing active tables: {missing}")
+        if not ticker_days or not source_days or not condition_parts:
+            raise RuntimeError(
+                "QMD history source revision is incomplete; bounded ticker/source manifests "
+                "or condition-reference parts are missing"
+            )
         plan: dict[str, Any] = {
-            "schema_version": 1,
-            "authority": "qmd-history-clickhouse-active-parts",
-            "ticker": ticker.upper(),
+            "schema_version": 2,
+            "authority": "qmd-history-bounded-manifests-v1",
+            "ticker": canonical,
             "as_of_session": local_day.isoformat(),
             "coverage_start": history_start.isoformat(),
             "coverage_end_exclusive": end.isoformat(),
-            "tables": rows,
+            "condition_reference_parts": condition_parts,
+            "event_ticker_days": ticker_days,
+            "source_days": source_days,
+            "identity_intervals": [asdict(row) for row in intervals],
+            "split_actions": [asdict(row) for row in actions],
         }
         encoded = json.dumps(plan, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8")
         plan["revision_sha256"] = hashlib.sha256(encoded).hexdigest()
@@ -515,6 +537,43 @@ FORMAT JSONEachRow
 def _historical_window(as_of: dt.datetime) -> tuple[dt.date, dt.date, dt.date]:
     local_day = as_of.astimezone(NEW_YORK).date()
     return local_day, local_day - dt.timedelta(days=800), local_day + dt.timedelta(days=1)
+
+
+def _bounded_event_revision_sql(
+    database: str,
+    ticker: str,
+    history_start: dt.date,
+    end: dt.date,
+) -> tuple[str, str]:
+    database_sql = _sql_text(database)
+    ticker_sql = _sql_text(ticker.upper())
+    start_sql = history_start.isoformat()
+    end_sql = end.isoformat()
+    ticker_days = f"""
+SELECT source_date, event_count, first_ordinal, last_ordinal, next_ordinal,
+       first_sip_timestamp_us, last_sip_timestamp_us, build_step, built_at
+FROM `{database_sql}`.`events_ticker_day_index` FINAL
+WHERE ticker = '{ticker_sql}'
+  AND source_date >= toDate('{start_sql}')
+  AND source_date < toDate('{end_sql}')
+ORDER BY source_date
+FORMAT JSONEachRow
+"""
+    source_days = f"""
+SELECT source_date, stats_version, source_filter_key,
+       quote_file_path, quote_file_size, quote_file_mtime_ns,
+       trade_file_path, trade_file_size, trade_file_mtime_ns,
+       quote_event_rows, trade_event_rows, total_event_rows_after_filters,
+       first_sip_timestamp_us, last_sip_timestamp_us, updated_at
+FROM `{database_sql}`.`events_source_day_stats` FINAL
+WHERE source_date >= toDate('{start_sql}')
+  AND source_date < toDate('{end_sql}')
+ORDER BY source_date, stats_version, source_filter_key,
+         quote_file_path, quote_file_size, quote_file_mtime_ns,
+         trade_file_path, trade_file_size, trade_file_mtime_ns
+FORMAT JSONEachRow
+"""
+    return ticker_days, source_days
 
 
 def _sql_text(value: str) -> str:

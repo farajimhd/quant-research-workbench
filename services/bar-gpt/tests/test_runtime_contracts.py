@@ -16,7 +16,7 @@ from research.bar_gpt.v3.schema import FEATURE_NAMES
 from bar_gpt_service.cache import CALENDAR_VIEWS, INTRADAY_VIEW_US, CausalCache
 from bar_gpt_service.contracts import ScopeRequest
 from bar_gpt_service.runtime import BarGptRuntime, PrioritySemaphore
-from bar_gpt_service.sources import HistoricalBootstrap
+from bar_gpt_service.sources import HistoricalBootstrap, _bounded_event_revision_sql
 
 
 def _runtime() -> BarGptRuntime:
@@ -37,6 +37,22 @@ def _runtime() -> BarGptRuntime:
 
 
 class RuntimeContractTests(unittest.TestCase):
+    def test_source_revision_queries_are_ticker_and_date_bounded(self) -> None:
+        ticker_days, source_days = _bounded_event_revision_sql(
+            "market_sip_compact",
+            "aapl",
+            dt.date(2024, 6, 13),
+            dt.date(2026, 8, 22),
+        )
+
+        self.assertIn("events_ticker_day_index` FINAL", ticker_days)
+        self.assertIn("ticker = 'AAPL'", ticker_days)
+        self.assertIn("source_date >= toDate('2024-06-13')", ticker_days)
+        self.assertIn("source_date < toDate('2026-08-22')", ticker_days)
+        self.assertIn("events_source_day_stats` FINAL", source_days)
+        self.assertIn("source_date < toDate('2026-08-22')", source_days)
+        self.assertNotIn("system.parts", ticker_days + source_days)
+
     def test_interactive_warm_has_priority_over_queued_live_warm(self) -> None:
         async def scenario() -> list[str]:
             gate = PrioritySemaphore(1)
