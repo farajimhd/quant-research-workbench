@@ -152,7 +152,7 @@ const FIELD_CATALOG: FieldDefinition[] = [
   field("sector", "Sector", "Security", "raw", "text", "Provider or canonical sector classification."),
   field("last", "Last", "Market state", "raw", "money", "Latest eligible trade price at the workspace clock."),
   field("spread_bps", "Spread ($)", "Market state", "raw", "money", "Current quoted ask-minus-bid width in US dollars. Configured rule thresholds continue to use the canonical basis-point source."),
-  field("change_pct", "Change", "Market state", "derived", "percent", "Return over the scanner observation window."),
+  field("change_pct", "Session change", "Market state", "derived", "percent", "Last price versus the split-adjusted completed previous-session close."),
   field("change_5m_pct", "5 min", "Market state", "derived", "percent", "Return from the first eligible bar in the latest five-minute interval."),
   field("volume", "Volume", "Market state", "raw", "integer", "Eligible executed share volume in the observation window."),
   field("trade_count", "Trades", "Market state", "raw", "integer", "Eligible trade count in the observation window."),

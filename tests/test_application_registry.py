@@ -439,7 +439,7 @@ class ApplicationRegistryTests(unittest.TestCase):
         self.assertEqual(float_documentation["source_fields"], ["float_shares"])
         self.assertEqual(len(float_documentation["classification_bands"]), 2)
         change_documentation = definitions["market.change_pct"]["documentation"]
-        self.assertIn("last price / previous close", change_documentation["calculation_summary"])
+        self.assertIn("last price / adjusted previous close", change_documentation["calculation_summary"])
         self.assertEqual(
             change_documentation["input_field_ids"],
             ["market.last_price", "market.previous_close"],

@@ -2492,8 +2492,8 @@ def _discovery_reference_capabilities() -> list[dict[str, Any]]:
     """Point-in-time scanner fields used by reusable Watchlist templates."""
 
     rows = [
-        ("market.change_actual", "Session price change", "market_data", "currency", "market.change_actual", "Last price minus the completed previous-session close.", "QMD bars + previous-session reference", ["session"]),
-        ("market.change_pct", "Session change", "market_data", "percent", "market.change_pct", "Last price divided by the completed previous-session close, minus one, expressed as a percentage.", "QMD bars + previous-session reference", ["session"]),
+        ("market.change_actual", "Session price change", "market_data", "currency", "market.change_actual", "Last price minus the split-adjusted completed previous-session close.", "session_change.v1: QMD bars + Reference Gateway stock splits", ["session"]),
+        ("market.change_pct", "Session change", "market_data", "percent", "market.change_pct", "Last price divided by the split-adjusted completed previous-session close, minus one, expressed as a percentage.", "session_change.v1: QMD bars + Reference Gateway stock splits", ["session"]),
         ("market.volume", "Session volume", "market_data", "shares", "market.volume", "Cumulative eligible trade size for the current session.", "QMD eligible trades", ["session"]),
         ("market.session_dollar_volume", "Session dollar volume", "market_data", "currency", "market.session_dollar_volume", "Cumulative eligible trade notional since the 04:00 New York session boundary.", "QMD eligible trades", ["session"]),
         ("market.relative_volume", "Relative volume", "indicator", "multiple", "market.relative_volume", "Current cumulative session volume divided by the point-in-time 20-session baseline for the same elapsed session interval.", "QMD volume + 20-session baseline", ["session"]),
@@ -2699,7 +2699,7 @@ def _default_watchlist_rule_sets() -> list[dict[str, Any]]:
     return [
         *categories,
         *float_rules,
-        _watchlist_rule("watchlist-positive-gainer", "Positive session gainer", "Requires a positive percentage change from the completed previous-session close.", [_watchlist_condition("positive-session-change", "market.change_pct", "greater_than", 0)]),
+        _watchlist_rule("watchlist-positive-gainer", "Positive session gainer", "Requires a positive percentage change from the split-adjusted completed previous-session close.", [_watchlist_condition("positive-session-change", "market.change_pct", "greater_than", 0)]),
         _watchlist_rule("watchlist-relative-volume-gainer", "Elevated relative volume", "Requires current volume to exceed the aligned 20-session baseline.", [_watchlist_condition("relative-volume-over-baseline", "market.relative_volume", "greater_than", 1)]),
         _watchlist_rule("watchlist-price-or-volume-squeeze", "Session Price or Volume Expansion", "Passes when session return from previous close reaches 5% or aligned 20-session relative volume reaches 3x.", [_watchlist_condition("squeeze-session-price", "market.change_pct", "greater_or_equal", 5), _watchlist_condition("squeeze-volume", "market.relative_volume", "greater_or_equal", 3)], operator="any"),
         _watchlist_rule(
