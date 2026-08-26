@@ -2,6 +2,7 @@ import { lazy, Suspense, useEffect, useState, type Dispatch, type ReactNode, typ
 
 import { Layout } from "./app/components/Layout";
 import { MarketStatusBadge, liveMarketStatus, type MarketStatus } from "./app/components/MarketStatusBadge";
+import { TickerSecPopoverProvider } from "./app/components/TickerSecPopoverHost";
 import {
   configurationSectionForPage,
   isCompactContentPage,
@@ -42,11 +43,11 @@ export function App() {
   }, [page]);
 
   if (page === "canvas-focus") {
-    return <Layout chromeless page={page} onPageChange={setPage}><PageSuspense><CanvasFocusPage /></PageSuspense></Layout>;
+    return <TickerSecPopoverProvider><Layout chromeless page={page} onPageChange={setPage}><PageSuspense><CanvasFocusPage /></PageSuspense></Layout></TickerSecPopoverProvider>;
   }
 
   return (
-    <Layout
+    <TickerSecPopoverProvider><Layout
       compactContent={isCompactContentPage(page)}
       page={page}
       onPageChange={setPage}
@@ -61,7 +62,7 @@ export function App() {
           onTopbarCenterChange={setTopbarCenter}
         />
       </PageSuspense>
-    </Layout>
+    </Layout></TickerSecPopoverProvider>
   );
 }
 

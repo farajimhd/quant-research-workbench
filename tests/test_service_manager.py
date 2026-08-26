@@ -69,10 +69,10 @@ def test_catalog_defines_operator_profiles_and_dynamic_dependencies() -> None:
     assert profiles["middleware"] == profiles["intelligence"]
     assert services["reference-gateway"].dependencies == ("ibkr-supervisor",)
     assert services["news-hypothesis"].dependencies == ("model-gateway",)
-    assert services["text-intelligence"].dependencies == ("model-gateway", "news-hypothesis")
+    assert services["text-intelligence"].dependencies == ()
     order = service_manager._topological_order(services, set(profiles["live"]))
     assert order.index("qmd-history") < order.index("backend") < order.index("frontend")
-    assert order.index("model-gateway") < order.index("news-hypothesis") < order.index("text-intelligence")
+    assert order.index("model-gateway") < order.index("news-hypothesis")
     assert order.index("ibkr-supervisor") < order.index("reference-gateway")
     assert services["qmd-live"].readiness["kind"] == "qmd_live"
     assert services["ibkr-supervisor"].readiness["kind"] == "ibkr"
@@ -520,6 +520,70 @@ def test_restart_plan_shows_stop_and_start_for_running_target(tmp_path: Path, mo
     assert "[start]    model-gateway (plan)" in output
 
 
+def test_restart_coordinates_running_dependents_before_dependency(tmp_path: Path, monkeypatch, capsys) -> None:
+    services, profiles = service_manager._load_catalog()
+    manager = service_manager.ServiceManager(services, profiles, _options(tmp_path))
+    owned = {"backend", "frontend"}
+    monkeypatch.setattr(manager, "statuses", lambda selected: {
+        service_id: service_manager.ServiceStatus(
+            service_id=service_id,
+            title=services[service_id].title,
+            state="running" if service_id in owned else "stopped",
+            reason="test",
+            port=services[service_id].port,
+            owned=service_id in owned,
+            listening=service_id in owned,
+            ready=service_id in owned,
+            stale=False,
+            desired_fingerprint="",
+            running_fingerprint="",
+            registry_path="",
+        )
+        for service_id in selected
+    })
+
+    manager.restart({"backend"}, dry_run=True)
+
+    output = capsys.readouterr().out
+    assert "[coordinate] restarting active dependents: frontend" in output
+    assert output.index("[stop]     frontend (plan)") < output.index("[stop]     backend (plan)")
+    assert output.index("[start]    backend (plan)") < output.index("[start]    frontend (plan)")
+
+
+def test_managed_tab_launch_uses_runtime_files_not_encoded_command_line(tmp_path: Path, monkeypatch) -> None:
+    services, profiles = service_manager._load_catalog()
+    manager = service_manager.ServiceManager(services, profiles, _options(tmp_path))
+    captured: list[str] = []
+
+    def run(arguments, **_kwargs):
+        captured.extend(str(value) for value in arguments)
+        registry = Path(captured[captured.index("-RegistryPath") + 1])
+        registry.parent.mkdir(parents=True, exist_ok=True)
+        registry.write_text("{}", encoding="utf-8")
+        return mock.Mock(returncode=0)
+
+    monkeypatch.setattr(service_manager.subprocess, "run", run)
+    monkeypatch.setattr(service_manager, "_windows_terminal", lambda: "wt.exe")
+    monkeypatch.setattr(service_manager, "_powershell", lambda: "powershell.exe")
+    manager._open_tab(
+        services["model-gateway"],
+        manager.desired_fingerprint("model-gateway"),
+        dry_run=False,
+    )
+
+    assert "-CommandPath" in captured
+    assert "-LaunchMetadataPath" in captured
+    assert "-EncodedCommand" not in captured
+    assert "-LaunchMetadataBase64" not in captured
+    command_path = Path(captured[captured.index("-CommandPath") + 1])
+    metadata_path = Path(captured[captured.index("-LaunchMetadataPath") + 1])
+    assert command_path.is_file()
+    assert metadata_path.is_file()
+    assert manager.runtime_root.resolve() in command_path.resolve().parents
+    assert "run_model_gateway.ps1" in command_path.read_text(encoding="utf-8")
+    assert json.loads(metadata_path.read_text(encoding="utf-8"))["launch_inputs"]["service_id"] == "model-gateway"
+
+
 def test_unified_wrapper_and_owned_stop_extension_are_present() -> None:
     wrapper = (REPO_ROOT / "scripts" / "services.ps1").read_text(encoding="utf-8").lower()
     tab_host = (REPO_ROOT / "scripts" / "run_windows_terminal_service_tab.ps1").read_text(encoding="utf-8").lower()
@@ -534,6 +598,9 @@ def test_unified_wrapper_and_owned_stop_extension_are_present() -> None:
     assert "stdout.log" in tab_host
     assert "stderr.log" in tab_host
     assert "exit.json" in tab_host
+    assert "commandpath" in tab_host
+    assert "launchmetadatapath" in tab_host
+    assert "-file" in tab_host
 
 
 def test_windows_powershell_bom_ownership_record_is_readable(tmp_path: Path) -> None:

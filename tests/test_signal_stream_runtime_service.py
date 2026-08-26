@@ -90,6 +90,10 @@ class SignalStreamRuntimeTests(unittest.TestCase):
             "news_ai_review": 92.0,
             "news_ai_reaction": 1.25,
             "sec_recency": "cold",
+            "sec_count": 2,
+            "sec_labels": "8-K, 10-Q",
+            "sec_synthesis_count": 2,
+            "sec_review_status": "not_requested",
         }
         first = runtime.resolve(
             self.configuration, [matching], as_of=start, journal=self.journal
@@ -112,6 +116,10 @@ class SignalStreamRuntimeTests(unittest.TestCase):
         self.assertEqual(repeated["occurrences"][0]["news_ai_review"], 92.0)
         self.assertEqual(repeated["occurrences"][0]["news_ai_reaction"], 1.25)
         self.assertEqual(repeated["occurrences"][0]["sec_recency"], "cold")
+        self.assertEqual(repeated["occurrences"][0]["sec_count"], 2)
+        self.assertEqual(repeated["occurrences"][0]["sec_labels"], "8-K, 10-Q")
+        self.assertEqual(repeated["occurrences"][0]["sec_synthesis_count"], 2)
+        self.assertEqual(repeated["occurrences"][0]["sec_review_status"], "not_requested")
 
         restarted = SignalStreamRuntime()
         after_restart = restarted.resolve(

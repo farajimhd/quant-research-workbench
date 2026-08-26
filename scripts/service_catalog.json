@@ -52,7 +52,7 @@
       "start_priority": 80,
       "dependencies": ["qmd-history"],
       "graceful_timeout_seconds": 15,
-      "watch": ["src/backend/**", "src/runtime_paths.py", "scripts/run_backend.ps1"]
+      "watch": ["src/backend/**", "src/runtime_paths.py", "scripts/run_backend.py", "scripts/run_backend.ps1"]
     },
     "frontend": {
       "title": "Frontend",
@@ -167,9 +167,9 @@
       "arguments": ["-CondaEnv", "ml4t", "-PythonExe", "{python}"],
       "environment": {"TEXT_INTELLIGENCE_REVIEW_TRIGGER_MODE": "manual", "TEXT_INTELLIGENCE_TERMINAL_RICH_ENABLED": "true", "TEXT_INTELLIGENCE_TERMINAL_SCREEN_ENABLED": "true"},
       "start_priority": 40,
-      "fingerprint_env": ["TEXT_INTELLIGENCE_BIND", "TEXT_INTELLIGENCE_FORECAST_MODEL_DEVICE", "TEXT_INTELLIGENCE_FORECAST_ELIGIBILITY_THRESHOLD", "TEXT_INTELLIGENCE_REVIEW_TRIGGER_MODE"],
+      "fingerprint_env": ["TEXT_INTELLIGENCE_BIND", "TEXT_INTELLIGENCE_FORECAST_MODEL_DEVICE", "TEXT_INTELLIGENCE_FORECAST_ELIGIBILITY_THRESHOLD", "TEXT_INTELLIGENCE_REVIEW_TRIGGER_MODE", "TEXT_INTELLIGENCE_SEC_RECONCILE_HOURS"],
       "artifact_paths": ["{text_intelligence_release_manifest}"],
-      "dependencies": ["model-gateway", "news-hypothesis"],
+      "dependencies": [],
       "graceful_timeout_seconds": 45,
       "watch": ["services/text-intelligence/**", "research/text_intelligence/**", "services/gateway_core/**", "scripts/run_text_intelligence.ps1"]
     },

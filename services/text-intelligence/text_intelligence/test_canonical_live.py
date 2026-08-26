@@ -305,6 +305,8 @@ class CanonicalTextRuntimeLifecycleTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("PREWHERE _partition_id >=", client.sql)
         self.assertIn("WHERE published_at_utc >=", client.sql)
         self.assertIn("f.source_updated_at_utc > s.updated_at_utc", client.sql)
+        self.assertIn("row_number() OVER (PARTITION BY corpus ORDER BY source_timestamp DESC)", client.sql)
+        self.assertIn("accepted_at_utc >=", client.sql)
         self.assertIn("max_execution_time=25", client.sql)
 
     def test_stale_funnel_reconciliation_is_release_and_threshold_bound(self) -> None:

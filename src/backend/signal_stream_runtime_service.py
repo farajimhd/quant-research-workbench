@@ -785,6 +785,10 @@ def _occurrence(
             if row.get(key) not in (None, "")
         },
         "sec_recency": str(row.get("sec_recency") or "none"),
+        "sec_count": int(row.get("sec_count") or 0),
+        "sec_labels": str(row.get("sec_labels") or ""),
+        "sec_synthesis_count": int(row.get("sec_synthesis_count") or 0),
+        "sec_review_status": str(row.get("sec_review_status") or ""),
         "conid": int(row.get("ibkr_conid") or row.get("conid") or 0),
         "event_time": as_of.isoformat(),
         "effective_at": as_of.isoformat(),

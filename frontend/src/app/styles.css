@@ -14824,11 +14824,18 @@ button {
 .table-security-trailing { align-items: center; align-self: center; display: inline-flex; gap: 3px; grid-area: trailing; justify-self: end; }
 .table-security-recency-icon {
   align-items: center;
+  background: transparent;
+  border: 0;
   display: inline-flex;
   height: 18px;
   justify-content: center;
+  padding: 0;
   width: 18px;
 }
+.table-security-recency-icon:is(button) { cursor: pointer; border-radius: 4px; }
+.table-security-recency-icon:is(button):hover { background: var(--secondary); }
+.table-security-recency-icon:is(button):focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 1px; }
+.table-security-recency-icon[data-source="sec"] .sec-intelligence-icon { height: 18px; width: 18px; }
 .table-security-recency-icon[data-source="news"][data-state="hot"] { color: var(--news-hot); }
 .table-security-recency-icon[data-source="news"][data-state="hot"] svg { fill: var(--news-hot-fill); }
 .table-security-recency-icon[data-source="news"][data-state="cold"] { color: var(--news-cold); }

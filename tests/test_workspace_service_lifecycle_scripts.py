@@ -133,6 +133,18 @@ def test_tab_host_owns_children_with_manifest_and_kill_on_close_job() -> None:
     assert "exit.json" in source
     assert "process_exit_nonzero" in source
     assert "logretentionruns" in source
+    assert "commandpath" in source
+    assert "launchmetadatapath" in source
+    assert 'startinfo.arguments = "-nologo -noprofile -executionpolicy bypass -outputformat text -file' in source
+
+
+def test_backend_launcher_uses_windows_selector_loop_before_uvicorn() -> None:
+    powershell_source = _source("run_backend.ps1")
+    python_source = _source("run_backend.py")
+
+    assert 'join-path $psscriptroot "run_backend.py"' in powershell_source
+    assert "windowsselectoreventlooppolicy" in python_source
+    assert python_source.index("set_event_loop_policy") < python_source.index("import uvicorn")
 
 
 def test_qmd_specialized_launcher_persists_per_run_stream_and_exit_evidence() -> None:

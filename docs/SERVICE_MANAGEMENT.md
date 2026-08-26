@@ -33,6 +33,11 @@ Terminal window:       quant-research-workbench-services
 ```
 
 No secret values are written to the catalog or ownership records.
+Managed Windows Terminal launches write the service command and non-secret
+launch metadata under `D:\TradingML\runtimes\service_manager\launch-specs` and
+pass only those file paths to the tab host. This keeps encoded scripts and large
+metadata blobs off the process command line while preserving the same run
+manifest and fingerprint evidence.
 
 ## Command shape
 
@@ -45,7 +50,7 @@ No secret values are written to the catalog or ownership records.
 | `status` | Inspect readiness, ownership, and revision state. |
 | `start` | Start missing targets and dependencies; preserve running services. |
 | `stop` | Stop selected manager-owned targets in reverse dependency order. |
-| `restart` | Restart selected running targets; do not start stopped targets unless requested. |
+| `restart` | Restart selected running targets plus active dependents in dependency order; do not start stopped targets unless requested. |
 | `plan` | Prefix `start`, `stop`, or `restart` to show actions without mutation. |
 | `groups` | List profiles, services, and dynamic selectors. |
 | `validate` | Validate catalog entries, launchers, releases, generated commands, and fingerprints. |
@@ -126,6 +131,10 @@ Normal development loop:
 
 `start dev` is rejected because start cannot refresh a stale running process.
 By default, restart does not unexpectedly start stopped services.
+Active dependents are coordinated automatically: they stop before the selected
+dependency and restart after it is ready. For example, restarting Backend first
+stops Frontend so Vite does not retain a websocket whose upstream is being
+removed.
 
 ## Historical workflows
 
@@ -165,8 +174,11 @@ The designated workstation must opt in explicitly:
 .\scripts\services.ps1 start live --qmd-live-host-role Workstation
 ```
 
-Text Intelligence starts with manual LLM review, and News Hypothesis starts in
-manual trigger mode. The manager never enables automatic AI mode.
+Text Intelligence starts with deterministic News and SEC synthesis plus manual
+LLM review. It has no hard dependency on Model Gateway or News Hypothesis;
+manual review and reaction requests report those optional services separately.
+News Hypothesis starts in manual trigger mode. The manager never enables
+automatic AI mode.
 
 IBKR readiness requires both a ready gateway and authenticated session before
 Reference Gateway starts. Select another configured account key with:
@@ -188,8 +200,9 @@ Reference Gateway starts. Select another configured account key with:
 ```
 
 Starting a service adds missing declared dependencies. Stopping an individual
-service stops only that service; dependents may become degraded and identify the
-missing dependency. Target a whole layer/profile when dependents should stop.
+service stops only that service. Restarting a service also cycles its active
+dependents in reverse/start dependency order so live transports are quiesced
+before their upstream disappears.
 
 ## Planning, automation, and overrides
 

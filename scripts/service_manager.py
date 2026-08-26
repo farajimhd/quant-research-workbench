@@ -189,6 +189,20 @@ def _dependency_closure(services: Mapping[str, Service], selected: set[str]) -> 
     return result
 
 
+def _dependent_closure(services: Mapping[str, Service], selected: set[str]) -> set[str]:
+    """Return services whose active lifecycle depends on the selected services."""
+
+    result = set(selected)
+    changed = True
+    while changed:
+        changed = False
+        for service_id, service in services.items():
+            if service_id not in result and any(dependency in result for dependency in service.dependencies):
+                result.add(service_id)
+                changed = True
+    return result
+
+
 def _powershell() -> str:
     system_root = Path(os.environ.get("SystemRoot", r"C:\Windows"))
     candidate = system_root / "System32" / "WindowsPowerShell" / "v1.0" / "powershell.exe"
@@ -303,6 +317,13 @@ def _atomic_json(path: Path, payload: Mapping[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_suffix(path.suffix + f".{os.getpid()}.tmp")
     temporary.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+    os.replace(temporary, path)
+
+
+def _atomic_text(path: Path, value: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(path.suffix + f".{os.getpid()}.tmp")
+    temporary.write_text(value, encoding="utf-8")
     os.replace(temporary, path)
 
 
@@ -805,23 +826,26 @@ class ServiceManager:
         if dry_run:
             return registry_path
         registry_path.parent.mkdir(parents=True, exist_ok=True)
-        command = self._powershell_command(service)
-        encoded = base64.b64encode(command.encode("utf-16-le")).decode("ascii")
-        launch_metadata = base64.b64encode(json.dumps({
+        instance_id = uuid.uuid4().hex
+        launch_spec_root = (self.runtime_root / "launch-specs" / service.service_id / instance_id).resolve()
+        command_path = launch_spec_root / "command.ps1"
+        launch_metadata_path = launch_spec_root / "metadata.json"
+        _atomic_text(command_path, self._powershell_command(service))
+        _atomic_json(launch_metadata_path, {
             "fingerprint_components": self.desired_fingerprint_components(service.service_id),
             "launch_inputs": _launch_inputs(service, self.options),
-        }, sort_keys=True).encode("utf-8")).decode("ascii")
+        })
         window = "0" if self.options.terminal_target == "current" else self.options.terminal_window
         arguments = [
             _windows_terminal(), "-w", window, "new-tab", "--title", service.title,
             "--suppressApplicationTitle", "-d", str(REPO_ROOT), _powershell(), "-NoLogo",
             "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
-            str(SCRIPTS / "run_windows_terminal_service_tab.ps1"), "-EncodedCommand", encoded,
+            str(SCRIPTS / "run_windows_terminal_service_tab.ps1"), "-CommandPath", str(command_path),
             "-PowerShellExe", _powershell(), "-RegistryPath", str(registry_path),
             "-ServiceRole", service.role, "-ServicePort", str(service.port),
-            "-InstanceId", uuid.uuid4().hex, "-RepositoryRoot", str(REPO_ROOT),
+            "-InstanceId", instance_id, "-RepositoryRoot", str(REPO_ROOT),
             "-DesiredFingerprint", fingerprint,
-            "-LaunchMetadataBase64", launch_metadata,
+            "-LaunchMetadataPath", str(launch_metadata_path),
             "-LogRoot", str((self.runtime_root / "logs").resolve()),
         ]
         completed = subprocess.run(arguments, cwd=REPO_ROOT, check=False)
@@ -1019,6 +1043,12 @@ class ServiceManager:
         if not selected:
             print("[complete] No services match the target.")
             return
+        affected = _dependent_closure(self.services, selected)
+        dependent_statuses = self.statuses(affected - selected)
+        running_dependents = {key for key, row in dependent_statuses.items() if row.owned}
+        selected |= running_dependents
+        if running_dependents:
+            print(f"[coordinate] restarting active dependents: {', '.join(sorted(running_dependents))}")
         qmd_targets = self._qmd_targets() if "qmd-live" in selected and not dry_run else []
         before = self.statuses(selected)
         restartable = {key for key, row in before.items() if row.owned}

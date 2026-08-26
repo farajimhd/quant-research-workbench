@@ -965,10 +965,16 @@ FORMAT JSONEachRow
         hours = max(
             1, min(24 * 30, int(os.environ.get("TEXT_INTELLIGENCE_RECONCILE_HOURS", "72")))
         )
+        sec_hours = max(
+            hours,
+            min(24 * 90, int(os.environ.get("TEXT_INTELLIGENCE_SEC_RECONCILE_HOURS", "720"))),
+        )
         start = datetime.now(UTC) - timedelta(hours=hours)
+        sec_start = datetime.now(UTC) - timedelta(hours=sec_hours)
         start_sql = start.strftime("%Y-%m-%d %H:%M:%S.%f")
         start_date_sql = start.date().isoformat()
-        start_partition = start.strftime("%Y%m")
+        sec_start_sql = sec_start.strftime("%Y-%m-%d %H:%M:%S.%f")
+        sec_start_partition = sec_start.strftime("%Y%m")
         rows = list(self.client.iter_json_each_row(f"""
 WITH
  complete_status AS
@@ -988,14 +994,14 @@ WITH
   (
    SELECT *
    FROM `{self.database}`.`sec_filing_v3` FINAL
-   PREWHERE _partition_id >= {sql_string(start_partition)}
-   WHERE accepted_at_utc >= toDateTime64({sql_string(start_sql)},6,'UTC')
+   PREWHERE _partition_id >= {sql_string(sec_start_partition)}
+   WHERE accepted_at_utc >= toDateTime64({sql_string(sec_start_sql)},6,'UTC')
   ) f
   LEFT JOIN
   (
    SELECT cik,accession_number,max(inserted_at) xbrl_updated_at_utc
    FROM `{self.database}`.`sec_xbrl_company_fact_v3` FINAL
-   WHERE filed_at_utc >= toDateTime64({sql_string(start_sql)},6,'UTC')
+   WHERE filed_at_utc >= toDateTime64({sql_string(sec_start_sql)},6,'UTC')
    GROUP BY cik,accession_number
   ) x ON x.cik=f.cik AND x.accession_number=f.accession_number
  )
@@ -1039,7 +1045,7 @@ LEFT JOIN complete_status s
 WHERE empty(s.source_id)
    OR f.source_updated_at_utc > s.updated_at_utc
 )
-ORDER BY source_timestamp
+ORDER BY row_number() OVER (PARTITION BY corpus ORDER BY source_timestamp DESC),corpus
 LIMIT 5000
 SETTINGS max_execution_time=25
 FORMAT JSONEachRow

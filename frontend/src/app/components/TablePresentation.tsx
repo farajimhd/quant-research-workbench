@@ -1,8 +1,10 @@
-import { Building2, CheckCircle2, CircleAlert, Clock3, FileCheck2, Flame, Gauge, Info, Minus, ShieldAlert, Snowflake, TrendingDown, TrendingUp, Zap } from "lucide-react";
+import { Building2, CheckCircle2, CircleAlert, Clock3, Flame, Gauge, Info, Minus, ShieldAlert, Snowflake, TrendingDown, TrendingUp, Zap } from "lucide-react";
 import type { ReactNode } from "react";
 
 import { MarketTime } from "./MarketTime";
+import { SecIntelligenceIcon } from "./SecIntelligenceIcon";
 import { TickerLogo } from "./TickerIdentity";
+import { dispatchTickerSecPopover } from "./TickerSecPopoverContext";
 
 export type PresentationValueType =
   | "basis_points" | "boolean" | "category" | "date" | "datetime" | "identifier"
@@ -77,7 +79,7 @@ function booleanBadge(value: unknown): { icon: typeof CheckCircle2; label: strin
   return null;
 }
 
-export function SecurityIdentityCell({ companyName = "", country = "", halted, logoUrl = "", newsRecency, secRecency, ticker, trailing }: { companyName?: string; country?: string; halted?: unknown; logoUrl?: string; newsRecency?: unknown; secRecency?: unknown; ticker: string; trailing?: ReactNode }) {
+export function SecurityIdentityCell({ companyName = "", country = "", halted, logoUrl = "", newsRecency, secCount, secRecency, ticker, trailing }: { companyName?: string; country?: string; halted?: unknown; logoUrl?: string; newsRecency?: unknown; secCount?: unknown; secRecency?: unknown; ticker: string; trailing?: ReactNode }) {
   const symbol = ticker.trim().toUpperCase();
   const countryName = formatCountry(country);
   const newsState = normalizedRecency(newsRecency);
@@ -90,8 +92,8 @@ export function SecurityIdentityCell({ companyName = "", country = "", halted, l
     {countryName ? <span className="table-security-country">{countryName}</span> : null}
     {hasTrailing ? <span className="table-security-trailing">
       {isHalted ? <span aria-label="Trading halted" className="table-security-status-icon" data-status="halted"><ShieldAlert aria-hidden="true" size={17} strokeWidth={1.8} /></span> : null}
-      <SecurityRecencyIcon kind="news" state={newsState} />
-      <SecurityRecencyIcon kind="sec" state={secState} />
+      <SecurityRecencyIcon kind="news" state={newsState} ticker={symbol} />
+      <SecurityRecencyIcon count={secCount} kind="sec" state={secState} ticker={symbol} />
       {trailing}
     </span> : null}
   </span>;
@@ -99,12 +101,16 @@ export function SecurityIdentityCell({ companyName = "", country = "", halted, l
 
 type RecencyState = "hot" | "cold" | "old" | "none" | "unavailable";
 
-function SecurityRecencyIcon({ kind, state }: { kind: "news" | "sec"; state: RecencyState }) {
+function SecurityRecencyIcon({ count, kind, state, ticker }: { count?: unknown; kind: "news" | "sec"; state: RecencyState; ticker: string }) {
   if (!isRecentRecency(state)) return null;
   const source = kind === "news" ? "News" : "SEC filing";
-  const Icon = kind === "news" ? state === "hot" ? Flame : Snowflake : FileCheck2;
+  const Icon = state === "hot" ? Flame : Snowflake;
   const description = `${state} ${source.toLowerCase()}`;
   const hot = state === "hot";
+  if (kind === "sec") {
+    const filingCount = Math.max(0, Math.round(Number(count) || 0));
+    return <button aria-label={`Open ${ticker} SEC filing timeline. ${description}.`} className="table-security-recency-icon" data-open-sec-ticker={ticker} data-source={kind} data-state={state} onClick={(event) => { event.stopPropagation(); dispatchTickerSecPopover(event.currentTarget, ticker); }} onPointerDown={(event) => event.stopPropagation()} type="button"><SecIntelligenceIcon count={filingCount} recency={state} /></button>;
+  }
   return <span aria-label={description} className="table-security-recency-icon" data-source={kind} data-state={state}><Icon aria-hidden="true" size={hot ? 16 : 15} strokeWidth={hot ? 1.5 : 1.8} /></span>;
 }
 

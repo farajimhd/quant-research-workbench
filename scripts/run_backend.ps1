@@ -53,18 +53,16 @@ function Resolve-PythonExecutable {
 
 $resolvedPython = Resolve-PythonExecutable -Requested $PythonExe
 
-$uvicornArgs = @(
-    "-m", "uvicorn",
-    "src.backend.app:app",
+$backendArgs = @(
+    "-B", (Join-Path $PSScriptRoot "run_backend.py"),
     "--host", $HostName,
-    "--port", "$Port",
-    "--lifespan", "on"
+    "--port", "$Port"
 )
 
 if (-not $NoReload) {
-    $uvicornArgs += @("--reload", "--reload-dir", "src")
+    $backendArgs += "--reload"
 }
 
 Write-Host "Starting backend API at http://$HostName`:$Port"
 Write-Host "Uvicorn lifespan is enabled for owned background runtimes and graceful shutdown."
-& $resolvedPython @uvicornArgs
+& $resolvedPython @backendArgs

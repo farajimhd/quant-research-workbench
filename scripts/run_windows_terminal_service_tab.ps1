@@ -1,8 +1,7 @@
 [CmdletBinding()]
 param(
-    [Parameter(Mandatory)]
-    [ValidateNotNullOrEmpty()]
-    [string]$EncodedCommand,
+    [string]$CommandPath = "",
+    [string]$EncodedCommand = "",
     [string]$PowerShellExe = "",
     [string]$RegistryPath = "",
     [string]$ServiceRole = "",
@@ -11,6 +10,7 @@ param(
     [string]$InstanceId = "",
     [string]$RepositoryRoot = "",
     [string]$DesiredFingerprint = "",
+    [string]$LaunchMetadataPath = "",
     [string]$LaunchMetadataBase64 = "",
     [string]$LogRoot = "",
     [ValidateRange(1, 100)]
@@ -240,11 +240,22 @@ $runRoot = ""
 $stdoutPath = ""
 $stderrPath = ""
 $exitPath = ""
+$bootstrapPath = ""
 $runStartedAtUtc = [DateTime]::UtcNow
 $childExitCode = 1
 $exitReason = "host_exception"
 $hostError = $null
 try {
+    if (-not $CommandPath.Trim() -and -not $EncodedCommand.Trim()) {
+        throw "CommandPath or EncodedCommand must be supplied."
+    }
+    if ($CommandPath.Trim() -and $EncodedCommand.Trim()) {
+        throw "CommandPath and EncodedCommand are mutually exclusive."
+    }
+    if ($LaunchMetadataPath.Trim() -and $LaunchMetadataBase64.Trim()) {
+        throw "LaunchMetadataPath and LaunchMetadataBase64 are mutually exclusive."
+    }
+
     $registrationValues = @($RegistryPath, $ServiceRole, $InstanceId, $RepositoryRoot)
     $registrationEnabled = @($registrationValues | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }).Count -gt 0
     if ($registrationEnabled -and
@@ -256,7 +267,15 @@ try {
         fingerprint_components = @{}
         launch_inputs = @{}
     }
-    if ($LaunchMetadataBase64.Trim()) {
+    if ($LaunchMetadataPath.Trim()) {
+        $resolvedLaunchMetadataPath = [IO.Path]::GetFullPath($LaunchMetadataPath)
+        if (-not (Test-Path -LiteralPath $resolvedLaunchMetadataPath -PathType Leaf)) {
+            throw "Launch metadata does not exist: $resolvedLaunchMetadataPath"
+        }
+        $metadataText = Get-Content -LiteralPath $resolvedLaunchMetadataPath -Raw -Encoding UTF8
+        $launchMetadata = $metadataText | ConvertFrom-Json
+    }
+    elseif ($LaunchMetadataBase64.Trim()) {
         $metadataText = [Text.Encoding]::UTF8.GetString(
             [Convert]::FromBase64String($LaunchMetadataBase64)
         )
@@ -305,26 +324,41 @@ try {
         $gateName
     )
     $gateLiteral = $gateName.Replace("'", "''")
+    $commandPathLiteral = ""
+    if ($CommandPath.Trim()) {
+        $resolvedCommandPath = [IO.Path]::GetFullPath($CommandPath)
+        if (-not (Test-Path -LiteralPath $resolvedCommandPath -PathType Leaf)) {
+            throw "Service command does not exist: $resolvedCommandPath"
+        }
+        $commandPathLiteral = $resolvedCommandPath.Replace("'", "''")
+    }
     $commandLiteral = $EncodedCommand.Replace("'", "''")
+    $commandInvocation = if ($commandPathLiteral) {
+        "& '$commandPathLiteral'"
+    }
+    else {
+        "`$commandText = [Text.Encoding]::Unicode.GetString([Convert]::FromBase64String('$commandLiteral'))`n& ([ScriptBlock]::Create(`$commandText))"
+    }
     $bootstrapCommand = @"
 `$gate = [Threading.EventWaitHandle]::OpenExisting('$gateLiteral')
 try { [void]`$gate.WaitOne() } finally { `$gate.Dispose() }
 `$ProgressPreference = 'SilentlyContinue'
-`$commandText = [Text.Encoding]::Unicode.GetString([Convert]::FromBase64String('$commandLiteral'))
-& ([ScriptBlock]::Create(`$commandText))
+$commandInvocation
 if (`$null -ne `$LASTEXITCODE) { exit `$LASTEXITCODE }
 if (-not `$?) { exit 1 }
 "@
-    $bootstrapEncodedCommand = [Convert]::ToBase64String(
-        [Text.Encoding]::Unicode.GetBytes($bootstrapCommand)
-    )
+    $bootstrapPath = if ($runRoot) {
+        Join-Path $runRoot 'bootstrap.ps1'
+    }
+    else {
+        Join-Path ([IO.Path]::GetTempPath()) ("qw-service-bootstrap-{0}.ps1" -f [Guid]::NewGuid().ToString('N'))
+    }
+    $bootstrapCommand | Set-Content -LiteralPath $bootstrapPath -Encoding UTF8
+    $bootstrapArgument = $bootstrapPath.Replace('"', '\"')
 
     $startInfo = [Diagnostics.ProcessStartInfo]::new()
     $startInfo.FileName = $PowerShellExe
-    $startInfo.Arguments = (
-        "-NoLogo -NoProfile -ExecutionPolicy Bypass -OutputFormat Text -EncodedCommand {0}" -f
-        $bootstrapEncodedCommand
-    )
+    $startInfo.Arguments = "-NoLogo -NoProfile -ExecutionPolicy Bypass -OutputFormat Text -File `"$bootstrapArgument`""
     $startInfo.UseShellExecute = $false
     # This host already owns the Windows Terminal tab's console. The launcher
     # must inherit that console so normal output, ANSI sequences, and Rich Live
@@ -456,6 +490,9 @@ finally {
     }
     if ($null -ne $stdoutWriter) { $stdoutWriter.Dispose() }
     if ($null -ne $stderrWriter) { $stderrWriter.Dispose() }
+    if ($bootstrapPath -and (Test-Path -LiteralPath $bootstrapPath -PathType Leaf)) {
+        Remove-Item -LiteralPath $bootstrapPath -Force -ErrorAction SilentlyContinue
+    }
     [ServiceTabJobControl]::Close($job)
     if ($runRoot) {
         $exitRecord = [ordered]@{
