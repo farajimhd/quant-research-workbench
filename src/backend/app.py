@@ -3567,14 +3567,19 @@ def trading_sec_filing_detail(cik: str, accession_number: str, as_of: str | None
 
 
 @app.post("/api/trading/sec/{cik}/{accession_number}/ai-review", status_code=202)
-def trading_sec_ai_review(cik: str, accession_number: str, command: SecAiReviewCommand) -> dict[str, Any]:
+async def trading_sec_ai_review(cik: str, accession_number: str, command: SecAiReviewCommand) -> dict[str, Any]:
     try:
-        return request_sec_review(cik, accession_number, command.requested_by)
+        # Manual review admission performs bounded ClickHouse validation in Text
+        # Intelligence. Keep it out of FastAPI's shared synchronous endpoint pool
+        # so scanner and Canvas reads cannot starve this operator action.
+        return await asyncio.to_thread(
+            request_sec_review, cik, accession_number, command.requested_by
+        )
     except urllib.error.HTTPError as error:
         detail = error.read().decode(errors="replace")[:500]
         raise HTTPException(status_code=error.code, detail=detail or "SEC AI review request failed") from error
     except (TimeoutError, urllib.error.URLError) as error:
-        raise HTTPException(status_code=503, detail="Text Intelligence is temporarily unavailable") from error
+        raise HTTPException(status_code=503, detail="Text Intelligence did not acknowledge the SEC review request") from error
 
 
 @app.get("/api/trading/sec/{cik}/{accession_number}/ai-review")

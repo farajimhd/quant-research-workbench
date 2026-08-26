@@ -50,6 +50,7 @@
       "readiness": {"kind": "transport"},
       "arguments": ["-HostName", "127.0.0.1", "-Port", "8000", "-PythonExe", "{python}", "-NoReload"],
       "start_priority": 80,
+      "fingerprint_env": ["TEXT_INTELLIGENCE_URL", "TEXT_INTELLIGENCE_SEC_REVIEW_ADMISSION_TIMEOUT_SECONDS"],
       "dependencies": ["qmd-history"],
       "graceful_timeout_seconds": 15,
       "watch": ["src/backend/**", "src/runtime_paths.py", "scripts/run_backend.py", "scripts/run_backend.ps1"]

@@ -1,12 +1,50 @@
 from __future__ import annotations
 
 import json
+import os
 import unittest
+from unittest import mock
 
-from src.backend.sec_synthesis_service import load_sec_synthesis_state
+from src.backend.sec_synthesis_service import load_sec_synthesis_state, request_sec_review
 
 
 class SecSynthesisServiceTests(unittest.TestCase):
+    def test_sec_review_admission_uses_configured_bounded_timeout(self) -> None:
+        response = mock.MagicMock()
+        response.__enter__.return_value.read.return_value = b'{"status":"queued"}'
+        environment = {
+            "TEXT_INTELLIGENCE_URL": "http://text-intelligence.test:8804/",
+            "TEXT_INTELLIGENCE_SEC_REVIEW_ADMISSION_TIMEOUT_SECONDS": "30",
+        }
+
+        with mock.patch.dict(os.environ, environment, clear=False), mock.patch(
+            "src.backend.sec_synthesis_service.urllib.request.urlopen", return_value=response
+        ) as urlopen:
+            result = request_sec_review("0001930510", "0001213900-26-092120", "frontend-operator")
+
+        self.assertEqual({"status": "queued"}, result)
+        request = urlopen.call_args.args[0]
+        self.assertEqual("http://text-intelligence.test:8804/sec-review", request.full_url)
+        self.assertEqual(30.0, urlopen.call_args.kwargs["timeout"])
+        self.assertEqual(
+            {
+                "cik": "0001930510",
+                "accession_number": "0001213900-26-092120",
+                "requested_by": "frontend-operator",
+            },
+            json.loads(request.data.decode()),
+        )
+
+    def test_sec_review_admission_rejects_nonpositive_timeout(self) -> None:
+        with mock.patch.dict(
+            os.environ,
+            {"TEXT_INTELLIGENCE_SEC_REVIEW_ADMISSION_TIMEOUT_SECONDS": "0"},
+            clear=False,
+        ), mock.patch("src.backend.sec_synthesis_service.urllib.request.urlopen") as urlopen:
+            with self.assertRaisesRegex(ValueError, "must be positive"):
+                request_sec_review("0001930510", "0001213900-26-092120", "operator")
+        urlopen.assert_not_called()
+
     def test_attaches_synthesis_and_manual_review(self) -> None:
         synthesis = {"accession_number": "0001", "contract_version": "sec_synthesis_v1"}
 

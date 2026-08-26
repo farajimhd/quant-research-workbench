@@ -283,7 +283,28 @@ function SecAiReviewCard({ accession, cik, initial, onChange }: { accession: str
   useEffect(() => setReview(initial ?? { status: "not_reviewed" }), [initial]);
   const pending = ["queued", "reviewing"].includes(review.status);
   useEffect(() => { if (!pending) return; const poll = window.setInterval(() => { api<{ review?: SecReview }>(`/api/trading/sec/${encodeURIComponent(cik)}/${encodeURIComponent(accession)}/ai-review`, { timeoutMs: 10000 }).then((value) => { const next = value.review ?? { status: "not_reviewed" }; setReview(next); onChange(next); }).catch(() => undefined); }, 2200); return () => window.clearInterval(poll); }, [accession, cik, onChange, pending]);
-  const requestReview = async () => { setError(""); const queued = { ...review, status: "queued" }; setReview(queued); onChange(queued); try { await api(`/api/trading/sec/${encodeURIComponent(cik)}/${encodeURIComponent(accession)}/ai-review`, { method: "POST", body: JSON.stringify({ requested_by: "frontend-operator" }), timeoutMs: 15000 }); } catch (reason) { const message = reason instanceof Error ? reason.message : String(reason); setError(message); const failed = { ...review, status: "failed", error: message }; setReview(failed); onChange(failed); } };
+  const applyReview = (next: SecReview) => { setReview(next); onChange(next); };
+  const readCanonicalReview = async () => { const value = await api<{ review?: SecReview }>(`/api/trading/sec/${encodeURIComponent(cik)}/${encodeURIComponent(accession)}/ai-review`, { timeoutMs: 10000 }); return value.review ?? { status: "not_reviewed" }; };
+  const requestReview = async () => {
+    setError(""); const queued = { ...review, status: "queued" }; applyReview(queued);
+    try {
+      await api(`/api/trading/sec/${encodeURIComponent(cik)}/${encodeURIComponent(accession)}/ai-review`, { method: "POST", body: JSON.stringify({ requested_by: "frontend-operator" }), timeoutMs: 35000 });
+    } catch (reason) {
+      const message = reason instanceof Error ? reason.message : String(reason);
+      const status = Number((reason as { status?: number })?.status || 0);
+      const ambiguous = !status || /timed out|network|aborted|fetch/i.test(message);
+      if (ambiguous) {
+        setError("Review acknowledgement was delayed; checking canonical status…");
+        for (let attempt = 0; attempt < 5; attempt += 1) {
+          await new Promise((resolve) => window.setTimeout(resolve, 1500));
+          const canonical = await readCanonicalReview().catch(() => null);
+          if (canonical && canonical.status !== "not_reviewed") { setError(""); applyReview(canonical); return; }
+        }
+      }
+      const detail = ambiguous ? "The review request could not be confirmed. Retry is safe because review admission is deduplicated." : message;
+      setError(detail); applyReview({ ...review, status: "failed", error: detail });
+    }
+  };
   const result = review.result;
   return <section className="news-intelligence-card news-ai-card" data-state={review.status}><header><span>AI review</span><b data-tone={result ? "candidate" : pending ? "pending" : "view"}>Manual remote</b></header>{result ? <><div className="news-card-primary"><strong>{humanize(result.fundamental_direction)}</strong><em>{Math.round(result.forecast_relevance_probability * 100)}% relevant</em><span data-tone={normalizeSemanticDirection(result.fundamental_direction)}>{Math.round(result.materiality_probability * 100)}% material</span></div><div className="news-card-metrics"><span>Positive {Math.round(result.positive_implication_probability * 100)}%</span><span>Negative {Math.round(result.negative_implication_probability * 100)}%</span><span>{humanize(result.risk_change)} risk</span></div></> : <button className="news-card-action" disabled={pending} onClick={() => void requestReview()} type="button"><Bot size={12} />{pending ? "Reviewing filing" : review.status === "failed" ? "Retry SEC review" : "Review SEC filing"}</button>}{error || review.error ? <small className="news-ai-review-error">{error || review.error}</small> : null}</section>;
 }

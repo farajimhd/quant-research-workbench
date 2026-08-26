@@ -9,31 +9,24 @@ _RISK = {"increased", "decreased", "unchanged", "mixed", "uncertain"}
 _GUIDANCE = {"raised", "lowered", "reaffirmed", "withdrawn", "introduced", "none", "uncertain"}
 
 TRANSPORT_SCHEMA: dict[str, Any] = {
-    "type": "json_schema",
-    "json_schema": {
-        "name": "sec_issuer_review_v1",
-        "strict": True,
-        "schema": {
-            "type": "object",
-            "additionalProperties": False,
-            "required": ["accession_number", "cik", "ticker", "materiality_probability", "forecast_relevance_probability", "positive_implication_probability", "negative_implication_probability", "fundamental_direction", "risk_change", "guidance_change", "event_tags", "evidence_ids", "conflict_ids", "abstain", "abstention_reasons", "summary"],
-            "properties": {
-                "accession_number": {"type": "string"}, "cik": {"type": "string"}, "ticker": {"type": "string"},
-                "materiality_probability": {"type": "number", "minimum": 0, "maximum": 1},
-                "forecast_relevance_probability": {"type": "number", "minimum": 0, "maximum": 1},
-                "positive_implication_probability": {"type": "number", "minimum": 0, "maximum": 1},
-                "negative_implication_probability": {"type": "number", "minimum": 0, "maximum": 1},
-                "fundamental_direction": {"type": "string", "enum": sorted(_DIRECTIONS)},
-                "risk_change": {"type": "string", "enum": sorted(_RISK)},
-                "guidance_change": {"type": "string", "enum": sorted(_GUIDANCE)},
-                "event_tags": {"type": "array", "items": {"type": "string"}, "maxItems": 12},
-                "evidence_ids": {"type": "array", "items": {"type": "string"}, "maxItems": 12},
-                "conflict_ids": {"type": "array", "items": {"type": "string"}, "maxItems": 12},
-                "abstain": {"type": "boolean"},
-                "abstention_reasons": {"type": "array", "items": {"type": "string"}, "maxItems": 8},
-                "summary": {"type": "string", "maxLength": 1200},
-            },
-        },
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["accession_number", "cik", "ticker", "materiality_probability", "forecast_relevance_probability", "positive_implication_probability", "negative_implication_probability", "fundamental_direction", "risk_change", "guidance_change", "event_tags", "evidence_ids", "conflict_ids", "abstain", "abstention_reasons", "summary"],
+    "properties": {
+        "accession_number": {"type": "string"}, "cik": {"type": "string"}, "ticker": {"type": "string"},
+        "materiality_probability": {"type": "number", "minimum": 0, "maximum": 1},
+        "forecast_relevance_probability": {"type": "number", "minimum": 0, "maximum": 1},
+        "positive_implication_probability": {"type": "number", "minimum": 0, "maximum": 1},
+        "negative_implication_probability": {"type": "number", "minimum": 0, "maximum": 1},
+        "fundamental_direction": {"type": "string", "enum": sorted(_DIRECTIONS)},
+        "risk_change": {"type": "string", "enum": sorted(_RISK)},
+        "guidance_change": {"type": "string", "enum": sorted(_GUIDANCE)},
+        "event_tags": {"type": "array", "items": {"type": "string"}, "maxItems": 12},
+        "evidence_ids": {"type": "array", "items": {"type": "string"}, "maxItems": 12},
+        "conflict_ids": {"type": "array", "items": {"type": "string"}, "maxItems": 12},
+        "abstain": {"type": "boolean"},
+        "abstention_reasons": {"type": "array", "items": {"type": "string"}, "maxItems": 8},
+        "summary": {"type": "string", "maxLength": 1200},
     },
 }
 

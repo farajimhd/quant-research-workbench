@@ -2,10 +2,15 @@ from __future__ import annotations
 
 import unittest
 
-from research.text_intelligence.sec_issuer_review_v1.schema import validate_output
+from research.text_intelligence.sec_issuer_review_v1.schema import TRANSPORT_SCHEMA, validate_output
 
 
 class SecIssuerReviewV1Tests(unittest.TestCase):
+    def test_transport_schema_is_the_object_schema_expected_by_model_gateway(self) -> None:
+        self.assertEqual("object", TRANSPORT_SCHEMA["type"])
+        self.assertIn("properties", TRANSPORT_SCHEMA)
+        self.assertNotIn("json_schema", TRANSPORT_SCHEMA)
+
     def test_rejects_invented_evidence(self) -> None:
         synthesis = {"accession_number": "a", "cik": "1", "narrative_disclosures": [], "reconciliation": []}
         result = {

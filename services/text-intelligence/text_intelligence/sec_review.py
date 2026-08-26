@@ -48,6 +48,7 @@ class SecReviewRuntime:
         self.database = database
         self.queue: asyncio.Queue[SecReviewWork | None] = asyncio.Queue(maxsize=128)
         self.pending: set[tuple[str, str]] = set()
+        self.admission_lock = asyncio.Lock()
         self.worker: asyncio.Task[None] | None = None
         self.metrics: dict[str, Any] = {"queued": 0, "completed": 0, "failed": 0, "last_error": ""}
 
@@ -63,23 +64,29 @@ class SecReviewRuntime:
         await self.worker
         self.worker = None
 
-    def enqueue(self, request: SecReviewRequest) -> dict[str, str]:
+    async def enqueue(self, request: SecReviewRequest) -> dict[str, str]:
         key = (request.cik, request.accession_number)
-        if key in self.pending:
-            return {"status": "already_queued", "cik": key[0], "accession_number": key[1]}
-        synthesis = self._load_synthesis(*key)
-        if not request.force and self._review_complete(*key, str(synthesis["source_hash"])):
-            return {"status": "complete", "cik": key[0], "accession_number": key[1]}
-        # There is intentionally no automatic trigger mode or caller-controlled mode.
-        self.pending.add(key)
-        try:
-            self.queue.put_nowait(SecReviewWork(request=request))
-        except asyncio.QueueFull:
-            self.pending.discard(key)
-            raise
-        self._write_status(request, synthesis, "queued")
-        self.metrics["queued"] += 1
-        return {"status": "queued", "cik": key[0], "accession_number": key[1]}
+        async with self.admission_lock:
+            if key in self.pending:
+                return {"status": "already_queued", "cik": key[0], "accession_number": key[1]}
+            synthesis = await asyncio.to_thread(self._load_synthesis, *key)
+            if not request.force and await asyncio.to_thread(
+                self._review_complete, *key, str(synthesis["source_hash"])
+            ):
+                return {"status": "complete", "cik": key[0], "accession_number": key[1]}
+            if self.queue.full():
+                raise asyncio.QueueFull
+            # Persist acknowledgement before making work visible to the worker.
+            # Queue ownership and deduplication stay on this event loop.
+            self.pending.add(key)
+            try:
+                await asyncio.to_thread(self._write_status, request, synthesis, "queued")
+                self.queue.put_nowait(SecReviewWork(request=request))
+            except Exception:
+                self.pending.discard(key)
+                raise
+            self.metrics["queued"] += 1
+            return {"status": "queued", "cik": key[0], "accession_number": key[1]}
 
     def status(self, cik: str, accession_number: str) -> dict[str, Any]:
         rows = list(self.client.iter_json_each_row(f"""
@@ -99,8 +106,16 @@ ORDER BY updated_at_utc DESC LIMIT 1 FORMAT JSONEachRow
             except Exception as exc:  # noqa: BLE001
                 if work is not None:
                     try:
-                        synthesis = self._load_synthesis(work.request.cik, work.request.accession_number)
-                        self._write_status(work.request, synthesis, "failed", error=f"{type(exc).__name__}: {exc}")
+                        synthesis = await asyncio.to_thread(
+                            self._load_synthesis, work.request.cik, work.request.accession_number
+                        )
+                        await asyncio.to_thread(
+                            self._write_status,
+                            work.request,
+                            synthesis,
+                            "failed",
+                            error=f"{type(exc).__name__}: {exc}",
+                        )
                     except Exception:  # noqa: BLE001
                         pass
                 self.metrics["failed"] += 1
@@ -112,7 +127,7 @@ ORDER BY updated_at_utc DESC LIMIT 1 FORMAT JSONEachRow
 
     async def _process(self, request: SecReviewRequest) -> None:
         synthesis = await asyncio.to_thread(self._load_synthesis, request.cik, request.accession_number)
-        self._write_status(request, synthesis, "reviewing")
+        await asyncio.to_thread(self._write_status, request, synthesis, "reviewing")
         source_hash = str(synthesis["source_hash"])
         nonce = uuid.uuid4().hex if request.force else ""
         review_id = hashlib.sha256(
@@ -155,11 +170,14 @@ ORDER BY updated_at_utc DESC LIMIT 1 FORMAT JSONEachRow
             "cost_usd": float(response.get("cost_usd") or 0), "latency_ms": int(response.get("latency_ms") or 0),
             "error": "", "updated_at_utc": now,
         }
-        insert_json_each_row(self.client, self.database, REVIEW_TABLE, list(persisted), [persisted])
         history = {"review_id": review_id, **persisted}
-        insert_json_each_row(self.client, self.database, REVIEW_HISTORY_TABLE, list(history), [history])
+        await asyncio.to_thread(self._write_complete, persisted, history)
         self.metrics["completed"] += 1
         self.metrics["last_error"] = ""
+
+    def _write_complete(self, persisted: dict[str, Any], history: dict[str, Any]) -> None:
+        insert_json_each_row(self.client, self.database, REVIEW_TABLE, list(persisted), [persisted])
+        insert_json_each_row(self.client, self.database, REVIEW_HISTORY_TABLE, list(history), [history])
 
     def _load_synthesis(self, cik: str, accession_number: str) -> dict[str, Any]:
         rows = list(self.client.iter_json_each_row(f"""

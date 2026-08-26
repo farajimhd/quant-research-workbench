@@ -62,10 +62,13 @@ FORMAT JSONEachRow
 
 def request_sec_review(cik: str, accession_number: str, requested_by: str) -> dict[str, Any]:
     base = os.environ.get("TEXT_INTELLIGENCE_URL", "http://127.0.0.1:8804").rstrip("/")
+    timeout_seconds = float(os.environ.get("TEXT_INTELLIGENCE_SEC_REVIEW_ADMISSION_TIMEOUT_SECONDS", "30"))
+    if timeout_seconds <= 0:
+        raise ValueError("TEXT_INTELLIGENCE_SEC_REVIEW_ADMISSION_TIMEOUT_SECONDS must be positive")
     payload = {"cik": cik, "accession_number": accession_number, "requested_by": requested_by or "operator"}
     request = urllib.request.Request(
         f"{base}/sec-review", data=json.dumps(payload).encode(),
         headers={"Content-Type": "application/json"}, method="POST",
     )
-    with urllib.request.urlopen(request, timeout=10.0) as response:
+    with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
         return json.loads(response.read().decode())

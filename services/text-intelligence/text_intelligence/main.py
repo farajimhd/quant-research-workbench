@@ -190,9 +190,9 @@ def request_news_reaction(request: ReactionRequest) -> dict[str, object]:
 
 
 @app.post("/sec-review", status_code=202)
-def request_sec_review(request: SecReviewRequest) -> dict[str, str]:
+async def request_sec_review(request: SecReviewRequest) -> dict[str, str]:
     try:
-        return sec_review_runtime.enqueue(request)
+        return await sec_review_runtime.enqueue(request)
     except asyncio.QueueFull as exc:
         raise HTTPException(status_code=503, detail="SEC review queue is full") from exc
     except LookupError as exc:
