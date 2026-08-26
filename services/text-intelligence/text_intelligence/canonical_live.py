@@ -8,9 +8,9 @@ import threading
 import time
 import uuid
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
-from typing import Any, Literal
+from typing import Any, Literal, Mapping
 
 from pydantic import BaseModel, Field
 
@@ -24,7 +24,6 @@ from research.text_intelligence.candidate_inventory_v1.config import (
 )
 from .sec_authority import (
     RELATION_TABLE,
-    SCOPED_LABELING_VERSION,
     TARGET_TABLE,
     attach_sec_ticker,
     classify_sec_document,
@@ -47,6 +46,14 @@ from research.text_intelligence.news_synthesis_v1.storage import (
     load_identity_index,
     persist_documents,
     persist_funnel_results,
+)
+from research.text_intelligence.sec_synthesis_v1 import (
+    ENGINE_VERSION as SEC_SYNTHESIS_ENGINE_VERSION,
+    SecSynthesisEngine,
+)
+from research.text_intelligence.sec_synthesis_v1.storage import (
+    create_tables as create_sec_synthesis_tables,
+    persist_document as persist_sec_synthesis_document,
 )
 
 from .live import LiveCandidate, LiveNewsRuntime, PreparedNewsCandidate, SynthesisLiveLabel
@@ -73,6 +80,7 @@ class LoadedSource:
     rows: tuple[dict[str, Any], ...]
     source_hash: str
     disposition: str = "ready"
+    context: Mapping[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
@@ -82,7 +90,7 @@ class CanonicalWorkItem:
 
 
 class CanonicalTextRuntime:
-    """V1 News Synthesis runtime plus the separately versioned SEC authority."""
+    """Shared deterministic News and accession-level SEC Synthesis runtime."""
 
     def __init__(
         self,
@@ -103,6 +111,7 @@ class CanonicalTextRuntime:
         self.workers: list[asyncio.Task[None]] = []
         self.reconcile_task: asyncio.Task[None] | None = None
         self.news_engine: NewsSynthesisEngine | None = None
+        self.sec_engine = SecSynthesisEngine()
         self.sec_mappings: dict[str, list[dict[str, Any]]] = {}
         self.sec_mapping_lock = threading.Lock()
         self.state_lock = threading.Lock()
@@ -119,6 +128,7 @@ class CanonicalTextRuntime:
             "deterministic_failed": 0,
             "news_synthesis_documents": 0,
             "sec_label_rows": 0,
+            "sec_synthesis_documents": 0,
             "deterministic_reconciled": 0,
             "deterministic_live_forwarded": 0,
             "deterministic_live_forward_failed": 0,
@@ -142,6 +152,7 @@ class CanonicalTextRuntime:
     async def start(self) -> None:
         await asyncio.to_thread(create_tables, self.client, self.database)
         await asyncio.to_thread(create_news_synthesis_tables, self.client, self.database)
+        await asyncio.to_thread(create_sec_synthesis_tables, self.client, self.database)
         await asyncio.to_thread(self._ensure_status_table)
         identity_index = await asyncio.to_thread(load_identity_index, self.client, self.database)
         self.news_engine = NewsSynthesisEngine(identity_index)
@@ -286,21 +297,41 @@ class CanonicalTextRuntime:
             return "deferred_not_ready"
         self._set_worker_stage(worker_index, "checking_status")
         source_is_current = self._status_is_current(notice, loaded.source_hash)
-        if loaded.disposition == "ineligible":
+        if loaded.disposition == "synthesis_only":
             if source_is_current:
                 self.metrics["deterministic_skipped_current"] = int(
                     self.metrics["deterministic_skipped_current"]
                 ) + 1
                 return "skipped_current"
+            filing = dict(loaded.context.get("filing") or {})
+            facts = tuple(loaded.context.get("facts") or ())
+            synthesis = self.sec_engine.process(
+                filing=filing,
+                documents=[
+                    {
+                        **row,
+                        "document_id": str(row.get("source_id") or row.get("document_id") or ""),
+                        "ticker": next(iter(row.get("tickers") or ()), ""),
+                    }
+                    for row in loaded.rows
+                ],
+                facts=facts,
+                source_hash=loaded.source_hash,
+            )
+            self._set_worker_stage(worker_index, "writing_sec_synthesis")
+            persist_sec_synthesis_document(self.client, self.database, synthesis)
             self._set_worker_stage(worker_index, "writing_status")
             self._write_status(notice, loaded.source_hash, "complete", 0, 0, "")
             self.metrics["deterministic_ineligible"] = int(
                 self.metrics["deterministic_ineligible"]
             ) + 1
+            self.metrics["sec_synthesis_documents"] = int(
+                self.metrics["sec_synthesis_documents"]
+            ) + 1
             self.metrics["deterministic_completed"] = int(
                 self.metrics["deterministic_completed"]
             ) + 1
-            return "skipped_ineligible"
+            return "complete_synthesis_only"
         if not loaded.rows:
             raise RuntimeError(
                 f"canonical {notice.corpus} source is not ready: {notice.source_id}"
@@ -323,6 +354,22 @@ class CanonicalTextRuntime:
             )
             for label in labels:
                 relation_rows.extend(relationship_rows(document, label, run_id))
+        filing = dict(loaded.context.get("filing") or {})
+        facts = tuple(loaded.context.get("facts") or ())
+        synthesis_documents = [
+            {
+                **row,
+                "document_id": str(row.get("source_id") or row.get("document_id") or ""),
+                "ticker": next(iter(row.get("tickers") or ()), ""),
+            }
+            for row in loaded.rows
+        ]
+        synthesis = self.sec_engine.process(
+            filing=filing,
+            documents=synthesis_documents,
+            facts=facts,
+            source_hash=loaded.source_hash,
+        )
         if label_rows and not source_is_current:
             self._set_worker_stage(worker_index, "writing_labels")
             insert_json_each_row(
@@ -342,6 +389,13 @@ class CanonicalTextRuntime:
                 relation_rows,
             )
         if not source_is_current:
+            self._set_worker_stage(worker_index, "writing_sec_synthesis")
+            persist_sec_synthesis_document(
+                self.client,
+                self.database,
+                synthesis,
+            )
+        if not source_is_current:
             self._set_worker_stage(worker_index, "writing_status")
             self._write_status(
                 notice,
@@ -352,6 +406,9 @@ class CanonicalTextRuntime:
                 "",
             )
             self.metrics["sec_label_rows"] = int(self.metrics["sec_label_rows"]) + len(label_rows)
+            self.metrics["sec_synthesis_documents"] = int(
+                self.metrics["sec_synthesis_documents"]
+            ) + 1
             self.metrics["deterministic_completed"] = int(
                 self.metrics["deterministic_completed"]
             ) + 1
@@ -623,22 +680,43 @@ FORMAT JSONEachRow
 """))
         if not metadata:
             return LoadedSource(notice, (), "", "not_ready")
-        eligible_metadata = [
-            row for row in metadata if sec_document_labeling_eligible(row)
-        ]
-        if not eligible_metadata:
-            return LoadedSource(
-                notice,
-                (),
-                _ineligible_sec_hash(filing, metadata),
-                "ineligible",
-            )
         with self.sec_mapping_lock:
             if cik not in self.sec_mappings:
                 extend_sec_ticker_mappings(
                     self.client, self.database, (cik,), self.sec_mappings
                 )
             filing_mappings = {cik: list(self.sec_mappings.get(cik, ()))}
+        facts = self._load_sec_facts(
+            cik=cik,
+            accession=str(filing["accession_number"]),
+            accepted_at_utc=str(filing["source_timestamp"]),
+        )
+        eligible_metadata = [
+            row for row in metadata if sec_document_labeling_eligible(row)
+        ]
+        if not eligible_metadata:
+            envelope_documents = []
+            for metadata_row in metadata:
+                row = {
+                    **metadata_row,
+                    "source_id": str(metadata_row.get("document_id") or ""),
+                    "source_timestamp": filing["source_timestamp"],
+                    "text": "",
+                    "text_sha256": "",
+                }
+                attach_sec_ticker(row, filing_mappings)
+                envelope_documents.append(row)
+            return LoadedSource(
+                notice,
+                tuple(envelope_documents),
+                _sec_synthesis_source_hash(filing, envelope_documents, facts),
+                "synthesis_only",
+                context={
+                    "filing": filing,
+                    "facts": tuple(facts),
+                    "document_metadata": tuple(metadata),
+                },
+            )
         documents = list(
             iter_sec_documents_for_filings(
                 self.client,
@@ -673,9 +751,52 @@ FORMAT JSONEachRow
                 }
             )
             attach_sec_ticker(row, filing_mappings)
+        source_hash = _sec_synthesis_source_hash(filing, documents, facts)
         return LoadedSource(
-            notice, tuple(documents), _sec_document_set_hash(documents)
+            notice,
+            tuple(documents),
+            source_hash,
+            context={"filing": filing, "facts": tuple(facts), "document_metadata": tuple(metadata)},
         )
+
+    def _load_sec_facts(
+        self,
+        *,
+        cik: str,
+        accession: str,
+        accepted_at_utc: str,
+    ) -> list[dict[str, Any]]:
+        """Load current facts and exact-tag priors available by filing acceptance."""
+        return list(self.client.iter_json_each_row(f"""
+WITH current_keys AS
+(
+ SELECT DISTINCT taxonomy,tag,unit_code
+ FROM `{self.database}`.`sec_xbrl_company_fact_v3` FINAL
+ PREWHERE cik={sql_string(cik)}
+ WHERE accession_number={sql_string(accession)}
+)
+SELECT x.company_fact_id,x.cik,x.taxonomy,x.tag,x.unit_code,x.fiscal_year,
+       ifNull(x.fiscal_period,'') fiscal_period,
+       toString(x.filed_at_utc) filed_at_utc,
+       ifNull(toString(x.period_end_date),'') period_end_date,x.value,
+       ifNull(x.form_type,'') form_type,ifNull(x.accession_number,'') accession_number,
+       toString(x.recorded_at_utc) recorded_at_utc,
+       ifNull(toString(f.accepted_at_utc),toString(x.filed_at_utc)) accepted_at_utc
+FROM `{self.database}`.`sec_xbrl_company_fact_v3` x FINAL
+LEFT JOIN
+(
+ SELECT cik,accession_number,accepted_at_utc
+ FROM `{self.database}`.`sec_filing_v3` FINAL
+ PREWHERE cik={sql_string(cik)}
+) f ON f.cik=x.cik AND f.accession_number=x.accession_number
+PREWHERE x.cik={sql_string(cik)}
+WHERE (x.taxonomy,x.tag,x.unit_code) IN current_keys
+  AND ifNull(f.accepted_at_utc,x.filed_at_utc) <= parseDateTime64BestEffort({sql_string(accepted_at_utc)})
+ORDER BY x.period_end_date DESC,x.filed_at_utc DESC,x.recorded_at_utc DESC
+LIMIT 8 BY x.taxonomy,x.tag,x.unit_code
+SETTINGS max_execution_time=25
+FORMAT JSONEachRow
+"""))
 
     def _status_is_current(
         self, notice: TextDocumentNotice, source_hash: str
@@ -859,13 +980,24 @@ WITH
  recent_sec AS
  (
   SELECT
-   accession_number source_id,
-   cik source_cik,
-   accepted_at_utc source_timestamp,
-   inserted_at source_updated_at_utc
-  FROM `{self.database}`.`sec_filing_v3` FINAL
-  PREWHERE _partition_id >= {sql_string(start_partition)}
-  WHERE accepted_at_utc >= toDateTime64({sql_string(start_sql)},6,'UTC')
+   f.accession_number source_id,
+   f.cik source_cik,
+   f.accepted_at_utc source_timestamp,
+   greatest(f.inserted_at,ifNull(x.xbrl_updated_at_utc,f.inserted_at)) source_updated_at_utc
+  FROM
+  (
+   SELECT *
+   FROM `{self.database}`.`sec_filing_v3` FINAL
+   PREWHERE _partition_id >= {sql_string(start_partition)}
+   WHERE accepted_at_utc >= toDateTime64({sql_string(start_sql)},6,'UTC')
+  ) f
+  LEFT JOIN
+  (
+   SELECT cik,accession_number,max(inserted_at) xbrl_updated_at_utc
+   FROM `{self.database}`.`sec_xbrl_company_fact_v3` FINAL
+   WHERE filed_at_utc >= toDateTime64({sql_string(start_sql)},6,'UTC')
+   GROUP BY cik,accession_number
+  ) x ON x.cik=f.cik AND x.accession_number=f.accession_number
  )
 SELECT corpus,source_id,source_timestamp,source_cik
 FROM
@@ -903,7 +1035,7 @@ SELECT 'sec' corpus,f.source_id,toString(f.source_timestamp) source_timestamp,
 FROM recent_sec f
 LEFT JOIN complete_status s
  ON s.corpus='sec' AND s.source_id=f.source_id
- AND s.authority_version={sql_string(SCOPED_LABELING_VERSION)}
+ AND s.authority_version={sql_string(SEC_SYNTHESIS_ENGINE_VERSION)}
 WHERE empty(s.source_id)
    OR f.source_updated_at_utc > s.updated_at_utc
 )
@@ -1017,7 +1149,7 @@ def _live_candidate(row: dict[str, Any]) -> LiveCandidate:
 
 
 def _authority_version(corpus: str) -> str:
-    return NEWS_SYNTHESIS_ENGINE_VERSION if corpus == "news" else SCOPED_LABELING_VERSION
+    return NEWS_SYNTHESIS_ENGINE_VERSION if corpus == "news" else SEC_SYNTHESIS_ENGINE_VERSION
 
 
 def _live_synthesis_labels(document: dict[str, Any]) -> tuple[SynthesisLiveLabel, ...]:
@@ -1071,13 +1203,46 @@ def _live_synthesis_labels(document: dict[str, Any]) -> tuple[SynthesisLiveLabel
     return tuple(output)
 
 
-def _sec_document_set_hash(documents: list[dict[str, Any]]) -> str:
-    """Hash the exact ordered rendered-document authority for one filing."""
-    material = "|".join(
-        f"{row['source_id']}:{row.get('text_sha256') or ''}"
-        for row in sorted(documents, key=lambda item: str(item["source_id"]))
-    )
-    return hashlib.sha256(material.encode()).hexdigest()
+def _sec_synthesis_source_hash(
+    filing: Mapping[str, Any],
+    documents: list[dict[str, Any]],
+    facts: list[dict[str, Any]],
+) -> str:
+    """Hash every accession-level input that may alter deterministic synthesis."""
+    material = {
+        "filing": {
+            key: filing.get(key)
+            for key in (
+                "cik", "accession_number", "source_timestamp", "company_name",
+                "form_type", "filing_items", "filing_date", "report_date",
+                "accepted_at_source", "source_content_sha256",
+            )
+        },
+        "documents": [
+            {
+                "source_id": row.get("source_id"),
+                "text_sha256": row.get("text_sha256"),
+                "document_type": row.get("document_type"),
+                "document_role": row.get("document_role"),
+                "ticker": next(iter(row.get("tickers") or ()), ""),
+            }
+            for row in sorted(documents, key=lambda item: str(item.get("source_id") or ""))
+        ],
+        "facts": [
+            {
+                key: row.get(key)
+                for key in (
+                    "company_fact_id", "accession_number", "taxonomy", "tag",
+                    "unit_code", "fiscal_year", "fiscal_period", "period_end_date",
+                    "value", "recorded_at_utc", "accepted_at_utc",
+                )
+            }
+            for row in sorted(facts, key=lambda item: str(item.get("company_fact_id") or ""))
+        ],
+    }
+    return hashlib.sha256(
+        json.dumps(material, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
 
 
 def _news_source_hash(row: dict[str, Any]) -> str:
@@ -1092,25 +1257,6 @@ def _news_source_hash(row: dict[str, Any]) -> str:
     return hashlib.sha256(
         json.dumps(material, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
     ).hexdigest()
-
-
-def _ineligible_sec_hash(
-    filing: dict[str, Any], metadata: list[dict[str, Any]]
-) -> str:
-    documents = "|".join(
-        f"{row.get('document_id') or ''}:{row.get('document_type') or ''}"
-        for row in sorted(metadata, key=lambda item: str(item.get("document_id") or ""))
-    )
-    material = "|".join(
-        (
-            "ineligible",
-            str(filing.get("cik") or ""),
-            str(filing.get("accession_number") or ""),
-            str(filing.get("source_content_sha256") or ""),
-            documents,
-        )
-    )
-    return hashlib.sha256(material.encode()).hexdigest()
 
 
 def _parse_utc(value: str) -> datetime | None:

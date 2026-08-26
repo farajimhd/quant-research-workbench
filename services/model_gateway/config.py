@@ -115,6 +115,14 @@ class GatewayConfig:
                 _float("MODEL_GATEWAY_SEC_DAILY_BUDGET_USD", 10.0),
                 os.environ.get("MODEL_GATEWAY_SEC_REASONING_EFFORT", "low"),
             ),
+            "sec.issuer_review.v1": RouteProfile(
+                "sec.issuer_review.v1",
+                _csv("MODEL_GATEWAY_SEC_REVIEW_PROVIDERS", "openai-deep"),
+                _float("MODEL_GATEWAY_SEC_REVIEW_TIMEOUT_SECONDS", 300.0),
+                _int("MODEL_GATEWAY_SEC_REVIEW_MAX_OUTPUT_TOKENS", 4096),
+                _float("MODEL_GATEWAY_SEC_REVIEW_DAILY_BUDGET_USD", 20.0),
+                os.environ.get("MODEL_GATEWAY_SEC_REVIEW_REASONING_EFFORT", "medium"),
+            ),
         }
         return cls(
             bind=os.environ.get("MODEL_GATEWAY_BIND", "127.0.0.1:8802"),

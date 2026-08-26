@@ -1,8 +1,8 @@
 # Text Intelligence Service
 
-Shared domain service for informational News Synthesis V1, separately versioned
-SEC text labels, DeepFM forecast-eligibility scoring, and issuer-review
-orchestration.
+Shared domain service for informational News Synthesis V1, accession-level SEC
+Synthesis V1, DeepFM News forecast-eligibility scoring, compatibility SEC V5
+text labels, and manual issuer-review orchestration.
 
 News Gateway and SEC Gateway own acquisition and canonical persistence. After a
 canonical publish, they send only a corpus, source identity, timestamp, and
@@ -10,10 +10,12 @@ the SEC CIK needed for an exact filing read to this service. Bounded workers
 reload canonical source data. News is processed only by
 the version exported by `research.text_intelligence.news_synthesis_v1.engine`
 and persisted to `q_live.news_synthesis_v1`. The table name denotes the stable
-V1 document contract, not an engine version. SEC is
-processed by its independent `scoped_text_labeling_v5` authority and persisted
-to `q_live.scoped_text_labels_v5` and `q_live.scoped_content_relations_v3`.
-The SEC classifier is never a News fallback or input.
+V1 document contract, not an engine version. SEC filings are compiled across
+their filing envelope, rendered narrative documents, issuer identity, and
+filing-linked XBRL facts by the exported SEC synthesis engine version, then persisted to
+`q_live.sec_synthesis_v1`. The earlier `scoped_text_labeling_v5` rows and
+relationships remain available as a compatibility authority; neither SEC path
+is a News fallback or input.
 
 `q_live.canonical_text_live_status_v1` binds completion to the exact rendered
 source hash and the applicable authority version. Reconciliation therefore
@@ -34,11 +36,14 @@ next reconciliation cycle rather than misreported as processing failures.
 
 - Synthesize every completed canonical News document with News Synthesis V1;
   never poll a source provider.
-- Classify SEC documents only through the separately versioned SEC authority.
+- Synthesize every SEC accession with its filing envelope and, where available, exact narrative evidence,
+  fail-closed XBRL comparisons, reconciliation, and product eligibility.
 - Maintain source-hash idempotency and repair missed gateway notifications.
 - Preserve one canonical publication while separating issuer roles, evidence,
   concepts, eligibility, and direction for multi-issuer events.
 - Persist News synthesis and SEC relationships to their distinct authorities.
+- Route SEC issuer review only after a manual request; validate all returned
+  evidence IDs against the persisted synthesis before durable storage.
 - Score every News revision with the promoted DeepFM release; use DeepFM as the
   sole live forecast-eligibility authority.
 - Route only DeepFM-eligible issuer units into manual or explicitly enabled
@@ -145,9 +150,11 @@ or:
 .\scripts\run_text_intelligence.ps1
 ```
 
-The bare launcher runs News Synthesis V1, the promoted DeepFM scorer, and the
-separate SEC V5 classifier and reconciler. It does not make an LLM call unless
-Review is explicitly requested or automatic review is enabled. The standard
+The bare launcher runs News Synthesis V1, SEC Synthesis V1, the promoted News
+DeepFM scorer, and the compatibility SEC V5 classifier. It does not make an
+SEC LLM call unless `POST /sec-review` is explicitly requested. News review can
+still be automatic only when its separate trigger setting is explicitly changed
+from the shipped `manual` default. The standard
 live-gateway launcher also starts the service with the shared Rich operational
 terminal. That terminal keeps current reconciliation, worker focus, queue
 depth, durable completion counts, and active failures visible;
@@ -238,6 +245,8 @@ POST /documents
 POST /news-review
 POST /news-reviews
 GET /news-review/{canonical_news_id}
+POST /sec-review
+GET /sec-review/{cik}/{accession_number}
 ```
 
 `POST /documents` accepts a bounded batch of lightweight canonical notices:
@@ -255,3 +264,11 @@ manual and explicitly enabled automatic reviews persist current state to
 `q_live.news_llm_issuer_review_history_v1`. The funnel persists separately to
 `q_live.news_forecast_funnel_v1`. Eligible issuer labels are forwarded to News
 Hypothesis; no route places orders or bypasses configured Signal Stream rules.
+
+`POST /sec-review` is always manual. It sends the persisted SEC Synthesis record
+to Model Gateway route `sec.issuer_review.v1`, whose prompt includes the filing
+summary, exact disclosure evidence, XBRL transitions, reconciliation conflicts,
+and quality flags. Validated current state is stored in
+`q_live.sec_llm_issuer_review_v1`; immutable completed attempts are stored in
+`q_live.sec_llm_issuer_review_history_v1`. There is no SEC automatic trigger and
+no SEC DeepFM dependency.

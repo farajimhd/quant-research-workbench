@@ -137,7 +137,7 @@
       "readiness": {"kind": "service", "accepted_statuses": ["ready"]},
       "arguments": ["-PythonExe", "{python}"],
       "start_priority": 20,
-      "fingerprint_env": ["MODEL_GATEWAY_BIND", "MODEL_GATEWAY_FAST_MODEL", "MODEL_GATEWAY_DEEP_MODEL", "MODEL_GATEWAY_NEWS_REVIEW_PROVIDERS", "MODEL_GATEWAY_NEWS_REVIEW_TIMEOUT_SECONDS"],
+      "fingerprint_env": ["MODEL_GATEWAY_BIND", "MODEL_GATEWAY_FAST_MODEL", "MODEL_GATEWAY_DEEP_MODEL", "MODEL_GATEWAY_NEWS_REVIEW_PROVIDERS", "MODEL_GATEWAY_NEWS_REVIEW_TIMEOUT_SECONDS", "MODEL_GATEWAY_SEC_REVIEW_PROVIDERS", "MODEL_GATEWAY_SEC_REVIEW_TIMEOUT_SECONDS"],
       "dependencies": [],
       "graceful_timeout_seconds": 20,
       "watch": ["services/model_gateway/**", "scripts/run_model_gateway.ps1"]

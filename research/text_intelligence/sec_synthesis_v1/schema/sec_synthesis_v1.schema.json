@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:quant-research-workbench:sec-synthesis:v1",
+  "title": "SEC Synthesis V1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "contract_version", "concept_registry_version", "accession_number", "cik",
+    "accepted_at_utc", "source_hash", "filing_envelope", "entities",
+    "narrative_disclosures", "fundamental_transitions", "reconciliation",
+    "issuer_views", "synthesis", "eligibility", "quality_flags", "production"
+  ],
+  "properties": {
+    "contract_version": {"const": "sec_synthesis_v1"},
+    "concept_registry_version": {"const": "sec_synthesis_concepts_v1"},
+    "accession_number": {"type": "string", "minLength": 1},
+    "cik": {"type": "string", "minLength": 1},
+    "accepted_at_utc": {"type": "string", "minLength": 1},
+    "source_hash": {"type": "string", "minLength": 1},
+    "filing_envelope": {"type": "object"},
+    "entities": {"type": "array"},
+    "narrative_disclosures": {"type": "array"},
+    "fundamental_transitions": {"type": "array"},
+    "reconciliation": {"type": "array"},
+    "issuer_views": {"type": "array"},
+    "synthesis": {"type": "object"},
+    "eligibility": {"type": "array"},
+    "quality_flags": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+    "production": {"type": "object"}
+  }
+}

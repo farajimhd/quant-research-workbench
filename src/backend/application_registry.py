@@ -2119,10 +2119,12 @@ def _fields() -> tuple[FieldDefinition, ...]:
         timeframes=("event",),
     ))
 
-    sec_names = ("latest_at", "count", "recency", "latest_form", "cik", "accession", "form", "accepted_at", "filed_at", "period_end", "document_id", "document_type", "source_hash", "renderer_version", "topic", "event_type", "direction", "score", "confidence", "impact", "uncertainty", "entity_relationships", "market_bridge_state")
+    sec_names = ("latest_at", "count", "recency", "latest_form", "cik", "accession", "form", "accepted_at", "filed_at", "period_end", "document_id", "document_type", "source_hash", "renderer_version", "topic", "event_type", "direction", "score", "confidence", "impact", "uncertainty", "entity_relationships", "narrative_disclosures", "fundamental_transitions", "reconciliation", "readable_summary", "quality_flags", "eligible_products", "review_status", "review_materiality_probability", "review_forecast_relevance_probability", "review_fundamental_direction", "market_bridge_state")
     for name in sec_names:
-        semantic = name in {"topic", "event_type", "direction", "score", "confidence", "impact", "uncertainty", "entity_relationships"}
-        rows.append(_field(f"sec.{name}", "sec", "text_intelligence" if semantic else "sec_gateway", "service://text-intelligence/sec-synthesis-v1" if semantic else "service://sec-gateway/filings-v3", "intelligence.sec_asof.v1" if semantic else "sec.filing_asof.v1", value_type="number" if name in {"count", "recency", "score", "confidence", "impact", "uncertainty", "renderer_version"} else "json" if name == "entity_relationships" else "string", entity_grain="sec_filing", ttl_seconds=900, publication_cadence="event_driven", status="integration_pending" if semantic else "implemented"))
+        semantic = name in {"topic", "event_type", "direction", "score", "confidence", "impact", "uncertainty", "entity_relationships", "narrative_disclosures", "fundamental_transitions", "reconciliation", "readable_summary", "quality_flags", "eligible_products", "review_status", "review_materiality_probability", "review_forecast_relevance_probability", "review_fundamental_direction"}
+        numeric = name in {"count", "recency", "score", "confidence", "impact", "uncertainty", "renderer_version", "review_materiality_probability", "review_forecast_relevance_probability"}
+        json_value = name in {"entity_relationships", "narrative_disclosures", "fundamental_transitions", "reconciliation", "quality_flags", "eligible_products"}
+        rows.append(_field(f"sec.{name}", "sec", "text_intelligence" if semantic else "sec_gateway", "service://text-intelligence/sec-synthesis-v1" if semantic else "service://sec-gateway/filings-v3", "intelligence.sec_asof.v1" if semantic else "sec.filing_asof.v1", value_type="number" if numeric else "json" if json_value else "string", entity_grain="sec_filing", ttl_seconds=900, publication_cadence="event_driven", status="implemented"))
 
     reported_fundamentals = (
         "revenue", "gross_profit", "operating_income", "net_income", "diluted_eps", "operating_cash_flow", "capital_expenditure", "cash", "current_assets", "current_liabilities", "accounts_receivable", "accounts_payable", "inventory", "assets", "liabilities", "stockholders_equity", "long_term_debt", "current_debt", "research_development", "sga_expense", "stock_based_compensation", "interest_expense", "income_tax_expense", "effective_tax_rate_pct", "goodwill", "intangible_assets", "deferred_revenue", "debt_issued", "debt_repaid", "common_stock_issuance", "common_shares_outstanding", "weighted_average_basic_shares", "weighted_average_diluted_shares", "sec_public_float_value", "dividends_per_share", "share_repurchases", "repurchased_shares",
@@ -2152,7 +2154,7 @@ def _fields() -> tuple[FieldDefinition, ...]:
         ("signal.news_labeled", "service://text-intelligence/news-synthesis-v1"),
         ("signal.sec_labeled", "service://text-intelligence/sec-synthesis-v1"),
     ):
-        rows.append(_field(field_id, "intelligence_signal", "text_intelligence", source, "intelligence.news_asof.v1" if "news" in field_id else "intelligence.sec_asof.v1", value_type="boolean", entity_grain="company_event", ttl_seconds=900, publication_cadence="event_driven", provenance="derived", status="integration_pending"))
+        rows.append(_field(field_id, "intelligence_signal", "text_intelligence", source, "intelligence.news_asof.v1" if "news" in field_id else "intelligence.sec_asof.v1", value_type="boolean", entity_grain="company_event", ttl_seconds=900, publication_cadence="event_driven", provenance="derived", status="implemented" if "sec" in field_id else "integration_pending"))
 
     for field_id, owner, source in (
         ("embedding.news.vector", "text_embed_gateway", "service://text-embed/news"),

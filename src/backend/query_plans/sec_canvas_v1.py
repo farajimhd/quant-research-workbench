@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 
 from research.mlops.clickhouse import quote_ident, sql_string
+from research.text_intelligence.sec_synthesis_v1 import ENGINE_VERSION as SEC_SYNTHESIS_ENGINE_VERSION
 
 
 QUERY_PLAN_ID = "sec.canvas_asof.v1"
@@ -122,10 +123,22 @@ def filing_list_sql(*, cutoff: datetime, database: str, label: str, limit: int, 
         accession_sql = sql_string(before_accession)
         conditions.append(f"(f.accepted_at_utc < parseDateTime64BestEffort({before_sql}) OR (f.accepted_at_utc = parseDateTime64BestEffort({before_sql}) AND f.accession_number < {accession_sql}))")
     active_eligibility = eligibility_filters or {}
-    has_intelligence_filter = bool(role or origin or direction or any(active_eligibility.values()))
-    if has_intelligence_filter or label_state in {"classified", "quality"}:
+    synthesis_eligibility = {
+        name: active_eligibility.get(name, "")
+        for name in ("forecast_eligible", "reaction_eligible", "history_eligible")
+    }
+    legacy_eligibility = {
+        name: active_eligibility.get(name, "")
+        for name in ("prior_context_eligible", "followup_eligible")
+    }
+    if direction or any(synthesis_eligibility.values()):
         conditions.append(
-            f"f.accession_number IN ({sec_label_accessions_sql(cutoff=cutoff, database=database, direction=direction, eligibility_filters=active_eligibility, origin=origin, role=role, start=window_start or (cutoff - timedelta(hours=lookback_hours)), ticker=ticker_label, quality_only=label_state == 'quality')})"
+            f"f.accession_number IN ({sec_synthesis_accessions_sql(cutoff=cutoff, database=database, direction=direction, eligibility_filters=synthesis_eligibility, start=window_start or (cutoff - timedelta(hours=lookback_hours)), ticker=ticker_label)})"
+        )
+    has_legacy_filter = bool(role or origin or any(legacy_eligibility.values()))
+    if has_legacy_filter or label_state in {"classified", "quality"}:
+        conditions.append(
+            f"f.accession_number IN ({sec_label_accessions_sql(cutoff=cutoff, database=database, direction='', eligibility_filters=legacy_eligibility, origin=origin, role=role, start=window_start or (cutoff - timedelta(hours=lookback_hours)), ticker=ticker_label, quality_only=label_state == 'quality')})"
         )
     elif label_state == "pending":
         conditions.append(
@@ -159,6 +172,34 @@ def filing_list_sql(*, cutoff: datetime, database: str, label: str, limit: int, 
         ORDER BY accepted_at_utc DESC, accession_number DESC
         LIMIT {int(limit)}
         FORMAT JSONEachRow
+    """
+
+
+def sec_synthesis_accessions_sql(*, cutoff: datetime, database: str, direction: str, eligibility_filters: dict[str, str], start: datetime, ticker: str) -> str:
+    """Return accessions matching the displayed SEC Synthesis V1 authority."""
+    db = quote_ident(database)
+    where = [
+        f"engine_version = {sql_string(SEC_SYNTHESIS_ENGINE_VERSION)}",
+        f"accepted_at_utc >= parseDateTime64BestEffort({sql_string(clickhouse_timestamp(start))})",
+        f"accepted_at_utc <= parseDateTime64BestEffort({sql_string(clickhouse_timestamp(cutoff))})",
+    ]
+    if ticker:
+        where.append(f"ticker = {sql_string(ticker)}")
+    if direction:
+        where.append(f"composite_sentiment = {sql_string(direction)}")
+    products = {
+        "forecast_eligible": "forecast_trigger",
+        "reaction_eligible": "reaction_study",
+        "history_eligible": "issuer_history",
+    }
+    for name, value in eligibility_filters.items():
+        if value:
+            expression = f"has(eligible_products, {sql_string(products[name])})"
+            where.append(expression if value == "eligible" else f"NOT {expression}")
+    return f"""
+        SELECT accession_number
+        FROM {db}.sec_synthesis_v1 FINAL
+        WHERE {' AND '.join(where)}
     """
 
 

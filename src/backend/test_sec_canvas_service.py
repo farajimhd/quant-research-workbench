@@ -72,6 +72,26 @@ class SecCanvasServiceTests(unittest.TestCase):
         self.assertIn("accepted_at_utc >= parseDateTime64BestEffort('2024-01-02T05:00:00.000+00:00')", listing)
         self.assertIn("PREWHERE toDate(f.accepted_at_utc) = toDate('2025-07-10')", detail)
 
+    def test_forecast_filter_uses_sec_synthesis_authority(self) -> None:
+        cutoff = datetime(2026, 7, 18, 14, 0, tzinfo=UTC)
+        sql = filing_list_sql(
+            cutoff=cutoff,
+            database="q_live",
+            label="",
+            limit=26,
+            lookback_hours=168,
+            search="",
+            ticker="",
+            before=None,
+            before_accession="",
+            direction="negative",
+            eligibility_filters={"forecast_eligible": "eligible"},
+        )
+        self.assertIn("sec_synthesis_v1 FINAL", sql)
+        self.assertIn("composite_sentiment = 'negative'", sql)
+        self.assertIn("has(eligible_products, 'forecast_trigger')", sql)
+        self.assertNotIn("l.forecast_trigger_eligible", sql)
+
     def test_detail_entities_include_all_filing_roles(self) -> None:
         cutoff = datetime(2026, 7, 18, 14, 0, tzinfo=UTC)
         sql = detail_filing_entities_sql("0000320193", "0000320193-25-000079", cutoff, "q_live")

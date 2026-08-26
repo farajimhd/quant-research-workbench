@@ -15,6 +15,7 @@ Routes:
 - `news.trade_hypothesis.v1`
 - `news.trade_hypothesis.v2`
 - `sec.semantic_label.v1`
+- `sec.issuer_review.v1` (manual remote review; defaults to `openai-deep`)
 
 Runtime state is stored outside the repository under
 `D:\TradingML\runtimes\model_gateway` by default.

@@ -135,7 +135,7 @@ class CanonicalTextRuntimeTests(unittest.TestCase):
         self.assertIn("max_execution_time=25", client.sql)
         self.assertEqual(loaded.disposition, "not_ready")
 
-    def test_sec_non_narrative_document_is_durably_ineligible(self) -> None:
+    def test_sec_non_narrative_document_gets_envelope_synthesis(self) -> None:
         class Client:
             calls = 0
 
@@ -186,17 +186,22 @@ class CanonicalTextRuntimeTests(unittest.TestCase):
 
         loaded = runtime._load_sec(notice)
 
-        self.assertEqual(loaded.disposition, "ineligible")
+        self.assertEqual(loaded.disposition, "synthesis_only")
+        self.assertEqual(len(loaded.rows), 1)
         self.assertEqual(len(loaded.source_hash), 64)
         with (
             mock.patch.object(runtime, "_load_source", return_value=loaded),
             mock.patch.object(runtime, "_status_is_current", return_value=False),
             mock.patch.object(runtime, "_write_status") as write_status,
+            mock.patch.object(runtime.sec_engine, "process", return_value={"contract_version": "sec_synthesis_v1"}),
+            mock.patch("text_intelligence.canonical_live.persist_sec_synthesis_document") as persist_synthesis,
         ):
             outcome = runtime._process_notice(notice)
-        self.assertEqual(outcome, "skipped_ineligible")
+        self.assertEqual(outcome, "complete_synthesis_only")
         self.assertEqual(runtime.metrics["deterministic_ineligible"], 1)
+        self.assertEqual(runtime.metrics["sec_synthesis_documents"], 1)
         self.assertEqual(runtime.metrics["deterministic_completed"], 1)
+        persist_synthesis.assert_called_once()
         write_status.assert_called_once_with(
             notice, loaded.source_hash, "complete", 0, 0, ""
         )

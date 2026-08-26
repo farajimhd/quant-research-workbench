@@ -41,6 +41,7 @@ from src.backend.scoped_text_labels import (
     load_scoped_sec_labels,
     scoped_sec_summary,
 )
+from src.backend.sec_synthesis_service import load_sec_synthesis_state
 from src.backend.text_query_contract import TEXT_QUERY_SESSIONS, resolve_text_query_window
 
 
@@ -317,13 +318,14 @@ def enrich_sec_intelligence(
     database: str,
     ticker: str = "",
 ) -> str:
-    """Attach V5 document labels while preserving canonical filing availability."""
+    """Attach SEC Synthesis, manual review, and compatibility V5 labels."""
     if not rows:
         return "ready"
     keys = [
         (str(row.get("cik") or ""), str(row.get("accession_number") or ""))
         for row in rows
     ]
+    label_status = "ready"
     try:
         documents = clickhouse_rows(
             client, filing_document_ids_sql(keys, cutoff, database)
@@ -346,7 +348,9 @@ def enrich_sec_intelligence(
         for row in rows:
             row["scoped_labels"] = []
             row["scoped_summary"] = None
-        return "unavailable"
+        label_status = "unavailable"
+        documents = []
+        labels_by_source = {}
     labels_by_accession: dict[str, list[dict[str, Any]]] = {}
     for document in documents:
         accession = str(document.get("accession_number") or "")
@@ -359,7 +363,22 @@ def enrich_sec_intelligence(
         )
         row["scoped_labels"] = labels
         row["scoped_summary"] = scoped_sec_summary(labels)
-    return "ready"
+    try:
+        state = load_sec_synthesis_state(
+            [str(row.get("accession_number") or "") for row in rows],
+            database=database,
+            query_rows=lambda sql: clickhouse_rows(client, sql),
+        )
+    except Exception:
+        state = {}
+        synthesis_status = "unavailable"
+    else:
+        synthesis_status = "ready"
+    for row in rows:
+        item = state.get(str(row.get("accession_number") or ""), {})
+        row["sec_synthesis"] = item.get("synthesis")
+        row["sec_review"] = item.get("review") or {"status": "not_reviewed"}
+    return "ready" if label_status == "ready" and synthesis_status == "ready" else "unavailable"
 
 
 def sec_document_text_payload(

@@ -25,6 +25,7 @@ from .canonical_live import (
     TextDocumentNoticeBatch,
 )
 from .forecast_review import ForecastReviewRuntime, ReactionRequest, ReviewBatch, ReviewRequest
+from .sec_review import SecReviewRequest, SecReviewRuntime
 
 config = IntelligenceConfig.from_env()
 engine = IntelligenceEngine(config)
@@ -36,6 +37,7 @@ shared_client = ClickHouseHttpClient(
         timeout_seconds=30,
     )
 forecast_review_runtime = ForecastReviewRuntime(config, shared_client, live_runtime.database)
+sec_review_runtime = SecReviewRuntime(config, shared_client, live_runtime.database)
 canonical_runtime = CanonicalTextRuntime(
     client=shared_client,
     database=live_runtime.database,
@@ -59,6 +61,7 @@ async def lifespan(_app: FastAPI):
     canonical_started = False
     try:
         await forecast_review_runtime.start()
+        await sec_review_runtime.start()
         await live_runtime.start()
         live_started = True
         await canonical_runtime.start()
@@ -72,6 +75,7 @@ async def lifespan(_app: FastAPI):
             await canonical_runtime.stop()
         if live_started:
             await live_runtime.stop()
+        await sec_review_runtime.stop()
         await forecast_review_runtime.stop()
         canonical_runtime.client.close()
 
@@ -185,6 +189,21 @@ def request_news_reaction(request: ReactionRequest) -> dict[str, object]:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
+@app.post("/sec-review", status_code=202)
+def request_sec_review(request: SecReviewRequest) -> dict[str, str]:
+    try:
+        return sec_review_runtime.enqueue(request)
+    except asyncio.QueueFull as exc:
+        raise HTTPException(status_code=503, detail="SEC review queue is full") from exc
+    except LookupError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@app.get("/sec-review/{cik}/{accession_number}")
+def sec_review_status(cik: str, accession_number: str) -> dict[str, object]:
+    return sec_review_runtime.status(cik, accession_number)
+
+
 def _snapshot_metrics() -> dict[str, object]:
     registry = engine.registry.snapshot()
     model_rows = registry.get("models") if isinstance(registry.get("models"), list) else []
@@ -261,6 +280,12 @@ def _snapshot_metrics() -> dict[str, object]:
             "queue_size": forecast_review_runtime.queue.qsize(),
             "pending": len(forecast_review_runtime.pending),
         },
+        "sec_review_trigger_mode": "manual",
+        "sec_review_metrics": {
+            **sec_review_runtime.metrics,
+            "queue_size": sec_review_runtime.queue.qsize(),
+            "pending": len(sec_review_runtime.pending),
+        },
         "stack_version": config.stack_version,
         "taxonomy_version": config.taxonomy_version,
         "models_loaded": loaded,
@@ -297,10 +322,10 @@ def _snapshot_metrics() -> dict[str, object]:
                 "message": "Find new or revised canonical News and SEC sources.",
             },
             {
-                "name": "persist_news_synthesis_v1_and_sec_v5",
+                "name": "persist_news_synthesis_v1_and_sec_synthesis_v1",
                 "status": "failed" if worker_error_active else current_phase,
                 "rows": deterministic_metrics.get("deterministic_completed", 0),
-                "message": "Persist News Synthesis V1 and separately versioned SEC labels.",
+                "message": "Persist News Synthesis V1, SEC Synthesis V1, and compatible SEC labels.",
             },
         ],
         "live_session": vars(live_runtime.session),

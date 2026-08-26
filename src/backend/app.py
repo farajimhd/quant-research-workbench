@@ -140,6 +140,7 @@ from src.backend.sec_canvas_service import (
     sec_filing_facts_payload,
     sec_filings_payload,
 )
+from src.backend.sec_synthesis_service import load_sec_synthesis_state, request_sec_review
 from src.backend.text_query_contract import (
     MARKET_TIME_ZONE_NAME,
     MAX_TEXT_QUERY_HOURS,
@@ -3477,6 +3478,10 @@ class NewsAiReactionCommand(NewsAiReviewCommand):
     ticker: str = ""
 
 
+class SecAiReviewCommand(BaseModel):
+    requested_by: str = "operator"
+
+
 @app.post("/api/trading/news/{canonical_news_id}/ai-review", status_code=202)
 def trading_news_ai_review(canonical_news_id: str, command: NewsAiReviewCommand) -> dict[str, Any]:
     try:
@@ -3559,6 +3564,27 @@ def trading_sec_filing_detail(cik: str, accession_number: str, as_of: str | None
     if payload.get("status") == "not_found":
         raise HTTPException(status_code=404, detail="SEC filing was not available at this point in time.")
     return payload
+
+
+@app.post("/api/trading/sec/{cik}/{accession_number}/ai-review", status_code=202)
+def trading_sec_ai_review(cik: str, accession_number: str, command: SecAiReviewCommand) -> dict[str, Any]:
+    try:
+        return request_sec_review(cik, accession_number, command.requested_by)
+    except urllib.error.HTTPError as error:
+        detail = error.read().decode(errors="replace")[:500]
+        raise HTTPException(status_code=error.code, detail=detail or "SEC AI review request failed") from error
+    except (TimeoutError, urllib.error.URLError) as error:
+        raise HTTPException(status_code=503, detail="Text Intelligence is temporarily unavailable") from error
+
+
+@app.get("/api/trading/sec/{cik}/{accession_number}/ai-review")
+def trading_sec_ai_review_status(cik: str, accession_number: str) -> dict[str, Any]:
+    try:
+        return load_sec_synthesis_state(
+            [accession_number], database="q_live", query_rows=clickhouse_json_each_row
+        ).get(accession_number, {"synthesis": None, "review": {"status": "not_reviewed"}})
+    except Exception as error:
+        raise HTTPException(status_code=503, detail="SEC AI review state is temporarily unavailable") from error
 
 
 @app.get("/api/trading/sec/detail/{cik}/{accession_number}/text/{document_id}")
