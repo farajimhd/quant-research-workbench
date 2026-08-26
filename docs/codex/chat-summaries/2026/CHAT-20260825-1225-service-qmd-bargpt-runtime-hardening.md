@@ -1,8 +1,8 @@
 # Diagnose and harden QMD Live, BarGPT, and managed service operations
 
 - Chat started: 2026-08-25 12:25:29 PDT (America/Vancouver)
-- Chat ended or last activity: 2026-08-25 15:57:39 PDT (summary checkpoint; chat still active)
-- Summary written: 2026-08-25 15:57:39 PDT (America/Vancouver)
+- Chat ended or last activity: 2026-08-25 18:24 PDT
+- Summary written: 2026-08-25 18:24 PDT (America/Vancouver)
 - Chat/task identifier: `01a03a62-807a-7c23-96c7-a16aba5b4d93`
 - Repository or scope: `D:\TradingCodes\quant-research-workbench`; QMD Live, BarGPT, unified service lifecycle, News/SEC/IBKR health, Reference identity, backend, frontend, and managed runtime evidence
 - Related task-history entries: `TASK-0025`, `TASK-0197`, `TASK-0201`, `TASK-0203`
@@ -36,6 +36,14 @@ Chart latency had two independent causes. Five-minute first paint expanded the r
 
 The reported Vite `write ECONNABORTED` websocket-proxy stack was also reconciled with lifecycle evidence. It occurred when the backend side of an active proxied websocket was torn down during managed restart, so Vite reported the transport abort. It was not evidence of a separate VWAP or frontend-state calculation defect. The browser clients reconnect and the hardened manager now exposes semantic backend readiness and durable exit evidence; suppressing the proxy stack would have hidden the causal service transition. A recurring abort while backend ownership and health remain stable would be a new incident and must be correlated with the backend run log.
 
+Production activation uncovered two further query-authority defects. QMD History used its projected `upper(ticker)` alias in three raw event filters, defeating the ClickHouse sort key; one AAPL page scanned 6.7 billion rows and 31 GiB before timing out. Commit `285ce0c4` routes scanner, coverage, and paged history filters through the raw `source.ticker` predicate. The complete 57-test QMD History suite passed. Real two-hour AAPL pages then returned in 2.36 seconds for one-minute and 2.32 seconds for five-minute bars, with exactly identical session VWAP `309.85427357022286` at the same 22:30 UTC cutoff. Source-plan gaps remain truthfully exposed through `request_complete=false`.
+
+BarGPT's broad Live warm could still consume every worker and each worker could prefetch four ClickHouse pages. Commits `77c97e50`, `9d0ce9c2`, and `20f5f8f7` prioritize Replay, reserve capacity, and serialize serving pages. An August 25 probe then silently used the August 21 archive frontier; `500db74d` now rejects cross-session Replay/Backtest/Debug context. The first valid August 21 cold build was invalidated after 34 minutes because its table-wide revision changed on an unrelated insert. Commit `29fedff9` binds revisions to exact ticker/source days, resolved identity/splits, and condition authority; two live checks were stable in 0.84 and 0.27 seconds. The certified cold build completed in 2,058.953 seconds. Inference returned one immutable 1,932-field v2 payload with six horizons at the exact origin in 0.765 seconds. After a full restart, snapshot restore completed in 13.422 seconds and inference in 0.873 seconds. All 26 BarGPT tests pass.
+
+The final fleet pass found QMD's attention builder declaring historical startup-repair events critically stale while the market was closed. Data lanes were healthy; the alert predicate alone omitted the active-collection-window guard stated in its own message. Commit `27e66c75` scopes feed-freshness attention to live windows. The first managed restart then exposed a lifecycle defect: after 15 minutes of healthy zero-error catch-up, the generic readiness timeout stopped QMD and discarded command progress. Commits `7e82e931` and `caa5fbff` admit inactive-market `catching_up`/`closed` states and zero-work, zero-failure starting lanes while retaining failure, saturation, active-error, and live-lag gates. Live `start qmd-live` now preserves the owned catch-up immediately. The complete 175-test QMD and 23-test manager suites pass.
+
+Final status showed every service reachable and semantically ready; Reference Gateway was restored through the manager, and current run-log roots contained zero fatal/error-pattern matches. Model Gateway, News Hypothesis, and Text Intelligence retain only legacy `unknown component` fingerprint metadata and were not restarted solely for bookkeeping.
+
 ### Durable decisions
 
 - QMD source normalization, app publication, and canonical persistence have priority over every derivative or repair path. Optional work must be bounded, nonblocking, measurable, and restart-recoverable.
@@ -44,6 +52,8 @@ The reported Vite `write ECONNABORTED` websocket-proxy stack was also reconciled
 - BarGPT release identity is immutable end to end. V2 remains champion and v3 remains shadow until fixed-panel evidence authorizes promotion.
 - Full-prefix inference remains authoritative until a separate KV-cache parity certification covers masks, rollovers, sessions, splits, corrections, and as-of fusion.
 - Warm snapshots are optimizations bound to exact source and model revisions, never a second data authority.
+- Historical ClickHouse filters must address the raw ticker sort key; projected ticker aliases are output-only and must never govern source pruning.
+- Replay/Backtest BarGPT context must belong to the requested New York session. An older archive frontier is an explicit unavailable state, never an acceptable forecast origin.
 - Session VWAP is exact eligible-trade notional divided by eligible volume and must be invariant across intraday timeframes at the same causal cutoff. Timeframe-specific HLC3 recomputation is rejected.
 - A timeframe transition may retain the last complete chart only within the same ticker, session, and indicator projection; the first authoritative replacement page swaps the dataset atomically.
 - `warming`, `retrying`, `degraded`, and `ready` are distinct operational states. Port-open and HTTP 200 alone do not establish readiness.
@@ -59,12 +69,14 @@ The reported Vite `write ECONNABORTED` websocket-proxy stack was also reconciled
 - Passed the full stated test/build matrix and validated the real managed runtime under active market and warm-up load.
 - Committed and pushed `dafcac9d fix: harden live service runtime and BarGPT`.
 - Corrected cross-timeframe VWAP authority, bounded five-minute first paint, and removed blank chart transitions; passed 172 QMD core, 54 QMD History, and 35 backend tests plus four subtests and the 1,905-module frontend build; committed and pushed `a3972aab fix: unify chart vwap and timeframe transitions`.
+- Activated exact v31 VWAP projection and raw-key-pruned QMD History in production, reserved interactive BarGPT capacity, isolated serving queries, and made stale Replay origins fail closed; pushed commits through `500db74d`.
+- Removed false closed-market feed degradation and timeout rollback of healthy QMD catch-up; passed 175 QMD and 23 manager tests and pushed commits through `caa5fbff`.
 
 ### Unfinished or hanging work
 
 - **BarGPT full-scope capacity guidance.** Current state: the configured 500-ticker scope is bounded at four workers and remains healthy, but first authoritative warm completion time for a representative 100/500-ticker population has not been fully benchmarked. Next action: record completion latency, GPU memory, CPU/ClickHouse load, snapshot-hit latency, prediction throughput, and chart latency for fixed ranked panels. Owner: TASK-0197.
 - **BarGPT promotion and KV reuse.** Current state: v2 is champion and v3 is shadow; full-prefix inference is active. Next action: approve v3 only from immutable fixed-panel evidence and certify KV parity separately before enabling reuse. Owner: TASK-0197.
-- **Replay chart and chart-transition UAT.** Current state: chart contracts, complete QMD suites, backend tests, and the production build passed, but runtime activation is pending because frontend, backend, QMD Live, and QMD History have additional unrelated source edits; restarting now would load changes outside this task. Next action: after those edits are resolved, use managed dependency-ordered restarts, create a historical Replay, compare VWAP across intraday timeframes at one frozen cutoff, verify the old chart remains visible until each replacement arrives, enable Manual BarGPT forecast overlays, warm one liquid symbol, infer, step one event-time second, infer again, and verify candle/line movement and prediction provenance. Owner: TASK-0203 and TASK-0197/user.
+- **Visual Replay chart UAT.** Production API acceptance proves exact cross-timeframe VWAP, bounded first paint, valid Aug. 21 BarGPT inference, and restart snapshot reuse. Next action: use Replay Manual on Aug. 21 to verify forecast candles and provenance visually. Owner: user. Model promotion, broad-panel capacity, maintained daily authority, and KV parity remain TASK-0197.
 - **QMD historical maintenance.** Current state: the live incident is fixed, but prior workstation update, retention certification, v3 bootstrap, and indicator backfill dependencies remain separate. Next action: follow TASK-0025 evidence gates; do not use a laptop substitute or bypass retention blockers. Owner: TASK-0025/workstation operations.
 - **SEC historical coverage.** Current state: live service and audits are healthy, while text extraction and companyfacts coverage were approximately 12.8 days stale. A restart-safe external fill command was generated. Next action: run it in the authorized maintenance window and verify coverage/audit afterward. Owner: SEC operations.
 - **Legacy fingerprint records.** Current state: several unrelated healthy services still show `stale/unknown component` because their ownership records predate component fingerprints. Next action: allow their next normal managed restart to migrate the records; do not restart the full fleet solely to clear metadata.
