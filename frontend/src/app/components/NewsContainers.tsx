@@ -297,22 +297,25 @@ function TickerNewsPopoverStory({ asOfMs, queryId, row }: { asOfMs: number; quer
   const direction = normalizeSemanticDirection(row.news_synthesis_summary?.composite_sentiment);
   const teaser = newsTeaser(row);
   const selection = newsSelectionForRow(row, queryId);
+  const intelligence = useNewsIntelligenceState(row.ai_state, row.canonical_news_id, row.published_at_utc);
+  const labels = sortedIssuerAiLabels(intelligence.state);
+  const primary = labels[0];
   return <article className="ticker-news-popover-story" data-direction={direction} data-tone={tone}>
     <a className="ticker-news-popover-story-open" href={newsPageUrl(selection, true)} onClick={() => prepareNewsReader(selection)} rel="noopener noreferrer" target="_blank" title="Open News Detail in a new tab">
       <span className="ticker-news-popover-story-time"><strong><MarketTime dateStyle="short" includeDate value={row.published_at_utc} /></strong></span>
       <span className="ticker-news-popover-story-main">
-        <span className="ticker-news-popover-story-meta">
-          <span className="ticker-news-popover-recency" data-tone={tone}><TemperatureIcon size={11} />{readableLabel(tone)}</span>
-          <NewsKind classification={classificationFromRow(row)} />
-          <SynthesisDirection summary={row.news_synthesis_summary} salient />
-          <SynthesisConcepts concepts={row.news_synthesis_summary?.concepts} compact />
-        </span>
+        <NewsPopoverPredictions intelligence={intelligence} primary={primary} summary={row.news_synthesis_summary} />
         <strong className="ticker-news-popover-story-title">{row.title || "Untitled story"}</strong>
         {teaser ? <span className="ticker-news-popover-story-teaser">{teaser}</span> : null}
+        <span className="ticker-news-popover-story-meta ticker-news-popover-story-support">
+          <span className="ticker-news-popover-recency" data-tone={tone}><TemperatureIcon size={11} />{readableLabel(tone)}</span>
+          <NewsKind classification={classificationFromRow(row)} />
+          <SynthesisConcepts concepts={row.news_synthesis_summary?.concepts} compact />
+        </span>
       </span>
       <span className="ticker-news-popover-open-cue"><ExternalLink size={13} /><span>Detail</span></span>
     </a>
-    <NewsTimelineIntelligence compact row={row} />
+    <NewsTimelineIntelligenceStrip compact includeReview={false} includeSynthesis={false} intelligence={intelligence} row={row} />
   </article>;
 }
 
@@ -713,9 +716,28 @@ function useNewsIntelligenceState(initialState: NewsAiState | null | undefined, 
 
 function NewsTimelineIntelligence({ compact = false, row }: { compact?: boolean; row: NewsRow }) {
   const intelligence = useNewsIntelligenceState(row.ai_state, row.canonical_news_id, row.published_at_utc);
+  return <NewsTimelineIntelligenceStrip compact={compact} intelligence={intelligence} row={row} />;
+}
+
+function NewsPopoverPredictions({ intelligence, primary, summary }: { intelligence: NewsIntelligenceController; primary?: IssuerAiLabel; summary?: NewsSynthesisSummary | null }) {
+  const reviewState = normalizedReviewState(intelligence.state?.review?.status);
+  const reviewLabel = reviewState === "pending" ? "Reviewing" : reviewState === "failed" ? "Review failed" : "Not reviewed";
+  return <span aria-label="News synthesis and AI prediction" className="news-popover-predictions">
+    <span className="news-popover-prediction" data-kind="synthesis" data-tone={normalizeSemanticDirection(summary?.composite_sentiment)}>
+      <span className="news-popover-prediction-label"><Layers3 aria-hidden="true" size={11} />News synthesis</span>
+      <SynthesisDirection summary={summary} />
+    </span>
+    <span className="news-popover-prediction" data-kind="ai" data-state={reviewState} data-tone={primary ? aiLabelTone(primary) : "pending"}>
+      <span className="news-popover-prediction-label"><Bot aria-hidden="true" size={11} />AI prediction</span>
+      {primary ? <span className="news-popover-ai-result"><strong>{readableLabel(aiLanguageSentiment(primary))}</strong><small>{Math.round(primary.forecast_relevance_probability * 100)}% relevant{primary.ticker ? ` · ${primary.ticker}` : ""}</small></span> : <span className="news-popover-ai-result"><strong>{reviewLabel}</strong><small>Manual review</small></span>}
+    </span>
+  </span>;
+}
+
+function NewsTimelineIntelligenceStrip({ compact = false, includeReview = true, includeSynthesis = true, intelligence, row }: { compact?: boolean; includeReview?: boolean; includeSynthesis?: boolean; intelligence: NewsIntelligenceController; row: NewsRow }) {
   const funnel = intelligence.state?.funnel;
   const deepFmCurrent = isDeepFmFunnel(funnel);
-  const labels = [...(intelligence.state?.review?.labels?.issuers ?? [])].sort((a, b) => b.forecast_relevance_probability - a.forecast_relevance_probability);
+  const labels = sortedIssuerAiLabels(intelligence.state);
   const primary = labels[0];
   const hypothesis = intelligence.state?.hypotheses?.[0];
   const reaction = hypothesis?.prediction.predictions["5m"];
@@ -723,9 +745,9 @@ function NewsTimelineIntelligence({ compact = false, row }: { compact?: boolean;
   const ticker = primary?.ticker || row.ticker_link_sample?.[0] || "";
   return <div className={`ticker-news-decision-strip${compact ? " compact" : ""}`}>
     <div className="ticker-news-decision-badges">
-      <span data-kind="synthesis" title="News Synthesis is informational and is not used for filtering or signals"><b>Synth</b>{row.news_synthesis_summary ? `${readableLabel(row.news_synthesis_summary.communication_purpose)} · ${shortSentiment(row.news_synthesis_summary.composite_sentiment)}` : "Pending"}<em>View only</em></span>
+      {includeSynthesis ? <span data-kind="synthesis" title="News Synthesis is informational and is not used for filtering or signals"><b>Synth</b>{row.news_synthesis_summary ? `${readableLabel(row.news_synthesis_summary.communication_purpose)} · ${shortSentiment(row.news_synthesis_summary.composite_sentiment)}` : "Pending"}<em>View only</em></span> : null}
       <span data-kind="deepfm" data-tone={deepFmCurrent && funnel.forecast_eligibility === "eligible" ? "positive" : deepFmCurrent ? "negative" : "pending"}><b>DeepFM</b>{deepFmCurrent ? `${funnel.forecast_eligibility === "eligible" ? "Eligible" : "Filtered"} ${Math.round(funnel.eligible_probability * 100)}%` : "Pending"}</span>
-      {primary ? <span data-kind="review" data-tone={aiLabelTone(primary)}><b>AI</b>{shortSentiment(aiLanguageSentiment(primary))} · {Math.round(primary.forecast_relevance_probability * 100)}%</span> : null}
+      {includeReview && primary ? <span data-kind="review" data-tone={aiLabelTone(primary)}><b>AI</b>{shortSentiment(aiLanguageSentiment(primary))} · {Math.round(primary.forecast_relevance_probability * 100)}%</span> : null}
       {reaction ? <span data-kind="reaction" data-tone={reaction.expected_return_pct > 0 ? "positive" : reaction.expected_return_pct < 0 ? "negative" : "neutral"}><b>5m</b>{reaction.expected_return_pct > 0 ? <TrendingUp size={11} /> : reaction.expected_return_pct < 0 ? <TrendingDown size={11} /> : null}{formatSignedPercent(reaction.expected_return_pct)} · {Math.round(reaction.confidence * 100)}%</span> : null}
     </div>
     <div className="ticker-news-actions">
@@ -735,6 +757,8 @@ function NewsTimelineIntelligence({ compact = false, row }: { compact?: boolean;
     {intelligence.error ? <small className="news-ai-review-error">{intelligence.error}</small> : null}
   </div>;
 }
+
+function sortedIssuerAiLabels(state?: NewsAiState | null) { return [...(state?.review?.labels?.issuers ?? [])].sort((a, b) => b.forecast_relevance_probability - a.forecast_relevance_probability); }
 
 function NewsIntelligenceCards({ initialState, newsId, publishedAt }: { initialState?: NewsAiState | null; newsId: string; publishedAt: string }) {
   const intelligence = useNewsIntelligenceState(initialState, newsId, publishedAt);
