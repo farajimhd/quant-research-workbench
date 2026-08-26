@@ -2,7 +2,7 @@ import { Bot, Building2, Check, ChevronDown, ChevronLeft, ChevronRight, CircleDo
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } from "react";
 import { createPortal } from "react-dom";
 
-import { api, query } from "../../api/client";
+import { api, apiWebSocketUrl, query } from "../../api/client";
 import { NEWS_READER_CANVAS_ID, ensureNewsReaderCanvas, focusCanvasUrl } from "../canvasWorkspace";
 import { timeRecency, type TimeRecency } from "../timeRecency";
 import { FilterOverflowMenu } from "./FilterOverflowMenu";
@@ -546,8 +546,7 @@ function useNewsQuery({ asOf, content, direction, eligibilityFilters, endDate, h
     let socket: WebSocket | null = null;
     let refreshController: AbortController | null = null;
     const connect = () => {
-      const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-      socket = new WebSocket(`${protocol}//${window.location.host}/api/trading/news/stream${query({ ticker: ticker || undefined })}`);
+      socket = new WebSocket(apiWebSocketUrl(`/api/trading/news/stream${query({ ticker: ticker || undefined })}`));
       socket.onopen = () => { if (!closed) { setLiveConnected(true); setLiveError(""); } };
       socket.onmessage = (event) => {
         if (closed) return;

@@ -1,7 +1,7 @@
 import { Activity, BookOpen, ChevronRight, CircleHelp, Radio, ShieldAlert, WifiOff } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 
-import { api, query } from "../../api/client";
+import { api, apiWebSocketUrl, query } from "../../api/client";
 import { usePollingTask } from "../hooks/usePollingTask";
 import { CompactTapeQuoteCharts, QuoteChartGallery, TapeChartGallery } from "./MarketMicrostructureChartGallery";
 import { Modal } from "./Modal";
@@ -613,10 +613,9 @@ function useMarketEvents(symbol: string, start?: string, end?: string) {
       .then((payload) => { if (active) { merge(payload.events); setReferences(payload.references ?? EMPTY_REFERENCES); } })
       .catch(() => { if (active && !snapshotController.signal.aborted) setError(MARKET_EVENTS_UNAVAILABLE); });
 
-    const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
     const connect = () => {
       if (!active) return;
-      socket = new WebSocket(`${protocol}//${window.location.host}/api/trading/canvas-market-events/stream/${encodeURIComponent(ticker)}`);
+      socket = new WebSocket(apiWebSocketUrl(`/api/trading/canvas-market-events/stream/${encodeURIComponent(ticker)}`));
       socket.onopen = () => { if (active) setConnected("connecting"); };
       socket.onmessage = (message) => {
         if (!active) return;

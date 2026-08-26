@@ -1,5 +1,6 @@
 import { useEffect, useRef } from "react";
 
+import { apiWebSocketUrl } from "../api/client";
 import type { CanvasRegistry } from "./canvasWorkspace";
 
 export type CanvasReplayRun = {
@@ -57,8 +58,7 @@ export function useReplayRunEvents(
 
   useEffect(() => {
     if (!runId) return;
-    const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-    const streamUrl = `${protocol}//${window.location.host}/api/trading/replay/runs/${encodeURIComponent(runId)}/events`;
+    const streamUrl = apiWebSocketUrl(`/api/trading/replay/runs/${encodeURIComponent(runId)}/events`);
     let socket: WebSocket | null = null;
     let reconnectTimer: number | null = null;
     let reconnectAttempt = 0;

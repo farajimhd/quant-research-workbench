@@ -147,6 +147,25 @@ def test_backend_launcher_uses_windows_selector_loop_before_uvicorn() -> None:
     assert python_source.index("set_event_loop_policy") < python_source.index("import uvicorn")
 
 
+def test_frontend_websockets_bypass_the_vite_http_proxy_in_development() -> None:
+    api_source = (REPO_ROOT / "frontend" / "src" / "api" / "client.ts").read_text(encoding="utf-8")
+    vite_source = (REPO_ROOT / "frontend" / "vite.config.ts").read_text(encoding="utf-8")
+    websocket_sources = [
+        REPO_ROOT / "frontend" / "src" / "app" / "replayRun.ts",
+        REPO_ROOT / "frontend" / "src" / "app" / "components" / "MarketMicrostructureContainers.tsx",
+        REPO_ROOT / "frontend" / "src" / "app" / "components" / "NewsContainers.tsx",
+        REPO_ROOT / "frontend" / "src" / "features" / "canvas" / "chartData.ts",
+    ]
+
+    assert "VITE_API_WS_TARGET" in api_source
+    assert '"http://127.0.0.1:8000"' in api_source
+    assert "ws: true" not in vite_source
+    for source_path in websocket_sources:
+        source = source_path.read_text(encoding="utf-8")
+        assert "apiWebSocketUrl" in source
+        assert "window.location.host" not in source
+
+
 def test_qmd_specialized_launcher_persists_per_run_stream_and_exit_evidence() -> None:
     start_source = _source("start_qmd_live_gateway.ps1")
     run_source = _source("run_qmd_gateway.ps1")

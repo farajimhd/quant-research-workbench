@@ -64,6 +64,7 @@
       "readiness": {"kind": "transport"},
       "arguments": ["dev", "--", "--host", "127.0.0.1", "--port", "5173"],
       "start_priority": 90,
+      "fingerprint_env": ["VITE_API_PROXY_TARGET", "VITE_API_WS_TARGET"],
       "dependencies": ["backend"],
       "graceful_timeout_seconds": 10,
       "watch": ["frontend/src/**", "frontend/index.html", "frontend/package.json", "frontend/package-lock.json", "frontend/tsconfig.json", "frontend/vite.config.ts", "scripts/run_frontend.py"]

@@ -132,9 +132,12 @@ Normal development loop:
 `start dev` is rejected because start cannot refresh a stale running process.
 By default, restart does not unexpectedly start stopped services.
 Active dependents are coordinated automatically: they stop before the selected
-dependency and restart after it is ready. For example, restarting Backend first
-stops Frontend so Vite does not retain a websocket whose upstream is being
-removed.
+dependency and restart after it is ready, so the frontend does not admit new
+HTTP work while Backend is unavailable. In development, application WebSockets
+connect directly to Backend instead of traversing Vite's HTTP proxy. The
+browser-visible target defaults to `http://127.0.0.1:8000` and can be overridden
+with `VITE_API_WS_TARGET`; changes to either frontend proxy target are included
+in the managed service fingerprint.
 
 ## Historical workflows
 

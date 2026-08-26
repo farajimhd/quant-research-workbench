@@ -80,6 +80,20 @@ export function invalidateApiCache(pathPrefix?: string) {
   }
 }
 
+export function apiWebSocketUrl(path: string): string {
+  const normalizedPath = path.startsWith("/") ? path : `/${path}`;
+  const developmentTarget = String(
+    import.meta.env.VITE_API_WS_TARGET
+      || import.meta.env.VITE_API_PROXY_TARGET
+      || "http://127.0.0.1:8000",
+  ).trim();
+  const url = new URL(normalizedPath, import.meta.env.DEV ? developmentTarget : window.location.origin);
+  if (url.protocol === "http:") url.protocol = "ws:";
+  else if (url.protocol === "https:") url.protocol = "wss:";
+  else if (url.protocol !== "ws:" && url.protocol !== "wss:") throw new Error(`Unsupported WebSocket target protocol: ${url.protocol}`);
+  return url.toString();
+}
+
 function unwrapApiSuccess(payload: unknown, response: Response): unknown {
   if (response.headers.get("X-Response-Envelope") !== "1") return payload;
   if (!payload || typeof payload !== "object" || !("data" in payload)) {

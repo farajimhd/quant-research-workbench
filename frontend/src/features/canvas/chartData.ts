@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type MutableRefObject } from "react";
 import type { UTCTimestamp } from "lightweight-charts";
 
-import { api, query } from "../../api/client";
+import { api, apiWebSocketUrl, query } from "../../api/client";
 import type { CanvasChartTimeframe } from "../../app/canvasWorkspace";
 import type { ChartPayload } from "../../app/components/ChartPanel";
 import { CHART_INDICATORS, ENRICHED_QMD_TIMEFRAMES, MACRO_TIMEFRAMES } from "./configuration";
@@ -528,8 +528,7 @@ function qmdSnapshotRows<T extends { bar_start: string }>(payload: { current?: T
 }
 
 export function canvasLiveStreamUrl(kind: "bars" | "indicators", symbol: string, timeframe: string, indicatorColumns = "") {
-  const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-  return `${protocol}//${window.location.host}/api/trading/canvas-live-chart/stream/${kind}/${encodeURIComponent(symbol)}${query({ indicator_columns: kind === "indicators" ? indicatorColumns : undefined, limit: chartPageSize(timeframe), timeframe })}`;
+  return apiWebSocketUrl(`/api/trading/canvas-live-chart/stream/${kind}/${encodeURIComponent(symbol)}${query({ indicator_columns: kind === "indicators" ? indicatorColumns : undefined, limit: chartPageSize(timeframe), timeframe })}`);
 }
 
 export function mergeStructureEvents(current: QmdStructureEvent[], incoming: QmdStructureEvent[] | undefined) {
