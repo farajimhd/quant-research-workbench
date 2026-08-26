@@ -422,6 +422,51 @@ def test_qmd_semantic_readiness_accepts_healthy_fresh_required_lanes(
     assert status.ready is True
 
 
+def test_qmd_semantic_readiness_accepts_bounded_closed_market_catch_up(
+    tmp_path: Path, monkeypatch, capsys,
+) -> None:
+    services, profiles = service_manager._load_catalog()
+    manager = service_manager.ServiceManager(services, profiles, _options(tmp_path))
+    registry = manager._default_registry_path("qmd-live")
+    registry.parent.mkdir(parents=True, exist_ok=True)
+    fingerprint = manager.desired_fingerprint("qmd-live")
+    registry.write_text(json.dumps(_ownership_record(
+        manager, "qmd-live", pid=458, fingerprint=fingerprint,
+    )), encoding="utf-8")
+    health = {
+        "status": "catching_up", "running": True,
+        "market_calendar": {"active_collection_window": False, "market_closed": True},
+        "operational": {"lanes": [
+            {
+                "key": "massive_feed", "required": True, "state": "starting",
+                "pending_rows": 0, "max_pending_rows": 0,
+            },
+            {
+                "key": "compact_events", "required": True, "state": "healthy",
+                "pending_rows": 10, "max_pending_rows": 100,
+            },
+        ]},
+    }
+    snapshot = {
+        "status": "catching_up", "error_state": {"active": False},
+        "runtime": {"last_event_lag_ms": 20_000_000},
+    }
+    monkeypatch.setattr(service_manager, "_pid_exists", lambda pid: pid == 458)
+    monkeypatch.setattr(service_manager, "_port_open", lambda port, timeout=0.2: True)
+    monkeypatch.setattr(service_manager, "_http_probe", lambda url, timeout=2.0, **kwargs: (
+        (True, "HTTP 200", snapshot) if url.endswith("/snapshot/status")
+        else (True, "HTTP 200", health)
+    ))
+
+    status = manager.status("qmd-live")
+
+    assert status.state == "catching_up"
+    assert status.ready is True
+    assert manager.resolve_target("unhealthy", within="market-data") == set()
+    assert manager.print_status({"qmd-live"}) is True
+    assert "catching_up" in capsys.readouterr().out
+
+
 def test_dead_registry_reconciliation_archives_only_dead_owned_record(
     tmp_path: Path, monkeypatch,
 ) -> None:

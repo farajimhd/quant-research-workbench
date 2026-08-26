@@ -504,6 +504,12 @@ class ServiceManager:
             if not snapshot_ready or snapshot is None:
                 semantic_ready, semantic_detail = False, f"status snapshot unavailable: {snapshot_detail}"
             else:
+                declared = str(payload.get("service_status") or payload.get("status") or "").lower()
+                calendar = payload.get("market_calendar") if isinstance(payload.get("market_calendar"), dict) else {}
+                inactive_catch_up = (
+                    declared in {"catching_up", "closed"}
+                    and calendar.get("active_collection_window") is not True
+                )
                 required_lanes = []
                 health_operational = payload.get("operational")
                 if isinstance(health_operational, dict):
@@ -515,6 +521,11 @@ class ServiceManager:
                     str(row.get("key") or "unknown")
                     for row in required_lanes
                     if str(row.get("state") or "").lower() != "healthy"
+                    and not (
+                        inactive_catch_up
+                        and str(row.get("key") or "") == "massive_feed"
+                        and str(row.get("state") or "").lower() in {"starting", "connecting"}
+                    )
                 ]
                 saturation = float(service.readiness.get("queue_saturation_ratio") or 0.95)
                 saturated_lanes = [
@@ -531,7 +542,6 @@ class ServiceManager:
                 elif snapshot_error.get("active") is True:
                     semantic_ready, semantic_detail, degraded = False, str(snapshot_error.get("message") or "active QMD degradation"), True
                 else:
-                    calendar = payload.get("market_calendar") if isinstance(payload.get("market_calendar"), dict) else {}
                     runtime = snapshot.get("runtime") if isinstance(snapshot.get("runtime"), dict) else {}
                     if calendar.get("active_collection_window") is True and calendar.get("market_closed") is not True:
                         lag_ms = int(runtime.get("last_event_lag_ms") or 0)
@@ -589,6 +599,8 @@ class ServiceManager:
             state, reason = "stale", f"changed: {changed}"
         elif owned and ready and semantic_state == "warming":
             state, reason = "warming", health_detail
+        elif owned and ready and semantic_state == "catching_up":
+            state, reason = "catching_up", health_detail
         elif owned and ready:
             state, reason = "ready", health_detail
         elif owned and listening:
@@ -658,7 +670,7 @@ class ServiceManager:
                 if len(detail) > detail_width:
                     detail = detail[: max(1, detail_width - 3)] + "..."
                 print(f"{row.service_id:<20} {row.state:<15} {revision:<18} {row.port:>5}  {detail}")
-        return all(row.state in {"ready", "warming"} for row in rows.values())
+        return all(row.state in {"ready", "warming", "catching_up"} for row in rows.values())
 
     def print_groups(self) -> None:
         print("Static profiles")

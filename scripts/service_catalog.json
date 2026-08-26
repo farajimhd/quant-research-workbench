@@ -20,7 +20,7 @@
       "port": 8795,
       "health_url": "http://127.0.0.1:8795/health",
       "launch_kind": "qmd_live",
-      "readiness": {"kind": "qmd_live", "accepted_statuses": ["running"], "require_running": true, "snapshot_url": "http://127.0.0.1:8795/snapshot/status", "max_event_lag_seconds": 30, "queue_saturation_ratio": 0.95},
+      "readiness": {"kind": "qmd_live", "accepted_statuses": ["running", "closed", "catching_up"], "require_running": true, "snapshot_url": "http://127.0.0.1:8795/snapshot/status", "max_event_lag_seconds": 30, "queue_saturation_ratio": 0.95},
       "start_priority": 5,
       "fingerprint_env": ["QMD_DERIVED_RECONCILIATION_ENABLED", "QMD_DERIVED_RECONCILIATION_INTERVAL_MS"],
       "dependencies": [],
