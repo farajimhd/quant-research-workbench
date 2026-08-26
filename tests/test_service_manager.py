@@ -386,6 +386,41 @@ def test_qmd_semantic_readiness_rejects_required_queue_saturation(
     assert status.ready is False
 
 
+def test_qmd_semantic_readiness_uses_declared_capacity_not_historical_peak(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    services, profiles = service_manager._load_catalog()
+    manager = service_manager.ServiceManager(services, profiles, _options(tmp_path))
+    registry = manager._default_registry_path("qmd-live")
+    registry.parent.mkdir(parents=True, exist_ok=True)
+    registry.write_text(json.dumps(_ownership_record(
+        manager, "qmd-live", pid=459, fingerprint=manager.desired_fingerprint("qmd-live"),
+    )), encoding="utf-8")
+    health = {
+        "status": "running", "running": True,
+        "market_calendar": {"active_collection_window": True, "market_closed": False},
+        "operational": {"lanes": [{
+            "key": "canonical_events", "required": True, "state": "healthy",
+            "pending_rows": 90, "capacity_rows": 1000, "max_pending_rows": 90,
+        }]},
+    }
+    snapshot = {
+        "status": "running", "error_state": {"active": False},
+        "runtime": {"last_event_lag_ms": 1000},
+    }
+    monkeypatch.setattr(service_manager, "_pid_exists", lambda pid: pid == 459)
+    monkeypatch.setattr(service_manager, "_port_open", lambda port, timeout=0.2: True)
+    monkeypatch.setattr(service_manager, "_http_probe", lambda url, timeout=2.0, **kwargs: (
+        (True, "HTTP 200", snapshot) if url.endswith("/snapshot/status")
+        else (True, "HTTP 200", health)
+    ))
+
+    status = manager.status("qmd-live")
+
+    assert status.state == "ready"
+    assert status.ready is True
+
+
 def test_qmd_semantic_readiness_accepts_healthy_fresh_required_lanes(
     tmp_path: Path, monkeypatch,
 ) -> None:

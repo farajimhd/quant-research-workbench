@@ -5,7 +5,7 @@ use crate::event::{
 };
 use crate::indicators::IndicatorEventRouter;
 use crate::live_market_state::LiveMarketStateRouter;
-use crate::metrics::{SharedMetrics, TimingTarget};
+use crate::metrics::{QueueFailureKind, SharedMetrics, TimingTarget};
 use crate::state::{ScannerRowDelta, SharedMarketState};
 use futures_util::{SinkExt, StreamExt};
 use serde_json::json;
@@ -216,31 +216,70 @@ async fn fanout_canonical_event(event: MarketEvent, fanout: &MarketEventFanout) 
         fanout.state.apply_event(&event).await
     };
     if fanout.scanner_delta_sender.send(scanner_delta).is_err() {
-        fanout.metrics.inc_event_broadcast_dropped();
+        fanout.metrics.inc_app_broadcast_unobserved();
     }
-    if fanout
+    match fanout
         .live_market_state_router
-        .send_event(event.clone())
-        .await
-        .is_err()
+        .try_send_event(event.clone())
     {
-        eprintln!("Live market state receiver closed; could not route one market event.");
+        Ok(()) => {}
+        Err(mpsc::error::TrySendError::Full(_)) => {
+            fanout.metrics.inc_event_broadcast_dropped();
+            fanout.metrics.record_queue_failure(
+                "canonical_events",
+                QueueFailureKind::Full,
+                "The live market-state queue is saturated; canonical persistence continues, while market-state consumers must resnapshot from canonical data.",
+            );
+        }
+        Err(mpsc::error::TrySendError::Closed(_)) => {
+            fanout.metrics.inc_event_broadcast_dropped();
+            fanout.metrics.record_queue_failure(
+                "canonical_events",
+                QueueFailureKind::Closed,
+                "The live market-state worker closed; canonical persistence continues, but market-state consumers cannot advance until the worker is restored and resnapshotted.",
+            );
+        }
     }
     if fanout.event_sender.send(event.clone()).is_err() {
-        fanout.metrics.inc_event_broadcast_dropped();
+        fanout.metrics.inc_app_broadcast_unobserved();
     }
-    if fanout.bar_router.send(event.clone()).await.is_err() {
-        fanout.metrics.inc_bar_event_dropped();
-        eprintln!("Bar engine receiver closed; could not route one aggregation event.");
+    match fanout.bar_router.try_send(event.clone()) {
+        Ok(()) => {}
+        Err(mpsc::error::TrySendError::Full(_)) => {
+            fanout.metrics.inc_bar_event_dropped();
+            fanout.metrics.record_queue_failure(
+                "canonical_events",
+                QueueFailureKind::Full,
+                "A bounded in-memory bar shard is saturated; canonical persistence continues, while affected bar and structure state must rebuild from canonical data.",
+            );
+        }
+        Err(mpsc::error::TrySendError::Closed(_)) => {
+            fanout.metrics.inc_bar_event_dropped();
+            fanout.metrics.record_queue_failure(
+                "canonical_events",
+                QueueFailureKind::Closed,
+                "An in-memory bar worker closed; canonical persistence continues, but affected bar and structure state must be restored and rebuilt.",
+            );
+        }
     }
-    if fanout
-        .indicator_router
-        .send_event(event.clone())
-        .await
-        .is_err()
-    {
-        fanout.metrics.inc_indicator_event_dropped();
-        eprintln!("Indicator shard receiver closed; could not route one indicator event.");
+    match fanout.indicator_router.try_send_event(event) {
+        Ok(()) => {}
+        Err(mpsc::error::TrySendError::Full(_)) => {
+            fanout.metrics.inc_indicator_event_dropped();
+            fanout.metrics.record_queue_failure(
+                "canonical_events",
+                QueueFailureKind::Full,
+                "A bounded indicator shard is saturated; canonical persistence continues, while affected indicator state must reconcile from canonical data.",
+            );
+        }
+        Err(mpsc::error::TrySendError::Closed(_)) => {
+            fanout.metrics.inc_indicator_event_dropped();
+            fanout.metrics.record_queue_failure(
+                "canonical_events",
+                QueueFailureKind::Closed,
+                "An indicator worker closed; canonical persistence continues, but affected indicator state must be restored and reconciled.",
+            );
+        }
     }
 }
 
@@ -333,12 +372,22 @@ async fn enqueue_authoritative_event(
     if let Some(sender) = compact_writer_sender {
         if sender.send(event.clone()).await.is_err() {
             metrics.inc_compact_event_queue_dropped();
+            metrics.record_queue_failure(
+                "compact_events",
+                QueueFailureKind::Closed,
+                "The canonical q_live.events writer closed; authoritative live persistence cannot advance.",
+            );
             eprintln!("Compact event writer receiver closed; could not route one compact event.");
         }
     }
     if let Some(sender) = writer_sender {
         if sender.send(event).await.is_err() {
             metrics.inc_clickhouse_event_dropped();
+            metrics.record_queue_failure(
+                "raw_events",
+                QueueFailureKind::Closed,
+                "The optional raw-event writer closed; raw persistence cannot advance.",
+            );
             eprintln!(
                 "Raw ClickHouse writer receiver closed; could not route one raw persistence event."
             );

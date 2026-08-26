@@ -541,7 +541,7 @@ class ServiceManager:
                 failed_lanes = [
                     str(row.get("key") or "unknown")
                     for row in required_lanes
-                    if str(row.get("state") or "").lower() != "healthy"
+                    if str(row.get("state") or "").lower() not in {"healthy", "saturated"}
                     and not (
                         inactive_catch_up
                         and str(row.get("state") or "").lower() in {"starting", "connecting"}
@@ -551,11 +551,31 @@ class ServiceManager:
                     )
                 ]
                 saturation = float(service.readiness.get("queue_saturation_ratio") or 0.95)
+                has_explicit_capacity_contract = any(
+                    "capacity_rows" in row for row in required_lanes
+                )
                 saturated_lanes = [
                     str(row.get("key") or "unknown")
                     for row in required_lanes
-                    if int(row.get("max_pending_rows") or 0) > 0
-                    and int(row.get("pending_rows") or 0) / int(row.get("max_pending_rows") or 1) >= saturation
+                    if str(row.get("state") or "").lower() == "saturated"
+                    or (
+                        int(
+                            (
+                                row.get("capacity_rows")
+                                if has_explicit_capacity_contract
+                                else row.get("max_pending_rows")
+                            ) or 0
+                        ) > 0
+                        and int(row.get("pending_rows") or 0)
+                        / int(
+                            (
+                                row.get("capacity_rows")
+                                if has_explicit_capacity_contract
+                                else row.get("max_pending_rows")
+                            ) or 1
+                        )
+                        >= saturation
+                    )
                 ]
                 snapshot_error = snapshot.get("error_state") if isinstance(snapshot.get("error_state"), dict) else {}
                 if failed_lanes:

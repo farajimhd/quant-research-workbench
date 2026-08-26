@@ -130,6 +130,13 @@ impl LiveMarketStateRouter {
         self.sender.send(LiveMarketStateInput::Event(event)).await
     }
 
+    pub fn try_send_event(
+        &self,
+        event: MarketEvent,
+    ) -> Result<(), mpsc::error::TrySendError<LiveMarketStateInput>> {
+        self.sender.try_send(LiveMarketStateInput::Event(event))
+    }
+
     pub async fn send_bar(
         &self,
         row: BarRow,

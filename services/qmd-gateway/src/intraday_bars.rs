@@ -4,7 +4,7 @@ use crate::config::GatewayConfig;
 use crate::event::MarketEvent;
 use crate::maintenance::SharedMaintenanceState;
 use crate::market_calendar::MarketCalendarClient;
-use crate::metrics::SharedMetrics;
+use crate::metrics::{QueueFailureKind, SharedMetrics};
 use crate::timefmt::clickhouse_datetime64;
 use chrono::{Datelike, Timelike, Utc};
 use chrono_tz::America::New_York;
@@ -294,6 +294,7 @@ pub async fn run_intraday_bar_reconciliation_service(
     reconciler: IntradayBarReconciler,
     maintenance: SharedMaintenanceState,
     calendar: MarketCalendarClient,
+    metrics: SharedMetrics,
 ) {
     if !config.derived_reconciliation_enabled {
         return;
@@ -324,6 +325,10 @@ pub async fn run_intraday_bar_reconciliation_service(
                 .await
             {
                 Ok(summary) => {
+                    metrics.resolve_queue_saturation(
+                        "intraday_bars",
+                        "Retained canonical intraday bars were rebuilt from durable q_live.events; previously skipped queue input is exactly reconciled.",
+                    );
                     maintenance
                         .finish(
                             "up_to_date",
@@ -356,14 +361,20 @@ pub async fn run_intraday_bar_reconciliation_service(
 }
 
 impl IntradayBarRouter {
-    pub async fn send(&self, event: LiveCompactEvent) -> Result<(), ()> {
+    pub async fn send(
+        &self,
+        event: LiveCompactEvent,
+    ) -> Result<(), mpsc::error::SendError<LiveCompactEvent>> {
         let index = stable_hash(&event.ticker) as usize % self.senders.len();
-        self.senders[index].send(event).await.map_err(|_| ())
+        self.senders[index].send(event).await
     }
 
-    pub fn try_send(&self, event: LiveCompactEvent) -> Result<(), ()> {
+    pub fn try_send(
+        &self,
+        event: LiveCompactEvent,
+    ) -> Result<(), mpsc::error::TrySendError<LiveCompactEvent>> {
         let index = stable_hash(&event.ticker) as usize % self.senders.len();
-        self.senders[index].try_send(event).map_err(|_| ())
+        self.senders[index].try_send(event)
     }
 }
 
@@ -1006,6 +1017,11 @@ async fn emit_row(
     let _ = live_rows.send(row.clone());
     if output.send(WriterMessage::Row(row)).await.is_err() {
         metrics.inc_intraday_bar_event_dropped();
+        metrics.record_queue_failure(
+            "intraday_bars",
+            QueueFailureKind::Closed,
+            "An intraday-bar writer closed; the emitted row remains recoverable from durable q_live.events reconciliation.",
+        );
         return false;
     }
     metrics.inc_intraday_bar_emitted(1);

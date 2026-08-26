@@ -1295,6 +1295,20 @@ impl IndicatorEventRouter {
         let index = shard_index(event.ticker(), self.event_senders.len());
         self.event_senders[index].send(event).await
     }
+
+    pub fn try_send_event(
+        &self,
+        event: MarketEvent,
+    ) -> Result<(), mpsc::error::TrySendError<MarketEvent>> {
+        if !self
+            .computation_targets
+            .requires_event_computation(event.ticker())
+        {
+            return Ok(());
+        }
+        let index = shard_index(event.ticker(), self.event_senders.len());
+        self.event_senders[index].try_send(event)
+    }
 }
 
 impl IndicatorShardStore {

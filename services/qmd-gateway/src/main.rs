@@ -211,6 +211,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         broadcast::channel::<LiveCompactEvent>(10_000);
     let (canonical_event_sender, canonical_event_receiver) =
         mpsc::channel::<MarketEvent>(config.event_channel_capacity);
+    metrics.set_lane_capacity("canonical_events", config.event_channel_capacity as u64);
     let (scanner_sender, _scanner_receiver) = broadcast::channel::<MarketSignalDelta>(10_000);
     let (scanner_delta_sender, _scanner_delta_receiver) =
         broadcast::channel::<ScannerRowDelta>(10_000);
@@ -566,6 +567,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             intraday_bar_reconciler,
             maintenance.clone(),
             market_calendar.clone(),
+            metrics.clone(),
         )));
     }
     server.await??;

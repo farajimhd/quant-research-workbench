@@ -11,6 +11,7 @@ pub struct SharedMetrics {
 }
 
 struct MetricsInner {
+    app_broadcast_unobserved: AtomicU64,
     bar_rows_emitted: AtomicU64,
     bar_events_dropped: AtomicU64,
     bar_rows_scanner_dropped: AtomicU64,
@@ -66,6 +67,9 @@ struct MetricsInner {
     massive_connect_failures: AtomicU64,
     massive_disconnects: AtomicU64,
     parse_failures: AtomicU64,
+    queue_closed_events: AtomicU64,
+    queue_saturation_events: AtomicU64,
+    queue_unresolved_events: AtomicU64,
     scanner_candidates_emitted: AtomicU64,
     core_scan_stage: StageTiming,
     all_market_bar_stage: StageTiming,
@@ -83,12 +87,21 @@ pub struct OperationalLaneSnapshot {
     pub state: String,
     pub detail: String,
     pub pending_rows: u64,
+    pub capacity_rows: u64,
     pub max_pending_rows: u64,
+    pub high_watermark_rows: u64,
     pub successful_rows: u64,
     pub failures: u64,
     pub consecutive_failures: u64,
+    pub queue_saturation_events: u64,
+    pub queue_closed_events: u64,
+    pub unresolved_queue_events: u64,
+    pub unresolved_queue_saturation_events: u64,
+    pub unresolved_queue_closed_events: u64,
+    pub active_queue_state: Option<String>,
     pub last_success_utc: Option<DateTime<Utc>>,
     pub last_failure_utc: Option<DateTime<Utc>>,
+    pub last_queue_recovery_utc: Option<DateTime<Utc>>,
     pub last_transition_utc: DateTime<Utc>,
 }
 
@@ -113,6 +126,7 @@ struct OperationalState {
 
 #[derive(Clone, Debug, Serialize)]
 pub struct MetricsSnapshot {
+    pub app_broadcast_unobserved: u64,
     pub bar_rows_emitted: u64,
     pub bar_events_dropped: u64,
     pub bar_rows_indicator_dropped: u64,
@@ -169,6 +183,9 @@ pub struct MetricsSnapshot {
     pub massive_connect_failures: u64,
     pub massive_disconnects: u64,
     pub parse_failures: u64,
+    pub queue_closed_events: u64,
+    pub queue_saturation_events: u64,
+    pub queue_unresolved_events: u64,
     pub process_uptime_ms: i64,
     pub scanner_candidates_emitted: u64,
     pub stage_profiles: BTreeMap<String, StageProfileSnapshot>,
@@ -207,10 +224,17 @@ pub enum TimingTarget {
     AllMarketBarEvent,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum QueueFailureKind {
+    Closed,
+    Full,
+}
+
 impl SharedMetrics {
     pub fn new() -> Self {
         Self {
             inner: Arc::new(MetricsInner {
+                app_broadcast_unobserved: AtomicU64::new(0),
                 bar_rows_emitted: AtomicU64::new(0),
                 bar_events_dropped: AtomicU64::new(0),
                 bar_rows_scanner_dropped: AtomicU64::new(0),
@@ -266,6 +290,9 @@ impl SharedMetrics {
                 massive_connect_failures: AtomicU64::new(0),
                 massive_disconnects: AtomicU64::new(0),
                 parse_failures: AtomicU64::new(0),
+                queue_closed_events: AtomicU64::new(0),
+                queue_saturation_events: AtomicU64::new(0),
+                queue_unresolved_events: AtomicU64::new(0),
                 scanner_candidates_emitted: AtomicU64::new(0),
                 core_scan_stage: StageTiming::default(),
                 all_market_bar_stage: StageTiming::default(),
@@ -298,12 +325,21 @@ impl SharedMetrics {
                 }
                 .to_string(),
                 pending_rows: 0,
+                capacity_rows: 0,
                 max_pending_rows: 0,
+                high_watermark_rows: 0,
                 successful_rows: 0,
                 failures: 0,
                 consecutive_failures: 0,
+                queue_saturation_events: 0,
+                queue_closed_events: 0,
+                unresolved_queue_events: 0,
+                unresolved_queue_saturation_events: 0,
+                unresolved_queue_closed_events: 0,
+                active_queue_state: None,
                 last_success_utc: None,
                 last_failure_utc: None,
+                last_queue_recovery_utc: None,
                 last_transition_utc: now,
             },
         );
@@ -334,7 +370,24 @@ impl SharedMetrics {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         if let Some(lane) = state.lanes.get_mut(key) {
             lane.pending_rows = pending_rows;
-            lane.max_pending_rows = lane.max_pending_rows.max(pending_rows);
+            lane.high_watermark_rows = lane.high_watermark_rows.max(pending_rows);
+            if lane.capacity_rows == 0 {
+                lane.max_pending_rows = lane.max_pending_rows.max(pending_rows);
+            }
+        }
+    }
+
+    pub fn set_lane_capacity(&self, key: &str, capacity_rows: u64) {
+        let mut state = self
+            .inner
+            .operational
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(lane) = state.lanes.get_mut(key) {
+            lane.capacity_rows = capacity_rows;
+            // Preserve the established field as a compatibility alias while
+            // exposing the explicit capacity/high-watermark distinction.
+            lane.max_pending_rows = capacity_rows;
         }
     }
 
@@ -348,14 +401,16 @@ impl SharedMetrics {
         let Some(lane) = state.lanes.get_mut(key) else {
             return;
         };
-        let recovered = lane.consecutive_failures > 0;
+        let recovered = lane.consecutive_failures > 0 && lane.active_queue_state.is_none();
         let label = lane.label.clone();
-        lane.state = "healthy".to_string();
-        lane.detail = detail.to_string();
         lane.successful_rows = lane.successful_rows.saturating_add(rows);
-        lane.consecutive_failures = 0;
         lane.last_success_utc = Some(now);
-        lane.last_transition_utc = now;
+        if lane.active_queue_state.is_none() {
+            lane.state = "healthy".to_string();
+            lane.detail = detail.to_string();
+            lane.consecutive_failures = 0;
+            lane.last_transition_utc = now;
+        }
         if recovered {
             state
                 .recent_recoveries
@@ -388,6 +443,120 @@ impl SharedMetrics {
         lane.last_transition_utc = now;
     }
 
+    pub fn record_queue_failure(&self, key: &str, kind: QueueFailureKind, error: &str) {
+        let now = Utc::now();
+        let mut state = self
+            .inner
+            .operational
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let Some(lane) = state.lanes.get_mut(key) else {
+            return;
+        };
+        match kind {
+            QueueFailureKind::Full => {
+                lane.queue_saturation_events = lane.queue_saturation_events.saturating_add(1);
+                lane.unresolved_queue_saturation_events =
+                    lane.unresolved_queue_saturation_events.saturating_add(1);
+                lane.active_queue_state = Some("saturated".to_string());
+                lane.state = "saturated".to_string();
+                self.inc(&self.inner.queue_saturation_events, 1);
+            }
+            QueueFailureKind::Closed => {
+                lane.queue_closed_events = lane.queue_closed_events.saturating_add(1);
+                lane.unresolved_queue_closed_events =
+                    lane.unresolved_queue_closed_events.saturating_add(1);
+                lane.active_queue_state = Some("closed".to_string());
+                lane.state = "failed".to_string();
+                self.inc(&self.inner.queue_closed_events, 1);
+            }
+        }
+        lane.detail = truncate_error(error);
+        lane.failures = lane.failures.saturating_add(1);
+        lane.consecutive_failures = lane.consecutive_failures.saturating_add(1);
+        lane.unresolved_queue_events = lane.unresolved_queue_events.saturating_add(1);
+        lane.last_failure_utc = Some(now);
+        lane.last_transition_utc = now;
+        self.inc(&self.inner.queue_unresolved_events, 1);
+    }
+
+    pub fn resolve_queue_failures(&self, key: &str, detail: &str) {
+        self.resolve_queue_events(key, true, true, detail);
+    }
+
+    pub fn resolve_queue_saturation(&self, key: &str, detail: &str) {
+        self.resolve_queue_events(key, true, false, detail);
+    }
+
+    fn resolve_queue_events(
+        &self,
+        key: &str,
+        resolve_saturation: bool,
+        resolve_closed: bool,
+        detail: &str,
+    ) {
+        let now = Utc::now();
+        let mut state = self
+            .inner
+            .operational
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let Some(lane) = state.lanes.get_mut(key) else {
+            return;
+        };
+        let resolved_saturation = if resolve_saturation {
+            lane.unresolved_queue_saturation_events
+        } else {
+            0
+        };
+        let resolved_closed = if resolve_closed {
+            lane.unresolved_queue_closed_events
+        } else {
+            0
+        };
+        let resolved = resolved_saturation.saturating_add(resolved_closed);
+        if resolved == 0 {
+            return;
+        }
+        lane.unresolved_queue_saturation_events = lane
+            .unresolved_queue_saturation_events
+            .saturating_sub(resolved_saturation);
+        lane.unresolved_queue_closed_events = lane
+            .unresolved_queue_closed_events
+            .saturating_sub(resolved_closed);
+        lane.unresolved_queue_events = lane.unresolved_queue_events.saturating_sub(resolved);
+        lane.last_queue_recovery_utc = Some(now);
+        lane.last_transition_utc = now;
+        let _ = self.inner.queue_unresolved_events.fetch_update(
+            Ordering::Relaxed,
+            Ordering::Relaxed,
+            |current| Some(current.saturating_sub(resolved)),
+        );
+        if lane.unresolved_queue_closed_events > 0 {
+            lane.active_queue_state = Some("closed".to_string());
+            lane.state = "failed".to_string();
+        } else if lane.unresolved_queue_saturation_events > 0 {
+            lane.active_queue_state = Some("saturated".to_string());
+            lane.state = "saturated".to_string();
+        } else {
+            let label = lane.label.clone();
+            lane.active_queue_state = None;
+            lane.state = "healthy".to_string();
+            lane.detail = detail.to_string();
+            lane.consecutive_failures = 0;
+            state
+                .recent_recoveries
+                .push_back(OperationalRecoverySnapshot {
+                    area: label,
+                    message: detail.to_string(),
+                    recovered_at_utc: now,
+                });
+            while state.recent_recoveries.len() > 12 {
+                state.recent_recoveries.pop_front();
+            }
+        }
+    }
+
     pub fn operational_snapshot(&self) -> OperationalSnapshot {
         let state = self
             .inner
@@ -415,6 +584,7 @@ impl SharedMetrics {
             ),
         ]);
         MetricsSnapshot {
+            app_broadcast_unobserved: self.get(&self.inner.app_broadcast_unobserved),
             bar_rows_emitted: self.get(&self.inner.bar_rows_emitted),
             bar_events_dropped: self.get(&self.inner.bar_events_dropped),
             bar_rows_indicator_dropped: self.get(&self.inner.bar_rows_indicator_dropped),
@@ -497,6 +667,9 @@ impl SharedMetrics {
             massive_connect_failures: self.get(&self.inner.massive_connect_failures),
             massive_disconnects: self.get(&self.inner.massive_disconnects),
             parse_failures: self.get(&self.inner.parse_failures),
+            queue_closed_events: self.get(&self.inner.queue_closed_events),
+            queue_saturation_events: self.get(&self.inner.queue_saturation_events),
+            queue_unresolved_events: self.get(&self.inner.queue_unresolved_events),
             process_uptime_ms: now_ms - start_ms,
             scanner_candidates_emitted: self.get(&self.inner.scanner_candidates_emitted),
             stage_profiles,
@@ -630,6 +803,10 @@ impl SharedMetrics {
 
     pub fn inc_event_broadcast_dropped(&self) {
         self.inc(&self.inner.events_broadcast_dropped, 1);
+    }
+
+    pub fn inc_app_broadcast_unobserved(&self) {
+        self.inc(&self.inner.app_broadcast_unobserved, 1);
     }
 
     pub fn inc_gap_fill_failure(&self) {
@@ -816,7 +993,7 @@ fn truncate_error(value: &str) -> String {
 
 #[cfg(test)]
 mod operational_tests {
-    use super::{SharedMetrics, TimingTarget};
+    use super::{QueueFailureKind, SharedMetrics, TimingTarget};
     use chrono::{TimeZone, Utc};
 
     #[test]
@@ -836,6 +1013,70 @@ mod operational_tests {
         assert_eq!(recovered.lanes[0].state, "healthy");
         assert_eq!(recovered.lanes[0].successful_rows, 25);
         assert_eq!(recovered.recent_recoveries.len(), 1);
+    }
+
+    #[test]
+    fn queue_saturation_requires_explicit_reconciliation_before_recovery() {
+        let metrics = SharedMetrics::new();
+        metrics.register_lane("canonical", "Canonical fanout", "computation", true, true);
+        metrics.set_lane_capacity("canonical", 100);
+        metrics.set_lane_pending("canonical", 100);
+        metrics.record_queue_failure(
+            "canonical",
+            QueueFailureKind::Full,
+            "The bounded fanout is saturated.",
+        );
+
+        metrics.record_lane_success("canonical", 1, "Applied one event.");
+        let unresolved = metrics.operational_snapshot();
+        assert_eq!(unresolved.lanes[0].state, "saturated");
+        assert_eq!(
+            unresolved.lanes[0].active_queue_state.as_deref(),
+            Some("saturated")
+        );
+        assert_eq!(unresolved.lanes[0].unresolved_queue_events, 1);
+        assert_eq!(unresolved.lanes[0].capacity_rows, 100);
+        assert_eq!(unresolved.lanes[0].high_watermark_rows, 100);
+        assert_eq!(metrics.snapshot().queue_saturation_events, 1);
+        assert_eq!(metrics.snapshot().queue_unresolved_events, 1);
+
+        metrics.resolve_queue_failures("canonical", "Canonical state rebuilt exactly.");
+        let recovered = metrics.operational_snapshot();
+        assert_eq!(recovered.lanes[0].state, "healthy");
+        assert_eq!(recovered.lanes[0].active_queue_state, None);
+        assert_eq!(recovered.lanes[0].unresolved_queue_events, 0);
+        assert_eq!(recovered.lanes[0].queue_saturation_events, 1);
+        assert_eq!(metrics.snapshot().queue_saturation_events, 1);
+        assert_eq!(metrics.snapshot().queue_unresolved_events, 0);
+        assert_eq!(recovered.recent_recoveries.len(), 1);
+    }
+
+    #[test]
+    fn closed_queue_is_distinct_from_saturation() {
+        let metrics = SharedMetrics::new();
+        metrics.register_lane("canonical", "Canonical fanout", "computation", true, true);
+        metrics.record_queue_failure(
+            "canonical",
+            QueueFailureKind::Closed,
+            "The canonical consumer closed.",
+        );
+
+        let operational = metrics.operational_snapshot();
+        assert_eq!(operational.lanes[0].state, "failed");
+        assert_eq!(
+            operational.lanes[0].active_queue_state.as_deref(),
+            Some("closed")
+        );
+        assert_eq!(operational.lanes[0].queue_closed_events, 1);
+        assert_eq!(operational.lanes[0].queue_saturation_events, 0);
+        assert_eq!(metrics.snapshot().queue_closed_events, 1);
+        assert_eq!(metrics.snapshot().queue_saturation_events, 0);
+
+        metrics.resolve_queue_saturation("canonical", "Saturated ranges reconciled.");
+        let still_closed = metrics.operational_snapshot();
+        assert_eq!(still_closed.lanes[0].state, "failed");
+        assert_eq!(still_closed.lanes[0].unresolved_queue_closed_events, 1);
+        assert_eq!(metrics.snapshot().queue_unresolved_events, 1);
     }
 
     #[test]

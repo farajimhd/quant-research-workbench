@@ -3,7 +3,7 @@ use crate::config::GatewayConfig;
 use crate::event::{MarketEvent, QuoteEvent, TradeEvent};
 use crate::intraday_bars::{DurableCompactEvents, IntradayBarRouter};
 use crate::market_products::MarketProductEventRouter;
-use crate::metrics::SharedMetrics;
+use crate::metrics::{QueueFailureKind, SharedMetrics};
 use crate::timefmt::clickhouse_datetime64;
 use chrono::{DateTime, TimeZone, Utc};
 use chrono_tz::America::New_York;
@@ -1228,20 +1228,41 @@ impl CompactEventClickHouseWriter {
                                         "canonical_events",
                                         self.canonical_event_sender.max_capacity().saturating_sub(self.canonical_event_sender.capacity()) as u64,
                                     ),
-                                    Err(_) => {
+                                    Err(mpsc::error::TrySendError::Full(_)) => {
                                         self.metrics.inc_event_broadcast_dropped();
-                                        self.metrics.record_lane_failure(
+                                        self.metrics.record_queue_failure(
                                             "canonical_events",
+                                            QueueFailureKind::Full,
                                             "The bounded computation fanout is saturated; real-time compact delivery and canonical persistence continue, while downstream state must resnapshot from canonical data.",
                                         );
                                     }
+                                    Err(mpsc::error::TrySendError::Closed(_)) => {
+                                        self.metrics.inc_event_broadcast_dropped();
+                                        self.metrics.record_queue_failure(
+                                            "canonical_events",
+                                            QueueFailureKind::Closed,
+                                            "The canonical computation consumer closed; real-time compact delivery and canonical persistence continue, but downstream state cannot advance until the worker is restored and resnapshotted.",
+                                        );
+                                    }
                                 }
-                                if self.product_router.try_send(canonical_event).is_err() {
-                                    self.metrics.inc_event_broadcast_dropped();
-                                    self.metrics.record_lane_failure(
-                                        "canonical_events",
-                                        "A focused market-product queue is saturated; real-time compact delivery and canonical persistence continue, while the focused product must rebuild from canonical data.",
-                                    );
+                                match self.product_router.try_send(canonical_event) {
+                                    Ok(()) => {}
+                                    Err(mpsc::error::TrySendError::Full(_)) => {
+                                        self.metrics.inc_event_broadcast_dropped();
+                                        self.metrics.record_queue_failure(
+                                            "canonical_events",
+                                            QueueFailureKind::Full,
+                                            "A focused market-product queue is saturated; real-time compact delivery and canonical persistence continue, while the focused product must rebuild from canonical data.",
+                                        );
+                                    }
+                                    Err(mpsc::error::TrySendError::Closed(_)) => {
+                                        self.metrics.inc_event_broadcast_dropped();
+                                        self.metrics.record_queue_failure(
+                                            "canonical_events",
+                                            QueueFailureKind::Closed,
+                                            "A focused market-product worker closed; real-time compact delivery and canonical persistence continue, but the focused product must be restored and rebuilt from canonical data.",
+                                        );
+                                    }
                                 }
                                 self.metrics.inc_compact_events_emitted(1);
                                 if self.config.persist_compact_events {
@@ -1265,16 +1286,26 @@ impl CompactEventClickHouseWriter {
                                     if batch.len() >= self.config.compact_event_max_clickhouse_batch {
                                         self.submit_persist_work(&persist_sender, &mut batch, &mut issue_batch).await;
                                     }
-                                } else if self
-                                    .intraday_bar_router
-                                    .try_send(conversion.event)
-                                    .is_err()
-                                {
-                                    self.metrics.inc_intraday_bar_event_dropped();
-                                    self.metrics.record_lane_failure(
-                                        "intraday_bars",
-                                        "The bounded intraday queue is full while compact persistence is disabled; canonical bar input was rejected.",
-                                    );
+                                } else {
+                                    match self.intraday_bar_router.try_send(conversion.event) {
+                                        Ok(()) => {}
+                                        Err(mpsc::error::TrySendError::Full(_)) => {
+                                            self.metrics.inc_intraday_bar_event_dropped();
+                                            self.metrics.record_queue_failure(
+                                                "intraday_bars",
+                                                QueueFailureKind::Full,
+                                                "The bounded intraday queue is full while compact persistence is disabled; canonical bar input was rejected.",
+                                            );
+                                        }
+                                        Err(mpsc::error::TrySendError::Closed(_)) => {
+                                            self.metrics.inc_intraday_bar_event_dropped();
+                                            self.metrics.record_queue_failure(
+                                                "intraday_bars",
+                                                QueueFailureKind::Closed,
+                                                "The intraday-bar worker closed while compact persistence is disabled; canonical bar input was rejected.",
+                                            );
+                                        }
+                                    }
                                 }
                             }
                             Err(reason) => record_compact_event_rejection(&self.metrics, reason),
@@ -1452,12 +1483,24 @@ impl CompactEventClickHouseWriter {
 
     fn route_ordered_intraday_events(&self, events: Vec<LiveCompactEvent>) {
         for event in events {
-            if self.intraday_bar_router.try_send(event).is_err() {
-                self.metrics.inc_intraday_bar_event_dropped();
-                self.metrics.record_lane_failure(
-                    "intraday_bars",
-                    "The bounded ordered-event queue is full; compact events remain durable and the affected bar range is deferred to canonical reconciliation.",
-                );
+            match self.intraday_bar_router.try_send(event) {
+                Ok(()) => {}
+                Err(mpsc::error::TrySendError::Full(_)) => {
+                    self.metrics.inc_intraday_bar_event_dropped();
+                    self.metrics.record_queue_failure(
+                        "intraday_bars",
+                        QueueFailureKind::Full,
+                        "The bounded ordered-event queue is full; compact events remain durable and the affected bar range is deferred to canonical reconciliation.",
+                    );
+                }
+                Err(mpsc::error::TrySendError::Closed(_)) => {
+                    self.metrics.inc_intraday_bar_event_dropped();
+                    self.metrics.record_queue_failure(
+                        "intraday_bars",
+                        QueueFailureKind::Closed,
+                        "The ordered intraday-bar consumer closed; compact events remain durable and the affected bar range requires canonical reconciliation after the worker is restored.",
+                    );
+                }
             }
         }
     }

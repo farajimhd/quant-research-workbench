@@ -667,14 +667,16 @@ async fn send_resnapshot_required(
 #[cfg(test)]
 mod shutdown_tests {
     use super::{
-        intraday_bar_history_sql, live_feed_is_stale, live_feed_requires_attention,
-        live_market_state_history_sql, parse_indicator_projection_fields,
-        resnapshot_required_frame, retain_indicator_projection_fields, retained_query_date_bounds,
-        scanner_sequence_gap, valid_shutdown_token,
+        build_attention, intraday_bar_history_sql, live_feed_is_stale,
+        live_feed_requires_attention, live_market_state_history_sql,
+        parse_indicator_projection_fields, resnapshot_required_frame,
+        retain_indicator_projection_fields, retained_query_date_bounds, scanner_sequence_gap,
+        valid_shutdown_token,
     };
     use crate::config::GatewayConfig;
+    use crate::maintenance::SharedMaintenanceState;
     use crate::market_calendar::MarketCalendarClient;
-    use crate::metrics::SharedMetrics;
+    use crate::metrics::{QueueFailureKind, SharedMetrics};
     use chrono::{NaiveDate, TimeZone, Utc};
     use serde_json::json;
 
@@ -696,6 +698,55 @@ mod shutdown_tests {
         let fresh = SharedMetrics::new();
         fresh.observe_event("quote", Utc::now());
         assert!(!live_feed_is_stale(&fresh.snapshot()));
+    }
+
+    #[tokio::test]
+    async fn queue_attention_reports_typed_active_state_not_lifetime_totals() {
+        let metrics = SharedMetrics::new();
+        metrics.register_lane(
+            "canonical_events",
+            "Normalized event computation fanout",
+            "computation",
+            true,
+            true,
+        );
+        metrics.record_queue_failure(
+            "canonical_events",
+            QueueFailureKind::Full,
+            "The bounded computation fanout is saturated.",
+        );
+        let maintenance = SharedMaintenanceState::new().snapshot().await;
+        let runtime = metrics.snapshot();
+        let active = build_attention(
+            &metrics.operational_snapshot(),
+            &maintenance,
+            &runtime,
+            runtime.queue_unresolved_events,
+            true,
+        );
+        assert_eq!(active.len(), 1);
+        assert_eq!(active[0]["queue_state"], "saturated");
+        assert_eq!(active[0]["unresolved_queue_events"], 1);
+        assert!(!active[0]["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("receiver-closed"));
+
+        metrics.resolve_queue_failures(
+            "canonical_events",
+            "Canonical computation state rebuilt exactly.",
+        );
+        let recovered_runtime = metrics.snapshot();
+        assert_eq!(recovered_runtime.queue_saturation_events, 1);
+        assert_eq!(recovered_runtime.queue_unresolved_events, 0);
+        assert!(build_attention(
+            &metrics.operational_snapshot(),
+            &maintenance,
+            &recovered_runtime,
+            recovered_runtime.queue_unresolved_events,
+            true,
+        )
+        .is_empty());
     }
 
     #[test]
@@ -867,12 +918,29 @@ async fn status_snapshot(State(state): State<Arc<AppState>>) -> Json<StandardSta
         + metrics.indicator_events_dropped
         + metrics.compact_event_queue_dropped
         + metrics.clickhouse_events_dropped;
+    let active_error =
+        metrics.queue_unresolved_events > 0 || metrics.parse_failures > 0 || maintenance.errors > 0;
+    let active_error_message = if metrics.queue_unresolved_events > 0 {
+        format!(
+            "{} downstream event(s) remain unresolved; inspect typed queue state and reconciliation evidence.",
+            metrics.queue_unresolved_events
+        )
+    } else if metrics.parse_failures > 0 {
+        format!(
+            "{} source event(s) failed structural parsing and remain rejected.",
+            metrics.parse_failures
+        )
+    } else if maintenance.errors > 0 {
+        maintenance.message.clone()
+    } else {
+        String::new()
+    };
     Json(StandardStatusPayload {
         attention: build_attention(
             &operational,
             &maintenance,
             &metrics,
-            queue_drops,
+            metrics.queue_unresolved_events,
             market_calendar.active_collection_window,
         ),
         live_pipeline: build_live_pipeline(&operational, &metrics),
@@ -948,12 +1016,19 @@ async fn status_snapshot(State(state): State<Arc<AppState>>) -> Json<StandardSta
             "compact_event_queue_dropped": metrics.compact_event_queue_dropped,
             "clickhouse_events_dropped": metrics.clickhouse_events_dropped,
             "queue_drop_total": queue_drops,
+            "queue_saturation_total": metrics.queue_saturation_events,
+            "queue_closed_total": metrics.queue_closed_events,
+            "queue_unresolved_total": metrics.queue_unresolved_events,
+            "app_broadcast_unobserved": metrics.app_broadcast_unobserved,
         }),
         error_state: json!({
-            "status": if queue_drops > 0 || metrics.parse_failures > 0 || metrics.gap_fill_failures > 0 { "degraded" } else { "ok" },
-            "active": queue_drops > 0 || metrics.parse_failures > 0 || metrics.gap_fill_failures > 0,
-            "severity": if queue_drops > 0 { "warning" } else { "info" },
-            "message": if queue_drops > 0 { "One or more downstream queues rejected work; inspect queue counters." } else { "" },
+            "status": if active_error { "degraded" } else { "ok" },
+            "active": active_error,
+            "severity": if metrics.queue_unresolved_events > 0 { "error" } else { "info" },
+            "message": active_error_message,
+            "queue_saturation_total": metrics.queue_saturation_events,
+            "queue_closed_total": metrics.queue_closed_events,
+            "queue_unresolved_total": metrics.queue_unresolved_events,
             "retryable": true,
             "last_error": "",
         }),
@@ -977,11 +1052,9 @@ fn qmd_status(
     operational: &OperationalSnapshot,
     metrics: &MetricsSnapshot,
 ) -> String {
-    if operational
-        .lanes
-        .iter()
-        .any(|lane| lane.enabled && lane.required && lane.state == "failed")
-    {
+    if operational.lanes.iter().any(|lane| {
+        lane.enabled && lane.required && matches!(lane.state.as_str(), "failed" | "saturated")
+    }) {
         return "degraded".to_string();
     }
     if maintenance.status.contains("manual")
@@ -1040,31 +1113,49 @@ fn build_attention(
     operational: &OperationalSnapshot,
     maintenance: &MaintenanceSnapshot,
     metrics: &MetricsSnapshot,
-    queue_drops: u64,
+    unresolved_queue_events: u64,
     active_collection_window: bool,
 ) -> Vec<Value> {
     let mut items = operational
         .lanes
         .iter()
-        .filter(|lane| lane.enabled && lane.state == "failed")
+        .filter(|lane| {
+            lane.enabled && matches!(lane.state.as_str(), "failed" | "saturated")
+        })
         .map(|lane| {
+            let queue_state = lane.active_queue_state.as_deref();
             json!({
                 "severity": if lane.required { "critical" } else { "warning" },
                 "area": lane.label,
                 "since_utc": lane.last_failure_utc,
                 "message": lane.detail,
                 "impact": if lane.required { "A required live-data path is impaired." } else { "An optional product is impaired." },
-                "action": "Inspect the writer error and ClickHouse/network health; the current batch remains pending for retry.",
+                "action": match queue_state {
+                    Some("saturated") => "Reduce or partition downstream work, then reconcile every skipped canonical range before clearing degradation.",
+                    Some("closed") => "Restore the stopped consumer, then reconcile every skipped canonical range before clearing degradation.",
+                    _ => "Inspect the writer error and ClickHouse/network health; the current batch remains pending for retry.",
+                },
+                "queue_state": queue_state,
+                "queue_saturation_events": lane.queue_saturation_events,
+                "queue_closed_events": lane.queue_closed_events,
+                "unresolved_queue_events": lane.unresolved_queue_events,
+                "unresolved_queue_saturation_events": lane.unresolved_queue_saturation_events,
+                "unresolved_queue_closed_events": lane.unresolved_queue_closed_events,
             })
         })
         .collect::<Vec<_>>();
-    if queue_drops > 0 {
+    let reported_unresolved = operational
+        .lanes
+        .iter()
+        .map(|lane| lane.unresolved_queue_events)
+        .sum::<u64>();
+    if unresolved_queue_events > reported_unresolved {
         items.push(json!({
             "severity": "critical",
-            "area": "Required queue path",
-            "message": format!("{queue_drops} receiver-closed event(s) were recorded."),
-            "impact": "One or more required consumers stopped accepting work.",
-            "action": "Inspect the failed worker and restart only after its cause is understood.",
+            "area": "Unattributed queue integrity",
+            "message": format!("{} unresolved queue event(s) are not attributed to a registered operational lane.", unresolved_queue_events - reported_unresolved),
+            "impact": "Readiness cannot prove which downstream state is incomplete.",
+            "action": "Inspect typed queue counters and restore lane attribution before clearing degradation.",
         }));
     }
     if live_feed_requires_attention(active_collection_window, metrics) {

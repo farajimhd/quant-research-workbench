@@ -296,7 +296,10 @@ impl MarketProductEventRouter {
         self.senders[index].send(event).await
     }
 
-    pub fn try_send(&self, event: MarketEvent) -> Result<(), ()> {
+    pub fn try_send(
+        &self,
+        event: MarketEvent,
+    ) -> Result<(), mpsc::error::TrySendError<MarketEvent>> {
         if !self
             .computation_targets
             .requires_focused_computation(event.ticker())
@@ -304,7 +307,7 @@ impl MarketProductEventRouter {
             return Ok(());
         }
         let index = stable_hash(event.ticker()) as usize % self.senders.len();
-        self.senders[index].try_send(event).map_err(|_| ())
+        self.senders[index].try_send(event)
     }
 }
 

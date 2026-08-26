@@ -963,6 +963,14 @@ impl BarEventRouter {
         let index = shard_index(event.ticker(), self.senders.len());
         self.senders[index].send(event).await
     }
+
+    pub fn try_send(
+        &self,
+        event: MarketEvent,
+    ) -> Result<(), mpsc::error::TrySendError<MarketEvent>> {
+        let index = shard_index(event.ticker(), self.senders.len());
+        self.senders[index].try_send(event)
+    }
 }
 
 impl BarShardStore {
