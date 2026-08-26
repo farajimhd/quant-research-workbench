@@ -11,6 +11,7 @@ from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from threading import Event, RLock
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from .cache import CALENDAR_VIEWS, INTRADAY_VIEW_US, CausalCache, RawBar
 from .config import ServiceConfig
@@ -490,6 +491,26 @@ class BarGptRuntime:
                     include_calendar=not bool(snapshot_rows),
                     stop_requested=self._stop_requested.is_set,
                 )
+                if cache_id != "live":
+                    one_second = [
+                        bar for bar in bars
+                        if bar.view == "1s" and bar.available_at_us <= origin_us
+                    ]
+                    requested_session = as_of.astimezone(
+                        ZoneInfo("America/New_York")
+                    ).date()
+                    observed_session = (
+                        datetime.fromtimestamp(
+                            one_second[-1].available_at_us / 1_000_000, tz=UTC
+                        ).astimezone(ZoneInfo("America/New_York")).date()
+                        if one_second else None
+                    )
+                    if observed_session != requested_session:
+                        observed = observed_session.isoformat() if observed_session else "none"
+                        raise RuntimeError(
+                            "QMD history has no BarGPT intraday context for requested "
+                            f"session {requested_session.isoformat()}; latest available session is {observed}"
+                        )
                 confirmed_revision = await asyncio.to_thread(bootstrap.source_revision, ticker, as_of)
                 self.metrics["warm_source_revision_checks"] = int(
                     self.metrics["warm_source_revision_checks"]

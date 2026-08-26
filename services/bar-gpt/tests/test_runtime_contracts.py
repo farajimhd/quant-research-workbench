@@ -272,7 +272,8 @@ class RuntimeContractTests(unittest.TestCase):
         release = runtime.releases["v2-fixed"]
         release.data_config = SimpleNamespace()
         revision = {"revision_sha256": "b" * 64}
-        snapshot_row = SimpleNamespace(available_at_us=1)
+        snapshot_row = SimpleNamespace(view="1D", available_at_us=1)
+        warm_row = SimpleNamespace(view="1s", available_at_us=2_000_000)
         snapshot_store = SimpleNamespace(
             load=MagicMock(return_value=[snapshot_row]),
             save=MagicMock(),
@@ -280,7 +281,7 @@ class RuntimeContractTests(unittest.TestCase):
         runtime._snapshot_store = snapshot_store
         harness = SimpleNamespace(
             source_revision=MagicMock(return_value=revision),
-            load=MagicMock(return_value=[]),
+            load=MagicMock(return_value=[warm_row]),
         )
         runtime._admit_warm_rows = MagicMock(
             side_effect=lambda *_args: asyncio.sleep(0)
@@ -294,6 +295,26 @@ class RuntimeContractTests(unittest.TestCase):
         snapshot_store.load.assert_called_once_with("AAPL", 3_000_000, revision)
         self.assertFalse(harness.load.call_args.kwargs["include_calendar"])
         snapshot_store.save.assert_called_once()
+
+    def test_replay_warm_rejects_context_from_a_different_session(self) -> None:
+        runtime = _runtime()
+        runtime.caches["replay"] = MagicMock()
+        release = runtime.releases["v2-fixed"]
+        release.data_config = SimpleNamespace()
+        stale = SimpleNamespace(view="1s", available_at_us=1_000_000)
+        harness = SimpleNamespace(
+            source_revision=MagicMock(return_value={"revision_sha256": "c" * 64}),
+            load=MagicMock(return_value=[stale]),
+        )
+        with (
+            patch("bar_gpt_service.runtime.HistoricalBootstrap", return_value=harness),
+            patch.object(runtime, "_record_event"),
+        ):
+            asyncio.run(runtime._warm("replay", "AAPL", 172_800_000_000))
+        state = runtime._warm_state[("replay", "AAPL")]
+        self.assertEqual(state["status"], "failed")
+        self.assertIn("requested session", state["error"])
+        self.assertIn("latest available session", state["error"])
 
     def test_historical_warm_stops_before_queries_when_shutdown_is_requested(self) -> None:
         bootstrap = object.__new__(HistoricalBootstrap)

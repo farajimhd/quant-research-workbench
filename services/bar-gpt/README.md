@@ -91,6 +91,10 @@ validated same-session calendar snapshots are shared across Live, Replay,
 Backtest, and Debug caches and refreshed after every successful warm. Running
 Live warm jobs are not cancelled; the interactive scope receives the next
 available worker slot.
+Replay, Backtest, and Debug warm-up also require the latest eligible 1s context
+to belong to the requested New York session. An archive lag or coverage gap
+therefore reports an explicit unavailable-session error instead of emitting a
+forecast at a stale prior-session origin.
 Managed shutdown also signals synchronous history loaders between their
 bounded ClickHouse requests, so an active multi-query warm plan cannot extend
 shutdown indefinitely.
