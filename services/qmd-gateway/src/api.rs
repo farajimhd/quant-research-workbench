@@ -667,10 +667,10 @@ async fn send_resnapshot_required(
 #[cfg(test)]
 mod shutdown_tests {
     use super::{
-        intraday_bar_history_sql, live_feed_is_stale, live_market_state_history_sql,
-        parse_indicator_projection_fields, resnapshot_required_frame,
-        retain_indicator_projection_fields, retained_query_date_bounds, scanner_sequence_gap,
-        valid_shutdown_token,
+        intraday_bar_history_sql, live_feed_is_stale, live_feed_requires_attention,
+        live_market_state_history_sql, parse_indicator_projection_fields,
+        resnapshot_required_frame, retain_indicator_projection_fields, retained_query_date_bounds,
+        scanner_sequence_gap, valid_shutdown_token,
     };
     use crate::config::GatewayConfig;
     use crate::market_calendar::MarketCalendarClient;
@@ -690,6 +690,8 @@ mod shutdown_tests {
         let metrics = SharedMetrics::new();
         metrics.observe_event("quote", Utc::now() - chrono::Duration::seconds(31));
         assert!(live_feed_is_stale(&metrics.snapshot()));
+        assert!(live_feed_requires_attention(true, &metrics.snapshot()));
+        assert!(!live_feed_requires_attention(false, &metrics.snapshot()));
 
         let fresh = SharedMetrics::new();
         fresh.observe_event("quote", Utc::now());
@@ -866,7 +868,13 @@ async fn status_snapshot(State(state): State<Arc<AppState>>) -> Json<StandardSta
         + metrics.compact_event_queue_dropped
         + metrics.clickhouse_events_dropped;
     Json(StandardStatusPayload {
-        attention: build_attention(&operational, &maintenance, &metrics, queue_drops),
+        attention: build_attention(
+            &operational,
+            &maintenance,
+            &metrics,
+            queue_drops,
+            market_calendar.active_collection_window,
+        ),
         live_pipeline: build_live_pipeline(&operational, &metrics),
         downstream_products: build_downstream_products(&state.config, &operational, &metrics),
         header: json!({
@@ -1005,6 +1013,10 @@ fn live_feed_is_stale(metrics: &MetricsSnapshot) -> bool {
             .is_some_and(|lag_ms| lag_ms > 30_000)
 }
 
+fn live_feed_requires_attention(active_collection_window: bool, metrics: &MetricsSnapshot) -> bool {
+    active_collection_window && live_feed_is_stale(metrics)
+}
+
 fn lane<'a>(
     operational: &'a OperationalSnapshot,
     key: &str,
@@ -1029,6 +1041,7 @@ fn build_attention(
     maintenance: &MaintenanceSnapshot,
     metrics: &MetricsSnapshot,
     queue_drops: u64,
+    active_collection_window: bool,
 ) -> Vec<Value> {
     let mut items = operational
         .lanes
@@ -1054,7 +1067,7 @@ fn build_attention(
             "action": "Inspect the failed worker and restart only after its cause is understood.",
         }));
     }
-    if live_feed_is_stale(metrics) {
+    if live_feed_requires_attention(active_collection_window, metrics) {
         items.push(json!({
             "severity": "critical",
             "area": "Massive feed freshness",
