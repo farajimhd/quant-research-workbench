@@ -151,6 +151,7 @@ const FIELD_CATALOG: FieldDefinition[] = [
   field("country", "Country", "Security", "raw", "text", "Canonical issuer domicile when published."),
   field("sector", "Sector", "Security", "raw", "text", "Provider or canonical sector classification."),
   field("last", "Last", "Market state", "raw", "money", "Latest eligible trade price at the workspace clock."),
+  field("spread_bps", "Spread ($)", "Market state", "raw", "money", "Current quoted ask-minus-bid width in US dollars. Configured rule thresholds continue to use the canonical basis-point source."),
   field("change_pct", "Change", "Market state", "derived", "percent", "Return over the scanner observation window."),
   field("change_5m_pct", "5 min", "Market state", "derived", "percent", "Return from the first eligible bar in the latest five-minute interval."),
   field("volume", "Volume", "Market state", "raw", "integer", "Eligible executed share volume in the observation window."),
@@ -409,6 +410,16 @@ function discoveryField(column: DiscoveryColumn): FieldDefinition {
               : valueType === "number" ? "number" : "text";
   const provenance = String(column.provenance ?? "raw");
   const kind: FieldKind = provenance === "derived" ? "derived" : provenance === "estimated" ? "estimated" : "raw";
+  if (column.column_id === "spread_bps") {
+    return field(
+      column.column_id,
+      "Spread ($)",
+      readableGroup(column.semantic_type),
+      kind,
+      "money",
+      "Current quoted ask-minus-bid width in US dollars. Configured rule thresholds continue to use the canonical basis-point source.",
+    );
+  }
   return { ...field(column.column_id, column.name, readableGroup(column.semantic_type), kind, format, column.description || `QMD-published ${column.name} field.`), presentationValueType: column.presentation_value_type };
 }
 
@@ -1043,7 +1054,7 @@ function normalizeScannerRows(rows: ScreenerRow[]) {
       symbol: ticker,
       last_price: lastSource,
       market_event_at: row.market_event_at ?? row.last_event_ts ?? row.bar_end ?? row.bar_time_market,
-      spread_bps: row.spread_bps ?? row.spread_bps_abs,
+      spread_bps: dollarSpread(row, lastSource),
       volume: volumeSource,
       dollar_volume: row.dollar_volume ?? (last > 0 && volume > 0 ? last * volume : undefined),
       microstructure_unified_confidence_pct: numberValue(row.microstructure_unified_confidence) * 100,
@@ -1054,6 +1065,20 @@ function normalizeScannerRows(rows: ScreenerRow[]) {
       ticker,
     };
   });
+}
+
+function dollarSpread(row: ScreenerRow, lastSource: unknown) {
+  const bid = optionalNumber(row.bid ?? row.bid_price ?? row.event_quote_bid_price ?? row.snapshot_bid);
+  const ask = optionalNumber(row.ask ?? row.ask_price ?? row.event_quote_ask_price ?? row.snapshot_ask);
+  const publishedSpread = optionalNumber(row.spread);
+  if (publishedSpread !== undefined && publishedSpread >= 0) return publishedSpread;
+  if (bid !== undefined && ask !== undefined && ask >= bid && bid > 0) return ask - bid;
+  const spreadBps = optionalNumber(row.spread_bps ?? row.spread_bps_abs ?? row.snapshot_spread_bps);
+  const referencePrice = bid !== undefined && ask !== undefined && ask >= bid && bid > 0
+    ? (bid + ask) / 2
+    : optionalNumber(lastSource);
+  if (spreadBps !== undefined && referencePrice !== undefined && referencePrice > 0) return spreadBps * referencePrice / 10_000;
+  return undefined;
 }
 
 function renderMarketCell(row: ScreenerRow, column: string, presentations: ReturnType<typeof useTickerPresentations>, customColumns: ScannerCustomColumn[], catalog = FIELD_CATALOG, companyInIdentity = false) {
@@ -1310,6 +1335,7 @@ function reportedFundamentalFields(): FieldDefinition[] {
 }
 function label(value: string) { return value.replaceAll("_", " ").replace(/\b\w/g, (character) => character.toUpperCase()); }
 function numberValue(value: unknown) { const numeric = Number(value); return Number.isFinite(numeric) ? numeric : 0; }
+function optionalNumber(value: unknown) { if (value === null || value === undefined || value === "") return undefined; const numeric = Number(value); return Number.isFinite(numeric) ? numeric : undefined; }
 function compareValues(left: unknown, right: unknown) { const leftNumber = Number(left); const rightNumber = Number(right); if (Number.isFinite(leftNumber) && Number.isFinite(rightNumber)) return leftNumber - rightNumber; return String(left ?? "").localeCompare(String(right ?? ""), undefined, { numeric: true }); }
 function formatCompact(value: number) { return new Intl.NumberFormat("en-US", { maximumFractionDigits: 1, notation: Math.abs(value) >= 1000 ? "compact" : "standard" }).format(value); }
 function formatMoney(value: number) { if (!Number.isFinite(value)) return "—"; const compact = Math.abs(value) >= 100_000; return new Intl.NumberFormat("en-US", { currency: "USD", maximumFractionDigits: compact ? 1 : value < 10 ? 4 : 2, notation: compact ? "compact" : "standard", style: "currency" }).format(value); }
