@@ -109,15 +109,17 @@ def article_fields(document: dict[str, Any]) -> dict[str, Any]:
     envelope = document["envelope"]
     structure = envelope["document_structure"]["value"]
     purpose = envelope["communication_purpose"]["value"]
+    purpose_rule = str(envelope["communication_purpose"].get("rule_id") or "")
     origin = envelope["information_origin"]["value"]
-    if purpose == "explain_move": kind = "why_moving"
+    if purpose_rule.startswith("envelope.purpose.earnings_call_v1:"): kind = "transcript"
+    elif purpose == "explain_move": kind = "why_moving"
     elif origin == "analyst": kind = "analyst"
     elif origin == "regulator": kind = "regulatory"
     elif structure in {"market_overview", "reference_list"}: kind = "market"
     elif structure == "multi_subject_digest": kind = "multi"
     elif origin == "issuer": kind = "company"
     else: kind = "editorial"
-    format_by_kind = {"why_moving": "why_moving", "analyst": "analyst_action", "regulatory": "regulatory_filing", "multi": "multi_company_coverage", "company": "company_announcement", "editorial": "editorial_coverage", "market": "general"}
+    format_by_kind = {"transcript": "earnings_call_transcript", "why_moving": "why_moving", "analyst": "analyst_action", "regulatory": "regulatory_filing", "multi": "multi_company_coverage", "company": "company_announcement", "editorial": "editorial_coverage", "market": "general"}
     tickers = [str(row.get("ticker") or "") for row in document.get("entities", []) if row.get("ticker")]
     return {
         "news_kind": kind, "news_format": format_by_kind[kind], "news_origin": origin,

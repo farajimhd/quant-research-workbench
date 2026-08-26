@@ -761,6 +761,9 @@ def derive_eligibility(
     ) & blocking_flag_names
     purpose = envelope["communication_purpose"]["value"]
     origin = envelope["information_origin"]["value"]
+    earnings_call_material = str(
+        envelope["communication_purpose"].get("rule_id") or ""
+    ).startswith("envelope.purpose.earnings_call_v1:")
     results: list[dict[str, Any]] = []
     for entity in entities:
         if entity.get("entity_kind") not in {"issuer", "security"}:
@@ -795,8 +798,14 @@ def derive_eligibility(
             if identity_status == status
         }
         tradable_security = entity.get("entity_kind") == "security" and bool(str(entity.get("ticker", "")).strip())
-        evidence_ok = bool(substantive) and not document_blocking_flags
-        trigger = tradable_security and identity_ok and evidence_ok and current_event and has_semantic_implication and purpose == "report" and origin != "analyst"
+        source_ok = not document_blocking_flags
+        evidence_ok = bool(substantive) and source_ok
+        trigger_evidence_ok = (
+            earnings_call_material and source_ok
+        ) or (
+            evidence_ok and current_event and has_semantic_implication
+        )
+        trigger = tradable_security and identity_ok and trigger_evidence_ok and purpose == "report" and origin != "analyst"
         reaction = trigger and purpose not in {"recap", "explain_move"}
         history = identity_ok and evidence_ok
         analyst = tradable_security and identity_ok and evidence_ok and origin == "analyst" and any(row["statement_kind"] in {"assessment", "forecast"} for row in substantive)

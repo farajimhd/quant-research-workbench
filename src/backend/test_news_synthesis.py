@@ -57,6 +57,21 @@ class NewsSynthesisPresentationTests(unittest.TestCase):
         self.assertNotIn("prior_primary_context_eligible", summary)
         self.assertNotIn("episode_followup_eligible", summary)
 
+    def test_earnings_call_is_exposed_as_transcript_format(self) -> None:
+        engine = NewsSynthesisEngine(IssuerIdentityIndex((IssuerIdentity("AAA", "issuer:aaa", "Alpha Corp", ("Alpha Corp",)),)))
+        document = engine.synthesize({
+            "source_id": "call-1",
+            "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": "Alpha Corp Q2 FY2026 Earnings Call Transcript",
+            "text": "Alpha Corp (NASDAQ:AAA) discussed quarterly operations.",
+            "tickers": ["AAA"],
+        })
+
+        fields = presentation_payload(document)["article_fields"]
+
+        self.assertEqual(fields["news_kind"], "transcript")
+        self.assertEqual(fields["news_format"], "earnings_call_transcript")
+
 
 if __name__ == "__main__":
     unittest.main()

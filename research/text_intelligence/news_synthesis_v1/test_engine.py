@@ -1730,6 +1730,34 @@ class NewsSynthesisEngineTests(unittest.TestCase):
         })
         self.assertEqual(document["envelope"]["communication_purpose"]["value"], "report")
         self.assertEqual(document["envelope"]["information_origin"]["value"], "mixed")
+        self.assertIn("earnings_call_transcript", document["quality_flags"])
+        self.assertTrue(any(
+            row["product"] == "forecast_trigger" and row["eligible"]
+            for row in document["eligibility"]
+        ))
+
+    def test_earnings_call_title_and_call_quote_are_forecast_eligible(self) -> None:
+        titles = (
+            "Alpha Q2 FY2026 Earnings Call Transcript",
+            "During Conf. Call, Alpha CFO Says Demand Remains Strong",
+        )
+        for index, title in enumerate(titles):
+            with self.subTest(title=title):
+                document = self.engine.synthesize({
+                    "source_id": f"news-call-material-{index}",
+                    "source_timestamp": "2026-08-03T12:00:00Z",
+                    "title": title,
+                    "text": "Alpha Therapeutics Inc (NASDAQ:AAA) discussed its quarterly operations.",
+                    "tickers": ["AAA"],
+                })
+                purpose = document["envelope"]["communication_purpose"]
+                self.assertEqual(purpose["value"], "report")
+                self.assertIn("earnings_call_v1", purpose["rule_id"])
+                self.assertIn("earnings_call_transcript", document["quality_flags"])
+                self.assertTrue(any(
+                    row["product"] == "forecast_trigger" and row["eligible"]
+                    for row in document["eligibility"]
+                ))
 
     def test_credit_rating_paragraph_does_not_define_document_as_analyst_origin(self) -> None:
         document = self.engine.synthesize({
@@ -1788,6 +1816,9 @@ class NewsSynthesisEngineTests(unittest.TestCase):
             "Shares of Alpha are trading lower after yesterday's filing.",
             "Alpha (AAA) Stock Jumps 90% After Hours: Here's Why",
             "Why Did CPI Aerostructures (CVU) Shares Jump After Hours?",
+            "Enovix Shares Are Moving Higher After The Bell: What's Going On?",
+            "What's Going On With Bitcoin Mining Stocks CleanSpark And Riot Platforms?",
+            "What's Behind The Drop In Inovio Pharmaceuticals Stock Today?",
         )
         for index, title in enumerate(titles):
             with self.subTest(title=title):
@@ -1803,7 +1834,7 @@ class NewsSynthesisEngineTests(unittest.TestCase):
                 })
                 purpose = document["envelope"]["communication_purpose"]
                 self.assertEqual(purpose["value"], "explain_move")
-                self.assertIn("why_moving_title_v1", purpose["rule_id"])
+                self.assertIn("why_moving_title_v2", purpose["rule_id"])
                 forecast = [
                     row for row in document["eligibility"]
                     if row["product"] == "forecast_trigger"

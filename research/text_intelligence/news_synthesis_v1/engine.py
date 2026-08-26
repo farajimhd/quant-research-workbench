@@ -14,7 +14,7 @@ from .facts import extract_regulatory_decision_facts, extract_typed_facts
 from .synthesis import derive_eligibility, derive_issuer_views, derive_synthesis
 
 
-ENGINE_VERSION = "news_synthesis_engine_v55"
+ENGINE_VERSION = "news_synthesis_engine_v56"
 EXCHANGE_TICKER_RE = re.compile(
     r"\b(?P<exchange>NASDAQ|NYSE|NYSE\s+AMERICAN|NYSEAMERICAN|AMEX|"
     r"OTC(?:QX|QB)?|TSX|TSXV|CSE)\s*[:\-]\s*"
@@ -56,6 +56,32 @@ WHY_MOVING_TITLE_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
             r"amid|because|today|premarket|postmarket|monday|tuesday|wednesday|thursday|"
             r"friday|here's\s+why|what(?:'s|\s+is)\s+(?:driving|happening)|"
             r"why\s+it\s+is\s+trending)\b|\d+(?:\.\d+)?%))",
+            re.I,
+        ),
+    ),
+    (
+        "movement_explanation_prompt",
+        re.compile(
+            r"\b(?:what(?:'s| is)\s+going\s+on|"
+            r"what(?:'s| is)\s+behind\s+(?:the\s+)?(?:move|jump|drop|rise|rally)|"
+            r"what(?:'s| is)\s+up\s+with\s+the\s+(?:move|jump|drop|rise|rally|surge))\b",
+            re.I,
+        ),
+    ),
+)
+EARNINGS_CALL_TITLE_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    (
+        "transcript",
+        re.compile(
+            r"(?:\b(?:earnings|conference)\s+(?:conference\s+)?call\b.{0,160}\btranscript\b|"
+            r"\btranscript\b.{0,160}\b(?:earnings|conference)\s+(?:conference\s+)?call\b)",
+            re.I,
+        ),
+    ),
+    (
+        "call_quote",
+        re.compile(
+            r"\bduring\s+(?:the\s+)?(?:conf(?:erence)?\.?|earnings)\s+call\b",
             re.I,
         ),
     ),
@@ -101,6 +127,14 @@ class IssuerIdentity:
 def why_moving_title_pattern(title: str) -> str | None:
     """Return the reviewed price-reaction headline family, if any."""
     for name, pattern in WHY_MOVING_TITLE_PATTERNS:
+        if pattern.search(title):
+            return name
+    return None
+
+
+def earnings_call_title_pattern(title: str) -> str | None:
+    """Return the reviewed earnings-call material family, if any."""
+    for name, pattern in EARNINGS_CALL_TITLE_PATTERNS:
         if pattern.search(title):
             return name
     return None
@@ -418,7 +452,11 @@ class NewsSynthesisEngine:
         entities = _dedupe_entities_by_id(
             self.identity_index.resolve(text=identity_text, candidates=tickers, timestamp=timestamp)
         )
-        if _has_issuer_scoped_rule(identity_text, self.rules) or _has_issuer_event_assertion(identity_text):
+        if (
+            _has_issuer_scoped_rule(identity_text, self.rules)
+            or _has_issuer_event_assertion(identity_text)
+            or earnings_call_title_pattern(title) is not None
+        ):
             entity_ids = {str(entity["entity_id"]) for entity in entities}
             for candidate in self.identity_index.supported_candidates(
                 candidates=tickers,
@@ -478,6 +516,8 @@ class NewsSynthesisEngine:
         )
         document_flags = _document_quality_flags(source, text)
         flags = _quality_flags(source, entities, text, document_flags=document_flags)
+        if earnings_call_title_pattern(title) is not None:
+            flags = sorted({*flags, "earnings_call_transcript"})
         views = derive_issuer_views(entities, participations, statements=statements)
         synthesis = derive_synthesis(entities=entities, statements=statements, participations=participations, issuer_views=views)
         eligibility = derive_eligibility(
@@ -980,6 +1020,7 @@ def _envelope(
     elif digest: structure = "multi_subject_digest"
     else: structure = "single_subject"
     reviewed_mover_pattern = why_moving_title_pattern(title)
+    earnings_call_pattern = earnings_call_title_pattern(title)
     causal_mover = bool(
         reviewed_mover_pattern
         or WHY_MOVING_RE.search(title)
@@ -1004,7 +1045,8 @@ def _envelope(
         reviewed_mover_pattern == "why_or_what_price_move_question"
         or bool(reviewed_mover_pattern and not market_overview)
     )
-    if reviewed_mover_override or (causal_mover and not market_overview): purpose = "explain_move"
+    if earnings_call_pattern: purpose = "report"
+    elif reviewed_mover_override or (causal_mover and not market_overview): purpose = "explain_move"
     elif list_title or re.search(
         r"\b(?:ahead of|preview|what to expect|will report|to watch)\b|"
         r"\bscheduled to (?:report|announce|release|publish)\b|"
@@ -1068,7 +1110,9 @@ def _envelope(
         r"appoints?|acquires?|enters?|rejects?|declares?|posts?|regains?)\b",
     ), title, "")
     issuer_transcript_match = _first_match((
-        r"^[^\n:]{2,120}\bearnings (?:call|conference call) transcript\b",
+        r"(?:\b(?:earnings|conference)\s+(?:conference\s+)?call\b.{0,160}\btranscript\b|"
+        r"\btranscript\b.{0,160}\b(?:earnings|conference)\s+(?:conference\s+)?call\b)",
+        r"\bduring\s+(?:the\s+)?(?:conf(?:erence)?\.?|earnings)\s+call\b",
     ), title, "")
     analyst_origin = analyst_match is not None
     regulator_origin = regulator_match is not None
@@ -1128,7 +1172,9 @@ def _envelope(
         "communication_purpose": decision(
             purpose,
             (
-                f"envelope.purpose.why_moving_title_v1:{reviewed_mover_pattern}"
+                f"envelope.purpose.earnings_call_v1:{earnings_call_pattern}"
+                if earnings_call_pattern
+                else f"envelope.purpose.why_moving_title_v2:{reviewed_mover_pattern}"
                 if reviewed_mover_pattern
                 else "envelope.purpose.v1"
             ),
