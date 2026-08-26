@@ -1,4 +1,4 @@
-import { ArrowDown, ArrowUp, BookOpen, Bot, Check, Clock3, ExternalLink, FileCheck2, FileText, Flame, Minus, RefreshCw, Search, Snowflake, Sparkles, Target, TriangleAlert, X } from "lucide-react";
+import { ArrowDown, ArrowUp, ArrowUpDown, BookOpen, Bot, Check, CircleDashed, Clock3, ExternalLink, FileCheck2, FileText, Flame, Minus, RefreshCw, Search, Snowflake, Sparkles, Target, TriangleAlert, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
@@ -138,25 +138,46 @@ export function TickerSecPopover({ anchor, onClose, ticker }: { anchor: TickerSe
   const width = Math.min(720, Math.max(360, window.innerWidth - 24)); const left = Math.max(12, Math.min(anchor.left, window.innerWidth - width - 12)); const top = Math.min(anchor.bottom + 6, window.innerHeight - 540);
   return createPortal(<aside aria-label={`${ticker} SEC filing timeline`} className="ticker-news-popover sec-ticker-popover" style={{ left, top: Math.max(12, top), width }}>
     <header><div className="ticker-news-popover-heading"><SecIntelligenceIcon count={payload?.rows.length ?? 1} kind={payload?.rows[0] ? secKindForRow(payload.rows[0]) : "other"} recency="cold" synthesized={Boolean(payload?.rows.some((row) => row.sec_synthesis))} /><span><strong>{ticker} SEC intelligence</strong><small>Synthesis, eligibility, evidence, then source filing</small></span></div><div className="ticker-news-popover-header-actions"><button aria-label="Close SEC timeline" onClick={onClose} type="button"><X size={15} /></button></div></header>
-    <div className="ticker-news-popover-feed">{error ? <SecEmpty label={error} /> : !payload ? <div className="canvas-preview-loading">Loading SEC timeline…</div> : payload.rows.length ? payload.rows.map((row) => { const synthesis = row.sec_synthesis; const kind = secKindForRow(row); return <article className="ticker-news-popover-story sec-ticker-popover-story" data-direction={secSynthesisDirection(row)} key={row.accession_number}><button className="ticker-news-popover-story-open" onClick={() => openSecPage(row, payload.query_id, true)} type="button"><div className="ticker-news-popover-story-time"><SecFilingTime row={row} /></div><div className="ticker-news-popover-story-main"><SecPopoverBadges kind={kind} row={row} /><strong className="ticker-news-popover-story-title">{synthesis?.synthesis.headline || row.filing_label_text || row.disclosure_title || `${row.form_type} filing`}</strong><p className="ticker-news-popover-story-teaser">{synthesis?.synthesis.readable_summary || "SEC Synthesis is pending. Open the filing to inspect the available source documents and classification."}</p><div className="sec-popover-source"><FileText aria-hidden="true" size={10} /><span>{row.form_type}</span><span>{row.disclosure_title || row.company_name}</span><span>{row.accession_number}</span></div></div><span className="ticker-news-popover-open-cue">Open <ExternalLink size={10} /></span></button></article>; }) : <SecEmpty label={`No recent ${ticker} filings.`} />}</div>
+    <div className="ticker-news-popover-feed">{error ? <SecEmpty label={error} /> : !payload ? <div className="canvas-preview-loading">Loading SEC timeline…</div> : payload.rows.length ? payload.rows.map((row) => { const synthesis = row.sec_synthesis; const kind = secKindForRow(row); const direction = secPopoverDirection(row); return <article className="ticker-news-popover-story sec-ticker-popover-story" data-direction={direction.value} key={row.accession_number}><button className="ticker-news-popover-story-open" onClick={() => openSecPage(row, payload.query_id, true)} type="button"><div className="ticker-news-popover-story-time"><SecFilingTime row={row} /></div><div className="ticker-news-popover-story-main"><SecPopoverIntelligence direction={direction} kind={kind} row={row} /><strong className="ticker-news-popover-story-title">{synthesis?.synthesis.headline || row.filing_label_text || row.disclosure_title || `${row.form_type} filing`}</strong><p className="ticker-news-popover-story-teaser">{synthesis?.synthesis.readable_summary || "SEC Synthesis is pending. Open the filing to inspect the available source documents and classification."}</p><SecPopoverSupport row={row} /><div className="sec-popover-source"><FileText aria-hidden="true" size={10} /><span>{row.form_type}</span><span>{row.disclosure_title || row.company_name}</span><span>{row.accession_number}</span></div></div><span className="ticker-news-popover-open-cue">Open <ExternalLink size={10} /></span></button></article>; }) : <SecEmpty label={`No recent ${ticker} filings.`} />}</div>
   </aside>, document.body);
 }
 
-function SecPopoverBadges({ kind, row }: { kind: SecIconKind; row: SecRow }) {
+type SecPopoverDirectionValue = ReturnType<typeof normalizeSemanticDirection> | "contextual" | "uncertain";
+type SecPopoverDirection = { source: "AI review" | "SEC Synthesis" | "Direction pending"; value: SecPopoverDirectionValue };
+
+function SecPopoverDirectionPanel({ direction }: { direction: SecPopoverDirection }) {
+  const DirectionIcon = direction.value === "positive" ? ArrowUp : direction.value === "negative" ? ArrowDown : direction.value === "mixed" ? ArrowUpDown : direction.value === "neutral" ? Minus : CircleDashed;
+  return <section aria-label={`${direction.source}: ${humanize(direction.value)}`} className="sec-popover-direction" data-direction={direction.value}>
+    <span className="sec-popover-direction-icon"><DirectionIcon aria-hidden="true" size={16} /></span>
+    <span><small>{direction.source}</small><strong>{humanize(direction.value)}</strong></span>
+  </section>;
+}
+
+function SecPopoverIntelligence({ direction, kind, row }: { direction: SecPopoverDirection; kind: SecIconKind; row: SecRow }) {
   const synthesis = row.sec_synthesis;
-  const direction = secSynthesisDirection(row);
-  const DirectionIcon = direction === "positive" ? ArrowUp : direction === "negative" ? ArrowDown : Minus;
+  const eligible = synthesis ? secProductEligible(synthesis, "forecast_trigger") : null;
+  return <div aria-label="SEC filing intelligence" className="sec-popover-intelligence">
+    <SecPopoverDirectionPanel direction={direction} />
+    <div className="sec-popover-primary-fields">
+      <span className="sec-popover-primary-field" data-field="meaning"><SecIntelligenceIcon count={1} kind={kind} recency="older" synthesized={Boolean(synthesis)} /><span><small>Filing meaning</small><strong>{secIconKindLabel(kind)}</strong></span></span>
+      <span className="sec-popover-primary-field" data-field="forecast" data-state={eligible === null ? "pending" : eligible ? "eligible" : "context"}><Target aria-hidden="true" size={14} /><span><small>Forecast use</small><strong>{eligible === null ? "Eligibility pending" : eligible ? "Forecast eligible" : "Context only"}</strong></span></span>
+    </div>
+  </div>;
+}
+
+function SecPopoverSupport({ row }: { row: SecRow }) {
+  const synthesis = row.sec_synthesis;
   const concepts = [...new Set(synthesis?.narrative_disclosures.map((item) => item.concept).filter(Boolean) ?? [])];
   const reviewed = Boolean(row.sec_review?.result);
-  return <div aria-label="SEC synthesis labels" className="sec-popover-badges">
-    <span className="sec-popover-badge" data-kind={kind} data-tone="category"><SecIntelligenceIcon count={1} kind={kind} recency="older" synthesized={Boolean(synthesis)} />{secIconKindLabel(kind)}</span>
-    {synthesis ? <span className="sec-popover-badge" data-tone={direction}><DirectionIcon aria-hidden="true" size={10} />{humanize(synthesis.synthesis.composite_sentiment)}</span> : <span className="sec-popover-badge" data-tone="pending"><Clock3 aria-hidden="true" size={10} />Synthesis pending</span>}
-    {synthesis ? <span className="sec-popover-badge" data-tone={secProductEligible(synthesis, "forecast_trigger") ? "eligible" : "context"}><Target aria-hidden="true" size={10} />{secProductEligible(synthesis, "forecast_trigger") ? "Forecast eligible" : "Context only"}</span> : <span className="sec-popover-badge" data-tone="pending"><Target aria-hidden="true" size={10} />Eligibility pending</span>}
-    {concepts.slice(0, 2).map((concept) => <span className="sec-popover-badge" data-tone="concept" key={concept}>{humanize(concept.split(".").at(-1))}</span>)}
-    {concepts.length > 2 ? <span className="sec-popover-badge" data-tone="concept">+{concepts.length - 2} concepts</span> : null}
-    {synthesis?.fundamental_transitions.length ? <span className="sec-popover-badge" data-tone="evidence">{synthesis.fundamental_transitions.length} XBRL {synthesis.fundamental_transitions.length === 1 ? "change" : "changes"}</span> : null}
-    {reviewed ? <span className="sec-popover-badge" data-tone="reviewed"><Sparkles aria-hidden="true" size={10} />AI reviewed</span> : null}
-    {synthesis?.quality_flags.length ? <span className="sec-popover-badge" data-tone="warning"><TriangleAlert aria-hidden="true" size={10} />{synthesis.quality_flags.length} quality {synthesis.quality_flags.length === 1 ? "flag" : "flags"}</span> : null}
+  const transitions = synthesis?.fundamental_transitions.length ?? 0;
+  const flags = synthesis?.quality_flags.length ?? 0;
+  if (!concepts.length && !reviewed && !transitions && !flags) return null;
+  return <div aria-label="Supporting SEC evidence" className="sec-popover-support">
+    {concepts.slice(0, 2).map((concept) => <span data-kind="concept" key={concept}>{humanize(concept.split(".").at(-1))}</span>)}
+    {concepts.length > 2 ? <span data-kind="concept">+{concepts.length - 2} concepts</span> : null}
+    {transitions ? <span data-kind="evidence">{transitions} XBRL {transitions === 1 ? "change" : "changes"}</span> : null}
+    {reviewed ? <span data-kind="reviewed"><Sparkles aria-hidden="true" size={10} />AI reviewed</span> : null}
+    {flags ? <span data-kind="warning"><TriangleAlert aria-hidden="true" size={10} />{flags} quality {flags === 1 ? "flag" : "flags"}</span> : null}
   </div>;
 }
 
@@ -361,6 +382,18 @@ function InfoItem({ label, value }: { label: string; value?: string }) { return 
 function secProductEligible(synthesis: SecSynthesis | null | undefined, product: string) { return Boolean(synthesis?.eligibility.some((item) => item.product === product && item.eligible)); }
 function secKindForRow(row: SecRow): SecIconKind { return secIconKindFor(row.filing_label, row.filing_label_text, row.form_type, row.sec_synthesis?.narrative_disclosures.map((item) => item.concept)); }
 function secSynthesisDirection(row: SecRow) { return normalizeSemanticDirection(row.sec_synthesis?.synthesis.composite_sentiment || row.scoped_summary?.semantic_direction); }
+function secPopoverDirection(row: SecRow): SecPopoverDirection {
+  const reviewDirection = row.sec_review?.result?.fundamental_direction || row.sec_review?.fundamental_direction;
+  const reviewComplete = ["complete", "completed"].includes(String(row.sec_review?.status || "").toLowerCase());
+  if (reviewComplete && reviewDirection) return { source: "AI review", value: secPopoverDirectionValue(reviewDirection) };
+  if (row.sec_synthesis) return { source: "SEC Synthesis", value: secSynthesisDirection(row) };
+  return { source: "Direction pending", value: "pending" };
+}
+function secPopoverDirectionValue(value: string): SecPopoverDirectionValue {
+  const normalized = value.trim().toLowerCase();
+  if (normalized === "contextual" || normalized === "uncertain") return normalized;
+  return normalizeSemanticDirection(normalized);
+}
 function synthesisSortScore(synthesis?: SecSynthesis | null) { const direction = normalizeSemanticDirection(synthesis?.synthesis.composite_sentiment); return direction === "positive" ? 1 : direction === "negative" ? -1 : direction === "mixed" ? 0.5 : 0; }
 function temperature(row: SecRow, _queryTime: number): Temperature { if (row.event_time_quality === "date_only") return "dated"; const age = Math.max(0, (Date.now() - Date.parse(row.accepted_at_utc)) / 60000); return age <= 240 ? "hot" : age <= 1440 ? "cold" : "old"; }
 function temperatureIcon(value: Temperature) { return value === "hot" ? Flame : value === "cold" ? Snowflake : Clock3; }
