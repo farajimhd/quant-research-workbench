@@ -523,8 +523,10 @@ class ServiceManager:
                     if str(row.get("state") or "").lower() != "healthy"
                     and not (
                         inactive_catch_up
-                        and str(row.get("key") or "") == "massive_feed"
                         and str(row.get("state") or "").lower() in {"starting", "connecting"}
+                        and int(row.get("pending_rows") or 0) == 0
+                        and int(row.get("failures") or 0) == 0
+                        and int(row.get("consecutive_failures") or 0) == 0
                     )
                 ]
                 saturation = float(service.readiness.get("queue_saturation_ratio") or 0.95)

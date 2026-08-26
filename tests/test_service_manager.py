@@ -438,8 +438,8 @@ def test_qmd_semantic_readiness_accepts_bounded_closed_market_catch_up(
         "market_calendar": {"active_collection_window": False, "market_closed": True},
         "operational": {"lanes": [
             {
-                "key": "massive_feed", "required": True, "state": "starting",
-                "pending_rows": 0, "max_pending_rows": 0,
+                "key": "canonical_events", "required": True, "state": "starting",
+                "pending_rows": 0, "max_pending_rows": 0, "failures": 0,
             },
             {
                 "key": "compact_events", "required": True, "state": "healthy",
@@ -465,6 +465,11 @@ def test_qmd_semantic_readiness_accepts_bounded_closed_market_catch_up(
     assert manager.resolve_target("unhealthy", within="market-data") == set()
     assert manager.print_status({"qmd-live"}) is True
     assert "catching_up" in capsys.readouterr().out
+
+    health["operational"]["lanes"][0]["failures"] = 1
+    failed = manager.status("qmd-live")
+    assert failed.state == "degraded"
+    assert failed.ready is False
 
 
 def test_dead_registry_reconciliation_archives_only_dead_owned_record(
