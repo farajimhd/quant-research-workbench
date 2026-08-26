@@ -22,7 +22,6 @@ from research.mlops.clickhouse import (  # noqa: E402
     default_clickhouse_password,
     default_clickhouse_url,
     default_clickhouse_user,
-    sql_string,
 )
 from research.text_intelligence.news_synthesis_v1.engine import (  # noqa: E402
     ENGINE_VERSION,
@@ -41,9 +40,12 @@ NEWS_ROOT = RUNTIME_ROOT / "news_synthesis_v1"
 PARENT_TRAINING = (
     RUNTIME_ROOT
     / "llm_issuer_labeling_v4"
-    / "forecast_eligibility_sentiment_authority_structured_rf_reverse_audit_v1"
+    / "forecast_eligibility_sentiment_authority_why_moving_human_review_v1"
 )
-PARENT_HOLDOUT = NEWS_ROOT / "forecast_eligibility_august_2026_temporal_holdout_v1"
+PARENT_HOLDOUT = (
+    NEWS_ROOT
+    / "forecast_eligibility_august_2026_temporal_holdout_why_moving_human_review_v1"
+)
 FEATURES = (
     NEWS_ROOT
     / "provider_filter_feature_audit_v6_provider_path_exceptions_final"
@@ -57,23 +59,14 @@ AUDIT_MARKDOWN = (
 DEFAULT_TRAINING_OUTPUT = (
     RUNTIME_ROOT
     / "llm_issuer_labeling_v4"
-    / "forecast_eligibility_sentiment_authority_why_moving_human_review_v1"
+    / "forecast_eligibility_sentiment_authority_why_moving_human_review_v2"
 )
 DEFAULT_HOLDOUT_OUTPUT = (
     NEWS_ROOT
-    / "forecast_eligibility_august_2026_temporal_holdout_why_moving_human_review_v1"
+    / "forecast_eligibility_august_2026_temporal_holdout_why_moving_human_review_v2"
 )
-REVIEW_AUTHORITY = "operator_manual_title_review_2026_08_26"
+REVIEW_AUTHORITY = "operator_manual_title_review_2026_08_26_v2"
 CORRECTION_REASON = "why_moving_or_price_reaction_followup"
-TITLE_CANDIDATE_RE2 = (
-    r"(?i)(\b(why\s+(is|are|did|has|have|was|were|does|do)|"
-    r"what('s| is)\s+going\s+on\s+with)\b.{0,220}\b(stock|shares?)\b|"
-    r"\bshares?\b.{0,120}\b((are|is|were|was)\s+)?"
-    r"trading\s+(higher|lower|up|down)\b|"
-    r"\b(stock|shares?)\b.{0,32}\b(jump|surge|soar|rall|rise|rose|gain|pop|"
-    r"spike|climb|rocket|skyrocket|slide|slid|slump|sink|sank|fall|fell|drop|"
-    r"tumble|plunge|dip|pause))"
-)
 
 
 def _sha256(path: Path) -> str:
@@ -126,13 +119,18 @@ def _audit_rows() -> list[dict[str, str]]:
     return rows
 
 
-def _candidate_titles(client: ClickHouseHttpClient) -> dict[str, str]:
+def _titles_in_scope(client: ClickHouseHttpClient) -> dict[str, str]:
+    """Load the bounded title population; the engine owns pattern semantics.
+
+    Do not maintain a second ClickHouse/RE2 approximation of
+    ``why_moving_title_pattern``.  The previous prefilter omitted inflections
+    such as ``rising`` and allowed gold labels to drift from the v55 gate.
+    """
     result: dict[str, str] = {}
-    for row in client.iter_json_each_row(f"""
+    for row in client.iter_json_each_row("""
 SELECT canonical_news_id,title
 FROM q_live.benzinga_news_event_v2 FINAL
 PREWHERE published_date BETWEEN toDate('2025-01-01') AND toDate('2026-08-31')
-WHERE match(title,{sql_string(TITLE_CANDIDATE_RE2)})
 FORMAT JSONEachRow
 """):
         result[str(row["canonical_news_id"])] = str(row.get("title") or "").strip()
@@ -186,7 +184,7 @@ def _correct_training(
                         else "human_pattern_policy_adjudicated"
                     ),
                     "human_certified": True,
-                    "source_dataset": "why_moving_human_review_v1",
+                    "source_dataset": "why_moving_human_review_v2",
                     "usage_policy": "model_development_human_policy_adjudicated",
                     "manual_review_scope": audit["review_scope"],
                     "manual_review_reason": CORRECTION_REASON,
@@ -302,7 +300,7 @@ def main() -> None:
         timeout_seconds=60,
     )
     try:
-        candidate_titles = _candidate_titles(client)
+        titles_in_scope = _titles_in_scope(client)
     finally:
         client.close()
 
@@ -317,7 +315,7 @@ def main() -> None:
             "review_scope": "approved_title_pattern",
             "old_label": parent_training_labels[source_id],
         }
-        for source_id, title in candidate_titles.items()
+        for source_id, title in titles_in_scope.items()
         if source_id in parent_training_labels
         and (family := why_moving_title_pattern(title)) is not None
     }
@@ -340,18 +338,21 @@ def main() -> None:
     if not set(holdout_review).issubset(holdout_pattern_rows):
         raise ValueError("one or more directly reviewed holdout titles are absent from the full pattern scan")
 
-    training_corrections = dict(training_review)
-    training_corrections.update({
+    if any(parent_training_labels[source_id] != "ineligible" for source_id in training_review):
+        raise ValueError("one or more directly reviewed training labels regressed in the parent")
+    if any(parent_holdout_labels[source_id] != "ineligible" for source_id in holdout_review):
+        raise ValueError("one or more directly reviewed holdout labels regressed in the parent")
+
+    training_corrections = {
         source_id: row
         for source_id, row in training_pattern_rows.items()
-        if parent_training_labels[source_id] != "ineligible" and source_id not in training_corrections
-    })
-    holdout_corrections = dict(holdout_review)
-    holdout_corrections.update({
+        if parent_training_labels[source_id] != "ineligible"
+    }
+    holdout_corrections = {
         source_id: row
         for source_id, row in holdout_pattern_rows.items()
-        if parent_holdout_labels[source_id] != "ineligible" and source_id not in holdout_corrections
-    })
+        if parent_holdout_labels[source_id] != "ineligible"
+    }
 
     training_labels, training_counts = _correct_training(
         args.training_output, training_corrections,
@@ -396,14 +397,30 @@ def main() -> None:
         "reason": CORRECTION_REASON,
         "news_synthesis_engine_version": ENGINE_VERSION,
     } for row in correction_rows}
-    _write_jsonl(
-        args.training_output / "why_moving_correction_ledger.jsonl",
-        (ledger_by_source_id[source_id] for source_id in sorted(training_corrections)),
-    )
-    _write_jsonl(
-        args.holdout_output / "why_moving_correction_ledger.jsonl",
-        (ledger_by_source_id[source_id] for source_id in sorted(holdout_corrections)),
-    )
+    for output, parent, corrections in (
+        (args.training_output, PARENT_TRAINING, training_corrections),
+        (args.holdout_output, PARENT_HOLDOUT, holdout_corrections),
+    ):
+        previous = {
+            str(row["source_id"]): row
+            for row in iter_jsonl(parent / "why_moving_correction_ledger.jsonl")
+        }
+        incremental = {
+            source_id: ledger_by_source_id[source_id]
+            for source_id in corrections
+        }
+        overlap = set(previous) & set(incremental)
+        if overlap:
+            raise ValueError(f"incremental correction already exists in parent: {sorted(overlap)[:10]}")
+        cumulative = {**previous, **incremental}
+        _write_jsonl(
+            output / "incremental_why_moving_correction_ledger.jsonl",
+            (incremental[source_id] for source_id in sorted(incremental)),
+        )
+        _write_jsonl(
+            output / "why_moving_correction_ledger.jsonl",
+            (cumulative[source_id] for source_id in sorted(cumulative)),
+        )
 
     pattern_counts = dict(Counter(row["title_pattern"] for row in audit_rows))
     validation = {
@@ -413,9 +430,15 @@ def main() -> None:
         "reviewed_rows": len(audit_rows),
         "reviewed_training_rows": len(training_review),
         "reviewed_holdout_rows": len(holdout_review),
-        "pattern_extension_training_corrections": len(training_corrections) - len(training_review),
-        "pattern_extension_holdout_corrections": len(holdout_corrections) - len(holdout_review),
-        "total_label_corrections": len(correction_rows),
+        "incremental_training_corrections": len(training_corrections),
+        "incremental_holdout_corrections": len(holdout_corrections),
+        "incremental_total_label_corrections": len(correction_rows),
+        "cumulative_training_corrections": sum(
+            1 for _ in iter_jsonl(args.training_output / "why_moving_correction_ledger.jsonl")
+        ),
+        "cumulative_holdout_corrections": sum(
+            1 for _ in iter_jsonl(args.holdout_output / "why_moving_correction_ledger.jsonl")
+        ),
         "reviewed_title_pattern_counts": pattern_counts,
         "training_why_moving_rows": len(why_training),
         "training_title_pattern_matches": len(training_pattern_ids),
@@ -426,7 +449,7 @@ def main() -> None:
         "pattern_matches_still_eligible": 0,
         "checks": {
             "all_reviewed_titles_match_named_pattern": True,
-            "all_reviewed_labels_corrected_to_ineligible": True,
+            "all_reviewed_labels_remain_ineligible": True,
             "all_other_matching_training_rows_ineligible": True,
             "all_other_matching_holdout_rows_ineligible": True,
             "all_matching_news_synthesis_purposes_block_forecast_trigger": True,
@@ -502,9 +525,9 @@ def main() -> None:
     else:
         print("PASSED  why-moving forecast-label correction")
         print(
-            f"corrected={validation['total_label_corrections']:,} "
+            f"incremental_corrected={validation['incremental_total_label_corrections']:,} "
             f"direct={validation['reviewed_rows']:,} "
-            f"pattern_extensions={validation['total_label_corrections'] - validation['reviewed_rows']:,}"
+            f"cumulative_training={validation['cumulative_training_corrections']:,}"
         )
         print(
             f"validated training={validation['training_title_pattern_matches']:,} "
