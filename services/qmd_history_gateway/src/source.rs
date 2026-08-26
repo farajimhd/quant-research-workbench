@@ -868,20 +868,7 @@ impl HistoricalEventSource {
         sender: mpsc::Sender<Result<Vec<LiveCompactEvent>, String>>,
     ) -> Result<(), String> {
         let plan = self.source_plan(&window).await?;
-        let mut ticker_filter = if window.tickers.is_empty() {
-            String::new()
-        } else {
-            let tickers = window
-                .tickers
-                .iter()
-                .map(|ticker| normalize_ticker(ticker))
-                .collect::<Result<Vec<_>, _>>()?
-                .into_iter()
-                .map(|ticker| sql_literal(&ticker))
-                .collect::<Vec<_>>()
-                .join(",");
-            format!(" AND ticker IN ({tickers})")
-        };
+        let mut ticker_filter = ticker_filter(&window.tickers)?;
         if let Some(event_type) = event_type_filter.filter(|value| *value <= 1) {
             ticker_filter.push_str(&format!(
                 " AND bitAnd(source.event_meta, 1) = toUInt8({event_type})"
@@ -1051,20 +1038,7 @@ impl HistoricalEventSource {
         validate_window(window)?;
         let plan = self.source_plan(window).await?;
         let limit = limit.clamp(1, 100_000);
-        let ticker_filter = if window.tickers.is_empty() {
-            String::new()
-        } else {
-            let tickers = window
-                .tickers
-                .iter()
-                .map(|ticker| normalize_ticker(ticker))
-                .collect::<Result<Vec<_>, _>>()?
-                .into_iter()
-                .map(|ticker| sql_literal(&ticker))
-                .collect::<Vec<_>>()
-                .join(",");
-            format!(" AND ticker IN ({tickers})")
-        };
+        let ticker_filter = ticker_filter(&window.tickers)?;
         let mut selects = Vec::new();
         for segment in plan
             .segments
@@ -1289,20 +1263,7 @@ impl HistoricalEventSource {
     pub async fn coverage(&self, window: &EventWindow) -> Result<EventCoverage, String> {
         validate_window(window)?;
         let plan = self.source_plan(window).await?;
-        let ticker_filter = if window.tickers.is_empty() {
-            String::new()
-        } else {
-            let tickers = window
-                .tickers
-                .iter()
-                .map(|ticker| normalize_ticker(ticker))
-                .collect::<Result<Vec<_>, _>>()?
-                .into_iter()
-                .map(|ticker| sql_literal(&ticker))
-                .collect::<Vec<_>>()
-                .join(",");
-            format!(" AND ticker IN ({tickers})")
-        };
+        let ticker_filter = ticker_filter(&window.tickers)?;
         let mut selects = Vec::new();
         let mut source_tables = Vec::new();
         for segment in plan
@@ -2649,7 +2610,7 @@ mod tests {
         latest_coverage_summary_sql, latest_coverage_target_date_sql, macro_bar_is_closed,
         materialize_confirmed_recent_coverage, merge_coverage_intervals, normalize_ticker,
         parse_historical_tsv_row, persisted_structure_events_sql, recent_coverage_sql,
-        row_to_event, session_vwap_seed_select, CoverageInterval, EventWindow, HistoricalRow,
+        row_to_event, session_vwap_seed_select, ticker_filter, CoverageInterval, EventWindow, HistoricalRow,
         MarketSourceTier, RecentCoverageRow,
     };
     use crate::config::HistoricalGatewayConfig;
@@ -2676,6 +2637,22 @@ mod tests {
         assert!(sql.contains("if(bitAnd(source.event_meta, 2) != 0, 10000., 100.)"));
         assert!(sql.contains("sum(toFloat64(source.size_primary))"));
         assert!(!sql.contains("ORDER BY"));
+    }
+
+    #[test]
+    fn event_fetch_ticker_filter_targets_the_raw_sort_key() {
+        let filter = ticker_filter(&["aapl".to_string()]).unwrap();
+        assert_eq!(filter, " AND source.ticker IN ('AAPL')");
+        let sql = event_select(
+            "q_live.events",
+            true,
+            Utc.with_ymd_and_hms(2026, 8, 25, 8, 0, 0).unwrap(),
+            Utc.with_ymd_and_hms(2026, 8, 25, 9, 0, 0).unwrap(),
+            &filter,
+            None,
+        );
+        assert!(sql.contains("WHERE 1 AND source.ticker IN ('AAPL')"));
+        assert!(!sql.contains("WHERE 1 AND ticker IN ('AAPL')"));
     }
 
     #[test]
