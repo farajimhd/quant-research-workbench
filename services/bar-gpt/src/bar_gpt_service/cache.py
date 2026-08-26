@@ -184,6 +184,13 @@ class CausalCache:
         self._tickers: dict[str, TickerCache] = {}
         self._lock = RLock()
         self.metrics = {"appended": 0, "corrected": 0, "duplicate": 0, "evicted_tickers": 0}
+        self._health_summary: dict[str, object] = {
+            "ticker_count": 0,
+            "rows_by_view": {view: 0 for view in self.capacities},
+            "estimated_feature_bytes": 0,
+            "metrics": dict(self.metrics),
+            "snapshot_stale": False,
+        }
 
     def upsert(self, bar: RawBar) -> str:
         with self._lock:
@@ -256,17 +263,31 @@ class CausalCache:
 
     def summary(self) -> dict[str, object]:
         with self._lock:
-            rows = {
-                view: sum(len(ticker.rows[view]) for ticker in self._tickers.values())
-                for view in self.capacities
-            }
-            estimated_bytes = sum(rows.values()) * len(FEATURE_NAMES) * 4
-            return {
-                "ticker_count": len(self._tickers),
-                "rows_by_view": rows,
-                "estimated_feature_bytes": estimated_bytes,
-                "metrics": dict(self.metrics),
-            }
+            return self._summary_unlocked(snapshot_stale=False)
+
+    def health_summary(self) -> dict[str, object]:
+        """Return control-plane cache evidence without waiting on data-plane admission."""
+        if not self._lock.acquire(blocking=False):
+            return {**self._health_summary, "snapshot_stale": True}
+        try:
+            return self._summary_unlocked(snapshot_stale=False)
+        finally:
+            self._lock.release()
+
+    def _summary_unlocked(self, *, snapshot_stale: bool) -> dict[str, object]:
+        rows = {
+            view: sum(len(ticker.rows[view]) for ticker in self._tickers.values())
+            for view in self.capacities
+        }
+        summary = {
+            "ticker_count": len(self._tickers),
+            "rows_by_view": rows,
+            "estimated_feature_bytes": sum(rows.values()) * len(FEATURE_NAMES) * 4,
+            "metrics": dict(self.metrics),
+            "snapshot_stale": snapshot_stale,
+        }
+        self._health_summary = summary
+        return dict(summary)
 
 
 def _bar_view(rows: list[RawBar]) -> BarView:

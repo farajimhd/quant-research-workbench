@@ -744,6 +744,40 @@ def test_start_refuses_to_adopt_foreign_listener(tmp_path: Path, monkeypatch) ->
         raise AssertionError("foreign listener was adopted")
 
 
+def test_start_preserves_ready_foreign_dependency_without_adopting_it(
+    tmp_path: Path, monkeypatch, capsys,
+) -> None:
+    services, profiles = service_manager._load_catalog()
+    manager = service_manager.ServiceManager(services, profiles, _options(tmp_path))
+    rows = {
+        "qmd-history": service_manager.ServiceStatus(
+            service_id="qmd-history", title="QMD History", state="foreign",
+            reason="foreign but healthy", port=8801, owned=False, listening=True, ready=True,
+            stale=True, desired_fingerprint="b" * 64, running_fingerprint="a" * 64,
+            registry_path="",
+        ),
+        "bar-gpt": service_manager.ServiceStatus(
+            service_id="bar-gpt", title="BarGPT", state="stopped",
+            reason="stopped", port=8805, owned=False, listening=False, ready=False,
+            stale=False, desired_fingerprint="b" * 64, running_fingerprint="",
+            registry_path="",
+        ),
+    }
+    monkeypatch.setattr(manager, "statuses", lambda selected=None: {
+        service_id: rows[service_id] for service_id in selected
+    })
+    open_tab = mock.Mock(return_value=tmp_path / "bar-gpt.json")
+    monkeypatch.setattr(manager, "_open_tab", open_tab)
+
+    started = manager.start({"bar-gpt"}, dry_run=True)
+
+    assert started == ["bar-gpt"]
+    open_tab.assert_called_once()
+    output = capsys.readouterr().out
+    assert "[preserve] qmd-history is already running" in output
+    assert "[start]    bar-gpt (plan)" in output
+
+
 def test_qmd_restart_snapshots_and_restores_computation_targets(tmp_path: Path, monkeypatch) -> None:
     services, profiles = service_manager._load_catalog()
     manager = service_manager.ServiceManager(services, profiles, _options(tmp_path))

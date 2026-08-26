@@ -3,6 +3,7 @@ from __future__ import annotations
 import unittest
 import asyncio
 import datetime as dt
+import threading
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -156,6 +157,69 @@ class RuntimeContractTests(unittest.TestCase):
             failed = self._scoped_runtime("failed").health()
         self.assertEqual(failed["status"], "degraded")
         self.assertEqual(failed["warm"]["failed"], 1)
+
+    def test_health_uses_admitted_warm_state_without_relocking_cache(self) -> None:
+        runtime = self._scoped_runtime("ready")
+        runtime.caches["live"].readiness = MagicMock(
+            side_effect=AssertionError("health must not enter the data-plane cache")
+        )
+        with patch("bar_gpt_service.runtime.release_summary", return_value={"model_id": "v2-fixed"}):
+            health = runtime.health()
+        self.assertEqual(health["status"], "ready")
+        self.assertEqual(health["warm"]["ready"], 1)
+
+    def test_cache_health_summary_never_waits_for_data_plane_lock(self) -> None:
+        cache = CausalCache({"1s": 2}, raw_capacity_1s=2)
+        lock_held = threading.Event()
+        release = threading.Event()
+
+        def hold_data_plane_lock() -> None:
+            with cache._lock:
+                lock_held.set()
+                release.wait(timeout=2)
+
+        holder = threading.Thread(target=hold_data_plane_lock)
+        holder.start()
+        self.assertTrue(lock_held.wait(timeout=1))
+        started = time.perf_counter()
+        summary = cache.health_summary()
+        elapsed = time.perf_counter() - started
+        release.set()
+        holder.join(timeout=1)
+        self.assertLess(elapsed, 0.1)
+        self.assertTrue(summary["snapshot_stale"])
+
+    def test_live_event_transformation_does_not_block_control_plane_loop(self) -> None:
+        async def scenario() -> tuple[bool, float]:
+            runtime = _runtime()
+
+            class SlowBuilder:
+                @staticmethod
+                def apply(_event, _active):
+                    time.sleep(0.2)
+                    return []
+
+            runtime._builder = SlowBuilder()
+            runtime.caches["live"] = SimpleNamespace(upsert_many=lambda _rows: None)
+            runtime.scopes["watchlist"] = {
+                "cache_id": "live",
+                "expires_monotonic": time.monotonic() + 60,
+                "request": {
+                    "mode": "live", "trigger_mode": "manual", "tickers": ["AAPL"],
+                    "clock_us": None, "model_ids": ["v2-fixed"],
+                },
+            }
+            started = time.perf_counter()
+            task = asyncio.create_task(runtime._on_qmd_events([{"ticker": "AAPL"}]))
+            await asyncio.sleep(0.02)
+            control_plane_delay = time.perf_counter() - started
+            was_still_processing = not task.done()
+            await task
+            return was_still_processing, control_plane_delay
+
+        was_still_processing, control_plane_delay = asyncio.run(scenario())
+        self.assertTrue(was_still_processing)
+        self.assertLess(control_plane_delay, 0.1)
 
     def test_event_log_failure_is_visible_in_health_and_metrics(self) -> None:
         runtime = _runtime()

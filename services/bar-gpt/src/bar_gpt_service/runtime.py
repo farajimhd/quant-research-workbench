@@ -106,6 +106,7 @@ class BarGptRuntime:
         self._retained_tickers: dict[tuple[str, str], float] = {}
         self._tasks: list[asyncio.Task[Any]] = []
         self._builder: LiveEventBarBuilder | None = None
+        self._live_builder_lock = asyncio.Lock()
         self._lock = RLock()
         self._listeners: set[asyncio.Queue[dict[str, Any]]] = set()
         # Direct-event historical warm-up is ClickHouse and memory intensive.
@@ -221,7 +222,13 @@ class BarGptRuntime:
             "maximum_tickers": self.config.maximum_tickers,
             "queue": {"active": self._queue.qsize(), "capacity": self._queue.maxsize},
             "warm": warm,
-            "caches": {key: value.summary() for key, value in self.caches.items()},
+            "caches": {
+                key: (
+                    value.health_summary()
+                    if hasattr(value, "health_summary") else value.summary()
+                )
+                for key, value in self.caches.items()
+            },
             "qmd": qmd,
             "backend": dict(self.backend_state),
             "event_log": dict(self.event_log_state),
@@ -657,26 +664,49 @@ class BarGptRuntime:
                 max(int(row.get("received_at_us") or row.get("sip_timestamp_us") or 0) for row in events),
             )
             self._set_qmd_state("streaming", "")
-        corrections: list[RawBar] = []
         active = self.active_tickers("live")
-        for event in events:
-            corrections.extend(self._builder.apply(event, active))
-        if corrections:
-            self._cache("live").upsert_many(corrections)
-            for bar in corrections:
-                self._schedule_auto("live", bar.ticker, bar.available_at_us)
+        async with self._live_builder_lock:
+            corrections = await asyncio.to_thread(
+                self._apply_live_events_sync, events, active
+            )
+        for bar in corrections:
+            self._schedule_auto("live", bar.ticker, bar.available_at_us)
 
     async def _clock_loop(self) -> None:
         while True:
             await asyncio.sleep(0.05)
             if self._builder is None:
                 continue
-            bars = self._builder.flush(self._serving_clock_us())
+            async with self._live_builder_lock:
+                bars = await asyncio.to_thread(
+                    self._flush_live_bars_sync, self._serving_clock_us()
+                )
             if not bars:
                 continue
-            self._cache("live").upsert_many(bars)
             for bar in bars:
                 self._schedule_auto("live", bar.ticker, bar.available_at_us)
+
+    def _apply_live_events_sync(
+        self, events: list[dict[str, Any]], active: set[str]
+    ) -> list[RawBar]:
+        builder = self._builder
+        if builder is None:
+            return []
+        corrections: list[RawBar] = []
+        for event in events:
+            corrections.extend(builder.apply(event, active))
+        if corrections:
+            self._cache("live").upsert_many(corrections)
+        return corrections
+
+    def _flush_live_bars_sync(self, clock_us: int) -> list[RawBar]:
+        builder = self._builder
+        if builder is None:
+            return []
+        bars = builder.flush(clock_us)
+        if bars:
+            self._cache("live").upsert_many(bars)
+        return bars
 
     def _schedule_auto(self, cache_id: str, ticker: str, origin_us: int) -> None:
         eligible = any(
@@ -916,10 +946,10 @@ class BarGptRuntime:
             for ticker in row["request"]["tickers"]
         }
         states = [self._warm_state.get(key, {}) for key in admitted]
-        ready = sum(
-            self._cache(cache_id).readiness(ticker, origin_us, self.config.minimum_warm_1s_bars)["ready"]
-            for cache_id, ticker in admitted
-        )
+        # Warm state becomes ready only after the complete causal context has
+        # been admitted. Re-reading every ticker cache here makes health depend
+        # on data-plane locks and can falsely report the service as down.
+        ready = sum(self._warm_state.get(key, {}).get("status") == "ready" for key in admitted)
         queued = sum(row.get("status") == "queued" for row in states)
         warming = sum(row.get("status") == "warming" for row in states)
         failed = sum(row.get("status") == "failed" for row in states)

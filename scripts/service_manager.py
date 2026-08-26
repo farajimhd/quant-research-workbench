@@ -933,7 +933,11 @@ class ServiceManager:
         if not dry_run:
             self.reconcile_dead_registries(ordered)
         initial = self.statuses(ordered)
-        foreign = [row for row in initial.values() if row.state == "foreign"]
+        foreign = [
+            row for service_id, row in initial.items()
+            if row.state == "foreign"
+            and (service_id in selected or not row.ready)
+        ]
         if foreign:
             detail = ", ".join(f"{row.service_id}:{row.port}" for row in foreign)
             raise ServiceManagerError(
