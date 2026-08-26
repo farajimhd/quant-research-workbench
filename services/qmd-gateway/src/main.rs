@@ -31,7 +31,7 @@ use qmd_core::market_products::{
 use qmd_core::massive::{run_canonical_event_fanout, run_massive_ingest, MarketEventFanout};
 use qmd_core::metrics::SharedMetrics;
 use qmd_core::scanner::{spawn_scanner_primitive_engine, MarketSignalDelta, SharedScannerStore};
-use qmd_core::signal_stream::SharedSignalStreamStore;
+use qmd_core::signal_stream::{spawn_all_market_squeeze_engine, SharedSignalStreamStore};
 use qmd_core::state::{ScannerRowDelta, SharedMarketState};
 use qmd_core::structure_focus::StructureFocusCoordinator;
 use std::collections::HashMap;
@@ -231,6 +231,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let intraday_bar_reconciler = intraday_bar_service.reconciler.clone();
 
     let mut writer_handles = Vec::new();
+    writer_handles.push(spawn_all_market_squeeze_engine(
+        intraday_bar_service.rows.subscribe(),
+        signal_streams.clone(),
+        market.clone(),
+    ));
     if config.persist_raw_events {
         let writer = ClickHouseWriter::new(config.clone(), metrics.clone());
         writer.initialize().await.map_err(|error| {

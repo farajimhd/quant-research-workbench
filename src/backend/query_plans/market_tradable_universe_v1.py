@@ -93,6 +93,10 @@ def tradable_symbol_lookup(*, database: str, symbols: Iterable[str]) -> str:
         SELECT
             toString(universe_date) AS universe_date_text,
             upper(ticker) AS ticker,
+            symbol_id,
+            listing_id,
+            exchange_code,
+            currency_code,
             toUInt8(is_tradable) AS is_tradable,
             ifNull(exclusion_reason, '') AS exclusion_reason,
             toUInt64OrZero(ifNull(ibkr_conid, '')) AS ibkr_conid

@@ -8,8 +8,10 @@ use tokio::sync::RwLock;
 
 const SCANNER_STALE_AFTER_MS: u64 = 60_000;
 const LIQUIDITY_RANK_CACHE_MS: i64 = 1_000;
-const LIQUIDITY_MIN_SESSION_DOLLAR_VOLUME: f64 = 500_000.0;
-const LIQUIDITY_MIN_TRADE_RATE_10S: f64 = 1.0;
+const LIQUIDITY_MIN_SESSION_DOLLAR_VOLUME: f64 = 1_000_000.0;
+const LIQUIDITY_MIN_SESSION_SHARE_VOLUME: f64 = 100_000.0;
+const LIQUIDITY_MIN_SESSION_TRADE_COUNT: u64 = 1_000;
+const LIQUIDITY_MIN_TRADE_RATE_60S: f64 = 0.5;
 const LIQUIDITY_MAX_SPREAD_BPS: f64 = 50.0;
 
 #[derive(Clone)]
@@ -504,9 +506,12 @@ fn apply_liquidity_ranking(rows: &mut [SymbolSnapshot]) {
         row.day_trade_count > 0 && row.day_dollar_volume > 0.0 && row.day_volume > 0.0
     });
     let dollar_volume = sorted_finite(executed.clone().map(|row| row.day_dollar_volume));
-    let trade_rate = sorted_finite(executed.clone().map(|row| row.trade_rate_10s.max(0.0)));
+    let share_volume = sorted_finite(executed.clone().map(|row| row.day_volume));
+    let trade_count = sorted_finite(executed.clone().map(|row| row.day_trade_count as f64));
+    let trade_rate = sorted_finite(executed.clone().map(|row| row.trade_rate_60s.max(0.0)));
     let quoted_depth = sorted_finite(
-        executed.clone()
+        executed
+            .clone()
             .map(|row| f64::from(row.bid_size) + f64::from(row.ask_size)),
     );
     let valid_spreads = sorted_finite(executed.filter_map(|row| {
@@ -526,33 +531,39 @@ fn apply_liquidity_ranking(rows: &mut [SymbolSnapshot]) {
         let spread_bps = (row.last_price > 0.0 && row.bid > 0.0 && row.ask > row.bid)
             .then_some((row.ask - row.bid) / row.last_price * 10_000.0);
         let spread_quality = if let Some(spread_bps) = spread_bps {
-            descending_percentile(
-                spread_bps,
-                &valid_spreads,
-            )
+            descending_percentile(spread_bps, &valid_spreads)
         } else {
             0.0
         };
-        let relative_score = (
-            0.45 * ascending_percentile(row.day_dollar_volume.max(0.0), &dollar_volume)
-                + 0.30 * ascending_percentile(row.trade_rate_10s.max(0.0), &trade_rate)
-                + 0.15 * spread_quality
-                + 0.10
-                    * ascending_percentile(
-                        f64::from(row.bid_size) + f64::from(row.ask_size),
-                        &quoted_depth,
-                    )
-        )
+        // Executed session capacity dominates the score. A momentary print burst,
+        // tight quote, or displayed size cannot make a thin symbol look liquid.
+        let relative_score = (0.40
+            * ascending_percentile(row.day_dollar_volume.max(0.0), &dollar_volume)
+            + 0.25 * ascending_percentile(row.day_volume.max(0.0), &share_volume)
+            + 0.15 * ascending_percentile(row.day_trade_count as f64, &trade_count)
+            + 0.10 * ascending_percentile(row.trade_rate_60s.max(0.0), &trade_rate)
+            + 0.05 * spread_quality
+            + 0.05
+                * ascending_percentile(
+                    f64::from(row.bid_size) + f64::from(row.ask_size),
+                    &quoted_depth,
+                ))
         .clamp(0.0, 100.0);
         let mut reasons = Vec::new();
         if row.quality_state != "ready" {
             reasons.push(format!("market_state_{}", row.quality_state));
         }
         if row.day_dollar_volume < LIQUIDITY_MIN_SESSION_DOLLAR_VOLUME {
-            reasons.push("session_dollar_volume_below_500000".to_string());
+            reasons.push("session_dollar_volume_below_1000000".to_string());
         }
-        if row.trade_rate_10s < LIQUIDITY_MIN_TRADE_RATE_10S {
-            reasons.push("trade_rate_10s_below_1".to_string());
+        if row.day_volume < LIQUIDITY_MIN_SESSION_SHARE_VOLUME {
+            reasons.push("session_share_volume_below_100000".to_string());
+        }
+        if row.day_trade_count < LIQUIDITY_MIN_SESSION_TRADE_COUNT {
+            reasons.push("session_trade_count_below_1000".to_string());
+        }
+        if row.trade_rate_60s < LIQUIDITY_MIN_TRADE_RATE_60S {
+            reasons.push("trade_rate_60s_below_0_5".to_string());
         }
         if spread_bps.is_none() {
             reasons.push("executable_nbbo_unavailable".to_string());
@@ -583,8 +594,8 @@ fn apply_liquidity_ranking(rows: &mut [SymbolSnapshot]) {
             })
             .then_with(|| {
                 right
-                    .trade_rate_10s
-                    .partial_cmp(&left.trade_rate_10s)
+                    .trade_rate_60s
+                    .partial_cmp(&left.trade_rate_60s)
                     .unwrap_or(std::cmp::Ordering::Equal)
             })
             .then_with(|| left.ticker.cmp(&right.ticker))
@@ -661,7 +672,11 @@ mod tests {
             bid: 10.0,
             bid_size: depth,
             day_dollar_volume: dollar_volume,
-            day_trade_count: u64::from(executed),
+            day_trade_count: if executed {
+                (dollar_volume / 1_000.0).max(1.0) as u64
+            } else {
+                0
+            },
             day_volume: if executed {
                 (dollar_volume / 10.0).max(1.0)
             } else {
@@ -742,10 +757,39 @@ mod tests {
         assert!(thin.liquidity_score < 50.0);
         assert!(thin
             .liquidity_eligibility_reasons
-            .contains(&"session_dollar_volume_below_500000".to_string()));
+            .contains(&"session_dollar_volume_below_1000000".to_string()));
         assert!(eligible.liquidity_eligible);
         assert!(eligible.liquidity_score >= 50.0);
         assert_eq!(eligible.liquidity_rank, 1);
+    }
+
+    #[test]
+    fn transient_burst_and_good_quotes_cannot_mask_thin_session_capacity() {
+        let mut burst = liquidity_row("BURST", 1_500_000.0, 25.0, 0.01, 20_000);
+        burst.day_volume = 25_000.0;
+        burst.day_trade_count = 300;
+        burst.trade_rate_60s = 0.4;
+        let mut sustained = liquidity_row("SUSTAINED", 5_000_000.0, 2.0, 0.03, 500);
+        sustained.day_volume = 500_000.0;
+        sustained.day_trade_count = 5_000;
+        sustained.trade_rate_60s = 2.0;
+        let mut rows = vec![burst, sustained];
+
+        apply_liquidity_ranking(&mut rows);
+
+        let burst = rows.iter().find(|row| row.ticker == "BURST").unwrap();
+        let sustained = rows.iter().find(|row| row.ticker == "SUSTAINED").unwrap();
+        assert!(!burst.liquidity_eligible);
+        assert!(burst.liquidity_score < 50.0);
+        assert!(burst
+            .liquidity_eligibility_reasons
+            .contains(&"session_share_volume_below_100000".to_string()));
+        assert!(burst
+            .liquidity_eligibility_reasons
+            .contains(&"session_trade_count_below_1000".to_string()));
+        assert!(sustained.liquidity_eligible);
+        assert!(sustained.liquidity_score >= 50.0);
+        assert_eq!(sustained.liquidity_rank, 1);
     }
 
     #[test]

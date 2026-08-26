@@ -1,6 +1,7 @@
 use crate::bars::BarRow;
 use crate::config::GatewayConfig;
 use crate::indicators::IndicatorRow;
+use crate::intraday_bars::IntradayBarRow;
 use crate::state::SharedMarketState;
 use chrono::{DateTime, Utc};
 use reqwest::Client;
@@ -10,7 +11,7 @@ use serde_json::{json, Map, Value};
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::Mutex;
+use tokio::sync::{broadcast, Mutex};
 
 pub const SIGNAL_STREAM_SCHEMA_VERSION: u16 = 2;
 const MEMORY_OCCURRENCE_LIMIT: usize = 50_000;
@@ -414,6 +415,31 @@ impl SharedSignalStreamStore {
         if ticker.is_empty() {
             return Ok(Vec::new());
         }
+        let mut row = serde_json::to_value(bar).unwrap_or_else(|_| json!({}));
+        if let (Some(target), Some(source)) = (
+            row.as_object_mut(),
+            serde_json::to_value(indicator)
+                .ok()
+                .and_then(|value| value.as_object().cloned()),
+        ) {
+            target.extend(source);
+            target.insert("ticker".to_string(), json!(ticker));
+            target.insert("symbol".to_string(), json!(ticker));
+            target.insert("last_price".to_string(), json!(bar.close));
+        }
+        self.observe_squeeze_row(&ticker, at, bar.open, bar.close, row, market)
+            .await
+    }
+
+    async fn observe_squeeze_row(
+        &self,
+        ticker: &str,
+        at: DateTime<Utc>,
+        open: f64,
+        close: f64,
+        mut row: Value,
+        market: &SharedMarketState,
+    ) -> Result<Vec<Value>, String> {
         let _mutation = self.mutation.lock().await;
         let mut store = self.inner.lock().await;
         let Some(configuration) = store.configuration.clone() else {
@@ -437,29 +463,16 @@ impl SharedSignalStreamStore {
             .cloned()
             .collect::<Vec<_>>();
         if episode_streams.is_empty() {
-            store.squeeze_last_prices.insert(ticker, bar.close);
+            store.squeeze_last_prices.insert(ticker.to_string(), close);
             return Ok(Vec::new());
         }
-
-        let mut row = serde_json::to_value(bar).unwrap_or_else(|_| json!({}));
-        if let (Some(target), Some(source)) = (
-            row.as_object_mut(),
-            serde_json::to_value(indicator)
-                .ok()
-                .and_then(|value| value.as_object().cloned()),
-        ) {
-            target.extend(source);
-            target.insert("ticker".to_string(), json!(ticker));
-            target.insert("symbol".to_string(), json!(ticker));
-            target.insert("last_price".to_string(), json!(bar.close));
-        }
-        let previous_price = store.squeeze_last_prices.insert(ticker.clone(), bar.close);
+        let previous_price = store.squeeze_last_prices.insert(ticker.to_string(), close);
         if store
             .squeeze_episodes
-            .get(&ticker)
+            .get(ticker)
             .is_some_and(|episode| at >= episode.expires_at)
         {
-            store.squeeze_episodes.remove(&ticker);
+            store.squeeze_episodes.remove(ticker);
         }
 
         let start_stream = episode_streams
@@ -467,11 +480,9 @@ impl SharedSignalStreamStore {
             .find(|stream| string(stream, "episode_role") == Some("start"));
         let start_matches = start_stream.is_some_and(|stream| stream_matches(stream, &rules, &row));
         let mut emit_roles = Vec::<(&str, Value)>::new();
-        if !store.squeeze_episodes.contains_key(&ticker) && start_matches {
+        if !store.squeeze_episodes.contains_key(ticker) && start_matches {
             let stream = start_stream.expect("start stream exists when its rules match");
-            let anchor_price = previous_price
-                .filter(|price| *price > 0.0)
-                .unwrap_or(bar.open);
+            let anchor_price = previous_price.filter(|price| *price > 0.0).unwrap_or(open);
             let ttl_ms = stream
                 .get("episode_ttl_ms")
                 .and_then(Value::as_i64)
@@ -484,7 +495,7 @@ impl SharedSignalStreamStore {
                 anchor_price
             ));
             store.squeeze_episodes.insert(
-                ticker.clone(),
+                ticker.to_string(),
                 SqueezeEpisode {
                     episode_id,
                     started_at: at,
@@ -497,11 +508,11 @@ impl SharedSignalStreamStore {
             emit_roles.push(("start", stream.clone()));
         }
 
-        let mut episode = match store.squeeze_episodes.get(&ticker).cloned() {
+        let mut episode = match store.squeeze_episodes.get(ticker).cloned() {
             Some(value) => value,
             None => return Ok(Vec::new()),
         };
-        let move_pct = (bar.close / episode.anchor_price - 1.0) * 100.0;
+        let move_pct = (close / episode.anchor_price - 1.0) * 100.0;
         episode.high_water_pct = episode.high_water_pct.max(move_pct);
         if !episode.milestone_emitted {
             if let Some(stream) = episode_streams
@@ -519,13 +530,13 @@ impl SharedSignalStreamStore {
         }
         store
             .squeeze_episodes
-            .insert(ticker.clone(), episode.clone());
+            .insert(ticker.to_string(), episode.clone());
         if emit_roles.is_empty() {
             return Ok(Vec::new());
         }
         drop(store);
 
-        if let Some(snapshot) = market.ticker_snapshot_at(&ticker, at).await {
+        if let Some(snapshot) = market.ticker_snapshot_at(ticker, at).await {
             if let (Some(target), Ok(Value::Object(source))) =
                 (row.as_object_mut(), serde_json::to_value(snapshot))
             {
@@ -996,6 +1007,112 @@ impl SharedSignalStreamStore {
         }
         Ok(inserted_count)
     }
+}
+
+#[derive(Clone)]
+struct CanonicalSqueezePrevious {
+    bucket_index: i64,
+    close: f64,
+    event_count: u64,
+    local_date: String,
+    size_sum: f64,
+}
+
+fn canonical_squeeze_changes(
+    previous: Option<&CanonicalSqueezePrevious>,
+    current: &CanonicalSqueezePrevious,
+) -> (Option<f64>, Option<f64>, Option<f64>) {
+    let comparable = previous.filter(|prior| {
+        prior.local_date == current.local_date
+            && prior.bucket_index < current.bucket_index
+            && prior.close.is_finite()
+            && prior.close > 0.0
+    });
+    (
+        comparable.map(|prior| (current.close / prior.close - 1.0) * 100.0),
+        comparable.map(|prior| current.size_sum - prior.size_sum),
+        comparable.map(|prior| current.event_count as f64 - prior.event_count as f64),
+    )
+}
+
+/// Observe the canonical all-market 100 ms trade bars. This path is deliberately
+/// independent of scoped indicator leases so the first move in a previously quiet
+/// symbol can open a squeeze episode. Scoped observations may still arrive first
+/// and contribute richer evidence; episode state makes the two paths idempotent.
+pub fn spawn_all_market_squeeze_engine(
+    mut receiver: broadcast::Receiver<IntradayBarRow>,
+    signal_streams: SharedSignalStreamStore,
+    market: SharedMarketState,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut previous_by_ticker = HashMap::<String, CanonicalSqueezePrevious>::new();
+        loop {
+            let bar = match receiver.recv().await {
+                Ok(row) => row,
+                Err(broadcast::error::RecvError::Lagged(skipped)) => {
+                    // A missing predecessor invalidates change operands. Clear the
+                    // bounded state and resume without manufacturing an impulse.
+                    previous_by_ticker.clear();
+                    eprintln!(
+                        "QMD all-market squeeze observer lagged by {skipped} canonical bar row(s); predecessor state was reset."
+                    );
+                    continue;
+                }
+                Err(broadcast::error::RecvError::Closed) => return,
+            };
+            if bar.label_resolution_us != 100_000
+                || bar.bar_family != "trade"
+                || !bar.close.is_finite()
+                || bar.close <= 0.0
+            {
+                continue;
+            }
+            let ticker = bar.ticker.trim().to_ascii_uppercase();
+            let Some(at) = DateTime::<Utc>::from_timestamp_micros(
+                i64::try_from(bar.last_event_timestamp_us).unwrap_or(i64::MAX),
+            ) else {
+                continue;
+            };
+            if ticker.is_empty() {
+                continue;
+            }
+            let current = CanonicalSqueezePrevious {
+                bucket_index: bar.bucket_index,
+                close: f64::from(bar.close),
+                event_count: bar.event_count,
+                local_date: bar.local_date.clone(),
+                size_sum: bar.size_sum,
+            };
+            let previous = previous_by_ticker.insert(ticker.clone(), current.clone());
+            let (price_change_pct, volume_change, trade_count_change) =
+                canonical_squeeze_changes(previous.as_ref(), &current);
+            let row = json!({
+                "ticker": ticker,
+                "symbol": ticker,
+                "last_price": current.close,
+                "open": f64::from(bar.open),
+                "close": current.close,
+                "price_change_1_bar_pct": price_change_pct,
+                "volume_change": volume_change,
+                "trade_count_change": trade_count_change,
+                "event_time": at.to_rfc3339(),
+                "source_authority": "qmd_canonical_intraday_100ms_all_market",
+            });
+            if let Err(error) = signal_streams
+                .observe_squeeze_row(
+                    &ticker,
+                    at,
+                    f64::from(bar.open),
+                    current.close,
+                    row,
+                    &market,
+                )
+                .await
+            {
+                eprintln!("QMD all-market squeeze observation failed for {ticker}: {error}");
+            }
+        }
+    })
 }
 
 fn recovery_value(state: &SignalRecoveryState) -> Value {
@@ -1950,6 +2067,38 @@ mod tests {
             &rules,
             &json!({"signal.squeeze_move_pct":5.0})
         ));
+    }
+
+    #[test]
+    fn canonical_all_market_changes_require_a_valid_same_session_predecessor() {
+        let previous = CanonicalSqueezePrevious {
+            bucket_index: 10,
+            close: 4.0,
+            event_count: 5,
+            local_date: "2026-08-26".to_string(),
+            size_sum: 1_000.0,
+        };
+        let current = CanonicalSqueezePrevious {
+            bucket_index: 11,
+            close: 4.2,
+            event_count: 8,
+            local_date: "2026-08-26".to_string(),
+            size_sum: 1_500.0,
+        };
+
+        let (price, volume, trades) = canonical_squeeze_changes(Some(&previous), &current);
+
+        assert!((price.unwrap() - 5.0).abs() < 1e-9);
+        assert_eq!(volume, Some(500.0));
+        assert_eq!(trades, Some(3.0));
+        let next_session = CanonicalSqueezePrevious {
+            local_date: "2026-08-27".to_string(),
+            ..current
+        };
+        assert_eq!(
+            canonical_squeeze_changes(Some(&previous), &next_session),
+            (None, None, None)
+        );
     }
 
     #[test]

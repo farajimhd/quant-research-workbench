@@ -28,6 +28,10 @@ class MarketTradableUniverseQueryPlanTests(unittest.TestCase):
         )
         self.assertIn("upper(ticker) IN ('AAPL', 'MSFT')", sql)
         self.assertIn("toUInt8(is_tradable) AS is_tradable", sql)
+        self.assertIn("symbol_id", sql)
+        self.assertIn("listing_id", sql)
+        self.assertIn("exchange_code", sql)
+        self.assertIn("currency_code", sql)
 
     def test_symbol_lookup_rejects_empty_set(self) -> None:
         with self.assertRaisesRegex(ValueError, "at least one symbol"):
@@ -72,6 +76,106 @@ class MarketTradableUniverseQueryPlanTests(unittest.TestCase):
             query,
             tradable_symbol_lookup(database="q_live", symbols=["AAPL"]),
         )
+
+    @patch("src.backend.real_live_trading_service.ClickHouseHttpClient")
+    @patch("src.backend.real_live_trading_service.market_gateway_config")
+    @patch.dict("os.environ", {"REAL_LIVE_TRADABLE_UNIVERSE_DATABASE": "q_live"})
+    def test_live_trading_lookup_prefers_unique_tradable_listing_for_duplicate_ticker(
+        self,
+        config_mock,
+        client_class_mock,
+    ) -> None:
+        config_mock.return_value = SimpleNamespace(
+            read_clickhouse=SimpleNamespace(database="ignored_read"),
+            write_clickhouse=SimpleNamespace(database="ignored_write"),
+        )
+        client_class_mock.return_value.query_json.return_value = [
+            {
+                "universe_date_text": "2026-08-26",
+                "ticker": "CRE",
+                "symbol_id": "foreign-symbol",
+                "listing_id": "foreign-listing",
+                "exchange_code": "LSE",
+                "currency_code": "GBP",
+                "is_tradable": 0,
+                "exclusion_reason": "non_usd_currency",
+                "ibkr_conid": 458339378,
+            },
+            {
+                "universe_date_text": "2026-08-26",
+                "ticker": "CRE",
+                "symbol_id": "cre8-symbol",
+                "listing_id": "cre8-listing",
+                "exchange_code": "ARCA",
+                "currency_code": "USD",
+                "is_tradable": 1,
+                "exclusion_reason": "",
+                "ibkr_conid": 854075520,
+            },
+            {
+                "universe_date_text": "2026-08-26",
+                "ticker": "CRE",
+                "symbol_id": "other-foreign-symbol",
+                "listing_id": "other-foreign-listing",
+                "exchange_code": "TSE",
+                "currency_code": "CAD",
+                "is_tradable": 0,
+                "exclusion_reason": "non_usd_currency",
+                "ibkr_conid": 84158465,
+            },
+        ]
+
+        row = tradable_symbol_map(["CRE"])["CRE"]
+
+        self.assertTrue(row["is_tradable"])
+        self.assertEqual(row["ibkr_conid"], 854075520)
+        self.assertEqual(row["listing_id"], "cre8-listing")
+        self.assertEqual(row["currency_code"], "USD")
+        self.assertEqual(row["identity_candidate_count"], 3)
+        self.assertEqual(row["tradable_identity_count"], 1)
+
+    @patch("src.backend.real_live_trading_service.ClickHouseHttpClient")
+    @patch("src.backend.real_live_trading_service.market_gateway_config")
+    @patch.dict("os.environ", {"REAL_LIVE_TRADABLE_UNIVERSE_DATABASE": "q_live"})
+    def test_live_trading_lookup_fails_closed_for_multiple_tradable_listings(
+        self,
+        config_mock,
+        client_class_mock,
+    ) -> None:
+        config_mock.return_value = SimpleNamespace(
+            read_clickhouse=SimpleNamespace(database="ignored_read"),
+            write_clickhouse=SimpleNamespace(database="ignored_write"),
+        )
+        client_class_mock.return_value.query_json.return_value = [
+            {
+                "universe_date_text": "2026-08-26",
+                "ticker": "DUP",
+                "symbol_id": "one",
+                "listing_id": "one",
+                "exchange_code": "NYSE",
+                "currency_code": "USD",
+                "is_tradable": 1,
+                "exclusion_reason": "",
+                "ibkr_conid": 1,
+            },
+            {
+                "universe_date_text": "2026-08-26",
+                "ticker": "DUP",
+                "symbol_id": "two",
+                "listing_id": "two",
+                "exchange_code": "NASDAQ",
+                "currency_code": "USD",
+                "is_tradable": 1,
+                "exclusion_reason": "",
+                "ibkr_conid": 2,
+            },
+        ]
+
+        row = tradable_symbol_map(["DUP"])["DUP"]
+
+        self.assertFalse(row["is_tradable"])
+        self.assertEqual(row["exclusion_reason"], "ambiguous_tradable_symbol_identity")
+        self.assertEqual(row["tradable_identity_count"], 2)
 
 
 if __name__ == "__main__":

@@ -2469,6 +2469,10 @@ def filter_tradable_rows(rows: list[dict[str, Any]]) -> tuple[list[dict[str, Any
         enriched["is_tradable"] = True
         enriched["ibkr_conid"] = int(match["ibkr_conid"])
         enriched["conid"] = int(match["ibkr_conid"])
+        enriched["symbol_id"] = str(match.get("symbol_id") or enriched.get("symbol_id") or "")
+        enriched["listing_id"] = str(match.get("listing_id") or enriched.get("listing_id") or "")
+        enriched["exchange"] = str(match.get("exchange_code") or enriched.get("exchange") or "")
+        enriched["currency"] = str(match.get("currency_code") or enriched.get("currency") or "")
         enriched["tradable_universe_date"] = match["universe_date"]
         enriched["exclusion_reason"] = match.get("exclusion_reason") or ""
         filtered.append(enriched)
@@ -2503,17 +2507,57 @@ def tradable_symbol_map(symbols: list[str]) -> dict[str, dict[str, Any]]:
         tradable_symbol_lookup(database=feature_database, symbols=normalized),
         timeout=10,
     )
-    return {
-        str(row.get("ticker") or "").upper(): {
-            "universe_date": str(row.get("universe_date_text") or ""),
-            "ticker": str(row.get("ticker") or "").upper(),
-            "is_tradable": bool(int(row.get("is_tradable") or 0)),
-            "exclusion_reason": str(row.get("exclusion_reason") or ""),
-            "ibkr_conid": int(row.get("ibkr_conid") or 0),
+    candidates_by_ticker: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        ticker = str(row.get("ticker") or "").strip().upper()
+        if ticker:
+            candidates_by_ticker.setdefault(ticker, []).append(dict(row))
+
+    resolved: dict[str, dict[str, Any]] = {}
+    for ticker, candidates in candidates_by_ticker.items():
+        tradable_candidates = [
+            row for row in candidates if bool(int(row.get("is_tradable") or 0))
+        ]
+        if len(tradable_candidates) == 1:
+            selected = tradable_candidates[0]
+            is_tradable = True
+            exclusion_reason = ""
+        elif len(tradable_candidates) > 1:
+            # A provider ticker alone cannot safely choose between two executable
+            # listings. Preserve the collision and fail closed instead of routing
+            # an order or scanner row to an arbitrary conid.
+            selected = sorted(tradable_candidates, key=_tradable_identity_sort_key)[0]
+            is_tradable = False
+            exclusion_reason = "ambiguous_tradable_symbol_identity"
+        else:
+            selected = sorted(candidates, key=_tradable_identity_sort_key)[0]
+            is_tradable = False
+            exclusion_reason = str(selected.get("exclusion_reason") or "not_tradable")
+        resolved[ticker] = {
+            "universe_date": str(selected.get("universe_date_text") or ""),
+            "ticker": ticker,
+            "symbol_id": str(selected.get("symbol_id") or ""),
+            "listing_id": str(selected.get("listing_id") or ""),
+            "exchange_code": str(selected.get("exchange_code") or ""),
+            "currency_code": str(selected.get("currency_code") or ""),
+            "is_tradable": is_tradable,
+            "exclusion_reason": exclusion_reason,
+            "ibkr_conid": int(selected.get("ibkr_conid") or 0),
+            "identity_candidate_count": len(candidates),
+            "tradable_identity_count": len(tradable_candidates),
         }
-        for row in rows
-        if str(row.get("ticker") or "").strip()
-    }
+    return resolved
+
+
+def _tradable_identity_sort_key(row: dict[str, Any]) -> tuple[str, str, str, int]:
+    """Provide stable evidence selection without implying identity authority."""
+
+    return (
+        str(row.get("currency_code") or ""),
+        str(row.get("exchange_code") or ""),
+        str(row.get("listing_id") or ""),
+        int(row.get("ibkr_conid") or 0),
+    )
 
 
 def scanner_row_symbol(row: dict[str, Any]) -> str:
