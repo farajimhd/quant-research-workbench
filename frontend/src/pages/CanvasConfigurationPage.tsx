@@ -500,6 +500,7 @@ function ReplayCanvasFocusPage({ focusToken, runId }: { focusToken: string; runI
 export function CanvasWorkspaceSurface({ accountKeys, approvedCanvas, canvasId, manager, modeControls, readOnly = false, replayRun, requestedInstanceId, requestedNewsId, requestedSecAccession, requestedSecCik, runtimeMode: requestedRuntimeMode, runtimeWorkspaceId, transient = false }: { accountKeys?: string[]; approvedCanvas?: ApprovedCanvasProfile; canvasId: string; manager: boolean; modeControls?: ReactNode; readOnly?: boolean; replayRun?: CanvasReplayRun; requestedInstanceId?: string; requestedNewsId?: string; requestedSecAccession?: string; requestedSecCik?: string; runtimeMode?: CanvasRuntimeMode; runtimeWorkspaceId?: string; transient?: boolean }) {
   const runtimeMode: CanvasRuntimeMode = replayRun?.mode === "backtest" || replayRun?.mode === "backtest_debug" ? replayRun.mode : replayRun ? "replay" : requestedRuntimeMode ?? "canvas";
   const liveMode = runtimeMode === "live" || runtimeMode === "paper";
+  const replayRuntimeReady = !replayRun || ["ready", "running", "paused", "fast_forwarding", "completed"].includes(replayRun.status);
   const focusRuntimeMode = runtimeMode === "live" || runtimeMode === "paper" ? runtimeMode : undefined;
   const resolvedAccountKeys = readOnly ? [] : accountKeys?.length ? accountKeys : readLiveAccountKeys();
   const accountSignature = [...resolvedAccountKeys].sort().join(".") || runtimeMode;
@@ -572,7 +573,7 @@ export function CanvasWorkspaceSurface({ accountKeys, approvedCanvas, canvasId, 
   const scannerCutoffMs = replayRun ? Math.floor(chartCutoffMs / 15_000) * 15_000 : chartCutoffMs;
   const historicalScanner = useCanvasScannerSnapshot({
     cutoffMs: scannerCutoffMs,
-    enabled: Boolean(scannerContainerKey) && contextReady && !liveMode,
+    enabled: Boolean(scannerContainerKey) && contextReady && replayRuntimeReady && !liveMode,
     materializeDiscovery: scannerNeedsDiscoveryRuntime,
     technicalWindows: scannerTechnicalWindows,
   });
@@ -734,6 +735,12 @@ export function CanvasWorkspaceSurface({ accountKeys, approvedCanvas, canvasId, 
 
   useEffect(() => {
     if (!contextReady) return;
+    if (replayRun && !replayRuntimeReady) {
+      setPreview(null);
+      setLoading(true);
+      setError("");
+      return;
+    }
     if (!previewContainerKey) {
       setPreview(null);
       setLoading(false);
@@ -768,7 +775,7 @@ export function CanvasWorkspaceSurface({ accountKeys, approvedCanvas, canvasId, 
       .catch((reason) => { if (!controller.signal.aborted) setError(reason instanceof Error ? reason.message : String(reason)); })
       .finally(() => { if (!controller.signal.aborted) setLoading(false); });
     return () => controller.abort();
-  }, [accountSignature, activeSymbol, contextError, contextReady, liveMode, previewContainerKey, previewContext.previewTime, previewContext.sessionDate, replayRun?.run_id, runtimeMode]);
+  }, [accountSignature, activeSymbol, contextError, contextReady, liveMode, previewContainerKey, previewContext.previewTime, previewContext.sessionDate, replayRun?.run_id, replayRun?.status, replayRuntimeReady, runtimeMode]);
 
   const metaForContainer = useMemo(() => (definition: WorkspaceContainerDefinition): WorkspaceWindowMeta => {
     if (definition.id === "chart") {

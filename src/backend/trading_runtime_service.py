@@ -1433,19 +1433,18 @@ def _bar_start_sort_key(row: dict[str, Any]) -> float:
 
 
 def historical_day_coverage(anchor_date: date) -> dict[str, Any]:
-    window = historical_window_preview(
-        mode=RunMode.REPLAY.value,
-        anchor_date=anchor_date,
-        session_count=1,
-        replay_end_date=anchor_date,
-    )
+    next_session = anchor_date + timedelta(days=1)
     payload = _historical_gateway_get(
-        "/coverage",
-        {"start": window["start"], "end": window["end"]},
+        "/coverage/latest",
+        {"before": next_session.isoformat()},
         timeout=15,
     )
     if not isinstance(payload, dict):
         raise RuntimeError("QMD History day coverage response must be an object")
+    if str(payload.get("session_date") or "") != anchor_date.isoformat():
+        raise RuntimeError(
+            f"QMD History has no canonical full-session coverage for {anchor_date.isoformat()}"
+        )
     return payload
 
 

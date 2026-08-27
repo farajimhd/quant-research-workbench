@@ -174,28 +174,29 @@ function canonicalJson(value: unknown): string {
 }
 
 export function readCanvasRuntimeRegistry(base: CanvasRegistry, storageKey: string): CanvasRegistry {
+  const normalizedBase = normalizeCanvasRegistry(base);
   try {
     const parsed = JSON.parse(window.localStorage.getItem(storageKey) || "null") as Partial<CanvasRegistry> | null;
-    if (!parsed || Number(parsed.version) !== 3) return base;
-    const linkAssignments = normalizeLinkAssignments(parsed.linkAssignments ?? base.linkAssignments);
+    if (!parsed || Number(parsed.version) !== 3) return normalizedBase;
+    const linkAssignments = normalizeLinkAssignments(parsed.linkAssignments ?? normalizedBase.linkAssignments);
     return {
-      ...base,
-      instanceSettings: normalizeInstanceSettings(parsed.instanceSettings ?? base.instanceSettings),
+      ...normalizedBase,
+      instanceSettings: normalizeInstanceSettings(parsed.instanceSettings ?? normalizedBase.instanceSettings),
       linkAssignments,
       linkContexts: {
-        A: normalizeLinkContext(parsed.linkContexts?.A, base.linkContexts.A),
-        B: normalizeLinkContext(parsed.linkContexts?.B, base.linkContexts.B),
-        C: normalizeLinkContext(parsed.linkContexts?.C, base.linkContexts.C),
-        D: normalizeLinkContext(parsed.linkContexts?.D, base.linkContexts.D),
-        E: normalizeLinkContext(parsed.linkContexts?.E, base.linkContexts.E),
-        F: normalizeLinkContext(parsed.linkContexts?.F, base.linkContexts.F),
-        G: normalizeLinkContext(parsed.linkContexts?.G, base.linkContexts.G),
+        A: normalizeLinkContext(parsed.linkContexts?.A, normalizedBase.linkContexts.A),
+        B: normalizeLinkContext(parsed.linkContexts?.B, normalizedBase.linkContexts.B),
+        C: normalizeLinkContext(parsed.linkContexts?.C, normalizedBase.linkContexts.C),
+        D: normalizeLinkContext(parsed.linkContexts?.D, normalizedBase.linkContexts.D),
+        E: normalizeLinkContext(parsed.linkContexts?.E, normalizedBase.linkContexts.E),
+        F: normalizeLinkContext(parsed.linkContexts?.F, normalizedBase.linkContexts.F),
+        G: normalizeLinkContext(parsed.linkContexts?.G, normalizedBase.linkContexts.G),
       },
-      linkOwners: normalizeLinkOwners(linkAssignments, parsed.linkOwners ?? base.linkOwners),
+      linkOwners: normalizeLinkOwners(linkAssignments, parsed.linkOwners ?? normalizedBase.linkOwners),
       version: 3,
     };
   } catch {
-    return base;
+    return normalizedBase;
   }
 }
 

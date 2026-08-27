@@ -1343,6 +1343,27 @@ class BacktestPreflightTests(unittest.TestCase):
 
 
 class ReplayControllerTests(unittest.IsolatedAsyncioTestCase):
+    async def test_historical_watchlist_warmup_runs_off_event_loop(self) -> None:
+        controller = ReplayRunController(
+            ReplayRunDefinition(
+                session_date=date(2026, 8, 21),
+                start_time=time(4, 0),
+                configuration_revision=approved_configuration(),
+            ),
+            runtime_root=Path(tempfile.gettempdir()),
+        )
+        with patch.object(
+            controller,
+            "_historical_watchlist_timeline",
+            return_value=[],
+        ) as materialize, patch(
+            "src.backend.replay_run_service.asyncio.to_thread",
+            new=AsyncMock(),
+        ) as to_thread:
+            await controller._prepare_historical_watchlist_timeline()
+
+        to_thread.assert_awaited_once_with(materialize)
+
     def test_source_native_market_signal_creates_assignment_without_symbol_seed(self) -> None:
         approved = approved_configuration()
         approved["payload"]["run_plan"] = {
@@ -2076,7 +2097,7 @@ class ReplayPreflightTests(unittest.TestCase):
         self.assertEqual(universe_check["status"], "ready")
         self.assertIn("every ticker", universe_check["summary"])
 
-    def test_preflight_resolves_watchlist_at_replay_clock(self) -> None:
+    def test_preflight_defers_watchlist_materialization_to_run_warmup(self) -> None:
         approved = approved_configuration()
         approved["payload"]["universes"] = [{
             "enabled": True,
@@ -2085,11 +2106,6 @@ class ReplayPreflightTests(unittest.TestCase):
             "source": "watchlist",
         }]
         approved["configuration_model"] = {"market_discovery": {}}
-        resolved = {
-            "members": [{"ticker": "MSFT", "ibkr_conid": 272093}],
-            "scanner": {"complete_universe": True},
-            "status": "ready",
-        }
         with tempfile.TemporaryDirectory() as directory, patch(
             "src.backend.replay_run_service.historical_gateway_snapshot",
             return_value={"base_url": "http://127.0.0.1:8801", "ready": True},
@@ -2101,7 +2117,7 @@ class ReplayPreflightTests(unittest.TestCase):
             return_value=Path(directory),
         ), patch(
             "src.backend.watchlist_runtime_service.resolve_historical_watchlist",
-            return_value=resolved,
+            side_effect=AssertionError("preflight must not materialize historical Watchlists"),
         ) as resolver:
             result = replay_preflight(
                 session_date=date(2026, 7, 28),
@@ -2111,13 +2127,12 @@ class ReplayPreflightTests(unittest.TestCase):
             )
 
         self.assertTrue(result["ready"])
-        self.assertIn("MSFT", result["tickers"])
-        self.assertEqual(
-            resolver.call_args.kwargs["as_of"].isoformat(),
-            "2026-07-28T09:45:00-04:00",
-        )
+        self.assertEqual(result["tickers"], [])
+        resolver.assert_not_called()
+        check = next(row for row in result["checks"] if row["id"] == "historical_watchlists")
+        self.assertIn("materializes asynchronously", check["summary"])
 
-    def test_preflight_fails_closed_for_partial_historical_watchlist(self) -> None:
+    def test_preflight_does_not_query_partial_historical_watchlist(self) -> None:
         approved = approved_configuration()
         approved["payload"]["universes"] = [{
             "enabled": True,
@@ -2137,12 +2152,8 @@ class ReplayPreflightTests(unittest.TestCase):
             return_value=Path(directory),
         ), patch(
             "src.backend.watchlist_runtime_service.resolve_historical_watchlist",
-            return_value={
-                "members": [{"ticker": "AAPL"}],
-                "scanner": {"complete_universe": False},
-                "status": "refreshing",
-            },
-        ):
+            side_effect=AssertionError("preflight must not inspect historical membership"),
+        ) as resolver:
             result = replay_preflight(
                 session_date=date(2026, 7, 28),
                 start_time=time(9, 45),
@@ -2150,10 +2161,11 @@ class ReplayPreflightTests(unittest.TestCase):
                 configuration_revision=approved,
             )
 
-        self.assertFalse(result["ready"])
+        self.assertTrue(result["ready"])
+        resolver.assert_not_called()
         check = next(row for row in result["checks"] if row["id"] == "historical_watchlists")
-        self.assertEqual(check["status"], "blocked")
-        self.assertIn("complete full-universe snapshot", check["evidence"])
+        self.assertEqual(check["status"], "ready")
+        self.assertIn("materializes asynchronously", check["summary"])
 
 
 class ReplaySharedAbstractionTests(unittest.TestCase):

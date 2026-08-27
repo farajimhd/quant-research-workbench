@@ -65,7 +65,7 @@ type ReplayPreflight = {
 const REPLAY_SPEEDS = [1, 5, 30, 120, 0] as const;
 
 export function ReplayTradingPage() {
-  const [sessionDate, setSessionDate] = useState(previousWeekdayIsoDate);
+  const [sessionDate, setSessionDate] = useState("");
   const [startTime, setStartTime] = useState("04:00");
   const [initialCash, setInitialCash] = useState(10_000);
   const [preflight, setPreflight] = useState<ReplayPreflight | null>(null);
@@ -79,6 +79,18 @@ export function ReplayTradingPage() {
   const [executionMode, setExecutionMode] = useState<"manual" | "strategy">("strategy");
   const [symbol, setSymbol] = useState("AAPL");
   const replayReady = Boolean(preflight?.ready);
+
+  useEffect(() => {
+    let cancelled = false;
+    api<{ session_date?: string }>("/api/trading/canvas-context", { timeoutMs: 5_000 })
+      .then((payload) => {
+        if (!cancelled) setSessionDate(payload.session_date || previousWeekdayIsoDate());
+      })
+      .catch(() => {
+        if (!cancelled) setSessionDate(previousWeekdayIsoDate());
+      });
+    return () => { cancelled = true; };
+  }, []);
 
   useEffect(() => {
     const refreshOnEntry = () => {
@@ -103,6 +115,7 @@ export function ReplayTradingPage() {
 
   useEffect(() => {
     if (run) return;
+    if (!sessionDate) return;
     let cancelled = false;
     const timer = window.setTimeout(() => {
       setChecking(true);

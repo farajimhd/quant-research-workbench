@@ -214,6 +214,6 @@ function normalizeScannerColumnKeys(columns: unknown, customColumns: unknown): s
 
 export function cloneDefaultSettings() { return normalizeSettings(DEFAULT_SETTINGS); }
 export function instanceSettings(registry: CanvasRegistry, instanceId: string) {
-  const stored = registry.instanceSettings[instanceId] as Partial<ContainerSettings> | undefined;
+  const stored = registry.instanceSettings?.[instanceId] as Partial<ContainerSettings> | undefined;
   return stored ? normalizeSettings(stored) : instanceId === "chart" ? readSettings() : cloneDefaultSettings();
 }

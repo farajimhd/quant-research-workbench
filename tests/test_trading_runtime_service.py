@@ -12,6 +12,7 @@ from src.backend.trading_runtime_service import (
     _recent_live_bar_history,
     historical_bar_chunk,
     historical_compact_events,
+    historical_day_coverage,
     historical_latest_coverage,
     historical_market_state,
     historical_ticker_change,
@@ -321,6 +322,34 @@ class HistoricalTradingServiceTests(unittest.TestCase):
         payload = historical_latest_coverage()
         self.assertEqual(payload["session_date"], "2026-07-10")
         gateway_get.assert_called_once_with("/coverage/latest", {}, timeout=15)
+
+    @patch("src.backend.trading_runtime_service._historical_gateway_get")
+    def test_day_coverage_uses_daily_continuity_summary(self, gateway_get) -> None:
+        gateway_get.return_value = {
+            "session_date": "2026-08-21",
+            "event_count": 535_000_000,
+            "ticker_count": 13_000,
+        }
+
+        payload = historical_day_coverage(date(2026, 8, 21))
+
+        self.assertEqual(payload["event_count"], 535_000_000)
+        gateway_get.assert_called_once_with(
+            "/coverage/latest",
+            {"before": "2026-08-22"},
+            timeout=15,
+        )
+
+    @patch("src.backend.trading_runtime_service._historical_gateway_get")
+    def test_day_coverage_rejects_earlier_session(self, gateway_get) -> None:
+        gateway_get.return_value = {
+            "session_date": "2026-08-20",
+            "event_count": 500_000_000,
+            "ticker_count": 12_000,
+        }
+
+        with self.assertRaisesRegex(RuntimeError, "no canonical full-session coverage"):
+            historical_day_coverage(date(2026, 8, 21))
 
     def test_replay_window_is_always_exactly_one_day(self) -> None:
         payload = historical_window_preview(

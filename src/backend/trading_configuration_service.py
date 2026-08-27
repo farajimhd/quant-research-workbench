@@ -73,6 +73,8 @@ CONFIGURATION_SCHEMA_VERSION = 40
 MARKET_DISCOVERY_MATERIALIZATION_RUN_ID = "market-discovery:materialized-configuration"
 _CONFIGURATION_BASE_CACHE_LOCK = threading.RLock()
 _CONFIGURATION_BASE_CACHE: tuple[str, float, dict[str, Any] | None] = ("", 0.0, None)
+_RUNTIME_SNAPSHOT_CACHE_LOCK = threading.RLock()
+_RUNTIME_SNAPSHOT_CACHE: dict[tuple[str, str, str, str], dict[str, Any]] = {}
 _MARKET_DISCOVERY_RUNTIME_CACHE_LOCK = threading.RLock()
 _MARKET_DISCOVERY_RUNTIME_CACHE: tuple[float, dict[str, Any] | None] = (0.0, None)
 CONFIGURATION_SECTIONS = {
@@ -708,15 +710,37 @@ def candidate_runtime_configuration_snapshot(
 ) -> dict[str, Any]:
     candidate = configuration_candidate(candidate_id, required=True)
     assert candidate is not None
-    return _runtime_configuration_snapshot(
-        candidate,
-        mode=mode,
-        run_plan_id=run_plan_id,
-        revision_id=str(candidate["candidate_id"]),
-        revision=int(candidate["candidate_revision"]),
-        timestamp=str(candidate["created_at"]),
-        release_state="test_candidate",
+    cache_key = (
+        mode,
+        str(candidate["candidate_id"]),
+        run_plan_id,
+        str(candidate["content_hash"]),
     )
+    with _RUNTIME_SNAPSHOT_CACHE_LOCK:
+        cached = _RUNTIME_SNAPSHOT_CACHE.get(cache_key)
+        if cached is not None:
+            return deepcopy(cached)
+        snapshot = _runtime_configuration_snapshot(
+            candidate,
+            mode=mode,
+            run_plan_id=run_plan_id,
+            revision_id=str(candidate["candidate_id"]),
+            revision=int(candidate["candidate_revision"]),
+            timestamp=str(candidate["created_at"]),
+            release_state="test_candidate",
+        )
+        _RUNTIME_SNAPSHOT_CACHE[cache_key] = snapshot
+        selected_run_plan_id = str(snapshot.get("run_plan_id") or "")
+        if selected_run_plan_id:
+            _RUNTIME_SNAPSHOT_CACHE[
+                (
+                    mode,
+                    str(candidate["candidate_id"]),
+                    selected_run_plan_id,
+                    str(candidate["content_hash"]),
+                )
+            ] = snapshot
+        return deepcopy(snapshot)
 
 
 def approved_runtime_configuration_snapshot(
@@ -749,7 +773,13 @@ def _runtime_configuration_snapshot(
 ) -> dict[str, Any]:
     if mode not in SUPPORTED_MODES:
         raise ValueError(f"Unsupported trading configuration mode: {mode}")
-    model = _migrate_draft(deepcopy(release["payload"]))
+    payload = dict(release["payload"])
+    model = (
+        deepcopy(payload)
+        if release_state == "test_candidate"
+        and int(payload.get("schema_version") or 0) == CONFIGURATION_SCHEMA_VERSION
+        else _migrate_draft(deepcopy(payload))
+    )
     _validate_draft(model)
     runtimes = resolve_runtime_configurations(model, mode=mode)
     if not runtimes:

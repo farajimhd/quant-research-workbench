@@ -7,6 +7,8 @@ from copy import deepcopy
 from pathlib import Path
 from unittest.mock import patch
 
+import src.backend.trading_configuration_service as configuration_service
+
 from src.backend.trading_configuration_service import (
     CONFIGURATION_SCHEMA_VERSION,
     _default_draft,
@@ -30,6 +32,7 @@ from src.backend.trading_configuration_service import (
     configuration_candidates,
     configuration_base,
     create_test_candidate,
+    candidate_runtime_configuration_snapshot,
     effective_configuration_snapshot,
     market_discovery_runtime_configuration,
     market_discovery_presentation_configuration,
@@ -45,6 +48,45 @@ from src.trading_runtime.strategy_engine import long_momentum_strategy_definitio
 
 
 class TradingConfigurationServiceTests(unittest.TestCase):
+    def test_candidate_runtime_snapshot_reuses_immutable_projection(self) -> None:
+        candidate = {
+            "candidate_id": "candidate-cache-test",
+            "candidate_revision": 1,
+            "content_hash": "candidate-cache-hash",
+            "created_at": "2026-08-27T12:00:00+00:00",
+        }
+        projected = {
+            "revision_id": candidate["candidate_id"],
+            "run_plan_id": "balanced-replay",
+        }
+        configuration_service._RUNTIME_SNAPSHOT_CACHE.clear()
+        try:
+            with patch(
+                "src.backend.trading_configuration_service.configuration_candidate",
+                return_value=candidate,
+            ), patch(
+                "src.backend.trading_configuration_service._runtime_configuration_snapshot",
+                return_value=projected,
+            ) as resolve:
+                first = candidate_runtime_configuration_snapshot(
+                    "replay",
+                    candidate_id=candidate["candidate_id"],
+                    run_plan_id="",
+                )
+                second = candidate_runtime_configuration_snapshot(
+                    "replay",
+                    candidate_id=candidate["candidate_id"],
+                    run_plan_id="balanced-replay",
+                )
+
+            self.assertEqual(first, projected)
+            self.assertEqual(second, projected)
+            self.assertIsNot(first, projected)
+            self.assertIsNot(second, projected)
+            resolve.assert_called_once()
+        finally:
+            configuration_service._RUNTIME_SNAPSHOT_CACHE.clear()
+
     def test_atomic_rule_catalog_has_complete_executable_conditions(self) -> None:
         with patch(
             "src.backend.trading_configuration_service.get_strategy_definition",
@@ -211,6 +253,9 @@ class TradingConfigurationServiceTests(unittest.TestCase):
         ) as snapshot, patch(
             "src.backend.trading_configuration_service.approved_configuration",
             return_value={"revision_id": "approved"},
+        ), patch(
+            "src.backend.trading_configuration_service.configuration_candidate",
+            return_value=None,
         ):
             replay = replay_configuration_snapshot()
             backtest = backtest_configuration_snapshot()

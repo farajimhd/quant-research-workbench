@@ -1098,6 +1098,7 @@ class ReplayRunController:
                     str(row.occurrence.get("event_id") or ""),
                 )
             )
+            await self._prepare_historical_watchlist_timeline()
             await self._initialize_runtime()
             self._record_historical_watchlist_authority()
             frames = await self._load_strategy_frames()
@@ -2257,6 +2258,12 @@ class ReplayRunController:
                     shared[cache_key] = cached
             self._historical_watchlist_timeline_cache = cached
         return self._historical_watchlist_timeline_cache
+
+    async def _prepare_historical_watchlist_timeline(self) -> None:
+        """Materialize historical universe authority without blocking the API loop."""
+        if self._historical_watchlist_timeline_cache is not None:
+            return
+        await asyncio.to_thread(self._historical_watchlist_timeline)
 
     def _apply_historical_watchlist_membership(self, event_time: datetime) -> None:
         timeline = self._historical_watchlist_timeline()
@@ -3979,16 +3986,6 @@ def replay_preflight(
     assignment_tickers = {
         str(row.get("ticker") or "").strip().upper() for row in assignments
     }
-    historical_watchlist_members: list[dict[str, Any]] = []
-    historical_watchlist_error = ""
-    try:
-        if execution_mode == "strategy":
-            historical_watchlist_members = _historical_watchlist_members_for_configuration(
-                approved,
-                as_of=definition.requested_start,
-            )
-    except Exception as exc:
-        historical_watchlist_error = str(exc)
     universe_tickers = {
         _ticker(symbol)
         for universe in configuration.get("universes") or []
@@ -4001,10 +3998,6 @@ def replay_preflight(
         {
             *assignment_tickers,
             *universe_tickers,
-            *(
-                str(row.get("ticker") or "").strip().upper()
-                for row in historical_watchlist_members
-            ),
             *(_ticker(value) for value in tickers),
         }
     )
@@ -4078,11 +4071,13 @@ def replay_preflight(
         _check(
             "historical_watchlists",
             "Historical Watchlists",
-            not historical_watchlist_error,
-            f"{len(historical_watchlist_members)} point-in-time Watchlist member(s) were resolved from a complete market snapshot."
-            if historical_watchlist_members
-            else "No enabled Watchlist-backed universe is configured for this run.",
-            historical_watchlist_error or "Approved configuration at the Replay event clock",
+            True,
+            (
+                f"{len(watchlist_source_ids)} causal Watchlist source(s) are pinned; membership materializes asynchronously during Replay warm-up."
+                if watchlist_source_ids
+                else "No Watchlist-backed universe is required by this Run Plan."
+            ),
+            "Pinned Run Plan configuration; no historical market materialization in preflight",
             required=any(
                 bool(universe.get("enabled", True))
                 and str(universe.get("source") or "") == "watchlist"
