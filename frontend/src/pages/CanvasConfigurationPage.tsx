@@ -500,7 +500,7 @@ function ReplayCanvasFocusPage({ focusToken, runId }: { focusToken: string; runI
 export function CanvasWorkspaceSurface({ accountKeys, approvedCanvas, canvasId, manager, modeControls, readOnly = false, replayRun, requestedInstanceId, requestedNewsId, requestedSecAccession, requestedSecCik, runtimeMode: requestedRuntimeMode, runtimeWorkspaceId, transient = false }: { accountKeys?: string[]; approvedCanvas?: ApprovedCanvasProfile; canvasId: string; manager: boolean; modeControls?: ReactNode; readOnly?: boolean; replayRun?: CanvasReplayRun; requestedInstanceId?: string; requestedNewsId?: string; requestedSecAccession?: string; requestedSecCik?: string; runtimeMode?: CanvasRuntimeMode; runtimeWorkspaceId?: string; transient?: boolean }) {
   const runtimeMode: CanvasRuntimeMode = replayRun?.mode === "backtest" || replayRun?.mode === "backtest_debug" ? replayRun.mode : replayRun ? "replay" : requestedRuntimeMode ?? "canvas";
   const liveMode = runtimeMode === "live" || runtimeMode === "paper";
-  const replayRuntimeReady = !replayRun || ["ready", "running", "paused", "fast_forwarding", "completed"].includes(replayRun.status);
+  const replayRuntimeReady = !replayRun || replayRun.runtime_ready === true;
   const focusRuntimeMode = runtimeMode === "live" || runtimeMode === "paper" ? runtimeMode : undefined;
   const resolvedAccountKeys = readOnly ? [] : accountKeys?.length ? accountKeys : readLiveAccountKeys();
   const accountSignature = [...resolvedAccountKeys].sort().join(".") || runtimeMode;
@@ -519,12 +519,22 @@ export function CanvasWorkspaceSurface({ accountKeys, approvedCanvas, canvasId, 
       ? rebaseCanvasRuntimeOverlay(previous, runtimeBase, canvasId)
       : null;
   });
-  const initialCanvasState = useMemo<CanvasWorkspaceState | null>(() => runtimeBase
-    ? runtimeCanvasState(runtimeBase, workspaceStorageKey, canvasId, requestedInstanceId, !transient)
-    : focusCanvasState(canvasId, requestedInstanceId), [canvasId, overlayEpoch, requestedInstanceId, runtimeBase, transient, workspaceStorageKey]);
-  const [registry, setRegistry] = useState<CanvasRegistry>(() => runtimeBase
-    ? transient ? runtimeBase : readCanvasRuntimeRegistry(runtimeBase, runtimeRegistryStorageKey)
-    : readCanvasRegistry());
+  const initialCanvasState = useMemo<CanvasWorkspaceState | null>(() => {
+    const state = runtimeBase
+      ? runtimeCanvasState(runtimeBase, workspaceStorageKey, canvasId, requestedInstanceId, !transient)
+      : focusCanvasState(canvasId, requestedInstanceId);
+    return replayRun?.execution_mode === "strategy" && !requestedInstanceId
+      ? strategyReplayCanvasState(state)
+      : state;
+  }, [canvasId, overlayEpoch, replayRun?.execution_mode, requestedInstanceId, runtimeBase, transient, workspaceStorageKey]);
+  const [registry, setRegistry] = useState<CanvasRegistry>(() => {
+    const base = runtimeBase
+      ? transient ? runtimeBase : readCanvasRuntimeRegistry(runtimeBase, runtimeRegistryStorageKey)
+      : readCanvasRegistry();
+    return replayRun?.execution_mode === "strategy"
+      ? strategyReplayRegistry(base, replayRun)
+      : base;
+  });
   const [previewContext, setPreviewContext] = useState<CanvasPreviewContext>(() => replayRun ? replayPreviewContext(replayRun) : liveMode ? currentLivePreviewContext() : readPreviewContext());
   const liveClockInstant = useWallClock(1_000, liveMode);
   const livePreviewRefreshMs = useWallClock(15_000, liveMode);
@@ -1719,6 +1729,60 @@ function runtimeCanvasState(profile: CanvasRegistry, storageKey: string, canvasI
   if (!requestedInstanceId) return state;
   const kind = workspaceContainerKind(requestedInstanceId, state);
   return { groups: {}, instances: { [requestedInstanceId]: kind }, layoutVersion: TRADING_WORKSPACE_LAYOUT_VERSION, layouts: createFocusLayouts([requestedInstanceId]), openIds: [requestedInstanceId] };
+}
+const STRATEGY_REPLAY_CONTAINER_IDS: WorkspaceContainerId[] = ["chart", "signal_stream", "watchlist", "strategy_activity", "scanner", "orders", "positions", "portfolio"];
+function strategyReplayCanvasState(state: CanvasWorkspaceState | null): CanvasWorkspaceState {
+  const openIds = [
+    ...STRATEGY_REPLAY_CONTAINER_IDS,
+    ...(state?.openIds ?? []).filter((id) => !STRATEGY_REPLAY_CONTAINER_IDS.includes(workspaceContainerKind(id, state))),
+  ];
+  const instances = {
+    ...(state?.instances ?? {}),
+    ...Object.fromEntries(STRATEGY_REPLAY_CONTAINER_IDS.map((id) => [id, id])),
+  } as Record<string, WorkspaceContainerId>;
+  return {
+    groups: {},
+    instances,
+    layoutVersion: TRADING_WORKSPACE_LAYOUT_VERSION,
+    layouts: createFocusLayouts(openIds),
+    openIds,
+  };
+}
+function strategyReplayRegistry(registry: CanvasRegistry, run: CanvasReplayRun): CanvasRegistry {
+  const signalStreamIds = run.strategy_debug_sources?.signal_stream_ids ?? [];
+  const watchlistIds = run.strategy_debug_sources?.watchlist_ids ?? [];
+  const signalSettings = instanceSettings(registry, "signal_stream");
+  const watchlistSettings = instanceSettings(registry, "watchlist");
+  const activitySettings = instanceSettings(registry, "strategy_activity");
+  return {
+    ...registry,
+    instanceSettings: {
+      ...registry.instanceSettings,
+      signal_stream: {
+        ...signalSettings,
+        signal_stream: {
+          ...signalSettings.signal_stream,
+          signalStreamId: signalStreamIds[0] ?? "",
+          signalStreamIds,
+        },
+      },
+      watchlist: {
+        ...watchlistSettings,
+        watchlist: {
+          ...watchlistSettings.watchlist,
+          watchlistId: watchlistIds[0] ?? "",
+          watchlistIds,
+        },
+      },
+      strategy_activity: {
+        ...activitySettings,
+        strategy_activity: {
+          ...activitySettings.strategy_activity,
+          runId: run.run_id,
+        },
+      },
+    },
+  };
 }
 function normalizeInheritedLayouts(layouts: Record<string, WorkspaceWindowLayout>, ids: string[]) {
   const fallback = createFocusLayouts(ids);

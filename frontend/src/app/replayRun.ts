@@ -20,6 +20,7 @@ export type CanvasReplayRun = {
   configuration_revision_id?: string;
   current_time: string;
   error: string;
+  execution_mode?: "manual" | "strategy";
   mode?: "backtest" | "backtest_debug" | "replay";
   navigation_action?: {
     category: string;
@@ -39,6 +40,11 @@ export type CanvasReplayRun = {
   requested_start: string;
   speed: number;
   status: string;
+  runtime_ready?: boolean;
+  strategy_debug_sources?: {
+    signal_stream_ids: string[];
+    watchlist_ids: string[];
+  };
   updated_at: string;
   warmup_events?: number;
   processed_events?: number;

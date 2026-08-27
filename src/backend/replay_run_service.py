@@ -545,9 +545,7 @@ class ReplayRunController:
                 self._step_until = None
                 self.status = "fast_forwarding"
             elif normalized == "next_action":
-                if self._journal is None:
-                    raise ValueError("Replay strategy activity is not ready")
-                records = self._journal.records(self.run_id)
+                records = self._journal.records(self.run_id) if self._journal is not None else []
                 self._next_action_after_sequence = records[-1].sequence if records else 0
                 self._last_navigation_action = None
                 self._fast_forward_until = None
@@ -738,6 +736,32 @@ class ReplayRunController:
         values = tuple(dict.fromkeys(self._account_map.values()))
         return values or ("SIM-REPLAY",)
 
+    def _strategy_debug_sources(self) -> dict[str, list[str]]:
+        configuration = dict(self.definition.configuration_revision.get("payload") or {})
+        run_plan = dict(configuration.get("run_plan") or {})
+        activation = dict(configuration.get("signal_activation") or {})
+        signal_stream_ids = [
+            str(row.get("signal_stream_id") or "")
+            for row in activation.get("signal_streams") or []
+            if bool(row.get("enabled", True)) and str(row.get("signal_stream_id") or "")
+        ]
+        watchlist_ids = [
+            str(value)
+            for value in run_plan.get("watchlist_ids") or []
+            if str(value)
+        ]
+        watchlist_ids.extend(
+            str(universe.get("scanner_view_id") or universe.get("name") or "")
+            for universe in configuration.get("universes") or []
+            if bool(universe.get("enabled", True))
+            and str(universe.get("source") or "") == "watchlist"
+            and str(universe.get("scanner_view_id") or universe.get("name") or "")
+        )
+        return {
+            "signal_stream_ids": list(dict.fromkeys(signal_stream_ids)),
+            "watchlist_ids": list(dict.fromkeys(watchlist_ids)),
+        }
+
     def snapshot(self) -> dict[str, Any]:
         current = self.current_time or self.definition.session_start
         checkpoint = self._checkpoint_projection()
@@ -751,6 +775,9 @@ class ReplayRunController:
             "mode": self.definition.mode.value,
             "run_id": self.run_id,
             "status": self.status,
+            "runtime_ready": self._runtime is not None and self._journal is not None,
+            "execution_mode": self.definition.execution_mode,
+            "strategy_debug_sources": self._strategy_debug_sources(),
             "error": self.error,
             "created_at": self.created_at.isoformat(),
             "updated_at": self.updated_at.isoformat(),
@@ -1081,7 +1108,8 @@ class ReplayRunController:
 
     async def _run(self) -> None:
         try:
-            self.status = "warming"
+            if self.status == "created":
+                self.status = "warming"
             self.updated_at = datetime.now(UTC)
             await self._publish(force=True)
             self._journal = TradingJournal(self.run_dir / "journal.sqlite3")

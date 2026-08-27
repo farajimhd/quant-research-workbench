@@ -1343,6 +1343,41 @@ class BacktestPreflightTests(unittest.TestCase):
 
 
 class ReplayControllerTests(unittest.IsolatedAsyncioTestCase):
+    async def test_next_action_can_be_queued_before_runtime_warmup_finishes(self) -> None:
+        configuration = approved_configuration()
+        controller = ReplayRunController(
+            ReplayRunDefinition(
+                session_date=date(2026, 8, 21),
+                start_time=time(4, 0),
+                configuration_revision=configuration,
+            ),
+            runtime_root=Path(tempfile.gettempdir()),
+        )
+        configuration["payload"]["signal_activation"] = {
+            "signal_streams": [{
+                "enabled": True,
+                "signal_stream_id": "price-squeeze-5m",
+            }],
+        }
+        configuration["payload"]["run_plan"] = {
+            "watchlist_ids": ["squeeze-tradable-candidates"],
+        }
+
+        result = await controller.command("next_action")
+
+        self.assertEqual(result["status"], "fast_forwarding")
+        self.assertFalse(result["runtime_ready"])
+        self.assertEqual(result["execution_mode"], "strategy")
+        self.assertEqual(
+            result["strategy_debug_sources"]["signal_stream_ids"],
+            ["price-squeeze-5m"],
+        )
+        self.assertEqual(
+            result["strategy_debug_sources"]["watchlist_ids"],
+            ["squeeze-tradable-candidates"],
+        )
+        self.assertEqual(controller._next_action_after_sequence, 0)
+
     async def test_historical_watchlist_warmup_runs_off_event_loop(self) -> None:
         controller = ReplayRunController(
             ReplayRunDefinition(
