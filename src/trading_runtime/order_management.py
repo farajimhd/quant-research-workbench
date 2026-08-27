@@ -651,6 +651,19 @@ class OrderManagementEngine:
                 or str(order.cOID or "").startswith(client_id_prefix)
             )
         ]
+        # Cancelling a parent can synchronously cancel its attached children.
+        # Cancel children and standalone repair backstops first so the snapshot
+        # does not become stale midway through this deterministic batch.
+        candidates.sort(
+            key=lambda order: (
+                0
+                if order.parentId
+                else 1
+                if "repair-" in str(order.cOID or "")
+                else 2,
+                str(order.orderId),
+            )
+        )
         async with self._command_lane(account_id):
             for order in candidates:
                 self._record(
@@ -661,7 +674,33 @@ class OrderManagementEngine:
                     event_time,
                     {"reason": "replace_strategy_protection", "ticker": ticker.upper()},
                 )
-                response = await self.broker.cancel_order(account_id, str(order.orderId))
+                try:
+                    response = await self.broker.cancel_order(
+                        account_id, str(order.orderId)
+                    )
+                except Exception:
+                    refreshed = next(
+                        (
+                            row
+                            for row in await self.broker.live_orders()
+                            if str(row.orderId) == str(order.orderId)
+                        ),
+                        None,
+                    )
+                    if (
+                        refreshed is not None
+                        and refreshed.order_status in OPEN_ORDER_STATUSES
+                    ):
+                        raise
+                    response = {
+                        "msg": "Order was already terminal during protection replacement",
+                        "order_id": str(order.orderId),
+                        "status": (
+                            refreshed.order_status.value
+                            if refreshed is not None
+                            else "not_found"
+                        ),
+                    }
                 responses.append(response)
                 group = self._group_for_order(order)
                 if group is not None:
@@ -699,6 +738,12 @@ class OrderManagementEngine:
         if next_state in TERMINAL_MANAGEMENT_STATES:
             group.terminal_broker_order_ids.add(str(order.orderId))
         if fill_role == "entry" and float(order.filledQuantity) > 0:
+            next_state = (
+                OrderManagementState.FILLED
+                if group.remaining_quantity <= 1e-9
+                else OrderManagementState.PARTIALLY_FILLED
+            )
+        elif fill_role == "managed_exit" and float(order.filledQuantity) > 0:
             next_state = (
                 OrderManagementState.FILLED
                 if group.remaining_quantity <= 1e-9
@@ -1057,9 +1102,14 @@ class OrderManagementEngine:
         if str(intent.action) not in {"exit", "take_profit", "reduce_long", "cover", "reduce_short"}:
             return None
         position_quantity = float(intent.metadata.get("position_quantity") or intent.quantity)
-        if intent.quantity + 1e-9 < position_quantity:
+        # Portfolio admission floors executable quantities to six decimal places.
+        # Compare against that same executable quantity so a full-position exit is
+        # not misclassified as partial solely because the broker position retained
+        # more floating-point precision.
+        executable_position_quantity = math.floor(position_quantity * 1_000_000) / 1_000_000
+        if intent.quantity + 1e-9 < executable_position_quantity:
             raise ValueError(
-                "Partial profit pocket is blocked: CPAPI isSingleGroup does not guarantee "
+                "Partial protected exit is blocked: CPAPI isSingleGroup does not guarantee "
                 "proportional protection reduction; use a full pocket and optional re-entry"
             )
         candidates = [
@@ -1410,6 +1460,12 @@ class OrderManagementEngine:
                 if group.remaining_quantity <= 1e-9
                 else OrderManagementState.PARTIALLY_FILLED
             )
+        elif fill_role == "managed_exit" and float(order.filled_quantity) > 0:
+            next_state = (
+                OrderManagementState.FILLED
+                if group.remaining_quantity <= 1e-9
+                else OrderManagementState.PARTIALLY_FILLED
+            )
         elif (
             fill_role in {"profit_target", "protective_stop", "trailing_stop"}
             and incremental <= 0
@@ -1494,8 +1550,10 @@ class OrderManagementEngine:
             )
         ]
         by_protection_group: dict[str, float] = {}
+        protection_groups: dict[str, list[LiveOrder]] = {}
         for order in protective:
-            key = str(order.parentId or order.cOID or order.orderId)
+            key = _protection_group_key(order)
+            protection_groups.setdefault(key, []).append(order)
             by_protection_group[key] = max(
                 by_protection_group.get(key, 0.0),
                 float(order.remainingQuantity),
@@ -1504,33 +1562,63 @@ class OrderManagementEngine:
         tolerance = 1e-9
         actions: list[dict[str, Any]] = []
         if coverage > required + tolerance:
-            scale = required / coverage if coverage > 0 else 0.0
-            for order in protective:
-                request_index = group.broker_order_request_indexes.get(str(order.orderId))
-                if request_index is None:
-                    continue
-                if scale <= 0:
-                    async with self._command_lane(group.account_id):
-                        response = await self.broker.cancel_order(group.account_id, str(order.orderId))
-                    actions.append({"action": "cancel_excess", "order_id": str(order.orderId), "response": response})
-                    continue
-                request = group.orders[request_index]
-                replacement = replace(request, quantity=max(1e-9, float(request.quantity or 0) * scale))
-                async with self._command_lane(group.account_id):
-                    response = await self.broker.modify_order(
-                        group.account_id,
-                        str(order.orderId),
-                        replacement,
+            excess = coverage - required
+            ordered_groups = sorted(
+                protection_groups.items(),
+                key=lambda item: (
+                    0 if "repair-" in item[0] else 1,
+                    item[0],
+                ),
+            )
+            for key, orders in ordered_groups:
+                if excess <= tolerance:
+                    break
+                current_remaining = by_protection_group[key]
+                reduction = min(excess, current_remaining)
+                target_remaining = max(0.0, current_remaining - reduction)
+                for order in orders:
+                    managed = self._group_for_order(order)
+                    request_index = (
+                        managed.broker_order_request_indexes.get(str(order.orderId))
+                        if managed is not None
+                        else None
                     )
-                group.orders[request_index] = replacement
-                actions.append(
-                    {
+                    if target_remaining <= tolerance:
+                        async with self._command_lane(group.account_id):
+                            response = await self.broker.cancel_order(
+                                group.account_id, str(order.orderId)
+                            )
+                        actions.append({
+                            "action": "cancel_excess",
+                            "order_id": str(order.orderId),
+                            "response": response,
+                        })
+                        continue
+                    if request_index is None:
+                        raise RuntimeError(
+                            f"Protection order {order.orderId} is not registered for safe resize"
+                        )
+                    request = managed.orders[request_index]
+                    replacement = replace(
+                        request,
+                        quantity=float(order.filledQuantity) + min(
+                            float(order.remainingQuantity), target_remaining
+                        ),
+                    )
+                    async with self._command_lane(group.account_id):
+                        response = await self.broker.modify_order(
+                            group.account_id,
+                            str(order.orderId),
+                            replacement,
+                        )
+                    managed.orders[request_index] = replacement
+                    actions.append({
                         "action": "resize_excess",
                         "order_id": str(order.orderId),
                         "quantity": replacement.quantity,
                         "response": response,
-                    }
-                )
+                    })
+                excess -= reduction
         elif required > coverage + tolerance:
             profile = group.intent.resolved_protection_profile()
             if profile is None or not group.orders:
@@ -1552,31 +1640,91 @@ class OrderManagementEngine:
                 for item in profile.slices
             ]
             stop_price = min(stops) if position_side == "long" else max(stops)
-            root = group.orders[0]
-            repair = OrderRequest(
-                acctId=group.account_id,
-                conid=root.conid,
-                secType=root.secType,
-                cOID=f"{self._protective_order_prefix()}repair-{uuid4().hex[:12]}",
-                ticker=root.ticker,
-                orderType="STP",
-                side="SELL" if position_side == "long" else "BUY",
-                quantity=required - coverage,
-                tif=root.tif,
-                outsideRTH=root.outsideRTH,
-                auxPrice=stop_price,
-                listingExchange=root.listingExchange,
+            missing = required - coverage
+            existing_repair = next(
+                (
+                    order
+                    for order in protective
+                    if "repair-" in str(order.cOID or "")
+                    and str(order.orderId) in group.broker_order_request_indexes
+                ),
+                None,
             )
-            async with self._command_lane(group.account_id):
-                response = await self.broker.place_orders(group.account_id, [repair])
-            actions.append(
-                {
-                    "action": "place_missing_backstop",
-                    "quantity": repair.quantity,
+            if existing_repair is not None:
+                order_id = str(existing_repair.orderId)
+                request_index = group.broker_order_request_indexes[order_id]
+                request = group.orders[request_index]
+                replacement = replace(
+                    request,
+                    quantity=(
+                        float(existing_repair.filledQuantity)
+                        + float(existing_repair.remainingQuantity)
+                        + missing
+                    ),
+                    auxPrice=stop_price,
+                )
+                async with self._command_lane(group.account_id):
+                    response = await self.broker.modify_order(
+                        group.account_id,
+                        order_id,
+                        replacement,
+                    )
+                group.orders[request_index] = replacement
+                actions.append({
+                    "action": "resize_missing_backstop",
+                    "order_id": order_id,
+                    "quantity": replacement.quantity,
                     "stop_price": stop_price,
                     "response": response,
-                }
-            )
+                })
+                missing = 0.0
+            if missing <= tolerance:
+                repair = None
+            else:
+                repair = OrderRequest(
+                    acctId=group.account_id,
+                    conid=group.orders[0].conid,
+                    secType=group.orders[0].secType,
+                    cOID=f"{self._protective_order_prefix()}repair-{uuid4().hex[:12]}",
+                    ticker=group.orders[0].ticker,
+                    orderType="STP",
+                    side="SELL" if position_side == "long" else "BUY",
+                    quantity=missing,
+                    tif=group.orders[0].tif,
+                    outsideRTH=group.orders[0].outsideRTH,
+                    auxPrice=stop_price,
+                    listingExchange=group.orders[0].listingExchange,
+                    raw=dict(group.orders[0].raw),
+                )
+            if repair is not None:
+                async with self._command_lane(group.account_id):
+                    response = await self.broker.place_orders(group.account_id, [repair])
+                request_index = len(group.orders)
+                group.orders.append(repair)
+                group.plan = _extend_managed_plan(
+                    group.plan,
+                    group.orders,
+                    slice_id="repair-backstop",
+                )
+                if repair.cOID:
+                    self._group_by_client_id[repair.cOID] = group.group_id
+                for row in response:
+                    order_id = str(row.get("order_id") or row.get("orderId") or "")
+                    if not order_id:
+                        continue
+                    if order_id not in group.broker_order_ids:
+                        group.broker_order_ids.append(order_id)
+                    self._group_by_broker_id[order_id] = group.group_id
+                    group.broker_order_roles[order_id] = "protective_stop"
+                    group.broker_order_request_indexes[order_id] = request_index
+                actions.append(
+                    {
+                        "action": "place_missing_backstop",
+                        "quantity": repair.quantity,
+                        "stop_price": stop_price,
+                        "response": response,
+                    }
+                )
         actions.extend(
             await self._apply_add_protection_policy(
                 group,
@@ -1996,7 +2144,7 @@ class OrderManagementEngine:
             ):
                 continue
             managed = self._group_for_order(order)
-            if managed is None:
+            if managed is None or managed.group_id != group.group_id:
                 continue
             index = managed.broker_order_request_indexes.get(str(order.orderId))
             if index is None:
@@ -2251,6 +2399,42 @@ def _group_batches(group: _ManagedOrderGroup) -> tuple[tuple[OrderRequest, ...],
     return tuple(batches)
 
 
+def _extend_managed_plan(
+    plan: StrategyOrderPlan,
+    managed_orders: list[OrderRequest],
+    *,
+    slice_id: str,
+) -> StrategyOrderPlan:
+    if len(managed_orders) != len(plan.orders) + 1:
+        raise ValueError("Managed order extension must append exactly one order")
+    previous_lengths = (
+        tuple(len(batch) for batch in plan.batches)
+        if plan.batches
+        else (len(plan.orders),)
+    )
+    offset = 0
+    batches: list[tuple[OrderRequest, ...]] = []
+    for length in previous_lengths:
+        batches.append(tuple(managed_orders[offset : offset + length]))
+        offset += length
+    batches.append((managed_orders[-1],))
+    existing_slice_ids = plan.order_slice_ids or tuple("" for _ in plan.orders)
+    return replace(
+        plan,
+        orders=tuple(managed_orders),
+        batches=tuple(batches),
+        order_slice_ids=(*existing_slice_ids, slice_id),
+    )
+
+
+def _protection_group_key(order: LiveOrder) -> str:
+    """Return the mutually exclusive capacity group for a protective order."""
+
+    raw = dict(order.raw or {})
+    oca_group = str(raw.get("oca_group") or raw.get("ocaGroup") or "")
+    return oca_group or str(order.parentId or order.cOID or order.orderId)
+
+
 def _warning_response(rows: list[dict[str, Any]]) -> bool:
     return any(row.get("id") and (row.get("message") or row.get("messageIds")) for row in rows)
 
@@ -2272,6 +2456,18 @@ def _apply_cumulative_fill(
             if group.broker_order_roles.get(order_id) == "entry"
         )
         group.remaining_quantity = max(0.0, float(group.intent.quantity) - group.filled_quantity)
+    elif role == "managed_exit":
+        group.filled_quantity = min(
+            float(group.intent.quantity),
+            sum(
+                quantity
+                for order_id, quantity in group.filled_by_broker_order.items()
+                if group.broker_order_roles.get(order_id) == "managed_exit"
+            ),
+        )
+        group.remaining_quantity = max(
+            0.0, float(group.intent.quantity) - group.filled_quantity
+        )
     return incremental
 
 

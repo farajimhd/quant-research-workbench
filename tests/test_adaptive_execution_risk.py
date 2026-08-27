@@ -162,6 +162,37 @@ class ContractAndPlanningTests(unittest.TestCase):
         self.assertEqual([batch[1].auxPrice for batch in plan.broker_batches], [97, 97])
 
 
+class OrderSafetyExitTests(unittest.IsolatedAsyncioTestCase):
+    async def test_full_exit_alternatives_do_not_multiply_approved_quantity(self) -> None:
+        broker = SimulatedBrokerAdapter(["DU1"], mode=TradingMode.PAPER)
+        await broker.initialize()
+        risk = RiskAuthority()
+        await risk.prime(broker, ["DU1"])
+        request = replace(
+            adaptive_intent(quantity=100),
+            intent_id="full-exit",
+            action="exit",
+            invalidation_price=95,
+            protection_profile=None,
+        )
+        plan = IbkrStrategyOrderPlanner().plan(
+            account_id="DU1",
+            instrument=InstrumentContract("TEST", 123, "TEST", "STK", "USD"),
+            intent=request,
+            strategy_id="strategy",
+            strategy_revision=7,
+        )
+
+        self.assertEqual(len(plan.orders), 2)
+        await risk.validate(
+            broker,
+            "DU1",
+            list(plan.orders),
+            intent=request,
+            require_fresh=False,
+        )
+
+
 class PortfolioAndContinuousRiskTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory(dir=RUNTIME_ROOT)

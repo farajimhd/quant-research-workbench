@@ -8,7 +8,10 @@ from src.backend.historical_watchlist_plan import (
     compile_historical_watchlist_plan,
     compile_signal_stream_recovery_templates,
 )
-from src.backend.replay_run_service import _historical_watchlist_plans_for_configuration
+from src.backend.replay_run_service import (
+    _historical_core_signal_plans_for_configuration,
+    _historical_watchlist_plans_for_configuration,
+)
 from src.backend.trading_configuration_service import _default_draft
 
 
@@ -169,6 +172,55 @@ class HistoricalWatchlistPlanTests(unittest.TestCase):
         self.assertEqual(len(plans), 1)
         self.assertEqual(plans[0]["watchlist_id"], "core-candidates")
         self.assertTrue(plans[0]["plan_hash"].startswith("sha256:"))
+
+    def test_resolved_run_plan_watchlist_compiles_without_legacy_universes(self) -> None:
+        model = _default_draft()
+        approved = {
+            "payload": {
+                "run_plan": {"watchlist_ids": ["squeeze-tradable-candidates"]},
+                "universe": {
+                    "source": "watchlist",
+                    "watchlist_snapshots": [{
+                        "watchlist_id": "squeeze-tradable-candidates",
+                        "name": "Squeeze tradable candidates",
+                    }],
+                },
+            },
+            "configuration_model": model,
+        }
+
+        plans = _historical_watchlist_plans_for_configuration(
+            approved,
+            start=datetime(2026, 8, 21, 8, tzinfo=UTC),
+            end=datetime(2026, 8, 22, 0, tzinfo=UTC),
+        )
+
+        self.assertEqual([row["watchlist_id"] for row in plans], ["squeeze-tradable-candidates"])
+        self.assertTrue({
+            "market.liquidity_score",
+            "market.session_dollar_volume",
+            "market.trade_rate_10s",
+        }.issubset(plans[0]["qmd_sources"]))
+
+    def test_source_native_signal_is_not_reconstructed_from_bar_fields(self) -> None:
+        model = _default_draft()
+        stream = next(
+            row
+            for row in model["market_discovery"]["signal_streams"]
+            if row["signal_stream_id"] == "price-squeeze-5m"
+        )
+        approved = {
+            "payload": {"signal_activation": {"signal_streams": [stream]}},
+            "configuration_model": model,
+        }
+
+        plans = _historical_core_signal_plans_for_configuration(
+            approved,
+            start=datetime(2026, 8, 21, 8, tzinfo=UTC),
+            end=datetime(2026, 8, 22, 0, tzinfo=UTC),
+        )
+
+        self.assertEqual(plans, [])
 
 
 if __name__ == "__main__":

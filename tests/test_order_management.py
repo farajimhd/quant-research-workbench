@@ -9,6 +9,15 @@ from unittest.mock import patch
 
 from src.trading_runtime.domain import InstrumentContract, TradingMode
 from src.trading_runtime.ibkr_schema import LiveOrder, OrderRequest, OrderStatus
+from src.trading_runtime.execution_policies import (
+    ExecutionMarketSnapshot,
+    ProtectionProfile,
+    ProtectionSlice,
+    StopRule,
+    StopRuleType,
+    TrailingRule,
+    TrailingRuleType,
+)
 from src.trading_runtime.journal import TradingJournal
 from src.trading_runtime.order_management import (
     BrokerCommunicationPolicy,
@@ -16,7 +25,10 @@ from src.trading_runtime.order_management import (
     OrderManagementEngine,
     OrderManagementState,
     ShortabilitySnapshot,
+    _ManagedOrderGroup,
     _intent_from_payload,
+    _extend_managed_plan,
+    _protection_group_key,
     execution_tactic,
 )
 from src.trading_runtime.risk import RiskAuthority
@@ -183,6 +195,62 @@ class BlockedShortability:
 
 
 class ExecutionTacticTests(unittest.TestCase):
+    def test_protection_capacity_groups_standalone_oca_alternatives_together(self) -> None:
+        common = dict(
+            account="DU1",
+            conid=123,
+            ticker="TEST",
+            side="SELL",
+            tif="DAY",
+            totalSize=100,
+            filledQuantity=0,
+            remainingQuantity=100,
+            avgPrice=0,
+            order_status=OrderStatus.SUBMITTED,
+            raw={"oca_group": "sim-oca-5"},
+        )
+        stop = LiveOrder(
+            **common,
+            orderId="6",
+            orderType="STP",
+            cOID="exit-stop",
+        )
+        trail = LiveOrder(
+            **common,
+            orderId="7",
+            orderType="TRAIL",
+            cOID="exit-trail",
+        )
+
+        self.assertEqual(_protection_group_key(stop), "sim-oca-5")
+        self.assertEqual(_protection_group_key(trail), "sim-oca-5")
+
+    def test_repair_order_extends_persisted_batches_and_slice_identity(self) -> None:
+        parent = OrderRequest(
+            acctId="DU1", conid=123, cOID="parent", ticker="TEST",
+            orderType="LMT", side="BUY", quantity=100, price=10,
+        )
+        stop = OrderRequest(
+            acctId="DU1", conid=123, parentId="parent", ticker="TEST",
+            orderType="STP", side="SELL", quantity=100, auxPrice=9.8,
+        )
+        repair = replace(stop, cOID="repair-1", parentId=None, quantity=25)
+        plan = StrategyOrderPlan(
+            orders=(parent, stop),
+            batches=((parent, stop),),
+            order_slice_ids=("main", "main"),
+        )
+
+        extended = _extend_managed_plan(
+            plan, [parent, stop, repair], slice_id="repair-backstop"
+        )
+
+        self.assertEqual(extended.orders, (parent, stop, repair))
+        self.assertEqual(extended.broker_batches, ((parent, stop), (repair,)))
+        self.assertEqual(
+            extended.order_slice_ids, ("main", "main", "repair-backstop")
+        )
+
     def test_execution_intent_contract_is_versioned_and_legacy_payloads_migrate(self) -> None:
         current = intent()
         self.assertEqual(
@@ -305,6 +373,116 @@ class OrderManagementPolicyTests(unittest.IsolatedAsyncioTestCase):
                     mismatched, account_id="DU1", event=None
                 )
             self.assertEqual(await broker.live_orders(), [])
+            await manager.close()
+            journal.close()
+
+    async def test_protection_replacement_cancels_children_before_parent(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            broker = SimulatedBrokerAdapter(["DU1"], mode=TradingMode.PAPER)
+            manager, journal = await self._manager(
+                directory,
+                broker,
+                policy=BrokerCommunicationPolicy(),
+            )
+            prefix = "strategy-1-v1-"
+            parent = OrderRequest(
+                acctId="DU1", conid=123, cOID=f"{prefix}entry", ticker="TEST",
+                orderType="LMT", side="BUY", quantity=10, price=10,
+            )
+            child = OrderRequest(
+                acctId="DU1", conid=123, cOID="", parentId=parent.cOID,
+                ticker="TEST", orderType="STP", side="SELL", quantity=10,
+                auxPrice=9.8, isSingleGroup=True,
+            )
+            await broker.place_orders("DU1", [parent, child])
+
+            responses = await manager.cancel_strategy_protection(
+                account_id="DU1",
+                ticker="TEST",
+                client_id_prefix=prefix,
+                event_time=NOW,
+            )
+
+            self.assertEqual(len(responses), 2)
+            states = {row.orderId: row.order_status for row in await broker.live_orders()}
+            self.assertEqual(states, {"1": OrderStatus.CANCELLED, "2": OrderStatus.CANCELLED})
+            await manager.close()
+            journal.close()
+
+    async def test_dynamic_ratchet_never_modifies_another_order_group(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            broker = RecordingBroker()
+            manager, journal = await self._manager(
+                directory,
+                broker,
+                policy=BrokerCommunicationPolicy(),
+            )
+            profile = ProtectionProfile(
+                profile_id="dynamic-single",
+                revision=1,
+                slices=(ProtectionSlice(
+                    "position",
+                    1.0,
+                    StopRule(StopRuleType.FIXED_PRICE, price=9.5),
+                    trailing=TrailingRule(
+                        rule_type=TrailingRuleType.BREAKEVEN_THEN_TRAIL,
+                        activation_gain_percent=0.0,
+                    ),
+                ),),
+            )
+            owner_intent = replace(
+                intent(quantity=10),
+                intent_id="dynamic-owner",
+                protection_profile=profile,
+            )
+            owner = _ManagedOrderGroup(
+                group_id="dynamic-owner-group",
+                intent=owner_intent,
+                account_id="DU1",
+                plan=StrategyOrderPlan(()),
+                state=OrderManagementState.FILLED,
+                created_at=NOW,
+                updated_at=NOW,
+                orders=[],
+                high_water_price=11.0,
+                low_water_price=10.0,
+            )
+            foreign_order = OrderRequest(
+                acctId="DU1", conid=123, cOID="foreign-exit-stop", ticker="TEST",
+                orderType="STP", side="SELL", quantity=10, auxPrice=9.0,
+            )
+            broker._book_execution(
+                OrderRequest(
+                    acctId="DU1", conid=123, cOID="seed-position", ticker="TEST",
+                    orderType="MKT", side="BUY", quantity=10,
+                ),
+                10.0,
+                10.0,
+                0.0,
+            )
+            response = await broker.place_orders("DU1", [foreign_order])
+            foreign_id = response[0]["order_id"]
+            foreign = _ManagedOrderGroup(
+                group_id="foreign-exit-group",
+                intent=intent(action="exit", quantity=10),
+                account_id="DU1",
+                plan=StrategyOrderPlan((foreign_order,)),
+                state=OrderManagementState.ACKNOWLEDGED,
+                created_at=NOW,
+                updated_at=NOW,
+                orders=[foreign_order],
+                broker_order_ids=[foreign_id],
+                broker_order_request_indexes={foreign_id: 0},
+            )
+            manager._groups = {owner.group_id: owner, foreign.group_id: foreign}
+            manager._group_by_broker_id[foreign_id] = foreign.group_id
+
+            await manager._ratchet_dynamic_protection(
+                owner,
+                ExecutionMarketSnapshot("TEST", 11.0, 11.02, 0.01, NOW, "test", volatility=0.1),
+            )
+
+            self.assertEqual(broker.modifications, [])
             await manager.close()
             journal.close()
 
@@ -493,11 +671,17 @@ class OrderManagementPolicyTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(len(entry_snapshot.broker_order_ids), 4)
             pocket = StrategyIntent(
                 **{
-                    **intent(action="take_profit", urgency="very_urgent").payload(),
+                    **intent(
+                        action="take_profit",
+                        urgency="very_urgent",
+                        quantity=99.999999,
+                    ).payload(),
                     "intent_id": "pocket-1",
                     "metadata": {
                         **intent(action="take_profit").metadata,
-                        "position_quantity": 100,
+                        # Portfolio approval floors quantities to six decimals; the
+                        # full broker position can retain additional precision.
+                        "position_quantity": 99.9999999,
                         "buy_back": True,
                     },
                 }

@@ -117,6 +117,7 @@ class TradingRuntime:
         self.broker = broker
         self.strategy = strategy
         self.journal = journal
+        self._persisted_assignment_versions: dict[str, tuple[str, str]] = {}
         self.control_plane = control_plane or shared_trading_control_plane(broker)
         self.control_plane.campaigns.bind_durable_authority(
             journal,
@@ -233,7 +234,12 @@ class TradingRuntime:
             payload={"status": "running", "config": asdict(self.config)},
         )
 
-    async def process_event(self, event: MarketEvent) -> None:
+    async def process_event(
+        self,
+        event: MarketEvent,
+        *,
+        evaluate_strategy: bool = True,
+    ) -> None:
         if self.last_event_time is not None and event.ts < self.last_event_time:
             raise ValueError("Market events must be processed in non-decreasing timestamp order")
         self.last_event_time = event.ts
@@ -273,7 +279,7 @@ class TradingRuntime:
         if executions and self._canonical_session is not None:
             await self._canonical_session.reconcile()
             self.portfolio.synchronize_canonical(self._canonical_session.projector.snapshot())
-        if self.strategy is not None:
+        if self.strategy is not None and evaluate_strategy:
             for account_id in self.config.account_ids:
                 evaluation = normalize_strategy_evaluation(
                     await self.strategy.on_event(event, account_id)
@@ -545,7 +551,14 @@ class TradingRuntime:
         if assignments is None:
             return
         for assignment in assignments():
-            self.journal.save_strategy_assignment(assignment.payload())
+            payload = assignment.payload()
+            version = (
+                str(payload.get("status") or ""),
+                str(payload.get("updated_at") or ""),
+            )
+            if self._persisted_assignment_versions.get(assignment.assignment_id) == version:
+                continue
+            self.journal.save_strategy_assignment(payload)
             self.journal.append(
                 run_id=self.run_id,
                 category="strategy",
@@ -563,6 +576,7 @@ class TradingRuntime:
                     "state": assignment.state,
                 },
             )
+            self._persisted_assignment_versions[assignment.assignment_id] = version
     async def snapshot_portfolios(self) -> None:
         event_time = self.last_event_time or datetime.now(timezone.utc)
         for account_id in self.config.account_ids:

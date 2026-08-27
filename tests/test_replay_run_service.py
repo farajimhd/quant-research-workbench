@@ -22,6 +22,8 @@ from src.backend.replay_run_service import (
     _historical_watchlist_membership_timeline_for_configuration,
     _historical_watchlist_membership_timeline_from_plans,
     _historical_signal_events,
+    _historical_derived_frames,
+    _occurrence_source_values,
     _qmd_payload_authority,
     _simulation_config,
     _debug_derived_frames,
@@ -146,6 +148,28 @@ class ReplayRunDefinitionTests(unittest.TestCase):
         self.assertEqual(definition.session_start.isoformat(), "2026-07-28T04:00:00-04:00")
         self.assertEqual(definition.requested_start.isoformat(), "2026-07-28T09:45:00-04:00")
         self.assertEqual(definition.session_end.isoformat(), "2026-07-28T20:00:00-04:00")
+
+    def test_definition_pins_bounded_premarket_end_clock(self) -> None:
+        definition = ReplayRunDefinition(
+            session_date=date(2026, 8, 21),
+            start_time=time(4, 0),
+            end_time=time(9, 30),
+            configuration_revision=approved_configuration(),
+            mode=RunMode.BACKTEST,
+        )
+
+        self.assertEqual(definition.session_end.isoformat(), "2026-08-21T09:30:00-04:00")
+        self.assertEqual(definition.payload()["end_time"], "09:30:00")
+
+    def test_definition_rejects_end_before_start(self) -> None:
+        with self.assertRaisesRegex(ValueError, "cannot precede"):
+            ReplayRunDefinition(
+                session_date=date(2026, 8, 21),
+                start_time=time(7, 30),
+                end_time=time(7, 29),
+                configuration_revision=approved_configuration(),
+                mode=RunMode.BACKTEST,
+            )
 
     def test_definition_rejects_clock_outside_extended_session(self) -> None:
         with self.assertRaisesRegex(ValueError, "04:00-20:00"):
@@ -788,6 +812,19 @@ class HistoricalDebugFixtureTests(unittest.IsolatedAsyncioTestCase):
 
 
 class HistoricalWatchlistTimelineTests(unittest.TestCase):
+    def test_source_native_squeeze_occurrence_projects_strategy_trigger_aliases(self) -> None:
+        values = _occurrence_source_values(
+            {
+                "available_at": "2026-08-21T10:30:18.507000+00:00",
+                "squeeze_move_pct": 5.8149,
+            }
+        )
+
+        self.assertEqual(values["signal.squeeze_move_pct"]["value"], 5.8149)
+        self.assertEqual(
+            values["data.signal.squeeze_move_pct@1:value"]["value"], 5.8149
+        )
+
     @patch(
         "src.backend.historical_watchlist_feature_service.materialize_historical_watchlist_plans"
     )
@@ -932,7 +969,16 @@ class HistoricalWatchlistTimelineTests(unittest.TestCase):
             controller._historical_watchlist_timeline_cache = [
                 {
                     "effective_at": datetime(2026, 8, 10, 9, 45, tzinfo=NEW_YORK),
-                    "members": [{"ticker": "AAPL", "ibkr_conid": 1}],
+                    "members": [{
+                        "ticker": "AAPL",
+                        "ibkr_conid": 1,
+                        "market.session_dollar_volume": 750_000.0,
+                        "market.trade_rate_10s": 2.5,
+                        "market.liquidity_score": 72.0,
+                        "volume_rate_ratio": 2.0,
+                        "volume_rate_ratio@@1s": 2.0,
+                        "market.spread_bps": 18.0,
+                    }],
                     "authority": [{
                         "watchlist_id": "small",
                         "scanner": {"source_revision": "archive:revision-17"},
@@ -950,19 +996,39 @@ class HistoricalWatchlistTimelineTests(unittest.TestCase):
                 datetime(2026, 8, 10, 10, 0, tzinfo=NEW_YORK)
             )
             self.assertEqual(controller._active_historical_watchlist_tickers, {"AAPL"})
+            self.assertEqual(
+                controller._strategy_source_values["AAPL"][
+                    "market.session_dollar_volume"
+                ]["value"],
+                750_000.0,
+            )
+            self.assertEqual(
+                controller._strategy_source_values["AAPL"]["market.spread_bps"][
+                    "observed_at"
+                ],
+                "2026-08-10T09:45:00-04:00",
+            )
+            self.assertEqual(
+                controller._strategy_source_values["AAPL"]["volume_rate_ratio@1s"][
+                    "value"
+                ],
+                2.0,
+            )
             controller._apply_historical_watchlist_membership(
                 datetime(2026, 8, 11, 4, 1, tzinfo=NEW_YORK)
             )
 
             self.assertEqual(controller._active_historical_watchlist_tickers, {"MSFT"})
+            self.assertNotIn("AAPL", controller._active_historical_watchlist_evidence)
             events = [
                 record.payload["event"]
                 for record in controller._journal.watchlist_membership_records()
             ]
             self.assertEqual(events, ["added", "added", "removed"])
             authority = controller.snapshot()["data_authority"]["sources"]
-            self.assertTrue(
-                any(key.startswith("watchlist_membership:") for key in authority)
+            self.assertIn("watchlist_membership_timeline", authority)
+            self.assertEqual(
+                authority["watchlist_membership_timeline"]["snapshot_count"], 2
             )
             authority_records = controller._journal.recent_records(
                 controller.run_id,
@@ -1065,6 +1131,48 @@ class ReplayRunServiceCapacityTests(unittest.IsolatedAsyncioTestCase):
 
 
 class ReplayHistoricalFetchBudgetTests(unittest.IsolatedAsyncioTestCase):
+    async def test_shared_historical_frame_cache_reuses_frozen_causal_tape(self) -> None:
+        start = datetime(2026, 8, 10, 8, tzinfo=ZoneInfo("UTC"))
+        end = datetime(2026, 8, 10, 9, tzinfo=ZoneInfo("UTC"))
+        frame = ReplayDerivedFrame(
+            as_of=start,
+            bar={"close": 10.0},
+            indicator={"flow_structure_composite_score": 0.7},
+            sequence=1,
+            ticker="ABCD",
+            timeframe="100ms",
+        )
+        authority = {
+            "authority": "qmd_history_derived",
+            "revision_token": "revision-1",
+            "source_plan_hash": "plan-1",
+            "complete_for_history": True,
+            "source_tiers": ["archive"],
+            "engine_version": "engine-1",
+            "event_count": 10,
+        }
+        cache = {
+            ("ABCD", "100ms", start.isoformat(), end.isoformat()): (
+                (frame,),
+                authority,
+            )
+        }
+        observed: dict[str, dict] = {}
+
+        frames = await _historical_derived_frames(
+            ticker="ABCD",
+            timeframe="100ms",
+            start=start,
+            end=end,
+            authority_sink=observed.__setitem__,
+            frame_cache=cache,
+        )
+
+        self.assertEqual(len(frames), 1)
+        self.assertIsNot(frames[0], frame)
+        self.assertIs(frames[0].bar, frame.bar)
+        self.assertEqual(observed["derived:ABCD:100ms"], authority)
+
     async def test_loads_scanner_signals_once_and_bounds_derived_fetches(self) -> None:
         definition = ReplayRunDefinition(
             session_date=date(2026, 8, 10),
@@ -1234,6 +1342,111 @@ class BacktestPreflightTests(unittest.TestCase):
 
 
 class ReplayControllerTests(unittest.IsolatedAsyncioTestCase):
+    async def test_warmup_market_event_updates_runtime_without_strategy_evaluation(self) -> None:
+        controller = ReplayRunController(
+            ReplayRunDefinition(
+                session_date=date(2026, 8, 21),
+                start_time=time(7, 30),
+                end_time=time(9, 30),
+                configuration_revision=approved_configuration(),
+                mode=RunMode.BACKTEST,
+            ),
+            runtime_root=Path(tempfile.gettempdir()),
+        )
+        controller._runtime = AsyncMock()
+        event = _debug_market_events(({
+            "kind": "trade",
+            "ticker": "AAPL",
+            "ts": "2026-08-21T06:00:00-04:00",
+            "price": 10.0,
+            "size": 100,
+        },))[0]
+
+        await controller._process_market_event(event, evaluate_strategy=False)
+
+        controller._runtime.process_event.assert_awaited_once_with(
+            event, evaluate_strategy=False
+        )
+
+    async def test_source_native_squeeze_loader_preserves_available_clock_and_authority(self) -> None:
+        configuration = approved_configuration()
+        configuration["payload"]["signal_activation"] = {
+            "signal_streams": [{
+                "signal_stream_id": "price-squeeze-5m",
+                "occurrence_source": "qmd_squeeze_episode",
+                "enabled": True,
+            }]
+        }
+        available_at = datetime(2026, 7, 28, 10, 0, 0, 100000, tzinfo=NEW_YORK)
+        loaded = {
+            "occurrences": [{
+                "event_id": "squeeze-1",
+                "signal_stream_id": "price-squeeze-5m",
+                "ticker": "AAPL",
+                "event_time": available_at.isoformat(),
+                "effective_at": available_at.isoformat(),
+                "available_at": available_at.isoformat(),
+                "squeeze_move_pct": 5.2,
+            }],
+            "authority": {
+                "authority": "qmd_persisted_signal_stream_occurrences",
+                "row_count": 1,
+                "content_hash": "abc123",
+            },
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            controller = ReplayRunController(
+                ReplayRunDefinition(
+                    session_date=date(2026, 7, 28),
+                    start_time=time(9, 45),
+                    configuration_revision=configuration,
+                ),
+                runtime_root=Path(directory),
+            )
+            controller._journal = TradingJournal(Path(directory) / "journal.sqlite3")
+            with patch(
+                "src.backend.historical_signal_occurrence_service."
+                "historical_source_native_signal_occurrences",
+                return_value=loaded,
+            ):
+                events = await controller._load_source_native_signal_events()
+            controller._journal.close()
+
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0].available_at, available_at)
+        self.assertEqual(events[0].ticker, "AAPL")
+        self.assertEqual(events[0].occurrence["event_id"], "squeeze-1")
+        self.assertEqual(
+            controller._data_authority["source_native_signal_stream:price-squeeze-5m"]
+            ["content_hash"],
+            "abc123",
+        )
+
+    async def test_unsupported_native_source_fails_closed(self) -> None:
+        configuration = approved_configuration()
+        configuration["payload"]["signal_activation"] = {
+            "signal_streams": [{
+                "signal_stream_id": "unsupported-stream",
+                "occurrence_source": "unversioned_native_source",
+                "enabled": True,
+            }]
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            controller = ReplayRunController(
+                ReplayRunDefinition(
+                    session_date=date(2026, 7, 28),
+                    start_time=time(9, 45),
+                    configuration_revision=configuration,
+                ),
+                runtime_root=Path(directory),
+            )
+            controller._journal = TradingJournal(Path(directory) / "journal.sqlite3")
+            with self.assertRaisesRegex(RuntimeError, "lack an immutable occurrence loader"):
+                await controller._load_source_native_signal_events()
+            controller._journal.close()
+
+        self.assertEqual(controller._historical_core_signal_plans, [])
+
     async def test_chart_proposal_captures_snapshot_before_runtime_authority(self) -> None:
         controller = ReplayRunController(
             ReplayRunDefinition(

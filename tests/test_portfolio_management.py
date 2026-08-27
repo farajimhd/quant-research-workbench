@@ -208,6 +208,35 @@ class PortfolioManagementTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(margin_decision.status, PortfolioDecisionStatus.APPROVED)
         self.assertEqual(margin_intent.quantity, 1_000)
 
+    async def test_gap_through_stop_does_not_block_full_exit_admission(self) -> None:
+        engine = self.engine([
+            PortfolioAccountProfile(
+                "cash", "CASH1", "backtest", "cash", PortfolioPolicy()
+            )
+        ])
+        engine.synchronize_snapshot(
+            "CASH1",
+            summary=summary("CASH1", equity=10_000, available=9_000),
+            ledger=ledger("CASH1", cash=9_000),
+            positions=[position("CASH1", "SXTC", 25, price=4.63)],
+        )
+        request = intent(
+            "gap-stop-exit",
+            action="exit",
+            ticker="SXTC",
+            quantity=25,
+            price=4.5809,
+            invalidation=4.6119,
+        )
+
+        decision, approved = await engine.approve(request, account_id="CASH1")
+
+        self.assertIsNotNone(approved)
+        self.assertIn(
+            decision.status,
+            {PortfolioDecisionStatus.APPROVED, PortfolioDecisionStatus.RESIZED},
+        )
+
     async def test_account_guardrail_latch_blocks_other_strategy_runs(self) -> None:
         profile = PortfolioAccountProfile("cash", "CASH1", "live", "cash", PortfolioPolicy())
         plane = TradingControlPlane()
@@ -394,6 +423,50 @@ class PortfolioManagementTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(exit_decision.status, PortfolioDecisionStatus.RESIZED)
         self.assertEqual(approved_exit.quantity, 50)
         self.assertIsNone(approved_entry)
+
+    async def test_exit_quantity_quantization_preserves_one_micro_share(self) -> None:
+        policy = PortfolioPolicy(policy_id="fractional-exit")
+        engine = self.engine([
+            PortfolioAccountProfile("cash", "CASH1", "live", "cash", policy)
+        ])
+        residual = 9.999999690535333e-07
+        engine.synchronize_snapshot(
+            "CASH1",
+            summary=summary("CASH1"),
+            ledger=ledger("CASH1"),
+            positions=[position("CASH1", "AAPL", residual)],
+        )
+
+        decision, approved = await engine.approve(
+            intent("fractional-exit", action="exit", quantity=residual),
+            account_id="CASH1",
+        )
+
+        self.assertEqual(decision.approved_quantity, 0.000001)
+        self.assertIsNotNone(approved)
+        self.assertEqual(approved.quantity, 0.000001)
+
+    async def test_sub_increment_exit_is_rejected_without_zero_quantity_intent(self) -> None:
+        policy = PortfolioPolicy(policy_id="sub-increment-exit")
+        engine = self.engine([
+            PortfolioAccountProfile("cash", "CASH1", "live", "cash", policy)
+        ])
+        residual = 0.0000004
+        engine.synchronize_snapshot(
+            "CASH1",
+            summary=summary("CASH1"),
+            ledger=ledger("CASH1"),
+            positions=[position("CASH1", "AAPL", residual)],
+        )
+
+        decision, approved = await engine.approve(
+            intent("sub-increment-exit", action="exit", quantity=residual),
+            account_id="CASH1",
+        )
+
+        self.assertEqual(decision.status, PortfolioDecisionStatus.REJECTED)
+        self.assertIn("quantity_below_minimum_increment", decision.reasons)
+        self.assertIsNone(approved)
 
     async def test_group_limit_is_enforced_across_accounts_without_rerouting(self) -> None:
         policy = PortfolioPolicy(

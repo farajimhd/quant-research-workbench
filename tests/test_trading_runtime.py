@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import tempfile
 import unittest
+from dataclasses import replace
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -76,6 +77,119 @@ class SimulatedBrokerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(positions[0].position, 100)
         self.assertEqual(positions[0].avgCost, 100.6)
 
+    async def test_minimum_commission_is_cumulative_per_order_not_per_partial_fill(self) -> None:
+        broker = SimulatedBrokerAdapter(
+            ["DU-COMMISSION"],
+            SimulationConfig(
+                initial_cash=10_000,
+                commission_per_share=0.005,
+                minimum_commission=1.0,
+                liquidity_participation=0.5,
+            ),
+        )
+        await broker.initialize()
+        await broker.on_market_event(quote(bid=99, ask=100, ask_size=4))
+        await broker.place_orders("DU-COMMISSION", [OrderRequest(
+            acctId="DU-COMMISSION", conid=265598, cOID="commission-order",
+            ticker="AAPL", orderType="LMT", side="BUY", quantity=10, price=100,
+        )])
+
+        fills = []
+        for _ in range(5):
+            fills.extend(
+                await broker.on_market_event(quote(bid=99, ask=100, ask_size=4))
+            )
+
+        self.assertEqual(sum(fill.size for fill in fills), 10)
+        self.assertEqual(sum(fill.commission for fill in fills), 1.0)
+
+    async def test_partially_filled_sell_modification_checks_remaining_quantity(self) -> None:
+        entry = OrderRequest(
+            acctId="DU123", conid=265598, cOID="entry", ticker="AAPL",
+            orderType="LMT", side="BUY", quantity=10, price=100,
+        )
+        await self.broker.place_orders("DU123", [entry])
+        await self.broker.on_market_event(
+            quote(bid=99, ask=100, bid_size=20, ask_size=20)
+        )
+        stop = OrderRequest(
+            acctId="DU123", conid=265598, cOID="stop", ticker="AAPL",
+            orderType="STP", side="SELL", quantity=10, auxPrice=100,
+        )
+        response = await self.broker.place_orders("DU123", [stop])
+        await self.broker.on_market_event(
+            quote(bid=99, ask=100, bid_size=10, ask_size=10)
+        )
+
+        modified = await self.broker.modify_order(
+            "DU123",
+            response[0]["order_id"],
+            replace(stop, auxPrice=98),
+        )
+
+        self.assertEqual(modified[0]["order_status"], "Submitted")
+
+    async def test_sell_capacity_tolerates_only_floating_point_roundoff(self) -> None:
+        entry = OrderRequest(
+            acctId="DU123", conid=265598, cOID="fractional-entry", ticker="AAPL",
+            orderType="LMT", side="BUY", quantity=0.3, price=100,
+        )
+        await self.broker.place_orders("DU123", [entry])
+        await self.broker.on_market_event(
+            quote(bid=99, ask=100, bid_size=1, ask_size=1)
+        )
+
+        first = OrderRequest(
+            acctId="DU123", conid=265598, cOID="fractional-stop-1", ticker="AAPL",
+            orderType="STP", side="SELL", quantity=0.1, auxPrice=95,
+        )
+        second = OrderRequest(
+            acctId="DU123", conid=265598, cOID="fractional-stop-2", ticker="AAPL",
+            orderType="STP", side="SELL", quantity=0.2, auxPrice=94,
+        )
+        await self.broker.place_orders("DU123", [first])
+        response = await self.broker.place_orders("DU123", [second])
+
+        self.assertEqual(response[0]["order_status"], "Submitted")
+        with self.assertRaisesRegex(ValueError, "unconfigured short"):
+            await self.broker.place_orders("DU123", [
+                OrderRequest(
+                    acctId="DU123", conid=265598, cOID="fractional-excess", ticker="AAPL",
+                    orderType="STP", side="SELL", quantity=0.0001, auxPrice=93,
+                )
+            ])
+
+    async def test_oca_alternatives_share_capacity_with_residual_backstop(self) -> None:
+        entry = OrderRequest(
+            acctId="DU123", conid=265598, cOID="oca-residual-entry", ticker="AAPL",
+            orderType="LMT", side="BUY", quantity=10.000001, price=100,
+        )
+        await self.broker.place_orders("DU123", [entry])
+        await self.broker.on_market_event(
+            quote(bid=99, ask=100, bid_size=100, ask_size=100)
+        )
+        alternatives = [
+            OrderRequest(
+                acctId="DU123", conid=265598, cOID=f"oca-alternative-{index}",
+                ticker="AAPL", orderType="STP", side="SELL", quantity=10,
+                auxPrice=95 - index, isSingleGroup=True,
+            )
+            for index in range(3)
+        ]
+        await self.broker.place_orders("DU123", alternatives)
+
+        response = await self.broker.place_orders("DU123", [OrderRequest(
+            acctId="DU123", conid=265598, cOID="residual-backstop", ticker="AAPL",
+            orderType="STP", side="SELL", quantity=0.000001, auxPrice=91,
+        )])
+
+        self.assertEqual(response[0]["order_status"], "Submitted")
+        with self.assertRaisesRegex(ValueError, "unconfigured short"):
+            await self.broker.place_orders("DU123", [OrderRequest(
+                acctId="DU123", conid=265598, cOID="excess-after-residual", ticker="AAPL",
+                orderType="STP", side="SELL", quantity=0.0001, auxPrice=90,
+            )])
+
     async def test_bracket_children_activate_and_oca_sibling_cancels(self) -> None:
         orders = [
             OrderRequest(acctId="DU123", conid=265598, cOID="entry", ticker="AAPL", orderType="LMT", side="BUY", quantity=10, price=100),
@@ -95,6 +209,256 @@ class SimulatedBrokerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(snapshots[1].order_status, OrderStatus.FILLED)
         self.assertEqual(snapshots[2].order_status, OrderStatus.CANCELLED)
         self.assertEqual((await self.broker.positions("DU123")), [])
+
+    async def test_standalone_exit_oca_cancellation_applies_within_same_event(self) -> None:
+        entry = OrderRequest(
+            acctId="DU123", conid=265598, cOID="entry", ticker="AAPL",
+            orderType="LMT", side="BUY", quantity=10, price=100,
+        )
+        await self.broker.place_orders("DU123", [entry])
+        await self.broker.on_market_event(quote(bid=99, ask=100, ask_size=20))
+        exits = [
+            OrderRequest(
+                acctId="DU123", conid=265598, cOID="exit-limit", ticker="AAPL",
+                orderType="LMT", side="SELL", quantity=10, price=98,
+                isSingleGroup=True,
+            ),
+            OrderRequest(
+                acctId="DU123", conid=265598, cOID="exit-stop", ticker="AAPL",
+                orderType="STP", side="SELL", quantity=10, auxPrice=100,
+                isSingleGroup=True,
+            ),
+        ]
+        await self.broker.place_orders("DU123", exits)
+
+        fills = await self.broker.on_market_event(
+            quote(bid=99, ask=100, bid_size=20, ask_size=20)
+        )
+
+        self.assertEqual(len(fills), 1)
+        snapshots = await self.broker.live_orders()
+        self.assertEqual(snapshots[-2].order_status, OrderStatus.FILLED)
+        self.assertEqual(snapshots[-1].order_status, OrderStatus.CANCELLED)
+        self.assertEqual(await self.broker.positions("DU123"), [])
+
+    async def test_partial_oca_fills_reduce_sibling_capacity_without_overfill(self) -> None:
+        entry = OrderRequest(
+            acctId="DU123", conid=265598, cOID="entry-large", ticker="AAPL",
+            orderType="LMT", side="BUY", quantity=100, price=100,
+        )
+        await self.broker.place_orders("DU123", [entry])
+        await self.broker.on_market_event(
+            quote(bid=99, ask=100, bid_size=200, ask_size=200)
+        )
+        exits = [
+            OrderRequest(
+                acctId="DU123", conid=265598, cOID="exit-limit-large", ticker="AAPL",
+                orderType="LMT", side="SELL", quantity=100, price=98,
+                isSingleGroup=True,
+            ),
+            OrderRequest(
+                acctId="DU123", conid=265598, cOID="exit-stop-large", ticker="AAPL",
+                orderType="STP", side="SELL", quantity=100, auxPrice=100,
+                isSingleGroup=True,
+            ),
+        ]
+        await self.broker.place_orders("DU123", exits)
+
+        first = await self.broker.on_market_event(
+            quote(bid=99, ask=100, bid_size=80, ask_size=80)
+        )
+        second = await self.broker.on_market_event(
+            quote(bid=99, ask=100, bid_size=80, ask_size=80)
+        )
+
+        sold = sum(fill.size for fill in [*first, *second] if fill.side == "S")
+        self.assertEqual(sold, 100)
+        self.assertEqual(await self.broker.positions("DU123"), [])
+
+    async def test_full_exit_oca_can_atomically_replace_same_strategy_protection(self) -> None:
+        strategy_raw = {
+            "canonical_strategy_id": "momentum",
+            "canonical_strategy_revision": 5,
+        }
+        entry = OrderRequest(
+            acctId="DU123", conid=265598, cOID="entry", ticker="AAPL",
+            orderType="LMT", side="BUY", quantity=10, price=100,
+        )
+        await self.broker.place_orders("DU123", [entry])
+        await self.broker.on_market_event(quote(bid=99, ask=100, ask_size=20))
+        protection = OrderRequest(
+            acctId="DU123", conid=265598, cOID="repair-stop", ticker="AAPL",
+            orderType="STP", side="SELL", quantity=10, auxPrice=95,
+            raw={
+                **strategy_raw,
+                "canonical_metadata": {"action": "enter_long"},
+            },
+        )
+        await self.broker.place_orders("DU123", [protection])
+        exits = [
+            OrderRequest(
+                acctId="DU123", conid=265598, cOID="exit-limit", ticker="AAPL",
+                orderType="LMT", side="SELL", quantity=10, price=101,
+                isSingleGroup=True,
+                raw={**strategy_raw, "canonical_metadata": {"action": "exit"}},
+            ),
+            OrderRequest(
+                acctId="DU123", conid=265598, cOID="exit-stop", ticker="AAPL",
+                orderType="STP", side="SELL", quantity=10, auxPrice=98,
+                isSingleGroup=True,
+                raw={**strategy_raw, "canonical_metadata": {"action": "exit"}},
+            ),
+        ]
+
+        response = await self.broker.place_orders("DU123", exits)
+
+        self.assertEqual([row["order_status"] for row in response], ["Submitted", "Submitted"])
+
+    async def test_full_exit_oca_cannot_replace_unrelated_strategy_sell(self) -> None:
+        entry = OrderRequest(
+            acctId="DU123", conid=265598, cOID="entry", ticker="AAPL",
+            orderType="LMT", side="BUY", quantity=10, price=100,
+        )
+        await self.broker.place_orders("DU123", [entry])
+        await self.broker.on_market_event(quote(bid=99, ask=100, ask_size=20))
+        await self.broker.place_orders("DU123", [OrderRequest(
+            acctId="DU123", conid=265598, cOID="other-stop", ticker="AAPL",
+            orderType="STP", side="SELL", quantity=10, auxPrice=95,
+            raw={
+                "canonical_strategy_id": "other",
+                "canonical_strategy_revision": 1,
+                "canonical_metadata": {"action": "enter_long"},
+            },
+        )])
+        exits = [
+            OrderRequest(
+                acctId="DU123", conid=265598, cOID="exit-limit", ticker="AAPL",
+                orderType="LMT", side="SELL", quantity=10, price=101,
+                isSingleGroup=True,
+                raw={
+                    "canonical_strategy_id": "momentum",
+                    "canonical_strategy_revision": 5,
+                    "canonical_metadata": {"action": "exit"},
+                },
+            ),
+            OrderRequest(
+                acctId="DU123", conid=265598, cOID="exit-stop", ticker="AAPL",
+                orderType="STP", side="SELL", quantity=10, auxPrice=98,
+                isSingleGroup=True,
+                raw={
+                    "canonical_strategy_id": "momentum",
+                    "canonical_strategy_revision": 5,
+                    "canonical_metadata": {"action": "exit"},
+                },
+            ),
+        ]
+
+        with self.assertRaisesRegex(ValueError, "unconfigured short"):
+            await self.broker.place_orders("DU123", exits)
+
+    async def test_newly_activated_child_cannot_fill_on_parent_market_event(self) -> None:
+        orders = [
+            OrderRequest(acctId="DU123", conid=265598, cOID="entry", ticker="AAPL", orderType="LMT", side="BUY", quantity=10, price=100),
+            OrderRequest(acctId="DU123", conid=265598, cOID="stop", parentId="entry", ticker="AAPL", orderType="STP", side="SELL", quantity=10, auxPrice=95, isSingleGroup=True),
+        ]
+        await self.broker.place_orders("DU123", orders)
+
+        parent_event = await self.broker.on_market_event(
+            quote(bid=94, ask=100, bid_size=20, ask_size=20)
+        )
+
+        self.assertEqual([fill.side for fill in parent_event], ["B"])
+        snapshots = await self.broker.live_orders()
+        self.assertEqual(snapshots[1].order_status, OrderStatus.SUBMITTED)
+        stop_event = await self.broker.on_market_event(
+            quote(bid=94, ask=95, bid_size=20, ask_size=20)
+        )
+        self.assertEqual([fill.side for fill in stop_event], ["S"])
+        self.assertEqual((await self.broker.positions("DU123")), [])
+
+    async def test_partial_bracket_fill_allows_active_backstop_while_children_inactive(self) -> None:
+        orders = [
+            OrderRequest(acctId="DU123", conid=265598, cOID="entry", ticker="AAPL", orderType="LMT", side="BUY", quantity=10, price=100),
+            OrderRequest(acctId="DU123", conid=265598, cOID="target", parentId="entry", ticker="AAPL", orderType="LMT", side="SELL", quantity=10, price=105, isSingleGroup=True),
+            OrderRequest(acctId="DU123", conid=265598, cOID="stop", parentId="entry", ticker="AAPL", orderType="STP", side="SELL", quantity=10, auxPrice=95, isSingleGroup=True),
+        ]
+        bracket_response = await self.broker.place_orders("DU123", orders)
+        await self.broker.on_market_event(
+            quote(bid=99, ask=100, bid_size=10, ask_size=10)
+        )
+
+        response = await self.broker.place_orders("DU123", [
+            OrderRequest(
+                acctId="DU123",
+                conid=265598,
+                cOID="partial-fill-backstop",
+                ticker="AAPL",
+                orderType="STP",
+                side="SELL",
+                quantity=5,
+                auxPrice=95,
+            )
+        ])
+
+        self.assertEqual(response[0]["order_status"], "Submitted")
+        inactive_child = OrderRequest(
+            acctId="DU123",
+            conid=265598,
+            cOID="stop",
+            parentId="entry",
+            ticker="AAPL",
+            orderType="STP",
+            side="SELL",
+            quantity=10,
+            auxPrice=96,
+            isSingleGroup=True,
+        )
+        child_modified = await self.broker.modify_order(
+            "DU123", bracket_response[2]["order_id"], inactive_child
+        )
+        self.assertEqual(child_modified[0]["order_status"], "Inactive")
+        with self.assertRaisesRegex(ValueError, "exceeds its parent"):
+            await self.broker.modify_order(
+                "DU123",
+                bracket_response[2]["order_id"],
+                replace(inactive_child, quantity=11),
+            )
+        replacement = OrderRequest(
+            acctId="DU123",
+            conid=265598,
+            cOID="partial-fill-backstop",
+            ticker="AAPL",
+            orderType="STP",
+            side="SELL",
+            quantity=5,
+            auxPrice=96,
+        )
+        modified = await self.broker.modify_order(
+            "DU123", response[0]["order_id"], replacement
+        )
+        self.assertEqual(modified[0]["order_status"], "Submitted")
+        with self.assertRaisesRegex(ValueError, "unconfigured short"):
+            await self.broker.place_orders("DU123", [
+                OrderRequest(
+                    acctId="DU123",
+                    conid=265598,
+                    cOID="excess-sell",
+                    ticker="AAPL",
+                    orderType="STP",
+                    side="SELL",
+                    quantity=1,
+                    auxPrice=94,
+                )
+            ])
+        await self.broker.on_market_event(
+            quote(bid=99, ask=100, bid_size=20, ask_size=20)
+        )
+        reduced_child = await self.broker.modify_order(
+            "DU123",
+            bracket_response[2]["order_id"],
+            replace(inactive_child, quantity=5),
+        )
+        self.assertEqual(reduced_child[0]["order_status"], "Submitted")
 
     async def test_trailing_stop_tracks_favorable_price_before_triggering(self) -> None:
         entry = OrderRequest(

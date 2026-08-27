@@ -7,14 +7,17 @@ use std::collections::{BTreeMap, BTreeSet};
 pub const WATCHLIST_TIMELINE_PLAN_SCHEMA_VERSION: u16 = 4;
 pub const MAX_EVALUATIONS_PER_CHUNK: u64 = 1_800;
 pub const MAX_MEMBERSHIP_SLOTS_PER_CHUNK: u64 = 2_000_000;
-const QMD_SOURCES: [&str; 13] = [
+const QMD_SOURCES: [&str; 16] = [
     "indicator.vwap.value",
     "liquidity-rank",
     "market.liquidity_rank",
     "market.change_pct",
     "market.change_actual",
     "market.last_price",
+    "market.liquidity_score",
     "market.relative_volume",
+    "market.session_dollar_volume",
+    "market.trade_rate_10s",
     "market.volume",
     "price_change_1_bar_pct",
     "volume_rate_ratio",
@@ -1294,6 +1297,28 @@ mod tests {
         assert!(validate_plan(&invalid)
             .unwrap_err()
             .contains("supports only latest left value selection"));
+    }
+
+    #[test]
+    fn accepts_absolute_liquidity_sources_used_by_historical_watchlists() {
+        let mut projected = plan();
+        for (source_id, runtime_field) in [
+            ("market.liquidity_score", "liquidity_score"),
+            ("market.session_dollar_volume", "session_dollar_volume"),
+            ("market.trade_rate_10s", "trade_rate_10s"),
+        ] {
+            projected.qmd_sources.push(source_id.to_string());
+            projected.qmd_source_specs.push(QmdSourceSpec {
+                instance_id: source_id.to_string(),
+                source_id: source_id.to_string(),
+                runtime_field: runtime_field.to_string(),
+                interval: String::new(),
+                aggregation: String::new(),
+            });
+        }
+        rehash(&mut projected);
+
+        assert!(validate_plan(&projected).unwrap().valid);
     }
 
     fn candidate(ticker: &str, liquidity: f64, public_float: f64) -> WatchlistCandidate {

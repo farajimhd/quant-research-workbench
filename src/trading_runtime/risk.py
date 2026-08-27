@@ -98,7 +98,16 @@ class OrderSafetyGuard:
         if intent is None:
             return
         root_orders = [order for order in orders if not order.parentId]
-        root_quantity = sum(float(order.quantity or 0) for order in root_orders)
+        # A full exit is one CPAPI single-group set of mutually exclusive
+        # limit/stop/trailing alternatives. Only one alternative can execute,
+        # so its economic quantity is the maximum child quantity, not their
+        # sum. Entry slice parents remain additive portfolio exposure.
+        if intent.action == "exit" and root_orders and all(
+            order.isSingleGroup for order in root_orders
+        ):
+            root_quantity = max(float(order.quantity or 0) for order in root_orders)
+        else:
+            root_quantity = sum(float(order.quantity or 0) for order in root_orders)
         if root_quantity > float(intent.quantity) + 1e-9:
             raise ValueError("Order safety violation: broker plan exceeds portfolio-approved quantity")
         envelope = intent.resolved_execution_policy().envelope

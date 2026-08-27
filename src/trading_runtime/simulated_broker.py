@@ -112,6 +112,7 @@ class _OrderState:
     oca_group: str = ""
     filled: float = 0.0
     avg_price: float = 0.0
+    commission_paid: float = 0.0
     stop_triggered: bool = False
     trailing_reference: float = 0.0
     status_description: str = ""
@@ -145,6 +146,18 @@ class _OrderState:
             outsideRTH=self.request.outsideRTH,
             lastExecutionTime=None,
             statusDescription=self.status_description,
+            raw={
+                "oca_group": self.oca_group,
+                "canonical_strategy_id": self.request.raw.get(
+                    "canonical_strategy_id", ""
+                ),
+                "canonical_strategy_revision": self.request.raw.get(
+                    "canonical_strategy_revision", 0
+                ),
+                "canonical_metadata": self.request.raw.get(
+                    "canonical_metadata", {}
+                ),
+            },
         )
 
 
@@ -204,6 +217,7 @@ class SimulatedBrokerAdapter:
                     "oca_group": state.oca_group,
                     "filled": state.filled,
                     "avg_price": state.avg_price,
+                    "commission_paid": state.commission_paid,
                     "stop_triggered": state.stop_triggered,
                     "trailing_reference": state.trailing_reference,
                     "status_description": state.status_description,
@@ -262,6 +276,7 @@ class SimulatedBrokerAdapter:
                 oca_group=str(values.get("oca_group") or ""),
                 filled=float(values.get("filled") or 0),
                 avg_price=float(values.get("avg_price") or 0),
+                commission_paid=float(values.get("commission_paid") or 0),
                 stop_triggered=bool(values.get("stop_triggered")),
                 trailing_reference=float(values.get("trailing_reference") or 0),
                 status_description=str(values.get("status_description") or ""),
@@ -355,6 +370,10 @@ class SimulatedBrokerAdapter:
             and all(order.isSingleGroup and not order.parentId for order in orders)
             else ""
         )
+        replaced_protection_identity = self._strategy_protection_replacement_identity(
+            orders,
+            oca_group=standalone_oca_group,
+        )
         async with self._lock:
             results: list[dict[str, Any]] = []
             for order in orders:
@@ -362,7 +381,11 @@ class SimulatedBrokerAdapter:
                 if order.cOID and order.cOID in self._order_ids_by_coid:
                     raise ValueError(f"cOID must be unique: {order.cOID}")
                 resolved = self._resolve_cash_quantity(order)
-                self._pretrade_validate(resolved)
+                self._pretrade_validate(
+                    resolved,
+                    oca_group=standalone_oca_group,
+                    replaced_protection_identity=replaced_protection_identity,
+                )
                 order_id = str(self._next_order_id)
                 self._next_order_id += 1
                 status = OrderStatus.INACTIVE if resolved.parentId else OrderStatus.SUBMITTED
@@ -420,7 +443,13 @@ class SimulatedBrokerAdapter:
                 raise ValueError("Modification must preserve cOID")
             if order.quantity is not None and order.quantity < state.filled:
                 raise ValueError("Modified quantity cannot be below filled quantity")
-            self._pretrade_validate(order)
+            self._pretrade_validate(
+                order,
+                exclude_order_id=order_id,
+                existing_order_quantity=state.requested_quantity,
+                existing_order_filled=state.filled,
+                oca_group=state.oca_group,
+            )
             state.request = order
             state.status = OrderStatus.INACTIVE if order.parentId and not self._parent_filled(order.parentId) else OrderStatus.SUBMITTED
             return [{"order_id": order_id, "order_status": state.status.value, "local_order_id": order.cOID}]
@@ -547,8 +576,25 @@ class SimulatedBrokerAdapter:
                 self._marks[conid] = event.price
         executions: list[Execution] = []
         async with self._lock:
-            for state in self._sorted_orders():
-                if state.request.conid != conid or state.status not in {OrderStatus.SUBMITTED, OrderStatus.PRE_SUBMITTED}:
+            # Freeze event eligibility before applying any fills. A child that
+            # becomes active because its parent fills on this event may only
+            # observe the next market event; otherwise it can trigger on data
+            # that causally preceded its activation.
+            eligible = [
+                state
+                for state in self._sorted_orders()
+                if state.request.conid == conid
+                and state.status in {OrderStatus.SUBMITTED, OrderStatus.PRE_SUBMITTED}
+            ]
+            for state in eligible:
+                # Eligibility is frozen to prevent a newly activated child
+                # from seeing the parent's market event. OCA cancellation is
+                # different: a sibling cancelled by an earlier fill on this
+                # same event must not execute from the frozen candidate list.
+                if state.status not in {
+                    OrderStatus.SUBMITTED,
+                    OrderStatus.PRE_SUBMITTED,
+                }:
                     continue
                 if not self._session_allows(state.request, event.ts):
                     continue
@@ -640,7 +686,9 @@ class SimulatedBrokerAdapter:
         state.filled += quantity
         state.avg_price = (prior_value + price * quantity) / state.filled
         state.status = OrderStatus.FILLED if state.remaining <= 1e-12 else OrderStatus.SUBMITTED
-        commission = self._commission(quantity)
+        if state.oca_group and state.status != OrderStatus.FILLED:
+            self._reduce_oca_sibling_capacity(state, quantity)
+        commission = self._incremental_order_commission(state)
         execution = Execution(
             execution_id=f"SIM-{self._next_execution_id}",
             symbol=state.request.ticker,
@@ -670,6 +718,27 @@ class SimulatedBrokerAdapter:
             self._cancel_oca_siblings(state)
         return execution
 
+    def _reduce_oca_sibling_capacity(
+        self, filled: _OrderState, incremental_quantity: float
+    ) -> None:
+        """Reduce every alternative by fills elsewhere in the OCA group."""
+
+        for sibling in self._orders.values():
+            if sibling.order_id == filled.order_id:
+                continue
+            if sibling.oca_group != filled.oca_group:
+                continue
+            if sibling.status not in OPEN_ORDER_STATUSES:
+                continue
+            next_remaining = max(0.0, sibling.remaining - incremental_quantity)
+            sibling.request = replace(
+                sibling.request,
+                quantity=sibling.filled + next_remaining,
+            )
+            if next_remaining <= 1e-12:
+                sibling.status = OrderStatus.CANCELLED
+                sibling.status_description = "OCA capacity was filled by a sibling"
+
     def _book_execution(self, request: OrderRequest, price: float, quantity: float, commission: float) -> None:
         account_id = request.acctId
         signed = quantity if request.side.upper() == "BUY" else -quantity
@@ -692,7 +761,16 @@ class SimulatedBrokerAdapter:
         position.quantity = new_qty
         self._cash[account_id] -= signed * price + commission
 
-    def _pretrade_validate(self, order: OrderRequest) -> None:
+    def _pretrade_validate(
+        self,
+        order: OrderRequest,
+        *,
+        exclude_order_id: str = "",
+        existing_order_quantity: float | None = None,
+        existing_order_filled: float = 0.0,
+        oca_group: str = "",
+        replaced_protection_identity: tuple[str, int] | None = None,
+    ) -> None:
         if order.quantity is None:
             raise ValueError("Simulation must resolve cashQty before submission")
         if order.side.upper() == "BUY":
@@ -712,17 +790,115 @@ class SimulatedBrokerAdapter:
                     and parent.request.side.upper() == "BUY"
                 ):
                     parent_capacity = parent.requested_quantity
-            open_sells = sum(
-                item.remaining
+                    if not self._parent_filled(order.parentId):
+                        if order.quantity > parent_capacity:
+                            raise ValueError(
+                                "Attached sell quantity exceeds its parent buy quantity"
+                            )
+                        # The child is contingent and cannot execute while the
+                        # parent is incomplete. Active partial-fill backstops
+                        # are accounted independently against shares held.
+                        return
+            open_sell_orders = [
+                item
                 for item in self._orders.values()
+                if item.order_id != exclude_order_id
+                if not oca_group or item.oca_group != oca_group
+                if not self._is_replaced_strategy_protection(
+                    item,
+                    replaced_protection_identity,
+                )
                 if item.request.acctId == order.acctId
                 and item.request.conid == order.conid
                 and item.request.side.upper() == "SELL"
-                and item.request.parentId != order.parentId
+                and (
+                    not order.parentId
+                    or item.request.parentId != order.parentId
+                )
                 and item.status in OPEN_ORDER_STATUSES
-            )
-            if order.quantity + open_sells > max(0.0, held, parent_capacity):
-                raise ValueError("Order would create an unconfigured short position")
+                # An attached child remains non-executable until its parent is
+                # complete. During a partial parent fill the OMS must be able
+                # to place an active backstop for the shares already held.
+                and item.status != OrderStatus.INACTIVE
+            ]
+            grouped_open_sells: dict[tuple[str, str], float] = {}
+            for item in open_sell_orders:
+                if item.oca_group:
+                    capacity_key = ("oca", item.oca_group)
+                elif item.request.parentId and item.request.isSingleGroup:
+                    capacity_key = ("parent", item.request.parentId)
+                else:
+                    capacity_key = ("order", item.order_id)
+                grouped_open_sells[capacity_key] = max(
+                    grouped_open_sells.get(capacity_key, 0.0),
+                    item.remaining,
+                )
+            open_sells = sum(grouped_open_sells.values())
+            proposed_remaining = max(0.0, order.quantity - existing_order_filled)
+            executable_capacity = max(0.0, held, parent_capacity)
+            if proposed_remaining + open_sells > executable_capacity + 1e-9:
+                if (
+                    existing_order_quantity is not None
+                    and order.quantity <= existing_order_quantity + 1e-12
+                ):
+                    # Permit a modification that does not increase an already
+                    # open sell. This lets reconciliation monotonically reduce
+                    # transient over-coverage after contingent children activate.
+                    return
+                raise ValueError(
+                    "Order would create an unconfigured short position: "
+                    f"cOID={order.cOID!r} side={order.side} quantity={order.quantity} "
+                    f"filled={existing_order_filled} proposed_remaining={proposed_remaining} "
+                    "open_sells="
+                    f"{[(item.order_id, item.request.cOID, item.remaining, item.oca_group) for item in open_sell_orders]} "
+                    f"grouped_open_sell_capacity={grouped_open_sells} "
+                    f"held={held} "
+                    f"parent_capacity={parent_capacity} oca_group={oca_group!r}"
+                )
+
+    @staticmethod
+    def _strategy_protection_replacement_identity(
+        orders: list[OrderRequest],
+        *,
+        oca_group: str,
+    ) -> tuple[str, int] | None:
+        """Identify a full-exit OCA that atomically supersedes strategy protection.
+
+        The OMS submits the mutually exclusive full-exit alternatives, waits for
+        acknowledgement, and then cancels the entry's protective orders before
+        another market event can be processed.  The simulator must therefore
+        permit only that same-strategy replacement window; unrelated open sells
+        remain part of the no-short capacity check.
+        """
+        if not oca_group or not orders:
+            return None
+        identities: set[tuple[str, int]] = set()
+        for order in orders:
+            metadata = dict(order.raw.get("canonical_metadata") or {})
+            if str(metadata.get("action") or "") != "exit":
+                return None
+            strategy_id = str(order.raw.get("canonical_strategy_id") or "")
+            strategy_revision = int(order.raw.get("canonical_strategy_revision") or 0)
+            if not strategy_id or strategy_revision <= 0:
+                return None
+            identities.add((strategy_id, strategy_revision))
+        return next(iter(identities)) if len(identities) == 1 else None
+
+    @staticmethod
+    def _is_replaced_strategy_protection(
+        state: _OrderState,
+        identity: tuple[str, int] | None,
+    ) -> bool:
+        if identity is None:
+            return False
+        raw = state.request.raw
+        metadata = dict(raw.get("canonical_metadata") or {})
+        action = str(metadata.get("action") or "")
+        return (
+            action in {"enter_long", "add_long"}
+            and str(raw.get("canonical_strategy_id") or "") == identity[0]
+            and int(raw.get("canonical_strategy_revision") or 0) == identity[1]
+        )
 
     def _resolve_cash_quantity(self, order: OrderRequest) -> OrderRequest:
         if order.cashQty is None:
@@ -806,6 +982,12 @@ class SimulatedBrokerAdapter:
 
     def _commission(self, quantity: float) -> float:
         return max(self.config.minimum_commission, abs(quantity) * self.config.commission_per_share)
+
+    def _incremental_order_commission(self, state: _OrderState) -> float:
+        cumulative = self._commission(state.filled)
+        incremental = max(0.0, cumulative - state.commission_paid)
+        state.commission_paid = cumulative
+        return incremental
 
     def _reference_price(self, conid: int) -> float:
         return self._marks.get(conid, 0.0)

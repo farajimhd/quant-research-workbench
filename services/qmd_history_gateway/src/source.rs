@@ -968,7 +968,7 @@ impl HistoricalEventSource {
         sender: mpsc::Sender<Result<Vec<LiveCompactEvent>, String>>,
     ) -> Result<(), String> {
         let url = format!(
-            "{}/?database={}&enable_http_compression=1&max_query_size=2097152&max_ast_elements=200000&max_expanded_ast_elements=200000",
+            "{}/?database={}&enable_http_compression=1&send_timeout=900&receive_timeout=900&max_query_size=2097152&max_ast_elements=200000&max_expanded_ast_elements=200000",
             self.config.clickhouse_url,
             urlencoding::encode(&self.config.clickhouse_database)
         );
@@ -990,7 +990,11 @@ impl HistoricalEventSource {
         }
         let mut buffer = Vec::<u8>::with_capacity(256 * 1024);
         let mut batch = Vec::with_capacity(batch_size);
-        while let Some(chunk) = response.chunk().await.map_err(|error| error.to_string())? {
+        while let Some(chunk) = response
+            .chunk()
+            .await
+            .map_err(|error| format!("ClickHouse response body stream failed: {error:#}"))?
+        {
             buffer.extend_from_slice(&chunk);
             let mut consumed = 0usize;
             while let Some(relative_end) = buffer[consumed..].iter().position(|byte| *byte == b'\n')
@@ -2610,8 +2614,8 @@ mod tests {
         latest_coverage_summary_sql, latest_coverage_target_date_sql, macro_bar_is_closed,
         materialize_confirmed_recent_coverage, merge_coverage_intervals, normalize_ticker,
         parse_historical_tsv_row, persisted_structure_events_sql, recent_coverage_sql,
-        row_to_event, session_vwap_seed_select, ticker_filter, CoverageInterval, EventWindow, HistoricalRow,
-        MarketSourceTier, RecentCoverageRow,
+        row_to_event, session_vwap_seed_select, ticker_filter, CoverageInterval, EventWindow,
+        HistoricalRow, MarketSourceTier, RecentCoverageRow,
     };
     use crate::config::HistoricalGatewayConfig;
     use chrono::{TimeZone, Utc};
@@ -2630,7 +2634,8 @@ mod tests {
         );
 
         assert!(sql.contains("FROM q_live.events AS source FINAL"));
-        assert!(sql.contains("source.sip_timestamp_us < 1787689800000000 AND source.ticker IN ('AAPL')"));
+        assert!(sql
+            .contains("source.sip_timestamp_us < 1787689800000000 AND source.ticker IN ('AAPL')"));
         assert!(sql.contains("bitAnd(source.event_meta, 1) = 0"));
         assert!(sql.contains("source.condition_token_1 IN (0,3,7)"));
         assert!(sql.contains("source.condition_token_5 IN (0,3,7)"));

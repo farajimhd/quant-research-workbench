@@ -432,6 +432,20 @@ pub struct IndicatorRow {
 }
 
 impl IndicatorRow {
+    /// Drop calculator-only state after the public indicator projection has
+    /// been finalized. Historical chart structure history is retained by its
+    /// dedicated event projection; replay consumes the scalar causal fields.
+    /// Keeping the redundant level/state vectors in every frame multiplies
+    /// memory and wire size without adding strategy evidence.
+    pub fn compact_for_historical_cache(mut self) -> Self {
+        self.qmd_structure_active_levels.clear();
+        self.qmd_structure_timeframe_states.clear();
+        self.qmd_structure_snapshot = Default::default();
+        self.qmd_structure_events.clear();
+        self.microstructure_interval = Default::default();
+        self
+    }
+
     pub fn apply_microstructure_interval(&mut self, interval: &MicrostructureIntervalFeatures) {
         self.microstructure_buy_trade_count = interval.buy_trade_count;
         self.microstructure_sell_trade_count = interval.sell_trade_count;
@@ -3472,6 +3486,42 @@ mod tests {
         assert_eq!(durable["complete"], 1);
     }
 
+    #[test]
+    fn historical_cache_compaction_preserves_the_wire_projection() {
+        let bar = base_bar();
+        let mut calculator = BarIndicatorCalculator::new();
+        let row = calculator.apply_bar(&bar);
+        let mut wire_before = serde_json::to_value(&row).expect("indicator row should serialize");
+        wire_before
+            .as_object_mut()
+            .unwrap()
+            .remove("qmd_structure_active_levels");
+        wire_before
+            .as_object_mut()
+            .unwrap()
+            .remove("qmd_structure_timeframe_states");
+
+        let compacted = row.compact_for_historical_cache();
+        let mut wire_after =
+            serde_json::to_value(&compacted).expect("compacted indicator row should serialize");
+        wire_after
+            .as_object_mut()
+            .unwrap()
+            .remove("qmd_structure_active_levels");
+        wire_after
+            .as_object_mut()
+            .unwrap()
+            .remove("qmd_structure_timeframe_states");
+
+        assert_eq!(wire_after, wire_before);
+        assert!(compacted.qmd_structure_active_levels.is_empty());
+        assert!(compacted.qmd_structure_timeframe_states.is_empty());
+        assert!(compacted.qmd_structure_snapshot.active_levels.is_empty());
+        assert!(compacted.qmd_structure_snapshot.timeframe_states.is_empty());
+        assert!(compacted.qmd_structure_events.is_empty());
+        assert_eq!(compacted.microstructure_interval.ofi_numerator, 0.0);
+    }
+
     #[tokio::test]
     async fn price_indicators_carry_across_invalid_buckets_without_zero_pollution() {
         let store = SharedIndicatorStore::new(
@@ -3547,7 +3597,9 @@ mod tests {
         let projected = store.apply_reconciliation_bar(minute).await;
 
         assert!((projected.vwap - 17.5).abs() < 1e-9);
-        assert!((projected.price_vs_vwap_pct - (projected.close / 17.5 - 1.0) * 100.0).abs() < 1e-9);
+        assert!(
+            (projected.price_vs_vwap_pct - (projected.close / 17.5 - 1.0) * 100.0).abs() < 1e-9
+        );
     }
 
     #[tokio::test]

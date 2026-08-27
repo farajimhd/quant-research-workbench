@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field, replace
-from datetime import datetime, timezone
+from datetime import datetime, time as clock_time, timezone
 from enum import StrEnum
 from typing import Any
 from uuid import uuid4
@@ -164,12 +164,15 @@ def default_entry_decision_rules(parameters: dict[str, Any] | None = None) -> di
 
 def _rule_stage_timeframes(stage: dict[str, Any]) -> set[str]:
     timeframes: set[str] = set()
-    for group in stage.get("groups") or []:
+    for group in stage.get("rule_sets") or stage.get("groups") or []:
         if not bool(group.get("enabled", True)):
             continue
         for condition in group.get("conditions") or []:
-            for key in ("left_timeframe", "right_timeframe"):
-                value = str(condition.get(key) or "")
+            for side in ("left", "right"):
+                value = _condition_interval_expression(
+                    condition.get(f"{side}_interval")
+                    or condition.get(f"{side}_timeframe")
+                )
                 if value not in {"", "event", "session"}:
                     timeframes.add(value)
     return timeframes
@@ -570,18 +573,21 @@ def _rule_stage_source_dependencies(
     stage: dict[str, Any],
 ) -> set[tuple[str, str]]:
     dependencies: set[tuple[str, str]] = set()
-    for group in stage.get("groups") or []:
+    for group in stage.get("rule_sets") or stage.get("groups") or []:
         if not bool(group.get("enabled", True)):
             continue
         for condition in group.get("conditions") or []:
-            for source_key, timeframe_key in (
-                ("left_source_id", "left_timeframe"),
-                ("right_source_id", "right_timeframe"),
-            ):
-                source_id = str(condition.get(source_key) or "")
+            for side in ("left", "right"):
+                source_id = str(condition.get(f"{side}_source_id") or "")
                 if source_id:
                     dependencies.add(
-                        (source_id, str(condition.get(timeframe_key) or ""))
+                        (
+                            source_id,
+                            _condition_interval_expression(
+                                condition.get(f"{side}_interval")
+                                or condition.get(f"{side}_timeframe")
+                            ),
+                        )
                     )
     return dependencies
 
@@ -743,6 +749,17 @@ class LongMomentumStrategyEngine:
             return self._result(assignment, observation, "wait", "assignment_not_active", 0.0, 1.0, state, status)
         if status == AssignmentStatus.PAUSED:
             return self._result(assignment, observation, "wait", "assignment_paused", 0.0, 1.0, state, status)
+        if status == AssignmentStatus.EXIT_PENDING and observation.position_quantity > 0:
+            return self._result(
+                assignment,
+                observation,
+                "hold",
+                "exit_fill_pending",
+                0.0,
+                1.0,
+                state,
+                AssignmentStatus.EXIT_PENDING,
+            )
         if not assignment.permissions.observe:
             return self._result(assignment, observation, "wait", "observation_not_authorized", 0.0, 1.0, state, status)
         if not flatten_due and not _observation_updates_active_rules(
@@ -1388,7 +1405,7 @@ class LongMomentumStrategyEngine:
                     } else None,
                     urgency=str(assignment.parameters.get("execution", {}).get("entry_urgency") or "urgent") if action in {"enter_long", "add_long", "enter_short", "add_short"} else str(assignment.parameters.get("execution", {}).get("exit_urgency") or "very_urgent"),  # type: ignore[arg-type]
                     time_in_force="",
-                    outside_rth=False,
+                    outside_rth=_outside_regular_hours(observation.observed_at),
                     reason=reason,
                     metadata={
                         "assignment_id": assignment.assignment_id,
@@ -1441,6 +1458,11 @@ def _at_or_after_session_time(observed_at: datetime, configured: str) -> bool:
         return False
     threshold = datetime.strptime(configured, "%H:%M:%S").time()
     return observed_at.astimezone(NEW_YORK).time().replace(tzinfo=None) >= threshold
+
+
+def _outside_regular_hours(observed_at: datetime) -> bool:
+    market_time = observed_at.astimezone(NEW_YORK).time().replace(tzinfo=None)
+    return not (clock_time(9, 30) <= market_time < clock_time(16, 0))
 
 
 def _capital_request(
@@ -1570,10 +1592,10 @@ def _protection_profile_from_phase(
                 ordinal=ordinal,
                 timeframe=timeframe,
             )
-            if anchor is None and (
-                anchor_source == "strategy_swing"
-                or rule_type == StopRuleType.SWING_ANCHORED
-            ):
+            # A hybrid stop is explicitly able to fall back to its volatility
+            # leg when no causal swing has formed yet. A purely swing-anchored
+            # stop must continue to fail closed.
+            if anchor is None and rule_type == StopRuleType.SWING_ANCHORED:
                 raise ValueError(
                     f"Protection profile {reference} requires unavailable {ordinal} causal swing"
                 )
@@ -1652,7 +1674,7 @@ def _missing_protection_anchor(
         stop = dict(raw.get("stop") or {})
         rule_type = str(stop.get("rule_type") or "")
         anchor_source = str(stop.get("anchor_source") or "")
-        if anchor_source != "strategy_swing" and rule_type != StopRuleType.SWING_ANCHORED:
+        if rule_type != StopRuleType.SWING_ANCHORED:
             continue
         ordinal = str(stop.get("anchor_ordinal") or "most_recent")
         if _structural_anchor_from_state(

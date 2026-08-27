@@ -170,6 +170,7 @@ class HistoricalDebugFixture:
 class ReplayRunDefinition:
     session_date: date
     start_time: clock_time
+    end_time: clock_time = clock_time(20, 0)
     initial_cash: float = 100_000.0
     assignment_ids: tuple[str, ...] = ()
     tickers: tuple[str, ...] = ()
@@ -179,6 +180,16 @@ class ReplayRunDefinition:
     final_session_date: date | None = None
     debug_fixture: HistoricalDebugFixture | None = None
     simulation_profile: str = "baseline"
+    historical_frame_cache: dict[tuple[str, str, str, str], Any] | None = field(
+        default=None,
+        repr=False,
+        compare=False,
+    )
+    historical_watchlist_cache: dict[str, Any] | None = field(
+        default=None,
+        repr=False,
+        compare=False,
+    )
 
     def __post_init__(self) -> None:
         if self.mode not in {RunMode.REPLAY, RunMode.BACKTEST, RunMode.BACKTEST_DEBUG}:
@@ -203,6 +214,17 @@ class ReplayRunDefinition:
             self.start_time.minute or self.start_time.second or self.start_time.microsecond
         ):
             raise ValueError("Replay start time cannot be later than 20:00 New York")
+        if not 4 <= self.end_time.hour <= 20:
+            raise ValueError("Replay end time must be inside the 04:00-20:00 New York session")
+        if self.end_time.hour == 20 and (
+            self.end_time.minute or self.end_time.second or self.end_time.microsecond
+        ):
+            raise ValueError("Replay end time cannot be later than 20:00 New York")
+        if (
+            (self.final_session_date is None or self.final_session_date == self.session_date)
+            and self.end_time < self.start_time
+        ):
+            raise ValueError("Replay end time cannot precede its requested start time")
         if not 1_000 <= self.initial_cash <= 1_000_000_000:
             raise ValueError("Replay initial cash must be between 1,000 and 1,000,000,000")
         if len(self.tickers) > 100:
@@ -230,7 +252,7 @@ class ReplayRunDefinition:
     def session_end(self) -> datetime:
         return datetime.combine(
             self.final_session_date or self.session_date,
-            clock_time(20, 0),
+            self.end_time,
             tzinfo=NEW_YORK,
         )
 
@@ -247,6 +269,7 @@ class ReplayRunDefinition:
             "execution_mode": self.execution_mode,
             "session_date": self.session_date.isoformat(),
             "start_time": self.start_time.isoformat(timespec="seconds"),
+            "end_time": self.end_time.isoformat(timespec="seconds"),
             "session_start": self.session_start.isoformat(),
             "session_end": self.session_end.isoformat(),
             "requested_start": self.requested_start.isoformat(),
@@ -276,6 +299,40 @@ class ReplayDerivedFrame:
     ticker: str
     timeframe: str
     signals: dict[str, float] = field(default_factory=dict)
+
+
+_STRATEGY_BAR_FIELDS = frozenset(
+    {"bar_end", "close", "high", "low", "open", "sym", "timeframe", "volume"}
+)
+_STRATEGY_INDICATOR_FIELDS = frozenset(
+    {
+        "atr_14",
+        "bar_end",
+        "close",
+        "flow_price_divergence_score",
+        "flow_structure_composite_bias",
+        "flow_structure_composite_confidence",
+        "flow_structure_composite_score",
+        "liquidity_dislocation_score",
+        "macd_histogram",
+        "macd_line",
+        "macd_signal",
+        "prev_close",
+        "previous_close",
+        "previous_high",
+        "price_change_1_bar_pct",
+        "price_volume_expansion_score",
+        "structure_bos_direction",
+        "structure_choch_direction",
+        "structure_luld_upper",
+        "structure_swing_high",
+        "structure_swing_low",
+        "sym",
+        "timeframe",
+        "vwap",
+        "vwap_transition_score",
+    }
+)
 
 
 def _simulation_config(definition: ReplayRunDefinition) -> SimulationConfig:
@@ -342,6 +399,7 @@ class ReplayRunController:
         self._strategy_source_values: dict[str, dict[str, Any]] = {}
         self._signal_stream_states: dict[tuple[str, str], dict[str, Any]] = {}
         self._signal_activated_tickers: set[str] = set()
+        self._source_native_signal_episodes: dict[str, ReplaySignalEvent] = {}
         self._canvas_state_cache: tuple[float, dict[str, Any]] | None = None
         self._runtime_finished = False
         self._stream_tickers: tuple[str, ...] = ()
@@ -350,6 +408,7 @@ class ReplayRunController:
         self._pace_reset = True
         self._historical_watchlist_cache: list[dict[str, Any]] | None = None
         self._historical_watchlist_timeline_cache: list[dict[str, Any]] | None = None
+        self._active_historical_watchlist_evidence: dict[str, dict[str, Any]] = {}
         if self.definition.mode == RunMode.BACKTEST_DEBUG:
             # Debug fixture records are the complete deterministic data
             # authority. Compiling historical plans here both weakens that
@@ -376,6 +435,8 @@ class ReplayRunController:
         self._source_cursor: dict[str, Any] = {}
         self._frame_cursor: dict[str, Any] = {}
         self._processed_frames = 0
+        self._last_restart_checkpoint_event_bucket = 0
+        self._last_restart_checkpoint_frame_bucket = 0
         self._bar_gpt_origin_us = 0
         self._bar_gpt_prediction_origin_us = 0
         self._bar_gpt_scope_task: asyncio.Task[None] | None = None
@@ -826,6 +887,19 @@ class ReplayRunController:
                         self._active_historical_watchlists.items()
                     )
                 },
+                "active_watchlist_evidence": deepcopy(
+                    self._active_historical_watchlist_evidence
+                ),
+                "signal_activated_tickers": sorted(self._signal_activated_tickers),
+                "source_native_signal_episodes": [
+                    {
+                        "available_at": event.available_at.isoformat(),
+                        "occurrence": deepcopy(event.occurrence),
+                        "source_values": deepcopy(event.source_values),
+                        "ticker": event.ticker,
+                    }
+                    for event in self._source_native_signal_episodes.values()
+                ],
                 "data_authority": deepcopy(self._data_authority),
             },
             "runtime": {
@@ -968,6 +1042,7 @@ class ReplayRunController:
             self._journal = TradingJournal(self.run_dir / "journal.sqlite3")
             self._historical_external_signal_events = [
                 *(await self._load_market_signal_events()),
+                *(await self._load_source_native_signal_events()),
                 *(await self._load_external_signal_events()),
             ]
             self._historical_external_signal_events.sort(
@@ -1058,7 +1133,10 @@ class ReplayRunController:
                         if self._stop_requested:
                             await self._finish("stopped")
                             return
-                    await self._process_market_event(event)
+                    await self._process_market_event(
+                        event,
+                        evaluate_strategy=event.ts >= self.definition.requested_start,
+                    )
                     if event.ts < self.definition.requested_start:
                         self.warmup_events += 1
                     else:
@@ -1301,7 +1379,10 @@ class ReplayRunController:
                         or {}
                     ).get(self.definition.mode.value, True)
                 ),
-                checkpoint_interval_events=1_000,
+                # ReplayRunController owns the complete restart checkpoint.
+                # Prevent the inner runtime's processed-count-only checkpoint
+                # from overwriting that state in the shared journal row.
+                checkpoint_interval_events=2**63 - 1,
             ),
             broker,
             self._strategy,
@@ -1365,6 +1446,15 @@ class ReplayRunController:
         self._source_cursor = dict(controller.get("source_cursor") or {})
         self._frame_cursor = dict(controller.get("frame_cursor") or {})
         self._processed_frames = int(controller.get("processed_frames") or 0)
+        checkpoint_interval = (
+            100_000 if self.definition.mode == RunMode.BACKTEST else 1_000
+        )
+        self._last_restart_checkpoint_event_bucket = (
+            self.processed_events // checkpoint_interval
+        )
+        self._last_restart_checkpoint_frame_bucket = (
+            self._processed_frames // checkpoint_interval
+        )
         if not self._source_cursor and not self._frame_cursor:
             raise ValueError("Historical restart checkpoint omitted all source cursors")
         self._previous_vwap = {
@@ -1396,6 +1486,23 @@ class ReplayRunController:
                 controller.get("active_watchlists") or {}
             ).items()
         }
+        self._active_historical_watchlist_evidence = deepcopy(
+            dict(controller.get("active_watchlist_evidence") or {})
+        )
+        self._signal_activated_tickers = {
+            str(value).upper()
+            for value in controller.get("signal_activated_tickers") or ()
+        }
+        self._source_native_signal_episodes = {
+            str(row.get("ticker") or "").upper(): ReplaySignalEvent(
+                available_at=_checkpoint_time(row["available_at"]),
+                occurrence=deepcopy(dict(row.get("occurrence") or {})),
+                source_values=deepcopy(dict(row.get("source_values") or {})),
+                ticker=str(row.get("ticker") or "").upper(),
+            )
+            for row in controller.get("source_native_signal_episodes") or ()
+            if str(row.get("ticker") or "").strip()
+        }
         self._data_authority = deepcopy(dict(controller.get("data_authority") or {}))
         self._runtime.processed_events = int(runtime.get("processed_events") or 0)
         self._runtime.last_event_time = last_event_time
@@ -1409,12 +1516,17 @@ class ReplayRunController:
         )
         self.updated_at = datetime.now(UTC)
 
-    async def _process_market_event(self, event: MarketEvent) -> None:
+    async def _process_market_event(
+        self,
+        event: MarketEvent,
+        *,
+        evaluate_strategy: bool = True,
+    ) -> None:
         if self._runtime is None:
             raise RuntimeError("Replay runtime was not initialized")
         if isinstance(event, QuoteEvent):
             self._quotes[event.ticker] = event
-        await self._runtime.process_event(event)
+        await self._runtime.process_event(event, evaluate_strategy=evaluate_strategy)
         self._source_cursor = {
             "ts": event.ts.astimezone(UTC).isoformat(),
             "sequence": int(event.sequence),
@@ -1424,6 +1536,7 @@ class ReplayRunController:
     async def _process_strategy_frame(self, frame: ReplayDerivedFrame) -> None:
         if self._runtime is None or self._strategy is None:
             return
+        self._refresh_source_native_signal_activation(frame.as_of)
         await self._ensure_bar_gpt_features(frame.as_of)
         quote = self._quotes.get(frame.ticker)
         indicator = frame.indicator
@@ -1494,7 +1607,10 @@ class ReplayRunController:
             acceleration=float(indicator.get("price_change_1_bar_pct") or 0),
             volatility=float(indicator.get("atr_14") or 0),
             upper_luld_price=_optional_positive(indicator.get("structure_luld_upper")),
-            market_open=clock_time(9, 30) <= observed_market_time < clock_time(16, 0),
+            # `market_open` is the strategy's tradability gate, not an RTH-only
+            # label. US equities are routable in the configured extended-hours
+            # session; order intents separately mark outside-RTH routing.
+            market_open=clock_time(4, 0) <= observed_market_time < clock_time(20, 0),
             source_signal_ids=(f"qmd-derived:{frame.ticker}:{frame.timeframe}:{frame.sequence}",),
             source_timeframe=frame.timeframe,
         )
@@ -1588,12 +1704,16 @@ class ReplayRunController:
         is_new_for_run = event.available_at >= self.definition.requested_start
         accepts_prior = str(activation.get("event_policy") or "new_occurrences") == "latest_session_occurrence"
         self._apply_historical_watchlist_membership(event.available_at)
-        if (is_new_for_run or accepts_prior) and run_plan_accepts_signal(
-            run_plan,
-            event.occurrence,
-            eligible_tickers=self._historical_signal_eligible_tickers(run_plan),
-        ):
-            self._signal_activated_tickers.add(event.ticker)
+        if is_new_for_run or accepts_prior:
+            if event.occurrence.get("squeeze_expires_at"):
+                self._source_native_signal_episodes[event.ticker] = event
+                self._refresh_source_native_signal_activation(event.available_at)
+            elif run_plan_accepts_signal(
+                run_plan,
+                event.occurrence,
+                eligible_tickers=self._historical_signal_eligible_tickers(run_plan),
+            ):
+                self._signal_activated_tickers.add(event.ticker)
         if is_new_for_run:
             await self._after_event(event.available_at)
 
@@ -1601,6 +1721,15 @@ class ReplayRunController:
         activation = dict(
             self.definition.configuration_revision["payload"].get("signal_activation") or {}
         )
+        if not any(
+            str(stream.get("occurrence_source") or "") != "qmd_squeeze_episode"
+            for stream in activation.get("signal_streams") or []
+            if bool(stream.get("enabled", True))
+        ):
+            # Exact squeeze occurrences are loaded from the immutable QMD
+            # occurrence table. Re-projecting the broad scanner data-field
+            # catalog from derived bars would introduce a second authority.
+            return {}
         plan = dict(activation.get("data_field_plan") or {})
         raw = {
             "ticker": frame.ticker,
@@ -1648,6 +1777,11 @@ class ReplayRunController:
         for stream in activation.get("signal_streams") or []:
             stream_id = str(stream.get("signal_stream_id") or "")
             if not stream_id or not bool(stream.get("enabled", True)):
+                continue
+            if str(stream.get("occurrence_source") or "") == "qmd_squeeze_episode":
+                # Source-native historical occurrences are processed by
+                # _process_external_signal_event; do not synthesize duplicates
+                # from later derived frames.
                 continue
             source_type = str(stream.get("source_type") or "core_scan")
             source_watchlist_id = str(stream.get("source_id") or "")
@@ -1763,19 +1897,23 @@ class ReplayRunController:
             self.status = "paused"
             transport_boundary = True
         await self._publish(force=transport_boundary)
-        if (
-            (
-                self.processed_events > 0
-                and self.processed_events % 1_000 == 0
-                and self._source_cursor
-            )
-            or (
-                self._processed_frames > 0
-                and self._processed_frames % 1_000 == 0
-                and self._frame_cursor
-            )
-        ):
+        checkpoint_interval = (
+            100_000 if self.definition.mode == RunMode.BACKTEST else 1_000
+        )
+        event_bucket = self.processed_events // checkpoint_interval
+        frame_bucket = self._processed_frames // checkpoint_interval
+        event_checkpoint_due = (
+            event_bucket > self._last_restart_checkpoint_event_bucket
+            and bool(self._source_cursor)
+        )
+        frame_checkpoint_due = (
+            frame_bucket > self._last_restart_checkpoint_frame_bucket
+            and bool(self._frame_cursor)
+        )
+        if event_checkpoint_due or frame_checkpoint_due:
             self._save_restart_checkpoint(event_time)
+            self._last_restart_checkpoint_event_bucket = event_bucket
+            self._last_restart_checkpoint_frame_bucket = frame_bucket
         if transport_boundary:
             self._write_manifest()
 
@@ -1846,6 +1984,19 @@ class ReplayRunController:
         activation = dict(
             self.definition.configuration_revision["payload"].get("signal_activation") or {}
         )
+        enabled_streams = [
+            dict(stream)
+            for stream in activation.get("signal_streams") or []
+            if bool(stream.get("enabled", True))
+        ]
+        if enabled_streams and all(
+            str(stream.get("occurrence_source") or "") == "qmd_squeeze_episode"
+            for stream in enabled_streams
+        ):
+            # The historical projection consumes immutable source-native
+            # occurrences and QMD derived indicators; the broad UI catalog is
+            # descriptive here and does not activate model feature serving.
+            return False
         return "model.bargpt." in json.dumps(activation, sort_keys=True, default=str)
 
     async def _ensure_bar_gpt_features(self, event_time: datetime) -> None:
@@ -1898,6 +2049,8 @@ class ReplayRunController:
             await asyncio.to_thread(publish_bar_gpt_scope, scope_id, **payload)
 
     async def _publish(self, *, force: bool = False) -> None:
+        if not self._subscribers:
+            return
         now = time.monotonic()
         if not force and now - self._last_publish_monotonic < 0.1:
             return
@@ -1938,6 +2091,15 @@ class ReplayRunController:
             for event in self._historical_external_signal_events
             if event.ticker not in existing_member_tickers
         }
+        run_plan = dict(configuration.get("run_plan") or {})
+        if (
+            list(run_plan.get("watchlist_ids") or [])
+            and str(dict(run_plan.get("activation") or {}).get("watchlist_policy") or "any_selected")
+            != "not_required"
+        ):
+            # Signals outside the causal eligibility Watchlists must never
+            # create assignments (or force unresolved broker identities).
+            external_signal_members = {}
         historical_members = [
             *historical_members,
             *(external_signal_members[ticker] for ticker in sorted(external_signal_members)),
@@ -2016,13 +2178,27 @@ class ReplayRunController:
     def _historical_watchlist_timeline(self) -> list[dict[str, Any]]:
         if self._historical_watchlist_timeline_cache is None:
             fixture = self.definition.debug_fixture
-            self._historical_watchlist_timeline_cache = (
-                _debug_watchlist_membership_timeline(fixture.watchlist_events)
-                if self.definition.mode == RunMode.BACKTEST_DEBUG and fixture is not None
-                else _historical_watchlist_membership_timeline_from_plans(
-                    self._historical_watchlist_plans
+            shared = self.definition.historical_watchlist_cache
+            cache_key = hashlib.sha256(
+                json.dumps(
+                    self._historical_watchlist_plans,
+                    default=str,
+                    separators=(",", ":"),
+                    sort_keys=True,
+                ).encode("utf-8")
+            ).hexdigest()
+            cached = shared.get(cache_key) if shared is not None else None
+            if cached is None:
+                cached = (
+                    _debug_watchlist_membership_timeline(fixture.watchlist_events)
+                    if self.definition.mode == RunMode.BACKTEST_DEBUG and fixture is not None
+                    else _historical_watchlist_membership_timeline_from_plans(
+                        self._historical_watchlist_plans
+                    )
                 )
-            )
+                if shared is not None:
+                    shared[cache_key] = cached
+            self._historical_watchlist_timeline_cache = cached
         return self._historical_watchlist_timeline_cache
 
     def _apply_historical_watchlist_membership(self, event_time: datetime) -> None:
@@ -2038,17 +2214,47 @@ class ReplayRunController:
                 if str(row.get("ticker") or "").strip()
             }
             current_by_watchlist: dict[str, set[str]] = {}
+            current_evidence: dict[str, dict[str, Any]] = {}
             for row in snapshot["members"]:
                 ticker = str(row.get("ticker") or "").upper()
                 if not ticker:
                     continue
+                current_evidence[ticker] = {
+                    str(source_id): deepcopy(value)
+                    for source_id, value in row.items()
+                    if source_id
+                    not in {
+                        "ticker",
+                        "rank",
+                        "score",
+                        "membership_reason",
+                        "watchlist_ids",
+                    }
+                }
                 for watchlist_id in row.get("watchlist_ids") or []:
                     current_by_watchlist.setdefault(str(watchlist_id), set()).add(ticker)
             added = sorted(current - self._active_historical_watchlist_tickers)
             removed = sorted(self._active_historical_watchlist_tickers - current)
             self._active_historical_watchlist_tickers = current
             self._active_historical_watchlists = current_by_watchlist
+            self._active_historical_watchlist_evidence = current_evidence
+            for ticker, evidence in current_evidence.items():
+                source_cache = self._strategy_source_values.setdefault(ticker, {})
+                for source_id, value in evidence.items():
+                    record = {
+                        "observed_at": effective_at.isoformat(),
+                        "value": deepcopy(value),
+                    }
+                    source_cache[source_id] = record
+                    if "@@" in source_id:
+                        base, dimension = source_id.split("@@", 1)
+                        interval, separator, aggregation = dimension.partition("##")
+                        alias = f"{base}@{interval}"
+                        if separator and aggregation:
+                            alias += f"#{aggregation}"
+                        source_cache[alias] = record
             self._historical_watchlist_timeline_index += 1
+            self._refresh_source_native_signal_activation(effective_at)
             if self._journal is not None:
                 for ticker in added:
                     self._journal.append(
@@ -2100,6 +2306,36 @@ class ReplayRunController:
             return set.intersection(*memberships) if memberships else set()
         return set().union(*memberships) if memberships else set()
 
+    def _refresh_source_native_signal_activation(self, event_time: datetime) -> None:
+        if not self._source_native_signal_episodes:
+            return
+        configuration = self.definition.configuration_revision["payload"]
+        run_plan = dict(configuration.get("run_plan") or {})
+        eligible = self._historical_signal_eligible_tickers(run_plan)
+        for ticker, event in list(self._source_native_signal_episodes.items()):
+            expires_at = _optional_checkpoint_time(
+                event.occurrence.get("squeeze_expires_at")
+            )
+            if expires_at is None:
+                expires_at = event.available_at + timedelta(minutes=5)
+            if event_time > expires_at:
+                self._source_native_signal_episodes.pop(ticker, None)
+                self._signal_activated_tickers.discard(ticker)
+                continue
+            if event_time < event.available_at:
+                continue
+            if run_plan_accepts_signal(
+                run_plan,
+                event.occurrence,
+                eligible_tickers=eligible,
+            ):
+                self._signal_activated_tickers.add(ticker)
+                self._strategy_source_values.setdefault(ticker, {}).update(
+                    deepcopy(event.source_values)
+                )
+            else:
+                self._signal_activated_tickers.discard(ticker)
+
     def _record_historical_watchlist_authority(self) -> None:
         fixture = self.definition.debug_fixture
         if (
@@ -2130,17 +2366,23 @@ class ReplayRunController:
                     "watchlist_id": plan["watchlist_id"],
                 },
             )
-        for snapshot in self._historical_watchlist_timeline():
-            authority = list(snapshot.get("authority") or ())
-            if not authority:
-                continue
-            effective_at = snapshot["effective_at"]
+        timeline = self._historical_watchlist_timeline()
+        if timeline:
             self._record_data_authority(
-                f"watchlist_membership:{effective_at.astimezone(UTC).isoformat()}",
+                "watchlist_membership_timeline",
                 {
                     "authority": "historical_watchlist_resolution",
-                    "effective_at": effective_at.astimezone(UTC).isoformat(),
-                    "watchlists": authority,
+                    "first_effective_at": timeline[0]["effective_at"]
+                    .astimezone(UTC)
+                    .isoformat(),
+                    "last_effective_at": timeline[-1]["effective_at"]
+                    .astimezone(UTC)
+                    .isoformat(),
+                    "snapshot_count": len(timeline),
+                    "watchlist_plan_hashes": sorted(
+                        str(plan["plan_hash"])
+                        for plan in self._historical_watchlist_plans
+                    ),
                 },
             )
     def _resolved_tickers(self) -> tuple[str, ...]:
@@ -2172,6 +2414,20 @@ class ReplayRunController:
                 ]
             )
         )
+        source_native_signal_tickers = {
+            event.ticker for event in self._historical_external_signal_events
+        }
+        if self._strategy is not None and source_native_signal_tickers:
+            # This is a computation-only projection. A source-native signal is
+            # a mandatory activation prerequisite, so an assignment with no
+            # occurrence cannot evaluate or trade. Pruning it cannot alter the
+            # strategy path and avoids replaying irrelevant raw market events.
+            assigned = set(assignment_tickers)
+            tickers = tuple(
+                ticker
+                for ticker in tickers
+                if ticker in assigned and ticker in source_native_signal_tickers
+            )
         if not tickers:
             raise ValueError(
                 "Historical run requires at least one explicit symbol, strategy assignment, or configured universe member"
@@ -2186,9 +2442,14 @@ class ReplayRunController:
             return _debug_derived_frames(fixture.derived_frames)
         if self._strategy is None or self._strategy_registration is None:
             return []
+        source_native_signal_tickers = {
+            event.ticker for event in self._historical_external_signal_events
+        }
         requests = {
             (assignment.ticker, timeframe)
             for assignment in self._strategy.assignments()
+            if not source_native_signal_tickers
+            or assignment.ticker in source_native_signal_tickers
             for timeframe in self._strategy_registration.timeframe_resolver(
                 assignment.parameters
             )
@@ -2205,17 +2466,34 @@ class ReplayRunController:
                     start=self.definition.session_start,
                     end=self.definition.session_end,
                     authority_sink=self._record_data_authority,
+                    frame_cache=self.definition.historical_frame_cache,
                 )
 
         groups = await asyncio.gather(
             *(load_derived(ticker, timeframe) for ticker, timeframe in sorted(requests))
         )
         tickers = tuple(sorted({ticker for ticker, _ in requests}))
-        events_by_ticker = await _historical_signal_events(
-            tickers=tickers,
-            start=self.definition.session_start,
-            end=self.definition.session_end,
-            authority_sink=self._record_data_authority,
+        activation = dict(
+            self.definition.configuration_revision["payload"].get("signal_activation") or {}
+        )
+        enabled_streams = [
+            dict(stream)
+            for stream in activation.get("signal_streams") or []
+            if bool(stream.get("enabled", True))
+        ]
+        source_native_only = bool(enabled_streams) and all(
+            str(stream.get("occurrence_source") or "") == "qmd_squeeze_episode"
+            for stream in enabled_streams
+        )
+        events_by_ticker = (
+            {}
+            if source_native_only
+            else await _historical_signal_events(
+                tickers=tickers,
+                start=self.definition.session_start,
+                end=self.definition.session_end,
+                authority_sink=self._record_data_authority,
+            )
         )
         frames = [frame for group in groups for frame in group]
         for ticker in events_by_ticker:
@@ -2398,6 +2676,94 @@ class ReplayRunController:
             ),
         )
 
+    async def _load_source_native_signal_events(self) -> list[ReplaySignalEvent]:
+        if self.definition.mode == RunMode.BACKTEST_DEBUG:
+            return []
+        if self._journal is None:
+            raise RuntimeError("Historical signal journal is unavailable")
+        activation = dict(
+            self.definition.configuration_revision["payload"].get("signal_activation")
+            or {}
+        )
+        from src.backend.historical_signal_occurrence_service import (
+            SUPPORTED_NATIVE_OCCURRENCE_SOURCES,
+            historical_source_native_signal_occurrences,
+        )
+
+        native_streams = [
+            dict(row)
+            for row in activation.get("signal_streams") or []
+            if bool(row.get("enabled", True))
+            and str(row.get("occurrence_source") or "").strip()
+        ]
+        unsupported = sorted({
+            str(row.get("occurrence_source") or "").strip()
+            for row in native_streams
+            if str(row.get("occurrence_source") or "").strip()
+            not in SUPPORTED_NATIVE_OCCURRENCE_SOURCES
+        })
+        if unsupported:
+            raise RuntimeError(
+                "Historical source-native Signal Streams lack an immutable occurrence loader: "
+                + ", ".join(unsupported)
+            )
+        streams = native_streams
+        if not streams:
+            return []
+
+        results: list[ReplaySignalEvent] = []
+        for stream in streams:
+            loaded = await asyncio.to_thread(
+                historical_source_native_signal_occurrences,
+                stream,
+                start=self.definition.requested_start,
+                end=self.definition.session_end,
+            )
+            stream_id = str(stream.get("signal_stream_id") or "")
+            self._record_data_authority(
+                f"source_native_signal_stream:{stream_id}",
+                dict(loaded.get("authority") or {}),
+            )
+            for source in loaded.get("occurrences") or []:
+                occurrence = dict(source)
+                available_at = _optional_checkpoint_time(
+                    occurrence.get("available_at")
+                    or occurrence.get("effective_at")
+                    or occurrence.get("event_time")
+                )
+                ticker = str(occurrence.get("ticker") or "").upper()
+                event_id = str(occurrence.get("event_id") or "")
+                if available_at is None or not ticker or not event_id:
+                    raise RuntimeError(
+                        f"Historical source-native Signal Stream {stream_id} returned an invalid occurrence"
+                    )
+                record, _inserted = self._journal.append_once(
+                    run_id=self.run_id,
+                    category="market_discovery_signal",
+                    entity_type="signal_occurrence",
+                    entity_id=event_id,
+                    event_time=available_at,
+                    payload=occurrence,
+                )
+                persisted = dict(record.payload)
+                results.append(
+                    ReplaySignalEvent(
+                        available_at=available_at,
+                        occurrence=persisted,
+                        source_values=_occurrence_source_values(persisted),
+                        ticker=ticker,
+                    )
+                )
+        return sorted(
+            results,
+            key=lambda row: (
+                row.available_at,
+                row.ticker,
+                str(row.occurrence.get("signal_stream_id") or ""),
+                str(row.occurrence.get("event_id") or ""),
+            ),
+        )
+
     async def _load_market_signal_events(self) -> list[ReplaySignalEvent]:
         if not self._historical_core_signal_plans:
             return []
@@ -2519,7 +2885,13 @@ class ReplayRunController:
                 event_time=self.current_time or self.definition.session_start,
                 payload={"source_key": key, **normalized},
             )
-        self._write_manifest()
+        # The journal is the durable authority ledger.  Do not rewrite the full
+        # configuration/catalog manifest for every newly observed source key:
+        # historical runs can register hundreds of keys before replay begins,
+        # and modern configuration catalogs are intentionally large.  The
+        # manifest is persisted at lifecycle and restart-checkpoint boundaries
+        # (and again on completion), so omitting this redundant write preserves
+        # restart semantics without quadratic startup I/O.
 
     def _write_manifest(self) -> None:
         if not self.run_dir.exists():
@@ -2544,12 +2916,28 @@ class ReplayRunController:
                 ),
                 encoding="utf-8",
             )
-            fixture_temporary.replace(fixture_target)
+            _replace_path_with_retry(fixture_temporary, fixture_target)
             payload["debug_fixture_path"] = str(fixture_target)
         target = self.run_dir / "manifest.json"
         temporary = self.run_dir / "manifest.json.tmp"
-        temporary.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
-        temporary.replace(target)
+        temporary.write_text(
+            json.dumps(payload, separators=(",", ":"), sort_keys=True),
+            encoding="utf-8",
+        )
+        _replace_path_with_retry(temporary, target)
+
+
+def _replace_path_with_retry(temporary: Path, target: Path) -> None:
+    """Preserve atomic manifests when a Windows reader briefly holds the target."""
+
+    for attempt in range(100):
+        try:
+            temporary.replace(target)
+            return
+        except PermissionError:
+            if attempt == 99:
+                raise
+            time.sleep(0.05)
 
 
 class ReplayRunService:
@@ -2773,6 +3161,7 @@ def _definition_from_manifest(
         session_date=session_date,
         final_session_date=session_end.astimezone(NEW_YORK).date(),
         start_time=clock_time.fromisoformat(str(definition.get("start_time") or "")),
+        end_time=session_end.astimezone(NEW_YORK).time().replace(tzinfo=None),
         initial_cash=float(definition.get("initial_cash") or 0),
         assignment_ids=tuple(str(value) for value in definition.get("assignment_ids") or ()),
         tickers=tuple(str(value) for value in definition.get("tickers") or ()),
@@ -2817,6 +3206,14 @@ def _occurrence_source_values(occurrence: dict[str, Any]) -> dict[str, Any]:
         or ""
     )
     result: dict[str, Any] = {}
+    squeeze_move = occurrence.get("squeeze_move_pct")
+    if squeeze_move is not None:
+        record = {"value": squeeze_move, "observed_at": observed_at}
+        for identity in (
+            "signal.squeeze_move_pct",
+            "data.signal.squeeze_move_pct@1:value",
+        ):
+            result[identity] = record
     for instance_ref, raw in dict(occurrence.get("field_evidence") or {}).items():
         evidence = dict(raw or {})
         value = evidence.get("value")
@@ -3356,6 +3753,31 @@ def _historical_watchlist_plans_for_configuration(
         for row in configuration.get("universes") or []
         if bool(row.get("enabled", True)) and str(row.get("source") or "") == "watchlist"
     ]
+    resolved_universe = dict(configuration.get("universe") or {})
+    run_plan_watchlist_ids = {
+        str(value)
+        for value in dict(configuration.get("run_plan") or {}).get("watchlist_ids")
+        or []
+        if str(value)
+    }
+    resolved_watchlists = {
+        str(row.get("watchlist_id") or ""): dict(row)
+        for row in resolved_universe.get("watchlist_snapshots") or []
+        if str(row.get("watchlist_id") or "")
+    }
+    existing_watchlist_ids = {
+        str(universe.get("scanner_view_id") or "") for universe in universes
+    }
+    universes.extend(
+        {
+            "universe_id": f"historical-run-plan-watchlist:{watchlist_id}",
+            "name": str(resolved_watchlists.get(watchlist_id, {}).get("name") or watchlist_id),
+            "source": "watchlist",
+            "scanner_view_id": watchlist_id,
+            "enabled": True,
+        }
+        for watchlist_id in sorted(run_plan_watchlist_ids - existing_watchlist_ids)
+    )
     selected_source_watchlists = {
         str(row.get("source_id") or "")
         for row in dict(configuration.get("signal_activation") or {}).get(
@@ -3407,6 +3829,7 @@ def _historical_core_signal_plans_for_configuration(
         for row in activation.get("signal_streams") or []
         if bool(row.get("enabled", True))
         and str(row.get("source_type") or "core_scan") == "core_scan"
+        and not str(row.get("occurrence_source") or "").strip()
     ]
     if streams and not model:
         raise ValueError("Historical core Signal Streams require the approved configuration model")
@@ -3654,8 +4077,11 @@ def backtest_preflight(
     anchor_date: date,
     session_count: int,
     initial_cash: float = 100_000.0,
+    end_time: clock_time = clock_time(20, 0),
     configuration_revision: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    if not clock_time(4, 0) < end_time <= clock_time(20, 0):
+        raise ValueError("Backtest end time must be after 04:00 and no later than 20:00 New York")
     approved = configuration_revision or backtest_configuration_snapshot()
     base = historical_preflight(
         mode=RunMode.BACKTEST.value,
@@ -3682,6 +4108,23 @@ def backtest_preflight(
         for row in configuration.get("universes") or []
         if bool(row.get("enabled", True)) and str(row.get("source") or "") == "watchlist"
     ]
+    resolved_universe = dict(configuration.get("universe") or {})
+    if (
+        bool(resolved_universe.get("enabled", True))
+        and str(resolved_universe.get("source") or "") == "watchlist"
+    ):
+        watchlists.extend(
+            {
+                "enabled": True,
+                "name": str(row.get("name") or row.get("watchlist_id") or ""),
+                "scanner_view_id": str(row.get("watchlist_id") or ""),
+                "source": "watchlist",
+            }
+            for row in resolved_universe.get("watchlist_snapshots") or []
+            if str(row.get("watchlist_id") or "")
+            and str(row.get("watchlist_id") or "")
+            not in {str(existing.get("scanner_view_id") or "") for existing in watchlists}
+        )
     watchlist_members: list[dict[str, Any]] = []
     watchlist_plans: list[dict[str, Any]] = []
     watchlist_snapshot_count = 0
@@ -3691,7 +4134,7 @@ def backtest_preflight(
             watchlist_plans = _historical_watchlist_plans_for_configuration(
                 approved,
                 start=datetime.combine(sessions[0], clock_time(4, 0), tzinfo=NEW_YORK),
-                end=datetime.combine(sessions[-1], clock_time(20, 0), tzinfo=NEW_YORK),
+                end=datetime.combine(sessions[-1], end_time, tzinfo=NEW_YORK),
             )
             timeline = _historical_watchlist_membership_timeline_from_plans(
                 watchlist_plans
@@ -3792,6 +4235,7 @@ def backtest_preflight(
         "available_run_plans": deepcopy(approved.get("available_run_plans") or []),
         "historical_watchlist_plans": watchlist_plans,
         "initial_cash": initial_cash,
+        "experiment_end_time": end_time.isoformat(timespec="seconds"),
     }
 
 
@@ -3917,52 +4361,118 @@ async def _historical_derived_frames(
     start: datetime,
     end: datetime,
     authority_sink: Callable[[str, dict[str, Any]], None] | None = None,
+    frame_cache: dict[tuple[str, str, str, str], Any] | None = None,
 ) -> list[ReplayDerivedFrame]:
+    cache_key = (_ticker(ticker), timeframe, start.isoformat(), end.isoformat())
+    if frame_cache is not None and cache_key in frame_cache:
+        cached_frames, cached_authority = frame_cache[cache_key]
+        if authority_sink is not None:
+            authority_sink(f"derived:{_ticker(ticker)}:{timeframe}", dict(cached_authority))
+        return [_copy_replay_frame(frame) for frame in cached_frames]
     url = qmd_history_websocket_url(
         f"/stream/derived/{urllib.parse.quote(ticker)}",
         {
             "start": start.isoformat(),
             "end": end.isoformat(),
             "timeframe": timeframe,
-            "emit": "full",
+            "emit": "frames",
             "as_of": end.isoformat(),
             "updates_per_second": 0,
+            "retain_cache": "true" if frame_cache is None else "false",
         },
     )
+    frames: list[ReplayDerivedFrame] = []
+    metadata: dict[str, Any] | None = None
     async with websockets.connect(
         url,
         ping_interval=20,
-        ping_timeout=20,
+        # Historical cache builds can be CPU-bound for several minutes while
+        # the HTTP health plane remains ready. Keep transport liveness bounded
+        # without treating one busy 20-second interval as missing market data.
+        ping_timeout=300,
         max_size=64 * 1024 * 1024,
     ) as socket:
-        message = await socket.recv()
-    payload = json.loads(message.decode("utf-8") if isinstance(message, bytes) else message)
+        try:
+            async for message in socket:
+                metadata = _append_historical_derived_message(
+                    message,
+                    frames=frames,
+                    metadata=metadata,
+                    ticker=ticker,
+                    timeframe=timeframe,
+                )
+        except websockets.exceptions.ConnectionClosedError:
+            expected = int((metadata or {}).get("frame_count") or -1)
+            if metadata is None or len(frames) != expected:
+                raise
+    if metadata is None:
+        raise RuntimeError(f"QMD derived frame stream omitted authority metadata for {ticker}")
+    authority = _qmd_payload_authority(metadata, authority="qmd_history_derived")
+    if authority_sink is not None:
+        authority_sink(f"derived:{_ticker(ticker)}:{timeframe}", authority)
+    expected = int(metadata.get("frame_count") or 0)
+    if len(frames) != expected:
+        raise RuntimeError(
+            f"QMD derived frame stream returned {len(frames)} of {expected} frames "
+            f"for {ticker} {timeframe}"
+        )
+    if frame_cache is not None:
+        frame_cache[cache_key] = (tuple(frames), dict(authority))
+    return [_copy_replay_frame(frame) for frame in frames] if frame_cache is not None else frames
+
+
+def _copy_replay_frame(frame: ReplayDerivedFrame) -> ReplayDerivedFrame:
+    return ReplayDerivedFrame(
+        as_of=frame.as_of,
+        bar=frame.bar,
+        indicator=frame.indicator,
+        sequence=frame.sequence,
+        ticker=frame.ticker,
+        timeframe=frame.timeframe,
+        signals=dict(frame.signals),
+    )
+
+
+def _append_historical_derived_message(
+    message: str | bytes,
+    *,
+    frames: list[ReplayDerivedFrame],
+    metadata: dict[str, Any] | None,
+    ticker: str,
+    timeframe: str,
+) -> dict[str, Any] | None:
+    payload = json.loads(
+        message.decode("utf-8") if isinstance(message, bytes) else message
+    )
     if payload.get("error"):
         raise RuntimeError(f"QMD derived stream failed for {ticker}: {payload['error']}")
-    if authority_sink is not None:
-        authority_sink(
-            f"derived:{_ticker(ticker)}:{timeframe}",
-            _qmd_payload_authority(payload, authority="qmd_history_derived"),
-        )
-    bars = list(payload.get("bars") or [])
-    indicators = list(payload.get("indicators") or [])
-    if len(bars) != len(indicators):
-        raise RuntimeError(
-            f"QMD derived stream misaligned bars and indicators for {ticker} {timeframe}"
-        )
-    return [
+    if payload.get("type") == "metadata":
+        return payload
+    bar = dict(payload.get("bar") or {})
+    indicator = dict(payload.get("indicator") or {})
+    frames.append(
         ReplayDerivedFrame(
             as_of=_aware_datetime(
-                indicator.get("bar_end") or bar.get("bar_end") or payload.get("as_of")
+                payload.get("as_of")
+                or indicator.get("bar_end")
+                or bar.get("bar_end")
             ),
-            bar=bar,
-            indicator=indicator,
-            sequence=index,
+            bar={
+                key: value for key, value in bar.items() if key in _STRATEGY_BAR_FIELDS
+            },
+            indicator={
+                key: value
+                for key, value in indicator.items()
+                if key in _STRATEGY_INDICATOR_FIELDS
+            },
+            sequence=int(payload.get("sequence") or len(frames) + 1),
             ticker=_ticker(indicator.get("sym") or bar.get("sym") or ticker),
-            timeframe=str(indicator.get("timeframe") or bar.get("timeframe") or timeframe),
+            timeframe=str(
+                indicator.get("timeframe") or bar.get("timeframe") or timeframe
+            ),
         )
-        for index, (bar, indicator) in enumerate(zip(bars, indicators, strict=True), start=1)
-    ]
+    )
+    return metadata
 
 
 async def _historical_signal_events(

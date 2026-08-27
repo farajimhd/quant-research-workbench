@@ -52,6 +52,8 @@ _MATERIALIZATION_CACHE_LIMIT = 8
 _DURABLE_CACHE_SCHEMA_VERSION = 1
 _DURABLE_CACHE_MAX_ENTRIES = 64
 _DURABLE_CACHE_MAX_FILE_BYTES = 256 * 1024 * 1024
+_QMD_WATCHLIST_CALCULATION_REVISION = "canvas_historical_qmd_snapshot_v6"
+_APPLICATION_WATCHLIST_PROJECTION_REVISION = 2
 
 
 def historical_watchlist_external_feature_intervals(
@@ -275,6 +277,8 @@ def materialize_historical_watchlist_plan(plan: dict[str, Any]) -> dict[str, Any
     )
     cache_key = _content_hash(
         {
+            "calculation_revision": _QMD_WATCHLIST_CALCULATION_REVISION,
+            "application_projection_revision": _APPLICATION_WATCHLIST_PROJECTION_REVISION,
             "external_feature_revisions": revisions,
             "identity_revision": bundle["identity_revision"],
             "plan_hash": plan.get("plan_hash"),
@@ -350,6 +354,8 @@ def materialize_historical_watchlist_plans(
     )
     cache_key = _content_hash(
         {
+            "calculation_revision": _QMD_WATCHLIST_CALCULATION_REVISION,
+            "application_projection_revision": _APPLICATION_WATCHLIST_PROJECTION_REVISION,
             "batch": [
                 {
                     "external_feature_revisions": bundle["external_feature_revisions"],
@@ -573,7 +579,11 @@ def _enrich_materialized_identity(
     by_ticker: dict[str, list[dict[str, Any]]] = {}
     for interval in identity_intervals:
         by_ticker.setdefault(str(interval["ticker"]), []).append(interval)
+    active_identity: dict[str, dict[str, Any]] = {}
+    suppressed: set[str] = set()
+    rejections: list[dict[str, Any]] = []
     for chunk in materialized.get("chunks") or []:
+        retained: list[dict[str, Any]] = []
         for transition in dict(chunk).get("transitions") or []:
             ticker = str(transition.get("ticker") or "").strip().upper()
             clock = _clock(transition.get("effective_at"), "transition effective_at")
@@ -583,15 +593,66 @@ def _enrich_materialized_identity(
                 if _clock(interval["start"], "identity start") <= clock
                 < _clock(interval["end"], "identity end")
             ]
-            if len(matches) != 1:
-                raise RuntimeError(
-                    f"historical Watchlist identity is incomplete for {ticker} at {clock.isoformat()}"
+            event = str(transition.get("event") or "")
+            identity = dict(matches[0]["identity"]) if len(matches) == 1 else None
+            if event == "removed":
+                prior = active_identity.pop(ticker, None)
+                suppressed.discard(ticker)
+                if prior is None:
+                    continue
+                transition["identity"] = prior
+                retained.append(transition)
+                continue
+            if identity is None:
+                rejections.append(
+                    {
+                        "effective_at": clock.astimezone(UTC).isoformat(),
+                        "event": event,
+                        "reason": "point_in_time_identity_unavailable",
+                        "ticker": ticker,
+                    }
                 )
-            transition["identity"] = dict(matches[0]["identity"])
+                prior = active_identity.pop(ticker, None)
+                suppressed.add(ticker)
+                if prior is not None:
+                    transition.update(
+                        {
+                            "event": "removed",
+                            "identity": prior,
+                            "prior_rank": transition.get("prior_rank")
+                            or transition.get("rank"),
+                            "rank": None,
+                            "reason": "point-in-time identity became unavailable",
+                        }
+                    )
+                    retained.append(transition)
+                continue
+            if ticker in suppressed:
+                transition.update(
+                    {
+                        "event": "added",
+                        "prior_rank": None,
+                        "reason": "point-in-time identity became available",
+                    }
+                )
+                suppressed.discard(ticker)
+            transition["identity"] = identity
+            active_identity[ticker] = identity
+            retained.append(transition)
+        chunk["transitions"] = retained
     materialized["identity_revision"] = dict(identity_revision)
+    materialized["qmd_transition_count"] = int(materialized.get("transition_count") or 0)
+    materialized["application_transition_count"] = sum(
+        len(dict(chunk).get("transitions") or [])
+        for chunk in materialized.get("chunks") or []
+    )
+    materialized["identity_rejection_count"] = len(rejections)
+    materialized["identity_rejections"] = rejections
     materialized["application_materialization_id"] = _content_hash(
         {
             "identity_revision": identity_revision,
+            "identity_rejections": rejections,
+            "projection_revision": _APPLICATION_WATCHLIST_PROJECTION_REVISION,
             "qmd_materialization_id": materialized.get("materialization_id"),
         }
     )

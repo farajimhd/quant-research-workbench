@@ -24,7 +24,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::sync::Arc;
 use tokio::sync::{Mutex, OnceCell};
 
-pub const HISTORICAL_SCANNER_DERIVED_SCHEMA_VERSION: &str = "canvas_historical_qmd_snapshot_v4";
+pub const HISTORICAL_SCANNER_DERIVED_SCHEMA_VERSION: &str = "canvas_historical_qmd_snapshot_v6";
 const SIGNAL_EVENT_LIMIT: usize = 20_000;
 const SCANNER_TIMEFRAMES: [&str; 12] = [
     "100ms", "1s", "10s", "30s", "1m", "5m", "15m", "30m", "1h", "2h", "4h", "1d",
@@ -37,6 +37,25 @@ const ALIGNED_VOLUME_SESSION_COUNT: usize = 20;
 const ALIGNED_VOLUME_BUCKET_SECONDS: usize = 10;
 const ALIGNED_VOLUME_BUCKET_COUNT: usize = 16 * 60 * 60 / ALIGNED_VOLUME_BUCKET_SECONDS;
 const ALIGNED_VOLUME_MAX_TICKERS: usize = 2_000;
+
+fn watchlist_derived_timeframes(qmd_sources: &BTreeSet<String>) -> BTreeSet<String> {
+    let mut timeframes = BTreeSet::new();
+    for source in qmd_sources {
+        if let Some((_, dimension)) = source.split_once("@@") {
+            let (source_id, _) = source.split_once("@@").unwrap_or((source, ""));
+            let timeframe = dimension.split_once("##").map_or(dimension, |row| row.0);
+            if source_id == "volume_rate_ratio" && timeframe.eq_ignore_ascii_case("1s") {
+                continue;
+            }
+            if !timeframe.is_empty() {
+                timeframes.insert(timeframe.to_ascii_lowercase());
+            }
+        } else if source == "indicator.vwap.value" {
+            timeframes.insert(SCANNER_INDICATOR_TIMEFRAME.to_string());
+        }
+    }
+    timeframes
+}
 
 #[derive(Clone, Debug, Serialize)]
 pub struct HistoricalScannerDerivedSnapshot {
@@ -176,6 +195,7 @@ struct CrossSectionEngine {
     market_signals: MarketSignalEngine,
     market_state: SharedMarketState,
     microstructure: HashMap<String, MicrostructureIntervalWindow>,
+    one_second_trade_volumes: HashMap<String, VecDeque<(i64, f64)>>,
     recent_signal_events: VecDeque<MarketSignalEvent>,
     relative_volume_baselines: HashMap<(NaiveDate, String), Arc<Vec<f64>>>,
     relative_volume_evidence: HashMap<(NaiveDate, String), RelativeVolumeRevisionEvidence>,
@@ -241,19 +261,27 @@ impl CrossSectionEngine {
         indicator_references: HashMap<String, MarketStructureReferenceLevels>,
         derived_enabled: bool,
     ) -> Self {
+        let timeframes = derived_enabled
+            .then(|| {
+                SCANNER_TIMEFRAMES
+                    .iter()
+                    .map(|value| (*value).to_string())
+                    .collect()
+            })
+            .unwrap_or_default();
+        Self::new_with_timeframes(trade_rules, indicator_references, timeframes)
+    }
+
+    fn new_with_timeframes(
+        trade_rules: TradeAggregationRules,
+        indicator_references: HashMap<String, MarketStructureReferenceLevels>,
+        timeframes: Vec<String>,
+    ) -> Self {
         Self {
             active_signals: HashMap::new(),
             aggregates: HashMap::new(),
-            bars: derived_enabled.then(|| {
-                SharedBarStore::new_without_structure(
-                    SCANNER_TIMEFRAMES
-                        .iter()
-                        .map(|value| (*value).to_string())
-                        .collect(),
-                    2,
-                    1,
-                    trade_rules.clone(),
-                )
+            bars: (!timeframes.is_empty()).then(|| {
+                SharedBarStore::new_without_structure(timeframes, 2, 1, trade_rules.clone())
             }),
             calculators: HashMap::new(),
             changed_indicator_tickers: BTreeSet::new(),
@@ -263,6 +291,7 @@ impl CrossSectionEngine {
             market_signals: MarketSignalEngine::default(),
             market_state: SharedMarketState::new(),
             microstructure: HashMap::new(),
+            one_second_trade_volumes: HashMap::new(),
             recent_signal_events: VecDeque::with_capacity(SIGNAL_EVENT_LIMIT),
             relative_volume_baselines: HashMap::new(),
             relative_volume_evidence: HashMap::new(),
@@ -272,6 +301,28 @@ impl CrossSectionEngine {
 
     async fn apply_event(&mut self, event: MarketEvent) -> Result<(), String> {
         let ticker = event.ticker().to_ascii_uppercase();
+        if let MarketEvent::Trade(trade) = &event {
+            let rule = self.trade_rules.resolve(&trade.conditions, trade.ts);
+            if rule.update_volume && trade.size.is_finite() && trade.size > 0.0 {
+                let second = trade.ts.timestamp();
+                let buckets = self
+                    .one_second_trade_volumes
+                    .entry(ticker.clone())
+                    .or_default();
+                if let Some((latest_second, volume)) = buckets.back_mut() {
+                    if *latest_second == second {
+                        *volume += trade.size;
+                    } else {
+                        buckets.push_back((second, trade.size));
+                    }
+                } else {
+                    buckets.push_back((second, trade.size));
+                }
+                while buckets.len() > 3 {
+                    buckets.pop_front();
+                }
+            }
+        }
         self.market_state.apply_event(&event).await;
         let Some(bars) = self.bars.clone() else {
             return Ok(());
@@ -322,7 +373,13 @@ impl CrossSectionEngine {
                 self.latest_indicators
                     .get(&format!("{ticker}:{}", interval.to_ascii_lowercase()))
             };
-            let value = if let Some(interval_row) = interval_indicator {
+            let value = if source_id == "volume_rate_ratio"
+                && interval.eq_ignore_ascii_case("1s")
+                && aggregation.is_empty()
+            {
+                self.one_second_volume_rate_ratio(&ticker, as_of)
+                    .map(Value::from)
+            } else if let Some(interval_row) = interval_indicator {
                 indicator_source_value(interval_row, source_id, aggregation)
             } else {
                 match source_id {
@@ -391,6 +448,19 @@ impl CrossSectionEngine {
             }
         }
         Ok(Some(WatchlistCandidate { ticker, values }))
+    }
+
+    fn one_second_volume_rate_ratio(&self, ticker: &str, as_of: DateTime<Utc>) -> Option<f64> {
+        let completed_second = as_of.timestamp().saturating_sub(1);
+        let buckets = self.one_second_trade_volumes.get(ticker)?;
+        let current = buckets
+            .iter()
+            .find_map(|(second, volume)| (*second == completed_second).then_some(*volume))?;
+        let prior = buckets.iter().find_map(|(second, volume)| {
+            (*second == completed_second.saturating_sub(1)).then_some(*volume)
+        })?;
+        (current.is_finite() && prior.is_finite() && current >= 0.0 && prior > 0.0)
+            .then_some(current / prior)
     }
 
     async fn liquidity_score(&self, ticker: &str, as_of: DateTime<Utc>) -> Option<f64> {
@@ -1262,16 +1332,21 @@ pub async fn materialize_watchlist_timelines(
     for (ticker, levels) in references {
         reference_partitions[scanner_shard_index(&ticker, shard_count)].insert(ticker, levels);
     }
-    let requires_derived = runtimes
+    let derived_timeframes = runtimes
         .iter()
-        .any(|runtime| runtime.qmd_sources.contains("indicator.vwap.value"));
+        .flat_map(|runtime| watchlist_derived_timeframes(&runtime.qmd_sources))
+        .collect::<BTreeSet<_>>();
     let mut engines = reference_partitions
         .into_iter()
         .map(|references| {
-            if requires_derived {
-                CrossSectionEngine::new(&source, references)
-            } else {
+            if derived_timeframes.is_empty() {
                 CrossSectionEngine::new_market_only(&source, references)
+            } else {
+                CrossSectionEngine::new_with_timeframes(
+                    source.trade_aggregation_rules(),
+                    references,
+                    derived_timeframes.iter().cloned().collect(),
+                )
             }
         })
         .collect::<Vec<_>>();
@@ -2002,6 +2077,7 @@ fn materialization_id(
     relative_volume_revisions: &[RelativeVolumeRevisionEvidence],
 ) -> Result<String, String> {
     let payload = serde_json::json!({
+        "calculation_revision": HISTORICAL_SCANNER_DERIVED_SCHEMA_VERSION,
         "external_feature_revisions": external_revisions,
         "plan_hash": plan_hash,
         "relative_volume_revisions": relative_volume_revisions,
@@ -2125,8 +2201,9 @@ fn scanner_shard_index(ticker: &str, shard_count: usize) -> usize {
 mod tests {
     use super::{
         accumulate_aligned_volume_session, aligned_volume_bucket, empty_source_revision,
-        scanner_shard_index, source_event_requirement, CoreLiquidityIndex, CrossSectionEngine,
-        RelativeVolumeRevisionEvidence, RuleEventRequirement, ALIGNED_VOLUME_BUCKET_COUNT,
+        scanner_shard_index, source_event_requirement, watchlist_derived_timeframes,
+        CoreLiquidityIndex, CrossSectionEngine, RelativeVolumeRevisionEvidence,
+        RuleEventRequirement, ALIGNED_VOLUME_BUCKET_COUNT,
     };
     use chrono::{TimeZone, Utc};
     use qmd_core::bars::{TradeAggregationRules, TradeUpdateRule};
@@ -2136,6 +2213,10 @@ mod tests {
     use std::collections::{BTreeSet, HashMap};
 
     fn trade(ticker: &str, millis: i64, price: f64) -> MarketEvent {
+        trade_with_size(ticker, millis, price, 100.0)
+    }
+
+    fn trade_with_size(ticker: &str, millis: i64, price: f64, size: f64) -> MarketEvent {
         let ts = Utc.timestamp_millis_opt(millis).single().unwrap();
         MarketEvent::Trade(TradeEvent {
             conditions: vec![0],
@@ -2145,7 +2226,7 @@ mod tests {
             price,
             raw: json!({}),
             sequence: millis as u64,
-            size: 100.0,
+            size,
             tape: 1,
             ticker: ticker.to_string(),
             trade_id: format!("{ticker}-{millis}"),
@@ -2297,6 +2378,63 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(candidate.values["price_change_1_bar_pct@@5m"], json!(5.0));
+    }
+
+    #[test]
+    fn interval_watchlist_sources_select_only_required_derived_timeframes() {
+        assert_eq!(
+            watchlist_derived_timeframes(&BTreeSet::from([
+                "volume_rate_ratio@@1s".to_string(),
+                "market.last_price@@5s##max".to_string(),
+            ])),
+            BTreeSet::from(["5s".to_string()]),
+        );
+        assert_eq!(
+            watchlist_derived_timeframes(&BTreeSet::from(["indicator.vwap.value".to_string(),])),
+            BTreeSet::from(["100ms".to_string()]),
+        );
+        assert!(watchlist_derived_timeframes(&BTreeSet::from([
+            "market.session_dollar_volume".to_string(),
+            "market.trade_rate_10s".to_string(),
+        ]))
+        .is_empty());
+    }
+
+    #[tokio::test]
+    async fn one_second_volume_ratio_uses_two_completed_causal_trade_buckets() {
+        let rules = TradeAggregationRules::new([(0, TradeUpdateRule::regular())]).unwrap();
+        let mut engine =
+            CrossSectionEngine::new_market_only_with_trade_rules(rules, HashMap::new());
+        let start = Utc.with_ymd_and_hms(2026, 8, 21, 8, 0, 0).single().unwrap();
+        for event in [
+            trade_with_size("AAPL", start.timestamp_millis() + 100, 10.0, 100.0),
+            trade_with_size("AAPL", start.timestamp_millis() + 1_100, 10.1, 120.0),
+            trade_with_size("AAPL", start.timestamp_millis() + 1_500, 10.2, 80.0),
+        ] {
+            engine.apply_event(event).await.unwrap();
+        }
+
+        let candidate = engine
+            .watchlist_candidate(
+                "AAPL",
+                start + chrono::Duration::seconds(2),
+                &BTreeSet::from(["volume_rate_ratio@@1s".to_string()]),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(candidate.values["volume_rate_ratio@@1s"], json!(2.0));
+        assert!(engine
+            .watchlist_candidate(
+                "AAPL",
+                start + chrono::Duration::seconds(3),
+                &BTreeSet::from(["volume_rate_ratio@@1s".to_string()]),
+            )
+            .await
+            .unwrap()
+            .unwrap()
+            .values
+            .is_empty());
     }
 
     #[tokio::test]

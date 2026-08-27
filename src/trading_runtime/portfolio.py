@@ -1054,7 +1054,22 @@ class PortfolioManagementEngine:
             return decision, None
 
         approved = min(approved, policy.maximum_order_quantity)
-        approved = math.floor(approved * 1_000_000) / 1_000_000
+        approved = math.floor((approved + 1e-12) * 1_000_000) / 1_000_000
+        if approved <= 0:
+            decision = self._decision(
+                intent,
+                state,
+                PortfolioDecisionStatus.REJECTED,
+                requested,
+                0.0,
+                0.0,
+                "",
+                [*reasons, "quantity_below_minimum_increment"],
+                metrics_before,
+                metrics_before,
+                now,
+            )
+            return decision, None
         notional = approved * base_price
         planned_loss = _planned_loss(intent, approved) * fx_to_base
         decision_id = str(uuid4())
@@ -1844,6 +1859,12 @@ def _intent_correlation(run_id: str, intent: StrategyIntent) -> str:
 
 
 def _planned_loss(intent: StrategyIntent, quantity: float) -> float:
+    if intent.action not in {"enter_long", "add_long", "enter_short", "add_short"}:
+        # Planned-loss sizing governs newly admitted exposure. A full exit may
+        # legitimately retain the original stop beyond the current price after
+        # a fast gap; that stop is an immediate broker-held fallback, not new
+        # portfolio risk to validate against the exit reference.
+        return 0.0
     profile = intent.resolved_protection_profile()
     if profile is None:
         return 0.0

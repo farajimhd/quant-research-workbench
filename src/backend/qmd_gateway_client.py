@@ -28,6 +28,7 @@ DEFAULT_QMD_BASE_URL = "http://127.0.0.1:8795"
 DEFAULT_QMD_HISTORY_BASE_URL = "http://127.0.0.1:8801"
 ENRICHED_QMD_TIMEFRAMES = frozenset({"100ms", "1s", "5s", "10s", "30s", "1m", "5m", "1h"})
 MACRO_QMD_TIMEFRAMES = frozenset({"1d", "1w", "1mo", "1y"})
+DEFAULT_HISTORICAL_WATCHLIST_TIMEOUT_SECONDS = 900
 
 QmdProduct = Literal["chart", "compact_events", "scanner"]
 QmdAuthority = Literal["auto", "live", "history"]
@@ -624,7 +625,7 @@ def qmd_materialize_historical_watchlist_timeline(
             "external_feature_revisions": external_feature_revisions,
             "external_feature_intervals": external_feature_intervals,
         },
-        timeout=300,
+        timeout=_historical_watchlist_timeout_seconds(),
     )
     if not isinstance(payload, dict):
         raise RuntimeError("QMD History returned an invalid historical Watchlist timeline")
@@ -643,7 +644,7 @@ def qmd_materialize_historical_watchlist_timelines(
     payload = qmd_history_post_json(
         "/materialize/watchlist-timelines",
         {"requests": requests},
-        timeout=300,
+        timeout=_historical_watchlist_timeout_seconds(),
     )
     if not isinstance(payload, dict):
         raise RuntimeError("QMD History returned an invalid Watchlist timeline batch")
@@ -671,6 +672,19 @@ def qmd_materialize_historical_watchlist_timelines(
     ):
         raise RuntimeError("QMD History Watchlist batch contains an invalid timeline")
     return payload
+
+
+def _historical_watchlist_timeout_seconds() -> int:
+    try:
+        configured = int(
+            os.environ.get(
+                "QMD_HISTORICAL_WATCHLIST_TIMEOUT_SECONDS",
+                DEFAULT_HISTORICAL_WATCHLIST_TIMEOUT_SECONDS,
+            )
+        )
+    except (TypeError, ValueError):
+        configured = DEFAULT_HISTORICAL_WATCHLIST_TIMEOUT_SECONDS
+    return max(300, min(configured, 1_800))
 
 
 def _qmd_service_get_json(

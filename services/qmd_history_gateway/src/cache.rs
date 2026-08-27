@@ -216,6 +216,7 @@ pub struct HistoricalDerivedCache {
 pub struct CacheLease {
     pub entry: Arc<CacheEntry>,
     pub hit: bool,
+    pub key: String,
     pub source_revision: SourceRevision,
 }
 
@@ -306,6 +307,7 @@ impl HistoricalDerivedCache {
             return Ok(CacheLease {
                 entry,
                 hit: true,
+                key,
                 source_revision,
             });
         }
@@ -329,13 +331,8 @@ impl HistoricalDerivedCache {
         }
         let (bar_updates, _) = broadcast::channel(self.config.cache_update_capacity.max(16));
         let (updates, _) = broadcast::channel(self.config.cache_update_capacity.max(16));
-        let requirement = historical_requirement(
-            &key,
-            &revision_window,
-            &ticker,
-            &profile,
-            &source_revision,
-        );
+        let requirement =
+            historical_requirement(&key, &revision_window, &ticker, &profile, &source_revision);
         let entry = Arc::new(CacheEntry {
             allocated_bytes: self.allocated_bytes.clone(),
             complete: AtomicBool::new(false),
@@ -352,7 +349,7 @@ impl HistoricalDerivedCache {
             requirement: Some(requirement),
         });
         index.entries.insert(key.clone(), entry.clone());
-        index.order.push_back(key);
+        index.order.push_back(key.clone());
         drop(index);
 
         self.stats.builds.fetch_add(1, Ordering::Relaxed);
@@ -367,8 +364,19 @@ impl HistoricalDerivedCache {
         Ok(CacheLease {
             entry,
             hit: false,
+            key,
             source_revision,
         })
+    }
+
+    pub async fn evict(&self, key: &str) -> bool {
+        let mut index = self.inner.lock().await;
+        index.order.retain(|candidate| candidate != key);
+        let removed = index.entries.remove(key).is_some();
+        if removed {
+            self.stats.evictions.fetch_add(1, Ordering::Relaxed);
+        }
+        removed
     }
 
     pub async fn acquire_derived(
@@ -1309,7 +1317,7 @@ impl CacheEntry {
         let update = DerivedUpdate {
             as_of: bar.bar_end,
             bar,
-            indicator,
+            indicator: indicator.compact_for_historical_cache(),
             sequence,
             update_type: "update",
         };

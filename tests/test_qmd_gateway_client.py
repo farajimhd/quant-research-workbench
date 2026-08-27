@@ -160,6 +160,7 @@ class QmdGatewayClientTests(unittest.TestCase):
             "http://127.0.0.1:8801/materialize/watchlist-timelines",
         )
         self.assertEqual(payload["batch_materialization_id"], "sha256:batch")
+        self.assertEqual(urlopen.call_args.kwargs["timeout"], 900)
 
     @patch("src.backend.qmd_gateway_client.urllib.request.urlopen")
     @patch("src.backend.qmd_gateway_client.qmd_history_base_url", return_value="http://127.0.0.1:8801")

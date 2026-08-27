@@ -167,6 +167,7 @@ struct DerivedStreamQuery {
     end: String,
     emit: Option<String>,
     max_updates: Option<u64>,
+    retain_cache: Option<bool>,
     start: String,
     timeframe: Option<String>,
     updates_per_second: Option<f64>,
@@ -1245,9 +1246,12 @@ async fn derived_stream(
     let timeframe = query.timeframe.unwrap_or_else(|| "1m".to_string());
     validate_timeframe(&timeframe)?;
     let emit = query.emit.unwrap_or_else(|| "updates".to_string());
-    if !matches!(emit.as_str(), "full" | "updates" | "full_then_updates") {
+    if !matches!(
+        emit.as_str(),
+        "frames" | "full" | "updates" | "full_then_updates"
+    ) {
         return Err(bad_request(
-            "emit must be full, updates, or full_then_updates",
+            "emit must be frames, full, updates, or full_then_updates",
         ));
     }
     let as_of = query
@@ -1281,6 +1285,7 @@ async fn derived_stream(
             query.after_sequence.unwrap_or(0),
             query.max_updates,
             updates_per_second,
+            query.retain_cache.unwrap_or(true),
         )
     }))
 }
@@ -1495,6 +1500,7 @@ async fn stream_derived(
     after_sequence: u64,
     max_updates: Option<u64>,
     updates_per_second: f64,
+    retain_cache: bool,
 ) {
     let lease = match cache
         .acquire_derived(window, ticker.clone(), timeframe.clone())
@@ -1506,6 +1512,65 @@ async fn stream_derived(
             return;
         }
     };
+
+    if emit == "frames" {
+        let (frames, _, error, events_processed) = loop {
+            let state = lease.entry.current().await;
+            if state.1 {
+                break state;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        };
+        if let Some(error) = error {
+            send_stream_error(&mut socket, error).await;
+            if !retain_cache {
+                cache.evict(&lease.key).await;
+            }
+            return;
+        }
+        let visible = frames
+            .iter()
+            .filter(|frame| {
+                frame.as_of <= as_of
+                    && frame.bar.is_closed
+                    && frame.bar.timeframe.eq_ignore_ascii_case(&timeframe)
+            })
+            .collect::<Vec<_>>();
+        let metadata = DerivedFramesMetadata {
+            as_of,
+            cache: CacheEvidence {
+                calculation_revision: HISTORICAL_CALCULATION_REVISION,
+                corporate_action_revision: HISTORICAL_CORPORATE_ACTION_REVISION,
+                engine_version: HISTORICAL_ENGINE_VERSION,
+                event_count: events_processed,
+                hit: lease.hit,
+                source_revision: lease.source_revision.clone(),
+            },
+            frame_count: visible.len(),
+            ticker: ticker.clone(),
+            timeframe: timeframe.clone(),
+            update_type: "metadata",
+        };
+        if send_json(&mut socket, &metadata).await.is_err() {
+            if !retain_cache {
+                cache.evict(&lease.key).await;
+            }
+            return;
+        }
+        for frame in visible {
+            if send_json(&mut socket, frame).await.is_err() {
+                if !retain_cache {
+                    cache.evict(&lease.key).await;
+                }
+                return;
+            }
+        }
+        let _ = socket.close().await;
+        if !retain_cache {
+            cache.evict(&lease.key).await;
+        }
+        return;
+    }
 
     if emit == "full" || emit == "full_then_updates" {
         let (frames, _, error, events_processed) = loop {
@@ -1628,6 +1693,17 @@ struct FullDerivedEnvelope {
     cache: CacheEvidence,
     indicators: Vec<qmd_core::indicators::IndicatorRow>,
     next_sequence: u64,
+    ticker: String,
+    timeframe: String,
+    #[serde(rename = "type")]
+    update_type: &'static str,
+}
+
+#[derive(Serialize)]
+struct DerivedFramesMetadata {
+    as_of: DateTime<Utc>,
+    cache: CacheEvidence,
+    frame_count: usize,
     ticker: String,
     timeframe: String,
     #[serde(rename = "type")]
@@ -1823,6 +1899,7 @@ fn watchlist_materialization_error(message: String) -> ApiError {
         "clickhouse http",
         "daily references unavailable",
         "error sending request for url",
+        "response body stream failed",
         "connection refused",
         "invalid historical stream",
         "historical source",
@@ -1939,9 +2016,9 @@ fn event_revision_changed(
 mod tests {
     use super::{
         causal_product_window, event_revision_changed, expected_event_revision, is_loopback_bind,
-        parse_chart_mode, parse_chart_stage, parse_indicator_projection, parse_timestamp, product_resolution,
-        stream_gap_frame, validate_timeframe, watchlist_materialization_error, EventRevisionPolicy,
-        ProductQuery,
+        parse_chart_mode, parse_chart_stage, parse_indicator_projection, parse_timestamp,
+        product_resolution, stream_gap_frame, validate_timeframe, watchlist_materialization_error,
+        EventRevisionPolicy, ProductQuery,
     };
     use crate::source::SourceRevision;
     use axum::http::StatusCode;
@@ -1990,6 +2067,16 @@ mod tests {
         assert_eq!(upstream.0, StatusCode::BAD_GATEWAY);
         assert_eq!(upstream.1 .0["error_code"], "watchlist_source_unavailable");
         assert_eq!(upstream.1 .0["retryable"], true);
+
+        let body_stream = watchlist_materialization_error(
+            "ClickHouse response body stream failed: error decoding response body".to_string(),
+        );
+        assert_eq!(body_stream.0, StatusCode::BAD_GATEWAY);
+        assert_eq!(
+            body_stream.1 .0["error_code"],
+            "watchlist_source_unavailable"
+        );
+        assert_eq!(body_stream.1 .0["retryable"], true);
 
         let bounded = watchlist_materialization_error(
             "historical Watchlist replay exceeded event_limit=100".to_string(),

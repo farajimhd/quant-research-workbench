@@ -9,6 +9,7 @@ from unittest.mock import patch
 from src.backend.historical_watchlist_feature_service import (
     _durable_cache_read,
     _durable_cache_write,
+    _enrich_materialized_identity,
     historical_watchlist_external_feature_bundle,
     historical_watchlist_external_feature_intervals,
     materialize_historical_watchlist_plans,
@@ -25,6 +26,39 @@ class _Client:
 
 
 class HistoricalWatchlistFeatureServiceTests(unittest.TestCase):
+    def test_identity_unavailable_members_are_rejected_with_explicit_evidence(self) -> None:
+        materialized = {
+            "materialization_id": "sha256:qmd",
+            "transition_count": 3,
+            "chunks": [{"transitions": [
+                {"effective_at": "2026-08-21T08:00:09+00:00", "event": "added", "ticker": "KORU"},
+                {"effective_at": "2026-08-21T08:00:10+00:00", "event": "added", "ticker": "AAPL"},
+                {"effective_at": "2026-08-21T08:00:11+00:00", "event": "removed", "ticker": "KORU"},
+            ]}],
+        }
+
+        _enrich_materialized_identity(
+            materialized,
+            identity_intervals=[{
+                "ticker": "AAPL",
+                "start": "2026-08-21T08:00:00+00:00",
+                "end": "2026-08-21T09:00:00+00:00",
+                "identity": {"ibkr_conid": 265598},
+            }],
+            identity_revision={"complete": True, "source_revision": "sha256:identity"},
+        )
+
+        transitions = materialized["chunks"][0]["transitions"]
+        self.assertEqual([row["ticker"] for row in transitions], ["AAPL"])
+        self.assertEqual(transitions[0]["identity"]["ibkr_conid"], 265598)
+        self.assertEqual(materialized["identity_rejection_count"], 1)
+        self.assertEqual(
+            materialized["identity_rejections"][0]["reason"],
+            "point_in_time_identity_unavailable",
+        )
+        self.assertEqual(materialized["qmd_transition_count"], 3)
+        self.assertEqual(materialized["application_transition_count"], 1)
+
     def test_durable_cache_is_bound_to_exact_source_revision(self) -> None:
         key = "sha256:" + "a" * 64
         revision = {"source_plan_hash": "plan-1", "token": "revision-1"}

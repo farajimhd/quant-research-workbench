@@ -209,6 +209,52 @@ class LongMomentumStrategyTests(unittest.TestCase):
 
         self.assertTrue({"10s", "30s", "1m"} <= timeframes)
 
+    def test_modern_rule_sets_and_structured_intervals_drive_dependencies(self) -> None:
+        parameters = default_long_momentum_parameters()
+        parameters["entry_rules"] = {
+            "trigger": {
+                "rule_sets": [{
+                    "rule_set_id": "modern-price-volume",
+                    "enabled": True,
+                    "operator": "all",
+                    "conditions": [{
+                        "condition_id": "modern-price-volume-condition",
+                        "left_source_id": "signal.price_volume_expansion.score",
+                        "left_interval": {"value": 10, "unit": "seconds"},
+                        "comparator": "greater_or_equal",
+                        "value": 0.5,
+                    }],
+                }],
+            },
+            "confirmation": {
+                "rule_sets": [{
+                    "rule_set_id": "modern-macd",
+                    "enabled": True,
+                    "operator": "all",
+                    "conditions": [{
+                        "condition_id": "modern-macd-condition",
+                        "left_source_id": "indicator.macd.line",
+                        "left_interval": {"value": 30, "unit": "seconds"},
+                        "comparator": "greater_than",
+                        "value": 0,
+                    }],
+                }],
+            },
+            "veto": {"rule_sets": []},
+        }
+
+        self.assertTrue({"10s", "30s"} <= strategy_rule_timeframes(parameters))
+        blocked = LongMomentumStrategyEngine().evaluate(
+            assignment(parameters=parameters),
+            confirmed_observation(changed_source_ids=("indicator.macd.line@5s",)),
+        )
+        admitted = LongMomentumStrategyEngine().evaluate(
+            assignment(parameters=parameters),
+            confirmed_observation(changed_source_ids=("indicator.macd.line@30s",)),
+        )
+        self.assertEqual(blocked.evaluation.signals[0].reason, "no_active_rule_source_updated")
+        self.assertNotEqual(admitted.evaluation.signals[0].reason, "no_active_rule_source_updated")
+
     def test_order_and_position_events_bypass_source_relevance_routing(self) -> None:
         parameters = default_long_momentum_parameters()
 
@@ -507,9 +553,47 @@ class LongMomentumStrategyTests(unittest.TestCase):
             strategy_id=STRATEGY_ID,
             strategy_revision=STRATEGY_REVISION,
         )
-
         self.assertEqual(intent.metadata["volatility"], 0.4)
         self.assertEqual([order.orderType for order in plan.orders], ["LMT", "LMT", "STP"])
+
+    def test_hybrid_protection_uses_volatility_when_no_swing_exists(self) -> None:
+        parameters = default_long_momentum_parameters()
+        parameters["phase_policy"] = {"initial_entry": {
+            "capital_request": {"mode": "mandate_fraction", "value": 0.1},
+            "order_intent": {
+                "execution_policy": "adaptive_urgent",
+                "protection_profile": "hybrid-single",
+                "partial_fill_policy": "complete_remainder",
+                "deadline_ms": 500,
+            },
+            "add_steps": [],
+        }}
+        parameters["protection_profile_catalog"] = {"hybrid-single": {
+            "profile_id": "hybrid-single",
+            "revision": 1,
+            "slices": [{
+                "slice_id": "position",
+                "quantity_fraction": 1.0,
+                "stop": {
+                    "rule_type": "hybrid",
+                    "order_type": "STP",
+                    "anchor_source": "strategy_swing",
+                    "anchor_ordinal": "most_recent",
+                    "volatility_multiple": 1.25,
+                },
+                "trailing": {"rule_type": "none"},
+            }],
+        }}
+        observation = confirmed_observation(swing_low=None)
+
+        result = LongMomentumStrategyEngine().evaluate(
+            assignment(parameters=parameters), observation
+        )
+
+        self.assertEqual(result.evaluation.signals[0].action, "enter_long")
+        stop = result.evaluation.intents[0].protection_profile.slices[0].stop
+        self.assertIsNone(stop.anchor)
+        self.assertEqual(stop.rule_type.value, "hybrid")
 
     def test_short_profile_emits_relative_sell_intent_with_phase_order_policy(self) -> None:
         parameters = default_long_momentum_parameters()
@@ -561,6 +645,17 @@ class LongMomentumStrategyTests(unittest.TestCase):
         self.assertTrue(all(order.tif == "DAY" for order in plan.orders))
         self.assertTrue(all(order.outsideRTH for order in plan.orders))
         self.assertGreater(intent.invalidation_price or 0, intent.reference_price)
+
+    def test_premarket_entry_intent_requests_outside_rth_routing(self) -> None:
+        result = LongMomentumStrategyEngine().evaluate(
+            assignment(),
+            confirmed_observation(
+                observed_at=datetime(2026, 7, 24, 12, 0, tzinfo=timezone.utc)
+            ),
+        )
+
+        self.assertEqual(result.evaluation.signals[0].action, "enter_long")
+        self.assertTrue(result.evaluation.intents[0].outside_rth)
 
     def test_campaign_initial_entry_authority_requires_operator_confirmation(self) -> None:
         waiting = assignment(
@@ -819,6 +914,23 @@ class LongMomentumStrategyTests(unittest.TestCase):
         self.assertEqual(result.evaluation.intents[0].quantity, 100)
         self.assertEqual(result.status, AssignmentStatus.EXIT_PENDING)
         self.assertTrue(result.evaluation.intents[0].metadata["buy_back"])
+
+        pending = assignment(
+            status=AssignmentStatus.EXIT_PENDING,
+            state=dict(result.state),
+        )
+        duplicate = LongMomentumStrategyEngine().evaluate(
+            pending,
+            confirmed_observation(
+                price=101.8,
+                position_quantity=40,
+                average_price=101.0,
+                acceleration=-0.2,
+            ),
+        )
+        self.assertEqual(duplicate.evaluation.signals[0].action, "hold")
+        self.assertEqual(duplicate.evaluation.signals[0].reason, "exit_fill_pending")
+        self.assertFalse(duplicate.evaluation.intents)
 
     def test_reentry_cooldown_is_deterministic(self) -> None:
         parameters = default_long_momentum_parameters()
