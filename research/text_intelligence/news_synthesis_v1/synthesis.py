@@ -5,7 +5,7 @@ from collections import defaultdict
 from typing import Any, Iterable, Mapping
 
 
-POLICY_VERSION = "news_synthesis_eligibility_v1"
+POLICY_VERSION = "news_synthesis_eligibility_v2"
 SYNTHESIS_VERSION = "news_synthesis_renderer_v1"
 
 
@@ -739,6 +739,7 @@ def derive_eligibility(
     envelope: Mapping[str, Any],
     quality_flags: Iterable[str],
     document_quality_flags: Iterable[str] | None = None,
+    forecast_policy: Mapping[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     statement_by_id = {str(row["statement_id"]): row for row in statements}
     parts_by_entity: dict[str, list[Mapping[str, Any]]] = defaultdict(list)
@@ -765,6 +766,12 @@ def derive_eligibility(
         envelope["communication_purpose"].get("rule_id") or ""
     ).startswith("envelope.purpose.earnings_call_v1:")
     clinical_conference_material = "clinical_conference_material" in flags
+    policy = dict(forecast_policy or {})
+    policy_label = str(policy.get("label") or "legacy")
+    policy_family = str(policy.get("family") or "legacy_semantic_policy")
+    policy_evidence_mode = str(policy.get("evidence_mode") or "legacy")
+    policy_rule_id = str(policy.get("rule_id") or "legacy")
+    policy_reason_codes = tuple(str(value) for value in policy.get("reason_codes") or ())
     results: list[dict[str, Any]] = []
     for entity in entities:
         if entity.get("entity_kind") not in {"issuer", "security"}:
@@ -801,12 +808,20 @@ def derive_eligibility(
         tradable_security = entity.get("entity_kind") == "security" and bool(str(entity.get("ticker", "")).strip())
         source_ok = not document_blocking_flags
         evidence_ok = bool(substantive) and source_ok
-        trigger_evidence_ok = (
-            (earnings_call_material or clinical_conference_material) and source_ok
-        ) or (
-            evidence_ok and current_event and has_semantic_implication
-        )
-        trigger = tradable_security and identity_ok and trigger_evidence_ok and purpose == "report" and origin != "analyst"
+        if policy_evidence_mode == "source":
+            trigger_evidence_ok = source_ok
+        elif policy_evidence_mode == "current_event":
+            trigger_evidence_ok = evidence_ok and current_event
+        elif policy_evidence_mode == "none":
+            trigger_evidence_ok = False
+        else:
+            trigger_evidence_ok = (
+                (earnings_call_material or clinical_conference_material) and source_ok
+            ) or (
+                evidence_ok and current_event and has_semantic_implication
+            )
+        policy_allows_trigger = policy_label in {"eligible", "legacy"}
+        trigger = tradable_security and identity_ok and trigger_evidence_ok and policy_allows_trigger
         reaction = trigger and purpose not in {"recap", "explain_move"}
         history = identity_ok and evidence_ok
         analyst = tradable_security and identity_ok and evidence_ok and origin == "analyst" and any(row["statement_kind"] in {"assessment", "forecast"} for row in substantive)
@@ -816,13 +831,20 @@ def derive_eligibility(
             ("issuer_history", history),
             ("analyst_evaluation", analyst),
         ):
-            reasons = _eligibility_reasons(product, eligible, identity_ok, tradable_security, evidence_ok, current_event, has_semantic_implication, purpose, origin)
+            reasons = _eligibility_reasons(
+                product, eligible, identity_ok, tradable_security, evidence_ok,
+                current_event, has_semantic_implication, purpose, origin,
+                policy_label=policy_label,
+                policy_family=policy_family,
+                policy_evidence_mode=policy_evidence_mode,
+                policy_reason_codes=policy_reason_codes,
+            )
             results.append(
                 {
                     "entity_id": entity_id,
                     "product": product,
                     "eligible": eligible,
-                    "policy_id": f"{POLICY_VERSION}:{product}",
+                    "policy_id": f"{POLICY_VERSION}:{product}:{policy_rule_id}",
                     "reasons": reasons,
                     "blocking_flags": sorted(document_blocking_flags | entity_identity_flags),
                 }
@@ -840,9 +862,18 @@ def _eligibility_reasons(
     implication: bool,
     purpose: str,
     origin: str,
+    *,
+    policy_label: str = "legacy",
+    policy_family: str = "legacy_semantic_policy",
+    policy_evidence_mode: str = "legacy",
+    policy_reason_codes: Iterable[str] = (),
 ) -> list[str]:
     if eligible:
-        return [f"eligible_under:{product}"]
+        return [
+            f"eligible_under:{product}",
+            f"forecast_policy:{policy_family}",
+            *policy_reason_codes,
+        ]
     reasons = []
     if not identity_ok:
         reasons.append("identity_not_resolved_as_of_publication")
@@ -851,14 +882,19 @@ def _eligibility_reasons(
     if not evidence_ok:
         reasons.append("insufficient_trustworthy_evidence")
     if product in {"forecast_trigger", "reaction_study"}:
+        if policy_label == "ineligible":
+            reasons.append(f"forecast_policy_ineligible:{policy_family}")
+        elif policy_label == "eligible" and policy_evidence_mode == "current_event" and not current_event:
+            reasons.append(f"forecast_policy_current_event_missing:{policy_family}")
         if not current_event:
             reasons.append("no_current_event")
-        if not implication:
+        if policy_label == "legacy" and not implication:
             reasons.append("no_positive_or_negative_semantic_implication")
         if purpose != "report":
             reasons.append(f"communication_purpose:{purpose}")
-        if origin == "analyst":
+        if policy_label == "legacy" and origin == "analyst":
             reasons.append("analyst_origin_excluded_from_issuer_event_policy")
+        reasons.extend(policy_reason_codes)
     if product == "analyst_evaluation" and origin != "analyst":
         reasons.append("not_analyst_origin")
     return reasons or ["policy_requirements_not_met"]

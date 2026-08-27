@@ -14,6 +14,10 @@ class ReviewedForecastTitlePolicyTest(unittest.TestCase):
             "Alpha Earnings Report: Q2 Overview",
             "Alpha Q2 Earnings Summary: Key Takeaways",
             "Alpha Earnings: What Investors Need To Know",
+            "Alpha Reports Q2 Comparable Sales Growth Of 4.2%",
+            "Alpha Q3 Revenue $125M, Net Income $18M",
+            "Alpha Q4 Earnings Top Forecasts, Private Equity Income Surges",
+            "Alpha Holiday Sales Surged 2.8% As Digital Revenue Grew",
         )
         for title in titles:
             with self.subTest(title=title):
@@ -25,12 +29,60 @@ class ReviewedForecastTitlePolicyTest(unittest.TestCase):
         titles = (
             "These Analysts Boost Their Forecasts Following Alpha Earnings",
             "Soros Fund Management Raises Share Stake In Alpha To 332,200 Shares",
+            "Tiger Global Management Takes New Stake In Alpha Stock",
         )
         for title in titles:
             with self.subTest(title=title):
                 decision = classify_reviewed_title_policy(title, tickers=("ALPH",))
                 self.assertIsNotNone(decision)
                 self.assertEqual(decision.label, "ineligible")
+
+    def test_reviewed_context_title_families_are_ineligible(self) -> None:
+        cases = {
+            "Why Is Alpha Stock Trading Higher Today?": "price_reaction",
+            "12 Industrials Stocks Moving In Tuesday's After-Market Session": "roundup_or_reference_list",
+            "Alpha Trading Halted At 10:32 ET, News Pending": "trading_halt_status",
+            "Could Alpha Stock Double This Year?": "question_or_hypothesis",
+            "Alpha Valuation Overview Compared To Its Peers": "valuation_peer_comparison",
+            "Alpha Faces Class Action Lawsuit": "legal_regulatory_action",
+            "Unusual Options Activity In Alpha Stock": "options_activity",
+            "Alpha RSI Signals An Overbought Stock": "technical_trading",
+            "Alpha Earnings Preview: What To Expect": "preview_schedule",
+        }
+        for title, family in cases.items():
+            with self.subTest(title=title):
+                decision = classify_reviewed_title_policy(title, tickers=("ALPH",))
+                self.assertIsNotNone(decision)
+                self.assertEqual(decision.label, "ineligible")
+                self.assertEqual(decision.family, family)
+
+    def test_live_broadcast_is_eligible(self) -> None:
+        decision = classify_reviewed_title_policy(
+            "Alpha To Host Live Webcast Of Investor Event", tickers=("ALPH",)
+        )
+        self.assertIsNotNone(decision)
+        self.assertEqual(decision.label, "eligible")
+        self.assertEqual(decision.family, "live_broadcast")
+
+    def test_material_ownership_is_eligible(self) -> None:
+        decision = classify_reviewed_title_policy(
+            "Activist Investor Files Schedule 13D Reporting 8.7% Stake In Alpha",
+            tickers=("ALPH",),
+        )
+        self.assertIsNotNone(decision)
+        self.assertEqual(decision.label, "eligible")
+        self.assertEqual(decision.family, "material_ownership")
+
+    def test_material_event_titles_do_not_match_context_patterns_incidentally(self) -> None:
+        titles = (
+            "National Bank Holdings Raises Quarterly Dividend To $0.30 Per Share",
+            "60 Degrees Pharmaceuticals Announces 1-For-5 Reverse Stock Split",
+            "Alpha Enters ATM Offering Agreement And May Sell Up To $6.5M In Common Stock",
+            "Alpha Launches $35M Buyback As It Eyes Undervalued Shares",
+        )
+        for title in titles:
+            with self.subTest(title=title):
+                self.assertIsNone(classify_reviewed_title_policy(title, tickers=("ALPH",)))
 
     def test_numeric_guidance_against_estimate_is_ineligible(self) -> None:
         decision = classify_reviewed_title_policy(

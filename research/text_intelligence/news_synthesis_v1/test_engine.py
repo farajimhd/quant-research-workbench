@@ -44,6 +44,26 @@ class NewsSynthesisEngineTests(unittest.TestCase):
         self.assertEqual(row["forecast_tickers"], ["AAA"])
         self.assertEqual(row["analyst_tickers"], [])
 
+    def test_neutral_direct_issuer_event_is_forecast_eligible_without_polarity_proxy(self) -> None:
+        document = self.engine.synthesize({
+            "source_id": "news-neutral-management-event",
+            "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": "Alpha Therapeutics Appoints Jane Doe As Chief Executive Officer",
+            "text": (
+                "Alpha Therapeutics Inc (NASDAQ:AAA) appointed Jane Doe as its "
+                "chief executive officer effective August 10."
+            ),
+            "tickers": ["AAA"],
+        })
+        self.assertIn(
+            "governance.management_change",
+            {row["concept_leaf"] for row in document["statements"]},
+        )
+        self.assertTrue(any(
+            row["product"] == "forecast_trigger" and row["eligible"]
+            for row in document["eligibility"]
+        ))
+
     def test_provider_ticker_without_text_evidence_is_not_an_entity(self) -> None:
         document = self.engine.synthesize({
             "source_id": "news-2", "source_timestamp": "2026-08-03T12:00:00Z",
@@ -1155,7 +1175,7 @@ class NewsSynthesisEngineTests(unittest.TestCase):
 
         self.assertEqual(views, {"AAA": "positive", "BBB": "positive"})
         self.assertTrue(all(
-            row["product"] != "forecast_trigger" or row["eligible"]
+            row["product"] != "forecast_trigger" or not row["eligible"]
             for row in document["eligibility"]
         ))
 
@@ -3393,7 +3413,7 @@ class NewsSynthesisEngineTests(unittest.TestCase):
         self.assertEqual(views["BBB"]["composite_sentiment"], "negative")
         self.assertEqual(document["envelope"]["communication_purpose"]["value"], "report")
         self.assertTrue(all(
-            row["eligible"]
+            not row["eligible"]
             for row in document["eligibility"]
             if row["product"] in {"forecast_trigger", "reaction_study"}
         ))

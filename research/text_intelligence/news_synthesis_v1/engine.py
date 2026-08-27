@@ -11,11 +11,12 @@ from typing import Any, Iterable, Mapping, Sequence
 from .contracts import CONTRACT_VERSION, PRODUCTION_VERSION, validate_document
 from .provider_context import classify_provider_context
 from .facts import extract_regulatory_decision_facts, extract_typed_facts
+from .forecast_policy import resolve_forecast_policy
 from .reviewed_title_policy import classify_reviewed_title_policy
 from .synthesis import derive_eligibility, derive_issuer_views, derive_synthesis
 
 
-ENGINE_VERSION = "news_synthesis_engine_v57"
+ENGINE_VERSION = "news_synthesis_engine_v59"
 EXCHANGE_TICKER_RE = re.compile(
     r"\b(?P<exchange>NASDAQ|NYSE|NYSE\s+AMERICAN|NYSEAMERICAN|AMEX|"
     r"OTC(?:QX|QB)?|TSX|TSXV|CSE)\s*[:\-]\s*"
@@ -516,9 +517,20 @@ class NewsSynthesisEngine:
             entities,
             mention_terms,
         )
+        earnings_call_material = earnings_call_title_pattern(title) is not None
+        forecast_policy = resolve_forecast_policy(
+            title=title,
+            text=text,
+            tickers=tickers,
+            envelope=envelope,
+            statements=statements,
+            reviewed_title_policy=reviewed_title_policy,
+            provider_context=classify_provider_context(source),
+            earnings_call_material=earnings_call_material,
+        )
         document_flags = _document_quality_flags(source, text)
         flags = _quality_flags(source, entities, text, document_flags=document_flags)
-        if earnings_call_title_pattern(title) is not None:
+        if earnings_call_material:
             flags = sorted({*flags, "earnings_call_transcript"})
         if reviewed_title_policy is not None:
             flags = sorted({*flags, f"reviewed_title_policy:{reviewed_title_policy.family}"})
@@ -533,6 +545,13 @@ class NewsSynthesisEngine:
             envelope=envelope,
             quality_flags=flags,
             document_quality_flags=document_flags,
+            forecast_policy={
+                "label": forecast_policy.label,
+                "family": forecast_policy.family,
+                "evidence_mode": forecast_policy.evidence_mode,
+                "rule_id": forecast_policy.rule_id,
+                "reason_codes": list(forecast_policy.reason_codes),
+            },
         )
         document = {
             "contract_version": CONTRACT_VERSION, "concept_registry_version": self.registry_version,
@@ -1030,6 +1049,7 @@ def _envelope(
     elif digest: structure = "multi_subject_digest"
     else: structure = "single_subject"
     reviewed_mover_pattern = why_moving_title_pattern(title)
+    envelope_title_policy = None if reviewed_mover_pattern else title_policy
     earnings_call_pattern = earnings_call_title_pattern(title)
     causal_mover = bool(
         reviewed_mover_pattern
@@ -1056,7 +1076,7 @@ def _envelope(
         or bool(reviewed_mover_pattern and not market_overview)
     )
     if earnings_call_pattern: purpose = "report"
-    elif title_policy is not None: purpose = title_policy.purpose
+    elif envelope_title_policy is not None: purpose = envelope_title_policy.purpose
     elif reviewed_mover_override or (causal_mover and not market_overview): purpose = "explain_move"
     elif list_title or re.search(
         r"\b(?:ahead of|preview|what to expect|will report|to watch)\b|"
@@ -1143,8 +1163,8 @@ def _envelope(
     }
     origins = [name for name, present in origin_evidence.items() if present]
     origin = "mixed" if len(origins) > 1 else origins[0] if origins else "editorial"
-    if title_policy is not None:
-        origin = title_policy.origin
+    if envelope_title_policy is not None:
+        origin = envelope_title_policy.origin
     if (
         purpose == "report"
         and analyst_match is not None
@@ -1187,8 +1207,8 @@ def _envelope(
             (
                 f"envelope.purpose.earnings_call_v1:{earnings_call_pattern}"
                 if earnings_call_pattern
-                else f"envelope.purpose.reviewed_title_policy_v1:{title_policy.family}"
-                if title_policy is not None
+                else f"envelope.purpose.reviewed_title_policy_v1:{envelope_title_policy.family}"
+                if envelope_title_policy is not None
                 else f"envelope.purpose.why_moving_title_v2:{reviewed_mover_pattern}"
                 if reviewed_mover_pattern
                 else "envelope.purpose.v1"

@@ -53,8 +53,8 @@ ASSIGNMENTS = (
     / "news_title_pattern_policy_disagreement_audit_2025_2026_v1"
     / "ARTICLE_POLICY_ASSIGNMENTS.csv"
 )
-DEFAULT_OUTPUT = NEWS_ROOT / "news_synthesis_v57_pattern_policy_gold_evaluation_v2_full"
-EVALUATION_VERSION = "news_synthesis_pattern_policy_gold_evaluation_v1"
+DEFAULT_OUTPUT = NEWS_ROOT / "news_synthesis_v59_aligned_title_event_policy_gold_evaluation_v1"
+EVALUATION_VERSION = "news_synthesis_pattern_policy_gold_evaluation_v2"
 
 
 def _sha256(path: Path) -> str:
@@ -221,9 +221,12 @@ FORMAT JSONEachRow
 def _prediction(engine: NewsSynthesisEngine, source: dict[str, Any]) -> dict[str, Any]:
     try:
         document = engine.synthesize(source)
+        forecast_rows = [
+            row for row in document["eligibility"]
+            if row["product"] == "forecast_trigger"
+        ]
         eligible = any(
-            row["product"] == "forecast_trigger" and bool(row["eligible"])
-            for row in document["eligibility"]
+            bool(row["eligible"]) for row in forecast_rows
         )
         envelope = document["envelope"]
         return {
@@ -232,6 +235,10 @@ def _prediction(engine: NewsSynthesisEngine, source: dict[str, Any]) -> dict[str
             "origin": envelope["information_origin"]["value"],
             "structure": envelope["document_structure"]["value"],
             "quality_flags": document["quality_flags"],
+            "forecast_policy_ids": sorted({str(row["policy_id"]) for row in forecast_rows}),
+            "forecast_reasons": sorted({
+                str(reason) for row in forecast_rows for reason in row.get("reasons") or ()
+            }),
             "error": None,
         }
     except Exception as exc:
@@ -241,6 +248,8 @@ def _prediction(engine: NewsSynthesisEngine, source: dict[str, Any]) -> dict[str
             "origin": "error",
             "structure": "error",
             "quality_flags": [],
+            "forecast_policy_ids": [],
+            "forecast_reasons": [],
             "error": f"{type(exc).__name__}: {exc}",
         }
 
@@ -374,12 +383,14 @@ def main() -> None:
                                 "source_id": source_id,
                                 "published_at_utc": scope[source_id]["published_at_utc"],
                                 "gold_label": actual,
-                                "v57_label": predicted,
+                                "synthesis_label": predicted,
                                 "confusion_cell": "fp" if predicted == "eligible" else "fn",
                                 "title": scope[source_id]["title"],
                                 "tickers": scope[source_id]["tickers"].split("|") if scope[source_id]["tickers"] else [],
                                 "synthesis_path": path,
                                 "quality_flags": prediction["quality_flags"],
+                                "forecast_policy_ids": prediction["forecast_policy_ids"],
+                                "forecast_reasons": prediction["forecast_reasons"],
                             }) + "\n")
                     for flag in prediction["quality_flags"]:
                         if str(flag).startswith("reviewed_title_policy:"):
