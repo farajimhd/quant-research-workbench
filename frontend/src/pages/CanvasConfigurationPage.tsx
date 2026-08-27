@@ -1,4 +1,4 @@
-import { Activity, BadgeDollarSign, BriefcaseBusiness, Check, CircleDollarSign, Clock3, Globe2, Landmark, Link2, MapPin, PanelRightOpen, RefreshCcw, Search, Save, Settings2, ShieldCheck, TriangleAlert, Unlink, WalletCards } from "lucide-react";
+import { Activity, BadgeDollarSign, BriefcaseBusiness, Check, CircleDollarSign, Clock3, ExternalLink, Globe2, Landmark, Link2, MapPin, PanelRightOpen, RefreshCcw, Search, Save, Settings2, ShieldCheck, TriangleAlert, Unlink, WalletCards } from "lucide-react";
 import { lazy, memo, Suspense, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type MutableRefObject, type ReactNode } from "react";
 
 import { api, apiCached, query, type ApiError } from "../api/client";
@@ -972,6 +972,23 @@ export function CanvasWorkspaceSurface({ accountKeys, approvedCanvas, canvasId, 
     openReusableGroup(CHARTS_QUOTES_GROUP_TEMPLATE_ID, tickerValue);
   }
 
+  function inspectTicker(tickerValue: string) {
+    const symbol = tickerValue.trim().toUpperCase();
+    if (!/^[A-Z][A-Z0-9.\-]{0,15}$/.test(symbol)) return;
+    if (activeLinkGroup !== "none") updateLinkContext(activeLinkGroup, { symbol });
+    else updateInstanceSettings(primaryChartId, (current) => ({
+      ...current,
+      chart: { ...current.chart, symbol },
+    }));
+    const activityId = (workspaceState?.openIds ?? []).find(
+      (instanceId) => workspaceContainerKind(instanceId, workspaceState) === "strategy_activity",
+    );
+    if (activityId) updateInstanceSettings(activityId, (current) => ({
+      ...current,
+      strategy_activity: { ...current.strategy_activity, ticker: symbol },
+    }));
+  }
+
   function openNewCanvas(instanceId?: string, sourceLayout?: WorkspaceWindowLayout) {
     const containerId = instanceId ? workspaceContainerKind(instanceId, workspaceState) : undefined;
     const created = createCanvasRecord(registry, containerId ? `${containerInstanceTitle(containerId, instanceId!, workspaceState, registry)} focus` : undefined);
@@ -1214,6 +1231,11 @@ export function CanvasWorkspaceSurface({ accountKeys, approvedCanvas, canvasId, 
         {error ? <div className="canvas-inline-error">{error}</div> : null}
       </div> : null}
 
+      {replayRun?.execution_mode === "strategy" ? <section aria-label="Replay inspection context" className="replay-inspection-context">
+        <div><span>Inspecting</span><strong>{activeSymbol}</strong><small>Select any Scanner, Signal Stream, Watch Universe, Strategy Activity, order, fill, or position row to retarget the chart and explanation panels.</small></div>
+        <button className="button secondary compact" onClick={() => openChartsQuotesForTicker(activeSymbol)} type="button"><ExternalLink size={13} /> Open {activeSymbol} Charts &amp; Quotes</button>
+      </section> : null}
+
       <TradingWorkspace
         key={`${workspaceStorageKey}:${overlayEpoch}`}
         allowMultipleInstances
@@ -1299,7 +1321,7 @@ export function CanvasWorkspaceSurface({ accountKeys, approvedCanvas, canvasId, 
             scannerSnapshot={scannerSnapshot}
             signalStreamLive={!replayRun}
             signalStreamRunId={replayRun?.run_id}
-            onTickerWorkspaceOpen={openChartsQuotesForTicker}
+            onTickerWorkspaceOpen={inspectTicker}
             previewContext={previewContext}
             requestedNewsId={requestedNewsId}
             requestedSecAccession={requestedSecAccession}
@@ -1435,12 +1457,12 @@ function ContainerPreview({ canvasId, chartCutoffMs, definition, instanceId, lin
           ? <div className="canvas-preview-loading">Loading the {liveMode ? "live" : "historical"} watchlist snapshot…</div>
           : scannerError && !scannerSnapshot
             ? <div className="canvas-inline-error">{liveMode ? "Live" : "Historical"} watchlist unavailable: {scannerError}</div>
-            : <WatchUniverseContainer asOf={new Date(chartCutoffMs).toISOString()} live={liveMode} onSettingsChange={(change) => updateSettings((state) => ({ ...state, watchlist: { ...state.watchlist, ...(typeof change === "function" ? change(state.watchlist) : change) } }))} onTickerSelect={onTickerWorkspaceOpen} runtime={scannerSnapshot?.watchlist_runtime ?? null} scannerRows={scannerSnapshot?.rows ?? preview?.scanner ?? []} settings={settings.watchlist} />
+            : <WatchUniverseContainer asOf={new Date(chartCutoffMs).toISOString()} live={liveMode} onSettingsChange={(change) => updateSettings((state) => ({ ...state, watchlist: { ...state.watchlist, ...(typeof change === "function" ? change(state.watchlist) : change) } }))} onTickerSelect={onTickerWorkspaceOpen} runtime={(preview?.run?.watchlist_runtime as import("../app/components/MarketScreenerContainers").WatchlistRuntimeResponse | undefined) ?? scannerSnapshot?.watchlist_runtime ?? null} scannerRows={scannerSnapshot?.rows ?? preview?.scanner ?? []} settings={settings.watchlist} />
       : definition.id === "strategy_activity"
-        ? <StrategyActivityContainer asOf={new Date(chartCutoffMs).toISOString()} onSettingsChange={(patch) => updateSettings((state) => ({ ...state, strategy_activity: { ...state.strategy_activity, ...patch } }))} onTickerSelect={onTickerWorkspaceOpen} settings={settings.strategy_activity} />
+        ? <StrategyActivityContainer asOf={new Date(chartCutoffMs).toISOString()} onSettingsChange={(patch) => updateSettings((state) => ({ ...state, strategy_activity: { ...state.strategy_activity, ...patch } }))} onTickerSelect={onTickerWorkspaceOpen} runId={signalStreamRunId} settings={settings.strategy_activity} />
       : loading && !preview
         ? <div className="canvas-preview-loading">Loading {definition.title.toLowerCase()}…</div>
-        : renderPreview(definition.id, preview, settings, linkGroup, onLinkContextChange)}</div>
+        : renderPreview(definition.id, preview, settings, linkGroup, onLinkContextChange, onTickerWorkspaceOpen)}</div>
   </div>;
 }
 
@@ -1467,8 +1489,8 @@ function LinkColorPicker({ containerTitle, onChange, value }: { containerTitle: 
   </div>;
 }
 
-function renderPreview(id: WorkspaceContainerId, preview: CanvasPreview | null, settings: ContainerSettings, linkGroup: CanvasLinkGroupId, onLinkContextChange: (patch: Partial<CanvasLinkContext>) => void) {
-  return <TradingContainerPreview id={id} linkGroup={linkGroup} onLinkContextChange={onLinkContextChange} preview={preview} settings={settings} />;
+function renderPreview(id: WorkspaceContainerId, preview: CanvasPreview | null, settings: ContainerSettings, linkGroup: CanvasLinkGroupId, onLinkContextChange: (patch: Partial<CanvasLinkContext>) => void, onTickerSelect: (ticker: string) => void) {
+  return <TradingContainerPreview id={id} linkGroup={linkGroup} onLinkContextChange={onLinkContextChange} onTickerSelect={onTickerSelect} preview={preview} settings={settings} />;
 }
 
 type ChartContainerPreviewProps = {
@@ -1493,7 +1515,7 @@ const ChartContainerPreview = memo(function ChartContainerPreview({ canvasId, cu
   const presentations = useTickerPresentations([linkContext.symbol]);
   const strategyDecisions = useMemo(() => strategyDecisionEvents(strategy), [strategy]);
   const strategyPresentation = useMemo(() => resolvedStrategyPresentation(strategy), [strategy]);
-  return <ChartPreview canvasId={canvasId} changeAsOf={new Date(cutoffMs).toISOString()} chartSettings={settings.chart} instanceId={instanceId} linkContext={linkContext} liveChart={liveChart} logoUrl={presentations[linkContext.symbol]?.logo_url} onChartSettingsChange={(next) => updateSettings((current) => ({ ...current, chart: next }))} onLinkContextChange={onLinkContextChange} strategyDecisions={strategyDecisions} strategyPresentation={strategyPresentation} symbolEditable={symbolEditable} trading={trading} />;
+  return <ChartPreview canvasId={canvasId} changeAsOf={new Date(cutoffMs).toISOString()} chartSettings={settings.chart} fillHeight instanceId={instanceId} linkContext={linkContext} liveChart={liveChart} logoUrl={presentations[linkContext.symbol]?.logo_url} onChartSettingsChange={(next) => updateSettings((current) => ({ ...current, chart: next }))} onLinkContextChange={onLinkContextChange} strategyDecisions={strategyDecisions} strategyPresentation={strategyPresentation} symbolEditable={symbolEditable} trading={trading} />;
 }, chartContainerPreviewPropsEqual);
 
 function ChartsQuotesContainerPreview({ canvasId, cutoffMs, instanceId, linkContext, liveMode, onLinkContextChange, previewContext, readOnly, settings, strategy, symbolEditable, trading, updateSettings }: Omit<ChartContainerPreviewProps, "linkGroup">) {
@@ -1731,6 +1753,21 @@ function runtimeCanvasState(profile: CanvasRegistry, storageKey: string, canvasI
   return { groups: {}, instances: { [requestedInstanceId]: kind }, layoutVersion: TRADING_WORKSPACE_LAYOUT_VERSION, layouts: createFocusLayouts([requestedInstanceId]), openIds: [requestedInstanceId] };
 }
 const STRATEGY_REPLAY_CONTAINER_IDS: WorkspaceContainerId[] = ["chart", "signal_stream", "watchlist", "strategy_activity", "scanner", "orders", "positions", "portfolio"];
+function strategyReplayLayouts(openIds: string[]): Record<string, WorkspaceWindowLayout> {
+  const required: Record<string, WorkspaceWindowLayout> = {
+    chart: { fullscreen: false, h: 610, minimized: false, w: 1040, x: 0, y: 0, z: 8 },
+    strategy_activity: { fullscreen: false, h: 350, minimized: false, w: 700, x: 1052, y: 0, z: 7 },
+    signal_stream: { fullscreen: false, h: 430, minimized: false, w: 700, x: 1052, y: 362, z: 6 },
+    watchlist: { fullscreen: false, h: 420, minimized: false, w: 1040, x: 0, y: 622, z: 5 },
+    orders: { fullscreen: false, h: 430, minimized: false, w: 870, x: 0, y: 1054, z: 4 },
+    positions: { fullscreen: false, h: 430, minimized: false, w: 870, x: 882, y: 804, z: 3 },
+    portfolio: { fullscreen: false, h: 370, minimized: false, w: 870, x: 882, y: 1246, z: 2 },
+    scanner: { fullscreen: false, h: 520, minimized: false, w: 1752, x: 0, y: 1628, z: 1 },
+  };
+  const extras = openIds.filter((id) => !(id in required));
+  const fallback = createFocusLayouts(extras);
+  return Object.fromEntries(openIds.map((id, index) => [id, required[id] ?? { ...fallback[id], y: 2160 + index * 24 }]));
+}
 function strategyReplayCanvasState(state: CanvasWorkspaceState | null): CanvasWorkspaceState {
   const openIds = [
     ...STRATEGY_REPLAY_CONTAINER_IDS,
@@ -1744,7 +1781,7 @@ function strategyReplayCanvasState(state: CanvasWorkspaceState | null): CanvasWo
     groups: {},
     instances,
     layoutVersion: TRADING_WORKSPACE_LAYOUT_VERSION,
-    layouts: createFocusLayouts(openIds),
+    layouts: strategyReplayLayouts(openIds),
     openIds,
   };
 }

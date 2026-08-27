@@ -221,6 +221,7 @@ pub struct CacheLease {
 }
 
 pub struct CacheEntry {
+    accounted: AtomicBool,
     allocated_bytes: Arc<AtomicU64>,
     complete: AtomicBool,
     frame_bytes: AtomicU64,
@@ -334,6 +335,7 @@ impl HistoricalDerivedCache {
         let requirement =
             historical_requirement(&key, &revision_window, &ticker, &profile, &source_revision);
         let entry = Arc::new(CacheEntry {
+            accounted: AtomicBool::new(true),
             allocated_bytes: self.allocated_bytes.clone(),
             complete: AtomicBool::new(false),
             frame_bytes: AtomicU64::new(0),
@@ -376,7 +378,12 @@ impl HistoricalDerivedCache {
     pub async fn evict(&self, key: &str) -> bool {
         let mut index = self.inner.lock().await;
         index.order.retain(|candidate| candidate != key);
-        let removed = index.entries.remove(key).is_some();
+        let removed = index.entries.remove(key);
+        drop(index);
+        if let Some(entry) = &removed {
+            entry.release_accounting();
+        }
+        let removed = removed.is_some();
         if removed {
             self.stats.evictions.fetch_add(1, Ordering::Relaxed);
         }
@@ -1265,6 +1272,15 @@ fn chart_structure_event(event: &GenericStructureEvent) -> bool {
 }
 
 impl CacheEntry {
+    fn release_accounting(&self) {
+        if self.accounted.swap(false, Ordering::AcqRel) {
+            let bytes = self.estimated_bytes.swap(0, Ordering::AcqRel);
+            if bytes > 0 {
+                self.allocated_bytes.fetch_sub(bytes, Ordering::AcqRel);
+            }
+        }
+    }
+
     pub fn subscribe(&self) -> broadcast::Receiver<DerivedUpdate> {
         self.updates.subscribe()
     }
@@ -1467,6 +1483,9 @@ impl CacheEntry {
     }
 
     fn set_estimated_bytes(&self, next: u64) -> Result<(), String> {
+        if !self.accounted.load(Ordering::Acquire) {
+            return Err("historical cache entry was evicted".to_string());
+        }
         let previous = self.estimated_bytes.load(Ordering::Acquire);
         if next == previous {
             return Ok(());
@@ -1624,10 +1643,7 @@ impl ChartBarRow {
 
 impl Drop for CacheEntry {
     fn drop(&mut self) {
-        let bytes = self.estimated_bytes.load(Ordering::Acquire);
-        if bytes > 0 {
-            self.allocated_bytes.fetch_sub(bytes, Ordering::AcqRel);
-        }
+        self.release_accounting();
     }
 }
 
@@ -2011,6 +2027,7 @@ mod tests {
         let (updates, _) = broadcast::channel(16);
         let (bar_updates, _) = broadcast::channel(16);
         let entry = CacheEntry {
+            accounted: AtomicBool::new(true),
             allocated_bytes: allocated.clone(),
             complete: AtomicBool::new(false),
             frame_bytes: AtomicU64::new(0),
@@ -2028,6 +2045,10 @@ mod tests {
         assert!(entry.set_estimated_bytes(900).is_ok());
         assert!(entry.set_estimated_bytes(1_001).is_err());
         assert_eq!(allocated.load(Ordering::Acquire), 900);
+        entry.release_accounting();
+        entry.release_accounting();
+        assert_eq!(allocated.load(Ordering::Acquire), 0);
+        assert!(entry.set_estimated_bytes(1).is_err());
         drop(entry);
         assert_eq!(allocated.load(Ordering::Acquire), 0);
     }
@@ -2038,6 +2059,7 @@ mod tests {
         let (updates, _) = broadcast::channel(16);
         let (bar_updates, _) = broadcast::channel(16);
         let entry = Arc::new(CacheEntry {
+            accounted: AtomicBool::new(true),
             allocated_bytes: allocated,
             complete: AtomicBool::new(false),
             frame_bytes: AtomicU64::new(0),
@@ -2076,6 +2098,7 @@ mod tests {
         let (updates, _) = broadcast::channel(16);
         let (bar_updates, _) = broadcast::channel(16);
         let entry = CacheEntry {
+            accounted: AtomicBool::new(true),
             allocated_bytes: allocated,
             complete: AtomicBool::new(false),
             frame_bytes: AtomicU64::new(0),

@@ -17,6 +17,7 @@ from uuid import uuid4
 from zoneinfo import ZoneInfo
 
 import websockets
+from websockets.exceptions import ConnectionClosedError
 
 from src.backend.data_field_contracts import (
     field_instance_ref,
@@ -97,7 +98,7 @@ REPLAY_STATUSES = {
 TERMINAL_REPLAY_STATUSES = {"completed", "stopped", "failed"}
 PLAYBACK_SPEEDS = (1.0, 5.0, 30.0, 120.0, 0.0)
 DEFAULT_MAX_RESIDENT_RUNS = 32
-DEFAULT_HISTORY_FETCH_CONCURRENCY = 2
+DEFAULT_HISTORY_FETCH_CONCURRENCY = 4
 MAX_DEBUG_FIXTURE_EVENTS = 20_000
 RESTART_CHECKPOINT_SCHEMA_VERSION = 3
 
@@ -383,6 +384,19 @@ class ReplayFrameSpool:
                     ) VALUES (?, ?, ?, ?, ?, ?, ?)
                     """,
                     rows,
+                )
+        finally:
+            connection.close()
+
+    def delete_stream(self, ticker: str, timeframe: str) -> None:
+        """Discard a partial transport attempt before retrying one frozen stream."""
+
+        connection = sqlite3.connect(self.path)
+        try:
+            with connection:
+                connection.execute(
+                    "DELETE FROM strategy_frames WHERE ticker = ? AND timeframe = ?",
+                    (_ticker(ticker), timeframe),
                 )
         finally:
             connection.close()
@@ -1002,6 +1016,27 @@ class ReplayRunController:
                 "timeline_index": self._historical_watchlist_timeline_index,
                 "timeline_count": len(self._historical_watchlist_timeline_cache or ()),
             },
+            "watchlist_runtime": {
+                "as_of": current.isoformat(),
+                "status": "ready" if self._runtime_inputs_ready else "building",
+                "watchlists": [
+                    {
+                        "watchlist_id": watchlist_id,
+                        "status": "ready" if self._runtime_inputs_ready else "building",
+                        "members": [
+                            deepcopy(
+                                self._active_historical_watchlist_rows
+                                .get(watchlist_id, {})
+                                .get(ticker, {"ticker": ticker})
+                            )
+                            for ticker in sorted(tickers)
+                        ],
+                    }
+                    for watchlist_id, tickers in sorted(
+                        self._active_historical_watchlists.items()
+                    )
+                ],
+            },
             "data_authority": {
                 "configuration": {
                     "revision_id": self.definition.configuration_revision.get("revision_id", ""),
@@ -1298,6 +1333,49 @@ class ReplayRunController:
             "xbrl": [],
             "run": self.snapshot(),
         }
+
+    def signal_stream_snapshot(
+        self,
+        *,
+        signal_stream_id: str = "",
+        as_of: datetime | None = None,
+        limit: int = 5_000,
+    ) -> dict[str, Any]:
+        if self._journal is None:
+            raise ValueError("Replay Signal Stream is not ready")
+        from src.backend.signal_stream_runtime_service import SIGNAL_STREAM_RUNTIME
+
+        return SIGNAL_STREAM_RUNTIME.snapshot(
+            self._journal,
+            signal_stream_id=signal_stream_id,
+            run_id=self.run_id,
+            as_of=as_of,
+            limit=limit,
+            configuration=self.definition.configuration_revision["payload"],
+        )
+
+    def strategy_activity_snapshot(
+        self,
+        *,
+        as_of: datetime | None = None,
+        strategy_id: str = "",
+        ticker: str = "",
+        event_type: str = "",
+        limit: int = 500,
+    ) -> dict[str, Any]:
+        if self._journal is None:
+            raise ValueError("Replay Strategy Activity is not ready")
+        from src.backend.trading_runtime_service import strategy_activity_payload
+
+        return strategy_activity_payload(
+            journal=self._journal,
+            as_of=as_of,
+            strategy_id=strategy_id,
+            run_id=self.run_id,
+            ticker=ticker,
+            event_type=event_type,
+            limit=limit,
+        )
 
     def subscribe(self) -> asyncio.Queue[dict[str, Any]]:
         queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue(maxsize=4)
@@ -2896,14 +2974,30 @@ class ReplayRunController:
                                 async with writer_lock:
                                     await asyncio.to_thread(spool.append, batch)
 
-                            await _stream_historical_derived_frames(
-                                ticker=ticker,
-                                timeframe=timeframe,
-                                start=self.definition.session_start,
-                                end=self.definition.session_end,
-                                frame_sink=persist,
-                                authority_sink=self._record_data_authority,
-                            )
+                            for attempt in range(3):
+                                try:
+                                    await _stream_historical_derived_frames(
+                                        ticker=ticker,
+                                        timeframe=timeframe,
+                                        start=self.definition.session_start,
+                                        end=self.definition.session_end,
+                                        frame_sink=persist,
+                                        authority_sink=self._record_data_authority,
+                                    )
+                                    break
+                                except (
+                                    TimeoutError,
+                                    ConnectionClosedError,
+                                ):
+                                    async with writer_lock:
+                                        await asyncio.to_thread(
+                                            spool.delete_stream,
+                                            ticker,
+                                            timeframe,
+                                        )
+                                    if attempt == 2:
+                                        raise
+                                    await asyncio.sleep(0.5 * (2**attempt))
                         else:
                             frames = await _historical_derived_frames(
                                 ticker=ticker,
@@ -4994,7 +5088,7 @@ async def _stream_historical_derived_frames(
                 if len(batch) >= batch_size:
                     await frame_sink(batch)
                     batch = []
-        except websockets.exceptions.ConnectionClosedError:
+        except ConnectionClosedError:
             expected = int((metadata or {}).get("frame_count") or -1)
             if metadata is None or received != expected:
                 raise
@@ -5063,7 +5157,7 @@ async def _historical_derived_frames(
                     ticker=ticker,
                     timeframe=timeframe,
                 )
-        except websockets.exceptions.ConnectionClosedError:
+        except ConnectionClosedError:
             expected = int((metadata or {}).get("frame_count") or -1)
             if metadata is None or len(frames) != expected:
                 raise

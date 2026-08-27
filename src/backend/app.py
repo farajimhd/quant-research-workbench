@@ -636,6 +636,17 @@ def _qmd_stream_error(error: Exception, *, stream: str) -> dict[str, Any]:
 replay_run_service = ReplayRunService()
 backtest_run_service = ReplayRunService(runtime_root=backtest_runtime_root())
 backtest_debug_run_service = ReplayRunService(runtime_root=backtest_debug_runtime_root())
+
+
+def _historical_run_controller(run_id: str):
+    for service in (replay_run_service, backtest_run_service, backtest_debug_run_service):
+        try:
+            return service.get(run_id)
+        except KeyError:
+            continue
+    return None
+
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=sorted(authority_policy.browser_origins),
@@ -4444,6 +4455,16 @@ def market_discovery_signal_stream_runtime(
         )
     if not run_id.strip():
         raise HTTPException(status_code=422, detail="Historical Signal Stream reads require run_id.")
+    controller = _historical_run_controller(run_id.strip())
+    if controller is not None:
+        try:
+            return controller.signal_stream_snapshot(
+                signal_stream_id=signal_stream_id,
+                as_of=cutoff,
+                limit=limit,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
     return SIGNAL_STREAM_RUNTIME.snapshot(
         trading_journal(),
         signal_stream_id=signal_stream_id,
@@ -4910,6 +4931,15 @@ def trading_strategy_activity(
         cutoff = datetime.fromisoformat(as_of.replace("Z", "+00:00")) if as_of else None
         if cutoff is not None and cutoff.tzinfo is None:
             cutoff = cutoff.replace(tzinfo=UTC)
+        controller = _historical_run_controller(run_id.strip()) if run_id.strip() else None
+        if controller is not None:
+            return controller.strategy_activity_snapshot(
+                as_of=cutoff,
+                strategy_id=strategy_id,
+                ticker=ticker,
+                event_type=event_type,
+                limit=limit,
+            )
         return strategy_activity_payload(
             as_of=cutoff,
             strategy_id=strategy_id,

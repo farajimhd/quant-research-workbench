@@ -228,9 +228,19 @@ export function ChartPreview({
   const activePosition = trading?.positions.find((row) => nestedValue(row, "instrument", "symbol") === linkContext.symbol && Number(row.quantity || 0) !== 0);
   const quantity = Number(activePosition?.quantity || 0);
   const averagePrice = Number(activePosition?.average_price || 0);
+  const activeEntryOrder = trading?.orders.find((row) =>
+    nestedValue(row, "instrument", "symbol") === linkContext.symbol
+    && String(row.side || "").toUpperCase() === (quantity >= 0 ? "BUY" : "SELL")
+    && !Boolean(row.terminal)
+    && Number(row.total_quantity || 0) >= Math.abs(quantity),
+  );
+  const targetQuantity = Number(activeEntryOrder?.total_quantity || 0);
+  const positionQuantityLabel = targetQuantity > Math.abs(quantity)
+    ? `${formatQuantity(Math.abs(quantity))} filled / ${formatQuantity(targetQuantity)} target`
+    : formatQuantity(Math.abs(quantity));
   const positionLine = activePosition && averagePrice > 0 ? {
     color: quantity > 0 ? "var(--success)" : "var(--danger)",
-    labelParts: [{ text: quantity > 0 ? "LONG" : "SHORT", tone: "label" }, { text: `${Math.abs(quantity).toLocaleString()} @ ${money(averagePrice)}`, tone: "price" }],
+    labelParts: [{ text: quantity > 0 ? "LONG" : "SHORT", tone: "label" }, { text: `${positionQuantityLabel} @ ${money(averagePrice)}`, tone: "price" }],
     pnl: Number(activePosition.unrealized_pnl || 0),
     price: averagePrice,
     quantity,

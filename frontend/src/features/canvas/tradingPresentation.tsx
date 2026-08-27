@@ -63,6 +63,7 @@ export type TradingContainerPreviewProps = {
   id: WorkspaceContainerId;
   linkGroup: CanvasLinkGroupId;
   onLinkContextChange: (patch: Partial<CanvasLinkContext>) => void;
+  onTickerSelect?: (ticker: string) => void;
   preview: CanvasPreview | null;
   settings: ContainerSettings;
 };
@@ -71,15 +72,17 @@ export function TradingContainerPreview({
   id,
   linkGroup,
   onLinkContextChange,
+  onTickerSelect,
   preview,
   settings,
 }: TradingContainerPreviewProps) {
   if (!preview) return <EmptyState label="No preview data" />;
   if (id === "portfolio") return <PortfolioPreview data={preview.trading} settings={settings.portfolio} />;
-  if (id === "positions") return <PositionsPreview data={preview.trading} onSymbolSelect={linkGroup === "none" ? undefined : (symbol) => onLinkContextChange({ symbol })} settings={settings.positions} />;
-  if (id === "orders") return <OrdersPreview data={preview.trading} onSymbolSelect={linkGroup === "none" ? undefined : (symbol) => onLinkContextChange({ symbol })} settings={settings.orders} />;
-  if (id === "fills") return <ExecutionsPreview data={preview.trading} settings={settings.fills} />;
-  if (id === "closed_trades") return <ClosedTradesPreview data={preview.trading} settings={settings.closed_trades} />;
+  const selectSymbol = onTickerSelect ?? (linkGroup === "none" ? undefined : (symbol: string) => onLinkContextChange({ symbol }));
+  if (id === "positions") return <PositionsPreview data={preview.trading} onSymbolSelect={selectSymbol} settings={settings.positions} />;
+  if (id === "orders") return <OrdersPreview data={preview.trading} onSymbolSelect={selectSymbol} settings={settings.orders} />;
+  if (id === "fills") return <ExecutionsPreview data={preview.trading} onSymbolSelect={selectSymbol} settings={settings.fills} />;
+  if (id === "closed_trades") return <ClosedTradesPreview data={preview.trading} onSymbolSelect={selectSymbol} settings={settings.closed_trades} />;
   if (id === "activity") return <ActivityPreview data={preview.trading} settings={settings.activity} />;
   if (id === "performance_journal") return <TradingJournalPreview data={preview.trading} settings={settings.performance_journal} />;
   if (id === "strategy") return <StrategyPreview data={preview.strategy} showSignals={settings.strategy.showSignals} />;
@@ -428,16 +431,16 @@ function OrderDetail({ row }: { row: PreviewRow }) {
   return <div className="trading-row-detail"><div className="trading-detail-facts"><span><small>Client order</small><strong>{String(order.client_order_id || "—")}</strong></span><span><small>Command</small><strong>{String(order.command_id || "—")}</strong></span><span><small>Parent</small><strong>{String(order.parent_order_id || "—")}</strong></span><span><small>Broker message</small><strong>{String(order.warning || order.rejection_reason || "None")}</strong></span></div><section className="trading-fill-evidence"><header><strong>Execution evidence</strong><span>{executions.length} fill{executions.length === 1 ? "" : "s"}</span></header>{executions.length ? <PreviewTable columns={["time", "execution_id", "side", "quantity", "price", "exchange", "commission", "fee_state"]} rows={executions} /> : <p>This order has no fills in the loaded execution window.</p>}</section></div>;
 }
 
-function ExecutionsPreview({ data, settings }: { data: CanonicalTradingPreview; settings: ContainerSettings["fills"] }) {
+function ExecutionsPreview({ data, onSymbolSelect, settings }: { data: CanonicalTradingPreview; onSymbolSelect?: (symbol: string) => void; settings: ContainerSettings["fills"] }) {
   const rows = data.executions.map(executionTableRow);
   const columns = settings.showCommission ? ["time", "symbol", "side", "quantity", "price", "exchange", "commission", "fee_state", "net_amount", "account", "order_id", "execution_id"] : ["time", "symbol", "side", "quantity", "price", "exchange", "account", "order_id", "execution_id"];
-  return <section className="trading-preview"><TradingFreshness data={data} /><div className="trading-disclosure">Advanced immutable execution audit. For routine management, use Orders &amp; Fills where each order expands into its related executions.</div><TradingDataTable columns={columns} defaultSort="time" filterColumn="side" filterLabel="All sides" rows={rows.slice(0, settings.limit)} searchPlaceholder="Search immutable execution evidence…" /></section>;
+  return <section className="trading-preview"><TradingFreshness data={data} /><div className="trading-disclosure">Advanced immutable execution audit. For routine management, use Orders &amp; Fills where each order expands into its related executions.</div><TradingDataTable columns={columns} defaultSort="time" filterColumn="side" filterLabel="All sides" onSymbolSelect={onSymbolSelect} rows={rows.slice(0, settings.limit)} searchPlaceholder="Search immutable execution evidence…" /></section>;
 }
 
-function ClosedTradesPreview({ data, settings }: { data: CanonicalTradingPreview; settings: ContainerSettings["closed_trades"] }) {
+function ClosedTradesPreview({ data, onSymbolSelect, settings }: { data: CanonicalTradingPreview; onSymbolSelect?: (symbol: string) => void; settings: ContainerSettings["closed_trades"] }) {
   const rows = data.closed_trades.map((row) => ({ closed_at: row.closed_at, symbol: nestedValue(row, "instrument", "symbol"), side: row.side, quantity: row.quantity, entry_price: row.entry_price, exit_price: row.exit_price, gross_pnl: row.gross_pnl, fees: row.fees, net_pnl: row.net_pnl, account: row.account_id }));
   const columns = settings.showFees ? ["closed_at", "symbol", "side", "quantity", "entry_price", "exit_price", "gross_pnl", "fees", "net_pnl", "account"] : ["closed_at", "symbol", "side", "quantity", "entry_price", "exit_price", "gross_pnl", "net_pnl", "account"];
-  return <section className="trading-preview"><div className="trading-disclosure">Advanced derived round-trip audit. The Position Manager provides the normal open, closed, and lifecycle workflow. {data.closed_trades_note}</div><TradingDataTable columns={columns} defaultSort="closed_at" filterColumn="side" filterLabel="All sides" rows={rows.slice(0, settings.limit)} searchPlaceholder="Search derived round trips…" /></section>;
+  return <section className="trading-preview"><div className="trading-disclosure">Advanced derived round-trip audit. The Position Manager provides the normal open, closed, and lifecycle workflow. {data.closed_trades_note}</div><TradingDataTable columns={columns} defaultSort="closed_at" filterColumn="side" filterLabel="All sides" onSymbolSelect={onSymbolSelect} rows={rows.slice(0, settings.limit)} searchPlaceholder="Search derived round trips…" /></section>;
 }
 
 function TradingTabs({ active, onChange, tabs }: { active: string; onChange: (id: string) => void; tabs: Array<{ count: number; id: string; label: string }> }) {

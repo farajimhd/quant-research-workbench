@@ -229,6 +229,10 @@ const FIELD_CATALOG: FieldDefinition[] = [
   field("action", "Action", "Strategy activity", "raw", "text", "The semantic action emitted by the strategy runtime."),
   field("state", "State", "Strategy activity", "raw", "text", "The resulting strategy or campaign state when one was recorded."),
   field("reason", "Reason", "Strategy activity", "raw", "text", "Durable explanation or evidence recorded with the strategy event."),
+  field("score", "Score", "Strategy activity", "raw", "number", "Strategy evidence score recorded when the action was evaluated."),
+  field("confidence", "Confidence", "Strategy activity", "raw", "percentPlain", "Strategy confidence recorded for this action; it is not a guaranteed win probability."),
+  field("reference_price", "Reference price", "Strategy activity", "raw", "money", "Causal market price attached to the decision or signal."),
+  field("source", "Source", "Strategy activity", "raw", "text", "Runtime authority that persisted the event."),
   field("strategy_id", "Strategy", "Strategy activity", "raw", "text", "Stable Strategy Profile identifier that emitted the event."),
   field("run_id", "Run", "Strategy activity", "raw", "text", "Strategy Run identifier that owns the event."),
   field("signal_type", "Signal", "Signal event", "derived", "text", "Stable event class or strategy-defined signal name."),
@@ -703,16 +707,18 @@ export function WatchUniverseContainer({ asOf, live = false, onSettingsChange, o
   </section>;
 }
 
-export function StrategyActivityContainer({ asOf, onSettingsChange, onTickerSelect, settings }: { asOf: string; onSettingsChange: (patch: Partial<StrategyActivitySettings>) => void; onTickerSelect: (ticker: string) => void; settings: StrategyActivitySettings }) {
+export function StrategyActivityContainer({ asOf, onSettingsChange, onTickerSelect, runId, settings }: { asOf: string; onSettingsChange: (patch: Partial<StrategyActivitySettings>) => void; onTickerSelect: (ticker: string) => void; runId?: string; settings: StrategyActivitySettings }) {
   const [payload, setPayload] = useState<StrategyActivityResponse | null>(null);
   const [error, setError] = useState("");
   useEffect(() => {
     const controller = new AbortController();
-    api<StrategyActivityResponse>(`/api/trading/strategy-activity?as_of=${encodeURIComponent(asOf)}&limit=5000`, { signal: controller.signal, timeoutMs: 10000 })
+    const query = new URLSearchParams({ as_of: asOf, limit: "5000" });
+    if (runId) query.set("run_id", runId);
+    api<StrategyActivityResponse>(`/api/trading/strategy-activity?${query}`, { signal: controller.signal, timeoutMs: 10000 })
       .then((response) => { setPayload(response); setError(""); })
       .catch((reason) => { if (!controller.signal.aborted) setError(reason instanceof Error ? reason.message : String(reason)); });
     return () => controller.abort();
-  }, [asOf]);
+  }, [asOf, runId]);
   const rows = useMemo(() => (payload?.rows ?? []).filter((row) =>
     (!settings.strategyId || String(row.strategy_id) === settings.strategyId)
     && (!settings.runId || String(row.run_id) === settings.runId)
@@ -723,14 +729,14 @@ export function StrategyActivityContainer({ asOf, onSettingsChange, onTickerSele
   const runs = useMemo(() => uniqueValues(payload?.rows ?? [], "run_id"), [payload]);
   const tickers = useMemo(() => uniqueValues(payload?.rows ?? [], "ticker"), [payload]);
   return <section className="market-list-surface strategy-activity-surface" aria-label="Strategy activity">
-    <header className="market-list-heading"><div><span className="market-list-eyebrow"><FileCheck2 size={12} /> Durable runtime history</span><h3>Strategy Activity</h3><p>{rows.length} persisted events at or before <MarketTime value={asOf} /></p></div><span className="market-list-owner strategy">Trading Journal</span></header>
+    <header className="market-list-heading"><div><span className="market-list-eyebrow"><FileCheck2 size={12} /> Durable runtime history</span><h3>Strategy Activity</h3><p>{rows.length} causal signals, decisions, and state changes at or before <MarketTime value={asOf} />. Select a ticker to inspect the same moment on the chart.</p></div><span className="market-list-owner strategy">Trading Journal</span></header>
     <div className="strategy-activity-filters">
       <ActivityFilter label="Strategy" onChange={(strategyId) => onSettingsChange({ strategyId })} options={strategies} value={settings.strategyId} />
       <ActivityFilter label="Run" onChange={(runId) => onSettingsChange({ runId })} options={runs} value={settings.runId} />
       <ActivityFilter label="Ticker" onChange={(ticker) => onSettingsChange({ ticker })} options={tickers} value={settings.ticker} />
       <ActivityFilter label="Event" onChange={(eventType) => onSettingsChange({ eventType })} options={["signal", "decision", "campaign_state"]} value={settings.eventType} />
     </div>
-    {error ? <div className="canvas-inline-error">Strategy activity unavailable: {error}</div> : <MarketListTable chronological columns={["event_time", "ticker", "event_type", "action", "state", "reason", "strategy_id", "run_id"]} customColumns={[]} empty="No persisted strategy events match these filters." limit={settings.limit} lockedColumns={[]} onColumnsChange={() => undefined} onCustomColumnsChange={() => undefined} onTickerSelect={onTickerSelect} rows={rows} title="Strategy activity" />}
+    {error ? <div className="canvas-inline-error">Strategy activity unavailable: {error}</div> : <MarketListTable chronological columns={["event_time", "ticker", "event_type", "action", "state", "reason", "score", "confidence", "reference_price", "source"]} customColumns={[]} empty="No causal strategy events match these filters yet. Press Play or advance to the next strategy action." limit={settings.limit} lockedColumns={[]} onColumnsChange={() => undefined} onCustomColumnsChange={() => undefined} onTickerSelect={onTickerSelect} rows={rows} title="Strategy activity" />}
   </section>;
 }
 

@@ -35,6 +35,7 @@ from src.backend.replay_run_service import (
     backtest_debug_preflight,
     backtest_preflight,
     replay_preflight,
+    replay_history_fetch_concurrency,
 )
 from src.market_engine.historical_source import QmdHistoricalEventSource
 from src.trading_runtime.domain import InstrumentContract
@@ -1009,6 +1010,13 @@ class HistoricalWatchlistTimelineTests(unittest.TestCase):
             self.assertEqual(controller._active_historical_watchlist_tickers, {"AAPL"})
             self.assertEqual(controller._active_historical_watchlists["two"], {"AAPL"})
             self.assertEqual(controller._active_historical_watchlists["one"], set())
+            controller._runtime_inputs_ready = True
+            runtime = controller.snapshot()["watchlist_runtime"]
+            self.assertEqual(runtime["status"], "ready")
+            projected = {row["watchlist_id"]: row for row in runtime["watchlists"]}
+            self.assertEqual(projected["one"]["members"], [])
+            self.assertEqual(projected["two"]["members"][0]["ticker"], "AAPL")
+            self.assertEqual(projected["two"]["members"][0]["ibkr_conid"], 265598)
 
     def test_resolves_first_clock_and_each_later_weekday_session_boundary(self) -> None:
         approved = approved_configuration()
@@ -1214,6 +1222,10 @@ class ReplayRunServiceCapacityTests(unittest.IsolatedAsyncioTestCase):
 
 
 class ReplayHistoricalFetchBudgetTests(unittest.IsolatedAsyncioTestCase):
+    async def test_default_history_fetch_concurrency_matches_gateway_build_budget(self) -> None:
+        with patch.dict("os.environ", {}, clear=True):
+            self.assertEqual(replay_history_fetch_concurrency(), 4)
+
     async def test_frame_spool_orders_frames_and_attaches_causal_signals(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             spool = ReplayFrameSpool(Path(directory) / "frames.sqlite3")
@@ -1335,6 +1347,55 @@ class ReplayHistoricalFetchBudgetTests(unittest.IsolatedAsyncioTestCase):
             end=definition.session_end,
             authority_sink=controller._record_data_authority,
         )
+
+    async def test_retries_closed_derived_stream_without_duplicate_partial_frames(self) -> None:
+        definition = ReplayRunDefinition(
+            session_date=date(2026, 8, 10),
+            start_time=time(9, 45),
+            tickers=("ABCD",),
+            configuration_revision=approved_configuration(),
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            controller = ReplayRunController(definition, runtime_root=Path(directory))
+            controller._strategy = MagicMock()
+            controller._strategy.assignments.return_value = [
+                MagicMock(ticker="ABCD", parameters={})
+            ]
+            controller._strategy_registration = MagicMock()
+            controller._strategy_registration.timeframe_resolver.return_value = {"1m"}
+            frame = ReplayDerivedFrame(
+                as_of=definition.session_start,
+                bar={"close": 10.0},
+                indicator={},
+                sequence=1,
+                ticker="ABCD",
+                timeframe="1m",
+            )
+            attempts = 0
+
+            async def derived(**kwargs):
+                nonlocal attempts
+                attempts += 1
+                await kwargs["frame_sink"]([frame])
+                if attempts == 1:
+                    raise TimeoutError("transient history transport timeout")
+
+            with (
+                patch(
+                    "src.backend.replay_run_service._stream_historical_derived_frames",
+                    side_effect=derived,
+                ),
+                patch(
+                    "src.backend.replay_run_service._historical_signal_events",
+                    AsyncMock(return_value={"ABCD": []}),
+                ),
+            ):
+                frames = controller._load_strategy_frames()
+                loaded = list(await frames)
+
+        self.assertEqual(attempts, 2)
+        self.assertEqual(len(loaded), 1)
+        self.assertEqual(loaded[0].ticker, "ABCD")
 
     async def test_groups_one_cross_sectional_signal_response_by_ticker(self) -> None:
         payload = MagicMock(
@@ -1623,12 +1684,18 @@ class ReplayControllerTests(unittest.IsolatedAsyncioTestCase):
                 return_value=loaded,
             ):
                 events = await controller._load_source_native_signal_events()
+            stream_snapshot = controller.signal_stream_snapshot(
+                signal_stream_id="price-squeeze-5m",
+                as_of=available_at,
+            )
             controller._journal.close()
 
         self.assertEqual(len(events), 1)
         self.assertEqual(events[0].available_at, available_at)
         self.assertEqual(events[0].ticker, "AAPL")
         self.assertEqual(events[0].occurrence["event_id"], "squeeze-1")
+        self.assertEqual(stream_snapshot["occurrence_count"], 1)
+        self.assertEqual(stream_snapshot["occurrences"][0]["event_id"], "squeeze-1")
         self.assertEqual(
             controller._data_authority["source_native_signal_stream:price-squeeze-5m"]
             ["content_hash"],

@@ -487,6 +487,7 @@ def strategy_canvas_payload(*, as_of: datetime, ticker: str) -> dict[str, Any]:
 
 def strategy_activity_payload(
     *,
+    journal: TradingJournal | None = None,
     as_of: datetime | None = None,
     strategy_id: str = "",
     run_id: str = "",
@@ -496,7 +497,7 @@ def strategy_activity_payload(
 ) -> dict[str, Any]:
     """Project the durable strategy journal into an operator-facing event list."""
     requested_limit = max(1, min(int(limit), 5000))
-    records = trading_journal().strategy_activity_records(
+    records = (journal or trading_journal()).strategy_activity_records(
         strategy_id=strategy_id.strip(),
         run_id=run_id.strip(),
         ticker=ticker.strip().upper(),

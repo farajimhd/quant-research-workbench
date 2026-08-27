@@ -1257,7 +1257,7 @@ class TradingConfigurationServiceTests(unittest.TestCase):
         self.assertNotIn("routes", lifecycle["exit"])
         self.assertEqual(
             lifecycle["initial_entry"]["capital_request"]["mode"],
-            "mandate_fraction",
+            "all_available",
         )
         self.assertEqual(lifecycle["initial_entry"]["add_steps"], [])
         self.assertEqual(lifecycle["initial_entry"]["action_id"], "position.enter_long")
@@ -1415,13 +1415,21 @@ class TradingConfigurationServiceTests(unittest.TestCase):
 
         self.assertEqual(replay["eligible_equity_fraction"], 1.0)
         self.assertEqual(real["eligible_equity_fraction"], 0.8)
-        self.assertEqual(replay["maximum_position_fraction"], 0.1)
+        self.assertEqual(replay["maximum_position_fraction"], 1.0)
+        self.assertEqual(replay["maximum_ticker_fraction"], 1.0)
+        self.assertEqual(real["maximum_position_fraction"], 0.8)
+        self.assertEqual(real["maximum_ticker_fraction"], 0.8)
         self.assertEqual(replay["maximum_planned_risk_fraction"], 0.0025)
         self.assertEqual(replay["maximum_open_positions"], 3)
         self.assertEqual(plan["watchlist_ids"], ["squeeze-tradable-candidates"])
         self.assertEqual(plan["campaign_lifecycle"]["reentry_cooldown_ms"], 5_000)
         self.assertEqual(profile["lifecycle"]["trading_behavior"]["entry_cutoff_time"], "15:45:00")
         self.assertEqual(profile["lifecycle"]["trading_behavior"]["flatten_time"], "15:55:00")
+        self.assertEqual(profile["lifecycle"]["initial_entry"]["capital_request"], {
+            "mode": "all_available",
+            "value": 1.0,
+            "allow_replacement": False,
+        })
 
     def test_approved_canvas_projection_exposes_only_published_profile_identity(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

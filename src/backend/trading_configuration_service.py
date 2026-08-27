@@ -3860,13 +3860,13 @@ def _default_draft() -> dict[str, Any]:
     }
     squeeze_lifecycle["initial_entry"]["add_steps"] = []
     squeeze_lifecycle["initial_entry"]["capital_request"] = {
-        "mode": "mandate_fraction",
-        "value": 0.10,
+        "mode": "all_available",
+        "value": 1.0,
         "allow_replacement": False,
     }
     squeeze_lifecycle["reentry"]["capital_request"] = {
-        "mode": "mandate_fraction",
-        "value": 0.10,
+        "mode": "all_available",
+        "value": 1.0,
         "allow_replacement": False,
     }
     squeeze_lifecycle["reentry"]["maximum_attempts"] = 1
@@ -3929,8 +3929,8 @@ def _default_draft() -> dict[str, Any]:
         profile.pop("rule_set_catalog", None)
     policy = asdict(PortfolioPolicy())
     policy.update({
-        "maximum_position_fraction": 0.10,
-        "maximum_ticker_fraction": 0.10,
+        "maximum_position_fraction": 1.0,
+        "maximum_ticker_fraction": 1.0,
         "maximum_planned_risk_fraction": 0.0025,
         "maximum_open_risk_fraction": 0.0075,
         "maximum_open_positions": 3,
@@ -3942,6 +3942,8 @@ def _default_draft() -> dict[str, Any]:
         "policy_id": "long-momentum-real-80",
         "revision": 1,
         "eligible_equity_fraction": 0.80,
+        "maximum_position_fraction": 0.80,
+        "maximum_ticker_fraction": 0.80,
     })
     bindings = [
         {
