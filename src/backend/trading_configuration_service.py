@@ -588,10 +588,63 @@ def _build_configuration_release(
     return runtime_candidate, payload, content_hash
 
 
-def replay_configuration_snapshot(run_plan_id: str = "") -> dict[str, Any]:
-    if run_plan_id:
-        return approved_runtime_configuration_snapshot("replay", run_plan_id=run_plan_id)
-    return approved_runtime_configuration_snapshot("replay")
+def replay_configuration_snapshot(
+    run_plan_id: str = "", *, candidate_id: str = ""
+) -> dict[str, Any]:
+    candidate = configuration_candidate(candidate_id)
+    if candidate is not None:
+        return candidate_runtime_configuration_snapshot(
+            "replay",
+            candidate_id=str(candidate["candidate_id"]),
+            run_plan_id=run_plan_id,
+        )
+    approved = approved_configuration()
+    if approved is None:
+        return candidate_runtime_configuration_snapshot(
+            "replay", candidate_id=candidate_id, run_plan_id=run_plan_id
+        )
+    if candidate_id and candidate_id != str(approved.get("revision_id") or ""):
+        raise ValueError("The selected Replay configuration no longer exists")
+    return approved_runtime_configuration_snapshot("replay", run_plan_id=run_plan_id)
+
+
+def candidate_session_configuration_snapshot(
+    mode: str,
+    *,
+    candidate_id: str = "",
+    session_profile_id: str = "",
+    execution_route_id: str = "",
+) -> dict[str, Any]:
+    """Pin a strategy-free simulated session to an immutable Test Candidate."""
+
+    if mode not in {"replay", "backtest", "backtest_debug"}:
+        raise ValueError(f"Test Candidates cannot authorize {mode}")
+    candidate = configuration_candidate(candidate_id, required=True)
+    assert candidate is not None
+    model = _migrate_draft(deepcopy(candidate["payload"]))
+    _validate_draft(model)
+    resolved = resolve_session_configuration(
+        model,
+        mode=mode,
+        session_profile_id=session_profile_id,
+        execution_route_id=execution_route_id,
+    )
+    return {
+        "revision_id": candidate["candidate_id"],
+        "revision": candidate["candidate_revision"],
+        "label": candidate["label"],
+        "content_hash": candidate["content_hash"],
+        "approved_at": "",
+        "created_at": candidate["created_at"],
+        "release_state": "test_candidate",
+        "schema_version": CONFIGURATION_SCHEMA_VERSION,
+        "mode": mode,
+        "execution_mode": "manual",
+        "session_profile_id": str(resolved["session_profile"]["session_profile_id"]),
+        "execution_route_id": str(resolved["execution_routes"][0]["execution_route_id"]),
+        "configuration_model": model,
+        "payload": resolved,
+    }
 
 
 def approved_session_configuration_snapshot(

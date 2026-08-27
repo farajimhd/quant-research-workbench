@@ -458,7 +458,8 @@
 
 .replay-control-back,
 .replay-control-primary,
-.replay-control-button {
+.replay-control-button,
+.replay-control-action {
   align-items: center;
   background: var(--surface-alt);
   border: 1px solid var(--border);
@@ -483,6 +484,14 @@
   background: var(--primary);
   border-color: var(--primary);
   color: var(--primary-foreground);
+}
+
+.replay-control-action {
+  background: color-mix(in srgb, var(--info) 12%, var(--surface-alt));
+  border-color: color-mix(in srgb, var(--info) 34%, var(--border));
+  color: var(--foreground);
+  font-weight: 700;
+  white-space: nowrap;
 }
 
 .replay-speed-control {

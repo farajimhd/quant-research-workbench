@@ -1564,6 +1564,40 @@ class ReplayControllerTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaisesRegex(ValueError, "cannot exceed 20:00"):
             await controller.command("fast_forward", target_time=time(20, 0, 1))
 
+    async def test_next_action_stops_on_causal_strategy_milestone(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            controller = ReplayRunController(
+                ReplayRunDefinition(
+                    session_date=date(2026, 7, 28),
+                    start_time=time(9, 45),
+                    tickers=("AAPL",),
+                    configuration_revision=approved_configuration(),
+                ),
+                runtime_root=Path(directory),
+            )
+            controller.status = "ready"
+            controller.current_time = datetime(2026, 7, 28, 9, 45, tzinfo=NEW_YORK)
+            controller._journal = TradingJournal(Path(directory) / "journal.sqlite")
+
+            result = await controller.command("next_action")
+            self.assertEqual(result["status"], "fast_forwarding")
+            event_time = datetime(2026, 7, 28, 9, 45, 1, tzinfo=NEW_YORK)
+            controller._journal.append(
+                run_id=controller.run_id,
+                category="strategy_decision",
+                entity_type="signal",
+                entity_id="entry-1",
+                event_time=event_time,
+                payload={"action": "enter_long", "ticker": "AAPL"},
+            )
+
+            await controller._after_event(event_time)
+
+            self.assertEqual(controller.status, "paused")
+            self.assertEqual(controller.snapshot()["navigation_action"]["label"], "enter long")
+            self.assertEqual(controller.snapshot()["navigation_action"]["ticker"], "AAPL")
+            controller._journal.close()
+
 
 class ReplayHistoricalSourceTests(unittest.IsolatedAsyncioTestCase):
     def test_qmd_payload_authority_normalizes_derived_and_scanner_evidence(self) -> None:

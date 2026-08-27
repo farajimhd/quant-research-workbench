@@ -14,8 +14,9 @@ from src.backend.app import (
 
 
 class TradingLaunchPreflightTests(unittest.TestCase):
+    @patch("src.backend.app.configuration_candidate", return_value=None)
     @patch("src.backend.app.approved_configuration", return_value=None)
-    def test_replay_missing_release_is_a_blocked_readiness_payload(self, _approved) -> None:
+    def test_replay_missing_release_is_a_blocked_readiness_payload(self, _approved, _candidate) -> None:
         payload = trading_replay_preflight(
             ReplayPreflightRequest(session_date=date(2026, 8, 18))
         )

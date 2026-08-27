@@ -49,6 +49,7 @@ type ReplayPreflight = {
   coverage: { event_count?: number; ticker_count?: number };
   configuration_content_hash: string;
   configuration_label: string;
+  configuration_release_state: "approved" | "test_candidate";
   configuration_revision: number;
   configuration_revision_id: string;
   canvas_profile: Record<string, unknown>;
@@ -65,8 +66,8 @@ const REPLAY_SPEEDS = [1, 5, 30, 120, 0] as const;
 
 export function ReplayTradingPage() {
   const [sessionDate, setSessionDate] = useState(previousWeekdayIsoDate);
-  const [startTime, setStartTime] = useState("09:45");
-  const [initialCash, setInitialCash] = useState(100_000);
+  const [startTime, setStartTime] = useState("04:00");
+  const [initialCash, setInitialCash] = useState(10_000);
   const [preflight, setPreflight] = useState<ReplayPreflight | null>(null);
   const [checking, setChecking] = useState(true);
   const [creating, setCreating] = useState(false);
@@ -75,8 +76,8 @@ export function ReplayTradingPage() {
   const [run, setRun] = useState<CanvasReplayRun | null>(null);
   const [recentRuns, setRecentRuns] = useState<CanvasReplayRun[]>([]);
   const [runPlanId, setRunPlanId] = useState("");
-  const [executionMode, setExecutionMode] = useState<"manual" | "strategy">("manual");
-  const [symbol, setSymbol] = useState("AAPL");
+  const [executionMode, setExecutionMode] = useState<"manual" | "strategy">("strategy");
+  const [symbol, setSymbol] = useState("JUNS");
   const replayReady = Boolean(preflight?.ready);
 
   useEffect(() => {
@@ -114,7 +115,7 @@ export function ReplayTradingPage() {
           run_plan_id: runPlanId,
           session_date: sessionDate,
           start_time: startTime,
-          tickers: executionMode === "manual" ? [symbol.trim().toUpperCase()] : [],
+          tickers: symbol.trim() ? [symbol.trim().toUpperCase()] : [],
         }),
         method: "POST",
         timeoutMs: 60_000,
@@ -160,7 +161,7 @@ export function ReplayTradingPage() {
           run_plan_id: runPlanId,
           session_date: sessionDate,
           start_time: startTime,
-          tickers: executionMode === "manual" ? [symbol.trim().toUpperCase()] : [],
+          tickers: symbol.trim() ? [symbol.trim().toUpperCase()] : [],
         }),
         method: "POST",
         timeoutMs: 60_000,
@@ -187,7 +188,7 @@ export function ReplayTradingPage() {
   return (
     <TradingModeLaunch
       actionLabel="Open Replay Canvas"
-      actionSummary={<>The approved revision is pinned to a durable simulated run. Replay opens paused at <strong>{sessionDate} · {startTime} ET</strong>.</>}
+      actionSummary={<>{preflight?.configuration_release_state === "test_candidate" ? "The immutable Test Candidate" : "The approved revision"} is pinned to a durable simulated run. Replay opens paused at <strong>{sessionDate} · {startTime} ET</strong>.</>}
       busy={creating}
       checking={checking}
       checks={preflight?.checks ?? []}
@@ -206,11 +207,11 @@ export function ReplayTradingPage() {
                 <select aria-label="Replay execution mode" onChange={(event) => setExecutionMode(event.target.value as "manual" | "strategy")} value={executionMode}><option value="manual">Manual / trading actions</option><option value="strategy">Strategy deployment</option></select>
                 <small>Manual uses the Session Profile directly. Strategy adds a published Run Plan.</small>
               </label>
-              {executionMode === "strategy" ? <label className="configuration-field">
+              {executionMode === "strategy" ? <><label className="configuration-field">
                 <span>Strategy Run Plan</span>
                 <select aria-label="Strategy Run Plan" onChange={(event) => setRunPlanId(event.target.value)} value={runPlanId}>{(preflight?.available_run_plans ?? []).map((plan) => <option key={plan.run_plan_id} value={plan.run_plan_id}>{plan.name} · {plan.strategy_id} r{plan.strategy_revision}</option>)}</select>
-                <small>Optional only when the Strategy engine owns decisions.</small>
-              </label> : <label className="configuration-field"><span>Starting symbol</span><input aria-label="Replay symbol" maxLength={12} onChange={(event) => setSymbol(event.target.value.toUpperCase())} value={symbol} /><small>The Canvas may change symbols later; this only seeds the historical event stream.</small></label>}
+                <small>The immutable Strategy Studio profile and executor used by this Replay.</small>
+              </label><label className="configuration-field"><span>Replay symbol</span><input aria-label="Replay symbol" maxLength={12} onChange={(event) => setSymbol(event.target.value.toUpperCase())} value={symbol} /><small>Seeds the causal event stream for this entry test; it does not force a trade.</small></label></> : <label className="configuration-field"><span>Starting symbol</span><input aria-label="Replay symbol" maxLength={12} onChange={(event) => setSymbol(event.target.value.toUpperCase())} value={symbol} /><small>The Canvas may change symbols later; this only seeds the historical event stream.</small></label>}
               <label className="configuration-field">
                 <span>Exchange date</span>
                 <input onChange={(event) => setSessionDate(event.target.value)} type="date" value={sessionDate} />
@@ -273,6 +274,7 @@ function ReplayControls({ onExit, onRunChange, run }: { onExit: () => void; onRu
     }} title="Replay setup" type="button"><ArrowLeft size={14} /></button>
     <button aria-label={terminal ? "Resume Replay checkpoint" : active ? "Pause Replay" : "Play Replay"} className="replay-control-primary" disabled={(terminal && !run.checkpoint?.resume_supported) || Boolean(busy)} onClick={() => terminal ? resumeCheckpoint() : command(active ? "pause" : "play")} type="button">{active ? <Pause size={14} /> : <Play size={14} />}</button>
     <button aria-label="Advance one event-time second" className="replay-control-button" disabled={terminal || Boolean(busy)} onClick={() => command("step", { step_seconds: 1 })} title="Step one second" type="button"><SkipForward size={13} /></button>
+    <button aria-label="Fast-forward to the next strategy action" className="replay-control-action" disabled={terminal || Boolean(busy)} onClick={() => command("next_action")} title="Causally process every event until the strategy watches, decides, or manages an order" type="button"><Sparkles size={13} /><span>Next action</span></button>
     <button aria-label="Fast-forward five event-time minutes" className="replay-control-button" disabled={terminal || Boolean(busy)} onClick={() => {
       const current = new Date(run.current_time);
       const end = new Date(run.session_end);
@@ -283,7 +285,7 @@ function ReplayControls({ onExit, onRunChange, run }: { onExit: () => void; onRu
       void command("fast_forward", { target_time: target });
     }} title="Process every event through the next five minutes without wall-clock pacing" type="button"><FastForward size={13} /></button>
     <label className="replay-speed-control"><Gauge aria-hidden="true" size={13} /><select aria-label="Replay speed" disabled={terminal || Boolean(busy)} onChange={(event) => command("set_speed", { speed: Number(event.target.value) })} value={run.speed}>{REPLAY_SPEEDS.map((speed) => <option key={speed} value={speed}>{speed === 0 ? "Max" : `${speed}×`}</option>)}</select></label>
-    <div className="replay-run-state" data-status={run.status}><i aria-hidden="true" /><span><strong>{run.status.replaceAll("_", " ")}</strong><small>{run.status === "warming" ? `${compactEventCount(run.warmup_events)} events` : `${Math.round(run.progress * 100)}%`}</small></span></div>
+    <div className="replay-run-state" data-status={run.status}><i aria-hidden="true" /><span><strong>{run.status.replaceAll("_", " ")}</strong><small>{run.navigation_action ? `${run.navigation_action.ticker ? `${run.navigation_action.ticker} · ` : ""}${run.navigation_action.label}` : run.status === "warming" ? `${compactEventCount(run.warmup_events)} events` : `${Math.round(run.progress * 100)}%`}</small></span></div>
     {controlError ? <span className="replay-control-error" title={controlError}>Control failed</span> : null}
   </div>;
 }

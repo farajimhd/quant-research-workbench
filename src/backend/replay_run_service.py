@@ -44,6 +44,7 @@ from src.backend.trading_configuration_service import (
     approved_session_configuration_snapshot,
     backtest_configuration_snapshot,
     backtest_debug_configuration_snapshot,
+    candidate_session_configuration_snapshot,
     merged_assignment_parameters,
     replay_configuration_snapshot,
 )
@@ -51,7 +52,7 @@ from src.backend.trading_action_registry import resolve_trading_action
 from src.market_engine.events import MarketEvent, QuoteEvent, TradeEvent
 from src.market_engine.historical_source import QmdHistoricalEventSource
 from src.trading_runtime.domain import InstrumentContract, TradingMode
-from src.trading_runtime.journal import TradingJournal
+from src.trading_runtime.journal import JournalRecord, TradingJournal
 from src.trading_runtime.portfolio import (
     PortfolioAccountProfile,
     PortfolioGroupPolicy,
@@ -98,6 +99,34 @@ DEFAULT_MAX_RESIDENT_RUNS = 32
 DEFAULT_HISTORY_FETCH_CONCURRENCY = 8
 MAX_DEBUG_FIXTURE_EVENTS = 20_000
 RESTART_CHECKPOINT_SCHEMA_VERSION = 3
+
+
+def _replay_navigation_action(record: JournalRecord) -> dict[str, Any] | None:
+    """Project the next causal milestone worth stopping Replay for."""
+
+    payload = dict(record.payload)
+    action = str(payload.get("action") or "").strip().lower()
+    if record.category == "market_discovery_signal":
+        kind = "watch_started"
+        label = str(payload.get("signal_stream_name") or payload.get("signal_stream_id") or "Market signal")
+    elif record.category == "strategy_decision" and action not in {"", "wait", "hold"}:
+        kind = "strategy_decision"
+        label = action.replace("_", " ")
+    elif record.category == "order_management":
+        kind = "order_management"
+        label = str(payload.get("state") or record.entity_type).replace("_", " ")
+    else:
+        return None
+    return {
+        "kind": kind,
+        "label": label,
+        "ticker": str(payload.get("ticker") or "").upper(),
+        "event_time": record.event_time.isoformat(),
+        "category": record.category,
+        "entity_type": record.entity_type,
+        "entity_id": record.entity_id,
+        "sequence": record.sequence,
+    }
 
 
 class ReplayRunCapacityError(RuntimeError):
@@ -230,7 +259,7 @@ class ReplayRunDefinition:
         if len(self.tickers) > 100:
             raise ValueError("Replay supports at most 100 explicitly configured symbols")
         if not self.configuration_revision.get("revision_id"):
-            raise ValueError("Replay requires an approved trading configuration revision")
+            raise ValueError("Replay requires an immutable configuration revision")
         if self.debug_fixture is not None:
             fixture_times = [
                 *(_debug_time(row.get("ts")) for row in self.debug_fixture.market_events),
@@ -386,6 +415,8 @@ class ReplayRunController:
         self._stop_requested = False
         self._step_until: datetime | None = None
         self._fast_forward_until: datetime | None = None
+        self._next_action_after_sequence: int | None = None
+        self._last_navigation_action: dict[str, Any] | None = None
         self._subscribers: set[asyncio.Queue[dict[str, Any]]] = set()
         self._last_publish_monotonic = 0.0
         self._runtime: TradingRuntime | None = None
@@ -465,7 +496,7 @@ class ReplayRunController:
         step_seconds: float = 1.0,
     ) -> dict[str, Any]:
         normalized = command.strip().lower()
-        if normalized not in {"play", "pause", "step", "set_speed", "fast_forward", "stop"}:
+        if normalized not in {"play", "pause", "step", "set_speed", "fast_forward", "next_action", "stop"}:
             raise ValueError(f"Unsupported Replay command: {command}")
         async with self._condition:
             if self.status in TERMINAL_REPLAY_STATUSES:
@@ -474,17 +505,20 @@ class ReplayRunController:
                 self.status = "running"
                 self._step_until = None
                 self._fast_forward_until = None
+                self._next_action_after_sequence = None
                 self._pace_reset = True
             elif normalized == "pause":
                 self.status = "paused"
                 self._step_until = None
                 self._fast_forward_until = None
+                self._next_action_after_sequence = None
             elif normalized == "step":
                 if step_seconds <= 0 or step_seconds > 60:
                     raise ValueError("Replay step_seconds must be greater than zero and at most 60")
                 base = self.current_time or self.definition.requested_start
                 self._step_until = base + timedelta(seconds=step_seconds)
                 self._fast_forward_until = None
+                self._next_action_after_sequence = None
                 self.status = "running"
                 self._pace_reset = True
             elif normalized == "set_speed":
@@ -507,6 +541,16 @@ class ReplayRunController:
                 if target > self.definition.session_end:
                     raise ValueError("Replay fast-forward target cannot exceed 20:00 New York")
                 self._fast_forward_until = target
+                self._next_action_after_sequence = None
+                self._step_until = None
+                self.status = "fast_forwarding"
+            elif normalized == "next_action":
+                if self._journal is None:
+                    raise ValueError("Replay strategy activity is not ready")
+                records = self._journal.records(self.run_id)
+                self._next_action_after_sequence = records[-1].sequence if records else 0
+                self._last_navigation_action = None
+                self._fast_forward_until = None
                 self._step_until = None
                 self.status = "fast_forwarding"
             else:
@@ -719,6 +763,7 @@ class ReplayRunController:
             "processed_events": self.processed_events,
             "warmup_events": self.warmup_events,
             "checkpoint": checkpoint,
+            "navigation_action": deepcopy(self._last_navigation_action),
             "progress": min(1.0, elapsed / duration),
             "account_ids": list(self.account_ids),
             "account_mapping": dict(self._account_map),
@@ -1885,6 +1930,18 @@ class ReplayRunController:
         self.updated_at = datetime.now(UTC)
         self._schedule_bar_gpt_scope(event_time)
         transport_boundary = False
+        if self._next_action_after_sequence is not None and self._journal is not None:
+            for record in self._journal.records(
+                self.run_id, after_sequence=self._next_action_after_sequence
+            ):
+                self._next_action_after_sequence = record.sequence
+                action = _replay_navigation_action(record)
+                if action is not None:
+                    self._last_navigation_action = action
+                    self._next_action_after_sequence = None
+                    self.status = "paused"
+                    transport_boundary = True
+                    break
         if self._step_until is not None and event_time >= self._step_until:
             self._step_until = None
             self.status = "paused"
@@ -3883,7 +3940,7 @@ def replay_preflight(
     execution_route_id: str = "",
 ) -> dict[str, Any]:
     approved = configuration_revision or (
-        approved_session_configuration_snapshot(
+        candidate_session_configuration_snapshot(
             "replay",
             session_profile_id=session_profile_id,
             execution_route_id=execution_route_id,
@@ -3966,12 +4023,12 @@ def replay_preflight(
     ticker_count = int(coverage.get("ticker_count") or 0)
     checks = [
         _check(
-            "approved_configuration",
-            "Approved configuration",
+            "immutable_configuration",
+            "Immutable Test Candidate" if approved.get("release_state") == "test_candidate" else "Approved configuration",
             bool(approved.get("revision_id") and approved.get("content_hash")),
             f"Revision {approved.get('revision')} · {approved.get('label')} is pinned for the full run."
             if approved.get("revision_id")
-            else "No approved configuration revision is available.",
+            else "No immutable configuration revision is available.",
             str(approved.get("content_hash") or ""),
         ),
         _check(
@@ -4064,6 +4121,7 @@ def replay_preflight(
         "configuration_revision": approved["revision"],
         "configuration_label": approved["label"],
         "configuration_content_hash": approved["content_hash"],
+        "configuration_release_state": str(approved.get("release_state") or "approved"),
         "run_plan_id": approved.get("run_plan_id", ""),
         "session_profile_id": approved.get("session_profile_id", ""),
         "execution_route_id": approved.get("execution_route_id", ""),

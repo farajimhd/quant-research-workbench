@@ -242,6 +242,7 @@ from src.backend.trading_configuration_service import (
     approved_configuration,
     backtest_configuration_snapshot,
     backtest_debug_configuration_snapshot,
+    candidate_session_configuration_snapshot,
     configuration_candidate,
     configuration_candidates,
     configuration_base,
@@ -5174,25 +5175,38 @@ def trading_historical_preflight(payload: HistoricalPreflightRequest) -> dict[st
 
 @app.post("/api/trading/replay/preflight")
 def trading_replay_preflight(payload: ReplayPreflightRequest) -> dict[str, Any]:
-    if approved_configuration() is None:
+    if approved_configuration() is None and configuration_candidate() is None:
         return _blocked_trading_launch_preflight("replay")
     try:
         configuration_revision = (
-            approved_session_configuration_snapshot(
-                "replay",
-                session_profile_id=payload.session_profile_id,
-                execution_route_id=payload.execution_route_id,
+            (
+                candidate_session_configuration_snapshot(
+                    "replay",
+                    candidate_id=payload.configuration_revision_id,
+                    session_profile_id=payload.session_profile_id,
+                    execution_route_id=payload.execution_route_id,
+                )
+                if (
+                    configuration_candidate(payload.configuration_revision_id) is not None
+                    or approved_configuration() is None
+                )
+                else approved_session_configuration_snapshot(
+                    "replay",
+                    session_profile_id=payload.session_profile_id,
+                    execution_route_id=payload.execution_route_id,
+                )
             )
             if payload.execution_mode == "manual"
-            else replay_configuration_snapshot(payload.run_plan_id)
-            if payload.run_plan_id
-            else replay_configuration_snapshot()
+            else replay_configuration_snapshot(
+                payload.run_plan_id,
+                candidate_id=payload.configuration_revision_id,
+            )
         )
         if (
             payload.configuration_revision_id
             and payload.configuration_revision_id != configuration_revision["revision_id"]
         ):
-            raise ValueError("The approved configuration changed; review Replay preflight again")
+            raise ValueError("The selected configuration changed; review Replay preflight again")
         return replay_preflight(
             session_date=payload.session_date,
             start_time=_replay_clock_time(payload.start_time),
@@ -5212,18 +5226,31 @@ def trading_replay_preflight(payload: ReplayPreflightRequest) -> dict[str, Any]:
 async def trading_replay_run_create(payload: ReplayRunCreateRequest) -> dict[str, Any]:
     try:
         configuration_revision = (
-            approved_session_configuration_snapshot(
-                "replay",
-                session_profile_id=payload.session_profile_id,
-                execution_route_id=payload.execution_route_id,
+            (
+                candidate_session_configuration_snapshot(
+                    "replay",
+                    candidate_id=payload.configuration_revision_id,
+                    session_profile_id=payload.session_profile_id,
+                    execution_route_id=payload.execution_route_id,
+                )
+                if (
+                    configuration_candidate(payload.configuration_revision_id) is not None
+                    or approved_configuration() is None
+                )
+                else approved_session_configuration_snapshot(
+                    "replay",
+                    session_profile_id=payload.session_profile_id,
+                    execution_route_id=payload.execution_route_id,
+                )
             )
             if payload.execution_mode == "manual"
-            else replay_configuration_snapshot(payload.run_plan_id)
-            if payload.run_plan_id
-            else replay_configuration_snapshot()
+            else replay_configuration_snapshot(
+                payload.run_plan_id,
+                candidate_id=payload.configuration_revision_id,
+            )
         )
         if payload.configuration_revision_id != configuration_revision["revision_id"]:
-            raise ValueError("The approved configuration changed; review Replay preflight again")
+            raise ValueError("The selected configuration changed; review Replay preflight again")
         definition = ReplayRunDefinition(
             session_date=payload.session_date,
             start_time=_replay_clock_time(payload.start_time),
@@ -5245,7 +5272,7 @@ async def trading_replay_run_create(payload: ReplayRunCreateRequest) -> dict[str
             execution_route_id=payload.execution_route_id,
         )
         if not preflight["ready"]:
-            raise ValueError("Replay dependencies changed after approval; run preflight again")
+            raise ValueError("Replay dependencies changed after preflight; run preflight again")
         controller = await replay_run_service.create(definition)
         return controller.snapshot()
     except ReplayRunCapacityError as exc:

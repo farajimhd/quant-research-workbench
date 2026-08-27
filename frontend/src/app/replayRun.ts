@@ -21,6 +21,16 @@ export type CanvasReplayRun = {
   current_time: string;
   error: string;
   mode?: "backtest" | "backtest_debug" | "replay";
+  navigation_action?: {
+    category: string;
+    entity_id: string;
+    entity_type: string;
+    event_time: string;
+    kind: "order_management" | "strategy_decision" | "watch_started";
+    label: string;
+    sequence: number;
+    ticker: string;
+  } | null;
   progress: number;
   run_id: string;
   session_date: string;
