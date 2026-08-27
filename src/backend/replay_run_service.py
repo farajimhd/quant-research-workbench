@@ -4008,6 +4008,32 @@ def replay_preflight(
             *(_ticker(value) for value in tickers),
         }
     )
+    run_plan = dict(configuration.get("run_plan") or {})
+    signal_streams = [
+        dict(row)
+        for row in dict(configuration.get("signal_activation") or {}).get(
+            "signal_streams"
+        )
+        or []
+        if bool(row.get("enabled", True))
+    ]
+    watchlist_source_ids = {
+        str(value)
+        for value in run_plan.get("watchlist_ids") or []
+        if str(value)
+    }
+    watchlist_source_ids.update(
+        str(universe.get("scanner_view_id") or universe.get("name") or "")
+        for universe in configuration.get("universes") or []
+        if bool(universe.get("enabled", True))
+        and str(universe.get("source") or "") == "watchlist"
+    )
+    watchlist_source_ids.discard("")
+    strategy_market_sources = bool(
+        assignments
+        or watchlist_source_ids
+        or signal_streams
+    )
     storage_ready = False
     storage_evidence = str(replay_runtime_root())
     try:
@@ -4074,12 +4100,22 @@ def replay_preflight(
         ),
         _check(
             "configured_symbols",
-            "Replay symbols",
-            bool(resolved_tickers),
-            f"{len(resolved_tickers)} configured symbol(s): {', '.join(resolved_tickers[:8])}"
-            if resolved_tickers
-            else "No explicit symbol or active Strategy assignment is available.",
-            "Explicit session symbols plus approved Strategy assignments",
+            "Strategy market universe" if execution_mode == "strategy" else "Replay symbol",
+            strategy_market_sources if execution_mode == "strategy" else bool(resolved_tickers),
+            (
+                f"The Run Plan will causally admit every ticker from {len(signal_streams)} Signal Stream(s) and {len(watchlist_source_ids)} Watchlist source(s)."
+                if execution_mode == "strategy" and strategy_market_sources
+                else "The Strategy Run Plan has no enabled Signal Stream, Watchlist, or assignment source."
+                if execution_mode == "strategy"
+                else f"Manual Replay starts with {', '.join(resolved_tickers[:8])}."
+                if resolved_tickers
+                else "Manual Replay requires a starting symbol."
+            ),
+            (
+                "Run Plan Signal Streams plus point-in-time Watchlist membership"
+                if execution_mode == "strategy"
+                else "Explicit manual session symbol"
+            ),
         ),
         _check(
             "strategy_assignments",

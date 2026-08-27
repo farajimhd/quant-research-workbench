@@ -77,7 +77,7 @@ export function ReplayTradingPage() {
   const [recentRuns, setRecentRuns] = useState<CanvasReplayRun[]>([]);
   const [runPlanId, setRunPlanId] = useState("");
   const [executionMode, setExecutionMode] = useState<"manual" | "strategy">("strategy");
-  const [symbol, setSymbol] = useState("JUNS");
+  const [symbol, setSymbol] = useState("AAPL");
   const replayReady = Boolean(preflight?.ready);
 
   useEffect(() => {
@@ -115,7 +115,7 @@ export function ReplayTradingPage() {
           run_plan_id: runPlanId,
           session_date: sessionDate,
           start_time: startTime,
-          tickers: symbol.trim() ? [symbol.trim().toUpperCase()] : [],
+          tickers: executionMode === "manual" && symbol.trim() ? [symbol.trim().toUpperCase()] : [],
         }),
         method: "POST",
         timeoutMs: 60_000,
@@ -161,7 +161,7 @@ export function ReplayTradingPage() {
           run_plan_id: runPlanId,
           session_date: sessionDate,
           start_time: startTime,
-          tickers: symbol.trim() ? [symbol.trim().toUpperCase()] : [],
+          tickers: executionMode === "manual" && symbol.trim() ? [symbol.trim().toUpperCase()] : [],
         }),
         method: "POST",
         timeoutMs: 60_000,
@@ -207,11 +207,11 @@ export function ReplayTradingPage() {
                 <select aria-label="Replay execution mode" onChange={(event) => setExecutionMode(event.target.value as "manual" | "strategy")} value={executionMode}><option value="manual">Manual / trading actions</option><option value="strategy">Strategy deployment</option></select>
                 <small>Manual uses the Session Profile directly. Strategy adds a published Run Plan.</small>
               </label>
-              {executionMode === "strategy" ? <><label className="configuration-field">
+              {executionMode === "strategy" ? <label className="configuration-field">
                 <span>Strategy Run Plan</span>
                 <select aria-label="Strategy Run Plan" onChange={(event) => setRunPlanId(event.target.value)} value={runPlanId}>{(preflight?.available_run_plans ?? []).map((plan) => <option key={plan.run_plan_id} value={plan.run_plan_id}>{plan.name} · {plan.strategy_id} r{plan.strategy_revision}</option>)}</select>
-                <small>The immutable Strategy Studio profile and executor used by this Replay.</small>
-              </label><label className="configuration-field"><span>Replay symbol</span><input aria-label="Replay symbol" maxLength={12} onChange={(event) => setSymbol(event.target.value.toUpperCase())} value={symbol} /><small>Seeds the causal event stream for this entry test; it does not force a trade.</small></label></> : <label className="configuration-field"><span>Starting symbol</span><input aria-label="Replay symbol" maxLength={12} onChange={(event) => setSymbol(event.target.value.toUpperCase())} value={symbol} /><small>The Canvas may change symbols later; this only seeds the historical event stream.</small></label>}
+                <small>Its Signal Streams and causal Watchlists own the market-wide ticker population.</small>
+              </label> : <label className="configuration-field"><span>Starting symbol</span><input aria-label="Replay symbol" maxLength={12} onChange={(event) => setSymbol(event.target.value.toUpperCase())} value={symbol} /><small>The Canvas may change symbols later; this only seeds the manual historical event stream.</small></label>}
               <label className="configuration-field">
                 <span>Exchange date</span>
                 <input onChange={(event) => setSessionDate(event.target.value)} type="date" value={sessionDate} />

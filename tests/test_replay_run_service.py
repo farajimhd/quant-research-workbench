@@ -17,6 +17,7 @@ from src.backend.replay_run_service import (
     ReplayRunCapacityError,
     ReplayRunDefinition,
     ReplayRunService,
+    ReplaySignalEvent,
     _attach_historical_signals,
     _canvas_profile_tickers,
     _historical_watchlist_membership_timeline_for_configuration,
@@ -1342,6 +1343,42 @@ class BacktestPreflightTests(unittest.TestCase):
 
 
 class ReplayControllerTests(unittest.IsolatedAsyncioTestCase):
+    def test_source_native_market_signal_creates_assignment_without_symbol_seed(self) -> None:
+        approved = approved_configuration()
+        approved["payload"]["run_plan"] = {
+            "activation": {"watchlist_policy": "not_required"},
+            "watchlist_ids": [],
+        }
+        controller = ReplayRunController(
+            ReplayRunDefinition(
+                session_date=date(2026, 8, 21),
+                start_time=time(4, 0),
+                tickers=(),
+                configuration_revision=approved,
+            ),
+            runtime_root=Path(tempfile.gettempdir()),
+        )
+        occurrence_time = datetime(2026, 8, 21, 7, 32, tzinfo=NEW_YORK)
+        controller._historical_external_signal_events = [
+            ReplaySignalEvent(
+                available_at=occurrence_time,
+                occurrence={
+                    "conid": 123456,
+                    "event_id": "early-juns-1",
+                    "signal_stream_id": "price-squeeze-early",
+                    "ticker": "JUNS",
+                },
+                source_values={},
+                ticker="JUNS",
+            )
+        ]
+
+        assignments = controller._selected_assignments()
+
+        self.assertEqual(len(assignments), 1)
+        self.assertEqual(assignments[0]["ticker"], "JUNS")
+        self.assertEqual(assignments[0]["source"], "historical_signal_stream")
+
     async def test_warmup_market_event_updates_runtime_without_strategy_evaluation(self) -> None:
         controller = ReplayRunController(
             ReplayRunDefinition(
@@ -1994,6 +2031,50 @@ class ReplayPreflightTests(unittest.TestCase):
         self.assertTrue(result["ready"])
         self.assertEqual(result["account_mapping"], {"DU123456": "SIM-01-PRIMARY"})
         self.assertTrue(all(check["status"] == "ready" for check in result["checks"]))
+
+    def test_strategy_preflight_uses_run_plan_market_sources_without_symbol(self) -> None:
+        approved = approved_configuration()
+        approved["payload"]["run_plan"] = {
+            "activation": {"watchlist_policy": "any_selected"},
+            "watchlist_ids": ["squeeze-tradable-candidates"],
+        }
+        approved["payload"]["signal_activation"] = {
+            "signal_streams": [{
+                "enabled": True,
+                "occurrence_source": "qmd_squeeze_episode",
+                "signal_stream_id": "price-squeeze-early",
+            }],
+        }
+        with tempfile.TemporaryDirectory() as directory, patch(
+            "src.backend.replay_run_service.historical_gateway_snapshot",
+            return_value={"base_url": "http://127.0.0.1:8801", "ready": True},
+        ), patch(
+            "src.backend.replay_run_service.historical_day_coverage",
+            return_value={
+                "coverage_table": "qmd.coverage",
+                "event_count": 10_000,
+                "ticker_count": 1_000,
+            },
+        ), patch(
+            "src.backend.replay_run_service.replay_runtime_root",
+            return_value=Path(directory),
+        ):
+            result = replay_preflight(
+                session_date=date(2026, 7, 28),
+                start_time=time(4, 0),
+                initial_cash=10_000,
+                configuration_revision=approved,
+                execution_mode="strategy",
+            )
+
+        universe_check = next(
+            row for row in result["checks"] if row["id"] == "configured_symbols"
+        )
+        self.assertTrue(result["ready"])
+        self.assertEqual(result["tickers"], [])
+        self.assertEqual(universe_check["label"], "Strategy market universe")
+        self.assertEqual(universe_check["status"], "ready")
+        self.assertIn("every ticker", universe_check["summary"])
 
     def test_preflight_resolves_watchlist_at_replay_clock(self) -> None:
         approved = approved_configuration()
