@@ -11,10 +11,11 @@ from typing import Any, Iterable, Mapping, Sequence
 from .contracts import CONTRACT_VERSION, PRODUCTION_VERSION, validate_document
 from .provider_context import classify_provider_context
 from .facts import extract_regulatory_decision_facts, extract_typed_facts
+from .reviewed_title_policy import classify_reviewed_title_policy
 from .synthesis import derive_eligibility, derive_issuer_views, derive_synthesis
 
 
-ENGINE_VERSION = "news_synthesis_engine_v56"
+ENGINE_VERSION = "news_synthesis_engine_v57"
 EXCHANGE_TICKER_RE = re.compile(
     r"\b(?P<exchange>NASDAQ|NYSE|NYSE\s+AMERICAN|NYSEAMERICAN|AMEX|"
     r"OTC(?:QX|QB)?|TSX|TSXV|CSE)\s*[:\-]\s*"
@@ -446,6 +447,7 @@ class NewsSynthesisEngine:
             for value in source.get("tickers") or source.get("entity_terms") or ()
             if _normalize_ticker_identifier(value)
         ))
+        reviewed_title_policy = classify_reviewed_title_policy(title, tickers=tickers)
         evaluation_tickers = tuple(
             str(value) for value in source.get("evaluation_target_tickers") or () if value
         )
@@ -518,6 +520,10 @@ class NewsSynthesisEngine:
         flags = _quality_flags(source, entities, text, document_flags=document_flags)
         if earnings_call_title_pattern(title) is not None:
             flags = sorted({*flags, "earnings_call_transcript"})
+        if reviewed_title_policy is not None:
+            flags = sorted({*flags, f"reviewed_title_policy:{reviewed_title_policy.family}"})
+            if reviewed_title_policy.title_material_flag:
+                flags = sorted({*flags, reviewed_title_policy.title_material_flag})
         views = derive_issuer_views(entities, participations, statements=statements)
         synthesis = derive_synthesis(entities=entities, statements=statements, participations=participations, issuer_views=views)
         eligibility = derive_eligibility(
@@ -976,6 +982,10 @@ def _envelope(
     provider_context = classify_provider_context(source)
     metadata = " ".join(str(x) for name in ("channels", "provider_tags") for x in source.get(name) or ())
     author = str(source.get("author") or "").strip().casefold()
+    title_policy = classify_reviewed_title_policy(
+        title,
+        tickers=tuple(str(value) for value in source.get("tickers") or ()),
+    )
     article_url = str(source.get("article_url") or source.get("url_domain") or "").casefold()
     list_title = bool(re.search(
         r"\b(?:calendar|watch list|stocks to watch|top \d+|\d+ stocks|analyst color|price target changes|"
@@ -1046,6 +1056,7 @@ def _envelope(
         or bool(reviewed_mover_pattern and not market_overview)
     )
     if earnings_call_pattern: purpose = "report"
+    elif title_policy is not None: purpose = title_policy.purpose
     elif reviewed_mover_override or (causal_mover and not market_overview): purpose = "explain_move"
     elif list_title or re.search(
         r"\b(?:ahead of|preview|what to expect|will report|to watch)\b|"
@@ -1132,6 +1143,8 @@ def _envelope(
     }
     origins = [name for name, present in origin_evidence.items() if present]
     origin = "mixed" if len(origins) > 1 else origins[0] if origins else "editorial"
+    if title_policy is not None:
+        origin = title_policy.origin
     if (
         purpose == "report"
         and analyst_match is not None
@@ -1174,6 +1187,8 @@ def _envelope(
             (
                 f"envelope.purpose.earnings_call_v1:{earnings_call_pattern}"
                 if earnings_call_pattern
+                else f"envelope.purpose.reviewed_title_policy_v1:{title_policy.family}"
+                if title_policy is not None
                 else f"envelope.purpose.why_moving_title_v2:{reviewed_mover_pattern}"
                 if reviewed_mover_pattern
                 else "envelope.purpose.v1"

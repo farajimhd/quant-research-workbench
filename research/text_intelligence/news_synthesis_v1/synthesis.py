@@ -764,6 +764,7 @@ def derive_eligibility(
     earnings_call_material = str(
         envelope["communication_purpose"].get("rule_id") or ""
     ).startswith("envelope.purpose.earnings_call_v1:")
+    clinical_conference_material = "clinical_conference_material" in flags
     results: list[dict[str, Any]] = []
     for entity in entities:
         if entity.get("entity_kind") not in {"issuer", "security"}:
@@ -801,7 +802,7 @@ def derive_eligibility(
         source_ok = not document_blocking_flags
         evidence_ok = bool(substantive) and source_ok
         trigger_evidence_ok = (
-            earnings_call_material and source_ok
+            (earnings_call_material or clinical_conference_material) and source_ok
         ) or (
             evidence_ok and current_event and has_semantic_implication
         )

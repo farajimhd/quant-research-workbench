@@ -63,6 +63,63 @@ class NewsSynthesisEngineTests(unittest.TestCase):
         self.assertTrue(validate_document(document).valid)
         self.assertEqual([row["ticker"] for row in document["entities"]], ["AAA"])
 
+    def test_reviewed_title_policy_blocks_earnings_recap_and_analyst_forecast(self) -> None:
+        cases = (
+            (
+                "Alpha Q2 EPS $0.25 Beats $0.20 Estimate, Sales $10M Beats $9M Estimate",
+                "Alpha Therapeutics Inc (NASDAQ:AAA) reported Q2 EPS of $0.25 and sales of $10 million.",
+            ),
+            (
+                "These Analysts Boost Their Forecasts Following Alpha Earnings",
+                "Analysts raised forecasts for Alpha Therapeutics Inc (NASDAQ:AAA) after earnings.",
+            ),
+        )
+        for index, (title, text) in enumerate(cases):
+            with self.subTest(title=title):
+                document = self.engine.synthesize({
+                    "source_id": f"reviewed-ineligible-{index}",
+                    "source_timestamp": "2026-08-03T12:00:00Z",
+                    "title": title,
+                    "text": text,
+                    "tickers": ["AAA"],
+                })
+                self.assertFalse(any(
+                    row["product"] == "forecast_trigger" and row["eligible"]
+                    for row in document["eligibility"]
+                ))
+                self.assertTrue(any(
+                    flag.startswith("reviewed_title_policy:")
+                    for flag in document["quality_flags"]
+                ))
+
+    def test_reviewed_clinical_conference_policy_uses_ticker_cardinality(self) -> None:
+        single = self.engine.synthesize({
+            "source_id": "reviewed-clinical-single",
+            "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": "Alpha To Present Phase 2 Clinical Data At ESMO Congress 2026",
+            "text": "Alpha Therapeutics Inc (NASDAQ:AAA) will present Phase 2 clinical data at ESMO Congress 2026.",
+            "tickers": ["AAA"],
+        })
+        self.assertTrue(any(
+            row["product"] == "forecast_trigger" and row["eligible"]
+            for row in single["eligibility"]
+        ))
+
+        multi = self.engine.synthesize({
+            "source_id": "reviewed-clinical-multi",
+            "source_timestamp": "2026-08-03T12:00:00Z",
+            "title": "Alpha And Beta To Present Clinical Data At ESMO Congress 2026",
+            "text": (
+                "Alpha Therapeutics Inc (NASDAQ:AAA) and Beta Holdings Corp "
+                "(NYSE:BBB) will present clinical data at ESMO Congress 2026."
+            ),
+            "tickers": ["AAA", "BBB"],
+        })
+        self.assertFalse(any(
+            row["product"] == "forecast_trigger" and row["eligible"]
+            for row in multi["eligibility"]
+        ))
+
     def test_multiple_symbols_for_one_security_emit_one_entity(self) -> None:
         engine = NewsSynthesisEngine(IssuerIdentityIndex((
             IssuerIdentity("OLD", "issuer:same", "Same Company", ("Same Company",), security_id="security:same"),
