@@ -417,6 +417,9 @@ class ReplayRunController:
         self._fast_forward_until: datetime | None = None
         self._next_action_after_sequence: int | None = None
         self._last_navigation_action: dict[str, Any] | None = None
+        self._navigation_started_at: datetime | None = None
+        self._navigation_start_time: datetime | None = None
+        self._navigation_start_processed_events = 0
         self._subscribers: set[asyncio.Queue[dict[str, Any]]] = set()
         self._last_publish_monotonic = 0.0
         self._runtime: TradingRuntime | None = None
@@ -506,12 +509,14 @@ class ReplayRunController:
                 self._step_until = None
                 self._fast_forward_until = None
                 self._next_action_after_sequence = None
+                self._clear_navigation_search()
                 self._pace_reset = True
             elif normalized == "pause":
                 self.status = "paused"
                 self._step_until = None
                 self._fast_forward_until = None
                 self._next_action_after_sequence = None
+                self._clear_navigation_search()
             elif normalized == "step":
                 if step_seconds <= 0 or step_seconds > 60:
                     raise ValueError("Replay step_seconds must be greater than zero and at most 60")
@@ -519,6 +524,7 @@ class ReplayRunController:
                 self._step_until = base + timedelta(seconds=step_seconds)
                 self._fast_forward_until = None
                 self._next_action_after_sequence = None
+                self._clear_navigation_search()
                 self.status = "running"
                 self._pace_reset = True
             elif normalized == "set_speed":
@@ -542,17 +548,22 @@ class ReplayRunController:
                     raise ValueError("Replay fast-forward target cannot exceed 20:00 New York")
                 self._fast_forward_until = target
                 self._next_action_after_sequence = None
+                self._clear_navigation_search()
                 self._step_until = None
                 self.status = "fast_forwarding"
             elif normalized == "next_action":
                 records = self._journal.records(self.run_id) if self._journal is not None else []
                 self._next_action_after_sequence = records[-1].sequence if records else 0
                 self._last_navigation_action = None
+                self._navigation_started_at = datetime.now(UTC)
+                self._navigation_start_time = self.current_time or self.definition.requested_start
+                self._navigation_start_processed_events = self.processed_events
                 self._fast_forward_until = None
                 self._step_until = None
                 self.status = "fast_forwarding"
             else:
                 self._stop_requested = True
+                self._clear_navigation_search()
                 self.status = "stopped"
             self.updated_at = datetime.now(UTC)
             self._condition.notify_all()
@@ -762,6 +773,35 @@ class ReplayRunController:
             "watchlist_ids": list(dict.fromkeys(watchlist_ids)),
         }
 
+    def _clear_navigation_search(self) -> None:
+        self._next_action_after_sequence = None
+        self._navigation_started_at = None
+        self._navigation_start_time = None
+        self._navigation_start_processed_events = self.processed_events
+
+    def _navigation_search_projection(self) -> dict[str, Any]:
+        active = self._next_action_after_sequence is not None
+        return {
+            "active": active,
+            "phase": "scanning" if active and self._runtime is not None else "preparing" if active else "idle",
+            "started_at": (
+                self._navigation_started_at.isoformat()
+                if self._navigation_started_at is not None
+                else None
+            ),
+            "start_event_time": (
+                self._navigation_start_time.isoformat()
+                if self._navigation_start_time is not None
+                else None
+            ),
+            "scanned_events": (
+                max(0, self.processed_events - self._navigation_start_processed_events)
+                if active
+                else 0
+            ),
+            "targets": ["watch start", "strategy decision", "order update"],
+        }
+
     def snapshot(self) -> dict[str, Any]:
         current = self.current_time or self.definition.session_start
         checkpoint = self._checkpoint_projection()
@@ -791,6 +831,7 @@ class ReplayRunController:
             "warmup_events": self.warmup_events,
             "checkpoint": checkpoint,
             "navigation_action": deepcopy(self._last_navigation_action),
+            "navigation_search": self._navigation_search_projection(),
             "progress": min(1.0, elapsed / duration),
             "account_ids": list(self.account_ids),
             "account_mapping": dict(self._account_map),
@@ -1968,6 +2009,7 @@ class ReplayRunController:
                 if action is not None:
                     self._last_navigation_action = action
                     self._next_action_after_sequence = None
+                    self._clear_navigation_search()
                     self.status = "paused"
                     transport_boundary = True
                     break
@@ -2009,6 +2051,8 @@ class ReplayRunController:
             self._runtime_finished = True
         if self.current_time is not None and (self._source_cursor or self._frame_cursor):
             self._save_restart_checkpoint(self.current_time)
+        self._next_action_after_sequence = None
+        self._clear_navigation_search()
         self.status = status
         self.updated_at = datetime.now(UTC)
         await self._publish(force=True)

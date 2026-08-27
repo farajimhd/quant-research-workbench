@@ -32,6 +32,14 @@ export type CanvasReplayRun = {
     sequence: number;
     ticker: string;
   } | null;
+  navigation_search?: {
+    active: boolean;
+    phase: "idle" | "preparing" | "scanning";
+    scanned_events: number;
+    start_event_time: string | null;
+    started_at: string | null;
+    targets: string[];
+  };
   progress: number;
   run_id: string;
   session_date: string;

@@ -247,8 +247,17 @@ export function ReplayTradingPage() {
 function ReplayControls({ onExit, onRunChange, run }: { onExit: () => void; onRunChange: (run: CanvasReplayRun) => void; run: CanvasReplayRun }) {
   const [busy, setBusy] = useState("");
   const [controlError, setControlError] = useState("");
+  const [wallClock, setWallClock] = useState(() => Date.now());
   const terminal = isTerminalReplayStatus(run.status);
   const active = ["running", "fast_forwarding"].includes(run.status);
+  const navigationActive = run.navigation_search?.active === true;
+  const navigationPreparing = navigationActive && run.navigation_search?.phase === "preparing";
+  useEffect(() => {
+    if (!navigationActive) return;
+    setWallClock(Date.now());
+    const timer = window.setInterval(() => setWallClock(Date.now()), 1_000);
+    return () => window.clearInterval(timer);
+  }, [navigationActive, run.navigation_search?.started_at]);
 
   async function command(name: string, payload: Record<string, unknown> = {}) {
     setBusy(name);
@@ -287,7 +296,7 @@ function ReplayControls({ onExit, onRunChange, run }: { onExit: () => void; onRu
     }} title="Replay setup" type="button"><ArrowLeft size={14} /></button>
     <button aria-label={terminal ? "Resume Replay checkpoint" : active ? "Pause Replay" : "Play Replay"} className="replay-control-primary" disabled={(terminal && !run.checkpoint?.resume_supported) || Boolean(busy)} onClick={() => terminal ? resumeCheckpoint() : command(active ? "pause" : "play")} type="button">{active ? <Pause size={14} /> : <Play size={14} />}</button>
     <button aria-label="Advance one event-time second" className="replay-control-button" disabled={terminal || Boolean(busy)} onClick={() => command("step", { step_seconds: 1 })} title="Step one second" type="button"><SkipForward size={13} /></button>
-    <button aria-label="Fast-forward to the next strategy action" className="replay-control-action" disabled={terminal || Boolean(busy)} onClick={() => command("next_action")} title="Causally process every event until the strategy watches, decides, or manages an order" type="button"><Sparkles size={13} /><span>Next action</span></button>
+    <button aria-label="Fast-forward to the next strategy action" className="replay-control-action" data-active={navigationActive || undefined} disabled={terminal || Boolean(busy) || navigationActive} onClick={() => command("next_action")} title="Causally process every event until the strategy watches, decides, or manages an order" type="button"><Sparkles size={13} /><span>{busy === "next_action" ? "Starting…" : navigationPreparing ? "Preparing…" : navigationActive ? "Scanning…" : "Next action"}</span></button>
     <button aria-label="Fast-forward five event-time minutes" className="replay-control-button" disabled={terminal || Boolean(busy)} onClick={() => {
       const current = new Date(run.current_time);
       const end = new Date(run.session_end);
@@ -298,14 +307,19 @@ function ReplayControls({ onExit, onRunChange, run }: { onExit: () => void; onRu
       void command("fast_forward", { target_time: target });
     }} title="Process every event through the next five minutes without wall-clock pacing" type="button"><FastForward size={13} /></button>
     <label className="replay-speed-control"><Gauge aria-hidden="true" size={13} /><select aria-label="Replay speed" disabled={terminal || Boolean(busy)} onChange={(event) => command("set_speed", { speed: Number(event.target.value) })} value={run.speed}>{REPLAY_SPEEDS.map((speed) => <option key={speed} value={speed}>{speed === 0 ? "Max" : `${speed}×`}</option>)}</select></label>
-    <div className="replay-run-state" data-status={run.status}><i aria-hidden="true" /><span><strong>{run.status.replaceAll("_", " ")}</strong><small>{run.navigation_action ? `${run.navigation_action.ticker ? `${run.navigation_action.ticker} · ` : ""}${run.navigation_action.label}` : run.status === "warming" ? `${compactEventCount(run.warmup_events)} events` : `${Math.round(run.progress * 100)}%`}</small></span></div>
+    <div className={`replay-run-state${navigationActive ? " is-navigation" : ""}`} data-status={run.status}><i aria-hidden="true" /><span><strong aria-live="polite">{navigationPreparing ? "Preparing causal scan" : navigationActive ? "Finding next action" : run.status.replaceAll("_", " ")}</strong><small>{navigationPreparing ? `Loading signal + Watchlist history · ${navigationElapsedSeconds(run.navigation_search?.started_at, wallClock)}s` : navigationActive ? `${compactEventCount(run.navigation_search?.scanned_events)} market events · ${formatReplayClock(run.current_time)} ET · ${navigationElapsedSeconds(run.navigation_search?.started_at, wallClock)}s` : run.navigation_action ? `${run.navigation_action.ticker ? `${run.navigation_action.ticker} · ` : ""}${run.navigation_action.label}` : run.status === "warming" ? `${compactEventCount(run.warmup_events)} events` : `${Math.round(run.progress * 100)}%`}</small></span></div>
     {controlError ? <span className="replay-control-error" title={controlError}>Control failed</span> : null}
   </div>;
 }
 
 function compactEventCount(value?: number) {
-  if (!value) return "Preparing";
+  if (value === undefined) return "Preparing";
   return new Intl.NumberFormat("en-US", { maximumFractionDigits: 1, notation: "compact" }).format(value);
+}
+
+function navigationElapsedSeconds(startedAt: string | null | undefined, now: number) {
+  if (!startedAt) return 0;
+  return Math.max(0, Math.floor((now - Date.parse(startedAt)) / 1_000));
 }
 
 function ReplayCheckRow({ check }: { check: ReplayCheck }) {

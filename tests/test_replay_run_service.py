@@ -1367,6 +1367,18 @@ class ReplayControllerTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result["status"], "fast_forwarding")
         self.assertFalse(result["runtime_ready"])
+        self.assertTrue(result["navigation_search"]["active"])
+        self.assertEqual(result["navigation_search"]["phase"], "preparing")
+        self.assertEqual(result["navigation_search"]["scanned_events"], 0)
+        self.assertEqual(
+            result["navigation_search"]["start_event_time"],
+            "2026-08-21T04:00:00-04:00",
+        )
+        with patch.object(controller, "_runtime", object()):
+            self.assertEqual(
+                controller.snapshot()["navigation_search"]["phase"],
+                "scanning",
+            )
         self.assertEqual(result["execution_mode"], "strategy")
         self.assertEqual(
             result["strategy_debug_sources"]["signal_stream_ids"],
@@ -1674,6 +1686,7 @@ class ReplayControllerTests(unittest.IsolatedAsyncioTestCase):
 
             result = await controller.command("next_action")
             self.assertEqual(result["status"], "fast_forwarding")
+            self.assertTrue(result["navigation_search"]["active"])
             event_time = datetime(2026, 7, 28, 9, 45, 1, tzinfo=NEW_YORK)
             controller._journal.append(
                 run_id=controller.run_id,
@@ -1689,6 +1702,7 @@ class ReplayControllerTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(controller.status, "paused")
             self.assertEqual(controller.snapshot()["navigation_action"]["label"], "enter long")
             self.assertEqual(controller.snapshot()["navigation_action"]["ticker"], "AAPL")
+            self.assertFalse(controller.snapshot()["navigation_search"]["active"])
             controller._journal.close()
 
 
