@@ -385,6 +385,7 @@ class RuntimeContractTests(unittest.TestCase):
         harness = SimpleNamespace(
             source_revision=MagicMock(return_value={"revision_sha256": "c" * 64}),
             load=MagicMock(return_value=[stale]),
+            load_current_session=MagicMock(return_value=[]),
         )
         with (
             patch("bar_gpt_service.runtime.HistoricalBootstrap", return_value=harness),
@@ -395,6 +396,36 @@ class RuntimeContractTests(unittest.TestCase):
         self.assertEqual(state["status"], "failed")
         self.assertIn("requested session", state["error"])
         self.assertIn("latest available session", state["error"])
+
+    def test_replay_warm_supplements_partial_session_from_qmd_history(self) -> None:
+        runtime = _runtime()
+        runtime.caches["replay"] = MagicMock()
+        release = runtime.releases["v2-fixed"]
+        release.data_config = SimpleNamespace()
+        origin = int(dt.datetime(2026, 8, 21, 8, 10, tzinfo=dt.UTC).timestamp() * 1_000_000)
+        stale = SimpleNamespace(
+            view="1s", bar_start_us=origin - 86_401_000_000,
+            available_at_us=origin - 86_400_000_000,
+        )
+        current = SimpleNamespace(
+            view="1s", bar_start_us=origin - 2_000_000,
+            available_at_us=origin - 1_000_000,
+        )
+        harness = SimpleNamespace(
+            source_revision=MagicMock(return_value={"revision_sha256": "d" * 64}),
+            load=MagicMock(return_value=[stale]),
+            load_current_session=MagicMock(return_value=[current]),
+        )
+        runtime._admit_warm_rows = MagicMock(side_effect=lambda *_args: asyncio.sleep(0))
+        with (
+            patch("bar_gpt_service.runtime.HistoricalBootstrap", return_value=harness),
+            patch.object(runtime, "_record_event"),
+        ):
+            asyncio.run(runtime._warm("replay", "ASPC", origin))
+        state = runtime._warm_state[("replay", "ASPC")]
+        self.assertEqual(state["status"], "ready", state)
+        harness.load_current_session.assert_called_once()
+        self.assertIn(current, runtime._admit_warm_rows.call_args.args[1])
 
     def test_historical_warm_stops_before_queries_when_shutdown_is_requested(self) -> None:
         bootstrap = object.__new__(HistoricalBootstrap)

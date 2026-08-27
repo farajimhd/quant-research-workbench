@@ -142,10 +142,10 @@ export function ChartPreview({
             source: "canvas.chart",
           }),
           signal: controller.signal,
-          timeoutMs: 2500,
+          timeoutMs: 10_000,
         });
         if (!cancelled) setBarGptScope(scope);
-        const forecasts = await api<BarGptForecastPayload>(`/api/model-features/chart/${encodeURIComponent(linkContext.symbol)}?model_version=${encodeURIComponent(barGptVersion)}&quantile=${encodeURIComponent(barGptQuantile)}&scope_id=${encodeURIComponent(barGptScopeId)}`, { signal: controller.signal, timeoutMs: 2500 });
+        const forecasts = await api<BarGptForecastPayload>(`/api/model-features/chart/${encodeURIComponent(linkContext.symbol)}?model_version=${encodeURIComponent(barGptVersion)}&quantile=${encodeURIComponent(barGptQuantile)}&scope_id=${encodeURIComponent(barGptScopeId)}`, { signal: controller.signal, timeoutMs: 10_000 });
         if (!cancelled) {
           const rows = latestForecastsByHorizon(forecasts.rows);
           setBarGptForecasts(barGptHorizon === "all" ? rows : rows.filter((row) => row.horizon === barGptHorizon));
@@ -216,9 +216,10 @@ export function ChartPreview({
         ...strategyInvalidations,
       ],
       regions: MACRO_TIMEFRAMES.has(timeframe) ? [] : extendedSessionRegions(liveChart.bars),
+      trade_annotations: closedTradeAnnotations(trading, linkContext.symbol),
       volume: chartSettings.showVolume ? liveChart.bars.map((bar) => ({ color: bar.close >= bar.open ? "var(--success)" : "var(--danger)", time: Date.parse(bar.bar_start) / 1000, value: bar.volume })) : [],
     };
-  }, [barGptForecasts, barGptQuantile, barGptVersion, chartSettings.showVolume, forecastLineComponents.join("|"), indicators, linkContext.symbol, liveChart.bars, liveChart.marketSignalEvents, liveChart.structureEvents, liveChart.structureLevelHistory, showForecastCandles, strategyDecisions, strategyPresentation, timeframe, visibleIndicators]);
+  }, [barGptForecasts, barGptQuantile, barGptVersion, chartSettings.showVolume, forecastLineComponents.join("|"), indicators, linkContext.symbol, liveChart.bars, liveChart.marketSignalEvents, liveChart.structureEvents, liveChart.structureLevelHistory, showForecastCandles, strategyDecisions, strategyPresentation, timeframe, trading, visibleIndicators]);
   function updateChart(symbol: string, nextTimeframe: CanvasChartTimeframe) {
     onChartSettingsChange({ ...chartSettings, symbol, timeframe: nextTimeframe });
     onLinkContextChange({ symbol });
@@ -297,6 +298,31 @@ export function ChartPreview({
     </div> : null}
     <ChartPanel baseHeight={baseHeight} canLoadEarlier={liveChart.canLoadEarlier} displayItemOptions={CHART_INDICATORS} emptyMessage={emptyMessage} enableFullscreen={false} errorMessage={liveChart.error || liveChart.historyError} featureOptions={[]} fillHeight={fillHeight} indicatorOptions={[]} initialFitMode="default" liveEntryLine={positionLine} loading={liveChart.loading} loadingEarlier={liveChart.loadingEarlier} onLoadEarlier={liveChart.loadEarlier} onTickerChange={(symbol) => updateChart(symbol.toUpperCase(), timeframe)} onTimeframeChange={(nextTimeframe) => updateChart(linkContext.symbol, nextTimeframe as CanvasChartTimeframe)} onVisibleColumnsChange={(nextVisibleIndicators) => onChartSettingsChange({ ...chartSettings, visibleIndicators: nextVisibleIndicators })} payload={payload} periodEnd={sessionDate} periodStart={sessionDate} settingsStorageKey={`${CANVAS_SETTINGS_STORAGE_KEY}.${instanceId}`} ticker={linkContext.symbol} tickerChangeAsOf={changeAsOf} tickerEditable={symbolEditable} tickerLogoUrl={logoUrl} timeframe={timeframe} timeframes={timeframes} toolbarVariant={toolbarVariant} visibleColumns={visibleIndicators} />
   </div>;
+}
+
+function closedTradeAnnotations(trading: CanonicalTradingPreview | undefined, symbol: string): NonNullable<ChartPayload["trade_annotations"]> {
+  return (trading?.closed_trades ?? []).flatMap((row, index) => {
+    if (String(nestedValue(row, "instrument", "symbol") || "").toUpperCase() !== symbol) return [];
+    const entryPrice = Number(row.entry_price || 0);
+    const exitPrice = Number(row.exit_price || 0);
+    const entryTime = Date.parse(String(row.opened_at || "")) / 1000;
+    const exitTime = Date.parse(String(row.closed_at || "")) / 1000;
+    if (![entryPrice, exitPrice, entryTime, exitTime].every(Number.isFinite) || entryPrice <= 0 || exitPrice <= 0) return [];
+    const quantity = Number(row.quantity || 0);
+    const pnl = Number(row.net_pnl || row.gross_pnl || 0);
+    const reason = String(row.exit_reason || "strategy exit").replaceAll("_", " ");
+    return [{
+      color: pnl >= 0 ? "var(--success)" : "var(--danger)",
+      entryLabel: `Entry · ${formatQuantity(quantity)} @ ${money(entryPrice)}`,
+      entryPrice,
+      entryTime,
+      exitLabel: `Exit · ${reason} · ${money(pnl)}`,
+      exitPrice,
+      exitTime,
+      id: String(row.trade_id || `${symbol}:${entryTime}:${exitTime}:${index}`),
+      pnl,
+    }];
+  });
 }
 
 function durationSeconds(value: string): number {

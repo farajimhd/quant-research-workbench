@@ -675,6 +675,45 @@ export function CanvasWorkspaceSurface({ accountKeys, approvedCanvas, canvasId, 
   }, [replayRun?.current_time, replayRun?.error, replayRun?.session_date]);
 
   useEffect(() => {
+    const ticker = String(replayRun?.navigation_action?.ticker || "").trim().toUpperCase();
+    if (!ticker) return;
+    setRegistry((current) => {
+      const group = current.linkAssignments[primaryChartId] ?? "none";
+      if (group !== "none") {
+        if (current.linkContexts[group].symbol === ticker) return current;
+        return {
+          ...current,
+          linkContexts: {
+            ...current.linkContexts,
+            [group]: { ...current.linkContexts[group], symbol: ticker },
+          },
+        };
+      }
+      const currentSettings = instanceSettings(current, primaryChartId);
+      if (currentSettings.chart.symbol === ticker) return current;
+      return {
+        ...current,
+        instanceSettings: {
+          ...current.instanceSettings,
+          [primaryChartId]: normalizeSettings({
+            ...currentSettings,
+            chart: { ...currentSettings.chart, symbol: ticker },
+          }),
+        },
+      };
+    });
+  }, [replayRun?.navigation_action?.sequence]);
+
+  useEffect(() => {
+    if (replayRun?.execution_mode !== "strategy") return;
+    setRegistry((current) => strategyReplayRegistry(current, replayRun));
+  }, [
+    replayRun?.run_id,
+    replayRun?.strategy_debug_sources?.signal_stream_ids?.join("|"),
+    replayRun?.strategy_debug_sources?.watchlist_ids?.join("|"),
+  ]);
+
+  useEffect(() => {
     if (!linkPopoverContainerId) return;
     const dismissLinkPopover = (event: PointerEvent) => {
       const target = event.target;
@@ -1582,7 +1621,7 @@ function tradingPositionSignature(trading: CanonicalTradingPreview | undefined, 
 
 function strategyDecisionEvents(strategy: CanvasPreview["strategy"] | undefined): StrategyDecisionEvent[] {
   if (!strategy || strategy.fixture) return [];
-  return strategy.signals.flatMap((row, index) => {
+  return [...strategy.signals, ...(strategy.decisions ?? [])].flatMap((row, index) => {
     const action = String(row.action || "wait").toLowerCase();
     const effectiveAt = String(row.effective_at || row.event_time || row.time || "");
     const ticker = String(row.ticker || row.symbol || "").trim().toUpperCase();
@@ -1752,7 +1791,7 @@ function runtimeCanvasState(profile: CanvasRegistry, storageKey: string, canvasI
   const kind = workspaceContainerKind(requestedInstanceId, state);
   return { groups: {}, instances: { [requestedInstanceId]: kind }, layoutVersion: TRADING_WORKSPACE_LAYOUT_VERSION, layouts: createFocusLayouts([requestedInstanceId]), openIds: [requestedInstanceId] };
 }
-const STRATEGY_REPLAY_CONTAINER_IDS: WorkspaceContainerId[] = ["chart", "signal_stream", "watchlist", "strategy_activity", "scanner", "orders", "positions", "portfolio"];
+const STRATEGY_REPLAY_CONTAINER_IDS: WorkspaceContainerId[] = ["chart", "signal_stream", "watchlist", "strategy_activity", "scanner", "orders", "fills", "positions", "closed_trades", "portfolio", "news", "sec", "facts", "xbrl"];
 function strategyReplayLayouts(openIds: string[]): Record<string, WorkspaceWindowLayout> {
   const required: Record<string, WorkspaceWindowLayout> = {
     chart: { fullscreen: false, h: 610, minimized: false, w: 1040, x: 0, y: 0, z: 8 },
@@ -1760,9 +1799,15 @@ function strategyReplayLayouts(openIds: string[]): Record<string, WorkspaceWindo
     signal_stream: { fullscreen: false, h: 430, minimized: false, w: 700, x: 1052, y: 362, z: 6 },
     watchlist: { fullscreen: false, h: 420, minimized: false, w: 1040, x: 0, y: 622, z: 5 },
     orders: { fullscreen: false, h: 430, minimized: false, w: 870, x: 0, y: 1054, z: 4 },
-    positions: { fullscreen: false, h: 430, minimized: false, w: 870, x: 882, y: 804, z: 3 },
-    portfolio: { fullscreen: false, h: 370, minimized: false, w: 870, x: 882, y: 1246, z: 2 },
-    scanner: { fullscreen: false, h: 520, minimized: false, w: 1752, x: 0, y: 1628, z: 1 },
+    fills: { fullscreen: false, h: 430, minimized: false, w: 870, x: 882, y: 1054, z: 3 },
+    positions: { fullscreen: false, h: 430, minimized: false, w: 870, x: 0, y: 1496, z: 3 },
+    closed_trades: { fullscreen: false, h: 430, minimized: false, w: 870, x: 882, y: 1496, z: 3 },
+    portfolio: { fullscreen: false, h: 370, minimized: false, w: 1752, x: 0, y: 1938, z: 2 },
+    scanner: { fullscreen: false, h: 520, minimized: false, w: 1752, x: 0, y: 2320, z: 2 },
+    news: { fullscreen: false, h: 560, minimized: false, w: 870, x: 0, y: 2852, z: 1 },
+    sec: { fullscreen: false, h: 560, minimized: false, w: 870, x: 882, y: 2852, z: 1 },
+    facts: { fullscreen: false, h: 500, minimized: false, w: 870, x: 0, y: 3424, z: 1 },
+    xbrl: { fullscreen: false, h: 500, minimized: false, w: 870, x: 882, y: 3424, z: 1 },
   };
   const extras = openIds.filter((id) => !(id in required));
   const fallback = createFocusLayouts(extras);

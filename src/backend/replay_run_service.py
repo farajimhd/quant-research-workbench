@@ -335,17 +335,19 @@ class ReplayDerivedFrame:
 class ReplayFrameSpool:
     """Disk-backed, event-time-ordered derived frames for one historical run."""
 
-    def __init__(self, path: Path) -> None:
+    def __init__(self, path: Path, *, reset: bool = True) -> None:
         self.path = path
         self._signal_events: dict[str, list[dict[str, Any]]] = {}
         self.path.parent.mkdir(parents=True, exist_ok=True)
         connection = sqlite3.connect(self.path)
         try:
             with connection:
-                connection.execute("DROP TABLE IF EXISTS strategy_frames")
+                if reset:
+                    connection.execute("DROP TABLE IF EXISTS strategy_frames")
+                    connection.execute("DROP TABLE IF EXISTS strategy_frame_streams")
                 connection.execute(
                     """
-                    CREATE TABLE strategy_frames (
+                    CREATE TABLE IF NOT EXISTS strategy_frames (
                         as_of_us INTEGER NOT NULL,
                         as_of TEXT NOT NULL,
                         ticker TEXT NOT NULL,
@@ -353,6 +355,16 @@ class ReplayFrameSpool:
                         sequence INTEGER NOT NULL,
                         bar_json TEXT NOT NULL,
                         indicator_json TEXT NOT NULL
+                    )
+                    """
+                )
+                connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS strategy_frame_streams (
+                        ticker TEXT NOT NULL,
+                        timeframe TEXT NOT NULL,
+                        completed_at TEXT NOT NULL,
+                        PRIMARY KEY (ticker, timeframe)
                     )
                     """
                 )
@@ -398,6 +410,37 @@ class ReplayFrameSpool:
                     "DELETE FROM strategy_frames WHERE ticker = ? AND timeframe = ?",
                     (_ticker(ticker), timeframe),
                 )
+                connection.execute(
+                    "DELETE FROM strategy_frame_streams WHERE ticker = ? AND timeframe = ?",
+                    (_ticker(ticker), timeframe),
+                )
+        finally:
+            connection.close()
+
+    def mark_stream_complete(self, ticker: str, timeframe: str) -> None:
+        connection = sqlite3.connect(self.path)
+        try:
+            with connection:
+                connection.execute(
+                    """
+                    INSERT OR REPLACE INTO strategy_frame_streams (
+                        ticker, timeframe, completed_at
+                    ) VALUES (?, ?, ?)
+                    """,
+                    (_ticker(ticker), timeframe, datetime.now(UTC).isoformat()),
+                )
+        finally:
+            connection.close()
+
+    def completed_streams(self) -> set[tuple[str, str]]:
+        connection = sqlite3.connect(self.path)
+        try:
+            return {
+                (str(ticker), str(timeframe))
+                for ticker, timeframe in connection.execute(
+                    "SELECT ticker, timeframe FROM strategy_frame_streams"
+                )
+            }
         finally:
             connection.close()
 
@@ -563,6 +606,8 @@ class ReplayRunController:
         self._step_until: datetime | None = None
         self._fast_forward_until: datetime | None = None
         self._next_action_after_sequence: int | None = None
+        self._navigation_target_action: dict[str, Any] | None = None
+        self._navigation_skip_to_target = False
         self._last_navigation_action: dict[str, Any] | None = None
         self._navigation_started_at: datetime | None = None
         self._navigation_start_time: datetime | None = None
@@ -641,6 +686,7 @@ class ReplayRunController:
         if self._task is not None:
             return
         self.run_dir.mkdir(parents=True, exist_ok=True)
+        await asyncio.to_thread(self._write_approved_configuration)
         self._write_manifest()
         self._task = asyncio.create_task(self._run(), name=f"replay-run-{self.run_id}")
 
@@ -712,6 +758,24 @@ class ReplayRunController:
                 self._navigation_started_at = datetime.now(UTC)
                 self._navigation_start_time = self.current_time or self.definition.requested_start
                 self._navigation_start_processed_events = self.processed_events
+                current = self.current_time or self.definition.requested_start
+                future_market_actions = [
+                    action
+                    for record in records
+                    if record.event_time > current
+                    and (action := _replay_navigation_action(record)) is not None
+                    and action["kind"] == "watch_started"
+                ]
+                self._navigation_target_action = min(
+                    future_market_actions,
+                    key=lambda action: (
+                        _optional_checkpoint_time(action.get("event_time"))
+                        or self.definition.session_end,
+                        int(action.get("sequence") or 0),
+                    ),
+                    default=None,
+                )
+                self._navigation_skip_to_target = await self._can_skip_to_navigation_target()
                 self._fast_forward_until = None
                 self._step_until = None
                 self.status = "fast_forwarding"
@@ -929,6 +993,8 @@ class ReplayRunController:
 
     def _clear_navigation_search(self) -> None:
         self._next_action_after_sequence = None
+        self._navigation_target_action = None
+        self._navigation_skip_to_target = False
         self._navigation_started_at = None
         self._navigation_start_time = None
         self._navigation_start_processed_events = self.processed_events
@@ -954,7 +1020,44 @@ class ReplayRunController:
                 else 0
             ),
             "targets": ["watch start", "strategy decision", "order update"],
+            "target_event_time": (
+                self._navigation_target_action.get("event_time")
+                if self._navigation_target_action is not None
+                else None
+            ),
         }
+
+    async def _can_skip_to_navigation_target(self) -> bool:
+        """Allow raw-event skipping only before a source-native activation boundary."""
+
+        if self._navigation_target_action is None or self._runtime is None:
+            return False
+        activation = dict(
+            self.definition.configuration_revision["payload"].get("signal_activation")
+            or {}
+        )
+        enabled_streams = [
+            dict(stream)
+            for stream in activation.get("signal_streams") or []
+            if bool(stream.get("enabled", True))
+        ]
+        if not enabled_streams or not all(
+            str(stream.get("occurrence_source") or "") == "qmd_squeeze_episode"
+            for stream in enabled_streams
+        ):
+            return False
+        if self._signal_activated_tickers:
+            return False
+        for account_id in self.account_ids:
+            positions = await self._runtime.broker.positions(account_id)
+            if any(abs(float(position.position)) > 0 for position in positions):
+                return False
+        return True
+
+    def _navigation_skip_boundary(self) -> datetime | None:
+        if not self._navigation_skip_to_target or self._navigation_target_action is None:
+            return None
+        return _optional_checkpoint_time(self._navigation_target_action.get("event_time"))
 
     def _transport_mode(self) -> str:
         if self._next_action_after_sequence is not None:
@@ -1308,6 +1411,12 @@ class ReplayRunController:
                 if row["entity_type"] == "signal"
                 and str(row.get("ticker") or "").upper() == ticker
             ],
+            "decisions": [
+                row
+                for row in strategy_records
+                if row["category"] == "strategy_decision"
+                and str(row.get("ticker") or "").upper() == ticker
+            ],
             "order_management": [
                 row for row in strategy_records if row["category"] == "order_management"
             ],
@@ -1474,6 +1583,39 @@ class ReplayRunController:
                             await self._finish("stopped")
                             return
                         await self._pace(event)
+                    navigation_skip_boundary = self._navigation_skip_boundary()
+                    if (
+                        event.ts >= self.definition.requested_start
+                        and navigation_skip_boundary is not None
+                        and event.ts < navigation_skip_boundary
+                    ):
+                        while next_frame is not None and next_frame.as_of <= event.ts:
+                            frame = next_frame
+                            while (
+                                external_index < len(self._historical_external_signal_events)
+                                and self._historical_external_signal_events[external_index].available_at
+                                <= frame.as_of
+                            ):
+                                signal_event = self._historical_external_signal_events[external_index]
+                                await self._process_external_signal_event(signal_event)
+                                external_index += 1
+                            self._apply_historical_watchlist_membership(frame.as_of)
+                            await self._process_strategy_frame(frame)
+                            next_frame = next(frame_iterator, None)
+                        if isinstance(event, QuoteEvent):
+                            self._quotes[event.ticker] = event
+                        self._source_cursor = {
+                            "ts": event.ts.astimezone(UTC).isoformat(),
+                            "sequence": int(event.sequence),
+                            "kind": event.kind,
+                        }
+                        self.processed_events += 1
+                        self.current_time = event.ts
+                        self.updated_at = datetime.now(UTC)
+                        if event_index % 1_000 == 0:
+                            await self._publish()
+                            await asyncio.sleep(0)
+                        continue
                     while next_frame is not None and next_frame.as_of <= event.ts:
                         frame = next_frame
                         while (
@@ -2293,7 +2435,9 @@ class ReplayRunController:
     async def _after_event(self, event_time: datetime) -> None:
         self.current_time = event_time
         self.updated_at = datetime.now(UTC)
-        self._schedule_bar_gpt_scope(event_time)
+        # Replay BarGPT is intentionally chart-scoped while strategy entry is
+        # being validated. Prewarming every assignment here competes with the
+        # one ticker the operator is inspecting and makes visual UAT unusable.
         transport_boundary = False
         if self._next_action_after_sequence is not None and self._journal is not None:
             for record in self._journal.records(
@@ -2308,6 +2452,20 @@ class ReplayRunController:
                     self.status = "paused"
                     transport_boundary = True
                     break
+            if (
+                self._next_action_after_sequence is not None
+                and self._navigation_target_action is not None
+                and (
+                    target_time := _optional_checkpoint_time(
+                        self._navigation_target_action.get("event_time")
+                    )
+                ) is not None
+                and event_time >= target_time
+            ):
+                self._last_navigation_action = deepcopy(self._navigation_target_action)
+                self._clear_navigation_search()
+                self.status = "paused"
+                transport_boundary = True
         if self._step_until is not None and event_time >= self._step_until:
             self._step_until = None
             self.status = "paused"
@@ -2938,6 +3096,18 @@ class ReplayRunController:
         source_native_signal_tickers = {
             event.ticker for event in self._historical_external_signal_events
         }
+        activation = dict(
+            self.definition.configuration_revision["payload"].get("signal_activation") or {}
+        )
+        enabled_streams = [
+            dict(stream)
+            for stream in activation.get("signal_streams") or []
+            if bool(stream.get("enabled", True))
+        ]
+        source_native_only = bool(enabled_streams) and all(
+            str(stream.get("occurrence_source") or "") == "qmd_squeeze_episode"
+            for stream in enabled_streams
+        )
         requests = {
             (assignment.ticker, timeframe)
             for assignment in self._strategy.assignments()
@@ -2952,7 +3122,25 @@ class ReplayRunController:
         ordered_requests = sorted(requests)
         self._preparation_completed_units = 0
         self._preparation_total_units = len(ordered_requests)
-        spool = ReplayFrameSpool(self.run_dir / "strategy-frames.sqlite3")
+        spool_path = self.run_dir / "strategy-frames.sqlite3"
+        if self._resume_state is not None and spool_path.exists():
+            spool = ReplayFrameSpool(spool_path, reset=False)
+            if requests.issubset(await asyncio.to_thread(spool.completed_streams)):
+                tickers = tuple(sorted({ticker for ticker, _ in requests}))
+                events_by_ticker = (
+                    {}
+                    if source_native_only
+                    else await _historical_signal_events(
+                        tickers=tickers,
+                        start=self.definition.session_start,
+                        end=self.definition.session_end,
+                        authority_sink=self._record_data_authority,
+                    )
+                )
+                await asyncio.to_thread(spool.finalize, events_by_ticker)
+                self._preparation_completed_units = len(ordered_requests)
+                return spool
+        spool = ReplayFrameSpool(spool_path)
         timeframes_by_ticker: dict[str, list[str]] = {}
         for ticker, timeframe in ordered_requests:
             timeframes_by_ticker.setdefault(ticker, []).append(timeframe)
@@ -2974,7 +3162,7 @@ class ReplayRunController:
                                 async with writer_lock:
                                     await asyncio.to_thread(spool.append, batch)
 
-                            for attempt in range(3):
+                            for attempt in range(8):
                                 try:
                                     await _stream_historical_derived_frames(
                                         ticker=ticker,
@@ -2983,21 +3171,25 @@ class ReplayRunController:
                                         end=self.definition.session_end,
                                         frame_sink=persist,
                                         authority_sink=self._record_data_authority,
+                                        indicator_columns=(
+                                            tuple(sorted(_STRATEGY_INDICATOR_FIELDS))
+                                            if source_native_only
+                                            else None
+                                        ),
                                     )
                                     break
-                                except (
-                                    TimeoutError,
-                                    ConnectionClosedError,
-                                ):
+                                except Exception as exc:
+                                    if not _retryable_historical_stream_error(exc):
+                                        raise
                                     async with writer_lock:
                                         await asyncio.to_thread(
                                             spool.delete_stream,
                                             ticker,
                                             timeframe,
                                         )
-                                    if attempt == 2:
+                                    if attempt == 7:
                                         raise
-                                    await asyncio.sleep(0.5 * (2**attempt))
+                                    await asyncio.sleep(min(10.0, 0.5 * (2**attempt)))
                         else:
                             frames = await _historical_derived_frames(
                                 ticker=ticker,
@@ -3009,6 +3201,12 @@ class ReplayRunController:
                             )
                             async with writer_lock:
                                 await asyncio.to_thread(spool.append, frames)
+                        async with writer_lock:
+                            await asyncio.to_thread(
+                                spool.mark_stream_complete,
+                                ticker,
+                                timeframe,
+                            )
                         self._preparation_completed_units += 1
                         self.updated_at = datetime.now(UTC)
                         await self._publish(force=True)
@@ -3018,18 +3216,6 @@ class ReplayRunController:
         worker_count = min(replay_history_fetch_concurrency(), len(timeframes_by_ticker))
         await asyncio.gather(*(load_worker() for _ in range(worker_count)))
         tickers = tuple(sorted({ticker for ticker, _ in requests}))
-        activation = dict(
-            self.definition.configuration_revision["payload"].get("signal_activation") or {}
-        )
-        enabled_streams = [
-            dict(stream)
-            for stream in activation.get("signal_streams") or []
-            if bool(stream.get("enabled", True))
-        ]
-        source_native_only = bool(enabled_streams) and all(
-            str(stream.get("occurrence_source") or "") == "qmd_squeeze_episode"
-            for stream in enabled_streams
-        )
         events_by_ticker = (
             {}
             if source_native_only
@@ -3433,11 +3619,18 @@ class ReplayRunController:
     def _write_manifest(self) -> None:
         if not self.run_dir.exists():
             return
+        run = self.snapshot()
         payload = {
-            "schema_version": 1,
-            "run": self.snapshot(),
+            "schema_version": 2,
+            "run": run,
             "definition": self.definition.payload(),
-            "approved_configuration": self.definition.configuration_revision,
+            "approved_configuration_path": "approved-configuration.json",
+            "approved_configuration_revision_id": str(
+                self.definition.configuration_revision.get("revision_id") or ""
+            ),
+            "approved_configuration_content_hash": str(
+                self.definition.configuration_revision.get("content_hash") or ""
+            ),
             "runtime_root": str(self.runtime_root),
             "journal_path": str(self.run_dir / "journal.sqlite3"),
         }
@@ -3459,6 +3652,40 @@ class ReplayRunController:
         temporary = self.run_dir / "manifest.json.tmp"
         temporary.write_text(
             json.dumps(payload, separators=(",", ":"), sort_keys=True),
+            encoding="utf-8",
+        )
+        _replace_path_with_retry(temporary, target)
+        summary_target = self.run_dir / "run-summary.json"
+        summary_temporary = self.run_dir / "run-summary.json.tmp"
+        summary_temporary.write_text(
+            json.dumps(run, separators=(",", ":"), sort_keys=True),
+            encoding="utf-8",
+        )
+        _replace_path_with_retry(summary_temporary, summary_target)
+
+    def _write_approved_configuration(self) -> None:
+        target = self.run_dir / "approved-configuration.json"
+        expected_revision_id = str(
+            self.definition.configuration_revision.get("revision_id") or ""
+        )
+        expected_content_hash = str(
+            self.definition.configuration_revision.get("content_hash") or ""
+        )
+        if target.is_file():
+            existing = json.loads(target.read_text(encoding="utf-8"))
+            if (
+                str(existing.get("revision_id") or "") != expected_revision_id
+                or str(existing.get("content_hash") or "") != expected_content_hash
+            ):
+                raise ValueError("Replay approved configuration changed on disk")
+            return
+        temporary = self.run_dir / "approved-configuration.json.tmp"
+        temporary.write_text(
+            json.dumps(
+                self.definition.configuration_revision,
+                separators=(",", ":"),
+                sort_keys=True,
+            ),
             encoding="utf-8",
         )
         _replace_path_with_retry(temporary, target)
@@ -3613,13 +3840,20 @@ class ReplayRunService:
         known = {str(row.get("run_id") or "") for row in resident}
         persisted: list[dict[str, Any]] = []
         if self.runtime_root.is_dir():
-            for manifest_path in self.runtime_root.glob("*/manifest.json"):
-                if manifest_path.parent.name in known:
+            for run_dir in self.runtime_root.iterdir():
+                if not run_dir.is_dir() or run_dir.name in known:
                     continue
                 try:
-                    payload = json.loads(manifest_path.read_text(encoding="utf-8"))
-                    row = dict(payload.get("run") or {})
-                    if str(row.get("run_id") or "") != manifest_path.parent.name:
+                    summary_path = run_dir / "run-summary.json"
+                    manifest_path = run_dir / "manifest.json"
+                    if summary_path.is_file():
+                        row = dict(json.loads(summary_path.read_text(encoding="utf-8")))
+                    elif manifest_path.is_file() and manifest_path.stat().st_size <= 2_000_000:
+                        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+                        row = dict(payload.get("run") or {})
+                    else:
+                        continue
+                    if str(row.get("run_id") or "") != run_dir.name:
                         continue
                     persisted.append(row)
                 except (OSError, ValueError, TypeError, json.JSONDecodeError):
@@ -3666,8 +3900,29 @@ def _definition_from_manifest(
 ) -> ReplayRunDefinition:
     definition = dict(manifest.get("definition") or {})
     approved = manifest.get("approved_configuration")
+    if not isinstance(approved, dict):
+        configured_path = Path(
+            str(manifest.get("approved_configuration_path") or "approved-configuration.json")
+        )
+        approved_path = configured_path if configured_path.is_absolute() else run_dir / configured_path
+        approved_path = approved_path.resolve()
+        if run_dir.resolve() not in approved_path.parents:
+            raise ValueError("Historical approved configuration path escaped the run directory")
+        if not approved_path.is_file():
+            raise ValueError("Historical manifest omitted its approved configuration file")
+        approved = json.loads(approved_path.read_text(encoding="utf-8"))
     if not isinstance(approved, dict) or not approved.get("revision_id"):
         raise ValueError("Historical manifest omitted its approved configuration")
+    expected_revision_id = str(manifest.get("approved_configuration_revision_id") or "")
+    expected_content_hash = str(manifest.get("approved_configuration_content_hash") or "")
+    if (
+        expected_revision_id
+        and str(approved.get("revision_id") or "") != expected_revision_id
+    ) or (
+        expected_content_hash
+        and str(approved.get("content_hash") or "") != expected_content_hash
+    ):
+        raise ValueError("Historical approved configuration identity changed")
     mode = RunMode(str(definition.get("mode") or ""))
     fixture = None
     if mode == RunMode.BACKTEST_DEBUG:
@@ -5031,6 +5286,16 @@ def backtest_debug_preflight(
     }
 
 
+def _retryable_historical_stream_error(error: Exception) -> bool:
+    if isinstance(error, (TimeoutError, ConnectionClosedError)):
+        return True
+    detail = str(error).lower()
+    return isinstance(error, RuntimeError) and (
+        "historical cache byte limit exceeded" in detail
+        or "qmd derived stream closed early" in detail
+    )
+
+
 async def _stream_historical_derived_frames(
     *,
     ticker: str,
@@ -5040,6 +5305,7 @@ async def _stream_historical_derived_frames(
     frame_sink: Callable[[list[ReplayDerivedFrame]], Awaitable[None]],
     authority_sink: Callable[[str, dict[str, Any]], None] | None = None,
     batch_size: int = 1_000,
+    indicator_columns: tuple[str, ...] | None = None,
 ) -> None:
     """Stream one frozen QMD product to bounded run-owned storage."""
 
@@ -5050,9 +5316,15 @@ async def _stream_historical_derived_frames(
             "end": end.isoformat(),
             "timeframe": timeframe,
             "emit": "frames",
+            "frame_batch_size": 32,
             "as_of": end.isoformat(),
             "updates_per_second": 0,
             "retain_cache": "false",
+            **(
+                {"indicator_columns": ",".join(indicator_columns)}
+                if indicator_columns
+                else {}
+            ),
         },
     )
     metadata: dict[str, Any] | None = None
@@ -5062,6 +5334,7 @@ async def _stream_historical_derived_frames(
         url,
         ping_interval=20,
         ping_timeout=300,
+        max_queue=4,
         max_size=64 * 1024 * 1024,
     ) as socket:
         try:
@@ -5076,22 +5349,32 @@ async def _stream_historical_derived_frames(
                 if payload.get("type") == "metadata":
                     metadata = payload
                     continue
-                received += 1
-                batch.append(
-                    _replay_derived_frame_from_payload(
-                        payload,
-                        ticker=ticker,
-                        timeframe=timeframe,
-                        fallback_sequence=received,
-                    )
+                source_frames = (
+                    list(payload.get("frames") or [])
+                    if payload.get("type") == "frames_batch"
+                    else [payload]
                 )
+                for source_frame in source_frames:
+                    received += 1
+                    batch.append(
+                        _replay_derived_frame_from_payload(
+                            source_frame,
+                            ticker=ticker,
+                            timeframe=timeframe,
+                            fallback_sequence=received,
+                        )
+                    )
                 if len(batch) >= batch_size:
                     await frame_sink(batch)
                     batch = []
-        except ConnectionClosedError:
+        except ConnectionClosedError as exc:
             expected = int((metadata or {}).get("frame_count") or -1)
             if metadata is None or received != expected:
-                raise
+                raise RuntimeError(
+                    "QMD derived stream closed early for "
+                    f"{ticker} {timeframe}: received_frames={received} "
+                    f"expected_frames={expected}; transport={exc}"
+                ) from exc
     if batch:
         await frame_sink(batch)
     if metadata is None:
@@ -5129,6 +5412,7 @@ async def _historical_derived_frames(
             "end": end.isoformat(),
             "timeframe": timeframe,
             "emit": "frames",
+            "frame_batch_size": 32,
             "as_of": end.isoformat(),
             "updates_per_second": 0,
             # Replay consumes this complete, frozen response into its own run
@@ -5146,6 +5430,7 @@ async def _historical_derived_frames(
         # the HTTP health plane remains ready. Keep transport liveness bounded
         # without treating one busy 20-second interval as missing market data.
         ping_timeout=300,
+        max_queue=4,
         max_size=64 * 1024 * 1024,
     ) as socket:
         try:
@@ -5157,10 +5442,14 @@ async def _historical_derived_frames(
                     ticker=ticker,
                     timeframe=timeframe,
                 )
-        except ConnectionClosedError:
+        except ConnectionClosedError as exc:
             expected = int((metadata or {}).get("frame_count") or -1)
             if metadata is None or len(frames) != expected:
-                raise
+                raise RuntimeError(
+                    "QMD derived stream closed early for "
+                    f"{ticker} {timeframe}: received_frames={len(frames)} "
+                    f"expected_frames={expected}; transport={exc}"
+                ) from exc
     if metadata is None:
         raise RuntimeError(f"QMD derived frame stream omitted authority metadata for {ticker}")
     authority = _qmd_payload_authority(metadata, authority="qmd_history_derived")
@@ -5204,14 +5493,20 @@ def _append_historical_derived_message(
         raise RuntimeError(f"QMD derived stream failed for {ticker}: {payload['error']}")
     if payload.get("type") == "metadata":
         return payload
-    frames.append(
-        _replay_derived_frame_from_payload(
-            payload,
-            ticker=ticker,
-            timeframe=timeframe,
-            fallback_sequence=len(frames) + 1,
-        )
+    source_frames = (
+        list(payload.get("frames") or [])
+        if payload.get("type") == "frames_batch"
+        else [payload]
     )
+    for source_frame in source_frames:
+        frames.append(
+            _replay_derived_frame_from_payload(
+                source_frame,
+                ticker=ticker,
+                timeframe=timeframe,
+                fallback_sequence=len(frames) + 1,
+            )
+        )
     return metadata
 
 
@@ -5301,7 +5596,7 @@ def _qmd_payload_authority(
     plan_hash = str(revision.get("source_plan_hash") or "").strip()
     if not token or not plan_hash:
         raise RuntimeError(f"{authority} response returned incomplete source revision evidence")
-    return {
+    evidence = {
         "authority": authority,
         "revision_token": token,
         "source_plan_hash": plan_hash,
@@ -5310,6 +5605,11 @@ def _qmd_payload_authority(
         "engine_version": str(cache.get("engine_version") or payload.get("engine_version") or ""),
         "event_count": int(cache.get("event_count") or payload.get("event_count") or 0),
     }
+    if isinstance(payload.get("indicator_columns"), list):
+        evidence["indicator_columns"] = sorted(
+            str(column) for column in payload["indicator_columns"]
+        )
+    return evidence
 
 
 def replay_history_fetch_concurrency() -> int:

@@ -24,6 +24,7 @@ use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::mem::size_of;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::Mutex as StdMutex;
 use tokio::sync::{broadcast, mpsc, Mutex, Notify, Semaphore};
 
 pub const HISTORICAL_ENGINE_VERSION: &str = "qmd-derived-v31";
@@ -222,6 +223,7 @@ pub struct CacheLease {
 
 pub struct CacheEntry {
     accounted: AtomicBool,
+    accounting_lock: StdMutex<()>,
     allocated_bytes: Arc<AtomicU64>,
     complete: AtomicBool,
     frame_bytes: AtomicU64,
@@ -326,7 +328,8 @@ impl HistoricalDerivedCache {
             let Some(oldest) = index.order.remove(position) else {
                 break;
             };
-            if index.entries.remove(&oldest).is_some() {
+            if let Some(entry) = index.entries.remove(&oldest) {
+                entry.release_accounting();
                 self.stats.evictions.fetch_add(1, Ordering::Relaxed);
             }
         }
@@ -336,6 +339,7 @@ impl HistoricalDerivedCache {
             historical_requirement(&key, &revision_window, &ticker, &profile, &source_revision);
         let entry = Arc::new(CacheEntry {
             accounted: AtomicBool::new(true),
+            accounting_lock: StdMutex::new(()),
             allocated_bytes: self.allocated_bytes.clone(),
             complete: AtomicBool::new(false),
             frame_bytes: AtomicU64::new(0),
@@ -1208,7 +1212,8 @@ impl HistoricalDerivedCache {
             let Some(oldest) = index.order.remove(position) else {
                 break;
             };
-            if index.entries.remove(&oldest).is_some() {
+            if let Some(entry) = index.entries.remove(&oldest) {
+                entry.release_accounting();
                 self.stats.evictions.fetch_add(1, Ordering::Relaxed);
             }
         }
@@ -1273,6 +1278,10 @@ fn chart_structure_event(event: &GenericStructureEvent) -> bool {
 
 impl CacheEntry {
     fn release_accounting(&self) {
+        let _guard = self
+            .accounting_lock
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         if self.accounted.swap(false, Ordering::AcqRel) {
             let bytes = self.estimated_bytes.swap(0, Ordering::AcqRel);
             if bytes > 0 {
@@ -1483,6 +1492,16 @@ impl CacheEntry {
     }
 
     fn set_estimated_bytes(&self, next: u64) -> Result<(), String> {
+        // Bar production and indicator/structure production run concurrently
+        // for one entry. Serialize the per-entry absolute reservation update;
+        // otherwise both workers can observe the same previous value, reserve
+        // both deltas globally, and overwrite one another's entry total. That
+        // drift pins the service-wide counter at its byte ceiling even after
+        // every visible entry has been evicted.
+        let _guard = self
+            .accounting_lock
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         if !self.accounted.load(Ordering::Acquire) {
             return Err("historical cache entry was evicted".to_string());
         }
@@ -1792,7 +1811,7 @@ mod tests {
     use chrono::{DateTime, Duration, TimeZone, Utc};
     use qmd_core::generic_structure::{GenericStructureEvent, StructureLevelCandidate};
     use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-    use std::sync::Arc;
+    use std::sync::{Arc, Mutex as StdMutex};
     use tokio::sync::{broadcast, Mutex, Notify};
 
     #[test]
@@ -2028,6 +2047,7 @@ mod tests {
         let (bar_updates, _) = broadcast::channel(16);
         let entry = CacheEntry {
             accounted: AtomicBool::new(true),
+            accounting_lock: StdMutex::new(()),
             allocated_bytes: allocated.clone(),
             complete: AtomicBool::new(false),
             frame_bytes: AtomicU64::new(0),
@@ -2053,6 +2073,53 @@ mod tests {
         assert_eq!(allocated.load(Ordering::Acquire), 0);
     }
 
+    #[test]
+    fn concurrent_entry_updates_do_not_drift_global_byte_accounting() {
+        let allocated = Arc::new(AtomicU64::new(0));
+        let (updates, _) = broadcast::channel(16);
+        let (bar_updates, _) = broadcast::channel(16);
+        let entry = Arc::new(CacheEntry {
+            accounted: AtomicBool::new(true),
+            accounting_lock: StdMutex::new(()),
+            allocated_bytes: allocated.clone(),
+            complete: AtomicBool::new(false),
+            frame_bytes: AtomicU64::new(0),
+            global_max_bytes: 1_000_000,
+            notify: Notify::new(),
+            state: Mutex::new(EntryState::default()),
+            bar_updates,
+            updates,
+            estimated_bytes: AtomicU64::new(0),
+            max_update_bytes: 1_000_000,
+            max_updates: 10,
+            product_bytes: AtomicU64::new(0),
+            requirement: None,
+        });
+        let barrier = Arc::new(std::sync::Barrier::new(8));
+        let workers = (0..8)
+            .map(|worker| {
+                let entry = entry.clone();
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    for offset in 1..=2_000_u64 {
+                        entry.set_estimated_bytes(worker * 2_000 + offset).unwrap();
+                    }
+                })
+            })
+            .collect::<Vec<_>>();
+        for worker in workers {
+            worker.join().unwrap();
+        }
+
+        assert_eq!(
+            allocated.load(Ordering::Acquire),
+            entry.estimated_bytes.load(Ordering::Acquire),
+        );
+        entry.release_accounting();
+        assert_eq!(allocated.load(Ordering::Acquire), 0);
+    }
+
     #[tokio::test]
     async fn chart_bar_waiter_releases_before_indicator_completion() {
         let allocated = Arc::new(AtomicU64::new(0));
@@ -2060,6 +2127,7 @@ mod tests {
         let (bar_updates, _) = broadcast::channel(16);
         let entry = Arc::new(CacheEntry {
             accounted: AtomicBool::new(true),
+            accounting_lock: StdMutex::new(()),
             allocated_bytes: allocated,
             complete: AtomicBool::new(false),
             frame_bytes: AtomicU64::new(0),
@@ -2099,6 +2167,7 @@ mod tests {
         let (bar_updates, _) = broadcast::channel(16);
         let entry = CacheEntry {
             accounted: AtomicBool::new(true),
+            accounting_lock: StdMutex::new(()),
             allocated_bytes: allocated,
             complete: AtomicBool::new(false),
             frame_bytes: AtomicU64::new(0),

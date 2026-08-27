@@ -513,6 +513,26 @@ class BarGptRuntime:
                         if one_second else None
                     )
                     if observed_session != requested_session:
+                        supplemental = await asyncio.to_thread(
+                            bootstrap.load_current_session, ticker, as_of
+                        )
+                        if supplemental:
+                            bars.extend(supplemental)
+                            one_second = [
+                                bar for bar in bars
+                                if bar.view == "1s" and bar.available_at_us <= origin_us
+                            ]
+                            one_second.sort(
+                                key=lambda bar: (bar.available_at_us, bar.bar_start_us)
+                            )
+                            observed_session = (
+                                datetime.fromtimestamp(
+                                    one_second[-1].available_at_us / 1_000_000,
+                                    tz=UTC,
+                                ).astimezone(ZoneInfo("America/New_York")).date()
+                                if one_second else None
+                            )
+                    if observed_session != requested_session:
                         observed = observed_session.isoformat() if observed_session else "none"
                         raise RuntimeError(
                             "QMD history has no BarGPT intraday context for requested "

@@ -714,10 +714,15 @@ export function StrategyActivityContainer({ asOf, onSettingsChange, onTickerSele
     const controller = new AbortController();
     const query = new URLSearchParams({ as_of: asOf, limit: "5000" });
     if (runId) query.set("run_id", runId);
-    api<StrategyActivityResponse>(`/api/trading/strategy-activity?${query}`, { signal: controller.signal, timeoutMs: 10000 })
-      .then((response) => { setPayload(response); setError(""); })
-      .catch((reason) => { if (!controller.signal.aborted) setError(reason instanceof Error ? reason.message : String(reason)); });
-    return () => controller.abort();
+    let timer = 0;
+    const refresh = () => {
+      api<StrategyActivityResponse>(`/api/trading/strategy-activity?${query}`, { signal: controller.signal, timeoutMs: 10000 })
+        .then((response) => { setPayload(response); setError(""); })
+        .catch((reason) => { if (!controller.signal.aborted) setError(reason instanceof Error ? reason.message : String(reason)); })
+        .finally(() => { if (!controller.signal.aborted) timer = window.setTimeout(refresh, 5_000); });
+    };
+    refresh();
+    return () => { controller.abort(); window.clearTimeout(timer); };
   }, [asOf, runId]);
   const rows = useMemo(() => (payload?.rows ?? []).filter((row) =>
     (!settings.strategyId || String(row.strategy_id) === settings.strategyId)

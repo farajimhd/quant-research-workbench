@@ -1741,7 +1741,18 @@ impl HistoricalEventSource {
         let now = Instant::now();
         let mut cache = self.latest_coverage_cache.lock().await;
         cache.retain(|_, entry| entry.expires_at > now);
-        cache.get(&before).map(|entry| entry.value.clone())
+        if let Some(entry) = cache.get(&before) {
+            return Some(entry.value.clone());
+        }
+        // Readiness warms the unrestricted archive watermark. When that
+        // watermark is already earlier than a bounded request, it is also the
+        // exact latest session before that bound, so avoid repeating the same
+        // expensive ClickHouse aggregation for Replay preflight.
+        let bounded_before = before?;
+        cache
+            .get(&None)
+            .filter(|entry| coverage_precedes(&entry.value, bounded_before))
+            .map(|entry| entry.value.clone())
     }
 
     async fn store_latest_coverage(&self, before: Option<NaiveDate>, value: LatestEventCoverage) {
@@ -1818,6 +1829,14 @@ impl HistoricalEventSource {
         }
         Ok(text)
     }
+}
+
+fn coverage_precedes(value: &LatestEventCoverage, before: NaiveDate) -> bool {
+    value
+        .session_date
+        .as_deref()
+        .and_then(|session_date| NaiveDate::parse_from_str(session_date, "%Y-%m-%d").ok())
+        .is_some_and(|session_date| session_date < before)
 }
 
 fn latest_coverage_target_date_sql(table: &str, before: Option<NaiveDate>) -> String {
@@ -2610,15 +2629,16 @@ fn persisted_structure_events_sql(table: &str, ticker: &str, before: DateTime<Ut
 #[cfg(test)]
 mod tests {
     use super::{
-        append_scheduled_gap_segments, archive_session_end_utc, build_source_plan, event_select,
-        latest_coverage_summary_sql, latest_coverage_target_date_sql, macro_bar_is_closed,
+        append_scheduled_gap_segments, archive_session_end_utc, build_source_plan,
+        coverage_precedes, event_select, latest_coverage_summary_sql,
+        latest_coverage_target_date_sql, macro_bar_is_closed,
         materialize_confirmed_recent_coverage, merge_coverage_intervals, normalize_ticker,
         parse_historical_tsv_row, persisted_structure_events_sql, recent_coverage_sql,
         row_to_event, session_vwap_seed_select, ticker_filter, CoverageInterval, EventWindow,
-        HistoricalRow, MarketSourceTier, RecentCoverageRow,
+        HistoricalRow, LatestEventCoverage, MarketSourceTier, RecentCoverageRow,
     };
     use crate::config::HistoricalGatewayConfig;
-    use chrono::{TimeZone, Utc};
+    use chrono::{NaiveDate, TimeZone, Utc};
     use qmd_core::compact_event::{CompactEventDecoder, LIVE_COMPACT_EVENT_SCHEMA_VERSION};
     use qmd_core::event::MarketEvent;
 
@@ -2679,6 +2699,25 @@ mod tests {
         assert!(summary.contains("GROUP BY ticker"));
         assert!(!summary.contains("GROUP BY ticker, source_date"));
         assert!(summary.contains("max_execution_time = 15"));
+    }
+
+    #[test]
+    fn unrestricted_coverage_can_satisfy_a_later_bounded_preflight() {
+        let coverage = LatestEventCoverage {
+            coverage_table: "market.events".to_string(),
+            event_count: 42,
+            session_date: Some("2026-08-21".to_string()),
+            ticker_count: 3,
+        };
+
+        assert!(coverage_precedes(
+            &coverage,
+            NaiveDate::from_ymd_opt(2026, 8, 22).unwrap(),
+        ));
+        assert!(!coverage_precedes(
+            &coverage,
+            NaiveDate::from_ymd_opt(2026, 8, 21).unwrap(),
+        ));
     }
 
     #[test]

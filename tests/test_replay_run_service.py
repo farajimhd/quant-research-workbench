@@ -5,7 +5,7 @@ import json
 import tempfile
 import unittest
 from dataclasses import asdict
-from datetime import date, datetime, time
+from datetime import UTC, date, datetime, time
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 from zoneinfo import ZoneInfo
@@ -19,6 +19,7 @@ from src.backend.replay_run_service import (
     ReplayRunDefinition,
     ReplayRunService,
     ReplaySignalEvent,
+    _append_historical_derived_message,
     _attach_historical_signals,
     _canvas_profile_tickers,
     _historical_watchlist_membership_timeline_for_configuration,
@@ -28,6 +29,7 @@ from src.backend.replay_run_service import (
     _historical_derived_frames,
     _occurrence_source_values,
     _qmd_payload_authority,
+    _retryable_historical_stream_error,
     _simulation_config,
     _debug_derived_frames,
     _debug_market_events,
@@ -497,6 +499,7 @@ class HistoricalDebugFixtureTests(unittest.IsolatedAsyncioTestCase):
             )
             controller = ReplayRunController(definition, runtime_root=Path(directory))
             controller.run_dir.mkdir(parents=True)
+            controller._write_approved_configuration()
             controller._write_manifest()
             fixture_payload = json.loads(
                 (controller.run_dir / "debug-fixture.json").read_text(encoding="utf-8")
@@ -504,10 +507,18 @@ class HistoricalDebugFixtureTests(unittest.IsolatedAsyncioTestCase):
             manifest = json.loads(
                 (controller.run_dir / "manifest.json").read_text(encoding="utf-8")
             )
+            summary_exists = (controller.run_dir / "run-summary.json").is_file()
 
         self.assertEqual(fixture_payload["fixture_id"], "deterministic-aapl")
         self.assertEqual(fixture_payload["market_event_count"], 2)
         self.assertEqual(fixture_payload["content_hash"], self.fixture().content_hash)
+        self.assertEqual(manifest["schema_version"], 2)
+        self.assertNotIn("approved_configuration", manifest)
+        self.assertEqual(
+            manifest["approved_configuration_path"],
+            "approved-configuration.json",
+        )
+        self.assertTrue(summary_exists)
         authority = manifest["run"]["data_authority"]["sources"]["market_events"]
         self.assertEqual(authority["authority"], "backtest_debug_fixture")
         self.assertEqual(authority["revision_token"], self.fixture().content_hash)
@@ -597,6 +608,13 @@ class HistoricalDebugFixtureTests(unittest.IsolatedAsyncioTestCase):
                     ]
                 )
                 self.assertEqual(len(trading["closed_trades"]), 1)
+                self.assertTrue(
+                    any(
+                        row.get("action") == "enter_long"
+                        for row in payload["strategy"]["decisions"]
+                    ),
+                    payload["strategy"]["decisions"],
+                )
                 self.assertEqual(
                     trading["closed_trades"][0]["strategy_id"],
                     STRATEGY_ID,
@@ -724,12 +742,14 @@ class HistoricalDebugFixtureTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(service.list()[0]["checkpoint"]["resume_supported"])
             manifest_path = controller.run_dir / "manifest.json"
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-            manifest["approved_configuration"]["content_hash"] = "changed"
-            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+            approved_path = controller.run_dir / "approved-configuration.json"
+            approved = json.loads(approved_path.read_text(encoding="utf-8"))
+            approved["content_hash"] = "changed"
+            approved_path.write_text(json.dumps(approved), encoding="utf-8")
             with self.assertRaisesRegex(ValueError, "identity changed"):
                 await service.resume(controller.run_id)
-            manifest["approved_configuration"]["content_hash"] = "test-hash"
-            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+            approved["content_hash"] = "test-hash"
+            approved_path.write_text(json.dumps(approved), encoding="utf-8")
             resumed = await service.resume(controller.run_id)
             assert resumed._task is not None
             await resumed._task
@@ -1222,6 +1242,25 @@ class ReplayRunServiceCapacityTests(unittest.IsolatedAsyncioTestCase):
 
 
 class ReplayHistoricalFetchBudgetTests(unittest.IsolatedAsyncioTestCase):
+    async def test_only_resource_and_transport_stream_failures_are_retryable(self) -> None:
+        self.assertTrue(
+            _retryable_historical_stream_error(
+                RuntimeError(
+                    "QMD derived stream failed: historical cache byte limit exceeded"
+                )
+            )
+        )
+        self.assertTrue(
+            _retryable_historical_stream_error(
+                RuntimeError("QMD derived stream closed early for ABCD 100ms")
+            )
+        )
+        self.assertFalse(
+            _retryable_historical_stream_error(
+                RuntimeError("invalid focused repair coverage row")
+            )
+        )
+
     async def test_default_history_fetch_concurrency_matches_gateway_build_budget(self) -> None:
         with patch.dict("os.environ", {}, clear=True):
             self.assertEqual(replay_history_fetch_concurrency(), 4)
@@ -1249,6 +1288,52 @@ class ReplayHistoricalFetchBudgetTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual([frame.as_of for frame in frames], [earlier, later])
         self.assertEqual(frames[0].signals, {"breakout@1s": 0.8})
+
+    async def test_frame_spool_can_reopen_completed_resume_data_without_resetting_it(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "frames.sqlite3"
+            observed_at = datetime(2026, 8, 10, 9, 0, 1, tzinfo=ZoneInfo("UTC"))
+            spool = ReplayFrameSpool(path)
+            spool.append([
+                ReplayDerivedFrame(
+                    observed_at,
+                    {"close": 10.0},
+                    {"vwap": 9.9},
+                    1,
+                    "ABCD",
+                    "1s",
+                ),
+            ])
+            spool.mark_stream_complete("ABCD", "1s")
+            spool.finalize({})
+
+            reopened = ReplayFrameSpool(path, reset=False)
+            reopened.finalize({})
+            frames = list(reopened)
+            completed = reopened.completed_streams()
+
+        self.assertEqual(len(frames), 1)
+        self.assertEqual(frames[0].ticker, "ABCD")
+        self.assertEqual(frames[0].indicator["vwap"], 9.9)
+        self.assertEqual(completed, {("ABCD", "1s")})
+
+    async def test_frame_spool_does_not_claim_an_interrupted_stream_is_complete(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            spool = ReplayFrameSpool(Path(directory) / "frames.sqlite3")
+            spool.append([
+                ReplayDerivedFrame(
+                    datetime(2026, 8, 10, 9, 0, 1, tzinfo=ZoneInfo("UTC")),
+                    {"close": 10.0},
+                    {"vwap": 9.9},
+                    1,
+                    "ABCD",
+                    "1s",
+                ),
+            ])
+
+            completed = spool.completed_streams()
+
+        self.assertEqual(completed, set())
 
     async def test_shared_historical_frame_cache_reuses_frozen_causal_tape(self) -> None:
         start = datetime(2026, 8, 10, 8, tzinfo=ZoneInfo("UTC"))
@@ -1378,7 +1463,9 @@ class ReplayHistoricalFetchBudgetTests(unittest.IsolatedAsyncioTestCase):
                 attempts += 1
                 await kwargs["frame_sink"]([frame])
                 if attempts == 1:
-                    raise TimeoutError("transient history transport timeout")
+                    raise RuntimeError(
+                        "QMD derived stream failed: historical cache byte limit exceeded"
+                    )
 
             with (
                 patch(
@@ -1389,6 +1476,7 @@ class ReplayHistoricalFetchBudgetTests(unittest.IsolatedAsyncioTestCase):
                     "src.backend.replay_run_service._historical_signal_events",
                     AsyncMock(return_value={"ABCD": []}),
                 ),
+                patch("src.backend.replay_run_service.asyncio.sleep", AsyncMock()),
             ):
                 frames = controller._load_strategy_frames()
                 loaded = list(await frames)
@@ -1888,8 +1976,87 @@ class ReplayControllerTests(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(controller.snapshot()["navigation_search"]["active"])
             controller._journal.close()
 
+    async def test_next_action_stops_on_preloaded_future_market_signal(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            controller = ReplayRunController(
+                ReplayRunDefinition(
+                    session_date=date(2026, 7, 28),
+                    start_time=time(4, 0),
+                    tickers=("SUGP",),
+                    configuration_revision=approved_configuration(),
+                ),
+                runtime_root=Path(directory),
+            )
+            controller.status = "ready"
+            controller.current_time = datetime(2026, 7, 28, 4, 0, tzinfo=NEW_YORK)
+            controller._journal = TradingJournal(Path(directory) / "journal.sqlite")
+            signal_time = datetime(2026, 7, 28, 7, 32, 3, tzinfo=NEW_YORK)
+            controller._journal.append(
+                run_id=controller.run_id,
+                category="market_discovery_signal",
+                entity_type="signal_occurrence",
+                entity_id="squeeze-1",
+                event_time=signal_time,
+                payload={
+                    "signal_stream_id": "price-squeeze-5m",
+                    "signal_stream_name": "Small-cap 5% squeeze",
+                    "ticker": "SUGP",
+                },
+            )
+
+            result = await controller.command("next_action")
+
+            self.assertEqual(
+                result["navigation_search"]["target_event_time"],
+                signal_time.astimezone(UTC).isoformat(),
+            )
+            await controller._after_event(signal_time)
+            snapshot = controller.snapshot()
+            self.assertEqual(snapshot["status"], "paused")
+            self.assertEqual(snapshot["navigation_action"]["kind"], "watch_started")
+            self.assertEqual(snapshot["navigation_action"]["ticker"], "SUGP")
+            self.assertFalse(snapshot["navigation_search"]["active"])
+            controller._journal.close()
+
 
 class ReplayHistoricalSourceTests(unittest.IsolatedAsyncioTestCase):
+    def test_batched_qmd_frames_preserve_every_frame_and_metadata(self) -> None:
+        frames: list[ReplayDerivedFrame] = []
+        metadata = _append_historical_derived_message(
+            json.dumps({
+                "type": "frames_batch",
+                "frames": [
+                    {
+                        "as_of": "2026-07-28T13:45:00+00:00",
+                        "sequence": 1,
+                        "bar": {"close": 101.0},
+                        "indicator": {"vwap": 100.5},
+                    },
+                    {
+                        "as_of": "2026-07-28T13:45:01+00:00",
+                        "sequence": 2,
+                        "bar": {"close": 101.5},
+                        "indicator": {"vwap": 100.7},
+                    },
+                ],
+            }),
+            frames=frames,
+            metadata={},
+            ticker="AAPL",
+            timeframe="1s",
+        )
+        metadata = _append_historical_derived_message(
+            json.dumps({"type": "metadata", "emitted_updates": 2}),
+            frames=frames,
+            metadata=metadata,
+            ticker="AAPL",
+            timeframe="1s",
+        )
+
+        self.assertEqual([frame.sequence for frame in frames], [1, 2])
+        self.assertEqual([frame.bar["close"] for frame in frames], [101.0, 101.5])
+        self.assertEqual(metadata["emitted_updates"], 2)
+
     def test_qmd_payload_authority_normalizes_derived_and_scanner_evidence(self) -> None:
         payload = {
             "cache": {

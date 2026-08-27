@@ -199,6 +199,7 @@ export type CanvasPreview = {
     fixture?: boolean;
     revision: number;
     signals: PreviewRow[];
+    decisions?: PreviewRow[];
     order_management?: PreviewRow[];
     run_id?: string;
     runtime_mode?: "backtest" | "backtest_debug" | "replay";

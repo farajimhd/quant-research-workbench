@@ -1,6 +1,6 @@
 use crate::cache::{
-    CacheEvidence, CacheMetrics, ChartSnapshot, DerivedSnapshot, HistoricalDerivedCache,
-    HISTORICAL_CALCULATION_REVISION, HISTORICAL_CORPORATE_ACTION_REVISION,
+    CacheEvidence, CacheMetrics, ChartSnapshot, DerivedSnapshot, DerivedUpdate,
+    HistoricalDerivedCache, HISTORICAL_CALCULATION_REVISION, HISTORICAL_CORPORATE_ACTION_REVISION,
     HISTORICAL_ENGINE_VERSION,
 };
 use crate::config::HistoricalGatewayConfig;
@@ -166,6 +166,8 @@ struct DerivedStreamQuery {
     as_of: Option<String>,
     end: String,
     emit: Option<String>,
+    frame_batch_size: Option<usize>,
+    indicator_columns: Option<String>,
     max_updates: Option<u64>,
     retain_cache: Option<bool>,
     start: String,
@@ -1272,6 +1274,11 @@ async fn derived_stream(
     if query.max_updates.is_some_and(|value| value == 0) {
         return Err(bad_request("max_updates must be greater than zero"));
     }
+    let frame_batch_size = query.frame_batch_size.unwrap_or(1);
+    if !(1..=5_000).contains(&frame_batch_size) {
+        return Err(bad_request("frame_batch_size must be between 1 and 5000"));
+    }
+    let indicator_columns = parse_indicator_projection(query.indicator_columns.as_deref())?;
     let cache = state.cache.clone();
     Ok(websocket.on_upgrade(move |socket| {
         stream_derived(
@@ -1281,6 +1288,8 @@ async fn derived_stream(
             ticker,
             timeframe,
             emit,
+            frame_batch_size,
+            indicator_columns,
             as_of,
             query.after_sequence.unwrap_or(0),
             query.max_updates,
@@ -1496,6 +1505,8 @@ async fn stream_derived(
     ticker: String,
     timeframe: String,
     emit: String,
+    frame_batch_size: usize,
+    indicator_columns: Option<BTreeSet<String>>,
     as_of: DateTime<Utc>,
     after_sequence: u64,
     max_updates: Option<u64>,
@@ -1547,6 +1558,10 @@ async fn stream_derived(
                 source_revision: lease.source_revision.clone(),
             },
             frame_count: visible.len(),
+            indicator_columns: indicator_columns
+                .as_ref()
+                .map(|columns| columns.iter().cloned().collect())
+                .unwrap_or_default(),
             ticker: ticker.clone(),
             timeframe: timeframe.clone(),
             update_type: "metadata",
@@ -1557,8 +1572,44 @@ async fn stream_derived(
             }
             return;
         }
-        for frame in visible {
-            if send_json(&mut socket, frame).await.is_err() {
+        for frames in visible.chunks(frame_batch_size) {
+            let result = if let Some(columns) = indicator_columns.as_ref() {
+                let projected = match frames
+                    .iter()
+                    .map(|frame| project_derived_update(frame, columns))
+                    .collect::<Result<Vec<_>, _>>()
+                {
+                    Ok(projected) => projected,
+                    Err(error) => {
+                        send_stream_error(&mut socket, error).await;
+                        if !retain_cache {
+                            cache.evict(&lease.key).await;
+                        }
+                        return;
+                    }
+                };
+                if frame_batch_size == 1 {
+                    send_json(&mut socket, &projected[0]).await
+                } else {
+                    send_json(
+                        &mut socket,
+                        &json!({"type": "frames_batch", "frames": projected}),
+                    )
+                    .await
+                }
+            } else if frame_batch_size == 1 {
+                send_json(&mut socket, frames[0]).await
+            } else {
+                send_json(
+                    &mut socket,
+                    &DerivedFramesBatch {
+                        frames,
+                        update_type: "frames_batch",
+                    },
+                )
+                .await
+            };
+            if result.is_err() {
                 if !retain_cache {
                     cache.evict(&lease.key).await;
                 }
@@ -1704,8 +1755,78 @@ struct DerivedFramesMetadata {
     as_of: DateTime<Utc>,
     cache: CacheEvidence,
     frame_count: usize,
+    indicator_columns: Vec<String>,
     ticker: String,
     timeframe: String,
+    #[serde(rename = "type")]
+    update_type: &'static str,
+}
+
+fn project_derived_update(
+    frame: &DerivedUpdate,
+    columns: &BTreeSet<String>,
+) -> Result<Value, String> {
+    let row = &frame.indicator;
+    let mut indicator = serde_json::Map::new();
+    macro_rules! include {
+        ($key:literal, $value:expr) => {
+            if columns.contains($key) {
+                indicator.insert($key.to_string(), json!($value));
+            }
+        };
+    }
+    include!("atr_14", row.atr_14);
+    include!("bar_end", row.bar_end);
+    include!("bar_start", row.bar_start);
+    include!("close", row.close);
+    include!(
+        "flow_structure_composite_bias",
+        &row.flow_structure_composite_bias
+    );
+    include!(
+        "flow_structure_composite_confidence",
+        row.flow_structure_composite_confidence
+    );
+    include!(
+        "flow_structure_composite_score",
+        row.flow_structure_composite_score
+    );
+    include!("macd_histogram", row.macd_histogram);
+    include!("macd_line", row.macd_line);
+    include!("macd_signal", row.macd_signal);
+    include!(
+        "price_change_1_bar_pct",
+        row.bar_fields.price_change_1_bar_pct
+    );
+    include!("structure_bos_direction", row.structure_bos_direction);
+    include!("structure_choch_direction", row.structure_choch_direction);
+    include!("structure_luld_upper", row.structure_luld_upper);
+    include!("structure_swing_high", row.structure_swing_high);
+    include!("structure_swing_low", row.structure_swing_low);
+    include!("sym", &row.sym);
+    include!("timeframe", &row.timeframe);
+    include!("vwap", row.vwap);
+    Ok(json!({
+        "as_of": frame.as_of,
+        "bar": {
+            "bar_end": frame.bar.bar_end,
+            "close": frame.bar.close,
+            "high": frame.bar.high,
+            "low": frame.bar.low,
+            "open": frame.bar.open,
+            "sym": frame.bar.sym,
+            "timeframe": frame.bar.timeframe,
+            "volume": frame.bar.volume,
+        },
+        "indicator": Value::Object(indicator),
+        "sequence": frame.sequence,
+        "type": frame.update_type,
+    }))
+}
+
+#[derive(Serialize)]
+struct DerivedFramesBatch<'a> {
+    frames: &'a [&'a DerivedUpdate],
     #[serde(rename = "type")]
     update_type: &'static str,
 }

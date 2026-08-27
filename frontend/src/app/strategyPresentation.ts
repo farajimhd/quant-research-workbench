@@ -62,7 +62,8 @@ export function strategyPresentationMarkers(
     const effectiveAt = Date.parse(event.effective_at);
     if (!Number.isFinite(effectiveAt)) return [];
     const interval = intervals.find((candidate) => effectiveAt >= candidate.start && effectiveAt < candidate.end)
-      ?? intervals.find((candidate) => candidate.start >= effectiveAt);
+      ?? intervals.find((candidate) => candidate.start >= effectiveAt)
+      ?? [...intervals].reverse().find((candidate) => candidate.start <= effectiveAt);
     if (!interval) return [];
     const style = actionStyle(event.action, event.direction);
     const confidence = Math.max(0, Math.min(1, Number(event.confidence) || 0));
@@ -73,7 +74,7 @@ export function strategyPresentationMarkers(
       position: style.position,
       shape: style.shape,
       size: style.size,
-      text: `${strategyLabel} · ${actionLabel(event.action)}${presentation.show_confidence ? ` · ${Math.round(confidence * 100)}%` : ""}`,
+      text: `${strategyLabel} · ${actionLabel(event.action)} · ${formatEventTime(event.effective_at)}${presentation.show_confidence ? ` · ${Math.round(confidence * 100)}%` : ""}`,
       time: interval.time as UTCTimestamp,
     }];
   });
@@ -145,4 +146,16 @@ function actionStyle(action: StrategyAction, direction: StrategyDecisionEvent["d
 
 function actionLabel(action: StrategyAction) {
   return action.replace("_", " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
+function formatEventTime(value: string) {
+  const timestamp = Date.parse(value);
+  if (!Number.isFinite(timestamp)) return value;
+  return new Intl.DateTimeFormat("en-US", {
+    hour: "2-digit",
+    hour12: false,
+    minute: "2-digit",
+    second: "2-digit",
+    timeZone: "America/New_York",
+  }).format(timestamp);
 }

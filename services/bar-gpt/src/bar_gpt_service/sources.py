@@ -5,7 +5,9 @@ import datetime as dt
 import hashlib
 import json
 import math
+import os
 import urllib.parse
+import urllib.request
 from collections import OrderedDict
 from dataclasses import asdict, dataclass
 from typing import Any, Awaitable, Callable
@@ -532,6 +534,115 @@ FORMAT JSONEachRow
                     "qmd-history:direct-events-daily",
                 ))
         return [row for view in (*INTRADAY_VIEW_US, *CALENDAR_VIEWS) for row in raw_by_view[view]]
+
+    def load_current_session(
+        self, ticker: str, as_of: dt.datetime
+    ) -> list[RawBar]:
+        local = as_of.astimezone(NEW_YORK)
+        session_start = dt.datetime.combine(
+            local.date(), dt.time(hour=4), tzinfo=NEW_YORK
+        ).astimezone(dt.UTC)
+        if as_of <= session_start:
+            return []
+        base_url = os.environ.get(
+            "QMD_HISTORY_GATEWAY_URL", "http://127.0.0.1:8801"
+        ).rstrip("/")
+        params = {
+            "start": session_start.isoformat().replace("+00:00", "Z"),
+            "end": as_of.isoformat().replace("+00:00", "Z"),
+            "tickers": ticker.upper(),
+        }
+        revision_url = f"{base_url}/source-revision?{urllib.parse.urlencode(params)}"
+        revision_before = _read_json(revision_url)
+        compact_params = {
+            "start": params["start"],
+            "end": params["end"],
+            "limit": 100_000,
+            "tail": "true",
+        }
+        compact_url = (
+            f"{base_url}/snapshot/compact-events/{urllib.parse.quote(ticker.upper())}?"
+            f"{urllib.parse.urlencode(compact_params)}"
+        )
+        events = _read_json(compact_url)
+        if not isinstance(events, list):
+            raise RuntimeError("QMD History compact-event response must be an array")
+        if len(events) >= 100_000:
+            raise RuntimeError(
+                "QMD History current-session compact events exceed the bounded BarGPT warm limit"
+            )
+        revision_after = _read_json(revision_url)
+        if revision_before != revision_after:
+            raise RuntimeError("QMD History source revision changed during BarGPT session warm-up")
+        if not bool(revision_after.get("request_complete")):
+            raise RuntimeError("QMD History current-session source plan is incomplete")
+        references = ConditionReferences.load(
+            self.release.data_config.database,
+            self.release.data_config.condition_reference_table,
+        )
+        builder = LiveEventBarBuilder(
+            references,
+            self.release.data_config.max_quote_spread_bps,
+            retain_seconds=max(120, int((as_of - session_start).total_seconds()) + 5),
+        )
+        active = {ticker.upper()}
+        corrections: list[RawBar] = []
+        for event in events:
+            if isinstance(event, dict):
+                corrections.extend(builder.apply(event, active))
+        one_second = [*corrections, *builder.flush(int(as_of.timestamp() * 1_000_000))]
+        one_second.sort(key=lambda row: (row.bar_start_us, row.available_at_us))
+        if not one_second:
+            return []
+        source_revision = str(revision_after.get("token") or revision_after.get("source_plan_hash") or "")
+        one_second = [
+            RawBar(
+                ticker=row.ticker,
+                view=row.view,
+                bar_start_us=row.bar_start_us,
+                bar_end_us=row.bar_end_us,
+                available_at_us=row.available_at_us,
+                values=row.values,
+                revision=row.revision,
+                source="qmd-history:compact-events",
+                source_revision=source_revision,
+            )
+            for row in one_second
+        ]
+        view = _bar_view(one_second)
+        result = list(one_second)
+        for name, timeframe_us in INTRADAY_VIEW_US.items():
+            if name == "1s":
+                continue
+            rolled = rollup_intraday_view(view, timeframe_us)
+            result.extend(
+                _view_rows(
+                    ticker.upper(),
+                    name,
+                    rolled,
+                    rolled.features,
+                    "qmd-history:compact-events",
+                    origin_us=int(as_of.timestamp() * 1_000_000),
+                    past_limit=int(self.release.data_config.intraday_context_by_name[name]),
+                )
+            )
+        return result
+
+
+def _read_json(url: str) -> Any:
+    with urllib.request.urlopen(url, timeout=60) as response:
+        return json.load(response)
+
+
+def _bar_view(rows: list[RawBar]) -> BarView:
+    return BarView(
+        features=torch.as_tensor([row.values for row in rows], dtype=torch.float32),
+        bar_start_us=torch.as_tensor([row.bar_start_us for row in rows], dtype=torch.long),
+        bar_end_us=torch.as_tensor([row.bar_end_us for row in rows], dtype=torch.long),
+        available_at_us=torch.as_tensor(
+            [row.available_at_us for row in rows], dtype=torch.long
+        ),
+    )
 
 
 def _historical_window(as_of: dt.datetime) -> tuple[dt.date, dt.date, dt.date]:
