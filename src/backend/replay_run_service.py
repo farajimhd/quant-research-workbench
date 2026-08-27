@@ -5,13 +5,14 @@ import hashlib
 import json
 import os
 import re
+import sqlite3
 import time
 import urllib.parse
 from copy import deepcopy
 from dataclasses import asdict, dataclass, field, replace
 from datetime import UTC, date, datetime, time as clock_time, timedelta
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Awaitable, Callable, Iterator
 from uuid import uuid4
 from zoneinfo import ZoneInfo
 
@@ -96,7 +97,7 @@ REPLAY_STATUSES = {
 TERMINAL_REPLAY_STATUSES = {"completed", "stopped", "failed"}
 PLAYBACK_SPEEDS = (1.0, 5.0, 30.0, 120.0, 0.0)
 DEFAULT_MAX_RESIDENT_RUNS = 32
-DEFAULT_HISTORY_FETCH_CONCURRENCY = 8
+DEFAULT_HISTORY_FETCH_CONCURRENCY = 2
 MAX_DEBUG_FIXTURE_EVENTS = 20_000
 RESTART_CHECKPOINT_SCHEMA_VERSION = 3
 
@@ -330,6 +331,138 @@ class ReplayDerivedFrame:
     signals: dict[str, float] = field(default_factory=dict)
 
 
+class ReplayFrameSpool:
+    """Disk-backed, event-time-ordered derived frames for one historical run."""
+
+    def __init__(self, path: Path) -> None:
+        self.path = path
+        self._signal_events: dict[str, list[dict[str, Any]]] = {}
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        connection = sqlite3.connect(self.path)
+        try:
+            with connection:
+                connection.execute("DROP TABLE IF EXISTS strategy_frames")
+                connection.execute(
+                    """
+                    CREATE TABLE strategy_frames (
+                        as_of_us INTEGER NOT NULL,
+                        as_of TEXT NOT NULL,
+                        ticker TEXT NOT NULL,
+                        timeframe TEXT NOT NULL,
+                        sequence INTEGER NOT NULL,
+                        bar_json TEXT NOT NULL,
+                        indicator_json TEXT NOT NULL
+                    )
+                    """
+                )
+        finally:
+            connection.close()
+
+    def append(self, frames: list[ReplayDerivedFrame]) -> None:
+        if not frames:
+            return
+        rows = (
+            (
+                int(frame.as_of.timestamp() * 1_000_000),
+                frame.as_of.isoformat(),
+                frame.ticker,
+                frame.timeframe,
+                frame.sequence,
+                json.dumps(frame.bar, separators=(",", ":"), sort_keys=True),
+                json.dumps(frame.indicator, separators=(",", ":"), sort_keys=True),
+            )
+            for frame in frames
+        )
+        connection = sqlite3.connect(self.path)
+        try:
+            with connection:
+                connection.executemany(
+                    """
+                    INSERT INTO strategy_frames (
+                        as_of_us, as_of, ticker, timeframe, sequence, bar_json, indicator_json
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    rows,
+                )
+        finally:
+            connection.close()
+
+    def finalize(self, signal_events: dict[str, list[dict[str, Any]]]) -> None:
+        self._signal_events = {
+            ticker: sorted(
+                (dict(event) for event in events),
+                key=lambda event: _aware_datetime(
+                    event.get("effective_at") or event.get("observed_at")
+                ),
+            )
+            for ticker, events in signal_events.items()
+        }
+        connection = sqlite3.connect(self.path)
+        try:
+            with connection:
+                connection.execute(
+                    """
+                    CREATE INDEX IF NOT EXISTS strategy_frames_event_order
+                    ON strategy_frames (as_of_us, ticker, timeframe, sequence)
+                    """
+                )
+        finally:
+            connection.close()
+
+    def __iter__(self) -> Iterator[ReplayDerivedFrame]:
+        event_indices: dict[str, int] = {}
+        active_signals: dict[str, dict[str, float]] = {}
+        connection = sqlite3.connect(self.path)
+        cursor: sqlite3.Cursor | None = None
+        try:
+            cursor = connection.execute(
+                """
+                SELECT as_of, ticker, timeframe, sequence, bar_json, indicator_json
+                FROM strategy_frames
+                ORDER BY as_of_us, ticker, timeframe, sequence
+                """
+            )
+            for as_of, ticker, timeframe, sequence, bar_json, indicator_json in cursor:
+                frame_time = _aware_datetime(as_of)
+                ticker_events = self._signal_events.get(ticker, [])
+                event_index = event_indices.get(ticker, 0)
+                ticker_signals = active_signals.setdefault(ticker, {})
+                while event_index < len(ticker_events):
+                    event = ticker_events[event_index]
+                    effective_at = _aware_datetime(
+                        event.get("effective_at") or event.get("observed_at")
+                    )
+                    if effective_at > frame_time:
+                        break
+                    signal_key = str(event.get("signal_key") or "")
+                    working_timeframe = str(event.get("working_timeframe") or "")
+                    key = (
+                        f"{signal_key}@{working_timeframe}"
+                        if signal_key and working_timeframe
+                        else ""
+                    )
+                    if key:
+                        if str(event.get("state") or "") == "resolved":
+                            ticker_signals.pop(key, None)
+                        else:
+                            ticker_signals[key] = float(event.get("score") or 0)
+                    event_index += 1
+                event_indices[ticker] = event_index
+                yield ReplayDerivedFrame(
+                    as_of=frame_time,
+                    bar=json.loads(bar_json),
+                    indicator=json.loads(indicator_json),
+                    sequence=int(sequence),
+                    ticker=str(ticker),
+                    timeframe=str(timeframe),
+                    signals=dict(ticker_signals),
+                )
+        finally:
+            if cursor is not None:
+                cursor.close()
+            connection.close()
+
+
 _STRATEGY_BAR_FIELDS = frozenset(
     {"bar_end", "close", "high", "low", "open", "sym", "timeframe", "volume"}
 )
@@ -423,6 +556,10 @@ class ReplayRunController:
         self._subscribers: set[asyncio.Queue[dict[str, Any]]] = set()
         self._last_publish_monotonic = 0.0
         self._runtime: TradingRuntime | None = None
+        self._runtime_inputs_ready = False
+        self._preparation_stage = "created"
+        self._preparation_completed_units = 0
+        self._preparation_total_units = 0
         self._strategy: Any | None = None
         self._strategy_registration: StrategyExecutorRegistration | None = None
         self._planner: RuntimeIbkrStrategyOrderPlanner | None = None
@@ -463,6 +600,9 @@ class ReplayRunController:
         self._historical_watchlist_timeline_index = 0
         self._active_historical_watchlist_tickers: set[str] = set()
         self._active_historical_watchlists: dict[str, set[str]] = {}
+        self._active_historical_watchlist_rows: dict[
+            str, dict[str, dict[str, Any]]
+        ] = {}
         self._historical_external_signal_events: list[ReplaySignalEvent] = []
         self._data_authority: dict[str, dict[str, Any]] = {}
         self._resume_state = deepcopy(resume_state) if resume_state is not None else None
@@ -783,7 +923,7 @@ class ReplayRunController:
         active = self._next_action_after_sequence is not None
         return {
             "active": active,
-            "phase": "scanning" if active and self._runtime is not None else "preparing" if active else "idle",
+            "phase": "scanning" if active and self._runtime_inputs_ready else "preparing" if active else "idle",
             "started_at": (
                 self._navigation_started_at.isoformat()
                 if self._navigation_started_at is not None
@@ -802,6 +942,17 @@ class ReplayRunController:
             "targets": ["watch start", "strategy decision", "order update"],
         }
 
+    def _transport_mode(self) -> str:
+        if self._next_action_after_sequence is not None:
+            return "next_action"
+        if self._fast_forward_until is not None:
+            return "fast_forward"
+        if self._step_until is not None:
+            return "step"
+        if self.status == "running":
+            return "play"
+        return self.status
+
     def snapshot(self) -> dict[str, Any]:
         current = self.current_time or self.definition.session_start
         checkpoint = self._checkpoint_projection()
@@ -815,7 +966,12 @@ class ReplayRunController:
             "mode": self.definition.mode.value,
             "run_id": self.run_id,
             "status": self.status,
-            "runtime_ready": self._runtime is not None and self._journal is not None,
+            "runtime_ready": self._runtime_inputs_ready,
+            "preparation_stage": self._preparation_stage,
+            "preparation_progress": {
+                "completed": self._preparation_completed_units,
+                "total": self._preparation_total_units,
+            },
             "execution_mode": self.definition.execution_mode,
             "strategy_debug_sources": self._strategy_debug_sources(),
             "error": self.error,
@@ -827,6 +983,7 @@ class ReplayRunController:
             "session_start": self.definition.session_start.isoformat(),
             "session_end": self.definition.session_end.isoformat(),
             "speed": self.speed,
+            "transport_mode": self._transport_mode(),
             "processed_events": self.processed_events,
             "warmup_events": self.warmup_events,
             "checkpoint": checkpoint,
@@ -1000,6 +1157,9 @@ class ReplayRunController:
                         self._active_historical_watchlists.items()
                     )
                 },
+                "active_watchlist_rows": deepcopy(
+                    self._active_historical_watchlist_rows
+                ),
                 "active_watchlist_evidence": deepcopy(
                     self._active_historical_watchlist_evidence
                 ),
@@ -1154,6 +1314,8 @@ class ReplayRunController:
             self.updated_at = datetime.now(UTC)
             await self._publish(force=True)
             self._journal = TradingJournal(self.run_dir / "journal.sqlite3")
+            self._preparation_stage = "signal_occurrences"
+            await self._publish(force=True)
             self._historical_external_signal_events = [
                 *(await self._load_market_signal_events()),
                 *(await self._load_source_native_signal_events()),
@@ -1167,18 +1329,32 @@ class ReplayRunController:
                     str(row.occurrence.get("event_id") or ""),
                 )
             )
+            self._historical_watchlist_plans = (
+                _historical_watchlist_plans_at_source_native_events(
+                    self._historical_watchlist_plans,
+                    self._historical_external_signal_events,
+                    configuration=self.definition.configuration_revision["payload"],
+                )
+            )
+            self._preparation_stage = "watchlist_membership"
+            await self._publish(force=True)
             await self._prepare_historical_watchlist_timeline()
+            self._preparation_stage = "strategy_runtime"
+            await self._publish(force=True)
             await self._initialize_runtime()
             self._record_historical_watchlist_authority()
-            frames = await self._load_strategy_frames()
-            frame_index = 0
+            self._preparation_stage = "strategy_frames"
+            await self._publish(force=True)
+            frame_source = await self._load_strategy_frames()
+            frame_iterator = iter(frame_source)
+            next_frame = next(frame_iterator, None)
             external_index = 0
             if self._resume_state is not None and self._frame_cursor:
                 while (
-                    frame_index < len(frames)
-                    and not _frame_after_cursor(frames[frame_index], self._frame_cursor)
+                    next_frame is not None
+                    and not _frame_after_cursor(next_frame, self._frame_cursor)
                 ):
-                    frame_index += 1
+                    next_frame = next(frame_iterator, None)
             if self._resume_state is not None and self.current_time is not None:
                 while (
                     external_index < len(self._historical_external_signal_events)
@@ -1187,7 +1363,14 @@ class ReplayRunController:
                 ):
                     external_index += 1
             self._stream_tickers = self._resolved_tickers()
+            self._preparation_stage = "market_events"
+            await self._publish(force=True)
             async for events in self._market_event_batches():
+                if not self._runtime_inputs_ready:
+                    self._runtime_inputs_ready = True
+                    self._preparation_stage = "ready"
+                    self.updated_at = datetime.now(UTC)
+                    await self._publish(force=True)
                 for event_index, event in enumerate(events, start=1):
                     if self._resume_state is not None and self._source_cursor and not _event_after_cursor(
                         event, self._source_cursor
@@ -1213,8 +1396,8 @@ class ReplayRunController:
                             await self._finish("stopped")
                             return
                         await self._pace(event)
-                    while frame_index < len(frames) and frames[frame_index].as_of <= event.ts:
-                        frame = frames[frame_index]
+                    while next_frame is not None and next_frame.as_of <= event.ts:
+                        frame = next_frame
                         while (
                             external_index < len(self._historical_external_signal_events)
                             and self._historical_external_signal_events[external_index].available_at
@@ -1233,7 +1416,7 @@ class ReplayRunController:
                                 return
                             await self._process_strategy_frame(frame)
                             await self._after_event(frame.as_of)
-                        frame_index += 1
+                        next_frame = next(frame_iterator, None)
                     while (
                         external_index < len(self._historical_external_signal_events)
                         and self._historical_external_signal_events[external_index].available_at
@@ -1259,8 +1442,16 @@ class ReplayRunController:
                         await self._after_event(event.ts)
                     if event_index % 100 == 0:
                         await asyncio.sleep(0)
+            if not self._runtime_inputs_ready:
+                # A valid empty market stream (including derived-frame-only
+                # debug fixtures) is fully prepared once source iteration
+                # completes; it must not remain permanently "warming".
+                self._runtime_inputs_ready = True
+                self._preparation_stage = "ready"
+                self.updated_at = datetime.now(UTC)
+                await self._publish(force=True)
             if (
-                frame_index < len(frames)
+                next_frame is not None
                 and self.status == "warming"
                 and self.definition.mode == RunMode.BACKTEST_DEBUG
             ):
@@ -1269,8 +1460,8 @@ class ReplayRunController:
                 self.updated_at = datetime.now(UTC)
                 await self._publish(force=True)
                 self._write_manifest()
-            while frame_index < len(frames):
-                frame = frames[frame_index]
+            while next_frame is not None:
+                frame = next_frame
                 while (
                     external_index < len(self._historical_external_signal_events)
                     and self._historical_external_signal_events[external_index].available_at
@@ -1284,7 +1475,7 @@ class ReplayRunController:
                     await self._wait_until_active()
                     await self._process_strategy_frame(frame)
                     await self._after_event(frame.as_of)
-                frame_index += 1
+                next_frame = next(frame_iterator, None)
             while external_index < len(self._historical_external_signal_events):
                 signal_event = self._historical_external_signal_events[external_index]
                 await self._process_external_signal_event(signal_event)
@@ -1601,9 +1792,35 @@ class ReplayRunController:
                 controller.get("active_watchlists") or {}
             ).items()
         }
+        restored_rows = dict(controller.get("active_watchlist_rows") or {})
+        self._active_historical_watchlist_rows = {
+            str(watchlist_id): {
+                str(ticker).upper(): deepcopy(dict(row))
+                for ticker, row in dict(rows).items()
+                if str(ticker).strip()
+            }
+            for watchlist_id, rows in restored_rows.items()
+        }
         self._active_historical_watchlist_evidence = deepcopy(
             dict(controller.get("active_watchlist_evidence") or {})
         )
+        if not self._active_historical_watchlist_rows:
+            # Schema-v2 checkpoints did not persist per-Watchlist evidence.
+            # Reconstruct the best exact state available from their membership
+            # sets and the persisted union evidence.
+            self._active_historical_watchlist_rows = {
+                watchlist_id: {
+                    ticker: {
+                        "ticker": ticker,
+                        **deepcopy(
+                            self._active_historical_watchlist_evidence.get(ticker, {})
+                        ),
+                        "watchlist_ids": [watchlist_id],
+                    }
+                    for ticker in tickers
+                }
+                for watchlist_id, tickers in self._active_historical_watchlists.items()
+            }
         self._signal_activated_tickers = {
             str(value).upper()
             for value in controller.get("signal_activated_tickers") or ()
@@ -2292,7 +2509,13 @@ class ReplayRunController:
         members: dict[str, dict[str, Any]] = {}
         conids: dict[str, int] = {}
         for snapshot in self._historical_watchlist_timeline():
-            for row in snapshot["members"]:
+            rows = list(snapshot.get("members") or [])
+            rows.extend(
+                _historical_watchlist_transition_row(transition)
+                for transition in snapshot.get("transitions") or []
+                if str(transition.get("event") or "") in {"added", "rank_changed"}
+            )
+            for row in rows:
                 ticker = str(row.get("ticker") or "").upper()
                 conid = int(row.get("ibkr_conid") or 0)
                 if ticker in conids and conids[ticker] != conid:
@@ -2323,13 +2546,36 @@ class ReplayRunController:
                     _debug_watchlist_membership_timeline(fixture.watchlist_events)
                     if self.definition.mode == RunMode.BACKTEST_DEBUG and fixture is not None
                     else _historical_watchlist_membership_timeline_from_plans(
-                        self._historical_watchlist_plans
+                        self._historical_watchlist_plans,
+                        projection_tickers=self._historical_watchlist_projection_tickers(),
                     )
                 )
                 if shared is not None:
                     shared[cache_key] = cached
             self._historical_watchlist_timeline_cache = cached
         return self._historical_watchlist_timeline_cache
+
+    def _historical_watchlist_projection_tickers(self) -> list[str] | None:
+        activation = dict(
+            self.definition.configuration_revision["payload"].get(
+                "signal_activation"
+            )
+            or {}
+        )
+        enabled_streams = [
+            dict(stream)
+            for stream in activation.get("signal_streams") or []
+            if bool(stream.get("enabled", True))
+        ]
+        if not enabled_streams or not all(
+            str(stream.get("occurrence_source") or "").strip()
+            for stream in enabled_streams
+        ):
+            return None
+        tickers = sorted({
+            event.ticker for event in self._historical_external_signal_events
+        })
+        return tickers or None
 
     async def _prepare_historical_watchlist_timeline(self) -> None:
         """Materialize historical universe authority without blocking the API loop."""
@@ -2344,14 +2590,47 @@ class ReplayRunController:
             effective_at = snapshot["effective_at"]
             if effective_at > event_time:
                 break
+            if "transitions" in snapshot:
+                for transition in snapshot.get("transitions") or []:
+                    ticker = str(transition.get("ticker") or "").upper()
+                    watchlist_id = str(transition.get("watchlist_id") or "")
+                    if not ticker or not watchlist_id:
+                        continue
+                    rows = self._active_historical_watchlist_rows.setdefault(
+                        watchlist_id, {}
+                    )
+                    if str(transition.get("event") or "") == "removed":
+                        rows.pop(ticker, None)
+                    elif str(transition.get("event") or "") in {
+                        "added",
+                        "rank_changed",
+                    }:
+                        rows[ticker] = _historical_watchlist_transition_row(
+                            transition
+                        )
+                member_rows = _historical_watchlist_union_rows(
+                    self._active_historical_watchlist_rows
+                )
+            else:
+                member_rows = [dict(row) for row in snapshot.get("members") or []]
+                self._active_historical_watchlist_rows = {}
+                for row in member_rows:
+                    for watchlist_id in row.get("watchlist_ids") or []:
+                        self._active_historical_watchlist_rows.setdefault(
+                            str(watchlist_id), {}
+                        )[str(row.get("ticker") or "").upper()] = dict(row)
+
             current = {
                 str(row.get("ticker") or "").upper()
-                for row in snapshot["members"]
+                for row in member_rows
                 if str(row.get("ticker") or "").strip()
             }
-            current_by_watchlist: dict[str, set[str]] = {}
+            current_by_watchlist: dict[str, set[str]] = {
+                watchlist_id: set(rows)
+                for watchlist_id, rows in self._active_historical_watchlist_rows.items()
+            }
             current_evidence: dict[str, dict[str, Any]] = {}
-            for row in snapshot["members"]:
+            for row in member_rows:
                 ticker = str(row.get("ticker") or "").upper()
                 if not ticker:
                     continue
@@ -2570,7 +2849,7 @@ class ReplayRunController:
             )
         return tickers
 
-    async def _load_strategy_frames(self) -> list[ReplayDerivedFrame]:
+    async def _load_strategy_frames(self) -> list[ReplayDerivedFrame] | ReplayFrameSpool:
         if self.definition.mode == RunMode.BACKTEST_DEBUG:
             fixture = self.definition.debug_fixture
             if fixture is None:
@@ -2592,22 +2871,58 @@ class ReplayRunController:
         }
         if not requests:
             return []
-        fetch_permits = asyncio.Semaphore(replay_history_fetch_concurrency())
+        ordered_requests = sorted(requests)
+        self._preparation_completed_units = 0
+        self._preparation_total_units = len(ordered_requests)
+        spool = ReplayFrameSpool(self.run_dir / "strategy-frames.sqlite3")
+        timeframes_by_ticker: dict[str, list[str]] = {}
+        for ticker, timeframe in ordered_requests:
+            timeframes_by_ticker.setdefault(ticker, []).append(timeframe)
+        request_queue: asyncio.Queue[tuple[str, tuple[str, ...]]] = asyncio.Queue()
+        for ticker, timeframes in timeframes_by_ticker.items():
+            request_queue.put_nowait((ticker, tuple(timeframes)))
+        writer_lock = asyncio.Lock()
 
-        async def load_derived(ticker: str, timeframe: str) -> list[ReplayDerivedFrame]:
-            async with fetch_permits:
-                return await _historical_derived_frames(
-                    ticker=ticker,
-                    timeframe=timeframe,
-                    start=self.definition.session_start,
-                    end=self.definition.session_end,
-                    authority_sink=self._record_data_authority,
-                    frame_cache=self.definition.historical_frame_cache,
-                )
+        async def load_worker() -> None:
+            while True:
+                try:
+                    ticker, timeframes = request_queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    return
+                try:
+                    for timeframe in timeframes:
+                        if self.definition.historical_frame_cache is None:
+                            async def persist(batch: list[ReplayDerivedFrame]) -> None:
+                                async with writer_lock:
+                                    await asyncio.to_thread(spool.append, batch)
 
-        groups = await asyncio.gather(
-            *(load_derived(ticker, timeframe) for ticker, timeframe in sorted(requests))
-        )
+                            await _stream_historical_derived_frames(
+                                ticker=ticker,
+                                timeframe=timeframe,
+                                start=self.definition.session_start,
+                                end=self.definition.session_end,
+                                frame_sink=persist,
+                                authority_sink=self._record_data_authority,
+                            )
+                        else:
+                            frames = await _historical_derived_frames(
+                                ticker=ticker,
+                                timeframe=timeframe,
+                                start=self.definition.session_start,
+                                end=self.definition.session_end,
+                                authority_sink=self._record_data_authority,
+                                frame_cache=self.definition.historical_frame_cache,
+                            )
+                            async with writer_lock:
+                                await asyncio.to_thread(spool.append, frames)
+                        self._preparation_completed_units += 1
+                        self.updated_at = datetime.now(UTC)
+                        await self._publish(force=True)
+                finally:
+                    request_queue.task_done()
+
+        worker_count = min(replay_history_fetch_concurrency(), len(timeframes_by_ticker))
+        await asyncio.gather(*(load_worker() for _ in range(worker_count)))
         tickers = tuple(sorted({ticker for ticker, _ in requests}))
         activation = dict(
             self.definition.configuration_revision["payload"].get("signal_activation") or {}
@@ -2631,16 +2946,8 @@ class ReplayRunController:
                 authority_sink=self._record_data_authority,
             )
         )
-        frames = [frame for group in groups for frame in group]
-        for ticker in events_by_ticker:
-            _attach_historical_signals(
-                [frame for frame in frames if frame.ticker == ticker],
-                events_by_ticker[ticker],
-            )
-        return sorted(
-            frames,
-            key=lambda frame: (frame.as_of, frame.ticker, frame.timeframe, frame.sequence),
-        )
+        await asyncio.to_thread(spool.finalize, events_by_ticker)
+        return spool
 
     async def _load_external_signal_events(self) -> list[ReplaySignalEvent]:
         if self._journal is None:
@@ -3733,6 +4040,8 @@ def _historical_watchlist_membership_timeline_for_configuration(
 
 def _historical_watchlist_membership_timeline_from_plans(
     plans: list[dict[str, Any]],
+    *,
+    projection_tickers: list[str] | None = None,
 ) -> list[dict[str, Any]]:
     if not plans:
         return []
@@ -3740,7 +4049,10 @@ def _historical_watchlist_membership_timeline_from_plans(
         materialize_historical_watchlist_plans,
     )
 
-    batch = materialize_historical_watchlist_plans(plans)
+    batch = materialize_historical_watchlist_plans(
+        plans,
+        projection_tickers=projection_tickers,
+    )
     materialized_by_watchlist = {
         str(row.get("watchlist_id") or ""): dict(row)
         for row in batch.get("materializations") or []
@@ -3761,9 +4073,6 @@ def _historical_watchlist_membership_timeline_from_plans(
             str(event.get("event") or ""),
         ),
     )
-    members_by_watchlist: dict[str, dict[str, dict[str, Any]]] = {
-        str(plan.get("watchlist_id") or ""): {} for plan in plans
-    }
     authority = []
     for plan in plans:
         watchlist_id = str(plan.get("watchlist_id") or "")
@@ -3806,65 +4115,178 @@ def _historical_watchlist_membership_timeline_from_plans(
                 "calculation_revision": str(
                     materialized.get("calculation_revision") or ""
                 ),
+                "projection_complete": bool(
+                    materialized.get("projection_complete", True)
+                ),
+                "projection_mode": str(
+                    materialized.get("projection_mode") or "full"
+                ),
+                "projection_tickers": list(
+                    materialized.get("projection_tickers") or []
+                ),
+                "source_tickers": list(
+                    materialized.get("source_tickers") or []
+                ),
             }
         )
+    # Keep the QMD transition representation compressed. Expanding every
+    # one-second clock into a full union membership snapshot duplicated rich
+    # evidence tens of thousands of times and could consume gigabytes before
+    # Replay exposed its runtime. The controller applies these deltas causally.
     timeline: list[dict[str, Any]] = []
     index = 0
     while index < len(transitions):
         effective_at = _historical_watchlist_clock(transitions[index].get("effective_at"))
+        clock_transitions: list[dict[str, Any]] = []
         while index < len(transitions):
             event = transitions[index]
             if _historical_watchlist_clock(event.get("effective_at")) != effective_at:
                 break
-            ticker = str(event.get("ticker") or "").strip().upper()
-            watchlist_id = str(event.get("_watchlist_id") or "")
-            members = members_by_watchlist[watchlist_id]
-            event_kind = str(event.get("event") or "")
-            if ticker and event_kind == "removed":
-                members.pop(ticker, None)
-            elif ticker and event_kind in {"added", "rank_changed"}:
-                members[ticker] = {
-                    "ticker": ticker,
-                    "rank": event.get("rank"),
-                    "score": event.get("score"),
-                    "membership_reason": event.get("reason"),
-                    **dict(event.get("evidence") or {}),
-                    **dict(event.get("identity") or {}),
-                    "watchlist_ids": [watchlist_id],
+            clock_transitions.append(
+                {
+                    **{key: deepcopy(value) for key, value in event.items() if key != "_watchlist_id"},
+                    "ticker": str(event.get("ticker") or "").strip().upper(),
+                    "watchlist_id": str(event.get("_watchlist_id") or ""),
                 }
+            )
             index += 1
-        union_members: dict[str, dict[str, Any]] = {}
-        for plan in plans:
-            watchlist_id = str(plan.get("watchlist_id") or "")
-            for ticker, row in members_by_watchlist[watchlist_id].items():
-                existing = union_members.get(ticker)
-                if existing is not None:
-                    if int(existing.get("ibkr_conid") or 0) != int(
-                        row.get("ibkr_conid") or 0
-                    ):
-                        raise ValueError(
-                            f"Historical Watchlists disagree on point-in-time identity for {ticker}"
-                        )
-                    existing["watchlist_ids"] = [
-                        *list(existing.get("watchlist_ids") or []),
-                        watchlist_id,
-                    ]
-                else:
-                    union_members[ticker] = dict(row)
         timeline.append(
             {
                 "effective_at": effective_at,
-                "members": sorted(
-                    (dict(row) for row in union_members.values()),
-                    key=lambda row: (
-                        int(row.get("rank") or 10**9),
-                        str(row.get("ticker") or ""),
-                    ),
-                ),
+                "transitions": clock_transitions,
                 "authority": [dict(row) for row in authority],
             }
         )
     return timeline
+
+
+def _historical_watchlist_plans_at_source_native_events(
+    plans: list[dict[str, Any]],
+    events: list[ReplaySignalEvent],
+    *,
+    configuration: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """Scope activation Watchlists to immutable source-native event clocks.
+
+    These Watchlists admit or reject an occurrence; they are not a second
+    continuously evaluated strategy. QMD still replays the complete market and
+    computes exact cross-sectional membership at every occurrence timestamp.
+    """
+    activation = dict(configuration.get("signal_activation") or {})
+    enabled_streams = [
+        dict(stream)
+        for stream in activation.get("signal_streams") or []
+        if bool(stream.get("enabled", True))
+    ]
+    if (
+        not plans
+        or not events
+        or not enabled_streams
+        or not all(
+            str(stream.get("occurrence_source") or "").strip()
+            for stream in enabled_streams
+        )
+    ):
+        return plans
+    scoped: list[dict[str, Any]] = []
+    for source in plans:
+        plan = deepcopy(source)
+        start = _historical_watchlist_clock(plan.get("start"))
+        end = _historical_watchlist_clock(plan.get("end"))
+        cadence_ms = max(1, int(plan.get("cadence_ms") or 0))
+        event_clocks = sorted({
+            start
+            + timedelta(
+                microseconds=(
+                    (
+                        max(
+                            0,
+                            int(
+                                (event.available_at - start).total_seconds()
+                                * 1_000_000
+                            ),
+                        )
+                        + cadence_ms * 1_000
+                        - 1
+                    )
+                    // (cadence_ms * 1_000)
+                    * cadence_ms
+                    * 1_000
+                )
+            )
+            for event in events
+            if start <= event.available_at < end
+        })
+        windows = [
+            {
+                "start": clock.astimezone(UTC).isoformat(),
+                "end": min(
+                    end,
+                    clock + timedelta(milliseconds=cadence_ms),
+                ).astimezone(UTC).isoformat(),
+            }
+            for clock in event_clocks
+            if start <= clock < end
+        ]
+        if not windows:
+            scoped.append(plan)
+            continue
+        plan["evaluation_windows"] = windows
+        body = {key: value for key, value in plan.items() if key != "plan_hash"}
+        plan["plan_hash"] = "sha256:" + hashlib.sha256(
+            json.dumps(
+                body,
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=True,
+            ).encode("utf-8")
+        ).hexdigest()
+        scoped.append(plan)
+    return scoped
+
+
+def _historical_watchlist_transition_row(
+    transition: dict[str, Any],
+) -> dict[str, Any]:
+    watchlist_id = str(transition.get("watchlist_id") or "")
+    return {
+        "ticker": str(transition.get("ticker") or "").strip().upper(),
+        "rank": transition.get("rank"),
+        "score": transition.get("score"),
+        "membership_reason": transition.get("reason"),
+        **deepcopy(dict(transition.get("evidence") or {})),
+        **deepcopy(dict(transition.get("identity") or {})),
+        "watchlist_ids": [watchlist_id],
+    }
+
+
+def _historical_watchlist_union_rows(
+    rows_by_watchlist: dict[str, dict[str, dict[str, Any]]],
+) -> list[dict[str, Any]]:
+    union: dict[str, dict[str, Any]] = {}
+    for watchlist_id, rows in rows_by_watchlist.items():
+        for ticker, row in rows.items():
+            existing = union.get(ticker)
+            if existing is not None:
+                if int(existing.get("ibkr_conid") or 0) != int(
+                    row.get("ibkr_conid") or 0
+                ):
+                    raise ValueError(
+                        f"Historical Watchlists disagree on point-in-time identity for {ticker}"
+                    )
+                existing["watchlist_ids"] = [
+                    *list(existing.get("watchlist_ids") or []),
+                    watchlist_id,
+                ]
+            else:
+                union[ticker] = deepcopy(row)
+    return sorted(
+        union.values(),
+        key=lambda row: (
+            int(row.get("rank") or 10**9),
+            str(row.get("ticker") or ""),
+        ),
+    )
 
 
 def _historical_watchlist_clock(value: Any) -> datetime:
@@ -4515,6 +4937,82 @@ def backtest_debug_preflight(
     }
 
 
+async def _stream_historical_derived_frames(
+    *,
+    ticker: str,
+    timeframe: str,
+    start: datetime,
+    end: datetime,
+    frame_sink: Callable[[list[ReplayDerivedFrame]], Awaitable[None]],
+    authority_sink: Callable[[str, dict[str, Any]], None] | None = None,
+    batch_size: int = 1_000,
+) -> None:
+    """Stream one frozen QMD product to bounded run-owned storage."""
+
+    url = qmd_history_websocket_url(
+        f"/stream/derived/{urllib.parse.quote(ticker)}",
+        {
+            "start": start.isoformat(),
+            "end": end.isoformat(),
+            "timeframe": timeframe,
+            "emit": "frames",
+            "as_of": end.isoformat(),
+            "updates_per_second": 0,
+            "retain_cache": "false",
+        },
+    )
+    metadata: dict[str, Any] | None = None
+    batch: list[ReplayDerivedFrame] = []
+    received = 0
+    async with websockets.connect(
+        url,
+        ping_interval=20,
+        ping_timeout=300,
+        max_size=64 * 1024 * 1024,
+    ) as socket:
+        try:
+            async for message in socket:
+                payload = json.loads(
+                    message.decode("utf-8") if isinstance(message, bytes) else message
+                )
+                if payload.get("error"):
+                    raise RuntimeError(
+                        f"QMD derived stream failed for {ticker}: {payload['error']}"
+                    )
+                if payload.get("type") == "metadata":
+                    metadata = payload
+                    continue
+                received += 1
+                batch.append(
+                    _replay_derived_frame_from_payload(
+                        payload,
+                        ticker=ticker,
+                        timeframe=timeframe,
+                        fallback_sequence=received,
+                    )
+                )
+                if len(batch) >= batch_size:
+                    await frame_sink(batch)
+                    batch = []
+        except websockets.exceptions.ConnectionClosedError:
+            expected = int((metadata or {}).get("frame_count") or -1)
+            if metadata is None or received != expected:
+                raise
+    if batch:
+        await frame_sink(batch)
+    if metadata is None:
+        raise RuntimeError(f"QMD derived frame stream omitted authority metadata for {ticker}")
+    expected = int(metadata.get("frame_count") or 0)
+    if received != expected:
+        raise RuntimeError(
+            f"QMD derived frame stream returned {received} of {expected} frames "
+            f"for {ticker} {timeframe}"
+        )
+    authority = _qmd_payload_authority(metadata, authority="qmd_history_derived")
+    if authority_sink is not None:
+        authority_sink(f"derived:{_ticker(ticker)}:{timeframe}", authority)
+
+
 async def _historical_derived_frames(
     *,
     ticker: str,
@@ -4539,7 +5037,10 @@ async def _historical_derived_frames(
             "emit": "frames",
             "as_of": end.isoformat(),
             "updates_per_second": 0,
-            "retain_cache": "true" if frame_cache is None else "false",
+            # Replay consumes this complete, frozen response into its own run
+            # state. Retaining every ticker/timeframe product in QMD History
+            # exhausts the service-wide cache before the run can start.
+            "retain_cache": "false",
         },
     )
     frames: list[ReplayDerivedFrame] = []
@@ -4609,31 +5110,40 @@ def _append_historical_derived_message(
         raise RuntimeError(f"QMD derived stream failed for {ticker}: {payload['error']}")
     if payload.get("type") == "metadata":
         return payload
-    bar = dict(payload.get("bar") or {})
-    indicator = dict(payload.get("indicator") or {})
     frames.append(
-        ReplayDerivedFrame(
-            as_of=_aware_datetime(
-                payload.get("as_of")
-                or indicator.get("bar_end")
-                or bar.get("bar_end")
-            ),
-            bar={
-                key: value for key, value in bar.items() if key in _STRATEGY_BAR_FIELDS
-            },
-            indicator={
-                key: value
-                for key, value in indicator.items()
-                if key in _STRATEGY_INDICATOR_FIELDS
-            },
-            sequence=int(payload.get("sequence") or len(frames) + 1),
-            ticker=_ticker(indicator.get("sym") or bar.get("sym") or ticker),
-            timeframe=str(
-                indicator.get("timeframe") or bar.get("timeframe") or timeframe
-            ),
+        _replay_derived_frame_from_payload(
+            payload,
+            ticker=ticker,
+            timeframe=timeframe,
+            fallback_sequence=len(frames) + 1,
         )
     )
     return metadata
+
+
+def _replay_derived_frame_from_payload(
+    payload: dict[str, Any],
+    *,
+    ticker: str,
+    timeframe: str,
+    fallback_sequence: int,
+) -> ReplayDerivedFrame:
+    bar = dict(payload.get("bar") or {})
+    indicator = dict(payload.get("indicator") or {})
+    return ReplayDerivedFrame(
+        as_of=_aware_datetime(
+            payload.get("as_of") or indicator.get("bar_end") or bar.get("bar_end")
+        ),
+        bar={key: value for key, value in bar.items() if key in _STRATEGY_BAR_FIELDS},
+        indicator={
+            key: value
+            for key, value in indicator.items()
+            if key in _STRATEGY_INDICATOR_FIELDS
+        },
+        sequence=int(payload.get("sequence") or fallback_sequence),
+        ticker=_ticker(indicator.get("sym") or bar.get("sym") or ticker),
+        timeframe=str(indicator.get("timeframe") or bar.get("timeframe") or timeframe),
+    )
 
 
 async def _historical_signal_events(

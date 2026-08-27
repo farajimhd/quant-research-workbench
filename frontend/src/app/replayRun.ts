@@ -41,6 +41,8 @@ export type CanvasReplayRun = {
     targets: string[];
   };
   progress: number;
+  preparation_stage?: "created" | "market_events" | "ready" | "signal_occurrences" | "strategy_frames" | "strategy_runtime" | "watchlist_membership";
+  preparation_progress?: { completed: number; total: number };
   run_id: string;
   session_date: string;
   session_end: string;
@@ -48,6 +50,7 @@ export type CanvasReplayRun = {
   requested_start: string;
   speed: number;
   status: string;
+  transport_mode?: "completed" | "created" | "failed" | "fast_forward" | "next_action" | "paused" | "play" | "ready" | "step" | "stopped" | "warming";
   runtime_ready?: boolean;
   strategy_debug_sources?: {
     signal_stream_ids: string[];

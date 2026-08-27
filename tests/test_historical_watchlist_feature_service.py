@@ -111,6 +111,10 @@ class HistoricalWatchlistFeatureServiceTests(unittest.TestCase):
                     "watchlist_id": watchlist_id,
                     "plan_hash": f"sha256:{watchlist_id}",
                     "materialization_id": f"sha256:m-{watchlist_id}",
+                    "projection_complete": True,
+                    "projection_mode": "membership_transitions",
+                    "projection_tickers": ["AAPL", "MSFT"],
+                    "source_tickers": ["AAPL", "MSFT"],
                     "chunks": [{"transitions": [{
                         "effective_at": "2026-08-07T13:31:00+00:00",
                         "event": "added",
@@ -134,9 +138,20 @@ class HistoricalWatchlistFeatureServiceTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory, patch.dict(
             os.environ, {"QMD_WATCHLIST_TIMELINE_CACHE_DIR": directory}
         ):
-            result = materialize_historical_watchlist_plans(plans)
+            result = materialize_historical_watchlist_plans(
+                plans,
+                projection_tickers=["msft", "AAPL", "AAPL"],
+            )
 
         self.assertEqual(materialize.call_count, 1)
+        self.assertEqual(
+            bundle.call_args_list[0].kwargs["identity_tickers"],
+            ["AAPL", "MSFT"],
+        )
+        self.assertEqual(
+            materialize.call_args.args[0][0]["projection_tickers"],
+            ["AAPL", "MSFT"],
+        )
         self.assertEqual(
             result["materializations"][1]["chunks"][0]["transitions"][0]["identity"]["ibkr_conid"],
             2,
@@ -239,6 +254,41 @@ class HistoricalWatchlistFeatureServiceTests(unittest.TestCase):
         self.assertIn("available_at <", sql)
         self.assertIn("greatest(observed_at_utc, inserted_at)", sql)
         self.assertIn("greatest(toDateTime64(effective_date", sql)
+
+        identity_sql = feature_change_clocks(
+            cadence_ms=1_000,
+            include_reference=True,
+            include_fundamentals=False,
+            identity_tickers=["aapl", "MSFT"],
+            start=datetime(2026, 8, 7, 13, 30, tzinfo=UTC),
+            end=datetime(2026, 8, 7, 20, 0, tzinfo=UTC),
+        )
+        self.assertIn("upper(ticker) IN ('AAPL', 'MSFT')", identity_sql)
+        self.assertNotIn("market_security_float_v1", identity_sql)
+
+    def test_identity_only_projection_queries_only_strategy_tickers(self) -> None:
+        observed_tickers = []
+
+        def reference(_clock: datetime, **kwargs):
+            observed_tickers.append(kwargs.get("tickers"))
+            return {
+                "AAPL": {
+                    "ibkr_conid": 265598,
+                    "symbol_id": "symbol-aapl",
+                }
+            }
+
+        plan = {**self.plan, "external_features": []}
+        bundle = historical_watchlist_external_feature_bundle(
+            plan,
+            client=_Client(),
+            reference_projection=reference,
+            identity_tickers=["AAPL"],
+        )
+
+        self.assertTrue(observed_tickers)
+        self.assertTrue(all(tickers == ("AAPL",) for tickers in observed_tickers))
+        self.assertEqual(len(bundle["identity_intervals"]), 1)
 
 
 if __name__ == "__main__":

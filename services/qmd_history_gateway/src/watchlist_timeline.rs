@@ -187,6 +187,10 @@ pub struct HistoricalWatchlistTimelineRequest {
     pub external_feature_intervals: Vec<ExternalFeatureValueInterval>,
     pub external_feature_revisions: Vec<ExternalFeatureRevisionEvidence>,
     pub plan: HistoricalWatchlistPlan,
+    #[serde(default)]
+    pub projection_tickers: Vec<String>,
+    #[serde(default)]
+    pub source_tickers: Vec<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

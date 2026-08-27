@@ -343,7 +343,11 @@ impl HistoricalDerivedCache {
             bar_updates,
             updates,
             estimated_bytes: AtomicU64::new(0),
-            max_update_bytes: self.config.cache_max_bytes / 2,
+            // The service-wide atomic reservation below is the authoritative
+            // memory ceiling across concurrent products. A second implicit
+            // half-budget rejected one legitimate high-volume ticker even
+            // when the remaining global capacity was available.
+            max_update_bytes: self.config.cache_max_bytes,
             max_updates: self.config.cache_max_updates_per_entry,
             product_bytes: AtomicU64::new(0),
             requirement: Some(requirement),
@@ -840,7 +844,7 @@ impl HistoricalDerivedCache {
         } else {
             MarketStructureReferenceLevels::default()
         };
-        let indicator_worker = if matches!(profile, CacheProfile::Derived(_)) {
+        let mut indicator_worker = if matches!(profile, CacheProfile::Derived(_)) {
             let (sender, mut receiver) = mpsc::channel::<IndicatorWork>(
                 self.config.cache_update_capacity.clamp(16, 100_000),
             );
@@ -1023,13 +1027,33 @@ impl HistoricalDerivedCache {
                         indicator_bars.push((sequence, bar));
                     }
                     if let Some(sender) = indicator_sender.as_mut() {
-                        sender
+                        if sender
                             .send(IndicatorWork::Event {
                                 event,
                                 bars: indicator_bars,
                             })
                             .await
-                            .map_err(|_| "historical indicator worker stopped early".to_string())?;
+                            .is_err()
+                        {
+                            drop(indicator_sender.take());
+                            if let Some((original_sender, handle)) = indicator_worker.take() {
+                                drop(original_sender);
+                                return match handle.await {
+                                    Ok(Ok(())) => Err(
+                                        "historical indicator worker stopped early without an error"
+                                            .to_string(),
+                                    ),
+                                    Ok(Err(error)) => Err(error),
+                                    Err(error) => Err(format!(
+                                        "historical indicator worker panicked: {error}"
+                                    )),
+                                };
+                            }
+                            return Err(
+                                "historical indicator worker stopped early without a handle"
+                                    .to_string(),
+                            );
+                        }
                     }
                 }
                 events_processed += count as u64;

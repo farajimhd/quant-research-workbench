@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from typing import Iterable
 
 from research.mlops.clickhouse import quote_ident, sql_string
 
 
 QUERY_PLAN_ID = "watchlist.external_feature_intervals.v1"
-QUERY_PLAN_VERSION = 2
+QUERY_PLAN_VERSION = 3
 MAX_CHANGE_CLOCKS = 512
 
 
@@ -18,6 +19,7 @@ def feature_change_clocks(
     start: datetime,
     end: datetime,
     database: str = "q_live",
+    identity_tickers: Iterable[str] = (),
 ) -> str:
     """Return bounded clocks at which an approved as-of projection can change."""
     if start.tzinfo is None or end.tzinfo is None:
@@ -30,27 +32,40 @@ def feature_change_clocks(
         raise ValueError("historical Watchlist feature cadence must be positive")
     db = quote_ident(database)
     selects: list[str] = []
+    identity_catalog = tuple(sorted({
+        str(ticker).strip().upper()
+        for ticker in identity_tickers
+        if str(ticker).strip()
+    }))
     if include_reference:
-        for table in (
-            "feature_tradable_universe_v1",
-            "feature_scanner_static_v1",
-            "id_security_v1",
-            "id_issuer_v1",
-        ):
+        if identity_catalog:
+            ticker_values = ", ".join(sql_string(ticker) for ticker in identity_catalog)
             selects.append(
-                f"SELECT inserted_at AS raw_available_at FROM {db}.{quote_ident(table)} FINAL"
+                f"SELECT inserted_at AS raw_available_at "
+                f"FROM {db}.feature_tradable_universe_v1 FINAL "
+                f"WHERE upper(ticker) IN ({ticker_values})"
             )
-        selects.extend(
-            (
-                f"SELECT available_at_utc AS raw_available_at FROM {db}.market_security_country_v1 FINAL",
-                f"SELECT available_at_utc AS raw_available_at FROM {db}.market_issuer_company_profile_v1 FINAL",
-                f"SELECT greatest(observed_at_utc, inserted_at) AS raw_available_at FROM {db}.market_security_market_snapshot_v1 FINAL",
-                f"SELECT greatest(toDateTime64(effective_date, 3, 'UTC'), inserted_at) AS raw_available_at FROM {db}.market_security_float_v1 FINAL",
-                f"SELECT greatest(coalesce(published_at_utc, toDateTime64(publication_date, 3, 'UTC'), toDateTime64(settlement_date, 3, 'UTC')), inserted_at) AS raw_available_at FROM {db}.market_short_interest_v1 FINAL",
-                f"SELECT inserted_at AS raw_available_at FROM {db}.market_ipo_v1 FINAL",
-                f"SELECT inserted_at AS raw_available_at FROM {db}.market_stock_split_v1 FINAL",
+        else:
+            for table in (
+                "feature_tradable_universe_v1",
+                "feature_scanner_static_v1",
+                "id_security_v1",
+                "id_issuer_v1",
+            ):
+                selects.append(
+                    f"SELECT inserted_at AS raw_available_at FROM {db}.{quote_ident(table)} FINAL"
+                )
+            selects.extend(
+                (
+                    f"SELECT available_at_utc AS raw_available_at FROM {db}.market_security_country_v1 FINAL",
+                    f"SELECT available_at_utc AS raw_available_at FROM {db}.market_issuer_company_profile_v1 FINAL",
+                    f"SELECT greatest(observed_at_utc, inserted_at) AS raw_available_at FROM {db}.market_security_market_snapshot_v1 FINAL",
+                    f"SELECT greatest(toDateTime64(effective_date, 3, 'UTC'), inserted_at) AS raw_available_at FROM {db}.market_security_float_v1 FINAL",
+                    f"SELECT greatest(coalesce(published_at_utc, toDateTime64(publication_date, 3, 'UTC'), toDateTime64(settlement_date, 3, 'UTC')), inserted_at) AS raw_available_at FROM {db}.market_short_interest_v1 FINAL",
+                    f"SELECT inserted_at AS raw_available_at FROM {db}.market_ipo_v1 FINAL",
+                    f"SELECT inserted_at AS raw_available_at FROM {db}.market_stock_split_v1 FINAL",
+                )
             )
-        )
     if include_fundamentals:
         selects.extend(
             (

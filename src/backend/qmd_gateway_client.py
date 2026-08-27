@@ -592,11 +592,21 @@ def qmd_validate_historical_watchlist_plan(plan: dict[str, Any]) -> dict[str, An
 
 
 def qmd_historical_source_revision(
-    *, start: str, end: str
+    *, start: str, end: str, tickers: list[str] | tuple[str, ...] = ()
 ) -> dict[str, Any]:
     payload = qmd_history_get_json(
         "/source-revision",
-        {"start": start, "end": end},
+        {
+            "start": start,
+            "end": end,
+            "tickers": ",".join(
+                sorted({
+                    str(ticker).strip().upper()
+                    for ticker in tickers
+                    if str(ticker).strip()
+                })
+            ) or None,
+        },
         timeout=30,
     )
     if not isinstance(payload, dict):

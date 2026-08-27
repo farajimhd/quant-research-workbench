@@ -13,6 +13,7 @@ from zoneinfo import ZoneInfo
 from src.backend.replay_run_service import (
     HistoricalDebugFixture,
     ReplayDerivedFrame,
+    ReplayFrameSpool,
     ReplayRunController,
     ReplayRunCapacityError,
     ReplayRunDefinition,
@@ -22,6 +23,7 @@ from src.backend.replay_run_service import (
     _canvas_profile_tickers,
     _historical_watchlist_membership_timeline_for_configuration,
     _historical_watchlist_membership_timeline_from_plans,
+    _historical_watchlist_plans_at_source_native_events,
     _historical_signal_events,
     _historical_derived_frames,
     _occurrence_source_values,
@@ -813,6 +815,58 @@ class HistoricalDebugFixtureTests(unittest.IsolatedAsyncioTestCase):
 
 
 class HistoricalWatchlistTimelineTests(unittest.TestCase):
+    def test_source_native_watchlist_evaluates_only_at_occurrence_clocks(self) -> None:
+        plan = {
+            "watchlist_id": "squeeze-tradable-candidates",
+            "start": "2026-08-21T08:00:00+00:00",
+            "end": "2026-08-21T20:00:00+00:00",
+            "cadence_ms": 1_000,
+            "evaluation_windows": [{
+                "start": "2026-08-21T08:00:00+00:00",
+                "end": "2026-08-21T20:00:00+00:00",
+            }],
+            "plan_hash": "sha256:full-session",
+        }
+        events = [
+            ReplaySignalEvent(
+                available_at=datetime(2026, 8, 21, 8, minute, second, tzinfo=ZoneInfo("UTC")),
+                occurrence={"event_id": f"event-{minute}-{second}"},
+                source_values={},
+                ticker=ticker,
+            )
+            for minute, second, ticker in ((1, 5, "AAPL"), (3, 7, "MSFT"))
+        ]
+        configuration = {
+            "signal_activation": {
+                "signal_streams": [{
+                    "enabled": True,
+                    "occurrence_source": "qmd_squeeze_episode",
+                }]
+            }
+        }
+
+        scoped = _historical_watchlist_plans_at_source_native_events(
+            [plan],
+            events,
+            configuration=configuration,
+        )
+
+        self.assertEqual(
+            scoped[0]["evaluation_windows"],
+            [
+                {
+                    "start": "2026-08-21T08:01:05+00:00",
+                    "end": "2026-08-21T08:01:06+00:00",
+                },
+                {
+                    "start": "2026-08-21T08:03:07+00:00",
+                    "end": "2026-08-21T08:03:08+00:00",
+                },
+            ],
+        )
+        self.assertNotEqual(scoped[0]["plan_hash"], plan["plan_hash"])
+        self.assertEqual(plan["evaluation_windows"][0]["end"], "2026-08-21T20:00:00+00:00")
+
     def test_source_native_squeeze_occurrence_projects_strategy_trigger_aliases(self) -> None:
         values = _occurrence_source_values(
             {
@@ -839,6 +893,9 @@ class HistoricalWatchlistTimelineTests(unittest.TestCase):
                     "watchlist_id": "core-candidates",
                     "plan_hash": "sha256:plan",
                     "materialization_id": "sha256:materialized",
+                    "projection_complete": True,
+                    "projection_mode": "full",
+                    "projection_tickers": [],
                     "calculation_revision": "qmd-v3",
                     "source_revision": {"token": "events-v1"},
                     "external_feature_revisions": [],
@@ -877,12 +934,21 @@ class HistoricalWatchlistTimelineTests(unittest.TestCase):
             [{"watchlist_id": "core-candidates", "plan_hash": "sha256:plan"}]
         )
 
-        self.assertEqual([[row["ticker"] for row in item["members"]] for item in timeline], [
-            ["AAPL"],
-            ["MSFT"],
-        ])
-        self.assertEqual(timeline[0]["members"][0]["market.volume"], 1000)
-        self.assertEqual(timeline[0]["members"][0]["ibkr_conid"], 265598)
+        self.assertEqual(
+            [
+                [row["ticker"] for row in item["transitions"]]
+                for item in timeline
+            ],
+            [["AAPL"], ["AAPL", "MSFT"]],
+        )
+        self.assertEqual(
+            timeline[0]["transitions"][0]["evidence"]["market.volume"],
+            1000,
+        )
+        self.assertEqual(
+            timeline[0]["transitions"][0]["identity"]["ibkr_conid"],
+            265598,
+        )
         self.assertEqual(
             timeline[0]["authority"][0]["materialization_id"],
             "sha256:materialized",
@@ -924,9 +990,25 @@ class HistoricalWatchlistTimelineTests(unittest.TestCase):
             {"watchlist_id": "two", "plan_hash": "sha256:two"},
         ])
 
-        self.assertEqual([len(item["members"]) for item in timeline], [1, 1, 1])
-        self.assertEqual(timeline[-1]["members"][0]["watchlist_ids"], ["two"])
+        self.assertEqual([len(item["transitions"]) for item in timeline], [1, 1, 1])
+        self.assertEqual(timeline[-1]["transitions"][0]["watchlist_id"], "one")
         self.assertEqual(len(timeline[-1]["authority"]), 2)
+
+        definition = ReplayRunDefinition(
+            session_date=date(2026, 8, 10),
+            start_time=time(9, 30),
+            mode=RunMode.BACKTEST,
+            configuration_revision=approved_configuration(),
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            controller = ReplayRunController(definition, runtime_root=Path(directory))
+            controller._historical_watchlist_timeline_cache = timeline
+            controller._apply_historical_watchlist_membership(
+                datetime(2026, 8, 10, 13, 32, tzinfo=ZoneInfo("UTC"))
+            )
+            self.assertEqual(controller._active_historical_watchlist_tickers, {"AAPL"})
+            self.assertEqual(controller._active_historical_watchlists["two"], {"AAPL"})
+            self.assertEqual(controller._active_historical_watchlists["one"], set())
 
     def test_resolves_first_clock_and_each_later_weekday_session_boundary(self) -> None:
         approved = approved_configuration()
@@ -1132,6 +1214,30 @@ class ReplayRunServiceCapacityTests(unittest.IsolatedAsyncioTestCase):
 
 
 class ReplayHistoricalFetchBudgetTests(unittest.IsolatedAsyncioTestCase):
+    async def test_frame_spool_orders_frames_and_attaches_causal_signals(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            spool = ReplayFrameSpool(Path(directory) / "frames.sqlite3")
+            later = datetime(2026, 8, 10, 9, 0, 2, tzinfo=ZoneInfo("UTC"))
+            earlier = datetime(2026, 8, 10, 9, 0, 1, tzinfo=ZoneInfo("UTC"))
+            spool.append([
+                ReplayDerivedFrame(later, {"close": 11.0}, {}, 2, "ABCD", "1s"),
+                ReplayDerivedFrame(earlier, {"close": 10.0}, {}, 1, "ABCD", "1s"),
+            ])
+            spool.finalize({
+                "ABCD": [{
+                    "effective_at": earlier.isoformat(),
+                    "signal_key": "breakout",
+                    "working_timeframe": "1s",
+                    "state": "active",
+                    "score": 0.8,
+                }],
+            })
+
+            frames = list(spool)
+
+        self.assertEqual([frame.as_of for frame in frames], [earlier, later])
+        self.assertEqual(frames[0].signals, {"breakout@1s": 0.8})
+
     async def test_shared_historical_frame_cache_reuses_frozen_causal_tape(self) -> None:
         start = datetime(2026, 8, 10, 8, tzinfo=ZoneInfo("UTC"))
         end = datetime(2026, 8, 10, 9, tzinfo=ZoneInfo("UTC"))
@@ -1206,7 +1312,7 @@ class ReplayHistoricalFetchBudgetTests(unittest.IsolatedAsyncioTestCase):
         signal_rows = {f"T{index}": [] for index in range(12)}
         with (
             patch(
-                "src.backend.replay_run_service._historical_derived_frames",
+                "src.backend.replay_run_service._stream_historical_derived_frames",
                 side_effect=derived,
             ) as derived_fetch,
             patch(
@@ -1220,7 +1326,7 @@ class ReplayHistoricalFetchBudgetTests(unittest.IsolatedAsyncioTestCase):
         ):
             frames = await controller._load_strategy_frames()
 
-        self.assertEqual(frames, [])
+        self.assertEqual(list(frames), [])
         self.assertEqual(derived_fetch.call_count, 12)
         self.assertLessEqual(maximum_active, 8)
         signal_fetch.assert_awaited_once_with(
@@ -1366,7 +1472,9 @@ class ReplayControllerTests(unittest.IsolatedAsyncioTestCase):
         result = await controller.command("next_action")
 
         self.assertEqual(result["status"], "fast_forwarding")
+        self.assertEqual(result["transport_mode"], "next_action")
         self.assertFalse(result["runtime_ready"])
+        self.assertEqual(result["preparation_stage"], "created")
         self.assertTrue(result["navigation_search"]["active"])
         self.assertEqual(result["navigation_search"]["phase"], "preparing")
         self.assertEqual(result["navigation_search"]["scanned_events"], 0)
@@ -1374,7 +1482,7 @@ class ReplayControllerTests(unittest.IsolatedAsyncioTestCase):
             result["navigation_search"]["start_event_time"],
             "2026-08-21T04:00:00-04:00",
         )
-        with patch.object(controller, "_runtime", object()):
+        with patch.object(controller, "_runtime_inputs_ready", True):
             self.assertEqual(
                 controller.snapshot()["navigation_search"]["phase"],
                 "scanning",
@@ -1614,11 +1722,13 @@ class ReplayControllerTests(unittest.IsolatedAsyncioTestCase):
 
             played = await controller.command("play")
             self.assertEqual(played["status"], "running")
+            self.assertEqual(played["transport_mode"], "play")
             self.assertEqual(played["current_time"], "2026-07-28T09:45:00-04:00")
             self.assertEqual(played["canvas_profile"]["defaultState"]["openIds"], ["chart"])
 
             stepped = await controller.command("step", step_seconds=5)
             self.assertEqual(stepped["status"], "running")
+            self.assertEqual(stepped["transport_mode"], "step")
             self.assertEqual(
                 controller._step_until,
                 datetime(2026, 7, 28, 9, 45, 5, tzinfo=NEW_YORK),
@@ -1630,6 +1740,11 @@ class ReplayControllerTests(unittest.IsolatedAsyncioTestCase):
 
             paused = await controller.command("pause")
             self.assertEqual(paused["status"], "paused")
+            self.assertEqual(paused["transport_mode"], "paused")
+
+            jumped = await controller.command("fast_forward", target_time=time(9, 50))
+            self.assertEqual(jumped["status"], "fast_forwarding")
+            self.assertEqual(jumped["transport_mode"], "fast_forward")
 
     async def test_step_boundary_forces_paused_state_to_subscribers(self) -> None:
         controller = ReplayRunController(
@@ -1686,6 +1801,7 @@ class ReplayControllerTests(unittest.IsolatedAsyncioTestCase):
 
             result = await controller.command("next_action")
             self.assertEqual(result["status"], "fast_forwarding")
+            self.assertEqual(result["transport_mode"], "next_action")
             self.assertTrue(result["navigation_search"]["active"])
             event_time = datetime(2026, 7, 28, 9, 45, 1, tzinfo=NEW_YORK)
             controller._journal.append(

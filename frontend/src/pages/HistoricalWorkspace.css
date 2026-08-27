@@ -486,6 +486,12 @@
   color: var(--primary-foreground);
 }
 
+.replay-control-button.replay-control-jump {
+  padding: 0 7px;
+  white-space: nowrap;
+  width: auto;
+}
+
 .replay-control-action {
   background: color-mix(in srgb, var(--info) 12%, var(--surface-alt));
   border-color: color-mix(in srgb, var(--info) 34%, var(--border));
@@ -593,6 +599,8 @@
 @container canvas-mode-slot (max-width: 620px) {
   .replay-run-state.is-navigation { min-width: 112px; }
   .replay-run-state.is-navigation small { display: none; }
+  .replay-control-button.replay-control-jump { padding: 0; width: 27px; }
+  .replay-control-button.replay-control-jump span { display: none; }
 }
 
 @media (max-width: 980px) {

@@ -24,7 +24,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::sync::Arc;
 use tokio::sync::{Mutex, OnceCell};
 
-pub const HISTORICAL_SCANNER_DERIVED_SCHEMA_VERSION: &str = "canvas_historical_qmd_snapshot_v6";
+pub const HISTORICAL_SCANNER_DERIVED_SCHEMA_VERSION: &str = "canvas_historical_qmd_snapshot_v7";
 const SIGNAL_EVENT_LIMIT: usize = 20_000;
 const SCANNER_TIMEFRAMES: [&str; 12] = [
     "100ms", "1s", "10s", "30s", "1m", "5m", "15m", "30m", "1h", "2h", "4h", "1d",
@@ -90,9 +90,13 @@ pub struct HistoricalWatchlistTimelineMaterialization {
     pub external_feature_revisions: Vec<ExternalFeatureRevisionEvidence>,
     pub materialization_id: String,
     pub plan_hash: String,
+    pub projection_complete: bool,
+    pub projection_mode: &'static str,
+    pub projection_tickers: Vec<String>,
     pub relative_volume_revisions: Vec<RelativeVolumeRevisionEvidence>,
     pub schema_version: u16,
     pub source_revision: SourceRevision,
+    pub source_tickers: Vec<String>,
     pub transition_count: usize,
     pub watchlist_id: String,
 }
@@ -967,10 +971,19 @@ pub async fn materialize_watchlist_timeline(
         .parse::<DateTime<Utc>>()
         .map_err(|error| format!("invalid historical Watchlist end: {error}"))?;
     let (external, boundaries) = prepare_external_features(&request, start, end)?;
+    let source_tickers = request
+        .source_tickers
+        .iter()
+        .map(|ticker| ticker.trim().to_ascii_uppercase())
+        .filter(|ticker| !ticker.is_empty())
+        .collect::<BTreeSet<_>>();
+    if source_tickers.len() > 5_000 {
+        return Err("historical Watchlist source scope exceeds ticker_limit=5000".to_string());
+    }
     let window = EventWindow {
         start,
         end,
-        tickers: Vec::new(),
+        tickers: source_tickers.iter().cloned().collect(),
     };
     let source_plan = source.source_plan(&window).await?;
     if !source_plan.complete_for_history {
@@ -1098,6 +1111,25 @@ pub async fn materialize_watchlist_timeline(
             &mut chunks,
         )?;
     }
+    let projection_tickers = request
+        .projection_tickers
+        .iter()
+        .map(|ticker| ticker.trim().to_ascii_uppercase())
+        .filter(|ticker| !ticker.is_empty())
+        .collect::<BTreeSet<_>>();
+    if projection_tickers.len() > 5_000 {
+        return Err(
+            "historical Watchlist transition projection exceeds ticker_limit=5000".to_string(),
+        );
+    }
+    if !projection_tickers.is_empty() {
+        for chunk in &mut chunks {
+            chunk.transitions.retain(|transition| {
+                transition.event != "rank_changed"
+                    && projection_tickers.contains(&transition.ticker.to_ascii_uppercase())
+            });
+        }
+    }
     let transition_count = chunks
         .iter()
         .map(|chunk| chunk.transitions.len())
@@ -1120,9 +1152,17 @@ pub async fn materialize_watchlist_timeline(
         external_feature_revisions: external_revisions,
         materialization_id,
         plan_hash: request.plan.plan_hash,
+        projection_complete: true,
+        projection_mode: if projection_tickers.is_empty() {
+            "full"
+        } else {
+            "membership_transitions"
+        },
+        projection_tickers: projection_tickers.into_iter().collect(),
         relative_volume_revisions: Vec::new(),
         schema_version: 1,
         source_revision,
+        source_tickers: source_tickers.into_iter().collect(),
         transition_count,
         watchlist_id: request.plan.watchlist_id,
     })
@@ -1306,10 +1346,22 @@ pub async fn materialize_watchlist_timelines(
         });
     }
 
+    let source_tickers = batch
+        .requests
+        .iter()
+        .flat_map(|request| request.source_tickers.iter())
+        .map(|ticker| ticker.trim().to_ascii_uppercase())
+        .filter(|ticker| !ticker.is_empty())
+        .collect::<BTreeSet<_>>();
+    if source_tickers.len() > 5_000 {
+        return Err(
+            "historical Watchlist batch source scope exceeds ticker_limit=5000".to_string(),
+        );
+    }
     let window = EventWindow {
         start,
         end,
-        tickers: Vec::new(),
+        tickers: source_tickers.iter().cloned().collect(),
     };
     let source_plan = source.source_plan(&window).await?;
     if !source_plan.complete_for_history {
@@ -1414,7 +1466,27 @@ pub async fn materialize_watchlist_timelines(
     }
 
     let mut materializations = Vec::with_capacity(runtimes.len());
-    for runtime in runtimes {
+    for mut runtime in runtimes {
+        let projection_tickers = runtime
+            .request
+            .projection_tickers
+            .iter()
+            .map(|ticker| ticker.trim().to_ascii_uppercase())
+            .filter(|ticker| !ticker.is_empty())
+            .collect::<BTreeSet<_>>();
+        if projection_tickers.len() > 5_000 {
+            return Err(
+                "historical Watchlist transition projection exceeds ticker_limit=5000".to_string(),
+            );
+        }
+        if !projection_tickers.is_empty() {
+            for chunk in &mut runtime.chunks {
+                chunk.transitions.retain(|transition| {
+                    transition.event != "rank_changed"
+                        && projection_tickers.contains(&transition.ticker.to_ascii_uppercase())
+                });
+            }
+        }
         let transition_count = runtime
             .chunks
             .iter()
@@ -1445,9 +1517,17 @@ pub async fn materialize_watchlist_timelines(
             external_feature_revisions: external_revisions,
             materialization_id,
             plan_hash: runtime.request.plan.plan_hash.clone(),
+            projection_complete: true,
+            projection_mode: if projection_tickers.is_empty() {
+                "full"
+            } else {
+                "membership_transitions"
+            },
+            projection_tickers: projection_tickers.into_iter().collect(),
             relative_volume_revisions,
             schema_version: 1,
             source_revision: source_revision.clone(),
+            source_tickers: source_tickers.iter().cloned().collect(),
             transition_count,
             watchlist_id: runtime.request.plan.watchlist_id.clone(),
         });

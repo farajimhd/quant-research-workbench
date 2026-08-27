@@ -52,7 +52,7 @@ _MATERIALIZATION_CACHE_LIMIT = 8
 _DURABLE_CACHE_SCHEMA_VERSION = 1
 _DURABLE_CACHE_MAX_ENTRIES = 64
 _DURABLE_CACHE_MAX_FILE_BYTES = 256 * 1024 * 1024
-_QMD_WATCHLIST_CALCULATION_REVISION = "canvas_historical_qmd_snapshot_v6"
+_QMD_WATCHLIST_CALCULATION_REVISION = "canvas_historical_qmd_snapshot_v7"
 _APPLICATION_WATCHLIST_PROJECTION_REVISION = 2
 
 
@@ -79,6 +79,7 @@ def historical_watchlist_external_feature_bundle(
     client: ClickHouseHttpClient | None = None,
     reference_projection: Callable[..., dict[str, dict[str, Any]]] = historical_scanner_reference_projection,
     fundamental_projection: Callable[..., dict[str, dict[str, Any]]] = historical_scanner_fundamental_projection,
+    identity_tickers: list[str] | None = None,
 ) -> dict[str, Any]:
     """Materialize causal filter values and required point-in-time identity."""
     start = _clock(plan.get("start"), "start")
@@ -103,12 +104,27 @@ def historical_watchlist_external_feature_bundle(
     # Reference field. It is not admitted as Watchlist filter/rank evidence.
     include_reference = True
     include_fundamentals = bool(set(contracts) & set(FUNDAMENTAL_FIELDS))
+    identity_ticker_set = {
+        str(ticker).strip().upper()
+        for ticker in identity_tickers or []
+        if str(ticker).strip()
+    }
+    reference_tickers = (
+        ()
+        if set(contracts) & set(REFERENCE_FIELDS)
+        else tuple(sorted(identity_ticker_set))
+    )
     rows = _json_rows(
         active_client.execute(
             feature_change_clocks(
                 cadence_ms=max(1, int(plan.get("cadence_ms") or 0)),
                 include_reference=include_reference,
                 include_fundamentals=include_fundamentals,
+                identity_tickers=(
+                    reference_tickers
+                    if not set(contracts) & set(REFERENCE_FIELDS)
+                    else ()
+                ),
                 start=start,
                 end=end,
             )
@@ -120,8 +136,9 @@ def historical_watchlist_external_feature_bundle(
         )
     clocks = {start}
     clocks.update(_clock(row.get("available_at"), "available_at") for row in rows)
-    for window in plan.get("evaluation_windows") or []:
-        clocks.add(_clock(dict(window).get("start"), "evaluation window start"))
+    if contracts:
+        for window in plan.get("evaluation_windows") or []:
+            clocks.add(_clock(dict(window).get("start"), "evaluation window start"))
     ordered_clocks = sorted(clock for clock in clocks if start <= clock < end)
 
     open_values: dict[str, dict[str, dict[str, Any]]] = {
@@ -132,7 +149,13 @@ def historical_watchlist_external_feature_bundle(
     identity_intervals: list[dict[str, Any]] = []
     for clock in ordered_clocks:
         reference = (
-            reference_projection(clock, client=active_client) if include_reference else {}
+            reference_projection(
+                clock,
+                client=active_client,
+                tickers=reference_tickers,
+            )
+            if include_reference
+            else {}
         )
         fundamentals = (
             fundamental_projection(clock, client=active_client)
@@ -143,6 +166,10 @@ def historical_watchlist_external_feature_bundle(
             str(ticker).strip().upper(): identity
             for ticker, row in reference.items()
             if str(ticker).strip()
+            and (
+                not identity_ticker_set
+                or str(ticker).strip().upper() in identity_ticker_set
+            )
             and (identity := _identity(dict(row))) is not None
         }
         for ticker in sorted(set(open_identity) | set(current_identity)):
@@ -318,6 +345,8 @@ def materialize_historical_watchlist_plan(plan: dict[str, Any]) -> dict[str, Any
 
 def materialize_historical_watchlist_plans(
     plans: list[dict[str, Any]],
+    *,
+    projection_tickers: list[str] | None = None,
 ) -> dict[str, Any]:
     """Materialize several Watchlists through one shared QMD market replay."""
     if not plans:
@@ -330,12 +359,25 @@ def materialize_historical_watchlist_plans(
         qmd_materialize_historical_watchlist_timelines,
     )
 
-    bundles = [historical_watchlist_external_feature_bundle(plan) for plan in plans]
+    normalized_projection = sorted({
+        str(ticker).strip().upper()
+        for ticker in projection_tickers or []
+        if str(ticker).strip()
+    })
+    bundles = [
+        historical_watchlist_external_feature_bundle(
+            plan,
+            identity_tickers=normalized_projection or None,
+        )
+        for plan in plans
+    ]
     requests = [
         {
             "external_feature_intervals": bundle["external_feature_intervals"],
             "external_feature_revisions": bundle["external_feature_revisions"],
             "plan": plan,
+            "projection_tickers": normalized_projection,
+            "source_tickers": normalized_projection,
         }
         for plan, bundle in zip(plans, bundles, strict=True)
     ]
@@ -345,10 +387,17 @@ def materialize_historical_watchlist_plans(
     if len(bounds) != 1:
         raise ValueError("historical Watchlist batch plans must share exact bounds")
     start, end = next(iter(bounds))
-    source_revision = qmd_historical_source_revision(start=start, end=end)
+    source_revision = qmd_historical_source_revision(
+        start=start,
+        end=end,
+        tickers=normalized_projection,
+    )
     dependency_bounds = _dependency_source_bounds(plans)
     dependency_source_revision = (
-        qmd_historical_source_revision(**dependency_bounds)
+        qmd_historical_source_revision(
+            **dependency_bounds,
+            tickers=normalized_projection,
+        )
         if dependency_bounds["start"] != start
         else source_revision
     )
@@ -366,6 +415,7 @@ def materialize_historical_watchlist_plans(
             ],
             "source_revision": source_revision,
             "dependency_source_revision": dependency_source_revision,
+            "projection_tickers": normalized_projection,
         }
     )
     with _MATERIALIZATION_CACHE_LOCK:
@@ -381,7 +431,10 @@ def materialize_historical_watchlist_plans(
     _assert_source_revision(batch.get("source_revision"), source_revision)
     _assert_dependency_revision_stable(
         dependency_source_revision,
-        qmd_historical_source_revision(**dependency_bounds),
+        qmd_historical_source_revision(
+            **dependency_bounds,
+            tickers=normalized_projection,
+        ),
     )
     by_watchlist = {
         str(row.get("watchlist_id") or ""): row
@@ -400,6 +453,33 @@ def materialize_historical_watchlist_plans(
             identity_intervals=bundle["identity_intervals"],
             identity_revision=bundle["identity_revision"],
         )
+        actual_projection = sorted({
+            str(ticker).strip().upper()
+            for ticker in materialized.get("projection_tickers") or []
+            if str(ticker).strip()
+        })
+        if actual_projection != normalized_projection or not bool(
+            materialized.get("projection_complete")
+        ):
+            raise RuntimeError(
+                f"QMD History returned an incomplete Watchlist transition projection: {watchlist_id}"
+            )
+        expected_projection_mode = (
+            "membership_transitions" if normalized_projection else "full"
+        )
+        if str(materialized.get("projection_mode") or "") != expected_projection_mode:
+            raise RuntimeError(
+                f"QMD History returned the wrong Watchlist projection mode: {watchlist_id}"
+            )
+        actual_source_tickers = sorted({
+            str(ticker).strip().upper()
+            for ticker in materialized.get("source_tickers") or []
+            if str(ticker).strip()
+        })
+        if actual_source_tickers != normalized_projection:
+            raise RuntimeError(
+                f"QMD History returned the wrong Watchlist source scope: {watchlist_id}"
+            )
         ordered.append(materialized)
     batch["materializations"] = ordered
     batch["application_batch_materialization_id"] = _content_hash(
