@@ -156,6 +156,10 @@ class HistoricalWatchlistFeatureServiceTests(unittest.TestCase):
             result["materializations"][1]["chunks"][0]["transitions"][0]["identity"]["ibkr_conid"],
             2,
         )
+        self.assertEqual(
+            result["materializations"][1]["assignment_identities"],
+            [{"ticker": "MSFT", "ibkr_conid": 2}],
+        )
         self.assertTrue(result["application_batch_materialization_id"].startswith("sha256:"))
 
     def setUp(self) -> None:

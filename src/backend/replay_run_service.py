@@ -2848,13 +2848,19 @@ class ReplayRunController:
         existing_member_tickers = {
             str(member.get("ticker") or "").upper() for member in historical_members
         }
+        signal_identities = self._historical_signal_assignment_identities()
         external_signal_members = {
             event.ticker: {
                 "ticker": event.ticker,
-                "ibkr_conid": int(event.occurrence.get("conid") or 0),
+                "ibkr_conid": int(
+                    event.occurrence.get("conid")
+                    or signal_identities.get(event.ticker, {}).get("ibkr_conid")
+                    or 0
+                ),
             }
             for event in self._historical_external_signal_events
             if event.ticker not in existing_member_tickers
+            and _strategy_can_enter_at(configuration, event.available_at)
         }
         run_plan = dict(configuration.get("run_plan") or {})
         if (
@@ -2920,6 +2926,27 @@ class ReplayRunController:
                     f"Historical assignments are unavailable or inactive: {', '.join(sorted(missing))}"
                 )
         return rows
+
+    def _historical_signal_assignment_identities(self) -> dict[str, dict[str, Any]]:
+        identities: dict[str, dict[str, Any]] = {}
+        for snapshot in self._historical_watchlist_timeline():
+            for row in snapshot.get("assignment_identities") or []:
+                ticker = str(row.get("ticker") or "").strip().upper()
+                identity = {
+                    key: deepcopy(value)
+                    for key, value in dict(row).items()
+                    if key != "ticker"
+                }
+                if not ticker or int(identity.get("ibkr_conid") or 0) <= 0:
+                    continue
+                prior = identities.get(ticker)
+                if prior is not None and prior != identity:
+                    raise ValueError(
+                        f"Historical signal identity changed for {ticker}; "
+                        "ticker-only assignment authority is unsafe"
+                    )
+                identities[ticker] = identity
+        return identities
 
     def _historical_watchlist_members(self) -> list[dict[str, Any]]:
         if self._historical_watchlist_cache is not None:
@@ -3421,17 +3448,30 @@ class ReplayRunController:
 
             build_path = (
                 cache_path.with_name(
-                    f".{cache_path.name}.{self.run_id}.building"
+                    f".{cache_path.name}.building"
                 )
                 if durable_cache
                 else spool_path
             )
-            spool = ReplayFrameSpool(build_path)
-            self._strategy_frame_cache_status = (
-                "miss" if durable_cache else "request_memory"
+            partial_exists = durable_cache and build_path.is_file()
+            spool = ReplayFrameSpool(build_path, reset=not partial_exists)
+            completed_streams = (
+                await asyncio.to_thread(spool.completed_streams)
+                if partial_exists
+                else set()
             )
+            completed_requests = requests.intersection(completed_streams)
+            self._preparation_completed_units = len(completed_requests)
+            self._strategy_frame_cache_status = (
+                "partial_hit"
+                if completed_requests
+                else "miss"
+                if durable_cache
+                else "request_memory"
+            )
+            missing_requests = requests - completed_requests
             timeframes_by_ticker: dict[str, list[str]] = {}
-            for ticker, timeframe in ordered_requests:
+            for ticker, timeframe in sorted(missing_requests):
                 timeframes_by_ticker.setdefault(ticker, []).append(timeframe)
             request_queue: asyncio.Queue[tuple[str, tuple[str, ...]]] = asyncio.Queue()
             for ticker, timeframes in timeframes_by_ticker.items():
@@ -3456,6 +3496,17 @@ class ReplayRunController:
                                     authority.update(deepcopy(evidence))
 
                             if self.definition.historical_frame_cache is None:
+                                # A prior process may have stopped after
+                                # appending a partial stream but before its
+                                # completion marker. Resume only certified
+                                # streams and restart this one cleanly.
+                                async with writer_lock:
+                                    await asyncio.to_thread(
+                                        spool.delete_stream,
+                                        ticker,
+                                        timeframe,
+                                    )
+
                                 async def persist(batch: list[ReplayDerivedFrame]) -> None:
                                     async with writer_lock:
                                         await asyncio.to_thread(spool.append, batch)
@@ -3512,9 +3563,10 @@ class ReplayRunController:
                 worker_count = min(
                     replay_history_fetch_concurrency(), len(timeframes_by_ticker)
                 )
-                await asyncio.gather(
-                    *(load_worker() for _ in range(worker_count))
-                )
+                if worker_count:
+                    await asyncio.gather(
+                        *(load_worker() for _ in range(worker_count))
+                    )
                 events_by_ticker = await self._strategy_frame_signal_events(
                     requests=requests,
                     source_native_only=source_native_only,
@@ -3526,10 +3578,12 @@ class ReplayRunController:
                     )
                     spool = ReplayFrameSpool(cache_path, reset=False)
                     await asyncio.to_thread(spool.finalize, events_by_ticker)
+                    self._strategy_frame_cache_status = "built"
                 return spool
             except Exception:
-                if durable_cache and build_path.is_file():
-                    build_path.unlink()
+                # Completed streams remain restart-safe in the deterministic
+                # partial cache. Incomplete streams have no completion marker
+                # and are deleted before their next attempt.
                 raise
 
     async def _load_historical_signal_events(self) -> list[ReplaySignalEvent]:
@@ -4841,6 +4895,7 @@ def _historical_watchlist_membership_timeline_from_plans(
         ),
     )
     authority = []
+    assignment_identities: dict[str, dict[str, Any]] = {}
     for plan in plans:
         watchlist_id = str(plan.get("watchlist_id") or "")
         materialized = materialized_by_watchlist.get(watchlist_id)
@@ -4896,6 +4951,21 @@ def _historical_watchlist_membership_timeline_from_plans(
                 ),
             }
         )
+        for row in materialized.get("assignment_identities") or []:
+            ticker = str(row.get("ticker") or "").strip().upper()
+            identity = {
+                key: deepcopy(value)
+                for key, value in dict(row).items()
+                if key != "ticker"
+            }
+            if not ticker or int(identity.get("ibkr_conid") or 0) <= 0:
+                continue
+            prior = assignment_identities.get(ticker)
+            if prior is not None and prior != identity:
+                raise ValueError(
+                    f"Historical Watchlists disagree on assignment identity for {ticker}"
+                )
+            assignment_identities[ticker] = identity
     # Keep the QMD transition representation compressed. Expanding every
     # one-second clock into a full union membership snapshot duplicated rich
     # evidence tens of thousands of times and could consume gigabytes before
@@ -4922,6 +4992,21 @@ def _historical_watchlist_membership_timeline_from_plans(
                 "effective_at": effective_at,
                 "transitions": clock_transitions,
                 "authority": [dict(row) for row in authority],
+            }
+        )
+    identity_catalog = [
+        {"ticker": ticker, **assignment_identities[ticker]}
+        for ticker in sorted(assignment_identities)
+    ]
+    if timeline:
+        timeline[0]["assignment_identities"] = identity_catalog
+    elif identity_catalog:
+        timeline.append(
+            {
+                "effective_at": _historical_watchlist_clock(plans[0].get("start")),
+                "transitions": [],
+                "authority": [dict(row) for row in authority],
+                "assignment_identities": identity_catalog,
             }
         )
     return timeline

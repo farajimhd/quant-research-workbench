@@ -1628,6 +1628,84 @@ class ReplayHistoricalFetchBudgetTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(len(cache_files), 2)
 
+    async def test_prepared_frame_cache_resumes_completed_streams_after_interruption(self) -> None:
+        configuration = approved_configuration()
+        configuration["payload"]["signal_activation"] = {
+            "signal_streams": [{
+                "signal_stream_id": "price-squeeze-early",
+                "enabled": True,
+                "occurrence_source": "qmd_squeeze_episode",
+            }]
+        }
+        definition = ReplayRunDefinition(
+            session_date=date(2026, 8, 10),
+            start_time=time(4, 0),
+            configuration_revision=configuration,
+        )
+        source_revision = {
+            "token": "session-revision-1",
+            "source_plan_hash": "session-plan-1",
+            "complete_for_history": True,
+            "request_complete": True,
+            "source_tiers": ["archive"],
+        }
+        calls: list[str] = []
+        interrupted = True
+
+        async def derived(**kwargs):
+            nonlocal interrupted
+            ticker = kwargs["ticker"]
+            calls.append(ticker)
+            await kwargs["frame_sink"]([ReplayDerivedFrame(
+                as_of=definition.session_start,
+                bar={"close": 10.0},
+                indicator={},
+                sequence=1,
+                ticker=ticker,
+                timeframe="1s",
+            )])
+            if ticker == "BBB" and interrupted:
+                interrupted = False
+                raise RuntimeError("transport interrupted")
+
+        with tempfile.TemporaryDirectory() as directory:
+            runtime_root = Path(directory)
+
+            def controller() -> ReplayRunController:
+                result = ReplayRunController(definition, runtime_root=runtime_root)
+                result._strategy = MagicMock()
+                result._strategy.assignments.return_value = [
+                    MagicMock(ticker="AAA", parameters={}),
+                    MagicMock(ticker="BBB", parameters={}),
+                ]
+                result._strategy_registration = MagicMock()
+                result._strategy_registration.timeframe_resolver.return_value = {"1s"}
+                return result
+
+            first = controller()
+            second = controller()
+            with (
+                patch(
+                    "src.backend.replay_run_service.qmd_historical_source_revision",
+                    return_value=source_revision,
+                ),
+                patch(
+                    "src.backend.replay_run_service._stream_historical_derived_frames",
+                    side_effect=derived,
+                ),
+                patch.dict(
+                    "os.environ",
+                    {"TRADING_REPLAY_HISTORY_FETCH_CONCURRENCY": "1"},
+                ),
+            ):
+                with self.assertRaisesRegex(RuntimeError, "transport interrupted"):
+                    await first._load_strategy_frames()
+                frames = list(await second._load_strategy_frames())
+
+        self.assertEqual(calls, ["AAA", "BBB", "BBB"])
+        self.assertEqual([frame.ticker for frame in frames], ["AAA", "BBB"])
+        self.assertEqual(second._strategy_frame_cache_status, "built")
+
     async def test_loads_scanner_signals_once_and_bounds_derived_fetches(self) -> None:
         definition = ReplayRunDefinition(
             session_date=date(2026, 8, 10),
@@ -2191,6 +2269,59 @@ class ReplayControllerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(assignments), 1)
         self.assertEqual(assignments[0]["ticker"], "JUNS")
         self.assertEqual(assignments[0]["source"], "historical_signal_stream")
+
+    def test_source_native_assignments_use_pinned_identity_and_entry_session_scope(self) -> None:
+        approved = approved_configuration()
+        approved["payload"]["run_plan"] = {
+            "activation": {"watchlist_policy": "not_required"},
+            "watchlist_ids": [],
+        }
+        approved["payload"]["strategy_profile"] = {
+            "lifecycle": {
+                "trading_behavior": {
+                    "eligible_sessions": ["premarket"],
+                    "entry_cutoff_time": "09:29:59",
+                }
+            }
+        }
+        controller = ReplayRunController(
+            ReplayRunDefinition(
+                session_date=date(2026, 8, 21),
+                start_time=time(4, 0),
+                tickers=(),
+                configuration_revision=approved,
+            ),
+            runtime_root=Path(tempfile.gettempdir()),
+        )
+        controller._historical_watchlist_timeline_cache = [{
+            "effective_at": datetime(2026, 8, 21, 4, 0, tzinfo=NEW_YORK),
+            "transitions": [],
+            "assignment_identities": [
+                {"ticker": "CLSK", "ibkr_conid": 123456},
+                {"ticker": "LATE", "ibkr_conid": 654321},
+            ],
+        }]
+        controller._historical_external_signal_events = [
+            ReplaySignalEvent(
+                available_at=datetime(2026, 8, 21, 4, 1, tzinfo=NEW_YORK),
+                occurrence={"event_id": "early-clsk", "ticker": "CLSK"},
+                source_values={},
+                ticker="CLSK",
+            ),
+            ReplaySignalEvent(
+                available_at=datetime(2026, 8, 21, 10, 0, tzinfo=NEW_YORK),
+                occurrence={"event_id": "late", "ticker": "LATE"},
+                source_values={},
+                ticker="LATE",
+            ),
+        ]
+
+        assignments = controller._selected_assignments()
+
+        self.assertEqual(
+            [(row["ticker"], row["conid"]) for row in assignments],
+            [("CLSK", 123456)],
+        )
 
     async def test_warmup_market_event_updates_runtime_without_strategy_evaluation(self) -> None:
         controller = ReplayRunController(

@@ -52,8 +52,8 @@ _MATERIALIZATION_CACHE_LIMIT = 8
 _DURABLE_CACHE_SCHEMA_VERSION = 1
 _DURABLE_CACHE_MAX_ENTRIES = 64
 _DURABLE_CACHE_MAX_FILE_BYTES = 256 * 1024 * 1024
-_QMD_WATCHLIST_CALCULATION_REVISION = "canvas_historical_qmd_snapshot_v7"
-_APPLICATION_WATCHLIST_PROJECTION_REVISION = 2
+_QMD_WATCHLIST_CALCULATION_REVISION = "canvas_historical_qmd_snapshot_v8"
+_APPLICATION_WATCHLIST_PROJECTION_REVISION = 3
 
 
 def historical_watchlist_external_feature_intervals(
@@ -721,6 +721,24 @@ def _enrich_materialized_identity(
             retained.append(transition)
         chunk["transitions"] = retained
     materialized["identity_revision"] = dict(identity_revision)
+    assignment_identities: list[dict[str, Any]] = []
+    for ticker, intervals in sorted(by_ticker.items()):
+        unique = {
+            json.dumps(
+                dict(interval["identity"]),
+                sort_keys=True,
+                separators=(",", ":"),
+            ): dict(interval["identity"])
+            for interval in intervals
+        }
+        # Replay assignments are ticker-keyed for the complete run.  Publish
+        # only identities that are stable over the pinned interval; an actual
+        # identity change must continue to fail closed.
+        if len(unique) == 1:
+            assignment_identities.append(
+                {"ticker": ticker, **next(iter(unique.values()))}
+            )
+    materialized["assignment_identities"] = assignment_identities
     materialized["qmd_transition_count"] = int(materialized.get("transition_count") or 0)
     materialized["application_transition_count"] = sum(
         len(dict(chunk).get("transitions") or [])

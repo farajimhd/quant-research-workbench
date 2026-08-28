@@ -4,7 +4,7 @@ use crate::watchlist_timeline::{
     plan_evaluation_clock, validate_plan, ExternalFeatureRevisionEvidence, HistoricalWatchlistPlan,
     HistoricalWatchlistPlanValidation, HistoricalWatchlistTimelineBatchRequest,
     HistoricalWatchlistTimelineRequest, WatchlistCandidate, WatchlistCandidateDeltaFrame,
-    WatchlistTimelineChunk, WatchlistTimelineReducer,
+    WatchlistEvaluationWindow, WatchlistTimelineChunk, WatchlistTimelineReducer,
 };
 use chrono::{DateTime, Datelike, NaiveDate, TimeZone, Timelike, Utc};
 use chrono_tz::America::New_York;
@@ -24,7 +24,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::sync::Arc;
 use tokio::sync::{Mutex, OnceCell};
 
-pub const HISTORICAL_SCANNER_DERIVED_SCHEMA_VERSION: &str = "canvas_historical_qmd_snapshot_v7";
+pub const HISTORICAL_SCANNER_DERIVED_SCHEMA_VERSION: &str = "canvas_historical_qmd_snapshot_v8";
 const SIGNAL_EVENT_LIMIT: usize = 20_000;
 const SCANNER_TIMEFRAMES: [&str; 12] = [
     "100ms", "1s", "10s", "30s", "1m", "5m", "15m", "30m", "1h", "2h", "4h", "1d",
@@ -1358,18 +1358,30 @@ pub async fn materialize_watchlist_timelines(
             "historical Watchlist batch source scope exceeds ticker_limit=5000".to_string(),
         );
     }
-    let window = EventWindow {
+    // Plans scoped to source-native Signal Stream clocks do not depend on
+    // market events after their final evaluation window.  Keep the pinned
+    // source authority over the complete requested interval, but stop the
+    // physical replay at the last causal clock.  Previously a premarket-only
+    // strategy still decoded the entire 04:00-20:00 session.
+    let replay_end = replay_end_for_evaluation_windows(
+        batch
+            .requests
+            .iter()
+            .flat_map(|request| request.plan.evaluation_windows.iter()),
+        end,
+    )?;
+    let authority_window = EventWindow {
         start,
         end,
         tickers: source_tickers.iter().cloned().collect(),
     };
-    let source_plan = source.source_plan(&window).await?;
+    let source_plan = source.source_plan(&authority_window).await?;
     if !source_plan.complete_for_history {
         return Err(
             "historical Watchlist batch requires a complete pinned market-event window".to_string(),
         );
     }
-    let source_revision = source.source_revision(&window).await?;
+    let source_revision = source.source_revision(&authority_window).await?;
     if !source_revision.complete_for_history || !source_revision.request_complete {
         return Err(
             "historical Watchlist batch requires a complete pinned market-event window".to_string(),
@@ -1408,7 +1420,11 @@ pub async fn materialize_watchlist_timelines(
     let mut event_count = 0_u64;
     let mut reference_session = session_date(start);
     let mut batches = source.stream_ordered_filtered(
-        window,
+        EventWindow {
+            start,
+            end: replay_end,
+            tickers: source_tickers.iter().cloned().collect(),
+        },
         config.batch_size.max(100_000),
         source_revision.live_continuation_sequence,
         combined_rule_event_type_filter(batch.requests.iter().map(|request| &request.plan)),
@@ -1540,6 +1556,24 @@ pub async fn materialize_watchlist_timelines(
         schema_version: 1,
         source_revision,
     })
+}
+
+fn replay_end_for_evaluation_windows<'a>(
+    windows: impl Iterator<Item = &'a WatchlistEvaluationWindow>,
+    requested_end: DateTime<Utc>,
+) -> Result<DateTime<Utc>, String> {
+    Ok(windows
+        .map(|window| {
+            window
+                .end
+                .parse::<DateTime<Utc>>()
+                .map_err(|error| format!("invalid historical Watchlist evaluation end: {error}"))
+        })
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter()
+        .max()
+        .unwrap_or(requested_end)
+        .min(requested_end))
 }
 
 fn next_batch_clock(runtimes: &[BatchPlanRuntime<'_>]) -> Result<Option<DateTime<Utc>>, String> {
@@ -2281,10 +2315,11 @@ fn scanner_shard_index(ticker: &str, shard_count: usize) -> usize {
 mod tests {
     use super::{
         accumulate_aligned_volume_session, aligned_volume_bucket, empty_source_revision,
-        scanner_shard_index, source_event_requirement, watchlist_derived_timeframes,
-        CoreLiquidityIndex, CrossSectionEngine, RelativeVolumeRevisionEvidence,
-        RuleEventRequirement, ALIGNED_VOLUME_BUCKET_COUNT,
+        replay_end_for_evaluation_windows, scanner_shard_index, source_event_requirement,
+        watchlist_derived_timeframes, CoreLiquidityIndex, CrossSectionEngine,
+        RelativeVolumeRevisionEvidence, RuleEventRequirement, ALIGNED_VOLUME_BUCKET_COUNT,
     };
+    use crate::watchlist_timeline::WatchlistEvaluationWindow;
     use chrono::{TimeZone, Utc};
     use qmd_core::bars::{TradeAggregationRules, TradeUpdateRule};
     use qmd_core::event::{MarketEvent, TradeEvent};
@@ -2635,6 +2670,33 @@ mod tests {
         assert_eq!(
             source_event_requirement("custom.unknown_signal"),
             RuleEventRequirement::Both
+        );
+    }
+
+    #[test]
+    fn source_native_evaluation_windows_bound_physical_replay_end() {
+        let requested_end = Utc
+            .with_ymd_and_hms(2026, 8, 21, 20, 0, 0)
+            .single()
+            .unwrap();
+        let windows = [
+            WatchlistEvaluationWindow {
+                start: "2026-08-21T08:01:00+00:00".to_string(),
+                end: "2026-08-21T08:01:01+00:00".to_string(),
+            },
+            WatchlistEvaluationWindow {
+                start: "2026-08-21T13:29:58+00:00".to_string(),
+                end: "2026-08-21T13:29:59+00:00".to_string(),
+            },
+        ];
+
+        let replay_end = replay_end_for_evaluation_windows(windows.iter(), requested_end).unwrap();
+
+        assert_eq!(
+            replay_end,
+            Utc.with_ymd_and_hms(2026, 8, 21, 13, 29, 59)
+                .single()
+                .unwrap()
         );
     }
 }
