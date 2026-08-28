@@ -1424,15 +1424,28 @@ class TradingConfigurationServiceTests(unittest.TestCase):
         self.assertEqual(plan["watchlist_ids"], ["squeeze-tradable-candidates"])
         self.assertEqual(
             plan["signal_stream_ids"],
-            ["price-squeeze-early", "price-squeeze-5m"],
+            ["price-squeeze-early"],
         )
+        self.assertEqual(plan["activation"]["watchlist_policy"], "not_required")
         self.assertEqual(
             profile["lifecycle"]["initial_entry"]["opportunity"]["expression"][
                 "children"
             ][0]["rule_set_id"],
-            "watchlist-squeeze-early-impulse-100ms",
+            "strategy-squeeze-swing-high-break-1s",
         )
-        self.assertIn("continuation milestone", profile["description"])
+        swing_rule = next(
+            row
+            for row in draft["market_discovery"]["rule_sets"]
+            if row["rule_set_id"] == "strategy-squeeze-swing-high-break-1s"
+        )
+        swing_condition = swing_rule["conditions"][0]
+        self.assertEqual(swing_condition["left_source_id"], "market.last_price")
+        self.assertEqual(
+            swing_condition["right_source_id"],
+            "indicator.structure.swing_high",
+        )
+        self.assertEqual(swing_condition["value"], 5.0)
+        self.assertIn("swing-high breakout", profile["description"])
         self.assertEqual(plan["campaign_lifecycle"]["reentry_cooldown_ms"], 5_000)
         self.assertEqual(profile["lifecycle"]["trading_behavior"]["eligible_sessions"], ["premarket"])
         self.assertEqual(profile["lifecycle"]["trading_behavior"]["entry_cutoff_time"], "09:29:59")

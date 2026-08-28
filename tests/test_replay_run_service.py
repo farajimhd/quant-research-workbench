@@ -28,6 +28,7 @@ from src.backend.replay_run_service import (
     _historical_watchlist_membership_timeline_for_configuration,
     _historical_watchlist_membership_timeline_from_plans,
     _historical_watchlist_plans_at_source_native_events,
+    _historical_watchlist_assignment_is_observable,
     _historical_signal_events,
     _historical_derived_frames,
     _occurrence_source_values,
@@ -887,6 +888,26 @@ class HistoricalDebugFixtureTests(unittest.IsolatedAsyncioTestCase):
 
 
 class HistoricalWatchlistTimelineTests(unittest.TestCase):
+    def test_early_signal_episode_survives_later_watchlist_removal(self) -> None:
+        self.assertTrue(
+            _historical_watchlist_assignment_is_observable(
+                source="historical_watchlist:price-squeeze",
+                ticker="CLSK",
+                active_tickers=set(),
+                signal_activated_tickers={"CLSK"},
+                position_quantity=0.0,
+            )
+        )
+        self.assertFalse(
+            _historical_watchlist_assignment_is_observable(
+                source="historical_watchlist:price-squeeze",
+                ticker="CLSK",
+                active_tickers=set(),
+                signal_activated_tickers=set(),
+                position_quantity=0.0,
+            )
+        )
+
     def test_premarket_strategy_indicator_horizon_ends_after_flatten_clock(self) -> None:
         start = datetime(2026, 8, 21, 4, 0, tzinfo=NEW_YORK)
         end = datetime(2026, 8, 21, 20, 0, tzinfo=NEW_YORK)
@@ -1258,6 +1279,14 @@ class HistoricalWatchlistTimelineTests(unittest.TestCase):
 
             self.assertEqual(controller._active_historical_watchlist_tickers, {"MSFT"})
             self.assertNotIn("AAPL", controller._active_historical_watchlist_evidence)
+            self.assertNotIn(
+                "market.session_dollar_volume",
+                controller._strategy_source_values["AAPL"],
+            )
+            self.assertNotIn(
+                "volume_rate_ratio@1s",
+                controller._strategy_source_values["AAPL"],
+            )
             events = [
                 record.payload["event"]
                 for record in controller._journal.watchlist_membership_records()

@@ -1897,6 +1897,7 @@ impl BarIndicatorState {
                 .cloned()
                 .unwrap_or_default()
         };
+        let current_timeframe_state = state_for(&bar.timeframe);
         // Temporary compatibility projections for consumers that still deserialize the
         // former three-scale columns. They are sourced from the canonical timeframe
         // states; the level book itself has no micro/tactical/context extraction path.
@@ -1988,8 +1989,12 @@ impl BarIndicatorState {
             structure_premarket_low: 0.0,
             structure_opening_range_high: 0.0,
             structure_opening_range_low: 0.0,
-            structure_swing_high: 0.0,
-            structure_swing_low: 0.0,
+            // These compatibility fields are the strategy-facing, timeframe-local
+            // confirmed pivots. Leaving them at zero made every configured
+            // `indicator.structure.swing_*` rule permanently unavailable even
+            // though the canonical generic-structure state was populated.
+            structure_swing_high: current_timeframe_state.swing_high,
+            structure_swing_low: current_timeframe_state.swing_low,
             structure_volume_poc: 0.0,
             structure_nearest_round: 0.0,
             structure_bos_price: 0.0,

@@ -69,7 +69,7 @@ from src.trading_runtime.strategy_campaign import validate_campaign_policy
 from src.trading_runtime.taxonomy import StrategyTaxonomy
 
 
-CONFIGURATION_SCHEMA_VERSION = 40
+CONFIGURATION_SCHEMA_VERSION = 41
 MARKET_DISCOVERY_MATERIALIZATION_RUN_ID = "market-discovery:materialized-configuration"
 _CONFIGURATION_BASE_CACHE_LOCK = threading.RLock()
 _CONFIGURATION_BASE_CACHE: tuple[str, float, dict[str, Any] | None] = ("", 0.0, None)
@@ -2869,6 +2869,22 @@ def _default_watchlist_rule_sets() -> list[dict[str, Any]]:
             ],
         ),
         _watchlist_rule(
+            "strategy-squeeze-swing-high-break-1s",
+            "Causal one-second swing-high breakout",
+            "Enters immediately when quality is confirmed and price is already at least five basis points above the latest causally confirmed one-second swing high; otherwise it waits and enters on the first later pass above that same live threshold.",
+            [{
+                **_watchlist_condition(
+                    "squeeze-price-over-swing-high",
+                    "market.last_price",
+                    "above_by_bps",
+                    5.0,
+                    interval="1s",
+                ),
+                "right_source_id": "indicator.structure.swing_high",
+                "right_interval": normalize_interval_spec("1s"),
+            }],
+        ),
+        _watchlist_rule(
             "strategy-live-spread-quality",
             "Executable spread quality",
             "Allows immediate event-driven entry only while the latest quoted spread is no wider than 50 basis points.",
@@ -3201,7 +3217,7 @@ def _default_watchlist_templates(symbols: list[str], calculation_rows: list[dict
         gainers.append(template(f"top-{slug}-volume-gainers", f"Top {label} Volume Gainers", f"Most unusually active {label.lower()} instruments, ranked by aligned relative volume.", [category_rule, "watchlist-relative-volume-gainer"], "market.relative_volume"))
     return [
         {"watchlist_id": "core-candidates", "name": "Core candidates", "description": "Candidate instruments produced from the Core Scan for strategy evaluation.", "enabled": True, "origin": "system", "template": False, "availability": "available", "availability_detail": "", "source_scan_id": "qmd-core-scan", "inclusion_rule_sets": [], "inclusion_operator": "all", "exclusion_rule_sets": [], "ranking_field": "market.liquidity_rank", "ranking_direction": "ascending", "maximum_size": 250, "refresh_interval_ms": 1000, "membership_expiry": "end_of_trading_day", "membership_ttl_ms": 300000, "manual_inclusions": symbols, "manual_exclusions": [], "columns": common_columns, "membership_history": []},
-        template("squeeze-tradable-candidates", "Squeeze tradable candidates", "Causal $2-$50 candidates that satisfy the shared absolute and relative liquidity contract before the exact 5% Squeeze event is allowed to activate an entry.", ["strategy-squeeze-volume-spread-quality"], "market.liquidity_score", refresh=1000, columns=common_columns),
+        template("squeeze-tradable-candidates", "Squeeze tradable candidates", "Current $2-$50 Early Squeeze candidates whose absolute liquidity, trade rate, one-second volume attraction, and executable spread all pass. Membership may change while the Early Squeeze episode remains under Strategy observation.", ["strategy-squeeze-volume-spread-quality"], "market.liquidity_score", refresh=1000, columns=common_columns),
         *gainers,
         template("price-or-volume-squeeze", "Session Price or Volume Expansion", "Symbols with at least 5% session price expansion or 3x aligned 20-session relative volume.", ["watchlist-price-or-volume-squeeze"], "market.relative_volume"),
         template("vwap-breakout", "VWAP Breakout", "Symbols trading at least 5 basis points above causal session VWAP.", ["watchlist-vwap-breakout"], "market.change_pct"),
@@ -3830,8 +3846,8 @@ def _default_draft() -> dict[str, Any]:
     system_profiles[0]["name"] = "Long Momentum · Squeeze"
     system_profiles[0]["description"] = (
         "Extended-hours long momentum strategy activated by the Early Squeeze Move "
-        "episode start and confirmed by volume attraction and spread quality. The "
-        "Exact 5% Squeeze event remains a continuation milestone."
+        "episode start, confirmed by executable liquidity and volume attraction, and "
+        "entered on the first causal one-second swing-high breakout."
     )
     squeeze_lifecycle = system_profiles[0]["lifecycle"]
     squeeze_lifecycle["trading_behavior"]["eligible_sessions"] = [
@@ -3845,7 +3861,7 @@ def _default_draft() -> dict[str, Any]:
             "operator": "and",
             "children": [{
                 "kind": "rule_set",
-                "rule_set_id": "watchlist-squeeze-early-impulse-100ms",
+                "rule_set_id": "strategy-squeeze-swing-high-break-1s",
             }],
         }
     }
@@ -4017,7 +4033,7 @@ def _default_draft() -> dict[str, Any]:
             "name": "Price Squeeze signals",
             "description": "Tickers are admitted causally when an Early Squeeze Move starts; Exact 5% remains observable as a continuation milestone.",
             "source": "signal_stream",
-            "signal_stream_ids": ["price-squeeze-early", "price-squeeze-5m"],
+            "signal_stream_ids": ["price-squeeze-early"],
             "symbols": [],
             "enabled": True,
         },
@@ -4035,13 +4051,13 @@ def _default_draft() -> dict[str, Any]:
         {
             "run_plan_id": f"long-momentum-squeeze-{binding['account_key']}",
             "name": f"Long Momentum · Price Squeeze · {str(binding['account_key']).title()}",
-            "description": "Session-enabled extended-hours momentum execution activated by the first Early Squeeze Move event-time episode start; Exact 5% is a continuation milestone.",
+            "description": "Session-enabled extended-hours momentum execution activated only by the first Early Squeeze Move event-time episode start.",
             "profile_id": "long-momentum-balanced",
             "oms_profile_id": "adaptive-regular",
             "universe_id": "price-squeeze-signal-universe",
             "watchlist_ids": [],
-            "signal_stream_ids": ["price-squeeze-early", "price-squeeze-5m"],
-            "activation": {"event_policy": "new_occurrences", "watchlist_policy": "any_selected"},
+            "signal_stream_ids": ["price-squeeze-early"],
+            "activation": {"event_policy": "new_occurrences", "watchlist_policy": "not_required"},
             "enablement": {"state": "disabled", "scope": "persistent", "effective_session": ""},
             "canvas_profile_id": "current-canvas",
             "canvas_profile_id": "current-canvas",
@@ -4090,8 +4106,8 @@ def _default_draft() -> dict[str, Any]:
         "oms_profile_id": "adaptive-regular",
         "universe_id": "configured-watch-universe",
         "watchlist_ids": ["squeeze-tradable-candidates"],
-        "signal_stream_ids": ["price-squeeze-early", "price-squeeze-5m"],
-        "activation": {"event_policy": "new_occurrences", "watchlist_policy": "any_selected"},
+        "signal_stream_ids": ["price-squeeze-early"],
+        "activation": {"event_policy": "new_occurrences", "watchlist_policy": "not_required"},
         "enablement": {"state": "enabled", "scope": "persistent", "effective_session": ""},
         "canvas_profile_id": "current-canvas",
         "data_plan_ids": _default_data_plan_ids(),
@@ -6080,6 +6096,24 @@ def _migrate_draft(raw: dict[str, Any]) -> dict[str, Any]:
                     "live": True,
                 }
             }
+        if source_schema_version < 41:
+            for universe in result["run_plans"]["universes"]:
+                if str(universe.get("universe_id") or "") == "price-squeeze-signal-universe":
+                    universe["signal_stream_ids"] = ["price-squeeze-early"]
+                    universe["description"] = (
+                        "Tickers are admitted causally only when an Early Squeeze Move starts."
+                    )
+            for run_plan in result["run_plans"]["plans"]:
+                if (
+                    str(run_plan.get("profile_id") or "") != "long-momentum-balanced"
+                    or str(run_plan.get("run_plan_id") or "").startswith("long-momentum-news")
+                ):
+                    continue
+                run_plan["signal_stream_ids"] = ["price-squeeze-early"]
+                activation = dict(run_plan.get("activation") or {})
+                activation["event_policy"] = "new_occurrences"
+                activation["watchlist_policy"] = "not_required"
+                run_plan["activation"] = activation
         for mandate in dict(result.get("portfolio") or {}).get("mandates") or []:
             mandate["run_plan_id"] = str(
                 mandate.get("run_plan_id")

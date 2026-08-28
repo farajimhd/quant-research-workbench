@@ -546,6 +546,13 @@ def strategy_activity_payload(
                     or payload.get("last_price")
                     or metadata.get("reference_price")
                 ),
+                "trigger_reference": str(
+                    metadata.get("trigger_reference_name")
+                    or metadata.get("reference")
+                    or ""
+                ),
+                "trigger_reference_price": metadata.get("trigger_reference_price"),
+                "trigger_threshold_price": metadata.get("trigger_threshold_price"),
                 "entity_id": record.entity_id,
                 "source": str(
                     payload.get("source_authority")

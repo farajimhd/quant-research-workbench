@@ -2375,10 +2375,12 @@ class ReplayRunController:
                 (row for row in positions if int(row.conid) == assignment.conid),
                 None,
             )
-            if (
-                "historical_watchlist" in assignment.source
-                and assignment.ticker not in self._active_historical_watchlist_tickers
-                and (position is None or float(position.position) == 0)
+            if not _historical_watchlist_assignment_is_observable(
+                source=assignment.source,
+                ticker=assignment.ticker,
+                active_tickers=self._active_historical_watchlist_tickers,
+                signal_activated_tickers=self._signal_activated_tickers,
+                position_quantity=float(position.position if position else 0),
             ):
                 continue
             if (
@@ -3004,12 +3006,14 @@ class ReplayRunController:
             effective_at = snapshot["effective_at"]
             if effective_at > event_time:
                 break
+            transition_by_ticker: dict[str, dict[str, Any]] = {}
             if "transitions" in snapshot:
                 for transition in snapshot.get("transitions") or []:
                     ticker = str(transition.get("ticker") or "").upper()
                     watchlist_id = str(transition.get("watchlist_id") or "")
                     if not ticker or not watchlist_id:
                         continue
+                    transition_by_ticker[ticker] = dict(transition)
                     rows = self._active_historical_watchlist_rows.setdefault(
                         watchlist_id, {}
                     )
@@ -3064,9 +3068,21 @@ class ReplayRunController:
                     current_by_watchlist.setdefault(str(watchlist_id), set()).add(ticker)
             added = sorted(current - self._active_historical_watchlist_tickers)
             removed = sorted(self._active_historical_watchlist_tickers - current)
+            previous_evidence = self._active_historical_watchlist_evidence
             self._active_historical_watchlist_tickers = current
             self._active_historical_watchlists = current_by_watchlist
             self._active_historical_watchlist_evidence = current_evidence
+            for ticker in removed:
+                source_cache = self._strategy_source_values.get(ticker, {})
+                for source_id in previous_evidence.get(ticker, {}):
+                    source_cache.pop(source_id, None)
+                    if "@@" in source_id:
+                        base, dimension = source_id.split("@@", 1)
+                        interval, separator, aggregation = dimension.partition("##")
+                        alias = f"{base}@{interval}"
+                        if separator and aggregation:
+                            alias += f"#{aggregation}"
+                        source_cache.pop(alias, None)
             for ticker, evidence in current_evidence.items():
                 source_cache = self._strategy_source_values.setdefault(ticker, {})
                 for source_id, value in evidence.items():
@@ -3086,6 +3102,7 @@ class ReplayRunController:
             self._refresh_source_native_signal_activation(effective_at)
             if self._journal is not None:
                 for ticker in added:
+                    transition = transition_by_ticker.get(ticker, {})
                     self._journal.append(
                         run_id=self.run_id,
                         category="watchlist_membership",
@@ -3096,11 +3113,15 @@ class ReplayRunController:
                             "event": "added",
                             "ticker": ticker,
                             "effective_at": effective_at.isoformat(),
+                            "evidence": deepcopy(transition.get("evidence") or {}),
+                            "reason": str(transition.get("reason") or "rules passed"),
                             "source": "causal_historical_watchlist",
+                            "watchlist_id": str(transition.get("watchlist_id") or ""),
                         },
                     )
 
                 for ticker in removed:
+                    transition = transition_by_ticker.get(ticker, {})
                     self._journal.append(
                         run_id=self.run_id,
                         category="watchlist_membership",
@@ -3111,7 +3132,12 @@ class ReplayRunController:
                             "event": "removed",
                             "ticker": ticker,
                             "effective_at": effective_at.isoformat(),
+                            "evidence": deepcopy(transition.get("evidence") or {}),
+                            "reason": str(
+                                transition.get("reason") or "rules no longer passed"
+                            ),
                             "source": "causal_historical_watchlist",
+                            "watchlist_id": str(transition.get("watchlist_id") or ""),
                         },
                     )
 
@@ -6307,6 +6333,25 @@ def _optional_datetime(value: Any) -> datetime | None:
     except ValueError:
         return None
     return parsed if parsed.tzinfo is not None else None
+
+
+def _historical_watchlist_assignment_is_observable(
+    *,
+    source: str,
+    ticker: str,
+    active_tickers: set[str],
+    signal_activated_tickers: set[str],
+    position_quantity: float,
+) -> bool:
+    """Keep a signal-started episode alive after its quality projection changes."""
+
+    if "historical_watchlist" not in source:
+        return True
+    return bool(
+        ticker in active_tickers
+        or ticker in signal_activated_tickers
+        or float(position_quantity) != 0
+    )
 
 
 def _historical_signal_occurrence(

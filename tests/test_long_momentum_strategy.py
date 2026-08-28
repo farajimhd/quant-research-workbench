@@ -387,6 +387,92 @@ class LongMomentumStrategyTests(unittest.TestCase):
         self.assertGreater(intent.profit_target_price or 0, intent.reference_price)
         self.assertGreater(intent.trailing_amount or 0, 0)
 
+    def test_materialized_swing_rule_waits_below_then_enters_above_threshold(self) -> None:
+        parameters = default_long_momentum_parameters()
+        parameters["entry_rules"] = {
+            "trigger": {
+                "expression": {
+                    "kind": "rule_set",
+                    "rule_set_id": "swing-break",
+                },
+                "rule_sets": [{
+                    "rule_set_id": "swing-break",
+                    "enabled": True,
+                    "operator": "all",
+                    "conditions": [{
+                        "condition_id": "price-over-swing",
+                        "left_source_id": "market.last_price",
+                        "left_field_ref": "market.last_price@1s",
+                        "left_interval": "1s",
+                        "comparator": "above_by_bps",
+                        "right_source_id": "indicator.structure.swing_high",
+                        "right_field_ref": "indicator.structure.swing_high@1s",
+                        "right_interval": "1s",
+                        "value": 5.0,
+                        "enabled": True,
+                    }],
+                }],
+            },
+            "confirmation": {
+                "expression": {
+                    "kind": "rule_set",
+                    "rule_set_id": "liquidity",
+                },
+                "rule_sets": [{
+                    "rule_set_id": "liquidity",
+                    "enabled": True,
+                    "operator": "all",
+                    "conditions": [{
+                        "condition_id": "dollar-volume",
+                        "left_source_id": "market.session_dollar_volume",
+                        "left_field_ref": "market.session_dollar_volume",
+                        "comparator": "greater_or_equal",
+                        "value": 100_000.0,
+                        "enabled": True,
+                    }],
+                }],
+            },
+            "veto": {"expression": {}, "rule_sets": []},
+        }
+        below = confirmed_observation(
+            price=13.00,
+            swing_high=13.03,
+            source_values={
+                "market.last_price@1s": {"value": 13.00},
+                "indicator.structure.swing_high@1s": {"value": 13.03},
+                "market.session_dollar_volume": {"value": 500_000.0},
+            },
+        )
+        waiting = LongMomentumStrategyEngine().evaluate(
+            assignment(parameters=parameters), below
+        )
+        wait_signal = waiting.evaluation.signals[0]
+        self.assertEqual(wait_signal.reason, "waiting_for_swing_high_cross")
+        self.assertAlmostEqual(
+            wait_signal.metadata["trigger_threshold_price"],
+            13.03 * 1.0005,
+        )
+
+        above = replace(
+            below,
+            observed_at=NOW + timedelta(seconds=1),
+            price=13.05,
+            source_values={
+                "market.last_price@1s": {"value": 13.05},
+                "indicator.structure.swing_high@1s": {"value": 13.03},
+                "market.session_dollar_volume": {"value": 500_000.0},
+            },
+        )
+        entered = LongMomentumStrategyEngine().evaluate(
+            assignment(parameters=parameters), above
+        )
+        self.assertEqual(entered.evaluation.signals[0].action, "enter_long")
+        self.assertTrue(
+            entered.evaluation.signals[0].metadata[
+                "trigger_reference_name"
+            ].startswith("indicator.structure.swing_high"),
+        )
+
     def test_configured_execution_and_multi_swing_protection_reach_entry_intent(self) -> None:
         parameters = default_long_momentum_parameters()
         parameters["phase_policy"] = {

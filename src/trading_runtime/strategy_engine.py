@@ -894,6 +894,10 @@ class LongMomentumStrategyEngine:
             rule_result,
             observation,
         )
+        if reference is None:
+            reference_name, reference, reference_buffer_bps = (
+                _configured_trigger_reference(phase_rules, observation)
+            )
         operational_triggers = [
             key
             for key, value in {
@@ -910,7 +914,24 @@ class LongMomentumStrategyEngine:
             observation.force_entry or bool(rule_result["confirmation"]["passed"])
         )
         if not can_enter:
-            reason = "entry_vetoed" if vetoes else "entry_confirmation_incomplete" if triggered else "waiting_for_entry_trigger"
+            confirmation_passed = bool(rule_result["confirmation"]["passed"])
+            if vetoes:
+                reason = "entry_vetoed"
+            elif not confirmation_passed:
+                reason = "entry_confirmation_incomplete"
+            elif reference_name.endswith("indicator.structure.swing_high"):
+                reason = (
+                    "waiting_for_swing_high_reference"
+                    if reference is None
+                    else "waiting_for_swing_high_cross"
+                )
+            else:
+                reason = "waiting_for_entry_trigger"
+            trigger_threshold = (
+                float(reference) * (1.0 + float(reference_buffer_bps) / 10_000.0)
+                if reference is not None
+                else None
+            )
             return self._result(
                 assignment,
                 observation,
@@ -920,7 +941,15 @@ class LongMomentumStrategyEngine:
                 _confirmation_confidence(observation),
                 state,
                 AssignmentStatus.WATCHING,
-                metadata={"triggers": triggered, "vetoes": vetoes, "confirmation": confirmation, "entry_rules": rule_result},
+                metadata={
+                    "triggers": triggered,
+                    "vetoes": vetoes,
+                    "confirmation": confirmation,
+                    "entry_rules": rule_result,
+                    "trigger_reference_name": reference_name,
+                    "trigger_reference_price": reference,
+                    "trigger_threshold_price": trigger_threshold,
+                },
             )
         if authority == "confirm" and not observation.manual_entry_request and not observation.force_entry:
             return self._result(
@@ -1002,6 +1031,14 @@ class LongMomentumStrategyEngine:
                 "triggers": triggered,
                 "confirmation": confirmation,
                 "reference": reference_name,
+                "trigger_reference_name": reference_name,
+                "trigger_reference_price": reference,
+                "trigger_threshold_price": (
+                    float(reference)
+                    * (1.0 + float(reference_buffer_bps) / 10_000.0)
+                    if reference is not None
+                    else None
+                ),
                 "entry_rules": rule_result,
             },
         )
@@ -1968,7 +2005,8 @@ def _trigger_reference(
     matched = set(dict(result.get("trigger") or {}).get("matched_groups") or [])
     trigger_stage = dict(rules.get("trigger") or {})
     for group in trigger_stage.get("rule_sets") or trigger_stage.get("groups") or []:
-        if str(group.get("group_id") or "") not in matched:
+        group_id = str(group.get("rule_set_id") or group.get("group_id") or "")
+        if group_id not in matched:
             continue
         for condition in group.get("conditions") or []:
             if str(condition.get("comparator") or "") != "above_by_bps":
@@ -1981,6 +2019,33 @@ def _trigger_reference(
             value = _condition_operand_value(condition, "right", observation)
             if value is not None:
                 return source_id, float(value), float(condition.get("value") or 0)
+    return "", None, 0.0
+
+
+def _configured_trigger_reference(
+    rules: dict[str, Any], observation: StrategyObservation
+) -> tuple[str, float | None, float]:
+    trigger_stage = dict(rules.get("trigger") or {})
+    for group in trigger_stage.get("rule_sets") or trigger_stage.get("groups") or []:
+        if not bool(group.get("enabled", True)):
+            continue
+        for condition in group.get("conditions") or []:
+            if (
+                not bool(condition.get("enabled", True))
+                or str(condition.get("comparator") or "") != "above_by_bps"
+            ):
+                continue
+            source_id = str(
+                condition.get("right_source_id")
+                or condition.get("right_field_ref")
+                or ""
+            )
+            value = _condition_operand_value(condition, "right", observation)
+            return (
+                source_id,
+                float(value) if value is not None else None,
+                float(condition.get("value") or 0),
+            )
     return "", None, 0.0
 
 

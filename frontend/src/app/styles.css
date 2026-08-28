@@ -13476,6 +13476,8 @@ button {
 .strategy-activity-surface .market-list-table tbody tr[data-pinned="true"] { background: color-mix(in oklab, var(--primary) 8%, var(--surface)); box-shadow: inset 3px 0 0 color-mix(in oklab, var(--primary) 72%, transparent); }
 .strategy-activity-filters { background: color-mix(in oklab, var(--surface-alt) 42%, var(--surface)); border-bottom: 1px solid var(--border); display: grid; gap: 7px; grid-template-columns: repeat(4, minmax(105px, 1fr)); padding: 7px 9px; }
 .strategy-activity-filters label { display: grid; gap: 3px; min-width: 0; }
+.signal-stream-trace-filters { align-items: end; grid-template-columns: minmax(140px, 220px) minmax(220px, 1fr); }
+.signal-stream-trace-filters > span { align-self: center; font-size: 10px; font-weight: 500; letter-spacing: 0; line-height: 1.35; text-transform: none; }
 @container (max-width: 620px) { .strategy-activity-filters { grid-template-columns: repeat(2, minmax(100px, 1fr)); } }
 @container (max-width: 560px) { .market-list-heading p { max-width: 250px; }.market-list-pagination > span { display: none; }.market-list-search { flex: 1 1 auto; }.market-table-filter-trigger > span { display: none; }.market-column-picker-body { grid-template-columns: 130px minmax(0, 1fr); }.market-list-heading { padding: 8px; }.market-list-heading h3 { font-size: 14px; }.market-table-active-filters > span { display: none; } }
 

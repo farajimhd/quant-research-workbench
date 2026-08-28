@@ -232,6 +232,9 @@ const FIELD_CATALOG: FieldDefinition[] = [
   field("score", "Score", "Strategy activity", "raw", "number", "Strategy evidence score recorded when the action was evaluated."),
   field("confidence", "Confidence", "Strategy activity", "raw", "percentPlain", "Strategy confidence recorded for this action; it is not a guaranteed win probability."),
   field("reference_price", "Reference price", "Strategy activity", "raw", "money", "Causal market price attached to the decision or signal."),
+  field("trigger_reference", "Entry reference", "Strategy activity", "raw", "text", "Causal market structure field used by the entry trigger."),
+  field("trigger_reference_price", "Swing high", "Strategy activity", "raw", "money", "Latest causally confirmed swing high available to the entry rule."),
+  field("trigger_threshold_price", "Entry threshold", "Strategy activity", "derived", "money", "Swing high plus the configured breakout buffer."),
   field("source", "Source", "Strategy activity", "raw", "text", "Runtime authority that persisted the event."),
   field("strategy_id", "Strategy", "Strategy activity", "raw", "text", "Stable Strategy Profile identifier that emitted the event."),
   field("run_id", "Run", "Strategy activity", "raw", "text", "Strategy Run identifier that owns the event."),
@@ -498,6 +501,7 @@ export function SignalStreamContainer({ asOf, live, onSettingsChange, onTickerSe
   const lastSequence = useRef<Record<string, number>>({});
   const sessionKey = useRef<Record<string, string>>({});
   const [runtimeUnavailableKeys, setRuntimeUnavailableKeys] = useState<Set<string>>(() => new Set());
+  const [tickerFilter, setTickerFilter] = useState("");
   const runtimeScopeKey = stream ? `${live ? "live" : runId ?? ""}|${stream.signal_stream_id}` : "";
   const runtime = runtimeScopeKey ? runtimeCache[runtimeScopeKey] ?? null : null;
   const runtimeUnavailable = runtimeScopeKey ? runtimeUnavailableKeys.has(runtimeScopeKey) : false;
@@ -587,6 +591,15 @@ export function SignalStreamContainer({ asOf, live, onSettingsChange, onTickerSe
     const normalized: ScreenerRow[] = normalizeScannerRows(enriched);
     return normalized.filter((row) => String(row["signal_stream_id"] ?? "") === String(stream?.signal_stream_id ?? "")).sort((left, right) => String(right["event_time"] ?? "").localeCompare(String(left["event_time"] ?? "")));
   }, [runtime?.occurrences, scannerRows, stream?.signal_stream_id]);
+  const signalTickers = useMemo(() => uniqueValues(rows, "ticker"), [rows]);
+  const visibleRows = useMemo(
+    () => tickerFilter ? rows.filter((row) => String(row.ticker ?? row.symbol ?? "").toUpperCase() === tickerFilter) : rows,
+    [rows, tickerFilter],
+  );
+  useEffect(() => {
+    if (tickerFilter && !signalTickers.includes(tickerFilter)) setTickerFilter("");
+  }, [signalTickers, tickerFilter]);
+  useEffect(() => { setTickerFilter(""); }, [runId, stream?.signal_stream_id]);
   const runtimeDefinition = runtime?.signal_streams?.find((row) => row.signal_stream_id === stream?.signal_stream_id);
   const sourceType = stream?.source_type ?? "core_scan";
   const sourceId = stream?.source_id ?? stream?.source_scan_id ?? discovery?.core_scan?.scan_id ?? "";
@@ -652,7 +665,8 @@ export function SignalStreamContainer({ asOf, live, onSettingsChange, onTickerSe
       <button aria-expanded={addingStream} aria-label="Add Signal Stream tab" className="watchlist-tab-add" disabled={!availableStreams.length} onClick={() => setAddingStream((open) => !open)} role="tab" type="button"><Plus size={12} /><span>Add</span></button>
     </nav>
     {addingStream ? <div className="watchlist-tab-lookup"><InventoryFilterSelect ariaLabel="Signal Stream to add" className="watchlist-add-lookup" onChange={addStream} options={availableStreams.map((row) => ({ description: row.description, label: row.name, value: row.signal_stream_id }))} searchable showAllOnOpen value="" /><button onClick={() => { window.location.hash = "market-discovery-configuration"; }} type="button">Configure Signal Stream <ArrowRight size={13} /></button></div> : null}
-    <MarketListTable key={runtimeScopeKey || "signal-stream"} catalog={streamCatalog} chronological columns={columns} customColumns={settings.customColumns} empty={emptyMessage} limit={settings.limit} liveRecency={live && !lastSession && !recoveringSession} lockedColumns={lockedColumns} onColumnsChange={(columns) => onSettingsChange({ columns })} onCustomColumnsChange={(customColumns) => onSettingsChange({ customColumns })} onTickerSelect={onTickerSelect} recencyRail rows={rows} title={stream?.name ?? "Signal Stream"} viewStateKey={`signal-stream:${stream?.signal_stream_id ?? "none"}`} />
+    {rows.length ? <div className="strategy-activity-filters signal-stream-trace-filters"><ActivityFilter label="Trace ticker" onChange={setTickerFilter} options={signalTickers} value={tickerFilter} /><span>{tickerFilter ? `${visibleRows.length} immutable ${tickerFilter} occurrence${visibleRows.length === 1 ? "" : "s"}` : "Choose a ticker to trace the immutable signal that activated Strategy."}</span></div> : null}
+    <MarketListTable key={runtimeScopeKey || "signal-stream"} catalog={streamCatalog} chronological columns={columns} customColumns={settings.customColumns} empty={tickerFilter ? `No ${tickerFilter} occurrence exists in this Signal Stream at the current Replay clock.` : emptyMessage} limit={settings.limit} liveRecency={live && !lastSession && !recoveringSession} lockedColumns={lockedColumns} onColumnsChange={(columns) => onSettingsChange({ columns })} onCustomColumnsChange={(customColumns) => onSettingsChange({ customColumns })} onTickerSelect={onTickerSelect} recencyRail rows={visibleRows} title={stream?.name ?? "Signal Stream"} viewStateKey={`signal-stream:${stream?.signal_stream_id ?? "none"}`} />
   </section>;
 }
 
@@ -776,7 +790,7 @@ export function StrategyActivityContainer({ asOf, focusSequence, onSettingsChang
       <ActivityFilter label="Ticker" onChange={(ticker) => onSettingsChange({ ticker })} options={tickers} value={settings.ticker} />
       <ActivityFilter label="Event" onChange={(eventType) => onSettingsChange({ eventType })} options={STRATEGY_ACTIVITY_EVENT_OPTIONS.map(({ value }) => value)} value={settings.eventType} />
     </div>
-    {error ? <div className="canvas-inline-error">Strategy activity unavailable: {error}</div> : <MarketListTable chronological columns={["event_time", "ticker", "event_type", "action", "state", "reason", "score", "confidence", "reference_price", "source"]} customColumns={[]} empty="No causal strategy events match these filters yet. Press Play or advance to the next strategy action." limit={settings.limit} lockedColumns={[]} onColumnsChange={() => undefined} onCustomColumnsChange={() => undefined} onTickerSelect={onTickerSelect} pinnedSequence={focusSequence} rows={rows} title="Strategy activity" />}
+    {error ? <div className="canvas-inline-error">Strategy activity unavailable: {error}</div> : <MarketListTable chronological columns={["event_time", "ticker", "event_type", "action", "state", "reason", "trigger_reference_price", "trigger_threshold_price", "score", "confidence", "reference_price", "source"]} customColumns={[]} empty="No causal strategy events match these filters yet. Press Play or advance to the next strategy action." limit={settings.limit} lockedColumns={[]} onColumnsChange={() => undefined} onCustomColumnsChange={() => undefined} onTickerSelect={onTickerSelect} pinnedSequence={focusSequence} rows={rows} title="Strategy activity" />}
   </section>;
 }
 
