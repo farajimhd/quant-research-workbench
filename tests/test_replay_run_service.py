@@ -2471,7 +2471,7 @@ class ReplayControllerTests(unittest.IsolatedAsyncioTestCase):
             controller._journal.append(
                 run_id=controller.run_id,
                 category="strategy_decision",
-                entity_type="strategy_evaluation",
+                entity_type="signal",
                 entity_id="decision-1",
                 event_time=decision_time,
                 payload={"action": "wait", "ticker": "AAPL"},

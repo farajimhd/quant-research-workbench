@@ -516,7 +516,10 @@ def strategy_activity_payload(
     rows: list[dict[str, Any]] = []
     for record in records:
         payload = dict(record.payload)
-        row_type = strategy_activity_event_type(record.entity_type)
+        row_type = strategy_activity_event_type(
+            record.entity_type,
+            category=record.category,
+        )
         if event_type and row_type != event_type:
             continue
         metadata = dict(payload.get("metadata") or {})
@@ -571,7 +574,13 @@ def strategy_activity_payload(
     }
 
 
-def strategy_activity_event_type(entity_type: str) -> str:
+def strategy_activity_event_type(entity_type: str, *, category: str = "") -> str:
+    if category == "strategy_decision":
+        # Strategy evaluations are durably stored as signal entities because
+        # they also feed the typed strategy-signal audit table. In Strategy
+        # Activity, their journal category is the operator-facing authority:
+        # enter, wait, hold, and veto evaluations are decisions.
+        return "decision"
     if entity_type == "signal_occurrence":
         return "signal"
     if entity_type == "historical_watchlist_member":

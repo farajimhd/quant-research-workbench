@@ -120,7 +120,10 @@ def _replay_navigation_action(
 
     payload = dict(record.payload)
     action = str(payload.get("action") or "").strip().lower()
-    event_type = strategy_activity_event_type(record.entity_type)
+    event_type = strategy_activity_event_type(
+        record.entity_type,
+        category=record.category,
+    )
     if target_event_type and event_type != target_event_type:
         return None
     if not target_event_type:

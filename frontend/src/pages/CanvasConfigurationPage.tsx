@@ -1320,6 +1320,7 @@ export function CanvasWorkspaceSurface({ accountKeys, approvedCanvas, canvasId, 
             scannerSnapshot={scannerSnapshot}
             signalStreamLive={!replayRun}
             signalStreamRunId={replayRun?.run_id}
+            strategyActivityFocusSequence={replayRun?.navigation_action?.sequence}
             replayWatchlistRuntime={replayRun?.watchlist_runtime}
             onTickerWorkspaceOpen={openTickerWorkspace}
             previewContext={previewContext}
@@ -1388,7 +1389,7 @@ function RuntimeCanvasScope({ mode, onApplyRebase, onKeepApproved, onReset, onSa
 
 type SettingsUpdater = (update: ContainerSettings | ((current: ContainerSettings) => ContainerSettings)) => void;
 
-function ContainerPreview({ canvasId, chartCutoffMs, definition, instanceId, linkContext, linkGroup, linkedContainers, linkOpen, liveMode, loading, onLinkChange, onLinkContextChange, onTickerWorkspaceOpen, preview, previewContext, readOnly, replayWatchlistRuntime, requestedNewsId, requestedSecAccession, requestedSecCik, scannerError, scannerLoading, scannerSnapshot, settings, settingsOpen, signalStreamLive, signalStreamRunId, symbolEditable, updateSettings }: {
+function ContainerPreview({ canvasId, chartCutoffMs, definition, instanceId, linkContext, linkGroup, linkedContainers, linkOpen, liveMode, loading, onLinkChange, onLinkContextChange, onTickerWorkspaceOpen, preview, previewContext, readOnly, replayWatchlistRuntime, requestedNewsId, requestedSecAccession, requestedSecCik, scannerError, scannerLoading, scannerSnapshot, settings, settingsOpen, signalStreamLive, signalStreamRunId, strategyActivityFocusSequence, symbolEditable, updateSettings }: {
   canvasId: string;
   chartCutoffMs: number;
   definition: WorkspaceContainerDefinition;
@@ -1410,6 +1411,7 @@ function ContainerPreview({ canvasId, chartCutoffMs, definition, instanceId, lin
   scannerSnapshot: CanvasScannerSnapshot | null;
   signalStreamLive: boolean;
   signalStreamRunId?: string;
+  strategyActivityFocusSequence?: number;
   previewContext: CanvasPreviewContext;
   requestedNewsId?: string;
   requestedSecAccession?: string;
@@ -1460,7 +1462,7 @@ function ContainerPreview({ canvasId, chartCutoffMs, definition, instanceId, lin
             ? <div className="canvas-inline-error">{liveMode ? "Live" : "Historical"} watchlist unavailable: {scannerError}</div>
             : <WatchUniverseContainer asOf={new Date(chartCutoffMs).toISOString()} live={liveMode} onSettingsChange={(change) => updateSettings((state) => ({ ...state, watchlist: { ...state.watchlist, ...(typeof change === "function" ? change(state.watchlist) : change) } }))} onTickerSelect={onTickerWorkspaceOpen} runtime={replayWatchlistRuntime ?? scannerSnapshot?.watchlist_runtime ?? null} scannerRows={scannerSnapshot?.rows ?? preview?.scanner ?? []} settings={settings.watchlist} />
       : definition.id === "strategy_activity"
-        ? <StrategyActivityContainer asOf={new Date(chartCutoffMs).toISOString()} onSettingsChange={(patch) => updateSettings((state) => ({ ...state, strategy_activity: { ...state.strategy_activity, ...patch } }))} onTickerSelect={onTickerWorkspaceOpen} runId={signalStreamRunId} settings={settings.strategy_activity} />
+        ? <StrategyActivityContainer asOf={new Date(chartCutoffMs).toISOString()} focusSequence={strategyActivityFocusSequence} onSettingsChange={(patch) => updateSettings((state) => ({ ...state, strategy_activity: { ...state.strategy_activity, ...patch } }))} onTickerSelect={onTickerWorkspaceOpen} runId={signalStreamRunId} settings={settings.strategy_activity} />
       : loading && !preview
         ? <div className="canvas-preview-loading">Loading {definition.title.toLowerCase()}…</div>
         : renderPreview(definition.id, preview, settings, linkGroup, onLinkContextChange, onTickerWorkspaceOpen)}</div>

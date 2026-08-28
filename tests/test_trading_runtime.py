@@ -606,8 +606,9 @@ class JournalTests(unittest.TestCase):
             activity = strategy_activity_payload(journal=journal, run_id="run-a", ticker="AAPL", as_of=TS + timedelta(seconds=4))
             self.assertEqual(
                 [row["event_type"] for row in activity["rows"]],
-                ["order", "decision", "signal", "watchlist", "signal"],
+                ["order", "decision", "decision", "watchlist", "signal"],
             )
+            self.assertEqual(activity["rows"][2]["action"], "wait")
             occurrence = activity["rows"][-1]
             self.assertEqual(occurrence["action"], "Exact 5% Squeeze")
             self.assertIn("+5.25% from squeeze anchor", occurrence["reason"])
