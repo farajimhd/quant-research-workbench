@@ -7,7 +7,7 @@ from typing import Any, Iterable, Mapping, Sequence
 from .reviewed_title_policy import ReviewedTitlePolicy
 
 
-FORECAST_POLICY_VERSION = "news_forecast_event_policy_v3"
+FORECAST_POLICY_VERSION = "news_forecast_event_policy_v4"
 
 
 @dataclass(frozen=True, slots=True)
@@ -166,6 +166,11 @@ def resolve_forecast_policy(
         return _decision(
             "eligible", "material_ownership", "current_event",
             "approved_material_ownership_policy",
+        )
+    if reviewed_title_policy and reviewed_title_policy.family == "issuer_guidance":
+        return _decision(
+            "eligible", "issuer_guidance", "current_event",
+            "approved_direct_issuer_guidance_policy",
         )
     if reviewed_title_policy and reviewed_title_policy.label == "ineligible":
         return _decision(

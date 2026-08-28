@@ -16,7 +16,7 @@ from .reviewed_title_policy import classify_reviewed_title_policy
 from .synthesis import derive_eligibility, derive_issuer_views, derive_synthesis
 
 
-ENGINE_VERSION = "news_synthesis_engine_v59"
+ENGINE_VERSION = "news_synthesis_engine_v61"
 EXCHANGE_TICKER_RE = re.compile(
     r"\b(?P<exchange>NASDAQ|NYSE|NYSE\s+AMERICAN|NYSEAMERICAN|AMEX|"
     r"OTC(?:QX|QB)?|TSX|TSXV|CSE)\s*[:\-]\s*"
@@ -1207,7 +1207,7 @@ def _envelope(
             (
                 f"envelope.purpose.earnings_call_v1:{earnings_call_pattern}"
                 if earnings_call_pattern
-                else f"envelope.purpose.reviewed_title_policy_v1:{envelope_title_policy.family}"
+                else f"envelope.purpose.reviewed_title_policy_v2:{envelope_title_policy.family}"
                 if envelope_title_policy is not None
                 else f"envelope.purpose.why_moving_title_v2:{reviewed_mover_pattern}"
                 if reviewed_mover_pattern

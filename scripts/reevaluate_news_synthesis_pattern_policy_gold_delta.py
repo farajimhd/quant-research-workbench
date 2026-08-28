@@ -28,10 +28,8 @@ from research.text_intelligence.news_synthesis_v1.provider_filter_analysis impor
     iter_jsonl,
 )
 from scripts.evaluate_news_synthesis_pattern_policy_gold import (  # noqa: E402
-    ASSIGNMENTS,
-    HOLDOUT_GOLD,
     NEWS_ROOT,
-    TRAINING_GOLD,
+    RUNTIME_ROOT,
     _holdout_sources,
     _initialize_prediction_worker,
     _load_scope,
@@ -44,6 +42,20 @@ from scripts.evaluate_news_synthesis_pattern_policy_gold import (  # noqa: E402
 )
 
 
+TRAINING_GOLD = (
+    RUNTIME_ROOT
+    / "llm_issuer_labeling_v4"
+    / "forecast_eligibility_sentiment_authority_pattern_policy_final_v2"
+)
+HOLDOUT_GOLD = (
+    NEWS_ROOT
+    / "forecast_eligibility_august_2026_temporal_holdout_pattern_policy_final_v2"
+)
+ASSIGNMENTS = (
+    NEWS_ROOT
+    / "news_title_pattern_policy_disagreement_audit_2025_2026_v1"
+    / "ARTICLE_POLICY_ASSIGNMENTS.csv"
+)
 TRAINING_GOLD_V1 = TRAINING_GOLD.with_name(
     "forecast_eligibility_sentiment_authority_pattern_policy_final_v1"
 )

@@ -42,7 +42,7 @@ NEWS_ROOT = RUNTIME_ROOT / "news_synthesis_v1"
 TRAINING_GOLD = (
     RUNTIME_ROOT
     / "llm_issuer_labeling_v4"
-    / "forecast_eligibility_sentiment_authority_pattern_policy_final_v2"
+    / "forecast_eligibility_sentiment_authority_v59_calibrated_reaudit_v1"
 )
 HOLDOUT_GOLD = (
     NEWS_ROOT
@@ -50,11 +50,13 @@ HOLDOUT_GOLD = (
 )
 ASSIGNMENTS = (
     NEWS_ROOT
-    / "news_title_pattern_policy_disagreement_audit_2025_2026_v1"
-    / "ARTICLE_POLICY_ASSIGNMENTS.csv"
+    / "news_v59_training_mismatch_calibrated_file_reaudit_v3"
+    / "reconciliation"
+    / "final"
+    / "ARTICLE_POLICY_ASSIGNMENTS_REAUDITED.csv"
 )
-DEFAULT_OUTPUT = NEWS_ROOT / "news_synthesis_v59_aligned_title_event_policy_gold_evaluation_v1"
-EVALUATION_VERSION = "news_synthesis_pattern_policy_gold_evaluation_v2"
+DEFAULT_OUTPUT = NEWS_ROOT / "news_synthesis_v61_reaudited_gold_evaluation_v1"
+EVALUATION_VERSION = "news_synthesis_pattern_policy_gold_evaluation_v3"
 
 
 def _sha256(path: Path) -> str:
@@ -67,6 +69,55 @@ def _sha256(path: Path) -> str:
 
 def _write_json(path: Path, value: Any) -> None:
     path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def _authority_manifest(root: Path) -> Path:
+    for name in ("MANIFEST.json", "HASH_MANIFEST.json"):
+        candidate = root / name
+        if candidate.is_file():
+            return candidate
+    raise FileNotFoundError(f"authority manifest is missing: {root}")
+
+
+def _result_block(
+    *,
+    population_articles: int,
+    gold_counts: Counter[str],
+    confusion: Counter[tuple[str, str]],
+    path_mismatches: Counter[str],
+    title_policy_predictions: Counter[tuple[str, str, str]],
+) -> dict[str, Any]:
+    tp = confusion[("eligible", "eligible")]
+    fn = confusion[("eligible", "ineligible")]
+    fp = confusion[("ineligible", "eligible")]
+    tn = confusion[("ineligible", "ineligible")]
+    binary = tp + fn + fp + tn
+    eligible_recall = tp / (tp + fn) if tp + fn else None
+    ineligible_recall = tn / (tn + fp) if tn + fp else None
+    return {
+        "population_articles": population_articles,
+        "binary_gold_articles": binary,
+        "nonbinary_gold_articles": population_articles - binary,
+        "gold_label_counts": dict(gold_counts),
+        "confusion": {"tp": tp, "fn": fn, "fp": fp, "tn": tn},
+        "metrics": {
+            "accuracy": (tp + tn) / binary if binary else None,
+            "eligible_precision": tp / (tp + fp) if tp + fp else None,
+            "eligible_recall": eligible_recall,
+            "ineligible_recall": ineligible_recall,
+            "balanced_accuracy": (
+                (eligible_recall + ineligible_recall) / 2
+                if eligible_recall is not None and ineligible_recall is not None
+                else None
+            ),
+        },
+        "mismatches": fp + fn,
+        "mismatch_paths": dict(path_mismatches.most_common()),
+        "reviewed_title_policy_confusion": {
+            f"{family}|gold_{actual}|predicted_{predicted}": count
+            for (family, actual, predicted), count in sorted(title_policy_predictions.items())
+        },
+    }
 
 
 def _month_bounds(month: str) -> tuple[date, date]:
@@ -292,6 +343,18 @@ def main() -> None:
     gold_counts: Counter[str] = Counter(gold.values())
     path_mismatches: Counter[str] = Counter()
     title_policy_predictions: Counter[tuple[str, str, str]] = Counter()
+    splits = tuple(sorted({str(row["population_split"]) for row in scope.values()}))
+    split_confusion = {split: Counter() for split in splits}
+    split_gold_counts = {
+        split: Counter(
+            gold[source_id]
+            for source_id, row in scope.items()
+            if str(row["population_split"]) == split
+        )
+        for split in splits
+    }
+    split_path_mismatches = {split: Counter() for split in splits}
+    split_title_policy_predictions = {split: Counter() for split in splits}
     source_seen: set[str] = set()
     failure_count = 0
 
@@ -366,6 +429,7 @@ def main() -> None:
                     source_seen.add(source_id)
                     actual = gold[source_id]
                     predicted = str(prediction["prediction"])
+                    population_split = str(scope[source_id]["population_split"])
                     if predicted == "error":
                         failure_count += 1
                         failure_handle.write(canonical_json({
@@ -376,12 +440,15 @@ def main() -> None:
                         continue
                     if actual in {"eligible", "ineligible"}:
                         confusion[(actual, predicted)] += 1
+                        split_confusion[population_split][(actual, predicted)] += 1
                         if actual != predicted:
                             path = " > ".join((prediction["structure"], prediction["purpose"], prediction["origin"]))
                             path_mismatches[path] += 1
+                            split_path_mismatches[population_split][path] += 1
                             mismatch_handle.write(canonical_json({
                                 "source_id": source_id,
                                 "published_at_utc": scope[source_id]["published_at_utc"],
+                                "population_split": population_split,
                                 "gold_label": actual,
                                 "synthesis_label": predicted,
                                 "confusion_cell": "fp" if predicted == "eligible" else "fn",
@@ -394,10 +461,13 @@ def main() -> None:
                             }) + "\n")
                     for flag in prediction["quality_flags"]:
                         if str(flag).startswith("reviewed_title_policy:"):
-                            title_policy_predictions[(str(flag).split(":", 1)[1], actual, predicted)] += 1
+                            title_key = (str(flag).split(":", 1)[1], actual, predicted)
+                            title_policy_predictions[title_key] += 1
+                            split_title_policy_predictions[population_split][title_key] += 1
                 print(
-                    f"[{month}] tickers={len(month_tickers):,} identities={identity_rows:,} "
-                    f"completed={len(source_seen):,}/{len(scope):,}",
+                    f"[{month}] status=completed tickers={len(month_tickers):,} "
+                    f"identities={identity_rows:,} completed={len(source_seen):,}/{len(scope):,} "
+                    f"failed={failure_count:,} queued={len(scope) - len(source_seen):,}",
                     flush=True,
                 )
     finally:
@@ -407,42 +477,44 @@ def main() -> None:
         raise RuntimeError(
             f"evaluation incomplete: seen={len(source_seen)}/{len(scope)}, failures={failure_count}"
         )
-    tp = confusion[("eligible", "eligible")]
-    fn = confusion[("eligible", "ineligible")]
-    fp = confusion[("ineligible", "eligible")]
-    tn = confusion[("ineligible", "ineligible")]
-    binary = tp + fn + fp + tn
+    overall = _result_block(
+        population_articles=len(scope),
+        gold_counts=gold_counts,
+        confusion=confusion,
+        path_mismatches=path_mismatches,
+        title_policy_predictions=title_policy_predictions,
+    )
+    split_results = {
+        split: _result_block(
+            population_articles=sum(
+                str(row["population_split"]) == split for row in scope.values()
+            ),
+            gold_counts=split_gold_counts[split],
+            confusion=split_confusion[split],
+            path_mismatches=split_path_mismatches[split],
+            title_policy_predictions=split_title_policy_predictions[split],
+        )
+        for split in splits
+    }
+    training_manifest = _authority_manifest(TRAINING_GOLD)
+    holdout_manifest = _authority_manifest(HOLDOUT_GOLD)
     report = {
         "status": "passed",
         "evaluation_version": EVALUATION_VERSION,
         "engine_version": ENGINE_VERSION,
         "created_at_utc": datetime.now(UTC).isoformat(),
         "elapsed_seconds": round(time.monotonic() - started, 3),
-        "population_articles": len(scope),
-        "binary_gold_articles": binary,
-        "nonbinary_gold_articles": len(scope) - binary,
-        "gold_label_counts": dict(gold_counts),
-        "confusion": {"tp": tp, "fn": fn, "fp": fp, "tn": tn},
-        "metrics": {
-            "accuracy": (tp + tn) / binary,
-            "eligible_precision": tp / (tp + fp) if tp + fp else None,
-            "eligible_recall": tp / (tp + fn) if tp + fn else None,
-            "ineligible_recall": tn / (tn + fp) if tn + fp else None,
-            "balanced_accuracy": ((tp / (tp + fn)) + (tn / (tn + fp))) / 2,
-        },
-        "mismatches": fp + fn,
-        "mismatch_paths": dict(path_mismatches.most_common()),
-        "reviewed_title_policy_confusion": {
-            f"{family}|gold_{actual}|predicted_{predicted}": count
-            for (family, actual, predicted), count in sorted(title_policy_predictions.items())
-        },
+        **overall,
+        "splits": split_results,
         "authority": {
             "assignments": str(ASSIGNMENTS),
             "assignments_sha256": _sha256(ASSIGNMENTS),
             "training_gold": str(TRAINING_GOLD),
-            "training_gold_manifest_sha256": _sha256(TRAINING_GOLD / "HASH_MANIFEST.json"),
+            "training_gold_manifest": str(training_manifest),
+            "training_gold_manifest_sha256": _sha256(training_manifest),
             "holdout_gold": str(HOLDOUT_GOLD),
-            "holdout_gold_manifest_sha256": _sha256(HOLDOUT_GOLD / "HASH_MANIFEST.json"),
+            "holdout_gold_manifest": str(holdout_manifest),
+            "holdout_gold_manifest_sha256": _sha256(holdout_manifest),
             "scoped_identity_tickers": len(scoped_tickers),
             "monthly_identity_authority": identity_months,
         },

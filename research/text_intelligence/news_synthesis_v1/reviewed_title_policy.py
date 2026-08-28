@@ -39,7 +39,7 @@ _MATERIAL_OWNERSHIP_RE = re.compile(
 _EARNINGS_RESULT_RE = re.compile(
     r"\b(?:sales|revenue|adj(?:usted)?\.?\s+EPS|GAAP\s+EPS|EPS)\b.{0,180}"
     r"\b(?:beat(?:s|en)?|miss(?:es|ed)?|inline)\b.{0,80}\b(?:estimate|est\.?|consensus)\b|"
-    r"\bearnings\s+(?:report|analysis|breakdown|summary|recap)\b|"
+    r"\bearnings\s+(?:report|analysis|assessment|breakdown|review|summary|recap)\b|"
     r"\b(?:quarter|Q[1-4])\s+earnings\s+summary\b|"
     r"\bQ[1-4]\s+earnings\b|"
     r"\b(?:Q[1-4]|quarter(?:ly)?|FY\s?\d{2,4}|holiday)\b.{0,100}"
@@ -55,6 +55,20 @@ _NUMERIC_GUIDANCE_VS_ESTIMATE_RE = re.compile(
     r"\b(?:sees?|expects?|anticipates?|projects?|raises?|lowers?|cuts?|reaffirms?)\b"
     r".{0,180}\b(?:FY\s?\d{2,4}|Q[1-4]|sales|revenue|EPS|EBITDA|guidance|outlook)\b"
     r".{0,180}\b(?:vs\.?|versus)\s*\$?[\d(]",
+    re.I,
+)
+_DIRECT_ISSUER_GUIDANCE_RE = re.compile(
+    r"\b(?:issues?|provides?|raises?|increases?|lowers?|cuts?|reduces?|reaffirms?|"
+    r"reiterates?|maintains?|updates?|narrows?|widens?)\b.{0,140}"
+    r"\b(?:guidance|outlook|forecast)\b|"
+    r"\b(?:guidance|outlook|forecast)\b.{0,100}"
+    r"\b(?:raised|lowered|cut|reaffirmed|reiterated|maintained|updated|narrowed|widened)\b|"
+    r"\b(?:sees?|expects?|projects?|forecasts?)\b.{0,80}"
+    r"\b(?:FY\s?\d{2,4}|fiscal[- ]year|Q[1-4]|20\d{2})\b.{0,100}"
+    r"\b(?:sales|revenue|EPS|EBITDA|FFO|margin|deliveries|production|bookings|income)\b|"
+    r"\b(?:FY\s?\d{2,4}|fiscal[- ]year|Q[1-4]|20\d{2})\b.{0,100}"
+    r"\b(?:sales|revenue|EPS|EBITDA|FFO|margin|deliveries|production|bookings|income)\b"
+    r".{0,80}\b(?:expected|projected|forecast)\b",
     re.I,
 )
 _REPORTED_EARLIER_RE = re.compile(
@@ -88,11 +102,43 @@ _ROUNDUP_LIST_RE = re.compile(
     r"moving\s+in\s+.{0,80}\bsession\b|"
     r"\b(?:top|best|worst)\s+\d+\b.{0,80}\bstocks?\b|"
     r"\bstocks?\s+to\s+(?:watch|buy|sell)\b|"
+    r"\b(?:joins?|among)\b.{0,160}\bstocks?\s+moving\b|"
     r"\b(?:gainers?|losers?|movers?)\s+(?:roundup|recap|list)\b",
     re.I,
 )
 _TRADING_HALT_RE = re.compile(
-    r"\b(?:trading halt|halted at|halt news pending|trading resumes?|resume trading)\b",
+    r"\b(?:trading halt|halted at|halt news pending|trading resumes?|resume trading|"
+    r"shares? resume(?:s|d)? trade|shares? resume(?:s|d)? trading)\b",
+    re.I,
+)
+_MARKET_MOVING_DATE_RE = re.compile(
+    r"^\s*market[- ]moving news for\b|^\s*leading and lagging sectors for\b",
+    re.I,
+)
+_INVESTOR_RADAR_ROUNDUP_RE = re.compile(
+    r"\bwhy (?:these|the following)\s+(?:\d+\s+)?stocks?\s+are\s+on\s+investors?'\s+radars?\s+today\b|"
+    r"\bwhy these\s+\d+\s+stocks?\s+are\s+on\s+investors?'\s+radars?\b",
+    re.I,
+)
+_POLITICAL_PORTFOLIO_TRADE_RE = re.compile(
+    r"\b(?:senator|representative|rep(?:resentative)?\.?|congress(?:man|woman|ional)?|house member)"
+    r"\s"
+    r".{0,140}\b(?:bought|sold|purchased|disposed|trade[sd]?)\b.{0,120}\b(?:stock|shares?)\b|"
+    r"\brecent (?:filing|report) shows that\b.{0,100}"
+    r"\b(?:senator|representative|rep(?:resentative)?\.?)\s.{0,100}\b(?:bought|sold)\b",
+    re.I,
+)
+_MACRO_STAT_RELEASE_RE = re.compile(
+    r"^\s*(?:USA|U\.S\.|US|UK|U\.K\.|Eurozone|Canada)\b.{0,140}"
+    r"\b(?:sales|index|earnings|inflation|GDP|employment|jobless claims|"
+    r"factory orders|inventor(?:y|ies))\b.{0,100}"
+    r"\b(?:vs\.?|prior|est\.?|estimate|consensus)\b",
+    re.I,
+)
+_TRADES_DIRECTION_RE = re.compile(
+    r"^(?!.*\b(?:will|to)\s+trade\b).{1,120}\btrades?\s+(?:higher|lower|up|down)\b"
+    r"(?=.{0,120}(?:\b(?:after|following|amid|because|today|premarket|after hours)\b|"
+    r"\d+(?:\.\d+)?%))",
     re.I,
 )
 _QUESTION_HYPOTHESIS_RE = re.compile(
@@ -192,8 +238,13 @@ def classify_reviewed_title_policy(
         )
     for pattern, family, purpose, origin in (
         (_PRICE_REACTION_RE, "price_reaction", "explain_move", "editorial"),
+        (_TRADES_DIRECTION_RE, "price_reaction", "explain_move", "editorial"),
         (_ROUNDUP_LIST_RE, "roundup_or_reference_list", "recap", "editorial"),
+        (_MARKET_MOVING_DATE_RE, "market_moving_date_recap", "recap", "editorial"),
+        (_INVESTOR_RADAR_ROUNDUP_RE, "investor_radar_roundup", "recap", "editorial"),
         (_TRADING_HALT_RE, "trading_halt_status", "recap", "regulator"),
+        (_POLITICAL_PORTFOLIO_TRADE_RE, "political_portfolio_trade", "recap", "editorial"),
+        (_MACRO_STAT_RELEASE_RE, "macro_statistical_release", "recap", "editorial"),
         (_QUESTION_HYPOTHESIS_RE, "question_or_hypothesis", "analyze", "editorial"),
         (_VALUATION_COMPARISON_RE, "valuation_peer_comparison", "analyze", "editorial"),
         (_LEGAL_ACTION_RE, "legal_regulatory_action", "recap", "editorial"),
@@ -210,7 +261,17 @@ def classify_reviewed_title_policy(
         return ReviewedTitlePolicy(
             "ineligible", "nonissuer_politics_macro_lifestyle", "recap", "editorial"
         )
-    if not normalized.casefold().startswith("correction:") and _NUMERIC_GUIDANCE_VS_ESTIMATE_RE.search(normalized):
+    if (
+        not normalized.casefold().startswith("correction:")
+        and (
+            _DIRECT_ISSUER_GUIDANCE_RE.search(normalized)
+            or _NUMERIC_GUIDANCE_VS_ESTIMATE_RE.search(normalized)
+        )
+    ):
+        return ReviewedTitlePolicy(
+            "eligible", "issuer_guidance", "report", "issuer", "issuer_guidance_material"
+        )
+    if _NUMERIC_GUIDANCE_VS_ESTIMATE_RE.search(normalized):
         return ReviewedTitlePolicy(
             "ineligible", "numeric_guidance_vs_estimate", "recap", "editorial"
         )

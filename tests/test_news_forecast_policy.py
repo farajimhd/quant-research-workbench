@@ -63,6 +63,17 @@ class NewsForecastPolicyTest(unittest.TestCase):
         self.assertEqual(transcript.label, "eligible")
         self.assertEqual(clinical.label, "eligible")
 
+    def test_direct_guidance_title_policy_precedes_context_metadata(self) -> None:
+        decision = _resolve(
+            "guidance.issued",
+            reviewed=ReviewedTitlePolicy(
+                "eligible", "issuer_guidance", "report", "issuer", "issuer_guidance_material"
+            ),
+            provider=_provider("context_only", "earnings_result"),
+        )
+        self.assertEqual(decision.label, "eligible")
+        self.assertEqual(decision.family, "issuer_guidance")
+
     def test_title_and_provider_context_exclusions_precede_event_concepts(self) -> None:
         title_block = _resolve(
             "commercial.contract",
