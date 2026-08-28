@@ -17,6 +17,7 @@ export function TradingModeLaunch({
   actionLabel,
   actionSummary,
   busy,
+  busyLabel = "Preparing Canvas…",
   checking,
   checks,
   children,
@@ -35,6 +36,7 @@ export function TradingModeLaunch({
   actionLabel: string;
   actionSummary: ReactNode;
   busy?: boolean;
+  busyLabel?: string;
   checking?: boolean;
   checks: TradingLaunchCheck[];
   children: ReactNode;
@@ -85,7 +87,7 @@ export function TradingModeLaunch({
         </div>
         <div className="mode-launch-command">
           <p>{actionSummary}</p>
-          <button className="button primary" disabled={!ready || checking || busy} onClick={onAction} type="button">{busy ? "Preparing Canvas…" : actionLabel}</button>
+          <button className="button primary" disabled={!ready || checking || busy} onClick={onAction} type="button">{busy ? busyLabel : actionLabel}</button>
         </div>
       </aside>
     </section>

@@ -444,8 +444,7 @@ class SignalStreamRuntime:
             for value in discovery.get("column_catalog") or []
         }
         revision = _definition_revision(stream, rule_sets)
-        inserted_rows: list[dict[str, Any]] = []
-        new_count = 0
+        prepared: list[tuple[dict[str, Any], datetime]] = []
         projected_rows = project_discovery_columns(
             rows,
             column_ids=(str(value) for value in stream.get("columns") or []),
@@ -467,14 +466,21 @@ class SignalStreamRuntime:
                     f"{signal_stream_id}|{revision}|{occurrence['ticker']}|{source_event_id}".encode("utf-8")
                 ).hexdigest()
                 occurrence["signal_id"] = occurrence["event_id"]
-            record, inserted = journal.append_once(
-                run_id=event_run_id,
-                category="market_discovery_signal",
-                entity_type="signal_occurrence",
-                entity_id=str(occurrence["event_id"]),
-                event_time=available_at,
-                payload=occurrence,
-            )
+            prepared.append((occurrence, available_at))
+        persisted = journal.append_once_many(
+            {
+                "run_id": event_run_id,
+                "category": "market_discovery_signal",
+                "entity_type": "signal_occurrence",
+                "entity_id": str(occurrence["event_id"]),
+                "event_time": available_at,
+                "payload": occurrence,
+            }
+            for occurrence, available_at in prepared
+        )
+        inserted_rows: list[dict[str, Any]] = []
+        new_count = 0
+        for (record, inserted), _prepared in zip(persisted, prepared, strict=True):
             if inserted or include_existing:
                 inserted_rows.append(dict(record.payload))
             if inserted:

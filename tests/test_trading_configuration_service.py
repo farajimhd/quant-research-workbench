@@ -1434,8 +1434,9 @@ class TradingConfigurationServiceTests(unittest.TestCase):
         )
         self.assertIn("continuation milestone", profile["description"])
         self.assertEqual(plan["campaign_lifecycle"]["reentry_cooldown_ms"], 5_000)
-        self.assertEqual(profile["lifecycle"]["trading_behavior"]["entry_cutoff_time"], "15:45:00")
-        self.assertEqual(profile["lifecycle"]["trading_behavior"]["flatten_time"], "15:55:00")
+        self.assertEqual(profile["lifecycle"]["trading_behavior"]["eligible_sessions"], ["premarket"])
+        self.assertEqual(profile["lifecycle"]["trading_behavior"]["entry_cutoff_time"], "09:29:59")
+        self.assertEqual(profile["lifecycle"]["trading_behavior"]["flatten_time"], "09:29:59")
         self.assertEqual(profile["lifecycle"]["initial_entry"]["capital_request"], {
             "mode": "all_available",
             "value": 1.0,

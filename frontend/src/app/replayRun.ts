@@ -18,6 +18,7 @@ export type CanvasReplayRun = {
   };
   configuration_content_hash?: string;
   configuration_revision_id?: string;
+  created_at: string;
   current_time: string;
   error: string;
   execution_mode?: "manual" | "strategy";
@@ -43,6 +44,7 @@ export type CanvasReplayRun = {
   progress: number;
   preparation_stage?: "created" | "market_events" | "ready" | "signal_occurrences" | "strategy_frames" | "strategy_runtime" | "watchlist_membership";
   preparation_progress?: { completed: number; total: number };
+  preparation_cache?: { strategy_frames?: "fixture" | "hit" | "miss" | "not_requested" | "not_required" | "request_memory" | "run_checkpoint" };
   run_id: string;
   session_date: string;
   session_end: string;

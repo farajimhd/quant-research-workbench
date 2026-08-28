@@ -660,6 +660,7 @@ class ReplayRunController:
         self._preparation_stage = "created"
         self._preparation_completed_units = 0
         self._preparation_total_units = 0
+        self._strategy_frame_cache_status = "not_requested"
         self._strategy: Any | None = None
         self._strategy_registration: StrategyExecutorRegistration | None = None
         self._planner: RuntimeIbkrStrategyOrderPlanner | None = None
@@ -1130,6 +1131,9 @@ class ReplayRunController:
                 "completed": self._preparation_completed_units,
                 "total": self._preparation_total_units,
             },
+            "preparation_cache": {
+                "strategy_frames": self._strategy_frame_cache_status,
+            },
             "execution_mode": self.definition.execution_mode,
             "strategy_debug_sources": self._strategy_debug_sources(),
             "error": self.error,
@@ -1548,11 +1552,9 @@ class ReplayRunController:
             self._journal = TradingJournal(self.run_dir / "journal.sqlite3")
             self._preparation_stage = "signal_occurrences"
             await self._publish(force=True)
-            self._historical_external_signal_events = [
-                *(await self._load_market_signal_events()),
-                *(await self._load_source_native_signal_events()),
-                *(await self._load_external_signal_events()),
-            ]
+            self._historical_external_signal_events = (
+                await self._load_historical_signal_events()
+            )
             self._historical_external_signal_events.sort(
                 key=lambda row: (
                     row.available_at,
@@ -2837,12 +2839,8 @@ class ReplayRunController:
         return self._historical_watchlist_timeline_cache
 
     def _historical_watchlist_projection_tickers(self) -> list[str] | None:
-        activation = dict(
-            self.definition.configuration_revision["payload"].get(
-                "signal_activation"
-            )
-            or {}
-        )
+        configuration = self.definition.configuration_revision["payload"]
+        activation = dict(configuration.get("signal_activation") or {})
         enabled_streams = [
             dict(stream)
             for stream in activation.get("signal_streams") or []
@@ -2854,7 +2852,9 @@ class ReplayRunController:
         ):
             return None
         tickers = sorted({
-            event.ticker for event in self._historical_external_signal_events
+            event.ticker
+            for event in self._historical_external_signal_events
+            if _strategy_can_enter_at(configuration, event.available_at)
         })
         return tickers or None
 
@@ -3132,11 +3132,13 @@ class ReplayRunController:
 
     async def _load_strategy_frames(self) -> list[ReplayDerivedFrame] | ReplayFrameSpool:
         if self.definition.mode == RunMode.BACKTEST_DEBUG:
+            self._strategy_frame_cache_status = "fixture"
             fixture = self.definition.debug_fixture
             if fixture is None:
                 raise RuntimeError("Backtest Debug fixture disappeared before execution")
             return _debug_derived_frames(fixture.derived_frames)
         if self._strategy is None or self._strategy_registration is None:
+            self._strategy_frame_cache_status = "not_required"
             return []
         source_native_signal_tickers = {
             event.ticker for event in self._historical_external_signal_events
@@ -3163,7 +3165,13 @@ class ReplayRunController:
             )
         }
         if not requests:
+            self._strategy_frame_cache_status = "not_required"
             return []
+        evaluation_end = _strategy_evaluation_end(
+            self.definition.configuration_revision["payload"],
+            session_start=self.definition.session_start,
+            session_end=self.definition.session_end,
+        )
         ordered_requests = sorted(requests)
         self._preparation_completed_units = 0
         self._preparation_total_units = len(ordered_requests)
@@ -3178,12 +3186,13 @@ class ReplayRunController:
                     else await _historical_signal_events(
                         tickers=tickers,
                         start=self.definition.session_start,
-                        end=self.definition.session_end,
+                        end=evaluation_end,
                         authority_sink=self._record_data_authority,
                     )
                 )
                 await asyncio.to_thread(spool.finalize, events_by_ticker)
                 self._preparation_completed_units = len(ordered_requests)
+                self._strategy_frame_cache_status = "run_checkpoint"
                 return spool
         indicator_columns = (
             tuple(sorted(_STRATEGY_INDICATOR_FIELDS)) if source_native_only else None
@@ -3194,7 +3203,7 @@ class ReplayRunController:
             cache_source_revision = await asyncio.to_thread(
                 qmd_historical_source_revision,
                 start=self.definition.session_start.isoformat(),
-                end=self.definition.session_end.isoformat(),
+                end=evaluation_end.isoformat(),
                 tickers=tuple(sorted({ticker for ticker, _ in requests})),
             )
             self._record_data_authority(
@@ -3220,7 +3229,7 @@ class ReplayRunController:
             _prepared_frame_cache_path(
                 self.runtime_root,
                 start=self.definition.session_start,
-                end=self.definition.session_end,
+                end=evaluation_end,
                 requests=ordered_requests,
                 indicator_columns=indicator_columns,
                 source_revision=cache_source_revision,
@@ -3248,6 +3257,7 @@ class ReplayRunController:
                     )
                     await asyncio.to_thread(cached.finalize, events_by_ticker)
                     self._preparation_completed_units = len(ordered_requests)
+                    self._strategy_frame_cache_status = "hit"
                     return cached
 
             build_path = (
@@ -3258,6 +3268,9 @@ class ReplayRunController:
                 else spool_path
             )
             spool = ReplayFrameSpool(build_path)
+            self._strategy_frame_cache_status = (
+                "miss" if durable_cache else "request_memory"
+            )
             timeframes_by_ticker: dict[str, list[str]] = {}
             for ticker, timeframe in ordered_requests:
                 timeframes_by_ticker.setdefault(ticker, []).append(timeframe)
@@ -3294,7 +3307,7 @@ class ReplayRunController:
                                             ticker=ticker,
                                             timeframe=timeframe,
                                             start=self.definition.session_start,
-                                            end=self.definition.session_end,
+                                            end=evaluation_end,
                                             frame_sink=persist,
                                             authority_sink=record_authority,
                                             indicator_columns=indicator_columns,
@@ -3317,7 +3330,7 @@ class ReplayRunController:
                                     ticker=ticker,
                                     timeframe=timeframe,
                                     start=self.definition.session_start,
-                                    end=self.definition.session_end,
+                                    end=evaluation_end,
                                     authority_sink=record_authority,
                                     frame_cache=self.definition.historical_frame_cache,
                                 )
@@ -3360,6 +3373,25 @@ class ReplayRunController:
                     build_path.unlink()
                 raise
 
+    async def _load_historical_signal_events(self) -> list[ReplaySignalEvent]:
+        """Load independent immutable signal authorities concurrently, then merge deterministically."""
+
+        batches = await asyncio.gather(
+            self._load_market_signal_events(),
+            self._load_source_native_signal_events(),
+            self._load_external_signal_events(),
+        )
+        events = [event for batch in batches for event in batch]
+        events.sort(
+            key=lambda row: (
+                row.available_at,
+                row.ticker,
+                str(row.occurrence.get("signal_stream_id") or ""),
+                str(row.occurrence.get("event_id") or ""),
+            )
+        )
+        return events
+
     async def _strategy_frame_signal_events(
         self,
         *,
@@ -3371,7 +3403,11 @@ class ReplayRunController:
         return await _historical_signal_events(
             tickers=tuple(sorted({ticker for ticker, _ in requests})),
             start=self.definition.session_start,
-            end=self.definition.session_end,
+            end=_strategy_evaluation_end(
+                self.definition.configuration_revision["payload"],
+                session_start=self.definition.session_start,
+                session_end=self.definition.session_end,
+            ),
             authority_sink=self._record_data_authority,
         )
 
@@ -3512,7 +3548,8 @@ class ReplayRunController:
                 for row in source_rows
                 if str(row.get("signal_stream_id") or stream_id) == stream_id
             ]
-            occurrences = SIGNAL_STREAM_RUNTIME.append_external_event_rows(
+            occurrences = await asyncio.to_thread(
+                SIGNAL_STREAM_RUNTIME.append_external_event_rows,
                 discovery,
                 signal_stream_id=stream_id,
                 rows=rows,
@@ -3580,19 +3617,38 @@ class ReplayRunController:
         if not streams:
             return []
 
+        permits = asyncio.Semaphore(replay_history_fetch_concurrency())
+
+        async def load_stream(stream: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+            async with permits:
+                loaded = await asyncio.to_thread(
+                    historical_source_native_signal_occurrences,
+                    stream,
+                    start=self.definition.requested_start,
+                    end=self.definition.session_end,
+                )
+            return stream, loaded
+
+        loaded_streams = await asyncio.gather(*(load_stream(stream) for stream in streams))
+        return await asyncio.to_thread(
+            self._persist_source_native_signal_events,
+            loaded_streams,
+        )
+
+    def _persist_source_native_signal_events(
+        self,
+        loaded_streams: list[tuple[dict[str, Any], dict[str, Any]]],
+    ) -> list[ReplaySignalEvent]:
+        if self._journal is None:
+            raise RuntimeError("Historical signal journal is unavailable")
         results: list[ReplaySignalEvent] = []
-        for stream in streams:
-            loaded = await asyncio.to_thread(
-                historical_source_native_signal_occurrences,
-                stream,
-                start=self.definition.requested_start,
-                end=self.definition.session_end,
-            )
+        for stream, loaded in loaded_streams:
             stream_id = str(stream.get("signal_stream_id") or "")
             self._record_data_authority(
                 f"source_native_signal_stream:{stream_id}",
                 dict(loaded.get("authority") or {}),
             )
+            prepared: list[tuple[dict[str, Any], datetime, str]] = []
             for source in loaded.get("occurrences") or []:
                 occurrence = dict(source)
                 available_at = _optional_checkpoint_time(
@@ -3606,20 +3662,27 @@ class ReplayRunController:
                     raise RuntimeError(
                         f"Historical source-native Signal Stream {stream_id} returned an invalid occurrence"
                     )
-                record, _inserted = self._journal.append_once(
-                    run_id=self.run_id,
-                    category="market_discovery_signal",
-                    entity_type="signal_occurrence",
-                    entity_id=event_id,
-                    event_time=available_at,
-                    payload=occurrence,
-                )
-                persisted = dict(record.payload)
+                prepared.append((occurrence, available_at, ticker))
+            persisted_records = self._journal.append_once_many(
+                {
+                    "run_id": self.run_id,
+                    "category": "market_discovery_signal",
+                    "entity_type": "signal_occurrence",
+                    "entity_id": str(occurrence["event_id"]),
+                    "event_time": available_at,
+                    "payload": occurrence,
+                }
+                for occurrence, available_at, _ticker in prepared
+            )
+            for (record, _inserted), (_occurrence, available_at, ticker) in zip(
+                persisted_records, prepared, strict=True
+            ):
+                persisted_occurrence = dict(record.payload)
                 results.append(
                     ReplaySignalEvent(
                         available_at=available_at,
-                        occurrence=persisted,
-                        source_values=_occurrence_source_values(persisted),
+                        occurrence=persisted_occurrence,
+                        source_values=_occurrence_source_values(persisted_occurrence),
                         ticker=ticker,
                     )
                 )
@@ -3646,6 +3709,13 @@ class ReplayRunController:
             materialize_historical_watchlist_plans,
             self._historical_core_signal_plans,
         )
+        return await asyncio.to_thread(self._compile_market_signal_events, batch)
+
+    def _compile_market_signal_events(
+        self, batch: dict[str, Any]
+    ) -> list[ReplaySignalEvent]:
+        if self._journal is None:
+            raise RuntimeError("Historical signal journal is unavailable")
         by_virtual_watchlist = {
             str(row.get("watchlist_id") or ""): dict(row)
             for row in batch.get("materializations") or []
@@ -3999,6 +4069,7 @@ def _replay_run_list_projection(
         "runtime_ready",
         "preparation_stage",
         "preparation_progress",
+        "preparation_cache",
         "error",
         "created_at",
         "updated_at",
@@ -4725,6 +4796,13 @@ def _historical_watchlist_plans_at_source_native_events(
         )
     ):
         return plans
+    eligible_events = [
+        event
+        for event in events
+        if _strategy_can_enter_at(configuration, event.available_at)
+    ]
+    if not eligible_events:
+        return plans
     scoped: list[dict[str, Any]] = []
     for source in plans:
         plan = deepcopy(source)
@@ -4751,7 +4829,7 @@ def _historical_watchlist_plans_at_source_native_events(
                     * 1_000
                 )
             )
-            for event in events
+            for event in eligible_events
             if start <= event.available_at < end
         })
         windows = [
@@ -4780,6 +4858,80 @@ def _historical_watchlist_plans_at_source_native_events(
         ).hexdigest()
         scoped.append(plan)
     return scoped
+
+
+def _strategy_can_enter_at(configuration: dict[str, Any], event_time: datetime) -> bool:
+    profile = dict(configuration.get("strategy_profile") or {})
+    lifecycle = dict(profile.get("lifecycle") or {})
+    behavior = dict(
+        lifecycle.get("trading_behavior")
+        or profile.get("trading_behavior")
+        or {}
+    )
+    eligible_sessions = {
+        str(value).strip().lower()
+        for value in behavior.get("eligible_sessions") or []
+        if str(value).strip()
+    }
+    if not eligible_sessions:
+        return True
+    local = event_time.astimezone(NEW_YORK)
+    local_time = local.timetz().replace(tzinfo=None)
+    if clock_time(4, 0) <= local_time < clock_time(9, 30):
+        phase = "premarket"
+    elif clock_time(9, 30) <= local_time < clock_time(16, 0):
+        phase = "regular"
+    elif clock_time(16, 0) <= local_time < clock_time(20, 0):
+        phase = "after_hours"
+    else:
+        return False
+    if phase not in eligible_sessions:
+        return False
+    cutoff = str(behavior.get("entry_cutoff_time") or "").strip()
+    if cutoff:
+        try:
+            cutoff_time = clock_time.fromisoformat(cutoff)
+        except ValueError as exc:
+            raise ValueError(
+                f"Strategy entry cutoff time is invalid: {cutoff}"
+            ) from exc
+        if local_time > cutoff_time:
+            return False
+    return True
+
+
+def _strategy_evaluation_end(
+    configuration: dict[str, Any],
+    *,
+    session_start: datetime,
+    session_end: datetime,
+) -> datetime:
+    profile = dict(configuration.get("strategy_profile") or {})
+    lifecycle = dict(profile.get("lifecycle") or {})
+    behavior = dict(
+        lifecycle.get("trading_behavior")
+        or profile.get("trading_behavior")
+        or {}
+    )
+    eligible_sessions = {
+        str(value).strip().lower()
+        for value in behavior.get("eligible_sessions") or []
+        if str(value).strip()
+    }
+    if eligible_sessions != {"premarket"}:
+        return session_end
+    flatten = str(behavior.get("flatten_time") or "").strip()
+    if not flatten:
+        return session_end
+    try:
+        flatten_time = clock_time.fromisoformat(flatten)
+    except ValueError as exc:
+        raise ValueError(f"Strategy flatten time is invalid: {flatten}") from exc
+    local_start = session_start.astimezone(NEW_YORK)
+    boundary = datetime.combine(
+        local_start.date(), flatten_time, tzinfo=NEW_YORK
+    ) + timedelta(seconds=1)
+    return min(session_end, max(session_start, boundary))
 
 
 def _historical_watchlist_transition_row(

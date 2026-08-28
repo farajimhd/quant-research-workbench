@@ -234,6 +234,68 @@ class TradingJournal:
                     raise
                 return _record(existing), False
 
+    def append_once_many(
+        self, entries: Iterable[dict[str, Any]]
+    ) -> list[tuple[JournalRecord, bool]]:
+        """Append an ordered event batch idempotently in one durable transaction.
+
+        Identity follows :meth:`append_once`: category, entity type, and entity
+        id are globally unique occurrence coordinates. Existing records and
+        duplicate identities within the input are returned in input order.
+        """
+
+        pending = [dict(entry) for entry in entries]
+        if not pending:
+            return []
+        keys = [
+            (
+                str(entry["category"]),
+                str(entry["entity_type"]),
+                str(entry["entity_id"]),
+            )
+            for entry in pending
+        ]
+        with self._lock:
+            existing_by_key: dict[tuple[str, str, str], JournalRecord] = {}
+            grouped_ids: dict[tuple[str, str], list[str]] = {}
+            for category, entity_type, entity_id in dict.fromkeys(keys):
+                grouped_ids.setdefault((category, entity_type), []).append(entity_id)
+            for (category, entity_type), entity_ids in grouped_ids.items():
+                for offset in range(0, len(entity_ids), 500):
+                    chunk = entity_ids[offset : offset + 500]
+                    placeholders = ",".join("?" for _ in chunk)
+                    rows = self._connection.execute(
+                        f"SELECT * FROM journal WHERE category = ? AND entity_type = ? "
+                        f"AND entity_id IN ({placeholders})",
+                        (category, entity_type, *chunk),
+                    ).fetchall()
+                    for row in rows:
+                        record = _record(row)
+                        existing_by_key[(category, entity_type, record.entity_id)] = record
+
+            new_entries: list[dict[str, Any]] = []
+            new_keys: list[tuple[str, str, str]] = []
+            seen_new: set[tuple[str, str, str]] = set()
+            for entry, key in zip(pending, keys, strict=True):
+                if key not in existing_by_key and key not in seen_new:
+                    new_entries.append(entry)
+                    new_keys.append(key)
+                    seen_new.add(key)
+            inserted_records = self.append_many(new_entries)
+            inserted_by_key = dict(zip(new_keys, inserted_records, strict=True))
+
+            returned: list[tuple[JournalRecord, bool]] = []
+            emitted_new: set[tuple[str, str, str]] = set()
+            for key in keys:
+                if key in existing_by_key:
+                    returned.append((existing_by_key[key], False))
+                    continue
+                record = inserted_by_key[key]
+                inserted = key not in emitted_new
+                returned.append((record, inserted))
+                emitted_new.add(key)
+            return returned
+
     def save_checkpoint(self, run_id: str, cursor: str, state: dict[str, Any], event_time: datetime) -> None:
         with self._lock, self._connection:
             self._connection.execute(

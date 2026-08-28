@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 import json
 import tempfile
+import threading
+import time as wall_time
 import unittest
 from copy import deepcopy
 from dataclasses import asdict
@@ -32,6 +34,7 @@ from src.backend.replay_run_service import (
     _qmd_payload_authority,
     _retryable_historical_stream_error,
     _simulation_config,
+    _strategy_evaluation_end,
     _debug_derived_frames,
     _debug_market_events,
     _debug_watchlist_membership_timeline,
@@ -836,6 +839,33 @@ class HistoricalDebugFixtureTests(unittest.IsolatedAsyncioTestCase):
 
 
 class HistoricalWatchlistTimelineTests(unittest.TestCase):
+    def test_premarket_strategy_indicator_horizon_ends_after_flatten_clock(self) -> None:
+        start = datetime(2026, 8, 21, 4, 0, tzinfo=NEW_YORK)
+        end = datetime(2026, 8, 21, 20, 0, tzinfo=NEW_YORK)
+        configuration = {
+            "strategy_profile": {
+                "lifecycle": {
+                    "trading_behavior": {
+                        "eligible_sessions": ["premarket"],
+                        "flatten_time": "09:29:59",
+                    }
+                }
+            }
+        }
+
+        self.assertEqual(
+            _strategy_evaluation_end(
+                configuration, session_start=start, session_end=end
+            ),
+            datetime(2026, 8, 21, 9, 30, tzinfo=NEW_YORK),
+        )
+        self.assertEqual(
+            _strategy_evaluation_end(
+                {}, session_start=start, session_end=end
+            ),
+            end,
+        )
+
     def test_source_native_watchlist_evaluates_only_at_occurrence_clocks(self) -> None:
         plan = {
             "watchlist_id": "squeeze-tradable-candidates",
@@ -887,6 +917,55 @@ class HistoricalWatchlistTimelineTests(unittest.TestCase):
         )
         self.assertNotEqual(scoped[0]["plan_hash"], plan["plan_hash"])
         self.assertEqual(plan["evaluation_windows"][0]["end"], "2026-08-21T20:00:00+00:00")
+
+    def test_source_native_watchlist_skips_clocks_where_strategy_cannot_enter(self) -> None:
+        plan = {
+            "watchlist_id": "squeeze-tradable-candidates",
+            "start": "2026-08-21T08:00:00+00:00",
+            "end": "2026-08-21T20:00:00+00:00",
+            "cadence_ms": 1_000,
+            "plan_hash": "sha256:full-session",
+        }
+        events = [
+            ReplaySignalEvent(
+                available_at=available_at,
+                occurrence={"event_id": ticker},
+                source_values={},
+                ticker=ticker,
+            )
+            for ticker, available_at in (
+                ("PRE", datetime(2026, 8, 21, 9, 15, tzinfo=NEW_YORK)),
+                ("RTH", datetime(2026, 8, 21, 10, 0, tzinfo=NEW_YORK)),
+            )
+        ]
+        configuration = {
+            "signal_activation": {
+                "signal_streams": [{
+                    "enabled": True,
+                    "occurrence_source": "qmd_squeeze_episode",
+                }]
+            },
+            "strategy_profile": {
+                "lifecycle": {
+                    "trading_behavior": {
+                        "eligible_sessions": ["premarket"],
+                        "entry_cutoff_time": "09:29:59",
+                    }
+                }
+            },
+        }
+
+        scoped = _historical_watchlist_plans_at_source_native_events(
+            [plan], events, configuration=configuration
+        )
+
+        self.assertEqual(
+            scoped[0]["evaluation_windows"],
+            [{
+                "start": "2026-08-21T13:15:00+00:00",
+                "end": "2026-08-21T13:15:01+00:00",
+            }],
+        )
 
     def test_source_native_squeeze_occurrence_projects_strategy_trigger_aliases(self) -> None:
         values = _occurrence_source_values(
@@ -1715,6 +1794,143 @@ class BacktestPreflightTests(unittest.TestCase):
 
 
 class ReplayControllerTests(unittest.IsolatedAsyncioTestCase):
+    async def test_watchlist_projection_tickers_follow_strategy_entry_session(self) -> None:
+        configuration = approved_configuration()
+        configuration["payload"]["signal_activation"] = {
+            "signal_streams": [{
+                "signal_stream_id": "early",
+                "occurrence_source": "qmd_squeeze_episode",
+                "enabled": True,
+            }]
+        }
+        configuration["payload"]["strategy_profile"] = {
+            "lifecycle": {
+                "trading_behavior": {
+                    "eligible_sessions": ["premarket"],
+                    "entry_cutoff_time": "09:29:59",
+                }
+            }
+        }
+        controller = ReplayRunController(
+            ReplayRunDefinition(
+                session_date=date(2026, 8, 21),
+                start_time=time(4, 0),
+                configuration_revision=configuration,
+            ),
+            runtime_root=Path(tempfile.gettempdir()),
+        )
+        controller._historical_external_signal_events = [
+            ReplaySignalEvent(
+                available_at=available_at,
+                occurrence={"event_id": ticker},
+                source_values={},
+                ticker=ticker,
+            )
+            for ticker, available_at in (
+                ("PRE", datetime(2026, 8, 21, 9, 15, tzinfo=NEW_YORK)),
+                ("RTH", datetime(2026, 8, 21, 10, 0, tzinfo=NEW_YORK)),
+            )
+        ]
+
+        self.assertEqual(
+            controller._historical_watchlist_projection_tickers(), ["PRE"]
+        )
+
+    async def test_independent_signal_authorities_load_concurrently_and_merge_causally(self) -> None:
+        controller = ReplayRunController(
+            ReplayRunDefinition(
+                session_date=date(2026, 8, 21),
+                start_time=time(4, 0),
+                configuration_revision=approved_configuration(),
+            ),
+            runtime_root=Path(tempfile.gettempdir()),
+        )
+        active = 0
+        peak = 0
+
+        async def loaded(ticker: str, second: int) -> list[ReplaySignalEvent]:
+            nonlocal active, peak
+            active += 1
+            peak = max(peak, active)
+            await asyncio.sleep(0)
+            active -= 1
+            available_at = datetime(2026, 8, 21, 8, 0, second, tzinfo=NEW_YORK)
+            return [ReplaySignalEvent(
+                available_at=available_at,
+                occurrence={"event_id": ticker, "signal_stream_id": "stream"},
+                source_values={},
+                ticker=ticker,
+            )]
+
+        async def market() -> list[ReplaySignalEvent]:
+            return await loaded("CCC", 3)
+
+        async def source_native() -> list[ReplaySignalEvent]:
+            return await loaded("AAA", 1)
+
+        async def external() -> list[ReplaySignalEvent]:
+            return await loaded("BBB", 2)
+
+        with (
+            patch.object(controller, "_load_market_signal_events", side_effect=market),
+            patch.object(controller, "_load_source_native_signal_events", side_effect=source_native),
+            patch.object(controller, "_load_external_signal_events", side_effect=external),
+        ):
+            events = await controller._load_historical_signal_events()
+
+        self.assertEqual(peak, 3)
+        self.assertEqual([event.ticker for event in events], ["AAA", "BBB", "CCC"])
+
+    async def test_source_native_stream_queries_use_bounded_concurrency(self) -> None:
+        configuration = approved_configuration()
+        configuration["payload"]["signal_activation"] = {
+            "signal_streams": [
+                {
+                    "signal_stream_id": stream_id,
+                    "occurrence_source": "qmd_squeeze_episode",
+                    "enabled": True,
+                }
+                for stream_id in ("early", "exact")
+            ]
+        }
+        active = 0
+        peak = 0
+        lock = threading.Lock()
+
+        def load(stream: dict, **_kwargs: object) -> dict:
+            nonlocal active, peak
+            with lock:
+                active += 1
+                peak = max(peak, active)
+            wall_time.sleep(0.03)
+            with lock:
+                active -= 1
+            return {
+                "authority": {"signal_stream_id": stream["signal_stream_id"]},
+                "occurrences": [],
+            }
+
+        with tempfile.TemporaryDirectory() as directory:
+            controller = ReplayRunController(
+                ReplayRunDefinition(
+                    session_date=date(2026, 8, 21),
+                    start_time=time(4, 0),
+                    configuration_revision=configuration,
+                ),
+                runtime_root=Path(directory),
+            )
+            controller._journal = TradingJournal(Path(directory) / "journal.sqlite3")
+            with patch(
+                "src.backend.historical_signal_occurrence_service."
+                "historical_source_native_signal_occurrences",
+                side_effect=load,
+            ):
+                events = await controller._load_source_native_signal_events()
+            controller._journal.close()
+
+        self.assertEqual(events, [])
+        self.assertEqual(peak, 2)
+
     async def test_next_action_can_be_queued_before_runtime_warmup_finishes(self) -> None:
         configuration = approved_configuration()
         controller = ReplayRunController(

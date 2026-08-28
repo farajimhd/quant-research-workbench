@@ -78,6 +78,7 @@ export function ReplayTradingPage() {
   const [error, setError] = useState("");
   const [refreshKey, setRefreshKey] = useState(0);
   const [run, setRun] = useState<CanvasReplayRun | null>(null);
+  const [preparingRun, setPreparingRun] = useState<CanvasReplayRun | null>(null);
   const [recentRuns, setRecentRuns] = useState<ReplayRunSummary[]>([]);
   const [runPlanId, setRunPlanId] = useState("");
   const [executionMode, setExecutionMode] = useState<"manual" | "strategy">("strategy");
@@ -165,6 +166,25 @@ export function ReplayTradingPage() {
     setError,
   );
 
+  useReplayRunEvents(
+    preparingRun?.run_id,
+    (update) => setPreparingRun((current) => latestReplayRun(current, update)),
+    setError,
+  );
+
+  useEffect(() => {
+    if (!preparingRun) return;
+    if (replayPrepared(preparingRun)) {
+      setRun(preparingRun);
+      setPreparingRun(null);
+      return;
+    }
+    if (isTerminalReplayStatus(preparingRun.status)) {
+      setError(preparingRun.error || `Replay preparation ${preparingRun.status}.`);
+      setPreparingRun(null);
+    }
+  }, [preparingRun]);
+
   async function createRun() {
     if (!replayReady) return;
     setCreating(true);
@@ -183,7 +203,8 @@ export function ReplayTradingPage() {
         method: "POST",
         timeoutMs: 60_000,
       });
-      setRun(created);
+      if (replayPrepared(created)) setRun(created);
+      else setPreparingRun(created);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
     } finally {
@@ -196,11 +217,26 @@ export function ReplayTradingPage() {
     setError("");
     try {
       const loaded = await api<CanvasReplayRun>(`/api/trading/replay/runs/${encodeURIComponent(recent.run_id)}`, { timeoutMs: 20_000 });
-      setRun(loaded);
+      if (replayPrepared(loaded)) setRun(loaded);
+      else setPreparingRun(loaded);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
     } finally {
       setCreating(false);
+    }
+  }
+
+  async function cancelPreparation() {
+    if (!preparingRun) return;
+    setError("");
+    try {
+      await api<CanvasReplayRun>(`/api/trading/replay/runs/${encodeURIComponent(preparingRun.run_id)}/commands`, {
+        body: JSON.stringify({ command: "stop" }),
+        method: "POST",
+      });
+      setPreparingRun(null);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
     }
   }
 
@@ -219,7 +255,8 @@ export function ReplayTradingPage() {
     <TradingModeLaunch
       actionLabel="Open Replay Canvas"
       actionSummary={<>{preflight?.configuration_release_state === "test_candidate" ? "The immutable Test Candidate" : "The approved revision"} is pinned to a durable simulated run. Replay opens paused at <strong>{sessionDate} · {startTime} ET</strong>.</>}
-      busy={creating}
+      busy={creating || Boolean(preparingRun)}
+      busyLabel={creating ? "Starting preparation…" : "Preparing Replay…"}
       checking={checking}
       checks={preflight?.checks ?? []}
       description="Practice manual and strategy-assisted trading against the historical quote and trade sequence. Earlier events warm the workspace causally."
@@ -230,35 +267,63 @@ export function ReplayTradingPage() {
       onRefresh={() => setRefreshKey((value) => value + 1)}
       ready={replayReady}
       title="Open a historical session"
-      secondary={recentRuns.length ? <details className="mode-launch-history"><summary><span>Recent runs</span><small>Reopen a run owned by this backend session</small></summary><div>{recentRuns.map((recent) => <button disabled={recent.resident === false || isTerminalReplayStatus(recent.status)} key={recent.run_id} onClick={() => void openRecentRun(recent)} type="button"><span><strong>{recent.session_date}</strong><small>{formatReplayClock(recent.current_time)} ET · {recent.status.replaceAll("_", " ")}</small></span><em>{Math.round(recent.progress * 100)}%</em></button>)}</div></details> : null}
+      secondary={preparingRun || recentRuns.length ? <>{preparingRun ? <ReplayPreparation onCancel={() => void cancelPreparation()} run={preparingRun} /> : null}{recentRuns.length ? <details className="mode-launch-history"><summary><span>Recent runs</span><small>Reopen a run owned by this backend session</small></summary><div>{recentRuns.map((recent) => <button disabled={Boolean(preparingRun) || recent.resident === false || isTerminalReplayStatus(recent.status)} key={recent.run_id} onClick={() => void openRecentRun(recent)} type="button"><span><strong>{recent.session_date}</strong><small>{formatReplayClock(recent.current_time)} ET · {recent.status.replaceAll("_", " ")}</small></span><em>{Math.round(recent.progress * 100)}%</em></button>)}</div></details> : null}</> : null}
     >
               <label className="configuration-field">
                 <span>Execution</span>
-                <select aria-label="Replay execution mode" onChange={(event) => setExecutionMode(event.target.value as "manual" | "strategy")} value={executionMode}><option value="manual">Manual / trading actions</option><option value="strategy">Strategy deployment</option></select>
+                <select aria-label="Replay execution mode" disabled={Boolean(preparingRun)} onChange={(event) => setExecutionMode(event.target.value as "manual" | "strategy")} value={executionMode}><option value="manual">Manual / trading actions</option><option value="strategy">Strategy deployment</option></select>
                 <small>Manual uses the Session Profile directly. Strategy adds a published Run Plan.</small>
               </label>
               {executionMode === "strategy" ? <label className="configuration-field">
                 <span>Strategy Run Plan</span>
-                <select aria-label="Strategy Run Plan" onChange={(event) => setRunPlanId(event.target.value)} value={selectedRunPlanId}>{(preflight?.available_run_plans ?? []).map((plan) => <option key={plan.run_plan_id} value={plan.run_plan_id}>{plan.name} · {plan.strategy_id} r{plan.strategy_revision}</option>)}</select>
+                <select aria-label="Strategy Run Plan" disabled={Boolean(preparingRun)} onChange={(event) => setRunPlanId(event.target.value)} value={selectedRunPlanId}>{(preflight?.available_run_plans ?? []).map((plan) => <option key={plan.run_plan_id} value={plan.run_plan_id}>{plan.name} · {plan.strategy_id} r{plan.strategy_revision}</option>)}</select>
                 <small>Its Signal Streams and causal Watchlists own the market-wide ticker population.</small>
-              </label> : <label className="configuration-field"><span>Starting symbol</span><input aria-label="Replay symbol" maxLength={12} onChange={(event) => setSymbol(event.target.value.toUpperCase())} value={symbol} /><small>The Canvas may change symbols later; this only seeds the manual historical event stream.</small></label>}
+              </label> : <label className="configuration-field"><span>Starting symbol</span><input aria-label="Replay symbol" disabled={Boolean(preparingRun)} maxLength={12} onChange={(event) => setSymbol(event.target.value.toUpperCase())} value={symbol} /><small>The Canvas may change symbols later; this only seeds the manual historical event stream.</small></label>}
               <label className="configuration-field">
                 <span>Exchange date</span>
-                <input onChange={(event) => setSessionDate(event.target.value)} type="date" value={sessionDate} />
+                <input disabled={Boolean(preparingRun)} onChange={(event) => setSessionDate(event.target.value)} type="date" value={sessionDate} />
                 <small>One 04:00–20:00 New York session.</small>
               </label>
               <label className="configuration-field">
                 <span>Enter Canvas at</span>
-                <input max="20:00" min="04:00" onChange={(event) => setStartTime(event.target.value)} step="1" type="time" value={startTime} />
+                <input disabled={Boolean(preparingRun)} max="20:00" min="04:00" onChange={(event) => setStartTime(event.target.value)} step="1" type="time" value={startTime} />
                 <small>Canvas opens paused at this event-time clock.</small>
               </label>
               <label className="configuration-field">
                 <span>Initial cash</span>
-                <input max={1_000_000_000} min={1_000} onChange={(event) => setInitialCash(Math.max(1_000, Number(event.target.value) || 1_000))} step={1_000} type="number" value={initialCash} />
+                <input disabled={Boolean(preparingRun)} max={1_000_000_000} min={1_000} onChange={(event) => setInitialCash(Math.max(1_000, Number(event.target.value) || 1_000))} step={1_000} type="number" value={initialCash} />
                 <small>Applied to the Session Profile's simulated account and Portfolio boundaries.</small>
               </label>
     </TradingModeLaunch>
   );
+}
+
+function ReplayPreparation({ onCancel, run }: { onCancel: () => void; run: CanvasReplayRun }) {
+  const [wallClock, setWallClock] = useState(() => Date.now());
+  useEffect(() => {
+    setWallClock(Date.now());
+    const timer = window.setInterval(() => setWallClock(Date.now()), 1_000);
+    return () => window.clearInterval(timer);
+  }, [run.run_id]);
+  const presentation = replayPreparationPresentation(run);
+  const elapsed = Math.max(0, Math.floor((wallClock - Date.parse(run.created_at || run.updated_at)) / 1_000));
+  const cache = run.preparation_cache?.strategy_frames;
+  const cacheLabel = cache === "hit" || cache === "run_checkpoint"
+    ? "Prepared frame cache reused"
+    : cache === "miss"
+      ? "Building restart-safe frame cache"
+      : cache === "not_required" || cache === "fixture"
+        ? "Frame cache not required"
+        : "Frame cache check follows Watchlist prep";
+  return <section aria-live="polite" className="replay-preparation-card" role="status">
+    <header><span><Sparkles aria-hidden="true" size={15} /><strong>Preparing Replay before Canvas opens</strong></span><em>{formatElapsed(elapsed)}</em></header>
+    <div className="replay-preparation-body">
+      <div><strong>{presentation.source}</strong><small>{presentation.progressLabel} · {cacheLabel}</small></div>
+      <progress aria-label={`${presentation.source} progress`} max={presentation.total || undefined} value={presentation.total ? Math.min(presentation.completed, presentation.total) : undefined} />
+      <p>The historical signal, Watchlist, strategy-frame, and market-stream authorities are being pinned now. Canvas opens only after the run reaches a usable event-time state.</p>
+    </div>
+    <button className="button secondary compact" onClick={onCancel} type="button"><CircleStop aria-hidden="true" size={13} /> Cancel preparation</button>
+  </section>;
 }
 
 function ReplayControls({ onExit, onRunChange, run }: { onExit: () => void; onRunChange: (run: CanvasReplayRun) => void; run: CanvasReplayRun }) {
@@ -272,10 +337,10 @@ function ReplayControls({ onExit, onRunChange, run }: { onExit: () => void; onRu
   const runtimePreparing = !terminal && !navigationActive && run.runtime_ready !== true;
   const transportPreparing = active && runtimePreparing;
   const preparingLabel = run.transport_mode === "fast_forward" ? "Preparing time jump" : run.transport_mode === "step" ? "Preparing one-second step" : "Preparing simulation";
-  const preparationCompleted = Math.max(0, Number(run.preparation_progress?.completed ?? 0));
-  const preparationTotal = Math.max(0, Number(run.preparation_progress?.total ?? 0));
-  const frameProgress = preparationTotal ? ` (${preparationCompleted}/${preparationTotal})` : "";
-  const preparationSource = run.preparation_stage === "signal_occurrences" ? "loading squeeze occurrences" : run.preparation_stage === "watchlist_membership" ? "resolving causal liquidity Watchlist" : run.preparation_stage === "strategy_runtime" ? "building simulated strategy runtime" : run.preparation_stage === "strategy_frames" ? `loading indicator frames${frameProgress}` : run.preparation_stage === "market_events" ? "opening QMD market stream" : "loading causal QMD sources";
+  const preparation = replayPreparationPresentation(run);
+  const preparationCompleted = preparation.completed;
+  const preparationTotal = preparation.total;
+  const preparationSource = preparation.source;
   const preparingDetail = run.transport_mode === "fast_forward" ? `+5 minutes queued · ${preparationSource}` : run.transport_mode === "step" ? `One-second step queued · ${preparationSource}` : `Play queued · ${preparationSource}`;
   useEffect(() => {
     if (!navigationActive) return;
@@ -342,6 +407,41 @@ function ReplayControls({ onExit, onRunChange, run }: { onExit: () => void; onRu
     </div>
     {controlError ? <span className="replay-control-error" title={controlError}>Control failed</span> : null}
   </div>;
+}
+
+function replayPrepared(run: CanvasReplayRun) {
+  return run.runtime_ready === true && !["created", "warming"].includes(run.status);
+}
+
+function replayPreparationPresentation(run: CanvasReplayRun) {
+  const completed = Math.max(0, Number(run.preparation_progress?.completed ?? 0));
+  const total = Math.max(0, Number(run.preparation_progress?.total ?? 0));
+  const frameProgress = total ? ` (${completed}/${total})` : "";
+  const source = run.preparation_stage === "signal_occurrences"
+    ? "Loading squeeze occurrences"
+    : run.preparation_stage === "watchlist_membership"
+      ? "Resolving causal liquidity Watchlist"
+      : run.preparation_stage === "strategy_runtime"
+        ? "Building simulated strategy runtime"
+        : run.preparation_stage === "strategy_frames"
+          ? `Loading indicator frames${frameProgress}`
+          : run.preparation_stage === "market_events"
+            ? "Opening QMD market stream"
+            : run.preparation_stage === "ready"
+              ? "Finalizing the event-time starting state"
+              : "Loading causal QMD sources";
+  return {
+    completed,
+    progressLabel: total ? `${completed} of ${total} frame streams` : "Causal source validation in progress",
+    source,
+    total,
+  };
+}
+
+function formatElapsed(seconds: number) {
+  const minutes = Math.floor(seconds / 60);
+  const remainder = seconds % 60;
+  return minutes ? `${minutes}m ${String(remainder).padStart(2, "0")}s` : `${remainder}s`;
 }
 
 function compactEventCount(value?: number) {

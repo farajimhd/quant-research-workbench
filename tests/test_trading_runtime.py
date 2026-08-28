@@ -659,6 +659,37 @@ class JournalTests(unittest.TestCase):
             self.assertEqual(len(journal.pending_outbox()), 4)
             journal.close()
 
+    def test_journal_idempotent_batch_preserves_order_and_duplicate_identity(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            journal = TradingJournal(Path(directory) / "journal.sqlite3")
+            existing, inserted = journal.append_once(
+                run_id="run",
+                category="signal",
+                entity_type="occurrence",
+                entity_id="existing",
+                payload={"position": 0},
+                event_time=TS,
+            )
+            self.assertTrue(inserted)
+
+            entries = [
+                {"run_id": "run", "category": "signal", "entity_type": "occurrence", "entity_id": "new-a", "payload": {"position": 1}, "event_time": TS},
+                {"run_id": "run", "category": "signal", "entity_type": "occurrence", "entity_id": "existing", "payload": {"position": 99}, "event_time": TS},
+                {"run_id": "run", "category": "signal", "entity_type": "occurrence", "entity_id": "new-a", "payload": {"position": 2}, "event_time": TS},
+                {"run_id": "run", "category": "signal", "entity_type": "occurrence", "entity_id": "new-b", "payload": {"position": 3}, "event_time": TS},
+            ]
+            results = journal.append_once_many(entries)
+
+            self.assertEqual(
+                [(record.entity_id, was_inserted) for record, was_inserted in results],
+                [("new-a", True), ("existing", False), ("new-a", False), ("new-b", True)],
+            )
+            self.assertEqual(results[1][0].record_id, existing.record_id)
+            self.assertEqual(results[2][0].payload["position"], 1)
+            self.assertEqual([results[0][0].sequence, results[3][0].sequence], [2, 3])
+            self.assertEqual(len(journal.pending_outbox()), 3)
+            journal.close()
+
     def test_journal_preserves_explicit_autonomous_lineage(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             journal = TradingJournal(Path(directory) / "journal.sqlite3")

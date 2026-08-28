@@ -3835,10 +3835,10 @@ def _default_draft() -> dict[str, Any]:
     )
     squeeze_lifecycle = system_profiles[0]["lifecycle"]
     squeeze_lifecycle["trading_behavior"]["eligible_sessions"] = [
-        "premarket", "regular"
+        "premarket"
     ]
-    squeeze_lifecycle["trading_behavior"]["entry_cutoff_time"] = "15:45:00"
-    squeeze_lifecycle["trading_behavior"]["flatten_time"] = "15:55:00"
+    squeeze_lifecycle["trading_behavior"]["entry_cutoff_time"] = "09:29:59"
+    squeeze_lifecycle["trading_behavior"]["flatten_time"] = "09:29:59"
     squeeze_lifecycle["initial_entry"]["opportunity"] = {
         "expression": {
             "kind": "operator",
