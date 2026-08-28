@@ -14,6 +14,7 @@ from datetime import UTC, date, datetime, time as clock_time, timedelta
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Iterator
 from uuid import uuid4
+from weakref import WeakValueDictionary
 from zoneinfo import ZoneInfo
 
 import websockets
@@ -33,6 +34,7 @@ from src.backend.news_signal_runtime_service import (
 from src.backend.signal_stream_runtime_service import SIGNAL_STREAM_RUNTIME
 from src.backend.qmd_gateway_client import (
     QmdProductRequest,
+    qmd_historical_source_revision,
     qmd_history_websocket_url,
     qmd_product_request,
 )
@@ -101,6 +103,10 @@ DEFAULT_MAX_RESIDENT_RUNS = 32
 DEFAULT_HISTORY_FETCH_CONCURRENCY = 4
 MAX_DEBUG_FIXTURE_EVENTS = 20_000
 RESTART_CHECKPOINT_SCHEMA_VERSION = 3
+PREPARED_FRAME_CACHE_SCHEMA_VERSION = 1
+_PREPARED_FRAME_CACHE_LOCKS: WeakValueDictionary[str, asyncio.Lock] = (
+    WeakValueDictionary()
+)
 
 
 def _replay_navigation_action(record: JournalRecord) -> dict[str, Any] | None:
@@ -364,10 +370,22 @@ class ReplayFrameSpool:
                         ticker TEXT NOT NULL,
                         timeframe TEXT NOT NULL,
                         completed_at TEXT NOT NULL,
+                        authority_json TEXT NOT NULL DEFAULT '{}',
                         PRIMARY KEY (ticker, timeframe)
                     )
                     """
                 )
+                stream_columns = {
+                    str(row[1])
+                    for row in connection.execute(
+                        "PRAGMA table_info(strategy_frame_streams)"
+                    )
+                }
+                if "authority_json" not in stream_columns:
+                    connection.execute(
+                        "ALTER TABLE strategy_frame_streams "
+                        "ADD COLUMN authority_json TEXT NOT NULL DEFAULT '{}'"
+                    )
         finally:
             connection.close()
 
@@ -417,17 +435,27 @@ class ReplayFrameSpool:
         finally:
             connection.close()
 
-    def mark_stream_complete(self, ticker: str, timeframe: str) -> None:
+    def mark_stream_complete(
+        self,
+        ticker: str,
+        timeframe: str,
+        authority: dict[str, Any] | None = None,
+    ) -> None:
         connection = sqlite3.connect(self.path)
         try:
             with connection:
                 connection.execute(
                     """
                     INSERT OR REPLACE INTO strategy_frame_streams (
-                        ticker, timeframe, completed_at
-                    ) VALUES (?, ?, ?)
+                        ticker, timeframe, completed_at, authority_json
+                    ) VALUES (?, ?, ?, ?)
                     """,
-                    (_ticker(ticker), timeframe, datetime.now(UTC).isoformat()),
+                    (
+                        _ticker(ticker),
+                        timeframe,
+                        datetime.now(UTC).isoformat(),
+                        json.dumps(authority or {}, separators=(",", ":"), sort_keys=True),
+                    ),
                 )
         finally:
             connection.close()
@@ -439,6 +467,19 @@ class ReplayFrameSpool:
                 (str(ticker), str(timeframe))
                 for ticker, timeframe in connection.execute(
                     "SELECT ticker, timeframe FROM strategy_frame_streams"
+                )
+            }
+        finally:
+            connection.close()
+
+    def stream_authorities(self) -> dict[tuple[str, str], dict[str, Any]]:
+        connection = sqlite3.connect(self.path)
+        try:
+            return {
+                (str(ticker), str(timeframe)): dict(json.loads(authority_json or "{}"))
+                for ticker, timeframe, authority_json in connection.execute(
+                    "SELECT ticker, timeframe, authority_json "
+                    "FROM strategy_frame_streams"
                 )
             }
         finally:
@@ -3144,94 +3185,195 @@ class ReplayRunController:
                 await asyncio.to_thread(spool.finalize, events_by_ticker)
                 self._preparation_completed_units = len(ordered_requests)
                 return spool
-        spool = ReplayFrameSpool(spool_path)
-        timeframes_by_ticker: dict[str, list[str]] = {}
-        for ticker, timeframe in ordered_requests:
-            timeframes_by_ticker.setdefault(ticker, []).append(timeframe)
-        request_queue: asyncio.Queue[tuple[str, tuple[str, ...]]] = asyncio.Queue()
-        for ticker, timeframes in timeframes_by_ticker.items():
-            request_queue.put_nowait((ticker, tuple(timeframes)))
-        writer_lock = asyncio.Lock()
-
-        async def load_worker() -> None:
-            while True:
-                try:
-                    ticker, timeframes = request_queue.get_nowait()
-                except asyncio.QueueEmpty:
-                    return
-                try:
-                    for timeframe in timeframes:
-                        if self.definition.historical_frame_cache is None:
-                            async def persist(batch: list[ReplayDerivedFrame]) -> None:
-                                async with writer_lock:
-                                    await asyncio.to_thread(spool.append, batch)
-
-                            for attempt in range(8):
-                                try:
-                                    await _stream_historical_derived_frames(
-                                        ticker=ticker,
-                                        timeframe=timeframe,
-                                        start=self.definition.session_start,
-                                        end=self.definition.session_end,
-                                        frame_sink=persist,
-                                        authority_sink=self._record_data_authority,
-                                        indicator_columns=(
-                                            tuple(sorted(_STRATEGY_INDICATOR_FIELDS))
-                                            if source_native_only
-                                            else None
-                                        ),
-                                    )
-                                    break
-                                except Exception as exc:
-                                    if not _retryable_historical_stream_error(exc):
-                                        raise
-                                    async with writer_lock:
-                                        await asyncio.to_thread(
-                                            spool.delete_stream,
-                                            ticker,
-                                            timeframe,
-                                        )
-                                    if attempt == 7:
-                                        raise
-                                    await asyncio.sleep(min(10.0, 0.5 * (2**attempt)))
-                        else:
-                            frames = await _historical_derived_frames(
-                                ticker=ticker,
-                                timeframe=timeframe,
-                                start=self.definition.session_start,
-                                end=self.definition.session_end,
-                                authority_sink=self._record_data_authority,
-                                frame_cache=self.definition.historical_frame_cache,
-                            )
-                            async with writer_lock:
-                                await asyncio.to_thread(spool.append, frames)
-                        async with writer_lock:
-                            await asyncio.to_thread(
-                                spool.mark_stream_complete,
-                                ticker,
-                                timeframe,
-                            )
-                        self._preparation_completed_units += 1
-                        self.updated_at = datetime.now(UTC)
-                        await self._publish(force=True)
-                finally:
-                    request_queue.task_done()
-
-        worker_count = min(replay_history_fetch_concurrency(), len(timeframes_by_ticker))
-        await asyncio.gather(*(load_worker() for _ in range(worker_count)))
-        tickers = tuple(sorted({ticker for ticker, _ in requests}))
-        events_by_ticker = (
-            {}
-            if source_native_only
-            else await _historical_signal_events(
-                tickers=tickers,
+        indicator_columns = (
+            tuple(sorted(_STRATEGY_INDICATOR_FIELDS)) if source_native_only else None
+        )
+        durable_cache = self.definition.historical_frame_cache is None
+        cache_source_revision: dict[str, Any] | None = None
+        if durable_cache:
+            cache_source_revision = await asyncio.to_thread(
+                qmd_historical_source_revision,
+                start=self.definition.session_start.isoformat(),
+                end=self.definition.session_end.isoformat(),
+                tickers=tuple(sorted({ticker for ticker, _ in requests})),
+            )
+            self._record_data_authority(
+                "prepared_strategy_frame_source",
+                {
+                    "authority": "qmd_history_source_revision",
+                    "revision_token": str(cache_source_revision["token"]),
+                    "source_plan_hash": str(
+                        cache_source_revision["source_plan_hash"]
+                    ),
+                    "complete_for_history": bool(
+                        cache_source_revision.get("complete_for_history")
+                    ),
+                    "request_complete": bool(
+                        cache_source_revision.get("request_complete")
+                    ),
+                    "source_tiers": list(
+                        cache_source_revision.get("source_tiers") or ()
+                    ),
+                },
+            )
+        cache_path = (
+            _prepared_frame_cache_path(
+                self.runtime_root,
                 start=self.definition.session_start,
                 end=self.definition.session_end,
-                authority_sink=self._record_data_authority,
+                requests=ordered_requests,
+                indicator_columns=indicator_columns,
+                source_revision=cache_source_revision,
             )
+            if durable_cache
+            else spool_path
         )
-        await asyncio.to_thread(spool.finalize, events_by_ticker)
-        return spool
+        cache_lock = _PREPARED_FRAME_CACHE_LOCKS.setdefault(
+            str(cache_path), asyncio.Lock()
+        )
+        async with cache_lock:
+            if durable_cache and cache_path.is_file():
+                cached = ReplayFrameSpool(cache_path, reset=False)
+                completed = await asyncio.to_thread(cached.completed_streams)
+                if requests.issubset(completed):
+                    authorities = await asyncio.to_thread(cached.stream_authorities)
+                    for (ticker, timeframe), authority in authorities.items():
+                        if (ticker, timeframe) in requests and authority:
+                            self._record_data_authority(
+                                f"derived:{ticker}:{timeframe}", authority
+                            )
+                    events_by_ticker = await self._strategy_frame_signal_events(
+                        requests=requests,
+                        source_native_only=source_native_only,
+                    )
+                    await asyncio.to_thread(cached.finalize, events_by_ticker)
+                    self._preparation_completed_units = len(ordered_requests)
+                    return cached
+
+            build_path = (
+                cache_path.with_name(
+                    f".{cache_path.name}.{self.run_id}.building"
+                )
+                if durable_cache
+                else spool_path
+            )
+            spool = ReplayFrameSpool(build_path)
+            timeframes_by_ticker: dict[str, list[str]] = {}
+            for ticker, timeframe in ordered_requests:
+                timeframes_by_ticker.setdefault(ticker, []).append(timeframe)
+            request_queue: asyncio.Queue[tuple[str, tuple[str, ...]]] = asyncio.Queue()
+            for ticker, timeframes in timeframes_by_ticker.items():
+                request_queue.put_nowait((ticker, tuple(timeframes)))
+            writer_lock = asyncio.Lock()
+
+            async def load_worker() -> None:
+                while True:
+                    try:
+                        ticker, timeframes = request_queue.get_nowait()
+                    except asyncio.QueueEmpty:
+                        return
+                    try:
+                        for timeframe in timeframes:
+                            authority: dict[str, Any] = {}
+
+                            def record_authority(
+                                key: str, evidence: dict[str, Any]
+                            ) -> None:
+                                self._record_data_authority(key, evidence)
+                                if key == f"derived:{ticker}:{timeframe}":
+                                    authority.update(deepcopy(evidence))
+
+                            if self.definition.historical_frame_cache is None:
+                                async def persist(batch: list[ReplayDerivedFrame]) -> None:
+                                    async with writer_lock:
+                                        await asyncio.to_thread(spool.append, batch)
+
+                                for attempt in range(8):
+                                    try:
+                                        await _stream_historical_derived_frames(
+                                            ticker=ticker,
+                                            timeframe=timeframe,
+                                            start=self.definition.session_start,
+                                            end=self.definition.session_end,
+                                            frame_sink=persist,
+                                            authority_sink=record_authority,
+                                            indicator_columns=indicator_columns,
+                                        )
+                                        break
+                                    except Exception as exc:
+                                        if not _retryable_historical_stream_error(exc):
+                                            raise
+                                        async with writer_lock:
+                                            await asyncio.to_thread(
+                                                spool.delete_stream,
+                                                ticker,
+                                                timeframe,
+                                            )
+                                        if attempt == 7:
+                                            raise
+                                        await asyncio.sleep(min(10.0, 0.5 * (2**attempt)))
+                            else:
+                                frames = await _historical_derived_frames(
+                                    ticker=ticker,
+                                    timeframe=timeframe,
+                                    start=self.definition.session_start,
+                                    end=self.definition.session_end,
+                                    authority_sink=record_authority,
+                                    frame_cache=self.definition.historical_frame_cache,
+                                )
+                                async with writer_lock:
+                                    await asyncio.to_thread(spool.append, frames)
+                            async with writer_lock:
+                                await asyncio.to_thread(
+                                    spool.mark_stream_complete,
+                                    ticker,
+                                    timeframe,
+                                    authority,
+                                )
+                            self._preparation_completed_units += 1
+                            self.updated_at = datetime.now(UTC)
+                            await self._publish(force=True)
+                    finally:
+                        request_queue.task_done()
+
+            try:
+                worker_count = min(
+                    replay_history_fetch_concurrency(), len(timeframes_by_ticker)
+                )
+                await asyncio.gather(
+                    *(load_worker() for _ in range(worker_count))
+                )
+                events_by_ticker = await self._strategy_frame_signal_events(
+                    requests=requests,
+                    source_native_only=source_native_only,
+                )
+                await asyncio.to_thread(spool.finalize, events_by_ticker)
+                if durable_cache:
+                    await asyncio.to_thread(
+                        _replace_path_with_retry, build_path, cache_path
+                    )
+                    spool = ReplayFrameSpool(cache_path, reset=False)
+                    await asyncio.to_thread(spool.finalize, events_by_ticker)
+                return spool
+            except Exception:
+                if durable_cache and build_path.is_file():
+                    build_path.unlink()
+                raise
+
+    async def _strategy_frame_signal_events(
+        self,
+        *,
+        requests: set[tuple[str, str]],
+        source_native_only: bool,
+    ) -> dict[str, list[dict[str, Any]]]:
+        if source_native_only:
+            return {}
+        return await _historical_signal_events(
+            tickers=tuple(sorted({ticker for ticker, _ in requests})),
+            start=self.definition.session_start,
+            end=self.definition.session_end,
+            authority_sink=self._record_data_authority,
+        )
 
     async def _load_external_signal_events(self) -> list[ReplaySignalEvent]:
         if self._journal is None:
@@ -3882,6 +4024,43 @@ def replay_runtime_root() -> Path:
         os.environ.get("TRADING_RUNTIME_ROOT", str(DEFAULT_REPLAY_ROOT.parent))
     )
     return trading_root / "replay"
+
+
+def _prepared_frame_cache_path(
+    runtime_root: Path,
+    *,
+    start: datetime,
+    end: datetime,
+    requests: list[tuple[str, str]],
+    indicator_columns: tuple[str, ...] | None,
+    source_revision: dict[str, Any] | None,
+) -> Path:
+    """Identify one immutable, restart-persistent derived-frame preparation."""
+
+    identity = {
+        "schema_version": PREPARED_FRAME_CACHE_SCHEMA_VERSION,
+        "start": start.isoformat(),
+        "end": end.isoformat(),
+        "requests": [list(request) for request in sorted(requests)],
+        "indicator_columns": (
+            list(indicator_columns) if indicator_columns is not None else None
+        ),
+        "source_revision": {
+            "token": str(dict(source_revision or {}).get("token") or ""),
+            "source_plan_hash": str(
+                dict(source_revision or {}).get("source_plan_hash") or ""
+            ),
+        },
+    }
+    encoded = json.dumps(identity, separators=(",", ":"), sort_keys=True).encode(
+        "utf-8"
+    )
+    cache_key = hashlib.sha256(encoded).hexdigest()
+    cache_root = (runtime_root / "_prepared" / "strategy-frames").resolve()
+    resolved_root = runtime_root.resolve()
+    if resolved_root != cache_root and resolved_root not in cache_root.parents:
+        raise ValueError("Replay prepared-frame cache escaped the runtime root")
+    return cache_root / f"v{PREPARED_FRAME_CACHE_SCHEMA_VERSION}-{cache_key}.sqlite3"
 
 
 def backtest_runtime_root() -> Path:

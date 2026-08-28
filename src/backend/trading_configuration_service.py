@@ -3829,8 +3829,9 @@ def _default_draft() -> dict[str, Any]:
     ]
     system_profiles[0]["name"] = "Long Momentum · Squeeze"
     system_profiles[0]["description"] = (
-        "Extended-hours long momentum strategy activated by the Exact 5% Squeeze "
-        "event-time milestone and confirmed by volume attraction and spread quality."
+        "Extended-hours long momentum strategy activated by the Early Squeeze Move "
+        "episode start and confirmed by volume attraction and spread quality. The "
+        "Exact 5% Squeeze event remains a continuation milestone."
     )
     squeeze_lifecycle = system_profiles[0]["lifecycle"]
     squeeze_lifecycle["trading_behavior"]["eligible_sessions"] = [
@@ -3844,7 +3845,7 @@ def _default_draft() -> dict[str, Any]:
             "operator": "and",
             "children": [{
                 "kind": "rule_set",
-                "rule_set_id": "signal-price-squeeze-5m",
+                "rule_set_id": "watchlist-squeeze-early-impulse-100ms",
             }],
         }
     }
@@ -4014,9 +4015,9 @@ def _default_draft() -> dict[str, Any]:
         {
             "universe_id": "price-squeeze-signal-universe",
             "name": "Price Squeeze signals",
-            "description": "Tickers are admitted causally by the Price Squeeze Signal Stream.",
+            "description": "Tickers are admitted causally when an Early Squeeze Move starts; Exact 5% remains observable as a continuation milestone.",
             "source": "signal_stream",
-            "signal_stream_ids": ["price-squeeze-5m"],
+            "signal_stream_ids": ["price-squeeze-early", "price-squeeze-5m"],
             "symbols": [],
             "enabled": True,
         },
@@ -4034,12 +4035,12 @@ def _default_draft() -> dict[str, Any]:
         {
             "run_plan_id": f"long-momentum-squeeze-{binding['account_key']}",
             "name": f"Long Momentum · Price Squeeze · {str(binding['account_key']).title()}",
-            "description": "Session-enabled extended-hours momentum execution activated by the first Exact 5% Squeeze event-time milestone.",
+            "description": "Session-enabled extended-hours momentum execution activated by the first Early Squeeze Move event-time episode start; Exact 5% is a continuation milestone.",
             "profile_id": "long-momentum-balanced",
             "oms_profile_id": "adaptive-regular",
             "universe_id": "price-squeeze-signal-universe",
             "watchlist_ids": [],
-            "signal_stream_ids": ["price-squeeze-5m"],
+            "signal_stream_ids": ["price-squeeze-early", "price-squeeze-5m"],
             "activation": {"event_policy": "new_occurrences", "watchlist_policy": "any_selected"},
             "enablement": {"state": "disabled", "scope": "persistent", "effective_session": ""},
             "canvas_profile_id": "current-canvas",
@@ -4089,7 +4090,7 @@ def _default_draft() -> dict[str, Any]:
         "oms_profile_id": "adaptive-regular",
         "universe_id": "configured-watch-universe",
         "watchlist_ids": ["squeeze-tradable-candidates"],
-        "signal_stream_ids": ["price-squeeze-5m"],
+        "signal_stream_ids": ["price-squeeze-early", "price-squeeze-5m"],
         "activation": {"event_policy": "new_occurrences", "watchlist_policy": "any_selected"},
         "enablement": {"state": "enabled", "scope": "persistent", "effective_session": ""},
         "canvas_profile_id": "current-canvas",

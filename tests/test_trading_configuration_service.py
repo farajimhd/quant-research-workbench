@@ -1422,6 +1422,17 @@ class TradingConfigurationServiceTests(unittest.TestCase):
         self.assertEqual(replay["maximum_planned_risk_fraction"], 0.0025)
         self.assertEqual(replay["maximum_open_positions"], 3)
         self.assertEqual(plan["watchlist_ids"], ["squeeze-tradable-candidates"])
+        self.assertEqual(
+            plan["signal_stream_ids"],
+            ["price-squeeze-early", "price-squeeze-5m"],
+        )
+        self.assertEqual(
+            profile["lifecycle"]["initial_entry"]["opportunity"]["expression"][
+                "children"
+            ][0]["rule_set_id"],
+            "watchlist-squeeze-early-impulse-100ms",
+        )
+        self.assertIn("continuation milestone", profile["description"])
         self.assertEqual(plan["campaign_lifecycle"]["reentry_cooldown_ms"], 5_000)
         self.assertEqual(profile["lifecycle"]["trading_behavior"]["entry_cutoff_time"], "15:45:00")
         self.assertEqual(profile["lifecycle"]["trading_behavior"]["flatten_time"], "15:55:00")

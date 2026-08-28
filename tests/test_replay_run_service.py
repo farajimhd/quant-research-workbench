@@ -4,6 +4,7 @@ import asyncio
 import json
 import tempfile
 import unittest
+from copy import deepcopy
 from dataclasses import asdict
 from datetime import UTC, date, datetime, time
 from pathlib import Path
@@ -1376,6 +1377,101 @@ class ReplayHistoricalFetchBudgetTests(unittest.IsolatedAsyncioTestCase):
         self.assertIs(frames[0].bar, frame.bar)
         self.assertEqual(observed["derived:ABCD:100ms"], authority)
 
+    async def test_prepared_frame_cache_survives_new_controller(self) -> None:
+        configuration = approved_configuration()
+        configuration["payload"]["signal_activation"] = {
+            "signal_streams": [{
+                "signal_stream_id": "price-squeeze-early",
+                "enabled": True,
+                "occurrence_source": "qmd_squeeze_episode",
+            }]
+        }
+        definition = ReplayRunDefinition(
+            session_date=date(2026, 8, 10),
+            start_time=time(4, 0),
+            tickers=("ABCD",),
+            configuration_revision=configuration,
+        )
+        frame = ReplayDerivedFrame(
+            as_of=definition.session_start,
+            bar={"close": 10.0},
+            indicator={"vwap": 9.9},
+            sequence=1,
+            ticker="ABCD",
+            timeframe="100ms",
+        )
+        authority = {
+            "authority": "qmd_history_derived",
+            "revision_token": "revision-1",
+            "source_plan_hash": "plan-1",
+            "complete_for_history": True,
+            "source_tiers": ["archive"],
+            "engine_version": "engine-1",
+            "event_count": 10,
+        }
+        source_revision = {
+            "token": "session-revision-1",
+            "source_plan_hash": "session-plan-1",
+            "complete_for_history": True,
+            "request_complete": True,
+            "source_tiers": ["archive"],
+        }
+
+        async def derived(**kwargs):
+            await kwargs["frame_sink"]([frame])
+            kwargs["authority_sink"](
+                "derived:ABCD:100ms", deepcopy(authority)
+            )
+
+        with tempfile.TemporaryDirectory() as directory:
+            runtime_root = Path(directory)
+
+            def controller() -> ReplayRunController:
+                result = ReplayRunController(definition, runtime_root=runtime_root)
+                result._strategy = MagicMock()
+                result._strategy.assignments.return_value = [
+                    MagicMock(ticker="ABCD", parameters={})
+                ]
+                result._strategy_registration = MagicMock()
+                result._strategy_registration.timeframe_resolver.return_value = {
+                    "100ms"
+                }
+                return result
+
+            first = controller()
+            second = controller()
+            with (
+                patch(
+                    "src.backend.replay_run_service.qmd_historical_source_revision",
+                    return_value=source_revision,
+                ) as source_revision_fetch,
+                patch(
+                    "src.backend.replay_run_service._stream_historical_derived_frames",
+                    side_effect=derived,
+                ) as fetch,
+            ):
+                first_frames = list(await first._load_strategy_frames())
+                second_frames = list(await second._load_strategy_frames())
+                source_revision_fetch.return_value = {
+                    **source_revision,
+                    "token": "session-revision-2",
+                }
+                third = controller()
+                third_frames = list(await third._load_strategy_frames())
+
+            cache_files = list(
+                (runtime_root / "_prepared" / "strategy-frames").glob("*.sqlite3")
+            )
+
+        self.assertEqual(fetch.call_count, 2)
+        self.assertEqual(len(first_frames), 1)
+        self.assertEqual(len(second_frames), 1)
+        self.assertEqual(len(third_frames), 1)
+        self.assertEqual(
+            second._data_authority["derived:ABCD:100ms"], authority
+        )
+        self.assertEqual(len(cache_files), 2)
+
     async def test_loads_scanner_signals_once_and_bounds_derived_fetches(self) -> None:
         definition = ReplayRunDefinition(
             session_date=date(2026, 8, 10),
@@ -1383,9 +1479,11 @@ class ReplayHistoricalFetchBudgetTests(unittest.IsolatedAsyncioTestCase):
             tickers=tuple(f"T{index}" for index in range(12)),
             configuration_revision=approved_configuration(),
         )
+        temporary_directory = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary_directory.cleanup)
         controller = ReplayRunController(
             definition,
-            runtime_root=Path(tempfile.gettempdir()),
+            runtime_root=Path(temporary_directory.name),
         )
         assignments = [
             MagicMock(ticker=f"T{index}", parameters={}) for index in range(12)
@@ -1407,6 +1505,16 @@ class ReplayHistoricalFetchBudgetTests(unittest.IsolatedAsyncioTestCase):
 
         signal_rows = {f"T{index}": [] for index in range(12)}
         with (
+            patch(
+                "src.backend.replay_run_service.qmd_historical_source_revision",
+                return_value={
+                    "token": "session-revision-1",
+                    "source_plan_hash": "session-plan-1",
+                    "complete_for_history": True,
+                    "request_complete": True,
+                    "source_tiers": ["archive"],
+                },
+            ),
             patch(
                 "src.backend.replay_run_service._stream_historical_derived_frames",
                 side_effect=derived,
@@ -1467,6 +1575,16 @@ class ReplayHistoricalFetchBudgetTests(unittest.IsolatedAsyncioTestCase):
                     )
 
             with (
+                patch(
+                    "src.backend.replay_run_service.qmd_historical_source_revision",
+                    return_value={
+                        "token": "session-revision-1",
+                        "source_plan_hash": "session-plan-1",
+                        "complete_for_history": True,
+                        "request_complete": True,
+                        "source_tiers": ["archive"],
+                    },
+                ),
                 patch(
                     "src.backend.replay_run_service._stream_historical_derived_frames",
                     side_effect=derived,
