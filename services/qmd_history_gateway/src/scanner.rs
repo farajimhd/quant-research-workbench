@@ -24,7 +24,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::sync::Arc;
 use tokio::sync::{Mutex, OnceCell};
 
-pub const HISTORICAL_SCANNER_DERIVED_SCHEMA_VERSION: &str = "canvas_historical_qmd_snapshot_v8";
+pub const HISTORICAL_SCANNER_DERIVED_SCHEMA_VERSION: &str = "canvas_historical_qmd_snapshot_v9";
 const SIGNAL_EVENT_LIMIT: usize = 20_000;
 const SCANNER_TIMEFRAMES: [&str; 12] = [
     "100ms", "1s", "10s", "30s", "1m", "5m", "15m", "30m", "1h", "2h", "4h", "1d",
@@ -1372,7 +1372,7 @@ pub async fn materialize_watchlist_timelines(
     )?;
     let authority_window = EventWindow {
         start,
-        end,
+        end: replay_end,
         tickers: source_tickers.iter().cloned().collect(),
     };
     let source_plan = source.source_plan(&authority_window).await?;

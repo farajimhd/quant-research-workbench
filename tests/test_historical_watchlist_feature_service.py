@@ -10,6 +10,7 @@ from src.backend.historical_watchlist_feature_service import (
     _durable_cache_read,
     _durable_cache_write,
     _enrich_materialized_identity,
+    _materialization_source_bounds,
     historical_watchlist_external_feature_bundle,
     historical_watchlist_external_feature_intervals,
     materialize_historical_watchlist_plans,
@@ -26,6 +27,19 @@ class _Client:
 
 
 class HistoricalWatchlistFeatureServiceTests(unittest.TestCase):
+    def test_materialization_source_revision_stops_at_last_evaluation_window(self) -> None:
+        start, end = _materialization_source_bounds([{
+            "start": "2026-08-21T08:00:00+00:00",
+            "end": "2026-08-22T00:00:00+00:00",
+            "evaluation_windows": [
+                {"start": "2026-08-21T08:01:00+00:00", "end": "2026-08-21T08:01:01+00:00"},
+                {"start": "2026-08-21T13:29:58+00:00", "end": "2026-08-21T13:29:59+00:00"},
+            ],
+        }])
+
+        self.assertEqual(start, "2026-08-21T08:00:00+00:00")
+        self.assertEqual(end, "2026-08-21T13:29:59+00:00")
+
     def test_identity_unavailable_members_are_rejected_with_explicit_evidence(self) -> None:
         materialized = {
             "materialization_id": "sha256:qmd",

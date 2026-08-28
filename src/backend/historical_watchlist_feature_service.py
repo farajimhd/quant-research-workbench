@@ -52,7 +52,7 @@ _MATERIALIZATION_CACHE_LIMIT = 8
 _DURABLE_CACHE_SCHEMA_VERSION = 1
 _DURABLE_CACHE_MAX_ENTRIES = 64
 _DURABLE_CACHE_MAX_FILE_BYTES = 256 * 1024 * 1024
-_QMD_WATCHLIST_CALCULATION_REVISION = "canvas_historical_qmd_snapshot_v8"
+_QMD_WATCHLIST_CALCULATION_REVISION = "canvas_historical_qmd_snapshot_v9"
 _APPLICATION_WATCHLIST_PROJECTION_REVISION = 3
 
 
@@ -284,6 +284,28 @@ def historical_watchlist_external_feature_bundle(
     }
 
 
+def _materialization_source_bounds(
+    plans: list[dict[str, Any]],
+) -> tuple[str, str]:
+    if not plans:
+        raise ValueError("historical Watchlist source bounds require at least one plan")
+    starts = {_clock(plan.get("start"), "start") for plan in plans}
+    ends = {_clock(plan.get("end"), "end") for plan in plans}
+    if len(starts) != 1 or len(ends) != 1:
+        raise ValueError("historical Watchlist plans must share exact source bounds")
+    start = next(iter(starts))
+    requested_end = next(iter(ends))
+    evaluation_ends = [
+        _clock(dict(window).get("end"), "evaluation window end")
+        for plan in plans
+        for window in plan.get("evaluation_windows") or []
+    ]
+    source_end = min(requested_end, max(evaluation_ends, default=requested_end))
+    if source_end <= start:
+        raise ValueError("historical Watchlist materialization end must follow start")
+    return start.astimezone(UTC).isoformat(), source_end.astimezone(UTC).isoformat()
+
+
 def materialize_historical_watchlist_plan(plan: dict[str, Any]) -> dict[str, Any]:
     from src.backend.qmd_gateway_client import (
         qmd_historical_source_revision,
@@ -293,13 +315,16 @@ def materialize_historical_watchlist_plan(plan: dict[str, Any]) -> dict[str, Any
     bundle = historical_watchlist_external_feature_bundle(plan)
     revisions = bundle["external_feature_revisions"]
     intervals = bundle["external_feature_intervals"]
+    source_start, source_end = _materialization_source_bounds([plan])
     source_revision = qmd_historical_source_revision(
-        start=str(plan.get("start") or ""), end=str(plan.get("end") or "")
+        start=source_start,
+        end=source_end,
     )
     dependency_bounds = _dependency_source_bounds([plan])
+    dependency_bounds["end"] = source_end
     dependency_source_revision = (
         qmd_historical_source_revision(**dependency_bounds)
-        if dependency_bounds["start"] != str(plan.get("start") or "")
+        if dependency_bounds["start"] != source_start
         else source_revision
     )
     cache_key = _content_hash(
@@ -387,18 +412,20 @@ def materialize_historical_watchlist_plans(
     if len(bounds) != 1:
         raise ValueError("historical Watchlist batch plans must share exact bounds")
     start, end = next(iter(bounds))
+    source_start, source_end = _materialization_source_bounds(plans)
     source_revision = qmd_historical_source_revision(
-        start=start,
-        end=end,
+        start=source_start,
+        end=source_end,
         tickers=normalized_projection,
     )
     dependency_bounds = _dependency_source_bounds(plans)
+    dependency_bounds["end"] = source_end
     dependency_source_revision = (
         qmd_historical_source_revision(
             **dependency_bounds,
             tickers=normalized_projection,
         )
-        if dependency_bounds["start"] != start
+        if dependency_bounds["start"] != source_start
         else source_revision
     )
     cache_key = _content_hash(
