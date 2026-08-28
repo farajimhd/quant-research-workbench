@@ -511,13 +511,7 @@ def strategy_activity_payload(
         if event_type and row_type != event_type:
             continue
         metadata = dict(payload.get("metadata") or {})
-        action = str(
-            payload.get("action")
-            or payload.get("event")
-            or payload.get("status")
-            or payload.get("state")
-            or "observed"
-        )
+        action = _strategy_activity_action(record.category, payload)
         rows.append(
             {
                 "record_id": record.record_id,
@@ -532,18 +526,20 @@ def strategy_activity_payload(
                 "event_type": row_type,
                 "action": action,
                 "state": str(payload.get("status") or payload.get("state") or ""),
-                "reason": str(
-                    payload.get("reason")
-                    or payload.get("evidence")
-                    or metadata.get("reason")
-                    or metadata.get("evidence")
-                    or ""
-                ),
+                "reason": _strategy_activity_reason(record.category, payload, metadata),
                 "score": payload.get("score"),
                 "confidence": payload.get("confidence"),
-                "reference_price": payload.get("reference_price") or metadata.get("reference_price"),
+                "reference_price": (
+                    payload.get("reference_price")
+                    or payload.get("last_price")
+                    or metadata.get("reference_price")
+                ),
                 "entity_id": record.entity_id,
-                "source": str(payload.get("source") or record.entity_type),
+                "source": str(
+                    payload.get("source_authority")
+                    or payload.get("source")
+                    or record.entity_type
+                ),
             }
         )
         if len(rows) >= requested_limit:
@@ -561,17 +557,73 @@ def strategy_activity_payload(
             "strategies": strategies,
             "runs": runs,
             "tickers": tickers,
-            "event_types": ["signal", "decision", "campaign_state"],
+            "event_types": ["signal", "watchlist", "decision", "campaign_state", "order"],
         },
     }
 
 
 def _strategy_activity_event_type(entity_type: str) -> str:
+    if entity_type == "signal_occurrence":
+        return "signal"
+    if entity_type == "historical_watchlist_member":
+        return "watchlist"
     if entity_type == "signal":
         return "signal"
     if entity_type == "strategy_assignment_state":
         return "campaign_state"
+    if entity_type in {"order", "order_state", "order_intent"}:
+        return "order"
     return "decision"
+
+
+def _strategy_activity_action(category: str, payload: dict[str, Any]) -> str:
+    if category == "market_discovery_signal":
+        return str(
+            payload.get("signal_stream_name")
+            or payload.get("signal_stream_id")
+            or "market signal"
+        )
+    return str(
+        payload.get("action")
+        or payload.get("event")
+        or payload.get("status")
+        or payload.get("state")
+        or "observed"
+    )
+
+
+def _strategy_activity_reason(
+    category: str,
+    payload: dict[str, Any],
+    metadata: dict[str, Any],
+) -> str:
+    explicit = (
+        payload.get("reason")
+        or payload.get("evidence")
+        or payload.get("membership_reason")
+        or metadata.get("reason")
+        or metadata.get("evidence")
+    )
+    if explicit:
+        return str(explicit)
+    if category != "market_discovery_signal":
+        return ""
+    parts: list[str] = []
+    move = payload.get("squeeze_move_pct")
+    anchor = payload.get("squeeze_anchor_price")
+    last = payload.get("last_price")
+    if move is not None:
+        parts.append(f"{float(move):+.2f}% from squeeze anchor")
+    if anchor is not None and last is not None:
+        parts.append(f"${float(anchor):.4g} to ${float(last):.4g}")
+    liquidity = payload.get("liquidity_score")
+    if liquidity is not None:
+        parts.append(f"liquidity {float(liquidity):.2f}")
+    bid = payload.get("event_quote_bid_price")
+    ask = payload.get("event_quote_ask_price")
+    if bid is not None and ask is not None:
+        parts.append(f"spread ${max(0.0, float(ask) - float(bid)):.4g}")
+    return " · ".join(parts)
 
 
 def _assignment_from_row(row: dict[str, Any]) -> StrategyAssignment:

@@ -1135,9 +1135,13 @@ class ReplayRunController:
                             for ticker in sorted(tickers)
                         ],
                     }
-                    for watchlist_id, tickers in sorted(
-                        self._active_historical_watchlists.items()
-                    )
+                    for watchlist_id in dict.fromkeys([
+                        *self._strategy_debug_sources()["watchlist_ids"],
+                        *self._active_historical_watchlists.keys(),
+                    ])
+                    for tickers in [
+                        self._active_historical_watchlists.get(watchlist_id, set())
+                    ]
                 ],
             },
             "data_authority": {
@@ -3829,40 +3833,45 @@ class ReplayRunService:
         return controller
 
     def list(self) -> list[dict[str, Any]]:
-        resident = [
-            controller.snapshot()
+        return [
+            _replay_run_list_projection(controller.snapshot(), resident=True)
             for controller in sorted(
                 self._runs.values(),
                 key=lambda item: item.created_at,
                 reverse=True,
             )
         ]
-        known = {str(row.get("run_id") or "") for row in resident}
-        persisted: list[dict[str, Any]] = []
-        if self.runtime_root.is_dir():
-            for run_dir in self.runtime_root.iterdir():
-                if not run_dir.is_dir() or run_dir.name in known:
-                    continue
-                try:
-                    summary_path = run_dir / "run-summary.json"
-                    manifest_path = run_dir / "manifest.json"
-                    if summary_path.is_file():
-                        row = dict(json.loads(summary_path.read_text(encoding="utf-8")))
-                    elif manifest_path.is_file() and manifest_path.stat().st_size <= 2_000_000:
-                        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
-                        row = dict(payload.get("run") or {})
-                    else:
-                        continue
-                    if str(row.get("run_id") or "") != run_dir.name:
-                        continue
-                    persisted.append(row)
-                except (OSError, ValueError, TypeError, json.JSONDecodeError):
-                    continue
-        return sorted(
-            [*resident, *persisted],
-            key=lambda row: str(row.get("created_at") or ""),
-            reverse=True,
-        )[: self.max_resident_runs * 4]
+
+
+def _replay_run_list_projection(
+    snapshot: dict[str, Any],
+    *,
+    resident: bool,
+) -> dict[str, Any]:
+    """Return the bounded lifecycle fields required by the recent-runs picker."""
+
+    fields = (
+        "schema_version",
+        "run_id",
+        "status",
+        "runtime_ready",
+        "preparation_stage",
+        "preparation_progress",
+        "error",
+        "created_at",
+        "updated_at",
+        "current_time",
+        "session_date",
+        "requested_start",
+        "session_start",
+        "session_end",
+        "progress",
+        "checkpoint",
+    )
+    return {
+        **{field: deepcopy(snapshot.get(field)) for field in fields},
+        "resident": resident,
+    }
 
 
 def replay_runtime_root() -> Path:

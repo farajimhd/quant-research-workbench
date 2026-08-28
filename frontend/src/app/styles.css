@@ -8162,6 +8162,7 @@ button {
 }
 
 .canvas-preview-table tbody tr:hover { background: var(--surface-alt); }
+.canvas-preview-table tbody tr[data-selectable="true"] { cursor: pointer; }
 
 .trading-preview {
   display: grid;

@@ -14,6 +14,7 @@ from src.backend.qmd_gateway_client import ENRICHED_QMD_TIMEFRAMES, normalize_qm
 from src.backend.trading_runtime_service import (
     _bounded_historical_chart_window,
     historical_bar_history_before,
+    strategy_activity_payload,
 )
 from src.market_engine.events import QuoteEvent
 from src.market_engine.historical_source import _validate_health, event_from_qmd_payload
@@ -567,9 +568,17 @@ class JournalTests(unittest.TestCase):
             self.assertEqual([row.entity_id for row in rows], ["occurrence-1"])
             journal.close()
 
-    def test_strategy_activity_is_newest_first_and_excludes_broker_records(self) -> None:
+    def test_strategy_activity_is_complete_causal_log_and_excludes_broker_records(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             journal = TradingJournal(Path(directory) / "journal.sqlite3")
+            journal.append(
+                run_id="run-a", category="market_discovery_signal", entity_type="signal_occurrence", entity_id="occurrence-1",
+                event_time=TS - timedelta(seconds=2), payload={"signal_stream_id": "squeeze", "signal_stream_name": "Exact 5% Squeeze", "ticker": "AAPL", "squeeze_move_pct": 5.25, "squeeze_anchor_price": 10.0, "last_price": 10.525, "liquidity_score": 88.0, "event_quote_bid_price": 10.52, "event_quote_ask_price": 10.53},
+            )
+            journal.append(
+                run_id="run-a", category="watchlist_membership", entity_type="historical_watchlist_member", entity_id="AAPL",
+                event_time=TS - timedelta(seconds=1), payload={"event": "added", "ticker": "AAPL", "source": "causal_historical_watchlist"},
+            )
             journal.append(
                 run_id="run-a", category="strategy_decision", entity_type="signal", entity_id="signal-1",
                 event_time=TS, payload={"strategy_id": "momentum", "ticker": "AAPL", "action": "wait"},
@@ -582,9 +591,27 @@ class JournalTests(unittest.TestCase):
                 run_id="run-a", category="broker", entity_type="order", entity_id="order-1",
                 event_time=TS + timedelta(seconds=2), payload={"strategy_id": "momentum", "ticker": "AAPL"},
             )
+            journal.append(
+                run_id="run-a", category="order_management", entity_type="order_state", entity_id="order-state-1",
+                event_time=TS + timedelta(seconds=3), payload={"strategy_id": "momentum", "ticker": "AAPL", "state": "submitted"},
+            )
 
             rows = journal.strategy_activity_records(strategy_id="momentum", ticker="AAPL")
-            self.assertEqual([row.entity_type for row in rows], ["strategy_intent", "signal"])
+            self.assertEqual([row.entity_type for row in rows], ["order_state", "strategy_intent", "signal"])
+            all_rows = journal.strategy_activity_records(ticker="AAPL")
+            self.assertEqual(
+                [row.entity_type for row in all_rows],
+                ["order_state", "strategy_intent", "signal", "historical_watchlist_member", "signal_occurrence"],
+            )
+            activity = strategy_activity_payload(journal=journal, run_id="run-a", ticker="AAPL", as_of=TS + timedelta(seconds=4))
+            self.assertEqual(
+                [row["event_type"] for row in activity["rows"]],
+                ["order", "decision", "signal", "watchlist", "signal"],
+            )
+            occurrence = activity["rows"][-1]
+            self.assertEqual(occurrence["action"], "Exact 5% Squeeze")
+            self.assertIn("+5.25% from squeeze anchor", occurrence["reason"])
+            self.assertEqual(occurrence["reference_price"], 10.525)
             self.assertEqual(journal.strategy_activity_records(run_id="missing"), [])
             journal.close()
 

@@ -62,6 +62,10 @@ type ReplayPreflight = {
   tickers: string[];
 };
 
+type ReplayRunSummary = Pick<CanvasReplayRun, "checkpoint" | "current_time" | "progress" | "run_id" | "session_date" | "status"> & {
+  resident: boolean;
+};
+
 const REPLAY_SPEEDS = [1, 5, 30, 120, 0] as const;
 
 export function ReplayTradingPage() {
@@ -74,11 +78,12 @@ export function ReplayTradingPage() {
   const [error, setError] = useState("");
   const [refreshKey, setRefreshKey] = useState(0);
   const [run, setRun] = useState<CanvasReplayRun | null>(null);
-  const [recentRuns, setRecentRuns] = useState<CanvasReplayRun[]>([]);
+  const [recentRuns, setRecentRuns] = useState<ReplayRunSummary[]>([]);
   const [runPlanId, setRunPlanId] = useState("");
   const [executionMode, setExecutionMode] = useState<"manual" | "strategy">("strategy");
   const [symbol, setSymbol] = useState("AAPL");
   const replayReady = Boolean(preflight?.ready);
+  const selectedRunPlanId = runPlanId || preflight?.run_plan_id || "";
 
   useEffect(() => {
     let cancelled = false;
@@ -108,7 +113,7 @@ export function ReplayTradingPage() {
 
   useEffect(() => {
     if (run) return;
-    api<{ rows: CanvasReplayRun[] }>("/api/trading/replay/runs", { timeoutMs: 20_000 })
+    api<{ rows: ReplayRunSummary[] }>("/api/trading/replay/runs", { timeoutMs: 20_000 })
       .then((payload) => setRecentRuns(payload.rows.slice(0, 5)))
       .catch(() => setRecentRuns([]));
   }, [refreshKey, run]);
@@ -136,7 +141,6 @@ export function ReplayTradingPage() {
         .then((payload) => {
           if (!cancelled) {
             setPreflight(payload);
-            if (!runPlanId && payload.run_plan_id) setRunPlanId(payload.run_plan_id);
           }
         })
         .catch((reason) => {
@@ -171,7 +175,7 @@ export function ReplayTradingPage() {
           configuration_revision_id: preflight?.configuration_revision_id,
           initial_cash: initialCash,
           execution_mode: executionMode,
-          run_plan_id: runPlanId,
+          run_plan_id: selectedRunPlanId,
           session_date: sessionDate,
           start_time: startTime,
           tickers: executionMode === "manual" && symbol.trim() ? [symbol.trim().toUpperCase()] : [],
@@ -180,6 +184,19 @@ export function ReplayTradingPage() {
         timeoutMs: 60_000,
       });
       setRun(created);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setCreating(false);
+    }
+  }
+
+  async function openRecentRun(recent: ReplayRunSummary) {
+    setCreating(true);
+    setError("");
+    try {
+      const loaded = await api<CanvasReplayRun>(`/api/trading/replay/runs/${encodeURIComponent(recent.run_id)}`, { timeoutMs: 20_000 });
+      setRun(loaded);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
     } finally {
@@ -213,7 +230,7 @@ export function ReplayTradingPage() {
       onRefresh={() => setRefreshKey((value) => value + 1)}
       ready={replayReady}
       title="Open a historical session"
-      secondary={recentRuns.length ? <details className="mode-launch-history"><summary><span>Recent runs</span><small>Resume a run owned by this backend session</small></summary><div>{recentRuns.map((recent) => <button disabled={recent.status === "failed" || recent.status === "stopped"} key={recent.run_id} onClick={() => setRun(recent)} type="button"><span><strong>{recent.session_date}</strong><small>{formatReplayClock(recent.current_time)} ET · {recent.status.replaceAll("_", " ")}</small></span><em>{Math.round(recent.progress * 100)}%</em></button>)}</div></details> : null}
+      secondary={recentRuns.length ? <details className="mode-launch-history"><summary><span>Recent runs</span><small>Reopen a run owned by this backend session</small></summary><div>{recentRuns.map((recent) => <button disabled={recent.resident === false || isTerminalReplayStatus(recent.status)} key={recent.run_id} onClick={() => void openRecentRun(recent)} type="button"><span><strong>{recent.session_date}</strong><small>{formatReplayClock(recent.current_time)} ET · {recent.status.replaceAll("_", " ")}</small></span><em>{Math.round(recent.progress * 100)}%</em></button>)}</div></details> : null}
     >
               <label className="configuration-field">
                 <span>Execution</span>
@@ -222,7 +239,7 @@ export function ReplayTradingPage() {
               </label>
               {executionMode === "strategy" ? <label className="configuration-field">
                 <span>Strategy Run Plan</span>
-                <select aria-label="Strategy Run Plan" onChange={(event) => setRunPlanId(event.target.value)} value={runPlanId}>{(preflight?.available_run_plans ?? []).map((plan) => <option key={plan.run_plan_id} value={plan.run_plan_id}>{plan.name} · {plan.strategy_id} r{plan.strategy_revision}</option>)}</select>
+                <select aria-label="Strategy Run Plan" onChange={(event) => setRunPlanId(event.target.value)} value={selectedRunPlanId}>{(preflight?.available_run_plans ?? []).map((plan) => <option key={plan.run_plan_id} value={plan.run_plan_id}>{plan.name} · {plan.strategy_id} r{plan.strategy_revision}</option>)}</select>
                 <small>Its Signal Streams and causal Watchlists own the market-wide ticker population.</small>
               </label> : <label className="configuration-field"><span>Starting symbol</span><input aria-label="Replay symbol" maxLength={12} onChange={(event) => setSymbol(event.target.value.toUpperCase())} value={symbol} /><small>The Canvas may change symbols later; this only seeds the manual historical event stream.</small></label>}
               <label className="configuration-field">
@@ -255,7 +272,9 @@ function ReplayControls({ onExit, onRunChange, run }: { onExit: () => void; onRu
   const runtimePreparing = !terminal && !navigationActive && run.runtime_ready !== true;
   const transportPreparing = active && runtimePreparing;
   const preparingLabel = run.transport_mode === "fast_forward" ? "Preparing time jump" : run.transport_mode === "step" ? "Preparing one-second step" : "Preparing simulation";
-  const frameProgress = run.preparation_progress?.total ? ` (${run.preparation_progress.completed}/${run.preparation_progress.total})` : "";
+  const preparationCompleted = Math.max(0, Number(run.preparation_progress?.completed ?? 0));
+  const preparationTotal = Math.max(0, Number(run.preparation_progress?.total ?? 0));
+  const frameProgress = preparationTotal ? ` (${preparationCompleted}/${preparationTotal})` : "";
   const preparationSource = run.preparation_stage === "signal_occurrences" ? "loading squeeze occurrences" : run.preparation_stage === "watchlist_membership" ? "resolving causal liquidity Watchlist" : run.preparation_stage === "strategy_runtime" ? "building simulated strategy runtime" : run.preparation_stage === "strategy_frames" ? `loading indicator frames${frameProgress}` : run.preparation_stage === "market_events" ? "opening QMD market stream" : "loading causal QMD sources";
   const preparingDetail = run.transport_mode === "fast_forward" ? `+5 minutes queued · ${preparationSource}` : run.transport_mode === "step" ? `One-second step queued · ${preparationSource}` : `Play queued · ${preparationSource}`;
   useEffect(() => {
@@ -313,7 +332,14 @@ function ReplayControls({ onExit, onRunChange, run }: { onExit: () => void; onRu
       void command("fast_forward", { target_time: target });
     }} title="Process every QMD event through the next five event-time minutes, then pause" type="button"><FastForward size={13} /><span>+5 min</span></button>
     <label className="replay-speed-control"><Gauge aria-hidden="true" size={13} /><select aria-label="Replay speed" disabled={terminal || Boolean(busy)} onChange={(event) => command("set_speed", { speed: Number(event.target.value) })} value={run.speed}>{REPLAY_SPEEDS.map((speed) => <option key={speed} value={speed}>{speed === 0 ? "Max" : `${speed}×`}</option>)}</select></label>
-    <div className={`replay-run-state${navigationActive || runtimePreparing ? " is-navigation" : ""}`} data-status={run.status}><i aria-hidden="true" /><span><strong aria-live="polite">{navigationPreparing ? "Preparing causal scan" : navigationActive ? "Finding next action" : runtimePreparing ? transportPreparing ? preparingLabel : "Preparing Replay" : run.status.replaceAll("_", " ")}</strong><small>{navigationPreparing ? `Loading signal + Watchlist history · ${navigationElapsedSeconds(run.navigation_search?.started_at, wallClock)}s` : navigationActive ? `${compactEventCount(run.navigation_search?.scanned_events)} market events · ${formatReplayClock(run.current_time)} ET · ${navigationElapsedSeconds(run.navigation_search?.started_at, wallClock)}s` : runtimePreparing ? transportPreparing ? preparingDetail : preparationSource : run.navigation_action ? `${run.navigation_action.ticker ? `${run.navigation_action.ticker} · ` : ""}${run.navigation_action.label}` : run.status === "warming" ? `${compactEventCount(run.warmup_events)} events` : `${Math.round(run.progress * 100)}%`}</small></span></div>
+    <div className={`replay-run-state${navigationActive || runtimePreparing ? " is-navigation" : ""}`} data-status={run.status}>
+      <i aria-hidden="true" />
+      <span>
+        <strong aria-live="polite">{navigationPreparing ? "Preparing causal scan" : navigationActive ? "Finding next action" : runtimePreparing ? transportPreparing ? preparingLabel : "Preparing Replay" : run.status.replaceAll("_", " ")}</strong>
+        <small>{navigationPreparing ? `Loading signal + Watchlist history · ${navigationElapsedSeconds(run.navigation_search?.started_at, wallClock)}s` : navigationActive ? `${compactEventCount(run.navigation_search?.scanned_events)} market events · ${formatReplayClock(run.current_time)} ET · ${navigationElapsedSeconds(run.navigation_search?.started_at, wallClock)}s` : runtimePreparing ? transportPreparing ? preparingDetail : preparationSource : run.navigation_action ? `${formatReplayClock(run.navigation_action.event_time)} ET · ${run.navigation_action.ticker ? `${run.navigation_action.ticker} · ` : ""}${run.navigation_action.label}` : run.status === "warming" ? `${compactEventCount(run.warmup_events)} events` : `${Math.round(run.progress * 100)}%`}</small>
+        {runtimePreparing ? <progress aria-label={`${preparationSource} progress`} max={preparationTotal || undefined} value={preparationTotal ? Math.min(preparationCompleted, preparationTotal) : undefined} /> : null}
+      </span>
+    </div>
     {controlError ? <span className="replay-control-error" title={controlError}>Control failed</span> : null}
   </div>;
 }

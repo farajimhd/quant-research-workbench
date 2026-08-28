@@ -826,12 +826,16 @@ class TradingJournal:
     ) -> list[JournalRecord]:
         """Return newest-first durable strategy events across ticker campaigns.
 
-        This query intentionally excludes broker and portfolio records.  Those
-        authorities have their own Canvas surfaces; Strategy Activity records
-        only the signals, semantic intents, and campaign-state transitions
-        emitted by a strategy runtime.
+        This query intentionally excludes broker and portfolio records. Those
+        authorities have their own Canvas surfaces. Strategy Activity includes
+        the causal discovery signal, Watchlist admission, semantic strategy
+        intent, campaign-state transition, and order-management handoff that
+        explain why the strategy did or did not act.
         """
-        clauses = ["category IN ('strategy', 'strategy_decision')"]
+        clauses = [
+            "category IN ('market_discovery_signal', 'watchlist_membership', "
+            "'strategy', 'strategy_decision', 'order_management')"
+        ]
         values: list[Any] = []
         if strategy_id:
             clauses.append("json_extract(payload_json, '$.strategy_id') = ?")

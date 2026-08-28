@@ -3,7 +3,6 @@ import { forwardRef, useDeferredValue, useEffect, useMemo, useRef, useState, typ
 
 import { api, apiCached, invalidateApiCache } from "../../api/client";
 import { CONFIGURATION_SESSION_CHANGED_EVENT, readConfigurationSession } from "../configurationSession";
-import { usePollingTask } from "../hooks/usePollingTask";
 import { timeRecency } from "../timeRecency";
 import { InventoryFilterSelect } from "./InventoryFilterSelect";
 import { MarketTime } from "./MarketTime";
@@ -498,17 +497,34 @@ export function SignalStreamContainer({ asOf, live, onSettingsChange, onTickerSe
   const lastSequence = useRef<Record<string, number>>({});
   const sessionKey = useRef<Record<string, string>>({});
   const [runtimeUnavailableKeys, setRuntimeUnavailableKeys] = useState<Set<string>>(() => new Set());
-  const runtimeScopeKey = stream ? `${live ? "live" : `${runId ?? ""}:${asOf}`}|${stream.signal_stream_id}` : "";
+  const runtimeScopeKey = stream ? `${live ? "live" : runId ?? ""}|${stream.signal_stream_id}` : "";
   const runtime = runtimeScopeKey ? runtimeCache[runtimeScopeKey] ?? null : null;
   const runtimeUnavailable = runtimeScopeKey ? runtimeUnavailableKeys.has(runtimeScopeKey) : false;
-  usePollingTask({
-    enabled: Boolean(stream && runtimeScopeKey),
-    initialDelayMs: 0,
-    intervalMs: Math.max(100, stream?.refresh_interval_ms ?? 5000),
-    repeat: live,
-    restartKey: `${runtimeScopeKey}:${settings.limit}:${stream?.maximum_events ?? ""}:${live ? "live" : asOf}`,
-    task: async (signal) => {
-      if (!stream || !runtimeScopeKey) return;
+  const historicalAsOfRef = useRef(asOf);
+  const requestLatestHistoricalRef = useRef<(() => void) | null>(null);
+  historicalAsOfRef.current = asOf;
+  useEffect(() => {
+    requestLatestHistoricalRef.current?.();
+  }, [asOf]);
+  useEffect(() => {
+    if (!stream || !runtimeScopeKey) return;
+    let stopped = false;
+    let inFlight = false;
+    let loadedAsOf = "";
+    let timer: number | null = null;
+    let controller: AbortController | null = null;
+    const schedule = (delay: number) => {
+      if (stopped) return;
+      if (timer !== null) window.clearTimeout(timer);
+      timer = window.setTimeout(load, delay);
+    };
+    const load = async () => {
+      timer = null;
+      if (stopped || inFlight) return;
+      const targetAsOf = historicalAsOfRef.current;
+      if (!live && targetAsOf === loadedAsOf) return;
+      inFlight = true;
+      controller = new AbortController();
       const query = new URLSearchParams({
         // QMD retains the complete effective session (up to its 50k authority
         // bound). The table page size must never truncate the query domain.
@@ -518,11 +534,13 @@ export function SignalStreamContainer({ asOf, live, onSettingsChange, onTickerSe
       const previousSequence = lastSequence.current[runtimeScopeKey] ?? 0;
       if (live && previousSequence > 0) query.set("after_sequence", String(previousSequence));
       if (!live) {
-        query.set("as_of", asOf);
+        query.set("as_of", targetAsOf);
         if (runId) query.set("run_id", runId);
       }
       try {
-        const payload = await api<SignalStreamRuntimeResponse>(`/api/market-discovery/signal-stream/runtime?${query}`, { signal, timeoutMs: 10000 });
+        const payload = await api<SignalStreamRuntimeResponse>(`/api/market-discovery/signal-stream/runtime?${query}`, { signal: controller.signal, timeoutMs: 10000 });
+        if (stopped) return;
+        loadedAsOf = targetAsOf;
         setRuntimeCache((current) => {
           const currentRuntime = current[runtimeScopeKey];
           const nextSessionKey = String(payload.session?.session_key ?? payload.session?.session_date ?? "");
@@ -541,10 +559,24 @@ export function SignalStreamContainer({ asOf, live, onSettingsChange, onTickerSe
           return next;
         });
       } catch (error) {
-        if (!signal.aborted) setRuntimeUnavailableKeys((current) => new Set(current).add(runtimeScopeKey));
+        if (!stopped && !controller?.signal.aborted) setRuntimeUnavailableKeys((current) => new Set(current).add(runtimeScopeKey));
+      } finally {
+        inFlight = false;
+        controller = null;
+        if (stopped) return;
+        if (live) schedule(Math.max(100, stream.refresh_interval_ms ?? 5000));
+        else if (historicalAsOfRef.current !== loadedAsOf) schedule(0);
       }
-    },
-  });
+    };
+    requestLatestHistoricalRef.current = () => schedule(0);
+    schedule(0);
+    return () => {
+      stopped = true;
+      if (timer !== null) window.clearTimeout(timer);
+      controller?.abort();
+      if (requestLatestHistoricalRef.current) requestLatestHistoricalRef.current = null;
+    };
+  }, [live, runId, runtimeScopeKey, settings.limit, stream?.maximum_events, stream?.refresh_interval_ms, stream?.signal_stream_id]);
   const rows = useMemo(() => {
     const scannerByTicker = new Map(scannerRows.map((row) => [String(row["ticker"] ?? row["symbol"] ?? "").toUpperCase(), row]));
     const enriched = (runtime?.occurrences ?? []).map((occurrence) => {
@@ -739,7 +771,7 @@ export function StrategyActivityContainer({ asOf, onSettingsChange, onTickerSele
       <ActivityFilter label="Strategy" onChange={(strategyId) => onSettingsChange({ strategyId })} options={strategies} value={settings.strategyId} />
       <ActivityFilter label="Run" onChange={(runId) => onSettingsChange({ runId })} options={runs} value={settings.runId} />
       <ActivityFilter label="Ticker" onChange={(ticker) => onSettingsChange({ ticker })} options={tickers} value={settings.ticker} />
-      <ActivityFilter label="Event" onChange={(eventType) => onSettingsChange({ eventType })} options={["signal", "decision", "campaign_state"]} value={settings.eventType} />
+      <ActivityFilter label="Event" onChange={(eventType) => onSettingsChange({ eventType })} options={["signal", "watchlist", "decision", "campaign_state", "order"]} value={settings.eventType} />
     </div>
     {error ? <div className="canvas-inline-error">Strategy activity unavailable: {error}</div> : <MarketListTable chronological columns={["event_time", "ticker", "event_type", "action", "state", "reason", "score", "confidence", "reference_price", "source"]} customColumns={[]} empty="No causal strategy events match these filters yet. Press Play or advance to the next strategy action." limit={settings.limit} lockedColumns={[]} onColumnsChange={() => undefined} onCustomColumnsChange={() => undefined} onTickerSelect={onTickerSelect} rows={rows} title="Strategy activity" />}
   </section>;

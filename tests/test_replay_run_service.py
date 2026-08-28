@@ -738,8 +738,7 @@ class HistoricalDebugFixtureTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(controller.processed_events, 1)
 
             service = ReplayRunService(runtime_root=root)
-            self.assertEqual(service.list()[0]["run_id"], controller.run_id)
-            self.assertTrue(service.list()[0]["checkpoint"]["resume_supported"])
+            self.assertEqual(service.list(), [])
             manifest_path = controller.run_dir / "manifest.json"
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
             approved_path = controller.run_dir / "approved-configuration.json"
@@ -1667,6 +1666,31 @@ class ReplayControllerTests(unittest.IsolatedAsyncioTestCase):
             await controller._prepare_historical_watchlist_timeline()
 
         to_thread.assert_awaited_once_with(materialize)
+
+    def test_replay_projects_selected_watchlist_as_resolved_when_membership_is_empty(self) -> None:
+        configuration = approved_configuration()
+        controller = ReplayRunController(
+            ReplayRunDefinition(
+                session_date=date(2026, 8, 21),
+                start_time=time(4, 0),
+                configuration_revision=configuration,
+            ),
+            runtime_root=Path(tempfile.gettempdir()),
+        )
+        controller._runtime_inputs_ready = True
+        controller._strategy_debug_sources = MagicMock(return_value={
+            "signal_stream_ids": [],
+            "watchlist_ids": ["squeeze-tradable-candidates"],
+        })
+
+        runtime = controller.snapshot()["watchlist_runtime"]
+
+        self.assertEqual(runtime["status"], "ready")
+        self.assertEqual(runtime["watchlists"], [{
+            "watchlist_id": "squeeze-tradable-candidates",
+            "status": "ready",
+            "members": [],
+        }])
 
     def test_source_native_market_signal_creates_assignment_without_symbol_seed(self) -> None:
         approved = approved_configuration()

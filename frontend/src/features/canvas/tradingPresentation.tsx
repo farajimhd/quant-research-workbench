@@ -98,7 +98,12 @@ function PreviewTable({ columns, onSymbolSelect, rows }: { columns: string[]; on
   const presentations = useTickerPresentations(rows.flatMap((row) => tickerColumns.map((column) => String(row[column] || ""))));
   if (!rows.length) return <EmptyState label="No point-in-time rows" />;
   const visibleColumns = columns.filter((column) => column !== "logo" && column !== "company_name");
-  return <div className="canvas-preview-table-wrap"><table className="canvas-preview-table"><thead><tr>{visibleColumns.map((column) => <th key={column}>{labelFor(column)}</th>)}</tr></thead><tbody>{rows.map((row, index) => <tr key={previewRowKey(row, visibleColumns, index)}>{visibleColumns.map((column) => <td className={`${tableCellClass(column)} preview-cell-${column.replace(/[^a-z0-9_-]/gi, "-")}`} data-tone={cellTone(row[column], column)} key={column}><PreviewCell column={column} onSymbolSelect={onSymbolSelect} presentations={presentations} row={row} /></td>)}</tr>)}</tbody></table></div>;
+  return <div className="canvas-preview-table-wrap"><table className="canvas-preview-table"><thead><tr>{visibleColumns.map((column) => <th key={column}>{labelFor(column)}</th>)}</tr></thead><tbody>{rows.map((row, index) => {
+    const ticker = tickerFromPreviewRow(row);
+    const selectable = Boolean(ticker && onSymbolSelect);
+    const select = () => { if (selectable) onSymbolSelect?.(ticker); };
+    return <tr aria-label={selectable ? `Open ${ticker} Charts & Quotes` : undefined} data-selectable={selectable ? "true" : undefined} key={previewRowKey(row, visibleColumns, index)} onClick={(event) => { if (!(event.target as HTMLElement).closest("button, input, select, a")) select(); }} onKeyDown={(event) => { if (selectable && (event.key === "Enter" || event.key === " ")) { event.preventDefault(); select(); } }} tabIndex={selectable ? 0 : undefined}>{visibleColumns.map((column) => <td className={`${tableCellClass(column)} preview-cell-${column.replace(/[^a-z0-9_-]/gi, "-")}`} data-tone={cellTone(row[column], column)} key={column}><PreviewCell column={column} onSymbolSelect={onSymbolSelect} presentations={presentations} row={row} /></td>)}</tr>;
+  })}</tbody></table></div>;
 }
 
 type TradingDataTableProps = {
@@ -150,7 +155,10 @@ function TradingDataTable({ columns, defaultSort, filterColumn, filterLabel = "A
 }
 
 function FragmentRow({ columns, expanded, onExpand, onSymbolSelect, presentations, renderExpanded, row }: { columns: string[]; expanded: boolean; onExpand?: () => void; onSymbolSelect?: (symbol: string) => void; presentations: ReturnType<typeof useTickerPresentations>; renderExpanded?: (row: PreviewRow) => ReactNode; row: PreviewRow }) {
-  return <>{<tr className={expanded ? "is-expanded" : undefined}>{renderExpanded ? <td className="trading-expand-column"><button aria-label={expanded ? "Collapse row" : "Expand row"} aria-expanded={expanded} onClick={onExpand} type="button">{expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}</button></td> : null}{columns.map((column) => <td className={`${tableCellClass(column)} preview-cell-${column.replace(/[^a-z0-9_-]/gi, "-")}`} data-tone={cellTone(row[column], column)} key={column}><PreviewCell column={column} onSymbolSelect={onSymbolSelect} presentations={presentations} row={row} /></td>)}</tr>}{expanded && renderExpanded ? <tr className="trading-expanded-row"><td colSpan={columns.length + 1}>{renderExpanded(row)}</td></tr> : null}</>;
+  const ticker = tickerFromPreviewRow(row);
+  const selectable = Boolean(ticker && onSymbolSelect);
+  const select = () => { if (selectable) onSymbolSelect?.(ticker); };
+  return <>{<tr aria-label={selectable ? `Open ${ticker} Charts & Quotes` : undefined} className={expanded ? "is-expanded" : undefined} data-selectable={selectable ? "true" : undefined} onClick={(event) => { if (!(event.target as HTMLElement).closest("button, input, select, a")) select(); }} onKeyDown={(event) => { if (selectable && (event.key === "Enter" || event.key === " ")) { event.preventDefault(); select(); } }} tabIndex={selectable ? 0 : undefined}>{renderExpanded ? <td className="trading-expand-column"><button aria-label={expanded ? "Collapse row" : "Expand row"} aria-expanded={expanded} onClick={onExpand} type="button">{expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}</button></td> : null}{columns.map((column) => <td className={`${tableCellClass(column)} preview-cell-${column.replace(/[^a-z0-9_-]/gi, "-")}`} data-tone={cellTone(row[column], column)} key={column}><PreviewCell column={column} onSymbolSelect={onSymbolSelect} presentations={presentations} row={row} /></td>)}</tr>}{expanded && renderExpanded ? <tr className="trading-expanded-row"><td colSpan={columns.length + 1}>{renderExpanded(row)}</td></tr> : null}</>;
 }
 
 function searchableValue(value: unknown) {
@@ -180,6 +188,7 @@ function PreviewCell({ column, onSymbolSelect, presentations, row }: { column: s
 }
 
 function isPreviewTickerColumn(column: string) { return ["symbol", "ticker", "candidate_massive_ticker"].includes(column.toLowerCase()); }
+function tickerFromPreviewRow(row: PreviewRow) { return String(row.symbol ?? row.ticker ?? row.candidate_massive_ticker ?? "").trim().toUpperCase(); }
 function isPreviewTimeColumn(column: string) { const normalized = column.toLowerCase(); return normalized === "time" || normalized.endsWith("_time") || normalized.endsWith("_at") || normalized.endsWith("_at_utc"); }
 
 function PortfolioPreview({ data, settings }: { data: CanonicalTradingPreview; settings: ContainerSettings["portfolio"] }) {
