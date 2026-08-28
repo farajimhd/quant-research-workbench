@@ -1,4 +1,5 @@
 import { displayName, formatCompactNumber } from "../../app/format";
+import { openTickerChartsQuotes } from "../../app/tickerNavigation";
 import { DebugObjectBlock } from "./DebugObjectBlock";
 import type {
   NewsCoverageHistoryRow,
@@ -170,7 +171,7 @@ export function NewsEnrichmentDetailModal({ row }: { row: NewsEnrichmentHistoryR
                     <td title={item.urlSample.join(" | ") || item.domainSample.join(", ")}>
                       {newsEnrichmentArticleUrlLabel(item)}
                     </td>
-                    <td>{item.tickers || "-"}</td>
+                    <td>{tickerValues(item.tickers).length ? tickerValues(item.tickers).map((ticker) => <button aria-label={`Open ${ticker} Charts & Quotes in a new tab`} className="ticker-charts-quotes-link" key={ticker} onClick={() => openTickerChartsQuotes(ticker)} type="button">{ticker}</button>) : "-"}</td>
                     <td title={item.providerArticleId || item.canonicalNewsId}>
                       {item.providerArticleId || shortPollId(item.canonicalNewsId) || "-"}
                     </td>
@@ -281,4 +282,8 @@ export function NewsCoverageDetailModal({ row }: { row: NewsCoverageHistoryRow }
       </dl>
     </div>
   );
+}
+
+function tickerValues(value: string) {
+  return String(value || "").split(/[\s,|/]+/).map((ticker) => ticker.trim().toUpperCase()).filter((ticker) => /^[A-Z][A-Z0-9.\-]{0,15}$/.test(ticker));
 }

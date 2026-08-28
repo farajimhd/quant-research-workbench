@@ -4,6 +4,7 @@ import { Search, X } from "lucide-react";
 import { api } from "../../api/client";
 import { Modal } from "../../app/components/Modal";
 import { formatCompactNumber } from "../../app/format";
+import { openTickerChartsQuotes } from "../../app/tickerNavigation";
 import type { NewsDetailPayload, NewsTodayRow, NewsTodayRowsState, NewsTodaySort } from "./newsContracts";
 import { NewsTodayDetailModal } from "./NewsTodayDetailModal";
 import { newsTodayFilteredRows, newsTodayFlagChips, newsTodayRowTone, newsTodayTextLabel, newsTodayTickerChips, newsTodayTickerLabel } from "./newsTodayPresentation";
@@ -52,10 +53,10 @@ export function NewsTodayRowsPanel({ onSortChange, state }: { onSortChange: (sor
       <div className="news-today-table-wrap"><table className="news-today-table">
         <thead><tr><th aria-sort={state.sort === "desc" ? "descending" : "ascending"}><button className="news-today-sort-button" onClick={() => onSortChange(state.sort === "desc" ? "asc" : "desc")} type="button"><span>Time</span><strong>{state.sort === "desc" ? "Newest" : "Oldest"}</strong></button></th><th>Tickers</th><th>Title</th><th>Text</th><th>Flags</th><th>Source</th></tr></thead>
         <tbody>{(filteredRows.length ? filteredRows : [null]).map((row, index) => row ? (
-          <tr className={`${newsTodayRowTone(row)} ${tableRowRecencyClass(row.publishedAtUtc)}`} key={`${row.canonicalNewsId}-${index}`} onClick={() => void openNews(row)} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); void openNews(row); } }} tabIndex={0}>
+          <tr className={`${newsTodayRowTone(row)} ${tableRowRecencyClass(row.publishedAtUtc)}`} key={`${row.canonicalNewsId}-${index}`}>
             <ServiceTableTimeCell className="news-today-time-cell" value={row.publishedAtUtc} />
-            <td className="news-today-ticker-cell" title={newsTodayTickerLabel(row)}><div className="news-today-chip-row">{newsTodayTickerChips(row).map((ticker) => <span key={ticker}>{ticker}</span>)}</div></td>
-            <td className="news-today-title-cell" title={row.title}><div className="news-today-cell-stack"><strong>{row.title || row.normalizedTitle || "-"}</strong><span>{row.textPreview || row.normalizedTitle || "No text preview reported."}</span></div></td>
+            <td className="news-today-ticker-cell" title={newsTodayTickerLabel(row)}><div className="news-today-chip-row">{newsTodayTickerChips(row).map((ticker) => <button aria-label={`Open ${ticker} Charts & Quotes in a new tab`} className="ticker-charts-quotes-link" key={ticker} onClick={() => openTickerChartsQuotes(ticker)} type="button">{ticker}</button>)}</div></td>
+            <td className="news-today-title-cell" title={row.title}><button className="table-primary-link" onClick={() => void openNews(row)} type="button"><span className="news-today-cell-stack"><strong>{row.title || row.normalizedTitle || "-"}</strong><span>{row.textPreview || row.normalizedTitle || "No text preview reported."}</span></span></button></td>
             <td className="news-today-text-cell" title={newsTodayTextLabel(row)}>{newsTodayTextLabel(row)}</td>
             <td className="news-today-flag-cell" title={row.contentQualityFlags.join(", ")}><div className="news-today-chip-row muted">{newsTodayFlagChips(row).map((flag) => <span key={flag}>{flag}</span>)}</div></td>
             <td className="news-today-source-cell" title={row.articleUrl || row.urlDomain}><div className="news-today-cell-stack"><strong>{row.urlDomain || "-"}</strong><span>{row.author || row.channels.slice(0, 2).join(", ") || "Benzinga"}</span></div></td>

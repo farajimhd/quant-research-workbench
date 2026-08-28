@@ -79,19 +79,10 @@ export function ServiceActivityPanel({ service }: { service: ServiceStatusPayloa
               <tr
                 className={`${workStatusClass(row.status)} ${serviceActivityRecencyClass(service, row)}`.trim()}
                 key={`${row.kind}-${row.subject}-${row.time}-${index}`}
-                onClick={() => setSelectedRow(row)}
-                onKeyDown={(event) => {
-                  if (event.key === "Enter" || event.key === " ") {
-                    event.preventDefault();
-                    setSelectedRow(row);
-                  }
-                }}
-                role="button"
-                tabIndex={0}
               >
                 <ServiceTableTimeCell timeMs={row.timeMs} value={row.time} />
                 <td><span className={`service-work-status ${workStatusClass(row.status)}`}>{displayName(row.status || "waiting")}</span></td>
-                <td title={row.subject}><strong>{row.subject}</strong><span>{displayName(row.kind)}</span></td>
+                <td title={row.subject}><button className="table-primary-link" onClick={() => setSelectedRow(row)} type="button"><strong>{row.subject}</strong><span>{displayName(row.kind)}</span></button></td>
                 <td>{row.rows || "-"}</td>
                 <td title={row.detail}>{row.detail || "-"}</td>
               </tr>

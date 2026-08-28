@@ -1,5 +1,7 @@
 export type TradingWorkspaceMode = "live" | "paper" | "replay" | "backtest" | "backtest_debug";
 
+export const TRADING_WORKSPACE_LAYOUT_VERSION = 8;
+
 export type WorkspaceContainerId =
   | "chart"
   | "charts_quotes"

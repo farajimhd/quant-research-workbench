@@ -70,14 +70,14 @@ export function ServiceDatabaseTableState({ service }: { service: ServiceStatusP
           </thead>
           <tbody>
             {rows.map((row, index) => (
-              <tr className={`service-db-state-row ${tableStateClass(row.status)}`} key={`${row.database}.${row.table}.${index}`} onClick={() => void openPreview(row)}>
+              <tr className={`service-db-state-row ${tableStateClass(row.status)}`} key={`${row.database}.${row.table}.${index}`}>
                 <td><span className="service-db-state-status">{displayName(row.status || "unknown")}</span></td>
                 <td title={row.role || ""}>{row.role || "-"}</td>
-                <td title={`${row.database || "-"}.${row.table || "-"}${row.time_column && row.time_column !== "-" ? ` by ${row.time_column}` : ""}`}>
+                <td title={`${row.database || "-"}.${row.table || "-"}${row.time_column && row.time_column !== "-" ? ` by ${row.time_column}` : ""}`}><button className="table-primary-link" onClick={() => void openPreview(row)} type="button">
                   <span className={`service-db-name ${databaseClass(row.database)}`}>{row.database || "-"}</span>
                   <span className="service-db-dot">.</span>
                   <span className="service-db-table-name">{row.table || "-"}</span>
-                </td>
+                </button></td>
                 <td title={row.latest_update || ""}>{shortTableTimestamp(row.latest_update)}</td>
                 <td className="service-db-total-cell">{row.rows || "-"}</td>
                 <td className="service-db-today-cell">{row.rows_today || "-"}</td>

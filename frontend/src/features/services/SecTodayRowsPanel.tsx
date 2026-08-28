@@ -4,6 +4,7 @@ import { Search, X } from "lucide-react";
 import { api } from "../../api/client";
 import { Modal } from "../../app/components/Modal";
 import { displayName, formatCompactNumber } from "../../app/format";
+import { openTickerChartsQuotes } from "../../app/tickerNavigation";
 import type { SecDetailPayload, SecTodayRow, SecTodayRowsState, SecTodaySort } from "./secContracts";
 import { SecFilingDetailModal } from "./SecFilingDetailModal";
 import {
@@ -88,12 +89,12 @@ export function SecTodayRowsPanel({ onSortChange, state }: { onSortChange: (sort
           </tr></thead>
           <tbody>
             {(filteredRows.length ? filteredRows : [null]).map((row, index) => row ? (
-              <tr className={`${secTodayRowTone(row)} ${tableRowRecencyClass(row.feedUpdatedAtUtc || row.acceptedAtUtc)}`} key={`${row.rowOrigin}-${row.cik}-${row.accessionNumber}-${index}`} onClick={() => void openFiling(row)} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); void openFiling(row); } }} tabIndex={0}>
+              <tr className={`${secTodayRowTone(row)} ${tableRowRecencyClass(row.feedUpdatedAtUtc || row.acceptedAtUtc)}`} key={`${row.rowOrigin}-${row.cik}-${row.accessionNumber}-${index}`}>
                 <ServiceTableTimeCell className="news-today-time-cell" value={row.feedUpdatedAtUtc || row.acceptedAtUtc} />
-                <td className="sec-filing-ticker-cell" title={secTickerTitle(row)}><div className="news-today-cell-stack">{row.primaryTicker ? <strong>{row.primaryTicker}</strong> : <strong className="muted-value">-</strong>}<span>{secTickerSubLabel(row)}</span></div></td>
+                <td className="sec-filing-ticker-cell" title={secTickerTitle(row)}><div className="news-today-cell-stack">{row.primaryTicker ? <button aria-label={`Open ${row.primaryTicker} Charts & Quotes in a new tab`} className="ticker-charts-quotes-link" onClick={() => openTickerChartsQuotes(row.primaryTicker)} type="button"><strong>{row.primaryTicker}</strong></button> : <strong className="muted-value">-</strong>}<span>{secTickerSubLabel(row)}</span></div></td>
                 <td title={row.cik}><div className="news-today-cell-stack"><strong>{row.cik || "-"}</strong><span>{row.rowOrigin === "sec_gateway_feed_participant" ? "feed participant" : row.issuerName || row.issuerId || row.accessionNumberCompact || "-"}</span></div></td>
                 <td title={row.formType}><span className="sec-form-chip">{row.formType || "-"}</span></td>
-                <td className="news-today-title-cell sec-filing-title-cell" title={`${row.companyName} ${row.accessionNumber}`}><div className="news-today-cell-stack"><strong>{row.companyName || "Unknown SEC filer"}</strong><span>{row.accessionNumber} / {row.primaryDocument || row.sourceFileName || "filing parent"}</span></div></td>
+                <td className="news-today-title-cell sec-filing-title-cell" title={`${row.companyName} ${row.accessionNumber}`}><button className="table-primary-link" onClick={() => void openFiling(row)} type="button"><span className="news-today-cell-stack"><strong>{row.companyName || "Unknown SEC filer"}</strong><span>{row.accessionNumber} / {row.primaryDocument || row.sourceFileName || "filing parent"}</span></span></button></td>
                 <td title={secDocumentTextLabel(row)}>{secDocumentTextLabel(row)}</td>
                 <td title={secXbrlLabel(row)}>{secXbrlLabel(row)}</td>
                 <td><span className={`service-work-status ${workStatusClass(secActivityStatus(row))}`}>{displayName(secDisplayStatus(row))}</span></td>

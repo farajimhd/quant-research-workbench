@@ -22,6 +22,7 @@ import { createPortal } from "react-dom";
 
 import "./DataTable.css";
 import { displayName, formatCell } from "../format";
+import { openTickerChartsQuotes } from "../tickerNavigation";
 import { Modal } from "./Modal";
 import { CategoryBadge, PresentedValue, SecurityIdentityCell, tableCellClass } from "./TablePresentation";
 
@@ -133,16 +134,6 @@ type HeaderPopoverState = {
   left: number;
   top: number;
 };
-type RowActionConfig = {
-  isAvailable?: (row: DataRow) => boolean;
-  label: string;
-  onSelect: (row: DataRow) => void;
-};
-type RowMenuState = {
-  left: number;
-  row: DataRow;
-  top: number;
-};
 type ColumnOptionMeta = {
   column: string;
   label: string;
@@ -163,10 +154,7 @@ type DataTableProps = {
   empty?: string;
   fitToContent?: boolean;
   filterPresets?: DataTableFilterPreset[];
-  isRowSelected?: (row: DataRow) => boolean;
-  onRowClick?: (row: DataRow) => void;
   preserveFiltersOnDataChange?: boolean;
-  rowAction?: RowActionConfig;
   rows: DataRow[];
   title?: string;
   transposeHelper?: boolean;
@@ -190,7 +178,7 @@ const BACKEND_QUERY_OPERATORS: Array<{ label: string; needsSecondValue?: boolean
 ];
 let backendQueryConditionSequence = 0;
 
-export function DataTable({ backendQuery, columns, defaultFilterPreset, defaultSort, empty = "No rows.", fitToContent = false, filterPresets = [], isRowSelected, onRowClick, preserveFiltersOnDataChange = false, rowAction, rows, title, transposeHelper = false }: DataTableProps) {
+export function DataTable({ backendQuery, columns, defaultFilterPreset, defaultSort, empty = "No rows.", fitToContent = false, filterPresets = [], preserveFiltersOnDataChange = false, rows, title, transposeHelper = false }: DataTableProps) {
   const emptyIsLoading = /^(loading|building|rebuilding|resolving|connecting|querying)\b/i.test(empty.trim());
   const baseColumns = useMemo(() => {
     const discovered = columns?.length ? columns : Array.from(new Set(rows.flatMap((row) => Object.keys(row))));
@@ -216,7 +204,6 @@ export function DataTable({ backendQuery, columns, defaultFilterPreset, defaultS
     () => filterPresetForColumns(defaultFilterPreset, resolvedColumns)
   );
   const [openPopover, setOpenPopover] = useState<HeaderPopoverState | null>(null);
-  const [rowMenu, setRowMenu] = useState<RowMenuState | null>(null);
   const [search, setSearch] = useState("");
   const [sort, setSort] = useState<SortState>(null);
   const [toolbarMenuOpen, setToolbarMenuOpen] = useState(false);
@@ -360,24 +347,6 @@ export function DataTable({ backendQuery, columns, defaultFilterPreset, defaultS
   }, [openPopover]);
 
   useEffect(() => {
-    if (!rowMenu) return;
-    const closeOnOutsidePointer = (event: PointerEvent) => {
-      const target = event.target as HTMLElement | null;
-      if (target?.closest(".data-table-row-menu")) return;
-      setRowMenu(null);
-    };
-    const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setRowMenu(null);
-    };
-    document.addEventListener("pointerdown", closeOnOutsidePointer);
-    document.addEventListener("keydown", closeOnEscape);
-    return () => {
-      document.removeEventListener("pointerdown", closeOnOutsidePointer);
-      document.removeEventListener("keydown", closeOnEscape);
-    };
-  }, [rowMenu]);
-
-  useEffect(() => {
     if (!backendQueryOpen && !columnsMenuOpen && !toolbarMenuOpen) return;
     const closeOnOutsidePointer = (event: PointerEvent) => {
       const target = event.target as HTMLElement | null;
@@ -418,7 +387,6 @@ export function DataTable({ backendQuery, columns, defaultFilterPreset, defaultS
       setActiveValueFiltersByColumn((current) => keepExistingColumnFilters(current, validColumns));
       setManualFiltersByColumn((current) => keepExistingColumnFilters(current, validColumns));
       setOpenPopover(null);
-      setRowMenu(null);
       return;
     }
     setActiveValueFiltersByColumn({});
@@ -426,7 +394,6 @@ export function DataTable({ backendQuery, columns, defaultFilterPreset, defaultS
     setColumnsSearch("");
     setManualFiltersByColumn(filterPresetForColumns(defaultFilterPreset, resolvedColumns));
     setOpenPopover(null);
-    setRowMenu(null);
   }, [defaultFilterPreset, preserveFiltersOnDataChange, resolvedColumns, tableIdentityKey]);
 
   const toggleSort = (column: string) => {
@@ -570,7 +537,6 @@ export function DataTable({ backendQuery, columns, defaultFilterPreset, defaultS
     setLayoutMode("fit_data");
     setManualFiltersByColumn({});
     setOpenPopover(null);
-    setRowMenu(null);
     setSearch("");
     setSort(null);
     setToolbarMenuOpen(false);
@@ -582,17 +548,6 @@ export function DataTable({ backendQuery, columns, defaultFilterPreset, defaultS
       setBackendQueryDraft(emptyQuery);
       backendQuery.onChange(emptyQuery);
     }
-  };
-
-  const openRowActionMenu = (event: MouseEvent<HTMLTableRowElement>, row: DataRow) => {
-    if (!rowAction || rowAction.isAvailable?.(row) === false) return;
-    const menuWidth = 210;
-    const menuHeight = 46;
-    setRowMenu({
-      left: Math.min(Math.max(12, event.clientX), Math.max(12, window.innerWidth - menuWidth - 12)),
-      row,
-      top: Math.min(Math.max(12, event.clientY + 8), Math.max(12, window.innerHeight - menuHeight - 12)),
-    });
   };
 
   const renderDensityControls = (buttonClassName = "table-segment-button") =>
@@ -1215,22 +1170,11 @@ export function DataTable({ backendQuery, columns, defaultFilterPreset, defaultS
           <tbody>
             {sortedRows.length ? (
               sortedRows.map((row, rowIndex) => {
-                const rowActionAvailable = Boolean(rowAction && rowAction.isAvailable?.(row) !== false);
-                const rowClickable = Boolean(onRowClick) || rowActionAvailable;
-                const selected = Boolean(isRowSelected?.(row));
                 return (
-                  <tr
-                    className={[
-                      rowClickable ? "data-table-row-actionable" : "",
-                      onRowClick ? "data-table-row-clickable" : "",
-                      selected ? "data-table-row-selected" : ""
-                    ].filter(Boolean).join(" ") || undefined}
-                    key={rowIndex}
-                    onClick={rowClickable ? (event) => (onRowClick ? onRowClick(row) : openRowActionMenu(event, row)) : undefined}
-                  >
+                  <tr key={rowIndex}>
                     {usableColumns.map((column) => (
                       <td className={cellClassName(row[column], column)} key={column}>
-                        {renderCell(row, column)}
+                        {renderCell(row, column, openTickerChartsQuotes)}
                       </td>
                     ))}
                   </tr>
@@ -1277,19 +1221,9 @@ export function DataTable({ backendQuery, columns, defaultFilterPreset, defaultS
                     aria-selected={selectedTransposeColumn === row.column}
                     className={selectedTransposeColumn === row.column ? "selected" : undefined}
                     key={row.column}
-                    onClick={() => setSelectedTransposeColumn((selected) => (selected === row.column ? null : row.column))}
-                    onKeyDown={(event) => {
-                      if (event.key === "Enter" || event.key === " ") {
-                        event.preventDefault();
-                        setSelectedTransposeColumn((selected) => (selected === row.column ? null : row.column));
-                      }
-                    }}
-                    role="button"
-                    tabIndex={0}
                   >
                     <th>
-                      <span>{row.label}</span>
-                      <small>{row.column}</small>
+                      <button className="table-primary-link" onClick={() => setSelectedTransposeColumn((selected) => (selected === row.column ? null : row.column))} type="button"><span>{row.label}</span><small>{row.column}</small></button>
                     </th>
                     {row.values.map((value, index) => (
                       <td key={`${row.column}:${index}`}>{value}</td>
@@ -1323,23 +1257,6 @@ export function DataTable({ backendQuery, columns, defaultFilterPreset, defaultS
               ) : (
                 <ColumnStatsPopover profile={openProfile} />
               )}
-            </div>,
-            document.body,
-          )
-        : null}
-      {rowMenu && rowAction && typeof document !== "undefined"
-        ? createPortal(
-            <div className="data-table-row-menu" style={{ left: rowMenu.left, top: rowMenu.top }}>
-              <button
-                onClick={() => {
-                  rowAction.onSelect(rowMenu.row);
-                  setRowMenu(null);
-                }}
-                type="button"
-              >
-                <BarChart3 size={14} />
-                {rowAction.label}
-              </button>
             </div>,
             document.body,
           )
@@ -2788,7 +2705,7 @@ function formatDateValue(value: Date) {
   return `${year}-${month}-${day}`;
 }
 
-function renderCell(row: DataRow, column: string) {
+function renderCell(row: DataRow, column: string, onTickerSelect: (ticker: string) => unknown) {
   if (isLogoColumn(column)) return renderLogoCell(row, column);
   if (isBadgeCategoryColumn(column.toLowerCase())) return <CategoryBadge column={column} value={row[column]} />;
   if (!isTickerColumn(column)) return <PresentedValue column={column} value={row[column]} />;
@@ -2796,7 +2713,7 @@ function renderCell(row: DataRow, column: string) {
   const ticker = value === "-" ? "" : value;
   const companyName = stringValue(row.company_name) || stringValue(row.issuer_name) || stringValue(row.name);
   const country = stringValue(row.country) || stringValue(row.company_country_code) || stringValue(row.domicile_country_code);
-  return <SecurityIdentityCell companyName={companyName} country={country} halted={row.market_is_halted ?? row.is_halted ?? row.trading_status} logoUrl={stringValue(row.logo_url)} newsRecency={row.live_news_recency} secCount={row.sec_count} secLabels={row.sec_labels} secRecency={row.sec_recency} secReviewDirection={row.sec_review_fundamental_direction} secReviewStatus={row.sec_review_status} secSynthesisCount={row.sec_synthesis_count} secSynthesisDirection={row.sec_synthesis_direction} ticker={ticker} />;
+  return <SecurityIdentityCell companyName={companyName} country={country} halted={row.market_is_halted ?? row.is_halted ?? row.trading_status} logoUrl={stringValue(row.logo_url)} newsRecency={row.live_news_recency} onTickerSelect={onTickerSelect} secCount={row.sec_count} secLabels={row.sec_labels} secRecency={row.sec_recency} secReviewDirection={row.sec_review_fundamental_direction} secReviewStatus={row.sec_review_status} secSynthesisCount={row.sec_synthesis_count} secSynthesisDirection={row.sec_synthesis_direction} ticker={ticker} />;
 }
 
 function renderCategoricalCell(value: unknown, column: string) {

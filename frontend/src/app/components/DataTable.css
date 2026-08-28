@@ -378,57 +378,6 @@
   background: color-mix(in oklab, var(--primary) 3%, transparent);
 }
 
-.data-table tbody tr.data-table-row-actionable {
-  cursor: context-menu;
-}
-
-.data-table tbody tr.data-table-row-clickable {
-  cursor: pointer;
-}
-
-.data-table tbody tr.data-table-row-selected {
-  background: color-mix(in oklab, var(--info) 8%, transparent);
-}
-
-.data-table tbody tr.data-table-row-selected:hover {
-  background: color-mix(in oklab, var(--info) 11%, transparent);
-}
-
-.data-table-row-menu {
-  position: fixed;
-  z-index: 10050;
-  zoom: var(--app-zoom);
-  min-width: 184px;
-  border: 1px solid var(--surface-border);
-  border-radius: 8px;
-  background: var(--surface);
-  box-shadow: 0 16px 42px rgba(16, 24, 40, 0.16);
-  padding: 5px;
-}
-
-.data-table-row-menu button {
-  display: flex;
-  width: 100%;
-  min-height: 32px;
-  align-items: center;
-  gap: 8px;
-  border: 0;
-  border-radius: 6px;
-  background: transparent;
-  color: var(--foreground);
-  cursor: pointer;
-  font-size: 12px;
-  font-weight: 500;
-  padding: 0 8px;
-  text-align: left;
-}
-
-.data-table-row-menu button:hover,
-.data-table-row-menu button:focus-visible {
-  background: color-mix(in oklab, var(--foreground) 5%, transparent);
-  outline: 0;
-}
-
 .data-table-header-cell {
   position: relative;
   display: flex;

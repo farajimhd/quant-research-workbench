@@ -46,6 +46,7 @@ import {
   containersForMode,
   defaultContainersForMode,
   sourceBindingForContainer,
+  TRADING_WORKSPACE_LAYOUT_VERSION,
   type TradingWorkspaceMode,
   type WorkspaceContainerDefinition,
   type WorkspaceContainerId,
@@ -154,7 +155,7 @@ class WorkspaceContainerErrorBoundary extends Component<
 }
 
 const DEFAULT_CANVAS_TARGETS: WorkspaceCanvasTarget[] = [{ color: "var(--primary)", id: "main", isCurrent: true, label: "Main" }];
-export const TRADING_WORKSPACE_LAYOUT_VERSION = 8;
+export { TRADING_WORKSPACE_LAYOUT_VERSION } from "../tradingWorkspace";
 
 function groupSelectionAction(selectedNodeIds: string[], groups: Record<string, WorkspaceGroup>) {
   if (selectedNodeIds.length < 2) return "Select one more";

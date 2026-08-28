@@ -99,10 +99,7 @@ function PreviewTable({ columns, onSymbolSelect, rows }: { columns: string[]; on
   if (!rows.length) return <EmptyState label="No point-in-time rows" />;
   const visibleColumns = columns.filter((column) => column !== "logo" && column !== "company_name");
   return <div className="canvas-preview-table-wrap"><table className="canvas-preview-table"><thead><tr>{visibleColumns.map((column) => <th key={column}>{labelFor(column)}</th>)}</tr></thead><tbody>{rows.map((row, index) => {
-    const ticker = tickerFromPreviewRow(row);
-    const selectable = Boolean(ticker && onSymbolSelect);
-    const select = () => { if (selectable) onSymbolSelect?.(ticker); };
-    return <tr aria-label={selectable ? `Open ${ticker} Charts & Quotes` : undefined} data-selectable={selectable ? "true" : undefined} key={previewRowKey(row, visibleColumns, index)} onClick={(event) => { if (!(event.target as HTMLElement).closest("button, input, select, a")) select(); }} onKeyDown={(event) => { if (selectable && (event.key === "Enter" || event.key === " ")) { event.preventDefault(); select(); } }} tabIndex={selectable ? 0 : undefined}>{visibleColumns.map((column) => <td className={`${tableCellClass(column)} preview-cell-${column.replace(/[^a-z0-9_-]/gi, "-")}`} data-tone={cellTone(row[column], column)} key={column}><PreviewCell column={column} onSymbolSelect={onSymbolSelect} presentations={presentations} row={row} /></td>)}</tr>;
+    return <tr key={previewRowKey(row, visibleColumns, index)}>{visibleColumns.map((column) => <td className={`${tableCellClass(column)} preview-cell-${column.replace(/[^a-z0-9_-]/gi, "-")}`} data-tone={cellTone(row[column], column)} key={column}><PreviewCell column={column} onSymbolSelect={onSymbolSelect} presentations={presentations} row={row} /></td>)}</tr>;
   })}</tbody></table></div>;
 }
 
@@ -155,10 +152,7 @@ function TradingDataTable({ columns, defaultSort, filterColumn, filterLabel = "A
 }
 
 function FragmentRow({ columns, expanded, onExpand, onSymbolSelect, presentations, renderExpanded, row }: { columns: string[]; expanded: boolean; onExpand?: () => void; onSymbolSelect?: (symbol: string) => void; presentations: ReturnType<typeof useTickerPresentations>; renderExpanded?: (row: PreviewRow) => ReactNode; row: PreviewRow }) {
-  const ticker = tickerFromPreviewRow(row);
-  const selectable = Boolean(ticker && onSymbolSelect);
-  const select = () => { if (selectable) onSymbolSelect?.(ticker); };
-  return <>{<tr aria-label={selectable ? `Open ${ticker} Charts & Quotes` : undefined} className={expanded ? "is-expanded" : undefined} data-selectable={selectable ? "true" : undefined} onClick={(event) => { if (!(event.target as HTMLElement).closest("button, input, select, a")) select(); }} onKeyDown={(event) => { if (selectable && (event.key === "Enter" || event.key === " ")) { event.preventDefault(); select(); } }} tabIndex={selectable ? 0 : undefined}>{renderExpanded ? <td className="trading-expand-column"><button aria-label={expanded ? "Collapse row" : "Expand row"} aria-expanded={expanded} onClick={onExpand} type="button">{expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}</button></td> : null}{columns.map((column) => <td className={`${tableCellClass(column)} preview-cell-${column.replace(/[^a-z0-9_-]/gi, "-")}`} data-tone={cellTone(row[column], column)} key={column}><PreviewCell column={column} onSymbolSelect={onSymbolSelect} presentations={presentations} row={row} /></td>)}</tr>}{expanded && renderExpanded ? <tr className="trading-expanded-row"><td colSpan={columns.length + 1}>{renderExpanded(row)}</td></tr> : null}</>;
+  return <>{<tr className={expanded ? "is-expanded" : undefined}>{renderExpanded ? <td className="trading-expand-column"><button aria-label={expanded ? "Collapse row" : "Expand row"} aria-expanded={expanded} onClick={onExpand} type="button">{expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}</button></td> : null}{columns.map((column) => <td className={`${tableCellClass(column)} preview-cell-${column.replace(/[^a-z0-9_-]/gi, "-")}`} data-tone={cellTone(row[column], column)} key={column}><PreviewCell column={column} onSymbolSelect={onSymbolSelect} presentations={presentations} row={row} /></td>)}</tr>}{expanded && renderExpanded ? <tr className="trading-expanded-row"><td colSpan={columns.length + 1}>{renderExpanded(row)}</td></tr> : null}</>;
 }
 
 function searchableValue(value: unknown) {
@@ -180,15 +174,13 @@ function compareTradingValues(left: unknown, right: unknown) {
 function PreviewCell({ column, onSymbolSelect, presentations, row }: { column: string; onSymbolSelect?: (symbol: string) => void; presentations: ReturnType<typeof useTickerPresentations>; row: PreviewRow }) {
   if (isPreviewTickerColumn(column)) {
     const ticker = String(row[column] || "").trim().toUpperCase();
-    const identity = <SecurityIdentityCell companyName={String(row.company_name ?? row.issuer_name ?? presentations[ticker]?.issuer_name ?? "")} country={String(row.country ?? row.company_country_code ?? presentations[ticker]?.country ?? "")} halted={row.market_is_halted ?? row.is_halted ?? row.trading_status} logoUrl={String(row.logo_url ?? presentations[ticker]?.logo_url ?? "")} newsRecency={row.live_news_recency} secCount={row.sec_count ?? presentations[ticker]?.sec_count} secLabels={row.sec_labels ?? presentations[ticker]?.sec_labels} secRecency={row.sec_recency ?? presentations[ticker]?.sec_recency} secReviewDirection={row.sec_review_fundamental_direction ?? presentations[ticker]?.sec_review_fundamental_direction} secReviewStatus={row.sec_review_status ?? presentations[ticker]?.sec_review_status} secSynthesisCount={row.sec_synthesis_count ?? presentations[ticker]?.sec_synthesis_count} secSynthesisDirection={row.sec_synthesis_direction ?? presentations[ticker]?.sec_synthesis_direction} ticker={ticker} />;
-    return column === "symbol" && onSymbolSelect ? <button className="canvas-symbol-link" onClick={() => onSymbolSelect(ticker)} type="button">{identity}</button> : identity;
+    return <SecurityIdentityCell companyName={String(row.company_name ?? row.issuer_name ?? presentations[ticker]?.issuer_name ?? "")} country={String(row.country ?? row.company_country_code ?? presentations[ticker]?.country ?? "")} halted={row.market_is_halted ?? row.is_halted ?? row.trading_status} logoUrl={String(row.logo_url ?? presentations[ticker]?.logo_url ?? "")} newsRecency={row.live_news_recency} onTickerSelect={onSymbolSelect} secCount={row.sec_count ?? presentations[ticker]?.sec_count} secLabels={row.sec_labels ?? presentations[ticker]?.sec_labels} secRecency={row.sec_recency ?? presentations[ticker]?.sec_recency} secReviewDirection={row.sec_review_fundamental_direction ?? presentations[ticker]?.sec_review_fundamental_direction} secReviewStatus={row.sec_review_status ?? presentations[ticker]?.sec_review_status} secSynthesisCount={row.sec_synthesis_count ?? presentations[ticker]?.sec_synthesis_count} secSynthesisDirection={row.sec_synthesis_direction ?? presentations[ticker]?.sec_synthesis_direction} ticker={ticker} />;
   }
   if (isPreviewTimeColumn(column)) return <MarketTime includeSeconds value={String(row[column] || "")} />;
   return <PresentedValue column={column} value={row[column]} />;
 }
 
 function isPreviewTickerColumn(column: string) { return ["symbol", "ticker", "candidate_massive_ticker"].includes(column.toLowerCase()); }
-function tickerFromPreviewRow(row: PreviewRow) { return String(row.symbol ?? row.ticker ?? row.candidate_massive_ticker ?? "").trim().toUpperCase(); }
 function isPreviewTimeColumn(column: string) { const normalized = column.toLowerCase(); return normalized === "time" || normalized.endsWith("_time") || normalized.endsWith("_at") || normalized.endsWith("_at_utc"); }
 
 function PortfolioPreview({ data, settings }: { data: CanonicalTradingPreview; settings: ContainerSettings["portfolio"] }) {

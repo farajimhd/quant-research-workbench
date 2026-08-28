@@ -1,0 +1,131 @@
+import {
+  MAIN_CANVAS_ID,
+  canvasFocusHandoffUrl,
+  readCanvasRegistry,
+  readCanvasWorkspaceState,
+  removeCanvasFocusHandoff,
+  replayFocusCanvasUrl,
+  snapshotSharedCanvasProfile,
+  writeCanvasFocusHandoff,
+  writeReplayCanvasFocusHandoff,
+  type CanvasFocusRuntimeMode,
+  type CanvasRegistry,
+  type CanvasWorkspaceState,
+} from "./canvasWorkspace";
+import type { WorkspaceWindowLayout } from "./components/WorkspaceCanvas";
+import { TRADING_WORKSPACE_LAYOUT_VERSION, type WorkspaceContainerId } from "./tradingWorkspace";
+
+const CHARTS_QUOTES_FOCUS_INSTANCE_ID = "charts_quotes-focus";
+
+export type TickerChartsQuotesOpenOptions = {
+  registry?: CanvasRegistry;
+  replayRunId?: string;
+  runtimeMode?: CanvasFocusRuntimeMode;
+  workspaceState?: CanvasWorkspaceState | null;
+};
+
+export type TickerChartsQuotesOpenResult = "invalid-ticker" | "opened" | "popup-blocked";
+
+export function openTickerChartsQuotes(
+  tickerValue: string,
+  options: TickerChartsQuotesOpenOptions = {},
+): TickerChartsQuotesOpenResult {
+  const symbol = normalizeTicker(tickerValue);
+  if (!symbol) return "invalid-ticker";
+  const registry = options.registry ?? readCanvasRegistry();
+  const workspaceState = options.workspaceState ?? readCanvasWorkspaceState(MAIN_CANVAS_ID) ?? registry.defaultState ?? null;
+  const { profile, state } = chartsQuotesFocusProfile(registry, workspaceState, symbol);
+  const token = options.replayRunId
+    ? writeReplayCanvasFocusHandoff(profile, state)
+    : writeCanvasFocusHandoff(profile, state, "Charts & Quotes");
+  const url = options.replayRunId
+    ? replayFocusCanvasUrl(options.replayRunId, token)
+    : canvasFocusHandoffUrl(token, options.runtimeMode);
+  const focusedWindow = window.open(url, "_blank");
+  if (!focusedWindow) {
+    if (!options.replayRunId) removeCanvasFocusHandoff(token);
+    return "popup-blocked";
+  }
+  focusedWindow.opener = null;
+  return "opened";
+}
+
+export function normalizeTicker(value: string) {
+  const symbol = String(value || "").trim().toUpperCase();
+  return /^[A-Z][A-Z0-9.\-]{0,15}$/.test(symbol) ? symbol : "";
+}
+
+function chartsQuotesFocusProfile(
+  registry: CanvasRegistry,
+  workspaceState: CanvasWorkspaceState | null,
+  symbol: string,
+) {
+  const sourceInstanceId = (workspaceState?.openIds ?? []).find(
+    (instanceId) => workspaceContainerKind(instanceId, workspaceState) === "charts_quotes",
+  ) ?? Object.keys(registry.instanceSettings).find(
+    (instanceId) => instanceId === "charts_quotes" || instanceId.startsWith("charts_quotes-"),
+  );
+  const settings = recordValue(registry.instanceSettings[sourceInstanceId ?? "charts_quotes"]);
+  const chart = recordValue(settings.chart);
+  const chartsQuotes = recordValue(settings.charts_quotes);
+  const daily = recordValue(chartsQuotes.daily);
+  const main = recordValue(chartsQuotes.main);
+  const month = recordValue(chartsQuotes.month);
+  const focusedIndicators = Array.from(new Set([
+    "indicator.vwap",
+    "indicator.macd",
+    ...stringArray(main.visibleIndicators),
+  ]));
+  const focusedSettings = {
+    ...settings,
+    chart: { ...chart, symbol },
+    charts_quotes: {
+      ...chartsQuotes,
+      daily: { ...daily, symbol },
+      main: { ...main, symbol, visibleIndicators: focusedIndicators },
+      month: { ...month, symbol },
+    },
+  };
+  const state: CanvasWorkspaceState = {
+    groups: {},
+    instances: { [CHARTS_QUOTES_FOCUS_INSTANCE_ID]: "charts_quotes" },
+    layoutVersion: TRADING_WORKSPACE_LAYOUT_VERSION,
+    layouts: { [CHARTS_QUOTES_FOCUS_INSTANCE_ID]: focusLayout() },
+    openIds: [CHARTS_QUOTES_FOCUS_INSTANCE_ID],
+  };
+  const profile: CanvasRegistry = {
+    ...snapshotSharedCanvasProfile(registry),
+    canvases: [{ id: MAIN_CANVAS_ID, label: "Charts & Quotes" }],
+    defaultState: state,
+    instanceSettings: { [CHARTS_QUOTES_FOCUS_INSTANCE_ID]: focusedSettings },
+    linkAssignments: { [CHARTS_QUOTES_FOCUS_INSTANCE_ID]: "none" },
+    linkOwners: {},
+    workspaceStates: { [MAIN_CANVAS_ID]: state },
+  };
+  return { profile, state };
+}
+
+function focusLayout(): WorkspaceWindowLayout {
+  const scale = Number(window.localStorage.getItem("quant-research-workbench.ui-scale")) || 1;
+  return {
+    fullscreen: true,
+    h: Math.max(320, Math.floor(window.innerHeight / scale) - 62),
+    minimized: false,
+    w: Math.max(680, Math.floor(window.innerWidth / scale)),
+    x: 0,
+    y: 0,
+    z: 1,
+  };
+}
+
+function workspaceContainerKind(instanceId: string, state: CanvasWorkspaceState | null): WorkspaceContainerId {
+  return state?.instances?.[instanceId] ?? instanceId.replace(/-\d+$/, "") as WorkspaceContainerId;
+}
+
+function recordValue(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+}
+
+function stringArray(value: unknown) {
+  return Array.isArray(value) ? value.map(String).filter(Boolean) : [];
+}

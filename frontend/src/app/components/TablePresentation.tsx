@@ -79,7 +79,7 @@ function booleanBadge(value: unknown): { icon: typeof CheckCircle2; label: strin
   return null;
 }
 
-export function SecurityIdentityCell({ companyName = "", country = "", halted, logoUrl = "", newsRecency, secCount, secLabels, secRecency, secReviewDirection, secReviewStatus, secSynthesisCount, secSynthesisDirection, ticker, trailing }: { companyName?: string; country?: string; halted?: unknown; logoUrl?: string; newsRecency?: unknown; secCount?: unknown; secLabels?: unknown; secRecency?: unknown; secReviewDirection?: unknown; secReviewStatus?: unknown; secSynthesisCount?: unknown; secSynthesisDirection?: unknown; ticker: string; trailing?: ReactNode }) {
+export function SecurityIdentityCell({ companyName = "", country = "", halted, logoUrl = "", newsRecency, onTickerSelect, secCount, secLabels, secRecency, secReviewDirection, secReviewStatus, secSynthesisCount, secSynthesisDirection, ticker, trailing }: { companyName?: string; country?: string; halted?: unknown; logoUrl?: string; newsRecency?: unknown; onTickerSelect?: (ticker: string) => void; secCount?: unknown; secLabels?: unknown; secRecency?: unknown; secReviewDirection?: unknown; secReviewStatus?: unknown; secSynthesisCount?: unknown; secSynthesisDirection?: unknown; ticker: string; trailing?: ReactNode }) {
   const symbol = ticker.trim().toUpperCase();
   const countryName = formatCountry(country);
   const newsState = normalizedRecency(newsRecency);
@@ -88,7 +88,7 @@ export function SecurityIdentityCell({ companyName = "", country = "", halted, l
   const hasTrailing = isHalted || isRecentRecency(newsState) || isRecentRecency(secState) || Boolean(trailing);
   return <span className="table-security-card" data-has-trailing={hasTrailing}>
     <TickerLogo logoUrl={logoUrl} showLogoPlaceholder ticker={symbol} />
-    <span className="table-security-copy"><strong>{symbol || "—"}</strong>{companyName ? <small>{companyName}</small> : null}</span>
+    <span className="table-security-copy">{symbol && onTickerSelect ? <button aria-label={`Open ${symbol} Charts & Quotes in a new tab`} className="ticker-charts-quotes-link" onClick={() => onTickerSelect(symbol)} type="button"><strong>{symbol}</strong></button> : <strong>{symbol || "—"}</strong>}{companyName ? <small>{companyName}</small> : null}</span>
     {countryName ? <span className="table-security-country">{countryName}</span> : null}
     {hasTrailing ? <span className="table-security-trailing">
       {isHalted ? <span aria-label="Trading halted" className="table-security-status-icon" data-status="halted"><ShieldAlert aria-hidden="true" size={17} strokeWidth={1.8} /></span> : null}

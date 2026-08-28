@@ -2,6 +2,7 @@ import { useState } from "react";
 
 import { Modal } from "../../app/components/Modal";
 import { displayName, formatCompactNumber } from "../../app/format";
+import { openTickerChartsQuotes } from "../../app/tickerNavigation";
 import { ServiceTableTimeCell } from "./ServiceTableTimeCell";
 import type {
   NewsCoverageHistoryRow,
@@ -78,20 +79,12 @@ export function NewsPublishHistoryTable({ rows }: { rows: NewsPublishHistoryRow[
               <tr
                 className={workStatusClass(row.status)}
                 key={`${row.event}-${row.pollId}-${row.time}-${index}`}
-                onClick={() => setSelectedRow(row)}
-                tabIndex={0}
                 title={row.title || "Open publish detail"}
-                onKeyDown={(event) => {
-                  if (event.key === "Enter" || event.key === " ") {
-                    event.preventDefault();
-                    setSelectedRow(row);
-                  }
-                }}
               >
                 <ServiceTableTimeCell compact value={row.time} />
-                <td><span className={`service-work-mini-status ${workStatusClass(row.status)}`}>{displayName(row.event)}</span></td>
+                <td><button className="table-primary-link" onClick={() => setSelectedRow(row)} type="button"><span className={`service-work-mini-status ${workStatusClass(row.status)}`}>{displayName(row.event)}</span></button></td>
                 <td>{displayName(row.coverageMode)}</td>
-                <td title={row.tickers}>{row.tickers}</td>
+                <td title={row.tickers}>{tickerValues(row.tickers).map((ticker) => <button aria-label={`Open ${ticker} Charts & Quotes in a new tab`} className="ticker-charts-quotes-link" key={ticker} onClick={() => openTickerChartsQuotes(ticker)} type="button">{ticker}</button>)}</td>
                 <td title={row.enrichment}>{row.enrichment}</td>
                 <td>{formatCompactNumber(row.insertedRows)}</td>
                 <td>{formatCompactNumber(row.skippedRows)}</td>
@@ -111,6 +104,10 @@ export function NewsPublishHistoryTable({ rows }: { rows: NewsPublishHistoryRow[
       ) : null}
     </>
   );
+}
+
+function tickerValues(value: string) {
+  return String(value || "").split(/[\s,|/]+/).map((ticker) => ticker.trim().toUpperCase()).filter((ticker) => /^[A-Z][A-Z0-9.\-]{0,15}$/.test(ticker));
 }
 
 export function NewsEnrichmentHistoryTable({ rows }: { rows: NewsEnrichmentHistoryRow[] }) {
@@ -135,19 +132,11 @@ export function NewsEnrichmentHistoryTable({ rows }: { rows: NewsEnrichmentHisto
               <tr
                 className={workStatusClass(row.status)}
                 key={`${row.event}-${row.pollId}-${row.time}-${index}`}
-                onClick={() => setSelectedRow(row)}
-                tabIndex={0}
                 title={row.detail || "Open enrichment detail"}
-                onKeyDown={(event) => {
-                  if (event.key === "Enter" || event.key === " ") {
-                    event.preventDefault();
-                    setSelectedRow(row);
-                  }
-                }}
               >
                 <ServiceTableTimeCell compact value={row.time} />
                 <td><span className={`service-work-mini-status ${workStatusClass(row.status)}`}>{displayName(row.status)}</span></td>
-                <td title={row.title}>{row.title}</td>
+                <td title={row.title}><button className="table-primary-link" onClick={() => setSelectedRow(row)} type="button">{row.title}</button></td>
                 <td title={row.titleSample.join(" | ")}>{row.titleSample[0] || "-"}</td>
                 <td title={row.urlSample.join(" | ")}>{enrichmentUrlLabel(row)}</td>
                 <td>{formatCompactNumber(row.enrichedUrls)}</td>
@@ -192,19 +181,11 @@ export function NewsCoverageHistoryTable({ rows }: { rows: NewsCoverageHistoryRo
               <tr
                 className={workStatusClass(row.status)}
                 key={`${row.event}-${row.time}-${index}`}
-                onClick={() => setSelectedRow(row)}
-                tabIndex={0}
                 title={row.detail || "Open coverage detail"}
-                onKeyDown={(event) => {
-                  if (event.key === "Enter" || event.key === " ") {
-                    event.preventDefault();
-                    setSelectedRow(row);
-                  }
-                }}
               >
                 <ServiceTableTimeCell compact value={row.time} />
                 <td><span className={`service-work-mini-status ${workStatusClass(row.status)}`}>{displayName(row.status)}</span></td>
-                <td title={row.stage}>{row.stage}</td>
+                <td title={row.stage}><button className="table-primary-link" onClick={() => setSelectedRow(row)} type="button">{row.stage}</button></td>
                 <td title={row.window}>{row.window}</td>
                 <td>{row.progress}</td>
                 <td>{formatCompactNumber(row.rows)}</td>

@@ -13,7 +13,6 @@ import {
   NEWS_READER_CANVAS_ID,
   SEC_READER_CANVAS_ID,
   canvasLinkGroupDefinition,
-  canvasFocusHandoffUrl,
   canvasRuntimeRegistryStorageKey,
   canvasRuntimeWorkspaceStorageKey,
   canvasWorkspaceStorageKey,
@@ -29,7 +28,6 @@ import {
   readCanvasWorkspaceStateByStorageKey,
   readReplayCanvasFocusHandoff,
   removeCanvasRecord,
-  removeCanvasFocusHandoff,
   replayFocusCanvasUrl,
   rebaseCanvasRuntimeOverlay,
   snapshotCanvasWorkspaceState,
@@ -37,7 +35,6 @@ import {
   snapshotSharedCanvasProfile,
   writeReplayCanvasFocusHandoff,
   writeCanvasRegistry,
-  writeCanvasFocusHandoff,
   writeCanvasRuntimeOverlayRecord,
   writeCanvasWorkspaceState,
   type CanvasAssignedLinkGroupId,
@@ -90,6 +87,7 @@ import { marketSessionDate, useCanvasHistoricalChart } from "../features/canvas/
 import { finiteNumber } from "../features/canvas/numbers";
 import { nestedValue } from "../features/canvas/presentationFormat";
 import { cloneDefaultSettings, instanceSettings, normalizeSettings } from "../features/canvas/settings";
+import { openTickerChartsQuotes } from "../app/tickerNavigation";
 import { useCanvasLiveScannerSnapshot, useCanvasScannerSnapshot } from "../features/canvas/scannerData";
 import { dateInTimeZone } from "../features/canvas/time";
 
@@ -122,7 +120,6 @@ function StrategyOrderEntry(props: StrategyOrderEntryProps) {
 const LIVE_ACCOUNT_KEYS_STORAGE_KEY = "quant-research-workbench.real-live-trading.account-keys";
 const LIVE_PERFORMANCE_STORAGE_KEY = "quant-research-workbench.canvas.live-performance-v1";
 const CHARTS_QUOTES_GROUP_TEMPLATE_ID = "charts-quotes";
-const CHARTS_QUOTES_FOCUS_INSTANCE_ID = "charts_quotes-focus";
 const CANVAS_GROUP_TEMPLATES: WorkspaceGroupTemplate[] = [{
   description: "A fixed synchronized market workspace; only its ticker context changes.",
   id: CHARTS_QUOTES_GROUP_TEMPLATE_ID,
@@ -967,79 +964,22 @@ export function CanvasWorkspaceSurface({ accountKeys, approvedCanvas, canvasId, 
 
   function openReusableGroup(templateId: string, tickerValue = activeSymbol) {
     if (templateId !== CHARTS_QUOTES_GROUP_TEMPLATE_ID) return;
-    const symbol = tickerValue.trim().toUpperCase();
-    if (!/^[A-Z][A-Z0-9.\-]{0,15}$/.test(symbol)) return;
-    const sourceInstanceId = (workspaceState?.openIds ?? []).find((instanceId) => workspaceContainerKind(instanceId, workspaceState) === "charts_quotes")
-      ?? Object.keys(registry.instanceSettings).find((instanceId) => instanceId === "charts_quotes" || instanceId.startsWith("charts_quotes-"));
-    const settings = instanceSettings(registry, sourceInstanceId ?? "charts_quotes");
-    const focusedIndicators = Array.from(new Set([
-      "indicator.vwap",
-      "indicator.macd",
-      ...settings.charts_quotes.main.visibleIndicators,
-    ]));
-    const focusedSettings = normalizeSettings({
-      ...settings,
-      chart: { ...settings.chart, symbol },
-      charts_quotes: {
-        daily: { ...settings.charts_quotes.daily, symbol },
-        layout: settings.charts_quotes.layout,
-        main: { ...settings.charts_quotes.main, symbol, visibleIndicators: focusedIndicators },
-        month: { ...settings.charts_quotes.month, symbol },
-      },
+    const result = openTickerChartsQuotes(tickerValue, {
+      registry,
+      replayRunId: replayRun?.run_id,
+      runtimeMode: focusRuntimeMode,
+      workspaceState,
     });
-    const state: CanvasWorkspaceState = {
-      groups: {},
-      instances: { [CHARTS_QUOTES_FOCUS_INSTANCE_ID]: "charts_quotes" },
-      layoutVersion: TRADING_WORKSPACE_LAYOUT_VERSION,
-      layouts: { [CHARTS_QUOTES_FOCUS_INSTANCE_ID]: focusLayout() },
-      openIds: [CHARTS_QUOTES_FOCUS_INSTANCE_ID],
-    };
-    const profile: CanvasRegistry = {
-      ...snapshotSharedCanvasProfile(registry),
-      canvases: [{ id: MAIN_CANVAS_ID, label: "Charts & Quotes" }],
-      defaultState: state,
-      instanceSettings: { [CHARTS_QUOTES_FOCUS_INSTANCE_ID]: focusedSettings },
-      linkAssignments: { [CHARTS_QUOTES_FOCUS_INSTANCE_ID]: "none" },
-      linkOwners: {},
-      workspaceStates: { [MAIN_CANVAS_ID]: state },
-    };
-    if (replayRun) {
-      openReplayFocus(profile, state);
-      return;
-    }
-    const token = writeCanvasFocusHandoff(profile, state, "Charts & Quotes");
-    const focusedWindow = window.open(canvasFocusHandoffUrl(token, focusRuntimeMode), "_blank");
-    if (!focusedWindow) {
-      removeCanvasFocusHandoff(token);
+    if (result === "popup-blocked") {
       setError("The Charts & Quotes group could not open because the browser blocked the focus window.");
-      return;
     }
-    focusedWindow.opener = null;
   }
 
   function openChartsQuotesForTicker(tickerValue: string) {
     openReusableGroup(CHARTS_QUOTES_GROUP_TEMPLATE_ID, tickerValue);
   }
 
-  function inspectTicker(tickerValue: string) {
-    const symbol = tickerValue.trim().toUpperCase();
-    if (!/^[A-Z][A-Z0-9.\-]{0,15}$/.test(symbol)) return;
-    if (activeLinkGroup !== "none") updateLinkContext(activeLinkGroup, { symbol });
-    else updateInstanceSettings(primaryChartId, (current) => ({
-      ...current,
-      chart: { ...current.chart, symbol },
-    }));
-    const activityId = (workspaceState?.openIds ?? []).find(
-      (instanceId) => workspaceContainerKind(instanceId, workspaceState) === "strategy_activity",
-    );
-    if (activityId) updateInstanceSettings(activityId, (current) => ({
-      ...current,
-      strategy_activity: { ...current.strategy_activity, ticker: symbol },
-    }));
-  }
-
   function openTickerWorkspace(tickerValue: string) {
-    inspectTicker(tickerValue);
     openChartsQuotesForTicker(tickerValue);
   }
 

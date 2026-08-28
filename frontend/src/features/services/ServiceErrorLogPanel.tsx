@@ -47,21 +47,12 @@ export function ServiceErrorLogPanel({ pageError, service }: { pageError: string
                 <tr
                   className={`service-log-row ${item.status}`}
                   key={`${item.key}-${index}`}
-                  onClick={() => setSelectedLog(item)}
-                  onKeyDown={(event) => {
-                    if (event.key === "Enter" || event.key === " ") {
-                      event.preventDefault();
-                      setSelectedLog(item);
-                    }
-                  }}
-                  role="button"
-                  tabIndex={0}
                 >
                   <td className="service-log-time" title={item.time || item.meta || ""}>{item.time || "-"}</td>
                   <td><span className={`service-log-status ${item.status}`}>{displayName(item.status)}</span></td>
                   <td title={item.source || item.meta || ""}>{item.source || "-"}</td>
                   <td title={displayName(item.event || item.key)}>{displayName(item.event || item.key)}</td>
-                  <td title={item.title}>{item.title}</td>
+                  <td title={item.title}><button className="table-primary-link" onClick={() => setSelectedLog(item)} type="button">{item.title}</button></td>
                   <td title={item.detail}>{item.detail}</td>
                 </tr>
               ))}

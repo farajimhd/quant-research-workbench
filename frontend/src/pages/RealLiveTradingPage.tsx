@@ -330,7 +330,6 @@ export function RealLiveTradingPage({ onMarketStatusChange, onTopbarCenterChange
   const paceRunRef = useRef(0);
   const liveClockModeRef = useRef<LiveClockMode>("idle");
   const warmedChartCacheKeysRef = useRef(new Set<string>());
-  const lastChartOpenRef = useRef<{ id: string; openedAt: number } | null>(null);
   const scannerQueryKey = useMemo(() => JSON.stringify(scannerQuery), [scannerQuery]);
   const scannerSetupPreset = useMemo(
     () => SCANNER_SETUP_PRESETS.find((preset) => preset.id === scannerSetupPresetId) ?? SCANNER_SETUP_PRESETS[0],
@@ -860,32 +859,6 @@ export function RealLiveTradingPage({ onMarketStatusChange, onTopbarCenterChange
     });
   }
 
-  function openChartForRow(row: Record<string, unknown>) {
-    const ticker = stringValue(row, "ticker").trim().toUpperCase();
-    if (!ticker) return;
-    const id = `chart-${ticker}`;
-    const now = window.performance.now();
-    if (lastChartOpenRef.current?.id === id && now - lastChartOpenRef.current.openedAt < 250) return;
-    lastChartOpenRef.current = { id, openedAt: now };
-    const chartRow = row.ticker === ticker ? row : { ...row, ticker };
-    setSelectedRow(chartRow);
-    setChartWindows((current) => [{ id, row: chartRow, ticker }, ...current.filter((chart) => chart.id !== id)]);
-    setOpenWindows((current) => [id, ...current.filter((windowId) => windowId !== id)]);
-    setLayouts((current) => {
-      const chartDefaults = current.chart ?? buildDefaultCanvasLayout(false).layouts.chart;
-      const existingChartIds = Object.keys(current).filter((layoutId) => layoutId.startsWith("chart-") && layoutId !== id);
-      const shifted = Object.fromEntries(
-        Object.entries(current).map(([layoutId, layout]) => {
-          const shiftedIndex = existingChartIds.indexOf(layoutId);
-          return shiftedIndex >= 0
-            ? [layoutId, { ...layout, h: chartDefaults.h, w: chartDefaults.w, x: chartDefaults.x + (shiftedIndex + 1) * (chartDefaults.w + 10), y: chartDefaults.y, z: Math.max(1, layout.z - 1) }]
-            : [layoutId, layout];
-        })
-      ) as Record<WindowId, WindowLayout>;
-      return { ...shifted, [id]: { ...chartDefaults, x: chartDefaults.x, z: Math.max(0, ...Object.values(current).map((layout) => layout.z)) + 1 } };
-    });
-  }
-
   function closeWindow(id: WindowId) {
     setOpenWindows((current) => current.filter((windowId) => windowId !== id));
     setChartWindows((current) => current.filter((chart) => chart.id !== id));
@@ -1112,13 +1085,11 @@ export function RealLiveTradingPage({ onMarketStatusChange, onTopbarCenterChange
                   queryGroups={scannerQueryGroups}
                   queryName={scannerQueryName}
                   rows={scannerRows}
-                  selectedTicker={selectedTicker}
                   signalRows={signalRows}
                   snapshot={snapshot}
                   onDeleteQueryGroup={deleteScannerQueryGroup}
                   onQueryChange={(nextQuery) => setScannerQuery(normalizeLiveScannerQuery(nextQuery) ?? nextQuery)}
                   onQueryNameChange={setScannerQueryName}
-                  onRowSelect={openChartForRow}
                   onSaveQueryGroup={saveScannerQueryGroup}
                 />
               </WorkspaceWindow>

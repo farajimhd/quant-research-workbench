@@ -2,7 +2,6 @@ import { DataTable, type BackendQueryPreset, type BackendTableQuery } from "../.
 import type { ScannerSnapshot, SignalRow } from "./contracts";
 import { marketStateTableColumns } from "./scanner";
 import type { ScannerQueryGroup } from "./liveWorkspaceContracts";
-import { stringValue } from "./liveTradingFormat";
 
 export const LIVE_SCANNER_COLUMNS = [
   "ticker",
@@ -61,13 +60,11 @@ export type LiveScannerContainerProps = {
   queryGroups: ScannerQueryGroup[];
   queryName: string;
   rows: Record<string, unknown>[];
-  selectedTicker: string;
   signalRows: SignalRow[];
   snapshot: ScannerSnapshot | null;
   onDeleteQueryGroup: (id: string) => void;
   onQueryChange: (query: BackendTableQuery) => void;
   onQueryNameChange: (value: string) => void;
-  onRowSelect: (row: Record<string, unknown>) => void;
   onSaveQueryGroup: (name: string, query: BackendTableQuery) => void;
 };
 
@@ -79,13 +76,11 @@ export function LiveScannerContainer({
   onDeleteQueryGroup,
   onQueryChange,
   onQueryNameChange,
-  onRowSelect,
   onSaveQueryGroup,
   query,
   queryGroups,
   queryName,
   rows,
-  selectedTicker,
   signalRows,
   snapshot,
 }: LiveScannerContainerProps) {
@@ -109,8 +104,6 @@ export function LiveScannerContainer({
           defaultSort={{ column: "live_signal_time", direction: "desc" }}
           empty={loading ? "Loading scanner..." : "No scanner signals detected yet."}
           fitToContent
-          isRowSelected={(row) => stringValue(row, "ticker") === selectedTicker}
-          onRowClick={onRowSelect}
           preserveFiltersOnDataChange
           rows={signalRows}
           title={`Signals${rows.length ? ` (${rows.length} current)` : ""}`}
@@ -122,8 +115,6 @@ export function LiveScannerContainer({
           columns={marketStateTableColumns(marketSnapshot?.columns ?? [])}
           defaultSort={{ column: "last_day_volume_so_far", direction: "desc" }}
           empty={loading ? "Loading market state..." : marketEmptyMessage}
-          isRowSelected={(row) => stringValue(row, "ticker") === selectedTicker}
-          onRowClick={onRowSelect}
           preserveFiltersOnDataChange
           rows={marketRows}
           title="Market State"
