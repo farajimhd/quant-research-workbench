@@ -61,6 +61,7 @@ import { useWallClock } from "../app/components/useWallClock";
 import { TickerIdentity, useTickerPresentations } from "../app/components/TickerIdentity";
 import { TRADING_WORKSPACE_LAYOUT_VERSION, TradingWorkspace, createFocusLayouts, type WorkspaceGroupTemplate } from "../app/components/TradingWorkspace";
 import type { WorkspaceWindowLayout, WorkspaceWindowMeta, WorkspaceWindowStatus } from "../app/components/WorkspaceCanvas";
+import { normalizeWorkspaceGroups } from "../app/workspaceGroups";
 import { TRADING_WORKSPACE_CONTAINERS, containerSupportsCanvasLink, containerSupportsSymbolLink, type WorkspaceContainerDefinition, type WorkspaceContainerId } from "../app/tradingWorkspace";
 import type { TradingWorkspaceMode } from "../app/tradingWorkspace";
 import { DEFAULT_STRATEGY_CHART_PRESENTATION, type StrategyAction, type StrategyChartPresentation, type StrategyDecisionEvent } from "../app/strategyPresentation";
@@ -506,7 +507,11 @@ export function CanvasWorkspaceSurface({ accountKeys, approvedCanvas, canvasId, 
   const accountSignature = [...resolvedAccountKeys].sort().join(".") || runtimeMode;
   const runtimeBase = replayRun?.canvas_profile ?? approvedCanvas?.profile;
   const runtimeRevision = replayRun?.configuration_content_hash || replayRun?.canvas_revision || approvedCanvas?.content_hash || approvedCanvas?.canvas_revision || "draft";
-  const runtimeScope = replayRun ? `${runtimeMode}.${replayRun.run_id}.${runtimeWorkspaceId || "main"}` : liveMode ? `${runtimeMode}.${accountSignature}` : runtimeMode === "research" ? `research.${runtimeWorkspaceId || canvasId}` : approvedCanvas ? "canvas" : "configuration";
+  const runtimeScope = replayRun
+    ? runtimeWorkspaceId
+      ? `${runtimeMode}.${replayRun.run_id}.${runtimeWorkspaceId}`
+      : `${runtimeMode}.${replayRun.execution_mode || "manual"}`
+    : liveMode ? `${runtimeMode}.${accountSignature}` : runtimeMode === "research" ? `research.${runtimeWorkspaceId || canvasId}` : approvedCanvas ? "canvas" : "configuration";
   const runtimeRegistryStorageKey = runtimeBase ? canvasRuntimeRegistryStorageKey(runtimeScope, runtimeRevision) : "";
   const workspaceStorageKey = runtimeBase
     ? canvasRuntimeWorkspaceStorageKey(runtimeScope, runtimeRevision, canvasId)
@@ -524,7 +529,7 @@ export function CanvasWorkspaceSurface({ accountKeys, approvedCanvas, canvasId, 
       ? runtimeCanvasState(runtimeBase, workspaceStorageKey, canvasId, requestedInstanceId, !transient)
       : focusCanvasState(canvasId, requestedInstanceId);
     return replayRun?.execution_mode === "strategy" && !requestedInstanceId
-      ? strategyReplayCanvasState(state)
+      ? strategyReplayCanvasState(runtimeBase && !transient ? readCanvasWorkspaceStateByStorageKey(workspaceStorageKey) : null)
       : state;
   }, [canvasId, overlayEpoch, replayRun?.execution_mode, requestedInstanceId, runtimeBase, transient, workspaceStorageKey]);
   const [registry, setRegistry] = useState<CanvasRegistry>(() => {
@@ -1798,42 +1803,40 @@ function runtimeCanvasState(profile: CanvasRegistry, storageKey: string, canvasI
   const kind = workspaceContainerKind(requestedInstanceId, state);
   return { groups: {}, instances: { [requestedInstanceId]: kind }, layoutVersion: TRADING_WORKSPACE_LAYOUT_VERSION, layouts: createFocusLayouts([requestedInstanceId]), openIds: [requestedInstanceId] };
 }
-const STRATEGY_REPLAY_CONTAINER_IDS: WorkspaceContainerId[] = ["chart", "signal_stream", "watchlist", "strategy_activity", "scanner", "orders", "fills", "positions", "closed_trades", "portfolio", "news", "sec", "facts", "xbrl"];
+const STRATEGY_REPLAY_CONTAINER_IDS: WorkspaceContainerId[] = ["strategy_activity", "signal_stream", "watchlist", "orders", "fills", "positions", "closed_trades", "portfolio"];
 function strategyReplayLayouts(openIds: string[]): Record<string, WorkspaceWindowLayout> {
   const required: Record<string, WorkspaceWindowLayout> = {
-    chart: { fullscreen: false, h: 610, minimized: false, w: 1040, x: 0, y: 0, z: 8 },
-    strategy_activity: { fullscreen: false, h: 350, minimized: false, w: 700, x: 1052, y: 0, z: 7 },
-    signal_stream: { fullscreen: false, h: 430, minimized: false, w: 700, x: 1052, y: 362, z: 6 },
-    watchlist: { fullscreen: false, h: 420, minimized: false, w: 1040, x: 0, y: 622, z: 5 },
-    orders: { fullscreen: false, h: 430, minimized: false, w: 870, x: 0, y: 1054, z: 4 },
-    fills: { fullscreen: false, h: 430, minimized: false, w: 870, x: 882, y: 1054, z: 3 },
-    positions: { fullscreen: false, h: 430, minimized: false, w: 870, x: 0, y: 1496, z: 3 },
-    closed_trades: { fullscreen: false, h: 430, minimized: false, w: 870, x: 882, y: 1496, z: 3 },
-    portfolio: { fullscreen: false, h: 370, minimized: false, w: 1752, x: 0, y: 1938, z: 2 },
-    scanner: { fullscreen: false, h: 520, minimized: false, w: 1752, x: 0, y: 2320, z: 2 },
-    news: { fullscreen: false, h: 560, minimized: false, w: 870, x: 0, y: 2852, z: 1 },
-    sec: { fullscreen: false, h: 560, minimized: false, w: 870, x: 882, y: 2852, z: 1 },
-    facts: { fullscreen: false, h: 500, minimized: false, w: 870, x: 0, y: 3424, z: 1 },
-    xbrl: { fullscreen: false, h: 500, minimized: false, w: 870, x: 882, y: 3424, z: 1 },
+    strategy_activity: { fullscreen: false, h: 440, minimized: false, w: 900, x: 0, y: 0, z: 8 },
+    signal_stream: { fullscreen: false, h: 440, minimized: false, w: 840, x: 912, y: 0, z: 7 },
+    watchlist: { fullscreen: false, h: 420, minimized: false, w: 1752, x: 0, y: 452, z: 6 },
+    orders: { fullscreen: false, h: 430, minimized: false, w: 870, x: 0, y: 884, z: 5 },
+    fills: { fullscreen: false, h: 430, minimized: false, w: 870, x: 882, y: 884, z: 4 },
+    positions: { fullscreen: false, h: 430, minimized: false, w: 870, x: 0, y: 1326, z: 3 },
+    closed_trades: { fullscreen: false, h: 430, minimized: false, w: 870, x: 882, y: 1326, z: 3 },
+    portfolio: { fullscreen: false, h: 370, minimized: false, w: 1752, x: 0, y: 1768, z: 2 },
   };
   const extras = openIds.filter((id) => !(id in required));
   const fallback = createFocusLayouts(extras);
   return Object.fromEntries(openIds.map((id, index) => [id, required[id] ?? { ...fallback[id], y: 2160 + index * 24 }]));
 }
 function strategyReplayCanvasState(state: CanvasWorkspaceState | null): CanvasWorkspaceState {
-  const openIds = [
-    ...STRATEGY_REPLAY_CONTAINER_IDS,
-    ...(state?.openIds ?? []).filter((id) => !STRATEGY_REPLAY_CONTAINER_IDS.includes(workspaceContainerKind(id, state))),
-  ];
-  const instances = {
-    ...(state?.instances ?? {}),
-    ...Object.fromEntries(STRATEGY_REPLAY_CONTAINER_IDS.map((id) => [id, id])),
-  } as Record<string, WorkspaceContainerId>;
+  if (!state) {
+    return {
+      groups: {},
+      instances: Object.fromEntries(STRATEGY_REPLAY_CONTAINER_IDS.map((id) => [id, id])) as Record<string, WorkspaceContainerId>,
+      layoutVersion: TRADING_WORKSPACE_LAYOUT_VERSION,
+      layouts: strategyReplayLayouts(STRATEGY_REPLAY_CONTAINER_IDS),
+      openIds: [...STRATEGY_REPLAY_CONTAINER_IDS],
+    };
+  }
+  const allowed = new Set<WorkspaceContainerId>(STRATEGY_REPLAY_CONTAINER_IDS);
+  const openIds = state.openIds.filter((id) => allowed.has(workspaceContainerKind(id, state)));
+  const open = new Set(openIds);
   return {
-    groups: {},
-    instances,
+    groups: normalizeWorkspaceGroups(state.groups, openIds),
+    instances: Object.fromEntries(Object.entries(state.instances).filter(([id]) => open.has(id))) as Record<string, WorkspaceContainerId>,
     layoutVersion: TRADING_WORKSPACE_LAYOUT_VERSION,
-    layouts: strategyReplayLayouts(openIds),
+    layouts: Object.fromEntries(Object.entries(state.layouts).filter(([id]) => open.has(id))),
     openIds,
   };
 }
