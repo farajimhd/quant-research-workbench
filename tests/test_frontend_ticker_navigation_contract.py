@@ -35,7 +35,19 @@ def test_ticker_identity_is_the_explicit_charts_quotes_control() -> None:
     assert "writeReplayCanvasFocusHandoff" in navigation_source
     assert 'replayRun={run} runtimeWorkspaceId={focusToken} transient' in canvas_source
     assert 'replayRun?.execution_mode === "strategy" && !requestedInstanceId && !transient' in canvas_source
+    assert "ReplayFocusTransportStatus" in canvas_source
+    assert 'modeControls={<ReplayFocusTransportStatus run={run} />}' in canvas_source
     assert "text-decoration: underline" not in styles_source[styles_source.index(".ticker-charts-quotes-link"):styles_source.index(".ticker-charts-quotes-link:focus-visible")]
+
+
+def test_replay_chart_refresh_tracks_closed_timeframe_boundaries() -> None:
+    chart_source = source("features/canvas/chartData.ts")
+    replay_source = source("pages/ReplayTradingPage.tsx")
+
+    assert "Math.floor(cutoffMs / timeframeDurationMs(timeframe))" in chart_source
+    assert "refreshCutoffMs === loadedCutoffRef.current" in chart_source
+    assert 'speed === 1 ? "1× real time"' in replay_source
+    assert '`Up to ${speed}×`' in replay_source
 
 
 def test_service_tables_use_explicit_cell_controls_instead_of_interactive_rows() -> None:

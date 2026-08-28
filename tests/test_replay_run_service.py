@@ -213,6 +213,17 @@ class ReplayRunDefinitionTests(unittest.TestCase):
             )["enabled"]
         )
 
+    def test_replay_defaults_to_real_time_playback(self) -> None:
+        definition = ReplayRunDefinition(
+            session_date=date(2026, 7, 28),
+            start_time=time(9, 45),
+            configuration_revision=approved_configuration(),
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            snapshot = ReplayRunController(definition, runtime_root=Path(directory)).snapshot()
+
+        self.assertEqual(snapshot["speed"], 1.0)
+
     def test_stream_snapshot_omits_heavy_audit_collections(self) -> None:
         definition = ReplayRunDefinition(
             session_date=date(2026, 7, 28),

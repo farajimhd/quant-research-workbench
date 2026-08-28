@@ -684,7 +684,7 @@ class ReplayRunController:
         self.created_at = datetime.now(UTC)
         self.updated_at = self.created_at
         self.current_time: datetime | None = None
-        self.speed = 30.0
+        self.speed = 1.0
         if self.definition.mode in {RunMode.BACKTEST, RunMode.BACKTEST_DEBUG}:
             self.speed = 0.0
         self.processed_events = 0
@@ -1559,7 +1559,10 @@ class ReplayRunController:
             "state": ticker_assignments[0]["status"] if ticker_assignments else "not_assigned",
             "definition": definition,
             "assignment": ticker_assignments[0] if ticker_assignments else None,
-            "assignments": assignments,
+            # Canvas is symbol-scoped. The complete assignment authority has a
+            # dedicated endpoint and must not be retransmitted on every clock
+            # refresh for every open chart.
+            "assignments": ticker_assignments,
             "signals": [
                 row
                 for row in strategy_records

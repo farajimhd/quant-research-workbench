@@ -1,4 +1,4 @@
-import { Activity, BadgeDollarSign, BriefcaseBusiness, Check, CircleDollarSign, Clock3, Globe2, Landmark, Link2, MapPin, PanelRightOpen, RefreshCcw, Search, Save, Settings2, ShieldCheck, TriangleAlert, Unlink, WalletCards } from "lucide-react";
+import { Activity, BadgeDollarSign, BriefcaseBusiness, Check, CircleDollarSign, Clock3, Globe2, Landmark, Link2, MapPin, PanelRightOpen, Pause, Play, RefreshCcw, Search, Save, Settings2, ShieldCheck, TriangleAlert, Unlink, WalletCards } from "lucide-react";
 import { lazy, memo, Suspense, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type MutableRefObject, type ReactNode } from "react";
 
 import { api, apiCached, query, type ApiError } from "../api/client";
@@ -45,7 +45,7 @@ import {
   type CanvasRuntimeRebase,
   type CanvasWorkspaceState,
 } from "../app/canvasWorkspace";
-import { latestReplayRun, useReplayRunEvents, type CanvasReplayRun } from "../app/replayRun";
+import { isTerminalReplayStatus, latestReplayRun, useReplayRunEvents, type CanvasReplayRun } from "../app/replayRun";
 import { AllNewsContainer, NEWS_ARTICLE_CLASS_OPTIONS, NewsDetailContainer, TickerNewsContainer } from "../app/components/NewsContainers";
 import { AllSecContainer, SecDetailContainer, TickerSecContainer } from "../app/components/SecContainers";
 import { MarketTime } from "../app/components/MarketTime";
@@ -492,7 +492,16 @@ function ReplayCanvasFocusPage({ focusToken, runId }: { focusToken: string; runI
 
   if (error && !run) return <div className="canvas-config-page canvas-focus-page"><div className="canvas-inline-error">{error}</div></div>;
   if (!run) return <div className="canvas-config-page canvas-focus-page"><div className="canvas-empty-state"><strong>Opening Replay focus canvas</strong><span>Restoring the selected container against the active run clock.</span></div></div>;
-  return <CanvasWorkspaceSurface canvasId={MAIN_CANVAS_ID} manager={false} replayRun={run} runtimeWorkspaceId={focusToken} transient />;
+  return <CanvasWorkspaceSurface canvasId={MAIN_CANVAS_ID} manager={false} modeControls={<ReplayFocusTransportStatus run={run} />} replayRun={run} runtimeWorkspaceId={focusToken} transient />;
+}
+
+function ReplayFocusTransportStatus({ run }: { run: CanvasReplayRun }) {
+  const active = ["running", "fast_forwarding"].includes(run.status);
+  const terminal = isTerminalReplayStatus(run.status);
+  const label = terminal ? run.status.replaceAll("_", " ") : active ? "Playing" : "Paused";
+  const speed = run.speed === 0 ? "Maximum throughput" : run.speed === 1 ? "1× real time" : `Up to ${run.speed}×`;
+  const Icon = active ? Play : Pause;
+  return <div aria-label={`Replay ${label} at ${speed}`} className="replay-focus-transport" data-status={run.status} role="status"><Icon aria-hidden="true" size={13} /><span><strong>{label}</strong><small>{speed}</small></span></div>;
 }
 
 export function CanvasWorkspaceSurface({ accountKeys, approvedCanvas, canvasId, manager, modeControls, readOnly = false, replayRun, requestedInstanceId, requestedNewsId, requestedSecAccession, requestedSecCik, runtimeMode: requestedRuntimeMode, runtimeWorkspaceId, transient = false }: { accountKeys?: string[]; approvedCanvas?: ApprovedCanvasProfile; canvasId: string; manager: boolean; modeControls?: ReactNode; readOnly?: boolean; replayRun?: CanvasReplayRun; requestedInstanceId?: string; requestedNewsId?: string; requestedSecAccession?: string; requestedSecCik?: string; runtimeMode?: CanvasRuntimeMode; runtimeWorkspaceId?: string; transient?: boolean }) {

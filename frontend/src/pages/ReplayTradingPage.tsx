@@ -399,7 +399,7 @@ function ReplayControls({ onExit, onRunChange, run }: { onExit: () => void; onRu
       const target = `${value("hour")}:${value("minute")}:${value("second")}`;
       void command("fast_forward", { target_time: target });
     }} title="Process every QMD event through the next five event-time minutes, then pause" type="button"><FastForward size={13} /><span>+5 min</span></button>
-    <label className="replay-speed-control"><Gauge aria-hidden="true" size={13} /><select aria-label="Replay speed" disabled={terminal || Boolean(busy)} onChange={(event) => command("set_speed", { speed: Number(event.target.value) })} value={run.speed}>{REPLAY_SPEEDS.map((speed) => <option key={speed} value={speed}>{speed === 0 ? "Max" : `${speed}×`}</option>)}</select></label>
+    <label className="replay-speed-control"><Gauge aria-hidden="true" size={13} /><select aria-label="Replay speed" disabled={terminal || Boolean(busy)} onChange={(event) => command("set_speed", { speed: Number(event.target.value) })} value={run.speed}>{REPLAY_SPEEDS.map((speed) => <option key={speed} value={speed}>{speed === 0 ? "Max" : speed === 1 ? "1× real time" : `Up to ${speed}×`}</option>)}</select></label>
     <div className={`replay-run-state${navigationActive || runtimePreparing ? " is-navigation" : ""}`} data-status={run.status}>
       <i aria-hidden="true" />
       <span>

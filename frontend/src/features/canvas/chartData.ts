@@ -40,6 +40,9 @@ const CHART_SNAPSHOT_CACHE_LIMIT = 48;
 
 export function useCanvasHistoricalChart(symbol: string, timeframe: CanvasChartTimeframe, cutoffMs: number, sessionDate: string, visibleIndicatorIds: string[], liveTail = false, enabled = true): CanvasLiveChartState {
   const pointInTime = !liveTail;
+  const refreshCutoffMs = pointInTime
+    ? Math.floor(cutoffMs / timeframeDurationMs(timeframe)) * timeframeDurationMs(timeframe)
+    : cutoffMs;
   const indicatorColumns = useMemo(() => requestedIndicatorColumns(visibleIndicatorIds), [visibleIndicatorIds]);
   const auxiliaryProjection = useMemo(() => requestedChartAuxiliary(visibleIndicatorIds), [visibleIndicatorIds]);
   const projectionKey = `${indicatorColumns}|signals=${auxiliaryProjection.includeMarketSignals}|structure=${auxiliaryProjection.includeStructure}`;
@@ -123,7 +126,7 @@ export function useCanvasHistoricalChart(symbol: string, timeframe: CanvasChartT
     setReadyKey("");
     historyCursorRef.current = null;
     historyRequestRef.current = false;
-    loadedCutoffRef.current = cutoffMs;
+    loadedCutoffRef.current = refreshCutoffMs;
     const cached = readChartSnapshot(requestKey);
     const cachedRows = cached
       ? alignHistoricalChartRows(
@@ -307,11 +310,11 @@ export function useCanvasHistoricalChart(symbol: string, timeframe: CanvasChartT
     if (!enabled || liveTail) return;
     const ticker = symbol.trim().toUpperCase();
     const requestKey = chartRequestKey(ticker, timeframe, projectionKey, sessionDate);
-    if (!ticker || cutoffMs === loadedCutoffRef.current || requestKeyRef.current !== requestKey) return;
-    const replacingRewind = cutoffMs < loadedCutoffRef.current;
-    loadedCutoffRef.current = cutoffMs;
+    if (!ticker || refreshCutoffMs === loadedCutoffRef.current || requestKeyRef.current !== requestKey) return;
+    const replacingRewind = refreshCutoffMs < loadedCutoffRef.current;
+    loadedCutoffRef.current = refreshCutoffMs;
     const controller = new AbortController();
-    api<QmdBarHistory>(`/api/trading/canvas-chart/history${query({ as_of: new Date(cutoffMs).toISOString(), include_market_signals: auxiliaryProjection.includeMarketSignals, include_structure: auxiliaryProjection.includeStructure, indicator_columns: indicatorColumns, mode: "replay", row_limit: chartInitialPageSize(timeframe), session_date: sessionDate, symbol: ticker, timeframe })}`, {
+    api<QmdBarHistory>(`/api/trading/canvas-chart/history${query({ as_of: new Date(refreshCutoffMs).toISOString(), include_market_signals: auxiliaryProjection.includeMarketSignals, include_structure: auxiliaryProjection.includeStructure, indicator_columns: indicatorColumns, mode: "replay", row_limit: chartInitialPageSize(timeframe), session_date: sessionDate, symbol: ticker, timeframe })}`, {
       signal: controller.signal,
       timeoutMs: 120000,
     })
@@ -320,8 +323,8 @@ export function useCanvasHistoricalChart(symbol: string, timeframe: CanvasChartT
         rememberChartSnapshot(requestKey, payload);
         updateHistoryCursor(historyCursorRef, payload);
         const aligned = alignHistoricalChartRows(
-          closedRowsAtCutoff(payload.history, timeframe, cutoffMs),
-          closedRowsAtCutoff(payload.indicators, timeframe, cutoffMs),
+          closedRowsAtCutoff(payload.history, timeframe, refreshCutoffMs),
+          closedRowsAtCutoff(payload.indicators, timeframe, refreshCutoffMs),
           payload.indicators_available,
         );
         setState((current) => {
@@ -348,7 +351,7 @@ export function useCanvasHistoricalChart(symbol: string, timeframe: CanvasChartT
         }
       });
     return () => controller.abort();
-  }, [auxiliaryProjection.includeMarketSignals, auxiliaryProjection.includeStructure, cutoffMs, enabled, indicatorColumns, liveTail, projectionKey, rowBudget, sessionDate, symbol, timeframe]);
+  }, [auxiliaryProjection.includeMarketSignals, auxiliaryProjection.includeStructure, enabled, indicatorColumns, liveTail, projectionKey, refreshCutoffMs, rowBudget, sessionDate, symbol, timeframe]);
 
   useEffect(() => {
     if (!enabled || !liveTail) return;

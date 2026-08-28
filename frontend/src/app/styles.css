@@ -10814,6 +10814,24 @@ button {
   overflow: hidden;
 }
 
+.replay-focus-transport {
+  align-items: center;
+  border-left: 1px solid var(--border);
+  color: var(--muted-foreground);
+  display: flex;
+  flex: 0 0 auto;
+  gap: 7px;
+  min-width: 112px;
+  padding: 4px 9px;
+}
+
+.replay-focus-transport > svg { color: var(--muted-foreground); }
+.replay-focus-transport[data-status="running"] > svg,
+.replay-focus-transport[data-status="fast_forwarding"] > svg { color: var(--success); }
+.replay-focus-transport > span { display: grid; line-height: 1.05; }
+.replay-focus-transport strong { color: var(--foreground); font-size: 11px; text-transform: capitalize; }
+.replay-focus-transport small { font-size: 9px; margin-top: 2px; white-space: nowrap; }
+
 .chart-shell.fill-height {
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
