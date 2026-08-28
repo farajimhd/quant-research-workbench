@@ -14894,9 +14894,9 @@ button {
 }
 .table-security-copy { align-self: center; display: grid; gap: 0; grid-area: copy; min-width: 0; }
 .table-security-copy > strong { color: var(--foreground); font-family: var(--font-body); font-size: 15px; font-weight: 650; letter-spacing: -.015em; line-height: 1; }
-.ticker-charts-quotes-link { background: transparent; border: 0; color: var(--primary); cursor: pointer; font: inherit; justify-self: start; line-height: 1; margin: 0; padding: 0; text-align: left; text-decoration: underline; text-decoration-color: color-mix(in oklab, currentColor 45%, transparent); text-decoration-thickness: 1px; text-underline-offset: 2px; }
+.ticker-charts-quotes-link { background: transparent; border: 0; color: var(--primary); cursor: pointer; font: inherit; justify-self: start; line-height: 1; margin: 0; padding: 0; text-align: left; text-decoration: none; }
 .ticker-charts-quotes-link > strong { font-family: var(--font-body); font-size: 15px; font-weight: 700; letter-spacing: -.015em; }
-.ticker-charts-quotes-link:hover { color: color-mix(in oklab, var(--primary) 78%, var(--foreground)); text-decoration-color: currentColor; }
+.ticker-charts-quotes-link:hover { color: color-mix(in oklab, var(--primary) 78%, var(--foreground)); text-decoration: none; }
 .ticker-charts-quotes-link:focus-visible { border-radius: 2px; outline: 2px solid color-mix(in oklab, var(--primary) 58%, transparent); outline-offset: 2px; }
 .table-primary-link { background: transparent; border: 0; color: inherit; cursor: pointer; display: inline-block; font: inherit; margin: 0; max-width: 100%; padding: 0; text-align: left; }
 .table-primary-link:hover strong { color: var(--primary); text-decoration: underline; text-underline-offset: 2px; }

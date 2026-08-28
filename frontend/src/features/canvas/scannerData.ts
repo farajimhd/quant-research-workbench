@@ -38,6 +38,7 @@ export function useCanvasScannerSnapshot({ cutoffMs, enabled, materializeDiscove
             })}`, { signal: requestController.signal, timeoutMs: 120_000 });
             if (!mountedRef.current) return;
             if (!targetRef.current.enabled) return;
+            if (targetRef.current.key !== target.key) continue;
             setSnapshot(corePayload);
             setError("");
             loadedKeyRef.current = target.key;
@@ -117,7 +118,6 @@ export function useCanvasScannerSnapshot({ cutoffMs, enabled, materializeDiscove
   }, []);
 
   useEffect(() => {
-    requestControllerRef.current?.abort();
     const asOf = new Date(cutoffMs).toISOString();
     const key = `${asOf}:${technicalWindows}:${materializeDiscovery ? "materialized" : "page"}`;
     targetRef.current = { asOf, enabled, key, technicalWindows };
@@ -126,6 +126,7 @@ export function useCanvasScannerSnapshot({ cutoffMs, enabled, materializeDiscove
       retryTimerRef.current = null;
     }
     if (!enabled) {
+      requestControllerRef.current?.abort();
       loadedKeyRef.current = "";
       setSnapshot(null);
       setLoading(false);

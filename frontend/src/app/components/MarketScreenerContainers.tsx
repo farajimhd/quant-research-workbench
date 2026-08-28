@@ -743,20 +743,22 @@ export function WatchUniverseContainer({ asOf, live = false, onSettingsChange, o
 export function StrategyActivityContainer({ asOf, onSettingsChange, onTickerSelect, runId, settings }: { asOf: string; onSettingsChange: (patch: Partial<StrategyActivitySettings>) => void; onTickerSelect: (ticker: string) => void; runId?: string; settings: StrategyActivitySettings }) {
   const [payload, setPayload] = useState<StrategyActivityResponse | null>(null);
   const [error, setError] = useState("");
+  const asOfRef = useRef(asOf);
+  asOfRef.current = asOf;
   useEffect(() => {
     const controller = new AbortController();
-    const query = new URLSearchParams({ as_of: asOf, limit: "5000" });
-    if (runId) query.set("run_id", runId);
     let timer = 0;
     const refresh = () => {
+      const query = new URLSearchParams({ as_of: asOfRef.current, limit: "5000" });
+      if (runId) query.set("run_id", runId);
       api<StrategyActivityResponse>(`/api/trading/strategy-activity?${query}`, { signal: controller.signal, timeoutMs: 10000 })
         .then((response) => { setPayload(response); setError(""); })
         .catch((reason) => { if (!controller.signal.aborted) setError(reason instanceof Error ? reason.message : String(reason)); })
-        .finally(() => { if (!controller.signal.aborted) timer = window.setTimeout(refresh, 5_000); });
+        .finally(() => { if (!controller.signal.aborted) timer = window.setTimeout(refresh, runId ? 1_000 : 5_000); });
     };
     refresh();
     return () => { controller.abort(); window.clearTimeout(timer); };
-  }, [asOf, runId]);
+  }, [runId]);
   const rows = useMemo(() => (payload?.rows ?? []).filter((row) =>
     (!settings.strategyId || String(row.strategy_id) === settings.strategyId)
     && (!settings.runId || String(row.run_id) === settings.runId)

@@ -217,7 +217,7 @@ export function ReplayTradingPage() {
     setCreating(true);
     setError("");
     try {
-      const loaded = await api<CanvasReplayRun>(`/api/trading/replay/runs/${encodeURIComponent(recent.run_id)}`, { timeoutMs: 20_000 });
+      const loaded = await api<CanvasReplayRun>(`/api/trading/replay/runs/${encodeURIComponent(recent.run_id)}?compact=true`, { timeoutMs: 20_000 });
       if (replayPrepared(loaded)) setRun(loaded);
       else setPreparingRun(loaded);
     } catch (reason) {

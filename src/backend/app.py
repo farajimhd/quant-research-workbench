@@ -5305,7 +5305,7 @@ async def trading_replay_run_create(payload: ReplayRunCreateRequest) -> dict[str
         if not preflight["ready"]:
             raise ValueError("Replay dependencies changed after preflight; run preflight again")
         controller = await replay_run_service.create(definition)
-        return controller.snapshot()
+        return controller.stream_snapshot()
     except ReplayRunCapacityError as exc:
         raise HTTPException(status_code=429, detail=str(exc)) from exc
     except ValueError as exc:
@@ -5707,9 +5707,10 @@ def trading_replay_runs() -> dict[str, Any]:
 
 
 @app.get("/api/trading/replay/runs/{run_id}")
-def trading_replay_run(run_id: str) -> dict[str, Any]:
+def trading_replay_run(run_id: str, compact: bool = False) -> dict[str, Any]:
     try:
-        return replay_run_service.get(run_id).snapshot()
+        controller = replay_run_service.get(run_id)
+        return controller.stream_snapshot() if compact else controller.snapshot()
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Replay run not found") from exc
 
@@ -5740,7 +5741,7 @@ async def trading_replay_run_command(
 @app.post("/api/trading/replay/runs/{run_id}/resume")
 async def trading_replay_run_resume(run_id: str) -> dict[str, Any]:
     try:
-        return (await replay_run_service.resume(run_id)).snapshot()
+        return (await replay_run_service.resume(run_id)).stream_snapshot()
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Replay run not found") from exc
     except ReplayRunCapacityError as exc:
@@ -5833,7 +5834,7 @@ async def trading_replay_run_events(websocket: WebSocket, run_id: str) -> None:
     await websocket.accept()
     queue = controller.subscribe()
     try:
-        await websocket.send_json(controller.snapshot())
+        await websocket.send_json(controller.stream_snapshot())
         while True:
             payload = await queue.get()
             await websocket.send_json(payload)

@@ -240,6 +240,40 @@ class TradingRuntime:
         *,
         evaluate_strategy: bool = True,
     ) -> None:
+        self._record_market_event_state(event)
+        executions = await self.broker.on_market_event(event)
+        for execution in executions:
+            self.journal.append(
+                run_id=self.run_id, category="execution", entity_type="fill", entity_id=execution.execution_id,
+                account_id=execution.account, event_time=execution.trade_time, payload=execution.to_cpapi(),
+            )
+        if executions and self.order_manager is not None:
+            await self.order_manager.reconcile()
+        if executions and self._canonical_session is not None:
+            await self._canonical_session.reconcile()
+            self.portfolio.synchronize_canonical(self._canonical_session.projector.snapshot())
+        if self.strategy is not None and evaluate_strategy:
+            for account_id in self.config.account_ids:
+                evaluation = normalize_strategy_evaluation(
+                    await self.strategy.on_event(event, account_id)
+                )
+                self._record_strategy_signals(evaluation, account_id)
+                await self._execute_intents(evaluation, account_id, event)
+        self._record_market_cursor(event)
+
+    def process_passive_market_event(self, event: MarketEvent) -> None:
+        """Advance market state when no order can match and strategy evaluation is external."""
+
+        if bool(getattr(self.broker, "has_orders", True)):
+            raise RuntimeError("Passive market processing requires an empty broker order book")
+        observe = getattr(self.broker, "observe_market_event", None)
+        if observe is None:
+            raise RuntimeError("Broker does not support passive market observation")
+        self._record_market_event_state(event)
+        observe(event)
+        self._record_market_cursor(event)
+
+    def _record_market_event_state(self, event: MarketEvent) -> None:
         if self.last_event_time is not None and event.ts < self.last_event_time:
             raise ValueError("Market events must be processed in non-decreasing timestamp order")
         self.last_event_time = event.ts
@@ -268,24 +302,8 @@ class TradingRuntime:
             self.execution_market_data.update(snapshot)
             if self.order_manager is not None:
                 self.order_manager.on_market_snapshot(snapshot)
-        executions = await self.broker.on_market_event(event)
-        for execution in executions:
-            self.journal.append(
-                run_id=self.run_id, category="execution", entity_type="fill", entity_id=execution.execution_id,
-                account_id=execution.account, event_time=execution.trade_time, payload=execution.to_cpapi(),
-            )
-        if executions and self.order_manager is not None:
-            await self.order_manager.reconcile()
-        if executions and self._canonical_session is not None:
-            await self._canonical_session.reconcile()
-            self.portfolio.synchronize_canonical(self._canonical_session.projector.snapshot())
-        if self.strategy is not None and evaluate_strategy:
-            for account_id in self.config.account_ids:
-                evaluation = normalize_strategy_evaluation(
-                    await self.strategy.on_event(event, account_id)
-                )
-                self._record_strategy_signals(evaluation, account_id)
-                await self._execute_intents(evaluation, account_id, event)
+
+    def _record_market_cursor(self, event: MarketEvent) -> None:
         cursor = f"{event.ts.astimezone(timezone.utc).isoformat()}|{event.sequence}|{event.kind}"
         self._latest_checkpoint_cursor = cursor
         if self.processed_events % self.config.checkpoint_interval_events == 0:

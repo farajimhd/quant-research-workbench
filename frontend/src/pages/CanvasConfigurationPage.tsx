@@ -482,7 +482,7 @@ function ReplayCanvasFocusPage({ focusToken, runId }: { focusToken: string; runI
   useEffect(() => {
     if (!handoff) return;
     let cancelled = false;
-    api<CanvasReplayRun>(`/api/trading/replay/runs/${encodeURIComponent(runId)}`, { timeoutMs: 20_000 })
+    api<CanvasReplayRun>(`/api/trading/replay/runs/${encodeURIComponent(runId)}?compact=true`, { timeoutMs: 20_000 })
       .then((payload) => { if (!cancelled) mergeFocusRun(payload); })
       .catch((reason) => { if (!cancelled) setError(reason instanceof Error ? reason.message : String(reason)); });
     return () => { cancelled = true; };
@@ -492,7 +492,7 @@ function ReplayCanvasFocusPage({ focusToken, runId }: { focusToken: string; runI
 
   if (error && !run) return <div className="canvas-config-page canvas-focus-page"><div className="canvas-inline-error">{error}</div></div>;
   if (!run) return <div className="canvas-config-page canvas-focus-page"><div className="canvas-empty-state"><strong>Opening Replay focus canvas</strong><span>Restoring the selected container against the active run clock.</span></div></div>;
-  return <CanvasWorkspaceSurface canvasId={MAIN_CANVAS_ID} manager={false} replayRun={run} runtimeWorkspaceId={focusToken} />;
+  return <CanvasWorkspaceSurface canvasId={MAIN_CANVAS_ID} manager={false} replayRun={run} runtimeWorkspaceId={focusToken} transient />;
 }
 
 export function CanvasWorkspaceSurface({ accountKeys, approvedCanvas, canvasId, manager, modeControls, readOnly = false, replayRun, requestedInstanceId, requestedNewsId, requestedSecAccession, requestedSecCik, runtimeMode: requestedRuntimeMode, runtimeWorkspaceId, transient = false }: { accountKeys?: string[]; approvedCanvas?: ApprovedCanvasProfile; canvasId: string; manager: boolean; modeControls?: ReactNode; readOnly?: boolean; replayRun?: CanvasReplayRun; requestedInstanceId?: string; requestedNewsId?: string; requestedSecAccession?: string; requestedSecCik?: string; runtimeMode?: CanvasRuntimeMode; runtimeWorkspaceId?: string; transient?: boolean }) {
@@ -525,7 +525,7 @@ export function CanvasWorkspaceSurface({ accountKeys, approvedCanvas, canvasId, 
     const state = runtimeBase
       ? runtimeCanvasState(runtimeBase, workspaceStorageKey, canvasId, requestedInstanceId, !transient)
       : focusCanvasState(canvasId, requestedInstanceId);
-    return replayRun?.execution_mode === "strategy" && !requestedInstanceId
+    return replayRun?.execution_mode === "strategy" && !requestedInstanceId && !transient
       ? strategyReplayCanvasState(runtimeBase && !transient ? readCanvasWorkspaceStateByStorageKey(workspaceStorageKey) : null)
       : state;
   }, [canvasId, overlayEpoch, replayRun?.execution_mode, requestedInstanceId, runtimeBase, transient, workspaceStorageKey]);
@@ -533,7 +533,7 @@ export function CanvasWorkspaceSurface({ accountKeys, approvedCanvas, canvasId, 
     const base = runtimeBase
       ? transient ? runtimeBase : readCanvasRuntimeRegistry(runtimeBase, runtimeRegistryStorageKey)
       : readCanvasRegistry();
-    return replayRun?.execution_mode === "strategy"
+    return replayRun?.execution_mode === "strategy" && !transient
       ? strategyReplayRegistry(base, replayRun)
       : base;
   });
@@ -712,12 +712,13 @@ export function CanvasWorkspaceSurface({ accountKeys, approvedCanvas, canvasId, 
   }, [replayRun?.navigation_action?.sequence]);
 
   useEffect(() => {
-    if (replayRun?.execution_mode !== "strategy") return;
+    if (replayRun?.execution_mode !== "strategy" || transient) return;
     setRegistry((current) => strategyReplayRegistry(current, replayRun));
   }, [
     replayRun?.run_id,
     replayRun?.strategy_debug_sources?.signal_stream_ids?.join("|"),
     replayRun?.strategy_debug_sources?.watchlist_ids?.join("|"),
+    transient,
   ]);
 
   useEffect(() => {
@@ -831,7 +832,7 @@ export function CanvasWorkspaceSurface({ accountKeys, approvedCanvas, canvasId, 
       .catch((reason) => { if (!controller.signal.aborted) setError(reason instanceof Error ? reason.message : String(reason)); })
       .finally(() => { if (!controller.signal.aborted) setLoading(false); });
     return () => controller.abort();
-  }, [accountSignature, activeSymbol, contextError, contextReady, liveMode, previewContainerKey, previewContext.previewTime, previewContext.sessionDate, replayRun?.run_id, replayRun?.status, replayRuntimeReady, runtimeMode]);
+  }, [accountSignature, activeSymbol, contextError, contextReady, liveMode, previewContainerKey, previewContext.previewTime, previewContext.sessionDate, replayRun?.current_time, replayRun?.run_id, replayRun?.status, replayRuntimeReady, runtimeMode]);
 
   const metaForContainer = useMemo(() => (definition: WorkspaceContainerDefinition): WorkspaceWindowMeta => {
     if (definition.id === "chart") {

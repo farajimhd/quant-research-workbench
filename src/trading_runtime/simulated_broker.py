@@ -561,11 +561,17 @@ class SimulatedBrokerAdapter:
     async def canonical_ledger(self, account_id: str):
         return normalize_ledger((await self.account_ledger(account_id)).to_cpapi(), account_id)
 
-    async def on_market_event(self, event: MarketEvent) -> list[Execution]:
+    @property
+    def has_orders(self) -> bool:
+        return bool(self._orders)
+
+    def observe_market_event(self, event: MarketEvent) -> int:
+        """Update causal quote/trade marks without running order matching."""
+
         self._require_initialized()
         conid = self._event_conid(event)
         if conid <= 0:
-            return []
+            return 0
         if isinstance(event, QuoteEvent):
             self._quotes[conid] = event
             if event.midpoint > 0:
@@ -574,6 +580,14 @@ class SimulatedBrokerAdapter:
             self._trades[conid] = event
             if event.price > 0:
                 self._marks[conid] = event.price
+        return conid
+
+    async def on_market_event(self, event: MarketEvent) -> list[Execution]:
+        conid = self.observe_market_event(event)
+        if conid <= 0:
+            return []
+        if not self._orders:
+            return []
         executions: list[Execution] = []
         async with self._lock:
             # Freeze event eligibility before applying any fills. A child that

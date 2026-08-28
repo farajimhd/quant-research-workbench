@@ -213,6 +213,43 @@ class ReplayRunDefinitionTests(unittest.TestCase):
             )["enabled"]
         )
 
+    def test_stream_snapshot_omits_heavy_audit_collections(self) -> None:
+        definition = ReplayRunDefinition(
+            session_date=date(2026, 7, 28),
+            start_time=time(9, 45),
+            configuration_revision=approved_configuration(),
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            controller = ReplayRunController(definition, runtime_root=Path(directory))
+            full = controller.snapshot()
+            streamed = controller.stream_snapshot()
+
+        self.assertIn("assignments", full)
+        self.assertIn("sources", full["data_authority"])
+        self.assertNotIn("assignments", streamed)
+        self.assertEqual(streamed["assignment_count"], 0)
+        self.assertNotIn("sources", streamed["data_authority"])
+        self.assertEqual(streamed["data_authority"]["source_count"], 0)
+        self.assertEqual(streamed["canvas_profile"], full["canvas_profile"])
+
+    def test_stream_snapshot_reuses_bounded_checkpoint_projection(self) -> None:
+        definition = ReplayRunDefinition(
+            session_date=date(2026, 7, 28),
+            start_time=time(9, 45),
+            configuration_revision=approved_configuration(),
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            controller = ReplayRunController(definition, runtime_root=Path(directory))
+            controller._journal = MagicMock()
+            controller._journal.load_checkpoint.return_value = None
+
+            first = controller.stream_snapshot()["checkpoint"]
+            second = controller.stream_snapshot()["checkpoint"]
+
+        self.assertEqual(first, second)
+        self.assertEqual(first["interval_events"], 25_000)
+        controller._journal.load_checkpoint.assert_called_once_with(controller.run_id)
+
     def test_debug_definition_requires_a_bounded_deterministic_fixture(self) -> None:
         with self.assertRaisesRegex(ValueError, "requires a deterministic fixture"):
             ReplayRunDefinition(

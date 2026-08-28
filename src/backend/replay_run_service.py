@@ -101,6 +101,8 @@ REPLAY_STATUSES = {
 }
 TERMINAL_REPLAY_STATUSES = {"completed", "stopped", "failed"}
 PLAYBACK_SPEEDS = (1.0, 5.0, 30.0, 120.0, 0.0)
+REPLAY_RESTART_CHECKPOINT_INTERVAL_EVENTS = 25_000
+BACKTEST_RESTART_CHECKPOINT_INTERVAL_EVENTS = 100_000
 DEFAULT_MAX_RESIDENT_RUNS = 32
 DEFAULT_HISTORY_FETCH_CONCURRENCY = 4
 MAX_DEBUG_FIXTURE_EVENTS = 20_000
@@ -759,6 +761,7 @@ class ReplayRunController:
         self._processed_frames = 0
         self._last_restart_checkpoint_event_bucket = 0
         self._last_restart_checkpoint_frame_bucket = 0
+        self._checkpoint_projection_cache: dict[str, Any] | None = None
         self._bar_gpt_origin_us = 0
         self._bar_gpt_prediction_origin_us = 0
         self._bar_gpt_scope_task: asyncio.Task[None] | None = None
@@ -884,7 +887,7 @@ class ReplayRunController:
             self._condition.notify_all()
         await self._publish(force=True)
         self._write_manifest()
-        return self.snapshot()
+        return self.stream_snapshot()
 
     async def add_assignment(self, payload: dict[str, Any]) -> dict[str, Any]:
         if self._strategy is None:
@@ -1169,7 +1172,7 @@ class ReplayRunController:
             return "play"
         return self.status
 
-    def snapshot(self) -> dict[str, Any]:
+    def snapshot(self, *, include_details: bool = True) -> dict[str, Any]:
         current = self.current_time or self.definition.session_start
         checkpoint = self._checkpoint_projection()
         duration = max(
@@ -1211,10 +1214,20 @@ class ReplayRunController:
             "progress": min(1.0, elapsed / duration),
             "account_ids": list(self.account_ids),
             "account_mapping": dict(self._account_map),
-            "assignments": (
-                [assignment.payload() for assignment in self._strategy.assignments()]
-                if self._strategy is not None
-                else []
+            **(
+                {
+                    "assignments": (
+                        [assignment.payload() for assignment in self._strategy.assignments()]
+                        if self._strategy is not None
+                        else []
+                    )
+                }
+                if include_details
+                else {
+                    "assignment_count": (
+                        len(self._strategy.assignments()) if self._strategy is not None else 0
+                    )
+                }
             ),
             "historical_watchlists": {
                 "active_tickers": sorted(self._active_historical_watchlist_tickers),
@@ -1252,7 +1265,11 @@ class ReplayRunController:
                     "revision": self.definition.configuration_revision.get("revision", 0),
                     "content_hash": self.definition.configuration_revision.get("content_hash", ""),
                 },
-                "sources": deepcopy(self._data_authority),
+                **(
+                    {"sources": deepcopy(self._data_authority)}
+                    if include_details
+                    else {"source_count": len(self._data_authority)}
+                ),
             },
             **{
                 key: value
@@ -1289,22 +1306,37 @@ class ReplayRunController:
         )
         return payload
 
+    def stream_snapshot(self) -> dict[str, Any]:
+        """Return the bounded, frequently published Replay state.
+
+        Full assignment and source-authority evidence remains available from
+        ``snapshot`` and the durable manifest. Neither collection is consumed
+        by the Replay Canvas, so retransmitting it on every clock tick only
+        adds serialization, websocket, and browser parsing pressure.
+        """
+
+        return self.snapshot(include_details=False)
+
     def _checkpoint_projection(self) -> dict[str, Any]:
+        if self._checkpoint_projection_cache is not None:
+            return deepcopy(self._checkpoint_projection_cache)
         persisted = (
             self._journal.load_checkpoint(self.run_id)
             if self._journal is not None
             else None
         )
         if persisted is None:
-            return {
+            projection = {
                 "status": "pending",
                 "cursor": "",
                 "event_time": None,
                 "updated_at": None,
                 "processed_events": 0,
-                "interval_events": 1_000,
+                "interval_events": self._restart_checkpoint_interval_events(),
                 "resume_supported": False,
             }
+            self._checkpoint_projection_cache = projection
+            return deepcopy(projection)
         state = dict(persisted.get("state") or {})
         restart_ready = (
             int(state.get("schema_version") or 0) == RESTART_CHECKPOINT_SCHEMA_VERSION
@@ -1314,7 +1346,7 @@ class ReplayRunController:
             and isinstance(state.get("identity"), dict)
             and isinstance(state.get("runtime"), dict)
         )
-        return {
+        projection = {
             "status": "available",
             "cursor": str(persisted.get("cursor") or ""),
             "event_time": persisted.get("event_time"),
@@ -1324,14 +1356,19 @@ class ReplayRunController:
                 or state.get("processed_events")
                 or 0
             ),
-            "interval_events": (
-                self._runtime.config.checkpoint_interval_events
-                if self._runtime is not None
-                else 1_000
-            ),
+            "interval_events": self._restart_checkpoint_interval_events(),
             "resume_supported": restart_ready,
             "schema_version": int(state.get("schema_version") or 1),
         }
+        self._checkpoint_projection_cache = projection
+        return deepcopy(projection)
+
+    def _restart_checkpoint_interval_events(self) -> int:
+        return (
+            BACKTEST_RESTART_CHECKPOINT_INTERVAL_EVENTS
+            if self.definition.mode == RunMode.BACKTEST
+            else REPLAY_RESTART_CHECKPOINT_INTERVAL_EVENTS
+        )
 
     def _restart_checkpoint_state(self) -> dict[str, Any]:
         if self._runtime is None:
@@ -1448,6 +1485,18 @@ class ReplayRunController:
             sort_keys=True,
         )
         self._journal.save_checkpoint(self.run_id, cursor, state, event_time)
+        self._checkpoint_projection_cache = {
+            "status": "available",
+            "cursor": cursor,
+            "event_time": event_time.isoformat(),
+            "updated_at": datetime.now(UTC).isoformat(),
+            "processed_events": int(
+                dict(state.get("controller") or {}).get("processed_events") or 0
+            ),
+            "interval_events": self._restart_checkpoint_interval_events(),
+            "resume_supported": True,
+            "schema_version": int(state.get("schema_version") or 1),
+        }
 
     async def canvas_payload(self, symbol: str = "AAPL") -> dict[str, Any]:
         if self._runtime is None or self._journal is None:
@@ -1546,7 +1595,7 @@ class ReplayRunController:
             "strategy": strategy,
             "trading": trading,
             "xbrl": [],
-            "run": self.snapshot(),
+            "run": self.stream_snapshot(),
         }
 
     def signal_stream_snapshot(
@@ -1757,7 +1806,11 @@ class ReplayRunController:
                             return
                     await self._process_market_event(
                         event,
-                        evaluate_strategy=event.ts >= self.definition.requested_start,
+                        # This strategy evaluates normalized causal observations
+                        # in _process_strategy_frame. Its raw-event callback is a
+                        # deliberate no-op, so invoking it for every quote/trade
+                        # only reduces Replay throughput.
+                        evaluate_strategy=False,
                     )
                     if event.ts < self.definition.requested_start:
                         self.warmup_events += 1
@@ -2076,9 +2129,7 @@ class ReplayRunController:
         self._source_cursor = dict(controller.get("source_cursor") or {})
         self._frame_cursor = dict(controller.get("frame_cursor") or {})
         self._processed_frames = int(controller.get("processed_frames") or 0)
-        checkpoint_interval = (
-            100_000 if self.definition.mode == RunMode.BACKTEST else 1_000
-        )
+        checkpoint_interval = self._restart_checkpoint_interval_events()
         self._last_restart_checkpoint_event_bucket = (
             self.processed_events // checkpoint_interval
         )
@@ -2182,7 +2233,13 @@ class ReplayRunController:
             raise RuntimeError("Replay runtime was not initialized")
         if isinstance(event, QuoteEvent):
             self._quotes[event.ticker] = event
-        await self._runtime.process_event(event, evaluate_strategy=evaluate_strategy)
+        if (
+            not evaluate_strategy
+            and not bool(getattr(self._runtime.broker, "has_orders", True))
+        ):
+            self._runtime.process_passive_market_event(event)
+        else:
+            await self._runtime.process_event(event, evaluate_strategy=evaluate_strategy)
         self._source_cursor = {
             "ts": event.ts.astimezone(UTC).isoformat(),
             "sequence": int(event.sequence),
@@ -2584,9 +2641,7 @@ class ReplayRunController:
             self.status = "paused"
             transport_boundary = True
         await self._publish(force=transport_boundary)
-        checkpoint_interval = (
-            100_000 if self.definition.mode == RunMode.BACKTEST else 1_000
-        )
+        checkpoint_interval = self._restart_checkpoint_interval_events()
         event_bucket = self.processed_events // checkpoint_interval
         frame_bucket = self._processed_frames // checkpoint_interval
         event_checkpoint_due = (
@@ -2741,10 +2796,10 @@ class ReplayRunController:
         if not self._subscribers:
             return
         now = time.monotonic()
-        if not force and now - self._last_publish_monotonic < 0.1:
+        if not force and now - self._last_publish_monotonic < 0.25:
             return
         self._last_publish_monotonic = now
-        payload = self.snapshot()
+        payload = self.stream_snapshot()
         for queue in tuple(self._subscribers):
             if queue.full():
                 try:
@@ -4105,7 +4160,7 @@ class ReplayRunService:
 
     def list(self) -> list[dict[str, Any]]:
         return [
-            _replay_run_list_projection(controller.snapshot(), resident=True)
+            _replay_run_list_projection(controller.stream_snapshot(), resident=True)
             for controller in sorted(
                 self._runs.values(),
                 key=lambda item: item.created_at,

@@ -1487,6 +1487,36 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
                 await runtime.process_event(older)
             journal.close()
 
+    async def test_passive_market_event_updates_causal_state_without_order_matching(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            journal = TradingJournal(Path(directory) / "journal.sqlite3")
+            broker = SimulatedBrokerAdapter(["DU123"])
+            runtime = TradingRuntime(
+                RunConfig(
+                    RunMode.REPLAY,
+                    "noop",
+                    1,
+                    ("DU123",),
+                    date(2026, 7, 14),
+                    run_id="00000000-0000-0000-0000-000000000003",
+                    checkpoint_interval_events=10_000,
+                ),
+                broker,
+                _NoopStrategy(),
+                journal,
+            )
+            try:
+                await runtime.initialize()
+                runtime.process_passive_market_event(quote(bid=99, ask=100))
+
+                self.assertEqual(runtime.processed_events, 1)
+                self.assertEqual(runtime.last_event_time, TS)
+                self.assertTrue(runtime._latest_checkpoint_cursor.endswith("|1|quote"))
+                self.assertFalse(broker.has_orders)
+                self.assertEqual(broker._quotes[265598].ask_price, 100)
+            finally:
+                journal.close()
+
     async def test_backtest_anchor_is_exclusive_and_replay_anchor_is_inclusive(self) -> None:
         backtest = historical_run_window(RunMode.BACKTEST, date(2026, 7, 13), session_count=1)
         replay = historical_run_window(RunMode.REPLAY, date(2026, 7, 13))

@@ -73,7 +73,7 @@ export type CanvasReplayRun = {
   processed_events?: number;
 };
 
-const REPLAY_UI_UPDATE_MS = 2_000;
+const REPLAY_UI_UPDATE_MS = 1_000;
 const TERMINAL_REPLAY_STATUSES = new Set(["completed", "failed", "stopped"]);
 
 export function isTerminalReplayStatus(status: string) {
