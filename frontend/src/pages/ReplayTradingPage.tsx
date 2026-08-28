@@ -22,6 +22,7 @@ import "./HistoricalWorkspace.css";
 import { MAIN_CANVAS_ID } from "../app/canvasWorkspace";
 import { TradingModeLaunch } from "../app/components/TradingModeLaunch";
 import { isTerminalReplayStatus, latestReplayRun, useReplayRunEvents, type CanvasReplayRun } from "../app/replayRun";
+import { STRATEGY_ACTIVITY_EVENT_LABELS, STRATEGY_ACTIVITY_EVENT_OPTIONS, type StrategyActivityEventType } from "../app/strategyActivity";
 import { CanvasWorkspaceSurface } from "./CanvasConfigurationPage";
 
 type ReplayCheck = {
@@ -329,6 +330,7 @@ function ReplayPreparation({ onCancel, run }: { onCancel: () => void; run: Canva
 function ReplayControls({ onExit, onRunChange, run }: { onExit: () => void; onRunChange: (run: CanvasReplayRun) => void; run: CanvasReplayRun }) {
   const [busy, setBusy] = useState("");
   const [controlError, setControlError] = useState("");
+  const [nextEventType, setNextEventType] = useState<"" | StrategyActivityEventType>("");
   const [wallClock, setWallClock] = useState(() => Date.now());
   const terminal = isTerminalReplayStatus(run.status);
   const active = ["running", "fast_forwarding"].includes(run.status);
@@ -386,7 +388,8 @@ function ReplayControls({ onExit, onRunChange, run }: { onExit: () => void; onRu
     }} title="Replay setup" type="button"><ArrowLeft size={14} /></button>
     <button aria-label={terminal ? "Resume Replay checkpoint" : active ? "Pause Replay" : "Play Replay"} className="replay-control-primary" disabled={(terminal && !run.checkpoint?.resume_supported) || Boolean(busy)} onClick={() => terminal ? resumeCheckpoint() : command(active ? "pause" : "play")} title={terminal ? "Resume from the latest durable checkpoint" : active ? "Pause the simulation" : "Continuously process QMD events at the selected speed"} type="button">{active ? <Pause size={14} /> : <Play size={14} />}</button>
     <button aria-label="Advance one event-time second" className="replay-control-button" disabled={terminal || Boolean(busy)} onClick={() => command("step", { step_seconds: 1 })} title="Step one second" type="button"><SkipForward size={13} /></button>
-    <button aria-label="Fast-forward to the next strategy action" className="replay-control-action" data-active={navigationActive || undefined} disabled={terminal || Boolean(busy) || navigationActive} onClick={() => command("next_action")} title="Search causally for a watch start, strategy decision, or order update, then pause" type="button"><Sparkles size={13} /><span>{busy === "next_action" ? "Starting…" : navigationPreparing ? "Preparing…" : navigationActive ? "Scanning…" : "Next strategy action"}</span></button>
+    <label className="replay-next-event-control" title="Choose the Strategy Activity event class to find next"><span>Next</span><select aria-label="Next strategy event type" disabled={terminal || Boolean(busy) || navigationActive} onChange={(event) => setNextEventType(event.target.value as "" | StrategyActivityEventType)} value={nextEventType}><option value="">Any action</option>{STRATEGY_ACTIVITY_EVENT_OPTIONS.map(({ label, value }) => <option key={value} value={value}>{label}</option>)}</select></label>
+    <button aria-label={`Fast-forward to the next ${nextEventType ? STRATEGY_ACTIVITY_EVENT_LABELS[nextEventType].toLowerCase() : "strategy action"}`} className="replay-control-action" data-active={navigationActive || undefined} disabled={terminal || Boolean(busy) || navigationActive} onClick={() => command("next_action", { target_event_type: nextEventType })} title={nextEventType ? `Process events causally until the next ${STRATEGY_ACTIVITY_EVENT_LABELS[nextEventType].toLowerCase()}, then pause` : "Search causally for a watch start, strategy decision, or order update, then pause"} type="button"><Sparkles size={13} /><span>{busy === "next_action" ? "Starting…" : navigationPreparing ? "Preparing…" : navigationActive ? "Scanning…" : nextEventType ? `Next ${STRATEGY_ACTIVITY_EVENT_LABELS[nextEventType].toLowerCase()}` : "Next strategy action"}</span></button>
     <button aria-label="Advance five event-time minutes and pause" className="replay-control-button replay-control-jump" disabled={terminal || Boolean(busy)} onClick={() => {
       const current = new Date(run.current_time);
       const end = new Date(run.session_end);

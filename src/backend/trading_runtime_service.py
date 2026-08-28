@@ -485,6 +485,15 @@ def strategy_canvas_payload(*, as_of: datetime, ticker: str) -> dict[str, Any]:
     }
 
 
+STRATEGY_ACTIVITY_EVENT_TYPES = (
+    "signal",
+    "watchlist",
+    "decision",
+    "campaign_state",
+    "order",
+)
+
+
 def strategy_activity_payload(
     *,
     journal: TradingJournal | None = None,
@@ -507,7 +516,7 @@ def strategy_activity_payload(
     rows: list[dict[str, Any]] = []
     for record in records:
         payload = dict(record.payload)
-        row_type = _strategy_activity_event_type(record.entity_type)
+        row_type = strategy_activity_event_type(record.entity_type)
         if event_type and row_type != event_type:
             continue
         metadata = dict(payload.get("metadata") or {})
@@ -557,12 +566,12 @@ def strategy_activity_payload(
             "strategies": strategies,
             "runs": runs,
             "tickers": tickers,
-            "event_types": ["signal", "watchlist", "decision", "campaign_state", "order"],
+            "event_types": list(STRATEGY_ACTIVITY_EVENT_TYPES),
         },
     }
 
 
-def _strategy_activity_event_type(entity_type: str) -> str:
+def strategy_activity_event_type(entity_type: str) -> str:
     if entity_type == "signal_occurrence":
         return "signal"
     if entity_type == "historical_watchlist_member":

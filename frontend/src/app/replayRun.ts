@@ -28,7 +28,7 @@ export type CanvasReplayRun = {
     entity_id: string;
     entity_type: string;
     event_time: string;
-    kind: "order_management" | "strategy_decision" | "watch_started";
+    kind: "campaign_state" | "order_management" | "strategy_decision" | "strategy_signal" | "watch_started" | "watchlist_membership";
     label: string;
     sequence: number;
     ticker: string;
@@ -39,6 +39,7 @@ export type CanvasReplayRun = {
     scanned_events: number;
     start_event_time: string | null;
     started_at: string | null;
+    target_event_type?: string;
     targets: string[];
   };
   progress: number;

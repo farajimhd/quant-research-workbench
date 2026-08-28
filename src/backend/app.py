@@ -1041,6 +1041,7 @@ class ReplayRunCommandRequest(BaseModel):
     command: str
     speed: float | None = None
     target_time: str | None = None
+    target_event_type: str = Field(default="", max_length=32)
     step_seconds: float = Field(default=1.0, gt=0, le=60)
 
 
@@ -5727,6 +5728,7 @@ async def trading_replay_run_command(
                 if payload.target_time is not None
                 else None
             ),
+            target_event_type=payload.target_event_type,
             step_seconds=payload.step_seconds,
         )
     except KeyError as exc:

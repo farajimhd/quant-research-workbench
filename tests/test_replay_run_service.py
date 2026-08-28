@@ -2334,6 +2334,71 @@ class ReplayControllerTests(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(controller.snapshot()["navigation_search"]["active"])
             controller._journal.close()
 
+    async def test_next_action_can_target_strategy_activity_event_type(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            controller = ReplayRunController(
+                ReplayRunDefinition(
+                    session_date=date(2026, 7, 28),
+                    start_time=time(9, 45),
+                    tickers=("AAPL",),
+                    configuration_revision=approved_configuration(),
+                ),
+                runtime_root=Path(directory),
+            )
+            controller.status = "ready"
+            controller.current_time = datetime(2026, 7, 28, 9, 45, tzinfo=NEW_YORK)
+            controller._journal = TradingJournal(Path(directory) / "journal.sqlite")
+
+            result = await controller.command(
+                "next_action", target_event_type="decision"
+            )
+            self.assertEqual(result["navigation_search"]["target_event_type"], "decision")
+
+            signal_time = datetime(2026, 7, 28, 9, 45, 1, tzinfo=NEW_YORK)
+            controller._journal.append(
+                run_id=controller.run_id,
+                category="market_discovery_signal",
+                entity_type="signal_occurrence",
+                entity_id="signal-1",
+                event_time=signal_time,
+                payload={"ticker": "AAPL", "signal_stream_name": "Early Squeeze Move"},
+            )
+            await controller._after_event(signal_time)
+            self.assertEqual(controller.status, "fast_forwarding")
+
+            decision_time = datetime(2026, 7, 28, 9, 45, 2, tzinfo=NEW_YORK)
+            controller._journal.append(
+                run_id=controller.run_id,
+                category="strategy_decision",
+                entity_type="strategy_evaluation",
+                entity_id="decision-1",
+                event_time=decision_time,
+                payload={"action": "wait", "ticker": "AAPL"},
+            )
+            await controller._after_event(decision_time)
+
+            snapshot = controller.snapshot()
+            self.assertEqual(snapshot["status"], "paused")
+            self.assertEqual(snapshot["navigation_action"]["event_type"], "decision")
+            self.assertEqual(snapshot["navigation_action"]["label"], "wait")
+            self.assertFalse(snapshot["navigation_search"]["active"])
+            controller._journal.close()
+
+    async def test_next_action_rejects_unknown_strategy_activity_event_type(self) -> None:
+        controller = ReplayRunController(
+            ReplayRunDefinition(
+                session_date=date(2026, 7, 28),
+                start_time=time(9, 45),
+                tickers=("AAPL",),
+                configuration_revision=approved_configuration(),
+            ),
+            runtime_root=Path(tempfile.gettempdir()),
+        )
+        controller.status = "ready"
+
+        with self.assertRaisesRegex(ValueError, "target_event_type"):
+            await controller.command("next_action", target_event_type="unknown")
+
     async def test_next_action_stops_on_preloaded_future_market_signal(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             controller = ReplayRunController(

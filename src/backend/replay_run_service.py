@@ -39,10 +39,12 @@ from src.backend.qmd_gateway_client import (
     qmd_product_request,
 )
 from src.backend.trading_runtime_service import (
+    STRATEGY_ACTIVITY_EVENT_TYPES,
     historical_day_coverage,
     historical_gateway_base_url,
     historical_gateway_snapshot,
     historical_preflight,
+    strategy_activity_event_type,
 )
 from src.backend.trading_configuration_service import (
     approved_session_configuration_snapshot,
@@ -109,21 +111,64 @@ _PREPARED_FRAME_CACHE_LOCKS: WeakValueDictionary[str, asyncio.Lock] = (
 )
 
 
-def _replay_navigation_action(record: JournalRecord) -> dict[str, Any] | None:
+def _replay_navigation_action(
+    record: JournalRecord, target_event_type: str = ""
+) -> dict[str, Any] | None:
     """Project the next causal milestone worth stopping Replay for."""
 
     payload = dict(record.payload)
     action = str(payload.get("action") or "").strip().lower()
-    if record.category == "market_discovery_signal":
-        kind = "watch_started"
-        label = str(payload.get("signal_stream_name") or payload.get("signal_stream_id") or "Market signal")
-    elif record.category == "strategy_decision" and action not in {"", "wait", "hold"}:
+    event_type = strategy_activity_event_type(record.entity_type)
+    if target_event_type and event_type != target_event_type:
+        return None
+    if not target_event_type:
+        if record.category == "market_discovery_signal":
+            kind = "watch_started"
+            label = str(
+                payload.get("signal_stream_name")
+                or payload.get("signal_stream_id")
+                or "Market signal"
+            )
+        elif record.category == "strategy_decision" and action not in {
+            "",
+            "wait",
+            "hold",
+        }:
+            kind = "strategy_decision"
+            label = action.replace("_", " ")
+        elif record.category == "order_management":
+            kind = "order_management"
+            label = str(payload.get("state") or record.entity_type).replace("_", " ")
+        else:
+            return None
+    elif event_type == "signal":
+        kind = "strategy_signal"
+        label = str(
+            payload.get("signal_stream_name")
+            or payload.get("signal_stream_id")
+            or action
+            or "Market signal"
+        )
+    elif event_type == "watchlist":
+        kind = "watchlist_membership"
+        label = str(payload.get("event") or "Watchlist membership").replace("_", " ")
+    elif event_type == "campaign_state":
+        kind = "campaign_state"
+        label = str(
+            payload.get("status")
+            or payload.get("state")
+            or action
+            or "Campaign state"
+        ).replace("_", " ")
+    elif event_type == "decision":
         kind = "strategy_decision"
-        label = action.replace("_", " ")
-    elif record.category == "order_management":
+        label = (action or str(payload.get("state") or "Strategy decision")).replace(
+            "_", " "
+        )
+    elif event_type == "order":
         kind = "order_management"
         label = str(payload.get("state") or record.entity_type).replace("_", " ")
-    else:
+    else:  # pragma: no cover - guarded by the shared activity taxonomy
         return None
     return {
         "kind": kind,
@@ -134,6 +179,7 @@ def _replay_navigation_action(record: JournalRecord) -> dict[str, Any] | None:
         "entity_type": record.entity_type,
         "entity_id": record.entity_id,
         "sequence": record.sequence,
+        "event_type": event_type,
     }
 
 
@@ -647,6 +693,7 @@ class ReplayRunController:
         self._step_until: datetime | None = None
         self._fast_forward_until: datetime | None = None
         self._next_action_after_sequence: int | None = None
+        self._navigation_target_event_type = ""
         self._navigation_target_action: dict[str, Any] | None = None
         self._navigation_skip_to_target = False
         self._last_navigation_action: dict[str, Any] | None = None
@@ -739,6 +786,7 @@ class ReplayRunController:
         speed: float | None = None,
         target_time: clock_time | None = None,
         step_seconds: float = 1.0,
+        target_event_type: str = "",
     ) -> dict[str, Any]:
         normalized = command.strip().lower()
         if normalized not in {"play", "pause", "step", "set_speed", "fast_forward", "next_action", "stop"}:
@@ -794,8 +842,15 @@ class ReplayRunController:
                 self._step_until = None
                 self.status = "fast_forwarding"
             elif normalized == "next_action":
+                normalized_target = target_event_type.strip().lower()
+                if normalized_target and normalized_target not in STRATEGY_ACTIVITY_EVENT_TYPES:
+                    raise ValueError(
+                        "Replay target_event_type must be one of "
+                        + ", ".join(STRATEGY_ACTIVITY_EVENT_TYPES)
+                    )
                 records = self._journal.records(self.run_id) if self._journal is not None else []
                 self._next_action_after_sequence = records[-1].sequence if records else 0
+                self._navigation_target_event_type = normalized_target
                 self._last_navigation_action = None
                 self._navigation_started_at = datetime.now(UTC)
                 self._navigation_start_time = self.current_time or self.definition.requested_start
@@ -805,8 +860,8 @@ class ReplayRunController:
                     action
                     for record in records
                     if record.event_time > current
-                    and (action := _replay_navigation_action(record)) is not None
-                    and action["kind"] == "watch_started"
+                    and (action := _replay_navigation_action(record, normalized_target)) is not None
+                    and action["kind"] in {"watch_started", "strategy_signal"}
                 ]
                 self._navigation_target_action = min(
                     future_market_actions,
@@ -1035,6 +1090,7 @@ class ReplayRunController:
 
     def _clear_navigation_search(self) -> None:
         self._next_action_after_sequence = None
+        self._navigation_target_event_type = ""
         self._navigation_target_action = None
         self._navigation_skip_to_target = False
         self._navigation_started_at = None
@@ -1061,7 +1117,8 @@ class ReplayRunController:
                 if active
                 else 0
             ),
-            "targets": ["watch start", "strategy decision", "order update"],
+            "targets": list(STRATEGY_ACTIVITY_EVENT_TYPES),
+            "target_event_type": self._navigation_target_event_type,
             "target_event_time": (
                 self._navigation_target_action.get("event_time")
                 if self._navigation_target_action is not None
@@ -2491,7 +2548,9 @@ class ReplayRunController:
                 self.run_id, after_sequence=self._next_action_after_sequence
             ):
                 self._next_action_after_sequence = record.sequence
-                action = _replay_navigation_action(record)
+                action = _replay_navigation_action(
+                    record, self._navigation_target_event_type
+                )
                 if action is not None:
                     self._last_navigation_action = action
                     self._next_action_after_sequence = None
