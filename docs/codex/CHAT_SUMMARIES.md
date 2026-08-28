@@ -2,6 +2,22 @@
 
 ## 2026
 
+### [2026-08-26 08:46 PDT - Repair DeepFM serving drift, forecast gold, and News Synthesis V61](/docs/codex/chat-summaries/2026/CHAT-20260826-0846-news-forecast-gold-reaudit-v61-alignment.md)
+
+- Chat/task ID: `01a03ec0-9ed5-7b82-9920-77dec0c69ae7`
+- Related tasks: `TASK-0182`, `TASK-0191`, `TASK-0200`, `TASK-0204`
+- Summary written: 2026-08-28 16:11 PDT
+
+Repaired a DeepFM training/serving scaling inversion and rescored all affected
+live rows, converted extensive title-pattern and manual reviews into immutable
+authorities, and completed a bounded two-pass audit of all 43,369 V59 training
+mismatches. A later lineage check found that the first successor had restored
+55,425 older unaudited labels. The corrected V2 authority now preserves every
+operator decision and unaudited parent row, applies 20,122 nonconflicting
+subagent corrections, and reduces V61 training mismatches from 65,960 to
+31,856 while leaving the August holdout unchanged. DeepFM retraining and final
+V61 alignment remain open.
+
 ### [2026-08-25 12:25 PDT - Harden QMD Live, BarGPT, and managed service operations](docs/codex/chat-summaries/2026/CHAT-20260825-1225-service-qmd-bargpt-runtime-hardening.md)
 
 - Chat/task ID: `01a03a62-807a-7c23-96c7-a16aba5b4d93`
