@@ -1359,6 +1359,17 @@ def finalize_gold_standard(output_root: Path, source_root: Path) -> dict[str, An
                 parent_assignment_alignment_changes += 1
             decision = decisions_by_source.get(source_id)
             if decision:
+                operator_protected = (
+                    bool(row.get("human_certified"))
+                    or str(row.get("authority_class") or "").startswith("operator_reviewed_")
+                    or "human_policy_adjudicated" in str(row.get("usage_policy") or "")
+                )
+                if operator_protected and decision["final_label"] != parent_label:
+                    raise ValueError(
+                        "subagent decision conflicts with operator-protected parent label; "
+                        "use build_news_v59_consolidated_gold_v2.py for explicit precedence: "
+                        f"{source_id}"
+                    )
                 scoped += 1
                 row.update(
                     {
@@ -1396,17 +1407,12 @@ def finalize_gold_standard(output_root: Path, source_root: Path) -> dict[str, An
                 if decision["correction_applied"]:
                     row["superseded_forecast_eligibility_label"] = decision["old_gold_label"]
             else:
-                target_label = assignment_label if assignment_label is not None else parent_label
+                # The assignment CSV describes the frozen audit population; its gold_label
+                # is not a successor authority.  Retain the already-corrected parent for
+                # every row outside this audit instead of resurrecting older labels.
+                target_label = parent_label
                 row["forecast_eligibility_label"] = target_label
                 row["forecast_eligible"] = target_label == "eligible"
-                if assignment_label is not None and parent_label != assignment_label:
-                    row.update(
-                        {
-                            "assignment_gold_aligned": True,
-                            "assignment_gold_source": POLICY_ASSIGNMENTS.parent.name,
-                            "source_dataset": FINAL_TRAINING_AUTHORITY.name,
-                        }
-                    )
             expected_authority_labels[source_id] = str(row["forecast_eligibility_label"])
             authority_counts[str(row["forecast_eligibility_label"])] += 1
             handle.write(canonical_json(row) + "\n")

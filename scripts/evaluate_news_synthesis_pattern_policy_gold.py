@@ -42,21 +42,17 @@ NEWS_ROOT = RUNTIME_ROOT / "news_synthesis_v1"
 TRAINING_GOLD = (
     RUNTIME_ROOT
     / "llm_issuer_labeling_v4"
-    / "forecast_eligibility_sentiment_authority_v59_calibrated_reaudit_v1"
+    / "forecast_eligibility_sentiment_authority_v59_calibrated_reaudit_v2"
 )
 HOLDOUT_GOLD = (
     NEWS_ROOT
     / "forecast_eligibility_august_2026_temporal_holdout_pattern_policy_final_v2"
 )
 ASSIGNMENTS = (
-    NEWS_ROOT
-    / "news_v59_training_mismatch_calibrated_file_reaudit_v3"
-    / "reconciliation"
-    / "final"
-    / "ARTICLE_POLICY_ASSIGNMENTS_REAUDITED.csv"
+    TRAINING_GOLD / "EVALUATION_ASSIGNMENTS.csv"
 )
-DEFAULT_OUTPUT = NEWS_ROOT / "news_synthesis_v61_reaudited_gold_evaluation_v1"
-EVALUATION_VERSION = "news_synthesis_pattern_policy_gold_evaluation_v3"
+DEFAULT_OUTPUT = NEWS_ROOT / "news_synthesis_v61_consolidated_gold_v2_evaluation_v1"
+EVALUATION_VERSION = "news_synthesis_pattern_policy_gold_evaluation_v4"
 
 
 def _sha256(path: Path) -> str:
