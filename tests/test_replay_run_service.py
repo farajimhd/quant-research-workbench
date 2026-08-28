@@ -2028,6 +2028,59 @@ class ReplayControllerTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(controller._next_action_after_sequence, 0)
 
+    async def test_next_action_publishes_only_start_and_final_transport_boundaries(self) -> None:
+        controller = ReplayRunController(
+            ReplayRunDefinition(
+                session_date=date(2026, 8, 21),
+                start_time=time(4, 0),
+                configuration_revision=approved_configuration(),
+            ),
+            runtime_root=Path(tempfile.gettempdir()),
+        )
+        queue = controller.subscribe()
+        start_time = controller.definition.requested_start
+        controller.current_time = start_time
+        controller.status = "fast_forwarding"
+        controller._next_action_after_sequence = 0
+        controller._navigation_started_at = datetime.now(UTC)
+        controller._navigation_start_time = start_time
+
+        await controller._publish(force=True)
+        self.assertTrue(queue.empty())
+
+        await controller._publish(force=True, allow_navigation=True)
+        started = queue.get_nowait()
+        self.assertTrue(started["navigation_search"]["active"])
+        self.assertEqual(started["current_time"], start_time.isoformat())
+
+        controller.current_time = start_time.replace(minute=5)
+        controller.processed_events = 25_000
+        await controller._publish(force=True)
+        self.assertTrue(queue.empty())
+
+        controller._last_navigation_action = {
+            "event_time": controller.current_time.isoformat(),
+            "kind": "strategy_signal",
+            "label": "Entry decision",
+            "sequence": 1,
+            "ticker": "TEST",
+        }
+        controller._clear_navigation_search()
+        controller.status = "paused"
+        await controller._publish(force=True)
+        finished = queue.get_nowait()
+        self.assertFalse(finished["navigation_search"]["active"])
+        self.assertEqual(finished["status"], "paused")
+        self.assertEqual(finished["current_time"], controller.current_time.isoformat())
+
+        controller.status = "running"
+        controller.current_time = start_time.replace(minute=6)
+        await controller._publish(force=True)
+        playing = queue.get_nowait()
+        self.assertEqual(playing["status"], "running")
+        self.assertEqual(playing["current_time"], controller.current_time.isoformat())
+        controller.unsubscribe(queue)
+
     async def test_historical_watchlist_warmup_runs_off_event_loop(self) -> None:
         controller = ReplayRunController(
             ReplayRunDefinition(

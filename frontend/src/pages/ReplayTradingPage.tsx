@@ -331,7 +331,6 @@ function ReplayControls({ onExit, onRunChange, run }: { onExit: () => void; onRu
   const [busy, setBusy] = useState("");
   const [controlError, setControlError] = useState("");
   const [nextEventType, setNextEventType] = useState<"" | StrategyActivityEventType>("");
-  const [wallClock, setWallClock] = useState(() => Date.now());
   const terminal = isTerminalReplayStatus(run.status);
   const active = ["running", "fast_forwarding"].includes(run.status);
   const navigationActive = run.navigation_search?.active === true;
@@ -344,13 +343,6 @@ function ReplayControls({ onExit, onRunChange, run }: { onExit: () => void; onRu
   const preparationTotal = preparation.total;
   const preparationSource = preparation.source;
   const preparingDetail = run.transport_mode === "fast_forward" ? `+5 minutes queued · ${preparationSource}` : run.transport_mode === "step" ? `One-second step queued · ${preparationSource}` : `Play queued · ${preparationSource}`;
-  useEffect(() => {
-    if (!navigationActive) return;
-    setWallClock(Date.now());
-    const timer = window.setInterval(() => setWallClock(Date.now()), 1_000);
-    return () => window.clearInterval(timer);
-  }, [navigationActive, run.navigation_search?.started_at]);
-
   async function command(name: string, payload: Record<string, unknown> = {}) {
     setBusy(name);
     setControlError("");
@@ -404,7 +396,7 @@ function ReplayControls({ onExit, onRunChange, run }: { onExit: () => void; onRu
       <i aria-hidden="true" />
       <span>
         <strong aria-live="polite">{navigationPreparing ? "Preparing causal scan" : navigationActive ? "Finding next action" : runtimePreparing ? transportPreparing ? preparingLabel : "Preparing Replay" : run.status.replaceAll("_", " ")}</strong>
-        <small>{navigationPreparing ? `Loading signal + Watchlist history · ${navigationElapsedSeconds(run.navigation_search?.started_at, wallClock)}s` : navigationActive ? `${compactEventCount(run.navigation_search?.scanned_events)} market events · ${formatReplayClock(run.current_time)} ET · ${navigationElapsedSeconds(run.navigation_search?.started_at, wallClock)}s` : runtimePreparing ? transportPreparing ? preparingDetail : preparationSource : run.navigation_action ? `${formatReplayClock(run.navigation_action.event_time)} ET · ${run.navigation_action.ticker ? `${run.navigation_action.ticker} · ` : ""}${run.navigation_action.label}` : run.status === "warming" ? `${compactEventCount(run.warmup_events)} events` : `${Math.round(run.progress * 100)}%`}</small>
+        <small>{navigationPreparing ? "Loading signal + Watchlist history in the backend" : navigationActive ? `Backend scan in progress · Canvas held at ${formatReplayClock(run.current_time)} ET` : runtimePreparing ? transportPreparing ? preparingDetail : preparationSource : run.navigation_action ? `${formatReplayClock(run.navigation_action.event_time)} ET · ${run.navigation_action.ticker ? `${run.navigation_action.ticker} · ` : ""}${run.navigation_action.label}` : run.status === "warming" ? `${compactEventCount(run.warmup_events)} events` : `${Math.round(run.progress * 100)}%`}</small>
         {runtimePreparing ? <progress aria-label={`${preparationSource} progress`} max={preparationTotal || undefined} value={preparationTotal ? Math.min(preparationCompleted, preparationTotal) : undefined} /> : null}
       </span>
     </div>
@@ -450,11 +442,6 @@ function formatElapsed(seconds: number) {
 function compactEventCount(value?: number) {
   if (value === undefined) return "Preparing";
   return new Intl.NumberFormat("en-US", { maximumFractionDigits: 1, notation: "compact" }).format(value);
-}
-
-function navigationElapsedSeconds(startedAt: string | null | undefined, now: number) {
-  if (!startedAt) return 0;
-  return Math.max(0, Math.floor((now - Date.parse(startedAt)) / 1_000));
 }
 
 function ReplayCheckRow({ check }: { check: ReplayCheck }) {

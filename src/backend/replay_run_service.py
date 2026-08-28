@@ -885,7 +885,10 @@ class ReplayRunController:
                 self.status = "stopped"
             self.updated_at = datetime.now(UTC)
             self._condition.notify_all()
-        await self._publish(force=True)
+        await self._publish(
+            force=True,
+            allow_navigation=normalized == "next_action",
+        )
         self._write_manifest()
         return self.stream_snapshot()
 
@@ -2795,8 +2798,18 @@ class ReplayRunController:
             scope_id = str(payload.pop("scope_id"))
             await asyncio.to_thread(publish_bar_gpt_scope, scope_id, **payload)
 
-    async def _publish(self, *, force: bool = False) -> None:
+    async def _publish(
+        self,
+        *,
+        force: bool = False,
+        allow_navigation: bool = False,
+    ) -> None:
         if not self._subscribers:
+            return
+        if self._next_action_after_sequence is not None and not allow_navigation:
+            # Next-action navigation is a backend-only causal scan. Canvas
+            # consumers receive the acknowledged start state and the final
+            # paused boundary, never the intermediate market traversal.
             return
         now = time.monotonic()
         if not force and now - self._last_publish_monotonic < 0.25:
