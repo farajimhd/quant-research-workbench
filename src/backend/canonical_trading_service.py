@@ -26,7 +26,12 @@ from src.trading_runtime.ibkr_normalizer import (
 )
 from src.trading_runtime.projector import TradingStateProjector
 from src.trading_runtime.round_trips import derive_round_trip_trades
-from src.trading_runtime.performance import build_performance_report, derive_trade_episodes, episodes_from_round_trips
+from src.trading_runtime.performance import (
+    build_performance_report,
+    derive_position_lifecycles,
+    derive_trade_episodes,
+    episodes_from_round_trips,
+)
 
 
 _CACHE_SECONDS = 2.0
@@ -180,10 +185,15 @@ def trading_state_payload(snapshot: TradingStateSnapshot) -> dict[str, Any]:
         "pending_commission_count": sum(1 for row in payload.get("executions", []) if row.get("commission_status") != "final"),
     }
     payload["closed_trades_note"] = "Derived FIFO round trips for strategy analytics; not IBKR tax lots or IBKR trade confirmations."
+    payload["position_lifecycles"] = derive_position_lifecycles(
+        snapshot.executions,
+        snapshot.orders,
+        snapshot.positions,
+    )
     episodes = (
-        episodes_from_round_trips(snapshot.closed_trades)
-        if snapshot.mode in {TradingMode.BACKTEST, TradingMode.BACKTEST_DEBUG} and snapshot.closed_trades
-        else derive_trade_episodes(snapshot.executions)
+        derive_trade_episodes(snapshot.executions)
+        if snapshot.executions
+        else episodes_from_round_trips(snapshot.closed_trades)
     )
     payload["performance_snapshot"] = performance_snapshot(snapshot, metrics, episodes)
     payload["performance_journal"] = build_performance_report(episodes, snapshot.executions, snapshot.orders)

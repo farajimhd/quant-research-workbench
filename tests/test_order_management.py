@@ -767,6 +767,86 @@ class OrderManagementPolicyTests(unittest.IsolatedAsyncioTestCase):
             await manager.close()
             journal.close()
 
+    async def test_protective_fill_cancels_unfilled_entry_remainder(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            broker = RecordingBroker()
+            real_planner = IbkrStrategyOrderPlanner()
+            instrument = InstrumentContract("TEST", 123, "TEST", "STK", "USD")
+
+            def bracket_planner(strategy_intent, account_id, _event):
+                return real_planner.plan(
+                    account_id=account_id,
+                    instrument=instrument,
+                    intent=strategy_intent,
+                    strategy_id="strategy-1",
+                    strategy_revision=1,
+                )
+
+            journal = TradingJournal(Path(directory) / "orders.sqlite3")
+            await broker.initialize()
+            risk = RiskAuthority()
+            await risk.prime(broker, ["DU1"])
+            manager = OrderManagementEngine(
+                broker=broker,
+                planner=bracket_planner,
+                risk=risk,
+                journal=journal,
+                run_id="run-1",
+                strategy_id="strategy-1",
+                strategy_revision=1,
+                policy=BrokerCommunicationPolicy(),
+            )
+            entry = StrategyIntent(
+                **{
+                    **intent(quantity=100).payload(),
+                    "intent_id": "partial-entry-with-target",
+                    "profit_target_price": 10.50,
+                }
+            )
+            snapshot = await manager.submit_intent(
+                portfolio_approved(journal, entry), account_id="DU1", event=None
+            )
+            parent_id, child_id = snapshot.broker_order_ids[:2]
+            await manager.on_order_update(
+                LiveOrder(
+                    account="DU1", orderId=parent_id, conid=123, ticker="TEST",
+                    side="BUY", orderType="LMT", tif="DAY", totalSize=100,
+                    filledQuantity=25, remainingQuantity=75, avgPrice=10.02,
+                    order_status=OrderStatus.SUBMITTED,
+                    cOID=snapshot.client_order_ids[0],
+                )
+            )
+            await manager.on_order_update(
+                LiveOrder(
+                    account="DU1", orderId=child_id, conid=123, ticker="TEST",
+                    side="SELL", orderType="LMT", tif="DAY", totalSize=100,
+                    filledQuantity=25, remainingQuantity=75, avgPrice=10.50,
+                    order_status=OrderStatus.SUBMITTED,
+                    parentId=snapshot.client_order_ids[0],
+                )
+            )
+
+            parent = next(
+                row for row in await broker.live_orders()
+                if str(row.orderId) == str(parent_id)
+            )
+            self.assertEqual(parent.order_status, OrderStatus.CANCELLED)
+            cancel_records = [
+                row.payload
+                for row in journal.order_management_records(limit=100)
+                if row.entity_type == "order_cancel_requested"
+            ]
+            self.assertTrue(
+                any(
+                    row.get("reason")
+                    == "protective_exit_started_before_entry_complete"
+                    for row in cancel_records
+                ),
+                cancel_records,
+            )
+            await manager.close()
+            journal.close()
+
 
 if __name__ == "__main__":
     unittest.main()

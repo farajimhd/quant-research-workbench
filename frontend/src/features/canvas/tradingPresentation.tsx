@@ -375,29 +375,35 @@ function PortfolioManagementPreview({ data, management }: { data: CanonicalTradi
 
 function PositionsPreview({ data, onSymbolSelect, settings }: { data: CanonicalTradingPreview; onSymbolSelect?: (symbol: string) => void; settings: ContainerSettings["positions"] }) {
   const [view, setView] = useState<"open" | "closed" | "timeline">("open");
-  const openRows = data.positions.map((row) => {
-    const symbol = nestedValue(row, "instrument", "symbol");
-    const account = String(row.account_id || "");
-    const quantity = Number(row.quantity || 0);
-    const averagePrice = Number(row.average_price || 0);
-    const mark = Number(row.market_price || 0);
+  const lifecycleRows = (data.position_lifecycles ?? []).map((lifecycle) => {
+    const symbol = nestedValue(lifecycle, "instrument", "symbol");
+    const account = String(lifecycle.account_id || "");
+    const lifecycleOrderIds = new Set(((lifecycle.order_ids as unknown[]) ?? []).map(String));
+    const lifecycleExecutionIds = new Set(((lifecycle.execution_ids as unknown[]) ?? []).map(String));
+    const relatedOrders = data.orders.filter((order) => String(order.account_id || "") === account && lifecycleOrderIds.has(String(order.broker_order_id || order.client_order_id || "")));
+    const relatedExecutions = data.executions.filter((execution) => String(execution.account_id || "") === account && lifecycleExecutionIds.has(String(execution.execution_id || "")));
+    return { lifecycle, symbol, account, relatedOrders, relatedExecutions };
+  });
+  const openRows = lifecycleRows.filter(({ lifecycle }) => String(lifecycle.status) === "open").map(({ lifecycle, symbol, account, relatedOrders, relatedExecutions }) => {
+    const position = data.positions.find((row) => String(row.account_id || "") === account && nestedValue(row, "instrument", "instrument_id") === nestedValue(lifecycle, "instrument", "instrument_id"));
+    const quantity = Number(lifecycle.current_quantity || 0);
+    const averagePrice = Number(lifecycle.entry_price || 0);
+    const mark = Number(position?.market_price || 0);
     const returnPct = averagePrice > 0 ? ((mark - averagePrice) / averagePrice) * 100 * (quantity < 0 ? -1 : 1) : 0;
-    const relatedOrders = data.orders.filter((order) => String(order.account_id || "") === account && nestedValue(order, "instrument", "symbol") === symbol && !terminalOrderState(String(order.lifecycle_state || "")));
-    const relatedExecutions = data.executions.filter((execution) => String(execution.account_id || "") === account && nestedValue(execution, "instrument", "symbol") === symbol);
-    return { account, symbol, side: quantity > 0 ? "Long" : quantity < 0 ? "Short" : "Flat", quantity, average_price: row.average_price, mark: row.market_price, return_pct: returnPct, market_value: row.market_value, unrealized_pnl: row.unrealized_pnl, realized_pnl: row.realized_pnl, working_orders: relatedOrders.length, fills: relatedExecutions.length, updated_at: row.source_event_time, _position: row, _orders: relatedOrders, _executions: relatedExecutions };
-  }).filter((row) => row.quantity !== 0);
-  const closedRows = data.closed_trades.map((row) => ({ closed_at: row.closed_at, symbol: nestedValue(row, "instrument", "symbol"), side: row.side, quantity: row.quantity, entry_price: row.entry_price, exit_price: row.exit_price, gross_pnl: row.gross_pnl, fees: row.fees, net_pnl: row.net_pnl, account: row.account_id, _trade: row }));
+    return { account, symbol, side: lifecycle.side, quantity, average_price: lifecycle.entry_price, mark: position?.market_price, return_pct: returnPct, market_value: position?.market_value, unrealized_pnl: position?.unrealized_pnl, realized_pnl: lifecycle.gross_pnl, orders: relatedOrders.length, fills: relatedExecutions.length, opened_at: lifecycle.opened_at, _position: position ?? {}, _lifecycle: lifecycle, _orders: relatedOrders, _executions: relatedExecutions };
+  });
+  const closedRows = lifecycleRows.filter(({ lifecycle }) => String(lifecycle.status) === "closed").map(({ lifecycle, symbol, account, relatedOrders, relatedExecutions }) => ({ closed_at: lifecycle.closed_at, opened_at: lifecycle.opened_at, symbol, side: lifecycle.side, quantity: lifecycle.quantity, entry_price: lifecycle.entry_price, exit_price: lifecycle.exit_price, gross_pnl: lifecycle.gross_pnl, fees: lifecycle.fees, net_pnl: lifecycle.net_pnl, orders: relatedOrders.length, fills: relatedExecutions.length, account, _lifecycle: lifecycle, _orders: relatedOrders, _executions: relatedExecutions }));
   const timelineRows = data.activity.filter((row) => ["position_observed", "position_snapshot_completed", "execution_reported", "commission_reported"].includes(String(row.event_type || ""))).map((row) => ({ time: row.source_event_time, event: row.event_type, account: row.account_id, order_id: row.broker_order_id, execution_id: row.execution_id, provider: row.provider }));
   const netPnl = openRows.reduce((total, row) => total + Number(row.unrealized_pnl || 0), 0);
   const grossValue = openRows.reduce((total, row) => total + Math.abs(Number(row.market_value || 0)), 0);
   const winners = openRows.filter((row) => Number(row.unrealized_pnl || 0) > 0).length;
-  const openColumns = settings.showPnl ? ["symbol", "side", "quantity", "average_price", "mark", "return_pct", "market_value", "unrealized_pnl", "working_orders", "fills", "account", "updated_at"] : ["symbol", "side", "quantity", "average_price", "mark", "market_value", "working_orders", "fills", "account", "updated_at"];
+  const openColumns = settings.showPnl ? ["symbol", "side", "quantity", "average_price", "mark", "return_pct", "market_value", "unrealized_pnl", "orders", "fills", "account", "opened_at"] : ["symbol", "side", "quantity", "average_price", "mark", "market_value", "orders", "fills", "account", "opened_at"];
   return <section className="trading-preview trading-position-manager"><TradingFreshness data={data} />
     <div className="trading-summary-strip"><TradingMetric label="Open positions" value={String(openRows.length)} /><TradingMetric label="Winning" value={`${winners}/${openRows.length}`} tone={winners ? "positive" : "neutral"} /><TradingMetric label="Open P&L" value={signedMoney(netPnl)} tone={numberTone(netPnl)} /><TradingMetric label="Gross exposure" value={money(grossValue)} /></div>
     <TradingTabs active={view} onChange={(value) => setView(value as typeof view)} tabs={[{ id: "open", label: "Open", count: openRows.length }, { id: "closed", label: "Closed", count: closedRows.length }, { id: "timeline", label: "Timeline", count: timelineRows.length }]} />
-    {view === "open" ? <TradingDataTable columns={openColumns} defaultSort="market_value" filterColumn="side" filterLabel="All directions" onSymbolSelect={onSymbolSelect} renderExpanded={(row) => <PositionDetail row={row} />} rows={openRows.slice(0, settings.limit)} searchPlaceholder="Search symbol, account, side…" /> : null}
-    {view === "closed" ? <><div className="trading-disclosure">{data.closed_trades_note}</div><TradingDataTable columns={settings.showPnl ? ["closed_at", "symbol", "side", "quantity", "entry_price", "exit_price", "gross_pnl", "fees", "net_pnl", "account"] : ["closed_at", "symbol", "side", "quantity", "entry_price", "exit_price", "account"]} defaultSort="closed_at" filterColumn="side" filterLabel="All directions" onSymbolSelect={onSymbolSelect} rows={closedRows.slice(0, settings.limit)} searchPlaceholder="Search closed positions…" /></> : null}
-    {view === "timeline" ? <TradingDataTable columns={["time", "event", "account", "order_id", "execution_id", "provider"]} defaultSort="time" filterColumn="event" filterLabel="All events" rows={timelineRows.slice(0, settings.limit)} searchPlaceholder="Search position history…" /> : null}
+    {view === "open" ? <TradingDataTable columns={openColumns} defaultSort="market_value" filterColumn="side" filterLabel="All directions" onSymbolSelect={onSymbolSelect} renderExpanded={(row) => <PositionDetail row={row} />} rows={openRows} searchPlaceholder="Search symbol, account, side…" /> : null}
+    {view === "closed" ? <><div className="trading-disclosure">One row is one flat-to-flat position lifecycle. Partial exits and scale changes remain inside that position.</div><TradingDataTable columns={settings.showPnl ? ["closed_at", "symbol", "side", "quantity", "entry_price", "exit_price", "gross_pnl", "fees", "net_pnl", "orders", "fills", "account"] : ["closed_at", "symbol", "side", "quantity", "entry_price", "exit_price", "orders", "fills", "account"]} defaultSort="closed_at" filterColumn="side" filterLabel="All directions" onSymbolSelect={onSymbolSelect} renderExpanded={(row) => <PositionDetail row={row} />} rows={closedRows} searchPlaceholder="Search closed positions…" /></> : null}
+    {view === "timeline" ? <TradingDataTable columns={["time", "event", "account", "order_id", "execution_id", "provider"]} defaultSort="time" filterColumn="event" filterLabel="All events" rows={timelineRows} searchPlaceholder="Search position history…" /> : null}
   </section>;
 }
 
@@ -405,14 +411,21 @@ function PositionDetail({ row }: { row: PreviewRow }) {
   const orders = (row._orders as PreviewRow[] | undefined) ?? [];
   const executions = (row._executions as PreviewRow[] | undefined) ?? [];
   const position = (row._position as PreviewRow | undefined) ?? {};
-  const orderRows = orders.map(orderTableRow);
-  const executionRows = executions.map(executionTableRow);
-  return <div className="trading-row-detail"><div className="trading-detail-facts"><span><small>Contract</small><strong>{String(nestedValue(position, "instrument", "conid") || "—")}</strong></span><span><small>Asset / currency</small><strong>{String(nestedValue(position, "instrument", "security_type") || "—")} · {String(nestedValue(position, "instrument", "currency") || "—")}</strong></span><span><small>Model</small><strong>{String(position.model || "Default")}</strong></span><span><small>Snapshot</small><strong>{String(position.snapshot_id || "—")}</strong></span></div><div className="trading-related-grid"><section><header><strong>Working orders</strong><span>{orders.length}</span></header>{orders.length ? <PreviewTable columns={["status", "side", "remaining", "type", "limit", "stop", "order_id"]} rows={orderRows} /> : <p>No working orders for this position.</p>}</section><section><header><strong>Recent fills</strong><span>{executions.length}</span></header>{executions.length ? <PreviewTable columns={["time", "side", "quantity", "price", "exchange", "commission"]} rows={executionRows} /> : <p>No execution evidence in the loaded window.</p>}</section></div></div>;
+  const lifecycle = (row._lifecycle as PreviewRow | undefined) ?? {};
+  const orderRows = orders.map((order) => {
+    const orderExecutions = executions.filter((execution) => String(execution.broker_order_id || "") === String(order.broker_order_id || ""));
+    return { ...orderTableRow(order, orderExecutions), _order: order, _executions: orderExecutions };
+  });
+  const instrument = (lifecycle.instrument as PreviewRow | undefined) ?? (position.instrument as PreviewRow | undefined) ?? {};
+  return <div className="trading-row-detail"><div className="trading-detail-facts"><span><small>Position lifecycle</small><strong>{String(lifecycle.lifecycle_id || "—")}</strong></span><span><small>Contract</small><strong>{String(instrument.conid || "—")}</strong></span><span><small>Opened / closed</small><strong>{formatJournalDate(String(lifecycle.opened_at || "")) || "—"} ET · {lifecycle.closed_at ? `${formatJournalDate(String(lifecycle.closed_at))} ET` : "Open"}</strong></span><span><small>Execution parts</small><strong>{executions.length}</strong></span></div><section className="trading-fill-evidence"><header><strong>Orders in this position</strong><span>{orders.length} order{orders.length === 1 ? "" : "s"}</span></header>{orders.length ? <TradingDataTable columns={["status", "side", "progress", "remaining", "type", "limit", "stop", "order_id", "updated_at"]} defaultSort="updated_at" filterColumn="status" filterLabel="All statuses" renderExpanded={(order) => <OrderDetail row={order} />} rows={orderRows} searchPlaceholder="Search this position's orders…" /> : <p>No canonical order is linked to this position lifecycle.</p>}</section></div>;
 }
 
 function OrdersPreview({ data, onSymbolSelect, settings }: { data: CanonicalTradingPreview; onSymbolSelect?: (symbol: string) => void; settings: ContainerSettings["orders"] }) {
   const [view, setView] = useState<"working" | "all" | "fills">("working");
-  const orderRows: PreviewRow[] = data.orders.map((row) => ({ ...orderTableRow(row), _order: row, _executions: data.executions.filter((execution) => String(execution.account_id || "") === String(row.account_id || "") && String(execution.broker_order_id || "") === String(row.broker_order_id || "")) }));
+  const orderRows: PreviewRow[] = data.orders.map((row) => {
+    const executions = data.executions.filter((execution) => String(execution.account_id || "") === String(row.account_id || "") && String(execution.broker_order_id || "") === String(row.broker_order_id || ""));
+    return { ...orderTableRow(row, executions), _order: row, _executions: executions };
+  });
   const workingRows = orderRows.filter((row) => !terminalOrderState(String(row.status || "")));
   const executionRows = data.executions.map(executionTableRow);
   const filledCount = orderRows.filter((row) => String(row.status) === "filled").length;
@@ -422,7 +435,7 @@ function OrdersPreview({ data, onSymbolSelect, settings }: { data: CanonicalTrad
   return <section className="trading-preview trading-order-manager"><TradingFreshness data={data} />
     <div className="trading-summary-strip"><TradingMetric label="Working" value={String(workingRows.length)} tone={workingRows.length ? "primary" : "neutral"} /><TradingMetric label="Filled" value={String(filledCount)} tone={filledCount ? "positive" : "neutral"} /><TradingMetric label="Rejected" value={String(rejectedCount)} tone={rejectedCount ? "negative" : "neutral"} /><TradingMetric label="Executions" value={String(executionRows.length)} /></div>
     <TradingTabs active={view} onChange={(value) => setView(value as typeof view)} tabs={[{ id: "working", label: "Working", count: workingRows.length }, { id: "all", label: "All orders", count: orderRows.length }, { id: "fills", label: "Fills", count: executionRows.length }]} />
-    {view !== "fills" ? <TradingDataTable columns={columns} defaultSort="updated_at" filterColumn="status" filterLabel="All statuses" onSymbolSelect={onSymbolSelect} renderExpanded={(row) => <OrderDetail row={row} />} rows={activeRows.slice(0, settings.limit)} searchPlaceholder="Search orders, symbols, IDs…" /> : <TradingDataTable columns={["time", "symbol", "side", "quantity", "price", "exchange", "commission", "fee_state", "account", "order_id", "execution_id"]} defaultSort="time" filterColumn="side" filterLabel="All sides" onSymbolSelect={onSymbolSelect} rows={executionRows.slice(0, settings.limit)} searchPlaceholder="Search fills, venues, order IDs…" />}
+    {view !== "fills" ? <TradingDataTable columns={columns} defaultSort="updated_at" filterColumn="status" filterLabel="All statuses" onSymbolSelect={onSymbolSelect} renderExpanded={(row) => <OrderDetail row={row} />} rows={activeRows} searchPlaceholder="Search orders, symbols, IDs…" /> : <TradingDataTable columns={["time", "symbol", "side", "quantity", "price", "exchange", "commission", "fee_state", "account", "order_id", "execution_id"]} defaultSort="time" filterColumn="side" filterLabel="All sides" onSymbolSelect={onSymbolSelect} rows={executionRows} searchPlaceholder="Search fills, venues, order IDs…" />}
   </section>;
 }
 
@@ -435,23 +448,24 @@ function OrderDetail({ row }: { row: PreviewRow }) {
 function ExecutionsPreview({ data, onSymbolSelect, settings }: { data: CanonicalTradingPreview; onSymbolSelect?: (symbol: string) => void; settings: ContainerSettings["fills"] }) {
   const rows = data.executions.map(executionTableRow);
   const columns = settings.showCommission ? ["time", "symbol", "side", "quantity", "price", "exchange", "commission", "fee_state", "net_amount", "account", "order_id", "execution_id"] : ["time", "symbol", "side", "quantity", "price", "exchange", "account", "order_id", "execution_id"];
-  return <section className="trading-preview"><TradingFreshness data={data} /><div className="trading-disclosure">Advanced immutable execution audit. For routine management, use Orders &amp; Fills where each order expands into its related executions.</div><TradingDataTable columns={columns} defaultSort="time" filterColumn="side" filterLabel="All sides" onSymbolSelect={onSymbolSelect} rows={rows.slice(0, settings.limit)} searchPlaceholder="Search immutable execution evidence…" /></section>;
+  return <section className="trading-preview"><TradingFreshness data={data} /><div className="trading-disclosure">Advanced immutable execution audit. Every canonical execution is shown; Orders &amp; Fills groups these execution parts under their order.</div><TradingDataTable columns={columns} defaultSort="time" filterColumn="side" filterLabel="All sides" onSymbolSelect={onSymbolSelect} rows={rows} searchPlaceholder="Search immutable execution evidence…" /></section>;
 }
 
 function ClosedTradesPreview({ data, onSymbolSelect, settings }: { data: CanonicalTradingPreview; onSymbolSelect?: (symbol: string) => void; settings: ContainerSettings["closed_trades"] }) {
   const rows = data.closed_trades.map((row) => ({ closed_at: row.closed_at, symbol: nestedValue(row, "instrument", "symbol"), side: row.side, quantity: row.quantity, entry_price: row.entry_price, exit_price: row.exit_price, gross_pnl: row.gross_pnl, fees: row.fees, net_pnl: row.net_pnl, account: row.account_id }));
   const columns = settings.showFees ? ["closed_at", "symbol", "side", "quantity", "entry_price", "exit_price", "gross_pnl", "fees", "net_pnl", "account"] : ["closed_at", "symbol", "side", "quantity", "entry_price", "exit_price", "gross_pnl", "net_pnl", "account"];
-  return <section className="trading-preview"><div className="trading-disclosure">Advanced derived round-trip audit. The Position Manager provides the normal open, closed, and lifecycle workflow. {data.closed_trades_note}</div><TradingDataTable columns={columns} defaultSort="closed_at" filterColumn="side" filterLabel="All sides" onSymbolSelect={onSymbolSelect} rows={rows.slice(0, settings.limit)} searchPlaceholder="Search derived round trips…" /></section>;
+  return <section className="trading-preview"><div className="trading-disclosure">Advanced derived round-trip audit. FIFO fragments can outnumber positions; Position Manager is the flat-to-flat lifecycle authority. {data.closed_trades_note}</div><TradingDataTable columns={columns} defaultSort="closed_at" filterColumn="side" filterLabel="All sides" onSymbolSelect={onSymbolSelect} rows={rows} searchPlaceholder="Search derived round trips…" /></section>;
 }
 
 function TradingTabs({ active, onChange, tabs }: { active: string; onChange: (id: string) => void; tabs: Array<{ count: number; id: string; label: string }> }) {
   return <div aria-label="Trading view" className="trading-view-tabs" role="tablist">{tabs.map((tab) => <button aria-selected={active === tab.id} className={active === tab.id ? "active" : undefined} key={tab.id} onClick={() => onChange(tab.id)} role="tab" type="button"><span>{tab.label}</span><strong>{tab.count}</strong></button>)}</div>;
 }
 
-function orderTableRow(row: PreviewRow): PreviewRow {
+function orderTableRow(row: PreviewRow, executions: PreviewRow[] = []): PreviewRow {
   const filled = Number(row.filled_quantity || 0);
   const total = Number(row.total_quantity || 0);
-  return { status: row.lifecycle_state, broker_status: row.broker_status_raw, symbol: nestedValue(row, "instrument", "symbol"), side: row.side, progress: `${filled}/${total}`, filled, total, remaining: row.remaining_quantity, type: row.order_type, limit: row.limit_price, stop: row.stop_price, tif: row.time_in_force, account: row.account_id, order_id: row.broker_order_id, client_id: row.client_order_id, updated_at: row.source_event_time };
+  const executionTimes = executions.map((execution) => String(execution.source_event_time || "")).filter(Boolean).sort();
+  return { status: row.lifecycle_state, broker_status: row.broker_status_raw, symbol: nestedValue(row, "instrument", "symbol"), side: row.side, progress: `${filled}/${total}`, filled, total, remaining: row.remaining_quantity, type: row.order_type, limit: row.limit_price, stop: row.stop_price, tif: row.time_in_force, account: row.account_id, order_id: row.broker_order_id, client_id: row.client_order_id, updated_at: executionTimes.at(-1) || row.source_event_time };
 }
 
 function executionTableRow(row: PreviewRow): PreviewRow {

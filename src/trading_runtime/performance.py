@@ -8,10 +8,18 @@ from typing import Any, Iterable
 from uuid import NAMESPACE_URL, uuid5
 from zoneinfo import ZoneInfo
 
-from src.trading_runtime.domain import Execution, RoundTripTrade, TradeEpisode, json_safe
+from src.trading_runtime.domain import (
+    Execution,
+    OrderState,
+    PositionState,
+    RoundTripTrade,
+    TradeEpisode,
+    json_safe,
+)
 
 
 ZERO = Decimal("0")
+POSITION_EPSILON = Decimal("0.000001")
 NEW_YORK = ZoneInfo("America/New_York")
 PNL_CANDLE_TIMEFRAMES = ("30m", "1h", "1d", "1M")
 
@@ -52,13 +60,49 @@ def derive_trade_episodes(executions: Iterable[Execution]) -> list[TradeEpisode]
     win rate count strategy decisions instead of FIFO fragments.
     """
 
+    episodes, _states = _derive_episode_states(executions)
+    return episodes
+
+
+def derive_position_lifecycles(
+    executions: Iterable[Execution],
+    orders: Iterable[OrderState],
+    positions: Iterable[PositionState] = (),
+) -> list[dict[str, Any]]:
+    """Project one operator position per flat-to-flat lifecycle.
+
+    Broker positions remain the current-quantity authority and FIFO round trips
+    remain immutable realization evidence.  This projection supplies the
+    missing lifecycle relation used by Position Manager: a scale-in, partial
+    exit, or protective-order replacement stays under one position until its
+    executed quantity returns to zero.
+    """
+
+    episodes, open_states = _derive_episode_states(executions)
+    rows = [_closed_lifecycle_row(row) for row in episodes]
+    rows.extend(_open_lifecycle_row(key, state) for key, state in open_states.items())
+    rows.extend(_snapshot_only_lifecycle_rows(rows, positions))
+    _attach_lifecycle_orders(rows, orders)
+    rows.sort(
+        key=lambda row: (
+            str(row.get("opened_at") or ""),
+            str(row.get("lifecycle_id") or ""),
+        ),
+        reverse=True,
+    )
+    return json_safe(rows)
+
+
+def _derive_episode_states(
+    executions: Iterable[Execution],
+) -> tuple[list[TradeEpisode], dict[tuple[str, str], _EpisodeState]]:
     states: dict[tuple[str, str], _EpisodeState] = {}
     episodes: list[TradeEpisode] = []
     sequences: dict[tuple[str, str], int] = defaultdict(int)
     ordered = sorted(executions, key=lambda row: (row.source_event_time, row.execution_id))
     for execution in ordered:
         quantity = abs(execution.quantity)
-        if quantity <= 0:
+        if quantity <= POSITION_EPSILON:
             continue
         direction = 1 if execution.side.upper() == "BUY" else -1
         key = (execution.account_id, execution.instrument.instrument_id)
@@ -76,13 +120,171 @@ def derive_trade_episodes(executions: Iterable[Execution]) -> list[TradeEpisode]
         closing = min(abs(state.position), remaining)
         _add_closing_fill(state, execution, closing, fee_per_unit)
         remaining -= closing
+        if remaining <= POSITION_EPSILON:
+            remaining = ZERO
         if state.position == 0:
             sequences[key] += 1
             episodes.append(_close_episode(state, execution.source_event_time, sequences[key]))
             del states[key]
         if remaining > 0:
             states[key] = _open_state(execution, direction, remaining, fee_per_unit)
-    return episodes
+    return episodes, states
+
+
+def _closed_lifecycle_row(row: TradeEpisode) -> dict[str, Any]:
+    return {
+        **asdict(row),
+        "lifecycle_id": row.episode_id,
+        "status": "closed",
+        "current_quantity": ZERO,
+        "peak_quantity": row.quantity,
+    }
+
+
+def _open_lifecycle_row(
+    key: tuple[str, str], state: _EpisodeState
+) -> dict[str, Any]:
+    first_execution_id = state.execution_ids[0] if state.execution_ids else "open"
+    lifecycle_id = str(
+        uuid5(
+            NAMESPACE_URL,
+            ":".join((key[0], key[1], first_execution_id, "open")),
+        )
+    )
+    return {
+        "lifecycle_id": lifecycle_id,
+        "episode_id": lifecycle_id,
+        "account_id": state.account_id,
+        "instrument": asdict(state.instrument),
+        "opened_at": state.opened_at,
+        "closed_at": None,
+        "status": "open",
+        "side": "LONG" if state.direction > 0 else "SHORT",
+        "quantity": state.peak_quantity,
+        "peak_quantity": state.peak_quantity,
+        "current_quantity": abs(state.position),
+        "entry_price": state.average_entry,
+        "exit_price": (
+            state.exit_notional / state.exit_quantity
+            if state.exit_quantity
+            else None
+        ),
+        "gross_pnl": state.gross_pnl,
+        "fees": state.fees,
+        "net_pnl": state.gross_pnl - state.fees,
+        "strategy_id": state.strategy_id,
+        "strategy_revision": state.strategy_revision,
+        "run_id": state.run_id,
+        "setup": state.setup,
+        "exit_reason": state.exit_reason,
+        "planned_risk": state.planned_risk,
+        "execution_ids": tuple(state.execution_ids),
+        "order_ids": tuple(state.order_ids),
+        "opened_at_known": True,
+    }
+
+
+def _snapshot_only_lifecycle_rows(
+    lifecycle_rows: list[dict[str, Any]],
+    positions: Iterable[PositionState],
+) -> list[dict[str, Any]]:
+    open_keys = {
+        (
+            str(row.get("account_id") or ""),
+            _instrument_id(row.get("instrument")),
+        )
+        for row in lifecycle_rows
+        if row.get("status") == "open"
+    }
+    result: list[dict[str, Any]] = []
+    for position in positions:
+        if position.quantity == 0:
+            continue
+        key = (position.account_id, position.instrument.instrument_id)
+        if key in open_keys:
+            continue
+        lifecycle_id = str(
+            uuid5(
+                NAMESPACE_URL,
+                f"{position.account_id}:{position.instrument.instrument_id}:broker-snapshot",
+            )
+        )
+        result.append(
+            {
+                "lifecycle_id": lifecycle_id,
+                "episode_id": lifecycle_id,
+                "account_id": position.account_id,
+                "instrument": asdict(position.instrument),
+                "opened_at": position.source_event_time,
+                "closed_at": None,
+                "status": "open",
+                "side": "LONG" if position.quantity > 0 else "SHORT",
+                "quantity": abs(position.quantity),
+                "peak_quantity": abs(position.quantity),
+                "current_quantity": abs(position.quantity),
+                "entry_price": position.average_price,
+                "exit_price": None,
+                "gross_pnl": position.realized_pnl,
+                "fees": ZERO,
+                "net_pnl": position.realized_pnl,
+                "strategy_id": "",
+                "strategy_revision": 0,
+                "run_id": "",
+                "setup": "",
+                "exit_reason": "",
+                "planned_risk": None,
+                "execution_ids": (),
+                "order_ids": (),
+                "opened_at_known": False,
+            }
+        )
+    return result
+
+
+def _instrument_id(instrument: Any) -> str:
+    if isinstance(instrument, dict):
+        return str(instrument.get("instrument_id") or "")
+    return str(getattr(instrument, "instrument_id", "") or "")
+
+
+def _attach_lifecycle_orders(
+    rows: list[dict[str, Any]], orders: Iterable[OrderState]
+) -> None:
+    by_key: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
+    for row in rows:
+        instrument_id = _instrument_id(row.get("instrument"))
+        by_key[(str(row.get("account_id") or ""), instrument_id)].append(row)
+        row["order_ids"] = list(row.get("order_ids") or [])
+    for candidates in by_key.values():
+        candidates.sort(key=lambda row: row["opened_at"])
+
+    for order in sorted(
+        orders,
+        key=lambda row: (
+            row.source_event_time,
+            row.broker_order_id or row.client_order_id,
+        ),
+    ):
+        order_id = order.broker_order_id or order.client_order_id
+        if not order_id:
+            continue
+        candidates = by_key.get(
+            (order.account_id, order.instrument.instrument_id), []
+        )
+        if not candidates:
+            continue
+        exact = [row for row in candidates if order_id in row["order_ids"]]
+        if exact:
+            continue
+        selected = candidates[0]
+        for candidate in candidates:
+            if candidate["opened_at"] <= order.source_event_time:
+                selected = candidate
+            else:
+                break
+        selected["order_ids"].append(order_id)
+    for row in rows:
+        row["order_ids"] = tuple(dict.fromkeys(row["order_ids"]))
 
 
 def episodes_from_round_trips(rows: Iterable[RoundTripTrade]) -> list[TradeEpisode]:
@@ -212,6 +414,8 @@ def _add_closing_fill(state: _EpisodeState, execution: Execution, quantity: Deci
     state.fees += quantity * fee_per_unit
     state.gross_pnl += (execution.price - state.average_entry) * quantity * state.direction
     state.position -= quantity * state.direction
+    if abs(state.position) <= POSITION_EPSILON:
+        state.position = ZERO
     state.exit_reason = execution.exit_reason or state.exit_reason
     _append_identity(state, execution)
 

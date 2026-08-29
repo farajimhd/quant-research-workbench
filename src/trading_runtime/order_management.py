@@ -782,6 +782,18 @@ class OrderManagementEngine:
             await self.state_callback(snapshot)
         if incremental > 0 and self.fill_callback is not None:
             await self.fill_callback(snapshot)
+        if (
+            incremental > 0
+            and fill_role in {"profit_target", "protective_stop", "trailing_stop"}
+        ):
+            # A child exit filling while its entry root is still working can
+            # flatten the partial position and then let the parent reopen it on
+            # a later print.  Once risk reduction begins, freeze the acquired
+            # quantity by cancelling every unfilled entry remainder first.
+            await self._cancel_open_entry_roots(
+                group,
+                "protective_exit_started_before_entry_complete",
+            )
         protective_terminal_without_fill = (
             fill_role in {"profit_target", "protective_stop", "trailing_stop"}
             and incremental <= 0
@@ -1367,8 +1379,11 @@ class OrderManagementEngine:
         if group.remaining_quantity > 0 and execution_policy.name == ExecutionPolicyName.CANCEL_IF_NOT_FILLED:
             await self._cancel_open_entry_roots(group, "execution_deadline")
 
-    async def _cancel_open_entry_roots(self, group: _ManagedOrderGroup, reason: str) -> None:
-        for broker_order_id, _ in _open_entry_roots(group):
+    async def _cancel_open_entry_roots(self, group: _ManagedOrderGroup, reason: str) -> bool:
+        roots = _open_entry_roots(group)
+        if not roots:
+            return False
+        for broker_order_id, _ in roots:
             async with self._command_lane(group.account_id):
                 response = await self.broker.cancel_order(group.account_id, broker_order_id)
             self._record(
@@ -1380,6 +1395,7 @@ class OrderManagementEngine:
                 {"order_group_id": group.group_id, "reason": reason, "broker_response": response},
             )
         self._transition(group, OrderManagementState.CANCEL_PENDING, {"event": "adaptive_cancel_requested", "reason": reason})
+        return True
 
     async def _require_shortability(self, intent: StrategyIntent, plan: StrategyOrderPlan) -> None:
         if str(intent.action) not in {"enter_short", "add_short"}:
@@ -1507,6 +1523,14 @@ class OrderManagementEngine:
             await self.state_callback(snapshot)
         if incremental > 0 and self.fill_callback is not None:
             await self.fill_callback(snapshot)
+        if (
+            incremental > 0
+            and fill_role in {"profit_target", "protective_stop", "trailing_stop"}
+        ):
+            await self._cancel_open_entry_roots(
+                group,
+                "protective_exit_started_before_entry_complete",
+            )
         protective_terminal_without_fill = (
             fill_role in {"profit_target", "protective_stop", "trailing_stop"}
             and incremental <= 0

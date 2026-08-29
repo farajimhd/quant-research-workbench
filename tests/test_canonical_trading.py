@@ -16,7 +16,7 @@ from src.backend.canonical_backtest_service import (
     backtest_comparison_projection,
     canonical_backtest_state,
 )
-from src.backend.canonical_trading_service import performance_snapshot
+from src.backend.canonical_trading_service import performance_snapshot, trading_state_payload
 from src.backend.real_live_trading_service import RealLiveAccount, real_live_portfolio
 from src.trading_runtime.canonical_commands import intent_to_ibkr_request
 from src.trading_runtime.canonical_session import CanonicalBrokerSession
@@ -28,11 +28,17 @@ from src.trading_runtime.domain import (
     InstrumentContract,
     OrderIntent,
     OrderLifecycleState,
+    OrderState,
+    PositionState,
     TradingMode,
 )
 from src.trading_runtime.ibkr_normalizer import normalize_account_values, normalize_accounts, normalize_ledger, normalize_order, normalize_position_snapshot
 from src.trading_runtime.projector import TradingStateProjector
-from src.trading_runtime.performance import build_performance_report, derive_trade_episodes
+from src.trading_runtime.performance import (
+    build_performance_report,
+    derive_position_lifecycles,
+    derive_trade_episodes,
+)
 from src.trading_runtime.round_trips import derive_round_trip_trades
 from src.trading_runtime.simulated_broker import SimulatedBrokerAdapter
 
@@ -203,6 +209,98 @@ class CanonicalProjectionTests(unittest.TestCase):
         self.assertEqual(episodes[0].strategy_id, "momentum")
         self.assertEqual(episodes[0].strategy_revision, 3)
         self.assertEqual(episodes[0].exit_reason, "target")
+
+    def test_position_lifecycle_links_all_orders_and_execution_parts(self) -> None:
+        executions = [
+            Execution("open-1", "DU1", instrument(), "BUY", Decimal("10"), Decimal("100"), NOW, broker_order_id="entry"),
+            Execution("open-2", "DU1", instrument(), "BUY", Decimal("10"), Decimal("102"), NOW + timedelta(seconds=1), broker_order_id="entry"),
+            Execution("close-1", "DU1", instrument(), "SELL", Decimal("5"), Decimal("103"), NOW + timedelta(minutes=1), broker_order_id="exit"),
+            Execution("close-2", "DU1", instrument(), "SELL", Decimal("15"), Decimal("104"), NOW + timedelta(minutes=2), broker_order_id="exit"),
+        ]
+        orders = [
+            OrderState(account_id="DU1", instrument=instrument(), lifecycle_state=OrderLifecycleState.FILLED, broker_status_raw="Filled", broker_order_id="entry", side="BUY", total_quantity=Decimal("20"), filled_quantity=Decimal("20"), source_event_time=NOW),
+            OrderState(account_id="DU1", instrument=instrument(), lifecycle_state=OrderLifecycleState.FILLED, broker_status_raw="Filled", broker_order_id="exit", side="SELL", total_quantity=Decimal("20"), filled_quantity=Decimal("20"), source_event_time=NOW + timedelta(minutes=1)),
+            OrderState(account_id="DU1", instrument=instrument(), lifecycle_state=OrderLifecycleState.CANCELLED, broker_status_raw="Cancelled", broker_order_id="protective", side="SELL", total_quantity=Decimal("20"), source_event_time=NOW + timedelta(seconds=2)),
+        ]
+
+        lifecycles = derive_position_lifecycles(executions, orders)
+
+        self.assertEqual(len(lifecycles), 1)
+        self.assertEqual(lifecycles[0]["status"], "closed")
+        self.assertEqual(lifecycles[0]["quantity"], "20")
+        self.assertEqual(
+            set(lifecycles[0]["order_ids"]),
+            {"entry", "exit", "protective"},
+        )
+        self.assertEqual(
+            lifecycles[0]["execution_ids"],
+            ["open-1", "open-2", "close-1", "close-2"],
+        )
+
+    def test_open_execution_lifecycle_is_not_duplicated_by_position_snapshot(self) -> None:
+        executions = [
+            Execution(
+                "open-1",
+                "DU1",
+                instrument(),
+                "BUY",
+                Decimal("10"),
+                Decimal("100"),
+                NOW,
+                broker_order_id="entry",
+            )
+        ]
+        positions = [
+            PositionState(
+                snapshot_id="positions-1",
+                account_id="DU1",
+                instrument=instrument(),
+                quantity=Decimal("10"),
+                market_price=Decimal("101"),
+                market_value=Decimal("1010"),
+                average_cost=Decimal("1000"),
+                average_price=Decimal("100"),
+                realized_pnl=Decimal("0"),
+                unrealized_pnl=Decimal("10"),
+                source_event_time=NOW + timedelta(seconds=1),
+            )
+        ]
+
+        lifecycles = derive_position_lifecycles(executions, [], positions)
+
+        self.assertEqual(len(lifecycles), 1)
+        self.assertEqual(lifecycles[0]["status"], "open")
+        self.assertEqual(lifecycles[0]["execution_ids"], ["open-1"])
+
+    def test_backtest_payload_keeps_fifo_audit_separate_from_position_lifecycle(self) -> None:
+        executions = [
+            Execution("open-1", "DU1", instrument(), "BUY", Decimal("10"), Decimal("100"), NOW, broker_order_id="entry"),
+            Execution("open-2", "DU1", instrument(), "BUY", Decimal("10"), Decimal("102"), NOW + timedelta(seconds=1), broker_order_id="entry"),
+            Execution("close-1", "DU1", instrument(), "SELL", Decimal("5"), Decimal("103"), NOW + timedelta(minutes=1), broker_order_id="exit"),
+            Execution("close-2", "DU1", instrument(), "SELL", Decimal("15"), Decimal("104"), NOW + timedelta(minutes=2), broker_order_id="exit"),
+        ]
+        projector = TradingStateProjector(TradingMode.BACKTEST, BrokerProvider.SIMULATED)
+        projector.set_accounts([
+            BrokerAccount(
+                provider=BrokerProvider.SIMULATED,
+                account_id="DU1",
+                base_currency="USD",
+                can_view=True,
+                can_trade=True,
+                valid_at=NOW,
+            )
+        ])
+        projector.set_executions(executions)
+
+        payload = trading_state_payload(projector.snapshot())
+
+        self.assertEqual(len(payload["closed_trades"]), 3)
+        self.assertEqual(len(payload["position_lifecycles"]), 1)
+        self.assertEqual(payload["performance_journal"]["summary"]["episode_count"], 1)
+        self.assertEqual(
+            payload["performance_journal"]["episode_definition"],
+            "flat_to_flat_position_lifecycle",
+        )
 
     def test_trade_episode_reversal_closes_then_opens_a_new_episode(self) -> None:
         executions = [

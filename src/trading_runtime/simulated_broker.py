@@ -145,7 +145,11 @@ class _OrderState:
             price=self.request.price,
             auxPrice=self.request.auxPrice,
             outsideRTH=self.request.outsideRTH,
-            lastExecutionTime=None,
+            # CPAPI uses this field as the order-state timestamp. Preserve the
+            # causal simulated submission time so completed-run hydration does
+            # not make every historical order appear to have been created at
+            # review time.
+            lastExecutionTime=self.submitted_at,
             statusDescription=self.status_description,
             raw={
                 "oca_group": self.oca_group,

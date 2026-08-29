@@ -5,6 +5,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 REPLAY_PAGE = REPO_ROOT / "frontend" / "src" / "pages" / "ReplayTradingPage.tsx"
 CANVAS_PAGE = REPO_ROOT / "frontend" / "src" / "pages" / "CanvasConfigurationPage.tsx"
 SCREENER_CONTAINERS = REPO_ROOT / "frontend" / "src" / "app" / "components" / "MarketScreenerContainers.tsx"
+TRADING_PRESENTATION = REPO_ROOT / "frontend" / "src" / "features" / "canvas" / "tradingPresentation.tsx"
 
 
 def test_next_action_reports_backend_progress_while_canvas_stays_static() -> None:
@@ -15,6 +16,18 @@ def test_next_action_reports_backend_progress_while_canvas_stays_static() -> Non
     assert "navigationElapsedSeconds" in source
     assert "navigation_search?.scanned_events" in source
     assert "Causal strategy scan progress" in source
+
+
+def test_trading_audits_do_not_truncate_canonical_rows_before_table_filtering() -> None:
+    source = TRADING_PRESENTATION.read_text(encoding="utf-8")
+    positions_source = source.split("function PositionsPreview", 1)[1].split("function PositionDetail", 1)[0]
+    orders_source = source.split("function OrdersPreview", 1)[1].split("function OrderDetail", 1)[0]
+    executions_source = source.split("function ExecutionsPreview", 1)[1].split("function ClosedTradesPreview", 1)[0]
+    round_trips_source = source.split("function ClosedTradesPreview", 1)[1].split("function TradingTabs", 1)[0]
+
+    assert "data.position_lifecycles" in source
+    for audit_source in (positions_source, orders_source, executions_source, round_trips_source):
+        assert ".slice(0, settings.limit)" not in audit_source
 
 
 def test_strategy_activity_pins_the_navigation_stop_record() -> None:
