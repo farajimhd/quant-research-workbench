@@ -88,6 +88,24 @@ def test_debug_page_can_open_a_durable_completed_backtest_review() -> None:
     assert 'runtimeWorkspaceId="completed-review"' in source
 
 
+def test_completed_backtest_focus_rehydrates_after_backend_restart() -> None:
+    source = CANVAS_PAGE.read_text(encoding="utf-8")
+
+    focus_source = source.split("function ReplayCanvasFocusPage", 1)[1].split("function ReplayFocusTransportStatus", 1)[0]
+    assert 'runMode !== "backtest" || status !== 404' in focus_source
+    assert '/api/trading/backtest/runs/${encodeURIComponent(runId)}/review' in focus_source
+    assert 'method: "POST"' in focus_source
+
+
+def test_chart_memo_signature_includes_completed_position_evidence() -> None:
+    source = CANVAS_PAGE.read_text(encoding="utf-8")
+
+    signature_source = source.split("function tradingPositionSignature", 1)[1].split("function strategyDecisionEvents", 1)[0]
+    assert "trading?.position_lifecycles" in signature_source
+    assert "trading?.executions" in signature_source
+    assert "row.lifecycle_id" in signature_source
+
+
 def test_completed_backtest_chart_uses_durable_trading_evidence_and_full_session_history() -> None:
     canvas_source = CANVAS_PAGE.read_text(encoding="utf-8")
     chart_data_source = (REPO_ROOT / "frontend" / "src" / "features" / "canvas" / "chartData.ts").read_text(encoding="utf-8")

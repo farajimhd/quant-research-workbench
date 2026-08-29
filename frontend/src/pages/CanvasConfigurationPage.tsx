@@ -484,7 +484,19 @@ function ReplayCanvasFocusPage({ focusToken, runId, runMode }: { focusToken: str
   useEffect(() => {
     if (!handoff) return;
     let cancelled = false;
-    api<CanvasReplayRun>(`/api/trading/${runMode}/runs/${encodeURIComponent(runId)}?compact=true`, { timeoutMs: 20_000 })
+    const loadRun = async () => {
+      try {
+        return await api<CanvasReplayRun>(`/api/trading/${runMode}/runs/${encodeURIComponent(runId)}?compact=true`, { timeoutMs: 20_000 });
+      } catch (reason) {
+        const status = typeof reason === "object" && reason && "status" in reason ? Number((reason as ApiError).status) : 0;
+        if (runMode !== "backtest" || status !== 404) throw reason;
+        return api<CanvasReplayRun>(`/api/trading/backtest/runs/${encodeURIComponent(runId)}/review`, {
+          method: "POST",
+          timeoutMs: 60_000,
+        });
+      }
+    };
+    loadRun()
       .then((payload) => { if (!cancelled) mergeFocusRun(payload); })
       .catch((reason) => { if (!cancelled) setError(reason instanceof Error ? reason.message : String(reason)); });
     return () => { cancelled = true; };
@@ -1599,8 +1611,19 @@ function chartContainerPreviewPropsEqual(previous: ChartContainerPreviewProps, n
 }
 
 function tradingPositionSignature(trading: CanonicalTradingPreview | undefined, symbol: string) {
-  const row = trading?.positions.find((position) => nestedValue(position, "instrument", "symbol") === symbol);
-  return row ? `${row.account_id}:${row.quantity}:${row.average_price}:${row.market_price}:${row.unrealized_pnl}:${row.source_event_time}` : "";
+  const normalizedSymbol = symbol.toUpperCase();
+  const position = trading?.positions.find((row) => String(nestedValue(row, "instrument", "symbol")).toUpperCase() === normalizedSymbol);
+  const lifecycles = (trading?.position_lifecycles ?? [])
+    .filter((row) => String(nestedValue(row, "instrument", "symbol")).toUpperCase() === normalizedSymbol)
+    .map((row) => [row.lifecycle_id, row.status, row.quantity, row.current_quantity, row.entry_price, row.exit_price, row.opened_at, row.closed_at, row.net_pnl, ...(Array.isArray(row.execution_ids) ? row.execution_ids : [])].join(":"));
+  const executions = (trading?.executions ?? [])
+    .filter((row) => String(nestedValue(row, "instrument", "symbol")).toUpperCase() === normalizedSymbol)
+    .map((row) => [row.execution_id, row.quantity, row.price, row.side, row.source_event_time].join(":"));
+  return JSON.stringify({
+    executions,
+    lifecycles,
+    position: position ? [position.account_id, position.quantity, position.average_price, position.market_price, position.unrealized_pnl, position.source_event_time] : null,
+  });
 }
 
 function strategyDecisionEvents(strategy: CanvasPreview["strategy"] | undefined): StrategyDecisionEvent[] {
