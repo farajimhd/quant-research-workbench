@@ -87,7 +87,11 @@ Historical chart reconstruction seeds one causal ticker-level Structure book,
 including still-valid prior-session levels, from the preceding
 `QMD_HISTORY_STRUCTURE_BOOK_LOOKBACK_DAYS` (default `180`). The seed is complete
 or fails closed: `QMD_HISTORY_STRUCTURE_BOOK_MAX_SEED_EVENTS` (default
-`2000000`) is an explicit resource ceiling, never a tail-truncation policy.
+`2000000`) is an explicit resource ceiling, never a tail-truncation policy. For
+archive dates that predate persisted Structure events, QMD History causally
+rebuilds the same book from canonical tape over
+`QMD_HISTORY_STRUCTURE_BOOK_REBUILD_DAYS` (default `7`), which includes the
+prior trading session across weekends and ordinary holidays.
 Single-ticker deployment-gap repair evidence is read from
 `QMD_HISTORY_RECENT_FOCUSED_REPAIR_TABLE` (default
 `q_live.qmd_gap_fill_symbol_universe_v1`). A completed, error-free repair whose

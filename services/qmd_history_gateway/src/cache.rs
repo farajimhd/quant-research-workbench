@@ -2,6 +2,10 @@ use crate::config::HistoricalGatewayConfig;
 use crate::source::{
     EventWindow, HistoricalCursor, HistoricalEventSource, SessionVwapSeed, SourceRevision,
 };
+use crate::structure_checkpoint::{
+    rebuild_structure_checkpoint, StructureCheckpointRebuildRequest,
+    STRUCTURE_CHECKPOINT_REBUILD_SCHEMA_VERSION,
+};
 use chrono::{DateTime, Datelike, Duration, TimeZone, Timelike, Utc};
 use chrono_tz::America::New_York;
 use qmd_core::bars::{BarRow, BarSnapshot, SharedBarStore, BAR_SCHEMA_VERSION};
@@ -300,7 +304,8 @@ impl HistoricalDerivedCache {
         ticker: String,
         profile: CacheProfile,
     ) -> Result<CacheLease, String> {
-        let revision_window = revision_window(&window, &profile)?;
+        let revision_window =
+            revision_window(&window, &profile, self.config.structure_book_rebuild_days)?;
         let source_revision = self.source.source_revision(&revision_window).await?;
         let key = cache_key(&window, &ticker, &source_revision, &profile);
         let mut index = self.inner.lock().await;
@@ -833,7 +838,40 @@ impl HistoricalDerivedCache {
                 .source
                 .persisted_structure_events_before(&ticker, window.start)
                 .await?;
-            bars.seed_structure_events(events).await;
+            if events.is_empty() {
+                let rebuild_start =
+                    structure_rebuild_start(window.start, self.config.structure_book_rebuild_days)?;
+                let rebuild_as_of = window
+                    .start
+                    .checked_sub_signed(Duration::microseconds(1))
+                    .ok_or_else(|| "historical structure warm-start underflow".to_string())?;
+                match rebuild_structure_checkpoint(
+                    &self.config,
+                    &self.source,
+                    StructureCheckpointRebuildRequest {
+                        schema_version: STRUCTURE_CHECKPOINT_REBUILD_SCHEMA_VERSION,
+                        ticker: ticker.clone(),
+                        start: rebuild_start,
+                        as_of: rebuild_as_of,
+                        expected_source_plan_hash: None,
+                        event_limit: Some(self.config.structure_checkpoint_rebuild_max_events),
+                    },
+                )
+                .await
+                {
+                    Ok(rebuilt) => {
+                        bars.seed_structure_checkpoints(vec![(ticker.clone(), rebuilt.checkpoint)])
+                            .await;
+                    }
+                    Err(error)
+                        if error
+                            .starts_with("Generic Structure rebuild found no canonical events") => {
+                    }
+                    Err(error) => return Err(error),
+                }
+            } else {
+                bars.seed_structure_events(events).await;
+            }
         }
         let shard = bars.shard(0);
         let trade_rules = self.source.trade_aggregation_rules();
@@ -1677,9 +1715,13 @@ fn split_event_window(window: &EventWindow, chunk_hours: usize) -> Vec<EventWind
     chunks
 }
 
-fn revision_window(window: &EventWindow, profile: &CacheProfile) -> Result<EventWindow, String> {
+fn revision_window(
+    window: &EventWindow,
+    profile: &CacheProfile,
+    structure_rebuild_days: usize,
+) -> Result<EventWindow, String> {
     let start = if matches!(profile, CacheProfile::Derived(_)) {
-        session_anchor(window.start)?
+        structure_rebuild_start(window.start, structure_rebuild_days)?
     } else {
         window.start
     };
@@ -1688,6 +1730,16 @@ fn revision_window(window: &EventWindow, profile: &CacheProfile) -> Result<Event
         end: window.end,
         tickers: window.tickers.clone(),
     })
+}
+
+fn structure_rebuild_start(
+    timestamp: DateTime<Utc>,
+    rebuild_days: usize,
+) -> Result<DateTime<Utc>, String> {
+    let lookback = timestamp
+        .checked_sub_signed(Duration::days(rebuild_days as i64))
+        .ok_or_else(|| "historical structure rebuild lookback underflow".to_string())?;
+    session_anchor(lookback)
 }
 
 fn session_anchor(timestamp: DateTime<Utc>) -> Result<DateTime<Utc>, String> {
@@ -1810,7 +1862,7 @@ mod tests {
     use tokio::sync::{broadcast, Mutex, Notify};
 
     #[test]
-    fn derived_revision_and_seed_anchor_cover_the_full_new_york_session() {
+    fn derived_revision_covers_the_causal_structure_warm_start() {
         let page = EventWindow {
             start: Utc.with_ymd_and_hms(2026, 7, 14, 18, 30, 0).unwrap(),
             end: Utc.with_ymd_and_hms(2026, 7, 14, 20, 30, 0).unwrap(),
@@ -1820,13 +1872,13 @@ mod tests {
 
         assert_eq!(session_anchor(page.start).unwrap(), expected);
         assert_eq!(
-            revision_window(&page, &CacheProfile::Derived("5m".to_string()))
+            revision_window(&page, &CacheProfile::Derived("5m".to_string()), 7)
                 .unwrap()
                 .start,
-            expected
+            Utc.with_ymd_and_hms(2026, 7, 7, 8, 0, 0).unwrap()
         );
         assert_eq!(
-            revision_window(&page, &CacheProfile::Products)
+            revision_window(&page, &CacheProfile::Products, 7)
                 .unwrap()
                 .start,
             page.start
