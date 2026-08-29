@@ -115,6 +115,7 @@ def test_structural_history_can_span_all_loaded_chart_bars() -> None:
 
 def test_unified_structure_scores_can_filter_loaded_levels_without_a_history_request() -> None:
     renderer_source = (REPO_ROOT / "frontend" / "src" / "app" / "components" / "ChartPanel.tsx").read_text(encoding="utf-8")
+    styles_source = (REPO_ROOT / "frontend" / "src" / "app" / "styles.css").read_text(encoding="utf-8")
     chart_source = CHART_PRESENTATION.read_text(encoding="utf-8")
 
     assert "priceZoneMeetsUnifiedFilters(zone, settings)" in renderer_source
@@ -133,6 +134,9 @@ def test_unified_structure_scores_can_filter_loaded_levels_without_a_history_req
     assert "legendSettingsRef.current" in renderer_source
     assert "holdProbability: boundedUnit(level.hold_probability)" in chart_source
     assert "roleFlipCount: Number(level.role_flip_count ?? 0)" in chart_source
+    assert 'className="legend-configure-button"' in renderer_source
+    assert ".legend-row-actions > button:not(.legend-configure-button)" in styles_source
+    assert ".chart-legend-row:hover .legend-row-actions > button" in styles_source
 
 
 def test_debug_page_can_open_a_durable_completed_backtest_review() -> None:

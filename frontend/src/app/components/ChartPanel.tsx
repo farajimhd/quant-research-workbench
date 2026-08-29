@@ -1956,6 +1956,7 @@ function ChartLegend({
                     ) : null}
                     <button
                       aria-label={`Configure ${item.label}`}
+                      className="legend-configure-button"
                       onClick={(event) => {
                         const closing = editingKey === item.key;
                         setEditingKey(closing ? null : item.key);

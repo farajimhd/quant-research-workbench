@@ -5780,13 +5780,19 @@ button {
   align-items: center;
   gap: 2px;
   margin-left: 4px;
+  opacity: 1;
+}
+
+.legend-row-actions > button:not(.legend-configure-button) {
   opacity: 0;
+  pointer-events: none;
   transition: opacity 120ms ease;
 }
 
-.chart-legend-row:hover .legend-row-actions,
-.chart-legend-row:focus-within .legend-row-actions {
+.chart-legend-row:hover .legend-row-actions > button,
+.chart-legend-row:focus-within .legend-row-actions > button {
   opacity: 1;
+  pointer-events: auto;
 }
 
 .legend-row-actions button,
