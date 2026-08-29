@@ -700,6 +700,7 @@ class ReplayRunController:
         self._next_action_after_sequence: int | None = None
         self._navigation_target_event_type = ""
         self._navigation_target_action: dict[str, Any] | None = None
+        self._navigation_prerequisite_action: dict[str, Any] | None = None
         self._navigation_skip_to_target = False
         self._last_navigation_action: dict[str, Any] | None = None
         self._navigation_started_at: datetime | None = None
@@ -707,6 +708,8 @@ class ReplayRunController:
         self._navigation_start_processed_events = 0
         self._subscribers: set[asyncio.Queue[dict[str, Any]]] = set()
         self._last_publish_monotonic = 0.0
+        self._manifest_write_task: asyncio.Task[None] | None = None
+        self._manifest_write_pending = False
         self._runtime: TradingRuntime | None = None
         self._runtime_inputs_ready = False
         self._preparation_stage = "created"
@@ -719,15 +722,23 @@ class ReplayRunController:
         self._journal: TradingJournal | None = None
         self._account_map: dict[str, str] = {}
         self._quotes: dict[str, QuoteEvent] = {}
+        self._pending_passive_market_events: list[MarketEvent] = []
         self._previous_vwap: dict[tuple[str, str], tuple[datetime, float]] = {}
         self._strategy_source_values: dict[str, dict[str, Any]] = {}
         self._signal_stream_states: dict[tuple[str, str], dict[str, Any]] = {}
         self._signal_activated_tickers: set[str] = set()
+        # Once a source-native signal has admitted a ticker, keep evaluating
+        # that campaign after the short-lived signal episode expires (an open
+        # position may still need management). Tickers that have never been
+        # admitted need only cheap causal frame memory.
+        self._strategy_engaged_tickers: set[str] = set()
+        self._strategy_quality_admitted_tickers: set[str] = set()
         self._source_native_signal_episodes: dict[str, ReplaySignalEvent] = {}
         self._canvas_state_cache: tuple[float, dict[str, Any]] | None = None
         self._runtime_finished = False
         self._stream_tickers: tuple[str, ...] = ()
         self._pace_event_anchor: datetime | None = None
+        self._pace_last_check_event_time: datetime | None = None
         self._pace_wall_anchor = 0.0
         self._pace_reset = True
         self._historical_watchlist_cache: list[dict[str, Any]] | None = None
@@ -854,30 +865,37 @@ class ReplayRunController:
                         "Replay target_event_type must be one of "
                         + ", ".join(STRATEGY_ACTIVITY_EVENT_TYPES)
                     )
-                records = self._journal.records(self.run_id) if self._journal is not None else []
-                self._next_action_after_sequence = records[-1].sequence if records else 0
+                self._next_action_after_sequence = (
+                    self._journal.latest_sequence(self.run_id)
+                    if self._journal is not None
+                    else 0
+                )
                 self._navigation_target_event_type = normalized_target
                 self._last_navigation_action = None
                 self._navigation_started_at = datetime.now(UTC)
                 self._navigation_start_time = self.current_time or self.definition.requested_start
                 self._navigation_start_processed_events = self.processed_events
                 current = self.current_time or self.definition.requested_start
-                future_market_actions = [
-                    action
-                    for record in records
-                    if record.event_time > current
-                    and (action := _replay_navigation_action(record, normalized_target)) is not None
-                    and action["kind"] in {"watch_started", "strategy_signal"}
-                ]
-                self._navigation_target_action = min(
-                    future_market_actions,
-                    key=lambda action: (
-                        _optional_checkpoint_time(action.get("event_time"))
-                        or self.definition.session_end,
-                        int(action.get("sequence") or 0),
-                    ),
-                    default=None,
+                next_source_record = (
+                    self._journal.next_record_after_time(
+                        self.run_id,
+                        current,
+                        categories=("market_discovery_signal",),
+                    )
+                    if self._journal is not None
+                    else None
                 )
+                source_action = (
+                    _replay_navigation_action(next_source_record)
+                    if next_source_record is not None
+                    else None
+                )
+                self._navigation_target_action = (
+                    _replay_navigation_action(next_source_record, normalized_target)
+                    if next_source_record is not None
+                    else None
+                )
+                self._navigation_prerequisite_action = source_action
                 self._navigation_skip_to_target = await self._can_skip_to_navigation_target()
                 self._fast_forward_until = None
                 self._step_until = None
@@ -888,11 +906,13 @@ class ReplayRunController:
                 self.status = "stopped"
             self.updated_at = datetime.now(UTC)
             self._condition.notify_all()
+        self._flush_passive_market_events()
         await self._publish(
             force=True,
             allow_navigation=normalized == "next_action",
         )
-        self._write_manifest()
+        if normalized in {"pause", "stop"}:
+            self._schedule_manifest_write()
         return self.stream_snapshot()
 
     async def add_assignment(self, payload: dict[str, Any]) -> dict[str, Any]:
@@ -1101,6 +1121,7 @@ class ReplayRunController:
         self._next_action_after_sequence = None
         self._navigation_target_event_type = ""
         self._navigation_target_action = None
+        self._navigation_prerequisite_action = None
         self._navigation_skip_to_target = False
         self._navigation_started_at = None
         self._navigation_start_time = None
@@ -1108,6 +1129,48 @@ class ReplayRunController:
 
     def _navigation_search_projection(self) -> dict[str, Any]:
         active = self._next_action_after_sequence is not None
+        scanned_events = (
+            max(0, self.processed_events - self._navigation_start_processed_events)
+            if active
+            else 0
+        )
+        elapsed_seconds = (
+            max(
+                0.0,
+                (datetime.now(UTC) - self._navigation_started_at).total_seconds(),
+            )
+            if active and self._navigation_started_at is not None
+            else 0.0
+        )
+        target_time = (
+            _optional_checkpoint_time(
+                (
+                    self._navigation_target_action
+                    or self._navigation_prerequisite_action
+                    or {}
+                ).get("event_time")
+            )
+            if self._navigation_target_action is not None
+            or self._navigation_prerequisite_action is not None
+            else None
+        )
+        scanned_through = self.current_time if active else None
+        start_time = self._navigation_start_time
+        known_target_progress = (
+            max(
+                0.0,
+                min(
+                    1.0,
+                    (scanned_through - start_time).total_seconds()
+                    / max(0.001, (target_time - start_time).total_seconds()),
+                ),
+            )
+            if scanned_through is not None
+            and start_time is not None
+            and target_time is not None
+            and target_time > start_time
+            else None
+        )
         return {
             "active": active,
             "phase": "scanning" if active and self._runtime_inputs_ready else "preparing" if active else "idle",
@@ -1121,24 +1184,26 @@ class ReplayRunController:
                 if self._navigation_start_time is not None
                 else None
             ),
-            "scanned_events": (
-                max(0, self.processed_events - self._navigation_start_processed_events)
-                if active
-                else 0
+            "scanned_events": scanned_events,
+            "scanned_through_event_time": (
+                scanned_through.isoformat() if scanned_through is not None else None
             ),
+            "elapsed_seconds": elapsed_seconds,
+            "events_per_second": (
+                scanned_events / elapsed_seconds if elapsed_seconds > 0 else 0.0
+            ),
+            "known_target_progress": known_target_progress,
             "targets": list(STRATEGY_ACTIVITY_EVENT_TYPES),
             "target_event_type": self._navigation_target_event_type,
             "target_event_time": (
-                self._navigation_target_action.get("event_time")
-                if self._navigation_target_action is not None
-                else None
+                target_time.isoformat() if target_time is not None else None
             ),
         }
 
     async def _can_skip_to_navigation_target(self) -> bool:
         """Allow raw-event skipping only before a source-native activation boundary."""
 
-        if self._navigation_target_action is None or self._runtime is None:
+        if self._navigation_prerequisite_action is None or self._runtime is None:
             return False
         activation = dict(
             self.definition.configuration_revision["payload"].get("signal_activation")
@@ -1163,9 +1228,14 @@ class ReplayRunController:
         return True
 
     def _navigation_skip_boundary(self) -> datetime | None:
-        if not self._navigation_skip_to_target or self._navigation_target_action is None:
+        if (
+            not self._navigation_skip_to_target
+            or self._navigation_prerequisite_action is None
+        ):
             return None
-        return _optional_checkpoint_time(self._navigation_target_action.get("event_time"))
+        return _optional_checkpoint_time(
+            self._navigation_prerequisite_action.get("event_time")
+        )
 
     def _transport_mode(self) -> str:
         if self._next_action_after_sequence is not None:
@@ -1321,7 +1391,31 @@ class ReplayRunController:
         adds serialization, websocket, and browser parsing pressure.
         """
 
-        return self.snapshot(include_details=False)
+        payload = self.snapshot(include_details=False)
+        if (
+            self._next_action_after_sequence is not None
+            and self._navigation_start_time is not None
+        ):
+            # Navigation publishes transport progress while the visible Canvas
+            # remains pinned. Consumers refresh expensive charts/tables once,
+            # at the final causal boundary, rather than for every scanned tick.
+            payload["current_time"] = self._navigation_start_time.isoformat()
+            duration = max(
+                1.0,
+                (
+                    self.definition.session_end
+                    - self.definition.requested_start
+                ).total_seconds(),
+            )
+            payload["progress"] = max(
+                0.0,
+                (
+                    self._navigation_start_time
+                    - self.definition.requested_start
+                ).total_seconds()
+                / duration,
+            )
+        return payload
 
     def _checkpoint_projection(self) -> dict[str, Any]:
         if self._checkpoint_projection_cache is not None:
@@ -1379,6 +1473,7 @@ class ReplayRunController:
     def _restart_checkpoint_state(self) -> dict[str, Any]:
         if self._runtime is None:
             raise RuntimeError("Historical runtime is not ready for checkpointing")
+        self._flush_passive_market_events()
         broker_checkpoint = getattr(self._runtime.broker, "checkpoint_state", None)
         if broker_checkpoint is None:
             raise RuntimeError("Historical broker does not support restart checkpoints")
@@ -1451,6 +1546,10 @@ class ReplayRunController:
                     self._active_historical_watchlist_evidence
                 ),
                 "signal_activated_tickers": sorted(self._signal_activated_tickers),
+                "strategy_engaged_tickers": sorted(self._strategy_engaged_tickers),
+                "strategy_quality_admitted_tickers": sorted(
+                    self._strategy_quality_admitted_tickers
+                ),
                 "source_native_signal_episodes": [
                     {
                         "available_at": event.available_at.isoformat(),
@@ -1517,11 +1616,20 @@ class ReplayRunController:
                 )
             )
             self._canvas_state_cache = (now, trading)
-        records = self._journal.recent_records(
-            self.run_id,
-            categories=("strategy", "strategy_decision", "order_management"),
-            limit=5_000,
-        )
+        ticker = _ticker(symbol)
+        records = [
+            *self._journal.strategy_records(
+                ticker=ticker,
+                as_of=self.current_time or self.definition.requested_start,
+                limit=250,
+            ),
+            *self._journal.order_management_records(
+                ticker=ticker,
+                as_of=self.current_time or self.definition.requested_start,
+                limit=250,
+            ),
+        ]
+        records.sort(key=lambda record: record.sequence)
         strategy_records = [
             {
                 **record.payload,
@@ -1539,7 +1647,6 @@ class ReplayRunController:
             if self._strategy is not None
             else []
         )
-        ticker = _ticker(symbol)
         ticker_assignments = [
             row for row in assignments if str(row.get("ticker") or "").upper() == ticker
         ]
@@ -1744,7 +1851,22 @@ class ReplayRunController:
                         if self._stop_requested:
                             await self._finish("stopped")
                             return
-                        await self._pace(event)
+                        broker_has_orders = bool(
+                            self._runtime is not None
+                            and getattr(self._runtime.broker, "has_orders", True)
+                        )
+                        pace_due = (
+                            self._pace_reset
+                            or broker_has_orders
+                            or self._pace_last_check_event_time is None
+                            or (
+                                event.ts - self._pace_last_check_event_time
+                            ).total_seconds()
+                            >= 0.05
+                        )
+                        if pace_due:
+                            await self._pace(event)
+                            self._pace_last_check_event_time = event.ts
                     navigation_skip_boundary = self._navigation_skip_boundary()
                     if (
                         event.ts >= self.definition.requested_start
@@ -1762,20 +1884,27 @@ class ReplayRunController:
                                 await self._process_external_signal_event(signal_event)
                                 external_index += 1
                             self._apply_historical_watchlist_membership(frame.as_of)
-                            await self._process_strategy_frame(frame)
+                            # Before the first source-native activation the
+                            # strategy cannot act. Preserve only causal VWAP
+                            # memory; full evaluation starts at the activation
+                            # boundary instead of scanning every assignment for
+                            # every pre-signal frame.
+                            self._remember_strategy_frame(frame)
                             next_frame = next(frame_iterator, None)
                         if isinstance(event, QuoteEvent):
                             self._quotes[event.ticker] = event
                         self._source_cursor = {
                             "ts": event.ts.astimezone(UTC).isoformat(),
+                            "ticker": event.ticker,
                             "sequence": int(event.sequence),
                             "kind": event.kind,
                         }
                         self.processed_events += 1
                         self.current_time = event.ts
                         self.updated_at = datetime.now(UTC)
-                        if event_index % 1_000 == 0:
+                        if event_index % 250 == 0:
                             await self._publish()
+                        if event_index % 25 == 0:
                             await asyncio.sleep(0)
                         continue
                     while next_frame is not None and next_frame.as_of <= event.ts:
@@ -1796,8 +1925,8 @@ class ReplayRunController:
                             if self._stop_requested:
                                 await self._finish("stopped")
                                 return
-                            await self._process_strategy_frame(frame)
-                            await self._after_event(frame.as_of)
+                            if await self._process_strategy_frame(frame):
+                                await self._after_event(frame.as_of)
                         next_frame = next(frame_iterator, None)
                     while (
                         external_index < len(self._historical_external_signal_events)
@@ -1825,8 +1954,19 @@ class ReplayRunController:
                         self.warmup_events += 1
                     else:
                         self.processed_events += 1
-                        await self._after_event(event.ts)
-                    if event_index % 100 == 0:
+                        exact_transport_boundary = (
+                            self._step_until is not None
+                            and event.ts >= self._step_until
+                        ) or (
+                            self._fast_forward_until is not None
+                            and event.ts >= self._fast_forward_until
+                        )
+                        if exact_transport_boundary or event_index % 100 == 0:
+                            await self._after_event(event.ts)
+                        else:
+                            self.current_time = event.ts
+                            self.updated_at = datetime.now(UTC)
+                    if event_index % 25 == 0:
                         await asyncio.sleep(0)
             if not self._runtime_inputs_ready:
                 # A valid empty market stream (including derived-frame-only
@@ -1859,8 +1999,8 @@ class ReplayRunController:
                 if frame.as_of >= self.definition.requested_start:
                     self._apply_historical_watchlist_membership(frame.as_of)
                     await self._wait_until_active()
-                    await self._process_strategy_frame(frame)
-                    await self._after_event(frame.as_of)
+                    if await self._process_strategy_frame(frame):
+                        await self._after_event(frame.as_of)
                 next_frame = next(frame_iterator, None)
             while external_index < len(self._historical_external_signal_events):
                 signal_event = self._historical_external_signal_events[external_index]
@@ -1888,7 +2028,34 @@ class ReplayRunController:
             start=self.definition.session_start,
             end=self.definition.session_end,
             tickers=list(self._stream_tickers),
-            batch_size=1_000,
+            # QMD filters raw trade prints before JSON serialization, so this
+            # larger cursor page amortizes storage latency without recreating
+            # the former 25k-object Python conversion burst.
+            batch_size=100_000,
+            # Do not make Canvas readiness wait for the full throughput-sized
+            # page. Subsequent pages are prefetched at 100k while Replay
+            # consumes this smaller first causal window.
+            initial_batch_size=10_000,
+            # Strategy indicators already include causal trade/volume data;
+            # simulated execution consumes quote liquidity. Raw trade prints
+            # are therefore redundant in the strategy transport.
+            event_kinds=("quote",),
+            start_cursor=(
+                {
+                    "sip_timestamp_us": int(
+                        _checkpoint_time(self._source_cursor["ts"]).timestamp()
+                        * 1_000_000
+                    ),
+                    "ticker": str(self._source_cursor["ticker"]),
+                    "ordinal": int(self._source_cursor["sequence"]),
+                }
+                if (
+                    self._resume_state is not None
+                    and self._source_cursor
+                    and self._source_cursor.get("ticker")
+                )
+                else None
+            ),
         )
         await source.health()
         async for batch in source.stream():
@@ -1898,6 +2065,12 @@ class ReplayRunController:
                 "market_events",
                 {
                     "authority": "qmd_history_events",
+                    # Replay consumes source-native quotes only.  Strategy
+                    # trade/volume indicators come from the separately pinned
+                    # QMD derived-frame authority below, so transporting raw
+                    # trades here would duplicate the dominant event volume.
+                    "event_kinds": ["quote"],
+                    "trade_volume_authority": "qmd_derived_frames",
                     **source.source_revision,
                 },
             )
@@ -2085,6 +2258,10 @@ class ReplayRunController:
         await self._runtime.initialize()
         if self._resume_state is not None:
             self._restore_restart_checkpoint()
+        self._runtime.persist_strategy_assignments(
+            self.current_time or self.definition.requested_start,
+            record_events=False,
+        )
 
     def _restore_restart_checkpoint(self) -> None:
         if self._runtime is None or self._resume_state is None:
@@ -2209,6 +2386,14 @@ class ReplayRunController:
             str(value).upper()
             for value in controller.get("signal_activated_tickers") or ()
         }
+        self._strategy_engaged_tickers = {
+            str(value).upper()
+            for value in controller.get("strategy_engaged_tickers") or ()
+        } | self._signal_activated_tickers
+        self._strategy_quality_admitted_tickers = {
+            str(value).upper()
+            for value in controller.get("strategy_quality_admitted_tickers") or ()
+        }
         self._source_native_signal_episodes = {
             str(row.get("ticker") or "").upper(): ReplaySignalEvent(
                 available_at=_checkpoint_time(row["available_at"]),
@@ -2246,19 +2431,85 @@ class ReplayRunController:
             not evaluate_strategy
             and not bool(getattr(self._runtime.broker, "has_orders", True))
         ):
-            self._runtime.process_passive_market_event(event)
+            self._pending_passive_market_events.append(event)
+            if len(self._pending_passive_market_events) >= 100:
+                self._flush_passive_market_events()
         else:
+            self._flush_passive_market_events()
             await self._runtime.process_event(event, evaluate_strategy=evaluate_strategy)
         self._source_cursor = {
             "ts": event.ts.astimezone(UTC).isoformat(),
+            "ticker": event.ticker,
             "sequence": int(event.sequence),
             "kind": event.kind,
         }
 
-    async def _process_strategy_frame(self, frame: ReplayDerivedFrame) -> None:
-        if self._runtime is None or self._strategy is None:
+    def _flush_passive_market_events(self) -> None:
+        if not self._pending_passive_market_events:
             return
+        if self._runtime is None:
+            raise RuntimeError("Replay runtime was not initialized")
+        pending = self._pending_passive_market_events
+        self._pending_passive_market_events = []
+        self._runtime.process_passive_market_events(pending)
+
+    async def _process_strategy_frame(self, frame: ReplayDerivedFrame) -> bool:
+        if self._runtime is None or self._strategy is None:
+            return False
+        self._flush_passive_market_events()
         self._refresh_source_native_signal_activation(frame.as_of)
+        if frame.ticker in self._signal_activated_tickers:
+            self._strategy_engaged_tickers.add(frame.ticker)
+        activation = dict(
+            self.definition.configuration_revision["payload"].get("signal_activation")
+            or {}
+        )
+        enabled_streams = [
+            dict(stream)
+            for stream in activation.get("signal_streams") or []
+            if bool(stream.get("enabled", True))
+        ]
+        source_native_only = bool(enabled_streams) and all(
+            str(stream.get("occurrence_source") or "") == "qmd_squeeze_episode"
+            for stream in enabled_streams
+        )
+        if source_native_only and frame.ticker not in self._strategy_engaged_tickers:
+            # The configured strategy is forbidden to evaluate before its
+            # source-native Early Squeeze occurrence. Avoid projecting rule
+            # fields and scanning assignments for hundreds of unrelated
+            # tickers while preserving the causal VWAP history needed if this
+            # ticker is admitted later.
+            self._remember_strategy_frame(frame)
+            self._frame_cursor = {
+                "as_of": frame.as_of.astimezone(UTC).isoformat(),
+                "ticker": frame.ticker,
+                "timeframe": frame.timeframe,
+                "sequence": frame.sequence,
+            }
+            self._processed_frames += 1
+            if self._processed_frames % 64 == 0:
+                await asyncio.sleep(0)
+            return False
+        if (
+            source_native_only
+            and frame.ticker not in self._strategy_quality_admitted_tickers
+            and frame.timeframe != "1s"
+        ):
+            # The approved volume/spread-quality gate is entirely one-second
+            # and event/session sourced. Before it passes, higher-frequency
+            # veto evaluation cannot authorize an entry and only creates
+            # redundant wait decisions.
+            self._remember_strategy_frame(frame)
+            self._frame_cursor = {
+                "as_of": frame.as_of.astimezone(UTC).isoformat(),
+                "ticker": frame.ticker,
+                "timeframe": frame.timeframe,
+                "sequence": frame.sequence,
+            }
+            self._processed_frames += 1
+            if self._processed_frames % 64 == 0:
+                await asyncio.sleep(0)
+            return False
         await self._ensure_bar_gpt_features(frame.as_of)
         quote = self._quotes.get(frame.ticker)
         indicator = frame.indicator
@@ -2367,9 +2618,39 @@ class ReplayRunController:
             source_values=deepcopy(source_cache),
         )
         self._apply_historical_signal_streams(frame, source_cache)
-        for assignment in self._strategy.assignments():
-            if assignment.ticker != frame.ticker:
-                continue
+        ticker_assignments = tuple(
+            assignment
+            for assignment in self._strategy.assignments()
+            if assignment.ticker == frame.ticker
+        )
+        if frame.ticker not in self._strategy_quality_admitted_tickers:
+            quality_rules = [
+                dict(rule_set)
+                for assignment in ticker_assignments
+                for rule_set in dict(
+                    dict(assignment.parameters.get("entry_rules") or {}).get(
+                        "confirmation"
+                    )
+                    or {}
+                ).get("rule_sets")
+                or []
+                if str(rule_set.get("rule_set_id") or "")
+                == "strategy-squeeze-volume-spread-quality"
+                and bool(rule_set.get("enabled", True))
+            ]
+            if not quality_rules:
+                self._strategy_quality_admitted_tickers.add(frame.ticker)
+            else:
+                quality_masks = evaluate_rule_sets_frame(
+                    quality_rules,
+                    [{"ticker": frame.ticker, **source_cache}],
+                )
+                if all(
+                    bool((quality_masks.get(str(rule_set["rule_set_id"])) or [False])[0])
+                    for rule_set in quality_rules
+                ):
+                    self._strategy_quality_admitted_tickers.add(frame.ticker)
+        for assignment in ticker_assignments:
             positions = await self._runtime.broker.positions(assignment.account_id)
             position = next(
                 (row for row in positions if int(row.conid) == assignment.conid),
@@ -2418,6 +2699,8 @@ class ReplayRunController:
             "sequence": frame.sequence,
         }
         self._processed_frames += 1
+        await asyncio.sleep(0)
+        return True
 
     async def _process_external_signal_event(self, event: ReplaySignalEvent) -> None:
         source_cache = self._strategy_source_values.setdefault(event.ticker, {})
@@ -2438,6 +2721,7 @@ class ReplayRunController:
                 eligible_tickers=self._historical_signal_eligible_tickers(run_plan),
             ):
                 self._signal_activated_tickers.add(event.ticker)
+                self._strategy_engaged_tickers.add(event.ticker)
         if is_new_for_run:
             await self._after_event(event.available_at)
 
@@ -2566,6 +2850,7 @@ class ReplayRunController:
                     eligible_tickers=eligible,
                 ):
                     self._signal_activated_tickers.add(frame.ticker)
+                    self._strategy_engaged_tickers.add(frame.ticker)
                 next_state["last_emitted_at"] = frame.as_of.isoformat()
             self._signal_stream_states[key] = next_state
 
@@ -2605,6 +2890,7 @@ class ReplayRunController:
             await asyncio.sleep(min(delay, 0.25))
 
     async def _after_event(self, event_time: datetime) -> None:
+        self._flush_passive_market_events()
         self.current_time = event_time
         self.updated_at = datetime.now(UTC)
         # Replay BarGPT is intentionally chart-scoped while strategy entry is
@@ -2668,9 +2954,10 @@ class ReplayRunController:
             self._last_restart_checkpoint_event_bucket = event_bucket
             self._last_restart_checkpoint_frame_bucket = frame_bucket
         if transport_boundary:
-            self._write_manifest()
+            self._schedule_manifest_write()
 
     async def _finish(self, status: str) -> None:
+        self._flush_passive_market_events()
         if self._runtime is not None and not self._runtime_finished:
             await self._runtime.finish(status=status)
             self._runtime_finished = True
@@ -2681,7 +2968,14 @@ class ReplayRunController:
         self.status = status
         self.updated_at = datetime.now(UTC)
         await self._publish(force=True)
-        self._write_manifest()
+        self._schedule_manifest_write()
+        if self._manifest_write_task is not None:
+            await self._manifest_write_task
+        # Persist the complete terminal snapshot only once transport has
+        # stopped.  In-flight boundary writes intentionally use the compact
+        # projection so they cannot serialize hundreds of assignments while
+        # the event loop is advancing them.
+        await asyncio.to_thread(self._write_manifest, include_details=True)
         if self._bar_gpt_scope_task is not None:
             await asyncio.gather(self._bar_gpt_scope_task, return_exceptions=True)
         try:
@@ -2803,6 +3097,21 @@ class ReplayRunController:
             scope_id = str(payload.pop("scope_id"))
             await asyncio.to_thread(publish_bar_gpt_scope, scope_id, **payload)
 
+    def _schedule_manifest_write(self) -> None:
+        """Coalesce durable manifest updates without blocking Replay transport."""
+
+        self._manifest_write_pending = True
+        if self._manifest_write_task is None or self._manifest_write_task.done():
+            self._manifest_write_task = asyncio.create_task(
+                self._write_pending_manifests(),
+                name=f"replay-manifest-{self.run_id}",
+            )
+
+    async def _write_pending_manifests(self) -> None:
+        while self._manifest_write_pending:
+            self._manifest_write_pending = False
+            await asyncio.to_thread(self._write_manifest, include_details=False)
+
     async def _publish(
         self,
         *,
@@ -2810,11 +3119,6 @@ class ReplayRunController:
         allow_navigation: bool = False,
     ) -> None:
         if not self._subscribers:
-            return
-        if self._next_action_after_sequence is not None and not allow_navigation:
-            # Next-action navigation is a backend-only causal scan. Canvas
-            # consumers receive the acknowledged start state and the final
-            # paused boundary, never the intermediate market traversal.
             return
         now = time.monotonic()
         if not force and now - self._last_publish_monotonic < 0.25:
@@ -4045,10 +4349,10 @@ class ReplayRunController:
         # (and again on completion), so omitting this redundant write preserves
         # restart semantics without quadratic startup I/O.
 
-    def _write_manifest(self) -> None:
+    def _write_manifest(self, *, include_details: bool = True) -> None:
         if not self.run_dir.exists():
             return
-        run = self.snapshot()
+        run = self.snapshot(include_details=include_details)
         payload = {
             "schema_version": 2,
             "run": run,

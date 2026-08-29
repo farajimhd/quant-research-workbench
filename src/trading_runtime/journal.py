@@ -786,14 +786,56 @@ class TradingJournal:
         return results
 
     def save_strategy_assignment(self, payload: dict[str, Any]) -> dict[str, Any]:
-        assignment_id = str(payload.get("assignment_id") or "").strip()
-        if not assignment_id:
-            raise ValueError("assignment_id is required")
+        saved = self.save_strategy_assignments([payload])
+        return saved[0] if saved else {}
+
+    def save_strategy_assignments(
+        self, payloads: Iterable[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
+        """Upsert an assignment set in one crash-safe transaction."""
+
+        prepared: list[tuple[Any, ...]] = []
+        assignment_ids: list[str] = []
         now = datetime.now(timezone.utc).isoformat()
-        created_at = str(payload.get("created_at") or now)
-        updated_at = str(payload.get("updated_at") or now)
+        for raw in payloads:
+            payload = dict(raw)
+            assignment_id = str(payload.get("assignment_id") or "").strip()
+            if not assignment_id:
+                raise ValueError("assignment_id is required")
+            assignment_ids.append(assignment_id)
+            prepared.append(
+                (
+                    assignment_id,
+                    str(payload.get("strategy_id") or ""),
+                    int(payload.get("strategy_revision") or 0),
+                    str(payload.get("account_id") or ""),
+                    str(payload.get("ticker") or "").upper(),
+                    int(payload.get("conid") or 0),
+                    str(payload.get("status") or ""),
+                    json.dumps(
+                        payload.get("permissions") or {},
+                        sort_keys=True,
+                        default=_json_default,
+                    ),
+                    json.dumps(
+                        payload.get("parameters") or {},
+                        sort_keys=True,
+                        default=_json_default,
+                    ),
+                    json.dumps(
+                        payload.get("state") or {},
+                        sort_keys=True,
+                        default=_json_default,
+                    ),
+                    str(payload.get("source") or "order_entry"),
+                    str(payload.get("created_at") or now),
+                    str(payload.get("updated_at") or now),
+                )
+            )
+        if not prepared:
+            return []
         with self._lock, self._connection:
-            self._connection.execute(
+            self._connection.executemany(
                 """
                 INSERT INTO strategy_assignments(
                     assignment_id, strategy_id, strategy_revision, account_id, ticker, conid,
@@ -804,23 +846,18 @@ class TradingJournal:
                     parameters_json=excluded.parameters_json, state_json=excluded.state_json,
                     updated_at=excluded.updated_at
                 """,
-                (
-                    assignment_id,
-                    str(payload.get("strategy_id") or ""),
-                    int(payload.get("strategy_revision") or 0),
-                    str(payload.get("account_id") or ""),
-                    str(payload.get("ticker") or "").upper(),
-                    int(payload.get("conid") or 0),
-                    str(payload.get("status") or ""),
-                    json.dumps(payload.get("permissions") or {}, sort_keys=True, default=_json_default),
-                    json.dumps(payload.get("parameters") or {}, sort_keys=True, default=_json_default),
-                    json.dumps(payload.get("state") or {}, sort_keys=True, default=_json_default),
-                    str(payload.get("source") or "order_entry"),
-                    created_at,
-                    updated_at,
-                ),
+                prepared,
             )
-        return self.strategy_assignment(assignment_id) or {}
+        placeholders = ",".join("?" for _ in assignment_ids)
+        rows = self._fetchall(
+            f"SELECT * FROM strategy_assignments WHERE assignment_id IN ({placeholders})",
+            assignment_ids,
+        )
+        by_id = {
+            str(row["assignment_id"]): _assignment(row)
+            for row in rows
+        }
+        return [by_id[assignment_id] for assignment_id in assignment_ids]
 
     def strategy_assignment(self, assignment_id: str) -> dict[str, Any] | None:
         row = self._fetchone(
@@ -974,6 +1011,35 @@ class TradingJournal:
         )
         return [_record(row) for row in rows]
 
+    def latest_sequence(self, run_id: str) -> int:
+        row = self._fetchone(
+            "SELECT COALESCE(MAX(sequence), 0) AS sequence FROM journal WHERE run_id = ?",
+            (run_id,),
+        )
+        return int(row["sequence"] if row is not None else 0)
+
+    def next_record_after_time(
+        self,
+        run_id: str,
+        event_time: datetime,
+        *,
+        categories: tuple[str, ...],
+    ) -> JournalRecord | None:
+        if not categories:
+            return None
+        placeholders = ",".join("?" for _ in categories)
+        row = self._fetchone(
+            f"SELECT * FROM journal WHERE run_id = ? AND event_time > ? "
+            f"AND category IN ({placeholders}) "
+            "ORDER BY event_time ASC, sequence ASC LIMIT 1",
+            (
+                run_id,
+                event_time.astimezone(timezone.utc).isoformat(),
+                *categories,
+            ),
+        )
+        return _record(row) if row is not None else None
+
     def watchlist_membership_records(
         self,
         *,
@@ -1085,6 +1151,10 @@ class TradingJournal:
                 );
                 CREATE INDEX IF NOT EXISTS idx_journal_entity ON journal(entity_type, entity_id, sequence);
                 CREATE INDEX IF NOT EXISTS idx_journal_signal_time ON journal(category, entity_type, event_time DESC);
+                CREATE INDEX IF NOT EXISTS idx_journal_run_event_time
+                    ON journal(run_id, event_time DESC, sequence DESC);
+                CREATE INDEX IF NOT EXISTS idx_journal_run_category_sequence
+                    ON journal(run_id, category, sequence DESC);
                 CREATE TABLE IF NOT EXISTS outbox(
                     record_id TEXT PRIMARY KEY REFERENCES journal(record_id), attempts INTEGER NOT NULL,
                     last_error TEXT NOT NULL, delivered_at TEXT

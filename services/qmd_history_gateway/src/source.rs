@@ -796,7 +796,8 @@ impl HistoricalEventSource {
         cursor: Option<&HistoricalCursor>,
         limit: usize,
     ) -> Result<(Vec<LiveCompactEvent>, Option<HistoricalCursor>), String> {
-        self.fetch_ordered(window, cursor, limit, false, None).await
+        self.fetch_ordered(window, cursor, limit, false, None, None)
+            .await
     }
 
     pub async fn fetch_batch_at_revision(
@@ -806,8 +807,34 @@ impl HistoricalEventSource {
         limit: usize,
         live_continuation_sequence: Option<u64>,
     ) -> Result<(Vec<LiveCompactEvent>, Option<HistoricalCursor>), String> {
-        self.fetch_ordered(window, cursor, limit, false, live_continuation_sequence)
-            .await
+        self.fetch_ordered(
+            window,
+            cursor,
+            limit,
+            false,
+            live_continuation_sequence,
+            None,
+        )
+        .await
+    }
+
+    pub async fn fetch_batch_at_revision_filtered(
+        &self,
+        window: &EventWindow,
+        cursor: Option<&HistoricalCursor>,
+        limit: usize,
+        live_continuation_sequence: Option<u64>,
+        event_type_filter: Option<u8>,
+    ) -> Result<(Vec<LiveCompactEvent>, Option<HistoricalCursor>), String> {
+        self.fetch_ordered(
+            window,
+            cursor,
+            limit,
+            false,
+            live_continuation_sequence,
+            event_type_filter,
+        )
+        .await
     }
 
     pub async fn fetch_latest(
@@ -815,7 +842,9 @@ impl HistoricalEventSource {
         window: &EventWindow,
         limit: usize,
     ) -> Result<Vec<LiveCompactEvent>, String> {
-        let (mut events, _) = self.fetch_ordered(window, None, limit, true, None).await?;
+        let (mut events, _) = self
+            .fetch_ordered(window, None, limit, true, None, None)
+            .await?;
         events.reverse();
         Ok(events)
     }
@@ -1038,11 +1067,17 @@ impl HistoricalEventSource {
         limit: usize,
         descending: bool,
         live_continuation_sequence: Option<u64>,
+        event_type_filter: Option<u8>,
     ) -> Result<(Vec<LiveCompactEvent>, Option<HistoricalCursor>), String> {
         validate_window(window)?;
         let plan = self.source_plan(window).await?;
         let limit = limit.clamp(1, 100_000);
-        let ticker_filter = ticker_filter(&window.tickers)?;
+        let mut ticker_filter = ticker_filter(&window.tickers)?;
+        if let Some(event_type) = event_type_filter.filter(|value| *value <= 1) {
+            ticker_filter.push_str(&format!(
+                " AND bitAnd(source.event_meta, 1) = toUInt8({event_type})"
+            ));
+        }
         let mut selects = Vec::new();
         for segment in plan
             .segments
@@ -1111,6 +1146,9 @@ impl HistoricalEventSource {
                 self.fetch_live_segment(segment, &window.tickers, live_continuation_sequence)
                     .await?,
             );
+        }
+        if let Some(event_type) = event_type_filter.filter(|value| *value <= 1) {
+            events.retain(|event| event.event_meta & 1 == event_type);
         }
         if let Some(cursor) = cursor {
             events.retain(|event| event_follows_cursor(event, cursor, descending));

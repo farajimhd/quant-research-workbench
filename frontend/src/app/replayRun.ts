@@ -36,9 +36,14 @@ export type CanvasReplayRun = {
   navigation_search?: {
     active: boolean;
     phase: "idle" | "preparing" | "scanning";
+    elapsed_seconds?: number;
+    events_per_second?: number;
+    known_target_progress?: number | null;
     scanned_events: number;
+    scanned_through_event_time?: string | null;
     start_event_time: string | null;
     started_at: string | null;
+    target_event_time?: string | null;
     target_event_type?: string;
     targets: string[];
   };
@@ -73,7 +78,7 @@ export type CanvasReplayRun = {
   processed_events?: number;
 };
 
-const REPLAY_UI_UPDATE_MS = 1_000;
+const REPLAY_UI_UPDATE_MS = 500;
 const TERMINAL_REPLAY_STATUSES = new Set(["completed", "failed", "stopped"]);
 
 export function isTerminalReplayStatus(status: string) {

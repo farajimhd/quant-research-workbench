@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import asdict, dataclass, replace
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from enum import StrEnum
-from typing import Any, Mapping, Protocol
+from typing import Any, Mapping, Protocol, Sequence
 from uuid import uuid4
 
 from src.market_engine.events import MarketEvent, QuoteEvent
@@ -118,6 +118,8 @@ class TradingRuntime:
         self.strategy = strategy
         self.journal = journal
         self._persisted_assignment_versions: dict[str, tuple[str, str]] = {}
+        self._persisted_assignment_times: dict[str, datetime] = {}
+        self._last_wait_decision_times: dict[tuple[str, str], datetime] = {}
         self.control_plane = control_plane or shared_trading_control_plane(broker)
         self.control_plane.campaigns.bind_durable_authority(
             journal,
@@ -273,11 +275,54 @@ class TradingRuntime:
         observe(event)
         self._record_market_cursor(event)
 
+    def process_passive_market_events(self, events: Sequence[MarketEvent]) -> None:
+        """Coalesce an order-free event burst while preserving its causal cursor.
+
+        With no working order, intermediate quotes and trades cannot create an
+        execution. Only the latest event of each kind per ticker is needed for
+        broker marks and the execution snapshot; the full event count and final
+        cursor remain authoritative for progress and restart accounting.
+        """
+
+        if not events:
+            return
+        if bool(getattr(self.broker, "has_orders", True)):
+            raise RuntimeError("Passive market batching requires an empty broker order book")
+        observe = getattr(self.broker, "observe_market_event", None)
+        if observe is None:
+            raise RuntimeError("Broker does not support passive market observation")
+        previous_time = self.last_event_time
+        for event in events:
+            if previous_time is not None and event.ts < previous_time:
+                raise ValueError("Market events must be processed in non-decreasing timestamp order")
+            previous_time = event.ts
+        latest: dict[tuple[str, str], MarketEvent] = {}
+        for event in events:
+            latest[(event.ticker, event.kind)] = event
+        for event in sorted(latest.values(), key=lambda row: (row.ts, row.sequence, row.kind)):
+            self._observe_market_event_state(event)
+            observe(event)
+        prior_count = self.processed_events
+        self.processed_events += len(events)
+        self.last_event_time = events[-1].ts
+        self._set_market_cursor(events[-1])
+        interval = self.config.checkpoint_interval_events
+        if prior_count // interval < self.processed_events // interval:
+            self.journal.save_checkpoint(
+                self.run_id,
+                self._latest_checkpoint_cursor,
+                {"processed_events": self.processed_events},
+                events[-1].ts,
+            )
+
     def _record_market_event_state(self, event: MarketEvent) -> None:
         if self.last_event_time is not None and event.ts < self.last_event_time:
             raise ValueError("Market events must be processed in non-decreasing timestamp order")
         self.last_event_time = event.ts
         self.processed_events += 1
+        self._observe_market_event_state(event)
+
+    def _observe_market_event_state(self, event: MarketEvent) -> None:
         if isinstance(event, QuoteEvent) and event.bid_price > 0 and event.ask_price >= event.bid_price:
             tick_size = float(event.raw.get("tick_size") or 0.01)
             snapshot = ExecutionMarketSnapshot(
@@ -304,15 +349,18 @@ class TradingRuntime:
                 self.order_manager.on_market_snapshot(snapshot)
 
     def _record_market_cursor(self, event: MarketEvent) -> None:
-        cursor = f"{event.ts.astimezone(timezone.utc).isoformat()}|{event.sequence}|{event.kind}"
-        self._latest_checkpoint_cursor = cursor
+        self._set_market_cursor(event)
         if self.processed_events % self.config.checkpoint_interval_events == 0:
             self.journal.save_checkpoint(
                 self.run_id,
-                cursor,
+                self._latest_checkpoint_cursor,
                 {"processed_events": self.processed_events},
                 event.ts,
             )
+
+    def _set_market_cursor(self, event: MarketEvent) -> None:
+        cursor = f"{event.ts.astimezone(timezone.utc).isoformat()}|{event.sequence}|{event.kind}"
+        self._latest_checkpoint_cursor = cursor
 
     async def process_market_signal(self, signal: MarketSignal) -> None:
         """Deliver one causal reusable signal without coupling QMD to order routing."""
@@ -358,7 +406,11 @@ class TradingRuntime:
         evaluation = normalize_strategy_evaluation(await handler(observation, account_id))
         self._record_strategy_signals(evaluation, account_id)
         await self._execute_intents(evaluation, account_id, None)
-        self._persist_strategy_assignments(observation.observed_at)
+        self.persist_strategy_assignments(
+            observation.observed_at,
+            account_id=account_id,
+            ticker=observation.ticker,
+        )
 
     def _update_execution_market_from_observation(
         self, observation: StrategyObservation
@@ -390,6 +442,19 @@ class TradingRuntime:
         self, evaluation: StrategyEvaluation, account_id: str
     ) -> None:
         for signal in evaluation.signals:
+            action = str(signal.action.value if hasattr(signal.action, "value") else signal.action)
+            if action in {"wait", "hold"} and not evaluation.intents:
+                decision_key = (account_id, signal.ticker.upper())
+                last_wait_at = self._last_wait_decision_times.get(decision_key)
+                if (
+                    last_wait_at is not None
+                    and signal.event_time < last_wait_at + timedelta(seconds=1)
+                ):
+                    continue
+                self._last_wait_decision_times[decision_key] = signal.event_time
+            else:
+                decision_key = (account_id, signal.ticker.upper())
+                self._last_wait_decision_times.pop(decision_key, None)
             self.journal.append(
                 run_id=self.run_id,
                 category="strategy_decision",
@@ -564,11 +629,28 @@ class TradingRuntime:
         )
         return {"proposal_id": proposal_id, **result}
 
-    def _persist_strategy_assignments(self, event_time: datetime) -> None:
+    def persist_strategy_assignments(
+        self,
+        event_time: datetime,
+        *,
+        record_events: bool = True,
+        account_id: str = "",
+        ticker: str = "",
+    ) -> None:
+        """Persist changed campaign state without one transaction per ticker."""
+
         assignments = getattr(self.strategy, "assignments", None)
         if assignments is None:
             return
-        for assignment in assignments():
+        normalized_ticker = ticker.strip().upper()
+        selected = (
+            assignment
+            for assignment in assignments()
+            if (not account_id or assignment.account_id == account_id)
+            and (not normalized_ticker or assignment.ticker.upper() == normalized_ticker)
+        )
+        changed: list[tuple[Any, dict[str, Any], tuple[str, str]]] = []
+        for assignment in selected:
             payload = assignment.payload()
             version = (
                 str(payload.get("status") or ""),
@@ -576,25 +658,50 @@ class TradingRuntime:
             )
             if self._persisted_assignment_versions.get(assignment.assignment_id) == version:
                 continue
-            self.journal.save_strategy_assignment(payload)
-            self.journal.append(
-                run_id=self.run_id,
-                category="strategy",
-                entity_type="strategy_assignment_state",
-                entity_id=assignment.assignment_id,
-                account_id=assignment.account_id,
-                event_time=event_time,
-                payload={
-                    "event": "assignment_state_saved",
-                    "assignment_id": assignment.assignment_id,
-                    "strategy_id": assignment.strategy_id,
-                    "strategy_revision": assignment.strategy_revision,
-                    "ticker": assignment.ticker,
-                    "status": assignment.status.value,
-                    "state": assignment.state,
-                },
+            previous = self._persisted_assignment_versions.get(assignment.assignment_id)
+            last_persisted_at = self._persisted_assignment_times.get(
+                assignment.assignment_id
             )
+            status_changed = previous is None or previous[0] != version[0]
+            if (
+                not status_changed
+                and last_persisted_at is not None
+                and event_time < last_persisted_at + timedelta(seconds=5)
+            ):
+                continue
+            changed.append((assignment, payload, version))
+        if not changed:
+            return
+        self.journal.save_strategy_assignments(
+            [payload for _, payload, _ in changed]
+        )
+        if record_events:
+            self.journal.append_many([
+                {
+                    "run_id": self.run_id,
+                    "category": "strategy",
+                    "entity_type": "strategy_assignment_state",
+                    "entity_id": assignment.assignment_id,
+                    "account_id": assignment.account_id,
+                    "event_time": event_time,
+                    "payload": {
+                        "event": "assignment_state_saved",
+                        "assignment_id": assignment.assignment_id,
+                        "strategy_id": assignment.strategy_id,
+                        "strategy_revision": assignment.strategy_revision,
+                        "ticker": assignment.ticker,
+                        "status": assignment.status.value,
+                        "state": assignment.state,
+                    },
+                }
+                for assignment, _, _ in changed
+            ])
+        for assignment, _, version in changed:
             self._persisted_assignment_versions[assignment.assignment_id] = version
+            self._persisted_assignment_times[assignment.assignment_id] = event_time
+
+    def _persist_strategy_assignments(self, event_time: datetime) -> None:
+        self.persist_strategy_assignments(event_time)
     async def snapshot_portfolios(self) -> None:
         event_time = self.last_event_time or datetime.now(timezone.utc)
         for account_id in self.config.account_ids:

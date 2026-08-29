@@ -2135,7 +2135,7 @@ class ReplayControllerTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(controller._next_action_after_sequence, 0)
 
-    async def test_next_action_publishes_only_start_and_final_transport_boundaries(self) -> None:
+    async def test_next_action_publishes_progress_without_moving_visible_canvas_clock(self) -> None:
         controller = ReplayRunController(
             ReplayRunDefinition(
                 session_date=date(2026, 8, 21),
@@ -2153,9 +2153,6 @@ class ReplayControllerTests(unittest.IsolatedAsyncioTestCase):
         controller._navigation_start_time = start_time
 
         await controller._publish(force=True)
-        self.assertTrue(queue.empty())
-
-        await controller._publish(force=True, allow_navigation=True)
         started = queue.get_nowait()
         self.assertTrue(started["navigation_search"]["active"])
         self.assertEqual(started["current_time"], start_time.isoformat())
@@ -2163,7 +2160,13 @@ class ReplayControllerTests(unittest.IsolatedAsyncioTestCase):
         controller.current_time = start_time.replace(minute=5)
         controller.processed_events = 25_000
         await controller._publish(force=True)
-        self.assertTrue(queue.empty())
+        scanning = queue.get_nowait()
+        self.assertEqual(scanning["current_time"], start_time.isoformat())
+        self.assertEqual(scanning["navigation_search"]["scanned_events"], 25_000)
+        self.assertEqual(
+            scanning["navigation_search"]["scanned_through_event_time"],
+            controller.current_time.isoformat(),
+        )
 
         controller._last_navigation_action = {
             "event_time": controller.current_time.isoformat(),
@@ -2878,6 +2881,47 @@ class ReplayHistoricalSourceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(source.source_revision, pinned)
         self.assertEqual(read_page.call_args_list[0].args, (None, None))
         self.assertEqual(read_page.call_args_list[1].args, (cursor, pinned))
+
+    async def test_paged_pull_resumes_from_exact_source_cursor(self) -> None:
+        start_cursor = {
+            "ordinal": 17,
+            "sip_timestamp_us": 1_774_708_700_123_456,
+            "ticker": "STAK",
+        }
+        source = QmdHistoricalEventSource(
+            "http://127.0.0.1:8801",
+            start=datetime(2026, 7, 28, 9, 45, tzinfo=NEW_YORK),
+            end=datetime(2026, 7, 28, 9, 46, tzinfo=NEW_YORK),
+            tickers=["STAK"],
+            batch_size=100_000,
+            start_cursor=start_cursor,
+            event_kinds=("quote",),
+            initial_batch_size=10_000,
+        )
+        revision = {
+            "complete_for_history": True,
+            "request_complete": True,
+            "source_plan_hash": "fnv1a64:resume-plan",
+            "source_tiers": ["archive"],
+            "token": "resume-revision",
+        }
+        with patch.object(
+            source,
+            "_read_page",
+            return_value={
+                "complete": True,
+                "events": [],
+                "next_cursor": None,
+                "source_revision": revision,
+            },
+        ) as read_page:
+            batches = [batch async for batch in source.stream()]
+
+        self.assertEqual(batches, [])
+        self.assertEqual(
+            read_page.call_args_list[0].args,
+            (start_cursor, None, 10_000),
+        )
 
     async def test_paged_pull_rejects_changed_source_revision(self) -> None:
         source = QmdHistoricalEventSource(

@@ -522,6 +522,46 @@ class SimulatedBrokerTests(unittest.IsolatedAsyncioTestCase):
 
 
 class JournalTests(unittest.TestCase):
+    def test_indexed_navigation_queries_find_latest_and_next_causal_record(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            journal = TradingJournal(Path(directory) / "journal.sqlite3")
+            first = journal.append(
+                run_id="replay-a",
+                category="strategy_decision",
+                entity_type="signal",
+                entity_id="decision-1",
+                event_time=TS,
+                payload={"action": "wait", "ticker": "AAPL"},
+            )
+            journal.append(
+                run_id="replay-a",
+                category="broker",
+                entity_type="order",
+                entity_id="order-1",
+                event_time=TS + timedelta(seconds=1),
+                payload={"ticker": "AAPL"},
+            )
+            final = journal.append(
+                run_id="replay-a",
+                category="strategy",
+                entity_type="strategy_intent",
+                entity_id="intent-1",
+                event_time=TS + timedelta(seconds=2),
+                payload={"action": "enter_long", "ticker": "AAPL"},
+            )
+
+            next_record = journal.next_record_after_time(
+                "replay-a",
+                TS - timedelta(microseconds=1),
+                categories=("strategy_decision", "strategy"),
+            )
+
+            assert next_record is not None
+            self.assertEqual(next_record.record_id, first.record_id)
+            self.assertEqual(journal.latest_sequence("replay-a"), final.sequence)
+            self.assertEqual(journal.latest_sequence("missing"), 0)
+            journal.close()
+
     def test_historical_signal_stream_records_are_scoped_to_run(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             journal = TradingJournal(Path(directory) / "journal.sqlite3")

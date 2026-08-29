@@ -763,8 +763,14 @@ export function StrategyActivityContainer({ asOf, focusSequence, onSettingsChang
     const controller = new AbortController();
     let timer = 0;
     const refresh = () => {
-      const query = new URLSearchParams({ as_of: asOfRef.current, limit: "5000" });
+      const query = new URLSearchParams({
+        as_of: asOfRef.current,
+        limit: String(Math.max(1, Math.min(settings.limit, 500))),
+      });
       if (runId) query.set("run_id", runId);
+      if (settings.strategyId) query.set("strategy_id", settings.strategyId);
+      if (settings.ticker) query.set("ticker", settings.ticker);
+      if (settings.eventType) query.set("event_type", settings.eventType);
       api<StrategyActivityResponse>(`/api/trading/strategy-activity?${query}`, { signal: controller.signal, timeoutMs: 10000 })
         .then((response) => { setPayload(response); setError(""); })
         .catch((reason) => { if (!controller.signal.aborted) setError(reason instanceof Error ? reason.message : String(reason)); })
@@ -772,7 +778,7 @@ export function StrategyActivityContainer({ asOf, focusSequence, onSettingsChang
     };
     refresh();
     return () => { controller.abort(); window.clearTimeout(timer); };
-  }, [runId]);
+  }, [focusSequence, runId, settings.eventType, settings.limit, settings.strategyId, settings.ticker]);
   const rows = useMemo(() => (payload?.rows ?? []).filter((row) =>
     (!settings.strategyId || String(row.strategy_id) === settings.strategyId)
     && (!settings.runId || String(row.run_id) === settings.runId)

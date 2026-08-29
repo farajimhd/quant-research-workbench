@@ -137,6 +137,7 @@ struct EventPageQuery {
     expected_revision_token: Option<String>,
     expected_source_plan_hash: Option<String>,
     limit: Option<usize>,
+    kinds: Option<String>,
     #[serde(default)]
     revision_policy: EventRevisionPolicy,
     start: String,
@@ -739,13 +740,30 @@ async fn event_page_snapshot(
             "cursor_sip_timestamp_us, cursor_ticker, and cursor_ordinal must be supplied together",
         )),
     };
+    let requested_kinds = query
+        .kinds
+        .as_deref()
+        .unwrap_or("trade,quote")
+        .split(',')
+        .filter(|value| !value.trim().is_empty())
+        .map(|value| value.trim().to_ascii_lowercase())
+        .collect::<std::collections::HashSet<_>>();
+    if requested_kinds.is_empty()
+        || requested_kinds
+            .iter()
+            .any(|value| !matches!(value.as_str(), "trade" | "quote"))
+    {
+        return Err(bad_request("kinds must contain trade and/or quote"));
+    }
+    let event_type_filter = compact_event_type_filter(&requested_kinds);
     let (events, next_cursor) = state
         .source
-        .fetch_batch_at_revision(
+        .fetch_batch_at_revision_filtered(
             &window,
             cursor.as_ref(),
             limit,
             source_revision.live_continuation_sequence,
+            event_type_filter,
         )
         .await
         .map_err(service_error)?;
@@ -755,11 +773,26 @@ async fn event_page_snapshot(
         events: events
             .iter()
             .map(|event| state.source.market_event(event))
+            .filter(|event| {
+                matches!(event, MarketEvent::Trade(_)) && requested_kinds.contains("trade")
+                    || matches!(event, MarketEvent::Quote(_)) && requested_kinds.contains("quote")
+            })
             .collect(),
         next_cursor,
         revision_policy: query.revision_policy.as_str(),
         source_revision,
     }))
+}
+
+fn compact_event_type_filter(requested_kinds: &std::collections::HashSet<String>) -> Option<u8> {
+    if requested_kinds.len() != 1 {
+        return None;
+    }
+    Some(if requested_kinds.contains("quote") {
+        0
+    } else {
+        1
+    })
 }
 
 async fn bar_snapshot(
@@ -2136,10 +2169,10 @@ fn event_revision_changed(
 #[cfg(test)]
 mod tests {
     use super::{
-        causal_product_window, event_revision_changed, expected_event_revision, is_loopback_bind,
-        parse_chart_mode, parse_chart_stage, parse_indicator_projection, parse_timestamp,
-        product_resolution, stream_gap_frame, validate_timeframe, watchlist_materialization_error,
-        EventRevisionPolicy, ProductQuery,
+        causal_product_window, compact_event_type_filter, event_revision_changed,
+        expected_event_revision, is_loopback_bind, parse_chart_mode, parse_chart_stage,
+        parse_indicator_projection, parse_timestamp, product_resolution, stream_gap_frame,
+        validate_timeframe, watchlist_materialization_error, EventRevisionPolicy, ProductQuery,
     };
     use crate::source::SourceRevision;
     use axum::http::StatusCode;
@@ -2148,6 +2181,26 @@ mod tests {
     fn timestamps_require_explicit_timezone() {
         assert!(parse_timestamp("2026-07-13T04:00:00-04:00").is_ok());
         assert!(parse_timestamp("2026-07-13 04:00:00").is_err());
+    }
+
+    #[test]
+    fn compact_event_kind_maps_quote_and_trade_to_wire_tokens() {
+        assert_eq!(
+            compact_event_type_filter(&["quote".to_string()].into_iter().collect()),
+            Some(0)
+        );
+        assert_eq!(
+            compact_event_type_filter(&["trade".to_string()].into_iter().collect()),
+            Some(1)
+        );
+        assert_eq!(
+            compact_event_type_filter(
+                &["quote".to_string(), "trade".to_string()]
+                    .into_iter()
+                    .collect()
+            ),
+            None
+        );
     }
 
     #[test]

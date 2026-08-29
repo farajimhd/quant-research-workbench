@@ -23,7 +23,10 @@ class QmdHistoricalEventSource:
         end: datetime,
         tickers: list[str] | None = None,
         batch_size: int = 10_000,
+        initial_batch_size: int | None = None,
         revision_policy: Literal["pinned", "advancing"] = "pinned",
+        start_cursor: dict[str, Any] | None = None,
+        event_kinds: tuple[Literal["trade", "quote"], ...] = ("trade", "quote"),
     ) -> None:
         if start.tzinfo is None or end.tzinfo is None:
             raise ValueError("Historical event boundaries must be timezone-aware")
@@ -31,6 +34,8 @@ class QmdHistoricalEventSource:
             raise ValueError("end must be later than start")
         if not 1 <= batch_size <= 100_000:
             raise ValueError("batch_size must be between 1 and 100000")
+        if initial_batch_size is not None and not 1 <= initial_batch_size <= 100_000:
+            raise ValueError("initial_batch_size must be between 1 and 100000")
         if revision_policy not in {"pinned", "advancing"}:
             raise ValueError("revision_policy must be pinned or advancing")
         self.base_url = base_url.rstrip("/")
@@ -38,7 +43,18 @@ class QmdHistoricalEventSource:
         self.end = end
         self.tickers = list(tickers or [])
         self.batch_size = batch_size
+        self.initial_batch_size = initial_batch_size or batch_size
         self.revision_policy = revision_policy
+        self.start_cursor = dict(start_cursor) if start_cursor else None
+        if not event_kinds or any(kind not in {"trade", "quote"} for kind in event_kinds):
+            raise ValueError("event_kinds must contain trade and/or quote")
+        self.event_kinds = tuple(dict.fromkeys(event_kinds))
+        if self.start_cursor is not None:
+            required = {"sip_timestamp_us", "ticker", "ordinal"}
+            if set(self.start_cursor) != required:
+                raise ValueError(
+                    "Historical start_cursor requires sip_timestamp_us, ticker, and ordinal"
+                )
         self.source_revision: dict[str, Any] | None = None
 
     async def health(self) -> dict[str, object]:
@@ -54,68 +70,105 @@ class QmdHistoricalEventSource:
     async def stream(self, cursor: EventCursor | None = None):
         if cursor and cursor.token:
             raise ValueError("Reconnect historical events using a source-owned page boundary")
-        page_cursor: dict[str, Any] | None = None
+        page_cursor: dict[str, Any] | None = (
+            dict(self.start_cursor) if self.start_cursor else None
+        )
         pinned_revision: dict[str, Any] | None = None
-        while True:
-            payload = await asyncio.to_thread(
-                self._read_page, page_cursor, pinned_revision
-            )
-            revision = _source_revision(payload)
-            if revision["request_complete"] is not True:
-                raise RuntimeError(
-                    "QMD historical event source contains an explicit coverage gap; "
-                    "Replay and Backtest require complete source authority"
-                )
-            if (
-                self.revision_policy == "pinned"
-                and revision["complete_for_history"] is not True
-            ):
-                raise RuntimeError(
-                    "Pinned QMD historical event source requires live continuation; "
-                    "Replay and Backtest require a fully durable source plan"
-                )
-            if pinned_revision is None:
-                pinned_revision = revision
-                self.source_revision = dict(revision)
-            elif revision["source_plan_hash"] != pinned_revision["source_plan_hash"]:
-                raise RuntimeError(
-                    "QMD historical source plan changed during paged read; "
-                    "restart from the first page"
-                )
-            elif self.revision_policy == "pinned" and revision != pinned_revision:
-                raise RuntimeError(
-                    "QMD historical source revision changed during paged read; "
-                    "restart from the first page"
-                )
-            else:
-                self.source_revision = dict(revision)
-            events = [
-                event_from_qmd_payload(dict(item))
-                for item in payload.get("events") or []
-            ]
-            if events:
-                yield _batch(events)
-            if payload.get("complete"):
-                return
-            if not events:
-                raise RuntimeError(
-                    "QMD historical event pagination ended before complete=true"
-                )
-            next_cursor = payload.get("next_cursor")
-            if not isinstance(next_cursor, dict):
-                raise RuntimeError("QMD historical event page omitted its continuation cursor")
-            page_cursor = next_cursor
+        pending_page: asyncio.Task[dict[str, Any]] | None = None
+        first_page = True
+        try:
+            while True:
+                if pending_page is None:
+                    if first_page and self.initial_batch_size != self.batch_size:
+                        payload = await asyncio.to_thread(
+                            self._read_page,
+                            page_cursor,
+                            pinned_revision,
+                            self.initial_batch_size,
+                        )
+                    else:
+                        payload = await asyncio.to_thread(
+                            self._read_page, page_cursor, pinned_revision
+                        )
+                    first_page = False
+                else:
+                    payload = await pending_page
+                    pending_page = None
+                revision = _source_revision(payload)
+                if revision["request_complete"] is not True:
+                    raise RuntimeError(
+                        "QMD historical event source contains an explicit coverage gap; "
+                        "Replay and Backtest require complete source authority"
+                    )
+                if (
+                    self.revision_policy == "pinned"
+                    and revision["complete_for_history"] is not True
+                ):
+                    raise RuntimeError(
+                        "Pinned QMD historical event source requires live continuation; "
+                        "Replay and Backtest require a fully durable source plan"
+                    )
+                if pinned_revision is None:
+                    pinned_revision = revision
+                    self.source_revision = dict(revision)
+                elif revision["source_plan_hash"] != pinned_revision["source_plan_hash"]:
+                    raise RuntimeError(
+                        "QMD historical source plan changed during paged read; "
+                        "restart from the first page"
+                    )
+                elif self.revision_policy == "pinned" and revision != pinned_revision:
+                    raise RuntimeError(
+                        "QMD historical source revision changed during paged read; "
+                        "restart from the first page"
+                    )
+                else:
+                    self.source_revision = dict(revision)
+                events = [
+                    event_from_qmd_payload(dict(item))
+                    for item in payload.get("events") or []
+                ]
+                complete = bool(payload.get("complete"))
+                if not complete:
+                    if not events:
+                        raise RuntimeError(
+                            "QMD historical event pagination ended before complete=true"
+                        )
+                    next_cursor = payload.get("next_cursor")
+                    if not isinstance(next_cursor, dict):
+                        raise RuntimeError(
+                            "QMD historical event page omitted its continuation cursor"
+                        )
+                    page_cursor = next_cursor
+                    # Fetch one page ahead while the controller consumes this
+                    # batch. This hides QMD/JSON page latency without changing
+                    # event order or the pinned source-revision barrier.
+                    pending_page = asyncio.create_task(
+                        asyncio.to_thread(
+                            self._read_page,
+                            page_cursor,
+                            pinned_revision,
+                        )
+                    )
+                if events:
+                    yield _batch(events)
+                if complete:
+                    return
+        finally:
+            if pending_page is not None and not pending_page.done():
+                pending_page.cancel()
 
     def _read_page(
         self,
         cursor: dict[str, Any] | None,
         pinned_revision: dict[str, Any] | None,
+        limit: int | None = None,
     ) -> dict[str, Any]:
         parameters: dict[str, Any] = {
             "start": self.start.isoformat(),
             "end": self.end.isoformat(),
             "tickers": ",".join(self.tickers),
-            "limit": self.batch_size,
+            "limit": limit or self.batch_size,
+            "kinds": ",".join(self.event_kinds),
             "revision_policy": self.revision_policy,
         }
         if cursor:

@@ -335,6 +335,11 @@ function ReplayControls({ onExit, onRunChange, run }: { onExit: () => void; onRu
   const active = ["running", "fast_forwarding"].includes(run.status);
   const navigationActive = run.navigation_search?.active === true;
   const navigationPreparing = navigationActive && run.navigation_search?.phase === "preparing";
+  const navigationScannedEvents = run.navigation_search?.scanned_events ?? 0;
+  const navigationScannedThrough = run.navigation_search?.scanned_through_event_time;
+  const navigationElapsedSeconds = Math.max(0, Math.floor(run.navigation_search?.elapsed_seconds ?? 0));
+  const navigationRate = Math.max(0, Math.round(run.navigation_search?.events_per_second ?? 0));
+  const navigationProgress = run.navigation_search?.known_target_progress;
   const runtimePreparing = !terminal && !navigationActive && run.runtime_ready !== true;
   const transportPreparing = active && runtimePreparing;
   const preparingLabel = run.transport_mode === "fast_forward" ? "Preparing time jump" : run.transport_mode === "step" ? "Preparing one-second step" : "Preparing simulation";
@@ -396,8 +401,8 @@ function ReplayControls({ onExit, onRunChange, run }: { onExit: () => void; onRu
       <i aria-hidden="true" />
       <span>
         <strong aria-live="polite">{navigationPreparing ? "Preparing causal scan" : navigationActive ? "Finding next action" : runtimePreparing ? transportPreparing ? preparingLabel : "Preparing Replay" : run.status.replaceAll("_", " ")}</strong>
-        <small>{navigationPreparing ? "Loading signal + Watchlist history in the backend" : navigationActive ? `Backend scan in progress · Canvas held at ${formatReplayClock(run.current_time)} ET` : runtimePreparing ? transportPreparing ? preparingDetail : preparationSource : run.navigation_action ? `${formatReplayClock(run.navigation_action.event_time)} ET · ${run.navigation_action.ticker ? `${run.navigation_action.ticker} · ` : ""}${run.navigation_action.label}` : run.status === "warming" ? `${compactEventCount(run.warmup_events)} events` : `${Math.round(run.progress * 100)}%`}</small>
-        {runtimePreparing ? <progress aria-label={`${preparationSource} progress`} max={preparationTotal || undefined} value={preparationTotal ? Math.min(preparationCompleted, preparationTotal) : undefined} /> : null}
+        <small>{navigationPreparing ? "Loading signal + Watchlist history in the backend" : navigationActive ? `${compactEventCount(navigationScannedEvents)} events${navigationScannedThrough ? ` · through ${formatReplayClock(navigationScannedThrough)} ET` : ""}${navigationRate ? ` · ${compactEventCount(navigationRate)}/s` : ""} · ${formatElapsed(navigationElapsedSeconds)} · Canvas held at ${formatReplayClock(run.current_time)} ET` : runtimePreparing ? transportPreparing ? preparingDetail : preparationSource : run.navigation_action ? `${formatReplayClock(run.navigation_action.event_time)} ET · ${run.navigation_action.ticker ? `${run.navigation_action.ticker} · ` : ""}${run.navigation_action.label}` : run.status === "warming" ? `${compactEventCount(run.warmup_events)} events` : `${Math.round(run.progress * 100)}%`}</small>
+        {navigationActive ? <progress aria-label="Causal strategy scan progress" max={1} value={typeof navigationProgress === "number" ? navigationProgress : undefined} /> : runtimePreparing ? <progress aria-label={`${preparationSource} progress`} max={preparationTotal || undefined} value={preparationTotal ? Math.min(preparationCompleted, preparationTotal) : undefined} /> : null}
       </span>
     </div>
     {controlError ? <span className="replay-control-error" title={controlError}>Control failed</span> : null}
