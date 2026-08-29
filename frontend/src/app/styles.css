@@ -5731,7 +5731,7 @@ button {
 .legend-label {
   overflow: hidden;
   min-width: 0;
-  flex: 1 1 auto;
+  flex: 0 1 auto;
   color: var(--foreground);
   font-size: 10px;
   font-weight: 400;
@@ -5744,7 +5744,7 @@ button {
   max-width: 88px;
   min-width: 0;
   color: var(--foreground);
-  flex: 0 1 auto;
+  flex: 0 0 auto;
   font-size: 8px;
   font-weight: 400;
   text-align: left;
@@ -5788,7 +5788,7 @@ button {
   flex: 0 0 auto;
   align-items: center;
   gap: 2px;
-  margin-left: 4px;
+  margin-left: 0;
   opacity: 1;
 }
 

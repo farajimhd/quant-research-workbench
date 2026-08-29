@@ -140,7 +140,10 @@ def test_unified_structure_scores_can_filter_loaded_levels_without_a_history_req
     assert ".legend-row-actions > button:not(.legend-configure-button)" in styles_source
     assert ".chart-legend-row:hover .legend-row-actions > button" in styles_source
     assert "width: min(340px, calc(100% - 20px));" in styles_source
+    assert ".legend-label {\n  overflow: hidden;\n  min-width: 0;\n  flex: 0 1 auto;" in styles_source
+    assert ".legend-value {\n  overflow: hidden;\n  max-width: 88px;\n  min-width: 0;\n  color: var(--foreground);\n  flex: 0 0 auto;" in styles_source
     assert ".legend-row-actions {\n  display: inline-flex;\n  flex: 0 0 auto;" in styles_source
+    assert "margin-left: 0;" in styles_source
 
 
 def test_debug_page_can_open_a_durable_completed_backtest_review() -> None:
