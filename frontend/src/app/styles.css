@@ -13873,6 +13873,8 @@ button {
   grid-area: main;
   border-right: 1px solid var(--charts-quotes-rule);
   border-bottom: 1px solid var(--charts-quotes-rule);
+  box-sizing: border-box;
+  padding-bottom: 6px;
 }
 
 .charts-quotes-tape {

@@ -38,7 +38,9 @@ const CHART_SNAPSHOT_CACHE = new Map<string, ChartSnapshotCacheEntry>();
 const CHART_SNAPSHOT_CACHE_TTL_MS = 2 * 60_000;
 const CHART_SNAPSHOT_CACHE_LIMIT = 48;
 
-export function useCanvasHistoricalChart(symbol: string, timeframe: CanvasChartTimeframe, cutoffMs: number, sessionDate: string, visibleIndicatorIds: string[], liveTail = false, enabled = true): CanvasLiveChartState {
+type HistoricalChartMode = "backtest" | "debug" | "replay";
+
+export function useCanvasHistoricalChart(symbol: string, timeframe: CanvasChartTimeframe, cutoffMs: number, sessionDate: string, visibleIndicatorIds: string[], liveTail = false, enabled = true, historicalMode: HistoricalChartMode = "replay", fullSession = false): CanvasLiveChartState {
   const pointInTime = !liveTail;
   const refreshCutoffMs = pointInTime
     ? Math.floor(cutoffMs / timeframeDurationMs(timeframe)) * timeframeDurationMs(timeframe)
@@ -62,11 +64,11 @@ export function useCanvasHistoricalChart(symbol: string, timeframe: CanvasChartT
   const loadEarlier = useCallback(() => {
     if (!enabled) return;
     const ticker = symbol.trim().toUpperCase();
-    const requestKey = chartRequestKey(ticker, timeframe, projectionKey, sessionDate);
+    const requestKey = chartRequestKey(ticker, timeframe, projectionKey, sessionDate, historicalMode, fullSession);
     const cursor = historyCursorRef.current;
     if (!cursor || historyRequestRef.current || requestKeyRef.current !== requestKey) return;
     if (!cursor.nextBefore && !cursor.previousSessionBefore) return;
-    const request = earlierChartHistoryRequest(cursor, ticker, timeframe, indicatorColumns);
+    const request = earlierChartHistoryRequest(cursor, ticker, timeframe, indicatorColumns, historicalMode);
     if (!request) return;
     const controller = new AbortController();
     historyAbortRef.current = controller;
@@ -111,15 +113,15 @@ export function useCanvasHistoricalChart(symbol: string, timeframe: CanvasChartT
         }
         if (requestKeyRef.current === requestKey) setState((current) => ({ ...current, loadingEarlier: false }));
       });
-  }, [auxiliaryProjection.includeMarketSignals, auxiliaryProjection.includeStructure, cutoffMs, enabled, indicatorColumns, projectionKey, rowBudget, sessionDate, symbol, timeframe]);
+  }, [auxiliaryProjection.includeMarketSignals, auxiliaryProjection.includeStructure, cutoffMs, enabled, fullSession, historicalMode, indicatorColumns, projectionKey, rowBudget, sessionDate, symbol, timeframe]);
 
   useEffect(() => {
     if (!enabled) return;
     let active = true;
     const historyController = new AbortController();
     const ticker = symbol.trim().toUpperCase();
-    const requestKey = chartRequestKey(ticker, timeframe, projectionKey, sessionDate);
-    const identityKey = chartIdentityKey(ticker, projectionKey, sessionDate);
+    const requestKey = chartRequestKey(ticker, timeframe, projectionKey, sessionDate, historicalMode, fullSession);
+    const identityKey = chartIdentityKey(ticker, projectionKey, sessionDate, historicalMode, fullSession);
     historyAbortRef.current?.abort();
     historyAbortRef.current = historyController;
     requestKeyRef.current = requestKey;
@@ -178,10 +180,10 @@ export function useCanvasHistoricalChart(symbol: string, timeframe: CanvasChartT
 
     const fetchHistoricalPage = () => {
       historyRequestRef.current = true;
-      const requestParams = { allow_persisted_bars: liveTail, as_of: new Date(cutoffMs).toISOString(), include_market_signals: auxiliaryProjection.includeMarketSignals, include_structure: auxiliaryProjection.includeStructure, mode: liveTail ? "live" : "replay", row_limit: chartInitialPageSize(timeframe), session_date: sessionDate, symbol: ticker, timeframe };
+      const requestParams = { allow_persisted_bars: liveTail, as_of: new Date(cutoffMs).toISOString(), full_session: fullSession, include_market_signals: auxiliaryProjection.includeMarketSignals, include_structure: auxiliaryProjection.includeStructure, mode: liveTail ? "live" : historicalMode, row_limit: fullSession ? chartFullSessionPageSize(timeframe) : chartInitialPageSize(timeframe), session_date: sessionDate, symbol: ticker, timeframe };
       const progressive = ENRICHED_QMD_TIMEFRAMES.has(timeframe);
       const barsRequest = progressive
-        ? api<QmdBarHistory>(`/api/trading/canvas-chart/history${query({ ...requestParams, row_limit: chartInitialPageSize(timeframe), stage: "bars" })}`, { signal: historyController.signal, timeoutMs: 120000 })
+        ? api<QmdBarHistory>(`/api/trading/canvas-chart/history${query({ ...requestParams, stage: "bars" })}`, { signal: historyController.signal, timeoutMs: 120000 })
         : api<QmdBarHistory>(`/api/trading/canvas-chart/history${query({ ...requestParams, indicator_columns: indicatorColumns, stage: "full" })}`, { signal: historyController.signal, timeoutMs: 120000 });
       const fullRequest = progressive
         ? () => api<QmdBarHistory>(`/api/trading/canvas-chart/history${query({ ...requestParams, indicator_columns: indicatorColumns, stage: "full" })}`, { signal: historyController.signal, timeoutMs: 120000 })
@@ -304,17 +306,17 @@ export function useCanvasHistoricalChart(symbol: string, timeframe: CanvasChartT
       if (requestKeyRef.current === requestKey) requestKeyRef.current = "";
       historyController.abort();
     };
-  }, [auxiliaryProjection.includeMarketSignals, auxiliaryProjection.includeStructure, enabled, indicatorColumns, pointInTime, projectionKey, rowBudget, sessionDate, symbol, timeframe]);
+  }, [auxiliaryProjection.includeMarketSignals, auxiliaryProjection.includeStructure, enabled, fullSession, historicalMode, indicatorColumns, pointInTime, projectionKey, rowBudget, sessionDate, symbol, timeframe]);
 
   useEffect(() => {
     if (!enabled || liveTail) return;
     const ticker = symbol.trim().toUpperCase();
-    const requestKey = chartRequestKey(ticker, timeframe, projectionKey, sessionDate);
+    const requestKey = chartRequestKey(ticker, timeframe, projectionKey, sessionDate, historicalMode, fullSession);
     if (!ticker || refreshCutoffMs === loadedCutoffRef.current || requestKeyRef.current !== requestKey) return;
     const replacingRewind = refreshCutoffMs < loadedCutoffRef.current;
     loadedCutoffRef.current = refreshCutoffMs;
     const controller = new AbortController();
-    api<QmdBarHistory>(`/api/trading/canvas-chart/history${query({ as_of: new Date(refreshCutoffMs).toISOString(), include_market_signals: auxiliaryProjection.includeMarketSignals, include_structure: auxiliaryProjection.includeStructure, indicator_columns: indicatorColumns, mode: "replay", row_limit: chartInitialPageSize(timeframe), session_date: sessionDate, symbol: ticker, timeframe })}`, {
+    api<QmdBarHistory>(`/api/trading/canvas-chart/history${query({ as_of: new Date(refreshCutoffMs).toISOString(), full_session: fullSession, include_market_signals: auxiliaryProjection.includeMarketSignals, include_structure: auxiliaryProjection.includeStructure, indicator_columns: indicatorColumns, mode: historicalMode, row_limit: fullSession ? chartFullSessionPageSize(timeframe) : chartInitialPageSize(timeframe), session_date: sessionDate, symbol: ticker, timeframe })}`, {
       signal: controller.signal,
       timeoutMs: 120000,
     })
@@ -351,14 +353,14 @@ export function useCanvasHistoricalChart(symbol: string, timeframe: CanvasChartT
         }
       });
     return () => controller.abort();
-  }, [auxiliaryProjection.includeMarketSignals, auxiliaryProjection.includeStructure, enabled, indicatorColumns, liveTail, projectionKey, refreshCutoffMs, rowBudget, sessionDate, symbol, timeframe]);
+  }, [auxiliaryProjection.includeMarketSignals, auxiliaryProjection.includeStructure, enabled, fullSession, historicalMode, indicatorColumns, liveTail, projectionKey, refreshCutoffMs, rowBudget, sessionDate, symbol, timeframe]);
 
   useEffect(() => {
     if (!enabled || !liveTail) return;
     const ticker = symbol.trim().toUpperCase();
     if (!ticker) return;
-    const requestKey = chartRequestKey(ticker, timeframe, projectionKey, sessionDate);
-    const identityKey = chartIdentityKey(ticker, projectionKey, sessionDate);
+    const requestKey = chartRequestKey(ticker, timeframe, projectionKey, sessionDate, historicalMode, fullSession);
+    const identityKey = chartIdentityKey(ticker, projectionKey, sessionDate, historicalMode, fullSession);
     let active = true;
     let resnapshotController: AbortController | null = null;
     const sockets: Partial<Record<"bars" | "indicators", WebSocket>> = {};
@@ -487,21 +489,21 @@ export function useCanvasHistoricalChart(symbol: string, timeframe: CanvasChartT
       Object.values(sockets).forEach((socket) => socket?.close());
       document.removeEventListener("visibilitychange", handleVisibilityChange);
     };
-  }, [enabled, indicatorColumns, liveTail, projectionKey, rowBudget, sessionDate, symbol, timeframe]);
+  }, [enabled, fullSession, historicalMode, indicatorColumns, liveTail, projectionKey, rowBudget, sessionDate, symbol, timeframe]);
 
-  const currentRequestKey = chartRequestKey(symbol.trim().toUpperCase(), timeframe, projectionKey, sessionDate);
+  const currentRequestKey = chartRequestKey(symbol.trim().toUpperCase(), timeframe, projectionKey, sessionDate, historicalMode, fullSession);
   const causalBars = pointInTime ? closedRowsAtCutoff(state.bars, timeframe, cutoffMs) : state.bars;
   const causalTimes = pointInTime ? new Set(causalBars.map(barStartTime)) : null;
   const causalIndicators = causalTimes ? state.indicators.filter((row) => causalTimes.has(barStartTime(row))) : state.indicators;
   return { ...state, bars: causalBars, indicators: causalIndicators, loadEarlier, ready: enabled && readyKey === currentRequestKey };
 }
 
-function chartRequestKey(ticker: string, timeframe: string, indicatorColumns: string, sessionDate: string): string {
-  return [ticker, timeframe, indicatorColumns, sessionDate].join("|");
+function chartRequestKey(ticker: string, timeframe: string, indicatorColumns: string, sessionDate: string, historicalMode: HistoricalChartMode, fullSession: boolean): string {
+  return [ticker, timeframe, indicatorColumns, sessionDate, historicalMode, fullSession ? "full-session" : "paged"].join("|");
 }
 
-function chartIdentityKey(ticker: string, indicatorColumns: string, sessionDate: string): string {
-  return [ticker, indicatorColumns, sessionDate].join("|");
+function chartIdentityKey(ticker: string, indicatorColumns: string, sessionDate: string, historicalMode: HistoricalChartMode, fullSession: boolean): string {
+  return [ticker, indicatorColumns, sessionDate, historicalMode, fullSession ? "full-session" : "paged"].join("|");
 }
 
 function rememberChartSnapshot(key: string, payload: QmdBarHistory) {
@@ -618,6 +620,20 @@ export function chartInitialPageSize(timeframe: string) {
   return pageSizes[timeframe] ?? chartPageSize(timeframe);
 }
 
+export function chartFullSessionPageSize(timeframe: string) {
+  const pageSizes: Record<string, number> = {
+    "100ms": 25_000,
+    "1s": 25_000,
+    "5s": 5_000,
+    "10s": 5_000,
+    "30s": 1_920,
+    "1m": 960,
+    "5m": 192,
+    "1h": 64,
+  };
+  return pageSizes[timeframe] ?? chartInitialPageSize(timeframe);
+}
+
 export function chartRowBudget(indicatorColumns: string): number {
   const projectedColumnCount = indicatorColumns ? indicatorColumns.split(",").length : 1;
   return Math.max(5_000, Math.min(25_000, Math.floor(500_000 / (projectedColumnCount + 20))));
@@ -674,11 +690,12 @@ export function earlierChartHistoryRequest(
   ticker: string,
   timeframe: CanvasChartTimeframe,
   indicatorColumns: string,
+  historicalMode: HistoricalChartMode = "replay",
 ): { key: string; params: Record<string, string | number | undefined> } | null {
   if (!cursor || (!cursor.nextBefore && !cursor.previousSessionBefore)) return null;
   const params = cursor.nextBefore
-    ? { as_of: cursor.asOf, before_bar: cursor.nextBefore, indicator_columns: indicatorColumns, mode: "replay", row_limit: chartPageSize(timeframe), session_date: cursor.sessionDate, symbol: ticker, timeframe }
-    : { before: cursor.previousSessionBefore, indicator_columns: indicatorColumns, mode: "replay", row_limit: chartPageSize(timeframe), symbol: ticker, timeframe };
+    ? { as_of: cursor.asOf, before_bar: cursor.nextBefore, indicator_columns: indicatorColumns, mode: historicalMode, row_limit: chartPageSize(timeframe), session_date: cursor.sessionDate, symbol: ticker, timeframe }
+    : { before: cursor.previousSessionBefore, indicator_columns: indicatorColumns, mode: historicalMode, row_limit: chartPageSize(timeframe), symbol: ticker, timeframe };
   return {
     key: [ticker, timeframe, indicatorColumns, cursor.asOf, cursor.sessionDate, cursor.nextBefore, cursor.previousSessionBefore].join("|"),
     params,

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import json
+import math
 import re
 import threading
 import urllib.parse
@@ -1069,6 +1070,7 @@ def _bounded_historical_chart_window(
     before_bar: str | None,
     timeframe: str,
     row_limit: int,
+    full_session: bool = False,
 ) -> tuple[datetime, datetime, bool]:
     page_end = min(as_of, session_end)
     if before_bar:
@@ -1079,6 +1081,13 @@ def _bounded_historical_chart_window(
     resolution_us = _CHART_TIMEFRAME_MICROSECONDS.get(timeframe)
     if resolution_us is None:
         return session_start, page_end, False
+    if full_session and not before_bar:
+        required_rows = max(
+            1,
+            math.ceil((page_end - session_start).total_seconds() * 1_000_000 / resolution_us),
+        )
+        if required_rows <= min(row_limit, 50_000):
+            return session_start, page_end, False
     # The extra 25% supplies indicator warm-up without reconstructing the full
     # raw-event session before the first chart paint.
     span_us = resolution_us * max(1, min(row_limit, 5_000)) * 5 // 4
@@ -1202,6 +1211,7 @@ def historical_bar_history_before(
     include_structure: bool = True,
     stage: str = "full",
     mode: str = "live",
+    full_session: bool = False,
 ) -> dict[str, Any]:
     resolved_ticker = _historical_ticker(ticker)
     resolved_timeframe = _historical_timeframe(timeframe)
@@ -1308,6 +1318,7 @@ def historical_bar_history_before(
         before_bar=before_bar,
         timeframe=resolved_timeframe,
         row_limit=row_limit,
+        full_session=full_session,
     )
     snapshot = qmd_product_request(
         QmdProductRequest(

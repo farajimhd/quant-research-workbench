@@ -6077,6 +6077,7 @@ def trading_canvas_live_chart_history(
     include_structure: bool = True,
     stage: str = Query(default="full", pattern="^(bars|full)$"),
     mode: str = Query(default="live", pattern="^(live|replay|backtest|debug)$"),
+    full_session: bool = False,
     days: int = Query(default=1, ge=1, le=1),
     row_limit: int = Query(default=20_000, ge=1, le=50_000),
 ) -> dict[str, Any]:
@@ -6100,6 +6101,7 @@ def trading_canvas_live_chart_history(
             ticker, timeframe, before or "", session_date or "", as_of or "",
             before_bar or "", tuple(projected_columns or ()), allow_persisted_bars, include_market_signals,
             include_structure, stage, mode, row_limit,
+            full_session,
         )
         return _CANVAS_CHART_HISTORY_CACHE.get_or_load(
             cache_key,
@@ -6117,6 +6119,7 @@ def trading_canvas_live_chart_history(
                 stage=stage,
                 mode=mode,
                 row_limit=row_limit,
+                full_session=full_session,
             ),
         )
     except QmdServiceError as exc:
@@ -6140,6 +6143,7 @@ def _canvas_live_chart_history(
     stage: str,
     mode: str,
     row_limit: int,
+    full_session: bool,
 ) -> dict[str, Any]:
     before_date = date.fromisoformat(before) if before else datetime.now(ZoneInfo(EXCHANGE_TIME_ZONE)).date()
     return historical_bar_history_before(
@@ -6156,6 +6160,7 @@ def _canvas_live_chart_history(
         include_structure=include_structure,
         stage=stage,
         mode=mode,
+        full_session=full_session,
     )
 
 

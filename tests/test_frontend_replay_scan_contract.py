@@ -44,3 +44,16 @@ def test_debug_page_can_open_a_durable_completed_backtest_review() -> None:
     assert "/api/trading/backtest/runs" in source
     assert "/review`" in source
     assert 'runtimeWorkspaceId="completed-review"' in source
+
+
+def test_completed_backtest_chart_uses_durable_trading_evidence_and_full_session_history() -> None:
+    canvas_source = CANVAS_PAGE.read_text(encoding="utf-8")
+    chart_data_source = (REPO_ROOT / "frontend" / "src" / "features" / "canvas" / "chartData.ts").read_text(encoding="utf-8")
+
+    assert "durableTerminalReview" in canvas_source
+    assert "historicalTradingContainers" in canvas_source
+    assert 'readOnly={runMode !== "replay"}' in canvas_source
+    assert 'const fullSession = runtimeMode === "backtest" || runtimeMode === "backtest_debug"' in canvas_source
+    assert "full_session: fullSession" in chart_data_source
+    assert "chartFullSessionPageSize" in chart_data_source
+    assert "chartPanelRef.current?.fitFirstDay()" in (REPO_ROOT / "frontend" / "src" / "features" / "canvas" / "chartPresentation.tsx").read_text(encoding="utf-8")

@@ -888,6 +888,38 @@ class HistoricalContractTests(unittest.TestCase):
         self.assertEqual(page_start, datetime(2026, 8, 25, 20, 35, tzinfo=timezone.utc))
         self.assertTrue(has_earlier)
 
+    def test_completed_five_second_review_loads_the_full_premarket_session(self) -> None:
+        session_start = datetime(2026, 8, 21, 8, 0, tzinfo=timezone.utc)
+        page_start, page_end, has_earlier = _bounded_historical_chart_window(
+            session_start=session_start,
+            session_end=datetime(2026, 8, 21, 13, 30, tzinfo=timezone.utc),
+            as_of=datetime(2026, 8, 21, 13, 30, tzinfo=timezone.utc),
+            before_bar=None,
+            timeframe="5s",
+            row_limit=5_000,
+            full_session=True,
+        )
+
+        self.assertEqual(page_start, session_start)
+        self.assertEqual(page_end, datetime(2026, 8, 21, 13, 30, tzinfo=timezone.utc))
+        self.assertFalse(has_earlier)
+
+    def test_completed_subsecond_review_remains_bounded_when_session_exceeds_capacity(self) -> None:
+        session_start = datetime(2026, 8, 21, 8, 0, tzinfo=timezone.utc)
+        page_start, page_end, has_earlier = _bounded_historical_chart_window(
+            session_start=session_start,
+            session_end=datetime(2026, 8, 21, 13, 30, tzinfo=timezone.utc),
+            as_of=datetime(2026, 8, 21, 13, 30, tzinfo=timezone.utc),
+            before_bar=None,
+            timeframe="100ms",
+            row_limit=25_000,
+            full_session=True,
+        )
+
+        self.assertEqual(page_end, datetime(2026, 8, 21, 13, 30, tzinfo=timezone.utc))
+        self.assertEqual(page_start, datetime(2026, 8, 21, 13, 19, 35, tzinfo=timezone.utc))
+        self.assertTrue(has_earlier)
+
     def test_python_runtime_consumes_the_rust_market_event_contract(self) -> None:
         event = event_from_qmd_payload(
             {

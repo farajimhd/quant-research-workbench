@@ -931,13 +931,13 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
     payloadRef.current = payload;
     if (!payload || !priceChartRef.current || !candleRef.current || !volumeRef.current) return;
     const fitKey = buildChartFitKey(ticker, timeframe, referenceKey, payload.candles);
-    const shouldAutoFit = fitKey !== fittedChartKeyRef.current;
     const nextCandleWindow = candleWindow(payload.candles);
     const earlierBarsPrepended = Boolean(
       candleWindowRef.current
       && nextCandleWindow
       && nextCandleWindow.first < candleWindowRef.current.first
     );
+    const shouldAutoFit = fitKey !== fittedChartKeyRef.current;
     const currentRange = shouldAutoFit ? null : priceChartRef.current.timeScale().getVisibleLogicalRange();
     const currentTimeRange = !shouldAutoFit && earlierBarsPrepended ? priceChartRef.current.timeScale().getVisibleRange() : null;
     const timeline = chartTimelineData(payload.candles, timeframe, chartSettingsRef.current.hideEmptyIntervals);
@@ -4028,7 +4028,9 @@ function fitLatestSession(target: ChartRangeTarget, candles: Candle[], timeframe
     }
   });
   if (firstIndex < 0 || lastIndex < 0) return;
-  setChartLogicalRange(charts, { from: Math.max(-1, firstIndex - 1), to: Math.max(firstIndex + 1, lastIndex + 1) });
+  const sessionSpan = lastIndex - firstIndex + 1;
+  const edgePadding = Math.max(2, Math.min(60, Math.ceil(sessionSpan * 0.025)));
+  setChartLogicalRange(charts, { from: firstIndex - edgePadding, to: lastIndex + edgePadding });
 }
 
 function resetChartViewport(chart: IChartApi | null, candles: Candle[], timeframe: string, chartWidth: number, candleSize: number, hideEmptyIntervals = true) {
