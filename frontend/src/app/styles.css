@@ -5654,7 +5654,7 @@ button {
    */
   left: var(--chart-legend-inline-padding, 10px);
   z-index: 6;
-  width: min(260px, calc(100% - 20px));
+  width: min(340px, calc(100% - 20px));
   overflow: hidden;
   border: 0;
   border-radius: 0;
@@ -5668,7 +5668,7 @@ button {
 .chart-context-modal-panel .chart-legend {
   top: 12px;
   left: var(--chart-legend-inline-padding, 14px);
-  width: min(260px, calc(100% - 28px));
+  width: min(340px, calc(100% - 28px));
 }
 
 .chart-legend.collapsed {
@@ -5701,11 +5701,15 @@ button {
 .chart-legend-rows {
   display: grid;
   gap: 0;
+  min-width: 0;
   padding: 3px 0 0 10px;
 }
 
 .chart-legend-row {
   display: flex;
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
   min-height: 15px;
   align-items: center;
   gap: 4px;
@@ -5726,8 +5730,8 @@ button {
 
 .legend-label {
   overflow: hidden;
-  max-width: 128px;
-  flex: 0 1 auto;
+  min-width: 0;
+  flex: 1 1 auto;
   color: var(--foreground);
   font-size: 10px;
   font-weight: 400;
@@ -5736,11 +5740,15 @@ button {
 }
 
 .legend-value {
+  overflow: hidden;
+  max-width: 88px;
+  min-width: 0;
   color: var(--foreground);
-  flex: 0 0 auto;
+  flex: 0 1 auto;
   font-size: 8px;
   font-weight: 400;
   text-align: left;
+  text-overflow: ellipsis;
   white-space: nowrap;
 }
 
@@ -5777,6 +5785,7 @@ button {
 
 .legend-row-actions {
   display: inline-flex;
+  flex: 0 0 auto;
   align-items: center;
   gap: 2px;
   margin-left: 4px;

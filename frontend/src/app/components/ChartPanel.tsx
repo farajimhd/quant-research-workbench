@@ -1928,8 +1928,8 @@ function ChartLegend({
                 <span className={item.seriesStyle === "histogram" ? "legend-swatch histogram" : `legend-swatch ${item.lineStyle}`} style={{ color: item.color, opacity: item.opacity }}>
                   <i style={{ background: item.color }} />
                 </span>
-                <span className="legend-label">{item.label}</span>
-                {item.showValue && item.visible ? <span className="legend-value" style={{ color: item.color, opacity: item.opacity }}>{item.value}</span> : null}
+                <span className="legend-label" title={item.label}>{item.label}</span>
+                {item.showValue && item.visible ? <span className="legend-value" style={{ color: item.color, opacity: item.opacity }} title={item.value}>{item.value}</span> : null}
                 {item.configurable ? (
                   <span className="legend-row-actions">
                     <button
@@ -3238,8 +3238,8 @@ function buildPriceZoneLegendItems(
       value: itemZones.some((zone) => zone.annotationKind === "signal-episode-range")
         ? `${episodeIds.size} episode${episodeIds.size === 1 ? "" : "s"}`
         : selectedZones.length === presetZoneCount
-          ? `${selectedZones.length} level${selectedZones.length === 1 ? "" : "s"}`
-          : `${selectedZones.length}/${presetZoneCount} levels`,
+          ? `${selectedZones.length.toLocaleString("en-US")} level${selectedZones.length === 1 ? "" : "s"}`
+          : `${selectedZones.length.toLocaleString("en-US")} / ${presetZoneCount.toLocaleString("en-US")}`,
       visible: settings.visible,
     };
   });
