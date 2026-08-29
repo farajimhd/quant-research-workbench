@@ -38,6 +38,8 @@ pub struct HistoricalGatewayConfig {
     pub structure_checkpoint_max_events: usize,
     pub structure_checkpoint_rebuild_max_events: usize,
     pub structure_checkpoint_max_window_hours: usize,
+    pub structure_book_lookback_days: usize,
+    pub structure_book_max_seed_events: usize,
     pub structure_database: String,
     pub structure_events_table: String,
     pub table_prefix: String,
@@ -133,6 +135,16 @@ impl HistoricalGatewayConfig {
                 72,
             )
             .clamp(1, 168),
+            structure_book_lookback_days: env_usize(
+                "QMD_HISTORY_STRUCTURE_BOOK_LOOKBACK_DAYS",
+                180,
+            )
+            .clamp(2, 3_650),
+            structure_book_max_seed_events: env_usize(
+                "QMD_HISTORY_STRUCTURE_BOOK_MAX_SEED_EVENTS",
+                2_000_000,
+            )
+            .clamp(10_000, 10_000_000),
             structure_database: env_string("QMD_HISTORY_STRUCTURE_DATABASE", "q_live"),
             structure_events_table: env_string(
                 "QMD_HISTORY_STRUCTURE_EVENTS_TABLE",

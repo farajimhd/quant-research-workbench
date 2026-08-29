@@ -1673,9 +1673,18 @@ impl HistoricalEventSource {
             })
             .await?;
         if !available {
-            return Ok(Vec::new());
+            return Err(format!(
+                "required persisted Generic Structure ticker-book table {table} is unavailable"
+            ));
         }
-        let sql = persisted_structure_events_sql(&table, &ticker, before);
+        let max_events = self.config.structure_book_max_seed_events;
+        let sql = persisted_structure_events_sql(
+            &table,
+            &ticker,
+            before,
+            self.config.structure_book_lookback_days,
+            max_events.saturating_add(1),
+        );
         let text = self.query(&sql).await?;
         let mut events = text
             .lines()
@@ -1711,6 +1720,11 @@ impl HistoricalEventSource {
                 })
             })
             .collect::<Result<Vec<_>, String>>()?;
+        if events.len() > max_events {
+            return Err(format!(
+                "persisted Generic Structure ticker book for {ticker} exceeded the configured complete-seed limit of {max_events} events; refusing to build a silently truncated prior-session book"
+            ));
+        }
         events.sort_by_key(|event| (event.confirmed_at, event.event_id));
         Ok(events)
     }
@@ -2627,7 +2641,13 @@ fn recent_coverage_sql(table: &str, window: &EventWindow) -> String {
     )
 }
 
-fn persisted_structure_events_sql(table: &str, ticker: &str, before: DateTime<Utc>) -> String {
+fn persisted_structure_events_sql(
+    table: &str,
+    ticker: &str,
+    before: DateTime<Utc>,
+    lookback_days: usize,
+    event_limit: usize,
+) -> String {
     format!(
         r#"SELECT
                 algorithm_version,
@@ -2654,13 +2674,16 @@ fn persisted_structure_events_sql(table: &str, ticker: &str, before: DateTime<Ut
             WHERE algorithm_version = {version}
               AND sym = {ticker}
               AND confirmed_at < parseDateTime64BestEffort({before})
-              AND confirmed_at >= parseDateTime64BestEffort({before}) - INTERVAL 90 DAY
-            ORDER BY confirmed_at DESC, event_id DESC
-            LIMIT 5000
+              AND event_date >= toDate(parseDateTime64BestEffort({before}) - INTERVAL {lookback_days} DAY)
+              AND confirmed_at >= parseDateTime64BestEffort({before}) - INTERVAL {lookback_days} DAY
+            ORDER BY confirmed_at ASC, event_id ASC
+            LIMIT {event_limit}
             FORMAT JSONEachRow"#,
         version = GENERIC_STRUCTURE_ALGORITHM_VERSION,
         ticker = sql_literal(ticker),
         before = sql_literal(&before.to_rfc3339()),
+        lookback_days = lookback_days,
+        event_limit = event_limit,
     )
 }
 
@@ -2887,14 +2910,24 @@ mod tests {
     #[test]
     fn persisted_structure_query_does_not_shadow_datetime_predicates_with_text_aliases() {
         let before = Utc.with_ymd_and_hms(2026, 8, 11, 18, 20, 0).unwrap();
-        let sql =
-            persisted_structure_events_sql("q_derived.generic_structure_events_v1", "AAPL", before);
+        let sql = persisted_structure_events_sql(
+            "q_derived.generic_structure_events_v1",
+            "AAPL",
+            before,
+            180,
+            2_000_001,
+        );
         assert!(sql.contains("AS pivot_at_text"));
         assert!(sql.contains("AS confirmed_at_text"));
         assert!(!sql.contains("AS pivot_at,"));
         assert!(!sql.contains("AS confirmed_at\n"));
         assert!(sql.contains("AND confirmed_at < parseDateTime64BestEffort"));
         assert!(sql.contains("AND confirmed_at >= parseDateTime64BestEffort"));
+        assert!(sql.contains("AND event_date >= toDate("));
+        assert!(sql.contains("INTERVAL 180 DAY"));
+        assert!(sql.contains("ORDER BY confirmed_at ASC, event_id ASC"));
+        assert!(sql.contains("LIMIT 2000001"));
+        assert!(!sql.contains("ORDER BY confirmed_at DESC"));
     }
 
     #[test]

@@ -83,6 +83,11 @@ Generic Structure checkpoint advancement is bounded by
 `QMD_HISTORY_STRUCTURE_CHECKPOINT_MAX_CONCURRENT_ADVANCEMENTS`,
 `QMD_HISTORY_STRUCTURE_CHECKPOINT_MAX_EVENTS`, and
 `QMD_HISTORY_STRUCTURE_CHECKPOINT_MAX_WINDOW_HOURS`.
+Historical chart reconstruction seeds one causal ticker-level Structure book,
+including still-valid prior-session levels, from the preceding
+`QMD_HISTORY_STRUCTURE_BOOK_LOOKBACK_DAYS` (default `180`). The seed is complete
+or fails closed: `QMD_HISTORY_STRUCTURE_BOOK_MAX_SEED_EVENTS` (default
+`2000000`) is an explicit resource ceiling, never a tail-truncation policy.
 Single-ticker deployment-gap repair evidence is read from
 `QMD_HISTORY_RECENT_FOCUSED_REPAIR_TABLE` (default
 `q_live.qmd_gap_fill_symbol_universe_v1`). A completed, error-free repair whose

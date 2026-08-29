@@ -1412,6 +1412,17 @@ impl GenericStructureEngine {
                         seed_timeframe_swing(state, event);
                     }
                 }
+                "level_reinforced" => {
+                    if let Some(level) = self
+                        .levels
+                        .iter_mut()
+                        .find(|level| level.level_id == event.level_id)
+                    {
+                        level.touch_count = level.touch_count.saturating_add(1);
+                        level.hold_count = level.hold_count.saturating_add(1);
+                        level.last_test_at = event.confirmed_at;
+                    }
+                }
                 "level_crossed" => {
                     if let Some(level) = self
                         .levels
@@ -1419,9 +1430,12 @@ impl GenericStructureEngine {
                         .find(|level| level.level_id == event.level_id)
                     {
                         level.break_count = level.break_count.saturating_add(1);
-                        level.lifecycle = LevelLifecycle::AwaitingRetest {
+                        level.last_test_at = event.confirmed_at;
+                        level.lifecycle = LevelLifecycle::Crossed {
                             direction: event.direction,
-                            accepted_at: event.confirmed_at,
+                            first_crossed_at: event.confirmed_at,
+                            beyond_trades: 1,
+                            beyond_volume: 0.0,
                         };
                     }
                 }
@@ -1432,9 +1446,23 @@ impl GenericStructureEngine {
                         .find(|level| level.level_id == event.level_id)
                     {
                         level.accepted_break_count = level.accepted_break_count.saturating_add(1);
+                        level.last_test_at = event.confirmed_at;
                         level.lifecycle = LevelLifecycle::AwaitingRetest {
                             direction: event.direction,
                             accepted_at: event.confirmed_at,
+                        };
+                    }
+                }
+                "retest_started" => {
+                    if let Some(level) = self
+                        .levels
+                        .iter_mut()
+                        .find(|level| level.level_id == event.level_id)
+                    {
+                        level.last_test_at = event.confirmed_at;
+                        level.lifecycle = LevelLifecycle::RetestContact {
+                            direction: event.direction,
+                            contacted_at: event.confirmed_at,
                         };
                     }
                 }
@@ -1446,15 +1474,30 @@ impl GenericStructureEngine {
                     {
                         level.side = event.direction;
                         level.role_flip_count = level.role_flip_count.saturating_add(1);
+                        level.touch_count = level.touch_count.saturating_add(1);
+                        level.hold_count = level.hold_count.saturating_add(1);
+                        level.last_test_at = event.confirmed_at;
                         level.lifecycle = LevelLifecycle::Active;
                     }
                 }
-                "break_rejected" | "retest_failed" => {
+                "break_rejected" => {
                     if let Some(level) = self
                         .levels
                         .iter_mut()
                         .find(|level| level.level_id == event.level_id)
                     {
+                        level.hold_count = level.hold_count.saturating_add(1);
+                        level.last_test_at = event.confirmed_at;
+                        level.lifecycle = LevelLifecycle::Active;
+                    }
+                }
+                "retest_failed" => {
+                    if let Some(level) = self
+                        .levels
+                        .iter_mut()
+                        .find(|level| level.level_id == event.level_id)
+                    {
+                        level.last_test_at = event.confirmed_at;
                         level.lifecycle = LevelLifecycle::Active;
                     }
                 }
@@ -3288,6 +3331,68 @@ mod tests {
         let snapshot = engine.snapshot(Utc::now());
         assert_eq!(snapshot.session_high, 75.0);
         assert_eq!(snapshot.session_low, 75.0);
+    }
+
+    #[test]
+    fn ticker_level_book_survives_the_next_session_boundary() {
+        let mut prior_engine = GenericStructureEngine::new("TEST");
+        let mut persisted_events = Vec::new();
+        let prior_session = [100.00, 100.04, 100.08, 100.12, 100.11, 100.13, 100.11];
+        for (index, price) in prior_session.into_iter().enumerate() {
+            let (_, emitted) = prior_engine.apply_event(
+                &trade(
+                    new_york_ms(2026, 7, 24, 15, 0, 0) + index as i64,
+                    price,
+                    100.0,
+                    index as u64 + 1,
+                ),
+                TradeUpdateRule::regular(),
+            );
+            persisted_events.extend(emitted);
+        }
+        let prior_levels = prior_engine.checkpoint().levels;
+        assert!(!prior_levels.is_empty());
+        let prior_level_id = prior_levels
+            .iter()
+            .find(|level| level.break_count > 0)
+            .expect("the prior-session fixture must exercise lifecycle reconstruction")
+            .level_id;
+
+        let mut engine = GenericStructureEngine::new("TEST");
+        engine.seed_events(&persisted_events);
+        let seeded_level = engine
+            .checkpoint()
+            .levels
+            .into_iter()
+            .find(|level| level.level_id == prior_level_id)
+            .unwrap();
+        let prior_level = prior_levels
+            .iter()
+            .find(|level| level.level_id == prior_level_id)
+            .unwrap();
+        assert_eq!(seeded_level.touch_count, prior_level.touch_count);
+        assert_eq!(seeded_level.hold_count, prior_level.hold_count);
+        assert_eq!(seeded_level.break_count, prior_level.break_count);
+        assert_eq!(
+            seeded_level.accepted_break_count,
+            prior_level.accepted_break_count
+        );
+        assert_eq!(seeded_level.role_flip_count, prior_level.role_flip_count);
+        assert_eq!(seeded_level.lifecycle.label(), prior_level.lifecycle.label());
+        engine.apply_event(
+            &trade(new_york_ms(2026, 7, 25, 4, 0, 0), 100.10, 100.0, 100),
+            TradeUpdateRule::regular(),
+        );
+
+        let checkpoint = engine.checkpoint();
+        assert_eq!(
+            checkpoint.session_anchor,
+            NaiveDate::from_ymd_opt(2026, 7, 25)
+        );
+        assert!(checkpoint
+            .levels
+            .iter()
+            .any(|level| level.level_id == prior_level_id));
     }
 
     #[test]

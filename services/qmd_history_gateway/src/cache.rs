@@ -28,7 +28,7 @@ use std::sync::Mutex as StdMutex;
 use tokio::sync::{broadcast, mpsc, Mutex, Notify, Semaphore};
 
 pub const HISTORICAL_ENGINE_VERSION: &str = "qmd-derived-v33";
-pub const HISTORICAL_CALCULATION_REVISION: &str = "qmd-derived-v33";
+pub const HISTORICAL_CALCULATION_REVISION: &str = "qmd-derived-v34";
 pub const HISTORICAL_CORPORATE_ACTION_REVISION: &str = "raw-unadjusted-v1";
 const MAX_ENCOUNTERED_STRUCTURE_LEVELS: usize = 4_000;
 
@@ -829,16 +829,11 @@ impl HistoricalDerivedCache {
             SessionVwapSeed::default()
         };
         if matches!(&profile, CacheProfile::Derived(_)) {
-            match self
+            let events = self
                 .source
                 .persisted_structure_events_before(&ticker, window.start)
-                .await
-            {
-                Ok(events) => bars.seed_structure_events(events).await,
-                Err(error) => eprintln!(
-                    "QMD historical structure warm start unavailable for {ticker}: {error}"
-                ),
-            }
+                .await?;
+            bars.seed_structure_events(events).await;
         }
         let shard = bars.shard(0);
         let trade_rules = self.source.trade_aggregation_rules();
