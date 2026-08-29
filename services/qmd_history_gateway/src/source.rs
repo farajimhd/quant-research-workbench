@@ -800,24 +800,6 @@ impl HistoricalEventSource {
             .await
     }
 
-    pub async fn fetch_batch_at_revision(
-        &self,
-        window: &EventWindow,
-        cursor: Option<&HistoricalCursor>,
-        limit: usize,
-        live_continuation_sequence: Option<u64>,
-    ) -> Result<(Vec<LiveCompactEvent>, Option<HistoricalCursor>), String> {
-        self.fetch_ordered(
-            window,
-            cursor,
-            limit,
-            false,
-            live_continuation_sequence,
-            None,
-        )
-        .await
-    }
-
     pub async fn fetch_batch_at_revision_filtered(
         &self,
         window: &EventWindow,

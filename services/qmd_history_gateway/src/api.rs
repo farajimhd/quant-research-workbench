@@ -842,6 +842,11 @@ async fn chart_bar_snapshot(
     let (window, as_of) = causal_product_window(&product_query, &ticker)?;
     let before = query.before.as_deref().map(parse_timestamp).transpose()?;
     let indicator_columns = parse_indicator_projection(query.indicator_columns.as_deref())?;
+    let structure_only = indicator_columns.as_ref().is_some_and(|columns| {
+        columns.len() == 2
+            && columns.contains("bar_start")
+            && columns.contains("qmd_structure_unified_levels")
+    });
     let bars_only = parse_chart_stage(query.stage.as_deref())?;
     let mode = parse_chart_mode(query.mode.as_deref())?;
     if bars_only && mode == "live" && query.allow_persisted_bars.unwrap_or(true) {
@@ -935,6 +940,7 @@ async fn chart_bar_snapshot(
             as_of,
             before,
             bars_only,
+            structure_only,
         )
         .await
         .map_err(service_error)?;
@@ -992,7 +998,7 @@ fn parse_indicator_projection(raw: Option<&str>) -> Result<Option<BTreeSet<Strin
 }
 
 fn project_chart_snapshot(
-    snapshot: ChartSnapshot,
+    mut snapshot: ChartSnapshot,
     columns: Option<&BTreeSet<String>>,
     include_market_signals: bool,
     include_structure: bool,
@@ -1014,26 +1020,38 @@ fn project_chart_snapshot(
         }
         return Ok(value);
     };
-    let indicator_count = snapshot.indicators.len();
-    let mut indicators = snapshot
-        .indicators
-        .into_iter()
-        .enumerate()
-        .map(|(index, indicator)| {
-            let mut value = serde_json::to_value(indicator).map_err(|error| {
-                service_error(format!("failed to serialize chart indicator: {error}"))
-            })?;
-            if let Some(object) = value.as_object_mut() {
-                object.retain(|key, _| columns.contains(key));
-                if index + 1 < indicator_count {
-                    object.remove("qmd_structure_active_levels");
-                    object.remove("qmd_structure_timeframe_states");
+    let mut indicators = if let Some(projected) = snapshot.indicator_projection.take() {
+        projected
+    } else {
+        let indicator_count = snapshot.indicators.len();
+        let mut projected = snapshot
+            .indicators
+            .into_iter()
+            .enumerate()
+            .map(|(index, indicator)| {
+                let mut value = serde_json::to_value(indicator).map_err(|error| {
+                    service_error(format!("failed to serialize chart indicator: {error}"))
+                })?;
+                if let Some(object) = value.as_object_mut() {
+                    object.retain(|key, _| columns.contains(key));
+                    if index + 1 < indicator_count {
+                        object.remove("qmd_structure_active_levels");
+                        object.remove("qmd_structure_timeframe_states");
+                    }
                 }
-            }
-            Ok(value)
-        })
-        .collect::<Result<Vec<_>, ApiError>>()?;
-    compact_projected_unified_structure_history(&mut indicators);
+                Ok(value)
+            })
+            .collect::<Result<Vec<_>, ApiError>>()?;
+        compact_projected_unified_structure_history(&mut projected);
+        projected
+    };
+    indicators.iter_mut().for_each(|row| {
+        if let Some(object) = row.as_object_mut() {
+            object.retain(|key, _| {
+                columns.contains(key) || key == "qmd_structure_unified_level_delta"
+            });
+        }
+    });
     Ok(json!({
         "as_of": snapshot.as_of,
         "bars": snapshot.bars,
@@ -1113,6 +1131,9 @@ fn unified_structure_level_map(levels: &Value) -> BTreeMap<String, (Value, Value
                 object.remove("total_volume");
                 object.remove("trade_count");
                 object.remove("sources");
+                object.remove("source_count");
+                object.remove("touch_count");
+                object.remove("hold_count");
                 object.remove("last_test_at_ms");
                 // The chart communicates these scores as whole-percent
                 // evidence and draws them across a finite pixel span.
@@ -1125,7 +1146,7 @@ fn unified_structure_level_map(levels: &Value) -> BTreeMap<String, (Value, Value
                     "confidence",
                 ] {
                     if let Some(number) = object.get(key).and_then(Value::as_f64) {
-                        object.insert(key.to_string(), json!((number * 100.0).round() / 100.0));
+                        object.insert(key.to_string(), json!((number * 20.0).round() / 20.0));
                     }
                 }
             }

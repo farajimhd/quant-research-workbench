@@ -27,6 +27,7 @@ use qmd_core::market_products::{
 use qmd_core::market_signal::{MarketSignalEngine, MarketSignalEvent};
 use qmd_core::microstructure_interval::MicrostructureIntervalWindow;
 use serde::Serialize;
+use serde_json::{json, Value};
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::mem::size_of;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -42,6 +43,7 @@ const MAX_ENCOUNTERED_STRUCTURE_LEVELS: usize = 4_000;
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum CacheProfile {
     Derived(String),
+    Structure(String),
     Products,
 }
 
@@ -49,6 +51,7 @@ impl CacheProfile {
     fn key(&self) -> String {
         match self {
             Self::Derived(timeframe) => format!("derived:{timeframe}"),
+            Self::Structure(timeframe) => format!("structure:{timeframe}"),
             Self::Products => "products".to_string(),
         }
     }
@@ -152,6 +155,8 @@ pub struct ChartSnapshot {
     pub cache: CacheEvidence,
     pub has_more: bool,
     pub indicators: Vec<IndicatorRow>,
+    #[serde(skip)]
+    pub indicator_projection: Option<Vec<Value>>,
     pub indicators_available: bool,
     pub market_signal_events: Vec<MarketSignalEvent>,
     pub next_before: Option<DateTime<Utc>>,
@@ -174,6 +179,98 @@ fn encountered_structure_levels(indicators: &[IndicatorRow]) -> Vec<StructureLev
             .iter()
             .flat_map(|indicator| indicator.qmd_structure_active_levels.iter().cloned()),
     )
+}
+
+fn unified_structure_projection(selected: &[&BarUpdate]) -> Result<Vec<Value>, String> {
+    let terminal_index = selected.len().saturating_sub(1);
+    let mut previous = BTreeMap::<String, (Value, Value)>::new();
+    selected
+        .iter()
+        .enumerate()
+        .map(|(index, update)| {
+            let mut levels = serde_json::to_value(&update.bar.qmd_structure.unified_levels)
+                .map_err(|error| format!("failed to serialize unified structure levels: {error}"))?;
+            if let Some(rows) = levels.as_array_mut() {
+                for level in rows {
+                    if let Some(object) = level.as_object_mut() {
+                        // Source pivots are audit detail, not chart geometry. Keep
+                        // the array contract while avoiding repeated nested books
+                        // in a presentation-only projection.
+                        object.insert("sources".to_string(), json!([]));
+                    }
+                }
+            }
+            let current = unified_structure_level_map(&levels);
+            let mut row = json!({"bar_start": update.bar.bar_start});
+            let object = row
+                .as_object_mut()
+                .ok_or_else(|| "invalid unified structure projection row".to_string())?;
+            if index == 0 || index == terminal_index {
+                object.insert("qmd_structure_unified_levels".to_string(), levels);
+            } else {
+                let upserts = current
+                    .iter()
+                    .filter_map(|(key, (signature, level))| {
+                        (previous.get(key).map(|(value, _)| value) != Some(signature))
+                            .then(|| level.clone())
+                    })
+                    .collect::<Vec<_>>();
+                let removed = previous
+                    .iter()
+                    .filter_map(|(key, (_, level))| {
+                        (!current.contains_key(key)).then(|| json!({
+                            "unified_level_id": level.get("unified_level_id").cloned().unwrap_or(Value::Null),
+                            "side": level.get("side").cloned().unwrap_or(Value::Null),
+                        }))
+                    })
+                    .collect::<Vec<_>>();
+                if !upserts.is_empty() || !removed.is_empty() {
+                    object.insert(
+                        "qmd_structure_unified_level_delta".to_string(),
+                        json!({"upserts": upserts, "removed": removed}),
+                    );
+                }
+            }
+            previous = current;
+            Ok(row)
+        })
+        .collect()
+}
+
+fn unified_structure_level_map(levels: &Value) -> BTreeMap<String, (Value, Value)> {
+    levels
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|level| {
+            let identity = format!("{}:{}", level.get("unified_level_id")?, level.get("side")?);
+            let mut signature = level.clone();
+            if let Some(object) = signature.as_object_mut() {
+                for key in [
+                    "total_volume",
+                    "trade_count",
+                    "sources",
+                    "source_count",
+                    "touch_count",
+                    "hold_count",
+                    "last_test_at_ms",
+                ] {
+                    object.remove(key);
+                }
+                for key in [
+                    "reaction_probability",
+                    "hold_probability",
+                    "salience",
+                    "confidence",
+                ] {
+                    if let Some(number) = object.get(key).and_then(Value::as_f64) {
+                        object.insert(key.to_string(), json!((number * 20.0).round() / 20.0));
+                    }
+                }
+            }
+            Some((identity, (signature, level.clone())))
+        })
+        .collect()
 }
 
 fn encountered_structure_levels_for_session(
@@ -482,16 +579,23 @@ impl HistoricalDerivedCache {
         as_of: DateTime<Utc>,
         before: Option<DateTime<Utc>>,
         bars_only: bool,
+        structure_only: bool,
     ) -> Result<ChartSnapshot, String> {
         let resolution_us = parse_resolution_us(&timeframe)
             .ok_or_else(|| format!("unsupported chart timeframe {timeframe}"))?;
         let profile = if qmd_core::bars::is_supported_timeframe(&timeframe) {
-            CacheProfile::Derived(timeframe.clone())
+            if structure_only {
+                CacheProfile::Structure(timeframe.clone())
+            } else {
+                CacheProfile::Derived(timeframe.clone())
+            }
         } else {
             CacheProfile::Products
         };
         let lease = self.acquire(window, ticker.clone(), profile).await?;
-        let event_count = if bars_only && qmd_core::bars::is_supported_timeframe(&timeframe) {
+        let event_count = if (bars_only || structure_only)
+            && qmd_core::bars::is_supported_timeframe(&timeframe)
+        {
             lease.entry.wait_bars_ready().await?
         } else {
             lease.entry.wait_ready().await?
@@ -533,7 +637,45 @@ impl HistoricalDerivedCache {
                     cache,
                     has_more,
                     indicators: Vec::new(),
+                    indicator_projection: None,
                     indicators_available: false,
+                    market_signal_events: Vec::new(),
+                    next_before,
+                    structure_events: Vec::new(),
+                    structure_level_history: Vec::new(),
+                    ticker,
+                    timeframe,
+                });
+            }
+            if structure_only {
+                let mut selected = state
+                    .bars
+                    .iter()
+                    .rev()
+                    .filter(|update| {
+                        update.bar.timeframe.eq_ignore_ascii_case(&timeframe)
+                            && update.bar.bar_end <= as_of
+                            && before.is_none_or(|bound| update.bar.bar_start < bound)
+                    })
+                    .take(limit.saturating_add(1))
+                    .collect::<Vec<_>>();
+                let has_more = selected.len() > limit;
+                selected.truncate(limit);
+                selected.reverse();
+                let bars = selected
+                    .iter()
+                    .map(|update| ChartBarRow::from_bar(&update.bar))
+                    .collect::<Vec<_>>();
+                let indicator_projection = unified_structure_projection(&selected)?;
+                let next_before = has_more.then(|| bars[0].bar_start);
+                return Ok(ChartSnapshot {
+                    as_of,
+                    bars,
+                    cache,
+                    has_more,
+                    indicators: Vec::new(),
+                    indicator_projection: Some(indicator_projection),
+                    indicators_available: true,
                     market_signal_events: Vec::new(),
                     next_before,
                     structure_events: Vec::new(),
@@ -602,6 +744,7 @@ impl HistoricalDerivedCache {
                 cache,
                 has_more,
                 indicators,
+                indicator_projection: None,
                 indicators_available: true,
                 market_signal_events,
                 next_before,
@@ -645,6 +788,7 @@ impl HistoricalDerivedCache {
             cache,
             has_more,
             indicators: Vec::new(),
+            indicator_projection: None,
             indicators_available: false,
             market_signal_events: Vec::new(),
             next_before,
@@ -811,13 +955,19 @@ impl HistoricalDerivedCache {
             .filter_map(|value| parse_resolution_us(value))
             .collect::<Vec<_>>();
         let requested_timeframe = match &profile {
-            CacheProfile::Derived(timeframe) => Some(timeframe.clone()),
+            CacheProfile::Derived(timeframe) | CacheProfile::Structure(timeframe) => {
+                Some(timeframe.clone())
+            }
             CacheProfile::Products => None,
         };
-        let derived_timeframes = match &requested_timeframe {
-            Some(timeframe) if timeframe.eq_ignore_ascii_case("100ms") => vec![timeframe.clone()],
-            Some(timeframe) => vec!["100ms".to_string(), timeframe.clone()],
-            None => Vec::new(),
+        let structure_only = matches!(&profile, CacheProfile::Structure(_));
+        let derived_timeframes = match (&profile, &requested_timeframe) {
+            (CacheProfile::Structure(_), Some(timeframe)) => vec![timeframe.clone()],
+            (_, Some(timeframe)) if timeframe.eq_ignore_ascii_case("100ms") => {
+                vec![timeframe.clone()]
+            }
+            (_, Some(timeframe)) => vec!["100ms".to_string(), timeframe.clone()],
+            (_, None) => Vec::new(),
         };
         let bars = SharedBarStore::new(
             derived_timeframes,
@@ -840,7 +990,10 @@ impl HistoricalDerivedCache {
         } else {
             SessionVwapSeed::default()
         };
-        if matches!(&profile, CacheProfile::Derived(_)) {
+        if matches!(
+            &profile,
+            CacheProfile::Derived(_) | CacheProfile::Structure(_)
+        ) {
             if let Some(checkpoint) = self
                 .structure_seed_checkpoint(&ticker, window.start)
                 .await?
@@ -851,7 +1004,7 @@ impl HistoricalDerivedCache {
         }
         let shard = bars.shard(0);
         let trade_rules = self.source.trade_aggregation_rules();
-        let structure_references = if matches!(profile, CacheProfile::Derived(_)) {
+        let structure_references = if matches!(&profile, CacheProfile::Derived(_)) {
             self.source
                 .market_structure_reference_levels(&ticker, window.start)
                 .await
@@ -864,7 +1017,7 @@ impl HistoricalDerivedCache {
         } else {
             MarketStructureReferenceLevels::default()
         };
-        let mut indicator_worker = if matches!(profile, CacheProfile::Derived(_)) {
+        let mut indicator_worker = if matches!(&profile, CacheProfile::Derived(_)) {
             let (sender, mut receiver) = mpsc::channel::<IndicatorWork>(
                 self.config.cache_update_capacity.clamp(16, 100_000),
             );
@@ -1009,6 +1162,7 @@ impl HistoricalDerivedCache {
             active.push_back(self.spawn_chunk_fetch(
                 chunks[next_chunk].clone(),
                 source_revision.live_continuation_sequence,
+                structure_only.then_some(1),
             ));
             next_chunk += 1;
         }
@@ -1026,6 +1180,12 @@ impl HistoricalDerivedCache {
                 }
                 for compact in &events {
                     let event = self.source.market_event(compact);
+                    // Unified Structural Levels are driven only by eligible prints.
+                    // Quotes do not alter their price-level book, while replaying
+                    // every quote dominates cold historical preparation time.
+                    if structure_only && !matches!(&event, MarketEvent::Trade(_)) {
+                        continue;
+                    }
                     if let Some(products) = products.as_mut() {
                         products.apply_event(&event, event.ts());
                     }
@@ -1087,6 +1247,7 @@ impl HistoricalDerivedCache {
                 active.push_back(self.spawn_chunk_fetch(
                     chunks[next_chunk].clone(),
                     source_revision.live_continuation_sequence,
+                    structure_only.then_some(1),
                 ));
                 next_chunk += 1;
             }
@@ -1235,11 +1396,19 @@ impl HistoricalDerivedCache {
         &self,
         window: EventWindow,
         live_continuation_sequence: Option<u64>,
+        event_type_filter: Option<u8>,
     ) -> mpsc::Receiver<Result<Vec<LiveCompactEvent>, String>> {
         let (sender, receiver) = mpsc::channel(2);
         let source = self.source.clone();
         let permits = self.fetch_permits.clone();
-        let batch_size = self.config.batch_size;
+        // A structure-only source query already excludes the much larger quote
+        // family. Fetch its remaining eligible prints in fewer bounded pages so
+        // ClickHouse cursor round trips do not dominate cold chart preparation.
+        let batch_size = if event_type_filter.is_some() {
+            self.config.batch_size.max(100_000)
+        } else {
+            self.config.batch_size
+        };
         tokio::spawn(async move {
             let _permit = match permits.acquire_owned().await {
                 Ok(permit) => permit,
@@ -1253,11 +1422,12 @@ impl HistoricalDerivedCache {
             let mut cursor: Option<HistoricalCursor> = None;
             loop {
                 match source
-                    .fetch_batch_at_revision(
+                    .fetch_batch_at_revision_filtered(
                         &window,
                         cursor.as_ref(),
                         batch_size,
                         live_continuation_sequence,
+                        event_type_filter,
                     )
                     .await
                 {
@@ -1778,7 +1948,10 @@ fn revision_window(
     profile: &CacheProfile,
     structure_rebuild_days: usize,
 ) -> Result<EventWindow, String> {
-    let start = if matches!(profile, CacheProfile::Derived(_)) {
+    let start = if matches!(
+        profile,
+        CacheProfile::Derived(_) | CacheProfile::Structure(_)
+    ) {
         structure_rebuild_start(window.start, structure_rebuild_days)?
     } else {
         window.start
@@ -1861,7 +2034,9 @@ fn historical_requirement(
         product: profile.key(),
         ticker: ticker.to_ascii_uppercase(),
         timeframe: match profile {
-            CacheProfile::Derived(timeframe) => Some(timeframe.clone()),
+            CacheProfile::Derived(timeframe) | CacheProfile::Structure(timeframe) => {
+                Some(timeframe.clone())
+            }
             CacheProfile::Products => None,
         },
         parameter_hash: stable_hash_hex(&parameter_contract),

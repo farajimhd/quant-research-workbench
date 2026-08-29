@@ -5797,7 +5797,7 @@ function drawTradeAnnotationPrimitiveGeometry(
     const entryY = priceSeries.priceToCoordinate(annotation.entryPrice);
     const exitY = priceSeries.priceToCoordinate(annotation.exitPrice);
     if (entryX === null || exitX === null || entryY === null || exitY === null) return;
-    const span = clippedHorizontalSpan(entryX, exitX, width);
+    const span = clippedTradeSpan(entryX, exitX, width);
     if (!span) return;
     const entryColor = validHexColor(annotation.entryColor, "#16a34a");
     const exitColor = validHexColor(annotation.exitColor, "#dc2626");
@@ -5851,6 +5851,20 @@ function drawTradeAnnotationPrimitiveGeometry(
     drawCanvasTradeArrow(context, x, y, color, fill.side === "BUY" ? "entry" : "exit", false, 5);
   });
   context.restore();
+}
+
+function clippedTradeSpan(start: number, end: number, viewportWidth: number): HorizontalSpan | null {
+  const span = clippedHorizontalSpan(start, end, viewportWidth);
+  if (span) return span;
+  if (!Number.isFinite(start) || !Number.isFinite(end) || !(viewportWidth > 0)) return null;
+  const anchor = (start + end) / 2;
+  if (anchor < -24 || anchor > viewportWidth + 24) return null;
+  // A complete position can open and close inside one candle or even one
+  // rendered pixel. Keep its exact event-time arrows and give the lifecycle
+  // line a small visible span instead of dropping the whole annotation.
+  const left = Math.max(-24, anchor - 3);
+  const right = Math.min(viewportWidth + 24, anchor + 3);
+  return { left, right, width: right - left };
 }
 
 function drawCanvasTradeLine(

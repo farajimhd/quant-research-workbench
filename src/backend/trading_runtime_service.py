@@ -1337,7 +1337,7 @@ def historical_bar_history_before(
             include_structure=include_structure,
             stage=stage,
             limit=row_limit,
-            timeout_seconds=90,
+            timeout_seconds=(150 if indicator_columns == ["bar_start", "qmd_structure_unified_levels"] else 90),
         ),
         history_get=_historical_gateway_get,
     ).payload
