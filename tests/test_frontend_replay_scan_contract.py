@@ -113,6 +113,28 @@ def test_structural_history_can_span_all_loaded_chart_bars() -> None:
     assert "compact_projected_unified_structure_history(&mut indicators)" in projected_history
 
 
+def test_unified_structure_scores_can_filter_loaded_levels_without_a_history_request() -> None:
+    renderer_source = (REPO_ROOT / "frontend" / "src" / "app" / "components" / "ChartPanel.tsx").read_text(encoding="utf-8")
+    chart_source = CHART_PRESENTATION.read_text(encoding="utf-8")
+
+    assert "priceZoneMeetsUnifiedFilters(zone, settings)" in renderer_source
+    assert "minimumSalience" in renderer_source
+    assert "minimumReactionProbability" in renderer_source
+    assert "minimumHoldProbability" in renderer_source
+    assert "minimumConfidence" in renderer_source
+    assert "Levels must meet all four minimums" in renderer_source
+    assert "Changes apply immediately to loaded chart data" in renderer_source
+    assert "showUnifiedSupport" in renderer_source
+    assert "showUnifiedResistance" in renderer_source
+    assert "showUnifiedActive" in renderer_source
+    assert "showUnifiedBroken" in renderer_source
+    assert "showUnifiedRoleFlipped" in renderer_source
+    assert 'zone.latest ? settings.showUnifiedActive : settings.showUnifiedBroken' in renderer_source
+    assert "legendSettingsRef.current" in renderer_source
+    assert "holdProbability: boundedUnit(level.hold_probability)" in chart_source
+    assert "roleFlipCount: Number(level.role_flip_count ?? 0)" in chart_source
+
+
 def test_debug_page_can_open_a_durable_completed_backtest_review() -> None:
     source = (REPO_ROOT / "frontend" / "src" / "pages" / "BacktestDebugPage.tsx").read_text(encoding="utf-8")
 

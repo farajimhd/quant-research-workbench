@@ -137,6 +137,7 @@ type PriceZone = {
   historicalLabelsDefault?: boolean;
   historyBarsDefault?: number;
   historyTimeframeSeconds?: number;
+  holdProbability?: number;
   label: string;
   latest?: boolean;
   legendLabel?: string;
@@ -149,6 +150,7 @@ type PriceZone = {
   probabilityLineRatio?: number;
   probabilityLineWidth?: number;
   renderMode?: "line" | "zone";
+  roleFlipCount?: number;
   settingsId?: string;
   start: number;
   strength?: number;
@@ -260,12 +262,21 @@ type LegendSeriesSettings = {
   labelFontSize?: number;
   lineStyle?: LegendLineStyle;
   lineWidth?: number;
+  minimumConfidence?: number;
+  minimumHoldProbability?: number;
+  minimumReactionProbability?: number;
+  minimumSalience?: number;
   opacity?: number;
   preset?: ChartPreset;
   showConnectors?: boolean;
   showAxisLabel?: boolean;
   showHistoricalLabels?: boolean;
   showLabels?: boolean;
+  showUnifiedActive?: boolean;
+  showUnifiedBroken?: boolean;
+  showUnifiedResistance?: boolean;
+  showUnifiedRoleFlipped?: boolean;
+  showUnifiedSupport?: boolean;
   showValue?: boolean;
   upColor?: string;
   visible?: boolean;
@@ -1300,7 +1311,16 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
     const chart = priceChartRef.current;
     const currentPayload = payloadRef.current;
     if (!chart || !currentPayload) return;
-    const selectedZones = (currentPayload.price_zones ?? []).filter((zone) => !zone.displayItemId || visibleSelectionRef.current.has(zone.displayItemId.toLowerCase()));
+    const selectedZones = (currentPayload.price_zones ?? []).filter((zone) => {
+      if (zone.displayItemId && !visibleSelectionRef.current.has(zone.displayItemId.toLowerCase())) return false;
+      const settingsId = zone.settingsId || zone.displayItemId || `zone:${zone.label}`;
+      const settings = resolvePriceZoneLegendSettings(
+        legendSettingsRef.current,
+        priceZoneLegendKey(settingsId),
+        zone,
+      );
+      return priceZoneMeetsUnifiedFilters(zone, settings);
+    });
     const timeline = chartTimelineData(currentPayload.candles, timeframe, chartSettingsRef.current.hideEmptyIntervals);
     priceZonePrimitiveRef.current?.setState({
       candles: currentPayload.candles,
@@ -1821,6 +1841,10 @@ type LegendItem = {
   label: string;
   lineStyle: LegendLineStyle;
   lineWidth: number;
+  minimumConfidence?: number;
+  minimumHoldProbability?: number;
+  minimumReactionProbability?: number;
+  minimumSalience?: number;
   opacity: number;
   preset?: ChartPreset;
   presetOptions?: Array<{ description?: string; label: string; value: ChartPreset }>;
@@ -1831,6 +1855,11 @@ type LegendItem = {
   showAxisLabel?: boolean;
   showHistoricalLabels?: boolean;
   showLabels?: boolean;
+  showUnifiedActive?: boolean;
+  showUnifiedBroken?: boolean;
+  showUnifiedResistance?: boolean;
+  showUnifiedRoleFlipped?: boolean;
+  showUnifiedSupport?: boolean;
   showValue: boolean;
   supportsConnectors?: boolean;
   supportsNeutralColorEditing?: boolean;
@@ -1840,6 +1869,7 @@ type LegendItem = {
   supportsHistoricalLabels?: boolean;
   supportsHistoryWindow?: boolean;
   supportsStroke?: boolean;
+  supportsUnifiedFilters?: boolean;
   supportsPreset?: boolean;
   value: string;
   visible: boolean;
@@ -2148,6 +2178,24 @@ function LegendEditor({
           </span>
         </label>
       ) : null}
+      {item.itemKind === "zone" && item.supportsUnifiedFilters ? (
+        <fieldset className="legend-unified-filters">
+          <legend>Minimum level scores</legend>
+          <ScoreThresholdControl label="Importance" value={item.minimumSalience ?? 0} onChange={(minimumSalience) => onUpdate({ minimumSalience })} />
+          <ScoreThresholdControl label="Reaction" value={item.minimumReactionProbability ?? 0} onChange={(minimumReactionProbability) => onUpdate({ minimumReactionProbability })} />
+          <ScoreThresholdControl label="Hold" value={item.minimumHoldProbability ?? 0} onChange={(minimumHoldProbability) => onUpdate({ minimumHoldProbability })} />
+          <ScoreThresholdControl label="Confidence" value={item.minimumConfidence ?? 0} onChange={(minimumConfidence) => onUpdate({ minimumConfidence })} />
+          <small>Levels must meet all four minimums. Changes apply immediately to loaded chart data.</small>
+          <span className="legend-filter-subtitle">Visible roles and states</span>
+          <span className="legend-filter-grid">
+            <UnifiedVisibilityToggle checked={item.showUnifiedSupport !== false} label="Support" onChange={(showUnifiedSupport) => onUpdate({ showUnifiedSupport })} />
+            <UnifiedVisibilityToggle checked={item.showUnifiedResistance !== false} label="Resistance" onChange={(showUnifiedResistance) => onUpdate({ showUnifiedResistance })} />
+            <UnifiedVisibilityToggle checked={item.showUnifiedActive !== false} label="Active" onChange={(showUnifiedActive) => onUpdate({ showUnifiedActive })} />
+            <UnifiedVisibilityToggle checked={item.showUnifiedBroken !== false} label="Broken" onChange={(showUnifiedBroken) => onUpdate({ showUnifiedBroken })} />
+            <UnifiedVisibilityToggle checked={item.showUnifiedRoleFlipped !== false} label="Role-flipped" onChange={(showUnifiedRoleFlipped) => onUpdate({ showUnifiedRoleFlipped })} />
+          </span>
+        </fieldset>
+      ) : null}
       <label>
         Opacity
         <span className="legend-range-control">
@@ -2223,6 +2271,36 @@ function LegendEditor({
       <button className="legend-reset-button" onClick={onReset} type="button">Reset</button>
     </div>,
     document.body
+  );
+}
+
+function ScoreThresholdControl({ label, onChange, value }: { label: string; onChange: (value: number) => void; value: number }) {
+  const percent = Math.round(clampNumber(value, 0, 1, 0) * 100);
+  return (
+    <label>
+      {label}
+      <span className="legend-range-control">
+        <input
+          aria-label={`Minimum ${label.toLowerCase()} score`}
+          min={0}
+          max={100}
+          step={1}
+          type="range"
+          value={percent}
+          onChange={(event) => onChange(Number(event.target.value) / 100)}
+        />
+        <output>{percent}%</output>
+      </span>
+    </label>
+  );
+}
+
+function UnifiedVisibilityToggle({ checked, label, onChange }: { checked: boolean; label: string; onChange: (value: boolean) => void }) {
+  return (
+    <label className="legend-checkbox">
+      <input checked={checked} type="checkbox" onChange={(event) => onChange(event.target.checked)} />
+      {label}
+    </label>
   );
 }
 
@@ -3105,7 +3183,11 @@ function buildPriceZoneLegendItems(
       : sourceColumn ? chartColumnHelp(sourceColumn, guideTitle) : undefined;
     const key = priceZoneLegendKey(id);
     const settings = resolvePriceZoneLegendSettings(settingsMap, key, itemZones[0]);
-    const selectedZones = itemZones.filter((zone) => !zone.preset || zone.preset === settings.preset);
+    const selectedZones = itemZones.filter((zone) => (
+      (!zone.preset || zone.preset === settings.preset)
+      && priceZoneMeetsUnifiedFilters(zone, settings)
+    ));
+    const presetZoneCount = itemZones.filter((zone) => !zone.preset || zone.preset === settings.preset).length;
     const episodeIds = new Set(selectedZones.filter((zone) => zone.episodeId !== undefined).map((zone) => `${zone.preset}:${zone.episodeId}`));
     return {
       color: settings.color,
@@ -3120,6 +3202,10 @@ function buildPriceZoneLegendItems(
       labelFontSize: settings.labelFontSize,
       lineStyle: settings.lineStyle,
       lineWidth: settings.lineWidth,
+      minimumConfidence: settings.minimumConfidence,
+      minimumHoldProbability: settings.minimumHoldProbability,
+      minimumReactionProbability: settings.minimumReactionProbability,
+      minimumSalience: settings.minimumSalience,
       opacity: settings.opacity,
       preset: settings.preset,
       presetOptions: displayItem?.presetOptions,
@@ -3129,6 +3215,11 @@ function buildPriceZoneLegendItems(
       showConnectors: settings.showConnectors,
       showAxisLabel: settings.showAxisLabel,
       showHistoricalLabels: settings.showHistoricalLabels,
+      showUnifiedActive: settings.showUnifiedActive,
+      showUnifiedBroken: settings.showUnifiedBroken,
+      showUnifiedResistance: settings.showUnifiedResistance,
+      showUnifiedRoleFlipped: settings.showUnifiedRoleFlipped,
+      showUnifiedSupport: settings.showUnifiedSupport,
       showValue: true,
       supportsConnectors: itemZones.some(isStructureBreakZone),
       supportsNeutralColorEditing: selectedZones.some((zone) => !zone.tone),
@@ -3142,9 +3233,12 @@ function buildPriceZoneLegendItems(
         || zone.annotationKind === "level-footprint"
         || zone.annotationKind === "swing-footprint"),
       supportsPreset: Boolean(displayItem?.presetOptions?.length),
+      supportsUnifiedFilters: itemZones.some((zone) => zone.annotationKind === "unified-structure-level"),
       value: itemZones.some((zone) => zone.annotationKind === "signal-episode-range")
         ? `${episodeIds.size} episode${episodeIds.size === 1 ? "" : "s"}`
-        : `${selectedZones.length} level${selectedZones.length === 1 ? "" : "s"}`,
+        : selectedZones.length === presetZoneCount
+          ? `${selectedZones.length} level${selectedZones.length === 1 ? "" : "s"}`
+          : `${selectedZones.length}/${presetZoneCount} levels`,
       visible: settings.visible,
     };
   });
@@ -3577,12 +3671,21 @@ function defaultLegendSettings(series: ChartSeries): Required<LegendSeriesSettin
     labelFontSize: 11,
     lineStyle: series.lineStyle ?? "solid",
     lineWidth: Math.max(1, Math.min(4, Math.round(series.lineWidth || 1))),
+    minimumConfidence: 0,
+    minimumHoldProbability: 0,
+    minimumReactionProbability: 0,
+    minimumSalience: 0,
     opacity: 1,
     preset: "micro",
     showConnectors: true,
     showAxisLabel: false,
     showHistoricalLabels: true,
     showLabels: true,
+    showUnifiedActive: true,
+    showUnifiedBroken: true,
+    showUnifiedResistance: true,
+    showUnifiedRoleFlipped: true,
+    showUnifiedSupport: true,
     showValue: true,
     upColor: resolveChartColor("var(--success)"),
     visible: series.defaultVisible !== false
@@ -3600,12 +3703,21 @@ function resolveLegendSettings(settingsMap: LegendSettingsMap, key: string, seri
     labelFontSize: Math.max(9, Math.min(18, Math.round(stored.labelFontSize ?? defaults.labelFontSize))),
     lineStyle: stored.lineStyle || defaults.lineStyle,
     lineWidth: Math.max(1, Math.min(4, Math.round(stored.lineWidth ?? defaults.lineWidth))),
+    minimumConfidence: clampNumber(stored.minimumConfidence, 0, 1, defaults.minimumConfidence),
+    minimumHoldProbability: clampNumber(stored.minimumHoldProbability, 0, 1, defaults.minimumHoldProbability),
+    minimumReactionProbability: clampNumber(stored.minimumReactionProbability, 0, 1, defaults.minimumReactionProbability),
+    minimumSalience: clampNumber(stored.minimumSalience, 0, 1, defaults.minimumSalience),
     opacity: clampNumber(stored.opacity ?? defaults.opacity, 0, 1, 1),
     preset: stored.preset === "tactical" || stored.preset === "context" ? stored.preset : defaults.preset,
     showConnectors: stored.showConnectors ?? defaults.showConnectors,
     showAxisLabel: stored.showAxisLabel ?? defaults.showAxisLabel,
     showHistoricalLabels: stored.showHistoricalLabels ?? defaults.showHistoricalLabels,
     showLabels: stored.showLabels ?? defaults.showLabels,
+    showUnifiedActive: stored.showUnifiedActive ?? defaults.showUnifiedActive,
+    showUnifiedBroken: stored.showUnifiedBroken ?? defaults.showUnifiedBroken,
+    showUnifiedResistance: stored.showUnifiedResistance ?? defaults.showUnifiedResistance,
+    showUnifiedRoleFlipped: stored.showUnifiedRoleFlipped ?? defaults.showUnifiedRoleFlipped,
+    showUnifiedSupport: stored.showUnifiedSupport ?? defaults.showUnifiedSupport,
     showValue: stored.showValue ?? defaults.showValue,
     upColor: validHexColor(stored.upColor, defaults.upColor),
     visible: stored.visible ?? defaults.visible
@@ -3620,11 +3732,20 @@ type ResolvedPriceZoneLegendSettings = {
   labelFontSize: number;
   lineStyle: LegendLineStyle;
   lineWidth: number;
+  minimumConfidence: number;
+  minimumHoldProbability: number;
+  minimumReactionProbability: number;
+  minimumSalience: number;
   opacity: number;
   preset: ChartPreset;
   showConnectors: boolean;
   showAxisLabel: boolean;
   showHistoricalLabels: boolean;
+  showUnifiedActive: boolean;
+  showUnifiedBroken: boolean;
+  showUnifiedResistance: boolean;
+  showUnifiedRoleFlipped: boolean;
+  showUnifiedSupport: boolean;
   upColor: string;
   visible: boolean;
 };
@@ -3639,6 +3760,10 @@ function resolvePriceZoneLegendSettings(settingsMap: LegendSettingsMap, key: str
     labelFontSize: Math.max(9, Math.min(18, Math.round(stored.labelFontSize ?? 11))),
     lineStyle: stored.lineStyle ?? zoneBorderStyle(zone?.borderStyle),
     lineWidth: Math.max(1, Math.min(4, Math.round(stored.lineWidth ?? zone?.borderWidth ?? 1))),
+    minimumConfidence: clampNumber(stored.minimumConfidence, 0, 1, 0),
+    minimumHoldProbability: clampNumber(stored.minimumHoldProbability, 0, 1, 0),
+    minimumReactionProbability: clampNumber(stored.minimumReactionProbability, 0, 1, 0),
+    minimumSalience: clampNumber(stored.minimumSalience, 0, 1, 0),
     opacity: clampNumber(stored.opacity ?? zone?.opacityDefault ?? 1, 0, 1, 1),
     preset: stored.preset === "tactical"
       || stored.preset === "context"
@@ -3649,9 +3774,26 @@ function resolvePriceZoneLegendSettings(settingsMap: LegendSettingsMap, key: str
     showConnectors: stored.showConnectors !== false,
     showAxisLabel: stored.showAxisLabel ?? zone?.axisLabelDefault ?? false,
     showHistoricalLabels: stored.showHistoricalLabels ?? zone?.historicalLabelsDefault ?? false,
+    showUnifiedActive: stored.showUnifiedActive !== false,
+    showUnifiedBroken: stored.showUnifiedBroken !== false,
+    showUnifiedResistance: stored.showUnifiedResistance !== false,
+    showUnifiedRoleFlipped: stored.showUnifiedRoleFlipped !== false,
+    showUnifiedSupport: stored.showUnifiedSupport !== false,
     upColor: validHexColor(stored.upColor, resolveChartColor("var(--success)")),
     visible: stored.visible ?? zone?.defaultVisible ?? true,
   };
+}
+
+function priceZoneMeetsUnifiedFilters(zone: PriceZone, settings: ResolvedPriceZoneLegendSettings) {
+  if (zone.annotationKind !== "unified-structure-level") return true;
+  const roleVisible = zone.tone === "buy" ? settings.showUnifiedSupport : settings.showUnifiedResistance;
+  const stateVisible = zone.latest ? settings.showUnifiedActive : settings.showUnifiedBroken;
+  const flipVisible = !(Number(zone.roleFlipCount) > 0) || settings.showUnifiedRoleFlipped;
+  return roleVisible && stateVisible && flipVisible
+    && clampNumber(zone.strength, 0, 1, 0) >= settings.minimumSalience
+    && clampNumber(zone.probabilityLineRatio, 0, 1, 0) >= settings.minimumReactionProbability
+    && clampNumber(zone.holdProbability, 0, 1, 0) >= settings.minimumHoldProbability
+    && clampNumber(zone.confidence, 0, 1, 0) >= settings.minimumConfidence;
 }
 
 function applySeriesSettings(renderer: AnySeriesApi, source: ChartSeries, settings: Required<LegendSeriesSettings>, useAdaptivePriceFormat: boolean, appearance = defaultChartAppearanceSettings) {
