@@ -3,7 +3,7 @@ use crate::source::{
     EventWindow, HistoricalCursor, HistoricalEventSource, SessionVwapSeed, SourceRevision,
 };
 use crate::structure_checkpoint::{
-    rebuild_structure_checkpoint, StructureCheckpointRebuildRequest,
+    rebuild_trade_structure_checkpoint, StructureCheckpointRebuildRequest,
     STRUCTURE_CHECKPOINT_REBUILD_SCHEMA_VERSION,
 };
 use chrono::{DateTime, Datelike, Duration, TimeZone, Timelike, Utc};
@@ -1365,7 +1365,11 @@ impl HistoricalDerivedCache {
                 engine.seed_events(&events);
                 return Ok(Some(engine.checkpoint()));
             }
-            match rebuild_structure_checkpoint(
+            // The dedicated level-book profile is trade-driven end to end.
+            // Use the same filtered authority for its warm-start rebuild so a
+            // missing persisted checkpoint cannot replay days of irrelevant
+            // quote traffic before the requested chart session can begin.
+            match rebuild_trade_structure_checkpoint(
                 &config,
                 &source,
                 StructureCheckpointRebuildRequest {

@@ -330,7 +330,6 @@ export function useCanvasHistoricalChart(symbol: string, timeframe: CanvasChartT
               bars: merged.bars,
               canLoadEarlier: payload.has_more && !merged.atCapacity,
               marketSignalEvents: mergeMarketSignalEvents(current.marketSignalEvents, payload.market_signal_events),
-              historyError: "",
               historyNotice: merged.atCapacity ? chartHistoryLimitNotice(rowBudget) : unifiedStructurePending ? "Loading Unified Structural Levels…" : "",
               indicators: merged.indicators,
               indicatorsAvailable: payload.indicators_available,

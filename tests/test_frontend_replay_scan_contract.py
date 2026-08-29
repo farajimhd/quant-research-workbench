@@ -93,6 +93,7 @@ def test_structural_history_can_span_all_loaded_chart_bars() -> None:
     chart_data_source = (REPO_ROOT / "frontend" / "src" / "features" / "canvas" / "chartData.ts").read_text(encoding="utf-8")
     history_api_source = (REPO_ROOT / "services" / "qmd_history_gateway" / "src" / "api.rs").read_text(encoding="utf-8")
     history_cache_source = (REPO_ROOT / "services" / "qmd_history_gateway" / "src" / "cache.rs").read_text(encoding="utf-8")
+    structure_checkpoint_source = (REPO_ROOT / "services" / "qmd_history_gateway" / "src" / "structure_checkpoint.rs").read_text(encoding="utf-8")
 
     assert "show on all loaded bars" in renderer_source
     assert "historyBars: event.target.checked ? 0 : 200" in renderer_source
@@ -119,6 +120,9 @@ def test_structural_history_can_span_all_loaded_chart_bars() -> None:
     assert 'object.insert("sources".to_string(), json!([]))' in history_cache_source
     assert "CacheProfile::Structure" in history_cache_source
     assert "structure_only.then_some(1)" in history_cache_source
+    assert "rebuild_trade_structure_checkpoint" in history_cache_source
+    assert "rebuild_structure_checkpoint_inner(config, source, request, Some(1))" in structure_checkpoint_source
+    assert "source.stream_ordered_filtered(" in structure_checkpoint_source
     assert 'column !== "qmd_structure_unified_levels"' in chart_data_source
     assert 'indicator_columns: "bar_start,qmd_structure_unified_levels"' in chart_data_source
     assert 'const unifiedStructureAsPrimary' not in chart_data_source
@@ -128,6 +132,8 @@ def test_structural_history_can_span_all_loaded_chart_bars() -> None:
     assert "function chartIdentityKey(ticker: string, indicatorColumns: string" not in chart_data_source
     assert "mergeIndicatorRowsByTime(current.indicators, rows)" in chart_data_source
     assert "Loading Unified Structural Levels…" in chart_data_source
+    structure_followup = chart_data_source.split(".then((payload) => {", 2)[2].split(".catch((reason) => {", 1)[0]
+    assert 'historyError: ""' not in structure_followup
 
 
 def test_canvas_registry_retries_transient_failures_before_blocking_container_adds() -> None:

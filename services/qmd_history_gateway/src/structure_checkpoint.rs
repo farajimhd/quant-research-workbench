@@ -65,6 +65,23 @@ pub async fn rebuild_structure_checkpoint(
     source: &HistoricalEventSource,
     request: StructureCheckpointRebuildRequest,
 ) -> Result<StructureCheckpointRebuildResponse, String> {
+    rebuild_structure_checkpoint_inner(config, source, request, None).await
+}
+
+pub(crate) async fn rebuild_trade_structure_checkpoint(
+    config: &HistoricalGatewayConfig,
+    source: &HistoricalEventSource,
+    request: StructureCheckpointRebuildRequest,
+) -> Result<StructureCheckpointRebuildResponse, String> {
+    rebuild_structure_checkpoint_inner(config, source, request, Some(1)).await
+}
+
+async fn rebuild_structure_checkpoint_inner(
+    config: &HistoricalGatewayConfig,
+    source: &HistoricalEventSource,
+    request: StructureCheckpointRebuildRequest,
+    event_type_filter: Option<u8>,
+) -> Result<StructureCheckpointRebuildResponse, String> {
     let ticker = validate_rebuild_request(config, &request)?;
     let replay_end = request
         .as_of
@@ -94,10 +111,16 @@ pub async fn rebuild_structure_checkpoint(
         .clamp(1, config.structure_checkpoint_rebuild_max_events);
     let rules = source.trade_aggregation_rules();
     let mut engine = GenericStructureEngine::new(&ticker);
-    let mut batches = source.stream_ordered(
+    let batch_size = if event_type_filter.is_some() {
+        config.batch_size.max(100_000)
+    } else {
+        config.batch_size
+    };
+    let mut batches = source.stream_ordered_filtered(
         window.clone(),
-        config.batch_size,
+        batch_size,
         source_revision_before.live_continuation_sequence,
+        event_type_filter,
     )?;
     let mut event_count = 0_u64;
     let mut advanced_event_count = 0_u64;
