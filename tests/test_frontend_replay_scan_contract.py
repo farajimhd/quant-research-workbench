@@ -6,6 +6,7 @@ REPLAY_PAGE = REPO_ROOT / "frontend" / "src" / "pages" / "ReplayTradingPage.tsx"
 CANVAS_PAGE = REPO_ROOT / "frontend" / "src" / "pages" / "CanvasConfigurationPage.tsx"
 SCREENER_CONTAINERS = REPO_ROOT / "frontend" / "src" / "app" / "components" / "MarketScreenerContainers.tsx"
 TRADING_PRESENTATION = REPO_ROOT / "frontend" / "src" / "features" / "canvas" / "tradingPresentation.tsx"
+CHART_PRESENTATION = REPO_ROOT / "frontend" / "src" / "features" / "canvas" / "chartPresentation.tsx"
 
 
 def test_next_action_reports_backend_progress_while_canvas_stays_static() -> None:
@@ -30,6 +31,23 @@ def test_trading_audits_do_not_truncate_canonical_rows_before_table_filtering() 
         assert ".slice(0, settings.limit)" not in audit_source
 
 
+def test_completed_position_manager_reports_an_outdated_backend_contract() -> None:
+    source = TRADING_PRESENTATION.read_text(encoding="utf-8")
+
+    assert "lifecycleProjectionAvailable" in source
+    assert "Position lifecycle data is unavailable from the running backend" in source
+    assert "will not reinterpret FIFO execution fragments as positions" in source
+
+
+def test_charts_quotes_scopes_trade_annotations_to_the_main_chart() -> None:
+    canvas_source = CANVAS_PAGE.read_text(encoding="utf-8")
+    chart_source = CHART_PRESENTATION.read_text(encoding="utf-8")
+
+    assert "showTradeAnnotations = true" in chart_source
+    assert chart_source.count("showTradeAnnotations ?") == 2
+    assert canvas_source.count("showTradeAnnotations={false}") == 2
+
+
 def test_strategy_activity_pins_the_navigation_stop_record() -> None:
     canvas_source = CANVAS_PAGE.read_text(encoding="utf-8")
     container_source = SCREENER_CONTAINERS.read_text(encoding="utf-8")
@@ -44,7 +62,7 @@ def test_chart_projects_completed_order_fills_as_execution_annotations() -> None
     chart_source = (REPO_ROOT / "frontend" / "src" / "features" / "canvas" / "chartPresentation.tsx").read_text(encoding="utf-8")
     renderer_source = (REPO_ROOT / "frontend" / "src" / "app" / "components" / "ChartPanel.tsx").read_text(encoding="utf-8")
 
-    assert "execution_annotations: executionAnnotations(trading, linkContext.symbol)" in chart_source
+    assert "execution_annotations: showTradeAnnotations ? executionAnnotations(trading, linkContext.symbol) : []" in chart_source
     assert "ENTRY FILL" in chart_source
     assert "EXIT FILL" in chart_source
     assert "drawExecutionAnnotations" in renderer_source

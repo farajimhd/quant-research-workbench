@@ -375,6 +375,7 @@ function PortfolioManagementPreview({ data, management }: { data: CanonicalTradi
 
 function PositionsPreview({ data, onSymbolSelect, settings }: { data: CanonicalTradingPreview; onSymbolSelect?: (symbol: string) => void; settings: ContainerSettings["positions"] }) {
   const [view, setView] = useState<"open" | "closed" | "timeline">("open");
+  const lifecycleProjectionAvailable = Array.isArray(data.position_lifecycles);
   const lifecycleRows = (data.position_lifecycles ?? []).map((lifecycle) => {
     const symbol = nestedValue(lifecycle, "instrument", "symbol");
     const account = String(lifecycle.account_id || "");
@@ -399,6 +400,7 @@ function PositionsPreview({ data, onSymbolSelect, settings }: { data: CanonicalT
   const winners = openRows.filter((row) => Number(row.unrealized_pnl || 0) > 0).length;
   const openColumns = settings.showPnl ? ["symbol", "side", "quantity", "average_price", "mark", "return_pct", "market_value", "unrealized_pnl", "orders", "fills", "account", "opened_at"] : ["symbol", "side", "quantity", "average_price", "mark", "market_value", "orders", "fills", "account", "opened_at"];
   return <section className="trading-preview trading-position-manager"><TradingFreshness data={data} />
+    {!lifecycleProjectionAvailable ? <div className="trading-disclosure" data-tone="warning" role="alert">Position lifecycle data is unavailable from the running backend. Restart the backend on the current application revision; Position Manager will not reinterpret FIFO execution fragments as positions.</div> : null}
     <div className="trading-summary-strip"><TradingMetric label="Open positions" value={String(openRows.length)} /><TradingMetric label="Winning" value={`${winners}/${openRows.length}`} tone={winners ? "positive" : "neutral"} /><TradingMetric label="Open P&L" value={signedMoney(netPnl)} tone={numberTone(netPnl)} /><TradingMetric label="Gross exposure" value={money(grossValue)} /></div>
     <TradingTabs active={view} onChange={(value) => setView(value as typeof view)} tabs={[{ id: "open", label: "Open", count: openRows.length }, { id: "closed", label: "Closed", count: closedRows.length }, { id: "timeline", label: "Timeline", count: timelineRows.length }]} />
     {view === "open" ? <TradingDataTable columns={openColumns} defaultSort="market_value" filterColumn="side" filterLabel="All directions" onSymbolSelect={onSymbolSelect} renderExpanded={(row) => <PositionDetail row={row} />} rows={openRows} searchPlaceholder="Search symbol, account, side…" /> : null}

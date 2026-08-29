@@ -70,6 +70,7 @@ export function ChartPreview({
   fullSessionReview = false,
   strategyDecisions = EMPTY_STRATEGY_DECISIONS,
   strategyPresentation = DEFAULT_STRATEGY_CHART_PRESENTATION,
+  showTradeAnnotations = true,
   trading,
 }: {
   baseHeight?: number;
@@ -89,6 +90,7 @@ export function ChartPreview({
   fullSessionReview?: boolean;
   strategyDecisions?: StrategyDecisionEvent[];
   strategyPresentation?: StrategyChartPresentation;
+  showTradeAnnotations?: boolean;
   trading?: CanonicalTradingPreview;
 }) {
   const [barGptForecasts, setBarGptForecasts] = useState<BarGptForecast[]>([]);
@@ -230,11 +232,11 @@ export function ChartPreview({
         ...strategyInvalidations,
       ],
       regions: MACRO_TIMEFRAMES.has(timeframe) ? [] : extendedSessionRegions(liveChart.bars),
-      execution_annotations: executionAnnotations(trading, linkContext.symbol),
-      trade_annotations: closedTradeAnnotations(trading, linkContext.symbol),
+      execution_annotations: showTradeAnnotations ? executionAnnotations(trading, linkContext.symbol) : [],
+      trade_annotations: showTradeAnnotations ? closedTradeAnnotations(trading, linkContext.symbol) : [],
       volume: chartSettings.showVolume ? liveChart.bars.map((bar) => ({ color: bar.close >= bar.open ? "var(--success)" : "var(--danger)", time: Date.parse(bar.bar_start) / 1000, value: bar.volume })) : [],
     };
-  }, [barGptForecasts, barGptQuantile, barGptVersion, chartSettings.showVolume, forecastLineComponents.join("|"), indicators, linkContext.symbol, liveChart.bars, liveChart.marketSignalEvents, liveChart.structureEvents, liveChart.structureLevelHistory, showForecastCandles, strategyDecisions, strategyPresentation, timeframe, trading, visibleIndicators]);
+  }, [barGptForecasts, barGptQuantile, barGptVersion, chartSettings.showVolume, forecastLineComponents.join("|"), indicators, linkContext.symbol, liveChart.bars, liveChart.marketSignalEvents, liveChart.structureEvents, liveChart.structureLevelHistory, showForecastCandles, showTradeAnnotations, strategyDecisions, strategyPresentation, timeframe, trading, visibleIndicators]);
   function updateChart(symbol: string, nextTimeframe: CanvasChartTimeframe) {
     onChartSettingsChange({ ...chartSettings, symbol, timeframe: nextTimeframe });
     onLinkContextChange({ symbol });

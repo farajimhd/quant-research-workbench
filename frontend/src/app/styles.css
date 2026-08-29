@@ -10130,6 +10130,12 @@ button {
   padding: 8px 10px;
 }
 
+.trading-disclosure[data-tone="warning"] {
+  background: color-mix(in oklab, var(--warning) 9%, var(--surface));
+  border-left-color: var(--warning);
+  color: var(--foreground);
+}
+
 .canvas-metric-row {
   display: grid;
   gap: 7px;

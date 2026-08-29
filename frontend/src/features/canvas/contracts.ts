@@ -84,7 +84,7 @@ export type CanonicalTradingPreview = {
   account_values: PreviewRow[];
   ledger: PreviewRow[];
   positions: PreviewRow[];
-  position_lifecycles: PreviewRow[];
+  position_lifecycles?: PreviewRow[];
   orders: PreviewRow[];
   executions: PreviewRow[];
   closed_trades: PreviewRow[];
