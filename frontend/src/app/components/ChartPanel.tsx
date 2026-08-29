@@ -76,6 +76,7 @@ const rendererDataCache = new WeakMap<object, RendererDataCache>();
 type Region = { start: number; end: number; color: string; label: string };
 type TradeLabelPart = { text: string; tone?: "label" | "price" | "pnlLoss" | "pnlWin" | "reason" | "separator" | "size" };
 type TradeFillAnnotation = {
+  kind?: "add" | "trim";
   label?: string;
   labelParts?: TradeLabelPart[];
   price: number;
@@ -85,6 +86,7 @@ type TradeFillAnnotation = {
 };
 type TradeAnnotation = {
   color: string;
+  entryColor?: string;
   entryLabel?: string;
   entryLabelParts?: TradeLabelPart[];
   entryLabelSide?: "left" | "right";
@@ -93,6 +95,7 @@ type TradeAnnotation = {
   exitLabel?: string;
   exitLabelParts?: TradeLabelPart[];
   exitLabelSide?: "left" | "right";
+  exitColor?: string;
   exitPrice: number;
   exitTime: number;
   fills?: TradeFillAnnotation[];
@@ -5565,28 +5568,18 @@ function drawTradeAnnotations(
     if (!span) return;
     const left = span.left;
     const width = Math.max(3, span.width);
-    const color = validHexColor(annotation.color, annotation.pnl !== undefined && annotation.pnl < 0 ? "#dc2626" : "#16a34a");
+    const entryColor = validHexColor(annotation.entryColor, "#16a34a");
+    const exitColor = validHexColor(annotation.exitColor, "#dc2626");
     const selected = annotation.selected === true;
-    const region = document.createElement("div");
-    region.className = selected ? "trade-annotation-region selected" : "trade-annotation-region";
-    region.title = annotation.pnl !== undefined ? `Trade P/L ${annotation.pnl.toFixed(2)}` : "Trade";
-    region.style.left = `${left}px`;
-    region.style.top = `${Math.min(entryY, exitY)}px`;
-    region.style.width = `${width}px`;
-    region.style.height = `${Math.max(7, Math.abs(exitY - entryY))}px`;
-    region.style.background = rgbaFromHex(color, selected ? 0.12 : 0.06);
-    region.style.borderColor = rgbaFromHex(color, selected ? 0.28 : 0.12);
-    layer.appendChild(region);
-
-    drawTradePriceLine(layer, left, width, entryY, color, annotation.entryLabel ?? "Entry", annotation.entryLabelParts, "entry", selected, annotation.entryLabelSide ?? "left");
-    drawTradePriceLine(layer, left, width, exitY, color, annotation.exitLabel ?? "Exit", annotation.exitLabelParts, "exit", selected, annotation.exitLabelSide ?? "right");
-    if (isVisibleCoordinate(entryX, layer.clientWidth)) drawTradeArrow(layer, entryX, entryY, color, "entry", selected);
-    if (isVisibleCoordinate(exitX, layer.clientWidth)) drawTradeArrow(layer, exitX, exitY, color, "exit", selected);
+    drawTradePriceLine(layer, left, width, entryY, entryColor, annotation.entryLabel ?? "Entry", annotation.entryLabelParts, "entry", selected, annotation.entryLabelSide ?? "left");
+    drawTradePriceLine(layer, left, width, exitY, exitColor, annotation.exitLabel ?? "Exit", annotation.exitLabelParts, "exit", selected, annotation.exitLabelSide ?? "right");
+    if (isVisibleCoordinate(entryX, layer.clientWidth)) drawTradeArrow(layer, entryX, entryY, entryColor, "entry", selected);
+    if (isVisibleCoordinate(exitX, layer.clientWidth)) drawTradeArrow(layer, exitX, exitY, exitColor, "exit", selected);
     annotation.fills?.forEach((fill) => {
       const fillX = xForAnnotationTime(chart, fill.time, candles);
       const fillY = priceSeries.priceToCoordinate(fill.price);
       if (fillX === null || fillY === null) return;
-      if (isVisibleCoordinate(fillX, layer.clientWidth)) drawTradeFillMarker(layer, fillX, fillY, color, fill, selected);
+      if (isVisibleCoordinate(fillX, layer.clientWidth)) drawPositionAdjustment(layer, fillX, fillY, fill, selected);
     });
     if (typeof annotation.stopPrice === "number" && Number.isFinite(annotation.stopPrice)) {
       const stopY = priceSeries.priceToCoordinate(annotation.stopPrice);
@@ -5597,6 +5590,21 @@ function drawTradeAnnotations(
       if (triggerY !== null) drawTradeGuideLine(layer, left, width, triggerY, "#2563eb", "Trigger", "trigger");
     }
   });
+}
+
+function drawPositionAdjustment(layer: HTMLDivElement, x: number, y: number, fill: TradeFillAnnotation, selected: boolean) {
+  const color = fill.side === "BUY" ? "#16a34a" : "#dc2626";
+  const marker = document.createElement("div");
+  marker.className = `trade-adjustment-marker ${fill.kind ?? "add"}${selected ? " selected" : ""}`;
+  marker.style.left = `${x}px`;
+  marker.style.top = `${y}px`;
+  marker.style.borderColor = color;
+  marker.style.color = color;
+  const label = document.createElement("span");
+  label.textContent = fill.label ?? `${fill.kind === "trim" ? "Trim" : "Add"} ${fill.quantity ?? ""} @ ${fill.price.toFixed(2)}`;
+  label.style.borderColor = rgbaFromHex(color, 0.28);
+  marker.appendChild(label);
+  layer.appendChild(marker);
 }
 
 function drawExecutionAnnotations(
@@ -5644,6 +5652,15 @@ function drawTradePriceLine(layer: HTMLDivElement, left: number, width: number, 
   text.style.borderColor = rgbaFromHex(color, 0.32);
   line.appendChild(text);
   layer.appendChild(line);
+  const textBounds = text.getBoundingClientRect();
+  const layerBounds = layer.getBoundingClientRect();
+  if (textBounds.left < layerBounds.left) {
+    text.style.right = "auto";
+    text.style.left = "0";
+  } else if (textBounds.right > layerBounds.right) {
+    text.style.left = "auto";
+    text.style.right = "0";
+  }
 }
 
 function drawTradeFillMarker(layer: HTMLDivElement, x: number, y: number, color: string, fill: TradeFillAnnotation, selected: boolean) {
@@ -5687,7 +5704,7 @@ function drawTradeArrow(layer: HTMLDivElement, x: number, y: number, color: stri
   const arrow = document.createElement("div");
   arrow.className = `trade-arrow ${kind}${selected ? " selected" : ""}`;
   arrow.style.left = `${x}px`;
-  arrow.style.top = `${kind === "entry" ? y + 7 : y - 7}px`;
+  arrow.style.top = `${y}px`;
   arrow.style.borderColor = color;
   layer.appendChild(arrow);
 }

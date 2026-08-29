@@ -325,25 +325,43 @@ function positionLifecycleAnnotations(trading: CanonicalTradingPreview | undefin
   return (trading?.position_lifecycles ?? []).flatMap((row) => {
     if (String(nestedValue(row, "instrument", "symbol") || "").toUpperCase() !== normalizedSymbol) return [];
     if (String(row.status || "").toLowerCase() !== "closed") return [];
-    const entryPrice = Number(row.entry_price || 0);
-    const exitPrice = Number(row.exit_price || 0);
-    const entryTime = Date.parse(String(row.opened_at || "")) / 1000;
-    const exitTime = Date.parse(String(row.closed_at || "")) / 1000;
+    const side = String(row.side || "LONG").toUpperCase();
+    const executionIds = Array.isArray(row.execution_ids) ? row.execution_ids.map(String) : [];
+    const actions = positionExecutionActions(executionIds.flatMap((executionId) => {
+      const execution = executionsById.get(executionId);
+      return execution ? [execution] : [];
+    }), side);
+    const entryAction = actions[0];
+    const exitAction = actions.length > 1 ? actions.at(-1) : undefined;
+    const entryPrice = Number(entryAction?.price ?? row.entry_price ?? 0);
+    const exitPrice = Number(exitAction?.price ?? row.exit_price ?? 0);
+    const entryTime = entryAction?.time ?? Date.parse(String(row.opened_at || "")) / 1000;
+    const exitTime = exitAction?.time ?? Date.parse(String(row.closed_at || "")) / 1000;
     if (![entryPrice, exitPrice, entryTime, exitTime].every(Number.isFinite) || entryPrice <= 0 || exitPrice <= 0) return [];
     const quantity = Math.abs(Number(row.quantity || 0));
     const pnl = Number(row.net_pnl || row.gross_pnl || 0);
-    const side = String(row.side || "LONG").toUpperCase();
-    const executionIds = Array.isArray(row.execution_ids) ? row.execution_ids.map(String) : [];
-    const fills = compactPositionFills(executionIds.flatMap((executionId) => {
-      const execution = executionsById.get(executionId);
-      return execution ? [execution] : [];
-    }));
+    const openingSide = side === "SHORT" ? "SELL" : "BUY";
+    const fills = actions.slice(1, -1).map((action) => {
+      const kind = action.side === openingSide ? "add" as const : "trim" as const;
+      return {
+        kind,
+        label: `${kind === "add" ? "Add" : "Trim"} ${formatQuantity(action.quantity)} @ ${action.price.toFixed(2)}`,
+        price: action.price,
+        quantity: action.quantity,
+        side: action.side,
+        time: action.time,
+      };
+    });
+    const entryQuantity = entryAction?.quantity ?? quantity;
+    const exitQuantity = exitAction?.quantity ?? quantity;
     return [{
       color: pnl >= 0 ? "var(--success)" : "var(--danger)",
-      entryLabel: `Position ${side} · ${formatQuantity(quantity)} @ ${money(entryPrice)}`,
+      entryColor: side === "SHORT" ? "#dc2626" : "#16a34a",
+      entryLabel: `${side === "SHORT" ? "Short" : "Long"} ${formatQuantity(entryQuantity)} @ ${entryPrice.toFixed(2)}`,
       entryPrice,
       entryTime,
-      exitLabel: `Flat · ${money(pnl)}`,
+      exitColor: side === "SHORT" ? "#16a34a" : "#dc2626",
+      exitLabel: `Exit ${formatQuantity(exitQuantity)} @ ${exitPrice.toFixed(2)} · ${signedMoneyShort(pnl)}`,
       exitPrice,
       exitTime,
       fills,
@@ -353,9 +371,11 @@ function positionLifecycleAnnotations(trading: CanonicalTradingPreview | undefin
   });
 }
 
-function compactPositionFills(executions: PreviewRow[]): NonNullable<ChartPayload["trade_annotations"]>[number]["fills"] {
-  type Aggregate = { latestTime: number; notional: number; quantity: number; side: "BUY" | "SELL" };
-  const byOrderAndPrice = new Map<string, Aggregate>();
+type PositionExecutionAction = { orderId: string; price: number; quantity: number; side: "BUY" | "SELL"; time: number };
+
+function positionExecutionActions(executions: PreviewRow[], positionSide: string): PositionExecutionAction[] {
+  type Aggregate = PositionExecutionAction & { notional: number };
+  const byOrderAndSide = new Map<string, Aggregate>();
   executions.forEach((row, index) => {
     const rawSide = String(row.side || "").toUpperCase();
     const side = rawSide === "BUY" || rawSide === "B" ? "BUY" : rawSide === "SELL" || rawSide === "S" ? "SELL" : null;
@@ -364,23 +384,22 @@ function compactPositionFills(executions: PreviewRow[]): NonNullable<ChartPayloa
     const time = Date.parse(String(row.source_event_time || "")) / 1000;
     if (!side || !Number.isFinite(quantity) || !Number.isFinite(price) || !Number.isFinite(time) || quantity <= 0 || price <= 0) return;
     const orderId = String(row.broker_order_id || row.client_order_id || row.execution_id || `fill:${index}`);
-    const key = `${orderId}:${price.toFixed(8)}:${side}`;
-    const current = byOrderAndPrice.get(key) ?? { latestTime: time, notional: 0, quantity: 0, side };
-    current.latestTime = Math.max(current.latestTime, time);
+    const key = `${orderId}:${side}`;
+    const current = byOrderAndSide.get(key) ?? { orderId, time, notional: 0, price: 0, quantity: 0, side };
+    current.time = Math.max(current.time, time);
     current.notional += quantity * price;
     current.quantity += quantity;
-    byOrderAndPrice.set(key, current);
+    current.price = current.notional / current.quantity;
+    byOrderAndSide.set(key, current);
   });
-  return [...byOrderAndPrice.values()].map((row) => {
-    const price = row.notional / row.quantity;
-    return {
-      label: `${row.side === "BUY" ? "B" : "S"} ${formatQuantity(row.quantity)}·${price.toFixed(2)}`,
-      price,
-      quantity: row.quantity,
-      side: row.side,
-      time: row.latestTime,
-    };
-  }).sort((left, right) => left.time - right.time);
+  const openingSide = positionSide === "SHORT" ? "SELL" : "BUY";
+  return [...byOrderAndSide.values()]
+    .sort((left, right) => left.time - right.time || Number(right.side === openingSide) - Number(left.side === openingSide))
+    .map(({ notional: _notional, ...action }) => action);
+}
+
+function signedMoneyShort(value: number): string {
+  return `${value >= 0 ? "+" : "−"}$${Math.abs(value).toFixed(2)}`;
 }
 
 function durationSeconds(value: string): number {

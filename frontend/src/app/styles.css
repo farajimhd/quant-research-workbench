@@ -5496,7 +5496,7 @@ button {
 }
 
 .trade-price-line.exit {
-  border-top-style: dashed;
+  border-top-style: solid;
 }
 
 .trade-price-line.selected {
@@ -5510,16 +5510,25 @@ button {
   max-width: 320px;
   overflow: hidden;
   border: 1px solid;
-  border-radius: 999px;
+  border-radius: 4px;
   background: color-mix(in oklab, var(--surface) 96%, transparent);
   box-shadow: 0 2px 8px color-mix(in oklab, #000 12%, transparent);
-  font-size: 11px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
   font-weight: 600;
   line-height: 1;
-  padding: 4px 7px;
+  padding: 3px 5px;
   text-overflow: ellipsis;
-  transform: translateY(-50%);
   white-space: nowrap;
+}
+
+.trade-price-line.entry span {
+  transform: translateY(4px);
+}
+
+.trade-price-line.exit span {
+  transform: translateY(calc(-100% - 4px));
 }
 
 .live-entry-price-line {
@@ -5676,6 +5685,52 @@ button {
 
 .trade-fill-marker.entry span {
   transform: translate(-50%, 45%);
+}
+
+.trade-adjustment-marker {
+  position: absolute;
+  z-index: 8;
+  width: 58px;
+  height: 0;
+  border-top: 1px solid;
+  transform: translateX(-100%);
+}
+
+.trade-adjustment-marker::after {
+  position: absolute;
+  top: -4px;
+  right: -1px;
+  width: 0;
+  height: 0;
+  border-top: 4px solid transparent;
+  border-bottom: 4px solid transparent;
+  border-left: 6px solid currentColor;
+  content: "";
+}
+
+.trade-adjustment-marker.selected {
+  border-top-width: 2px;
+}
+
+.trade-adjustment-marker span {
+  position: absolute;
+  top: 0;
+  right: calc(100% + 5px);
+  overflow: hidden;
+  max-width: 120px;
+  border: 1px solid;
+  border-radius: 4px;
+  background: color-mix(in oklab, var(--surface) 96%, transparent);
+  box-shadow: 0 2px 8px color-mix(in oklab, #000 12%, transparent);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 650;
+  line-height: 1;
+  padding: 3px 5px;
+  text-overflow: ellipsis;
+  transform: translateY(-50%);
+  white-space: nowrap;
 }
 
 .trade-guide-line {

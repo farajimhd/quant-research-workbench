@@ -59,16 +59,25 @@ def test_strategy_activity_pins_the_navigation_stop_record() -> None:
     assert "Number(row.sequence) === pinnedSequence" in container_source
 
 
-def test_chart_projects_position_lifecycles_with_compact_linked_fills() -> None:
+def test_chart_projects_position_lifecycles_with_compact_position_actions() -> None:
     chart_source = (REPO_ROOT / "frontend" / "src" / "features" / "canvas" / "chartPresentation.tsx").read_text(encoding="utf-8")
     renderer_source = (REPO_ROOT / "frontend" / "src" / "app" / "components" / "ChartPanel.tsx").read_text(encoding="utf-8")
 
     assert "trade_annotations: showTradeAnnotations ? positionLifecycleAnnotations(trading, linkContext.symbol) : []" in chart_source
     assert "trading?.position_lifecycles" in chart_source
     assert "execution_annotations: []" in chart_source
-    assert "compactPositionFills" in chart_source
+    assert "positionExecutionActions" in chart_source
+    assert '"Long" : "Short"' not in chart_source
+    assert '"Short" : "Long"' in chart_source
+    assert "actions.slice(1, -1)" in chart_source
+    assert 'kind === "add" ? "Add" : "Trim"' in chart_source
     assert "closedTradeAnnotations" not in chart_source
-    assert "drawExecutionAnnotations" in renderer_source
+    assert "drawPositionAdjustment" in renderer_source
+    assert 'arrow.style.top = `${y}px`' in renderer_source
+    assert "textBounds.left < layerBounds.left" in renderer_source
+    assert "textBounds.right > layerBounds.right" in renderer_source
+    draw_source = renderer_source.split("function drawTradeAnnotations", 1)[1].split("function drawPositionAdjustment", 1)[0]
+    assert "trade-annotation-region" not in draw_source
 
 
 def test_structural_history_can_span_all_loaded_chart_bars() -> None:
