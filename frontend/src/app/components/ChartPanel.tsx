@@ -2015,6 +2015,8 @@ function LegendEditor({
 }) {
   const editorRef = useRef<HTMLDivElement | null>(null);
   const [position, setPosition] = useState({ left: 8, top: 8, visibility: "hidden" as "hidden" | "visible" });
+  const allHistoryBars = (item.historyBars ?? 20) === 0;
+  const limitedHistoryBars = allHistoryBars ? 200 : (item.historyBars ?? 20);
 
   useLayoutEffect(() => {
     const placeEditor = () => {
@@ -2142,24 +2144,25 @@ function LegendEditor({
           <label className="legend-toggle-row">
             <input
               aria-label={`${item.label} show on all loaded bars`}
-              checked={(item.historyBars ?? 20) === 0}
+              checked={allHistoryBars}
               type="checkbox"
               onChange={(event) => onUpdate({ historyBars: event.target.checked ? 0 : 200 })}
             />
             <span>All loaded bars</span>
           </label>
-          {(item.historyBars ?? 20) !== 0 ? <span className="legend-range-control">
+          <span className="legend-range-control">
             <input
               aria-label={`${item.label} history bars`}
+              disabled={allHistoryBars}
               min={20}
               max={1000}
               step={10}
               type="range"
-              value={item.historyBars ?? 20}
+              value={limitedHistoryBars}
               onChange={(event) => onUpdate({ historyBars: Number(event.target.value) })}
             />
-            <output>{item.historyBars ?? 20} bars</output>
-          </span> : <output>Full loaded chart</output>}
+            <output>{allHistoryBars ? "All" : `${limitedHistoryBars} bars`}</output>
+          </span>
         </fieldset>
       ) : null}
       {item.itemKind === "zone" && item.supportsCurrentLevelCount ? (
@@ -3190,6 +3193,7 @@ function buildPriceZoneLegendItems(
     ));
     const presetZoneCount = itemZones.filter((zone) => !zone.preset || zone.preset === settings.preset).length;
     const episodeIds = new Set(selectedZones.filter((zone) => zone.episodeId !== undefined).map((zone) => `${zone.preset}:${zone.episodeId}`));
+    const supportsUnifiedFilters = itemZones.some((zone) => zone.annotationKind === "unified-structure-level");
     return {
       color: settings.color,
       configurable: true,
@@ -3211,7 +3215,7 @@ function buildPriceZoneLegendItems(
       preset: settings.preset,
       presetOptions: displayItem?.presetOptions,
       seriesStyle: "line" as const,
-      semanticColor: selectedZones.some((zone) => zone.tone === "buy" || zone.tone === "sell"),
+      semanticColor: itemZones.some((zone) => zone.tone === "buy" || zone.tone === "sell"),
       semanticColors: { down: settings.downColor, neutral: settings.color, up: settings.upColor },
       showConnectors: settings.showConnectors,
       showAxisLabel: settings.showAxisLabel,
@@ -3223,18 +3227,18 @@ function buildPriceZoneLegendItems(
       showUnifiedSupport: settings.showUnifiedSupport,
       showValue: true,
       supportsConnectors: itemZones.some(isStructureBreakZone),
-      supportsNeutralColorEditing: selectedZones.some((zone) => !zone.tone),
-      supportsSemanticColorEditing: selectedZones.some((zone) => zone.tone === "buy" || zone.tone === "sell"),
+      supportsNeutralColorEditing: itemZones.some((zone) => !zone.tone),
+      supportsSemanticColorEditing: itemZones.some((zone) => zone.tone === "buy" || zone.tone === "sell"),
       supportsCurrentLevelCount: itemZones.some((zone) => Boolean(zone.currentLevelSide)),
       supportsAxisLabel: itemZones.some((zone) => typeof zone.axisLabelDefault === "boolean"),
       supportsHistoricalLabels: itemZones.some((zone) => (zone.renderMode === "line" && Boolean(zone.compactLabel)) || isStructureBreakZone(zone)),
-      supportsHistoryWindow: selectedZones.some((zone) => !zone.latest),
-      supportsStroke: !selectedZones.some((zone) =>
+      supportsHistoryWindow: supportsUnifiedFilters || itemZones.some((zone) => !zone.latest),
+      supportsStroke: !itemZones.some((zone) =>
         Boolean(zone.currentLevelSide)
         || zone.annotationKind === "level-footprint"
         || zone.annotationKind === "swing-footprint"),
       supportsPreset: Boolean(displayItem?.presetOptions?.length),
-      supportsUnifiedFilters: itemZones.some((zone) => zone.annotationKind === "unified-structure-level"),
+      supportsUnifiedFilters,
       value: itemZones.some((zone) => zone.annotationKind === "signal-episode-range")
         ? `${episodeIds.size} episode${episodeIds.size === 1 ? "" : "s"}`
         : selectedZones.length === presetZoneCount

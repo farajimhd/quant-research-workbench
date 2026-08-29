@@ -137,6 +137,14 @@ def test_unified_structure_scores_can_filter_loaded_levels_without_a_history_req
     assert 'className="legend-configure-button"' in renderer_source
     assert 'className="legend-label" title={item.label}' in renderer_source
     assert '`${selectedZones.length.toLocaleString("en-US")} / ${presetZoneCount.toLocaleString("en-US")}`' in renderer_source
+    assert "const allHistoryBars = (item.historyBars ?? 20) === 0;" in renderer_source
+    assert "disabled={allHistoryBars}" in renderer_source
+    assert 'allHistoryBars ? "All"' in renderer_source
+    assert 'const supportsUnifiedFilters = itemZones.some((zone) => zone.annotationKind === "unified-structure-level");' in renderer_source
+    assert "supportsHistoryWindow: supportsUnifiedFilters || itemZones.some((zone) => !zone.latest)" in renderer_source
+    assert "supportsSemanticColorEditing: itemZones.some" in renderer_source
+    assert "supportsStroke: !itemZones.some" in renderer_source
+    assert "supportsHistoryWindow: selectedZones.some" not in renderer_source
     assert ".legend-row-actions > button:not(.legend-configure-button)" in styles_source
     assert ".chart-legend-row:hover .legend-row-actions > button" in styles_source
     assert "width: min(340px, calc(100% - 20px));" in styles_source
@@ -144,6 +152,7 @@ def test_unified_structure_scores_can_filter_loaded_levels_without_a_history_req
     assert ".legend-value {\n  overflow: hidden;\n  max-width: 88px;\n  min-width: 0;\n  color: var(--foreground);\n  flex: 0 0 auto;" in styles_source
     assert ".legend-row-actions {\n  display: inline-flex;\n  flex: 0 0 auto;" in styles_source
     assert "margin-left: 0;" in styles_source
+    assert ".chart-legend-editor .legend-history-control legend" in styles_source
 
 
 def test_debug_page_can_open_a_durable_completed_backtest_review() -> None:

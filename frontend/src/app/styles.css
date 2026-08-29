@@ -10064,14 +10064,33 @@ button {
   padding: 0;
 }
 
-.legend-history-control legend {
+.chart-legend-editor .legend-history-control legend {
+  color: var(--foreground);
+  font-size: 10px;
+  font-weight: 750;
+  line-height: 1.2;
   margin-bottom: 2px;
+  padding: 0;
+  text-transform: uppercase;
 }
 
 .legend-toggle-row {
   align-items: center;
   display: flex;
   gap: 6px;
+}
+
+.legend-history-control .legend-range-control input:disabled {
+  cursor: default;
+  opacity: 0.45;
+}
+
+.legend-history-control .legend-range-control {
+  grid-template-columns: minmax(0, 1fr) 50px;
+}
+
+.legend-history-control .legend-range-control output {
+  font-size: 10px;
 }
 
 .trading-disclosure[data-tone="warning"] {
