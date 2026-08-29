@@ -11,7 +11,10 @@ use chrono_tz::America::New_York;
 use qmd_core::bars::{BarRow, BarSnapshot, SharedBarStore, BAR_SCHEMA_VERSION};
 use qmd_core::compact_event::LiveCompactEvent;
 use qmd_core::event::MarketEvent;
-use qmd_core::generic_structure::{GenericStructureEvent, StructureLevelCandidate};
+use qmd_core::generic_structure::{
+    GenericStructureCheckpoint, GenericStructureEngine, GenericStructureEvent,
+    StructureLevelCandidate,
+};
 use qmd_core::indicators::{
     BarIndicatorCalculator, IndicatorRow, MarketStructureReferenceLevels,
     MicrostructureSampleAggregate, INDICATOR_SCHEMA_VERSION,
@@ -29,10 +32,10 @@ use std::mem::size_of;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
-use tokio::sync::{broadcast, mpsc, Mutex, Notify, Semaphore};
+use tokio::sync::{broadcast, mpsc, Mutex, Notify, OnceCell, Semaphore};
 
 pub const HISTORICAL_ENGINE_VERSION: &str = "qmd-derived-v33";
-pub const HISTORICAL_CALCULATION_REVISION: &str = "qmd-derived-v34";
+pub const HISTORICAL_CALCULATION_REVISION: &str = "qmd-derived-v35";
 pub const HISTORICAL_CORPORATE_ACTION_REVISION: &str = "raw-unadjusted-v1";
 const MAX_ENCOUNTERED_STRUCTURE_LEVELS: usize = 4_000;
 
@@ -214,9 +217,12 @@ pub struct HistoricalDerivedCache {
     inner: Arc<Mutex<CacheIndex>>,
     source: HistoricalEventSource,
     stats: Arc<CacheStats>,
+    structure_seeds: Arc<Mutex<HashMap<String, Arc<OnceCell<StructureSeedResult>>>>>,
     build_permits: Arc<Semaphore>,
     fetch_permits: Arc<Semaphore>,
 }
+
+type StructureSeedResult = Result<Option<GenericStructureCheckpoint>, String>;
 
 pub struct CacheLease {
     pub entry: Arc<CacheEntry>,
@@ -293,6 +299,7 @@ impl HistoricalDerivedCache {
             })),
             source,
             stats: Arc::new(CacheStats::default()),
+            structure_seeds: Arc::new(Mutex::new(HashMap::new())),
             build_permits: Arc::new(Semaphore::new(max_concurrent_builds)),
             fetch_permits: Arc::new(Semaphore::new(max_concurrent_fetches)),
         }
@@ -834,43 +841,12 @@ impl HistoricalDerivedCache {
             SessionVwapSeed::default()
         };
         if matches!(&profile, CacheProfile::Derived(_)) {
-            let events = self
-                .source
-                .persisted_structure_events_before(&ticker, window.start)
-                .await?;
-            if events.is_empty() {
-                let rebuild_start =
-                    structure_rebuild_start(window.start, self.config.structure_book_rebuild_days)?;
-                let rebuild_as_of = window
-                    .start
-                    .checked_sub_signed(Duration::microseconds(1))
-                    .ok_or_else(|| "historical structure warm-start underflow".to_string())?;
-                match rebuild_structure_checkpoint(
-                    &self.config,
-                    &self.source,
-                    StructureCheckpointRebuildRequest {
-                        schema_version: STRUCTURE_CHECKPOINT_REBUILD_SCHEMA_VERSION,
-                        ticker: ticker.clone(),
-                        start: rebuild_start,
-                        as_of: rebuild_as_of,
-                        expected_source_plan_hash: None,
-                        event_limit: Some(self.config.structure_checkpoint_rebuild_max_events),
-                    },
-                )
-                .await
-                {
-                    Ok(rebuilt) => {
-                        bars.seed_structure_checkpoints(vec![(ticker.clone(), rebuilt.checkpoint)])
-                            .await;
-                    }
-                    Err(error)
-                        if error
-                            .starts_with("Generic Structure rebuild found no canonical events") => {
-                    }
-                    Err(error) => return Err(error),
-                }
-            } else {
-                bars.seed_structure_events(events).await;
+            if let Some(checkpoint) = self
+                .structure_seed_checkpoint(&ticker, window.start)
+                .await?
+            {
+                bars.seed_structure_checkpoints(vec![(ticker.clone(), checkpoint)])
+                    .await;
             }
         }
         let shard = bars.shard(0);
@@ -1171,6 +1147,88 @@ impl HistoricalDerivedCache {
             state.products = Some(products);
         }
         Ok(events_processed)
+    }
+
+    async fn structure_seed_checkpoint(
+        &self,
+        ticker: &str,
+        before: DateTime<Utc>,
+    ) -> StructureSeedResult {
+        let rebuild_start =
+            structure_rebuild_start(before, self.config.structure_book_rebuild_days)?;
+        let rebuild_as_of = before
+            .checked_sub_signed(Duration::microseconds(1))
+            .ok_or_else(|| "historical structure warm-start underflow".to_string())?;
+        let seed_window = EventWindow {
+            start: rebuild_start,
+            end: before,
+            tickers: vec![ticker.to_string()],
+        };
+        let seed_revision = self.source.source_revision(&seed_window).await?;
+        let key = format!(
+            "{}:{}:{}:{}:{}",
+            ticker.to_ascii_uppercase(),
+            rebuild_start.timestamp_micros(),
+            before.timestamp_micros(),
+            seed_revision.token,
+            HISTORICAL_CALCULATION_REVISION,
+        );
+        let cell = {
+            let mut seeds = self.structure_seeds.lock().await;
+            if let Some(existing) = seeds.get(&key) {
+                existing.clone()
+            } else {
+                if seeds.len() >= self.config.cache_max_entries {
+                    let removable = seeds
+                        .iter()
+                        .find(|(_, cell)| cell.initialized())
+                        .map(|(key, _)| key.clone());
+                    if let Some(removable) = removable {
+                        seeds.remove(&removable);
+                    }
+                }
+                let cell = Arc::new(OnceCell::new());
+                seeds.insert(key, cell.clone());
+                cell
+            }
+        };
+        let config = self.config.clone();
+        let source = self.source.clone();
+        let ticker = ticker.to_string();
+        cell.get_or_init(|| async move {
+            let events = source
+                .persisted_structure_events_before(&ticker, before)
+                .await?;
+            if !events.is_empty() {
+                let mut engine = GenericStructureEngine::new(&ticker);
+                engine.seed_events(&events);
+                return Ok(Some(engine.checkpoint()));
+            }
+            match rebuild_structure_checkpoint(
+                &config,
+                &source,
+                StructureCheckpointRebuildRequest {
+                    schema_version: STRUCTURE_CHECKPOINT_REBUILD_SCHEMA_VERSION,
+                    ticker: ticker.clone(),
+                    start: rebuild_start,
+                    as_of: rebuild_as_of,
+                    expected_source_plan_hash: Some(seed_revision.source_plan_hash),
+                    event_limit: Some(config.structure_checkpoint_rebuild_max_events),
+                },
+            )
+            .await
+            {
+                Ok(rebuilt) => Ok(Some(rebuilt.checkpoint)),
+                Err(error)
+                    if error.starts_with("Generic Structure rebuild found no canonical events") =>
+                {
+                    Ok(None)
+                }
+                Err(error) => Err(error),
+            }
+        })
+        .await
+        .clone()
     }
 
     fn spawn_chunk_fetch(
