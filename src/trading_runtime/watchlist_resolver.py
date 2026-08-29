@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from math import isfinite
 from typing import Any, Iterable
 
@@ -164,7 +165,7 @@ def evaluate_rule_sets_frame(
     """
 
     rule_list = [dict(rule) for rule in rule_sets]
-    classified = [classify_watchlist_row(dict(row)) for row in rows]
+    classified = [classify_watchlist_row(_rule_evaluation_row(row)) for row in rows]
     if not classified:
         return {str(rule.get("rule_set_id") or ""): [] for rule in rule_list}
     frame = pl.from_dicts(classified, strict=False, infer_schema_length=None)
@@ -281,22 +282,30 @@ def _rule_matches(rule_set: dict[str, Any] | None, row: dict[str, Any]) -> bool:
 def _condition_matches(condition: dict[str, Any], row: dict[str, Any]) -> bool:
     if str(condition.get("left_value_selection") or "latest") != "latest":
         return False
-    left_ref = str(condition.get("left_field_ref") or "")
-    left_interval = interval_expression(condition.get("left_interval"))
-    left = _source_value(row, field_instance_ref(left_ref, left_interval, condition.get("left_aggregation"))) if left_ref else None
-    if left is None and (not left_ref or not left_interval):
-        left = _source_value(row, str(condition.get("left_source_id") or ""))
+    left = next(
+        (
+            value
+            for candidate in _operand_candidates(condition, "left")
+            if (value := _source_value(row, candidate)) is not None
+        ),
+        None,
+    )
     comparator = str(condition.get("comparator") or "")
     if comparator == "is_true":
         return left is True
-    right_ref = str(condition.get("right_field_ref") or "")
-    right_interval = interval_expression(condition.get("right_interval"))
     right_source = str(condition.get("right_source_id") or "")
     if right_source and str(condition.get("right_value_selection") or "latest") != "latest":
         return False
-    right = _source_value(row, field_instance_ref(right_ref, right_interval, condition.get("right_aggregation"))) if right_ref else None
-    if right is None and (not right_ref or not right_interval):
-        right = _source_value(row, right_source) if right_source else condition.get("value")
+    right = next(
+        (
+            value
+            for candidate in _operand_candidates(condition, "right")
+            if (value := _source_value(row, candidate)) is not None
+        ),
+        None,
+    )
+    if right is None and not right_source:
+        right = condition.get("value")
     if comparator == "equals":
         return left == right
     if comparator == "not_equals":
@@ -352,27 +361,55 @@ def _operand_expression(
 ) -> pl.Expr | None:
     if str(condition.get(f"{side}_value_selection") or "latest") != "latest":
         return None
-    field_ref = str(condition.get(f"{side}_field_ref") or "")
-    interval = interval_expression(condition.get(f"{side}_interval"))
-    aggregation = condition.get(f"{side}_aggregation")
-    source_id = str(condition.get(f"{side}_source_id") or "")
-    candidates = []
-    if field_ref:
-        candidates.append(field_instance_ref(field_ref, interval, aggregation))
-        if not interval:
-            candidates.append(field_ref)
-    if not interval and source_id:
-        candidates.extend((source_id, SOURCE_FIELDS.get(source_id, source_id)))
-    for candidate in dict.fromkeys(candidates):
+    for candidate in _operand_candidates(condition, side):
         if candidate in schema:
             return pl.col(candidate)
     return None
 
 
+def _operand_candidates(condition: dict[str, Any], side: str) -> list[str]:
+    """Resolve one operand through canonical field and runtime source aliases."""
+
+    field_ref = str(condition.get(f"{side}_field_ref") or "")
+    interval = interval_expression(condition.get(f"{side}_interval"))
+    aggregation = condition.get(f"{side}_aggregation")
+    source_id = str(condition.get(f"{side}_source_id") or "")
+    candidates: list[str] = []
+    if field_ref:
+        candidates.append(field_instance_ref(field_ref, interval, aggregation))
+        if not interval:
+            candidates.append(field_ref)
+    if source_id:
+        if interval:
+            candidates.extend(
+                (
+                    field_instance_ref(source_id, interval, aggregation),
+                    f"{source_id}@{interval}",
+                )
+            )
+        else:
+            candidates.extend((source_id, SOURCE_FIELDS.get(source_id, source_id)))
+    return list(dict.fromkeys(candidate for candidate in candidates if candidate))
+
+
 def _source_value(row: dict[str, Any], source_id: str) -> Any:
     if source_id in row:
-        return row[source_id]
-    return row.get(SOURCE_FIELDS.get(source_id, source_id))
+        return _point_in_time_value(row[source_id])
+    return _point_in_time_value(row.get(SOURCE_FIELDS.get(source_id, source_id)))
+
+
+def _rule_evaluation_row(row: Mapping[str, Any]) -> dict[str, Any]:
+    """Project causal source envelopes to scalar operands without losing authority upstream."""
+
+    return {str(key): _point_in_time_value(value) for key, value in row.items()}
+
+
+def _point_in_time_value(value: Any) -> Any:
+    if isinstance(value, Mapping) and "value" in value and any(
+        key in value for key in ("observed_at", "as_of", "event_time")
+    ):
+        return value.get("value")
+    return value
 
 
 def _number(value: Any) -> float | None:

@@ -5,6 +5,7 @@ import unittest
 from src.backend.trading_configuration_service import _default_draft
 from src.trading_runtime.watchlist_resolver import (
     classify_watchlist_row,
+    evaluate_rule_set_result,
     evaluate_rule_sets_frame,
     resolve_watchlist_membership,
 )
@@ -258,6 +259,40 @@ class WatchlistResolverTest(unittest.TestCase):
         )
 
         self.assertEqual(masks["missing-interval-field"], [False, False, False])
+
+    def test_quality_rule_unwraps_causal_envelopes_and_resolves_interval_alias(self) -> None:
+        quality = next(
+            rule
+            for rule in self.discovery["rule_sets"]
+            if rule["rule_set_id"] == "strategy-squeeze-volume-spread-quality"
+        )
+        observed_at = "2026-08-21T08:01:33+00:00"
+
+        def causal(value: float) -> dict[str, object]:
+            return {"observed_at": observed_at, "value": value}
+
+        passing = {
+            "ticker": "NBIS",
+            "market.last_price": causal(10.4),
+            "market.session_dollar_volume": causal(2_121_447.86),
+            "market.trade_rate_10s": causal(22.4),
+            "market.liquidity_score": causal(95.15),
+            "volume_rate_ratio@1s": causal(5.23),
+            "market.spread_bps": causal(9.62),
+        }
+        failing = {
+            **passing,
+            "market.spread_bps": causal(60.0),
+        }
+
+        masks = evaluate_rule_sets_frame([quality], [passing, failing])
+
+        self.assertEqual(
+            masks["strategy-squeeze-volume-spread-quality"],
+            [True, False],
+        )
+        self.assertTrue(evaluate_rule_set_result(quality, passing))
+        self.assertFalse(evaluate_rule_set_result(quality, failing))
 
     def test_only_pending_integration_templates_are_disabled_and_fail_closed(self) -> None:
         for watchlist_id in {

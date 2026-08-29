@@ -20,6 +20,7 @@ from src.trading_runtime.execution_policies import (
     ProtectionSlice,
     StopRule,
     StopRuleType,
+    StructuralAnchor,
 )
 from src.trading_runtime.ibkr_schema import AccountLedger, AccountSummary, LiveOrder, OrderRequest, OrderStatus
 from src.trading_runtime.journal import TradingJournal
@@ -122,6 +123,28 @@ def portfolio_approved(
 
 
 class ContractAndPlanningTests(unittest.TestCase):
+    def test_hybrid_stop_ignores_structural_anchor_on_wrong_side_of_entry(self) -> None:
+        rule = StopRule(
+            StopRuleType.HYBRID,
+            volatility_multiple=1.25,
+            buffer_bps=8,
+            anchor=StructuralAnchor(
+                observation_id="qmd-derived:SUGP:1s:231",
+                price=3.33,
+                confirmed_at=NOW,
+                timeframe="strategy",
+            ),
+        )
+
+        resolved = rule.resolve(
+            reference_price=3.3195,
+            side="long",
+            quantity=3_000,
+            volatility=0.013689117957856283,
+        )
+
+        self.assertAlmostEqual(resolved, 3.3023886025526797)
+
     def test_multi_swing_profile_creates_independent_protected_batches(self) -> None:
         plan = IbkrStrategyOrderPlanner().plan(
             account_id="DU1",

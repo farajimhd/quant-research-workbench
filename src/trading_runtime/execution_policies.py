@@ -196,7 +196,13 @@ class StopRule:
             result = reference_price + direction * volatility * float(self.volatility_multiple or 0)
             if self.rule_type == StopRuleType.HYBRID and self.anchor is not None:
                 structural = self.anchor.price * (1.0 + direction * self.buffer_bps / 10_000.0)
-                result = max(result, structural) if long_position else min(result, structural)
+                structural_is_protective = (
+                    structural < reference_price
+                    if long_position
+                    else structural > reference_price
+                )
+                if structural_is_protective:
+                    result = max(result, structural) if long_position else min(result, structural)
         else:
             result = reference_price
         if result <= 0:
