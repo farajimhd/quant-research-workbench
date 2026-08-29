@@ -54,6 +54,12 @@ export type QmdUnifiedStructureSource = {
   confidence: number;
   total_volume: number;
   trade_count: number;
+  source_kind: string;
+  touch_count: number;
+  hold_count: number;
+  break_count: number;
+  role_flip_count: number;
+  last_test_at_ms: number;
 };
 export type QmdUnifiedStructureLevel = {
   unified_level_id: number;
@@ -70,14 +76,26 @@ export type QmdUnifiedStructureLevel = {
   confirmed_at_ms: number;
   total_volume: number;
   trade_count: number;
+  reaction_probability: number;
+  hold_probability: number;
+  touch_count: number;
+  hold_count: number;
+  break_count: number;
+  role_flip_count: number;
+  last_test_at_ms: number;
   sources: QmdUnifiedStructureSource[];
+};
+export type QmdUnifiedStructureLevelDelta = {
+  upserts: QmdUnifiedStructureLevel[];
+  removed: Array<{ unified_level_id: number; side: number }>;
 };
 export type HistoricalIndicator = {
   bar_start: string;
   qmd_structure_active_levels?: QmdStructureLevelCandidate[];
   qmd_structure_timeframe_states?: QmdStructureTimeframeState[];
+  qmd_structure_unified_level_delta?: QmdUnifiedStructureLevelDelta;
   qmd_structure_unified_levels?: QmdUnifiedStructureLevel[];
-} & Record<string, number | string | QmdStructureLevelCandidate[] | QmdStructureTimeframeState[] | QmdUnifiedStructureLevel[] | undefined>;
+} & Record<string, number | string | QmdStructureLevelCandidate[] | QmdStructureTimeframeState[] | QmdUnifiedStructureLevel[] | QmdUnifiedStructureLevelDelta | undefined>;
 export type PreviewRow = Record<string, unknown>;
 export type PnlCandleTimeframe = "30m" | "1h" | "1d" | "1M";
 export type PnlCandle = {

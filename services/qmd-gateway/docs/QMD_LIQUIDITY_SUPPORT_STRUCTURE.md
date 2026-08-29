@@ -1,16 +1,17 @@
 # QMD Liquidity, Support, and Structure Guide
 
-## Generic Structure v10: immediate levels, timeframe-local swings, and unified structural levels
+## Generic Structure v11: persistent level book, timeframe-local swings, and unified structural levels
 
-Generic Structure v10 has one source stream: ordered eligible executed trades.
+Generic Structure v11 has one source stream: ordered eligible executed trades.
 It maintains three deliberately separate products:
 
 - an immediate traded-price level book for support/resistance and volume
   evidence; and
 - a causal local swing and structural-break hierarchy owned independently by
   each supported timeframe; and
-- unified structural price zones that cluster the latest confirmed, unbroken
-  local swings across timeframes without changing their source identity.
+- unified structural price zones that combine the persistent cross-session
+  level book with confirmed, unbroken local swings across timeframes without
+  changing source identity.
 
 The engine processes them as follows:
 
@@ -35,19 +36,38 @@ The engine processes them as follows:
 
 ### Unified Structural Levels
 
-The unified projection clusters swing highs separately from swing lows using an
-adaptive bandwidth of two ticks or five basis points, whichever is larger. It
-is independent of the chart interval: the selected interval changes the candle
-display, not the source swing books or their combined price zones.
+The unified projection clusters current support separately from current
+resistance using an adaptive bandwidth of two ticks or five basis points,
+whichever is larger. Sources include active event-native book levels plus the
+latest unbroken swings from every structure timeframe. The bounded book is
+checkpointed across sessions, so repeatedly tested levels can remain relevant
+for days or months. It is independent of the chart interval: the selected
+interval changes candle display, not level identity or evidence.
 
 The same exact price and pivot timestamp can appear in several timeframe books.
 Those appearances remain listed as sources but count once toward salience,
 confidence, volume, and trade-count evidence. Nearby swings with different
-pivot identities count independently. Broken swings are excluded. A zone's
+pivot identities count independently. Broken swings and event-native levels
+between accepted break and confirmed retest are excluded. A confirmed role
+reversal republishes the same stable unified identity with the opposite side.
+A zone's
 `confirmed_at_ms` is the latest confirmation among its sources, which is the
 earliest time the complete displayed cluster was knowable without lookahead.
-`salience` and `confidence` are bounded evidence scores, not calibrated breakout
-probabilities.
+`salience` and `confidence` remain bounded evidence scores.
+
+`reaction_probability` combines independent-pivot salience, source confidence,
+repeated tests, accepted breaks, cross-timeframe diversity, and confirmed role
+flips. `hold_probability` is a Beta-smoothed summary of holds versus accepted
+breaks in the current role. These are deterministic evidence-derived scores,
+not calibrated return forecasts or trade instructions. Publication remains
+bounded to sixteen major levels per side; the internal book retains up to 512
+levels and prunes inactive, unpromoted, oldest evidence first.
+
+Historical chart projection is transition encoded. The first and terminal
+level-book snapshots are complete. Intermediate rows publish only changed
+levels and removed identities in `qmd_structure_unified_level_delta`; a row
+without either field carries the prior state forward. This preserves every
+causal band lifetime without repeating the whole book on every bar.
 
 ### Executed-volume footprint
 

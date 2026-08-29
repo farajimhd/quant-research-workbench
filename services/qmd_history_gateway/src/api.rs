@@ -41,7 +41,7 @@ use qmd_core::market_products::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use tokio::sync::Semaphore;
 use tower_http::cors::CorsLayer;
@@ -1015,7 +1015,7 @@ fn project_chart_snapshot(
         return Ok(value);
     };
     let indicator_count = snapshot.indicators.len();
-    let indicators = snapshot
+    let mut indicators = snapshot
         .indicators
         .into_iter()
         .enumerate()
@@ -1028,12 +1028,12 @@ fn project_chart_snapshot(
                 if index + 1 < indicator_count {
                     object.remove("qmd_structure_active_levels");
                     object.remove("qmd_structure_timeframe_states");
-                    object.remove("qmd_structure_unified_levels");
                 }
             }
             Ok(value)
         })
         .collect::<Result<Vec<_>, ApiError>>()?;
+    compact_projected_unified_structure_history(&mut indicators);
     Ok(json!({
         "as_of": snapshot.as_of,
         "bars": snapshot.bars,
@@ -1049,6 +1049,89 @@ fn project_chart_snapshot(
         "ticker": snapshot.ticker,
         "timeframe": snapshot.timeframe,
     }))
+}
+
+/// The unified level book is a state snapshot, not an independent observation
+/// on every bar. Keep the first state, every presentation-significant
+/// transition, and the terminal state. Omitting an unchanged intermediate
+/// field means "carry the prior book forward"; an explicit empty array still
+/// means that every previously visible level ended at that bar.
+fn compact_projected_unified_structure_history(indicators: &mut [Value]) {
+    let terminal_index = indicators.len().saturating_sub(1);
+    let mut previous = BTreeMap::<String, (Value, Value)>::new();
+    for (index, indicator) in indicators.iter_mut().enumerate() {
+        let Some(object) = indicator.as_object_mut() else {
+            continue;
+        };
+        let Some(levels) = object.get("qmd_structure_unified_levels").cloned() else {
+            continue;
+        };
+        let current = unified_structure_level_map(&levels);
+        if index > 0 && index != terminal_index {
+            let upserts = current
+                .iter()
+                .filter_map(|(key, (signature, level))| {
+                    (previous.get(key).map(|(value, _)| value) != Some(signature))
+                        .then(|| level.clone())
+                })
+                .collect::<Vec<_>>();
+            let removed = previous
+                .iter()
+                .filter_map(|(key, (_, level))| {
+                    if current.contains_key(key) {
+                        return None;
+                    }
+                    Some(json!({
+                        "unified_level_id": level.get("unified_level_id").cloned().unwrap_or(Value::Null),
+                        "side": level.get("side").cloned().unwrap_or(Value::Null),
+                    }))
+                })
+                .collect::<Vec<_>>();
+            object.remove("qmd_structure_unified_levels");
+            if !upserts.is_empty() || !removed.is_empty() {
+                object.insert(
+                    "qmd_structure_unified_level_delta".to_string(),
+                    json!({"upserts": upserts, "removed": removed}),
+                );
+            }
+        }
+        previous = current;
+    }
+}
+
+fn unified_structure_level_map(levels: &Value) -> BTreeMap<String, (Value, Value)> {
+    levels
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|level| {
+            let identity = format!("{}:{}", level.get("unified_level_id")?, level.get("side")?);
+            let mut signature = level.clone();
+            if let Some(object) = signature.as_object_mut() {
+                // These grow with prints but do not alter a band's bounds,
+                // role, line length, opacity, or explanatory label.
+                object.remove("total_volume");
+                object.remove("trade_count");
+                object.remove("sources");
+                object.remove("last_test_at_ms");
+                // The chart communicates these scores as whole-percent
+                // evidence and draws them across a finite pixel span.
+                // Sub-percent churn is not presentation-significant and must
+                // not turn every trade-bearing bar into a new state.
+                for key in [
+                    "reaction_probability",
+                    "hold_probability",
+                    "salience",
+                    "confidence",
+                ] {
+                    if let Some(number) = object.get(key).and_then(Value::as_f64) {
+                        object.insert(key.to_string(), json!((number * 100.0).round() / 100.0));
+                    }
+                }
+            }
+            Some((identity, (signature, level.clone())))
+        })
+        .collect()
 }
 
 fn chart_indicator_provenance(
@@ -2170,13 +2253,15 @@ fn event_revision_changed(
 #[cfg(test)]
 mod tests {
     use super::{
-        causal_product_window, compact_event_type_filter, event_revision_changed,
+        causal_product_window, compact_event_type_filter,
+        compact_projected_unified_structure_history, event_revision_changed,
         expected_event_revision, is_loopback_bind, parse_chart_mode, parse_chart_stage,
         parse_indicator_projection, parse_timestamp, product_resolution, stream_gap_frame,
         validate_timeframe, watchlist_materialization_error, EventRevisionPolicy, ProductQuery,
     };
     use crate::source::SourceRevision;
     use axum::http::StatusCode;
+    use serde_json::json;
 
     #[test]
     fn timestamps_require_explicit_timezone() {
@@ -2352,6 +2437,65 @@ mod tests {
         assert!(columns.contains("bar_start"));
         assert!(columns.contains("ema_20"));
         assert!(parse_indicator_projection(Some("ema-20")).is_err());
+    }
+
+    #[test]
+    fn unified_structure_projection_keeps_only_material_transitions_and_terminal_state() {
+        let level = |reaction: f64, volume: f64| {
+            json!({
+                "unified_level_id": 17,
+                "side": 1,
+                "lower": 9.98,
+                "upper": 10.02,
+                "price": 10.0,
+                "reaction_probability": reaction,
+                "hold_probability": 0.6,
+                "touch_count": 3,
+                "hold_count": 2,
+                "break_count": 0,
+                "role_flip_count": 1,
+                "total_volume": volume,
+                "trade_count": volume as u64,
+                "last_test_at_ms": volume as i64,
+                "sources": [{"total_volume": volume}],
+            })
+        };
+        let mut indicators = vec![
+            json!({"bar_start": "a", "qmd_structure_unified_levels": [level(0.70, 10.0)]}),
+            json!({"bar_start": "b", "qmd_structure_unified_levels": [level(0.70, 20.0)]}),
+            json!({"bar_start": "c", "qmd_structure_unified_levels": [level(0.75, 30.0)]}),
+            json!({"bar_start": "d", "qmd_structure_unified_levels": [level(0.75, 40.0)]}),
+        ];
+
+        compact_projected_unified_structure_history(&mut indicators);
+
+        assert!(indicators[0].get("qmd_structure_unified_levels").is_some());
+        assert!(indicators[1].get("qmd_structure_unified_levels").is_none());
+        assert!(indicators[1]
+            .get("qmd_structure_unified_level_delta")
+            .is_none());
+        assert!(indicators[2].get("qmd_structure_unified_levels").is_none());
+        assert_eq!(
+            indicators[2]["qmd_structure_unified_level_delta"]["upserts"]
+                .as_array()
+                .map(Vec::len),
+            Some(1)
+        );
+        assert!(indicators[3].get("qmd_structure_unified_levels").is_some());
+
+        let mut closes = vec![
+            json!({"bar_start": "a", "qmd_structure_unified_levels": [level(0.70, 10.0)]}),
+            json!({"bar_start": "b", "qmd_structure_unified_levels": []}),
+            json!({"bar_start": "c", "qmd_structure_unified_levels": []}),
+        ];
+        compact_projected_unified_structure_history(&mut closes);
+        assert_eq!(
+            closes[1]["qmd_structure_unified_level_delta"]["removed"]
+                .as_array()
+                .map(Vec::len),
+            Some(1)
+        );
+        assert_eq!(closes[2]["qmd_structure_unified_levels"], json!([]));
     }
 
     #[test]

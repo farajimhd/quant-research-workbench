@@ -33,7 +33,7 @@ These package ids are available in the Indicators menu and chart legend:
 | `indicator.qmd_resiliency` | QMD Liquidity Resiliency | `microstructure_resiliency` | Signed oscillator histogram. |
 | `indicator.flow_structure_composite` | Flow-Structure Composite · Oscillator | continuous score, confidence, bias, reason | Confidence-weighted flow-versus-structure indicator; market-signal markers use the separate 3-of-5 lifecycle. |
 | `indicator.qmd_generic_structure` | QMD Generic Structure | active zones, complete causal event stream, three-scale swings | Price overlay with independently configurable micro, tactical, and context layers. |
-| `indicator.qmd_unified_structure` | QMD Unified Structural Levels | clustered confirmed swing highs/lows from all QMD structure timeframes | Interval-independent support/resistance zones with causal confirmation, source diversity, salience, and confidence. |
+| `indicator.qmd_unified_structure` | QMD Unified Structural Levels | persistent level book plus independent confirmed swings from all QMD structure timeframes | Borderless cross-session support/resistance bands. Each role segment ends at its accepted break; a confirmed retest may begin the same level in the opposite color. The thick center line occupies the evidence-derived reaction-probability fraction of the band. |
 | `indicator.qmd_reference_levels` | QMD Reference Levels | extended-session high/low, opening range, POC, LULD, and completed higher-timeframe references | Independent price lines, not structural evidence. |
 
 Every package exposes its guide from both the indicator picker and configured
@@ -44,13 +44,27 @@ breaks can be turned on independently to verify the causal engine.
 Structural overlays that expose a History control also provide **All loaded
 bars**. This removes the presentation window only; it does not request future
 data or change the causal confirmation time. Load earlier chart pages when more
-session history is needed.
+session history is needed. Unified Structural Levels selects all loaded bars by
+default. QMD retains the bounded level book across session checkpoints, while
+the chart reconstructs each causal support/resistance role from the indicator
+rows actually loaded. QMD History transition-encodes this state: intermediate
+rows contain only level upserts and removed identities, while rows without a
+change carry the prior book forward. The first and terminal snapshots remain
+complete.
 
-Completed trading annotations are position-centric. One shaded span represents
-one flat-to-flat position lifecycle; scale-ins, partial exits, and distinct fill
-prices appear as compact `B quantity·price` or `S quantity·price` markers inside
-that lifecycle. The chart does not independently redraw FIFO round-trip
-fragments or duplicate every execution as another position.
+Unified-level reaction probability is an evidence-derived score, not a
+calibrated return forecast. It combines independent pivots, timeframe
+diversity, repeated tests and holds, accepted breaks, role reversals, volume,
+and confidence. Green denotes the currently confirmed support role; red denotes
+resistance. A level disappears at an accepted break and returns with the
+opposite role only after the retest confirms support/resistance reversal.
+
+Completed trading annotations are position-centric. Native chart primitives
+draw the flat-to-flat lifecycle at its event timestamps and execution prices;
+entry, exit, scale-in, and partial-exit marks therefore move with the candles
+under panning, time scaling, price scaling, resize, and timeframe changes.
+Labels stay compact, and the chart does not independently redraw FIFO
+round-trip fragments or duplicate every execution as another position.
 
 ## How to Read the Liquidity Oscillators
 

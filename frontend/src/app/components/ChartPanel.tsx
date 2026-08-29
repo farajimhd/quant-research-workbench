@@ -107,7 +107,7 @@ type TradeAnnotation = {
 };
 type ChartPreset = "micro" | "tactical" | "context" | "axis-history" | "swing-rails";
 type PriceZone = {
-  annotationKind?: "band" | "bos" | "choch" | "level-footprint" | "swing-footprint" | "structure-break" | "level" | "luld-line" | "liquidity-resistance" | "liquidity-support" | "signal-episode-rail" | "signal-episode-range" | "swing-high" | "swing-low";
+  annotationKind?: "band" | "bos" | "choch" | "level-footprint" | "swing-footprint" | "structure-break" | "level" | "luld-line" | "liquidity-resistance" | "liquidity-support" | "signal-episode-rail" | "signal-episode-range" | "swing-high" | "swing-low" | "unified-structure-level";
   axisLabelDefault?: boolean;
   borderColor?: string;
   borderOpacity?: number;
@@ -135,6 +135,7 @@ type PriceZone = {
   fillColor?: string;
   fillOpacity?: number;
   historicalLabelsDefault?: boolean;
+  historyBarsDefault?: number;
   historyTimeframeSeconds?: number;
   label: string;
   latest?: boolean;
@@ -145,6 +146,8 @@ type PriceZone = {
   opacityDefault?: number;
   preset?: ChartPreset;
   presetDefault?: ChartPreset;
+  probabilityLineRatio?: number;
+  probabilityLineWidth?: number;
   renderMode?: "line" | "zone";
   settingsId?: string;
   start: number;
@@ -275,6 +278,12 @@ type PriceZonePrimitiveState = {
   zones: PriceZone[];
 };
 
+type TradeAnnotationPrimitiveState = {
+  candles: Candle[];
+  executions: TradeFillAnnotation[];
+  trades: TradeAnnotation[];
+};
+
 class PriceZonePrimitive implements ISeriesPrimitive<Time> {
   private chart: IChartApi | null = null;
   private requestUpdate: (() => void) | null = null;
@@ -340,6 +349,55 @@ class PriceZonePrimitive implements ISeriesPrimitive<Time> {
   }
 
   setState(state: PriceZonePrimitiveState) {
+    this.state = state;
+    this.requestUpdate?.();
+  }
+}
+
+class TradeAnnotationPrimitive implements ISeriesPrimitive<Time> {
+  private chart: IChartApi | null = null;
+  private requestUpdate: (() => void) | null = null;
+  private series: ISeriesApi<"Candlestick"> | null = null;
+  private state: TradeAnnotationPrimitiveState = { candles: [], executions: [], trades: [] };
+  private readonly rendererImpl: IPrimitivePaneRenderer = {
+    draw: (target) => {
+      if (!this.chart || !this.series) return;
+      target.useMediaCoordinateSpace(({ context, mediaSize }) => {
+        drawTradeAnnotationPrimitiveGeometry(
+          this.chart as IChartApi,
+          this.series as ISeriesApi<"Candlestick">,
+          context,
+          mediaSize.width,
+          mediaSize.height,
+          this.state.trades,
+          this.state.executions,
+          this.state.candles,
+        );
+      });
+    },
+  };
+  private readonly paneView: IPrimitivePaneView = {
+    renderer: () => this.rendererImpl,
+    zOrder: () => "top",
+  };
+
+  attached({ chart, requestUpdate, series }: Parameters<NonNullable<ISeriesPrimitive<Time>["attached"]>>[0]) {
+    this.chart = chart as IChartApi;
+    this.series = series as ISeriesApi<"Candlestick">;
+    this.requestUpdate = requestUpdate;
+  }
+
+  detached() {
+    this.chart = null;
+    this.series = null;
+    this.requestUpdate = null;
+  }
+
+  paneViews() {
+    return [this.paneView];
+  }
+
+  setState(state: TradeAnnotationPrimitiveState) {
     this.state = state;
     this.requestUpdate?.();
   }
@@ -549,6 +607,7 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
   const oscillatorPaneRuntimesRef = useRef<Map<string, OscillatorPaneRuntime>>(new Map());
   const priceZoneAxisLinesRef = useRef<Map<string, PriceZoneAxisLineRuntime>>(new Map());
   const priceZonePrimitiveRef = useRef<PriceZonePrimitive | null>(null);
+  const tradeAnnotationPrimitiveRef = useRef<TradeAnnotationPrimitive | null>(null);
   const payloadRef = useRef<ChartPayload | null>(payload);
   const liveEntryLineRef = useRef<LiveEntryLine | null>(null);
   const referenceRef = useRef<ChartReference | null>(reference ?? null);
@@ -891,6 +950,9 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
     const priceZonePrimitive = new PriceZonePrimitive();
     candleSeries.attachPrimitive(priceZonePrimitive);
     priceZonePrimitiveRef.current = priceZonePrimitive;
+    const tradeAnnotationPrimitive = new TradeAnnotationPrimitive();
+    candleSeries.attachPrimitive(tradeAnnotationPrimitive);
+    tradeAnnotationPrimitiveRef.current = tradeAnnotationPrimitive;
     const volume = priceChart.addSeries(HistogramSeries, {
       base: 0,
       lastValueVisible: false,
@@ -1245,8 +1307,13 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
       legendSettings: legendSettingsRef.current,
       zones: selectedZones,
     });
+    tradeAnnotationPrimitiveRef.current?.setState({
+      candles: currentPayload.candles,
+      executions: currentPayload.execution_annotations ?? [],
+      trades: currentPayload.trade_annotations ?? [],
+    });
     syncPriceZoneAxisLines(candleRef.current, selectedZones, legendSettingsRef.current, priceZoneAxisLinesRef.current);
-    drawRegions(chart, candleRef.current, priceLayerRef.current, currentPayload.regions, currentPayload.trade_annotations ?? [], currentPayload.execution_annotations ?? [], currentPayload.candles, timeline, chartSettingsRef.current, liveEntryLineRef.current);
+    drawRegions(chart, candleRef.current, priceLayerRef.current, currentPayload.regions, currentPayload.candles, timeline, chartSettingsRef.current, liveEntryLineRef.current);
     oscillatorPaneRuntimesRef.current.forEach((_runtime, key) => {
       drawSessionRegions(
         chart,
@@ -1315,6 +1382,10 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
       candleRef.current.detachPrimitive(priceZonePrimitiveRef.current);
     }
     priceZonePrimitiveRef.current = null;
+    if (tradeAnnotationPrimitiveRef.current && candleRef.current) {
+      candleRef.current.detachPrimitive(tradeAnnotationPrimitiveRef.current);
+    }
+    tradeAnnotationPrimitiveRef.current = null;
     if (priceChartRef.current) {
       priceChartRef.current.remove();
     }
@@ -3564,7 +3635,7 @@ function resolvePriceZoneLegendSettings(settingsMap: LegendSettingsMap, key: str
     color: validHexColor(stored.color, resolveChartColor(zone?.color || "var(--muted-foreground)")),
     currentLevelCount: Math.max(1, Math.min(6, Math.round(stored.currentLevelCount ?? 3))),
     downColor: validHexColor(stored.downColor, resolveChartColor("var(--danger)")),
-    historyBars: resolveHistoryBars(stored.historyBars, 20),
+    historyBars: resolveHistoryBars(stored.historyBars, zone?.historyBarsDefault ?? 20),
     labelFontSize: Math.max(9, Math.min(18, Math.round(stored.labelFontSize ?? 11))),
     lineStyle: stored.lineStyle ?? zoneBorderStyle(zone?.borderStyle),
     lineWidth: Math.max(1, Math.min(4, Math.round(stored.lineWidth ?? zone?.borderWidth ?? 1))),
@@ -4245,8 +4316,6 @@ function drawRegions(
   priceSeries: ISeriesApi<"Candlestick"> | null,
   layer: HTMLDivElement | null,
   regions: Region[],
-  tradeAnnotations: TradeAnnotation[],
-  executionAnnotations: TradeFillAnnotation[],
   candles: Candle[],
   timeline: CandleSeriesDatum[],
   settings: ChartAppearanceSettings,
@@ -4255,9 +4324,6 @@ function drawRegions(
   if (!layer) return;
   const plotLayer = drawSessionRegions(chart, layer, regions, timeline, candles, settings, true);
   if (!plotLayer) return;
-  const barWidth = estimateBarWidth(chart, candles);
-  drawTradeAnnotations(chart, priceSeries, layer, tradeAnnotations, candles, barWidth);
-  drawExecutionAnnotations(chart, priceSeries, layer, executionAnnotations, candles);
   drawLiveEntryLine(chart, priceSeries, layer, candles, liveEntryLine);
 }
 
@@ -4567,7 +4633,7 @@ function drawPriceZonePrimitiveGeometry(
       const lineOnly = zone.renderMode === "line" || isStructureBreakZone(zone);
       const baseFillOpacity = clampNumber(zone.fillOpacity, 0.02, 0.35, 0.08);
       const fillOpacity = lineOnly ? 0 : baseFillOpacity * (confidence === null ? 1 : 0.45 + 0.55 * confidence) * settings.opacity;
-      const borderOpacity = zone.annotationKind === "signal-episode-range"
+      const borderOpacity = zone.annotationKind === "signal-episode-range" || zone.annotationKind === "unified-structure-level"
         ? 0
         : lineOnly
         ? settings.opacity
@@ -4617,6 +4683,19 @@ function drawPriceZonePrimitiveGeometry(
       } else {
         context.fillRect(span.left, top, span.width, zoneHeight);
         if (borderOpacity > 0 && lineWidth > 0) context.strokeRect(span.left, top, span.width, zoneHeight);
+        if (zone.annotationKind === "unified-structure-level") {
+          const probability = clampNumber(zone.probabilityLineRatio, 0, 1, 0);
+          const probabilityWidth = clampNumber(zone.probabilityLineWidth, 1, 6, 2);
+          if (probability > 0) {
+            context.strokeStyle = rgbaFromHex(borderColor, 0.82 * settings.opacity);
+            context.lineWidth = probabilityWidth;
+            context.setLineDash([]);
+            context.beginPath();
+            context.moveTo(span.left, center);
+            context.lineTo(span.left + span.width * probability, center);
+            context.stroke();
+          }
+        }
       }
       context.restore();
     });
@@ -5549,169 +5628,226 @@ function drawDaySeparators(chart: IChartApi, layer: HTMLDivElement, candles: Can
   });
 }
 
-function drawTradeAnnotations(
+function drawTradeAnnotationPrimitiveGeometry(
   chart: IChartApi,
-  priceSeries: ISeriesApi<"Candlestick"> | null,
-  layer: HTMLDivElement,
+  priceSeries: ISeriesApi<"Candlestick">,
+  context: CanvasRenderingContext2D,
+  width: number,
+  height: number,
   annotations: TradeAnnotation[],
+  executions: TradeFillAnnotation[],
   candles: Candle[],
-  barWidth: number
 ) {
-  if (!priceSeries || !annotations.length || !candles.length) return;
+  if (!candles.length || width < 1 || height < 1 || (!annotations.length && !executions.length)) return;
+  const chartBackground = validHexColor(readChartPalette().background, "#ffffff");
+  context.save();
+  context.globalCompositeOperation = "source-over";
+  context.lineCap = "round";
+  context.lineJoin = "round";
   annotations.forEach((annotation) => {
     const entryX = xForAnnotationTime(chart, annotation.entryTime, candles);
     const exitX = xForAnnotationTime(chart, annotation.exitTime, candles);
     const entryY = priceSeries.priceToCoordinate(annotation.entryPrice);
     const exitY = priceSeries.priceToCoordinate(annotation.exitPrice);
     if (entryX === null || exitX === null || entryY === null || exitY === null) return;
-    const span = clippedHorizontalSpan(entryX - barWidth / 2, exitX + barWidth / 2, layer.clientWidth);
+    const span = clippedHorizontalSpan(entryX, exitX, width);
     if (!span) return;
-    const left = span.left;
-    const width = Math.max(3, span.width);
     const entryColor = validHexColor(annotation.entryColor, "#16a34a");
     const exitColor = validHexColor(annotation.exitColor, "#dc2626");
-    const selected = annotation.selected === true;
-    drawTradePriceLine(layer, left, width, entryY, entryColor, annotation.entryLabel ?? "Entry", annotation.entryLabelParts, "entry", selected, annotation.entryLabelSide ?? "left");
-    drawTradePriceLine(layer, left, width, exitY, exitColor, annotation.exitLabel ?? "Exit", annotation.exitLabelParts, "exit", selected, annotation.exitLabelSide ?? "right");
-    if (isVisibleCoordinate(entryX, layer.clientWidth)) drawTradeArrow(layer, entryX, entryY, entryColor, "entry", selected);
-    if (isVisibleCoordinate(exitX, layer.clientWidth)) drawTradeArrow(layer, exitX, exitY, exitColor, "exit", selected);
+    const lineWidth = annotation.selected ? 3 : 2;
+    drawCanvasTradeLine(context, span.left, span.right, entryY, entryColor, lineWidth);
+    drawCanvasTradeLine(context, span.left, span.right, exitY, exitColor, lineWidth);
+    drawCanvasTradeArrow(context, entryX, entryY, entryColor, "entry", annotation.selected === true);
+    drawCanvasTradeArrow(context, exitX, exitY, exitColor, "exit", annotation.selected === true);
+    drawCanvasTradeLabel(
+      context,
+      compactTradeLabel(annotation.entryLabelParts, annotation.entryLabel, "Entry"),
+      entryX,
+      entryY + 14,
+      entryColor,
+      chartBackground,
+      annotation.entryLabelSide ?? "left",
+      width,
+      height,
+    );
+    drawCanvasTradeLabel(
+      context,
+      compactTradeLabel(annotation.exitLabelParts, annotation.exitLabel, "Exit"),
+      exitX,
+      exitY - 25,
+      exitColor,
+      chartBackground,
+      annotation.exitLabelSide ?? "right",
+      width,
+      height,
+    );
     annotation.fills?.forEach((fill) => {
-      const fillX = xForAnnotationTime(chart, fill.time, candles);
-      const fillY = priceSeries.priceToCoordinate(fill.price);
-      if (fillX === null || fillY === null) return;
-      if (isVisibleCoordinate(fillX, layer.clientWidth)) drawPositionAdjustment(layer, fillX, fillY, fill, selected);
+      const x = xForAnnotationTime(chart, fill.time, candles);
+      const y = priceSeries.priceToCoordinate(fill.price);
+      if (x === null || y === null || x < -70 || x > width + 70) return;
+      drawCanvasPositionAdjustment(context, x, y, fill, chartBackground, width, height);
     });
     if (typeof annotation.stopPrice === "number" && Number.isFinite(annotation.stopPrice)) {
-      const stopY = priceSeries.priceToCoordinate(annotation.stopPrice);
-      if (stopY !== null) drawTradeGuideLine(layer, left, width, stopY, "#dc2626", "Stop", "stop");
+      const y = priceSeries.priceToCoordinate(annotation.stopPrice);
+      if (y !== null) drawCanvasTradeGuide(context, span.left, span.right, y, "#dc2626", "Stop", chartBackground, width, height);
     }
     if (typeof annotation.triggerPrice === "number" && Number.isFinite(annotation.triggerPrice)) {
-      const triggerY = priceSeries.priceToCoordinate(annotation.triggerPrice);
-      if (triggerY !== null) drawTradeGuideLine(layer, left, width, triggerY, "#2563eb", "Trigger", "trigger");
+      const y = priceSeries.priceToCoordinate(annotation.triggerPrice);
+      if (y !== null) drawCanvasTradeGuide(context, span.left, span.right, y, "#2563eb", "Trigger", chartBackground, width, height);
     }
   });
-}
-
-function drawPositionAdjustment(layer: HTMLDivElement, x: number, y: number, fill: TradeFillAnnotation, selected: boolean) {
-  const color = fill.side === "BUY" ? "#16a34a" : "#dc2626";
-  const marker = document.createElement("div");
-  marker.className = `trade-adjustment-marker ${fill.kind ?? "add"}${selected ? " selected" : ""}`;
-  marker.style.left = `${x}px`;
-  marker.style.top = `${y}px`;
-  marker.style.borderColor = color;
-  marker.style.color = color;
-  const label = document.createElement("span");
-  label.textContent = fill.label ?? `${fill.kind === "trim" ? "Trim" : "Add"} ${fill.quantity ?? ""} @ ${fill.price.toFixed(2)}`;
-  label.style.borderColor = rgbaFromHex(color, 0.28);
-  marker.appendChild(label);
-  layer.appendChild(marker);
-}
-
-function drawExecutionAnnotations(
-  chart: IChartApi,
-  priceSeries: ISeriesApi<"Candlestick"> | null,
-  layer: HTMLDivElement,
-  annotations: TradeFillAnnotation[],
-  candles: Candle[],
-) {
-  if (!priceSeries || !annotations.length || !candles.length) return;
-  annotations.forEach((fill) => {
+  executions.forEach((fill) => {
     const x = xForAnnotationTime(chart, fill.time, candles);
     const y = priceSeries.priceToCoordinate(fill.price);
-    if (x === null || y === null || !isVisibleCoordinate(x, layer.clientWidth)) return;
-    drawTradeFillMarker(
-      layer,
-      x,
-      y,
-      fill.side === "BUY" ? "#16a34a" : "#dc2626",
-      fill,
-      false,
-    );
+    if (x === null || y === null || x < -20 || x > width + 20) return;
+    const color = fill.side === "BUY" ? "#16a34a" : "#dc2626";
+    drawCanvasTradeArrow(context, x, y, color, fill.side === "BUY" ? "entry" : "exit", false, 5);
   });
+  context.restore();
 }
 
-function drawTradePriceLine(layer: HTMLDivElement, left: number, width: number, y: number, color: string, label: string, parts: TradeLabelPart[] | undefined, kind: "entry" | "exit", selected: boolean, labelSide: "left" | "right") {
-  const line = document.createElement("div");
-  line.className = `trade-price-line ${kind} label-${labelSide}${selected ? " selected" : ""}`;
-  line.style.left = `${left}px`;
-  line.style.top = `${y}px`;
-  line.style.width = `${width}px`;
-  line.style.borderColor = color;
-  const text = document.createElement("span");
-  if (parts?.length) {
-    parts.forEach((part) => {
-      const piece = document.createElement("b");
-      piece.className = `trade-label-part ${part.tone ?? "label"}`;
-      piece.textContent = part.text;
-      text.appendChild(piece);
-    });
-  } else {
-    text.textContent = label;
-  }
-  text.style.color = color;
-  text.style.borderColor = rgbaFromHex(color, 0.32);
-  line.appendChild(text);
-  layer.appendChild(line);
-  const textBounds = text.getBoundingClientRect();
-  const layerBounds = layer.getBoundingClientRect();
-  if (textBounds.left < layerBounds.left) {
-    text.style.right = "auto";
-    text.style.left = "0";
-  } else if (textBounds.right > layerBounds.right) {
-    text.style.left = "auto";
-    text.style.right = "0";
-  }
+function drawCanvasTradeLine(
+  context: CanvasRenderingContext2D,
+  left: number,
+  right: number,
+  y: number,
+  color: string,
+  width: number,
+) {
+  context.beginPath();
+  context.strokeStyle = rgbaFromHex(color, 0.88);
+  context.lineWidth = width;
+  context.moveTo(left, y);
+  context.lineTo(right, y);
+  context.stroke();
 }
 
-function drawTradeFillMarker(layer: HTMLDivElement, x: number, y: number, color: string, fill: TradeFillAnnotation, selected: boolean) {
-  const marker = document.createElement("div");
-  marker.className = `trade-fill-marker ${fill.side === "BUY" ? "entry" : "exit"}${selected ? " selected" : ""}`;
-  marker.style.left = `${x}px`;
-  marker.style.top = `${y}px`;
-  marker.style.borderColor = color;
-  const label = document.createElement("span");
-  if (fill.labelParts?.length) {
-    fill.labelParts.forEach((part) => {
-      const piece = document.createElement("b");
-      piece.className = `trade-label-part ${part.tone ?? "label"}`;
-      piece.textContent = part.text;
-      label.appendChild(piece);
-    });
-  } else {
-    label.textContent = fill.label ?? `${fill.side} @${fill.price.toFixed(2)}`;
-  }
-  label.style.borderColor = rgbaFromHex(color, 0.28);
-  marker.appendChild(label);
-  layer.appendChild(marker);
+function drawCanvasTradeArrow(
+  context: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  color: string,
+  kind: "entry" | "exit",
+  selected: boolean,
+  radius = 7,
+) {
+  // The triangle tip is the exact event-time / execution-price coordinate.
+  // Everything else extends away from the candle so the semantic anchor never
+  // changes when the chart is panned, scaled, or rendered at another interval.
+  const direction = kind === "entry" ? 1 : -1;
+  const size = selected ? radius + 2 : radius;
+  context.beginPath();
+  context.moveTo(x, y);
+  context.lineTo(x - size, y + direction * (size + 4));
+  context.lineTo(x + size, y + direction * (size + 4));
+  context.closePath();
+  context.fillStyle = color;
+  context.fill();
 }
 
-function drawTradeGuideLine(layer: HTMLDivElement, left: number, width: number, y: number, color: string, label: string, kind: string) {
-  const line = document.createElement("div");
-  line.className = `trade-guide-line ${kind}`;
-  line.style.left = `${left}px`;
-  line.style.top = `${y}px`;
-  line.style.width = `${width}px`;
-  line.style.borderColor = rgbaFromHex(color, 0.78);
-  const text = document.createElement("span");
-  text.textContent = label;
-  text.style.color = color;
-  text.style.borderColor = rgbaFromHex(color, 0.26);
-  line.appendChild(text);
-  layer.appendChild(line);
+function drawCanvasPositionAdjustment(
+  context: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  fill: TradeFillAnnotation,
+  background: string,
+  width: number,
+  height: number,
+) {
+  const color = fill.side === "BUY" ? "#16a34a" : "#dc2626";
+  context.beginPath();
+  context.strokeStyle = rgbaFromHex(color, 0.86);
+  context.lineWidth = 1.5;
+  context.moveTo(x - 42, y);
+  context.lineTo(x, y);
+  context.stroke();
+  context.beginPath();
+  context.moveTo(x, y);
+  context.lineTo(x - 7, y - 4);
+  context.lineTo(x - 7, y + 4);
+  context.closePath();
+  context.fillStyle = color;
+  context.fill();
+  drawCanvasTradeLabel(
+    context,
+    compactTradeLabel(fill.labelParts, fill.label, fill.kind === "trim" ? "Trim" : "Add"),
+    x - 45,
+    y - 8,
+    color,
+    background,
+    "right",
+    width,
+    height,
+  );
 }
 
-function drawTradeArrow(layer: HTMLDivElement, x: number, y: number, color: string, kind: "entry" | "exit", selected: boolean) {
-  const arrow = document.createElement("div");
-  arrow.className = `trade-arrow ${kind}${selected ? " selected" : ""}`;
-  arrow.style.left = `${x}px`;
-  arrow.style.top = `${y}px`;
-  arrow.style.borderColor = color;
-  layer.appendChild(arrow);
+function drawCanvasTradeGuide(
+  context: CanvasRenderingContext2D,
+  left: number,
+  right: number,
+  y: number,
+  color: string,
+  label: string,
+  background: string,
+  width: number,
+  height: number,
+) {
+  context.save();
+  context.setLineDash([4, 3]);
+  drawCanvasTradeLine(context, left, right, y, color, 1);
+  context.restore();
+  drawCanvasTradeLabel(context, label, left, y + 3, color, background, "left", width, height);
+}
+
+function drawCanvasTradeLabel(
+  context: CanvasRenderingContext2D,
+  text: string,
+  anchorX: number,
+  top: number,
+  color: string,
+  background: string,
+  side: "left" | "right",
+  width: number,
+  height: number,
+) {
+  if (!text) return;
+  context.font = `600 10px ${canvasInterfaceFont()}`;
+  context.textBaseline = "middle";
+  const labelWidth = Math.ceil(context.measureText(text).width) + 10;
+  const labelHeight = 17;
+  const preferredLeft = side === "right" ? anchorX - labelWidth : anchorX;
+  const left = Math.max(3, Math.min(preferredLeft, width - labelWidth - 3));
+  const clampedTop = Math.max(3, Math.min(top, height - labelHeight - 3));
+  context.fillStyle = rgbaFromHex(background, 0.92);
+  context.fillRect(left, clampedTop, labelWidth, labelHeight);
+  context.strokeStyle = rgbaFromHex(color, 0.36);
+  context.lineWidth = 1;
+  context.strokeRect(left + 0.5, clampedTop + 0.5, labelWidth - 1, labelHeight - 1);
+  context.fillStyle = color;
+  context.fillText(text, left + 5, clampedTop + labelHeight / 2);
+}
+
+function compactTradeLabel(parts: TradeLabelPart[] | undefined, fallback: string | undefined, defaultLabel: string) {
+  const fromParts = parts?.map((part) => part.text.trim()).filter(Boolean).join(" ");
+  return fromParts || fallback || defaultLabel;
 }
 
 function xForAnnotationTime(chart: IChartApi, time: number, candles: Candle[]) {
   const exact = chart.timeScale().timeToCoordinate(time as Time);
   if (exact !== null) return exact;
+  const rightIndex = lowerBoundCandleTime(candles, time);
+  const leftIndex = rightIndex - 1;
+  if (leftIndex >= 0 && rightIndex < candles.length) {
+    const leftCandle = candles[leftIndex];
+    const rightCandle = candles[rightIndex];
+    const leftX = chart.timeScale().timeToCoordinate(leftCandle.time as Time);
+    const rightX = chart.timeScale().timeToCoordinate(rightCandle.time as Time);
+    const duration = rightCandle.time - leftCandle.time;
+    if (leftX !== null && rightX !== null && duration > 0) {
+      const ratio = clampNumber((time - leftCandle.time) / duration, 0, 1, 0);
+      return leftX + (rightX - leftX) * ratio;
+    }
+  }
   const nearest = candles[nearestCandleIndex(candles, time)];
   return nearest ? chart.timeScale().timeToCoordinate(nearest.time as Time) : null;
 }

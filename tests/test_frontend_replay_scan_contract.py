@@ -72,20 +72,43 @@ def test_chart_projects_position_lifecycles_with_compact_position_actions() -> N
     assert "actions.slice(1, -1)" in chart_source
     assert 'kind === "add" ? "Add" : "Trim"' in chart_source
     assert "closedTradeAnnotations" not in chart_source
-    assert "drawPositionAdjustment" in renderer_source
-    assert 'arrow.style.top = `${y}px`' in renderer_source
-    assert "textBounds.left < layerBounds.left" in renderer_source
-    assert "textBounds.right > layerBounds.right" in renderer_source
-    draw_source = renderer_source.split("function drawTradeAnnotations", 1)[1].split("function drawPositionAdjustment", 1)[0]
-    assert "trade-annotation-region" not in draw_source
+    assert "class TradeAnnotationPrimitive implements ISeriesPrimitive<Time>" in renderer_source
+    assert "candleSeries.attachPrimitive(tradeAnnotationPrimitive)" in renderer_source
+    assert "tradeAnnotationPrimitiveRef.current?.setState" in renderer_source
+    assert "drawTradeAnnotationPrimitiveGeometry" in renderer_source
+    assert "const ratio = clampNumber((time - leftCandle.time) / duration" in renderer_source
+    assert "return leftX + (rightX - leftX) * ratio" in renderer_source
+    assert "The triangle tip is the exact event-time / execution-price coordinate" in renderer_source
+    draw_source = renderer_source.split("function drawRegions", 1)[1].split("function drawSessionRegions", 1)[0]
+    assert "drawTradeAnnotations(" not in draw_source
+    assert "drawExecutionAnnotations(" not in draw_source
 
 
 def test_structural_history_can_span_all_loaded_chart_bars() -> None:
     renderer_source = (REPO_ROOT / "frontend" / "src" / "app" / "components" / "ChartPanel.tsx").read_text(encoding="utf-8")
+    chart_source = CHART_PRESENTATION.read_text(encoding="utf-8")
+    history_api_source = (REPO_ROOT / "services" / "qmd_history_gateway" / "src" / "api.rs").read_text(encoding="utf-8")
 
     assert "show on all loaded bars" in renderer_source
     assert "historyBars: event.target.checked ? 0 : 200" in renderer_source
     assert "if (historyBars === 0) return Number.NEGATIVE_INFINITY" in renderer_source
+    assert "unifiedStructureSegments(rows, chartEnd)" in chart_source
+    assert "row.qmd_structure_unified_level_delta" in chart_source
+    assert "delta.removed" in chart_source
+    assert "delta.upserts" in chart_source
+    assert '`${level.unified_level_id}:${level.side}`' in chart_source
+    assert "active.delete(key)" in chart_source
+    assert "unifiedEvidenceSignature(existing.level) !== unifiedEvidenceSignature(level)" in chart_source
+    assert "historyBarsDefault: 0" in chart_source
+    assert 'annotationKind: "unified-structure-level"' in chart_source
+    assert "borderOpacity: 0" in chart_source
+    assert "probabilityLineRatio: reactionProbability" in chart_source
+    assert 'zone.annotationKind === "unified-structure-level"' in renderer_source
+    assert "span.left + span.width * probability" in renderer_source
+    projected_history = history_api_source.split("fn project_chart_snapshot", 1)[1].split("fn chart_indicator_provenance", 1)[0]
+    direct_projection = projected_history.split("compact_projected_unified_structure_history(&mut indicators)", 1)[0]
+    assert 'object.remove("qmd_structure_unified_levels")' not in direct_projection
+    assert "compact_projected_unified_structure_history(&mut indicators)" in projected_history
 
 
 def test_debug_page_can_open_a_durable_completed_backtest_review() -> None:

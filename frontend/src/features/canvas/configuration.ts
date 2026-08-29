@@ -214,12 +214,12 @@ export const CHART_INDICATORS: ChartDisplayItem[] = [
   displayIndicator("indicator.qmd_unified_structure", "QMD Unified Structural Levels", "price_action", [
     "qmd_structure_unified_levels",
   ], "price", indicatorGuide(
-    "Price-first structural zones formed from independent causal swing hierarchies.",
-    "Clusters the latest unbroken, confirmed swing highs separately from swing lows across 100 ms, 1 s, 5 s, 10 s, 30 s, 1 m, 5 m, and 1 h. Nearby prices join within an adaptive tick-and-price bandwidth. Identical underlying pivots appearing in several timeframes remain visible as sources but count once toward independent evidence.",
-    "A unified low with several independent pivots, strong salience, and later price acceptance can become an adaptive support candidate.",
-    "A unified high with several independent pivots, strong salience, and repeated rejection can become an adaptive resistance candidate.",
-    "The output is independent of the selected chart interval; changing chart timeframe changes candle display, not the unified zones.",
-    ["Salience and confidence are deterministic evidence scores, not calibrated breakout probabilities.", "The zone begins at the latest contributing confirmation time, so it never appears before all displayed evidence was knowable.", "Overlapping timeframe observations from the same exact pivot are deduplicated for scoring."],
+    "A causal, cross-session level book that preserves major support, resistance, breaks, and confirmed role reversals.",
+    "Clusters the persistent event-native level book with independent confirmed swings across 100 ms, 1 s, 5 s, 10 s, 30 s, 1 m, 5 m, and 1 h. Repeated tests, holds, accepted breaks, cross-timeframe pivots, and support/resistance flips contribute without counting the same pivot twice.",
+    "Green bands are levels currently confirmed as support. Longer center lines mean stronger evidence that the next encounter produces a meaningful reaction; repeated holds and resistance-to-support flips increase structural importance.",
+    "Red bands are levels currently confirmed as resistance. The band stops at an accepted break and can resume in green only after a causal retest confirms the role reversal.",
+    "The book is independent of the selected chart interval and survives session boundaries through QMD checkpoints. Changing chart timeframe changes candle display, not level identity or evidence.",
+    ["Reaction probability is a deterministic evidence-derived score, not a statistically calibrated return forecast or trade instruction. Current-role hold probability is Beta-smoothed from holds versus accepted breaks.", "Each shaded band begins only when its evidence is causally available, ends when that role breaks, and displays on all loaded bars by default.", "Overlapping timeframe observations from the same exact pivot are deduplicated for scoring, and the published projection is bounded to major levels per side."],
   )),
   {
     ...displayIndicator("indicator.qmd_level_footprint", "QMD Level Volume Footprint", "price_action", [

@@ -467,40 +467,41 @@ function pushUnifiedStructureLevels(
   rows: HistoricalIndicator[],
   chartEnd: number,
 ) {
-  const latest = rows[rows.length - 1];
-  const levels = Array.isArray(latest?.qmd_structure_unified_levels)
-    ? latest.qmd_structure_unified_levels.filter(isQmdUnifiedStructureLevel)
-    : [];
-  levels.forEach((level, index) => {
-    const start = Number(level.confirmed_at_ms) / 1000;
+  const segments = unifiedStructureSegments(rows, chartEnd);
+  let latestRank = 0;
+  segments.forEach(({ end, latest, level, start }) => {
     if (!Number.isFinite(start) || !(start > 0) || !(chartEnd > start)) return;
     const low = level.side > 0;
     const color = low ? "var(--success)" : "var(--danger)";
     const timeframes = level.timeframes.join(" · ");
+    const reactionProbability = boundedUnit(level.reaction_probability || level.confidence);
     zones.push({
-      annotationKind: "band",
-      axisLabelDefault: index < 2,
+      annotationKind: "unified-structure-level",
+      axisLabelDefault: latest && latestRank++ < 4,
       borderColor: color,
-      borderOpacity: 0.72,
+      borderOpacity: 0,
       borderStyle: "solid",
-      borderWidth: Math.max(1, Math.min(3, Math.ceil(level.independent_pivot_count / 2))),
+      borderWidth: 0,
       color,
-      compactLabel: `${low ? "UL" : "UH"}${index + 1} · ${Math.round(level.salience * 100)}`,
+      compactLabel: `${low ? "S" : "R"} ${Math.round(reactionProbability * 100)}%`,
       confidence: boundedUnit(level.confidence),
       defaultVisible: true,
       displayItemId: "indicator.qmd_unified_structure",
-      end: chartEnd,
-      extendToRightEdge: true,
+      end,
+      extendToRightEdge: latest,
       fillColor: color,
-      fillOpacity: 0.035 + boundedUnit(level.salience) * 0.11,
+      fillOpacity: 0.045 + boundedUnit(level.salience) * 0.085,
       historicalLabelsDefault: false,
-      label: `Unified swing ${low ? "low" : "high"} · ${level.independent_pivot_count} independent pivot${level.independent_pivot_count === 1 ? "" : "s"} · ${level.source_count} timeframe source${level.source_count === 1 ? "" : "s"} (${timeframes}) · ${percentLabel(level.salience)} salience · ${percentLabel(level.confidence)} confidence · causal from ${new Date(level.confirmed_at_ms).toISOString()}`,
-      latest: true,
-      legendLabel: "Unified structural zones",
+      historyBarsDefault: 0,
+      label: `${low ? "Support" : "Resistance"} · ${percentLabel(reactionProbability)} reaction evidence · ${percentLabel(level.hold_probability)} current-role hold evidence · ${level.touch_count} tests · ${level.hold_count} holds · ${level.break_count} accepted break${level.break_count === 1 ? "" : "s"} · ${level.role_flip_count} role flip${level.role_flip_count === 1 ? "" : "s"} · ${level.independent_pivot_count} independent pivot${level.independent_pivot_count === 1 ? "" : "s"} (${timeframes})`,
+      latest,
+      legendLabel: "Unified structural level book",
       lower: level.lower,
       minPixelHeight: 9,
+      probabilityLineRatio: reactionProbability,
+      probabilityLineWidth: 1.5 + boundedUnit(level.salience) * 2.5,
       renderMode: "zone",
-      settingsId: "indicator.qmd_unified_structure.zones",
+      settingsId: "indicator.qmd_unified_structure.level-book-v2",
       start,
       strength: boundedUnit(level.salience),
       tone: low ? "buy" : "sell",
@@ -510,6 +511,83 @@ function pushUnifiedStructureLevels(
   });
 }
 
+type UnifiedStructureSegment = {
+  end: number;
+  latest: boolean;
+  level: QmdUnifiedStructureLevel;
+  start: number;
+};
+
+function unifiedStructureSegments(rows: HistoricalIndicator[], chartEnd: number): UnifiedStructureSegment[] {
+  const ordered = rows
+    .map((row) => ({ row, time: Date.parse(String(row.bar_start || "")) / 1000 }))
+    .filter(({ time }) => Number.isFinite(time))
+    .sort((left, right) => left.time - right.time);
+  const active = new Map<string, UnifiedStructureSegment>();
+  const completed: UnifiedStructureSegment[] = [];
+  const closeSegment = (key: string, time: number) => {
+    const segment = active.get(key);
+    if (!segment) return;
+    completed.push({ ...segment, end: Math.max(segment.start, time), latest: false });
+    active.delete(key);
+  };
+  const upsertLevel = (level: QmdUnifiedStructureLevel, time: number) => {
+    const key = `${level.unified_level_id}:${level.side}`;
+    const existing = active.get(key);
+    if (existing) {
+      if (unifiedEvidenceSignature(existing.level) !== unifiedEvidenceSignature(level)) {
+        closeSegment(key, time);
+        active.set(key, { end: chartEnd, latest: true, level, start: time });
+      } else {
+        existing.end = chartEnd;
+      }
+      return;
+    }
+    const confirmed = Number(level.confirmed_at_ms) / 1000;
+    active.set(key, {
+      end: chartEnd,
+      latest: true,
+      level,
+      start: Math.max(time, Number.isFinite(confirmed) ? confirmed : time),
+    });
+  };
+  ordered.forEach(({ row, time }) => {
+    // QMD History publishes the first level-book snapshot, each material
+    // transition, and the terminal snapshot. A missing field carries the
+    // previous state; an explicit empty array closes all active segments.
+    const delta = row.qmd_structure_unified_level_delta;
+    if (!Array.isArray(row.qmd_structure_unified_levels) && !delta) return;
+    if (delta) {
+      (delta.removed ?? []).forEach((level) => closeSegment(`${level.unified_level_id}:${level.side}`, time));
+      (delta.upserts ?? []).filter(isQmdUnifiedStructureLevel).forEach((level) => upsertLevel(level, time));
+      return;
+    }
+    const levels = (row.qmd_structure_unified_levels ?? []).filter(isQmdUnifiedStructureLevel);
+    const keys = new Set(levels.map((level) => `${level.unified_level_id}:${level.side}`));
+    active.forEach((segment, key) => {
+      if (keys.has(key)) return;
+      closeSegment(key, time);
+    });
+    levels.forEach((level) => upsertLevel(level, time));
+  });
+  active.forEach((segment) => completed.push({ ...segment, end: chartEnd, latest: true }));
+  return completed.filter((segment) => segment.end > segment.start);
+}
+
+function unifiedEvidenceSignature(level: QmdUnifiedStructureLevel) {
+  return [
+    Number(level.lower).toFixed(6),
+    Number(level.upper).toFixed(6),
+    Number(level.price).toFixed(6),
+    Number(level.reaction_probability ?? level.confidence).toFixed(6),
+    Number(level.hold_probability ?? 0).toFixed(6),
+    Number(level.touch_count ?? 0),
+    Number(level.hold_count ?? 0),
+    Number(level.break_count ?? 0),
+    Number(level.role_flip_count ?? 0),
+  ].join(":");
+}
+
 function isQmdUnifiedStructureLevel(value: unknown): value is QmdUnifiedStructureLevel {
   if (!value || typeof value !== "object") return false;
   const row = value as Partial<QmdUnifiedStructureLevel>;
@@ -517,6 +595,7 @@ function isQmdUnifiedStructureLevel(value: unknown): value is QmdUnifiedStructur
     && (Number(row.side) === 1 || Number(row.side) === -1)
     && Number(row.lower) > 0
     && Number(row.upper) >= Number(row.lower)
+    && Number.isFinite(Number(row.reaction_probability ?? row.confidence))
     && Array.isArray(row.timeframes)
     && Array.isArray(row.sources);
 }

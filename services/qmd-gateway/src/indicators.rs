@@ -24,8 +24,8 @@ use tokio::time::{interval, sleep, Duration, MissedTickBehavior};
 
 const STRUCTURE_CHECKPOINT_BATCH_LIMIT: usize = 256;
 
-pub const INDICATOR_SCHEMA_VERSION: u16 = 20;
-pub const INDICATOR_CALCULATION_REVISION: &str = "qmd-indicators-v22";
+pub const INDICATOR_SCHEMA_VERSION: u16 = 21;
+pub const INDICATOR_CALCULATION_REVISION: &str = "qmd-indicators-v23";
 const MICROSTRUCTURE_AGGREGATE_TIMEFRAMES: [&str; 7] = ["1s", "5s", "10s", "30s", "1m", "5m", "1h"];
 const INDICATOR_STATE_RECLAIM_INTERVAL_SECONDS: u64 = 30;
 const RETAINED_100MS_HISTORY_ROWS: usize = 128;
