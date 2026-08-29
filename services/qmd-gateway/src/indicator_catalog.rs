@@ -797,6 +797,7 @@ const INDICATOR_CATALOG: &[IndicatorCatalogEntry] = &[
             "qmd_structure_resistance_upper",
             "qmd_structure_active_levels",
             "qmd_structure_timeframe_states",
+            "qmd_structure_unified_levels",
             "qmd_structure_developing_high",
             "qmd_structure_developing_low",
             "qmd_structure_developing_direction",

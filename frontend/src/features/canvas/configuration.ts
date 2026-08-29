@@ -211,6 +211,16 @@ export const CHART_INDICATORS: ChartDisplayItem[] = [
     ],
     caveats: ["QMD observes consolidated Level-1 NBBO and eligible prints, not full venue depth or hidden liquidity.", "A local swing is unknowable at its pivot instant; it becomes causal only after the following timeframe bucket completes. Strategies must use confirmed_at, never pivot_at.", "Nearest means absolute distance from current price. Strongest combines causal strength and confidence; it does not necessarily mean closest or most likely to hold.", "The footprint classifies aggressor side from available trade and NBBO evidence and therefore cannot reveal hidden orders.", "BoS, CHoCH, support, and resistance are deterministic evidence states—not trade instructions or win probabilities."],
   }),
+  displayIndicator("indicator.qmd_unified_structure", "QMD Unified Structural Levels", "price_action", [
+    "qmd_structure_unified_levels",
+  ], "price", indicatorGuide(
+    "Price-first structural zones formed from independent causal swing hierarchies.",
+    "Clusters the latest unbroken, confirmed swing highs separately from swing lows across 100 ms, 1 s, 5 s, 10 s, 30 s, 1 m, 5 m, and 1 h. Nearby prices join within an adaptive tick-and-price bandwidth. Identical underlying pivots appearing in several timeframes remain visible as sources but count once toward independent evidence.",
+    "A unified low with several independent pivots, strong salience, and later price acceptance can become an adaptive support candidate.",
+    "A unified high with several independent pivots, strong salience, and repeated rejection can become an adaptive resistance candidate.",
+    "The output is independent of the selected chart interval; changing chart timeframe changes candle display, not the unified zones.",
+    ["Salience and confidence are deterministic evidence scores, not calibrated breakout probabilities.", "The zone begins at the latest contributing confirmation time, so it never appears before all displayed evidence was knowable.", "Overlapping timeframe observations from the same exact pivot are deduplicated for scoring."],
+  )),
   {
     ...displayIndicator("indicator.qmd_level_footprint", "QMD Level Volume Footprint", "price_action", [
       "qmd_structure_active_levels",

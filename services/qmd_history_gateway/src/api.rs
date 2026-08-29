@@ -1028,6 +1028,7 @@ fn project_chart_snapshot(
                 if index + 1 < indicator_count {
                     object.remove("qmd_structure_active_levels");
                     object.remove("qmd_structure_timeframe_states");
+                    object.remove("qmd_structure_unified_levels");
                 }
             }
             Ok(value)

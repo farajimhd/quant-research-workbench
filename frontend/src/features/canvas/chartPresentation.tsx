@@ -25,8 +25,10 @@ import {
   EMPTY_STRATEGY_DECISIONS,
   type HistoricalBar,
   type HistoricalIndicator,
+  type PreviewRow,
   type QmdStructureEvent,
   type QmdStructureLevelCandidate,
+  type QmdUnifiedStructureLevel,
 } from "./contracts";
 import {
   CHART_INDICATORS,
@@ -232,8 +234,8 @@ export function ChartPreview({
         ...strategyInvalidations,
       ],
       regions: MACRO_TIMEFRAMES.has(timeframe) ? [] : extendedSessionRegions(liveChart.bars),
-      execution_annotations: showTradeAnnotations ? executionAnnotations(trading, linkContext.symbol) : [],
-      trade_annotations: showTradeAnnotations ? closedTradeAnnotations(trading, linkContext.symbol) : [],
+      execution_annotations: [],
+      trade_annotations: showTradeAnnotations ? positionLifecycleAnnotations(trading, linkContext.symbol) : [],
       volume: chartSettings.showVolume ? liveChart.bars.map((bar) => ({ color: bar.close >= bar.open ? "var(--success)" : "var(--danger)", time: Date.parse(bar.bar_start) / 1000, value: bar.volume })) : [],
     };
   }, [barGptForecasts, barGptQuantile, barGptVersion, chartSettings.showVolume, forecastLineComponents.join("|"), indicators, linkContext.symbol, liveChart.bars, liveChart.marketSignalEvents, liveChart.structureEvents, liveChart.structureLevelHistory, showForecastCandles, showTradeAnnotations, strategyDecisions, strategyPresentation, timeframe, trading, visibleIndicators]);
@@ -317,56 +319,62 @@ export function ChartPreview({
   </div>;
 }
 
-function closedTradeAnnotations(trading: CanonicalTradingPreview | undefined, symbol: string): NonNullable<ChartPayload["trade_annotations"]> {
-  return (trading?.closed_trades ?? []).flatMap((row, index) => {
-    if (String(nestedValue(row, "instrument", "symbol") || "").toUpperCase() !== symbol) return [];
+function positionLifecycleAnnotations(trading: CanonicalTradingPreview | undefined, symbol: string): NonNullable<ChartPayload["trade_annotations"]> {
+  const executionsById = new Map((trading?.executions ?? []).map((row) => [String(row.execution_id || ""), row]));
+  const normalizedSymbol = symbol.toUpperCase();
+  return (trading?.position_lifecycles ?? []).flatMap((row) => {
+    if (String(nestedValue(row, "instrument", "symbol") || "").toUpperCase() !== normalizedSymbol) return [];
+    if (String(row.status || "").toLowerCase() !== "closed") return [];
     const entryPrice = Number(row.entry_price || 0);
     const exitPrice = Number(row.exit_price || 0);
     const entryTime = Date.parse(String(row.opened_at || "")) / 1000;
     const exitTime = Date.parse(String(row.closed_at || "")) / 1000;
     if (![entryPrice, exitPrice, entryTime, exitTime].every(Number.isFinite) || entryPrice <= 0 || exitPrice <= 0) return [];
-    const quantity = Number(row.quantity || 0);
+    const quantity = Math.abs(Number(row.quantity || 0));
     const pnl = Number(row.net_pnl || row.gross_pnl || 0);
-    const reason = String(row.exit_reason || "strategy exit").replaceAll("_", " ");
+    const side = String(row.side || "LONG").toUpperCase();
+    const executionIds = Array.isArray(row.execution_ids) ? row.execution_ids.map(String) : [];
+    const fills = compactPositionFills(executionIds.flatMap((executionId) => {
+      const execution = executionsById.get(executionId);
+      return execution ? [execution] : [];
+    }));
     return [{
       color: pnl >= 0 ? "var(--success)" : "var(--danger)",
-      entryLabel: `Entry · ${formatQuantity(quantity)} @ ${money(entryPrice)}`,
+      entryLabel: `Position ${side} · ${formatQuantity(quantity)} @ ${money(entryPrice)}`,
       entryPrice,
       entryTime,
-      exitLabel: `Exit · ${reason} · ${money(pnl)}`,
+      exitLabel: `Flat · ${money(pnl)}`,
       exitPrice,
       exitTime,
-      id: String(row.trade_id || `${symbol}:${entryTime}:${exitTime}:${index}`),
+      fills,
+      id: String(row.lifecycle_id || `${normalizedSymbol}:${entryTime}:${exitTime}`),
       pnl,
     }];
   });
 }
 
-function executionAnnotations(
-  trading: CanonicalTradingPreview | undefined,
-  symbol: string,
-): NonNullable<ChartPayload["execution_annotations"]> {
-  type Aggregate = { latestTime: number; notional: number; orderId: string; quantity: number; side: "BUY" | "SELL" };
-  const byOrder = new Map<string, Aggregate>();
-  (trading?.executions ?? []).forEach((row, index) => {
-    if (String(nestedValue(row, "instrument", "symbol") || "").toUpperCase() !== symbol) return;
+function compactPositionFills(executions: PreviewRow[]): NonNullable<ChartPayload["trade_annotations"]>[number]["fills"] {
+  type Aggregate = { latestTime: number; notional: number; quantity: number; side: "BUY" | "SELL" };
+  const byOrderAndPrice = new Map<string, Aggregate>();
+  executions.forEach((row, index) => {
     const rawSide = String(row.side || "").toUpperCase();
     const side = rawSide === "BUY" || rawSide === "B" ? "BUY" : rawSide === "SELL" || rawSide === "S" ? "SELL" : null;
     const quantity = Math.abs(Number(row.quantity || 0));
     const price = Number(row.price || 0);
     const time = Date.parse(String(row.source_event_time || "")) / 1000;
     if (!side || !Number.isFinite(quantity) || !Number.isFinite(price) || !Number.isFinite(time) || quantity <= 0 || price <= 0) return;
-    const orderId = String(row.broker_order_id || row.client_order_id || row.execution_id || `${symbol}:${index}`);
-    const current = byOrder.get(orderId) ?? { latestTime: time, notional: 0, orderId, quantity: 0, side };
+    const orderId = String(row.broker_order_id || row.client_order_id || row.execution_id || `fill:${index}`);
+    const key = `${orderId}:${price.toFixed(8)}:${side}`;
+    const current = byOrderAndPrice.get(key) ?? { latestTime: time, notional: 0, quantity: 0, side };
     current.latestTime = Math.max(current.latestTime, time);
     current.notional += quantity * price;
     current.quantity += quantity;
-    byOrder.set(orderId, current);
+    byOrderAndPrice.set(key, current);
   });
-  return [...byOrder.values()].map((row) => {
+  return [...byOrderAndPrice.values()].map((row) => {
     const price = row.notional / row.quantity;
     return {
-      label: `${row.side === "BUY" ? "ENTRY FILL" : "EXIT FILL"} · ${formatQuantity(row.quantity)} @ ${money(price)}`,
+      label: `${row.side === "BUY" ? "B" : "S"} ${formatQuantity(row.quantity)}·${price.toFixed(2)}`,
       price,
       quantity: row.quantity,
       side: row.side,
@@ -415,6 +423,9 @@ function historicalMarketLevelZones(
       timeframe,
     );
   }
+  if (visibleIndicators.includes("indicator.qmd_unified_structure")) {
+    pushUnifiedStructureLevels(zones, rows, chartEnd);
+  }
   if (visibleIndicators.includes("indicator.qmd_level_footprint")) {
     pushLevelVolumeFootprint(
       zones,
@@ -430,6 +441,65 @@ function historicalMarketLevelZones(
     pushGenericStructureReferences(zones, rows, chartEnd);
   }
   return zones;
+}
+
+function pushUnifiedStructureLevels(
+  zones: NonNullable<ChartPayload["price_zones"]>,
+  rows: HistoricalIndicator[],
+  chartEnd: number,
+) {
+  const latest = rows[rows.length - 1];
+  const levels = Array.isArray(latest?.qmd_structure_unified_levels)
+    ? latest.qmd_structure_unified_levels.filter(isQmdUnifiedStructureLevel)
+    : [];
+  levels.forEach((level, index) => {
+    const start = Number(level.confirmed_at_ms) / 1000;
+    if (!Number.isFinite(start) || !(start > 0) || !(chartEnd > start)) return;
+    const low = level.side > 0;
+    const color = low ? "var(--success)" : "var(--danger)";
+    const timeframes = level.timeframes.join(" · ");
+    zones.push({
+      annotationKind: "band",
+      axisLabelDefault: index < 2,
+      borderColor: color,
+      borderOpacity: 0.72,
+      borderStyle: "solid",
+      borderWidth: Math.max(1, Math.min(3, Math.ceil(level.independent_pivot_count / 2))),
+      color,
+      compactLabel: `${low ? "UL" : "UH"}${index + 1} · ${Math.round(level.salience * 100)}`,
+      confidence: boundedUnit(level.confidence),
+      defaultVisible: true,
+      displayItemId: "indicator.qmd_unified_structure",
+      end: chartEnd,
+      extendToRightEdge: true,
+      fillColor: color,
+      fillOpacity: 0.035 + boundedUnit(level.salience) * 0.11,
+      historicalLabelsDefault: false,
+      label: `Unified swing ${low ? "low" : "high"} · ${level.independent_pivot_count} independent pivot${level.independent_pivot_count === 1 ? "" : "s"} · ${level.source_count} timeframe source${level.source_count === 1 ? "" : "s"} (${timeframes}) · ${percentLabel(level.salience)} salience · ${percentLabel(level.confidence)} confidence · causal from ${new Date(level.confirmed_at_ms).toISOString()}`,
+      latest: true,
+      legendLabel: "Unified structural zones",
+      lower: level.lower,
+      minPixelHeight: 9,
+      renderMode: "zone",
+      settingsId: "indicator.qmd_unified_structure.zones",
+      start,
+      strength: boundedUnit(level.salience),
+      tone: low ? "buy" : "sell",
+      totalVolume: level.total_volume,
+      upper: level.upper,
+    });
+  });
+}
+
+function isQmdUnifiedStructureLevel(value: unknown): value is QmdUnifiedStructureLevel {
+  if (!value || typeof value !== "object") return false;
+  const row = value as Partial<QmdUnifiedStructureLevel>;
+  return Number.isFinite(Number(row.unified_level_id))
+    && (Number(row.side) === 1 || Number(row.side) === -1)
+    && Number(row.lower) > 0
+    && Number(row.upper) >= Number(row.lower)
+    && Array.isArray(row.timeframes)
+    && Array.isArray(row.sources);
 }
 
 function pushStructureSwingLevels(

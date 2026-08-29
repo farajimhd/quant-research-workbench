@@ -44,7 +44,8 @@ def test_charts_quotes_scopes_trade_annotations_to_the_main_chart() -> None:
     chart_source = CHART_PRESENTATION.read_text(encoding="utf-8")
 
     assert "showTradeAnnotations = true" in chart_source
-    assert chart_source.count("showTradeAnnotations ?") == 2
+    assert chart_source.count("showTradeAnnotations ?") == 1
+    assert "execution_annotations: []" in chart_source
     assert canvas_source.count("showTradeAnnotations={false}") == 2
 
 
@@ -58,14 +59,24 @@ def test_strategy_activity_pins_the_navigation_stop_record() -> None:
     assert "Number(row.sequence) === pinnedSequence" in container_source
 
 
-def test_chart_projects_completed_order_fills_as_execution_annotations() -> None:
+def test_chart_projects_position_lifecycles_with_compact_linked_fills() -> None:
     chart_source = (REPO_ROOT / "frontend" / "src" / "features" / "canvas" / "chartPresentation.tsx").read_text(encoding="utf-8")
     renderer_source = (REPO_ROOT / "frontend" / "src" / "app" / "components" / "ChartPanel.tsx").read_text(encoding="utf-8")
 
-    assert "execution_annotations: showTradeAnnotations ? executionAnnotations(trading, linkContext.symbol) : []" in chart_source
-    assert "ENTRY FILL" in chart_source
-    assert "EXIT FILL" in chart_source
+    assert "trade_annotations: showTradeAnnotations ? positionLifecycleAnnotations(trading, linkContext.symbol) : []" in chart_source
+    assert "trading?.position_lifecycles" in chart_source
+    assert "execution_annotations: []" in chart_source
+    assert "compactPositionFills" in chart_source
+    assert "closedTradeAnnotations" not in chart_source
     assert "drawExecutionAnnotations" in renderer_source
+
+
+def test_structural_history_can_span_all_loaded_chart_bars() -> None:
+    renderer_source = (REPO_ROOT / "frontend" / "src" / "app" / "components" / "ChartPanel.tsx").read_text(encoding="utf-8")
+
+    assert "show on all loaded bars" in renderer_source
+    assert "historyBars: event.target.checked ? 0 : 200" in renderer_source
+    assert "if (historyBars === 0) return Number.NEGATIVE_INFINITY" in renderer_source
 
 
 def test_debug_page_can_open_a_durable_completed_backtest_review() -> None:

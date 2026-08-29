@@ -5,7 +5,7 @@ use chrono_tz::America::New_York;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap, VecDeque};
 
-pub const GENERIC_STRUCTURE_ALGORITHM_VERSION: u16 = 9;
+pub const GENERIC_STRUCTURE_ALGORITHM_VERSION: u16 = 10;
 pub const STRUCTURE_TIMEFRAMES: [(&str, i64); 8] = [
     ("100ms", 100),
     ("1s", 1_000),
@@ -111,6 +111,39 @@ pub struct StructureTimeframeSnapshot {
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct UnifiedStructureSource {
+    pub level_id: u64,
+    pub timeframe: String,
+    pub side: i8,
+    pub price: f64,
+    pub pivot_at_ms: i64,
+    pub confirmed_at_ms: i64,
+    pub strength: f64,
+    pub confidence: f64,
+    pub total_volume: f64,
+    pub trade_count: u64,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct UnifiedStructureLevel {
+    pub unified_level_id: u64,
+    pub side: i8,
+    pub price: f64,
+    pub lower: f64,
+    pub upper: f64,
+    pub salience: f64,
+    pub confidence: f64,
+    pub source_count: usize,
+    pub independent_pivot_count: usize,
+    pub timeframes: Vec<String>,
+    pub created_at_ms: i64,
+    pub confirmed_at_ms: i64,
+    pub total_volume: f64,
+    pub trade_count: u64,
+    pub sources: Vec<UnifiedStructureSource>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct GenericStructureSnapshot {
     pub algorithm_version: u16,
     pub reference_price: f64,
@@ -130,6 +163,8 @@ pub struct GenericStructureSnapshot {
     pub active_levels: Vec<StructureLevelCandidate>,
     #[serde(default)]
     pub timeframe_states: Vec<StructureTimeframeSnapshot>,
+    #[serde(default)]
+    pub unified_levels: Vec<UnifiedStructureLevel>,
     pub developing_high: f64,
     pub developing_low: f64,
     pub developing_direction: i8,
@@ -957,6 +992,7 @@ impl GenericStructureEngine {
             .iter()
             .map(|state| timeframe_snapshot(state, &active_levels))
             .collect::<Vec<_>>();
+        let unified_levels = unified_structure_levels(&self.sym, &self.timeframe_states, reference);
         let signed = timeframe_states
             .iter()
             .enumerate()
@@ -1020,6 +1056,7 @@ impl GenericStructureEngine {
             resistance,
             active_levels,
             timeframe_states,
+            unified_levels,
             developing_high: self.candidate_high,
             developing_low: self.candidate_low,
             developing_direction: self.leg_direction,
@@ -1246,6 +1283,206 @@ impl GenericStructureEngine {
         self.session_volume_by_price = checkpoint.session_volume_by_price.clone();
         self.trade_volume_poc = checkpoint.trade_volume_poc;
         self.last_event = checkpoint.last_event.clone();
+    }
+}
+
+#[derive(Clone)]
+struct UnifiedSwingAtom {
+    source: UnifiedStructureSource,
+}
+
+fn unified_structure_levels(
+    sym: &str,
+    states: &[TimeframeState],
+    reference: f64,
+) -> Vec<UnifiedStructureLevel> {
+    if !(reference > 0.0) {
+        return Vec::new();
+    }
+    let mut atoms = states
+        .iter()
+        .flat_map(|state| {
+            [state.active_low.as_ref(), state.active_high.as_ref()]
+                .into_iter()
+                .flatten()
+                .filter(|swing| !swing.broken && swing.price > 0.0)
+                .map(|swing| UnifiedSwingAtom {
+                    source: UnifiedStructureSource {
+                        level_id: swing.level_id,
+                        timeframe: state.timeframe.clone(),
+                        side: swing.side,
+                        price: swing.price,
+                        pivot_at_ms: swing
+                            .pivot_at
+                            .map(|value| value.timestamp_millis())
+                            .unwrap_or_default(),
+                        confirmed_at_ms: swing
+                            .confirmed_at
+                            .map(|value| value.timestamp_millis())
+                            .unwrap_or_default(),
+                        strength: swing.strength.clamp(0.0, 1.0),
+                        confidence: swing.confidence.clamp(0.0, 1.0),
+                        total_volume: swing.total_volume.max(0.0),
+                        trade_count: swing.trade_count,
+                    },
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>();
+    atoms.sort_by(|left, right| {
+        left.source
+            .side
+            .cmp(&right.source.side)
+            .then_with(|| left.source.price.total_cmp(&right.source.price))
+            .then_with(|| {
+                left.source
+                    .confirmed_at_ms
+                    .cmp(&right.source.confirmed_at_ms)
+            })
+            .then_with(|| left.source.level_id.cmp(&right.source.level_id))
+    });
+    let bandwidth = (price_tick(reference) * 2.0).max(reference * 0.0005);
+    let mut clusters: Vec<Vec<UnifiedSwingAtom>> = Vec::new();
+    for atom in atoms {
+        let joins = clusters.last().is_some_and(|cluster| {
+            cluster
+                .first()
+                .is_some_and(|first| first.source.side == atom.source.side)
+                && cluster
+                    .iter()
+                    .map(|item| item.source.price)
+                    .fold(f64::NEG_INFINITY, f64::max)
+                    + bandwidth
+                    >= atom.source.price
+        });
+        if joins {
+            if let Some(cluster) = clusters.last_mut() {
+                cluster.push(atom);
+            }
+        } else {
+            clusters.push(vec![atom]);
+        }
+    }
+    let mut levels = clusters
+        .into_iter()
+        .map(|cluster| unified_structure_level(sym, cluster, bandwidth))
+        .collect::<Vec<_>>();
+    levels.sort_by(|left, right| {
+        right
+            .salience
+            .total_cmp(&left.salience)
+            .then_with(|| {
+                (left.price - reference)
+                    .abs()
+                    .total_cmp(&(right.price - reference).abs())
+            })
+            .then_with(|| left.unified_level_id.cmp(&right.unified_level_id))
+    });
+    levels
+}
+
+fn unified_structure_level(
+    sym: &str,
+    cluster: Vec<UnifiedSwingAtom>,
+    bandwidth: f64,
+) -> UnifiedStructureLevel {
+    let sources = cluster
+        .into_iter()
+        .map(|item| item.source)
+        .collect::<Vec<_>>();
+    let mut independent = BTreeMap::<(i64, i64), &UnifiedStructureSource>::new();
+    for source in &sources {
+        let identity = (price_key(source.price), source.pivot_at_ms);
+        independent
+            .entry(identity)
+            .and_modify(|current| {
+                if source.confidence > current.confidence {
+                    *current = source;
+                }
+            })
+            .or_insert(source);
+    }
+    let weight_total = independent
+        .values()
+        .map(|source| (source.strength * source.confidence).max(0.05))
+        .sum::<f64>()
+        .max(1e-9);
+    let price = independent
+        .values()
+        .map(|source| source.price * (source.strength * source.confidence).max(0.05))
+        .sum::<f64>()
+        / weight_total;
+    let salience = 1.0
+        - independent.values().fold(1.0, |remaining, source| {
+            remaining * (1.0 - (source.strength * source.confidence).clamp(0.0, 0.95))
+        });
+    let evidence_confidence = independent
+        .values()
+        .map(|source| source.confidence * (source.strength * source.confidence).max(0.05))
+        .sum::<f64>()
+        / weight_total;
+    let diversity = (independent.len() as f64 / 3.0).clamp(0.0, 1.0);
+    let confidence = (evidence_confidence * (0.7 + 0.3 * diversity)).clamp(0.0, 1.0);
+    let lower_source = sources
+        .iter()
+        .map(|source| source.price)
+        .fold(f64::INFINITY, f64::min);
+    let upper_source = sources
+        .iter()
+        .map(|source| source.price)
+        .fold(f64::NEG_INFINITY, f64::max);
+    let mut timeframes = sources
+        .iter()
+        .map(|source| source.timeframe.clone())
+        .collect::<Vec<_>>();
+    timeframes.sort_by_key(|timeframe| {
+        STRUCTURE_TIMEFRAMES
+            .iter()
+            .position(|(candidate, _)| candidate == timeframe)
+            .unwrap_or(usize::MAX)
+    });
+    timeframes.dedup();
+    let created_at_ms = sources
+        .iter()
+        .map(|source| source.pivot_at_ms)
+        .filter(|value| *value > 0)
+        .min()
+        .unwrap_or_default();
+    let confirmed_at_ms = sources
+        .iter()
+        .map(|source| source.confirmed_at_ms)
+        .max()
+        .unwrap_or_default();
+    let side = sources
+        .first()
+        .map(|source| source.side)
+        .unwrap_or_default();
+    let lower = lower_source - bandwidth * 0.5;
+    let upper = upper_source + bandwidth * 0.5;
+    let total_volume = independent.values().map(|source| source.total_volume).sum();
+    let trade_count = independent.values().map(|source| source.trade_count).sum();
+    let unified_level_id = stable_hash(&format!(
+        "{sym}|unified|{side}|{}|{}|{}",
+        price_key(lower),
+        price_key(upper),
+        confirmed_at_ms
+    ));
+    UnifiedStructureLevel {
+        unified_level_id,
+        side,
+        price,
+        lower,
+        upper,
+        salience: salience.clamp(0.0, 1.0),
+        confidence,
+        source_count: sources.len(),
+        independent_pivot_count: independent.len(),
+        timeframes,
+        created_at_ms,
+        confirmed_at_ms,
+        total_volume,
+        trade_count,
+        sources,
     }
 }
 
@@ -2082,6 +2319,89 @@ mod tests {
             .unwrap()
             .with_timezone(&Utc)
             .timestamp_millis()
+    }
+
+    fn swing(
+        level_id: u64,
+        side: i8,
+        price: f64,
+        pivot_at_ms: i64,
+        confirmed_at_ms: i64,
+        broken: bool,
+    ) -> TimeframeSwing {
+        TimeframeSwing {
+            level_id,
+            side,
+            price,
+            pivot_at: Some(Utc.timestamp_millis_opt(pivot_at_ms).unwrap()),
+            confirmed_at: Some(Utc.timestamp_millis_opt(confirmed_at_ms).unwrap()),
+            strength: 0.8,
+            confidence: 0.75,
+            total_volume: 1_000.0,
+            trade_count: 10,
+            broken,
+            ..TimeframeSwing::default()
+        }
+    }
+
+    #[test]
+    fn unified_levels_deduplicate_the_same_pivot_across_timeframes() {
+        let pivot_at_ms = 1_700_000_000_000;
+        let states = vec![
+            TimeframeState {
+                timeframe: "1s".to_string(),
+                active_high: Some(swing(1, -1, 10.0, pivot_at_ms, pivot_at_ms + 2_000, false)),
+                ..TimeframeState::default()
+            },
+            TimeframeState {
+                timeframe: "5s".to_string(),
+                active_high: Some(swing(2, -1, 10.0, pivot_at_ms, pivot_at_ms + 10_000, false)),
+                ..TimeframeState::default()
+            },
+        ];
+        let duplicated = unified_structure_levels("TEST", &states, 10.0);
+        let single = unified_structure_levels("TEST", &states[..1], 10.0);
+
+        assert_eq!(duplicated.len(), 1);
+        assert_eq!(duplicated[0].source_count, 2);
+        assert_eq!(duplicated[0].independent_pivot_count, 1);
+        assert_eq!(duplicated[0].timeframes, vec!["1s", "5s"]);
+        assert_eq!(duplicated[0].confirmed_at_ms, pivot_at_ms + 10_000);
+        assert!((duplicated[0].salience - single[0].salience).abs() < 1e-12);
+    }
+
+    #[test]
+    fn unified_levels_cluster_nearby_independent_swings_and_ignore_broken_levels() {
+        let start = 1_700_000_000_000;
+        let states = vec![
+            TimeframeState {
+                timeframe: "1s".to_string(),
+                active_high: Some(swing(1, -1, 10.000, start, start + 2_000, false)),
+                active_low: Some(swing(2, 1, 9.900, start + 500, start + 2_500, false)),
+                ..TimeframeState::default()
+            },
+            TimeframeState {
+                timeframe: "5s".to_string(),
+                active_high: Some(swing(3, -1, 10.015, start + 1_000, start + 11_000, false)),
+                ..TimeframeState::default()
+            },
+            TimeframeState {
+                timeframe: "10s".to_string(),
+                active_high: Some(swing(4, -1, 10.200, start + 2_000, start + 22_000, true)),
+                ..TimeframeState::default()
+            },
+        ];
+        let levels = unified_structure_levels("TEST", &states, 10.0);
+
+        assert_eq!(levels.len(), 2);
+        let resistance = levels.iter().find(|level| level.side == -1).unwrap();
+        assert_eq!(resistance.source_count, 2);
+        assert_eq!(resistance.independent_pivot_count, 2);
+        assert!(resistance.lower < 10.0);
+        assert!(resistance.upper > 10.015);
+        assert_eq!(resistance.created_at_ms, start);
+        assert_eq!(resistance.confirmed_at_ms, start + 11_000);
+        assert!(levels.iter().all(|level| level.price < 10.1));
     }
 
     #[test]

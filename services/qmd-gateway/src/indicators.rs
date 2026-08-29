@@ -4,7 +4,7 @@ use crate::config::GatewayConfig;
 use crate::event::{MarketEvent, QuoteEvent, TradeEvent};
 use crate::generic_structure::{
     GenericStructureCheckpoint, GenericStructureEvent, GenericStructureSnapshot,
-    StructureLevelCandidate, StructureTimeframeSnapshot,
+    StructureLevelCandidate, StructureTimeframeSnapshot, UnifiedStructureLevel,
 };
 use crate::metrics::SharedMetrics;
 use crate::microstructure_interval::{
@@ -24,8 +24,8 @@ use tokio::time::{interval, sleep, Duration, MissedTickBehavior};
 
 const STRUCTURE_CHECKPOINT_BATCH_LIMIT: usize = 256;
 
-pub const INDICATOR_SCHEMA_VERSION: u16 = 19;
-pub const INDICATOR_CALCULATION_REVISION: &str = "qmd-indicators-v21";
+pub const INDICATOR_SCHEMA_VERSION: u16 = 20;
+pub const INDICATOR_CALCULATION_REVISION: &str = "qmd-indicators-v22";
 const MICROSTRUCTURE_AGGREGATE_TIMEFRAMES: [&str; 7] = ["1s", "5s", "10s", "30s", "1m", "5m", "1h"];
 const INDICATOR_STATE_RECLAIM_INTERVAL_SECONDS: u64 = 30;
 const RETAINED_100MS_HISTORY_ROWS: usize = 128;
@@ -358,6 +358,7 @@ pub struct IndicatorRow {
     pub qmd_structure_resistance_confidence: f64,
     pub qmd_structure_active_levels: Vec<StructureLevelCandidate>,
     pub qmd_structure_timeframe_states: Vec<StructureTimeframeSnapshot>,
+    pub qmd_structure_unified_levels: Vec<UnifiedStructureLevel>,
     pub qmd_structure_developing_high: f64,
     pub qmd_structure_developing_low: f64,
     pub qmd_structure_developing_direction: i8,
@@ -435,11 +436,14 @@ impl IndicatorRow {
     /// Drop calculator-only state after the public indicator projection has
     /// been finalized. Historical chart structure history is retained by its
     /// dedicated event projection; replay consumes the scalar causal fields.
-    /// Keeping the redundant level/state vectors in every frame multiplies
-    /// memory and wire size without adding strategy evidence.
+    /// Unified levels remain because they are the compact, point-in-time chart
+    /// projection and must be recoverable at every replay clock.
     pub fn compact_for_historical_cache(mut self) -> Self {
         self.qmd_structure_active_levels.clear();
         self.qmd_structure_timeframe_states.clear();
+        for level in &mut self.qmd_structure_unified_levels {
+            level.sources.clear();
+        }
         self.qmd_structure_snapshot = Default::default();
         self.qmd_structure_events.clear();
         self.microstructure_interval = Default::default();
@@ -1122,6 +1126,7 @@ impl SharedIndicatorStore {
             // request-scoped payload on the per-ticker indicator endpoint.
             row.qmd_structure_active_levels.clear();
             row.qmd_structure_timeframe_states.clear();
+            row.qmd_structure_unified_levels.clear();
         });
         let as_of = rows
             .iter()
@@ -1386,9 +1391,10 @@ impl IndicatorShardStore {
                     .collect::<Vec<_>>()
             })
             .unwrap_or_default();
-        history
-            .iter_mut()
-            .for_each(|row| row.qmd_structure_active_levels.clear());
+        history.iter_mut().for_each(|row| {
+            row.qmd_structure_active_levels.clear();
+            row.qmd_structure_unified_levels.clear();
+        });
         IndicatorSnapshot {
             ticker: ticker.to_string(),
             tick,
@@ -1507,6 +1513,7 @@ impl IndicatorStore {
             let mut retained = row.clone();
             retained.qmd_structure_active_levels.clear();
             retained.qmd_structure_timeframe_states.clear();
+            retained.qmd_structure_unified_levels.clear();
             retained.qmd_structure_events.clear();
             retained.qmd_structure_snapshot = GenericStructureSnapshot::default();
             retained.microstructure_interval = MicrostructureIntervalFeatures::default();
@@ -2035,6 +2042,7 @@ impl BarIndicatorState {
             qmd_structure_resistance_confidence: structure.resistance.confidence,
             qmd_structure_active_levels: structure.active_levels.clone(),
             qmd_structure_timeframe_states: structure.timeframe_states.clone(),
+            qmd_structure_unified_levels: structure.unified_levels.clone(),
             qmd_structure_developing_high: structure.developing_high,
             qmd_structure_developing_low: structure.developing_low,
             qmd_structure_developing_direction: structure.developing_direction,
@@ -3364,6 +3372,7 @@ fn indicator_insert_row(row: &IndicatorRow) -> serde_json::Value {
         // per-bar indicator table intentionally does not duplicate this array.
         object.remove("qmd_structure_active_levels");
         object.remove("qmd_structure_timeframe_states");
+        object.remove("qmd_structure_unified_levels");
         object.insert(
             "bar_start".to_string(),
             serde_json::Value::String(clickhouse_datetime64(&row.bar_start)),
@@ -3496,6 +3505,7 @@ mod tests {
         let bar = base_bar();
         let mut calculator = BarIndicatorCalculator::new();
         let row = calculator.apply_bar(&bar);
+        let unified_level_count = row.qmd_structure_unified_levels.len();
         let mut wire_before = serde_json::to_value(&row).expect("indicator row should serialize");
         wire_before
             .as_object_mut()
@@ -3521,6 +3531,14 @@ mod tests {
         assert_eq!(wire_after, wire_before);
         assert!(compacted.qmd_structure_active_levels.is_empty());
         assert!(compacted.qmd_structure_timeframe_states.is_empty());
+        assert_eq!(
+            compacted.qmd_structure_unified_levels.len(),
+            unified_level_count
+        );
+        assert!(compacted
+            .qmd_structure_unified_levels
+            .iter()
+            .all(|level| level.sources.is_empty()));
         assert!(compacted.qmd_structure_snapshot.active_levels.is_empty());
         assert!(compacted.qmd_structure_snapshot.timeframe_states.is_empty());
         assert!(compacted.qmd_structure_events.is_empty());

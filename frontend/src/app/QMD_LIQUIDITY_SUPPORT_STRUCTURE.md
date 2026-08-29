@@ -33,12 +33,24 @@ These package ids are available in the Indicators menu and chart legend:
 | `indicator.qmd_resiliency` | QMD Liquidity Resiliency | `microstructure_resiliency` | Signed oscillator histogram. |
 | `indicator.flow_structure_composite` | Flow-Structure Composite · Oscillator | continuous score, confidence, bias, reason | Confidence-weighted flow-versus-structure indicator; market-signal markers use the separate 3-of-5 lifecycle. |
 | `indicator.qmd_generic_structure` | QMD Generic Structure | active zones, complete causal event stream, three-scale swings | Price overlay with independently configurable micro, tactical, and context layers. |
+| `indicator.qmd_unified_structure` | QMD Unified Structural Levels | clustered confirmed swing highs/lows from all QMD structure timeframes | Interval-independent support/resistance zones with causal confirmation, source diversity, salience, and confidence. |
 | `indicator.qmd_reference_levels` | QMD Reference Levels | extended-session high/low, opening range, POC, LULD, and completed higher-timeframe references | Independent price lines, not structural evidence. |
 
 Every package exposes its guide from both the indicator picker and configured
 chart legend. Flow-Structure Composite is the relationship surface. Generic Structure remains an
 audit and location surface: micro, tactical, and context swings, zones, and
 breaks can be turned on independently to verify the causal engine.
+
+Structural overlays that expose a History control also provide **All loaded
+bars**. This removes the presentation window only; it does not request future
+data or change the causal confirmation time. Load earlier chart pages when more
+session history is needed.
+
+Completed trading annotations are position-centric. One shaded span represents
+one flat-to-flat position lifecycle; scale-ins, partial exits, and distinct fill
+prices appear as compact `B quantity·price` or `S quantity·price` markers inside
+that lifecycle. The chart does not independently redraw FIFO round-trip
+fragments or duplicate every execution as another position.
 
 ## How to Read the Liquidity Oscillators
 

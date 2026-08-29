@@ -2032,9 +2032,18 @@ function LegendEditor({
         </label>
       ) : null}
       {item.itemKind === "zone" && item.supportsHistoryWindow ? (
-        <label>
-          History
-          <span className="legend-range-control">
+        <fieldset className="legend-history-control">
+          <legend>History</legend>
+          <label className="legend-toggle-row">
+            <input
+              aria-label={`${item.label} show on all loaded bars`}
+              checked={(item.historyBars ?? 20) === 0}
+              type="checkbox"
+              onChange={(event) => onUpdate({ historyBars: event.target.checked ? 0 : 200 })}
+            />
+            <span>All loaded bars</span>
+          </label>
+          {(item.historyBars ?? 20) !== 0 ? <span className="legend-range-control">
             <input
               aria-label={`${item.label} history bars`}
               min={20}
@@ -2045,8 +2054,8 @@ function LegendEditor({
               onChange={(event) => onUpdate({ historyBars: Number(event.target.value) })}
             />
             <output>{item.historyBars ?? 20} bars</output>
-          </span>
-        </label>
+          </span> : <output>Full loaded chart</output>}
+        </fieldset>
       ) : null}
       {item.itemKind === "zone" && item.supportsCurrentLevelCount ? (
         <label>
@@ -3513,7 +3522,7 @@ function resolveLegendSettings(settingsMap: LegendSettingsMap, key: string, seri
     color: resolveChartColor(stored.color || defaults.color),
     downColor: validHexColor(stored.downColor, defaults.downColor),
     currentLevelCount: Math.max(1, Math.min(6, Math.round(stored.currentLevelCount ?? defaults.currentLevelCount))),
-    historyBars: Math.max(20, Math.min(1000, Math.round(stored.historyBars ?? defaults.historyBars))),
+    historyBars: resolveHistoryBars(stored.historyBars, defaults.historyBars),
     labelFontSize: Math.max(9, Math.min(18, Math.round(stored.labelFontSize ?? defaults.labelFontSize))),
     lineStyle: stored.lineStyle || defaults.lineStyle,
     lineWidth: Math.max(1, Math.min(4, Math.round(stored.lineWidth ?? defaults.lineWidth))),
@@ -3552,7 +3561,7 @@ function resolvePriceZoneLegendSettings(settingsMap: LegendSettingsMap, key: str
     color: validHexColor(stored.color, resolveChartColor(zone?.color || "var(--muted-foreground)")),
     currentLevelCount: Math.max(1, Math.min(6, Math.round(stored.currentLevelCount ?? 3))),
     downColor: validHexColor(stored.downColor, resolveChartColor("var(--danger)")),
-    historyBars: Math.max(20, Math.min(1000, Math.round(stored.historyBars ?? 20))),
+    historyBars: resolveHistoryBars(stored.historyBars, 20),
     labelFontSize: Math.max(9, Math.min(18, Math.round(stored.labelFontSize ?? 11))),
     lineStyle: stored.lineStyle ?? zoneBorderStyle(zone?.borderStyle),
     lineWidth: Math.max(1, Math.min(4, Math.round(stored.lineWidth ?? zone?.borderWidth ?? 1))),
@@ -4984,7 +4993,7 @@ function drawPriceZonePrimitiveLabels(
       eligibleZones
         .filter((zone) => Boolean(zone.compactLabel))
         .sort((first, second) => priceZoneLabelTime(first) - priceZoneLabelTime(second))
-        .slice(-settings.historyBars),
+        .slice(settings.historyBars === 0 ? 0 : -settings.historyBars),
     );
     const orderedLabelZones = [...eligibleZones].sort((first, second) => (
       priceZoneLabelPriority(first) - priceZoneLabelPriority(second)
@@ -5158,6 +5167,7 @@ function isStructureBreakZone(zone: PriceZone) {
 }
 
 function priceZoneHistoryStart(candles: Candle[], zones: PriceZone[], historyBars: number) {
+  if (historyBars === 0) return Number.NEGATIVE_INFINITY;
   const latestTime = candles[candles.length - 1]?.time;
   const sourceSeconds = zones.find((zone) =>
     Number.isFinite(zone.historyTimeframeSeconds) && Number(zone.historyTimeframeSeconds) > 0
@@ -5166,6 +5176,11 @@ function priceZoneHistoryStart(candles: Candle[], zones: PriceZone[], historyBar
     return Number(latestTime) - historyBars * Number(sourceSeconds);
   }
   return candles[Math.max(0, candles.length - historyBars)]?.time ?? Number.NEGATIVE_INFINITY;
+}
+
+function resolveHistoryBars(value: number | undefined, fallback: number) {
+  const rounded = Math.round(value ?? fallback);
+  return rounded === 0 ? 0 : Math.max(20, Math.min(1000, rounded));
 }
 
 function priceZoneWithinHistory(zone: PriceZone, historyStart: number) {

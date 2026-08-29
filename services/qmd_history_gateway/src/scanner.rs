@@ -574,6 +574,7 @@ impl CrossSectionEngine {
                 .insert(ticker.clone(), indicator.clone());
             let mut published = indicator.clone();
             published.qmd_structure_active_levels.clear();
+            published.qmd_structure_unified_levels.clear();
             self.latest_indicators
                 .insert(format!("{ticker}:{timeframe}"), published);
             self.changed_indicator_tickers.insert(ticker.clone());

@@ -953,6 +953,7 @@ class QmdGatewayClientTests(unittest.TestCase):
                 "vwap": 101.5,
                 "qmd_structure_active_levels": [{"price": 101.0}],
                 "qmd_structure_timeframe_states": [{"timeframe": "1s"}],
+                "qmd_structure_unified_levels": [{"price": 101.0}],
             }]
         }
 
@@ -966,6 +967,7 @@ class QmdGatewayClientTests(unittest.TestCase):
         self.assertEqual(rows[0]["vwap"], 101.5)
         self.assertNotIn("qmd_structure_active_levels", rows[0])
         self.assertNotIn("qmd_structure_timeframe_states", rows[0])
+        self.assertNotIn("qmd_structure_unified_levels", rows[0])
         get_json.assert_called_once_with(
             "/snapshot/scanner-indicators",
             {"limit": 25_000, "timeframe": "1s", "fields": "price_change_pct,vwap"},

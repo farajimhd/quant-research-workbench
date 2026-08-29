@@ -24,11 +24,11 @@ export function isQmdStructureLevelCandidate(value: unknown): value is QmdStruct
 }
 
 export function qmdStructureSwingLayerId(timeframe: string) {
-  return `indicator.qmd_generic_structure.v9.${timeframe}.swings`;
+  return `indicator.qmd_generic_structure.v10.${timeframe}.swings`;
 }
 
 export function qmdStructureBreakLayerId(timeframe: string) {
-  return `indicator.qmd_generic_structure.v9.${timeframe}.breaks`;
+  return `indicator.qmd_generic_structure.v10.${timeframe}.breaks`;
 }
 
 export function qmdStructureTimeframeSeconds(timeframe: string) {

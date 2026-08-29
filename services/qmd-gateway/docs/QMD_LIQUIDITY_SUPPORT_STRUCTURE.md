@@ -1,14 +1,16 @@
 # QMD Liquidity, Support, and Structure Guide
 
-## Generic Structure v7: immediate levels plus timeframe-local swings
+## Generic Structure v10: immediate levels, timeframe-local swings, and unified structural levels
 
-Generic Structure v7 has one source stream: ordered eligible executed trades.
-It maintains two deliberately separate products:
+Generic Structure v10 has one source stream: ordered eligible executed trades.
+It maintains three deliberately separate products:
 
 - an immediate traded-price level book for support/resistance and volume
   evidence; and
 - a causal local swing and structural-break hierarchy owned independently by
-  each supported timeframe.
+  each supported timeframe; and
+- unified structural price zones that cluster the latest confirmed, unbroken
+  local swings across timeframes without changing their source identity.
 
 The engine processes them as follows:
 
@@ -30,6 +32,22 @@ The engine processes them as follows:
    `structure_break`.
 7. An immediate-book level changes from support to resistance, or the reverse, only
    after a later retest and rejection. A simple price cross does not relabel it.
+
+### Unified Structural Levels
+
+The unified projection clusters swing highs separately from swing lows using an
+adaptive bandwidth of two ticks or five basis points, whichever is larger. It
+is independent of the chart interval: the selected interval changes the candle
+display, not the source swing books or their combined price zones.
+
+The same exact price and pivot timestamp can appear in several timeframe books.
+Those appearances remain listed as sources but count once toward salience,
+confidence, volume, and trade-count evidence. Nearby swings with different
+pivot identities count independently. Broken swings are excluded. A zone's
+`confirmed_at_ms` is the latest confirmation among its sources, which is the
+earliest time the complete displayed cluster was knowable without lookahead.
+`salience` and `confidence` are bounded evidence scores, not calibrated breakout
+probabilities.
 
 ### Executed-volume footprint
 
@@ -97,8 +115,8 @@ response, and QMD flow together.
 
 This is the calculation and service-contract authority for QMD liquidity,
 support/resistance, market structure, and structural-pressure indicators. It
-documents indicator schema version 17 and generic-structure algorithm version
-9. The application rendering contract is documented in
+documents indicator schema version 20 and generic-structure algorithm version
+10. The application rendering contract is documented in
 [`frontend/src/app/QMD_LIQUIDITY_SUPPORT_STRUCTURE.md`](../../../frontend/src/app/QMD_LIQUIDITY_SUPPORT_STRUCTURE.md).
 
 ## Scope and Interpretation Boundary

@@ -43,11 +43,41 @@ export type QmdStructureTimeframeState = {
   resistance?: Record<string, unknown>;
   promoted_level_count: number;
 };
+export type QmdUnifiedStructureSource = {
+  level_id: number;
+  timeframe: string;
+  side: number;
+  price: number;
+  pivot_at_ms: number;
+  confirmed_at_ms: number;
+  strength: number;
+  confidence: number;
+  total_volume: number;
+  trade_count: number;
+};
+export type QmdUnifiedStructureLevel = {
+  unified_level_id: number;
+  side: number;
+  price: number;
+  lower: number;
+  upper: number;
+  salience: number;
+  confidence: number;
+  source_count: number;
+  independent_pivot_count: number;
+  timeframes: string[];
+  created_at_ms: number;
+  confirmed_at_ms: number;
+  total_volume: number;
+  trade_count: number;
+  sources: QmdUnifiedStructureSource[];
+};
 export type HistoricalIndicator = {
   bar_start: string;
   qmd_structure_active_levels?: QmdStructureLevelCandidate[];
   qmd_structure_timeframe_states?: QmdStructureTimeframeState[];
-} & Record<string, number | string | QmdStructureLevelCandidate[] | QmdStructureTimeframeState[] | undefined>;
+  qmd_structure_unified_levels?: QmdUnifiedStructureLevel[];
+} & Record<string, number | string | QmdStructureLevelCandidate[] | QmdStructureTimeframeState[] | QmdUnifiedStructureLevel[] | undefined>;
 export type PreviewRow = Record<string, unknown>;
 export type PnlCandleTimeframe = "30m" | "1h" | "1d" | "1M";
 export type PnlCandle = {
